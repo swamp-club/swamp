@@ -52,8 +52,10 @@ import {
 import {
   type ExplicitLease,
   type ExplicitLeaseRenewal,
+  noteUnrenewedLeases,
   readExplicitLeases,
   renewExplicitLeases,
+  resetUnrenewedLeasesForTesting,
 } from "./explicit_model_leases.ts";
 import { holdServeLease } from "./serve_lease_registry.ts";
 import {
@@ -136,12 +138,13 @@ const renewedLeaseRoots = new Set<string>();
 
 export function resetLeaseRenewalsForTesting(): void {
   renewedLeaseRoots.clear();
+  resetUnrenewedLeasesForTesting();
 }
 
 /**
  * renews the explicit model leases recorded for root, once per process; a
- * failure is a warning, never the command's, and an unrenewed lease lapses at
- * serve once its hold passes
+ * failure is a warning, never the command's, and is noted so a lock on the
+ * lease may go offline without asking serve again
  */
 async function renewCheckoutLeases(root: string): Promise<void> {
   if (renewedLeaseRoots.has(root)) return;
@@ -158,6 +161,7 @@ async function renewCheckoutLeases(root: string): Promise<void> {
       client,
       AbortSignal.timeout(client.timeoutMs),
     );
+    noteUnrenewedLeases(root, client.baseUrl, renewal.unrenewed);
   } catch (error) {
     logger.warn`Could not renew this checkout's model leases: ${error}`;
   } finally {

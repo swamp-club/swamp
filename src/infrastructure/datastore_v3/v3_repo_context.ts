@@ -24,6 +24,7 @@
  */
 
 import { clearServeUnreachableLatches } from "./serve_datastore_client.ts";
+import { bindRenewalUnanswered } from "./explicit_model_leases.ts";
 import { dirname, join, resolve } from "@std/path";
 import {
   type DatastoreConfig,
@@ -352,6 +353,12 @@ const serveHolds = new Map<
  */
 const serveTeams = new Map<string, () => ServeLeader | undefined>();
 
+/**
+ * copies a serve follower opened, by handle key: no sidecar of this process
+ * replicates them until acquireV3Replication starts one
+ */
+const serveFollowerCopies = new Set<string>();
+
 export function enableV3ServeTeamMode(
   datastorePath: string,
   leader: () => ServeLeader | undefined,
@@ -383,6 +390,7 @@ export function refuseV3FollowerWrite(datastorePath: string): void {
 export async function refreshV3FollowerCopy(
   repoDir: string,
   config: V3DatastoreConfig,
+  signal?: AbortSignal,
 ): Promise<void> {
   if (holdsCurrentV3WriterLease(config.path)) return;
   const key = handleKey(repoDir, config);
@@ -392,8 +400,10 @@ export async function refreshV3FollowerCopy(
     // writer's: the refresh then leaves it to the retake's own restore.
     await ensureV3CopyCurrent(repoDir, config, "read", {
       stillCurrent: () => !holdsCurrentV3WriterLease(config.path),
+      ...(signal !== undefined ? { signal } : {}),
     });
   }
+  signal?.throwIfAborted();
   await opened.get(key)?.catchUp();
 }
 
@@ -460,6 +470,7 @@ export function v3DatastoreFor(
         ? { directories: config.directories }
         : {}),
       ...(config.exclude !== undefined ? { exclude: config.exclude } : {}),
+      ...(serveFollowerCopies.has(key) ? { serveFollower: true } : {}),
       writerFence: () => v3WriterFence(config.path),
       replicatedMark: () =>
         v3ReplicatesAt(config.path)
@@ -568,7 +579,7 @@ export async function ensureV3CopyCurrent(
   repoDir: string,
   config: V3DatastoreConfig,
   mode: "read" | "write",
-  options: { readonly stillCurrent?: () => boolean } = {},
+  options: EnsureV3CopyOptions = {},
 ): Promise<V3CopyRefresh & { readonly stale?: true }> {
   const key = handleKey(repoDir, config);
   if (!v3ReplicatesAt(config.path)) {
@@ -584,12 +595,18 @@ export async function ensureV3CopyCurrent(
   );
 }
 
+interface EnsureV3CopyOptions {
+  readonly stillCurrent?: () => boolean;
+  /** honoured until the restore is installed; the rebuild after it completes */
+  readonly signal?: AbortSignal;
+}
+
 async function ensureV3CopyCurrentNow(
   repoDir: string,
   config: V3DatastoreConfig,
   mode: "read" | "write",
   key: string,
-  options: { readonly stillCurrent?: () => boolean },
+  options: EnsureV3CopyOptions,
 ): Promise<V3CopyRefresh & { readonly stale?: true }> {
   await Deno.mkdir(resolve(repoDir), { recursive: true });
   const copy = copyOf(repoDir, config);
@@ -598,6 +615,7 @@ async function ensureV3CopyCurrentNow(
     mode,
     ...(handle !== undefined ? { openStore: handle.commitStore } : {}),
     lockWaitMs: resolveLockTimeoutMs(),
+    ...(options.signal !== undefined ? { signal: options.signal } : {}),
   });
   const datastore = resolve(config.path);
   const copies = copiesByDatastore.get(datastore) ?? [];
@@ -1064,6 +1082,7 @@ async function followV3Datastore(
   repoDir: string,
   ownerCheck: V3OwnerCheck | undefined,
 ): Promise<void> {
+  serveFollowerCopies.add(handleKey(repoDir, config));
   await ensureV3CopyCurrent(repoDir, config, "read");
   const handle = v3DatastoreFor(repoDir, config);
   const refusal = claimRefusal(
@@ -1307,6 +1326,13 @@ async function recoverV3Outbox(
   // a serve-mode checkout lands its entries through serve, never only in its
   // copy of serve's log
   const upstream = handle.serveUpstreamStore;
+  // the bind's renewal went unanswered or found no leader: this command goes
+  // offline, so what the outbox holds waits for the next that reaches serve
+  if (upstream !== undefined && bindRenewalUnanswered(handle.datastorePath)) {
+    logger
+      .debug`Serve did not answer this command's lease renewal; a later command lands this checkout's outbox`;
+    return;
+  }
   try {
     await recoverCommitOutbox(
       upstream === undefined ? handle : {
@@ -1954,6 +1980,7 @@ export async function closeV3Datastores(
   commandStartMarks.clear();
   serveHolds.clear();
   serveTeams.clear();
+  serveFollowerCopies.clear();
   // offline mode lasts the command; json mode says what it queued now, after
   // its result
   reportQueuedOffline();
@@ -1970,18 +1997,20 @@ export async function closeV3Datastores(
   );
   // a writer folds history the policy does not retain before it lets go of the
   // lock: compaction is the single writer's
-  for (const handle of unreachable ? [] : handles) {
-    if (!holdsV3WriterLock(handle.datastorePath)) continue;
-    // a sidecar already gone (signalled with this process) replicates nothing
-    // more, so no commit is made that no replica could hold
-    const use = replications.get(resolve(handle.datastorePath))?.[0];
-    if (use !== undefined && !await use.probe()) {
-      logger
-        .debug`Not compacting the v3 datastore at ${handle.datastorePath} at close: its Litestream sidecar is gone`;
-      continue;
+  await withSpan("swamp.datastore.v3.close.compact", {}, async () => {
+    for (const handle of unreachable ? [] : handles) {
+      if (!holdsV3WriterLock(handle.datastorePath)) continue;
+      // a sidecar already gone (signalled with this process) replicates nothing
+      // more, so no commit is made that no replica could hold
+      const use = replications.get(resolve(handle.datastorePath))?.[0];
+      if (use !== undefined && !await use.probe()) {
+        logger
+          .debug`Not compacting the v3 datastore at ${handle.datastorePath} at close: its Litestream sidecar is gone`;
+        continue;
+      }
+      await compactQuietly(handle, CLOSING_COMPACTION_BUDGET_MS);
     }
-    await compactQuietly(handle, CLOSING_COMPACTION_BUDGET_MS);
-  }
+  });
   // one sync per datastore confirms every commit this process made,
   // compaction's included; before the stores close, since it makes Litestream
   // open commits.db and the WAL must survive for the next sidecar start
@@ -1993,67 +2022,84 @@ export async function closeV3Datastores(
   const deadlineMs = unreachable
     ? UNREACHABLE_SYNC_DEADLINE_MS
     : v3SyncDeadlineMs();
-  const synced = await Promise.allSettled([
-    ...heldEntries.map(async ([datastore, uses]) => {
-      const watch = watchStorageDuringSync(datastore, handles, unreachable);
-      const startedAt = Date.now();
-      try {
-        return await syncAndPublish(
-          datastore,
-          uses[0],
-          handles,
-          deadlineMs,
-          watch.signal,
-          // serve's shutdown deadline covers the wait for a probe's sync too
-          { queueWaitCounts: shutdownDeadline !== undefined },
-        );
-      } catch (error) {
-        const left = deadlineMs - (Date.now() - startedAt);
-        if (
-          !(error instanceof V3ReplicationError) ||
-          watch.signal?.aborted === true ||
-          left < MIN_QUEUED_SYNC_MS || await uses[0].probe()
-        ) {
-          throw error;
-        }
-        return await confirmClosedFromReplica(
-          datastore,
-          uses[0],
-          handles,
-          left,
-          watch.signal,
-          error,
-        );
-      } finally {
-        if (watch.stop()) unreachable = true;
-      }
-    }),
-    ...owed.map((datastore) =>
-      Promise.reject(
-        markErrorPaths(
-          new V3ReplicationError(
-            `the Litestream sidecar of the v3 datastore at ${datastore} ` +
-              `could not be replaced, so serve's recent commits were never ` +
-              `confirmed`,
-          ),
-          [datastore],
+  const synced = await withSpan(
+    "swamp.datastore.v3.close.sync",
+    {},
+    () =>
+      Promise.allSettled([
+        ...heldEntries.map(async ([datastore, uses]) => {
+          const watch = watchStorageDuringSync(datastore, handles, unreachable);
+          const startedAt = Date.now();
+          try {
+            return await syncAndPublish(
+              datastore,
+              uses[0],
+              handles,
+              deadlineMs,
+              watch.signal,
+              // serve's shutdown deadline covers the wait for a probe's sync too
+              { queueWaitCounts: shutdownDeadline !== undefined },
+            );
+          } catch (error) {
+            const left = deadlineMs - (Date.now() - startedAt);
+            if (
+              !(error instanceof V3ReplicationError) ||
+              watch.signal?.aborted === true ||
+              left < MIN_QUEUED_SYNC_MS || await uses[0].probe()
+            ) {
+              throw error;
+            }
+            return await confirmClosedFromReplica(
+              datastore,
+              uses[0],
+              handles,
+              left,
+              watch.signal,
+              error,
+            );
+          } finally {
+            if (watch.stop()) unreachable = true;
+          }
+        }),
+        ...owed.map((datastore) =>
+          Promise.reject(
+            markErrorPaths(
+              new V3ReplicationError(
+                `the Litestream sidecar of the v3 datastore at ${datastore} ` +
+                  `could not be replaced, so serve's recent commits were never ` +
+                  `confirmed`,
+              ),
+              [datastore],
+            ),
+          )
         ),
-      )
-    ),
-  ]);
+      ]),
+  );
   setV3ClosingDeadline(undefined);
+  // after the closing sync, which may start one, and before the lease goes;
+  // fenced and repeatable, so an outage or serve's deadline leaves the rest
+  // to the next writer's first sync
+  if (!unreachable) {
+    await boundedLineageCollections(
+      shutdownDeadline?.remaining(SHUTDOWN_RELEASE_BOUND_MS),
+    );
+  }
   // After the closing sync, which serve's drain deadline is for, and before
   // the stores close.
-  for (const { key, handle, current } of dropped) {
-    await recoverDroppedWork(key, handle, current, unreachable);
-  }
+  await withSpan("swamp.datastore.v3.close.dropped_work", {}, async () => {
+    for (const { key, handle, current } of dropped) {
+      await recoverDroppedWork(key, handle, current, unreachable);
+    }
+  });
   // before the stores close; a checkout whose marker stays keeps its names
-  for (const [key, handle] of entries) {
-    const checkout = key.split("\0")[0];
-    if (!marked.has(key) || keepsMarker(checkout)) continue;
-    if (handle.droppedWork() !== undefined) continue;
-    await releaseDirtyNames(handle, checkout);
-  }
+  await withSpan("swamp.datastore.v3.close.dirty_names", {}, async () => {
+    for (const [key, handle] of entries) {
+      const checkout = key.split("\0")[0];
+      if (!marked.has(key) || keepsMarker(checkout)) continue;
+      if (handle.droppedWork() !== undefined) continue;
+      await releaseDirtyNames(handle, checkout);
+    }
+  });
   // once the command's own commits were confirmed, a closing sync that fails
   // covers only what was committed since: kept in commits.db, it replicates
   // with the next write and does not fail the command
@@ -2359,13 +2405,51 @@ async function syncAndPublishNow(
     // a bucket datastore's old lineage paths go through its provider's replica
     // paths
     const replicaPaths = v3BucketBindingAt(datastore)?.replicaPaths;
-    await collectV3Lineages(
+    // Off the confirm's path, so a takeover leads without waiting; deletes are
+    // fenced and idempotent, so one may overlap the next sync, and
+    // closeV3Datastores awaits any still running under the lease.
+    const collection: Promise<void> = collectV3Lineages(
       copy,
       use.lineageFence,
       replicaPaths !== undefined ? { replicaPaths } : {},
-    );
+    ).catch((error) => {
+      logger
+        .warn`Removing the replaced replication lineages of the v3 datastore at ${datastore} failed; the next writer's first sync tries again: ${error}`;
+    }).finally(() => lineageCollections.delete(collection));
+    lineageCollections.add(collection);
   }
   return mark.cursor;
+}
+
+/** the collections still running; each logs its own failure */
+const lineageCollections = new Set<Promise<void>>();
+
+export function trackV3LineageCollectionForTesting(
+  collection: Promise<void>,
+): void {
+  lineageCollections.add(collection);
+  void collection.finally(() => lineageCollections.delete(collection));
+}
+
+async function boundedLineageCollections(
+  boundMs: number | undefined,
+): Promise<void> {
+  const running = Promise.all([...lineageCollections]);
+  if (boundMs === undefined) {
+    await running;
+    return;
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      running,
+      new Promise<void>((done) => {
+        timer = setTimeout(done, boundMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**

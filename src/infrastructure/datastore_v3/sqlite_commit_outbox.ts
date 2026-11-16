@@ -634,6 +634,20 @@ export class SqliteCommitOutbox implements CommitOutbox {
     }, { create: false });
   }
 
+  async resendRejected(key: OutboxKey): Promise<boolean> {
+    // Fsynced, as every state mark is: it is what keeps the entry from a drop.
+    const moved = await this.#write((db) =>
+      Number(
+        db.prepare(
+          "UPDATE outbox_entries SET state = 'offline', state_reason = NULL, " +
+            "state_code = NULL " +
+            "WHERE namespace = ? AND partition = ? AND txn_id = ? " +
+            "AND state = 'rejected'",
+        ).run(key.namespace, key.partition, key.txnId).changes,
+      ) > 0, { create: false });
+    return moved === true;
+  }
+
   // deno-lint-ignore require-await
   async queuedDataHighWater(
     namespace: string,
@@ -641,13 +655,15 @@ export class SqliteCommitOutbox implements CommitOutbox {
     name: string,
   ): Promise<number> {
     // Read from the version index the prepare writes: no entry body is
-    // parsed, so the cost does not grow with what the outbox holds.
+    // parsed, so the cost does not grow with what the outbox holds. A pending
+    // entry may have landed unconfirmed, so its versions count too.
     const row = this.#read((db) =>
       db.prepare(
         "SELECT MAX(version.version) AS high FROM outbox_versions AS version " +
           "JOIN outbox_entries AS entry ON entry.sequence = version.sequence " +
           "WHERE entry.namespace = ? AND entry.partition = ? " +
-          "AND entry.state IS NOT NULL AND version.name = ?",
+          "AND (entry.state IS NOT NULL OR entry.abandoned_at IS NULL) " +
+          "AND version.name = ?",
       ).get(namespace, partition, name) as { high: number | null } | undefined
     );
     return row?.high ?? 0;

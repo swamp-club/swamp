@@ -24,6 +24,11 @@ import {
   type WordedText,
   wordedText,
 } from "../domain/behavior_wording.ts";
+import { isLapsedServeRequest } from "../domain/datastore_v3/writer_lease.ts";
+import {
+  isDatastoreOutage,
+  MAX_OUTAGE_CAUSE_DEPTH,
+} from "../infrastructure/datastore_v3/datastore_outage.ts";
 
 export interface SwampError {
   readonly code: string;
@@ -140,16 +145,51 @@ export function validationFailed(
   };
 }
 
+/** the outages v3 teardown reads as storage it could not reach */
+function hasOutageCode(error: Error): error is Error & { code: string } {
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" &&
+    (code.startsWith("datastore_v3_") || code.startsWith("serve_"));
+}
+
+/**
+ * when the chain holds a datastore or serve outage, its outermost error coded
+ * as one, whose code a wrapper of the chain reports
+ */
+export function datastoreOutageOf(
+  error: unknown,
+): (Error & { code: string }) | undefined {
+  const chain: Error[] = [];
+  let current = error;
+  for (
+    let depth = 0;
+    depth < MAX_OUTAGE_CAUSE_DEPTH && current instanceof Error;
+    depth++
+  ) {
+    chain.push(current);
+    current = current.cause;
+  }
+  if (!chain.some(isDatastoreOutage)) return undefined;
+  return chain.find(hasOutageCode);
+}
+
 /**
  * paths marked on the SwampError's cause carry over, so telemetry can still
- * remove them exactly
+ * remove them exactly. A datastore or serve outage in the cause is kept, so
+ * teardown and the exit code see it, and its code is reported
  */
 export function userErrorFromSwampError(error: SwampError): UserError {
+  const outage = datastoreOutageOf(error.cause);
+  const userError = new UserError(error.message, outage?.code ?? error.code);
+  if (outage !== undefined) {
+    userError.cause = error.cause;
+    // the wrapper exits and is hinted as the lapsed request it carries
+    if (isLapsedServeRequest(outage)) {
+      Object.defineProperty(userError, "lapsedServeRequest", { value: true });
+    }
+  }
   return carryModelWording(
     error,
-    markErrorPaths(
-      new UserError(error.message, error.code),
-      errorPaths(error.cause),
-    ),
+    markErrorPaths(userError, errorPaths(error.cause)),
   );
 }

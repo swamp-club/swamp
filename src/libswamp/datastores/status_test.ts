@@ -33,6 +33,14 @@ import { Commit } from "../../domain/datastore_v3/commit.ts";
 import { opFromJSON } from "../../domain/datastore_v3/op.ts";
 import { partitionOf } from "../../domain/datastore_v3/partition_key.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
+import {
+  behaviorOf,
+  nextStepForRejected,
+} from "../../domain/datastore_v3/rejected_write.ts";
+import {
+  fixtureCommit,
+  saveOps,
+} from "../../domain/datastore_v3/offline_rebase_test_helpers.ts";
 import { DefaultDatastorePathResolver } from "../../infrastructure/persistence/default_datastore_path_resolver.ts";
 
 function makeDeps(
@@ -290,6 +298,12 @@ Deno.test("outboxEntryStatusesOf: lists kept entries only, and quarantineStatusO
       reason: "refused",
       code: "run_initiator_mismatch",
       savedAt: "2026-10-30T12:00:00.000Z",
+      writes: [],
+      retryable: false,
+      next: nextStepForRejected({
+        retryable: false,
+        code: "run_initiator_mismatch",
+      }),
     }],
   );
   assertEquals(
@@ -396,4 +410,30 @@ Deno.test("createDatastoreStatusDeps: a serve-mode checkout on a bucket reports 
     message: "serve",
     latencyMs: 1,
   });
+});
+
+Deno.test("outboxEntryStatusesOf: a rejected entry names each data version that did not land, whether a resend can send it, and what to do", async () => {
+  const commit = fixtureCommit({
+    seq: 2,
+    txnId: "44444444-4444-4444-8444-444444444444",
+    ops: await saveOps({ name: "result", version: 246 }),
+  });
+  const [status] = outboxEntryStatusesOf([{
+    commit,
+    unitId: "u",
+    base: { seq: 1, txnId: undefined },
+    sequence: 1,
+    createdAt: Date.parse("2026-10-30T12:00:00.000Z"),
+    state: "rejected",
+    // as an older swamp kept it: serve's message, no code
+    stateReason:
+      "Data result version 246 is already live; only an append re-records it",
+  }]);
+  assertEquals(status.writes, [{
+    behavior: behaviorOf(commit.partition),
+    name: "result",
+    version: 246,
+  }]);
+  assertEquals(status.retryable, true);
+  assertEquals(status.next?.startsWith("Nothing to do"), true);
 });

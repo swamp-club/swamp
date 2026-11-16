@@ -33,6 +33,7 @@ import {
 import {
   type FenceRecord,
   V3_WRITER_BUSY_CODE,
+  WRITER_LEASE_CLOCK_SKEW_MS,
   WriterFencedError,
   WriterLease,
   WriterLeaseBusyError,
@@ -429,6 +430,35 @@ export async function checkV3WriterLease(datastorePath: string): Promise<void> {
   await held.get(resolve(datastorePath))?.hold?.assertCurrent();
 }
 
+export type V3LeaseLostListener = (datastorePath: string) => void;
+
+const leaseLostListeners = new Set<V3LeaseLostListener>();
+const lostNotified = new WeakSet<WriterLeaseHold>();
+
+/**
+ * once per hold a renewal finds fenced or released and could not take back;
+ * the path is resolved
+ */
+export function onV3LeaseLost(listener: V3LeaseLostListener): () => void {
+  leaseLostListeners.add(listener);
+  return () => {
+    leaseLostListeners.delete(listener);
+  };
+}
+
+function notifyLeaseLost(datastorePath: string, hold: WriterLeaseHold): void {
+  if (lostNotified.has(hold)) return;
+  lostNotified.add(hold);
+  for (const listener of [...leaseLostListeners]) {
+    try {
+      listener(resolve(datastorePath));
+    } catch (error) {
+      logger
+        .warn`A listener for the writer lease of the v3 datastore at ${datastorePath} failed: ${error}`;
+    }
+  }
+}
+
 export interface V3WriterLeaseHolder {
   readonly fence: number;
   readonly record?: FenceRecord;
@@ -469,6 +499,25 @@ export async function v3WriterLeaseHolder(
       : {}),
     state: inspection.state,
   };
+}
+
+/**
+ * the lease's lapse by this clock: 0 when unheld, undefined without a renewal
+ * time; throws when the lease cannot be read
+ */
+export async function v3WriterLeaseExpiresAt(
+  datastorePath: string,
+): Promise<number | undefined> {
+  const inspection = await (await writerLease(
+    datastorePath,
+    DEFAULT_LOCK_TTL_MS,
+  )).inspect();
+  if (inspection === null || inspection.state !== "held") return 0;
+  if (inspection.record === undefined || inspection.renewedAt === undefined) {
+    return undefined;
+  }
+  return Date.parse(inspection.renewedAt) + inspection.record.ttlMs +
+    WRITER_LEASE_CLOCK_SKEW_MS;
 }
 
 export type V3WriterLockHandle = Pick<
@@ -621,6 +670,11 @@ function startRenewal(
       logger.debug`Renewing the v3 writer lease failed: ${error}`;
     }).finally(() => {
       entry.renewing = undefined;
+      // a retake still in flight may yet win the lease back
+      if (
+        entry.hold === hold && hold.lost !== undefined &&
+        entry.retaking === undefined
+      ) notifyLeaseLost(datastorePath, hold);
     });
   };
   entry.renewal = setInterval(

@@ -1825,6 +1825,49 @@ Deno.test("ServeDatastoreClient: a reply serve never starts ends at the response
   }
 });
 
+Deno.test("ServeDatastoreClient.renewLock: a renewal's own response base replaces the client's for it alone; a commit keeps the commit base", async () => {
+  const { client } = clientWith(neverAnswered, {
+    responseBaseMs: 400,
+    commitResponseBaseMs: 200,
+    timeoutSignal: neverTimesOut,
+  });
+  // the deadline also allows for the upload, a few ms for these bodies
+  const deadlineOf = (error: ServeUnreachableError) =>
+    Math.floor(
+      Number(String(error.cause).match(/within (\d+) ms/)?.[1]) / 100,
+    ) * 100;
+  const leaseId = crypto.randomUUID();
+  try {
+    const short = await assertRejects(
+      () =>
+        client.renewLock(leaseId, 60_000, signal(), {
+          holdMs: 60_000,
+          responseBaseMs: 20,
+        }),
+      ServeUnreachableError,
+    );
+    assertEquals(deadlineOf(short), 0);
+    const plain = await assertRejects(
+      () => client.renewLock(leaseId, 60_000, signal()),
+      ServeUnreachableError,
+    );
+    assertEquals(deadlineOf(plain), 400);
+    const commit = await assertRejects(
+      () =>
+        client.postCommit(
+          modelPartition(),
+          { expectedSeq: 0, txnId: crypto.randomUUID(), ops: [] },
+          [],
+          signal(),
+        ),
+      ServeUnreachableError,
+    );
+    assertEquals(deadlineOf(commit), 200);
+  } finally {
+    client.close();
+  }
+});
+
 Deno.test("ServeDatastoreClient: a read serve never answers is sent once more on a fresh connection", async () => {
   let made = 0;
   const used: unknown[] = [];
@@ -1941,6 +1984,109 @@ Deno.test("ServeDatastoreClient: a request its caller timed out leaves its conne
   } finally {
     client.close();
   }
+});
+
+/** a client on its own connections, recording the connection each request used */
+function connectionClient(
+  handler: (call: number) => Response | Promise<Response>,
+  options: Partial<ServeDatastoreClientOptions> = {},
+): { client: ServeDatastoreClient; used: unknown[]; made: () => number } {
+  let made = 0;
+  const used: unknown[] = [];
+  const client = new ServeDatastoreClient({
+    baseUrl: BASE,
+    timeoutSignal: neverTimesOut,
+    ...options,
+    httpClient: () => {
+      made++;
+      return Deno.createHttpClient({});
+    },
+    fetch: (_input, init) => {
+      used.push((init as { client?: unknown }).client);
+      return Promise.resolve(handler(used.length));
+    },
+  });
+  return { client, used, made: () => made };
+}
+
+Deno.test("ServeDatastoreClient: a read refused as not the leader is retried on a fresh connection, which the address may route to the leader", async () => {
+  await withRefusalState(async () => {
+    const { client, used, made } = connectionClient(
+      (call) => call === 1 ? notLeader() : chunkReply(CHUNK),
+      refusalClock(),
+    );
+    try {
+      assertEquals(await client.getChunk(sha(CHUNK), signal()), CHUNK);
+      assertEquals(made(), 2);
+      assertNotStrictEquals(used[0], used[1]);
+    } finally {
+      client.close();
+    }
+  });
+});
+
+Deno.test("ServeDatastoreClient: a write refused as not the leader leaves its connection, so the next request opens a fresh one", async () => {
+  await withRefusalState(async () => {
+    const { client, used, made } = connectionClient(
+      (call) =>
+        call === 1
+          ? notLeader()
+          : Response.json({ changes: [], cursor: 0, more: false }),
+    );
+    try {
+      await assertRejects(() =>
+        client.postCommit(
+          modelPartition(),
+          { expectedSeq: 0, txnId: crypto.randomUUID(), ops: [] },
+          [],
+          signal(),
+        )
+      );
+      await client.changes(0, signal());
+      assertEquals(made(), 2);
+      assertNotStrictEquals(used[0], used[1]);
+    } finally {
+      client.close();
+    }
+  });
+});
+
+Deno.test("ServeDatastoreClient: a connection that fails leaves the client, so the next request opens a fresh one", async () => {
+  await withRefusalState(async () => {
+    const { client, used, made } = connectionClient((call) => {
+      if (call === 1) throw connectRefused();
+      return Response.json({ changes: [], cursor: 0, more: false });
+    });
+    try {
+      await assertRejects(
+        () => client.changes(0, signal()),
+        ServeUnreachableError,
+      );
+      await client.changes(0, signal());
+      assertEquals(made(), 2);
+      assertNotStrictEquals(used[0], used[1]);
+    } finally {
+      client.close();
+    }
+  });
+});
+
+Deno.test("ServeDatastoreClient: an ordinary answer, a 404 included, keeps the connection", async () => {
+  await withRefusalState(async () => {
+    const { client, used, made } = connectionClient((call) =>
+      call === 1
+        ? new Response(null, { status: 404 })
+        : Response.json({ changes: [], cursor: 0, more: false })
+    );
+    try {
+      assertEquals(await client.getChunk(sha(CHUNK), signal()), null);
+      await client.changes(0, signal());
+      assertEquals(made(), 1);
+      assertStrictEquals(used[0], used[1]);
+    } finally {
+      client.close();
+    }
+  });
 });
 
 Deno.test("ServeDatastoreClient: on the process-wide pool, a timed-out request moves later ones to a connection of their own", async () => {
@@ -2450,5 +2596,91 @@ Deno.test("ServeDatastoreClient: a refused read whose body is cut off is unreach
       ServeUnreachableError,
     );
     assertEquals(error.sent, "maybe");
+  });
+});
+
+Deno.test("ServeDatastoreClient.acquireLock: a request serve refused before the leader saw it is sent again, to the configured serve, until granted", async () => {
+  await withRefusalState(async () => {
+    const clock = refusalClock();
+    const { client, requests } = clientWith(
+      (_req, call) =>
+        call <= 2
+          ? notLeader({ address: "https://serve.example.com:9443" })
+          : Response.json(LEASE, { status: 201 }),
+      clock,
+    );
+    const reply = await client.acquireLock(LOCK_KEY, 30_000, 0, signal());
+    assertEquals(reply.acquired, true);
+    assertEquals(clock.waits, [250, 500]);
+    assertEquals(requests.map((req) => new URL(req.url).origin), [
+      BASE,
+      BASE,
+      BASE,
+    ]);
+    const ids = await Promise.all(
+      requests.map(async (req) => (await req.json()).requestId),
+    );
+    assertEquals(new Set(ids).size, 1);
+  });
+});
+
+Deno.test("ServeDatastoreClient.acquireLock: a request refused past the budget throws the refusal and cancels nothing", async () => {
+  await withRefusalState(async () => {
+    const clock = refusalClock();
+    const { client, requests } = clientWith(() => notLeader(), {
+      ...clock,
+      readRefusalBudgetMs: 1_000,
+    });
+    const error = await assertRejects(
+      () => client.acquireLock(LOCK_KEY, 30_000, 0, signal()),
+      ServeNotLeaderError,
+    );
+    assertEquals(error.inFlight, false);
+    assertEquals(clock.waits.reduce((sum, ms) => sum + ms, 0), 1_000);
+    assert(requests.every((req) => req.method === "POST"));
+  });
+});
+
+Deno.test("ServeDatastoreClient.acquireLock: a request refused in flight is not sent again, and is cancelled by its id", async () => {
+  await withRefusalState(async () => {
+    const clock = refusalClock();
+    const { client, requests } = clientWith(
+      (req) =>
+        req.method === "POST"
+          ? notLeader({ inFlight: true })
+          : Response.json({ cancelled: true }),
+      clock,
+    );
+    const error = await assertRejects(
+      () => client.acquireLock(LOCK_KEY, 30_000, 0, signal()),
+      ServeNotLeaderError,
+    );
+    assertEquals(error.inFlight, true);
+    assertEquals(clock.waits, []);
+    assertEquals(requests.map((req) => req.method), ["POST", "DELETE"]);
+    const asked = await requests[0].json();
+    assertEquals(
+      requests[1].url,
+      `${PREFIX}/locks/requests/${asked.requestId}`,
+    );
+  });
+});
+
+Deno.test("ServeDatastoreClient.acquireLock: a refused request is not sent again once the command found serve unreachable", async () => {
+  await withRefusalState(async () => {
+    const clock = refusalClock();
+    const { client, requests } = clientWith(() => notLeader(), {
+      ...clock,
+      delay: (ms, waitSignal) => {
+        latchServeUnreachable(BASE, new Error("a write timed out"));
+        return clock.delay(ms, waitSignal);
+      },
+    });
+    const error = await assertRejects(
+      () => client.acquireLock(LOCK_KEY, 30_000, 0, signal()),
+      ServeUnreachableError,
+    );
+    assertEquals(error.sent, "never");
+    assertEquals(requests.map((req) => req.method), ["POST"]);
   });
 });

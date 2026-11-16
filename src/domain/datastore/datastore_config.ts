@@ -157,6 +157,8 @@ export interface CustomDatastoreConfig {
    * published; absent means off: writes are atomic but unsynced
    */
   readonly durable?: boolean;
+  /** how often the v3 replica takes a full snapshot; absent means the default */
+  readonly snapshotIntervalMs?: number;
 }
 
 export type DatastoreConfig =
@@ -183,6 +185,8 @@ export interface DatastoreConfigData {
   hydrationStrategy?: "full" | "lazy";
   namespace?: string;
   durable?: boolean;
+  /** a whole number of minutes or hours, such as "30m" or "1h" */
+  snapshotInterval?: string;
   /**
    * 2 or 3 on a filesystem datastore, 3 only on an extension datastore (absent
    * means 2)
@@ -213,6 +217,36 @@ export function readDatastoreFormatKey(
   }
   if (type === "filesystem" || value === 3) return value;
   return undefined;
+}
+
+export const DEFAULT_SNAPSHOT_INTERVAL_MS = 60 * 60_000;
+export const MIN_SNAPSHOT_INTERVAL_MS = 5 * 60_000;
+export const MAX_SNAPSHOT_INTERVAL_MS = 24 * 60 * 60_000;
+
+/**
+ * restore time grows with the replica's tail since its last snapshot, so the
+ * interval is bounded below by snapshot upload cost and above by Litestream's
+ * own default
+ */
+export function readSnapshotIntervalKey(value: unknown): number | undefined {
+  if (value === undefined) return undefined;
+  const match = typeof value === "string"
+    ? /^([1-9][0-9]{0,4})(m|h)$/.exec(value.trim())
+    : null;
+  const ms = match === null
+    ? undefined
+    : Number(match[1]) * (match[2] === "h" ? 60 * 60_000 : 60_000);
+  if (
+    ms === undefined || ms < MIN_SNAPSHOT_INTERVAL_MS ||
+    ms > MAX_SNAPSHOT_INTERVAL_MS
+  ) {
+    throw new UserError(
+      `Invalid 'snapshotInterval' in the datastore block of .swamp.yaml: ` +
+        `expected a whole number of minutes or hours from 5m to 24h, such as ` +
+        `"1h" or "30m", got ${JSON.stringify(value)}.`,
+    );
+  }
+  return ms;
 }
 
 export function getDatastoreDirectories(
@@ -303,6 +337,7 @@ export const SETUP_PRESERVED_DATASTORE_KEYS = [
   "managedConfig",
   "exclude",
   "durable",
+  "snapshotInterval",
 ] as const satisfies readonly (keyof DatastoreConfigData)[];
 
 /**

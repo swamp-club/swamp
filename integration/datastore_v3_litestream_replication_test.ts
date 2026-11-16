@@ -71,7 +71,14 @@ import {
   v3WriterFence,
 } from "../src/infrastructure/datastore_v3/v3_writer_lock.ts";
 import { initializeV3Datastore } from "../src/infrastructure/datastore_v3/v3_datastore.ts";
-import { setV3ReplicationForTesting } from "../src/infrastructure/datastore_v3/litestream/v3_replication.ts";
+import {
+  setV3ReplicationForTesting,
+  setV3SidecarOwner,
+} from "../src/infrastructure/datastore_v3/litestream/v3_replication.ts";
+import {
+  localProcess,
+  probeProcess,
+} from "../src/infrastructure/datastore_v3/process_identity.ts";
 import { plantV3WriterLease } from "../src/infrastructure/datastore_v3/v3_writer_lock_test_helpers.ts";
 import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpers.ts";
 import { V3_REPLICA_ENV } from "../src/infrastructure/datastore_v3/litestream/replica_setting.ts";
@@ -776,5 +783,206 @@ Deno.test({
       );
       await closeV3Datastores().catch(() => {});
     }, { syncDeadlineMs: 1_000 });
+  },
+});
+
+/** a stand-in for the serve that owns a sidecar */
+async function withStandInOwner(
+  fn: (owner: Deno.ChildProcess) => Promise<void>,
+): Promise<void> {
+  const owner = new Deno.Command("sleep", {
+    args: ["600"],
+    stdin: "null",
+    stdout: "null",
+    stderr: "null",
+  }).spawn();
+  try {
+    await fn(owner);
+  } finally {
+    try {
+      owner.kill("SIGCONT");
+      owner.kill("SIGKILL");
+    } catch {
+      // Exited already.
+    }
+    await owner.status;
+  }
+}
+
+async function replicaFiles(dir: string): Promise<Set<string>> {
+  const names = new Set<string>();
+  const walk = async (at: string): Promise<void> => {
+    for await (const entry of Deno.readDir(at)) {
+      const path = join(at, entry.name);
+      if (entry.isDirectory) await walk(path);
+      else names.add(path);
+    }
+  };
+  await walk(dir);
+  return names;
+}
+
+function sidecarGone(presence: {
+  supervisorPid: number;
+  litestreamPid?: number;
+}): boolean {
+  return !hostLitestreamProcesses.isAlive(presence.supervisorPid) &&
+    !hostLitestreamProcesses.isAlive(presence.litestreamPid!);
+}
+
+const OWNED_TIMINGS = { idleMs: 120_000 };
+
+Deno.test({
+  name:
+    "v3 replication: an owned sidecar outlives a frozen owner, and is gone with no further upload within a tick of the owner's SIGKILL",
+  ignore,
+  async fn() {
+    await withReplicationEnv(async (env) => {
+      await withStandInOwner(async (owner) => {
+        const here = (await localProcess()).identity;
+        const startTime = probeProcess(owner.pid).startTime;
+        setV3SidecarOwner({
+          pid: owner.pid,
+          process: {
+            ...here,
+            ...(startTime !== undefined ? { startTime } : {}),
+          },
+        });
+        await writeCommand(env, 1);
+        const presence = (await presenceOf(env))!;
+        assert(presence.litestreamPid !== undefined);
+
+        owner.kill("SIGSTOP");
+        // several supervisor ticks, each a command the same sidecar serves
+        const frozenSince = Date.now();
+        while (Date.now() - frozenSince < 4 * TEST_TIMINGS.tickMs) {
+          await writeCommand(env, 1);
+          assertEquals(
+            (await presenceOf(env))?.supervisorPid,
+            presence.supervisorPid,
+          );
+        }
+        assert(!sidecarGone(presence), "a frozen owner is not dead");
+        owner.kill("SIGCONT");
+
+        owner.kill("SIGKILL");
+        await owner.status;
+        const atDeath = await replicaFiles(env.replicaRoot);
+        await waitFor(
+          () => sidecarGone(presence),
+          "the owned sidecar to stop once its owner is gone",
+          { timeoutMs: 5_000 },
+        );
+        const after = await replicaFiles(env.replicaRoot);
+        assertEquals(
+          [...after].filter((name) => !atDeath.has(name)),
+          [],
+          "nothing is uploaded after the owner died",
+        );
+        assertEquals(await presenceOf(env), undefined);
+      });
+    }, { timings: OWNED_TIMINGS });
+  },
+});
+
+Deno.test({
+  name:
+    "v3 replication: an owned sidecar whose owner's pid names another process stops",
+  ignore,
+  async fn() {
+    await withReplicationEnv(async (env) => {
+      await withStandInOwner(async (other) => {
+        const here = (await localProcess()).identity;
+        assert(
+          probeProcess(other.pid).startTime !== undefined,
+          "this platform reads start times",
+        );
+        // the recorded owner's pid, now held by an unrelated process
+        setV3SidecarOwner({
+          pid: other.pid,
+          process: { ...here, startTime: "not-its-start-time" },
+        });
+        await writeCommand(env, 1);
+        const presence = (await presenceOf(env))!;
+        await waitFor(
+          () => sidecarGone(presence),
+          "the sidecar to judge its owner gone",
+          { timeoutMs: 5_000 },
+        );
+        assert(hostLitestreamProcesses.isAlive(other.pid));
+      });
+    }, { timings: OWNED_TIMINGS });
+  },
+});
+
+async function ownerOf(process: Deno.ChildProcess) {
+  const startTime = probeProcess(process.pid).startTime;
+  return {
+    pid: process.pid,
+    process: {
+      ...(await localProcess()).identity,
+      ...(startTime !== undefined ? { startTime } : {}),
+    },
+  };
+}
+
+Deno.test({
+  name:
+    "v3 replication: owner gone after a graceful stop kills litestream after the closing sync",
+  ignore,
+  async fn() {
+    await withReplicationEnv(async (env) => {
+      await withStandInOwner(async (owner) => {
+        setV3SidecarOwner(await ownerOf(owner));
+        // its teardown is the closing sync, and fails unless confirmed
+        await writeCommand(env, 3);
+        const presence = (await presenceOf(env))!;
+        owner.kill("SIGKILL");
+        await owner.status;
+        await waitFor(
+          () => sidecarGone(presence),
+          "the owned sidecar to stop once its owner is gone",
+          { timeoutMs: 5_000 },
+        );
+        const local = commitCount((await env.paths()).commitsDb);
+        assertEquals(local, 3);
+        assertEquals(
+          await restoredCommitCount(
+            env,
+            replicaPathFor(env.replicaRoot, presence.lineageFence),
+          ),
+          local,
+        );
+      });
+    }, { timings: OWNED_TIMINGS });
+  },
+});
+
+Deno.test({
+  name:
+    "v3 replication: an owned acquire stops a running unowned sidecar gracefully and starts its own",
+  ignore,
+  async fn() {
+    await withReplicationEnv(async (env) => {
+      await withStandInOwner(async (owner) => {
+        await writeCommand(env, 1);
+        const unowned = (await presenceOf(env))!;
+        assertEquals(unowned.owner, undefined);
+        const serve = await ownerOf(owner);
+        setV3SidecarOwner(serve);
+        await writeCommand(env, 1);
+        const owned = (await presenceOf(env))!;
+        assertNotEquals(owned.supervisorPid, unowned.supervisorPid);
+        assertEquals(owned.owner, serve);
+        assert(sidecarGone(unowned));
+        assertEquals(
+          await restoredCommitCount(
+            env,
+            replicaPathFor(env.replicaRoot, owned.lineageFence),
+          ),
+          2,
+        );
+      });
+    }, { timings: OWNED_TIMINGS });
   },
 });

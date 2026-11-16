@@ -55,6 +55,15 @@ export const FORWARD_RESPONSE_BASE_MS = 7_000;
 export const FORWARD_COMMIT_RESPONSE_BASE_MS = SERVE_REQUEST_SYNC_DEADLINE_MS +
   3_000;
 
+/**
+ * timeouts in a row that mark a leader frozen, where a never-sent forward marks
+ * it at once; one counts only if sent after the last went unanswered
+ */
+export const FROZEN_AFTER_TIMEOUTS = 2;
+
+/** how long forwards to a frozen leader are refused before one probes it */
+export const FROZEN_LEADER_PROBE_MS = 5_000;
+
 const DATASTORE_PATH = /^\/api\/v1\/datastore\/[^/]+\/(.*)$/;
 
 /** the most bytes of a lock request read to learn the wait it asks for */
@@ -141,6 +150,7 @@ export interface LeaderLinkOptions {
   readonly peerToken?: () => string | undefined;
   readonly responseBaseMs?: number;
   readonly commitResponseBaseMs?: number;
+  readonly now?: () => number;
 }
 
 export interface ForwardOptions {
@@ -157,6 +167,11 @@ export class LeaderLink {
   readonly #options: LeaderLinkOptions;
   readonly #clients = new Map<string, Deno.HttpClient | undefined>();
   readonly #closed = new AbortController();
+  #superseded = new AbortController();
+  #frozen: { key: string; probeAt: number; probing: boolean } | undefined;
+  #unanswered: { key: string; count: number; seq: number } | undefined;
+  // a clock tick can hold a timeout and the next send alike; a sequence cannot
+  #timeoutSeq = 0;
 
   constructor(options: LeaderLinkOptions) {
     this.#options = options;
@@ -198,9 +213,13 @@ export class LeaderLink {
     const leader = this.#options.leader();
     const address = leader?.address;
     const nameLeader = options.nameLeader ?? true;
-    if (address === undefined || this.#closed.signal.aborted) {
+    if (
+      leader === undefined || address === undefined ||
+      this.#closed.signal.aborted
+    ) {
       return notLeaderResponse(new ServeNotLeaderError(leader), nameLeader);
     }
+    const key = leaderKey(leader, address);
     const url = new URL(req.url);
     const target = leaderTarget(address, url.pathname, url.search);
     const headers = forwardedHeaders(
@@ -216,7 +235,18 @@ export class LeaderLink {
     }
     const hasBody = req.method !== "GET" && req.method !== "HEAD";
     // other forwards (actions, signals, webhooks) keep their callers' deadlines
-    const responseMs = await this.#responseDeadlineMs(req, url, options.body);
+    const { responseMs, lockWaitMs } = await this.#responseDeadline(
+      req,
+      url,
+      options.body,
+    );
+    const client = this.client(address);
+    const admitted = this.#admit(key, responseMs, lockWaitMs);
+    if (admitted === "refuse") {
+      return notLeaderResponse(new ServeNotLeaderError(leader), nameLeader);
+    }
+    const sentAtSeq = this.#timeoutSeq;
+    const superseded = this.#superseded.signal;
     const unanswered = new AbortController();
     const responseTimer = responseMs === undefined
       ? undefined
@@ -231,8 +261,8 @@ export class LeaderLink {
       this.#closed.signal,
       req.signal,
       unanswered.signal,
+      superseded,
     ]);
-    const client = this.client(address);
     let upstream: Response;
     try {
       const doFetch = this.#options.fetch ?? fetch;
@@ -246,10 +276,17 @@ export class LeaderLink {
       } as RequestInit);
     } catch (error) {
       const inFlight = !forwardNeverSent(error);
-      if (unanswered.signal.aborted && !req.signal.aborted) {
+      const timedOut = unanswered.signal.aborted && !req.signal.aborted;
+      if (timedOut) {
         // its connections may reach a leader that no longer answers
         this.#dropClient(address);
       }
+      this.#failed(key, admitted === "probe", sentAtSeq, {
+        neverSent: !inFlight,
+        timedOut,
+        abandoned: req.signal.aborted || this.#closed.signal.aborted ||
+          superseded.aborted,
+      });
       logger
         .info`Forwarding ${req.method} ${url.pathname} to the leader at ${address} failed${
         inFlight ? " after it was sent" : ""
@@ -261,6 +298,7 @@ export class LeaderLink {
     } finally {
       clearTimeout(responseTimer);
     }
+    this.#answered(key);
     if (!upstream.body) {
       return new Response(null, {
         status: upstream.status,
@@ -275,13 +313,100 @@ export class LeaderLink {
     });
   }
 
-  async #responseDeadlineMs(
+  #now(): number {
+    return (this.#options.now ?? Date.now)();
+  }
+
+  /**
+   * Ends every forward still waiting on a leader's reply as in flight, as when
+   * this node takes the lead: the old leader's fence keeps it from landing them.
+   */
+  abortForwards(): void {
+    const superseded = this.#superseded;
+    this.#superseded = new AbortController();
+    superseded.abort(
+      new DOMException("This node took the lead", "AbortError"),
+    );
+  }
+
+  /** a mark or count kept for another leader ends when the leader changes */
+  #admit(
+    key: string,
+    responseMs: number | undefined,
+    lockWaitMs: number,
+  ): "send" | "probe" | "refuse" {
+    if (this.#unanswered !== undefined && this.#unanswered.key !== key) {
+      this.#unanswered = undefined;
+    }
+    const frozen = this.#frozen;
+    if (frozen === undefined) return "send";
+    if (frozen.key !== key) {
+      this.#frozen = undefined;
+      return "send";
+    }
+    // a lock wait would hold its caller past a takeover; the caller retries
+    if (lockWaitMs > 0) return "refuse";
+    if (frozen.probing || this.#now() < frozen.probeAt) return "refuse";
+    // one with no deadline of its own goes out without the probe slot; its
+    // answer still clears the mark
+    if (responseMs === undefined) return "send";
+    frozen.probing = true;
+    return "probe";
+  }
+
+  #answered(key: string): void {
+    if (this.#unanswered?.key === key) this.#unanswered = undefined;
+    if (this.#frozen?.key === key) {
+      this.#frozen = undefined;
+      logger
+        .info`The leader answered a forward again; forwarding to it resumes`;
+    }
+  }
+
+  #failed(
+    key: string,
+    probe: boolean,
+    sentAtSeq: number,
+    how: { neverSent: boolean; timedOut: boolean; abandoned: boolean },
+  ): void {
+    const frozen = this.#frozen?.key === key ? this.#frozen : undefined;
+    if (how.abandoned) {
+      if (probe && frozen !== undefined) frozen.probing = false;
+      return;
+    }
+    if (how.neverSent || probe) {
+      this.#markFrozen(key);
+      return;
+    }
+    if (!how.timedOut) return;
+    const prior = this.#unanswered?.key === key ? this.#unanswered : undefined;
+    if (prior !== undefined && sentAtSeq < prior.seq) return;
+    const count = (prior?.count ?? 0) + 1;
+    this.#unanswered = { key, count, seq: ++this.#timeoutSeq };
+    if (count >= FROZEN_AFTER_TIMEOUTS) this.#markFrozen(key);
+  }
+
+  #markFrozen(key: string): void {
+    if (this.#frozen?.key !== key) {
+      logger
+        .info`The leader stopped answering forwards; they are refused at once, and one is let through every ${FROZEN_LEADER_PROBE_MS} ms to see if it answers again`;
+    }
+    this.#frozen = {
+      key,
+      probeAt: this.#now() + FROZEN_LEADER_PROBE_MS,
+      probing: false,
+    };
+  }
+
+  async #responseDeadline(
     req: Request,
     url: URL,
     body: Uint8Array | undefined,
-  ): Promise<number | undefined> {
+  ): Promise<{ responseMs: number | undefined; lockWaitMs: number }> {
     const datastorePath = DATASTORE_PATH.exec(url.pathname)?.[1];
-    if (datastorePath === undefined) return undefined;
+    if (datastorePath === undefined) {
+      return { responseMs: undefined, lockWaitMs: 0 };
+    }
     const base = answersWithoutConfirm(req.method, datastorePath)
       ? this.#options.responseBaseMs ?? FORWARD_RESPONSE_BASE_MS
       : this.#options.commitResponseBaseMs ?? FORWARD_COMMIT_RESPONSE_BASE_MS;
@@ -307,7 +432,10 @@ export class LeaderLink {
         // the leader refuses a body it cannot read
       }
     }
-    return serveRequestDeadlineMs(base, bytes) + waitMs;
+    return {
+      responseMs: serveRequestDeadlineMs(base, bytes) + waitMs,
+      lockWaitMs: waitMs,
+    };
   }
 
   #dropClient(address: string): void {
@@ -357,6 +485,10 @@ export class LeaderLink {
     }
     this.#clients.clear();
   }
+}
+
+function leaderKey(leader: ServeLeader, address: string): string {
+  return `${leader.instanceId}\n${leader.fence}\n${address}`;
 }
 
 /**

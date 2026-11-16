@@ -51,32 +51,34 @@ found), see [references/version-check.md](references/version-check.md).
 
 ## Symptom → tier index
 
-| Symptom                                            | Start at                                                         |
-| -------------------------------------------------- | ---------------------------------------------------------------- |
-| Extension or binary misbehaves unexpectedly        | Before you start → version-drift check                           |
-| "This used to work" / suspected regression         | Before you start → version-drift check                           |
-| Extension not loaded / `swamp-warning:` on stderr  | Tier 1 → `swamp doctor extensions`                               |
-| Run stuck in "running" / orphaned after crash      | Tier 1 → `swamp run doctor --fix`, then `swamp workflow recover` |
-| Serve left a run `interrupted` after a restart     | `swamp workflow history get` names why; `swamp workflow recover` |
-| `run_record_unreadable` from any command           | Tier 1 → `swamp run doctor --fix`, if the run had not finished   |
-| "Is anything running right now?"                   | Tier 1 → `swamp run history --active`                            |
-| Every command fails with `auth_gate_blocked`       | Account required → see below                                     |
-| `datastore_format_unsupported` / `_marker_invalid` | Datastore format → see below                                     |
-| Windows blocks `deno.exe`, esbuild or Litestream   | Blocked program → see below                                      |
-| `datastore_v3_run_partly_committed` (exit 1)       | Tier 2 → run the `workflow recover` it names, in that checkout   |
-| `datastore_v3_commit_partly_committed` (exit 1)    | Tier 2 → part landed; check the datastore before re-running      |
-| `datastore_v3_*_unreachable` (exit 75)             | Tier 2 → nothing changed; retry once storage is reachable        |
-| `datastore_v3_partitions_refused` (exit 1)         | Tier 2 → `refusals` did not land; check the data, then re-run    |
-| `datastore_v3_commit_lease_lost` / `_lease_lapsed` | Tier 2 → exit 75: rerun; exit 1: resume or recover the run       |
-| `datastore_v3_offline_lease_required` (exit 75)    | Serve offline → take `behavior lease acquire --for` online first |
-| `datastore_v3_offline_config_edit` (exit 75)       | Serve offline → edit again once serve is reachable               |
-| Offline work "saved in this checkout" (exit 0)     | Serve offline → next writing command reaching serve sends it     |
-| Entries `rejected` / `quarantined` in status       | Serve offline → read the reason in `swamp datastore status`      |
-| Command errored — message is clear                 | Tier 2 → read it, fix the named issue                            |
-| Command errored — message is vague                 | Tier 2 → re-run with `--json`                                    |
-| Method or workflow run failed                      | Tier 2 → inspect generated reports                               |
-| Workflow / method / sync is slow                   | Tier 3 → enable tracing                                          |
-| Need to understand internals                       | Tier 4 → fetch source                                            |
+| Symptom                                            | Start at                                                          |
+| -------------------------------------------------- | ----------------------------------------------------------------- |
+| Extension or binary misbehaves unexpectedly        | Before you start → version-drift check                            |
+| "This used to work" / suspected regression         | Before you start → version-drift check                            |
+| Extension not loaded / `swamp-warning:` on stderr  | Tier 1 → `swamp doctor extensions`                                |
+| Run stuck in "running" / orphaned after crash      | Tier 1 → `swamp run doctor --fix`, then `swamp workflow recover`  |
+| Serve left a run `interrupted` after a restart     | `swamp workflow history get` names why; `swamp workflow recover`  |
+| `run_record_unreadable` from any command           | Tier 1 → `swamp run doctor --fix`, if the run had not finished    |
+| "Is anything running right now?"                   | Tier 1 → `swamp run history --active`                             |
+| Every command fails with `auth_gate_blocked`       | Account required → see below                                      |
+| `datastore_format_unsupported` / `_marker_invalid` | Datastore format → see below                                      |
+| Windows blocks `deno.exe`, esbuild or Litestream   | Blocked program → see below                                       |
+| `datastore_v3_run_partly_committed` (exit 1)       | Tier 2 → run the `workflow recover` it names, in that checkout    |
+| `datastore_v3_commit_partly_committed` (exit 1)    | Tier 2 → part landed; check the datastore before re-running       |
+| `datastore_v3_*_unreachable` (exit 75 or 1)        | Tier 2 → 75: retry when reachable; 1: an earlier change landed    |
+| `datastore_v3_partitions_refused` (exit 1)         | Tier 2 → `refusals` did not land; check the data, then re-run     |
+| `datastore_v3_commit_lease_lost` / `_lease_lapsed` | Tier 2 → exit 75: rerun; exit 1: resume or recover the run        |
+| `datastore_v3_commit_may_land` (exit 1)            | Tier 2 → may have landed; check run and data, then resume/recover |
+| `serve_not_leader` (exit 75 or 1, or `inFlight`)   | Tier 2 → 75: rerun; 1 or in flight: may have run, check first     |
+| `datastore_v3_offline_lease_required` (exit 75)    | Serve offline → take `behavior lease acquire --for` online first  |
+| `datastore_v3_offline_config_edit` (exit 75)       | Serve offline → edit again once serve is reachable                |
+| Offline work "saved in this checkout" (exit 0)     | Serve offline → next writing command reaching serve sends it      |
+| Entries `rejected` / `quarantined` in status       | Serve offline → read the reason in `swamp datastore status`       |
+| Command errored — message is clear                 | Tier 2 → read it, fix the named issue                             |
+| Command errored — message is vague                 | Tier 2 → re-run with `--json`                                     |
+| Method or workflow run failed                      | Tier 2 → inspect generated reports                                |
+| Workflow / method / sync is slow                   | Tier 3 → enable tracing                                           |
+| Need to understand internals                       | Tier 4 → fetch source                                             |
 
 ### Account required (`auth_gate_blocked`)
 

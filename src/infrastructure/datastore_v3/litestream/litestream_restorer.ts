@@ -110,6 +110,7 @@ export async function restoreV3Copy(
   const signal = request.signal === undefined
     ? timeout
     : AbortSignal.any([timeout, request.signal]);
+  let installing = false;
   try {
     const lineagePath = replicaPathFor(
       request.replica.path,
@@ -136,11 +137,16 @@ export async function restoreV3Copy(
       replicaType: request.replica.type,
       signal,
     });
+    request.signal?.throwIfAborted();
     const truncated = await withSpan(
       "swamp.datastore.v3.restore.truncate",
       {},
       () => truncateToMark(temp, request.head, target),
     );
+    // the last point a caller's abort is honoured: once installed, the restore
+    // runs to its end
+    request.signal?.throwIfAborted();
+    installing = true;
     await withSpan("swamp.datastore.v3.restore.install", {}, async () => {
       await syncFile(temp);
       await request.install(temp);
@@ -153,7 +159,10 @@ export async function restoreV3Copy(
     return { exactTxid, truncated };
   } catch (error) {
     if (error instanceof UserError) throw error;
-    if (request.signal?.aborted === true) throw request.signal.reason;
+    // an install that fails is reported as itself: the copy may be half-replaced
+    if (!installing && request.signal?.aborted === true) {
+      throw request.signal.reason;
+    }
     if (timeout.aborted) {
       throw new V3RestoreError(
         `it did not finish within ${Math.round(request.deadlineMs / 1000)}s`,
@@ -216,6 +225,7 @@ export async function restoreAndCheck(
       }: ${exact.message}`,
     );
   }
+  request.signal.throwIfAborted();
   await withSpan(
     "swamp.datastore.v3.restore.integrity_check",
     {},

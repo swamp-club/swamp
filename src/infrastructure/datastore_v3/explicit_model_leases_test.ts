@@ -19,18 +19,24 @@
 
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
+import { ServeNotLeaderError } from "../../domain/datastore_v3/serve_leader.ts";
 import { initializeLogging } from "../logging/logger.ts";
 import {
   acquireExplicitLease,
+  bindRenewalUnanswered,
+  EXPLICIT_LEASE_RENEWAL_RESPONSE_MS,
   EXPLICIT_LEASES_FILE,
   type ExplicitLease,
   ExplicitLeaseHeldError,
   explicitLeaseOn,
   ExplicitLeaseUnsupportedError,
+  noteUnrenewedLeases,
   readExplicitLeases,
   recordExplicitLease,
   releaseExplicitLease,
   renewExplicitLeases,
+  resetUnrenewedLeasesForTesting,
+  takeUnrenewedLease,
 } from "./explicit_model_leases.ts";
 import type { LockAcquireReply, LockLease } from "./serve_datastore_client.ts";
 import { ServeUnreachableError } from "./serve_upstream_errors.ts";
@@ -103,12 +109,15 @@ class FakeServe {
     return Promise.resolve({ acquired: true, lease });
   }
 
+  readonly renewDeadlines: (number | undefined)[] = [];
+
   renewLock(
     leaseId: string,
     ttlMs: number,
     _signal?: AbortSignal,
-    options: { holdMs?: number } = {},
+    options: { holdMs?: number; responseBaseMs?: number } = {},
   ): Promise<LockLease | undefined> {
+    this.renewDeadlines.push(options.responseBaseMs);
     this.calls.push(
       `renew ${leaseId} ttl=${ttlMs}` +
         (options.holdMs === undefined ? "" : ` hold=${options.holdMs}`),
@@ -266,13 +275,30 @@ Deno.test("renewExplicitLeases: renews each lease for its hold, forgets one serv
 
     serve.renewal = new Error("serve unreachable");
     result = await renewExplicitLeases(root, serve, SIGNAL);
-    assertEquals(result, { renewed: [], ended: [] });
+    assertEquals(result.renewed, []);
+    assertEquals(result.ended, []);
+    assertEquals(result.unrenewed.map((left) => left.lease.leaseId), [
+      kept.leaseId,
+    ]);
     assertEquals((await readExplicitLeases(root)).length, 1);
 
     serve.renewal = "ended";
     result = await renewExplicitLeases(root, serve, SIGNAL);
     assertEquals(result.ended.map((lease) => lease.leaseId), [kept.leaseId]);
     assertEquals(await readExplicitLeases(root), []);
+  });
+});
+
+Deno.test("renewExplicitLeases: renews with the short renewal deadline, while taking or extending a lease keeps the client's", async () => {
+  await withRoot(async (root) => {
+    const serve = new FakeServe();
+    await acquireExplicitLease(root, serve, KEY, 60_000, 5_000, SIGNAL);
+    assertEquals(serve.renewDeadlines, [undefined]);
+    await renewExplicitLeases(root, serve, SIGNAL);
+    assertEquals(serve.renewDeadlines, [
+      undefined,
+      EXPLICIT_LEASE_RENEWAL_RESPONSE_MS,
+    ]);
   });
 });
 
@@ -306,7 +332,12 @@ Deno.test("renewExplicitLeases: with serve unreachable, tries once and keeps eve
       new Error("fetch failed"),
     );
     const result = await renewExplicitLeases(root, serve, SIGNAL);
-    assertEquals(result, { renewed: [], ended: [] });
+    assertEquals(result.renewed, []);
+    assertEquals(result.ended, []);
+    // every lease left unrenewed carries the failure, for its lock to go
+    // offline on without asking serve again
+    assertEquals(result.unrenewed.length, 2);
+    assert(result.unrenewed.every((left) => left.error === serve.renewal));
     assertEquals(
       serve.calls.filter((call) => call.startsWith("renew")).length,
       1,
@@ -329,4 +360,43 @@ Deno.test("acquireExplicitLease: another explicit lease that outlasts the wait i
     assert(error.message.includes("user:boss"), error.message);
     assert(error.message.includes(until), error.message);
   });
+});
+
+Deno.test("bindRenewalUnanswered: a bind-time renewal that timed out, found serve unreachable or found no leader counts, another refusal does not, and the lock still takes it", () => {
+  const lease = (leaseId: string): ExplicitLease => ({
+    leaseId,
+    lockKey: `data/t/${leaseId}/.lock`,
+    fence: 1,
+    holdMs: 60_000,
+    expiresAt: "2026-11-14T12:00:00.000Z",
+    floor: [],
+  });
+  const timeout = new DOMException("timed out", "TimeoutError");
+  const unreachable = new ServeUnreachableError(
+    "https://serve.test",
+    "never",
+    new Error("fetch failed"),
+  );
+  try {
+    noteUnrenewedLeases("/refused", "https://serve.test", [
+      { lease: lease("r"), error: new Error("does not lead") },
+    ]);
+    noteUnrenewedLeases("/timed-out", "https://serve.test", [
+      { lease: lease("t"), error: timeout },
+    ]);
+    noteUnrenewedLeases("/away", "https://serve.test", [
+      { lease: lease("a"), error: unreachable },
+    ]);
+    noteUnrenewedLeases("/no-leader", "https://serve.test", [
+      { lease: lease("n"), error: new ServeNotLeaderError(undefined) },
+    ]);
+    assertEquals(bindRenewalUnanswered("/refused"), false);
+    assertEquals(bindRenewalUnanswered("/no-leader"), true);
+    assertEquals(bindRenewalUnanswered("/timed-out"), true);
+    assertEquals(bindRenewalUnanswered("/away"), true);
+    assertEquals(bindRenewalUnanswered("/other"), false);
+    assertEquals(takeUnrenewedLease("/timed-out", "t")?.error, timeout);
+  } finally {
+    resetUnrenewedLeasesForTesting();
+  }
 });

@@ -63,12 +63,19 @@ import {
 import type { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
 import { ServeUpstreamState } from "./serve_upstream_state.ts";
 import {
+  commandMayHaveLanded,
+  resetCommandLandedForTesting,
+} from "./command_landed.ts";
+import {
   type HeldServeLease,
   offerServeLeaseRelease,
   resetServeLeasesForTesting,
   serveLeaseReleasedByCommit,
 } from "./serve_lease_registry.ts";
-import { PartitionsRefusedError } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
+import {
+  COMMIT_MAY_LAND_CODE,
+  PartitionsRefusedError,
+} from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import {
   FakeServe,
   removeTempDir,
@@ -877,10 +884,15 @@ Deno.test("createServeCommitSink: the final batch ends only a lease its hold off
     await withCheckout(async ({ serve, cache, sink }) => {
       serve.takesBatches = true;
       const quieted: string[] = [];
-      offerServeLeaseRelease("lease-1", () => {
-        quieted.push("lease-1");
-        return Promise.resolve();
-      }, () => {});
+      offerServeLeaseRelease(
+        "lease-1",
+        () => {
+          quieted.push("lease-1");
+          return Promise.resolve();
+        },
+        () => {},
+        () => {},
+      );
       const uow = createCommitLogUnitOfWork(
         contextHook(),
         unitOptions(sink, cache),
@@ -944,6 +956,7 @@ Deno.test("createServeCommitSink: a hold quieted for a release serve did not mak
             return Promise.resolve();
           },
           () => events.push("resume"),
+          () => events.push("settled"),
         );
         const uow = createCommitLogUnitOfWork(
           contextHook(),
@@ -968,10 +981,15 @@ Deno.test("createServeCommitSink: a final batch carrying much keeps its hold ren
       serve.takesBatches = true;
       const quieted: string[] = [];
       for (const id of ["big", "small"]) {
-        offerServeLeaseRelease(id, () => {
-          quieted.push(id);
-          return Promise.resolve();
-        }, () => {});
+        offerServeLeaseRelease(
+          id,
+          () => {
+            quieted.push(id);
+            return Promise.resolve();
+          },
+          () => {},
+          () => {},
+        );
       }
       const uow = createCommitLogUnitOfWork(
         contextHook(),
@@ -1043,4 +1061,184 @@ Deno.test("createServeCommitSink: a commit serve acknowledges, or one a recovery
       new Set([landed.txnId, found.txnId]),
     );
   });
+});
+
+/** serve lands the commit, then the follower that forwarded it loses the leader */
+function landsThenNotLeader(serve: FakeServe, inFlight: boolean): void {
+  const post = serve.postCommit.bind(serve);
+  serve.postCommit = async (...args: Parameters<FakeServe["postCommit"]>) => {
+    await post(...args);
+    throw new ServeNotLeaderError(undefined, false, inFlight);
+  };
+}
+
+Deno.test("createServeCommitSink: a commit that may have reached serve counts as may-have-landed only when it has effects", async () => {
+  for (
+    const [label, partition, expected] of [
+      ["data", undefined, true],
+      ["run checkpoint", runPartition(), false],
+    ] as const
+  ) {
+    resetCommandLandedForTesting();
+    try {
+      await withCheckout(async ({ serve, sink }) => {
+        serve.postFaults.push({ kind: "maybe" });
+        const commit = modelCommit(
+          1,
+          [partition === undefined ? await savePut("a", 1) : await runPut("r")],
+          partition === undefined ? {} : { partition },
+        );
+        await assertRejects(() => sink.append(commit), ServeUnreachableError);
+        assertEquals(commandMayHaveLanded(), expected, label);
+      });
+    } finally {
+      clearServeUnreachableLatches();
+      resetCommandLandedForTesting();
+    }
+  }
+});
+
+Deno.test("createServeCommitSink: a forwarded commit refused not-leader in flight may have landed; one refused before it was sent did not", async () => {
+  for (const inFlight of [true, false]) {
+    resetCommandLandedForTesting();
+    try {
+      await withCheckout(async ({ serve, sink }) => {
+        landsThenNotLeader(serve, inFlight);
+        const commit = modelCommit(1, [await savePut("a", 1)]);
+        await assertRejects(() => sink.append(commit), ServeNotLeaderError);
+        assertEquals(commandMayHaveLanded(), inFlight, `inFlight ${inFlight}`);
+      });
+    } finally {
+      resetCommandLandedForTesting();
+    }
+  }
+});
+
+Deno.test("createServeCommitSink: a releasing batch that may have run settles its hold unreleased, never resuming it, and may have landed", async () => {
+  for (
+    const refusal of [
+      () => new ServeNotLeaderError(undefined, false, true),
+      () =>
+        new ServeUnreachableError(
+          "https://serve.test",
+          "maybe",
+          new Error("reply lost"),
+        ),
+    ]
+  ) {
+    resetServeLeasesForTesting();
+    resetCommandLandedForTesting();
+    try {
+      await withCheckout(async ({ serve, cache, sink }) => {
+        serve.takesBatches = true;
+        serve.postCommits = () => Promise.reject(refusal());
+        const events: string[] = [];
+        offerServeLeaseRelease(
+          "lease-1",
+          () => {
+            events.push("quiet");
+            return Promise.resolve();
+          },
+          () => events.push("resume"),
+          () => events.push("settled"),
+        );
+        const uow = createCommitLogUnitOfWork(
+          contextHook(),
+          unitOptions(sink, cache),
+        );
+        await uow.stageOp(blobChange("a"));
+        await assertRejects(() => uow.checkpoint({ release: "lease-1" }));
+        assertEquals(events, ["quiet", "settled"]);
+        assertEquals(commandMayHaveLanded(), true);
+        await uow.abandon().catch(() => {});
+      });
+    } finally {
+      clearServeUnreachableLatches();
+      resetServeLeasesForTesting();
+      resetCommandLandedForTesting();
+    }
+  }
+});
+
+/** the first send lands at the leader, a follower's reads never show it, and serve answers 503 in flight */
+function landsUnseenThenNotLeader(serve: FakeServe): void {
+  const post = serve.postCommit.bind(serve);
+  let first = true;
+  serve.postCommit = async (...args: Parameters<FakeServe["postCommit"]>) => {
+    const reply = await post(...args);
+    if (!first) return reply;
+    first = false;
+    serve.hidden.add(args[1].txnId);
+    throw new ServeNotLeaderError(undefined, false, true);
+  };
+}
+
+Deno.test("createServeCommitSink: after a forwarded send that may have run, neither a follower's read without it nor a later refusal before sending makes it not landed", async () => {
+  resetCommandLandedForTesting();
+  try {
+    await withCheckout(async ({ serve, sink }) => {
+      landsUnseenThenNotLeader(serve);
+      const commit = modelCommit(1, [await savePut("a", 1)]);
+      await assertRejects(() => sink.append(commit), ServeNotLeaderError);
+      serve.postFaults.push({ kind: "not-leader", inFlight: false });
+      await assertRejects(() => sink.append(commit));
+      await assertRejects(() =>
+        sink.outbox!.landedSeq!("", MODEL, commit.txnId)
+      );
+      assertEquals(serve.head(MODEL), 1, "it landed at the leader");
+    });
+  } finally {
+    clearServeUnreachableLatches();
+    resetCommandLandedForTesting();
+  }
+});
+
+Deno.test("createServeCommitSink: a unit whose forwarded commit may have run keeps its outbox entry and ends may-land, though a follower's read lacks it and a later send was refused before it was sent", async () => {
+  resetCommandLandedForTesting();
+  try {
+    await withCheckout(async ({ outbox, serve, cache, sink }) => {
+      landsUnseenThenNotLeader(serve);
+      const uow = createCommitLogUnitOfWork(
+        contextHook(),
+        unitOptions(sink, cache),
+      );
+      await uow.stageOp(blobChange("a"));
+      await assertRejects(() => uow.checkpoint());
+      serve.postFaults.push({ kind: "not-leader", inFlight: false });
+      const error = await assertRejects(() => uow.commit());
+      assertEquals(
+        (error as { code?: unknown }).code,
+        COMMIT_MAY_LAND_CODE,
+        String(error),
+      );
+      assertEquals(await outbox.hasEntries(), true, "the entry is kept");
+      assertEquals(commandMayHaveLanded(), true);
+    });
+  } finally {
+    clearServeUnreachableLatches();
+    resetCommandLandedForTesting();
+  }
+});
+
+Deno.test("createServeCommitSink: a forwarded commit that may have run is sent once in its command; the later flush sends nothing, and the commit is in serve's log once", async () => {
+  resetCommandLandedForTesting();
+  try {
+    await withCheckout(async ({ serve, cache, sink }) => {
+      landsUnseenThenNotLeader(serve);
+      const uow = createCommitLogUnitOfWork(
+        contextHook(),
+        unitOptions(sink, cache),
+      );
+      await uow.stageOp(blobChange("a"));
+      await assertRejects(() => uow.checkpoint());
+      const error = await assertRejects(() => uow.commit());
+      assertEquals((error as { code?: unknown }).code, COMMIT_MAY_LAND_CODE);
+      assertEquals(serve.posted.length, 1, "sent once");
+      // had it been sent again, serve would have answered a duplicate: once
+      assertEquals(serve.head(MODEL), 1);
+    });
+  } finally {
+    clearServeUnreachableLatches();
+    resetCommandLandedForTesting();
+  }
 });

@@ -37,6 +37,12 @@ const logger = getSwampLogger(["serve", "leadership"]);
 export const DEFAULT_LEADERSHIP_TICK_MS = 10_000;
 
 /**
+ * Past the old lease's computed expiry before a follower tries it: take()
+ * judges expiry strictly, and an early try that loses restores as a follower.
+ */
+const LEASE_EXPIRY_MARGIN_MS = 1_000;
+
+/**
  * How long a follower's copy may go without a refresh before it stops
  * answering reads: three ticks, so a revoked grant stops allowing reads on a
  * follower within it.
@@ -59,6 +65,10 @@ export interface LeadershipLease {
    * forwards to a leader record's address only at this fence
    */
   currentFence?(): Promise<number | undefined>;
+  /** when the holder's lease lapses by this clock; timing only, take() decides */
+  expiresAt(): Promise<number | undefined>;
+  /** calls the listener when this node finds its lease lost; returns an unsubscribe */
+  onLost?(listener: () => void): () => void;
 }
 
 /**
@@ -76,7 +86,8 @@ export interface ServeLeadershipDeps {
   readonly address?: string;
   readonly lease: LeadershipLease;
   readonly store: ControlPlaneStore;
-  refreshCopy(): Promise<void>;
+  /** signal aborts only when serve stops; honoured until a restore is installed */
+  refreshCopy(signal: AbortSignal): Promise<void>;
   /**
    * a follower applies it instead of restoring every tick, and restores only
    * when it is not current. Absent, every tick restores.
@@ -93,6 +104,12 @@ export interface ServeLeadershipDeps {
    * Absent, every record is taken as written.
    */
   trust?(leader: ServeLeader): Promise<boolean>;
+  /**
+   * Called when a follower takes the lease, and again as its role becomes
+   * leader: forwards still in flight to the old leader end, as it can no
+   * longer land them.
+   */
+  abortForwards?(): void;
   /** stopped turns true once stop() is called: a promotion then ends early */
   onLead(stopped: () => boolean): Promise<void>;
   /**
@@ -122,14 +139,20 @@ export class ServeLeadership {
   #refreshedAt: number | undefined;
   #recordedFence: number | undefined;
   #recordedProof: string | undefined;
-  #timer: ReturnType<typeof setInterval> | undefined;
+  #timer: ReturnType<typeof setTimeout> | undefined;
+  #scheduled: Promise<void> | undefined;
   #ticking: Promise<void> | undefined;
+  #refreshing: AbortController | undefined;
   /**
    * This node took the lease but could not write its leader record: the
    * next tick retries the record, not the lease.
    */
   #leadPending = false;
+  #lastTakeAt: number | undefined;
   #lostLead: Promise<void> | undefined;
+  #leaseLost = false;
+  #leadCheck: Promise<void> | undefined;
+  #unsubscribeLost: (() => void) | undefined;
   #stopped = false;
 
   constructor(deps: ServeLeadershipDeps) {
@@ -162,6 +185,15 @@ export class ServeLeadership {
       !this.#deps.lease.confirmed();
   }
 
+  /**
+   * a leader whose lease the hold reported lost, from then until serve stops;
+   * a hold still retaking it may win it back, so that alone never counts
+   */
+  leadLost(): boolean {
+    if (this.#lostLead !== undefined) return true;
+    return this.#role === "leader" && this.#leaseLost;
+  }
+
   isStale(): boolean {
     if (this.#role === "leader") return false;
     return this.#refreshedAt === undefined ||
@@ -169,6 +201,10 @@ export class ServeLeadership {
   }
 
   async start(initial: "writer" | "follower"): Promise<void> {
+    this.#unsubscribeLost ??= this.#deps.lease.onLost?.(() => {
+      this.#leaseLost = true;
+      this.#checkLeadNow();
+    });
     if (initial === "writer") {
       // Serve's boot did the leader's work before it listened, so a node
       // that took the lease at boot leads from the first request: it never
@@ -194,10 +230,7 @@ export class ServeLeadership {
           .info`Serve instance ${leader.instanceId} leads this datastore at ${leader.address}; this node follows it`;
       }
     }
-    // A tick never rejects, and stop() waits for the one in flight.
-    this.#timer = setInterval(() => {
-      void this.tick();
-    }, this.#tickMs);
+    this.#schedule(await this.#nextDelay());
   }
 
   lostLeadHandled(): Promise<void> {
@@ -216,14 +249,64 @@ export class ServeLeadership {
   }
 
   /**
-   * Stops ticking and waits for a tick in flight. The leader record is left:
-   * the lease decides, and the next leader overwrites it.
+   * aborts a follower refresh before its install but awaits a take() in
+   * flight, so the lease release never races a promotion
    */
   async stop(): Promise<void> {
     this.#stopped = true;
-    if (this.#timer !== undefined) clearInterval(this.#timer);
+    this.#unsubscribeLost?.();
+    if (this.#timer !== undefined) clearTimeout(this.#timer);
+    this.#refreshing?.abort(new Error("serve is stopping"));
     await this.#ticking;
+    await this.#leadCheck;
+    await this.#scheduled;
     await this.#deps.feed?.stop();
+  }
+
+  /**
+   * After any tick in flight, which may have read the lease before it was
+   * lost; it never rejects, and stop() waits for it.
+   */
+  #checkLeadNow(): void {
+    if (this.#stopped || this.#role !== "leader") return;
+    if (this.#leadCheck !== undefined) return;
+    this.#leadCheck = (this.#ticking ?? Promise.resolve())
+      .then(() => this.tick())
+      .finally(() => {
+        this.#leadCheck = undefined;
+      });
+  }
+
+  /** A tick never rejects, and stop() waits for the one in flight. */
+  #schedule(delay: number): void {
+    if (this.#stopped) return;
+    this.#timer = setTimeout(() => {
+      this.#timer = undefined;
+      this.#scheduled = (async () => {
+        await this.tick();
+        this.#schedule(await this.#nextDelay());
+      })();
+    }, delay);
+  }
+
+  /** capped at the tick, which also detects a lost lead and drives refreshes */
+  async #nextDelay(): Promise<number> {
+    if (this.#stopped || this.#role === "leader") return this.#tickMs;
+    const expiresAt = await this.#deps.lease.expiresAt().catch(
+      () => undefined,
+    );
+    if (expiresAt === undefined || !Number.isFinite(expiresAt)) {
+      return this.#tickMs;
+    }
+    const untilExpiry = expiresAt - this.#now();
+    if (untilExpiry <= 0) {
+      // a lapse no take has tried yet, as when a refresh outlasted it, is
+      // tried at once; once a take after it has lost, the tick paces retries
+      const tried = this.#lastTakeAt !== undefined &&
+        this.#lastTakeAt >= expiresAt;
+      return tried ? this.#tickMs : LEASE_EXPIRY_MARGIN_MS;
+    }
+    return Math.min(this.#tickMs, untilExpiry + LEASE_EXPIRY_MARGIN_MS);
   }
 
   async #tickOnce(): Promise<void> {
@@ -236,7 +319,7 @@ export class ServeLeadership {
       logger
         .error`This serve node lost the datastore's writer lease to another node; it stops, to start again as a follower`;
       this.#stopped = true;
-      if (this.#timer !== undefined) clearInterval(this.#timer);
+      if (this.#timer !== undefined) clearTimeout(this.#timer);
       // Its gates close while it stops: it takes nothing more.
       this.#role = "follower";
       this.#since = undefined;
@@ -250,11 +333,13 @@ export class ServeLeadership {
     }
     // A lease already taken, whose record write failed, is not taken again:
     // only the record is retried.
+    this.#lastTakeAt = this.#now();
     const taken = this.#leadPending && lease.holdsCurrent()
       ? "writer"
       : await lease.take();
     if (this.#stopped) return;
     if (taken === "writer") {
+      this.#deps.abortForwards?.();
       await this.#deps.feed?.stop();
       await this.#lead();
       return;
@@ -271,11 +356,27 @@ export class ServeLeadership {
       await feed.stop();
     }
     if (this.#stopped) return;
-    await this.#deps.refreshCopy();
+    if (!await this.#refresh()) return;
+    if (this.#stopped || this.#role !== "follower") return;
     this.#refreshedAt = this.#now();
-    if (this.#stopped) return;
     await this.#readLeader();
+    if (this.#stopped || this.#role !== "follower") return;
     feed?.follow(this.#leader);
+  }
+
+  /** false when stop() aborted the refresh */
+  async #refresh(): Promise<boolean> {
+    const refresh = new AbortController();
+    this.#refreshing = refresh;
+    try {
+      await this.#deps.refreshCopy(refresh.signal);
+      return true;
+    } catch (error) {
+      if (error === refresh.signal.reason) return false;
+      throw error;
+    } finally {
+      this.#refreshing = undefined;
+    }
   }
 
   /**
@@ -298,6 +399,8 @@ export class ServeLeadership {
     if (this.#stopped) return;
     await this.#deps.onLead(() => this.#stopped);
     if (this.#stopped) return;
+    // what was forwarded while the leader work ran went to the old leader too
+    this.#deps.abortForwards?.();
     this.#role = "leader";
     logger.info`This serve node leads the datastore`;
     try {

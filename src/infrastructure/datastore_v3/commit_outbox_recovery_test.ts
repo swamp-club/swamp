@@ -46,6 +46,7 @@ import {
   CommitOutboxUnreadableError,
   recoverCommitOutbox,
   type RecoverCommitOutboxOptions,
+  requeueRetryableRejections,
 } from "./commit_outbox_recovery.ts";
 import { SqliteCommitOutbox } from "./sqlite_commit_outbox.ts";
 import { setLocalProcessForTesting } from "./process_identity.ts";
@@ -919,5 +920,49 @@ Deno.test("recoverCommitOutbox: a run record serve refuses for its initiator is 
     );
     assertEquals(kept?.state, "rejected");
     assertEquals(kept?.stateCode, "run_initiator_mismatch");
+  });
+});
+
+Deno.test("requeueRetryableRejections: a version refused as live, by code or an older swamp's message, is queued offline again; a genuine conflict stays rejected with its reason", async () => {
+  await withFixture(async ({ outbox, prepare }) => {
+    const live = prepared(1, [await savePut("a", 1)], "t-live");
+    const legacy = prepared(1, [await savePut("b", 1)], "t-legacy");
+    const conflict = prepared(1, [await savePut("c", 1)], "t-conflict");
+    for (const commit of [live, legacy, conflict]) await prepare(commit);
+    await outbox.markState(
+      [outboxKeyOf(live)],
+      "rejected",
+      "Data a version 1 is already live; only an append re-records it",
+      "version-live",
+    );
+    await outbox.markState(
+      [outboxKeyOf(legacy)],
+      "rejected",
+      "Data b version 1 is already live; only an append re-records it",
+    );
+    await outbox.markState(
+      [outboxKeyOf(conflict)],
+      "rejected",
+      "it changed",
+      "expect-failed",
+    );
+    const requeued = await requeueRetryableRejections(
+      outbox,
+      (await outbox.entries()).entries,
+    );
+    const states = (entries: readonly (typeof requeued)[number][]) =>
+      Object.fromEntries(
+        entries.map((entry) => [
+          entry.commit.txnId,
+          [entry.state, entry.stateCode],
+        ]),
+      );
+    const expected = {
+      "t-live": ["offline", undefined],
+      "t-legacy": ["offline", undefined],
+      "t-conflict": ["rejected", "expect-failed"],
+    };
+    assertEquals(states(requeued), expected);
+    assertEquals(states((await outbox.entries()).entries), expected);
   });
 });

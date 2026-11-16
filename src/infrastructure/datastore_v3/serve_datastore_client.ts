@@ -492,6 +492,8 @@ interface RequestSpec {
   readonly serverWaitMs?: number;
   /** a read refused as not the leader or behind is thrown at once */
   readonly noRefusalRetry?: boolean;
+  /** this request's own response base, in place of the client's */
+  readonly responseBaseMs?: number;
 }
 
 function isTimeout(error: unknown): boolean {
@@ -512,17 +514,26 @@ function isReadSpec(spec: RequestSpec): boolean {
   return spec.method === "GET" || spec.path === "chunks/has";
 }
 
+/**
+ * a lock request refused before the leader saw it changed nothing, so it is
+ * retried like a read, but never followed: a failed follow is sent again
+ */
+function ridesRefusals(spec: RequestSpec): boolean {
+  return isReadSpec(spec) || (spec.method === "POST" && spec.path === "locks");
+}
+
 export class ServeDatastoreClient {
   readonly baseUrl: string;
   readonly namespace: string;
   readonly #token: string | undefined;
   readonly #makeHttpClient: (() => Deno.HttpClient) | undefined;
   #httpClient: Deno.HttpClient | undefined;
-  // a client whose connection timed out takes no new request; requests still
-  // in flight on it finish there, and it closes once they have
+  // a client whose connection timed out, failed or reached a node that refused
+  // as not serving takes no new request; requests in flight on it finish there,
+  // and it closes once they have
   readonly #retiredClients = new Set<Deno.HttpClient>();
   readonly #inFlight = new Map<Deno.HttpClient, number>();
-  #ownConnectionAfterTimeout = false;
+  #ownConnectionAfterRetire = false;
   readonly #timeoutMs: number;
   readonly #responseBaseMs: number;
   readonly #commitResponseBaseMs: number;
@@ -910,7 +921,10 @@ export class ServeDatastoreClient {
         budget,
       });
     } catch (error) {
-      if (error instanceof ServeUnreachableError && error.sent === "maybe") {
+      if (
+        (error instanceof ServeUnreachableError && error.sent === "maybe") ||
+        (error instanceof ServeNotLeaderError && error.inFlight)
+      ) {
         await this.#cancelLockRequest(budget.requestId);
       }
       throw error;
@@ -1016,13 +1030,19 @@ export class ServeDatastoreClient {
     leaseId: string,
     ttlMs: number,
     signal: AbortSignal,
-    options: { readonly holdMs?: number } = {},
+    options: {
+      readonly holdMs?: number;
+      readonly responseBaseMs?: number;
+    } = {},
   ): Promise<LockLease | undefined> {
     return await this.#exchange(
       {
         method: "PUT",
         path: `locks/${encodeURIComponent(leaseId)}`,
         headers: { "content-type": "application/json" },
+        ...(options.responseBaseMs === undefined
+          ? {}
+          : { responseBaseMs: options.responseBaseMs }),
         // `holdMs` makes the lease explicit, or changes its hold
         body: JSON.stringify(
           options.holdMs === undefined
@@ -1432,9 +1452,10 @@ export class ServeDatastoreClient {
         ]);
         const bodyBytes = bodyBytesOf(spec.body);
         const responseMs = serveResponseDeadlineMs(
-          answersWithoutConfirm(spec.method, spec.path)
-            ? this.#responseBaseMs
-            : this.#commitResponseBaseMs,
+          spec.responseBaseMs ??
+            (answersWithoutConfirm(spec.method, spec.path)
+              ? this.#responseBaseMs
+              : this.#commitResponseBaseMs),
           this.#timeoutMs,
           bodyBytes,
           spec.serverWaitMs ?? 0,
@@ -1469,7 +1490,10 @@ export class ServeDatastoreClient {
             followFailed = true;
             continue;
           }
-          if (isTimeout(error)) {
+          if (
+            isTimeout(error) || isNetworkFailure(error) ||
+            sentOf(error) === "never"
+          ) {
             // its connection may reach a node that no longer answers: the next
             // request opens a fresh one, which the address may route elsewhere
             this.#retireConnection();
@@ -1501,6 +1525,9 @@ export class ServeDatastoreClient {
           );
         }
         span.setAttribute("http.response.status_code", response.status);
+        // a node that is not serving (an old leader, a follower behind, one
+        // shutting down): a fresh connection may reach another behind the address
+        if (response.status === 503) this.#retireConnection();
         if (response.status === 429 && resends + 1 < this.#maxAttempts) {
           const wait = retryAfterMs(response.headers.get("retry-after"));
           if (wait !== undefined) {
@@ -1556,7 +1583,7 @@ export class ServeDatastoreClient {
           this.#accessCheck(access);
         }
         let refusal: ServeNotLeaderError | ServeFollowerBehindError | undefined;
-        if (response.status === 503 && isReadSpec(spec)) {
+        if (response.status === 503 && ridesRefusals(spec)) {
           try {
             refusal = retryableServeRefusal(
               await this.#refusal(response.clone(), routeTemplate(spec.path)),
@@ -1596,7 +1623,7 @@ export class ServeDatastoreClient {
           await this.#delay(wait, signal);
           if (
             refusal instanceof ServeNotLeaderError && !followFailed &&
-            baseLogId !== undefined
+            baseLogId !== undefined && isReadSpec(spec)
           ) {
             origin = followableLeader(this.baseUrl, refusal.leader?.address) ??
               origin;
@@ -1702,7 +1729,7 @@ export class ServeDatastoreClient {
 
   #clientInit(): { client?: Deno.HttpClient } {
     const make = this.#makeHttpClient ??
-      (this.#ownConnectionAfterTimeout
+      (this.#ownConnectionAfterRetire
         ? () => Deno.createHttpClient({})
         : undefined);
     if (make === undefined) return {};
@@ -1729,7 +1756,7 @@ export class ServeDatastoreClient {
     }
     // the process-wide pool may hold more connections to the same node
     if (this.#makeHttpClient === undefined) {
-      this.#ownConnectionAfterTimeout = true;
+      this.#ownConnectionAfterRetire = true;
     }
   }
 }

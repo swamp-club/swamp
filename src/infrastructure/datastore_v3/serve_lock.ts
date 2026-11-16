@@ -25,6 +25,8 @@
 
 import { UserError } from "../../domain/errors.ts";
 import { LEASE_LAPSED_CODE } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
+import { ServeNotLeaderError } from "../../domain/datastore_v3/serve_leader.ts";
+import { WRITER_LEASE_CLOCK_SKEW_MS } from "../../domain/datastore_v3/writer_lease.ts";
 import {
   type DistributedLock,
   type LockInfo,
@@ -38,7 +40,11 @@ import type {
   LockLease,
   ServeDatastoreClient,
 } from "./serve_datastore_client.ts";
-import type { ExplicitLease } from "./explicit_model_leases.ts";
+import {
+  EXPLICIT_LEASE_RENEWAL_RESPONSE_MS,
+  type ExplicitLease,
+  takeUnrenewedLease,
+} from "./explicit_model_leases.ts";
 import {
   dropServeLease,
   holdServeLease,
@@ -52,6 +58,7 @@ import {
   ServeUpstreamError,
 } from "./serve_upstream_errors.ts";
 import { serveUpstreamAt } from "./serve_upstream_registry.ts";
+import { serveClockOf } from "./serve_offline.ts";
 import { describeHolder, outlastsWait } from "./serve_lease_holder.ts";
 import {
   latchServeUnreachable,
@@ -108,9 +115,8 @@ export interface ServeLockOptions {
   /** where the checkout's copy stands, for serve to answer with the lease */
   readonly catchUpRequest?: () => CatchUpRequest | undefined;
   /**
-   * serve could not be reached by the lock that was the command's first
-   * contact; true when that put the checkout offline, and the hold then takes
-   * the offline path
+   * the first contact found serve unreachable, or leaderless for a live
+   * explicit lease; true when that put the checkout offline
    */
   readonly onUnreachable?: (error: ServeUnreachableError) => boolean;
   readonly root?: string;
@@ -157,7 +163,13 @@ export class ServeLock implements DistributedLock {
   #local: DistributedLock | undefined;
   /** Set while the hold is released: a renewal in flight cannot lapse it. */
   #releasing = false;
+  /** a lapse met while releasing: it fires if the hold outlives the release */
+  #lapsedWhileReleasing: string | undefined;
   #localOnly = false;
+  /** the adoption a serve_not_leader refused, while still live */
+  #adoptionRefused:
+    | { readonly refusal: unknown; readonly offline: ServeUnreachableError }
+    | undefined;
 
   constructor(options: ServeLockOptions) {
     this.#options = options;
@@ -193,16 +205,55 @@ export class ServeLock implements DistributedLock {
       await this.#acquireOffline(offline);
       return;
     }
+    if (await this.#offlineUnrenewed()) return;
     try {
       await this.#acquireOnline(signal);
     } catch (error) {
-      const goneOffline = error instanceof ServeUnreachableError &&
+      const refused = this.#adoptionRefused;
+      this.#adoptionRefused = undefined;
+      const unreachable = error instanceof ServeUnreachableError
+        ? error
+        : refused !== undefined && refused.refusal === error
+        ? refused.offline
+        : undefined;
+      const goneOffline = unreachable !== undefined &&
         this.#lease === undefined &&
-        this.#options.onUnreachable?.(error) === true;
+        this.#options.onUnreachable?.(unreachable) === true;
       const now = goneOffline ? this.#options.offline?.() : undefined;
       if (now === undefined) throw error;
       await this.#acquireOffline(now);
     }
+  }
+
+  /**
+   * a live recorded lease the bind could not renew goes offline here, without
+   * asking serve a second time; true when it did
+   */
+  async #offlineUnrenewed(): Promise<boolean> {
+    const root = this.#options.root;
+    if (root === undefined || this.#options.adopt === undefined) return false;
+    const explicit = await this.#options.adopt();
+    if (explicit === undefined) return false;
+    const failed = takeUnrenewedLease(root, explicit.leaseId);
+    if (failed === undefined) return false;
+    const { baseUrl, error } = failed;
+    const unreachable = !this.#liveFor(explicit, baseUrl)
+      ? undefined
+      : error instanceof ServeUnreachableError
+      ? error
+      : error instanceof Error && error.name === "TimeoutError"
+      ? new ServeUnreachableError(baseUrl, "maybe", error)
+      : this.#noLeaderFor(explicit, baseUrl, error);
+    if (
+      unreachable === undefined ||
+      this.#options.onUnreachable?.(unreachable) !== true
+    ) {
+      return false;
+    }
+    const offline = this.#options.offline?.();
+    if (offline === undefined) return false;
+    await this.#acquireOffline(offline);
+    return true;
   }
 
   async #acquireOnline(signal: AbortSignal | undefined): Promise<void> {
@@ -251,6 +302,7 @@ export class ServeLock implements DistributedLock {
           delivered = reply.catchUp;
           this.#acquiredAt = this.#now();
           this.#lost = false;
+          this.#lapsedWhileReleasing = undefined;
           // Measured from when the request was sent: serve's TTL started
           // no earlier.
           this.#armDeadline(askedMonotonic);
@@ -324,10 +376,17 @@ export class ServeLock implements DistributedLock {
         explicit.leaseId,
         explicit.holdMs,
         hold.signal,
-        { holdMs: explicit.holdMs },
+        {
+          holdMs: explicit.holdMs,
+          responseBaseMs: EXPLICIT_LEASE_RENEWAL_RESPONSE_MS,
+        },
       );
     } catch (error) {
       client.close?.();
+      const offline = this.#noLeaderFor(explicit, client.baseUrl, error);
+      this.#adoptionRefused = offline === undefined
+        ? undefined
+        : { refusal: error, offline };
       throw error;
     }
     if (renewed === undefined) {
@@ -351,10 +410,42 @@ export class ServeLock implements DistributedLock {
     };
     this.#acquiredAt = this.#now();
     this.#lost = false;
+    this.#lapsedWhileReleasing = undefined;
     this.#local = local;
     this.#armDeadline(asked);
     this.#startHeartbeat();
     return true;
+  }
+
+  /**
+   * a renewal refused as not the leader, of a lease live by serve's clock less
+   * the skew, may go offline as if serve were unreachable: one that may have
+   * run only extended the lease the offline write lands under
+   */
+  #noLeaderFor(
+    explicit: ExplicitLease,
+    baseUrl: string,
+    error: unknown,
+  ): ServeUnreachableError | undefined {
+    if (
+      !(error instanceof ServeNotLeaderError) ||
+      !this.#liveFor(explicit, baseUrl)
+    ) {
+      return undefined;
+    }
+    return new ServeUnreachableError(
+      baseUrl,
+      error.inFlight ? "maybe" : "never",
+      new Error(`serve has no leader right now: ${error.message}`, {
+        cause: error,
+      }),
+    );
+  }
+
+  #liveFor(explicit: ExplicitLease, baseUrl: string): boolean {
+    const offsetMs = serveClockOf(baseUrl)?.offsetMs ?? 0;
+    return Date.parse(explicit.expiresAt) - offsetMs -
+        WRITER_LEASE_CLOCK_SKEW_MS - this.#now() > 0;
   }
 
   /**
@@ -394,6 +485,7 @@ export class ServeLock implements DistributedLock {
       };
       this.#acquiredAt = this.#now();
       this.#lost = false;
+      this.#lapsedWhileReleasing = undefined;
       this.#local = local;
       held = true;
       // The recorded end, less the skew allowed for: the work under the
@@ -437,6 +529,7 @@ export class ServeLock implements DistributedLock {
         lease.leaseId,
         () => this.#quiet(),
         () => this.#resume(),
+        () => this.#settledUnreleased(),
       );
     }
   }
@@ -444,7 +537,26 @@ export class ServeLock implements DistributedLock {
   #resume(): void {
     if (this.#lease === undefined || this.#lost || !this.#releasing) return;
     this.#releasing = false;
+    if (this.#lapseMetWhileReleasing()) return;
     if (this.#heartbeat === undefined) this.#startHeartbeat();
+  }
+
+  /**
+   * serve may have ended the lease, so it is not renewed, but the hold no
+   * longer counts as releasing: its deadline lapses it as any other
+   */
+  #settledUnreleased(): void {
+    if (this.#lease === undefined || this.#lost || !this.#releasing) return;
+    this.#releasing = false;
+    this.#lapseMetWhileReleasing();
+  }
+
+  #lapseMetWhileReleasing(): boolean {
+    const reason = this.#lapsedWhileReleasing;
+    if (reason === undefined) return false;
+    this.#lapsedWhileReleasing = undefined;
+    this.#lapse(reason);
+    return true;
   }
 
   /** no renewal from here on: the commit closing the hold may end the lease */
@@ -473,6 +585,7 @@ export class ServeLock implements DistributedLock {
   async #release(): Promise<void> {
     this.#stopHeartbeat();
     this.#clearDeadline();
+    this.#lapsedWhileReleasing = undefined;
     if (this.#localOnly) {
       this.#localOnly = false;
       this.#acquiredAt = undefined;
@@ -685,10 +798,9 @@ export class ServeLock implements DistributedLock {
    */
   #lapse(reason: string): void {
     const lease = this.#lease;
-    if (
-      lease === undefined || lease.fence === undefined || this.#lost ||
-      this.#releasing
-    ) {
+    if (lease === undefined || lease.fence === undefined || this.#lost) return;
+    if (this.#releasing) {
+      this.#lapsedWhileReleasing ??= reason;
       return;
     }
     this.#lost = true;

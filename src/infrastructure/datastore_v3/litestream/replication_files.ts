@@ -42,6 +42,7 @@ import {
   parseReplicaVerification,
   type ReplicaVerification,
 } from "../../../domain/datastore_v3/replica_verification.ts";
+import { DEFAULT_SNAPSHOT_INTERVAL_MS } from "../../../domain/datastore/datastore_config.ts";
 import { atomicWriteTextFile } from "../../persistence/atomic_write.ts";
 import type { V3ReplicaSetting } from "./replica_setting.ts";
 
@@ -200,6 +201,39 @@ export interface PresenceRecord {
   readonly process?: ProcessIdentity;
   readonly lineageFence: number;
   readonly replicaPath: string;
+  readonly owner?: SupervisorOwner;
+}
+
+/** the process a sidecar stops with: a serve, never a CLI command */
+export interface SupervisorOwner {
+  readonly pid: number;
+  readonly process: ProcessIdentity;
+}
+
+/** undefined when missing or malformed */
+export function parseSupervisorOwner(
+  value: unknown,
+): SupervisorOwner | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const { pid, process } = value as Record<string, unknown>;
+  const identity = parseProcessIdentity(process);
+  if (
+    typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0 ||
+    identity === undefined
+  ) {
+    return undefined;
+  }
+  return { pid, process: identity };
+}
+
+export function sameSupervisorOwner(
+  a: SupervisorOwner | undefined,
+  b: SupervisorOwner | undefined,
+): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  return a.pid === b.pid && a.process.host === b.process.host &&
+    a.process.bootId === b.process.bootId &&
+    a.process.startTime === b.process.startTime;
 }
 
 export type PresenceRead =
@@ -249,6 +283,7 @@ function parsePresence(value: unknown): PresenceRecord | undefined {
     return undefined;
   }
   const process = parseProcessIdentity(r.process);
+  const owner = parseSupervisorOwner(r.owner);
   return {
     supervisorPid: r.supervisorPid as number,
     ...(r.litestreamPid !== undefined
@@ -259,6 +294,7 @@ function parsePresence(value: unknown): PresenceRecord | undefined {
     ...(process !== undefined ? { process } : {}),
     lineageFence: r.lineageFence as number,
     replicaPath: r.replicaPath,
+    ...(owner !== undefined ? { owner } : {}),
   };
 }
 
@@ -464,14 +500,27 @@ export function renderLitestreamConfig(
   paths: Pick<ReplicationPaths, "commitsDb" | "socket">,
   replica: V3ReplicaSetting,
   replicaPath: string,
+  snapshotIntervalMs: number = DEFAULT_SNAPSHOT_INTERVAL_MS,
 ): string {
   const q = (value: string) => JSON.stringify(value);
   return [
     "socket:",
     "  enabled: true",
     `  path: ${q(paths.socket)}`,
+    // Only replication takes snapshots, so the restore config leaves it out.
+    "snapshot:",
+    `  interval: ${goMinutes(snapshotIntervalMs)}`,
     ...databaseConfigLines(paths.commitsDb, replica, replicaPath),
   ].join("\n") + "\n";
+}
+
+function goMinutes(ms: number): string {
+  if (!Number.isSafeInteger(ms) || ms <= 0 || ms % 60_000 !== 0) {
+    throw new Error(
+      `Internal error: a snapshot interval of ${ms} ms is not whole minutes`,
+    );
+  }
+  return `${ms / 60_000}m`;
 }
 
 export function renderLitestreamRestoreConfig(

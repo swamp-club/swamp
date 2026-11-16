@@ -39,6 +39,13 @@ import {
   writeReplicaVerification,
 } from "./replication_files.ts";
 import {
+  judgeRecordedProcess,
+  type LocalProcess,
+  type ProcessProbe,
+  type ProcessVerdict,
+  type RecordedProcess,
+} from "../../../domain/datastore_v3/process_liveness.ts";
+import {
   REPLICA_VERIFY_BACKSTOP_MS,
   snapshotReadAt,
 } from "../../../domain/datastore_v3/replica_verification.ts";
@@ -584,7 +591,7 @@ Deno.test({
 
 Deno.test({
   name:
-    "runReplicationSupervisor: a new snapshot is checked before the backstop (swamp-club#4261)",
+    "runReplicationSupervisor: a new snapshot within a day of the last check waits for the backstop",
   ignore: !UNIX,
   async fn() {
     await withTempDir(async (dir) => {
@@ -593,8 +600,7 @@ Deno.test({
         3,
         (elapsed) => elapsed < HOUR ? txidOf(1) : txidOf(50),
       );
-      assertEquals(restores.length, 2);
-      assertEquals(restores[1].snapshotTxid, txidOf(50));
+      assertEquals(restores.length, 1);
     });
   },
 });
@@ -608,6 +614,22 @@ Deno.test({
       const { restores } = await serveDay(dir, 3, () => txidOf(71));
       assertEquals(restores.length, 2);
       assertEquals(restores[1].snapshotTxid, txidOf(71));
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "runReplicationSupervisor: hourly snapshots under the default backstop are checked every backstop, not every snapshot",
+  ignore: !UNIX,
+  async fn() {
+    await withTempDir(async (dir) => {
+      const { restores } = await serveDay(
+        dir,
+        24,
+        (elapsed) => txidOf(1 + Math.floor(elapsed / HOUR) * 60),
+      );
+      assertEquals(restores.length, 24 * HOUR / REPLICA_VERIFY_BACKSTOP_MS);
     });
   },
 });
@@ -782,6 +804,214 @@ Deno.test({
       );
       assert(restores.length >= 2);
       assert(polls <= 2 * sidecars, `${polls} listings`);
+    });
+  },
+});
+
+const OWNER_IDENTITY = { host: "h#ns", bootId: "boot-1", startTime: "100" };
+const OWNER = { pid: 9100, process: OWNER_IDENTITY };
+
+/** judges the owner as the host would, by a probe the test changes */
+function ownerJudge(probe: () => ProcessProbe): {
+  judge: (recorded: RecordedProcess) => Promise<ProcessVerdict>;
+  verdicts: ProcessVerdict[];
+} {
+  const local: LocalProcess = {
+    pid: 9000,
+    identity: { host: "h#ns", bootId: "boot-1", startTime: "50" },
+    probe: () => probe(),
+    bootIdRequired: true,
+    pidNamespaces: true,
+  };
+  const verdicts: ProcessVerdict[] = [];
+  return {
+    verdicts,
+    judge(recorded) {
+      const verdict = judgeRecordedProcess(recorded, local);
+      verdicts.push(verdict);
+      return Promise.resolve(verdict);
+    },
+  };
+}
+
+const ALIVE: ProcessProbe = { present: true, zombie: false, startTime: "100" };
+const EXITED: ProcessProbe = { present: false, zombie: false };
+
+Deno.test("parseSupervisorArgs: reads back an owner, and refuses a malformed one", () => {
+  const options: SupervisorOptions = {
+    commitsDb: "/d/commits.db",
+    privateRoot: "/tmp/swamp-1",
+    lineageFence: 7,
+    replicaPath: "/r/_litestream/000000000007",
+    idleMs: 300_000,
+    stopWaitMs: 5_000,
+    tickMs: 2_000,
+    owner: OWNER,
+  };
+  assertEquals(parseSupervisorArgs(supervisorArgs(options)), options);
+  const args = supervisorArgs(options);
+  for (const bad of ["{", '{"pid":0,"process":{"host":"h"}}', '{"pid":5}']) {
+    args[args.indexOf("--owner") + 1] = bad;
+    assertEquals(parseSupervisorArgs(args), undefined);
+  }
+});
+
+Deno.test({
+  name:
+    "runReplicationSupervisor: an owned sidecar runs while its owner lives, and within a tick of its death SIGKILLs Litestream, cleans up and exits",
+  ignore: !UNIX,
+  async fn() {
+    await withTempDir(async (dir) => {
+      const { options, paths } = await setup(dir);
+      const h = harness();
+      let probe = ALIVE;
+      let goneAt = 0;
+      h.at(500, () => {
+        probe = EXITED;
+        goneAt = h.now();
+      });
+      const owner = ownerJudge(() => probe);
+      assertEquals(
+        await runReplicationSupervisor(
+          { ...options, owner: OWNER },
+          { ...h.deps, judgeProcess: owner.judge },
+        ),
+        "owner-gone",
+      );
+      assert(owner.verdicts.filter((v) => v === "alive").length >= 4);
+      assert(h.now() - goneAt <= options.tickMs);
+      // no SIGTERM: a graceful stop would make a final upload
+      assertEquals(h.child.signals, ["SIGKILL"]);
+      assertEquals(await readPresence(paths), { kind: "missing" });
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "runReplicationSupervisor: an owner whose pid now names another process is gone",
+  ignore: !UNIX,
+  async fn() {
+    await withTempDir(async (dir) => {
+      const { options } = await setup(dir);
+      const h = harness();
+      const owner = ownerJudge(() => ({
+        present: true,
+        zombie: false,
+        startTime: "777",
+      }));
+      assertEquals(
+        await runReplicationSupervisor(
+          { ...options, owner: OWNER },
+          { ...h.deps, judgeProcess: owner.judge },
+        ),
+        "owner-gone",
+      );
+      assertEquals(h.child.signals, ["SIGKILL"]);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "runReplicationSupervisor: a stopped (frozen) owner is not gone, and the sidecar idles out as before",
+  ignore: !UNIX,
+  async fn() {
+    await withTempDir(async (dir) => {
+      const { options } = await setup(dir);
+      const h = harness();
+      // SIGSTOP leaves the process present and not a zombie
+      const owner = ownerJudge(() => ALIVE);
+      assertEquals(
+        await runReplicationSupervisor(
+          { ...options, owner: OWNER },
+          { ...h.deps, judgeProcess: owner.judge },
+        ),
+        "idle",
+      );
+      assert(owner.verdicts.length > 0);
+      assert(owner.verdicts.every((v) => v === "alive"));
+      assertEquals(h.child.signals, ["SIGTERM"]);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "runReplicationSupervisor: a sidecar with no owner never judges one, and idles out as before",
+  ignore: !UNIX,
+  async fn() {
+    await withTempDir(async (dir) => {
+      const { options } = await setup(dir);
+      const h = harness();
+      const owner = ownerJudge(() => EXITED);
+      assertEquals(
+        await runReplicationSupervisor(options, {
+          ...h.deps,
+          judgeProcess: owner.judge,
+        }),
+        "idle",
+      );
+      assertEquals(owner.verdicts, []);
+      assertEquals(h.child.signals, ["SIGTERM"]);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "runReplicationSupervisor: an owned sidecar asked to stop stops gracefully, and its owner dying mid-stop does not cut the final upload short",
+  ignore: !UNIX,
+  async fn() {
+    await withTempDir(async (dir) => {
+      const { options } = await setup(dir);
+      const h = harness();
+      let probe = ALIVE;
+      let request!: () => void;
+      const stop = new Promise<void>((resolve) => request = resolve);
+      h.at(300, () => request());
+      h.at(350, () => {
+        probe = EXITED;
+      });
+      // still uploading when the owner dies
+      h.at(450, () => h.child.exit());
+      const owner = ownerJudge(() => probe);
+      assertEquals(
+        await runReplicationSupervisor(
+          { ...options, owner: OWNER },
+          { ...h.deps, stopRequested: stop, judgeProcess: owner.judge },
+        ),
+        "stop-requested",
+      );
+      assertEquals(h.child.signals, []);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "runReplicationSupervisor: an owned sidecar whose owner is gone when a stop is requested still stops gracefully",
+  ignore: !UNIX,
+  async fn() {
+    await withTempDir(async (dir) => {
+      const { options } = await setup(dir);
+      const h = harness();
+      let probe = ALIVE;
+      let request!: () => void;
+      const stop = new Promise<void>((resolve) => request = resolve);
+      h.at(300, () => {
+        request();
+        probe = EXITED;
+      });
+      const owner = ownerJudge(() => probe);
+      assertEquals(
+        await runReplicationSupervisor(
+          { ...options, owner: OWNER },
+          { ...h.deps, stopRequested: stop, judgeProcess: owner.judge },
+        ),
+        "stop-requested",
+      );
+      assertEquals(h.child.signals[0], "SIGTERM");
     });
   },
 });

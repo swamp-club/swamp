@@ -286,6 +286,21 @@ swamp datastore setup filesystem --path /mnt/shared/swamp-data --json
 Migrates existing `.swamp/` runtime data to the new path and updates
 `.swamp.yaml`. Use `--skip-migration` to skip the data copy.
 
+### Replica Snapshot Interval
+
+A v3 datastore on a bucket replicates through Litestream, which takes a full
+snapshot of `commits.db` every `snapshotInterval` (default `1h`, a whole number
+of minutes or hours from `5m` to `24h`). A restore, as when a serve node takes
+over, reads the last snapshot plus everything after it, so a longer interval
+makes restores slower; each snapshot uploads the whole database, so a shorter
+one uploads more:
+
+```yaml
+datastore:
+  type: "@swamp/gcs-datastore"
+  snapshotInterval: 30m
+```
+
 ### Durable Writes
 
 By default a v2 data write is atomic (it survives a process crash) but is not

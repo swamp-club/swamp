@@ -192,11 +192,7 @@ export interface V3CopyRefresh {
  */
 export function makeV3CopyCurrent(
   copy: V3Copy,
-  options: {
-    readonly mode: "read" | "write";
-    readonly openStore?: SqliteCommitStore;
-    readonly lockWaitMs: number;
-  },
+  options: V3CopyRefreshOptions,
 ): Promise<V3CopyRefresh> {
   if (v3ReplicaFor(copy.datastorePath) === undefined) {
     return Promise.resolve({});
@@ -220,14 +216,22 @@ export function makeV3CopyCurrent(
   });
 }
 
+export interface V3CopyRefreshOptions {
+  readonly mode: "read" | "write";
+  readonly openStore?: SqliteCommitStore;
+  readonly lockWaitMs: number;
+  /**
+   * honoured only until the restored copy is installed: the temp file is
+   * removed and the copy left as it was; after that the refresh runs to its end
+   */
+  readonly signal?: AbortSignal;
+}
+
 async function makeV3CopyCurrentNow(
   copy: V3Copy,
-  options: {
-    readonly mode: "read" | "write";
-    readonly openStore?: SqliteCommitStore;
-    readonly lockWaitMs: number;
-  },
+  options: V3CopyRefreshOptions,
 ): Promise<V3CopyRefresh> {
+  const signal = options.signal;
   const replica = v3ReplicaFor(copy.datastorePath);
   if (replica === undefined) return {};
   // before the copy's first read of the bucket: the datastore is known to be v3
@@ -254,6 +258,7 @@ async function makeV3CopyCurrentNow(
       : {};
   }
   if (first.kind === "current") return {};
+  signal?.throwIfAborted();
 
   const lock = await Deno.open(paths.restoreLock, {
     read: true,
@@ -262,7 +267,7 @@ async function makeV3CopyCurrentNow(
   });
   let quiesced: (() => void) | undefined;
   try {
-    if (!await pollLock(lock, options.lockWaitMs)) {
+    if (!await pollLock(lock, options.lockWaitMs, signal)) {
       return refuseOrSkip(
         options.mode,
         copy,
@@ -278,6 +283,7 @@ async function makeV3CopyCurrentNow(
     const decision = decideLocalCopy(local, lineagesNow, root);
     if (decision.kind === "none" || decision.kind === "current") return {};
     const neverRestored = copyNeverRestored(local);
+    signal?.throwIfAborted();
     try {
       quiesced = await v3Replicator().quiesce(copy.commitsDb);
     } catch (error) {
@@ -286,6 +292,7 @@ async function makeV3CopyCurrentNow(
         neverRestored,
       });
     }
+    signal?.throwIfAborted();
     await ensurePrivateDir(paths);
     const cursor = readModelCursor(copy.repoDir);
     const before = cursor > 0 ? txnAt(paths.commitsDb, cursor) : undefined;
@@ -337,8 +344,13 @@ async function makeV3CopyCurrentNow(
       }, async () =>
         await restoreWhileWatched(
           watched,
-          async (signal) =>
-            await restoreV3Copy({
+          async (cut) => {
+            const stop = cut === undefined
+              ? signal
+              : signal === undefined
+              ? cut
+              : AbortSignal.any([cut, signal]);
+            return await restoreV3Copy({
               binary: await resolveV3LitestreamBinary(),
               replica,
               head: decision.lineage.head,
@@ -346,10 +358,13 @@ async function makeV3CopyCurrentNow(
               configDir: paths.privateDir,
               install,
               deadlineMs: restoreDeadlineMs,
-              ...(signal === undefined ? {} : { signal }),
-            }),
+              ...(stop === undefined ? {} : { signal: stop }),
+            });
+          },
         ));
     } catch (error) {
+      // stopped by its caller before install: the copy is as it was
+      if (signal?.aborted === true && error === signal.reason) throw error;
       // a replica that cannot be listed is the storage cut off: the read fails
       // with its code and the next command restores, whether the watch stopped
       // the restore or Litestream gave up first
@@ -664,9 +679,14 @@ async function localState(paths: ReplicationPaths) {
   };
 }
 
-async function pollLock(file: Deno.FsFile, waitMs: number): Promise<boolean> {
+async function pollLock(
+  file: Deno.FsFile,
+  waitMs: number,
+  signal?: AbortSignal,
+): Promise<boolean> {
   const until = Date.now() + waitMs;
   while (!await file.tryLock(true)) {
+    signal?.throwIfAborted();
     if (Date.now() >= until) return false;
     await new Promise((done) => setTimeout(done, 50));
   }

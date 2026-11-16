@@ -312,6 +312,8 @@ async function open(ttlMs: number | undefined): Promise<Opened> {
       confirmed: () => v3WriterLeaseConfirmed(here.path),
       fence: () => v3WriterFence(here.path),
       currentFence: async () => (await v3WriterLeaseHolder(here.path))?.fence,
+      // tests tick by hand
+      expiresAt: () => Promise.resolve(undefined),
       take: () =>
         holdV3Writer(here, repoDir, {
           retakeLost: true,
@@ -320,8 +322,8 @@ async function open(ttlMs: number | undefined): Promise<Opened> {
         }),
     },
     store: v3ServeControlPlaneAt(here),
-    refreshCopy: async () => {
-      await refreshV3FollowerCopy(repoDir, here);
+    refreshCopy: async (signal) => {
+      await refreshV3FollowerCopy(repoDir, here, signal);
       effects.poke();
     },
     onLead: async () => {

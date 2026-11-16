@@ -17,7 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
+import { waitFor } from "@swamp-club/swamp-testing";
 import type { ControlPlaneStore } from "../domain/datastore/control_plane_store.ts";
 import {
   parseServeLeader,
@@ -57,14 +58,31 @@ class FakeLease implements LeadershipLease {
   free: number | undefined;
   takes = 0;
   current: number | "unreadable" | undefined;
+  /** the holder's computed expiry; with freeFrom, take wins once it passes */
+  expiry: number | undefined;
+  freeFrom: { at: number; fence: number } | undefined;
   holdsCurrent = () => this.hold !== undefined && !this.hold.lost;
+  expiresAt = (): Promise<number | undefined> => Promise.resolve(this.expiry);
   currentFence = (): Promise<number | undefined> =>
     this.current === "unreadable"
       ? Promise.reject(new Error("lease unreadable"))
       : Promise.resolve(this.current ?? this.hold?.fence);
   fence = () => this.hold?.fence;
+  lostListeners = new Set<() => void>();
+  onLost = (listener: () => void): () => void => {
+    this.lostListeners.add(listener);
+    return () => this.lostListeners.delete(listener);
+  };
+  lose(): void {
+    if (this.hold !== undefined) this.hold.lost = true;
+    for (const listener of [...this.lostListeners]) listener();
+  }
   take = (): Promise<"writer" | "follower"> => {
     this.takes++;
+    if (this.freeFrom !== undefined && Date.now() > this.freeFrom.at) {
+      this.free = this.freeFrom.fence;
+      this.freeFrom = undefined;
+    }
     if (this.free === undefined) return Promise.resolve("follower");
     this.hold = { fence: this.free, lost: false };
     this.free = undefined;
@@ -191,6 +209,84 @@ Deno.test("ServeLeadership: a leader whose lease is taken over stops once, and n
   }
 });
 
+Deno.test("ServeLeadership: a leader stops as soon as its lease reports lost, not on the next tick", async () => {
+  const { lease, events, leadership } = setup();
+  lease.hold = { fence: 5, lost: false };
+  await leadership.start("writer");
+  try {
+    lease.lose();
+    await waitFor(
+      () => leadership.role === "follower",
+      "the leader to give up its role",
+      { timeoutMs: 2_000 },
+    );
+    await leadership.lostLeadHandled();
+    assertEquals(events, ["lead", "lost"]);
+    assertEquals(lease.takes, 0);
+  } finally {
+    await leadership.stop();
+  }
+});
+
+Deno.test("ServeLeadership: a lease lost while a tick is in flight is checked again once that tick ends", async () => {
+  let block: PromiseWithResolvers<void> | undefined;
+  const { lease, events, leadership } = setup({
+    prove: async () => {
+      await block?.promise;
+      return "proof";
+    },
+  });
+  lease.hold = { fence: 5, lost: false };
+  await leadership.start("writer");
+  try {
+    block = Promise.withResolvers<void>();
+    const inFlight = leadership.tick();
+    lease.lose();
+    block.resolve();
+    await inFlight;
+    await waitFor(
+      () => leadership.role === "follower",
+      "the leader to give up its role",
+      { timeoutMs: 2_000 },
+    );
+    await leadership.lostLeadHandled();
+    assertEquals(events, ["lead", "lost"]);
+  } finally {
+    await leadership.stop();
+  }
+});
+
+Deno.test("ServeLeadership.leadLost: a hold lost while its retake may still win it back keeps the leader ready; once the hold reports it lost, the leader is not ready and gives up the lead", async () => {
+  const { lease, events, leadership } = setup();
+  assertEquals(leadership.leadLost(), false);
+  lease.hold = { fence: 5, lost: false };
+  await leadership.start("writer");
+  try {
+    assertEquals(leadership.leadLost(), false);
+    // lost but retaking: a readiness probe neither reports it nor acts on it
+    lease.hold.lost = true;
+    assertEquals(leadership.leadLost(), false);
+    await Promise.resolve();
+    assertEquals(leadership.role, "leader");
+    assertEquals(events, ["lead"]);
+    lease.hold.lost = false;
+    assertEquals(leadership.leadLost(), false);
+    // the hold gave up: reported at once, and the lead is given up
+    lease.lose();
+    assertEquals(leadership.leadLost(), true);
+    await waitFor(
+      () => leadership.role === "follower",
+      "the leader to give up its role",
+      { timeoutMs: 2_000 },
+    );
+    await leadership.lostLeadHandled();
+    assertEquals(events, ["lead", "lost"]);
+    assertEquals(leadership.leadLost(), true);
+  } finally {
+    await leadership.stop();
+  }
+});
+
 Deno.test("ServeLeadership: a node takes the follower's gates down only once its leader work is done", async () => {
   const lease = new FakeLease();
   let roleDuringLead: string | undefined;
@@ -211,6 +307,51 @@ Deno.test("ServeLeadership: a node takes the follower's gates down only once its
     lease.free = 2;
     await leadership.tick();
     assertEquals(roleDuringLead, "follower");
+    assertEquals(leadership.role, "leader");
+  } finally {
+    await leadership.stop();
+  }
+});
+
+Deno.test("ServeLeadership: a follower that takes the lease aborts its forwards to the old leader before its leader work, and again before its role changes", async () => {
+  const lease = new FakeLease();
+  const feed = new FakeFeed();
+  const events: string[] = [];
+  const leadership: ServeLeadership = new ServeLeadership({
+    instanceId: "me",
+    lease,
+    store: memoryStore(),
+    feed: {
+      current: () => true,
+      follow: feed.follow,
+      stop: () => {
+        events.push(`feed-stop:${leadership.role}`);
+        return Promise.resolve();
+      },
+    },
+    refreshCopy: () => Promise.resolve(),
+    abortForwards: () => {
+      events.push(`abort:${leadership.role}`);
+    },
+    onLead: () => {
+      events.push(`lead:${leadership.role}`);
+      return Promise.resolve();
+    },
+    onLostLead: () => Promise.resolve(),
+    tickMs: 3_600_000,
+  });
+  await leadership.start("follower");
+  try {
+    await leadership.tick();
+    assertEquals(events, []);
+    lease.free = 2;
+    await leadership.tick();
+    assertEquals(events, [
+      "abort:follower",
+      "feed-stop:follower",
+      "lead:follower",
+      "abort:follower",
+    ]);
     assertEquals(leadership.role, "leader");
   } finally {
     await leadership.stop();
@@ -760,4 +901,195 @@ Deno.test("ServeLeadership.leadUnconfirmed: a leader whose lease the store has n
   } finally {
     await leadership.stop();
   }
+});
+
+/** a follower refresh that runs until its signal aborts it, as a long restore does */
+function hangingRefresh() {
+  const state = {
+    calls: 0,
+    aborted: 0,
+    started: Promise.withResolvers<void>(),
+  };
+  const ended = Promise.withResolvers<void>();
+  const refreshCopy = async (signal?: AbortSignal): Promise<void> => {
+    state.calls++;
+    state.started.resolve();
+    const aborted = new Promise<void>((done) =>
+      signal?.addEventListener("abort", () => done(), { once: true })
+    );
+    await Promise.race([aborted, ended.promise]);
+    if (signal?.aborted === true) {
+      state.aborted++;
+      throw signal.reason;
+    }
+  };
+  return { state, refreshCopy, end: () => ended.resolve() };
+}
+
+Deno.test("ServeLeadership: a follower's refresh still running when the holder's lease lapses runs to its end, and the lease is taken after it", async () => {
+  const lease = new FakeLease();
+  const feed = new FakeFeed();
+  const refresh = hangingRefresh();
+  const leadership = new ServeLeadership({
+    instanceId: "me",
+    lease,
+    store: memoryStore(),
+    feed,
+    refreshCopy: refresh.refreshCopy,
+    onLead: () => Promise.resolve(),
+    onLostLead: () => Promise.resolve(),
+    tickMs: 3_600_000,
+  });
+  await leadership.start("follower");
+  try {
+    const expiry = Date.now() + 100;
+    lease.expiry = expiry;
+    lease.freeFrom = { at: expiry, fence: 3 };
+    const ticking = leadership.tick();
+    await waitFor(() => Date.now() > expiry + 500, "the lease to lapse");
+    assertEquals([refresh.state.calls, refresh.state.aborted], [1, 0]);
+    assertEquals(lease.takes, 1);
+    refresh.end();
+    await ticking;
+    assertEquals(leadership.role, "follower");
+    await leadership.tick();
+    assertEquals(leadership.role, "leader");
+    assertEquals(lease.takes, 2);
+  } finally {
+    refresh.end();
+    await leadership.stop();
+  }
+});
+
+Deno.test("ServeLeadership: a follower tries the lease just after the holder's computed expiry when it comes before the next tick (swamp-club#4679)", async () => {
+  const { lease, leadership } = setup();
+  lease.expiry = Date.now() + 200;
+  await leadership.start("follower");
+  try {
+    await waitFor(() => lease.takes >= 1, "a tick at the expiry", {
+      timeoutMs: 5_000,
+    });
+  } finally {
+    await leadership.stop();
+  }
+});
+
+Deno.test("ServeLeadership: a lease that lapsed while a refresh ran is tried within the margin once it ends, not a whole tick later", async () => {
+  const lease = new FakeLease();
+  const refresh = hangingRefresh();
+  const leadership = new ServeLeadership({
+    instanceId: "me",
+    lease,
+    store: memoryStore(),
+    refreshCopy: refresh.refreshCopy,
+    onLead: () => Promise.resolve(),
+    onLostLead: () => Promise.resolve(),
+    tickMs: 3_600_000,
+  });
+  const expiry = Date.now() + 400;
+  lease.expiry = expiry;
+  lease.freeFrom = { at: expiry, fence: 3 };
+  await leadership.start("follower");
+  // a tick before the lapse: its take loses and its refresh outlasts the lapse
+  const ticking = leadership.tick();
+  try {
+    await waitFor(() => refresh.state.calls === 1, "the refresh to start");
+    assertEquals(lease.takes, 1);
+    // past the tick scheduled at the expiry, which joins the one in flight
+    await waitFor(() => Date.now() > expiry + 2_000, "the lease to lapse");
+    refresh.end();
+    await ticking;
+    await waitFor(() => leadership.role === "leader", "the lease taken", {
+      timeoutMs: 5_000,
+    });
+    assertEquals(lease.takes, 2);
+  } finally {
+    refresh.end();
+    await leadership.stop();
+  }
+});
+
+Deno.test("ServeLeadership: a follower ticks no slower than its tick when the holder's expiry is far off (swamp-club#4679)", async () => {
+  const lease = new FakeLease();
+  lease.expiry = Date.now() + 3_600_000;
+  const leadership = new ServeLeadership({
+    instanceId: "me",
+    lease,
+    store: memoryStore(),
+    refreshCopy: () => Promise.resolve(),
+    onLead: () => Promise.resolve(),
+    onLostLead: () => Promise.resolve(),
+    tickMs: 50,
+  });
+  await leadership.start("follower");
+  try {
+    await waitFor(() => lease.takes >= 2, "two ticks at the tick interval");
+  } finally {
+    await leadership.stop();
+  }
+});
+
+Deno.test("ServeLeadership.stop: aborts a follower refresh in flight rather than waiting it out (swamp-club#4679)", async () => {
+  const lease = new FakeLease();
+  const refresh = hangingRefresh();
+  const leadership = new ServeLeadership({
+    instanceId: "me",
+    lease,
+    store: memoryStore(),
+    refreshCopy: refresh.refreshCopy,
+    onLead: () => Promise.resolve(),
+    onLostLead: () => Promise.resolve(),
+    tickMs: 3_600_000,
+  });
+  await leadership.start("follower");
+  let stopped = false;
+  try {
+    const ticking = leadership.tick();
+    await refresh.state.started.promise;
+    const stopping = leadership.stop().then(() => {
+      stopped = true;
+    });
+    await waitFor(() => stopped, "stop to return", { timeoutMs: 5_000 });
+    await stopping;
+    await ticking;
+    assertEquals(refresh.state.aborted, 1);
+    assertEquals(lease.takes, 1, "no take after a stop");
+  } finally {
+    refresh.end();
+    await leadership.stop();
+  }
+});
+
+Deno.test("ServeLeadership.stop: still waits for a take() in flight (swamp-club#4679)", async () => {
+  const lease = new FakeLease();
+  const taking = Promise.withResolvers<void>();
+  const gate = Promise.withResolvers<"writer" | "follower">();
+  lease.take = () => {
+    lease.takes++;
+    taking.resolve();
+    return gate.promise;
+  };
+  const leadership = new ServeLeadership({
+    instanceId: "me",
+    lease,
+    store: memoryStore(),
+    refreshCopy: () => Promise.resolve(),
+    onLead: () => Promise.resolve(),
+    onLostLead: () => Promise.resolve(),
+    tickMs: 3_600_000,
+  });
+  await leadership.start("follower");
+  const ticking = leadership.tick();
+  await taking.promise;
+  let stopped = false;
+  const stopping = leadership.stop().then(() => {
+    stopped = true;
+  });
+  // lets stop() reach the take it must wait for
+  await Promise.resolve();
+  assert(!stopped, "stop waits for the take");
+  gate.resolve("follower");
+  await ticking;
+  await stopping;
+  assert(stopped);
 });

@@ -53,6 +53,7 @@ import {
   ensureSharedDir,
   isMarkedForReplacement,
   readLitestreamStateOwner,
+  readPresence,
   type ReplicationPaths,
   replicationPathsFor,
   writeCopyState,
@@ -91,6 +92,7 @@ class FakeWorld {
   nextPid = 50_000;
   readonly sidecars: FakeSidecar[] = [];
   readonly killed: number[] = [];
+  readonly groupSignals: [number, Deno.Signal][] = [];
   readonly commandLines = new Map<number, string>();
   readonly starting: Promise<void>[] = [];
   syncAnswer: () => Promise<Record<string, unknown>> = () =>
@@ -143,6 +145,7 @@ class FakeWorld {
             hostname: Deno.hostname(),
             lineageFence: options.lineageFence,
             replicaPath: options.replicaPath,
+            ...(options.owner !== undefined ? { owner: options.owner } : {}),
           }),
         );
       })());
@@ -157,8 +160,9 @@ class FakeWorld {
     signal: (pid) => {
       this.killed.push(pid);
     },
-    signalGroup: (pgid) => {
+    signalGroup: (pgid, signal) => {
       this.killed.push(-pgid);
+      this.groupSignals.push([pgid, signal]);
       for (const sidecar of this.sidecars) {
         if (sidecar.supervisorPid === pgid && sidecar.alive) {
           sidecar.alive = false;
@@ -269,6 +273,35 @@ Deno.test({
         1,
         "the next fence continues the lineage",
       );
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "LitestreamReplicator.acquire: the sidecar it starts snapshots at the request's interval, hourly when unset",
+  ignore: !UNIX,
+  async fn() {
+    await withWorld(async (world, db) => {
+      const replicator = new LitestreamReplicator(world.deps());
+      const unset = await replicator.acquire(world.request(db, 1));
+      assertStringIncludes(
+        await Deno.readTextFile(world.paths.config),
+        "\nsnapshot:\n  interval: 60m\n",
+      );
+      await unset.release();
+    });
+    await withWorld(async (world, db) => {
+      const replicator = new LitestreamReplicator(world.deps());
+      const set = await replicator.acquire({
+        ...world.request(db, 1),
+        snapshotIntervalMs: 15 * 60_000,
+      });
+      assertStringIncludes(
+        await Deno.readTextFile(world.paths.config),
+        "\nsnapshot:\n  interval: 15m\n",
+      );
+      await set.release();
     });
   },
 });
@@ -1452,6 +1485,49 @@ Deno.test({
       );
       assertEquals(world.leaseChecks, 1);
       await handle.release();
+    });
+  },
+});
+
+const SERVE_OWNER = {
+  pid: 7_000,
+  process: { host: "h", bootId: "b", startTime: "1" },
+};
+
+Deno.test({
+  name:
+    "LitestreamReplicator.acquire: an owned request stops an unowned sidecar gracefully and starts its own, which a request with no owner then reuses",
+  ignore: !UNIX,
+  async fn() {
+    await withWorld(async (world, db) => {
+      const cli = new LitestreamReplicator(world.deps());
+      await (await cli.acquire(world.request(db, 1))).release();
+      const unowned = world.sidecars[0];
+
+      const serve = new LitestreamReplicator(world.deps());
+      const owned = await serve.acquire({
+        ...world.request(db, 1),
+        owner: SERVE_OWNER,
+      });
+      assertEquals(world.groupSignals, [[unowned.supervisorPid, "SIGTERM"]]);
+      assertEquals(world.live.length, 1);
+      assertEquals(world.sidecars.length, 2);
+      const presence = await readPresence(world.paths);
+      assertEquals(
+        presence.kind === "found" ? presence.record.owner : undefined,
+        SERVE_OWNER,
+      );
+      assertEquals(owned.lineageFence, 1, "the lineage continues");
+      await owned.release();
+
+      await (await new LitestreamReplicator(world.deps()).acquire(
+        world.request(db, 1),
+      )).release();
+      await (await new LitestreamReplicator(world.deps()).acquire({
+        ...world.request(db, 1),
+        owner: SERVE_OWNER,
+      })).release();
+      assertEquals(world.sidecars.length, 2, "both reuse the owned sidecar");
     });
   },
 });

@@ -26,11 +26,12 @@ import {
   plantV3WriterLease,
 } from "./v3_writer_lock_test_helpers.ts";
 import type { ProcessIdentity } from "../../domain/datastore_v3/process_liveness.ts";
-import { FileLock } from "../persistence/file_lock.ts";
+import { DEFAULT_LOCK_TTL_MS, FileLock } from "../persistence/file_lock.ts";
 import { FileSystemControlPlaneStore } from "../persistence/fs_control_plane_store.ts";
 import {
   fenceKey,
   releasedKey,
+  WRITER_LEASE_CLOCK_SKEW_MS,
   WriterFencedError,
 } from "../../domain/datastore_v3/writer_lease.ts";
 import {
@@ -38,8 +39,10 @@ import {
   advanceV3WriterLease,
   assertV3WriterCurrent,
   checkV3WriterLease,
+  holdsCurrentV3WriterLease,
   holdsV3WriterLock,
   onV3HoldRetaken,
+  onV3LeaseLost,
   onV3LeaseTaken,
   tryAcquireV3WriterLock,
   V3_LEGACY_WRITER_LOCK_KEY,
@@ -48,6 +51,7 @@ import {
   v3WriterFence,
   type V3WriterFenceStore,
   v3WriterLeaseConfirmed,
+  v3WriterLeaseExpiresAt,
   v3WriterLockHandle,
 } from "./v3_writer_lock.ts";
 
@@ -398,6 +402,27 @@ Deno.test("acquireV3WriterLock: once the process's hold is lost, the next acquir
   });
 });
 
+Deno.test("onV3LeaseLost: a renewal that finds the hold taken over, and cannot take it back, tells the listeners", async () => {
+  await withTempDir(async (dir) => {
+    const heard: string[] = [];
+    const unsubscribe = onV3LeaseLost((path) => heard.push(path));
+    const lifetime = await acquireV3WriterLock(dir, {
+      retakeLost: true,
+      ttlMs: 300,
+    });
+    const other = await plantV3WriterLease(dir, { pid: Deno.pid });
+    try {
+      await waitFor(() => heard.length > 0, "the lease-lost listener");
+      assertEquals(heard.length, 1);
+      assertEquals(holdsCurrentV3WriterLease(dir), false);
+    } finally {
+      unsubscribe();
+      await other.release();
+      await lifetime();
+    }
+  });
+});
+
 Deno.test("acquireV3WriterLock: a retake that fails after every other caller released ends the hold", async () => {
   await withTempDir(async (dir) => {
     const first = await acquireV3WriterLock(dir, { retakeLost: true });
@@ -635,5 +660,23 @@ Deno.test("v3WriterLeaseConfirmed: a hold just taken, and kept renewed, is confi
       await release();
     }
     assertEquals(v3WriterLeaseConfirmed(dir), false);
+  });
+});
+
+Deno.test("v3WriterLeaseExpiresAt: 0 with no lease or a released one; a held lease lapses at its renewal plus its TTL and the skew allowance", async () => {
+  await withTempDir(async (dir) => {
+    assertEquals(await v3WriterLeaseExpiresAt(dir), 0);
+    const before = Date.now();
+    const release = await acquireV3WriterLock(dir);
+    const after = Date.now();
+    const lapse = DEFAULT_LOCK_TTL_MS + WRITER_LEASE_CLOCK_SKEW_MS;
+    const expiresAt = await v3WriterLeaseExpiresAt(dir);
+    assert(
+      expiresAt !== undefined && expiresAt >= before + lapse &&
+        expiresAt <= after + lapse,
+      `${expiresAt} within [${before + lapse}, ${after + lapse}]`,
+    );
+    await release();
+    assertEquals(await v3WriterLeaseExpiresAt(dir), 0);
   });
 });

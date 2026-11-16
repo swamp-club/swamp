@@ -85,7 +85,11 @@ import { DatabaseSync } from "node:sqlite";
 import {
   COMMIT_STORE_SCHEMA_VERSION,
   openCommitsDatabase,
+  stopAutoCheckpointAt,
+  storeConnectionsAt,
 } from "./sqlite_commit_store.ts";
+import { V3_REPLICA_ENV } from "./litestream/replica_setting.ts";
+import { withMockedEnv } from "../persistence/path_test_helpers.ts";
 import { ensureSupportedDatastoreFormat } from "../persistence/datastore_format_guard.ts";
 import { UserError } from "../../domain/errors.ts";
 import { writeDatastoreFormatMarker } from "../persistence/datastore_format_marker_writer.ts";
@@ -173,6 +177,47 @@ Deno.test("openV3Datastore: a root commits typed changes the read model of anoth
       await writer.close();
       await reader.close();
     }
+  });
+});
+
+Deno.test("openV3Datastore: a serve follower's replicated copy keeps SQLite's default auto-checkpoint until a sidecar is to start; a writer's opens with it off (swamp-club#4679)", async () => {
+  await withTempDir(async (dir) => {
+    const datastorePath = join(dir, "datastore");
+    await initializeV3Datastore(datastorePath, "test");
+    const autoCheckpoints = (path: string) =>
+      storeConnectionsAt(path).map((db) =>
+        (db.prepare("PRAGMA wal_autocheckpoint").get() as {
+          wal_autocheckpoint: number;
+        }).wal_autocheckpoint
+      );
+    await withMockedEnv(
+      {
+        [V3_REPLICA_ENV]: JSON.stringify({
+          type: "file",
+          path: join(dir, "replica"),
+        }),
+      },
+      async () => {
+        const follower = openV3Datastore({
+          repoDir: join(dir, "follower"),
+          datastorePath,
+          serveFollower: true,
+        });
+        const writer = openV3Datastore({
+          repoDir: join(dir, "writer"),
+          datastorePath,
+        });
+        try {
+          assertEquals(autoCheckpoints(follower.commitsDbPath), [1000]);
+          assertEquals(autoCheckpoints(writer.commitsDbPath), [0]);
+          stopAutoCheckpointAt(follower.commitsDbPath);
+          assertEquals(autoCheckpoints(follower.commitsDbPath), [0]);
+        } finally {
+          await follower.close();
+          await writer.close();
+        }
+      },
+    );
   });
 });
 

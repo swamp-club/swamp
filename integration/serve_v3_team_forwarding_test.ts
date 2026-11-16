@@ -18,11 +18,15 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assert, assertEquals } from "@std/assert";
+import { waitFor } from "@swamp-club/swamp-testing";
 import type { ServeLeader } from "../src/domain/datastore_v3/serve_leader.ts";
 import { handleDatastoreRequest } from "../src/serve/datastore_api.ts";
 import { matchDatastoreRoute } from "../src/serve/datastore_routes.ts";
 import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
-import { LeaderLink } from "../src/serve/leader_link.ts";
+import {
+  LeaderLink,
+  type LeaderLinkOptions,
+} from "../src/serve/leader_link.ts";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { partitionOf } from "../src/domain/datastore_v3/partition_key.ts";
 import { grant } from "./serve_request_harness.ts";
@@ -43,9 +47,10 @@ import {
 async function withFollower(
   server: Server,
   leader: () => ServeLeader | undefined,
-  fn: (url: string) => Promise<void>,
+  fn: (url: string, link: LeaderLink) => Promise<void>,
+  linkOptions: Partial<LeaderLinkOptions> = {},
 ): Promise<void> {
-  const leaderLink = new LeaderLink({ leader });
+  const leaderLink = new LeaderLink({ ...linkOptions, leader });
   const ctx = {
     ...server.ctx,
     followerGate: {
@@ -87,6 +92,7 @@ async function withFollower(
   try {
     await fn(
       server.url.replace(/:\d+\//, `:${http.addr.port}/`),
+      leaderLink,
     );
   } finally {
     leaderLink.close();
@@ -249,6 +255,110 @@ Deno.test({
       } finally {
         listener.close();
         await dropping.catch(() => {});
+      }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "team forwarding: a leader that left two forwards in a row unanswered is refused at once, never sent, until a new leader takes over",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(writer(), async (server) => {
+      const listener = Deno.listen({ hostname: "127.0.0.1", port: 0 });
+      let accepted = 0;
+      const held: Deno.Conn[] = [];
+      const frozenNode = (async () => {
+        for await (const conn of listener) {
+          accepted++;
+          held.push(conn);
+        }
+      })();
+      let current: ServeLeader = {
+        ...leaderAt(server),
+        instanceId: "frozen-1",
+        fence: 3,
+        address: `http://127.0.0.1:${(listener.addr as Deno.NetAddr).port}`,
+      };
+      try {
+        await withFollower(server, () => current, async (followerUrl) => {
+          const send = async () =>
+            await post(
+              followerPath(server, followerUrl),
+              "alice-token",
+              await saveBody(server),
+            );
+          for (let i = 0; i < 2; i++) {
+            const lost = await send();
+            assertEquals(lost.status, 503);
+            assertEquals(lost.json.inFlight, true);
+          }
+          const refused = await send();
+          assertEquals(refused.status, 503);
+          assertEquals(refused.json.code, "serve_not_leader");
+          assertEquals(refused.json.inFlight, undefined);
+          assert(String(refused.json.message).includes("Nothing was changed"));
+          // the accept loop counts on the event loop, which may lag the kernel
+          await waitFor(() => accepted === 2, "both lost forwards accepted");
+
+          current = leaderAt(server);
+          const landed = await send();
+          assertEquals(landed.status, 200, JSON.stringify(landed.json));
+        }, { commitResponseBaseMs: 200 });
+      } finally {
+        listener.close();
+        for (const conn of held) conn.close();
+        await frozenNode.catch(() => {});
+      }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "team forwarding: a forward in flight to a frozen leader is answered as in flight once this node takes the lead, not at its deadline",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(writer(), async (server) => {
+      const listener = Deno.listen({ hostname: "127.0.0.1", port: 0 });
+      let accepted = 0;
+      const held: Deno.Conn[] = [];
+      const frozenNode = (async () => {
+        for await (const conn of listener) {
+          accepted++;
+          held.push(conn);
+        }
+      })();
+      const frozen: ServeLeader = {
+        ...leaderAt(server),
+        instanceId: "frozen-1",
+        fence: 3,
+        address: `http://127.0.0.1:${(listener.addr as Deno.NetAddr).port}`,
+      };
+      try {
+        await withFollower(server, () => frozen, async (followerUrl, link) => {
+          const pending = post(
+            followerPath(server, followerUrl),
+            "alice-token",
+            await saveBody(server),
+          );
+          await waitFor(
+            () => accepted === 1,
+            "the forward to reach the leader",
+          );
+          link.abortForwards();
+          const lost = await pending;
+          assertEquals(lost.status, 503);
+          assertEquals(lost.json.code, "serve_not_leader");
+          assertEquals(lost.json.inFlight, true);
+        }, { commitResponseBaseMs: 600_000 });
+      } finally {
+        listener.close();
+        for (const conn of held) conn.close();
+        await frozenNode.catch(() => {});
       }
     });
   },

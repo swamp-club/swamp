@@ -1060,3 +1060,38 @@ Deno.test({
     });
   },
 });
+
+Deno.test({
+  name:
+    "makeV3CopyCurrent: an abort while another process holds the restore lock ends the wait, and the copy is left unrestored (swamp-club#4679)",
+  ignore: !UNIX,
+  async fn() {
+    await withCopy(async (env) => {
+      await publish(env, 3, { confirmed: true });
+      const paths = await pathsOf(env);
+      const held = await Deno.open(paths.restoreLock, {
+        read: true,
+        write: true,
+        create: true,
+      });
+      const stop = new AbortController();
+      const reason = new Error("the lease lapsed");
+      // past the cheap checks, into the restore-lock wait
+      const timer = setTimeout(() => stop.abort(reason), 300);
+      try {
+        await held.lock(true);
+        const error = await makeV3CopyCurrent(env.copy, {
+          mode: "read",
+          lockWaitMs: 30_000,
+          signal: stop.signal,
+        }).then(() => undefined, (e: unknown) => e);
+        assertEquals(error, reason);
+        assertEquals(await readCopyState(paths), undefined);
+        assertEquals(await exists(env.copy.commitsDb), false);
+      } finally {
+        clearTimeout(timer);
+        held.close();
+      }
+    });
+  },
+});

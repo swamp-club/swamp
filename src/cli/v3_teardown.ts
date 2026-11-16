@@ -17,20 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { ServeUnreachableError } from "../infrastructure/datastore_v3/serve_upstream_errors.ts";
 import { V3ReplicationError } from "../domain/datastore_v3/litestream_replication.ts";
-import {
-  CommitUnreachableError,
-  RunPartlyCommittedError,
-} from "../domain/datastore_v3/commit_log_unit_of_work.ts";
-import { ReadModelCatchUpUnreachableError } from "../domain/datastore_v3/read_model.ts";
-import { V3StorageUnreachableError } from "../domain/datastore_v3/writer_lease.ts";
 import {
   closeV3Datastores,
   reportedV3Failure,
   type V3CommandCommits,
   v3CommandCommits,
 } from "../infrastructure/datastore_v3/v3_repo_context.ts";
+import { causeChainHoldsDatastoreOutage } from "../infrastructure/datastore_v3/datastore_outage.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 
 /**
@@ -70,30 +64,11 @@ export async function closeV3DatastoresAfterFailure(
   // Before the close, which forgets what the command committed.
   const reported = reportedV3Failure(error, commits());
   try {
-    await close({ storageUnreachable: failedReachingStorage(reported) });
+    await close({
+      storageUnreachable: causeChainHoldsDatastoreOutage(reported),
+    });
   } catch {
     // Best effort: the writer lock's TTL expires if its release failed.
   }
   return reported;
-}
-
-const MAX_CAUSE_DEPTH = 8;
-
-function failedReachingStorage(error: unknown): boolean {
-  let current = error;
-  for (let depth = 0; depth < MAX_CAUSE_DEPTH; depth++) {
-    if (
-      current instanceof CommitUnreachableError ||
-      current instanceof RunPartlyCommittedError ||
-      current instanceof V3StorageUnreachableError ||
-      current instanceof ReadModelCatchUpUnreachableError ||
-      // serve, which the checkout writes through, is the storage it reaches
-      current instanceof ServeUnreachableError
-    ) {
-      return true;
-    }
-    if (!(current instanceof Error)) return false;
-    current = current.cause;
-  }
-  return false;
 }

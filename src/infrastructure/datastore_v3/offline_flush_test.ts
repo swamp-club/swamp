@@ -42,6 +42,7 @@ import {
   type OfflineRebaseCarry,
 } from "../../domain/datastore_v3/offline_rebase.ts";
 import type { Op } from "../../domain/datastore_v3/op.ts";
+import { configure, type LogRecord } from "@logtape/logtape";
 import { initializeLogging } from "../logging/logger.ts";
 import {
   flushOfflineEntries,
@@ -730,4 +731,99 @@ Deno.test("flushOfflineEntries: a run record refused for its initiator is reject
   assertEquals(port.marks, ["r rejected"]);
   assertEquals(port.markCodes, ["r run_initiator_mismatch"]);
   assertEquals(port.quarantinedEntries, []);
+});
+
+/** a copy that lags serve: its partition state holds none of serve's commits */
+class LaggingPort extends FakePort {
+  override partitionState(): Promise<Partition> {
+    return Promise.resolve(Partition.empty(this.history.partition.key));
+  }
+  override partitionCommits(): Promise<readonly Commit[]> {
+    return Promise.resolve([]);
+  }
+}
+
+Deno.test("flushOfflineEntries: serve refusing a version as live, rebased on a copy behind serve's head, resends it renumbered past that version, never rejected", async () => {
+  const port = new LaggingPort();
+  port.land(fixtureCommit({
+    seq: 1,
+    txnId: "theirs",
+    ops: await saveOps({ name: "out", version: 1 }),
+  }));
+  const report = await flush(port, [await offlineEntry(1, "mine", 1)]);
+  assertEquals(report.rejected, 0);
+  assertEquals(report.landed, 1);
+  assertEquals(port.marks, []);
+  assertEquals(port.sends.length, 2);
+  assertEquals(port.history.partition.versions("out"), [1, 2]);
+  assertEquals(
+    report.renumbered.map((version) => [version.from, version.to]),
+    [[1, 2]],
+  );
+});
+
+Deno.test("flushOfflineEntries: a version serve keeps refusing as live or reused leaves the entry waiting, kept offline, never rejected", async () => {
+  for (const reason of ["version-live", "version-reused"] as const) {
+    const port = new FakePort();
+    port.answers = Array.from(
+      { length: 20 },
+      () => new CommitRejectedError(reason, `refused ${reason}`),
+    );
+    const report = await flush(port, [
+      await offlineEntry(1, "stuck", 1),
+      await offlineEntry(2, "after", 2),
+    ]);
+    assertEquals([report.rejected, report.waiting], [0, 2]);
+    assertEquals(port.marks, []);
+    assertEquals(port.settled, []);
+  }
+});
+
+Deno.test("flushOfflineEntries: each write a flush rejects is named in the notice and warned on its own, with its version, txnId, reason and what to do", async () => {
+  const notices: ServeOfflineNotice[] = [];
+  const captured: LogRecord[] = [];
+  setServeOfflineNoticeWriter((notice) => notices.push(notice));
+  await configure({
+    sinks: { capture: (record: LogRecord) => captured.push(record) },
+    loggers: [
+      {
+        category: ["datastore", "v3", "offline"],
+        lowestLevel: "warning",
+        sinks: ["capture"],
+      },
+      { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+    ],
+    reset: true,
+  });
+  try {
+    const port = new FakePort();
+    port.answers = [new CommitRejectedError("expect-failed", "it changed")];
+    const entry = await offlineEntry(1, "refused", 4);
+    const report = await flush(port, [entry]);
+    const [notice] = notices;
+    assert(notice.notice === "datastore_offline_flush");
+    assertEquals(notice.rejected, 1);
+    assertEquals(notice.rejectedWrites, report.rejectedWrites);
+    assertEquals(report.rejectedWrites.length, 1);
+    const [write] = report.rejectedWrites;
+    assertEquals(
+      [write.name, write.version, write.txnId, write.reason, write.code],
+      ["out", 4, "refused", "it changed", "expect-failed"],
+    );
+    assertEquals(write.retryable, false);
+    assert(write.behavior.includes("/"));
+    assert(write.next.length > 0);
+    assertEquals(port.markCodes, ["refused expect-failed"]);
+    const warnings = captured.map((record) =>
+      record.message.map((part) => String(part)).join("")
+    );
+    assertEquals(warnings.length, 1);
+    for (const part of ["out", "version", "4", "refused", "it changed"]) {
+      assert(warnings[0].includes(part), warnings[0]);
+    }
+  } finally {
+    setServeOfflineNoticeWriter(undefined);
+    resetServeOfflineForTesting();
+    await initializeLogging({ _reset: true });
+  }
 });

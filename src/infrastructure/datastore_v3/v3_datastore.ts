@@ -382,6 +382,11 @@ export interface OpenV3DatastoreOptions {
    * that does not replicate, whose landed commits are already durable
    */
   readonly replicatedMark?: () => number | undefined;
+  /**
+   * a serve follower's copy: another node's sidecar replicates the lineage, so
+   * the copy keeps SQLite's auto-checkpoint until this node starts one
+   */
+  readonly serveFollower?: boolean;
 }
 
 export interface CutoffCompaction {
@@ -853,7 +858,7 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
     )
     : undefined;
   const commitStore = SqliteCommitStore.open(commitsDbPath, {
-    replicated: v3ReplicatesAt(datastorePath),
+    replicated: v3ReplicatesAt(datastorePath) && options.serveFollower !== true,
     ...(serve !== undefined ? { follower: true } : {}),
   });
   const outbox = new SqliteCommitOutbox(v3OutboxPath(commitsDbPath), {

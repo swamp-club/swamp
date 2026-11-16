@@ -25,7 +25,10 @@
 
 import { createHash } from "node:crypto";
 import { resolve } from "@std/path";
-import type { CustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
+import {
+  type CustomDatastoreConfig,
+  DEFAULT_SNAPSHOT_INTERVAL_MS,
+} from "../../domain/datastore/datastore_config.ts";
 import type { DatastoreProvider } from "../../domain/datastore/datastore_provider.ts";
 import type { DatastoreStorage } from "../../domain/datastore/datastore_storage.ts";
 import type {
@@ -92,6 +95,7 @@ export interface V3BucketBinding {
   readonly controlPlane: WritableDatastoreControlPlaneStore;
   readonly replica: V3ReplicaSetting;
   readonly replicaPaths: V3ReplicaPaths | undefined;
+  readonly snapshotIntervalMs: number;
   /**
    * runs before this process takes the writer lease or makes its copy current,
    * so a datastore whose marker the format guard could not read is touched only
@@ -120,6 +124,12 @@ export function v3ReplicaFor(
   // a copy of serve's log is never replicated: serve's own is
   if (serveUpstreamAt(datastorePath) !== undefined) return undefined;
   return v3BucketBindingAt(datastorePath)?.replica ?? v3ReplicaSetting();
+}
+
+/** the default unless a bucket datastore's config sets one */
+export function v3SnapshotIntervalFor(datastorePath: string): number {
+  return v3BucketBindingAt(datastorePath)?.snapshotIntervalMs ??
+    DEFAULT_SNAPSHOT_INTERVAL_MS;
 }
 
 export function v3ReplicatesAt(datastorePath: string): boolean {
@@ -286,6 +296,8 @@ export function bindV3BucketDatastore(
     controlPlane,
     replica,
     replicaPaths: resolveV3ReplicaPaths(provider, config.type),
+    snapshotIntervalMs: config.snapshotIntervalMs ??
+      DEFAULT_SNAPSHOT_INTERVAL_MS,
     confirmMarker() {
       confirming ??= confirmV3BucketMarker(controlPlane, config.type).catch(
         (error) => {

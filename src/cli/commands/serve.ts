@@ -781,8 +781,10 @@ import {
 } from "../../infrastructure/datastore_v3/v3_repo_context.ts";
 import {
   holdsCurrentV3WriterLease,
+  onV3LeaseLost,
   v3WriterFence,
   v3WriterLeaseConfirmed,
+  v3WriterLeaseExpiresAt,
   v3WriterLeaseHolder,
 } from "../../infrastructure/datastore_v3/v3_writer_lock.ts";
 import { importCheckoutControlPlane } from "../../infrastructure/persistence/checkout_control_plane_import.ts";
@@ -799,17 +801,22 @@ import { withSharedSyncGate, withSyncGate } from "../../serve/sync_gate.ts";
 import { GcMutex } from "../../serve/gc_mutex.ts";
 import { takeRetentionCandidate } from "../retention_candidate.ts";
 import {
+  ownV3SidecarsFromThisProcess,
   setV3ClosingDeadline,
 } from "../../infrastructure/datastore_v3/litestream/v3_replication.ts";
 import { followerHttpForward } from "../../serve/follower_requests.ts";
 import { LeaderLink } from "../../serve/leader_link.ts";
-import { FollowerFeed } from "../../serve/follower_feed.ts";
+import {
+  FollowerFeed,
+  followerUnreadyReason,
+} from "../../serve/follower_feed.ts";
 import { awaitFirstFollowerCatchUp } from "../../serve/follower_ready.ts";
 import type { ServeCommitEffects } from "../../serve/serve_commit_effects.ts";
 import { wireFollowerPolicy } from "../../serve/follower_policy_wiring.ts";
 import {
   applyV3LeaderChanges,
   v3FollowerCopyCursor,
+  v3FollowerWalBytes,
 } from "../../infrastructure/datastore_v3/serve_feed.ts";
 import {
   forwardCredentialOf,
@@ -4073,6 +4080,8 @@ export const serveCommand = new Command()
     }
 
     ctx.logger.info`Initializing repository at ${repoDir}`;
+
+    await ownV3SidecarsFromThisProcess();
 
     const {
       repoDir: resolvedRepoDir,
@@ -9782,7 +9791,7 @@ export const serveCommand = new Command()
         }
 
         // Readiness endpoint — returns 200 only after full startup and
-        // before shutdown begins
+        // before shutdown begins, and never for a follower broken on its own
         if (req.method === "GET" && new URL(req.url).pathname === "/ready") {
           if (shuttingDown) {
             return Response.json(
@@ -9793,6 +9802,25 @@ export const serveCommand = new Command()
           if (!isReady) {
             return Response.json(
               { status: "not_ready", instanceId },
+              { status: 503 },
+            );
+          }
+          if (serveLeadership?.leadLost() === true) {
+            return Response.json(
+              { status: "lead_lost", instanceId },
+              { status: 503 },
+            );
+          }
+          const broken = serveLeadership?.role === "follower" &&
+              serveFollowerFeed !== undefined && v3Location !== undefined
+            ? followerUnreadyReason({
+              localApplyFailures: serveFollowerFeed.localApplyFailures,
+              walBytes: await v3FollowerWalBytes(resolvedRepoDir, v3Location),
+            })
+            : undefined;
+          if (broken !== undefined) {
+            return Response.json(
+              { status: "follower_broken", reason: broken, instanceId },
               { status: 503 },
             );
           }
@@ -10017,9 +10045,9 @@ export const serveCommand = new Command()
           "awaited",
         );
       }
-      // No promotion during teardown: the lease is released below. Team
-      // mode stays on until the datastores close, so a follower still
-      // commits nothing. stop() ends a promotion in flight between its steps.
+      // No promotion during teardown: the lease is released below. stop() ends
+      // a promotion in flight between its steps and aborts a follower refresh
+      // before its restore is installed.
       if (serveLeadership) {
         const leadership = serveLeadership;
         await stages.run("leadership", () => leadership.stop(), "awaited");
@@ -10589,6 +10617,9 @@ export const serveCommand = new Command()
         instanceId,
         ...(leaderAddress !== undefined ? { address: leaderAddress } : {}),
         ...(followerFeed !== undefined ? { feed: followerFeed } : {}),
+        ...(leaderLink !== undefined
+          ? { abortForwards: () => leaderLink.abortForwards() }
+          : {}),
         ...(teamPeerKey !== undefined
           ? {
             prove: (leader: ServeLeader) => teamPeerKey.prove(leader),
@@ -10601,6 +10632,11 @@ export const serveCommand = new Command()
           fence: () => v3WriterFence(location.path),
           currentFence: async () =>
             (await v3WriterLeaseHolder(location.path))?.fence,
+          expiresAt: () => v3WriterLeaseExpiresAt(location.path),
+          onLost: (listener) =>
+            onV3LeaseLost((path) => {
+              if (path === resolve(location.path)) listener();
+            }),
           take: () =>
             holdV3Writer(location, resolvedRepoDir, {
               retakeLost: true,
@@ -10609,8 +10645,8 @@ export const serveCommand = new Command()
             }),
         },
         store: controlPlaneStore,
-        refreshCopy: async () => {
-          await refreshV3FollowerCopy(resolvedRepoDir, location);
+        refreshCopy: async (signal) => {
+          await refreshV3FollowerCopy(resolvedRepoDir, location, signal);
           serveCommitEffects?.poke();
         },
         onLead: async (stopped) => {

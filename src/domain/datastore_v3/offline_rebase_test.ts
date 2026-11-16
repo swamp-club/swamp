@@ -93,6 +93,28 @@ Deno.test("rebaseOfflineCommits: renumbers past versions written meanwhile and k
   assertEquals(history.partition.latest("state"), 3);
 });
 
+Deno.test("rebaseOfflineCommits: renumbers above a floor the partition state does not hold, and only for that name", async () => {
+  const history = await historyWithTwo();
+  const offline = await offlineSave("off-1", "state", 3, T0 + 30 * MINUTE);
+  const [result] = await rebaseOfflineCommits(
+    [offline],
+    history.partition,
+    history.lookups(),
+    { encodeMetadata, floor: (name) => name === "state" ? 4 : 0 },
+  );
+  if (result.kind !== "rebased") throw new Error(result.kind);
+  assertEquals(result.renumbered, [{ name: "state", from: 3, to: 5 }]);
+
+  const [below] = await rebaseOfflineCommits(
+    [offline],
+    history.partition,
+    history.lookups(),
+    { encodeMetadata, floor: (name) => name === "other" ? 9 : 1 },
+  );
+  if (below.kind !== "rebased") throw new Error(below.kind);
+  assertEquals(below.renumbered, [{ name: "state", from: 3, to: 3 }]);
+});
+
 Deno.test("rebaseOfflineCommits: keeps a version already above the high-water mark", async () => {
   const history = await historyWithTwo();
   const offline = await offlineSave("off-1", "state", 7, T0 + 30 * MINUTE);

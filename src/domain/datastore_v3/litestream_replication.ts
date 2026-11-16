@@ -205,6 +205,8 @@ export interface SidecarObservation {
   readonly lineageFence: number;
   readonly marked: boolean;
   readonly waitedPastDeadline: boolean;
+  /** an owner was asked for, and the running sidecar has another or none */
+  readonly ownerDiffers?: boolean;
 }
 
 export type SidecarAction =
@@ -212,7 +214,7 @@ export type SidecarAction =
   | { readonly kind: "start"; readonly orphanPid?: number }
   | {
     readonly kind: "replace";
-    readonly reason: "frozen" | "lineage" | "marked";
+    readonly reason: "frozen" | "lineage" | "marked" | "owner";
     readonly supervisorPid: number;
     readonly litestreamPid?: number;
   }
@@ -259,7 +261,9 @@ export function decideSidecarAction(o: SidecarObservation): SidecarAction {
       }
       : { kind: "wait" };
   }
-  const replace = (reason: "frozen" | "lineage" | "marked"): SidecarAction => ({
+  const replace = (
+    reason: "frozen" | "lineage" | "marked" | "owner",
+  ): SidecarAction => ({
     kind: "replace",
     reason,
     supervisorPid: presence.supervisorPid,
@@ -269,6 +273,7 @@ export function decideSidecarAction(o: SidecarObservation): SidecarAction {
   });
   if (o.marked) return replace("marked");
   if (presence.lineageFence !== o.lineageFence) return replace("lineage");
+  if (o.ownerDiffers === true) return replace("owner");
   if (o.answered) return { kind: "reuse" };
   // Starting (no socket yet) or frozen (a socket that never answers).
   return o.waitedPastDeadline ? replace("frozen") : { kind: "wait" };

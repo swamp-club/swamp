@@ -3150,11 +3150,13 @@ that.
   5-second `busy_timeout`, and no foreign keys (the schema has none).
 - Never a forced checkpoint: Litestream replicates the WAL, and
   `catalog_store.ts`'s `wal_checkpoint(TRUNCATE)` made the replica 11 times
-  larger (`datastore-litestream.md`). A replicated copy turns auto-checkpoint
-  off, so only Litestream checkpoints it (swamp-club#3935, "Verifying the
-  replica" in `datastore-litestream.md`); any other `commits.db` keeps
-  SQLite's default. A fitness rule refuses `wal_checkpoint` and
-  `wal_autocheckpoint` in v3 code but for that one pinned site.
+  larger (`datastore-litestream.md`). A copy a sidecar replicates turns
+  auto-checkpoint off before the sidecar starts, so only Litestream
+  checkpoints it (swamp-club#3935, "Verifying the replica" in
+  `datastore-litestream.md`); any other `commits.db` keeps SQLite's default,
+  a serve follower's copy included until its own sidecar starts
+  (swamp-club#4679). A fitness rule refuses `wal_checkpoint` and
+  `wal_autocheckpoint` in v3 code but for those two pinned sites.
 - Solo mode keeps one idle Litestream sidecar across write commands. A
   sidecar per command never compacts, so a day's replica of 252 objects took
   18–121 s to restore against 1.1–5.7 s compacted. A writer closes
@@ -5264,6 +5266,12 @@ A point or a partition that changed between the two steps means another
 process is writing the store, and the batch says so rather than report
 damage.
 
+Each batch takes its own turn on the store's queue: it reads the target and
+the point at the start of its turn, then reads, rebuilds and commits together,
+checking the point and the fence again. An append waits at most one batch, not
+the whole compaction (up to its 60 s budget). The retention pass and the
+closing compaction go through `compactHistory`, so both batch this way.
+
 A failure or a crash leaves a batch whole or absent.
 `integration/datastore_v3_compaction_test.ts` stops one with an injected
 failure, and with a Worker terminated inside the transaction, and compares
@@ -6384,7 +6392,18 @@ leader election and followers").
   expire by its TTL. It holds for that one teardown. A cut of only the replica's
   traffic on S3 still waits the closing sync's 60 s: Litestream retries inside
   the sync whatever its AWS SDK retry settings, and the storage probe still
-  answers.
+  answers. A workflow or method run whose failure has a datastore or serve
+  outage in its cause chain keeps that cause and reports its
+  `datastore_v3_*` or `serve_*` code (`datastoreOutageOf`,
+  `src/libswamp/errors.ts`), so its teardown is told the same and leaves the
+  recovery to the next command rather than running it on the exit path
+  (swamp-club#4679).
+- An outage that ends a command whose effectful commit may have landed is
+  reported as `datastore_v3_commit_may_land` (exit 1), and `--json` keeps
+  `inFlight` (swamp-club#4679): the command's last change may or may not have
+  been committed. A command that only read, waited for a lock or wrote
+  bookkeeping (data versions, lease ops) keeps exit 75. A lease-lost refusal
+  keeps its own code.
 - `--format 3` through `--server` is refused.
 
 **Retention and sweeps.** The end-of-command retention pass confirms the
@@ -8352,6 +8371,20 @@ connection; nothing else is, and fails as `ServeUnreachableError` with
 command works offline under the lease and queues. Offline mode still begins
 only at a command's start.
 
+A reachable serve with no leader counts as unreachable for a command holding a
+live explicit lease (swamp-club#4679): a renewal of that lease at bind time or
+at the lock that serve refuses as not the leader, in flight or not, or that
+outlasts its 3 s reply deadline (`EXPLICIT_LEASE_RENEWAL_RESPONSE_MS`), puts
+the checkout offline once, with no second request, while the lease is live by
+serve's clock less the skew. A renewal that may have landed is harmless, unlike
+a commit, whose deadline is unchanged: a commit already in flight at a leader's
+loss ends within that deadline (about 16 s), and an offline-allowed write that
+starts after it queues within 15 s, the two-part bar the dogfood gate measures.
+A write queued offline is acknowledged locally (exit 0) and becomes visible
+through serve, to this checkout and every other, when the next writing command
+in this checkout flushes the outbox; until then only this checkout sees it, and
+with no later writing command it stays queued.
+
 A read that cannot reach serve uses the copy as it is and warns that it may be
 out of date; in json mode it says so as a `datastore_offline` notice on
 stderr, as a writing command does. A write never falls back to storage. An entry that may have
@@ -8443,6 +8476,10 @@ drop rule takes it (`stale-fence`, `overtaken`, `abandoned`, `expired`,
 `head-moved`, `unit-dropped` and the 7-day retry bound all skip it): it may
 be the only record of a change a run made to real infrastructure.
 `rejected`: the flush could not land it; kept and reported with its reason.
+Every recovery first returns to `offline` a `rejected` entry that serve
+refused because its data version was already live or reused (by its stored
+code, or by that message for an entry an older swamp rejected), so it is
+renumbered and sent again; only a genuine conflict stays `rejected`.
 `quarantined`: serve refused it for a grant the caller lacks; kept for an
 admin. An entry the sink is about to queue is prepared already marked
 `offline`, so a process that dies before the queue's own mark never leaves
@@ -8530,6 +8567,12 @@ lands an entry twice.
 - **Refused for a grant** (`403` with reason `forbidden`) is
   `quarantined`; refused for its content (`content-refused`, a forwarded
   run's outputs) is `rejected`.
+- **A version serve holds already** (`version-live` or reused: the copy
+  lacked a version that landed, such as this checkout's own may-land commit)
+  raises the rebase's floor to that version and sends again, up to the same
+  bound as a sequence gap; past it the entry stays `offline`, never
+  `rejected`. Queued versions also count the outbox's pending entries, so an
+  offline write does not take a version an unconfirmed commit holds.
 - **Serve unreachable again** stops the flush; the rest stays `offline`.
 - **An error of the entry's own** (a chunk missing from the checkout's
   cache, content that does not check, a commit that cannot be rebuilt)
@@ -8541,7 +8584,10 @@ lands an entry twice.
   by txnId: it is `rejected` (possible duplicate), never resent blind.
 - Each command reports once what its flush did: versions rebased, which
   version holds each name's latest once the flush ends (`latestAtEnd`),
-  entries rejected or quarantined.
+  entries rejected or quarantined. Each rejected write is named
+  (`rejectedWrites`: behavior, data name, version, txnId, reason, whether it
+  retries, what to do), with a warning per write on stderr in log mode, and
+  `datastore status` lists the same per entry.
 
 **Quarantine.** A quarantined entry is deposited with serve, with its
 chunks: a revoked principal cannot `PUT chunks`, so serve keeps both in the
@@ -8704,12 +8750,16 @@ following, its copy made current for reads (`followV3Datastore`). Nothing is
 recovered, marked or replicated by a follower.
 
 - `ServeLeadership` (`src/serve/serve_leadership.ts`) tracks the role. On
-  every tick (10 s) a follower tries the lease once and, when it is busy,
-  restores its copy from the published lineage when it is behind
-  (`refreshV3FollowerCopy`) and reads the leader record. A follower that
-  wins takes the writer's full hold path: restore the latest replicated
-  state, raise the fence, check the claim, recover the outbox and start a
-  lineage at its fence.
+  every tick (10 s, or just after the holder's lease expires when that is
+  sooner) a follower tries the lease once and, when it is busy, restores its
+  copy from the published lineage when it is behind
+  (`refreshV3FollowerCopy`) and reads the leader record. A refresh still
+  running when the holder's lease expires runs to its end, and the next tick
+  tries the lease (swamp-club#4679, "Phase 4D2" in
+  `datastore-litestream.md`). A follower that wins takes the
+  writer's full hold path: restore the latest replicated state, raise the
+  fence, check the claim, recover the outbox and start a lineage at its
+  fence.
 - A leader whose lease another node took over (a higher fence) does not
   follow: it stops (`onLostLead`). Its role changes first, so its gates
   refuse, and serve shuts down as on SIGTERM: it takes no more work, its

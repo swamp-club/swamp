@@ -1489,17 +1489,34 @@ Deno.test("renderError: a lease-lost refusal the outbox could not discard keeps 
   assertEquals(exitCodeForError(mayLand, { commandLanded: false }), 1);
 });
 
-Deno.test("exitCodeForError: an unreachable serve or commit exits 1 once something of the command landed, and keeps 75 otherwise", () => {
+Deno.test("exitCodeForError: an unreachable serve, commit or storage, a refused catch-up and a non-leader exit 1 once something of the command landed, and keep 75 otherwise", () => {
   for (
     const code of [
       "datastore_v3_commit_unreachable",
       "datastore_v3_serve_unreachable",
+      "datastore_v3_storage_unreachable",
+      "datastore_v3_catch_up_unreachable",
+      "serve_not_leader",
     ]
   ) {
     const error = new UserError("unreachable", code);
-    assertEquals(exitCodeForError(error, { commandLanded: true }), 1);
-    assertEquals(exitCodeForError(error, { commandLanded: false }), 75);
-    assertEquals(exitCodeForError(error), 75);
+    assertEquals(exitCodeForError(error, { commandLanded: true }), 1, code);
+    assertEquals(exitCodeForError(error, { commandLanded: false }), 75, code);
+    assertEquals(exitCodeForError(error), 75, code);
+    assertEquals(
+      exitCodeForError(error, {
+        commandLanded: true,
+        commandMayHaveLanded: true,
+      }),
+      1,
+      code,
+    );
+    assertEquals(
+      renderedJson(error, { commandLanded: true, commandMayHaveLanded: true })
+        .code,
+      "datastore_v3_commit_may_land",
+      code,
+    );
   }
 });
 
@@ -1557,3 +1574,188 @@ Deno.test("buildErrorJson: a refused partition carries a stable code and each re
       "live; only an append re-records it",
   }]);
 });
+
+function renderedJson(
+  error: unknown,
+  context: Parameters<typeof renderError>[3],
+): Record<string, unknown> {
+  const logs: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => logs.push(args.join(" "));
+  try {
+    renderError(error, "json", "behavior", context);
+  } finally {
+    console.error = originalError;
+  }
+  return JSON.parse(logs.join("\n"));
+}
+
+function outageErrors(): Error[] {
+  const unreachable = new ServeUnreachableError(
+    "http://serve.test",
+    "maybe",
+    new Error("Serve did not start its reply"),
+  );
+  return [
+    unreachable,
+    new ServeLeaseLapsedRequestError(
+      "http://serve.test",
+      "maybe",
+      new ServeLeaseLapsedLatch("data/x/y/.lock"),
+      { route: "commits", bodyBytes: 0 },
+    ),
+    new CommitUnreachableError(unreachable),
+    new ServeNotLeaderError(undefined, false, true),
+    new ServeNotLeaderError(undefined),
+    // a workflow failure carrying the outage's code
+    userErrorFromSwampError({
+      code: "workflow_execution_failed",
+      message: "Workflow execution failed: cut off",
+      cause: new AppendUnrecordedError(unreachable, false),
+    }),
+  ];
+}
+
+Deno.test("exitCodeForError: an outage ending a command whose change may have landed exits 1 and is reported as may-land, ahead of the lapsed-request check", () => {
+  const context = {
+    commandLanded: true,
+    commandMayHaveLanded: true,
+    workflowCommand: true,
+  };
+  for (const error of outageErrors()) {
+    assertEquals(exitCodeForError(error, context), 1, error.message);
+    const json = renderedJson(error, context);
+    assertEquals(json.code, "datastore_v3_commit_may_land", error.message);
+    assertStringIncludes(
+      String(json.error),
+      "The outcome of this command's last change is unknown",
+    );
+    assertEquals("hint" in json, false, error.message);
+  }
+});
+
+Deno.test("exitCodeForError: the may-land relabel is worded apart from MayLandLaterError", () => {
+  const json = renderedJson(outageErrors()[0], {
+    commandLanded: true,
+    commandMayHaveLanded: true,
+  });
+  const mayLandLater = buildErrorJson(
+    new MayLandLaterError(new Error("cut off"), new Error("disk full")),
+  );
+  assertEquals(json.code, mayLandLater.code);
+  assertEquals(
+    String(json.error).includes("could not record that this change"),
+    false,
+  );
+  assertStringIncludes(String(json.error), "stays committed");
+});
+
+Deno.test("exitCodeForError: with nothing that may have landed, an outage keeps its code and today's exit", () => {
+  const [unreachable, lapsed, commit, notLeaderInFlight, notLeader, wrapped] =
+    outageErrors();
+  for (const landed of [false, true]) {
+    const context = { commandLanded: landed, commandMayHaveLanded: false };
+    const expected = landed ? 1 : 75;
+    assertEquals(exitCodeForError(unreachable, context), expected);
+    assertEquals(exitCodeForError(lapsed, context), expected);
+    assertEquals(exitCodeForError(commit, context), expected);
+    assertEquals(exitCodeForError(wrapped, context), expected);
+    // a refusal in flight with nothing that may have landed follows the
+    // landed rule, as a refusal not in flight does
+    assertEquals(exitCodeForError(notLeaderInFlight, context), expected);
+    assertEquals(exitCodeForError(notLeader, context), expected);
+    assertEquals(
+      renderedJson(unreachable, context).code,
+      "datastore_v3_serve_unreachable",
+    );
+    assertEquals(
+      renderedJson(wrapped, context).code,
+      "datastore_v3_serve_unreachable",
+    );
+  }
+});
+
+Deno.test("exitCodeForError: a lease-lost refusal keeps its code and hint when a change may have landed", () => {
+  const context = {
+    commandLanded: true,
+    commandMayHaveLanded: true,
+    workflowCommand: true,
+  };
+  const step = new CommitLeaseLostError("Serve refused this step's writes");
+  assertEquals(exitCodeForError(step, context), 1);
+  const json = renderedJson(step, context);
+  assertEquals(json.code, COMMIT_LEASE_LOST_CODE);
+  assertStringIncludes(String(json.hint), "swamp workflow resume");
+  const refused = new CommitUnreachableError(leaseLost());
+  assertEquals(renderedJson(refused, context).code, COMMIT_LEASE_LOST_CODE);
+});
+
+Deno.test("exitCodeForError: an error that is not an outage is never relabelled", () => {
+  const context = { commandLanded: true, commandMayHaveLanded: true };
+  const failed = new UserError("the method failed", "method_execution_failed");
+  assertEquals(exitCodeForError(failed, context), 1);
+  assertEquals(renderedJson(failed, context).code, "method_execution_failed");
+});
+
+Deno.test("exitCodeForError: storage cut off after a change that may have landed is reported as may-land", () => {
+  const context = { commandLanded: true, commandMayHaveLanded: true };
+  const down = new V3StorageUnreachableError("/store", new Error("down"));
+  assertEquals(exitCodeForError(down, context), 1);
+  assertEquals(
+    renderedJson(down, context).code,
+    "datastore_v3_commit_may_land",
+  );
+  assertEquals(
+    exitCodeForError(down, {
+      commandLanded: false,
+      commandMayHaveLanded: false,
+    }),
+    75,
+  );
+});
+
+Deno.test("buildErrorJson: a may-land error from a request in flight keeps inFlight: true", () => {
+  const context = { commandLanded: true, commandMayHaveLanded: true };
+  const [unreachable, lapsed, , notLeaderInFlight] = outageErrors();
+  for (const error of [unreachable, lapsed, notLeaderInFlight]) {
+    const json = renderedJson(error, context);
+    assertEquals(json.code, "datastore_v3_commit_may_land", error.message);
+    assertEquals(json.inFlight, true, error.message);
+  }
+  const flagged = Object.assign(
+    new UserError("refused in flight", "datastore_v3_commit_may_land"),
+    { inFlight: true },
+  );
+  assertEquals(buildErrorJson(flagged).inFlight, true);
+  const wrapped = new UserError(
+    "refused in flight",
+    "datastore_v3_commit_may_land",
+  );
+  wrapped.cause = new ServeNotLeaderError(undefined, false, true);
+  assertEquals(buildErrorJson(wrapped).inFlight, true);
+});
+
+Deno.test("buildErrorJson: a may-land error from nothing in flight carries no inFlight", () => {
+  const never = new ServeUnreachableError(
+    "http://serve.test",
+    "never",
+    new Error("connection refused"),
+  );
+  const json = renderedJson(never, {
+    commandLanded: true,
+    commandMayHaveLanded: true,
+  });
+  assertEquals(json.code, "datastore_v3_commit_may_land");
+  assertEquals("inFlight" in json, false);
+  assertEquals(
+    "inFlight" in
+      buildErrorJson(renderedError(new ServeNotLeaderError(undefined))),
+    false,
+  );
+});
+
+function renderedError(cause: Error): Error {
+  const error = new UserError("may land", "datastore_v3_commit_may_land");
+  error.cause = cause;
+  return error;
+}

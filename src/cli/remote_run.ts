@@ -56,6 +56,9 @@ import {
 } from "../domain/auth/server_login_hint.ts";
 import { quoteShellWord } from "../domain/shell_word.ts";
 import { processLockHolderMarker } from "../domain/datastore/lock_holder_marker.ts";
+import { COMMIT_MAY_LAND_CODE } from "../domain/datastore_v3/commit_log_unit_of_work.ts";
+import { SERVE_NOT_LEADER_CODE } from "../domain/datastore_v3/serve_leader.ts";
+import { V3_SERVE_UNREACHABLE_CODE } from "../domain/datastore_v3/writer_lease.ts";
 import {
   gutterLine,
   STATUS_COLORS,
@@ -228,7 +231,7 @@ export class ServerResponseError extends UserError {
 /** a connect that never reached serve, or reached a proxy saying serve is gone */
 class ServeUnreachableError extends UserError {
   constructor(message: string, readonly reason: string) {
-    super(message);
+    super(message, V3_SERVE_UNREACHABLE_CODE);
   }
 }
 
@@ -288,6 +291,9 @@ const ELSEWHERE_RETRY_DELAY_MS = 1_500;
 
 /** how long a request that serve refused without acting keeps being retried */
 const RESTART_RETRY_BUDGET_MS = 30_000;
+
+/** a run's start rides out a team takeover, as a reattach does */
+const START_RETRY_BUDGET_MS = 120_000;
 
 /** sized for a single-instance serve restart, which drains runs before exiting */
 const REATTACH_BUDGET_MS = 120_000;
@@ -380,6 +386,48 @@ function formatSeconds(ms: number): string {
   return `${Math.max(0, Math.round(ms / 1000))}s`;
 }
 
+/**
+ * serve's not-leader refusal; inFlight when a follower relayed the request to a
+ * leader that may have started it before it went away
+ */
+function notLeaderRefusal(
+  err: unknown,
+): { inFlight: boolean; retryAfterSeconds?: number } | undefined {
+  if (!(err instanceof ServerResponseError)) return undefined;
+  if (err.code !== SERVE_NOT_LEADER_CODE) return undefined;
+  const details = err.details;
+  return {
+    inFlight: typeof details === "object" && details !== null &&
+      (details as { inFlight?: unknown }).inFlight === true,
+    retryAfterSeconds: err.retryAfterSeconds,
+  };
+}
+
+/** a refusal that proves serve never started the run, so it can be sent again */
+function startRefusal(
+  err: unknown,
+): { reason: string; retryAfterSeconds?: number } | undefined {
+  const refusal = restartRefusal(err, RESTART_REFUSAL_CODES);
+  if (refusal !== undefined) return refusal;
+  const notLeader = notLeaderRefusal(err);
+  if (notLeader === undefined || notLeader.inFlight) return undefined;
+  return {
+    reason: SERVE_NOT_LEADER_CODE,
+    retryAfterSeconds: notLeader.retryAfterSeconds,
+  };
+}
+
+function startMayHaveRun(err: ServerResponseError): UserError {
+  const error = new UserError(
+    `${err.serverMessage} The run was not sent again; check for it with: ` +
+      "swamp run history",
+    COMMIT_MAY_LAND_CODE,
+  );
+  // the refusal's inFlight reaches --json through the cause
+  error.cause = err;
+  return error;
+}
+
 /** why serve refused without acting, when the refusal proves it did not act */
 function restartRefusal(
   err: unknown,
@@ -439,6 +487,7 @@ export interface ServerRunOptions extends RetryTiming {
   caCerts?: string[];
   createSocket?: (url: string, headers?: Record<string, string>) => WebSocket;
   reattachBudgetMs?: number;
+  connectTimeoutMs?: number;
 }
 
 /** stored credentials are keyed by http(s) URL, but --server often uses ws(s) */
@@ -1859,14 +1908,17 @@ async function* singleConnectionStream(
     notify();
   };
 
+  const connectTimeoutMs = options.connectTimeoutMs ?? CONNECT_TIMEOUT_MS;
   const opened = new Promise<void>((resolve, reject) => {
+    // nothing is sent before the socket opens, so serve has run nothing
     const timer = setTimeout(() => {
       reject(
-        new UserError(
-          `Timed out connecting to ${baseUrl} after ${CONNECT_TIMEOUT_MS}ms — is 'swamp serve' running?`,
+        new ServeUnreachableError(
+          `Timed out connecting to ${baseUrl} after ${connectTimeoutMs}ms — is 'swamp serve' running?`,
+          "connect timed out",
         ),
       );
-    }, CONNECT_TIMEOUT_MS);
+    }, connectTimeoutMs);
     socket.onopen = () => {
       clearTimeout(timer);
       resolve();
@@ -2027,7 +2079,7 @@ async function* streamServerRun(
   const state = { runId: undefined as string | undefined, lastSeq: 0 };
   const sleep = options.sleep ?? delay;
   const startWindow = new RetryWindow(
-    options.restartRetryBudgetMs ?? RESTART_RETRY_BUDGET_MS,
+    options.restartRetryBudgetMs ?? START_RETRY_BUDGET_MS,
     options,
   );
   startWindow.begin();
@@ -2072,9 +2124,13 @@ async function* streamServerRun(
         await stream.return({ kind: "done" });
       }
     } catch (err) {
-      const refusal = receivedEvents
-        ? undefined
-        : restartRefusal(err, RESTART_REFUSAL_CODES);
+      if (
+        !state.runId && err instanceof ServerResponseError &&
+        notLeaderRefusal(err)?.inFlight === true
+      ) {
+        throw startMayHaveRun(err);
+      }
+      const refusal = receivedEvents ? undefined : startRefusal(err);
       if (refusal !== undefined && !state.runId) {
         const wait = startWindow.nextWait(refusal.retryAfterSeconds);
         if (wait === undefined) {

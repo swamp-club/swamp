@@ -26,6 +26,7 @@
 import { withSpan } from "../tracing/tracer.ts";
 import { dataNameOfKey } from "../../domain/datastore_v3/recovery_scope.ts";
 import {
+  intentKindsOfOps,
   noteCommandLanded,
   noteCommandMayHaveLanded,
 } from "./command_landed.ts";
@@ -548,7 +549,11 @@ export function createCommitLogUnitOfWork(
    * the unit's end says its changes may still land
    */
   let unconfirmed:
-    | { readonly cause: unknown; readonly reason: unknown }
+    | {
+      readonly cause: unknown;
+      readonly reason: unknown;
+      readonly groups: readonly Group[];
+    }
     | undefined;
   const outbox: UnitOutbox = {
     unitId: crypto.randomUUID(),
@@ -760,7 +765,11 @@ export function createCommitLogUnitOfWork(
             [...dropped, ...pending.filter((other) => runRank(other) === 1)],
           );
           if (lost !== undefined && unconfirmed === undefined) {
-            unconfirmed = { cause: error, reason: lost.reason };
+            unconfirmed = {
+              cause: error,
+              reason: lost.reason,
+              groups: lost.groups,
+            };
           }
           const refusal: PartitionRefusal = {
             partition: group.partition,
@@ -855,7 +864,7 @@ export function createCommitLogUnitOfWork(
 
   const throwUnconfirmed = (): void => {
     if (unconfirmed !== undefined) {
-      noteCommandMayHaveLanded();
+      noteMayHaveLanded(unconfirmed.groups);
       throw new MayLandLaterError(unconfirmed.cause, unconfirmed.reason);
     }
   };
@@ -871,7 +880,7 @@ export function createCommitLogUnitOfWork(
       dropWork();
       const lost = await discardEntries(options, outbox, abandoned);
       if (lost !== undefined) {
-        noteCommandMayHaveLanded();
+        noteMayHaveLanded(lost.groups);
         throw new MayLandLaterError(undefined, lost.reason);
       }
       throwUnconfirmed();
@@ -916,7 +925,7 @@ export function createCommitLogUnitOfWork(
         ? unconfirmed
         : await discardEntries(options, outbox, pending) ?? unconfirmed;
       if (lost !== undefined && !(error instanceof MayLandLaterError)) {
-        noteCommandMayHaveLanded();
+        noteMayHaveLanded(lost.groups);
         throw new MayLandLaterError(error, lost.reason);
       }
       // given up, so nothing of it can land: a commit that never reached the
@@ -1246,14 +1255,18 @@ const REBASED_REMOVALS: ReadonlySet<string> = new Set([
   "definition.create",
 ]);
 
-/** a data-version or lease op rides along with a put and names no intent */
-function intentKindsOf(changes: readonly TypedChange[]): string[] {
-  const kinds: string[] = [];
-  for (const change of changes) {
-    if ("put" in change) kinds.push(change.put.intent.kind);
-    else if ("intent" in change.op) kinds.push(change.op.intent.kind);
+function intentKindsOf(
+  changes: readonly TypedChange[],
+): (string | undefined)[] {
+  return changes.flatMap((change) =>
+    "put" in change ? [change.put.intent.kind] : intentKindsOfOps([change.op])
+  );
+}
+
+function noteMayHaveLanded(groups: readonly Group[]): void {
+  for (const group of groups) {
+    noteCommandMayHaveLanded(group.partition, intentKindsOf(group.changes));
   }
-  return kinds;
 }
 
 /**
@@ -1913,7 +1926,7 @@ async function landedDespite(
       group.txnId,
     ) !== undefined;
   } catch (readError) {
-    noteCommandMayHaveLanded();
+    noteMayHaveLanded([group]);
     throw new MayLandLaterError(error, readError);
   }
 }
@@ -1945,15 +1958,19 @@ async function discardEntries(
   options: CommitLogUnitOptions,
   unitOutbox: UnitOutbox,
   groups: readonly Group[],
-): Promise<{ readonly reason: unknown } | undefined> {
+): Promise<
+  { readonly reason: unknown; readonly groups: readonly Group[] } | undefined
+> {
   const outbox = options.sink.outbox;
   if (outbox === undefined) return undefined;
   const keys: OutboxKey[] = [];
+  const kept: Group[] = [];
   for (const group of groups) {
     const key = unitOutbox.prepared.get(group.txnId);
     if (key === undefined) continue;
     unitOutbox.prepared.delete(group.txnId);
     keys.push(key);
+    kept.push(group);
   }
   if (keys.length === 0) return undefined;
   let marked = false;
@@ -1977,7 +1994,7 @@ async function discardEntries(
     }
     logger
       .warn`Discarding ${keys.length} outbox entries of failed v3 commits failed, and so did marking them abandoned; a later swamp command may commit them: ${error}`;
-    return { reason: error };
+    return { reason: error, groups: kept };
   }
 }
 

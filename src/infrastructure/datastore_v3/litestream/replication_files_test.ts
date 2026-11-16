@@ -22,6 +22,7 @@ import {
   assertEquals,
   assertRejects,
   assertStringIncludes,
+  assertThrows,
 } from "@std/assert";
 import { join } from "@std/path";
 import { UserError } from "../../../domain/errors.ts";
@@ -307,6 +308,40 @@ Deno.test("renderLitestreamConfig: a file replica, quoted, with no checkpoint op
   assertStringIncludes(config, '- path: "/d/commits.db"');
   assertStringIncludes(config, "type: file");
   assertEquals(/checkpoint/i.test(config), false);
+});
+
+Deno.test("renderLitestreamConfig: snapshots hourly by default and at a configured interval; the restore config sets none", () => {
+  const paths = { commitsDb: "/d/commits.db", socket: "/s" };
+  const replica = { type: "file", path: "/r" } as const;
+  const block = (interval: string) => `\nsnapshot:\n  interval: ${interval}\n`;
+  assertStringIncludes(
+    renderLitestreamConfig(paths, replica, "/r/_litestream/000000000001"),
+    block("60m"),
+  );
+  assertStringIncludes(
+    renderLitestreamConfig(
+      paths,
+      replica,
+      "/r/_litestream/000000000001",
+      30 * 60_000,
+    ),
+    block("30m"),
+  );
+  assertStringIncludes(
+    renderLitestreamConfig(
+      paths,
+      replica,
+      "/r/_litestream/000000000001",
+      24 * 60 * 60_000,
+    ),
+    block("1440m"),
+  );
+  assertThrows(() => renderLitestreamConfig(paths, replica, "/r/x", 90_000));
+  assertEquals(
+    renderLitestreamRestoreConfig("/d/commits.db", replica, "/r/x")
+      .includes("snapshot"),
+    false,
+  );
 });
 
 Deno.test("renderLitestreamConfig: an s3 replica with an endpoint uses path-style requests", () => {

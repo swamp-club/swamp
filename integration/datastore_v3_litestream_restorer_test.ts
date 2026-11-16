@@ -286,6 +286,41 @@ Deno.test({
 
 Deno.test({
   name:
+    "restoreV3Copy: an install that fails after the caller aborted reports the install, not the abort",
+  ignore,
+  async fn() {
+    await withDir(async (dir) => {
+      await storeWith(join(dir, "source.db"), 3);
+      const target = join(dir, "copy", "commits.db");
+      await Deno.mkdir(join(dir, "copy"));
+      await Deno.mkdir(join(dir, "priv"));
+      const binary = await fakeBinary(dir, join(dir, "source.db"), "exact");
+      const head = withPartition(2)(partitionOf(join(dir, "source.db")));
+      const stop = new AbortController();
+      const failed = await assertRejects(
+        () =>
+          restoreV3Copy({
+            binary,
+            replica: { type: "file", path: join(dir, "replica") },
+            head,
+            target,
+            configDir: join(dir, "priv"),
+            install: () => {
+              stop.abort(new Error("serve is stopping"));
+              return Promise.reject(new Error("disk full"));
+            },
+            deadlineMs: 30_000,
+            signal: stop.signal,
+          }),
+        V3RestoreError,
+      );
+      assertStringIncludes(failed.message, "disk full");
+    });
+  },
+});
+
+Deno.test({
+  name:
     "restoreV3Copy: a damaged or newer database is refused, a copy left as it was",
   ignore,
   async fn() {

@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { ServeUnreachableError } from "../../infrastructure/datastore_v3/serve_upstream_errors.ts";
 import { SecretRefusedError } from "../../domain/expressions/errors.ts";
 import { SENSITIVE_FORMAT_VERSION } from "../../domain/secrets/persisted_sensitive_form.ts";
 import type { WrittenVersion } from "../../domain/datastore/datastore_sync_service.ts";
@@ -3387,4 +3388,19 @@ Deno.test("modelMethodRun: a JSON artifact recorded with size 0 is measured afte
     [false, true, true],
   );
   assertEquals(reads, ["a", "b"]);
+});
+
+Deno.test("methodExecutionFailed: a serve outage in the cause reports its datastore code and keeps the cause", () => {
+  const unreachable = new ServeUnreachableError(
+    "http://serve.test",
+    "never",
+    new Error("connection refused"),
+  );
+  const error = methodExecutionFailed(unreachable);
+  assertEquals(error.code, "datastore_v3_serve_unreachable");
+  assertEquals(error.cause, unreachable);
+  assertEquals(
+    methodExecutionFailed(new Error("boom")).code,
+    "method_execution_failed",
+  );
 });

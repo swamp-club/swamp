@@ -2484,6 +2484,16 @@ the lapse stopped mid-request reports the same code, not
 `datastore_v3_serve_unreachable`, and exits as serve being unreachable does (1
 once a step landed).
 
+A workflow or method run that fails with a datastore or serve outage in its
+cause chain keeps that cause and reports its `datastore_v3_*` or `serve_*` code,
+so teardown leaves the recovery of dropped work to the next command instead of
+running it on the exit path. When the outage ends a command whose effectful
+commit may have landed, it is reported as `datastore_v3_commit_may_land` (exit
+1), and `--json` keeps `inFlight`: re-running could repeat what landed, so check
+the run and resume or recover it. A command that only read, waited for a lock or
+committed bookkeeping keeps exit 75. `serve_not_leader` exits 75 unless the
+command may have landed effects, and a lease-lost refusal keeps its own code.
+
 **JUnit XML output (`--junit`):** `swamp workflow run --junit [--out <file>]`
 emits one `<testcase>` per assert step, with a `<failure>` element when false.
 Non-assert steps are left out.
@@ -4750,7 +4760,8 @@ a dead owner's run fails it with the owner-stopped error. A start older than the
 run's last resume (`resumedAt` on the record) belongs to an attempt the resume
 reset and is left out. Only recovery marks a started step `unknown`. A step whose start cannot be committed never runs: it stays
 `pending`, no further step starts (cleanup steps included), steps already
-running finish, and the run fails with exit 75, naming `workflow resume` or, if
+running finish, and the run fails with exit 75 (or `datastore_v3_commit_may_land`,
+exit 1, when an earlier effectful commit may have landed), naming `workflow resume` or, if
 its failed record did not commit either, `workflow recover`. An offline team
 member's start waits in its outbox; a recovery on that machine puts it back
 before it reads the journal. See decision 6 in `design/enablers/datastores.md`.

@@ -62,6 +62,8 @@ import {
   ObservedBaseStaging,
   SqliteCommitStore,
   type SqliteCommitStoreOptions,
+  stopAutoCheckpointAt,
+  storeConnectionsAt,
 } from "./sqlite_commit_store.ts";
 
 const NEVER_OPENED = join("never", "created", "commits.db");
@@ -208,6 +210,87 @@ Deno.test("SqliteCommitStore.highWaterMark: is the compaction point once every c
     assertEquals(store.highWaterMark().commit?.seq, 3);
     await store.compactHistory(3);
     assertEquals(store.highWaterMark(), { cursor: 3 });
+  });
+});
+
+Deno.test("stopAutoCheckpointAt: turns auto-checkpoint off on every open store at the path and on stores opened there later, never at another path (swamp-club#4679)", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "commits.db");
+    const other = join(dir, "other.db");
+    const autoCheckpoints = (at: string) =>
+      storeConnectionsAt(at).map((db) =>
+        (db.prepare("PRAGMA wal_autocheckpoint").get() as {
+          wal_autocheckpoint: number;
+        }).wal_autocheckpoint
+      );
+    const first = SqliteCommitStore.open(path);
+    const second = SqliteCommitStore.open(path);
+    const elsewhere = SqliteCommitStore.open(other);
+    let later: SqliteCommitStore | undefined;
+    try {
+      assertEquals(autoCheckpoints(path), [1000, 1000]);
+      stopAutoCheckpointAt(path);
+      assertEquals(autoCheckpoints(path), [0, 0]);
+      later = SqliteCommitStore.open(path);
+      assertEquals(autoCheckpoints(path), [0, 0, 0]);
+      assertEquals(autoCheckpoints(other), [1000]);
+    } finally {
+      await first.close();
+      await second.close();
+      await later?.close();
+      await elsewhere.close();
+    }
+    assertEquals(storeConnectionsAt(path), []);
+  });
+});
+
+Deno.test("SqliteCommitStore.compactHistory: an append issued during a compaction of many batches lands after at most one batch, and the compaction still folds its target (swamp-club#4679)", async () => {
+  await withStore(async (store) => {
+    const commits = 8;
+    for (let seq = 1; seq <= commits; seq++) {
+      await store.append(leaseCommit(seq, 1));
+    }
+    const late = await save(1);
+    const order: string[] = [];
+    let appended: Promise<unknown> | undefined;
+    const report = await store.compactHistory(commits, {
+      batchSize: 1,
+      beforeCommit: () => {
+        order.push("batch");
+        appended ??= store.append(late).then(() => {
+          order.push("append");
+        });
+      },
+    });
+    await appended;
+    assertEquals(report.batches, commits);
+    assertEquals(report.point, commits);
+    // Issued inside the first batch: the append's turn comes before the
+    // second batch's.
+    assertEquals(order.indexOf("append"), 1);
+    assertEquals(order.filter((step) => step === "batch").length, commits);
+    assertEquals(store.highWaterMark().cursor, commits + 1);
+  });
+});
+
+Deno.test("SqliteCommitStore.compactHistory: never folds past its target, though appends land between its batches (swamp-club#4679)", async () => {
+  await withStore(async (store) => {
+    for (let seq = 1; seq <= 4; seq++) {
+      await store.append(leaseCommit(seq, 1));
+    }
+    let extra = 0;
+    const appends: Promise<unknown>[] = [];
+    const report = await store.compactHistory(3, {
+      batchSize: 1,
+      beforeCommit: () => {
+        extra++;
+        appends.push(store.append(leaseCommit(4 + extra, 1)));
+      },
+    });
+    await Promise.all(appends);
+    assertEquals(report.point, 3);
+    assertEquals(report.compacted, 3);
+    assertEquals((await store.history()).storedCommits, 1 + extra);
   });
 });
 

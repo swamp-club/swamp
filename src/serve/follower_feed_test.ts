@@ -17,7 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { V3StorageUnreachableError } from "../domain/datastore_v3/writer_lease.ts";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import type { ServeLeader } from "../domain/datastore_v3/serve_leader.ts";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
@@ -25,7 +26,10 @@ import {
   type FeedChange,
   FOLLOWER_FEED_SILENCE_MS,
   FOLLOWER_FEED_STUCK_MS,
+  FOLLOWER_UNREADY_APPLY_FAILURES,
+  FOLLOWER_UNREADY_WAL_BYTES,
   FollowerFeed,
+  followerUnreadyReason,
 } from "./follower_feed.ts";
 import type { LeaderLink } from "./leader_link.ts";
 
@@ -275,4 +279,138 @@ Deno.test("FollowerFeed.caughtUp: catching up while the feed was live lately, st
   now += FOLLOWER_FEED_STUCK_MS;
   assertEquals(await t.feed.caughtUp(), "stuck");
   await t.feed.stop();
+});
+
+/** a feed whose applies throw `failure` while it is set */
+function failingSetup() {
+  const sockets: FakeSocket[] = [];
+  const link = {
+    openSocket: () => {
+      const socket = new FakeSocket();
+      sockets.push(socket);
+      return { socket, leader: leader("x", 1) };
+    },
+  } as unknown as LeaderLink;
+  const state: { failure: Error | undefined; settled: number } = {
+    failure: undefined,
+    settled: 0,
+  };
+  const feed = new FollowerFeed({
+    link,
+    peerToken: () => Promise.resolve("swamp-peer.k"),
+    copyCursor: () => 0,
+    apply: () => {
+      state.settled++;
+      return state.failure === undefined
+        ? Promise.resolve()
+        : Promise.reject(state.failure);
+    },
+    onFresh: () => {},
+  });
+  const followAgain = async () => {
+    const opened = sockets.length;
+    feed.follow(leader("a", 1));
+    await waitFor(() => sockets.length > opened, "a fresh socket");
+    const socket = sockets.at(-1)!;
+    socket.open();
+    return socket;
+  };
+  const deliverOnNewSocket = async (cursors: number[]) => {
+    const settled = state.settled;
+    (await followAgain()).deliver(frame(cursors));
+    await waitFor(() => state.settled > settled, "the apply to settle");
+    await feed.stop();
+  };
+  return { feed, state, followAgain, deliverOnNewSocket };
+}
+
+const readiness = (feed: FollowerFeed, walBytes?: number) =>
+  followerUnreadyReason({
+    localApplyFailures: feed.localApplyFailures,
+    walBytes,
+  });
+
+Deno.test("FollowerFeed.localApplyFailures: applies failing on this node in a row make /ready report it broken; one frame applied clears it (swamp-club#4679)", async () => {
+  const t = failingSetup();
+  t.state.failure = new Error("database or disk is full");
+  for (let i = 1; i < FOLLOWER_UNREADY_APPLY_FAILURES; i++) {
+    await t.deliverOnNewSocket([i]);
+    assertEquals(readiness(t.feed), undefined);
+  }
+  await t.deliverOnNewSocket([FOLLOWER_UNREADY_APPLY_FAILURES]);
+  assertEquals(t.feed.localApplyFailures, FOLLOWER_UNREADY_APPLY_FAILURES);
+  assertStringIncludes(readiness(t.feed)!, "in a row on this node");
+  t.state.failure = undefined;
+  await t.deliverOnNewSocket([FOLLOWER_UNREADY_APPLY_FAILURES]);
+  assertEquals(t.feed.localApplyFailures, 0);
+  assertEquals(readiness(t.feed), undefined);
+});
+
+Deno.test("FollowerFeed.localApplyFailures: a dead leader, a dropped socket, a divergence or a network failure never counts (swamp-club#4679)", async () => {
+  const t = failingSetup();
+  for (let i = 0; i <= FOLLOWER_UNREADY_APPLY_FAILURES; i++) {
+    const ended = await t.followAgain();
+    ended.deliver({
+      type: "error",
+      id: "follower-feed",
+      error: { code: "serve_not_leader", message: "not the leader" },
+    });
+    (await t.followAgain()).close();
+  }
+  const diverged = new Error("The commit feed diverged from this copy: seq 4");
+  diverged.name = "FeedDivergedError";
+  const unreachable = new Error("fetching a chunk failed", {
+    cause: new Deno.errors.ConnectionReset("reset by peer"),
+  });
+  const throttled = new Error("applying the leader's commits failed", {
+    cause: new V3StorageUnreachableError(
+      "gs://bucket",
+      new Error("503 SlowDown"),
+    ),
+  });
+  for (const failure of [diverged, unreachable, throttled]) {
+    t.state.failure = failure;
+    for (let i = 0; i <= FOLLOWER_UNREADY_APPLY_FAILURES; i++) {
+      await t.deliverOnNewSocket([i + 1]);
+    }
+  }
+  assertEquals(t.feed.localApplyFailures, 0);
+  assertEquals(readiness(t.feed), undefined);
+  await t.feed.stop();
+});
+
+Deno.test("followerUnreadyReason: a takeover's restore keeps /ready 200: a stopped feed and a leaderless window past the stuck bound are no failures (swamp-club#4679)", async () => {
+  let now = 1_000_000;
+  const t = setup(() => now);
+  t.feed.follow(leader("a", 1));
+  await waitFor(() => t.sockets.length === 1, "the socket");
+  t.sockets[0].open();
+  t.sockets[0].deliver(frame([1]));
+  await waitFor(() => t.fresh() === 1, "a frame");
+  // the tick stops the feed for the takeover's restore; no leader answers
+  await t.feed.stop();
+  now += FOLLOWER_FEED_STUCK_MS * 4;
+  assertEquals(await t.feed.caughtUp(), "stuck");
+  assertEquals(readiness(t.feed), undefined);
+  assertEquals(readiness(t.feed, 0), undefined);
+  t.feed.follow(undefined);
+  assertEquals(readiness(t.feed, 64 * 1024 * 1024), undefined);
+  await t.feed.stop();
+});
+
+Deno.test("followerUnreadyReason: a WAL past the bound reports the follower broken (swamp-club#4679)", () => {
+  assertEquals(
+    followerUnreadyReason({
+      localApplyFailures: 0,
+      walBytes: FOLLOWER_UNREADY_WAL_BYTES,
+    }),
+    undefined,
+  );
+  assertStringIncludes(
+    followerUnreadyReason({
+      localApplyFailures: 0,
+      walBytes: FOLLOWER_UNREADY_WAL_BYTES + 1,
+    })!,
+    "WAL",
+  );
 });

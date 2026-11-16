@@ -19,7 +19,7 @@
 
 import type { FanOutGatePrompt } from "../../domain/workflows/fan_out_gates.ts";
 import { getLogger } from "@logtape/logtape";
-import { cancelled, type SwampError } from "../errors.ts";
+import { cancelled, datastoreOutageOf, type SwampError } from "../errors.ts";
 import type { LibSwampContext } from "../context.ts";
 import { withUnitOfWork } from "../unit_of_work.ts";
 import type {
@@ -1412,7 +1412,7 @@ export function inputValidationFailed(
 export function workflowExecutionFailed(cause: unknown): SwampError {
   const message = cause instanceof Error ? cause.message : String(cause);
   return {
-    code: "workflow_execution_failed",
+    code: datastoreOutageOf(cause)?.code ?? "workflow_execution_failed",
     message: `Workflow execution failed: ${message}`,
     cause: cause instanceof Error ? cause : undefined,
   };

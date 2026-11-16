@@ -36,6 +36,7 @@ import {
   DEFAULT_DATASTORE_SUBDIRS,
   isCustomDatastoreConfig,
   readDatastoreFormatKey,
+  readSnapshotIntervalKey,
 } from "../domain/datastore/datastore_config.ts";
 import { getSwampDataDir } from "../infrastructure/persistence/paths.ts";
 import { DefaultDatastorePathResolver } from "../infrastructure/persistence/default_datastore_path_resolver.ts";
@@ -114,6 +115,13 @@ function durableField(
     );
   }
   return { durable: ds.durable };
+}
+
+function snapshotIntervalField(
+  ds: { snapshotInterval?: unknown },
+): { snapshotIntervalMs?: number } {
+  const ms = readSnapshotIntervalKey(ds.snapshotInterval);
+  return ms === undefined ? {} : { snapshotIntervalMs: ms };
 }
 
 export function datastoreBasePath(config: DatastoreConfig): string {
@@ -414,6 +422,7 @@ export async function resolveDatastoreConfig(
           hydrationStrategy: dsFields.hydrationStrategy ?? ds.hydrationStrategy,
           namespace: dsFields.namespace ?? ds.namespace,
           ...durableField(ds),
+          ...snapshotIntervalField(ds),
           ...(format === 3 ? { format: 3 as const } : {}),
         };
       }
@@ -513,6 +522,7 @@ export async function resolveDatastoreConfig(
       hydrationStrategy: dsFields.hydrationStrategy ?? ds.hydrationStrategy,
       namespace: dsFields.namespace ?? ds.namespace,
       ...durableField(ds),
+      ...snapshotIntervalField(ds),
       ...(format === 3 ? { format: 3 as const } : {}),
     };
   }

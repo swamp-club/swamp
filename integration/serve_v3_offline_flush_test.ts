@@ -23,6 +23,7 @@ import {
   resetCommandLandedForTesting,
 } from "../src/infrastructure/datastore_v3/command_landed.ts";
 import { assert, assertEquals, assertRejects } from "@std/assert";
+import { waitFor } from "@swamp-club/swamp-testing";
 import { walk } from "@std/fs";
 import { join, SEPARATOR } from "@std/path";
 import {
@@ -37,6 +38,8 @@ import {
   OfflineConfigEditError,
   OfflineLeaseRequiredError,
 } from "../src/domain/datastore_v3/offline_write_policy.ts";
+import { ServeNotLeaderError } from "../src/domain/datastore_v3/serve_leader.ts";
+import { setServeReadRefusalBudgetForTesting } from "../src/infrastructure/datastore_v3/serve_datastore_client.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { captureLogs } from "./remote_secrets_baseline_harness.ts";
 import {
@@ -53,6 +56,12 @@ import {
 import { runAsUserConfigEdit } from "../src/infrastructure/datastore_v3/config_edit_scope.ts";
 import { runInRootUnitOfWork } from "../src/infrastructure/persistence/repo_unit_of_work.ts";
 import { exitCodeForError } from "../src/presentation/output/error_output.ts";
+import {
+  type CommitOutbox,
+  outboxKeyOf,
+} from "../src/domain/datastore_v3/commit_outbox.ts";
+import { v3DatastoreFor } from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
+import { outboxEntryStatusesOf } from "../src/libswamp/datastores/status.ts";
 import {
   type Client,
   dataOf,
@@ -541,6 +550,250 @@ Deno.test({
         proxy.up();
         await command(scratch, alice, env, () => Promise.resolve());
         assertEquals(await servedVersions(serve), [1, 2, 3]);
+      });
+    });
+  },
+});
+
+/**
+ * answers a partition read as a follower whose copy lags: with serve's head, or
+ * `head` when given, and none of the commits past `through`
+ */
+async function laggingCommitReads(
+  request: Request,
+  forward: () => Promise<Response>,
+  lag: { readonly through: number; readonly head?: number },
+): Promise<Response | undefined> {
+  if (
+    request.method !== "GET" ||
+    !/\/partitions\/.*\/commits$/.test(new URL(request.url).pathname)
+  ) {
+    return undefined;
+  }
+  const reply = await forward();
+  const real = await reply.json() as {
+    head: number;
+    commits: { seq: number }[];
+  };
+  return Response.json({
+    ...real,
+    head: lag.head ?? real.head,
+    commits: real.commits.filter((commit) => commit.seq <= lag.through),
+  }, { status: reply.status, headers: reply.headers });
+}
+
+Deno.test({
+  name:
+    "serve offline flush: an offline write queued after a may-land commit that landed lands past it, flushed through a copy behind serve's head, never rejected",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withScratch(async (scratch) => {
+      const serve = await scratch.serve({ grants: TEAM });
+      const alice = await scratch.client("a");
+      await withProxy(serve, async (proxy) => {
+        const env = serveEnv(proxy, "alice-token");
+        await command(
+          scratch,
+          alice,
+          env,
+          (ctx) => saveOut(ctx, serve, "online"),
+        );
+        await takeLease(scratch, serve, alice, env);
+
+        // The commit lands, but the client hears a follower that lost its
+        // leader in flight, and cannot read whether it landed.
+        let forwarded = false;
+        proxy.answer = async (request, forward) => {
+          const path = new URL(request.url).pathname;
+          const write = request.method === "POST" && /\/commits$/.test(path);
+          const read = request.method === "GET" &&
+            /\/partitions\/.*\/commits$/.test(path);
+          if (!write && !read) return undefined;
+          if (write && !forwarded) {
+            forwarded = true;
+            await forward();
+          }
+          return Response.json(
+            {
+              code: "serve_not_leader",
+              message: "This serve node lost its leader; try again",
+              ...(write ? { inFlight: true } : {}),
+            },
+            { status: 503, headers: { "retry-after": "1" } },
+          );
+        };
+        setServeReadRefusalBudgetForTesting(300);
+        try {
+          await assertRejects(() =>
+            lockedSave(scratch, serve, alice, env, "may land", {
+              deferred: true,
+            })
+          );
+        } finally {
+          setServeReadRefusalBudgetForTesting(undefined);
+        }
+        assertEquals(await servedVersions(serve), [1, 2]);
+
+        // Allocated above the unconfirmed version, not on it.
+        await proxy.down();
+        assertEquals(
+          await lockedSave(scratch, serve, alice, env, "offline", {
+            deferred: true,
+          }),
+          3,
+        );
+        assertEquals(await servedVersions(serve), [1, 2]);
+
+        proxy.up();
+        proxy.answer = (request, forward) =>
+          laggingCommitReads(request, forward, { through: 1 });
+        const notices: ServeOfflineNotice[] = [];
+        setServeOfflineNoticeWriter((notice) => notices.push(notice));
+        try {
+          await command(scratch, alice, env, () => Promise.resolve());
+        } finally {
+          setServeOfflineNoticeWriter(undefined);
+        }
+        const flush = notices.find((notice) =>
+          notice.notice === "datastore_offline_flush"
+        );
+        assert(flush?.notice === "datastore_offline_flush");
+        assertEquals([flush.rejected, flush.rejectedWrites], [0, []]);
+        assertEquals(await servedVersions(serve), [1, 2, 3]);
+        proxy.answer = undefined;
+        assertEquals(
+          await versionBy(scratch, serve, alice, env, 3),
+          "offline",
+        );
+      });
+    });
+  },
+});
+
+async function withOutbox<T>(
+  scratch: Scratch,
+  client: Client,
+  env: Record<string, string | undefined>,
+  fn: (outbox: CommitOutbox) => Promise<T>,
+): Promise<T> {
+  return await withClientEnv(
+    scratch,
+    env,
+    ["datastore", "status"],
+    async () => {
+      try {
+        await requireInitializedRepoUnlocked({
+          repoDir: client.repoDir,
+          outputMode: "json",
+        });
+        const location = await v3LocationOf(
+          await resolveDatastoreForRepo(client.repoDir),
+        );
+        return await fn(v3DatastoreFor(client.repoDir, location).outbox);
+      } finally {
+        await endCommand();
+      }
+    },
+  );
+}
+
+Deno.test({
+  name:
+    "serve offline flush: a change an older flush stranded as rejected for a live version is queued again by the next flush and lands, renumbered past what serve holds",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withScratch(async (scratch) => {
+      const serve = await scratch.serve({ grants: TEAM });
+      const alice = await scratch.client("a");
+      const bob = await scratch.client("b");
+      await withProxy(serve, async (proxy) => {
+        const env = serveEnv(proxy, "alice-token");
+        await command(
+          scratch,
+          alice,
+          env,
+          (ctx) => saveOut(ctx, serve, "online"),
+        );
+        await proxy.down();
+        assertEquals(
+          await command(
+            scratch,
+            alice,
+            env,
+            (ctx) => readKindSave(ctx, serve, "stranded"),
+          ),
+          2,
+        );
+        // As an older swamp left it: rejected with serve's message, no code.
+        const listed = await withOutbox(scratch, alice, env, async (box) => {
+          const { entries } = await box.entries();
+          await box.markState(
+            entries.map((entry) => outboxKeyOf(entry.commit)),
+            "rejected",
+            "Data out version 2 is already live; only an append re-records it",
+          );
+          return outboxEntryStatusesOf((await box.entries()).entries);
+        });
+        assertEquals(listed.length, 1);
+        assertEquals(listed[0].retryable, true);
+        assertEquals(
+          listed[0].writes?.map((write) => [write.name, write.version]),
+          [["out", 2]],
+        );
+        // Version 2 is live at serve, as the old message said.
+        assertEquals(
+          await writeCommand(
+            scratch,
+            bob,
+            serveEnv(serve, "bob-token"),
+            async (repos) =>
+              (await repos.unifiedDataRepo.save(
+                serve.modelType,
+                serve.models.web,
+                dataOf("out", DATA_ID),
+                json({ by: "bob" }),
+              )).version,
+          ),
+          2,
+        );
+        proxy.up();
+
+        const notices: ServeOfflineNotice[] = [];
+        setServeOfflineNoticeWriter((notice) => notices.push(notice));
+        try {
+          await command(scratch, alice, env, () => Promise.resolve());
+        } finally {
+          setServeOfflineNoticeWriter(undefined);
+        }
+        const flush = notices.find((notice) =>
+          notice.notice === "datastore_offline_flush"
+        );
+        assert(flush?.notice === "datastore_offline_flush");
+        assertEquals([flush.landed, flush.rejected], [1, 0]);
+        // above bob's 2; a restatement of bob's version may take one number
+        const served = await servedVersions(serve);
+        assertEquals(served.slice(0, 2), [1, 2]);
+        const by = await Promise.all(
+          served.slice(2).map((version) =>
+            versionBy(scratch, serve, alice, env, version)
+          ),
+        );
+        assert(by.includes("stranded"));
+        assertEquals(
+          await versionBy(scratch, serve, alice, env, 2),
+          "bob",
+        );
+        assertEquals(
+          await withOutbox(
+            scratch,
+            alice,
+            env,
+            async (box) => (await box.entries()).entries.length,
+          ),
+          0,
+        );
       });
     });
   },
@@ -1135,3 +1388,436 @@ Deno.test({
     });
   },
 });
+
+/** a follower with no leader: reads pass, a lock or commit is refused */
+function refuseWritesWithoutLeader(
+  proxy: OfflineProxy,
+  options: { readonly inFlight?: boolean } = {},
+): string[] {
+  const refused: string[] = [];
+  proxy.answer = (request) => {
+    const path = new URL(request.url).pathname;
+    if (
+      request.method === "GET" || !/\/(locks|commits)(\/|$)/.test(path)
+    ) {
+      return Promise.resolve(undefined);
+    }
+    refused.push(`${request.method} ${path}`);
+    return Promise.resolve(Response.json(
+      {
+        code: "serve_not_leader",
+        message: "This serve node does not lead the datastore; try again",
+        ...(options.inFlight === true ? { inFlight: true } : {}),
+      },
+      { status: 503, headers: { "retry-after": "5" } },
+    ));
+  };
+  return refused;
+}
+
+Deno.test({
+  name:
+    "serve offline, no leader: under an explicit lease a lock refused as not the leader takes the checkout offline at once, the command queues, and the next lands it under the lease",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withScratch(async (scratch) => {
+      const serve = await scratch.serve({ grants: TEAM });
+      const alice = await scratch.client("a");
+      await withProxy(serve, async (proxy) => {
+        const env = serveEnv(proxy, "alice-token");
+        await command(
+          scratch,
+          alice,
+          env,
+          (ctx) => saveOut(ctx, serve, "online"),
+        );
+        const lease = await takeLease(scratch, serve, alice, env);
+
+        const refused = refuseWritesWithoutLeader(proxy);
+        const notices: ServeOfflineNotice[] = [];
+        setServeOfflineNoticeWriter((notice) => notices.push(notice));
+        const started = performance.now();
+        try {
+          assertEquals(
+            await lockedSave(scratch, serve, alice, env, "no leader", {
+              deferred: true,
+            }),
+            2,
+          );
+        } finally {
+          setServeOfflineNoticeWriter(undefined);
+        }
+        assert(performance.now() - started < 15_000);
+        // the bind's renewal only: the lock goes offline on its refusal
+        assertEquals(leaseRenewals(refused), 1);
+        assertEquals(await servedVersions(serve), [1]);
+        const offline = notices.find((notice) =>
+          notice.notice === "datastore_offline"
+        );
+        assert(
+          offline?.notice === "datastore_offline" &&
+            offline.message.includes("no leader"),
+        );
+        assert(
+          notices.some((notice) =>
+            notice.notice === "datastore_offline_queued"
+          ),
+        );
+
+        proxy.answer = undefined;
+        await command(scratch, alice, env, () => Promise.resolve());
+        assertEquals(await servedVersions(serve), [1, 2]);
+        const fenced = (await serve.log()).filter((entry) =>
+          entry.keys.some((key) => /\/out\/2\//.test(key))
+        );
+        assert(fenced.every((entry) => entry.leaseFence === lease.fence));
+        assertEquals(await latestBy(scratch, serve, alice, env), {
+          version: 2,
+          by: "no leader",
+        });
+      });
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "serve offline, no leader: without a lease a lock refused as not the leader is not queued and fails as serve_not_leader with exit 75",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withScratch(async (scratch) => {
+      const serve = await scratch.serve({ grants: TEAM });
+      const alice = await scratch.client("a");
+      await withProxy(serve, async (proxy) => {
+        const env = serveEnv(proxy, "alice-token");
+        await command(
+          scratch,
+          alice,
+          env,
+          (ctx) => saveOut(ctx, serve, "online"),
+        );
+        refuseWritesWithoutLeader(proxy);
+        setServeReadRefusalBudgetForTesting(300);
+        let error: Error;
+        try {
+          error = await assertRejects(
+            () =>
+              lockedSave(scratch, serve, alice, env, "no leader", {
+                deferred: true,
+              }),
+            ServeNotLeaderError,
+          );
+        } finally {
+          setServeReadRefusalBudgetForTesting(undefined);
+        }
+        assertEquals(exitCodeForError(error), 75);
+        proxy.answer = undefined;
+        await command(scratch, alice, env, () => Promise.resolve());
+        assertEquals(await servedVersions(serve), [1]);
+      });
+    });
+  },
+});
+
+/** counts the lease renewals (PUT locks/{id}) the proxy saw */
+function leaseRenewals(refused: readonly string[]): number {
+  return refused.filter((call) => /^PUT .*\/locks\/[^/]+$/.test(call))
+    .length;
+}
+
+Deno.test({
+  name:
+    "serve offline, no leader: under an explicit lease a renewal refused as forwarded in flight takes the checkout offline after one renewal, and the command queues",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withScratch(async (scratch) => {
+      const serve = await scratch.serve({ grants: TEAM });
+      const alice = await scratch.client("a");
+      await withProxy(serve, async (proxy) => {
+        const env = serveEnv(proxy, "alice-token");
+        await command(
+          scratch,
+          alice,
+          env,
+          (ctx) => saveOut(ctx, serve, "online"),
+        );
+        const lease = await takeLease(scratch, serve, alice, env);
+        const refused = refuseWritesWithoutLeader(proxy, { inFlight: true });
+        const notices: ServeOfflineNotice[] = [];
+        setServeOfflineNoticeWriter((notice) => notices.push(notice));
+        try {
+          assertEquals(
+            await lockedSave(scratch, serve, alice, env, "in flight", {
+              deferred: true,
+            }),
+            2,
+          );
+        } finally {
+          setServeOfflineNoticeWriter(undefined);
+        }
+        // the bind's renewal only: the lock goes offline on its refusal
+        assertEquals(leaseRenewals(refused), 1);
+        assert(
+          notices.some((notice) =>
+            notice.notice === "datastore_offline_queued"
+          ),
+        );
+        assertEquals(await servedVersions(serve), [1]);
+
+        proxy.answer = undefined;
+        await command(scratch, alice, env, () => Promise.resolve());
+        assertEquals(await servedVersions(serve), [1, 2]);
+        const fenced = (await serve.log()).filter((entry) =>
+          entry.keys.some((key) => /\/out\/2\//.test(key))
+        );
+        assert(fenced.every((entry) => entry.leaseFence === lease.fence));
+      });
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "serve offline, no leader: without a lease a lock refused as forwarded in flight is not queued and fails with exit 75",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withScratch(async (scratch) => {
+      const serve = await scratch.serve({ grants: TEAM });
+      const alice = await scratch.client("a");
+      await withProxy(serve, async (proxy) => {
+        const env = serveEnv(proxy, "alice-token");
+        await command(
+          scratch,
+          alice,
+          env,
+          (ctx) => saveOut(ctx, serve, "online"),
+        );
+        refuseWritesWithoutLeader(proxy, { inFlight: true });
+        setServeReadRefusalBudgetForTesting(300);
+        let error: ServeNotLeaderError;
+        try {
+          error = await assertRejects(
+            () =>
+              lockedSave(scratch, serve, alice, env, "in flight", {
+                deferred: true,
+              }),
+            ServeNotLeaderError,
+          );
+        } finally {
+          setServeReadRefusalBudgetForTesting(undefined);
+        }
+        assert(error.inFlight);
+        assertEquals(exitCodeForError(error), 75);
+        proxy.answer = undefined;
+        await command(scratch, alice, env, () => Promise.resolve());
+        assertEquals(await servedVersions(serve), [1]);
+      });
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "serve offline, frozen leader: under an explicit lease a renewal serve never answers takes the checkout offline within 15 s after one renewal, and the command queues",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withScratch(async (scratch) => {
+      const serve = await scratch.serve({ grants: TEAM });
+      const alice = await scratch.client("a");
+      await withProxy(serve, async (proxy) => {
+        const env = serveEnv(proxy, "alice-token");
+        await command(
+          scratch,
+          alice,
+          env,
+          (ctx) => saveOut(ctx, serve, "online"),
+        );
+        const lease = await takeLease(scratch, serve, alice, env);
+        // a leader stopped mid-reply: the renewal is accepted, never answered
+        const hung: string[] = [];
+        const unhang: Array<() => void> = [];
+        proxy.answer = (request) => {
+          const path = new URL(request.url).pathname;
+          if (request.method !== "PUT" || !/\/locks\/[^/]+$/.test(path)) {
+            return Promise.resolve(undefined);
+          }
+          hung.push(`${request.method} ${path}`);
+          return new Promise((resolve) =>
+            unhang.push(() => resolve(new Response(null, { status: 503 })))
+          );
+        };
+        const notices: ServeOfflineNotice[] = [];
+        setServeOfflineNoticeWriter((notice) => notices.push(notice));
+        let outcome:
+          | { readonly version: number }
+          | { readonly error: unknown }
+          | undefined;
+        const saving = lockedSave(scratch, serve, alice, env, "frozen", {
+          deferred: true,
+        }).then(
+          (version) => outcome = { version },
+          (error) => outcome = { error },
+        );
+        try {
+          await waitFor(
+            () => outcome !== undefined,
+            "the leased write to go offline and queue",
+            { timeoutMs: 15_000 },
+          );
+        } finally {
+          for (const release of unhang) release();
+          await saving;
+          setServeOfflineNoticeWriter(undefined);
+        }
+        assertEquals(outcome, { version: 2 });
+        assertEquals(leaseRenewals(hung), 1);
+        assert(
+          notices.some((notice) =>
+            notice.notice === "datastore_offline_queued"
+          ),
+        );
+        assertEquals(await servedVersions(serve), [1]);
+
+        proxy.answer = undefined;
+        await command(scratch, alice, env, () => Promise.resolve());
+        assertEquals(await servedVersions(serve), [1, 2]);
+        const fenced = (await serve.log()).filter((entry) =>
+          entry.keys.some((key) => /\/out\/2\//.test(key))
+        );
+        assert(fenced.every((entry) => entry.leaseFence === lease.fence));
+      });
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "serve offline, frozen leader: a command whose bind-time renewal times out never sends the entries it inherited, and queues its own write within 15 s",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withScratch(async (scratch) => {
+      const serve = await scratch.serve({ grants: TEAM });
+      const alice = await scratch.client("a");
+      await withProxy(serve, async (proxy) => {
+        const env = serveEnv(proxy, "alice-token");
+        await command(
+          scratch,
+          alice,
+          env,
+          (ctx) => saveOut(ctx, serve, "online"),
+        );
+        await takeLease(scratch, serve, alice, env);
+        await proxy.down();
+        assertEquals(
+          await lockedSave(scratch, serve, alice, env, "inherited"),
+          2,
+        );
+        proxy.up();
+        // a leader stopped mid-reply: renewals and commits are accepted, never
+        // answered
+        const hung: string[] = [];
+        const unhang: Array<() => void> = [];
+        proxy.answer = (request) => {
+          const path = new URL(request.url).pathname;
+          const renewal = request.method === "PUT" &&
+            /\/locks\/[^/]+$/.test(path);
+          const commit = request.method === "POST" && /\/commits$/.test(path);
+          if (!renewal && !commit) return Promise.resolve(undefined);
+          hung.push(`${request.method} ${path}`);
+          return new Promise((resolve) =>
+            unhang.push(() => resolve(new Response(null, { status: 503 })))
+          );
+        };
+        let outcome:
+          | { readonly version: number }
+          | { readonly error: unknown }
+          | undefined;
+        const saving = lockedSave(scratch, serve, alice, env, "frozen", {
+          deferred: true,
+        }).then(
+          (version) => outcome = { version },
+          (error) => outcome = { error },
+        );
+        try {
+          await waitFor(
+            () => outcome !== undefined,
+            "the leased write to go offline and queue",
+            { timeoutMs: 15_000 },
+          );
+        } finally {
+          for (const release of unhang) release();
+          await saving;
+        }
+        assertEquals(outcome, { version: 3 });
+        assertEquals(
+          hung.filter((call) => call.startsWith("POST ")),
+          [],
+          "no inherited entry was sent",
+        );
+        assertEquals(leaseRenewals(hung), 1);
+        assertEquals(await servedVersions(serve), [1]);
+
+        proxy.answer = undefined;
+        await command(scratch, alice, env, () => Promise.resolve());
+        assertEquals(await servedVersions(serve), [1, 2, 3]);
+      });
+    });
+  },
+});
+
+for (const inFlight of [false, true]) {
+  Deno.test({
+    name:
+      `serve offline, no leader: a command whose bind-time renewal is refused as not the leader${
+        inFlight ? ", forwarded in flight," : ""
+      } never sends the entries it inherited, and queues its own write`,
+    sanitizeOps: false,
+    sanitizeResources: false,
+    fn: async () => {
+      await withScratch(async (scratch) => {
+        const serve = await scratch.serve({ grants: TEAM });
+        const alice = await scratch.client("a");
+        await withProxy(serve, async (proxy) => {
+          const env = serveEnv(proxy, "alice-token");
+          await command(
+            scratch,
+            alice,
+            env,
+            (ctx) => saveOut(ctx, serve, "online"),
+          );
+          await takeLease(scratch, serve, alice, env);
+          await proxy.down();
+          assertEquals(
+            await lockedSave(scratch, serve, alice, env, "inherited"),
+            2,
+          );
+          proxy.up();
+          const refused = refuseWritesWithoutLeader(proxy, { inFlight });
+          assertEquals(
+            await lockedSave(scratch, serve, alice, env, "no leader", {
+              deferred: true,
+            }),
+            3,
+          );
+          assertEquals(
+            refused.filter((call) => call.startsWith("POST ")),
+            [],
+            "no inherited entry was sent",
+          );
+          assertEquals(leaseRenewals(refused), 1);
+          assertEquals(await servedVersions(serve), [1]);
+
+          proxy.answer = undefined;
+          await command(scratch, alice, env, () => Promise.resolve());
+          assertEquals(await servedVersions(serve), [1, 2, 3]);
+        });
+      });
+    },
+  });
+}

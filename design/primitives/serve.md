@@ -200,6 +200,15 @@ holding the writer lease leads and the others follow. A v3 bucket datastore
 classifies as remote with a control plane. See "Team mode: leader election
 and followers" in `design/enablers/datastores.md`.
 
+A follower that forwards to a frozen leader fails fast (swamp-club#4679). It
+marks the leader frozen when a forward is never sent (a connect-level failure)
+or when two forwards in a row go unanswered, each sent after the last timed
+out, so one slow commit never marks it. While the mark holds, forwards are
+refused at once with the retryable `503` `serve_not_leader`, never sent, so
+not in flight, and one forward every 5 s probes the leader
+(`FROZEN_LEADER_PROBE_MS`, `src/serve/leader_link.ts`). Any answer, or a
+change of leader, clears the mark.
+
 "Remote control plane" means the datastore extension advertises
 `capabilities().controlPlane` and exposes `controlPlaneStore()`. Otherwise serve
 uses `FileSystemControlPlaneStore` under the repository's `.swamp/_control/`
@@ -231,7 +240,7 @@ Everything below shares the one listener, dispatched in table order
 | HTTP | `/auth/dashboard/session` | same-origin browser session (its own guess limit, not the IP burst) | Dashboard session status, manual-token exchange and logout. It sets or clears the host-only `HttpOnly`, `SameSite=Strict`, `Path=/` cookie, which holds an opaque control-plane session id; TLS deployments also set `Secure`. |
 | HTTP POST | `/auth/dashboard/device`, `/auth/dashboard/device/token` | same-origin browser session (IP burst limit) | Browser OAuth device grant. Completion sets the dashboard session cookie and returns no server token; the CLI device-auth JSON contract remains unchanged. |
 | HTTP GET | `/auth/info` | none | `{ mode, verificationBaseUri? }` so clients pick a login flow |
-| HTTP GET | `/ready`, `/` and `/health` | none | `/ready` is 503 until startup completes (a team follower's included: its copy and commit effects caught up with the leader, with no timeout, see `design/enablers/datastores.md`) and again (`shutting_down`) once shutdown begins; `/` and `/health` answer 200 `{ status: "ok", version: "1" }`, or `{ status: "draining", version: "1" }` once shutdown begins (still 200, so a liveness probe never ends a drain), in every auth mode and name no schedule, webhook or setting: the dashboard and `/api/v1/health` show those to a caller who may read them (swamp-club#3842) |
+| HTTP GET | `/ready`, `/` and `/health` | none | `/ready` is 503 until startup completes (a team follower's included: its copy and commit effects caught up with the leader, with no timeout, see `design/enablers/datastores.md`) and again (`shutting_down`) once shutdown begins; a follower also answers 503 `follower_broken`, with a `reason`, after three local failures in a row to apply the leader's commits (a full disk, a read-model apply error) or once its copy's WAL passes 1 GiB, a team leader answers 503 `lead_lost` from the moment it finds its writer lease gone until it stops (a lost lease starts the leadership check at once, not on the next tick), while failures the leader or the network cause, dropped sockets, staleness and restores never count, since the load balancer drops a node whose `/ready` fails; `/` and `/health` answer 200 `{ status: "ok", version: "1" }`, or `{ status: "draining", version: "1" }` once shutdown begins (still 200, so a liveness probe never ends a drain), in every auth mode and name no schedule, webhook or setting: the dashboard and `/api/v1/health` show those to a caller who may read them (swamp-club#3842) |
 | HTTP GET | `/dashboard`, `/dashboard/*` | none for assets (the SPA logs in itself) | Static files from `packages/dashboard/dist`, SPA fallback to `index.html`; without the dist, 404 "Dashboard assets not available in this build" |
 
 `/auth/dashboard/session` does not spend the IP burst, so traffic on other

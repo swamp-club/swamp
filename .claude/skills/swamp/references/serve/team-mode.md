@@ -13,6 +13,7 @@ setup **team mode** in anything written for users.
 - [What runs where](#what-runs-where)
 - [Who a run names](#who-a-run-names)
 - [Leases](#leases)
+- [Exit codes when serve or storage is cut off](#exit-codes-when-serve-or-storage-is-cut-off)
 - [Approvals, signals and cancel](#approvals-signals-and-cancel)
 - [Known costs and limits](#known-costs-and-limits)
 
@@ -76,12 +77,13 @@ its commit feed carries the refresh (the previous token works until it expires).
   `serverAddress: <serve URL>`.
 - Log in once: `swamp auth server-login --server <serve URL>`. The checkout
   needs no storage credentials.
-- When serve is unreachable, the checkout works offline from its copy. The saved
-  work is sent by the next command that writes to the datastore once serve is
-  reachable; a command that only reads does not send it. A method that changes
-  things runs offline only under a lease taken while online: see the "Team Mode:
-  Leases at Serve" section of
-  [concurrency.md](../behavior/references/concurrency.md).
+- When serve is unreachable, or reachable but without a leader during a
+  takeover, the checkout works offline from its copy. The saved work is sent by
+  the next command that writes to the datastore once serve is reachable; a
+  command that only reads does not send it, and other checkouts do not see the
+  saved work until it is sent. A method that changes things runs offline only
+  under a lease taken while online: see the "Team Mode: Leases at Serve" section
+  of [concurrency.md](../behavior/references/concurrency.md).
 
 ## Tokens
 
@@ -123,6 +125,25 @@ principal, whether it is an explicit lease, and when it ends;
 the wait (`SWAMP_LOCK_TIMEOUT_MS`, 60 s by default), the refusal comes at once
 (exit 75) instead of after the wait; a run's renewing lease is still waited for.
 
+## Exit codes when serve or storage is cut off
+
+- **Exit 75:** nothing of the command changed, so rerun it: a read, a lock wait,
+  a bookkeeping-only command, `datastore_v3_*_unreachable`, or
+  `serve_not_leader` refused before it reached the leader.
+- **Exit 1 with one of those codes:** an earlier change of the same command
+  landed, so rerunning repeats it: resume or recover the run instead.
+- **Exit 1, `datastore_v3_commit_may_land`:** the outage ended a command whose
+  last effectful change may have landed, and `--json` carries `inFlight: true`
+  (as does `serve_not_leader` relayed in flight). Do not rerun blindly: check
+  the run (`swamp workflow history`) and the datastore, then resume or recover
+  it.
+- **Lease lost or lapsed** keeps its own code: exit 75 reruns, exit 1 resumes or
+  recovers the run.
+- **`--server` runs:** a start is retried for up to 120 s across a leader
+  takeover, but only where serve never accepted it. A start refused in flight is
+  not resent and exits 1 with `datastore_v3_commit_may_land`; serve unreachable
+  exits 75 (`datastore_v3_serve_unreachable`).
+
 ## Approvals, signals and cancel
 
 - **Approve and reject** are decided on serve, under the decider's grant.
@@ -141,8 +162,10 @@ the wait (`SWAMP_LOCK_TIMEOUT_MS`, 60 s by default), the refusal comes at once
   it. Each start is a small record of its own (about 1.5 KiB: job, step and
   start time), not the run record again. A start that cannot commit after its
   retries puts the step back to pending and fails the run with
-  `datastore_v3_commit_unreachable` (exit 75); resume or recover it. A member
-  whose serve predates step starts commits each start as the whole run record.
+  `datastore_v3_commit_unreachable` (exit 75), or `datastore_v3_commit_may_land`
+  (exit 1) when an earlier step's change may have landed; resume or recover it.
+  A member whose serve predates step starts commits each start as the whole run
+  record.
 - **Cancel stops only this checkout's processes.** Two checkouts sharing a
   filesystem datastore no longer stop each other's runs; cancel a run from the
   checkout that started it, or through serve.

@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertFalse } from "@std/assert";
+import { assertEquals, assertFalse, assertThrows } from "@std/assert";
 import { withMockedEnv } from "../../infrastructure/persistence/path_test_helpers.ts";
 import { join } from "@std/path";
 import {
@@ -43,12 +43,14 @@ import {
   mergeSetupDatastoreBlock,
   planConfigTierMerge,
   PULLED_EXTENSIONS_SUBDIR,
+  readSnapshotIntervalKey,
   REPO_LOCAL_STREAM_SUBDIRS,
   resolveDurableWrites,
   resolveLockTimeoutMs,
   resolveSyncTimeoutMs,
   SYNC_TIMEOUT_ENV_VAR,
 } from "./datastore_config.ts";
+import { UserError } from "../errors.ts";
 
 const filesystemConfig: FilesystemDatastoreConfig = {
   type: "filesystem",
@@ -633,4 +635,37 @@ Deno.test("mergeSetupDatastoreBlock: keeps the durable setting across a setup re
     ),
     { type: "filesystem", path: "/new", durable: false },
   );
+});
+
+Deno.test("readSnapshotIntervalKey: whole minutes or hours from 5m to 24h; absent reads as unset", () => {
+  assertEquals(readSnapshotIntervalKey(undefined), undefined);
+  assertEquals(readSnapshotIntervalKey("5m"), 5 * 60_000);
+  assertEquals(readSnapshotIntervalKey("30m"), 30 * 60_000);
+  assertEquals(readSnapshotIntervalKey("1h"), 60 * 60_000);
+  assertEquals(readSnapshotIntervalKey("24h"), 24 * 60 * 60_000);
+  assertEquals(readSnapshotIntervalKey("1440m"), 24 * 60 * 60_000);
+  for (
+    const bad of [
+      "4m",
+      "25h",
+      "1441m",
+      "0h",
+      "01h",
+      "1.5h",
+      "90s",
+      "1d",
+      "1h30m",
+      "",
+      "-1h",
+      3_600_000,
+      null,
+      true,
+    ]
+  ) {
+    assertThrows(
+      () => readSnapshotIntervalKey(bad),
+      UserError,
+      "Invalid 'snapshotInterval'",
+    );
+  }
 });

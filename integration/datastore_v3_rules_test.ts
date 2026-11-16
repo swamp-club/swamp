@@ -199,6 +199,8 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   // swamp-club#4195: a serve-mode checkout's status lists the explicit
   // leases it holds, from its own record of them.
   "src/cli/commands/datastore_status.ts -> src/infrastructure/datastore_v3/explicit_model_leases.ts",
+  // status names each write a rejected entry holds.
+  "src/libswamp/datastores/status.ts -> src/domain/datastore_v3/rejected_write.ts",
   "src/cli/commands/serve.ts -> src/infrastructure/datastore_v3/bucket_write_retry.ts",
   "src/cli/commands/serve.ts -> src/infrastructure/datastore_v3/control_plane_lease_store.ts",
   "src/cli/commands/serve.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
@@ -271,6 +273,7 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   "src/cli/commands/serve.ts -> src/infrastructure/datastore_v3/litestream/v3_replication.ts",
   "src/cli/v3_teardown.ts -> src/domain/datastore_v3/litestream_replication.ts",
   "src/cli/v3_teardown.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
+  "src/cli/v3_teardown.ts -> src/infrastructure/datastore_v3/datastore_outage.ts",
   // swamp-club#3473: the end-of-command retention pass compacts v3 history
   // after a pass, as the writer, before teardown closes the hold.
   "src/cli/retention_teardown.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
@@ -300,9 +303,6 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   "src/cli/commands/model_method_run.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",
   "src/cli/commands/workflow_resume.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",
   "src/cli/commands/workflow_run.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",
-  "src/cli/v3_teardown.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",
-  "src/cli/v3_teardown.ts -> src/domain/datastore_v3/read_model.ts",
-  "src/cli/v3_teardown.ts -> src/domain/datastore_v3/writer_lease.ts",
   "src/presentation/output/error_output.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",
   "src/presentation/output/error_output.ts -> src/domain/datastore_v3/read_model.ts",
   // status says what to do about a run record refused for
@@ -368,6 +368,10 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   // names them, and a follower names them.
   "src/serve/handlers/commit_feed_handlers.ts -> src/infrastructure/datastore_v3/serve_datastore_client.ts",
   "src/serve/follower_feed.ts -> src/infrastructure/datastore_v3/serve_datastore_client.ts",
+  // a feed apply failing on the network never makes /ready report the
+  // follower broken.
+  "src/serve/follower_feed.ts -> src/infrastructure/datastore_v3/network_failure.ts",
+  "src/serve/follower_feed.ts -> src/infrastructure/datastore_v3/datastore_outage.ts",
   "src/serve/handlers/shared.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
   "src/serve/serve_commit_effects.ts -> src/domain/datastore_v3/commit_effects.ts",
   "src/serve/serve_commit_effects.ts -> src/domain/datastore_v3/commit_store.ts",
@@ -491,6 +495,10 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   // swamp-club#4253: another command setting up a serve-mode checkout's copy
   // is a stable, retryable code the CLI maps to exit 75.
   "src/presentation/output/error_output.ts -> src/domain/datastore_v3/copy_setup_raced_error.ts",
+  // a workflow or method failure keeps a datastore or serve outage in its
+  // cause and reports its code, so teardown and the exit see it.
+  "src/libswamp/errors.ts -> src/domain/datastore_v3/writer_lease.ts",
+  "src/libswamp/errors.ts -> src/infrastructure/datastore_v3/datastore_outage.ts",
   // an admin force-releases a lease by id without opening the checkout's
   // copy; a refused step names the lease-lost code; a lapsed lease decides a
   // run's exit; serve unreachable bounds the teardown.
@@ -499,9 +507,13 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   "src/cli/commands/workflow_resume.ts -> src/infrastructure/datastore_v3/serve_lock.ts",
   "src/cli/commands/workflow_run.ts -> src/infrastructure/datastore_v3/serve_lock.ts",
   "src/cli/repo_context.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",
-  "src/cli/v3_teardown.ts -> src/infrastructure/datastore_v3/serve_upstream_errors.ts",
   // a namespace merge keeps file times, so it owes the checkout a full recovery
   "src/cli/commands/datastore_namespace.ts -> src/infrastructure/datastore_v3/v3_catalog.ts",
+  // a --server run's start reads serve's not-leader refusal and reports the
+  // datastore's unreachable and may-land codes, so the exit codes match
+  "src/cli/remote_run.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",
+  "src/cli/remote_run.ts -> src/domain/datastore_v3/serve_leader.ts",
+  "src/cli/remote_run.ts -> src/domain/datastore_v3/writer_lease.ts",
 ];
 
 Deno.test("datastore v3: no production code outside v3 imports it", async () => {
@@ -551,8 +563,11 @@ const CHECKPOINT = /wal_(?:auto)?checkpoint/i;
 
 /** v3 files that mention a checkpoint pragma, as `file:line`. */
 const PINNED_V3_CHECKPOINTS: readonly string[] = [
+  // Off on every open connection before this node's sidecar starts on a copy
+  // a serve follower opened with the default.
+  "src/infrastructure/datastore_v3/sqlite_commit_store.ts:3153",
   // Auto-checkpoint off on a copy Litestream replicates (swamp-club#3935).
-  "src/infrastructure/datastore_v3/sqlite_commit_store.ts:3118",
+  "src/infrastructure/datastore_v3/sqlite_commit_store.ts:3180",
 ];
 
 Deno.test("datastore v3: no v3 code forces or tunes a WAL checkpoint", async () => {
@@ -652,7 +667,7 @@ const PINNED_STORAGE_CALLS: readonly string[] = [
   // swamp-club#3534: setup checks a bucket holds no chunk, and the binding
   // gives a bucket v3 datastore its chunk storage.
   "src/infrastructure/datastore_v3/v3_bucket_setup.ts:105",
-  "src/infrastructure/datastore_v3/v3_datastore_binding.ts:275",
+  "src/infrastructure/datastore_v3/v3_datastore_binding.ts:285",
 ];
 
 Deno.test("datastore v3: no production code calls a provider's storage()", async () => {

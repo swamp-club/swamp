@@ -19,6 +19,7 @@
 
 import type { DeferredExpression } from "../../domain/expressions/deferred_expression.ts";
 import {
+  datastoreOutageOf,
   type SwampError,
   validationFailed,
   wordedSwampError,
@@ -2214,7 +2215,8 @@ export function methodExecutionFailed(
   const shown = redactedError(cause, redactor);
   // keeps the cause's model wording
   return carryModelWording(shown, {
-    code: secretRefusalCode(cause) ?? "method_execution_failed",
+    code: secretRefusalCode(cause) ?? datastoreOutageOf(cause)?.code ??
+      "method_execution_failed",
     message: executionErrorFrom(cause, redactor).message,
     cause: shown instanceof Error ? shown : undefined,
   });

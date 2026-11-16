@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { StepStart } from "../../domain/workflows/step_start.ts";
+import { ServeUnreachableError } from "../../infrastructure/datastore_v3/serve_upstream_errors.ts";
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import {
   deferCompletedForOutputs,
@@ -3026,5 +3027,25 @@ Deno.test("RunAttributeBudget.resolveChild: an error other than RangeError from 
       ),
     TypeError,
     "not serialisable",
+  );
+});
+
+Deno.test("workflowExecutionFailed: a serve outage in the cause reports its datastore code; any other failure keeps workflow_execution_failed", () => {
+  const unreachable = new ServeUnreachableError(
+    "http://serve.test",
+    "maybe",
+    new Error("Serve did not start its reply"),
+  );
+  const outage = workflowExecutionFailed(
+    new Error("the run stopped", { cause: unreachable }),
+  );
+  assertEquals(outage.code, "datastore_v3_serve_unreachable");
+  assertEquals(
+    workflowExecutionFailed(new UserError("x", "serve_not_leader")).code,
+    "workflow_execution_failed",
+  );
+  assertEquals(
+    workflowExecutionFailed(new Error("boom")).code,
+    "workflow_execution_failed",
   );
 });

@@ -26,6 +26,7 @@ import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_reg
 import { FilesystemDatastoreVerifier } from "../../infrastructure/persistence/filesystem_datastore_verifier.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { OutboxEntry } from "../../domain/datastore_v3/commit_outbox.ts";
+import { rejectedWritesOf } from "../../domain/datastore_v3/rejected_write.ts";
 import type { QuarantineRecord } from "../../domain/datastore_v3/quarantine.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
@@ -76,6 +77,18 @@ export interface DatastoreOutboxEntryStatus {
   /** what the refusal was, when it has a code of its own */
   code?: string;
   savedAt: string;
+  /** a rejected entry's data versions, by the numbers they were saved under */
+  writes?: DatastoreOutboxWriteStatus[];
+  /** a rejected entry the next flush sends again, renumbered */
+  retryable?: boolean;
+  /** what to do about a rejected entry */
+  next?: string;
+}
+
+export interface DatastoreOutboxWriteStatus {
+  behavior: string;
+  name: string;
+  version: number;
 }
 
 export interface DatastoreQuarantineStatus {
@@ -130,14 +143,30 @@ export function outboxEntryStatusesOf(
   const listed: DatastoreOutboxEntryStatus[] = [];
   for (const entry of entries) {
     if (entry.state === undefined) continue;
-    listed.push({
+    const status: DatastoreOutboxEntryStatus = {
       state: entry.state,
       partition: entry.commit.partition.toString(),
       txnId: entry.commit.txnId,
       ...(entry.stateReason === undefined ? {} : { reason: entry.stateReason }),
       ...(entry.stateCode === undefined ? {} : { code: entry.stateCode }),
       savedAt: new Date(entry.createdAt).toISOString(),
-    });
+    };
+    if (entry.state === "rejected") {
+      const writes = rejectedWritesOf(entry.commit, {
+        reason: entry.stateReason ?? "",
+        ...(entry.stateCode === undefined ? {} : { code: entry.stateCode }),
+      });
+      status.writes = writes.flatMap((write) =>
+        write.name === undefined || write.version === undefined ? [] : [{
+          behavior: write.behavior,
+          name: write.name,
+          version: write.version,
+        }]
+      );
+      status.retryable = writes[0].retryable;
+      status.next = writes[0].next;
+    }
+    listed.push(status);
   }
   return listed;
 }

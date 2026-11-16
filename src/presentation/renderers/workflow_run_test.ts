@@ -34,6 +34,7 @@ import {
   showsDataAttributes,
 } from "./workflow_run.ts";
 import { errorPaths, markErrorPaths, UserError } from "../../domain/errors.ts";
+import { CommitUnreachableError } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import {
   deeplyNestedAttributes,
   nestedTreeDepth,
@@ -3618,4 +3619,41 @@ Deno.test("JsonWorkflowRunRenderer: a fan-out gate carries its prompt data in ap
   const parsed = JSON.parse(logs.at(-1)!);
   assertEquals(parsed.approvalRequired.stepId, "patch[approve-plan]");
   assertEquals(parsed.approvalRequired.fanOutGate, PLAN_GATE_PROMPT);
+});
+
+Deno.test("WorkflowRunRenderer: an error event cut off from the datastore rethrows with its cause and the outage's code, in both modes", () => {
+  for (const mode of ["log", "json"] as const) {
+    const handlers = createWorkflowRunRenderer(mode, {
+      workflowName: "test-pipeline",
+    }).handlers();
+    const cause = new CommitUnreachableError(new Error("connection refused"));
+    const error = assertThrows(
+      () =>
+        handlers.error({
+          kind: "error",
+          error: {
+            code: "workflow_execution_failed",
+            message: `Workflow execution failed: ${cause.message}`,
+            cause,
+          },
+        }),
+      UserError,
+    );
+    assertEquals(error.code, "datastore_v3_commit_unreachable", mode);
+    assertEquals(error.cause, cause, mode);
+    const other = assertThrows(
+      () =>
+        handlers.error({
+          kind: "error",
+          error: {
+            code: "workflow_execution_failed",
+            message: "Workflow execution failed: boom",
+            cause: new Error("boom"),
+          },
+        }),
+      UserError,
+    );
+    assertEquals(other.code, "workflow_execution_failed", mode);
+    assertEquals(other.cause, undefined, mode);
+  }
 });
