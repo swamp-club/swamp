@@ -190,6 +190,10 @@ function rowKey(row: {
   return `${row.namespace}\0${row.type_normalized}\0${row.model_id}\0${row.data_name}\0${row.version}`;
 }
 
+function groupKeyOf(row: CatalogDataName): string {
+  return `${row.namespace}\0${row.type_normalized}\0${row.model_id}\0${row.data_name}`;
+}
+
 export interface CatalogRowKey {
   readonly namespace: string;
   readonly type_normalized: string;
@@ -551,6 +555,7 @@ export class CatalogStore {
       CREATE INDEX IF NOT EXISTS ${GROUP_STEP_INDEX} ON catalog(namespace, type_normalized, model_id, data_name, step_name, version);
       CREATE INDEX IF NOT EXISTS ${STEP_LATEST_FLAG_INDEX} ON catalog(namespace, type_normalized, model_id, data_name, is_step_latest, version);
       CREATE INDEX IF NOT EXISTS idx_catalog_latest_lookup ON catalog(model_name, data_name, is_latest, namespace);
+      CREATE INDEX IF NOT EXISTS idx_catalog_pending ON catalog(namespace, type_normalized, model_id, data_name, version) WHERE is_pending = 1;
 
       CREATE TABLE IF NOT EXISTS catalog_renames (
         namespace       TEXT NOT NULL DEFAULT '',
@@ -766,21 +771,59 @@ export class CatalogStore {
   ): void {
     this.db.exec("BEGIN IMMEDIATE");
     try {
-      const pending = new Set(
-        (this.db.prepare(
-          `SELECT namespace, type_normalized, model_id, data_name, version
+      this.#writeUnlessPending(rows, computeFlags);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  /**
+   * bulkUpsert for a populated catalog: each written name's flags are
+   * recomputed over its stored rows in the same transaction, so no reader sees
+   * two latest rows for one name
+   */
+  upsertNamesRecomputingFlags(rows: readonly CatalogRow[]): void {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const written = this.#writeUnlessPending(rows);
+      const groups = new Map(written.map((row) => [groupKeyOf(row), row]));
+      for (const row of groups.values()) {
+        this.recomputeGroupFlags(
+          row.namespace,
+          row.type_normalized,
+          row.model_id,
+          row.data_name,
+          () => {},
+        );
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  #writeUnlessPending(
+    rows: readonly CatalogRow[],
+    computeFlags?: (rows: CatalogRow[]) => void,
+  ): CatalogRow[] {
+    const pending = new Set(
+      (this.db.prepare(
+        `SELECT namespace, type_normalized, model_id, data_name, version
            FROM catalog WHERE is_pending = 1`,
-        ).all() as {
-          namespace: string;
-          type_normalized: string;
-          model_id: string;
-          data_name: string;
-          version: number;
-        }[]).map(rowKey),
-      );
-      const toWrite = rows.filter((row) => !pending.has(rowKey(row)));
-      computeFlags?.(toWrite);
-      const stmt = this.db.prepare(`
+      ).all() as {
+        namespace: string;
+        type_normalized: string;
+        model_id: string;
+        data_name: string;
+        version: number;
+      }[]).map(rowKey),
+    );
+    const toWrite = rows.filter((row) => !pending.has(rowKey(row)));
+    computeFlags?.(toWrite);
+    const stmt = this.db.prepare(`
         INSERT OR REPLACE INTO catalog (
           namespace, type_normalized, model_id, data_name, id, version, is_latest, is_step_latest, model_name,
           spec_name, data_type, content_type, lifetime, garbage_collection, lifecycle, owner_type,
@@ -789,44 +832,40 @@ export class CatalogStore {
           is_pending, pending_pid, pending_host
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
-      for (const row of toWrite) {
-        stmt.run(
-          row.namespace,
-          row.type_normalized,
-          row.model_id,
-          row.data_name,
-          row.id,
-          row.version,
-          row.is_latest,
-          row.is_step_latest,
-          row.model_name,
-          row.spec_name,
-          row.data_type,
-          row.content_type,
-          row.lifetime,
-          row.garbage_collection,
-          row.lifecycle,
-          row.owner_type,
-          row.streaming,
-          row.size,
-          row.created_at,
-          row.tags,
-          row.owner_ref,
-          row.workflow_run_id,
-          row.workflow_name,
-          row.job_name,
-          row.step_name,
-          row.source,
-          row.is_pending ?? 0,
-          row.pending_pid ?? 0,
-          row.pending_host ?? "",
-        );
-      }
-      this.db.exec("COMMIT");
-    } catch (error) {
-      this.db.exec("ROLLBACK");
-      throw error;
+    for (const row of toWrite) {
+      stmt.run(
+        row.namespace,
+        row.type_normalized,
+        row.model_id,
+        row.data_name,
+        row.id,
+        row.version,
+        row.is_latest,
+        row.is_step_latest,
+        row.model_name,
+        row.spec_name,
+        row.data_type,
+        row.content_type,
+        row.lifetime,
+        row.garbage_collection,
+        row.lifecycle,
+        row.owner_type,
+        row.streaming,
+        row.size,
+        row.created_at,
+        row.tags,
+        row.owner_ref,
+        row.workflow_run_id,
+        row.workflow_name,
+        row.job_name,
+        row.step_name,
+        row.source,
+        row.is_pending ?? 0,
+        row.pending_pid ?? 0,
+        row.pending_host ?? "",
+      );
     }
+    return toWrite;
   }
 
   /**
@@ -2308,6 +2347,71 @@ export class CatalogStore {
     } catch (error) {
       this.db.exec("ROLLBACK");
       throw error;
+    }
+  }
+
+  /** safe to chunk because each cut falls between data names */
+  async enforceUniqueLatestInChunks(
+    computeFlags: (rows: CatalogRow[]) => void,
+    chunkRows: number = ITERATE_PAGE_SIZE,
+  ): Promise<number> {
+    const flagged = "(is_latest = 1 OR is_step_latest = 1)";
+    const order =
+      "ORDER BY namespace, type_normalized, model_id, data_name, version";
+    let after: string[] | undefined;
+    let changed = 0;
+    while (true) {
+      let done = false;
+      this.db.exec("BEGIN IMMEDIATE");
+      try {
+        const afterWhere = after === undefined
+          ? ""
+          : " AND (namespace, type_normalized, model_id, data_name) > (?, ?, ?, ?)";
+        const page = this.db.prepare(
+          `SELECT * FROM catalog WHERE ${flagged}${afterWhere} ${order} LIMIT ?`,
+        ).all(
+          ...(after ?? []),
+          chunkRows + 1,
+        ) as unknown as CatalogRow[];
+        let rows = page;
+        if (page.length <= chunkRows) {
+          done = true;
+        } else {
+          const cut = groupKeyOf(page[chunkRows]);
+          rows = page.slice(0, chunkRows).filter((row) =>
+            groupKeyOf(row) !== cut
+          );
+          if (rows.length === 0) {
+            const group = page[chunkRows];
+            rows = this.db.prepare(
+              `SELECT * FROM catalog WHERE (is_latest = 1 OR is_step_latest = 1)
+                 AND namespace = ? AND type_normalized = ? AND model_id = ?
+                 AND data_name = ? ${order}`,
+            ).all(
+              group.namespace,
+              group.type_normalized,
+              group.model_id,
+              group.data_name,
+            ) as unknown as CatalogRow[];
+          }
+        }
+        if (rows.length > 0) {
+          const last = rows[rows.length - 1];
+          after = [
+            last.namespace,
+            last.type_normalized,
+            last.model_id,
+            last.data_name,
+          ];
+          changed += this.writeRecomputedFlags(rows, computeFlags);
+        }
+        this.db.exec("COMMIT");
+      } catch (error) {
+        this.db.exec("ROLLBACK");
+        throw error;
+      }
+      if (done) return changed;
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
     }
   }
 

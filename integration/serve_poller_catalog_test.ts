@@ -42,7 +42,11 @@ import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { flushDatastoreSync } from "../src/infrastructure/persistence/datastore_sync_coordinator.ts";
 import { ReadWriteLock } from "../src/infrastructure/stream/read_write_lock.ts";
 import { requireInitializedRepoUnlocked } from "../src/cli/repo_context.ts";
-import { AccessDataPoller } from "../src/serve/access_data_poller.ts";
+import {
+  AccessDataPoller,
+  typeScopedCatalogRefresh,
+} from "../src/serve/access_data_poller.ts";
+import { GROUP_MODEL_TYPE } from "../src/domain/models/access/group_model.ts";
 import { ConfigPoller } from "../src/serve/config_poller.ts";
 import type { ExtensionReloadResult } from "../src/serve/extension_reload.ts";
 import { RuntimeDataPoller } from "../src/serve/runtime_data_poller.ts";
@@ -75,7 +79,7 @@ const PINNED_GAPS: readonly string[] = [
   "s2 delete: S's latest lookup still returns the row P deleted",
   "s5 void: RuntimeDataPoller does not invalidate",
   "s5 void: S's query misses P's row",
-  "s5 void: AccessDataPoller does not invalidate",
+  "s5 void: AccessDataPoller does not refresh the catalog",
   "s5 void: S's policy still denies P's grant",
 ];
 
@@ -442,11 +446,20 @@ function policyLoader(s: Serve): PolicySnapshotLoader {
 function accessPoller(
   s: Serve,
   loader: PolicySnapshotLoader,
+  refreshes: { count: number },
 ): AccessDataPoller {
+  const refresh = typeScopedCatalogRefresh(
+    s.ctx.repoContext.dataQueryService,
+    { invalidate: s.catalogInvalidate },
+    [GRANT_MODEL_TYPE, GROUP_MODEL_TYPE],
+  );
   return new AccessDataPoller({
     syncService: s.sync,
     policySnapshotLoader: loader,
-    catalogInvalidate: s.catalogInvalidate,
+    catalogRefresh: async () => {
+      refreshes.count++;
+      await refresh();
+    },
     pollIntervalMs: POLL_INTERVAL_MS,
   });
 }
@@ -469,8 +482,10 @@ Deno.test("AccessDataPoller: s3 a peer's grant and its revocation reach S's poli
         (peer) => peerSaveGrant(peer, peerGrant(grantId, "active")),
       );
       assertEquals(decision(loader), "deny");
-      await runCycles(accessPoller(s, loader), s.sync);
-      assertEquals(s.invalidations.count, 1);
+      const refreshes = { count: 0 };
+      await runCycles(accessPoller(s, loader, refreshes), s.sync);
+      assertEquals(refreshes.count, 1);
+      assertEquals(s.invalidations.count, 0, "only grant rows are refreshed");
       assertEquals(decision(loader), "allow");
 
       await onPeer(
@@ -478,8 +493,9 @@ Deno.test("AccessDataPoller: s3 a peer's grant and its revocation reach S's poli
         (peer) => peerSaveGrant(peer, peerGrant(grantId, "revoked")),
       );
       assertEquals(decision(loader), "allow");
-      await runCycles(accessPoller(s, loader), s.sync);
-      assertEquals(s.invalidations.count, 2);
+      await runCycles(accessPoller(s, loader, refreshes), s.sync);
+      assertEquals(refreshes.count, 2);
+      assertEquals(s.invalidations.count, 0);
       assertEquals(decision(loader), "deny");
     } finally {
       await loader.dispose();
@@ -597,11 +613,12 @@ Deno.test("pollers: s5 a void pull result invalidates in ConfigPoller only", asy
         repos,
         (peer) => peerSaveGrant(peer, peerGrant(crypto.randomUUID(), "active")),
       );
-      await runCycles(accessPoller(s, loader), s.sync);
+      const refreshes = { count: 0 };
+      await runCycles(accessPoller(s, loader, refreshes), s.sync);
       expectOrGap(
         gaps,
-        "s5 void: AccessDataPoller does not invalidate",
-        s.invalidations.count,
+        "s5 void: AccessDataPoller does not refresh the catalog",
+        refreshes.count,
         1,
         0,
       );

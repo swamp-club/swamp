@@ -52,6 +52,7 @@ import { BinaryContentPredicateError } from "./binary_content_predicate_error.ts
 import { ModelType } from "../models/model_type.ts";
 import { Data } from "./data.ts";
 import { createQuerySort, type QueryCursorPosition } from "./query_sort.ts";
+import { waitFor } from "@swamp-club/swamp-testing";
 
 function makeRow(overrides: Partial<CatalogRow> = {}): CatalogRow {
   return {
@@ -6944,4 +6945,244 @@ Deno.test("DataQueryService: a type tag equality pushes down to data_type and ma
     data_type: "",
   }));
   assertEquals(names('tags.type == "agent-session"'), ["session"]);
+});
+
+function writeTypeData(
+  dir: string,
+  type: string,
+  names: number,
+  versions: number,
+  modelName = "ingest",
+): void {
+  for (let n = 0; n < names; n++) {
+    const nameDir = join(dir, ".swamp", "data", type, "model-001", `d-${n}`);
+    for (let version = 1; version <= versions; version++) {
+      const versionDir = join(nameDir, String(version));
+      ensureDirSync(versionDir);
+      Deno.writeTextFileSync(join(versionDir, "raw"), "{}");
+      Deno.writeTextFileSync(
+        join(versionDir, "metadata.yaml"),
+        stringifyYaml({
+          name: `d-${n}`,
+          id: crypto.randomUUID(),
+          version,
+          contentType: "application/json",
+          lifetime: "infinite",
+          garbageCollection: 10,
+          streaming: false,
+          tags: { type: "resource", specName: "result", modelName },
+          ownerDefinition: { ownerType: "model-method", ownerRef: "test" },
+          createdAt: "2026-01-01T00:00:00.000Z",
+        }),
+      );
+    }
+    Deno.writeTextFileSync(join(nameDir, "latest"), String(versions));
+  }
+}
+
+function latestVersions(catalog: CatalogStore, type: string): string[] {
+  return [...catalog.iterate()]
+    .filter((row) => row.type_normalized === type && row.is_latest === 1)
+    .map((row) => `${row.data_name}@${row.version}`)
+    .sort();
+}
+
+Deno.test("DataQueryService: a backfill larger than one chunk lets timers run between its catalog commits", async () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-query-backfill-yield-" });
+  const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
+  using _cleanup = cleanupOnDispose(catalog, dir);
+  writeTypeData(dir, "test-model", 60, 20);
+
+  let commits = 0;
+  const upsert = catalog.upsertNamesRecomputingFlags.bind(catalog);
+  catalog.upsertNamesRecomputingFlags = (rows) => {
+    upsert(rows);
+    commits++;
+  };
+  // a timer firing with some commits made and more to come ran between them
+  const seenBetween: number[] = [];
+  const tick = () => {
+    if (commits > 0) seenBetween.push(commits);
+    timer = setTimeout(tick, 0);
+  };
+  let timer = setTimeout(tick, 0);
+  try {
+    const service = new DataQueryService(
+      catalog,
+      new FileSystemUnifiedDataRepository(dir, undefined, catalog),
+    );
+    await service.query('modelName == "ingest"');
+  } finally {
+    clearTimeout(timer);
+  }
+
+  assert(commits > 1, `expected chunked commits, got ${commits}`);
+  assert(
+    seenBetween.some((seen) => seen < commits),
+    `no timer ran between the ${commits} commits`,
+  );
+  assertEquals(catalog.isPopulated(), true);
+  assertEquals(catalog.count(), 1200);
+  assertEquals(latestVersions(catalog, "test-model").length, 60);
+});
+
+Deno.test("DataQueryService: services sharing one catalog and data repository walk the disk once for a backfill", async () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-query-backfill-once-" });
+  const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
+  using _cleanup = cleanupOnDispose(catalog, dir);
+  writeTypeData(dir, "test-model", 3, 2);
+  const dataRepo = new FileSystemUnifiedDataRepository(dir, undefined, catalog);
+  let walks = 0;
+  const findAllGlobal = dataRepo.findAllGlobal.bind(dataRepo);
+  dataRepo.findAllGlobal = (options) => {
+    walks++;
+    return findAllGlobal(options);
+  };
+
+  const first = new DataQueryService(catalog, dataRepo);
+  const second = new DataQueryService(catalog, dataRepo);
+  await Promise.all([
+    first.query('modelName == "ingest"'),
+    second.query('modelName == "ingest"'),
+    second.getLatestRecord("ingest", "d-0"),
+  ]);
+  assertEquals(walks, 1);
+
+  catalog.invalidate();
+  await second.query('modelName == "ingest"');
+  assertEquals(walks, 2, "a later invalidation starts a fresh walk");
+});
+
+Deno.test("DataQueryService.refreshTypes: re-reads only the given types and keeps the catalog populated", async () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-query-refresh-types-" });
+  const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
+  using _cleanup = cleanupOnDispose(catalog, dir);
+  writeTypeData(dir, "access-model", 2, 1, "access");
+  writeTypeData(dir, "other-model", 2, 1, "other");
+  const service = new DataQueryService(
+    catalog,
+    new FileSystemUnifiedDataRepository(dir, undefined, catalog),
+  );
+  await service.query("true");
+  assertEquals(latestVersions(catalog, "access-model"), ["d-0@1", "d-1@1"]);
+
+  writeTypeData(dir, "access-model", 3, 2, "access");
+  writeTypeData(dir, "other-model", 2, 2, "other");
+  // a peer's GC removed d-0@1, so only the stored row still flags it latest
+  Deno.removeSync(
+    join(dir, ".swamp", "data", "access-model", "model-001", "d-0", "1"),
+    { recursive: true },
+  );
+  // a reader running between the refresh's steps never sees two latest rows
+  let mostLatest = 0;
+  const tick = () => {
+    for (const name of ["d-0", "d-1"]) {
+      const latest = [...catalog.iterate()].filter((row) =>
+        row.type_normalized === "access-model" && row.data_name === name &&
+        row.is_latest === 1
+      ).length;
+      mostLatest = Math.max(mostLatest, latest);
+    }
+    timer = setTimeout(tick, 0);
+  };
+  let timer = setTimeout(tick, 0);
+  try {
+    await service.refreshTypes([ModelType.create("access-model")]);
+  } finally {
+    clearTimeout(timer);
+  }
+  assertEquals(mostLatest, 1);
+
+  assertEquals(catalog.isPopulated(), true);
+  assertEquals(latestVersions(catalog, "access-model"), [
+    "d-0@2",
+    "d-1@2",
+    "d-2@2",
+  ]);
+  assertEquals(latestVersions(catalog, "other-model"), ["d-0@1", "d-1@1"]);
+});
+
+Deno.test("DataQueryService.refreshTypes: leaves an unpopulated catalog to its full backfill", async () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-query-refresh-empty-" });
+  const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
+  using _cleanup = cleanupOnDispose(catalog, dir);
+  writeTypeData(dir, "access-model", 2, 1, "access");
+  const service = new DataQueryService(
+    catalog,
+    new FileSystemUnifiedDataRepository(dir, undefined, catalog),
+  );
+
+  await service.refreshTypes([ModelType.create("access-model")]);
+
+  assertEquals(catalog.count(), 0);
+  assertEquals(catalog.isPopulated(), false);
+});
+
+Deno.test("DataQueryService: a reader that does not wait for a backfill never sees two latest rows for one name", async () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-query-backfill-flags-" });
+  const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
+  using _cleanup = cleanupOnDispose(catalog, dir);
+  writeTypeData(dir, "test-model", 1, 2);
+  // a newer version the walk cannot see: written through after the walk read
+  // the name, or held only remotely
+  catalog.upsert(makeRow({ data_name: "d-0", version: 5, id: "newer" }));
+  catalog.invalidate();
+
+  let mostLatest = 0;
+  const tick = () => {
+    const latest =
+      [...catalog.iterate()].filter((row) =>
+        row.data_name === "d-0" && row.is_latest === 1
+      ).length;
+    mostLatest = Math.max(mostLatest, latest);
+    timer = setTimeout(tick, 0);
+  };
+  let timer = setTimeout(tick, 0);
+  try {
+    await new DataQueryService(
+      catalog,
+      new FileSystemUnifiedDataRepository(dir, undefined, catalog),
+    ).query("true");
+  } finally {
+    clearTimeout(timer);
+  }
+
+  assertEquals(mostLatest, 1);
+  assertEquals(latestVersions(catalog, "test-model"), ["d-0@5"]);
+});
+
+Deno.test("DataQueryService: a query never joins a backfill an invalidation overtook", async () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-query-backfill-stale-" });
+  const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
+  using _cleanup = cleanupOnDispose(catalog, dir);
+  writeTypeData(dir, "test-model", 2, 1);
+  const dataRepo = new FileSystemUnifiedDataRepository(dir, undefined, catalog);
+  let walks = 0;
+  let invalidated = false;
+  let release = () => {};
+  const held = new Promise<void>((resolve) => release = resolve);
+  const findAllGlobal = dataRepo.findAllGlobal.bind(dataRepo);
+  dataRepo.findAllGlobal = async (options) => {
+    walks++;
+    const found = await findAllGlobal(options);
+    // the first walk is overtaken by an invalidation and held until released
+    if (walks === 1) {
+      catalog.invalidate();
+      invalidated = true;
+      await held;
+    }
+    return found;
+  };
+
+  const first = new DataQueryService(catalog, dataRepo).ensurePopulated();
+  await waitFor(() => invalidated, "the first walk was overtaken");
+  const second = new DataQueryService(catalog, dataRepo).ensurePopulated();
+  try {
+    await waitFor(() => walks === 2, "the second query starts its own walk");
+    await second;
+    assertEquals(catalog.isPopulated(), true);
+  } finally {
+    release();
+    await first;
+  }
 });

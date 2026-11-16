@@ -370,6 +370,7 @@ async function materialize(admins: readonly string[]): Promise<unknown> {
     repos.definitionRepo,
     autoDefRepo,
     repos.unifiedDataRepo,
+    repos.eventBus,
   );
   const commitGrantWrites = createGrantWriteCommit(undefined, grantWrites, {
     markDirty: repos.markDirty,

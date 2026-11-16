@@ -31,7 +31,9 @@ import {
   ACCESS_DATA_SUBDIRS,
   AccessDataPoller,
   createAccessDataPoller,
+  typeScopedCatalogRefresh,
 } from "./access_data_poller.ts";
+import { ModelType } from "../domain/models/model_type.ts";
 import { FilesystemAccessDataChangeSource } from "./filesystem_access_data_change_source.ts";
 import { EventBus } from "../domain/events/event_bus.ts";
 import { createModelUpdated } from "../domain/events/types.ts";
@@ -113,11 +115,11 @@ function createMockPolicySnapshotLoader(): MockPolicySnapshotLoader {
 }
 
 function createCallbackTrackers() {
-  const state = { catalogInvalidateCalls: 0 };
+  const state = { catalogRefreshCalls: 0 };
   return {
     state,
-    catalogInvalidate: () => {
-      state.catalogInvalidateCalls++;
+    catalogRefresh: () => {
+      state.catalogRefreshCalls++;
     },
   };
 }
@@ -125,12 +127,12 @@ function createCallbackTrackers() {
 Deno.test("AccessDataPoller: start and stop lifecycle completes cleanly", async () => {
   const sync = createMockSyncService();
   const loader = createMockPolicySnapshotLoader();
-  const { catalogInvalidate } = createCallbackTrackers();
+  const { catalogRefresh } = createCallbackTrackers();
 
   const poller = new AccessDataPoller({
     syncService: sync,
     policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
-    catalogInvalidate,
+    catalogRefresh,
     pollIntervalMs: 50,
   });
 
@@ -142,12 +144,12 @@ Deno.test("AccessDataPoller: start and stop lifecycle completes cleanly", async 
 Deno.test("AccessDataPoller: pullChanged is called with grant and group subdirs", async () => {
   const sync = createMockSyncService();
   const loader = createMockPolicySnapshotLoader();
-  const { catalogInvalidate } = createCallbackTrackers();
+  const { catalogRefresh } = createCallbackTrackers();
 
   const poller = new AccessDataPoller({
     syncService: sync,
     policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
-    catalogInvalidate,
+    catalogRefresh,
     pollIntervalMs: 30,
   });
 
@@ -167,12 +169,12 @@ Deno.test("AccessDataPoller: pullChanged is called with grant and group subdirs"
 Deno.test("AccessDataPoller: namespace is passed through to pullChanged", async () => {
   const sync = createMockSyncService();
   const loader = createMockPolicySnapshotLoader();
-  const { catalogInvalidate } = createCallbackTrackers();
+  const { catalogRefresh } = createCallbackTrackers();
 
   const poller = new AccessDataPoller({
     syncService: sync,
     policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
-    catalogInvalidate,
+    catalogRefresh,
     pollIntervalMs: 30,
     namespace: "test-namespace",
   });
@@ -187,12 +189,12 @@ Deno.test("AccessDataPoller: namespace is passed through to pullChanged", async 
 Deno.test("AccessDataPoller: reloads policy and invalidates catalog when pullChanged returns count > 0", async () => {
   const sync = createMockSyncService({ pullResult: 3 });
   const loader = createMockPolicySnapshotLoader();
-  const { state, catalogInvalidate } = createCallbackTrackers();
+  const { state, catalogRefresh } = createCallbackTrackers();
 
   const poller = new AccessDataPoller({
     syncService: sync,
     policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
-    catalogInvalidate,
+    catalogRefresh,
     pollIntervalMs: 30,
   });
 
@@ -201,18 +203,18 @@ Deno.test("AccessDataPoller: reloads policy and invalidates catalog when pullCha
   await poller.stop();
 
   assertGreater(loader.loadCalls, 0);
-  assertGreater(state.catalogInvalidateCalls, 0);
+  assertGreater(state.catalogRefreshCalls, 0);
 });
 
 Deno.test("AccessDataPoller: does not reload policy when pullChanged returns 0", async () => {
   const sync = createMockSyncService({ pullResult: 0 });
   const loader = createMockPolicySnapshotLoader();
-  const { state, catalogInvalidate } = createCallbackTrackers();
+  const { state, catalogRefresh } = createCallbackTrackers();
 
   const poller = new AccessDataPoller({
     syncService: sync,
     policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
-    catalogInvalidate,
+    catalogRefresh,
     pollIntervalMs: 30,
   });
 
@@ -221,18 +223,18 @@ Deno.test("AccessDataPoller: does not reload policy when pullChanged returns 0",
   await poller.stop();
 
   assertEquals(loader.loadCalls, 0);
-  assertEquals(state.catalogInvalidateCalls, 0);
+  assertEquals(state.catalogRefreshCalls, 0);
 });
 
 Deno.test("AccessDataPoller: does not reload policy when pullChanged returns void", async () => {
   const sync = createMockSyncService({ pullResult: undefined });
   const loader = createMockPolicySnapshotLoader();
-  const { state, catalogInvalidate } = createCallbackTrackers();
+  const { state, catalogRefresh } = createCallbackTrackers();
 
   const poller = new AccessDataPoller({
     syncService: sync,
     policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
-    catalogInvalidate,
+    catalogRefresh,
     pollIntervalMs: 30,
   });
 
@@ -241,7 +243,7 @@ Deno.test("AccessDataPoller: does not reload policy when pullChanged returns voi
   await poller.stop();
 
   assertEquals(loader.loadCalls, 0);
-  assertEquals(state.catalogInvalidateCalls, 0);
+  assertEquals(state.catalogRefreshCalls, 0);
 });
 
 Deno.test("AccessDataPoller: survives pullChanged throwing an error", async () => {
@@ -249,12 +251,12 @@ Deno.test("AccessDataPoller: survives pullChanged throwing an error", async () =
     pullError: new Error("network timeout"),
   });
   const loader = createMockPolicySnapshotLoader();
-  const { catalogInvalidate } = createCallbackTrackers();
+  const { catalogRefresh } = createCallbackTrackers();
 
   const poller = new AccessDataPoller({
     syncService: sync,
     policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
-    catalogInvalidate,
+    catalogRefresh,
     pollIntervalMs: 30,
   });
 
@@ -268,12 +270,12 @@ Deno.test("AccessDataPoller: survives pullChanged throwing an error", async () =
 Deno.test("AccessDataPoller: serializes pulls — skips tick while pulling", async () => {
   const sync = createMockSyncService({ pullDelay: 100 });
   const loader = createMockPolicySnapshotLoader();
-  const { catalogInvalidate } = createCallbackTrackers();
+  const { catalogRefresh } = createCallbackTrackers();
 
   const poller = new AccessDataPoller({
     syncService: sync,
     policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
-    catalogInvalidate,
+    catalogRefresh,
     pollIntervalMs: 20,
   });
 
@@ -287,12 +289,12 @@ Deno.test("AccessDataPoller: serializes pulls — skips tick while pulling", asy
 Deno.test("AccessDataPoller: double start does not create duplicate timers", async () => {
   const sync = createMockSyncService();
   const loader = createMockPolicySnapshotLoader();
-  const { catalogInvalidate } = createCallbackTrackers();
+  const { catalogRefresh } = createCallbackTrackers();
 
   const poller = new AccessDataPoller({
     syncService: sync,
     policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
-    catalogInvalidate,
+    catalogRefresh,
     pollIntervalMs: 30,
   });
 
@@ -317,12 +319,12 @@ Deno.test("AccessDataPoller: stop awaits pending pull before returning", async (
   };
 
   const loader = createMockPolicySnapshotLoader();
-  const { catalogInvalidate } = createCallbackTrackers();
+  const { catalogRefresh } = createCallbackTrackers();
 
   const poller = new AccessDataPoller({
     syncService: sync,
     policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
-    catalogInvalidate,
+    catalogRefresh,
     pollIntervalMs: 20,
   });
 
@@ -336,12 +338,12 @@ Deno.test("AccessDataPoller: stop awaits pending pull before returning", async (
 Deno.test("AccessDataPoller: stop on never-started poller is a no-op", async () => {
   const sync = createMockSyncService();
   const loader = createMockPolicySnapshotLoader();
-  const { catalogInvalidate } = createCallbackTrackers();
+  const { catalogRefresh } = createCallbackTrackers();
 
   const poller = new AccessDataPoller({
     syncService: sync,
     policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
-    catalogInvalidate,
+    catalogRefresh,
   });
 
   await poller.stop();
@@ -364,12 +366,12 @@ Deno.test("AccessDataPoller: retries policy reload on next tick if load fails", 
       return Promise.resolve();
     },
   };
-  const { state, catalogInvalidate } = createCallbackTrackers();
+  const { state, catalogRefresh } = createCallbackTrackers();
 
   const poller = new AccessDataPoller({
     syncService: sync,
     policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
-    catalogInvalidate,
+    catalogRefresh,
     pollIntervalMs: 30,
   });
 
@@ -381,18 +383,18 @@ Deno.test("AccessDataPoller: retries policy reload on next tick if load fails", 
   await poller.stop();
 
   assertGreater(loader.loadCalls, 0);
-  assertGreater(state.catalogInvalidateCalls, 0);
+  assertGreater(state.catalogRefreshCalls, 0);
 });
 
 Deno.test("AccessDataPoller: can be restarted after stop", async () => {
   const sync = createMockSyncService();
   const loader = createMockPolicySnapshotLoader();
-  const { catalogInvalidate } = createCallbackTrackers();
+  const { catalogRefresh } = createCallbackTrackers();
 
   const poller = new AccessDataPoller({
     syncService: sync,
     policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
-    catalogInvalidate,
+    catalogRefresh,
     pollIntervalMs: 30,
   });
 
@@ -415,14 +417,14 @@ Deno.test("AccessDataPoller: can be restarted after stop", async () => {
 Deno.test("AccessDataPoller: pull holds the sync gate, so it cannot interleave a mutation", async () => {
   const sync = createMockSyncService();
   const loader = createMockPolicySnapshotLoader();
-  const { catalogInvalidate } = createCallbackTrackers();
+  const { catalogRefresh } = createCallbackTrackers();
   const gate = createSyncGate();
 
   const poller = new AccessDataPoller({
     syncService: sync,
     syncGate: gate,
     policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
-    catalogInvalidate,
+    catalogRefresh,
     pollIntervalMs: 1,
   });
 
@@ -463,11 +465,11 @@ Deno.test("AccessDataPoller: each poll cycle is the root of its own trace", asyn
     // Started under an active span, as serve starts it under swamp.cli.
     await withSpan("swamp.cli", {}, async () => {
       const loader = createMockPolicySnapshotLoader();
-      const { catalogInvalidate } = createCallbackTrackers();
+      const { catalogRefresh } = createCallbackTrackers();
       const poller = new AccessDataPoller({
         syncService: sync,
         policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
-        catalogInvalidate,
+        catalogRefresh,
         pollIntervalMs: 30,
       });
       poller.start();
@@ -522,11 +524,11 @@ Deno.test("AccessDataPoller: a change source's peer change reloads policy and in
     });
     await changeSource.prime();
     const loader = createMockPolicySnapshotLoader();
-    const { state, catalogInvalidate } = createCallbackTrackers();
+    const { state, catalogRefresh } = createCallbackTrackers();
     const poller = new AccessDataPoller({
       changeSource,
       policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
-      catalogInvalidate,
+      catalogRefresh,
       pollIntervalMs: 10,
     });
     poller.start();
@@ -537,7 +539,7 @@ Deno.test("AccessDataPoller: a change source's peer change reloads policy and in
       await poller.stop();
     }
     assertEquals(loader.loadCalls, 1);
-    assertEquals(state.catalogInvalidateCalls, 1);
+    assertEquals(state.catalogRefreshCalls, 1);
   });
 });
 
@@ -556,18 +558,18 @@ Deno.test("AccessDataPoller: a change source reporting nothing never reloads", a
       return count;
     };
     const loader = createMockPolicySnapshotLoader();
-    const { state, catalogInvalidate } = createCallbackTrackers();
+    const { state, catalogRefresh } = createCallbackTrackers();
     const poller = new AccessDataPoller({
       changeSource,
       policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
-      catalogInvalidate,
+      catalogRefresh,
       pollIntervalMs: 10,
     });
     poller.start();
     await waitFor(() => detects >= 3, "three cycles");
     await poller.stop();
     assertEquals(loader.loadCalls, 0);
-    assertEquals(state.catalogInvalidateCalls, 0);
+    assertEquals(state.catalogRefreshCalls, 0);
   });
 });
 
@@ -587,11 +589,11 @@ Deno.test("AccessDataPoller: a change source's own write stays staged", async ()
       return count;
     };
     const loader = createMockPolicySnapshotLoader();
-    const { catalogInvalidate } = createCallbackTrackers();
+    const { catalogRefresh } = createCallbackTrackers();
     const poller = new AccessDataPoller({
       changeSource,
       policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
-      catalogInvalidate,
+      catalogRefresh,
       pollIntervalMs: 10,
     });
     // Written before the poller starts, so no cycle sees it before its event.
@@ -625,11 +627,11 @@ Deno.test("AccessDataPoller: a change source change is reloaded again after a fa
         return Promise.resolve();
       },
     };
-    const { catalogInvalidate } = createCallbackTrackers();
+    const { catalogRefresh } = createCallbackTrackers();
     const poller = new AccessDataPoller({
       changeSource,
       policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
-      catalogInvalidate,
+      catalogRefresh,
       pollIntervalMs: 10,
     });
     poller.start();
@@ -661,11 +663,11 @@ function fakeResolver(
 Deno.test("createAccessDataPoller: a sync service gets the pull poller", async () => {
   const sync = createMockSyncService();
   const loader = createMockPolicySnapshotLoader();
-  const { catalogInvalidate } = createCallbackTrackers();
+  const { catalogRefresh } = createCallbackTrackers();
   const poller = await createAccessDataPoller({
     syncService: sync,
     policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
-    catalogInvalidate,
+    catalogRefresh,
     pollIntervalMs: 10,
     datastoreConfig: {
       type: "@swamp/s3-datastore",
@@ -685,10 +687,10 @@ Deno.test("createAccessDataPoller: a sync service gets the pull poller", async (
 Deno.test("createAccessDataPoller: a v2 filesystem datastore watches the resolved access data directories", async () => {
   await withTempDir(async (dir) => {
     const loader = createMockPolicySnapshotLoader();
-    const { catalogInvalidate } = createCallbackTrackers();
+    const { catalogRefresh } = createCallbackTrackers();
     const poller = await createAccessDataPoller({
       policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
-      catalogInvalidate,
+      catalogRefresh,
       pollIntervalMs: 10,
       datastoreConfig: { type: "filesystem", path: dir },
       datastoreEngine: "v2",
@@ -714,10 +716,10 @@ Deno.test("createAccessDataPoller: a v2 filesystem datastore watches the resolve
 
 Deno.test("createAccessDataPoller: a v3 datastore gets no poller", async () => {
   const loader = createMockPolicySnapshotLoader();
-  const { catalogInvalidate } = createCallbackTrackers();
+  const { catalogRefresh } = createCallbackTrackers();
   const poller = await createAccessDataPoller({
     policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
-    catalogInvalidate,
+    catalogRefresh,
     datastoreConfig: { type: "filesystem", path: "/unused", format: 3 },
     datastoreEngine: "v3",
     datastoreResolver: fakeResolver("v3", "/unused"),
@@ -728,10 +730,10 @@ Deno.test("createAccessDataPoller: a v3 datastore gets no poller", async () => {
 
 Deno.test("createAccessDataPoller: a custom datastore without a sync service gets no poller", async () => {
   const loader = createMockPolicySnapshotLoader();
-  const { catalogInvalidate } = createCallbackTrackers();
+  const { catalogRefresh } = createCallbackTrackers();
   const poller = await createAccessDataPoller({
     policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
-    catalogInvalidate,
+    catalogRefresh,
     datastoreConfig: {
       type: "@swamp/s3-datastore",
       config: {},
@@ -750,11 +752,11 @@ Deno.test("AccessDataPoller: reloads every cycle while the snapshot is missing r
   const loader = createMockPolicySnapshotLoader();
   // A degraded snapshot this poller did not build (serve's boot load).
   loader.unreadable = [{ cause: "unreadable" }];
-  const { state, catalogInvalidate } = createCallbackTrackers();
+  const { state, catalogRefresh } = createCallbackTrackers();
   const poller = new AccessDataPoller({
     syncService: sync,
     policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
-    catalogInvalidate,
+    catalogRefresh,
     pollIntervalMs: 10,
   });
 
@@ -772,7 +774,7 @@ Deno.test("AccessDataPoller: reloads every cycle while the snapshot is missing r
   } finally {
     await poller.stop();
   }
-  assertEquals(state.catalogInvalidateCalls, 0);
+  assertEquals(state.catalogRefreshCalls, 0);
 });
 
 Deno.test("AccessDataPoller: does not retry a snapshot whose missing records are all corrupt", async () => {
@@ -780,11 +782,11 @@ Deno.test("AccessDataPoller: does not retry a snapshot whose missing records are
   const loader = createMockPolicySnapshotLoader();
   // Corrupt records never read by themselves; a fixing write is a change.
   loader.unreadable = [{ cause: "corrupt" }, { cause: "unrecognised" }];
-  const { catalogInvalidate } = createCallbackTrackers();
+  const { catalogRefresh } = createCallbackTrackers();
   const poller = new AccessDataPoller({
     syncService: sync,
     policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
-    catalogInvalidate,
+    catalogRefresh,
     pollIntervalMs: 10,
   });
 
@@ -830,11 +832,11 @@ Deno.test("AccessDataPoller: repeated cycle failures escalate to error, and reco
     pullError: new Error("permission denied"),
   });
   const loader = createMockPolicySnapshotLoader();
-  const { catalogInvalidate } = createCallbackTrackers();
+  const { catalogRefresh } = createCallbackTrackers();
   const poller = new AccessDataPoller({
     syncService: sync,
     policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
-    catalogInvalidate,
+    catalogRefresh,
     pollIntervalMs: 10,
   });
 
@@ -920,11 +922,11 @@ Deno.test("AccessDataPoller: a change-source cycle exports detection, invalidati
       });
       await changeSource.prime();
       const loader = createMockPolicySnapshotLoader();
-      const { catalogInvalidate } = createCallbackTrackers();
+      const { catalogRefresh } = createCallbackTrackers();
       const poller = new AccessDataPoller({
         changeSource,
         policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
-        catalogInvalidate,
+        catalogRefresh,
         pollIntervalMs: 10,
       });
       poller.start();
@@ -994,7 +996,7 @@ Deno.test("AccessDataPoller: an unprimed change source records the missing basel
       const poller = new AccessDataPoller({
         changeSource,
         policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
-        catalogInvalidate: () => {},
+        catalogRefresh: () => {},
         pollIntervalMs: 10,
       });
       poller.start();
@@ -1016,12 +1018,12 @@ Deno.test("AccessDataPoller: a sync-pull cycle exports the gate wait and the pul
   await withObservedSpans(async (spans) => {
     const sync = createMockSyncService({ pullResult: 2 });
     const loader = createMockPolicySnapshotLoader();
-    const { catalogInvalidate } = createCallbackTrackers();
+    const { catalogRefresh } = createCallbackTrackers();
     const poller = new AccessDataPoller({
       syncService: sync,
       syncGate: createSyncGate(),
       policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
-      catalogInvalidate,
+      catalogRefresh,
       pollIntervalMs: 10,
     });
     poller.start();
@@ -1073,7 +1075,7 @@ Deno.test("AccessDataPoller: a busy gate skips the cycle, and stop() during a qu
       syncService: sync,
       syncGate: gate,
       policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
-      catalogInvalidate: () => {},
+      catalogRefresh: () => {},
       pollIntervalMs: 10,
     });
     poller.start();
@@ -1142,7 +1144,7 @@ Deno.test("AccessDataPoller: a failed reload ends its cycle in error, and the ne
     const poller = new AccessDataPoller({
       syncService: sync,
       policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
-      catalogInvalidate: () => {},
+      catalogRefresh: () => {},
       pollIntervalMs: 10,
     });
     await capturingPollerLogs(async () => {
@@ -1185,7 +1187,7 @@ Deno.test("AccessDataPoller: a snapshot missing unreadable records is retried wi
     const poller = new AccessDataPoller({
       syncService: sync,
       policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
-      catalogInvalidate: () => {},
+      catalogRefresh: () => {},
       pollIntervalMs: 10,
     });
     poller.start();
@@ -1225,7 +1227,7 @@ Deno.test("AccessDataPoller: a cycle whose pull was skipped but whose pending re
       syncService: sync,
       syncGate: gate,
       policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
-      catalogInvalidate: () => {},
+      catalogRefresh: () => {},
       pollIntervalMs: 10,
     });
     await capturingPollerLogs(async () => {
@@ -1257,11 +1259,11 @@ Deno.test("AccessDataPoller: a cycle whose pull was skipped but whose pending re
 Deno.test("AccessDataPoller: reloadEveryCycle reloads with nothing changed, because a local write pulls as no change", async () => {
   const sync = createMockSyncService();
   const loader = createMockPolicySnapshotLoader();
-  const { catalogInvalidate } = createCallbackTrackers();
+  const { catalogRefresh } = createCallbackTrackers();
   const poller = new AccessDataPoller({
     syncService: sync,
     policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
-    catalogInvalidate,
+    catalogRefresh,
     pollIntervalMs: 20,
     reloadEveryCycle: true,
   });
@@ -1273,11 +1275,11 @@ Deno.test("AccessDataPoller: reloadEveryCycle reloads with nothing changed, beca
 Deno.test("AccessDataPoller.setPollIntervalMs: a running poller re-arms at the reloaded interval", async () => {
   const sync = createMockSyncService();
   const loader = createMockPolicySnapshotLoader();
-  const { catalogInvalidate } = createCallbackTrackers();
+  const { catalogRefresh } = createCallbackTrackers();
   const poller = new AccessDataPoller({
     syncService: sync,
     policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
-    catalogInvalidate,
+    catalogRefresh,
     pollIntervalMs: 3_600_000,
   });
   poller.start();
@@ -1287,4 +1289,42 @@ Deno.test("AccessDataPoller.setPollIntervalMs: a running poller re-arms at the r
   } finally {
     await poller.stop();
   }
+});
+
+Deno.test("typeScopedCatalogRefresh: refreshes each type and its @-prefixed orphan directory, and keeps the catalog populated", async () => {
+  const refreshed: string[] = [];
+  let invalidations = 0;
+  const refresh = typeScopedCatalogRefresh(
+    {
+      refreshTypes: (types) => {
+        refreshed.push(...types.map((type) => type.normalized));
+        return Promise.resolve();
+      },
+    },
+    { invalidate: () => invalidations++ },
+    [ModelType.create("swamp/grant"), ModelType.create("swamp/group")],
+  );
+
+  await refresh();
+
+  assertEquals(refreshed, [
+    "swamp/grant",
+    "@swamp/grant",
+    "swamp/group",
+    "@swamp/group",
+  ]);
+  assertEquals(invalidations, 0);
+});
+
+Deno.test("typeScopedCatalogRefresh: a failed refresh invalidates the catalog instead of failing the cycle", async () => {
+  let invalidations = 0;
+  const refresh = typeScopedCatalogRefresh(
+    { refreshTypes: () => Promise.reject(new Error("database is locked")) },
+    { invalidate: () => invalidations++ },
+    [ModelType.create("swamp/grant")],
+  );
+
+  await refresh();
+
+  assertEquals(invalidations, 1);
 });

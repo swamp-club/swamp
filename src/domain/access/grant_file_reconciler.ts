@@ -37,6 +37,7 @@ import { Definition } from "../definitions/definition.ts";
 import type { UnifiedDataRepository } from "../data/repositories.ts";
 import { readStoredGrants } from "./stored_grant_reader.ts";
 import { createResourceWriter } from "../models/data_writer.ts";
+import type { DataVersionRef } from "../events/types.ts";
 
 const logger = getLogger(["swamp", "grant-file-reconciler"]);
 
@@ -337,6 +338,12 @@ export async function reconcileAllFileGrants(
 
 export const GRANT_DATA_NAME = "grant-main";
 
+export type GrantWrittenHook = (
+  modelId: string,
+  instanceName: string,
+  written: DataVersionRef,
+) => Promise<void>;
+
 /**
  * called with the path of each grant definition this store creates, right after
  * it is written, so a caller can re-mark it dirty before pushing
@@ -346,6 +353,7 @@ export function createFileGrantStore(
   writeRepo: DefinitionRepository,
   dataRepo: UnifiedDataRepository,
   onDefinitionSaved?: (path: string) => void,
+  onGrantWritten?: GrantWrittenHook,
 ): FileGrantStore {
   return {
     async queryFileGrants() {
@@ -395,11 +403,12 @@ export function createFileGrantStore(
         undefined,
         instanceName,
       );
-      await writeResource(
+      const { name, version } = await writeResource(
         "grant",
         GRANT_DATA_NAME,
         grant as unknown as Record<string, unknown>,
       );
+      await onGrantWritten?.(modelId, instanceName, { name, version });
     },
   };
 }
