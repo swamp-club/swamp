@@ -8940,15 +8940,14 @@ export class WorkflowExecutionService {
     );
   }
 
-  /** the walk stopped at a step boundary with work left for the continuation */
   private async parkRun(
     workflowId: WorkflowId,
     run: WorkflowRun,
     handover: RunHandover,
   ): Promise<WorkflowExecutionEvent> {
     run.park(handover.parker(run.id), new Date());
-    this.runTracker?.complete(run.id, "interrupted", SERVER_RESTART_REASON);
     await this.saveRun(workflowId, run);
+    this.runTracker?.complete(run.id, "interrupted", SERVER_RESTART_REASON);
     await handover.parked?.(run);
     return { kind: "parked", run };
   }

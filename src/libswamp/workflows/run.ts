@@ -298,7 +298,6 @@ export type WorkflowRunEvent =
   }
   | { kind: "completed"; run: WorkflowRunView }
   | { kind: "cancelled"; run: WorkflowRunView; reason?: string }
-  /** serve only: a planned restart parked the run; another process continues it */
   | { kind: "parked"; run: WorkflowRunView }
   | {
     kind: "suspended";
@@ -408,7 +407,6 @@ export interface WorkflowRunDeps {
 
 export interface WorkflowRunInput {
   workflowIdOrName: string;
-  /** serve only: a planned restart parks the run between steps */
   handover?: RunHandover;
   /**
    * Treat `workflowIdOrName` as a workflow id the caller already resolved,

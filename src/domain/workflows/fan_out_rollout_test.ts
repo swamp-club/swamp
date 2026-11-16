@@ -187,3 +187,17 @@ Deno.test("runRolloutLanes: a handover starts no further lane, lets the running 
   assertEquals(finished, ["a"]);
   assertEquals(end, { kind: "handed_over" });
 });
+
+Deno.test("runRolloutLanes: a rollout whose every lane started before the handover still completes", async () => {
+  const handover = new AbortController();
+  const { end } = await drain(runRolloutLanes(lanes({
+    rollout: { batches: [["a", "b"]], maxFailures: 0 },
+    handover: handover.signal,
+    // deno-lint-ignore require-yield
+    start: async function* (lane) {
+      if (lane === "b") handover.abort();
+      await Promise.resolve();
+    },
+  })));
+  assertEquals(end, { kind: "complete" });
+});

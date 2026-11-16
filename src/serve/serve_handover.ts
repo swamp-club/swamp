@@ -169,10 +169,14 @@ export async function listParkedRuns(
   return markers;
 }
 
+// a run id from a client names a key in the store, so it may hold no separator
+const RUN_ID = /^[A-Za-z0-9_-]{1,128}$/;
+
 export async function findParkedRun(
   store: ControlPlaneStore,
   runId: string,
 ): Promise<ParkedRunMarker | undefined> {
+  if (!RUN_ID.test(runId)) return undefined;
   const key = parkedRunKey(runId);
   const data = await store.get(key);
   return data ? parseMarker(key, data) : undefined;

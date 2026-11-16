@@ -9992,8 +9992,8 @@ export const serveCommand = new Command()
       // in the same turn as shuttingDown, with no await before it: once /ready
       // answers shutting_down, no trigger may be acknowledged
       admission.beginDraining();
-      // runs stop starting steps and park at their next boundary within the
-      // drain; with no drain the abort below settles them as it always has
+      // runs park at their next step boundary within the drain; with no drain
+      // the abort below settles them
       if (shutdownDrainTimeoutMs > 0) {
         dispatchService.beginHandover();
         serveHandover.begin();

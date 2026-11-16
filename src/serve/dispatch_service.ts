@@ -713,8 +713,8 @@ export class DispatchService {
         }
       }
     } catch (caught) {
-      // only the handover's own abort of the wait: any other failure keeps
-      // its cause and fails the step as before
+      // only the handover's own abort of the wait; any other failure keeps its
+      // cause and fails the step
       const handoverAbort = caught instanceof StepWithdrawnError ||
         (caught instanceof DOMException && caught.name === "AbortError");
       const error = withdrawable && attemptWorker === undefined &&

@@ -160,13 +160,19 @@ export async function* runRolloutLanes<T>(
   }
   if (laneError !== undefined) throw laneError.cause;
   if (lanes.signal?.aborted) return { kind: "aborted" };
-  if (lanes.handover?.aborted) return { kind: "handed_over" };
   if (paused !== undefined) return { kind: "paused", lane: paused };
   if (halted) {
     const held = lanes.rollout.batches.flat().filter((lane) =>
       !started.has(lane)
     );
     if (held.length > 0) return { kind: "halted", held };
+  }
+  // a rollout whose every lane started is complete, whenever the handover came
+  if (
+    lanes.handover?.aborted &&
+    lanes.rollout.batches.flat().some((lane) => !started.has(lane))
+  ) {
+    return { kind: "handed_over" };
   }
   return { kind: "complete" };
 }

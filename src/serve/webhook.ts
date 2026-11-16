@@ -612,7 +612,6 @@ export interface WebhookServiceDeps {
    */
   authorizeRun?: WebhookRunAuthorizer;
   executeWorkflow?: typeof executeWorkflowWithLocks;
-  /** a planned restart parks the webhook's runs between steps */
   handover?: import("./serve_handover.ts").ServeHandover;
   /**
    * builds, per run, the vault scope of the webhook principal; when absent runs

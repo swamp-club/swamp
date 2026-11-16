@@ -170,3 +170,18 @@ Deno.test("parkedRunHandled: a refusal that is judged again keeps the marker", (
 
   assertEquals(parkedRunHandled(waiting), false);
 });
+
+Deno.test("findParkedRun: a run id that could name another key is never read", async () => {
+  const store = memoryStore();
+  const reads: string[] = [];
+  const watched: ControlPlaneStore = {
+    ...store,
+    get: (key) => {
+      reads.push(key);
+      return store.get(key);
+    },
+  };
+
+  assertEquals(await findParkedRun(watched, "../active-runs/x"), undefined);
+  assertEquals(reads, []);
+});
