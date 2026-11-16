@@ -1498,3 +1498,76 @@ Deno.test("ServeLock.acquire: a catch-up under the lock that finds serve unreach
     assertEquals(subject.lease, undefined, name);
   }
 });
+
+class FakeCommandLeases {
+  readonly recorded: string[] = [];
+  readonly forgotten: string[] = [];
+  readonly asked: string[] = [];
+  dead: string[] = [];
+
+  record(lease: { leaseId: string }): Promise<void> {
+    this.recorded.push(lease.leaseId);
+    return Promise.resolve();
+  }
+  forget(leaseId: string): Promise<void> {
+    this.forgotten.push(leaseId);
+    return Promise.resolve();
+  }
+  deadOn(lockKey: string): Promise<readonly string[]> {
+    this.asked.push(lockKey);
+    return Promise.resolve(this.dead);
+  }
+}
+
+Deno.test("ServeLock.acquire: a lease a dead command of this checkout held is released at serve before the lock is asked for", async () => {
+  const serve = new FakeServe();
+  const leases = new FakeCommandLeases();
+  leases.dead = ["dead-lease"];
+  const subject = lock(serve, { commandLeases: leases });
+  await subject.acquire();
+  assertEquals(serve.calls[0], "release dead-lease");
+  assert(serve.calls[1].startsWith(`acquire ${KEY}`));
+  assertEquals(leases.asked, [KEY]);
+  assertEquals(leases.recorded, ["lease-1"]);
+  assertEquals(leases.forgotten, ["dead-lease"]);
+  await subject.release();
+  assertEquals(leases.forgotten, ["dead-lease", "lease-1"]);
+});
+
+Deno.test("ServeLock.acquire: a dead command's lease serve will not release is left to its TTL, and the lock is still asked for", async () => {
+  const serve = new FakeServe();
+  serve.releaseError = new ServeUnreachableError(
+    serve.baseUrl,
+    "never",
+    new Error("refused"),
+  );
+  const leases = new FakeCommandLeases();
+  leases.dead = ["dead-lease"];
+  const subject = lock(serve, { commandLeases: leases });
+  await subject.acquire();
+  assert(serve.calls.some((call) => call.startsWith("acquire")));
+  assertEquals(leases.forgotten, []);
+  serve.releaseError = undefined;
+  await subject.release();
+});
+
+Deno.test("ServeLock.acquire: an adopted explicit lease is never recorded, and no dead lease is looked for", async () => {
+  resetServeLeasesForTesting();
+  const serve = new FakeServe();
+  const leases = new FakeCommandLeases();
+  leases.dead = ["dead-lease"];
+  const subject = lock(serve, {
+    root: ROOT,
+    commandLeases: leases,
+    adopt: () =>
+      Promise.resolve(
+        liveExplicitLease("0b6c4bb4-9d61-4f0c-9a43-6f0c1f7b2a63"),
+      ),
+    localLock: () => localLock([]),
+  });
+  await subject.acquire();
+  assertEquals(leases.asked, []);
+  assertEquals(leases.recorded, []);
+  await subject.release();
+  assertEquals(leases.forgotten, []);
+});

@@ -62,6 +62,10 @@ import { serveClockOf } from "./serve_offline.ts";
 import { describeHolder, outlastsWait } from "./serve_lease_holder.ts";
 import { LockCatchUpBehindError } from "./serve_catch_up.ts";
 import {
+  type CommandLeaseRecords,
+  commandLeaseRecordsAt,
+} from "./serve_command_leases.ts";
+import {
   latchServeUnreachable,
   serveDatastoreClientFor,
 } from "./serve_datastore_client.ts";
@@ -129,6 +133,11 @@ export interface ServeLockOptions {
     delivered?: DeliveredCatchUp,
     maxCommits?: number,
   ) => Promise<void>;
+  /**
+   * where the command leases this checkout holds are recorded, so the next
+   * command releases one its dead predecessor held instead of waiting its TTL
+   */
+  readonly commandLeases?: CommandLeaseRecords;
   /** the copy's catch-up with the lock released, for a copy too far behind */
   readonly catchUpOutside?: () => Promise<void>;
   /**
@@ -343,6 +352,7 @@ export class ServeLock implements DistributedLock {
   ): Promise<void> {
     if (await this.#adoptExplicit(maxCommits)) return;
     const client = this.#options.client();
+    await this.#releaseDeadPredecessors(client);
     const hold = new AbortController();
     let delivered: DeliveredCatchUp | undefined;
     const started = this.#now();
@@ -420,7 +430,53 @@ export class ServeLock implements DistributedLock {
       if (this.#lease === undefined) client.close?.();
       throw error;
     }
+    await this.#recordCommandLease();
     await this.#settleAcquired(delivered, maxCommits);
+  }
+
+  /**
+   * a lease on this key that a command of this checkout held when its process
+   * died is ended at serve, so this one takes the lock with a fence above it
+   */
+  async #releaseDeadPredecessors(client: ServeLockClient): Promise<void> {
+    const leases = this.#options.commandLeases;
+    if (leases === undefined) return;
+    let dead: readonly string[];
+    try {
+      dead = await leases.deadOn(this.#options.lockKey);
+    } catch (error) {
+      logger
+        .debug`Could not read the leases this checkout's commands hold: ${error}`;
+      return;
+    }
+    for (const leaseId of dead) {
+      try {
+        await client.releaseLock(
+          leaseId,
+          AbortSignal.timeout(RELEASE_DEADLINE_MS),
+        );
+        await leases.forget(leaseId);
+        logger
+          .info`Released the lock ${this.#displayKey()} that a command of this checkout held when it stopped`;
+      } catch (error) {
+        // the ask below waits for its TTL, as without the record
+        logger
+          .debug`Could not release the lease ${leaseId} a stopped command of this checkout held: ${error}`;
+      }
+    }
+  }
+
+  async #recordCommandLease(): Promise<void> {
+    const lease = this.#lease;
+    if (lease === undefined || this.#options.commandLeases === undefined) {
+      return;
+    }
+    try {
+      await this.#options.commandLeases.record(lease);
+    } catch (error) {
+      logger
+        .debug`Could not record the lease on ${this.#displayKey()}, which a later command then waits out: ${error}`;
+    }
   }
 
   async #adoptExplicit(maxCommits: number | undefined): Promise<boolean> {
@@ -711,6 +767,11 @@ export class ServeLock implements DistributedLock {
       return;
     }
     if (lease === undefined || client === undefined) return;
+    await this.#options.commandLeases?.forget(lease.leaseId).catch(
+      (error) =>
+        logger
+          .debug`Could not remove the record of the lease on ${this.#displayKey()}: ${error}`,
+    );
     const releasedByCommit = serveLeaseReleasedByCommit(lease.leaseId);
     withdrawServeLeaseRelease(lease.leaseId);
     if (releasedByCommit) {
@@ -969,6 +1030,11 @@ export function createServeLock(
   return new ServeLock({
     ...options,
     client: () => lockClientFor(binding),
+    commandLeases: commandLeaseRecordsAt(
+      datastorePath,
+      binding.target.serverUrl,
+      binding.target.token,
+    ),
   });
 }
 

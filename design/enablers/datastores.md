@@ -8122,6 +8122,15 @@ below describes them.
   always false: serve's locks are never broken from a checkout. Serve
   unreachable while acquiring is `ServeUnreachableError` (exit 75), before
   the command's action runs.
+- **A dead command's lease.** Each command lease is recorded under the
+  datastore root (`command_leases/`: lease id, key, serve, caller fingerprint
+  and the process identity the writer marker uses) until its release. Before
+  asking for a lock, a command releases each recorded lease on the key, for
+  its caller at its serve, whose process is gone from this host
+  (`judgeRecordedProcess`: exited, a zombie, or its pid reused; a frozen
+  process is alive, and one on another host or boot unknown), then asks as
+  usual: the new lease's fence is above the dead one's, and its TTL is never
+  waited out. Explicit leases are never recorded.
 - **Catch-up under the lock.** Once the lease is taken, every handle the
   process opened on the copy catches up from serve, read model included
   (`catchUpV3HandlesAt`), before `acquire` resolves, bounded as above;

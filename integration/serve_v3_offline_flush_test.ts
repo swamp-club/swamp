@@ -25,7 +25,9 @@ import {
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { walk } from "@std/fs";
+import { createHash } from "node:crypto";
 import { join, SEPARATOR } from "@std/path";
+import { localProcess } from "../src/infrastructure/datastore_v3/process_identity.ts";
 import {
   acquireModelLocks,
   assertOfflineRunAllowed,
@@ -1554,6 +1556,100 @@ Deno.test({
         assertEquals(asks.length, 2);
         assert(locks.indexOf("DELETE") < locks.lastIndexOf("POST"));
         assertEquals(await servedVersions(serve), [1, 2, 3, 4, 5]);
+      });
+    });
+  },
+});
+
+/**
+ * a command lease granted at serve and recorded as a command of this checkout
+ * held it, in a process that no longer runs
+ */
+async function leaseLeftByDeadCommand(
+  scratch: Scratch,
+  serve: Serve,
+  client: Client,
+  env: Record<string, string | undefined>,
+): Promise<{ leaseId: string; record: string }> {
+  return await withClientEnv(scratch, env, ["model", "method"], async () => {
+    try {
+      const resolution = await resolveDatastoreForRepo(client.repoDir);
+      const root = (await v3LocationOf(resolution)).path;
+      const binding = serveUpstreamAt(root)!;
+      const serveClient = binding.client();
+      try {
+        const lockKey =
+          `data/${serve.modelType.normalized}/${serve.models.web}/.lock`;
+        const reply = await serveClient.acquireLock(
+          lockKey,
+          30_000,
+          0,
+          new AbortController().signal,
+        );
+        assert(reply.acquired);
+        const leaseId = reply.lease.leaseId;
+        const record = join(root, "command_leases", `${leaseId}.json`);
+        await Deno.mkdir(join(root, "command_leases"), { recursive: true });
+        await Deno.writeTextFile(
+          record,
+          JSON.stringify({
+            leaseId,
+            lockKey,
+            serverUrl: binding.target.serverUrl,
+            caller: createHash("sha256").update(binding.target.token ?? "")
+              .digest("hex"),
+            // no process has this pid
+            pid: 2_000_000_000,
+            process: (await localProcess()).identity,
+          }),
+        );
+        return { leaseId, record };
+      } finally {
+        serveClient.close();
+      }
+    } finally {
+      await endCommand();
+    }
+  });
+}
+
+Deno.test({
+  name:
+    "serve online, a killed command's lock: the next command of the checkout releases the lease its dead predecessor held and takes the lock without waiting out its TTL",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withScratch(async (scratch) => {
+      const serve = await scratch.serve({ grants: TEAM });
+      const alice = await scratch.client("a");
+      await withProxy(serve, async (proxy) => {
+        const env = serveEnv(proxy, "alice-token");
+        await command(
+          scratch,
+          alice,
+          env,
+          (ctx) => saveOut(ctx, serve, "first"),
+        );
+        const dead = await leaseLeftByDeadCommand(scratch, serve, alice, env);
+        const locks: string[] = [];
+        proxy.answer = (request) => {
+          const path = new URL(request.url).pathname;
+          if (/\/locks(\/|$)/.test(path)) {
+            locks.push(`${request.method} ${path.split("/").at(-1)}`);
+          }
+          return Promise.resolve(undefined);
+        };
+        assertEquals(
+          await lockedSave(scratch, serve, alice, env, "after the kill"),
+          2,
+        );
+        assertEquals(locks[0], `DELETE ${dead.leaseId}`);
+        assertEquals(locks[1], "POST locks");
+        assertEquals(
+          await Deno.stat(dead.record).catch(() => undefined),
+          undefined,
+        );
+        assertEquals(await servedVersions(serve), [1, 2]);
       });
     });
   },
