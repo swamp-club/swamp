@@ -175,7 +175,13 @@ Deno.test("compaction: folds commits away, refuses reads below the point, and ap
       [remove("a", 1)],
     ]);
     const report = await env.store.compactHistory(2, { batchSize: 1 });
-    assertEquals(report, { point: 2, compacted: 2, batches: 2, released: 0 });
+    assertEquals(report, {
+      point: 2,
+      compacted: 2,
+      batches: 2,
+      released: 0,
+      partitions: 1,
+    });
 
     await assertRejects(
       () => env.store.changesSince(1, 10),

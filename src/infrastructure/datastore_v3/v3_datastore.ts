@@ -17,6 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { withSpan } from "../tracing/tracer.ts";
+import {
+  type FollowCompactionReport,
+  ServeCompactionFollower,
+} from "./serve_compaction_follow.ts";
 import { DatabaseSync } from "node:sqlite";
 import { ensureDirSync } from "@std/fs";
 import { createHash } from "node:crypto";
@@ -618,6 +623,8 @@ export interface V3Datastore {
   assertReadModelWithin?(maxCommits: number): Promise<void>;
   /** where the copy's feed stands, for serve to answer with what it lacks */
   serveCatchUpRequest?(): CatchUpRequest;
+  /** installs serve's base for partitions serve compacted past, within `budgetMs` */
+  followServeCompaction?(budgetMs: number): Promise<FollowCompactionReport>;
   /**
    * the writer hold's offline rule, for a write whose first contact with serve
    * is its lock; true when the checkout went offline
@@ -1466,12 +1473,22 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
     );
     if (through === undefined) return undefined;
     const fence = options.writerFence?.();
-    return await commitStore.compactHistory(through, {
-      signal,
-      clock,
-      ...(fence !== undefined ? { fence } : {}),
-      // No retry, from a unit or the outbox, is older than the bound.
-      pruneTxnsBefore: new Date(now.getTime() - COMPACTED_TXN_RETENTION_MS),
+    return await withSpan("swamp.datastore.v3.compact", {}, async (span) => {
+      const report = await commitStore.compactHistory(through, {
+        signal,
+        clock,
+        ...(fence !== undefined ? { fence } : {}),
+        // No retry, from a unit or the outbox, is older than the bound.
+        pruneTxnsBefore: new Date(now.getTime() - COMPACTED_TXN_RETENTION_MS),
+        pruneRemovedBefore: new Date(now.getTime() - policy.retainMs),
+      });
+      span.setAttribute("swamp.datastore.v3.compact.commits", report.compacted);
+      span.setAttribute(
+        "swamp.datastore.v3.compact.partitions",
+        report.partitions ?? 0,
+      );
+      span.setAttribute("swamp.datastore.v3.compact.batches", report.batches);
+      return report;
     });
   };
 
@@ -1547,6 +1564,13 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
           if (pending > maxCommits) throw new LockCatchUpBehindError(pending);
         },
         serveCatchUpRequest: () => serveCatchUp.request(),
+        followServeCompaction: (budgetMs: number) =>
+          new ServeCompactionFollower({
+            client: serveClient!,
+            commitStore,
+            copyDir: dirname(commitsDbPath),
+            namespace,
+          }).follow(budgetMs, () => readModel.cursor()),
         goOfflineOnUnreachable: (error: unknown) => goOfflineOn(error),
         serveHasReadFeed: () => serveState?.hasReadFeed() === true,
         async catchUpReadModel(

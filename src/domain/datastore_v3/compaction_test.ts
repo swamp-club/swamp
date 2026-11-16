@@ -49,7 +49,11 @@ class MemoryBase implements CompactedBaseWriter {
   readonly catalog = new Map<string, CatalogNameState>();
   readonly files = new Map<string, FileOwnership>();
   readonly seqs = new Map<string, number>();
+  readonly commits: string[] = [];
 
+  atCommit(ns: string, p: string, seq: number): void {
+    this.commits.push(`${ns}|${p}|${seq}`);
+  }
   putRecord(ns: string, p: string, key: string, record: BaseRecord): void {
     this.records.set(`${ns}|${p}|${key}`, record);
   }

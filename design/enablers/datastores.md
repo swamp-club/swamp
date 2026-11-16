@@ -5394,46 +5394,79 @@ or below that seq. **There's no local fold and no local partition rebuild.**
   - A difference request below the horizon answers "gone", and the copy
     installs the partition whole.
 - **Serve's API**, read-only and behind the per-caller filter:
-  - a base index (each readable partition's compacted seq, and any partition
-    it shares a file key or a lexical conflict with);
-  - the base filtered to a list of partitions;
-  - a partition's difference since a seq.
+  - `GET base/index`: each partition the caller may read (whole, or its data),
+    with its compacted seq, base row count, difference horizon, and whether
+    another partition owns a key under its records;
+  - `GET base/partition?partition=P`: P's whole base;
+  - `GET base/partition?partition=P&since=S`: P's rows with `changed_seq > S`
+    and its removals after S. 410 below the horizon, 413 past the row limit;
+  - `GET base/partition?partition=P&paged=1[&after=T]`: P's whole base a page
+    at a time, for a partition too large to read at once.
 - **The copy** records, per partition, whether its base came from serve and at
   which seq.
   - A difference applies only to a base that came from serve. Equality holds by
     induction from the last install.
+  - A full base load is serve's base row for row, so it records every partition
+    as serve-sourced at its seq.
   - A partition the copy compacted locally (before this design) is equal to
     serve's only by projection, so it's installed whole once.
 - **One install, per partition, in one transaction under the copy's writer
   lock:**
-  1. replace (or, by difference, upsert and delete) the partition's base rows,
-     `compacted_partitions` and `compacted_txns`;
-  2. adjust `chunk_refs` and `chunk_partitions` per partition or per row, and
-     release a chunk whose count reaches zero, as a fold does;
+  1. replace (or, by difference, upsert and delete) the partition's base rows
+     and `compacted_partitions`;
+  2. adjust `chunk_refs` and `chunk_partitions` per row, and release a chunk
+     whose count reaches zero, as a fold does;
   3. write file ownership with its mark **rebased** below the partition's
-     lowest kept local cursor;
-  4. delete the commits at or below the new seq.
+     lowest local cursor above the new seq;
+  4. remove the commits it folds, **recording the txnIds of the commits it
+     removes** in `compacted_txns`, as a fold does;
+  5. move the copy's compaction point to just below its oldest commit not yet
+     in the base.
+- **Which commits an install removes:**
+  - **whole** (up to 1,000 base rows): every commit at or below the seq; the
+    partition's snapshot at that seq is rebuilt from the copy's own commits,
+    which is cheap at that size;
+  - **by difference:** only down to the partition's latest snapshot, so no
+    snapshot (a body of every record) is ever rewritten. The commits kept
+    between that snapshot and the seq are **history-only**: a partition
+    rebuild reads them, but the change feed never serves a commit at or below
+    its partition's compacted seq. They are a contiguous suffix of the
+    partition's history, so even a replay of them over the base would be
+    idempotent; the filter saves the work.
+- **The compaction point** moves only past commits that are in the base, so a
+  fresh read model loads the base and replays what follows it. An install never
+  folds a commit the live read model has not applied, so the point never passes
+  the live read model and never forces it to reload the base.
 - **Refusals that fall back to the full base load:**
-  - `chunk_refs` isn't the sum of `chunk_partitions` for the partition's
-    chunks;
+  - a touched chunk's `chunk_partitions` counts sum above its `chunk_refs`
+    (they may sum below it: an index row can be missing and fails closed);
   - the base index reports a contested key. None exist today, so this is a
     guard only;
-  - an outbox entry sits below serve's compacted seq. That's divergence, so
-    refuse and leave it to the divergence path.
-- **Never drop a commit still in the copy's outbox.** Serve's `compacted_txns`
-  are installed, so a retry of a folded commit is still a duplicate.
+- **The outbox is never touched**: it is a file of its own beside
+  `commits.db`, and serve cannot have folded a commit it never acknowledged, so
+  an install needs no outbox check.
+- **Never drop a commit still in the copy's outbox.** The install records the
+  txnIds of the commits it removes, and the copy's own landed work is always in
+  its own commits, so a retry of a folded commit is still a duplicate.
+- **A divergence truncation** that would remove a history-only commit is
+  refused as compacted-past, which takes the existing restore path.
+- **A copy with any serve-sourced partition never compacts locally**: its
+  history-only commits are already in the base.
 - **Forwards are partition-local:** a forward's target is a bare name, resolved
   at read time in the same model's catalog.
 - **The read model is untouched** for a caught-up copy: it has applied every
-  reinstalled commit, and the copy's global compaction point doesn't move.
+  commit an install folds.
   - A behind copy's read model applies the difference by name, using targeted
     recovery's restore and catalog steps scoped to the reinstalled partitions.
 - **When it runs:**
-  - **A caught-up copy:** inside a command, after its output is flushed and
-    before it returns. **Never at exit.** At most 1 s per command, resumable
-    between partition batches. It's skipped when another process holds the
-    copy's writer lock, and triggered when the copy holds at least 2,500
-    commits below serve's point.
+  - **A caught-up copy:** in the success teardown, after the datastore sync
+    and before the datastores close. It is capped at 1 s, installs only, and
+    is skipped when another process holds the copy's writer lock, so it is not
+    the unbounded exit fold the exit path once ran. One partition per
+    transaction; the budget stops it only between partitions, and it never
+    starts a partition whose estimated cost exceeds what is left. It runs
+    when the copy holds at least 2,500 foldable commits (above their
+    partition's compacted seq) and serve names `base-difference`.
   - An active member has about 100-160 partitions an hour (M), and about 750
     changed rows an hour per hot partition (M: distinct keys over 5 h). That's
     tens of ms (I).
@@ -5442,11 +5475,25 @@ or below that seq. **There's no local fold and no local partition rebuild.**
     rows whole, plus the hot partitions' changed rows (≤ about 40-50 k, I).
     Anything left continues at later commands' tails.
   - **A hot partition installed whole** (its first install, or past the
-    horizon) runs only in that first-command batch, never at a command's tail.
+    horizon) is **staged a page at a time** (`GET base/partition?paged=1`)
+    into the copy's staging tables, at command tails within their budget and
+    resumed by the next command from a stored page marker. Once staged, it is
+    swapped in by one set-based transaction, so no reader sees half of it,
+    and only when the swap's estimated cost fits the budget left (160 k rows
+    swapped in about 165 ms locally, M; the estimate pads that about three
+    times for slower disks). A complete staging swaps first, before any other
+    install, so it gets the whole budget. One partition is staged at a time;
+    serve moving to a new seq mid-staging starts it over, and a swap that is
+    refused clears its staging so it never blocks the next partition.
+  - **A difference that cannot be installed at a tail** (serve has forgotten
+    its removals, it is past serve's row limit, or it would not fit even a
+    whole budget) is staged and swapped in whole instead, never deferred for
+    good.
   - **Fallback to the full base load** when the difference's estimated rows
     exceed the whole base's.
-- **Observability:** a fold span on serve and on the copy, recording the
-  partitions and commits folded and the time taken.
+- **Observability:** `swamp.datastore.v3.follow_compaction` records, per
+  command, the budget used, the partitions installed, deferred and refused, the
+  pages staged and partitions swapped in, and the rows written.
 - **Serve's own follower copy** isn't covered. Under the physical-follower
   takeover design it's a byte-identical copy of the leader's lineage and takes
   the leader's compaction with it. If that design isn't in place when this

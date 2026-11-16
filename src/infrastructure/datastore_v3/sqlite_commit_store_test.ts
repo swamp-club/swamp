@@ -30,7 +30,12 @@ import { DatabaseSync } from "node:sqlite";
 import { BlobRef } from "../../domain/datastore_v3/blob_ref.ts";
 import type { Commit } from "../../domain/datastore_v3/commit.ts";
 import { createIntent, modelRef } from "../../domain/datastore_v3/intent.ts";
-import { leaseOp, putOp } from "../../domain/datastore_v3/op.ts";
+import {
+  leaseOp,
+  type Op,
+  putOp,
+  tombstoneOp,
+} from "../../domain/datastore_v3/op.ts";
 import {
   type PartitionKey,
   partitionOf,
@@ -1932,6 +1937,11 @@ Deno.test("SqliteCommitStore.installObservedBase: a follower takes serve's base 
         CommitsCompactedError,
       );
       assertEquals(await store.dataHighWater("", modelPartition(), "a"), 9);
+      // serve's base row for row, so a later difference may build on it
+      assertEquals(
+        (await store.basePositions("")).get(modelPartition().toString()),
+        { compacted: 7, source: 7 },
+      );
       const base = await store.readCompactedBase(undefined, 100);
       assertEquals(base.point, 3);
       assertEquals(
@@ -2358,5 +2368,157 @@ Deno.test("SqliteCommitStore.compactHistory: budgeted runs each fold at least on
       });
     }
     assertEquals((await store.history()).compactedThrough, 6);
+  });
+});
+
+Deno.test("SqliteCommitStore.compactHistory: each base row a fold writes carries the seq of the commit that wrote it", async () => {
+  await withStore(async (store, path) => {
+    for (let seq = 1; seq <= 3; seq++) await store.append(await save(seq));
+    await store.compactHistory(2);
+    assertEquals(
+      rawRows(
+        path,
+        "SELECT record_key, changed_seq FROM base_records ORDER BY record_key",
+      ).map((
+        row,
+      ) => [String(row.record_key).split("/").at(-2), row.changed_seq]),
+      [["1", 1], ["2", 2]],
+    );
+    assertEquals(
+      rawRows(
+        path,
+        "SELECT version, changed_seq FROM base_versions ORDER BY version",
+      )
+        .map((row) => row.changed_seq),
+      [2, 2],
+    );
+    assertEquals(rawRows(path, "SELECT * FROM base_removed"), []);
+  });
+});
+
+Deno.test("SqliteCommitStore.compactHistory: a fold logs the rows it removes, and only rows that are gone", async () => {
+  await withStore(async (store, path) => {
+    for (let seq = 1; seq <= 2; seq++) await store.append(await save(seq));
+    await store.compactHistory(2);
+    await store.append(modelCommit(3, [deleteVersion("a", 1)], { fence: 1 }));
+    await store.compactHistory(3);
+    const removed = rawRows(
+      path,
+      "SELECT section, row_key, removed_seq FROM base_removed ORDER BY section, row_key",
+    ).map((row) => [row.section, row.row_key, row.removed_seq]);
+    assertEquals(removed.filter(([section]) => section !== "record"), [
+      ["catalog", "1/a", 3],
+      ["version", "1/a", 3],
+    ]);
+    assertEquals(
+      removed.filter(([section]) => section === "record").length,
+      1,
+    );
+    // version a@2 was written again by the fold but never removed
+    assertEquals(
+      removed.some(([, key]) => key === "2/a"),
+      false,
+    );
+  });
+});
+
+Deno.test("SqliteCommitStore.compactHistory: a row written again after its removal is no longer logged as removed", async () => {
+  await withStore(async (store, path) => {
+    const id = "55555555-5555-4555-8555-555555555555";
+    const partition = partitionOf({ kind: "definition", id });
+    const key = RecordKey.create(`auto-definitions/${id}.yaml`);
+    const intent = (kind: "auto-definition.save" | "auto-definition.delete") =>
+      createIntent({ kind, autoDefinition: { id } });
+    const commit = (seq: number, ops: Op[]) =>
+      modelCommit(seq, ops, { partition, fence: 1, txnId: `auto-${seq}` });
+    const removed = () =>
+      rawRows(path, "SELECT row_key FROM base_removed WHERE section = 'record'")
+        .map((r) => r.row_key);
+    await store.append(
+      commit(1, [
+        await putOp({
+          intent: intent("auto-definition.save"),
+          key,
+          inline: btoa("a"),
+        }),
+      ]),
+    );
+    await store.append(
+      commit(2, [
+        tombstoneOp({ intent: intent("auto-definition.delete"), key }),
+      ]),
+    );
+    await store.compactHistory(2);
+    assertEquals(removed(), [key.toString()]);
+    await store.append(
+      commit(3, [
+        await putOp({
+          intent: intent("auto-definition.save"),
+          key,
+          inline: btoa("b"),
+        }),
+      ]),
+    );
+    await store.compactHistory(3);
+    assertEquals(removed(), []);
+    assertEquals(
+      rawRows(path, "SELECT changed_seq FROM base_records")[0].changed_seq,
+      3,
+    );
+  });
+});
+
+Deno.test("SqliteCommitStore: migrating to schema 14 starts each difference horizon at its partition's compacted seq, and a re-run after a rollback resets them", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "commits.db");
+    const store = SqliteCommitStore.open(path);
+    for (let seq = 1; seq <= 3; seq++) await store.append(await save(seq));
+    await store.compactHistory(2);
+    await store.close();
+    const db = new DatabaseSync(path);
+    try {
+      // as if an older swamp folded on after a rollback, recording nothing
+      db.exec(
+        "UPDATE compacted_partitions SET seq = 3; DELETE FROM difference_horizons; PRAGMA user_version=13",
+      );
+    } finally {
+      db.close();
+    }
+    await (SqliteCommitStore.open(path)).close();
+    assertEquals(
+      rawRows(path, "PRAGMA user_version")[0].user_version,
+      COMMIT_STORE_SCHEMA_VERSION,
+    );
+    assertEquals(
+      rawRows(path, "SELECT seq FROM difference_horizons").map((r) => r.seq),
+      [3],
+    );
+  });
+});
+
+Deno.test("SqliteCommitStore.compactHistory: pruning removals raises each partition's difference horizon past them first", async () => {
+  await withStore(async (store, path) => {
+    const at = (ms: number) => () => new Date(ms);
+    for (let seq = 1; seq <= 2; seq++) await store.append(await save(seq));
+    await store.compactHistory(2, { clock: at(1_000) });
+    await store.append(modelCommit(3, [deleteVersion("a", 1)], { fence: 1 }));
+    await store.compactHistory(3, { clock: at(2_000) });
+    const horizon = () =>
+      rawRows(path, "SELECT seq FROM difference_horizons").map((r) => r.seq);
+    const removed = () => rawRows(path, "SELECT 1 FROM base_removed").length;
+    assertGreater(removed(), 0);
+    await store.append(await save(4));
+    await store.compactHistory(4, {
+      clock: at(3_000),
+      pruneRemovedBefore: new Date(1_500),
+    });
+    assertGreater(removed(), 0);
+    await store.append(await save(5));
+    await store.compactHistory(5, {
+      clock: at(4_000),
+      pruneRemovedBefore: new Date(2_500),
+    });
+    assertEquals(removed(), 0);
+    assertEquals(horizon(), [3]);
   });
 });

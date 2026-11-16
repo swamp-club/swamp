@@ -148,7 +148,13 @@ Deno.test("SqliteCommitStore.compactHistory: reports prunedTxns only when prunin
   await withStore(async (store, path) => {
     for (let seq = 1; seq <= 3; seq++) await store.append(await save(seq));
     const report = await store.compactHistory(2);
-    assertEquals(report, { point: 2, compacted: 2, batches: 1, released: 0 });
+    assertEquals(report, {
+      point: 2,
+      compacted: 2,
+      batches: 1,
+      released: 0,
+      partitions: 1,
+    });
     assertEquals(txnRows(path), ["txn-1", "txn-2"]);
   });
 });

@@ -31,7 +31,11 @@ import { normalizeServerUrl } from "../../domain/auth/server_url.ts";
 import { CHUNK_BYTES } from "../../domain/datastore_v3/chunk_store.ts";
 import { MAX_COMMIT_OPS } from "../../domain/datastore_v3/commit.ts";
 import { MAX_FIELD_LENGTH as MAX_INTENT_FIELD_LENGTH } from "../../domain/datastore_v3/intent.ts";
-import type { DataNameMarks } from "../../domain/datastore_v3/commit_store.ts";
+import type {
+  BaseIndexEntry,
+  BaseRemoval,
+  DataNameMarks,
+} from "../../domain/datastore_v3/commit_store.ts";
 import {
   dataNameMarksFromJSON,
   type ObservedBaseEntry,
@@ -239,6 +243,18 @@ export const SERVE_DATASTORE_LOG_HEADER = "x-swamp-datastore-log";
 
 export const SERVE_DATASTORE_ACCESS_HEADER = "x-swamp-datastore-access";
 
+export interface ServeBaseIndex {
+  readonly point: number;
+  readonly partitions: readonly BaseIndexEntry[];
+}
+
+export interface ServePartitionBase {
+  readonly seq: number;
+  readonly horizon: number;
+  readonly entries: readonly ObservedBaseEntry[];
+  readonly removed: readonly BaseRemoval[];
+}
+
 /**
  * names what this client's copy understands; serve leaves lease ops out of
  * commits for a client that does not name `lease-ops`, which an older swamp
@@ -276,6 +292,8 @@ export const COMMIT_BATCH_FEATURE = "commit-batch";
 
 /** the most commits serve takes in one `POST commits` */
 export const MAX_BATCH_COMMITS = 16;
+
+export const BASE_DIFFERENCE_FEATURE = "base-difference";
 
 /** serve refuses a new run record that does not name the principal it stamps */
 export const RUN_INITIATOR_FEATURE = "run-initiator";
@@ -549,6 +567,7 @@ export class ServeDatastoreClient {
   #accessCheck: ((fingerprint: string) => void) | undefined;
   #takesStepStarts = false;
   #takesCommitBatches = false;
+  #takesBaseDifference = false;
   #heardReply = false;
   #initiatorMode: ServeInitiatorMode | undefined;
 
@@ -839,6 +858,161 @@ export class ServeDatastoreClient {
       pageMaxBytes(limit),
     );
     return changesPageOf(body, "changes");
+  }
+
+  async baseIndex(signal: AbortSignal): Promise<ServeBaseIndex> {
+    const body = await this.#json(
+      { method: "GET", path: "base/index", query: {} },
+      signal,
+      SERVE_PAGE_MAX_BYTES,
+    );
+    if (!isSeq(body.point) || !Array.isArray(body.partitions)) {
+      throw invalidReply("base/index", "point and partitions");
+    }
+    const partitions: BaseIndexEntry[] = [];
+    for (const entry of body.partitions as unknown[]) {
+      const e = entry as Record<string, unknown>;
+      if (
+        typeof e !== "object" || e === null ||
+        typeof e.partition !== "string" || !isSeq(e.seq) ||
+        !isSeq(e.rows) || !isSeq(e.horizon) ||
+        typeof e.contested !== "boolean"
+      ) {
+        throw invalidReply("base/index", "partition entries");
+      }
+      partitions.push({
+        partition: e.partition,
+        seq: e.seq,
+        rows: e.rows,
+        horizon: e.horizon,
+        contested: e.contested,
+      });
+    }
+    return { point: body.point, partitions };
+  }
+
+  /**
+   * One partition's base, or its difference since `since`. "gone" when serve
+   * forgot removals below `since`; "too-large" past serve's limit.
+   */
+  async basePartition(
+    partition: string,
+    since: number | undefined,
+    namespace: string,
+    signal: AbortSignal,
+  ): Promise<ServePartitionBase | "gone" | "too-large"> {
+    let body: Record<string, unknown>;
+    try {
+      body = await this.#json(
+        {
+          method: "GET",
+          path: "base/partition",
+          query: {
+            partition,
+            ...(since === undefined ? {} : { since: String(since) }),
+          },
+        },
+        signal,
+        SERVE_PAGE_MAX_BYTES,
+      );
+    } catch (error) {
+      if (error instanceof ServeUpstreamError) {
+        if (error.status === 410) return "gone";
+        if (error.status === 413) return "too-large";
+      }
+      throw error;
+    }
+    if (
+      !isSeq(body.seq) || !isSeq(body.horizon) ||
+      !Array.isArray(body.entries) || !Array.isArray(body.removed)
+    ) {
+      throw invalidReply("base/partition", "seq, horizon, entries and removed");
+    }
+    const removed: BaseRemoval[] = [];
+    for (const item of body.removed as unknown[]) {
+      const r = item as Record<string, unknown>;
+      if (
+        typeof r !== "object" || r === null || typeof r.key !== "string" ||
+        !["record", "version", "catalog", "forward"].includes(
+          r.section as string,
+        )
+      ) {
+        throw invalidReply("base/partition", "removals");
+      }
+      removed.push({
+        section: r.section as BaseRemoval["section"],
+        key: r.key,
+      });
+    }
+    let entries: ObservedBaseEntry[];
+    try {
+      entries = body.entries.map((entry) =>
+        observedBaseEntryFromJSON(entry, namespace)
+      );
+    } catch (error) {
+      throw new ServeUpstreamError(
+        200,
+        "invalid_response",
+        `Serve's reply to base/partition holds an entry this copy refuses: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+    return { seq: body.seq, horizon: body.horizon, entries, removed };
+  }
+
+  /** one page of a partition's whole base; serve's seq for it on every page */
+  async basePartitionPage(
+    partition: string,
+    after: string | undefined,
+    namespace: string,
+    signal: AbortSignal,
+    limit?: number,
+  ): Promise<{
+    seq: number;
+    entries: readonly ObservedBaseEntry[];
+    next: string | undefined;
+  }> {
+    const body = await this.#json(
+      {
+        method: "GET",
+        path: "base/partition",
+        query: {
+          partition,
+          paged: "1",
+          ...(after === undefined ? {} : { after }),
+          ...(limit === undefined ? {} : { limit: String(limit) }),
+        },
+      },
+      signal,
+      SERVE_PAGE_MAX_BYTES,
+    );
+    if (
+      !isSeq(body.seq) || !Array.isArray(body.entries) ||
+      (body.next !== undefined &&
+        (typeof body.next !== "string" || body.next.length === 0))
+    ) {
+      throw invalidReply("base/partition", "seq, entries and next");
+    }
+    let entries: ObservedBaseEntry[];
+    try {
+      entries = body.entries.map((entry) =>
+        observedBaseEntryFromJSON(entry, namespace)
+      );
+    } catch (error) {
+      throw new ServeUpstreamError(
+        200,
+        "invalid_response",
+        `Serve's reply to base/partition holds an entry this copy refuses: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+    return {
+      seq: body.seq,
+      entries,
+      next: body.next as string | undefined,
+    };
   }
 
   /**
@@ -1381,6 +1555,13 @@ export class ServeDatastoreClient {
     }
   }
 
+  /** read before each batch: a takeover to an older serve withdraws it */
+  takesBaseDifference(): boolean {
+    return this.#heardReply
+      ? this.#takesBaseDifference
+      : this.#heardFeature(BASE_DIFFERENCE_FEATURE);
+  }
+
   /** false until a reply from serve itself has said it takes batches */
   takesCommitBatches(): boolean {
     return this.#takesCommitBatches ||
@@ -1570,6 +1751,9 @@ export class ServeDatastoreClient {
           ) ?? "").split(",").map((feature) => feature.trim());
           this.#takesStepStarts = features.includes(STEP_STARTS_FEATURE);
           this.#takesCommitBatches = features.includes(COMMIT_BATCH_FEATURE);
+          this.#takesBaseDifference = features.includes(
+            BASE_DIFFERENCE_FEATURE,
+          );
           heardFeatures.set(this.#heardKey(), features);
           this.#heardReply = true;
           this.#initiatorMode = initiatorModeOf(
