@@ -217,7 +217,6 @@ Deno.test("SqliteCommitStore.installPartitionBase: a difference applies only wha
     );
     assertEquals(outcome.kind, "installed");
     assertEquals(baseOf(paths.copy), baseOf(paths.serve));
-    // snapshot interval 4: the latest snapshot is at 4, so 5 and 6 stay
     assertEquals(
       rows(
         paths.copy,
@@ -327,7 +326,6 @@ Deno.test("SqliteCommitStore.installPartitionBase: a hot partition of 40k record
         installOf(difference, "difference"),
       );
       if (outcome.kind !== "installed") throw new Error(outcome.reason);
-      // ten saves: a record and a version each, a catalog row, a file
       assertEquals(outcome.rows <= 10 * 5, true, `${outcome.rows} rows`);
       assertEquals(baseOf(paths.copy), baseOf(paths.serve));
     }

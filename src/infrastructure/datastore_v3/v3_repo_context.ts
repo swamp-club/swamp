@@ -2030,11 +2030,7 @@ async function recoverDroppedWork(
   }
 }
 
-/**
- * After the command's output and before its datastores close: each serve-mode
- * copy installs serve's base for partitions serve compacted past it, under one
- * budget. Never fails the command; anything not done waits for the next one.
- */
+/** never fails the command: what it leaves undone the next command resumes */
 export async function followServeCompactionAtCommandEnd(
   budgetMs: number = FOLLOW_COMPACTION_BUDGET_MS,
 ): Promise<void> {

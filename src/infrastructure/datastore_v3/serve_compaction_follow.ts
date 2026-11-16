@@ -115,11 +115,7 @@ interface Candidate {
   readonly since?: number;
 }
 
-/**
- * Keeps a caught-up copy bounded by installing serve's base for the partitions
- * serve has compacted past it: one partition per transaction, stopping only
- * between partitions, never starting one the budget cannot finish.
- */
+/** stops only between partitions, and never starts one the budget cannot finish */
 export class ServeCompactionFollower {
   readonly #client: ServeCompactionFollowerOptions["client"];
   readonly #commitStore: ServeCompactionFollowerOptions["commitStore"];
@@ -245,7 +241,7 @@ export class ServeCompactionFollower {
       const local = positions.get(entry.partition);
       if (entry.seq <= (local?.compacted ?? 0)) continue;
       if (entry.contested) {
-        // none exist today; such a partition is left to the full base load
+        // such a partition is left to the full base load
         waiting++;
         continue;
       }

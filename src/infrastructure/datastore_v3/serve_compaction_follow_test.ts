@@ -598,7 +598,6 @@ Deno.test("ServeCompactionFollower.follow: a swap that only misses a shared budg
   const hot = WHOLE_INSTALL_MAX_ROWS + 1;
   const run = follower({ partitions: [entry("hot", hot)] });
   run.seeStaging({ partition: "hot", seq: 10, complete: true, rows: 40_000 });
-  // 40 k rows fit the full budget but not the 100 ms another copy left
   const report = await run.follower.follow(100, () => 0);
   assertEquals(report.deferred >= 1, true);
   assertEquals(run.pageLimits.has("hot"), false);

@@ -476,7 +476,7 @@ const MIGRATIONS: readonly SqliteMigration[] = [
   // schema 12 or below does not know and would call corrupt; no table changes.
   `SELECT 1;`,
   // 13 → 14: no backfill, as a NULL changed_seq sits at or below its horizon,
-  // which starts at the compacted seq; a re-run after a rollback resets them.
+  // which starts at the compacted seq and is reset whenever this step runs.
   (db) => {
     addColumnsIfAbsent(
       [
@@ -1375,6 +1375,726 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
       this.#notifyHeadMoved();
       return result;
     });
+  }
+
+  /** commits a base install could still fold, counted no further than `atMost` */
+  foldableCommits(atMost = Number.MAX_SAFE_INTEGER): Promise<number> {
+    if (this.#closed) return Promise.reject(closedError());
+    return Promise.resolve(
+      Number(
+        (this.#db.prepare(
+          "SELECT COUNT(*) AS n FROM (SELECT 1 FROM commits AS c WHERE NOT EXISTS (SELECT 1 FROM compacted_partitions AS p " +
+            "WHERE p.namespace = c.namespace AND p.partition = c.partition AND p.seq >= c.seq) LIMIT ?)",
+        ).get(atMost) as { n: number }).n,
+      ),
+    );
+  }
+
+  /** each partition's compacted seq, and the serve seq its base came from */
+  basePositions(
+    namespace: string,
+  ): Promise<ReadonlyMap<string, { compacted: number; source?: number }>> {
+    if (this.#closed) return Promise.reject(closedError());
+    const positions = new Map<string, { compacted: number; source?: number }>();
+    for (
+      const row of this.#db.prepare(
+        "SELECT p.partition, p.seq, s.seq AS source FROM compacted_partitions AS p " +
+          "LEFT JOIN base_sources AS s USING (namespace, partition) WHERE p.namespace = ?",
+      ).all(namespace) as {
+        partition: string;
+        seq: number;
+        source: number | null;
+      }[]
+    ) {
+      positions.set(row.partition, {
+        compacted: row.seq,
+        ...(row.source === null ? {} : { source: row.source }),
+      });
+    }
+    return Promise.resolve(positions);
+  }
+
+  /** the partition being staged a page at a time, if any */
+  stagedPartition(): Promise<StagedPartition | undefined> {
+    if (this.#closed) return Promise.reject(closedError());
+    const row = this.#db.prepare(
+      "SELECT namespace, partition, seq, next, complete, rows FROM staged_partition WHERE id = 1",
+    ).get() as
+      | {
+        namespace: string;
+        partition: string;
+        seq: number;
+        next: string | null;
+        complete: number;
+        rows: number;
+      }
+      | undefined;
+    return Promise.resolve(
+      row === undefined ? undefined : {
+        namespace: row.namespace,
+        partition: row.partition,
+        seq: row.seq,
+        ...(row.next === null ? {} : { next: row.next }),
+        complete: row.complete === 1,
+        rows: row.rows,
+      },
+    );
+  }
+
+  /**
+   * Adds one page of a partition's whole base to the staging tables. A page of
+   * another partition or seq starts the staging over: one base, one seq.
+   */
+  stagePartitionPage(page: {
+    readonly namespace: string;
+    readonly partition: string;
+    readonly seq: number;
+    readonly entries: readonly ObservedBaseEntry[];
+    readonly next: string | undefined;
+  }): Promise<void> {
+    if (this.#closed) return Promise.reject(closedError());
+    return this.#enqueue(() => {
+      this.#db.exec("BEGIN IMMEDIATE");
+      try {
+        const marker = this.#db.prepare(
+          "SELECT namespace, partition, seq FROM staged_partition WHERE id = 1",
+        ).get() as
+          | { namespace: string; partition: string; seq: number }
+          | undefined;
+        if (
+          marker === undefined || marker.namespace !== page.namespace ||
+          marker.partition !== page.partition || marker.seq !== page.seq
+        ) {
+          this.#clearStaging();
+        }
+        const put = {
+          record: this.#db.prepare(
+            "INSERT OR REPLACE INTO staged_records (record_key, sha256, inline, blob, access) VALUES (?, ?, ?, ?, ?)",
+          ),
+          version: this.#db.prepare(
+            "INSERT OR REPLACE INTO staged_versions (name, version, metadata) VALUES (?, ?, ?)",
+          ),
+          catalog: this.#db.prepare(
+            "INSERT OR REPLACE INTO staged_catalog (name, version) VALUES (?, ?)",
+          ),
+          forward: this.#db.prepare(
+            "INSERT OR REPLACE INTO staged_forwards (name, renamed_to) VALUES (?, ?)",
+          ),
+          file: this.#db.prepare(
+            "INSERT OR REPLACE INTO staged_files (record_key, present) VALUES (?, ?)",
+          ),
+        };
+        let added = 0;
+        for (const entry of page.entries) {
+          if (entry.namespace !== page.namespace) {
+            throw new Error(
+              `A base entry of namespace ${entry.namespace} is not this copy's`,
+            );
+          }
+          if (entry.kind !== "file" && entry.partition !== page.partition) {
+            throw new Error(
+              `A base entry of partition ${entry.partition} came in the base of ${page.partition}`,
+            );
+          }
+          if (entry.kind !== "partition") added++;
+          switch (entry.kind) {
+            case "partition":
+              break;
+            case "record": {
+              const blob = "blob" in entry.record.content
+                ? entry.record.content.blob
+                : undefined;
+              put.record.run(
+                entry.key,
+                entry.record.sha256,
+                "inline" in entry.record.content
+                  ? entry.record.content.inline
+                  : null,
+                blob === undefined ? null : JSON.stringify(blob.toJSON()),
+                entry.record.access ?? null,
+              );
+              break;
+            }
+            case "version":
+              put.version.run(
+                entry.version.metadata.name,
+                entry.version.version,
+                JSON.stringify(entry.version.metadata),
+              );
+              break;
+            case "catalog-row":
+              put.catalog.run(entry.metadata.name, entry.metadata.version);
+              break;
+            case "forward":
+              put.forward.run(entry.name, entry.to);
+              break;
+            case "file":
+              if (entry.ownership.owner !== page.partition) {
+                throw new Error(
+                  `A file owned by ${entry.ownership.owner} came in the base of ${page.partition}`,
+                );
+              }
+              put.file.run(entry.key, entry.ownership.present ? 1 : 0);
+              break;
+          }
+        }
+        const before = (this.#db.prepare(
+          "SELECT rows FROM staged_partition WHERE id = 1",
+        ).get() as { rows: number } | undefined)?.rows ?? 0;
+        this.#db.prepare(
+          "INSERT OR REPLACE INTO staged_partition (id, namespace, partition, seq, next, complete, rows) VALUES (1, ?, ?, ?, ?, ?, ?)",
+        ).run(
+          page.namespace,
+          page.partition,
+          page.seq,
+          page.next ?? null,
+          page.next === undefined ? 1 : 0,
+          before + added,
+        );
+        this.#db.exec("COMMIT");
+      } catch (error) {
+        rollbackQuietly(this.#db);
+        throw error;
+      }
+      return Promise.resolve();
+    });
+  }
+
+  /** the page size staging this partition last fell back to, if any */
+  stagingPageLimit(
+    namespace: string,
+    partition: string,
+  ): Promise<number | undefined> {
+    if (this.#closed) return Promise.reject(closedError());
+    return Promise.resolve(
+      (this.#db.prepare(
+        "SELECT entries FROM staging_page_limits WHERE namespace = ? AND partition = ?",
+      ).get(namespace, partition) as { entries: number } | undefined)
+        ?.entries,
+    );
+  }
+
+  /** undefined forgets it, once the partition is swapped in */
+  setStagingPageLimit(
+    namespace: string,
+    partition: string,
+    entries: number | undefined,
+  ): Promise<void> {
+    if (this.#closed) return Promise.reject(closedError());
+    return this.#enqueue(() => {
+      if (entries === undefined) {
+        this.#db.prepare(
+          "DELETE FROM staging_page_limits WHERE namespace = ? AND partition = ?",
+        ).run(namespace, partition);
+      } else {
+        this.#db.prepare(
+          "INSERT OR REPLACE INTO staging_page_limits (namespace, partition, entries) VALUES (?, ?, ?)",
+        ).run(namespace, partition, entries);
+      }
+      return Promise.resolve();
+    });
+  }
+
+  /** forgets a staged partition, for one serve has moved past or refused */
+  clearStagedPartition(): Promise<void> {
+    if (this.#closed) return Promise.reject(closedError());
+    return this.#enqueue(() => {
+      this.#db.exec("BEGIN IMMEDIATE");
+      try {
+        this.#clearStaging();
+        this.#db.exec("COMMIT");
+      } catch (error) {
+        rollbackQuietly(this.#db);
+        throw error;
+      }
+      return Promise.resolve();
+    });
+  }
+
+  #clearStaging(): void {
+    for (
+      const table of [
+        "staged_partition",
+        "staged_records",
+        "staged_versions",
+        "staged_catalog",
+        "staged_forwards",
+        "staged_files",
+      ]
+    ) {
+      this.#db.exec(`DELETE FROM ${table}`);
+    }
+  }
+
+  #stagedRows(): number {
+    let rows = 0;
+    for (
+      const table of [
+        "staged_records",
+        "staged_versions",
+        "staged_catalog",
+        "staged_forwards",
+        "staged_files",
+      ]
+    ) {
+      rows += (this.#db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as {
+        n: number;
+      }).n;
+    }
+    return rows;
+  }
+
+  /** one set-based transaction, so no reader ever sees half a swapped base */
+  installStagedPartition(
+    readModelCursor: number,
+  ): Promise<PartitionInstallOutcome> {
+    if (this.#closed) return Promise.reject(closedError());
+    if (!this.#follower) {
+      return Promise.reject(
+        new Error(
+          "Internal error: only a serve-mode copy installs serve's base by partition",
+        ),
+      );
+    }
+    return this.#enqueue(() => this.#installStaged(readModelCursor)).finally(
+      () => this.#notifyHeadMoved(true),
+    );
+  }
+
+  async #installStaged(
+    readModelCursor: number,
+  ): Promise<PartitionInstallOutcome> {
+    const marker = this.#db.prepare(
+      "SELECT namespace, partition, seq, complete FROM staged_partition WHERE id = 1",
+    ).get() as
+      | { namespace: string; partition: string; seq: number; complete: number }
+      | undefined;
+    if (marker === undefined || marker.complete !== 1) {
+      throw new Error("Internal error: no completely staged partition");
+    }
+    const { namespace, partition, seq } = marker;
+    const ready = this.#installReady(
+      namespace,
+      partition,
+      seq,
+      readModelCursor,
+    );
+    if (ready !== undefined) return ready;
+    const latest = this.#selectSnapshot.get(namespace, partition) as
+      | { seq: number }
+      | undefined;
+    const removing = await this.#foldable(
+      namespace,
+      partition,
+      Math.min(seq, latest?.seq ?? 0),
+    );
+    const mark = this.#markBelowLater(namespace, partition, seq);
+    const rows = this.#stagedRows();
+    const compacted = this.#compactedSeq(namespace, partition);
+
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      if (this.#compactedSeq(namespace, partition) !== compacted) {
+        throw new Error(
+          `Partition ${partition} was compacted during its base install: another process is writing the store`,
+        );
+      }
+      const base = this.#base;
+      base.begin(Date.now());
+      this.#swapChunkCounts(base, namespace, partition);
+      const scope = [namespace, partition] as const;
+      this.#db.prepare(
+        "DELETE FROM base_records WHERE namespace = ? AND partition = ?",
+      ).run(...scope);
+      this.#db.prepare(
+        "INSERT INTO base_records (namespace, partition, record_key, sha256, inline, blob, access) " +
+          "SELECT ?, ?, record_key, sha256, inline, blob, access FROM staged_records",
+      ).run(...scope);
+      this.#db.prepare(
+        "DELETE FROM base_versions WHERE namespace = ? AND partition = ?",
+      ).run(...scope);
+      this.#db.prepare(
+        "INSERT INTO base_versions (namespace, partition, name, version, metadata) " +
+          "SELECT ?, ?, name, version, metadata FROM staged_versions",
+      ).run(...scope);
+      this.#db.prepare(
+        "DELETE FROM base_catalog WHERE namespace = ? AND partition = ?",
+      ).run(...scope);
+      this.#db.prepare(
+        "INSERT INTO base_catalog (namespace, partition, name, version) " +
+          "SELECT ?, ?, name, version FROM staged_catalog",
+      ).run(...scope);
+      this.#db.prepare(
+        "DELETE FROM base_forwards WHERE namespace = ? AND partition = ?",
+      ).run(...scope);
+      this.#db.prepare(
+        "INSERT INTO base_forwards (namespace, partition, name, renamed_to) " +
+          "SELECT ?, ?, name, renamed_to FROM staged_forwards",
+      ).run(...scope);
+      this.#db.prepare(
+        "DELETE FROM base_files WHERE namespace = ? AND owner = ?",
+      ).run(...scope);
+      this.#db.prepare(
+        "INSERT OR REPLACE INTO base_files (namespace, record_key, owner, mark, present) " +
+          "SELECT ?, record_key, ?, ?, present FROM staged_files",
+      ).run(namespace, partition, mark);
+      this.#finishInstall(base, namespace, partition, seq, removing);
+      this.#clearStaging();
+      this.#assertChunkCounts(namespace, base.touched);
+      this.#db.exec("COMMIT");
+      this.#cache.delete(cacheKeyOf(namespace, partition));
+      return { kind: "installed", rows, commitsRemoved: removing.rows.length };
+    } catch (error) {
+      rollbackQuietly(this.#db);
+      this.#cache.delete(cacheKeyOf(namespace, partition));
+      throw error;
+    }
+  }
+
+  /**
+   * Moves the partition's chunk counts from its current base records to the
+   * staged ones, counting each record's chunks once, as putRecord does.
+   */
+  #swapChunkCounts(
+    base: SqliteCompactedBase,
+    namespace: string,
+    partition: string,
+  ): void {
+    const chunksOf = (from: string, where: string) =>
+      new Map(
+        (this.#db.prepare(
+          "SELECT sha, COUNT(*) AS n FROM (SELECT DISTINCT r.record_key AS k, " +
+            "CASE WHEN json_type(r.blob, '$.parts') = 'array' THEN json_extract(p.value, '$.sha256') " +
+            "ELSE json_extract(r.blob, '$.sha256') END AS sha " +
+            `FROM ${from} AS r LEFT JOIN json_each(CASE WHEN json_type(r.blob, '$.parts') = 'array' ` +
+            "THEN json_extract(r.blob, '$.parts') ELSE '[null]' END) AS p " +
+            `WHERE r.blob IS NOT NULL${where}) GROUP BY sha`,
+        ).all(...(where === "" ? [] : [namespace, partition])) as {
+          sha: string;
+          n: number;
+        }[]).map((row) => [row.sha, row.n]),
+      );
+    const before = chunksOf(
+      "base_records",
+      " AND r.namespace = ? AND r.partition = ?",
+    );
+    const after = chunksOf("staged_records", "");
+    for (const sha of new Set([...before.keys(), ...after.keys()])) {
+      base.shiftChunk(
+        namespace,
+        partition,
+        sha,
+        (after.get(sha) ?? 0) - (before.get(sha) ?? 0),
+      );
+    }
+  }
+
+  /** never folds past what the read model applied or the copy's own head */
+  installPartitionBase(
+    install: PartitionBaseInstall,
+  ): Promise<PartitionInstallOutcome> {
+    if (this.#closed) return Promise.reject(closedError());
+    if (!this.#follower) {
+      return Promise.reject(
+        new Error(
+          "Internal error: only a serve-mode copy installs serve's base by partition",
+        ),
+      );
+    }
+    return this.#enqueue(() => this.#installPartition(install)).finally(() =>
+      this.#notifyHeadMoved(true)
+    );
+  }
+
+  async #installPartition(
+    install: PartitionBaseInstall,
+  ): Promise<PartitionInstallOutcome> {
+    const { namespace, partition, seq } = install;
+    const key = PartitionKey.parse(partition);
+    const compacted = this.#compactedSeq(namespace, partition);
+    if (seq <= compacted) return { kind: "skipped", reason: "not-newer" };
+    const source = this.#db.prepare(
+      "SELECT seq FROM base_sources WHERE namespace = ? AND partition = ?",
+    ).get(namespace, partition) as { seq: number } | undefined;
+    if (install.mode === "difference" && source?.seq !== compacted) {
+      return { kind: "skipped", reason: "no-source" };
+    }
+    const ready = this.#installReady(
+      namespace,
+      partition,
+      seq,
+      install.readModelCursor,
+    );
+    if (ready !== undefined) return ready;
+    let snapshot: { seq: number; body: string } | undefined;
+    let through: number;
+    const latest = this.#selectSnapshot.get(namespace, partition) as
+      | { seq: number }
+      | undefined;
+    if (install.mode === "whole" && (latest?.seq ?? 0) < seq) {
+      // a rebuild below the newest snapshot would replay from seq 1, over commits a base already took
+      if (latest === undefined && compacted > 0) {
+        return { kind: "skipped", reason: "no-snapshot" };
+      }
+      const rebuilt = await this.#rebuild(namespace, key, seq);
+      snapshot = { seq: rebuilt.seq, body: JSON.stringify(rebuilt.snapshot()) };
+      through = rebuilt.seq;
+    } else {
+      // the newest snapshot needs no commit at or below it
+      through = Math.min(seq, latest?.seq ?? 0);
+    }
+    const removing = await this.#foldable(namespace, partition, through);
+    const mark = this.#markBelowLater(namespace, partition, seq);
+
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      if (this.#compactedSeq(namespace, partition) !== compacted) {
+        throw new Error(
+          `Partition ${partition} was compacted during its base install: another process is writing the store`,
+        );
+      }
+      const base = this.#base;
+      base.begin(Date.now());
+      let written = 0;
+      if (install.mode === "whole") {
+        for (
+          const row of this.#db.prepare(
+            "SELECT record_key FROM base_records WHERE namespace = ? AND partition = ?",
+          ).all(namespace, partition) as { record_key: string }[]
+        ) {
+          base.deleteRecord(namespace, partition, row.record_key);
+        }
+        for (
+          const table of ["base_versions", "base_catalog", "base_forwards"]
+        ) {
+          this.#db.prepare(
+            `DELETE FROM ${table} WHERE namespace = ? AND partition = ?`,
+          ).run(namespace, partition);
+        }
+        this.#db.prepare(
+          "DELETE FROM base_files WHERE namespace = ? AND owner = ?",
+        ).run(namespace, partition);
+      } else {
+        for (const removal of install.removed) {
+          written++;
+          if (removal.section === "record") {
+            base.deleteRecord(namespace, partition, removal.key);
+            continue;
+          }
+          if (removal.section === "forward") {
+            this.#db.prepare(
+              "DELETE FROM base_forwards WHERE namespace = ? AND partition = ? AND name = ?",
+            ).run(namespace, partition, removal.key);
+            continue;
+          }
+          const split = removal.key.indexOf("/");
+          const version = Number(removal.key.slice(0, split));
+          const name = removal.key.slice(split + 1);
+          this.#db.prepare(
+            `DELETE FROM ${
+              removal.section === "version" ? "base_versions" : "base_catalog"
+            } WHERE namespace = ? AND partition = ? AND name = ? AND version = ?`,
+          ).run(namespace, partition, name, version);
+        }
+      }
+      for (const entry of install.entries) {
+        if (entry.namespace !== namespace) {
+          throw new Error(
+            `A base entry of namespace ${entry.namespace} is not this copy's`,
+          );
+        }
+        if (entry.kind !== "file" && entry.partition !== partition) {
+          throw new Error(
+            `A base entry of partition ${entry.partition} came in the install of ${partition}`,
+          );
+        }
+        written++;
+        switch (entry.kind) {
+          case "partition":
+            break;
+          case "record":
+            base.putRecord(namespace, partition, entry.key, entry.record);
+            break;
+          case "version":
+            this.#db.prepare(
+              "INSERT OR REPLACE INTO base_versions (namespace, partition, name, version, metadata) VALUES (?, ?, ?, ?, ?)",
+            ).run(
+              namespace,
+              partition,
+              entry.version.metadata.name,
+              entry.version.version,
+              JSON.stringify(entry.version.metadata),
+            );
+            break;
+          case "catalog-row":
+            this.#db.prepare(
+              "INSERT OR REPLACE INTO base_catalog (namespace, partition, name, version) VALUES (?, ?, ?, ?)",
+            ).run(
+              namespace,
+              partition,
+              entry.metadata.name,
+              entry.metadata.version,
+            );
+            break;
+          case "forward":
+            this.#db.prepare(
+              "INSERT OR REPLACE INTO base_forwards (namespace, partition, name, renamed_to) VALUES (?, ?, ?, ?)",
+            ).run(namespace, partition, entry.name, entry.to);
+            break;
+          case "file":
+            if (entry.ownership.owner !== partition) {
+              throw new Error(
+                `A file owned by ${entry.ownership.owner} came in the install of ${partition}`,
+              );
+            }
+            base.setFileOwnership(namespace, entry.key, {
+              ...entry.ownership,
+              mark,
+            });
+            break;
+        }
+      }
+      if (snapshot !== undefined) {
+        this.#upsertSnapshot.run(
+          namespace,
+          partition,
+          snapshot.seq,
+          snapshot.body,
+        );
+      }
+      this.#finishInstall(base, namespace, partition, seq, removing);
+      this.#assertChunkCounts(namespace, base.touched);
+      this.#db.exec("COMMIT");
+      this.#cache.delete(cacheKeyOf(namespace, partition));
+      return {
+        kind: "installed",
+        rows: written,
+        commitsRemoved: removing.rows.length,
+      };
+    } catch (error) {
+      rollbackQuietly(this.#db);
+      this.#cache.delete(cacheKeyOf(namespace, partition));
+      throw error;
+    }
+  }
+
+  /**
+   * why a partition cannot take serve's base at `seq` now, if it cannot; the
+   * cursor is the copy's only reader's, as a serve copy lives under its checkout
+   */
+  #installReady(
+    namespace: string,
+    partition: string,
+    seq: number,
+    readModelCursor: number,
+  ): PartitionInstallOutcome | undefined {
+    const compacted = this.#compactedSeq(namespace, partition);
+    if (seq <= compacted) return { kind: "skipped", reason: "not-newer" };
+    const head = (this.#selectHead.get(namespace, partition) as
+      | { seq: number }
+      | undefined)?.seq ?? 0;
+    if (head < seq) return { kind: "skipped", reason: "behind" };
+    const unread = this.#db.prepare(
+      "SELECT 1 AS found FROM commits WHERE namespace = ? AND partition = ? AND seq > ? AND seq <= ? AND cursor > ? LIMIT 1",
+    ).get(namespace, partition, compacted, seq, readModelCursor);
+    if (unread !== undefined) {
+      return { kind: "skipped", reason: "read-model-behind" };
+    }
+    return undefined;
+  }
+
+  async #foldable(
+    namespace: string,
+    partition: string,
+    through: number,
+  ): Promise<{ rows: CommitRow[]; commits: Commit[] }> {
+    const rows = this.#db.prepare(
+      "SELECT cursor, namespace, partition, seq, txn_id, body FROM commits " +
+        "WHERE namespace = ? AND partition = ? AND seq <= ? ORDER BY cursor",
+    ).all(namespace, partition, through) as unknown as CommitRow[];
+    const commits: Commit[] = [];
+    for (const row of rows) commits.push(await parseRow(row));
+    return { rows, commits };
+  }
+
+  /** below every later write of the partition, which alone compare against it */
+  #markBelowLater(namespace: string, partition: string, seq: number): number {
+    const after = this.#db.prepare(
+      "SELECT MIN(cursor) AS cursor FROM commits WHERE namespace = ? AND partition = ? AND seq > ?",
+    ).get(namespace, partition, seq) as { cursor: number | null };
+    const last = (this.#db.prepare(
+      "SELECT seq FROM sqlite_sequence WHERE name = 'commits'",
+    ).get() as { seq: number } | undefined)?.seq ?? 0;
+    return after.cursor === null ? last : after.cursor - 1;
+  }
+
+  #finishInstall(
+    base: SqliteCompactedBase,
+    namespace: string,
+    partition: string,
+    seq: number,
+    removing: { rows: CommitRow[]; commits: Commit[] },
+  ): void {
+    base.setCompactedSeq(namespace, partition, seq);
+    this.#advancePointPastFolded(base, removing.rows);
+    removing.rows.forEach((row, i) => {
+      base.compactCommit(
+        row,
+        removing.commits[i].chunkRefs(),
+        Date.parse(removing.commits[i].at),
+      );
+    });
+    this.#db.prepare(
+      "INSERT INTO base_sources (namespace, partition, seq) VALUES (?, ?, ?) " +
+        "ON CONFLICT (namespace, partition) DO UPDATE SET seq = excluded.seq",
+    ).run(namespace, partition, seq);
+  }
+
+  /** never past the live read model, since installs fold nothing it has not applied */
+  #advancePointPastFolded(
+    base: SqliteCompactedBase,
+    folding: readonly CommitRow[],
+  ): void {
+    const current = this.#point();
+    const unfolded = this.#db.prepare(
+      "SELECT MIN(c.cursor) AS cursor FROM commits AS c WHERE NOT EXISTS (SELECT 1 FROM compacted_partitions AS p " +
+        "WHERE p.namespace = c.namespace AND p.partition = c.partition AND p.seq >= c.seq)",
+    ).get() as { cursor: number | null };
+    const highest = (this.#db.prepare(
+      "SELECT MAX(cursor) AS cursor FROM commits",
+    ).get() as { cursor: number | null }).cursor ?? current;
+    const point = unfolded.cursor === null ? highest : unfolded.cursor - 1;
+    if (point <= current) return;
+    const at = (this.#db.prepare(
+      "SELECT cursor, namespace, partition, seq, txn_id, body FROM commits WHERE cursor <= ? ORDER BY cursor DESC LIMIT 1",
+    ).get(point) as CommitRow | undefined) ??
+      folding.findLast((row) => row.cursor <= point);
+    if (at !== undefined && at.cursor === point) base.setPoint(at);
+    else {
+      this.#db.prepare("UPDATE compaction SET point = ? WHERE id = 1").run(
+        point,
+      );
+    }
+  }
+
+  /**
+   * An index row may be missing (it fails closed), so a partition's counts
+   * may sum below the namespace's; above it means a count drifted.
+   */
+  #assertChunkCounts(namespace: string, chunks: ReadonlySet<string>): void {
+    const check = this.#db.prepare(
+      "SELECT COALESCE((SELECT refs FROM chunk_refs WHERE namespace = ?1 AND sha256 = ?2), 0) AS total, " +
+        "COALESCE((SELECT SUM(refs) FROM chunk_partitions WHERE namespace = ?1 AND sha256 = ?2), 0) AS indexed",
+    );
+    for (const sha256 of chunks) {
+      const { total, indexed } = check.get(namespace, sha256) as {
+        total: number;
+        indexed: number;
+      };
+      if (indexed > total || total < 0) {
+        throw new ChunkCountDriftError(sha256, total, indexed);
+      }
+    }
   }
 
   /**
@@ -3293,734 +4013,6 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
     return this.#enqueue(() => this.#replaceContent(path)).finally(() =>
       this.#notifyHeadMoved(true)
     );
-  }
-
-  /** commits a base install could still fold, counted no further than `atMost` */
-  foldableCommits(atMost = Number.MAX_SAFE_INTEGER): Promise<number> {
-    if (this.#closed) return Promise.reject(closedError());
-    return Promise.resolve(
-      Number(
-        (this.#db.prepare(
-          "SELECT COUNT(*) AS n FROM (SELECT 1 FROM commits AS c WHERE NOT EXISTS (SELECT 1 FROM compacted_partitions AS p " +
-            "WHERE p.namespace = c.namespace AND p.partition = c.partition AND p.seq >= c.seq) LIMIT ?)",
-        ).get(atMost) as { n: number }).n,
-      ),
-    );
-  }
-
-  /** each partition's compacted seq, and the serve seq its base came from */
-  basePositions(
-    namespace: string,
-  ): Promise<ReadonlyMap<string, { compacted: number; source?: number }>> {
-    if (this.#closed) return Promise.reject(closedError());
-    const positions = new Map<string, { compacted: number; source?: number }>();
-    for (
-      const row of this.#db.prepare(
-        "SELECT p.partition, p.seq, s.seq AS source FROM compacted_partitions AS p " +
-          "LEFT JOIN base_sources AS s USING (namespace, partition) WHERE p.namespace = ?",
-      ).all(namespace) as {
-        partition: string;
-        seq: number;
-        source: number | null;
-      }[]
-    ) {
-      positions.set(row.partition, {
-        compacted: row.seq,
-        ...(row.source === null ? {} : { source: row.source }),
-      });
-    }
-    return Promise.resolve(positions);
-  }
-
-  /** the partition being staged a page at a time, if any */
-  stagedPartition(): Promise<StagedPartition | undefined> {
-    if (this.#closed) return Promise.reject(closedError());
-    const row = this.#db.prepare(
-      "SELECT namespace, partition, seq, next, complete, rows FROM staged_partition WHERE id = 1",
-    ).get() as
-      | {
-        namespace: string;
-        partition: string;
-        seq: number;
-        next: string | null;
-        complete: number;
-        rows: number;
-      }
-      | undefined;
-    return Promise.resolve(
-      row === undefined ? undefined : {
-        namespace: row.namespace,
-        partition: row.partition,
-        seq: row.seq,
-        ...(row.next === null ? {} : { next: row.next }),
-        complete: row.complete === 1,
-        rows: row.rows,
-      },
-    );
-  }
-
-  /**
-   * Adds one page of a partition's whole base to the staging tables. A page of
-   * another partition or seq starts the staging over: one base, one seq.
-   */
-  stagePartitionPage(page: {
-    readonly namespace: string;
-    readonly partition: string;
-    readonly seq: number;
-    readonly entries: readonly ObservedBaseEntry[];
-    readonly next: string | undefined;
-  }): Promise<void> {
-    if (this.#closed) return Promise.reject(closedError());
-    return this.#enqueue(() => {
-      this.#db.exec("BEGIN IMMEDIATE");
-      try {
-        const marker = this.#db.prepare(
-          "SELECT namespace, partition, seq FROM staged_partition WHERE id = 1",
-        ).get() as
-          | { namespace: string; partition: string; seq: number }
-          | undefined;
-        if (
-          marker === undefined || marker.namespace !== page.namespace ||
-          marker.partition !== page.partition || marker.seq !== page.seq
-        ) {
-          this.#clearStaging();
-        }
-        const put = {
-          record: this.#db.prepare(
-            "INSERT OR REPLACE INTO staged_records (record_key, sha256, inline, blob, access) VALUES (?, ?, ?, ?, ?)",
-          ),
-          version: this.#db.prepare(
-            "INSERT OR REPLACE INTO staged_versions (name, version, metadata) VALUES (?, ?, ?)",
-          ),
-          catalog: this.#db.prepare(
-            "INSERT OR REPLACE INTO staged_catalog (name, version) VALUES (?, ?)",
-          ),
-          forward: this.#db.prepare(
-            "INSERT OR REPLACE INTO staged_forwards (name, renamed_to) VALUES (?, ?)",
-          ),
-          file: this.#db.prepare(
-            "INSERT OR REPLACE INTO staged_files (record_key, present) VALUES (?, ?)",
-          ),
-        };
-        let added = 0;
-        for (const entry of page.entries) {
-          if (entry.namespace !== page.namespace) {
-            throw new Error(
-              `A base entry of namespace ${entry.namespace} is not this copy's`,
-            );
-          }
-          if (entry.kind !== "file" && entry.partition !== page.partition) {
-            throw new Error(
-              `A base entry of partition ${entry.partition} came in the base of ${page.partition}`,
-            );
-          }
-          if (entry.kind !== "partition") added++;
-          switch (entry.kind) {
-            case "partition":
-              break;
-            case "record": {
-              const blob = "blob" in entry.record.content
-                ? entry.record.content.blob
-                : undefined;
-              put.record.run(
-                entry.key,
-                entry.record.sha256,
-                "inline" in entry.record.content
-                  ? entry.record.content.inline
-                  : null,
-                blob === undefined ? null : JSON.stringify(blob.toJSON()),
-                entry.record.access ?? null,
-              );
-              break;
-            }
-            case "version":
-              put.version.run(
-                entry.version.metadata.name,
-                entry.version.version,
-                JSON.stringify(entry.version.metadata),
-              );
-              break;
-            case "catalog-row":
-              put.catalog.run(entry.metadata.name, entry.metadata.version);
-              break;
-            case "forward":
-              put.forward.run(entry.name, entry.to);
-              break;
-            case "file":
-              if (entry.ownership.owner !== page.partition) {
-                throw new Error(
-                  `A file owned by ${entry.ownership.owner} came in the base of ${page.partition}`,
-                );
-              }
-              put.file.run(entry.key, entry.ownership.present ? 1 : 0);
-              break;
-          }
-        }
-        const before = (this.#db.prepare(
-          "SELECT rows FROM staged_partition WHERE id = 1",
-        ).get() as { rows: number } | undefined)?.rows ?? 0;
-        this.#db.prepare(
-          "INSERT OR REPLACE INTO staged_partition (id, namespace, partition, seq, next, complete, rows) VALUES (1, ?, ?, ?, ?, ?, ?)",
-        ).run(
-          page.namespace,
-          page.partition,
-          page.seq,
-          page.next ?? null,
-          page.next === undefined ? 1 : 0,
-          before + added,
-        );
-        this.#db.exec("COMMIT");
-      } catch (error) {
-        rollbackQuietly(this.#db);
-        throw error;
-      }
-      return Promise.resolve();
-    });
-  }
-
-  /** the page size staging this partition last fell back to, if any */
-  stagingPageLimit(
-    namespace: string,
-    partition: string,
-  ): Promise<number | undefined> {
-    if (this.#closed) return Promise.reject(closedError());
-    return Promise.resolve(
-      (this.#db.prepare(
-        "SELECT entries FROM staging_page_limits WHERE namespace = ? AND partition = ?",
-      ).get(namespace, partition) as { entries: number } | undefined)
-        ?.entries,
-    );
-  }
-
-  /** undefined forgets it, once the partition is swapped in */
-  setStagingPageLimit(
-    namespace: string,
-    partition: string,
-    entries: number | undefined,
-  ): Promise<void> {
-    if (this.#closed) return Promise.reject(closedError());
-    return this.#enqueue(() => {
-      if (entries === undefined) {
-        this.#db.prepare(
-          "DELETE FROM staging_page_limits WHERE namespace = ? AND partition = ?",
-        ).run(namespace, partition);
-      } else {
-        this.#db.prepare(
-          "INSERT OR REPLACE INTO staging_page_limits (namespace, partition, entries) VALUES (?, ?, ?)",
-        ).run(namespace, partition, entries);
-      }
-      return Promise.resolve();
-    });
-  }
-
-  /** forgets a staged partition, for one serve has moved past or refused */
-  clearStagedPartition(): Promise<void> {
-    if (this.#closed) return Promise.reject(closedError());
-    return this.#enqueue(() => {
-      this.#db.exec("BEGIN IMMEDIATE");
-      try {
-        this.#clearStaging();
-        this.#db.exec("COMMIT");
-      } catch (error) {
-        rollbackQuietly(this.#db);
-        throw error;
-      }
-      return Promise.resolve();
-    });
-  }
-
-  #clearStaging(): void {
-    for (
-      const table of [
-        "staged_partition",
-        "staged_records",
-        "staged_versions",
-        "staged_catalog",
-        "staged_forwards",
-        "staged_files",
-      ]
-    ) {
-      this.#db.exec(`DELETE FROM ${table}`);
-    }
-  }
-
-  #stagedRows(): number {
-    let rows = 0;
-    for (
-      const table of [
-        "staged_records",
-        "staged_versions",
-        "staged_catalog",
-        "staged_forwards",
-        "staged_files",
-      ]
-    ) {
-      rows += (this.#db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as {
-        n: number;
-      }).n;
-    }
-    return rows;
-  }
-
-  /**
-   * Swaps a completely staged partition in for its base in one transaction,
-   * set-based, so no reader ever sees half of it. Commits go only down to the
-   * partition's latest snapshot, as a difference install's do.
-   */
-  installStagedPartition(
-    readModelCursor: number,
-  ): Promise<PartitionInstallOutcome> {
-    if (this.#closed) return Promise.reject(closedError());
-    if (!this.#follower) {
-      return Promise.reject(
-        new Error(
-          "Internal error: only a serve-mode copy installs serve's base by partition",
-        ),
-      );
-    }
-    return this.#enqueue(() => this.#installStaged(readModelCursor)).finally(
-      () => this.#notifyHeadMoved(true),
-    );
-  }
-
-  async #installStaged(
-    readModelCursor: number,
-  ): Promise<PartitionInstallOutcome> {
-    const marker = this.#db.prepare(
-      "SELECT namespace, partition, seq, complete FROM staged_partition WHERE id = 1",
-    ).get() as
-      | { namespace: string; partition: string; seq: number; complete: number }
-      | undefined;
-    if (marker === undefined || marker.complete !== 1) {
-      throw new Error("Internal error: no completely staged partition");
-    }
-    const { namespace, partition, seq } = marker;
-    const ready = this.#installReady(
-      namespace,
-      partition,
-      seq,
-      readModelCursor,
-    );
-    if (ready !== undefined) return ready;
-    const latest = this.#selectSnapshot.get(namespace, partition) as
-      | { seq: number }
-      | undefined;
-    const removing = await this.#foldable(
-      namespace,
-      partition,
-      Math.min(seq, latest?.seq ?? 0),
-    );
-    const mark = this.#markBelowLater(namespace, partition, seq);
-    const rows = this.#stagedRows();
-    const compacted = this.#compactedSeq(namespace, partition);
-
-    this.#db.exec("BEGIN IMMEDIATE");
-    try {
-      if (this.#compactedSeq(namespace, partition) !== compacted) {
-        throw new Error(
-          `Partition ${partition} was compacted during its base install: another process is writing the store`,
-        );
-      }
-      const base = this.#base;
-      base.begin(Date.now());
-      this.#swapChunkCounts(base, namespace, partition);
-      const scope = [namespace, partition] as const;
-      this.#db.prepare(
-        "DELETE FROM base_records WHERE namespace = ? AND partition = ?",
-      ).run(...scope);
-      this.#db.prepare(
-        "INSERT INTO base_records (namespace, partition, record_key, sha256, inline, blob, access) " +
-          "SELECT ?, ?, record_key, sha256, inline, blob, access FROM staged_records",
-      ).run(...scope);
-      this.#db.prepare(
-        "DELETE FROM base_versions WHERE namespace = ? AND partition = ?",
-      ).run(...scope);
-      this.#db.prepare(
-        "INSERT INTO base_versions (namespace, partition, name, version, metadata) " +
-          "SELECT ?, ?, name, version, metadata FROM staged_versions",
-      ).run(...scope);
-      this.#db.prepare(
-        "DELETE FROM base_catalog WHERE namespace = ? AND partition = ?",
-      ).run(...scope);
-      this.#db.prepare(
-        "INSERT INTO base_catalog (namespace, partition, name, version) " +
-          "SELECT ?, ?, name, version FROM staged_catalog",
-      ).run(...scope);
-      this.#db.prepare(
-        "DELETE FROM base_forwards WHERE namespace = ? AND partition = ?",
-      ).run(...scope);
-      this.#db.prepare(
-        "INSERT INTO base_forwards (namespace, partition, name, renamed_to) " +
-          "SELECT ?, ?, name, renamed_to FROM staged_forwards",
-      ).run(...scope);
-      this.#db.prepare(
-        "DELETE FROM base_files WHERE namespace = ? AND owner = ?",
-      ).run(...scope);
-      this.#db.prepare(
-        "INSERT OR REPLACE INTO base_files (namespace, record_key, owner, mark, present) " +
-          "SELECT ?, record_key, ?, ?, present FROM staged_files",
-      ).run(namespace, partition, mark);
-      this.#finishInstall(base, namespace, partition, seq, removing);
-      this.#clearStaging();
-      this.#assertChunkCounts(namespace, base.touched);
-      this.#db.exec("COMMIT");
-      this.#cache.delete(cacheKeyOf(namespace, partition));
-      return { kind: "installed", rows, commitsRemoved: removing.rows.length };
-    } catch (error) {
-      rollbackQuietly(this.#db);
-      this.#cache.delete(cacheKeyOf(namespace, partition));
-      throw error;
-    }
-  }
-
-  /**
-   * Moves the partition's chunk counts from its current base records to the
-   * staged ones, counting each record's chunks once, as putRecord does.
-   */
-  #swapChunkCounts(
-    base: SqliteCompactedBase,
-    namespace: string,
-    partition: string,
-  ): void {
-    const chunksOf = (from: string, where: string) =>
-      new Map(
-        (this.#db.prepare(
-          "SELECT sha, COUNT(*) AS n FROM (SELECT DISTINCT r.record_key AS k, " +
-            "CASE WHEN json_type(r.blob, '$.parts') = 'array' THEN json_extract(p.value, '$.sha256') " +
-            "ELSE json_extract(r.blob, '$.sha256') END AS sha " +
-            `FROM ${from} AS r LEFT JOIN json_each(CASE WHEN json_type(r.blob, '$.parts') = 'array' ` +
-            "THEN json_extract(r.blob, '$.parts') ELSE '[null]' END) AS p " +
-            `WHERE r.blob IS NOT NULL${where}) GROUP BY sha`,
-        ).all(...(where === "" ? [] : [namespace, partition])) as {
-          sha: string;
-          n: number;
-        }[]).map((row) => [row.sha, row.n]),
-      );
-    const before = chunksOf(
-      "base_records",
-      " AND r.namespace = ? AND r.partition = ?",
-    );
-    const after = chunksOf("staged_records", "");
-    for (const sha of new Set([...before.keys(), ...after.keys()])) {
-      base.shiftChunk(
-        namespace,
-        partition,
-        sha,
-        (after.get(sha) ?? 0) - (before.get(sha) ?? 0),
-      );
-    }
-  }
-
-  /** never folds past what the read model applied or the copy's own head */
-  installPartitionBase(
-    install: PartitionBaseInstall,
-  ): Promise<PartitionInstallOutcome> {
-    if (this.#closed) return Promise.reject(closedError());
-    if (!this.#follower) {
-      return Promise.reject(
-        new Error(
-          "Internal error: only a serve-mode copy installs serve's base by partition",
-        ),
-      );
-    }
-    return this.#enqueue(() => this.#installPartition(install)).finally(() =>
-      this.#notifyHeadMoved(true)
-    );
-  }
-
-  async #installPartition(
-    install: PartitionBaseInstall,
-  ): Promise<PartitionInstallOutcome> {
-    const { namespace, partition, seq } = install;
-    const key = PartitionKey.parse(partition);
-    const compacted = this.#compactedSeq(namespace, partition);
-    if (seq <= compacted) return { kind: "skipped", reason: "not-newer" };
-    const source = this.#db.prepare(
-      "SELECT seq FROM base_sources WHERE namespace = ? AND partition = ?",
-    ).get(namespace, partition) as { seq: number } | undefined;
-    if (install.mode === "difference" && source?.seq !== compacted) {
-      return { kind: "skipped", reason: "no-source" };
-    }
-    const ready = this.#installReady(
-      namespace,
-      partition,
-      seq,
-      install.readModelCursor,
-    );
-    if (ready !== undefined) return ready;
-    let snapshot: { seq: number; body: string } | undefined;
-    let through: number;
-    const latest = this.#selectSnapshot.get(namespace, partition) as
-      | { seq: number }
-      | undefined;
-    if (install.mode === "whole" && (latest?.seq ?? 0) < seq) {
-      // a rebuild below the newest snapshot would replay from seq 1, over commits a base already took
-      if (latest === undefined && compacted > 0) {
-        return { kind: "skipped", reason: "no-snapshot" };
-      }
-      const rebuilt = await this.#rebuild(namespace, key, seq);
-      snapshot = { seq: rebuilt.seq, body: JSON.stringify(rebuilt.snapshot()) };
-      through = rebuilt.seq;
-    } else {
-      // the newest snapshot needs no commit at or below it
-      through = Math.min(seq, latest?.seq ?? 0);
-    }
-    const removing = await this.#foldable(namespace, partition, through);
-    const mark = this.#markBelowLater(namespace, partition, seq);
-
-    this.#db.exec("BEGIN IMMEDIATE");
-    try {
-      if (this.#compactedSeq(namespace, partition) !== compacted) {
-        throw new Error(
-          `Partition ${partition} was compacted during its base install: another process is writing the store`,
-        );
-      }
-      const base = this.#base;
-      base.begin(Date.now());
-      let written = 0;
-      if (install.mode === "whole") {
-        for (
-          const row of this.#db.prepare(
-            "SELECT record_key FROM base_records WHERE namespace = ? AND partition = ?",
-          ).all(namespace, partition) as { record_key: string }[]
-        ) {
-          base.deleteRecord(namespace, partition, row.record_key);
-        }
-        for (
-          const table of ["base_versions", "base_catalog", "base_forwards"]
-        ) {
-          this.#db.prepare(
-            `DELETE FROM ${table} WHERE namespace = ? AND partition = ?`,
-          ).run(namespace, partition);
-        }
-        this.#db.prepare(
-          "DELETE FROM base_files WHERE namespace = ? AND owner = ?",
-        ).run(namespace, partition);
-      } else {
-        for (const removal of install.removed) {
-          written++;
-          if (removal.section === "record") {
-            base.deleteRecord(namespace, partition, removal.key);
-            continue;
-          }
-          if (removal.section === "forward") {
-            this.#db.prepare(
-              "DELETE FROM base_forwards WHERE namespace = ? AND partition = ? AND name = ?",
-            ).run(namespace, partition, removal.key);
-            continue;
-          }
-          const split = removal.key.indexOf("/");
-          const version = Number(removal.key.slice(0, split));
-          const name = removal.key.slice(split + 1);
-          this.#db.prepare(
-            `DELETE FROM ${
-              removal.section === "version" ? "base_versions" : "base_catalog"
-            } WHERE namespace = ? AND partition = ? AND name = ? AND version = ?`,
-          ).run(namespace, partition, name, version);
-        }
-      }
-      for (const entry of install.entries) {
-        if (entry.namespace !== namespace) {
-          throw new Error(
-            `A base entry of namespace ${entry.namespace} is not this copy's`,
-          );
-        }
-        if (entry.kind !== "file" && entry.partition !== partition) {
-          throw new Error(
-            `A base entry of partition ${entry.partition} came in the install of ${partition}`,
-          );
-        }
-        written++;
-        switch (entry.kind) {
-          case "partition":
-            break;
-          case "record":
-            base.putRecord(namespace, partition, entry.key, entry.record);
-            break;
-          case "version":
-            this.#db.prepare(
-              "INSERT OR REPLACE INTO base_versions (namespace, partition, name, version, metadata) VALUES (?, ?, ?, ?, ?)",
-            ).run(
-              namespace,
-              partition,
-              entry.version.metadata.name,
-              entry.version.version,
-              JSON.stringify(entry.version.metadata),
-            );
-            break;
-          case "catalog-row":
-            this.#db.prepare(
-              "INSERT OR REPLACE INTO base_catalog (namespace, partition, name, version) VALUES (?, ?, ?, ?)",
-            ).run(
-              namespace,
-              partition,
-              entry.metadata.name,
-              entry.metadata.version,
-            );
-            break;
-          case "forward":
-            this.#db.prepare(
-              "INSERT OR REPLACE INTO base_forwards (namespace, partition, name, renamed_to) VALUES (?, ?, ?, ?)",
-            ).run(namespace, partition, entry.name, entry.to);
-            break;
-          case "file":
-            if (entry.ownership.owner !== partition) {
-              throw new Error(
-                `A file owned by ${entry.ownership.owner} came in the install of ${partition}`,
-              );
-            }
-            base.setFileOwnership(namespace, entry.key, {
-              ...entry.ownership,
-              mark,
-            });
-            break;
-        }
-      }
-      if (snapshot !== undefined) {
-        this.#upsertSnapshot.run(
-          namespace,
-          partition,
-          snapshot.seq,
-          snapshot.body,
-        );
-      }
-      this.#finishInstall(base, namespace, partition, seq, removing);
-      this.#assertChunkCounts(namespace, base.touched);
-      this.#db.exec("COMMIT");
-      this.#cache.delete(cacheKeyOf(namespace, partition));
-      return {
-        kind: "installed",
-        rows: written,
-        commitsRemoved: removing.rows.length,
-      };
-    } catch (error) {
-      rollbackQuietly(this.#db);
-      this.#cache.delete(cacheKeyOf(namespace, partition));
-      throw error;
-    }
-  }
-
-  /**
-   * why a partition cannot take serve's base at `seq` now, if it cannot; the
-   * cursor is the copy's only reader's, as a serve copy lives under its checkout
-   */
-  #installReady(
-    namespace: string,
-    partition: string,
-    seq: number,
-    readModelCursor: number,
-  ): PartitionInstallOutcome | undefined {
-    const compacted = this.#compactedSeq(namespace, partition);
-    if (seq <= compacted) return { kind: "skipped", reason: "not-newer" };
-    const head = (this.#selectHead.get(namespace, partition) as
-      | { seq: number }
-      | undefined)?.seq ?? 0;
-    if (head < seq) return { kind: "skipped", reason: "behind" };
-    const unread = this.#db.prepare(
-      "SELECT 1 AS found FROM commits WHERE namespace = ? AND partition = ? AND seq > ? AND seq <= ? AND cursor > ? LIMIT 1",
-    ).get(namespace, partition, compacted, seq, readModelCursor);
-    if (unread !== undefined) {
-      return { kind: "skipped", reason: "read-model-behind" };
-    }
-    return undefined;
-  }
-
-  async #foldable(
-    namespace: string,
-    partition: string,
-    through: number,
-  ): Promise<{ rows: CommitRow[]; commits: Commit[] }> {
-    const rows = this.#db.prepare(
-      "SELECT cursor, namespace, partition, seq, txn_id, body FROM commits " +
-        "WHERE namespace = ? AND partition = ? AND seq <= ? ORDER BY cursor",
-    ).all(namespace, partition, through) as unknown as CommitRow[];
-    const commits: Commit[] = [];
-    for (const row of rows) commits.push(await parseRow(row));
-    return { rows, commits };
-  }
-
-  /** below every later write of the partition, which alone compare against it */
-  #markBelowLater(namespace: string, partition: string, seq: number): number {
-    const after = this.#db.prepare(
-      "SELECT MIN(cursor) AS cursor FROM commits WHERE namespace = ? AND partition = ? AND seq > ?",
-    ).get(namespace, partition, seq) as { cursor: number | null };
-    const last = (this.#db.prepare(
-      "SELECT seq FROM sqlite_sequence WHERE name = 'commits'",
-    ).get() as { seq: number } | undefined)?.seq ?? 0;
-    return after.cursor === null ? last : after.cursor - 1;
-  }
-
-  #finishInstall(
-    base: SqliteCompactedBase,
-    namespace: string,
-    partition: string,
-    seq: number,
-    removing: { rows: CommitRow[]; commits: Commit[] },
-  ): void {
-    base.setCompactedSeq(namespace, partition, seq);
-    this.#advancePointPastFolded(base, removing.rows);
-    removing.rows.forEach((row, i) => {
-      base.compactCommit(
-        row,
-        removing.commits[i].chunkRefs(),
-        Date.parse(removing.commits[i].at),
-      );
-    });
-    this.#db.prepare(
-      "INSERT INTO base_sources (namespace, partition, seq) VALUES (?, ?, ?) " +
-        "ON CONFLICT (namespace, partition) DO UPDATE SET seq = excluded.seq",
-    ).run(namespace, partition, seq);
-  }
-
-  /**
-   * The point moves to just below the oldest commit not yet in the base, so a
-   * fresh read model loads the base and replays only what follows. Installs
-   * fold nothing the live read model has not applied, so it never passes it.
-   */
-  #advancePointPastFolded(
-    base: SqliteCompactedBase,
-    folding: readonly CommitRow[],
-  ): void {
-    const current = this.#point();
-    const unfolded = this.#db.prepare(
-      "SELECT MIN(c.cursor) AS cursor FROM commits AS c WHERE NOT EXISTS (SELECT 1 FROM compacted_partitions AS p " +
-        "WHERE p.namespace = c.namespace AND p.partition = c.partition AND p.seq >= c.seq)",
-    ).get() as { cursor: number | null };
-    const highest = (this.#db.prepare(
-      "SELECT MAX(cursor) AS cursor FROM commits",
-    ).get() as { cursor: number | null }).cursor ?? current;
-    const point = unfolded.cursor === null ? highest : unfolded.cursor - 1;
-    if (point <= current) return;
-    const at = (this.#db.prepare(
-      "SELECT cursor, namespace, partition, seq, txn_id, body FROM commits WHERE cursor <= ? ORDER BY cursor DESC LIMIT 1",
-    ).get(point) as CommitRow | undefined) ??
-      folding.findLast((row) => row.cursor <= point);
-    if (at !== undefined && at.cursor === point) base.setPoint(at);
-    else {
-      this.#db.prepare("UPDATE compaction SET point = ? WHERE id = 1").run(
-        point,
-      );
-    }
-  }
-
-  /**
-   * An index row may be missing (it fails closed), so a partition's counts
-   * may sum below the namespace's; above it means a count drifted.
-   */
-  #assertChunkCounts(namespace: string, chunks: ReadonlySet<string>): void {
-    const check = this.#db.prepare(
-      "SELECT COALESCE((SELECT refs FROM chunk_refs WHERE namespace = ?1 AND sha256 = ?2), 0) AS total, " +
-        "COALESCE((SELECT SUM(refs) FROM chunk_partitions WHERE namespace = ?1 AND sha256 = ?2), 0) AS indexed",
-    );
-    for (const sha256 of chunks) {
-      const { total, indexed } = check.get(namespace, sha256) as {
-        total: number;
-        indexed: number;
-      };
-      if (indexed > total || total < 0) {
-        throw new ChunkCountDriftError(sha256, total, indexed);
-      }
-    }
   }
 
   /**
