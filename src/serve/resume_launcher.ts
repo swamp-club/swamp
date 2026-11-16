@@ -377,9 +377,12 @@ export async function startDetachedResume(
 
   const buffer = new RunEventBuffer(DEFAULT_BUFFER_CAPACITY, {
     holdOutcome: ctx.holdRepliesUntilCommitted === true,
+    firstSeq: (resolvedRun.parker?.eventSeq ?? 0) + 1,
   });
   const runController = new AbortController();
   const runId: string = resolvedRun.id;
+  const handover = ctx.handover?.forRun(() => buffer.highSeq);
+  let parkedRun = false;
   const startedAt = new Date();
   const completedRun: CompletedRunSlot = {};
 
@@ -499,6 +502,7 @@ export async function startDetachedResume(
                   service.recover(workflowId, {
                     runId: resolvedRun.id,
                     signal: runController.signal,
+                    handover,
                     instanceId: ctx.instanceId,
                     automatic: {
                       holder: recoverInterrupted.holder,
@@ -512,6 +516,7 @@ export async function startDetachedResume(
                 () =>
                   service.resume(workflowName, resolvedRun.id, {
                     signal: runController.signal,
+                    handover,
                     inputs: request.inputs ?? {},
                     fromStep: request.from,
                     fromJob: request.fromJob,
@@ -531,6 +536,10 @@ export async function startDetachedResume(
                   },
                 )
               ) {
+                if (event.kind === "parked") {
+                  parkedRun = true;
+                  buffer.park();
+                }
                 const mapped = mapWorkflowExecutionEvent(event, runRepo);
                 if (!isWireEvent(mapped)) continue;
                 const serialized = serializeEvent(
@@ -669,7 +678,12 @@ export async function startDetachedResume(
             : String(disposeErr),
         });
       }
-      registry.deregister(runId);
+      // a client reattaching after a restart may arrive once this has ended
+      if (resolvedRun.parker !== undefined && !parkedRun) {
+        registry.deregisterRetained(runId);
+      } else {
+        registry.deregister(runId);
+      }
       try {
         if (ctx.controlPlaneStore && ctx.instanceId) {
           deleteActiveRun(ctx.controlPlaneStore, ctx.instanceId, runId);
@@ -691,7 +705,10 @@ export async function startDetachedResume(
             : String(callbackErr),
         });
       }
-      if (request.subject && resolvedRun.parentRun !== undefined) {
+      // a parked child is continued before its parent, which then follows
+      if (
+        request.subject && resolvedRun.parentRun !== undefined && !parkedRun
+      ) {
         try {
           await autoResumeParentAfterChild(
             ctx,

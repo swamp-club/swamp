@@ -17,6 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import {
+  createWorkflowId,
+  createWorkflowRunId,
+} from "../domain/workflows/workflow_id.ts";
+import { findParkedRun, parkedRunHandled } from "./serve_handover.ts";
 import { z } from "zod";
 import { principalToString } from "../domain/access/principal.ts";
 import {
@@ -4791,6 +4796,72 @@ function goneRunResource(
   return unresolvedAccessResource(resourceKind, resourceName);
 }
 
+/**
+ * a run a planned restart parked is continued here under the same id: the
+ * client is told to retry, as for a run on another instance, once it may
+ */
+async function answerParkedAttach(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  runId: string,
+  principal: import("../domain/access/principal.ts").Principal | null,
+): Promise<boolean> {
+  const store = ctx.handover?.markerStore;
+  if (store === undefined || ctx.instanceId === undefined) return false;
+  let marker: Awaited<ReturnType<typeof findParkedRun>>;
+  let parkedRun: Awaited<
+    ReturnType<ConnectionContext["repoContext"]["workflowRunRepo"]["findById"]>
+  >;
+  try {
+    marker = await findParkedRun(store, runId);
+    if (marker === undefined) return false;
+    parkedRun = await ctx.repoContext.workflowRunRepo.findById(
+      createWorkflowId(marker.workflowId),
+      createWorkflowRunId(runId),
+    );
+  } catch (error) {
+    logger.warn("Could not read parked run {runId} for attach: {error}", {
+      runId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return false;
+  }
+  // a run serve refused waits for an operator, so the client is not told to retry
+  if (
+    parkedRun === null ||
+    !(parkedRun.awaitsAutomaticContinuation ||
+      (parkedRun.isParked && !parkedRunHandled(parkedRun)))
+  ) {
+    return false;
+  }
+  const resolution = await resolveRunResource(
+    ctx,
+    "workflow",
+    parkedRun.workflowName,
+    marker.workflowId,
+  );
+  if (
+    !authorizeResolved(
+      socket,
+      requestId,
+      principal,
+      "run",
+      resolution,
+      parkedRun.workflowName,
+      "workflow",
+      ctx,
+      "run_attach_failed",
+    )
+  ) return true;
+  send(socket, {
+    type: "run.elsewhere",
+    id: requestId,
+    payload: { runId, instanceId: ctx.instanceId },
+  });
+  return true;
+}
+
 async function handleRunAttach(
   socket: WebSocket,
   ctx: ConnectionContext,
@@ -4801,6 +4872,11 @@ async function handleRunAttach(
 ): Promise<void> {
   const run = ctx.activeRunRegistry?.findForAttach(payload.runId);
   if (!run) {
+    if (
+      await answerParkedAttach(socket, ctx, requestId, payload.runId, principal)
+    ) {
+      return;
+    }
     if (ctx.controlPlaneStore) {
       const result = await findActiveRunByRunId(
         ctx.controlPlaneStore,

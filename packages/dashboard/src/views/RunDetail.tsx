@@ -62,6 +62,7 @@ import {
   type StepContext,
 } from "../components/RunSteps.tsx";
 import {
+  awaitingContinuation,
   buildRunGraph,
   type DisplayStatus,
   elapsed,
@@ -128,6 +129,8 @@ interface WorkflowRun {
   jobs: JobRun[];
   workflowDataArtifacts?: ArtifactRef[];
   interruptReason?: string;
+  /** a planned restart parked it; serve continues it, so it is not finished */
+  parked?: boolean;
   autoContinuation?: {
     continuedAt?: string;
     interruptReason?: string;
@@ -257,7 +260,13 @@ function RunPage({ workflowName, runId, health, onBack }: RunDetailProps) {
   const now = useNow(visibleIntervalMs(live ? 1000 : null, tabVisible));
 
   const graph = useMemo(
-    () => (run ? buildRunGraph(run, definition) : null),
+    () =>
+      run
+        ? buildRunGraph(
+          { ...run, parked: awaitingContinuation(run) },
+          definition,
+        )
+        : null,
     [run, definition],
   );
   const taskTypes = useMemo(() => {
@@ -372,7 +381,7 @@ function RunPage({ workflowName, runId, health, onBack }: RunDetailProps) {
   );
 
   const ctx: StepContext = {
-    runStatus: run?.status ?? "pending",
+    runStatus: run ? shownRunStatus(run) : "pending",
     now,
     onOpenItem: openItem,
     onNavigate: navigateTo,
@@ -545,6 +554,13 @@ function RunPage({ workflowName, runId, health, onBack }: RunDetailProps) {
 
 // ── header ──────────────────────────────────────────────────────────────
 
+/** a parked run shows as waiting to continue until serve refuses it */
+function shownRunStatus(
+  run: Pick<WorkflowRun, "status" | "parked" | "autoContinuation">,
+): string {
+  return awaitingContinuation(run) ? "parked" : run.status;
+}
+
 function runDisplayStatus(status: string): DisplayStatus {
   switch (status) {
     case "succeeded":
@@ -554,6 +570,7 @@ function runDisplayStatus(status: string): DisplayStatus {
     case "cancelled":
       return status;
     case "suspended":
+    case "parked":
       return "waiting";
     case "interrupted":
       return "cancelled";
@@ -564,6 +581,7 @@ function runDisplayStatus(status: string): DisplayStatus {
 
 const RUN_LABELS: Record<string, string> = {
   suspended: "Suspended",
+  parked: "Parked",
   interrupted: "Interrupted",
   cancelled: "Cancelled",
   pending: "Queued",
@@ -617,7 +635,7 @@ function RunHeader(
     onViewFailure: () => void;
   },
 ) {
-  const status = run ? runDisplayStatus(run.status) : null;
+  const status = run ? runDisplayStatus(shownRunStatus(run)) : null;
   const live = run !== null && LIVE_STATUSES.has(run.status);
   const duration = run ? elapsed(run, now, live) : undefined;
   const progress = run ? stepProgress(run) : null;
@@ -648,7 +666,7 @@ function RunHeader(
           ? (
             <span className={`rd-status rd-status-${status}`}>
               <RunStatusIcon status={status} size={14} label="" />
-              {RUN_LABELS[run.status] ?? statusLabel(status)}
+              {RUN_LABELS[shownRunStatus(run)] ?? statusLabel(status)}
             </span>
           )
           : <Skeleton width={92} height={24} radius={12} />}
@@ -1315,6 +1333,16 @@ function extractLogs(payload: unknown): LogsData | null {
 /** why serve stopped the run, and whether it continued it by itself */
 function RestartFact({ run }: { run: WorkflowRun }) {
   const continuation = run.autoContinuation;
+  if (awaitingContinuation(run)) {
+    return (
+      <Fact label="Parked">
+        <span>
+          for a serve restart · the next serve process continues it unless the
+          workflow sets autoContinue: false
+        </span>
+      </Fact>
+    );
+  }
   if (run.status === "interrupted" && run.interruptReason) {
     return (
       <Fact label="Interrupted">

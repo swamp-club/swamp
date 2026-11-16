@@ -169,7 +169,16 @@ function renderLogWorkflowRun(data: WorkflowRunView): void {
     }
   }
 
-  if (data.interruptReason !== undefined) {
+  if (data.parked === true) {
+    // a refusal below names why serve will not continue it
+    writeOutput(
+      yellow(
+        data.autoContinuation?.refused !== undefined
+          ? "Parked for a serve restart"
+          : "Parked for a serve restart: the next serve process continues it under the same run id unless the workflow sets autoContinue: false",
+      ),
+    );
+  } else if (data.interruptReason !== undefined) {
     writeOutput(
       yellow(`Interrupted: ${escapeControlCharacters(data.interruptReason)}`),
     );
@@ -201,8 +210,12 @@ function renderLogWorkflowRun(data: WorkflowRunView): void {
   const durationSuffix = data.duration !== undefined
     ? ` (${data.duration}ms)`
     : "";
-  const resultText = `Result: ${data.status.toUpperCase()}${durationSuffix}`;
-  const colorize = data.status === "failed" || data.status === "interrupted"
+  const resultText = `Result: ${
+    data.parked === true ? "PARKED" : data.status.toUpperCase()
+  }${durationSuffix}`;
+  const colorize = data.parked === true
+    ? yellow
+    : data.status === "failed" || data.status === "interrupted"
     ? red
     : data.status === "cancelled"
     ? yellow

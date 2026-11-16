@@ -325,6 +325,15 @@ import {
   parsePrincipal,
   type Principal,
 } from "../../domain/access/principal.ts";
+import {
+  forgetParkedRun,
+  handsOverRuns,
+  listParkedRuns,
+  parkedRunHandled,
+  parkedRunsAreContinuable,
+  parkerAsOwner,
+  ServeHandover,
+} from "../../serve/serve_handover.ts";
 import { executeWorkflowWithLocks } from "../../serve/deps.ts";
 import { DaemonTelemetryFlushService } from "../../serve/telemetry_flush.ts";
 import { runDetached } from "../../infrastructure/tracing/mod.ts";
@@ -4251,6 +4260,7 @@ export const serveCommand = new Command()
       dispatches: dispatchRegistry,
     });
     const instanceId = crypto.randomUUID();
+    const serveHandover = new ServeHandover(instanceId);
     const pendingRunOwner: PendingRunOwner = {
       instanceId,
       pid: Deno.pid,
@@ -5978,6 +5988,13 @@ export const serveCommand = new Command()
       runsLiveInDatastore(
         new DefaultDatastorePathResolver(resolvedRepoDir, datastoreConfig),
       );
+    const parkedRunsContinuable = parkedRunsAreContinuable(
+      repoContext.continuationClaims !== undefined,
+      runRecordsSynced,
+    );
+    serveHandover.useMarkerStore(
+      parkedRunsContinuable ? controlPlaneStore : undefined,
+    );
     repoContext.runRecordCurrency = runRecordsSynced
       ? runRecordCurrencyOver(
         datastoreConfig,
@@ -6471,6 +6488,7 @@ export const serveCommand = new Command()
       : null;
     const connectionCtx: import("../../serve/connection.ts").ConnectionContext =
       {
+        handover: serveHandover,
         tokenAdmission,
         integrationDirectory,
         delegationDirectory,
@@ -7127,7 +7145,7 @@ export const serveCommand = new Command()
             resolvedRepoDir,
             repoContext,
             datastoreConfig,
-            { ...input, instanceId },
+            { ...input, instanceId, handover: serveHandover.forRun() },
             signal,
             onEvent,
             syncService,
@@ -7786,6 +7804,7 @@ export const serveCommand = new Command()
     const endpoints = [...initialWebhookRoutes.endpoints];
     // built with no routes too, so a reload can add the first one
     const webhookService = new WebhookService({
+      handover: serveHandover,
       cancelIntents,
       acceptsRuns: () => !isFollowing(),
       startupComplete: () => admission.phase !== "starting",
@@ -9976,6 +9995,14 @@ export const serveCommand = new Command()
       // in the same turn as shuttingDown, with no await before it: once /ready
       // answers shutting_down, no trigger may be acknowledged
       admission.beginDraining();
+      // runs park at their next step boundary within the drain; with no drain
+      // the abort below settles them
+      if (
+        handsOverRuns(shutdownDrainTimeoutMs, parkedRunsContinuable)
+      ) {
+        dispatchService.beginHandover();
+        serveHandover.begin();
+      }
       // a stale file would point swamp serve reload at whatever process
       // reuses this pid
       if (pidPath) await removePidFileIfOurs(pidPath, Deno.pid);
@@ -10460,6 +10487,8 @@ export const serveCommand = new Command()
       cause: InterruptedRunContinuationCause,
       targets?: readonly InterruptedRunTarget[],
     ): Promise<void> => {
+      // a process handing its runs over continues none of them itself
+      if (shuttingDown) return;
       // removed before the pass, so a run handed back during it stays
       const judged = targets ?? [...pendingInterrupted.values()];
       for (const target of judged) pendingInterrupted.delete(target.runId);
@@ -10469,6 +10498,13 @@ export const serveCommand = new Command()
           cause,
           {
             targets,
+            parkerAlive: (parker) => {
+              const owner = parkerAsOwner(parker);
+              if (owner === undefined) return Promise.resolve(false);
+              return cause === "boot" || cause === "lead"
+                ? bootOwnerAlive(owner)
+                : sweepOwnerAlive(owner);
+            },
             onDeferredLater: (target) => {
               if (pendingInterrupted.size < PENDING_INTERRUPTED_MAX) {
                 pendingInterrupted.set(target.runId, target);
@@ -10484,10 +10520,45 @@ export const serveCommand = new Command()
           logger
             .info`Continued ${continued.length} interrupted run(s) automatically`;
         }
+        const markers = serveHandover.markerStore;
+        if (markers !== undefined) {
+          for (const runId of continued) await forgetParkedRun(markers, runId);
+        }
       } catch (err: unknown) {
         logger.warn(
           "Continuing interrupted runs failed: {error}. Recover them with 'swamp workflow recover <workflow>'",
           { error: err instanceof Error ? err.message : String(err) },
+        );
+      }
+    };
+    // runs a process that started before this one parked after this one's boot
+    // pass: listed by marker, judged once their parker has gone
+    const continueParkedAfterBoot = async (): Promise<void> => {
+      const store = serveHandover.markerStore;
+      if (store === undefined) return;
+      try {
+        const due: InterruptedRunTarget[] = [];
+        for (const marker of await listParkedRuns(store)) {
+          if (pendingInterrupted.has(marker.runId)) continue;
+          const owner = parkerAsOwner(marker.parker);
+          if (owner !== undefined && await sweepOwnerAlive(owner)) continue;
+          due.push({ workflowId: marker.workflowId, runId: marker.runId });
+        }
+        if (due.length === 0) return;
+        await continueInterruptedAtLead("sweep", due);
+        // a pass that judged nothing (shutdown, an unusable claim store, a
+        // failed read) leaves the record parked, so its marker stays
+        for (const target of due) {
+          const run = await repoContext.workflowRunRepo.findById(
+            createWorkflowId(target.workflowId),
+            createWorkflowRunId(target.runId),
+          );
+          if (parkedRunHandled(run)) await forgetParkedRun(store, target.runId);
+        }
+      } catch (error) {
+        logger.warn(
+          "Listing runs parked by a stopped serve process failed; retrying on the next pass: {error}",
+          { error: error instanceof Error ? error.message : String(error) },
         );
       }
     };
@@ -11257,6 +11328,7 @@ export const serveCommand = new Command()
               ...pendingInterrupted.values(),
             ]);
           }
+          if (!isStopping()) await continueParkedAfterBoot();
           if (!isStopping()) await sweepHeldSignalsWhenDue(connectionCtx);
           return result;
         },

@@ -34,7 +34,10 @@ import {
 } from "../domain/workflows/continuation_claim.ts";
 import { assertNestedWaitsSettled } from "../domain/workflows/nested_run_link.ts";
 import { getWorkerPoolReader } from "../domain/remote/worker_pool.ts";
-import type { WorkflowRun } from "../domain/workflows/workflow_run.ts";
+import type {
+  RunParker,
+  WorkflowRun,
+} from "../domain/workflows/workflow_run.ts";
 import {
   createWorkflowId,
   createWorkflowRunId,
@@ -87,6 +90,11 @@ export interface InterruptedRunContinuationOptions {
   readonly targets?: readonly InterruptedRunTarget[];
   /** a continuation that failed after its launch, to judge again later */
   readonly onDeferredLater?: (target: InterruptedRunTarget) => void;
+  /**
+   * whether the process that parked a run still lives: a parked run is left to
+   * it until it has gone, so two processes never run one run
+   */
+  readonly parkerAlive?: (parker: RunParker) => Promise<boolean>;
 }
 
 export interface InterruptedRunContinuationResult {
@@ -145,6 +153,14 @@ export async function continueInterruptedRuns(
     if (!serveMayActOnRun(ctx, run)) continue;
     const target = { workflowId, runId: run.id };
     try {
+      const parker = run.parker;
+      if (
+        parker !== undefined && options.parkerAlive !== undefined &&
+        await options.parkerAlive(parker)
+      ) {
+        deferred.push(target);
+        continue;
+      }
       const verdict = await verdictFor(ctx, run, workflowId);
       if (verdict.kind === "ineligible") continue;
       if (verdict.kind === "refuse") {

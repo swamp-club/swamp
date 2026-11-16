@@ -2360,3 +2360,52 @@ Deno.test("ScheduledExecutionService: a run a user cancelled stays out of the sh
     "cancelled by user",
   );
 });
+
+Deno.test("ScheduledExecutionService: a run parked for a restart is reported neither failed nor completed", async () => {
+  const wf = createTestWorkflow("parked-wf", "* * * * * *");
+  const events: ScheduledExecutionEvent[] = [];
+  let settled = 0;
+
+  const service = new ScheduledExecutionService({
+    workflowRepo: createMockWorkflowRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    onRunSettled: () => {
+      settled++;
+    },
+    executeWorkflow: (
+      _input,
+      _signal,
+      onEvent: (event: WorkflowRunEvent) => void,
+    ) => {
+      onEvent({
+        kind: "started",
+        runId: "run-1",
+        workflowName: "parked-wf",
+        jobs: [],
+      });
+      onEvent({
+        kind: "parked",
+        run: {
+          id: "run-1",
+          workflowId: wf.id,
+          workflowName: "parked-wf",
+          status: "interrupted",
+          parked: true,
+          jobs: [],
+        },
+      });
+      return Promise.resolve();
+    },
+  });
+
+  await service.start((e) => events.push(e));
+  await waitFor(() => settled >= 1, "the scheduled run to settle");
+  await service.stop();
+
+  assertEquals(
+    events.filter((e) =>
+      e.kind === "schedule_failed" || e.kind === "schedule_completed"
+    ),
+    [],
+  );
+});

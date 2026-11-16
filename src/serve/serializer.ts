@@ -27,6 +27,8 @@ import type { SerializedError, SerializedEvent } from "./protocol.ts";
  */
 const LOCAL_ONLY_EVENT_KINDS: ReadonlySet<string> = new Set([
   "signal_wait_requested",
+  // the client reattaches to the continued run instead
+  "parked",
 ]);
 
 export function isWireEvent(event: { kind: string }): boolean {

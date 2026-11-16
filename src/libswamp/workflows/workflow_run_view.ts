@@ -195,6 +195,11 @@ export interface WorkflowRunView {
   awaitingResume?: boolean;
   /** why the run stopped, while it is interrupted */
   interruptReason?: string;
+  /**
+   * a planned restart stopped it between steps (status stays interrupted);
+   * serve continues it under the same id with nothing to re-run
+   */
+  parked?: boolean;
   /** serve's last automatic continuation of the run, or its refusal */
   autoContinuation?: {
     count: number;

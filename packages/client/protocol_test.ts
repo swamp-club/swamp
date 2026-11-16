@@ -530,12 +530,13 @@ void _divergentMessageVariants;
 //
 // Every kind serve can send must be one the client declares, and each serve
 // variant must be receivable as the client's variant of the same kind. Not
-// sent unless asked: signal_wait_requested (local-only) and the fan-out kinds
+// sent unless asked: signal_wait_requested and parked (local-only) and the fan-out kinds
 // (only with eventKinds). `error` differs by design: serve serializes the
 // SwampError before sending it.
 
 type NotSentByDefault =
   | "signal_wait_requested"
+  | "parked"
   | "job_fanout_planned"
   | "job_fanout_waiting"
   | "job_fanout_summary"

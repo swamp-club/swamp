@@ -969,3 +969,38 @@ Deno.test("ActiveRunRegistry.setLimits: a run aborted for its duration logs the 
   }
   assertEquals(records.map((r) => r.properties.durationMs), [20]);
 });
+
+Deno.test("ActiveRunRegistry: an ended continued run stays attachable, but is no longer active, drained or cancellable", () => {
+  const reg = new ActiveRunRegistry();
+  const run = makeRun("r-continued");
+  reg.register(run);
+  run.buffer.finish({ kind: "done" });
+
+  reg.deregisterRetained("r-continued");
+
+  assertEquals(reg.findForAttach("r-continued"), run);
+  assertEquals(reg.get("r-continued"), undefined);
+  assertEquals(reg.size, 0);
+  assertEquals(reg.cancel("r-continued"), false);
+});
+
+Deno.test("ActiveRunRegistry: a retained ended run is dropped once its window passes", async () => {
+  const reg = new ActiveRunRegistry();
+  reg.register(makeRun("r-window"));
+
+  reg.deregisterRetained("r-window", 1);
+
+  await waitFor(
+    () => reg.findForAttach("r-window") === undefined,
+    "the retained run to expire",
+  );
+});
+
+Deno.test("ActiveRunRegistry: a plain deregister keeps nothing attachable", () => {
+  const reg = new ActiveRunRegistry();
+  reg.register(makeRun("r-plain"));
+
+  reg.deregister("r-plain");
+
+  assertEquals(reg.findForAttach("r-plain"), undefined);
+});

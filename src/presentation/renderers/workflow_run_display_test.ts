@@ -434,3 +434,48 @@ Deno.test("renderWorkflowRunDisplay: a run serve continued says so once it moves
   assertStringIncludes(out, "deploy");
   assertEquals(out.includes("Not continued"), false);
 });
+
+Deno.test("renderWorkflowRunDisplay: a run parked for a restart reads as parked, not interrupted", () => {
+  const out = captureOutput(() =>
+    renderWorkflowRunDisplay(
+      endedRun("interrupted", {
+        interruptReason: "server_restart",
+        parked: true,
+      }),
+      "log",
+    )
+  );
+  assertStringIncludes(
+    out,
+    "Parked for a serve restart: the next serve process continues it under the same run id unless the workflow sets autoContinue: false",
+  );
+  assertStringIncludes(out, "Result: PARKED");
+  assertEquals(out.includes("Interrupted:"), false);
+});
+
+Deno.test("renderWorkflowRunDisplay: a parked run serve refused promises no continuation and names why", () => {
+  const out = captureOutput(() =>
+    renderWorkflowRunDisplay(
+      endedRun("interrupted", {
+        interruptReason: "server_restart",
+        parked: true,
+        autoContinuation: {
+          count: 0,
+          refused: {
+            at: DEADLINE,
+            reason: "opted_out",
+            steps: [],
+            message: "The workflow sets autoContinue: false.",
+          },
+        },
+      }),
+      "log",
+    )
+  );
+  assertEquals(out.includes("continues it"), false);
+  assertStringIncludes(out, "Parked for a serve restart");
+  assertStringIncludes(
+    out,
+    "Not continued automatically (opted_out): The workflow sets autoContinue: false.",
+  );
+});

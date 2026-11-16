@@ -4878,3 +4878,95 @@ Deno.test("requestServerResponse: a draining frame on the WebSocket is retried",
   assertEquals(attempts, 2);
   assertEquals(clock.delays, [1000]);
 });
+
+Deno.test({
+  name:
+    "remote run: a run parked by a planned restart is followed to its end by the next process, every continued event received",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    let attaches = 0;
+    const server = scriptedServer((request, reply, socket) => {
+      if (request.type === "workflow.run") {
+        reply({
+          type: "event",
+          id: request.id,
+          event: {
+            kind: "started",
+            runId: "run-parked",
+            workflowName: "wf",
+            seq: 1,
+          },
+        });
+        reply({
+          type: "event",
+          id: request.id,
+          event: { kind: "step_completed", jobId: "main", stepId: "a", seq: 2 },
+        });
+        // the restart closes the socket without a terminal frame
+        setTimeout(() => socket.close(), 20);
+        return;
+      }
+      if (request.type === "run.attach") {
+        attaches++;
+        // the new process answers elsewhere until its continuation registers
+        if (attaches === 1) {
+          reply({
+            type: "run.elsewhere",
+            id: request.id,
+            payload: { runId: "run-parked", instanceId: "serve-new" },
+          });
+          return;
+        }
+        reply({
+          type: "run.attached",
+          id: request.id,
+          payload: {
+            runId: "run-parked",
+            kind: "workflow-resume",
+            startedAt: "2026-11-16T00:00:00Z",
+          },
+        });
+        // the continued run's seqs start above the parked stream's last
+        reply({
+          type: "event",
+          id: request.id,
+          event: { kind: "step_completed", jobId: "main", stepId: "b", seq: 3 },
+        });
+        reply({
+          type: "event",
+          id: request.id,
+          event: { kind: "completed", status: "succeeded", seq: 4 },
+        });
+        reply({ type: "done", id: request.id });
+      }
+    });
+    try {
+      const events: string[] = [];
+      for await (
+        const event of runWorkflowOverServer({
+          server: server.url,
+          payload: { workflowIdOrName: "wf" },
+        })
+      ) {
+        events.push(
+          event.kind === "step_completed"
+            ? `step_completed:${String(event.stepId)}`
+            : event.kind,
+        );
+      }
+      assertEquals(events, [
+        "started",
+        "step_completed:a",
+        "step_completed:b",
+        "completed",
+      ]);
+      const attachRequests = server.received.filter(
+        (r) => (r as { type: string }).type === "run.attach",
+      ) as Array<{ payload: { afterSeq?: number } }>;
+      assertEquals(attachRequests.map((r) => r.payload.afterSeq), [2, 2]);
+    } finally {
+      await server.shutdown();
+    }
+  },
+});

@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { StepWithdrawnError } from "../remote/remote_dispatch.ts";
 import { basename } from "@std/path";
 import type { z } from "zod";
 import {
@@ -2203,9 +2204,14 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         // a failed run's writes stay on disk, and the next run writes version 2
         warnOnSpecNameClash(context, recoveredDataHandles(error));
         if (output && context.outputRepository) {
-          // the record holds the error with every delivered value and, in a
-          // typed run, every sentinel, masked
-          output.markFailed(executionErrorFrom(error, context.redactor));
+          // a step a planned restart withdrew never ran, so nothing failed
+          if (error instanceof StepWithdrawnError) {
+            output.markCancelled(error.message);
+          } else {
+            // the record holds the error with every delivered value and, in a
+            // typed run, every sentinel, masked
+            output.markFailed(executionErrorFrom(error, context.redactor));
+          }
           await context.outputRepository.save(
             modelDef.type,
             methodName,

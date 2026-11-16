@@ -1970,6 +1970,7 @@ export class ScheduledExecutionService {
       let completedRun: WorkflowRunView | undefined;
       let streamError: string | undefined;
       let suspended = false;
+      let parked = false;
 
       const override = this.triggerOverrides.get(workflowName);
 
@@ -2037,6 +2038,9 @@ export class ScheduledExecutionService {
               if (event.kind === "suspended") {
                 suspended = true;
               }
+              if (event.kind === "parked") {
+                parked = true;
+              }
               if (event.kind === "error") {
                 streamError = event.error.message;
               }
@@ -2067,6 +2071,12 @@ export class ScheduledExecutionService {
         logger.warn(
           "Scheduled run cancelled for workflow {name}: {error}",
           { name: workflowName, error: message },
+        );
+      } else if (parked) {
+        // the next serve process continues it, holding off the next fire
+        logger.info(
+          "Scheduled run for workflow {name} parked for a serve restart; its next fire waits until it is continued (run: {runId})",
+          { name: workflowName, runId },
         );
       } else if (suspended) {
         this.emit({

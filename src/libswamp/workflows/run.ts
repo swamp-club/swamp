@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { RunHandover } from "../../domain/workflows/run_handover.ts";
 import type { FanOutGatePrompt } from "../../domain/workflows/fan_out_gates.ts";
 import { getLogger } from "@logtape/logtape";
 import { cancelled, datastoreOutageOf, type SwampError } from "../errors.ts";
@@ -297,6 +298,7 @@ export type WorkflowRunEvent =
   }
   | { kind: "completed"; run: WorkflowRunView }
   | { kind: "cancelled"; run: WorkflowRunView; reason?: string }
+  | { kind: "parked"; run: WorkflowRunView }
   | {
     kind: "suspended";
     run: WorkflowRunView;
@@ -405,6 +407,7 @@ export interface WorkflowRunDeps {
 
 export interface WorkflowRunInput {
   workflowIdOrName: string;
+  handover?: RunHandover;
   /**
    * Treat `workflowIdOrName` as a workflow id the caller already resolved,
    * and look it up by id only — here and in the execution service — so the
@@ -952,6 +955,7 @@ export function toRunData(
         run.tags["interrupt_reason"] !== undefined
       ? { interruptReason: run.tags["interrupt_reason"] }
       : {}),
+    ...(run.isParked ? { parked: true } : {}),
     ...autoContinuationView(run),
     ...(run.parentRun?.kind === "valid"
       ? {
@@ -1006,6 +1010,13 @@ export function mapWorkflowExecutionEvent(
       );
       const data = toRunData(event.run, path, verbose);
       return { kind: "cancelled", run: data, reason: event.reason };
+    }
+    case "parked": {
+      const path = runRepo.getPath(
+        createWorkflowId(event.run.workflowId),
+        createWorkflowRunId(event.run.id),
+      );
+      return { kind: "parked", run: toRunData(event.run, path, verbose) };
     }
     case "suspended": {
       const path = runRepo.getPath(
@@ -1260,6 +1271,7 @@ export async function* workflowRun(
                   inputs: resolvedInput.inputs,
                   runtimeTags: resolvedInput.runtimeTags,
                   signal: ctx.signal,
+                  handover: resolvedInput.handover,
                   reportFilterOptions: {
                     skipAllReports: resolvedInput.skipAllReports,
                     skipReportNames: resolvedInput.skipReportNames,

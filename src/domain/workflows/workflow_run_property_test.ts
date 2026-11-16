@@ -849,3 +849,58 @@ Deno.test("WorkflowRun (property): lane step starts in the journal land on their
     { numRuns: 1000 },
   );
 });
+
+function runningRun(): WorkflowRun {
+  const run = WorkflowRun.create(
+    Workflow.create({
+      name: "park-wf",
+      jobs: JOBS.map((name) =>
+        Job.create({
+          name,
+          steps: STEPS.map((step) =>
+            Step.create({ name: step, task: StepTask.model("m", "run") })
+          ),
+        })
+      ),
+    }),
+  );
+  run.start(4242, "serve-a");
+  for (const job of run.jobs) job.start();
+  return run;
+}
+
+Deno.test("WorkflowRun.park: a park leaves nothing unknown and keeps every outcome, or refuses a run with a step in flight", () => {
+  fc.assert(
+    fc.property(fc.array(arbTransition, { maxLength: 20 }), (moves) => {
+      const run = runningRun();
+      for (const { ref, transition } of moves) {
+        const step = run.getJob(ref.jobName)!.getStep(ref.stepName)!;
+        try {
+          TRANSITIONS[transition](step);
+        } catch (error) {
+          assert(error instanceof Error);
+        }
+      }
+      const before = run.jobs.flatMap((job) =>
+        job.steps.map((step) => step.status)
+      );
+      const inFlight = before.includes("running");
+      const unknownBefore = before.includes("unknown");
+      try {
+        run.park({ instanceId: "serve-a", pid: 4242 }, new Date());
+      } catch {
+        assert(inFlight, "a park was refused with no step in flight");
+        assertEquals(run.status, "running");
+        return;
+      }
+      assert(!inFlight, "a run with a step in flight was parked");
+      assertEquals(
+        run.jobs.flatMap((job) => job.steps.map((step) => step.status)),
+        before,
+      );
+      assertEquals(run.status, "interrupted");
+      assertEquals(run.isParked, !unknownBefore);
+      assert(run.continuableSince !== undefined);
+    }),
+  );
+});

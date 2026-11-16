@@ -760,9 +760,11 @@ export async function handleWorkflowRun(
           initiatedByUsername,
           client: getConnectionClient(socket),
           instanceId: ctx.instanceId,
+          handover: ctx.handover?.forRun(() => buffer.highSeq),
         },
         runController.signal,
         (event) => {
+          if (event.kind === "parked") buffer.park();
           // a nested started event carries the child's run id; the entry stays
           // keyed on this request's run, and a client reattaching by the
           // child's id finds it

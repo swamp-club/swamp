@@ -419,6 +419,7 @@ export interface ConnectionContext {
   authConfig: ServeAuthConfig;
   cancelRegistry?: RunCancelRegistry;
   activeRunRegistry?: import("../active_run_registry.ts").ActiveRunRegistry;
+  handover?: import("../serve_handover.ts").ServeHandover;
   /** scheduled runs serve continued, which hold off their workflows' fires */
   continuedScheduledRuns?: ContinuedScheduledRuns;
   admission?: import("../serve_admission.ts").ServeAdmission;

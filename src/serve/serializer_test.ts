@@ -412,6 +412,7 @@ const WORKFLOW_RUN_EVENT_KINDS: Record<WorkflowRunEvent["kind"], boolean> = {
   step_skipped: true,
   approval_requested: true,
   signal_wait_requested: false,
+  parked: false,
   step_failed: true,
   model_resolved: true,
   env_var_warning: true,

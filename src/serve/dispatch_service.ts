@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { StepWithdrawnError } from "../domain/remote/remote_dispatch.ts";
 import { currentRunProgress } from "../domain/remote/run_progress.ts";
 import {
   currentVaultAccess,
@@ -248,6 +249,7 @@ export function withWrittenVersions(
 
 export class DispatchService {
   readonly #options: DispatchServiceOptions;
+  readonly #handover = new AbortController();
   #queueTimeoutMs: number;
   readonly #runModelMethod: ModelMethodRunner;
   readonly #stepLeases: StepLeaseStore;
@@ -374,6 +376,14 @@ export class DispatchService {
     );
   }
 
+  /**
+   * a planned restart: a workflow step still waiting for a worker is withdrawn
+   * and goes back to pending; one a worker took runs on
+   */
+  beginHandover(): void {
+    this.#handover.abort(new StepWithdrawnError());
+  }
+
   async executeRemote(request: RemoteStepRequest): Promise<RemoteStepResult> {
     return await observeExecutionWork("dispatch.logical", {
       "swamp.logical_dispatch.id": crypto.randomUUID(),
@@ -409,6 +419,13 @@ export class DispatchService {
       ? null
       : Date.now() + effectiveTimeoutMs;
 
+    // only a workflow step can wait for its run's continuation
+    const withdrawable = request.workflowRunId !== undefined;
+    const waitSignal = !withdrawable
+      ? request.signal
+      : request.signal
+      ? AbortSignal.any([request.signal, this.#handover.signal])
+      : this.#handover.signal;
     let currentQueueId: string | null = null;
     let lastDispatchId: string | null = null;
     const emitQueued = () => {
@@ -555,7 +572,7 @@ export class DispatchService {
       }
 
       while (true) {
-        request.signal?.throwIfAborted();
+        waitSignal?.throwIfAborted();
         const scheduled = !(request.skipScheduler && effectivePlacement.target);
         const workerName = scheduled
           ? await observeExecutionWork(
@@ -564,7 +581,7 @@ export class DispatchService {
             () =>
               this.#acquireWorker(
                 effectivePlacement,
-                request.signal,
+                waitSignal,
                 deadline,
                 emitQueued,
                 assertPlaceable,
@@ -686,7 +703,7 @@ export class DispatchService {
             await observeExecutionWork(
               "dispatch.queue",
               { "swamp.queue.reason": "worker_refused" },
-              () => this.#waitForPoolChange(remaining, request.signal),
+              () => this.#waitForPoolChange(remaining, waitSignal),
             );
             continue;
           }
@@ -695,7 +712,16 @@ export class DispatchService {
           releaseReservation();
         }
       }
-    } catch (error) {
+    } catch (caught) {
+      // only the handover's own abort of the wait; any other failure keeps its
+      // cause and fails the step
+      const handoverAbort = caught instanceof StepWithdrawnError ||
+        (caught instanceof DOMException && caught.name === "AbortError");
+      const error = withdrawable && attemptWorker === undefined &&
+          handoverAbort && this.#handover.signal.aborted &&
+          !request.signal?.aborted
+        ? new StepWithdrawnError()
+        : caught;
       failure = error;
       if (currentQueueId !== null) {
         if (

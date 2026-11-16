@@ -330,6 +330,7 @@ export type WorkflowExecutionEvent =
   }
   | { kind: "completed"; run: WorkflowRun }
   | { kind: "cancelled"; run: WorkflowRun; reason?: string }
+  | { kind: "parked"; run: WorkflowRun }
   | {
     kind: "suspended";
     run: WorkflowRun;

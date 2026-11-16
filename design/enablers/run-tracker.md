@@ -115,6 +115,9 @@ to settle it keeps it forever. `swamp run gc` removes older records on demand:
    or push the run's record (`interruptShutdownRuns`,
    `src/serve/shutdown_interrupt.ts`). A row left `running` would make the
    next boot's reaper skip the run as still running (swamp-club#3958).
+   A run a planned restart parked at a step boundary instead completes its
+   row as `interrupted` with reason `server_restart`, written by the engine as
+   it parks the run (swamp-club#4737).
 4. **Reap**: find rows with a heartbeat older than 90s. On the same machine,
    check `isProcessDead(pid)` first; across machines, use the TTL alone. Reaped
    runs become `interrupted`, not `failed`, so they are eligible for checkpoint

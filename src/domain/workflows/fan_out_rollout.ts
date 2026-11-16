@@ -30,6 +30,7 @@ export interface RolloutLanes<T> {
   /** a positive limit caps the lanes in flight; otherwise there is none */
   readonly limit: number | undefined;
   readonly signal?: AbortSignal;
+  readonly handover?: AbortSignal;
   start(lane: string): AsyncIterable<T>;
   /** read once the lane's stream has ended */
   failed(lane: string): boolean;
@@ -41,6 +42,7 @@ export interface RolloutLanes<T> {
 export type RolloutEnd =
   | { readonly kind: "complete" }
   | { readonly kind: "aborted" }
+  | { readonly kind: "handed_over" }
   | { readonly kind: "halted"; readonly held: string[] }
   | { readonly kind: "paused"; readonly lane: string };
 
@@ -96,7 +98,7 @@ export async function* runRolloutLanes<T>(
     while (true) {
       while (
         !halted && paused === undefined && laneError === undefined &&
-        !lanes.signal?.aborted && running < limit
+        !lanes.signal?.aborted && !lanes.handover?.aborted && running < limit
       ) {
         const decision = nextBatch(progress, lanes.rollout);
         if (decision.kind === "halt") {
@@ -124,7 +126,8 @@ export async function* runRolloutLanes<T>(
       }
       if (running === 0 && messages.length === 0) {
         const stopped = halted || paused !== undefined ||
-          laneError !== undefined || lanes.signal?.aborted;
+          laneError !== undefined || lanes.signal?.aborted ||
+          lanes.handover?.aborted;
         // a batch waits only on running lanes, so waiting with none would hang
         if (!stopped && nextBatch(progress, lanes.rollout).kind === "wait") {
           throw new Error("fan-out rollout is waiting with no lane running");
@@ -162,6 +165,13 @@ export async function* runRolloutLanes<T>(
       !started.has(lane)
     );
     if (held.length > 0) return { kind: "halted", held };
+  }
+  // a rollout whose every lane started is complete, whenever the handover came
+  if (
+    lanes.handover?.aborted &&
+    lanes.rollout.batches.flat().some((lane) => !started.has(lane))
+  ) {
+    return { kind: "handed_over" };
   }
   return { kind: "complete" };
 }
