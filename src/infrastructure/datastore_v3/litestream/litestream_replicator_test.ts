@@ -967,25 +967,38 @@ Deno.test({
   },
 });
 
+// a brief hold of use.lock under suite load must not read as another command
+const QUIESCE_LOCK_WAIT: Partial<ReplicatorDeps> = {
+  timings: {
+    ...DEFAULT_REPLICATOR_TIMINGS,
+    lockWaitMs: 60_000,
+    startWaitMs: 300,
+  },
+};
+
 Deno.test({
   name:
     "LitestreamReplicator.quiesce: stops the copy's sidecar and keeps another from starting until released",
   ignore: !UNIX,
   async fn() {
     await withWorld(async (world, db) => {
-      const replicator = new LitestreamReplicator(world.deps());
+      const replicator = new LitestreamReplicator(
+        world.deps(QUIESCE_LOCK_WAIT),
+      );
       const handle = await replicator.acquire(world.request(db, 1));
       await handle.release();
       const supervisor = world.live[0].supervisorPid;
       const release = await replicator.quiesce(db);
       assertEquals(world.live.length, 0);
       assert(world.killed.includes(-supervisor), "its group was killed");
+      // the refused start waits the short budget, not quiesce's
+      const other = new LitestreamReplicator(world.deps());
       await assertRejects(
-        () => replicator.acquire(world.request(db, 2)),
+        () => other.acquire(world.request(db, 2)),
         V3ReplicationUnavailableError,
       );
       release();
-      const next = await replicator.acquire(world.request(db, 2));
+      const next = await other.acquire(world.request(db, 2));
       assertEquals(world.live.length, 1);
       await next.release();
     });
@@ -997,7 +1010,9 @@ Deno.test({
   ignore: !UNIX,
   async fn() {
     await withWorld(async (world, db) => {
-      const replicator = new LitestreamReplicator(world.deps());
+      const replicator = new LitestreamReplicator(
+        world.deps(QUIESCE_LOCK_WAIT),
+      );
       const release = await replicator.quiesce(db);
       release();
       assertEquals(world.killed, []);
@@ -1030,7 +1045,9 @@ Deno.test({
   ignore: !UNIX,
   async fn() {
     await withWorld(async (world, db) => {
-      const replicator = new LitestreamReplicator(world.deps());
+      const replicator = new LitestreamReplicator(
+        world.deps(QUIESCE_LOCK_WAIT),
+      );
       const handle = await replicator.acquire(world.request(db, 1));
       await handle.release();
       const supervisor = world.live[0].supervisorPid;
@@ -1056,6 +1073,7 @@ Deno.test({
   async fn() {
     await withWorld(async (world, db) => {
       const replicator = new LitestreamReplicator(world.deps({
+        ...QUIESCE_LOCK_WAIT,
         processes: {
           ...world.processes,
           signalGroup: (pgid) => {
@@ -1093,7 +1111,9 @@ Deno.test({
         lineageFence: 1,
         replicaPath: "/replica/_litestream/000000000001",
       });
-      const replicator = new LitestreamReplicator(world.deps());
+      const replicator = new LitestreamReplicator(
+        world.deps(QUIESCE_LOCK_WAIT),
+      );
       const release = await replicator.quiesce(db);
       release();
       assertEquals(world.killed, [orphan]);
