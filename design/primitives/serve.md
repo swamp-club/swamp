@@ -1902,7 +1902,13 @@ stamped `continuableSince`, and the next boot (or a new leader) continues it by
 itself when every step the abort cut off has a guard (swamp-club#4693, see
 Automatic continuation under Recovery in `design/primitives/workflows.md`). A run a user or a
 webhook cancel request cancelled before the abort is not reported and stays
-`cancelled`. Before it loads them it closes their run write fence
+`cancelled`. It loads them with one scan of the running and cancelled runs
+started since the earliest of their starts, less 60 s. That scan filters on a
+record's first start, which a resume (manual, past an approval gate, or an
+automatic continuation) can predate by far, so a run the scan missed is read
+by its id; without that, a run resumed long after it began ended `cancelled`
+at a shutdown rather than `interrupted` (swamp-club#4802). Before it loads them
+it closes their run write fence
 (`ServeRunWriteFence`, `src/serve/run_write_fence.ts`) and waits up to 2 s for
 a save already under way. An executor can outlive the abort grace, as one whose
 remote step answers after the abort does; with the fence closed it can no
@@ -1920,12 +1926,38 @@ that replay and waits for it at most 15 s (`REPLAY_SETTLE_TIMEOUT_MS`,
 abort signal, a listing does not and is cut off by the 15 s bound, and once
 aborted the replay queues and deletes nothing, so the runs stay pending for
 the next start (swamp-club#4660).
-The fence covers the top-level runs shutdown interrupts, not the child runs of
-nested workflows, which shutdown does not track. A child run in flight takes
-its parent's interruption, so it starts no cleanup either, but it ends
-`cancelled` rather than `interrupted`, and the parent's resume re-runs its
-workflow step as a new child: the cut-off child's cleanup never runs. One 5 s deadline bounds the
-gate wait and the push together;
+Shutdown does not track the child runs of nested workflows, but a child in
+flight takes its parent's interruption and starts no cleanup either
+(swamp-club#4802). Shutdown finds each child an interrupted run's workflow step
+started among the runs it loaded, through the child's `parentRun` link
+(`WorkflowRun.startedByStepOf`). A child still running, or cancelled with the
+shutdown's reason, is cut off. A child a user cancelled, or one an earlier
+attempt of the step started, is left alone, and the parent's resume re-runs
+that step. For each cut-off child, the parent's step is parked waiting on the
+child (`WorkflowRun.awaitCutOffNestedRun`, which sets the step's `nestedRun`
+link) before the parent is saved. Only once the parent is saved is the
+child's fence closed; the child is then re-read, interrupted and made
+continuable, and saved, with grandchildren handled the same way below it.
+Each run is saved once. A parent whose save fails leaves its children
+unfenced and untouched, and a child save that fails leaves the parent's
+resume failing the step from the child's `cancelled` record rather than
+starting a second child, with the child's tracker row settled. A
+child that cannot be read again is interrupted from the copy loaded before
+its fence closed. A child that finished while its fence waited keeps its
+outcome, which the parent's resume adopts. All fence waits, top-level and
+child, share one 2 s budget.
+Cut-off children are counted with the interrupted runs: their tracker rows
+settle `interrupted`, `--json` prints a `status: interrupted` line for each,
+and they join the unpushed list. A peer that settles this instance from its
+control-plane records sees only the top-level runs. The interrupted parent
+then waits on its child as on a child suspended at a gate. Automatic
+continuation continues a child whose cut-off steps are guarded, and continues
+the parent once the child finishes (`nested_run_unsettled` is judged again).
+Otherwise an operator recovers and resumes the child, then resumes the parent,
+which adopts the child's outcome; the child's cleanup runs only if its resume
+fails. Cancelling the recovered parent instead reports the interrupted child
+among its detached nested runs, and the child is cancelled as orphaned when it
+is next recovered. One 5 s deadline bounds the gate wait and the push together;
 a push that fails or misses it is logged as a warning, and the datastore keeps
 the run's last pushed status until a later write settles it. On a v3
 datastore the interrupted records are committed rather than pushed, and a

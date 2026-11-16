@@ -27,7 +27,7 @@ import { Step } from "../src/domain/workflows/step.ts";
 import { StepTask } from "../src/domain/workflows/step_task.ts";
 import { TriggerCondition } from "../src/domain/workflows/trigger_condition.ts";
 import { assessRecoveryForRun } from "../src/domain/workflows/recovery_assessment.ts";
-import type { WorkflowRun } from "../src/domain/workflows/workflow_run.ts";
+import { WorkflowRun } from "../src/domain/workflows/workflow_run.ts";
 import { createWorkflowId } from "../src/domain/workflows/workflow_id.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
@@ -50,6 +50,13 @@ import { parseWebhookFlag, WebhookService } from "../src/serve/webhook.ts";
 import { hmacSha256Hex } from "../src/serve/webhook_verifiers.ts";
 import { ScheduledExecutionService } from "../src/libswamp/workflows/scheduled_execution.ts";
 import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
+import { createLibSwampContext } from "../src/libswamp/context.ts";
+import {
+  createWorkflowCancelSuspendedDeps,
+  workflowCancelSuspended,
+  type WorkflowCancelSuspendedData,
+} from "../src/libswamp/workflows/cancel_suspended.ts";
+import { PARENT_ENDED_CANCEL_REASON } from "../src/domain/workflows/orphaned_nested_run.ts";
 
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
@@ -506,3 +513,366 @@ for (const trigger of ["webhook", "cron"] as const) {
       }),
   });
 }
+
+type NestedResume =
+  | "succeeds"
+  | "fails"
+  | "parent-cancelled"
+  | "child-cut-off-again";
+
+async function shutdownDuringNestedRun(resume: NestedResume): Promise<void> {
+  await withRepo(async (repoDir) => {
+    const modelType = ModelType.create(
+      `test/nested-interrupt-${crypto.randomUUID()}`,
+    );
+    let waitStarted = false;
+    // set once serve has shut down: the resumed method then finishes
+    let released = false;
+    const recordCalls: string[] = [];
+    modelRegistry.register({
+      type: modelType,
+      version: "2026.01.01.1",
+      globalArguments: z.object({}),
+      resources: {},
+      methods: {
+        wait: {
+          description: "waits until the run is aborted, then fails",
+          arguments: z.object({}),
+          execute: (_args, context) => {
+            if (released) {
+              return resume === "fails"
+                ? Promise.reject(new Error("slow failed on resume"))
+                : Promise.resolve({ dataHandles: [] });
+            }
+            waitStarted = true;
+            return new Promise((_resolve, reject) => {
+              context.signal.addEventListener("abort", () => {
+                reject(
+                  new DOMException("The operation was aborted.", "AbortError"),
+                );
+              }, { once: true });
+            });
+          },
+        },
+        record: {
+          description: "records the step that ran",
+          arguments: z.object({ name: z.string() }),
+          execute: (args) => {
+            recordCalls.push((args as { name: string }).name);
+            return Promise.resolve({ dataHandles: [] });
+          },
+        },
+      },
+    });
+
+    const tracker = RunTrackerStore.fromSwampDir(swampPath(repoDir));
+    try {
+      const recordStep = (name: string, after: string) =>
+        Step.create({
+          name,
+          task: StepTask.model("waiter", "record", { name }),
+          dependsOn: [{ step: after, condition: TriggerCondition.always() }],
+        });
+      const child = Workflow.create({
+        name: `nested-interrupt-child-${crypto.randomUUID()}`,
+        jobs: [
+          Job.create({
+            name: "main",
+            steps: [
+              Step.create({
+                name: "slow",
+                task: StepTask.model("waiter", "wait"),
+              }),
+              recordStep("cleanup", "slow"),
+            ],
+          }),
+          Job.create({
+            name: "notify",
+            dependsOn: [{ job: "main", condition: TriggerCondition.always() }],
+            steps: [Step.create({
+              name: "notify",
+              task: StepTask.model("waiter", "record", { name: "notify" }),
+            })],
+          }),
+        ],
+      });
+      const parent = Workflow.create({
+        name: `nested-interrupt-parent-${crypto.randomUUID()}`,
+        jobs: [
+          Job.create({
+            name: "outer",
+            steps: [Step.create({
+              name: "call-child",
+              task: StepTask.workflow(child.name),
+            })],
+          }),
+        ],
+      });
+      const workflowRepo = new YamlWorkflowRepository(repoDir);
+      await workflowRepo.save(child);
+      await workflowRepo.save(parent);
+      const {
+        repoDir: resolved,
+        repoContext,
+        datastoreConfig,
+        datastoreResolver,
+        syncService,
+      } = await requireInitializedRepoUnlocked({ repoDir, outputMode: "log" });
+      await repoContext.definitionRepo.save(
+        modelType,
+        Definition.create({ name: "waiter", type: modelType.normalized }),
+      );
+
+      // as handleWorkflowRun does: the run is registered under its own id
+      const registry = new ActiveRunRegistry();
+      const controller = new AbortController();
+      const runStarted = Promise.withResolvers<string>();
+      const execution = executeWorkflowWithLocks(
+        resolved,
+        repoContext,
+        datastoreConfig,
+        { workflowIdOrName: parent.name },
+        controller.signal,
+        (event) => {
+          if (event.kind === "started" && event.parentRunId === undefined) {
+            runStarted.resolve(event.runId);
+          }
+        },
+        syncService,
+        tracker,
+        { syncGate: undefined, triggerSource: "api" },
+      );
+      execution.catch((error) => runStarted.reject(error));
+      const parentRunId = await runStarted.promise;
+      registry.register({
+        runId: parentRunId,
+        kind: "workflow-run",
+        resourceName: parent.name,
+        buffer: new RunEventBuffer(1),
+        controller,
+        startedAt: new Date(),
+        completion: execution.then(
+          () => registry.deregister(parentRunId),
+          () => registry.deregister(parentRunId),
+        ),
+        principalId: null,
+      });
+      await waitFor(() => waitStarted, "the nested slow step to start");
+
+      const aborted = await runShutdownDrain({
+        webhookService: null,
+        scheduledExecution: null,
+        activeRunRegistry: registry,
+        drainTimeoutMs: 0,
+        abortGraceMs: SHUTDOWN_ABORT_GRACE_MS,
+      });
+      const result = await interruptShutdownRuns(aborted, {
+        repoContext,
+        runTracker: tracker,
+      });
+
+      const runRepo = repoContext.workflowRunRepo;
+      const parentId = createWorkflowId(parent.id);
+      const childId = createWorkflowId(child.id);
+      const childRuns = () => runRepo.findAllByWorkflowId(childId);
+      const [cutParent] = await runRepo.findAllByWorkflowId(parentId);
+      let [cutChild] = await childRuns();
+      assertEquals(recordCalls, []);
+      assertEquals(result.interrupted, [parentRunId, cutChild.id]);
+      assertEquals(cutParent.status, "interrupted");
+      assertEquals(statuses(cutParent), {
+        outer: "unknown",
+        "outer/call-child": "waiting_approval",
+      });
+      assertEquals(cutParent.findNestedWaits().map((wait) => wait.link), [{
+        kind: "valid",
+        ref: {
+          workflowId: child.id,
+          workflowName: child.name,
+          runId: cutChild.id,
+        },
+      }]);
+      assertEquals(cutChild.status, "interrupted");
+      assertEquals(cutChild.tags["interrupt_reason"], "server_shutdown");
+      assertEquals(statuses(cutChild), {
+        main: "unknown",
+        "main/slow": "unknown",
+        "main/cleanup": "failed",
+        notify: "failed",
+        "notify/notify": "failed",
+      });
+      assertEquals(tracker.findById(cutChild.id)?.status, "interrupted");
+
+      // replaced by each simulated restart, as a new serve has a new registry
+      let resumeRegistry = new ActiveRunRegistry();
+      const ctx = () =>
+        ({
+          repoDir: resolved,
+          repoContext,
+          datastoreConfig,
+          datastoreResolver,
+          syncService,
+          runTracker: tracker,
+          authConfig: { mode: "none" },
+          activeRunRegistry: resumeRegistry,
+        }) as unknown as ConnectionContext;
+      const resumeOverServe = async (workflowName: string, runId: string) => {
+        const sent: string[] = [];
+        await handleWorkflowResume(
+          {
+            readyState: WebSocket.OPEN,
+            send: (message: string) => sent.push(message),
+          } as unknown as WebSocket,
+          ctx(),
+          `resume-${crypto.randomUUID()}`,
+          { workflowIdOrName: workflowName, runId },
+          new AbortController(),
+          null,
+        );
+        return sent.join("\n");
+      };
+
+      if (resume === "child-cut-off-again") {
+        // first started well before its resume, as a run continued after a
+        // restart is
+        const backdated = WorkflowRun.fromData({
+          ...cutChild.toData(),
+          startedAt: new Date(Date.now() - 600_000).toISOString(),
+        });
+        backdated.resetUnknownStepsForRecovery();
+        await runRepo.save(childId, backdated);
+        waitStarted = false;
+        const resuming = resumeOverServe(child.name, cutChild.id);
+        await waitFor(() => waitStarted, "the resumed child's slow step");
+        const abortedAgain = await runShutdownDrain({
+          webhookService: null,
+          scheduledExecution: null,
+          activeRunRegistry: resumeRegistry,
+          drainTimeoutMs: 0,
+          abortGraceMs: SHUTDOWN_ABORT_GRACE_MS,
+        });
+        const again = await interruptShutdownRuns(abortedAgain, {
+          repoContext,
+          runTracker: tracker,
+        });
+        await resuming;
+        assertEquals(again.interrupted, [cutChild.id]);
+        [cutChild] = await childRuns();
+        assertEquals(cutChild.status, "interrupted");
+        assertEquals(recordCalls, []);
+        const [stillInterrupted] = await runRepo.findAllByWorkflowId(parentId);
+        assertEquals(stillInterrupted.findNestedWaits().length, 1);
+        resumeRegistry = new ActiveRunRegistry();
+      }
+
+      cutParent.resetUnknownStepsForRecovery();
+      await runRepo.save(parentId, cutParent);
+      released = true;
+
+      if (resume === "parent-cancelled") {
+        const cancelled = await cancelSuspendedRun(
+          workflowRepo,
+          runRepo,
+          parentRunId,
+        );
+        assertEquals(cancelled.detachedNestedRuns?.map((d) => d.runId), [
+          cutChild.id,
+        ]);
+        const [stillInterrupted] = await childRuns();
+        assertEquals(stillInterrupted.status, "interrupted");
+        stillInterrupted.resetUnknownStepsForRecovery();
+        await runRepo.save(childId, stillInterrupted);
+        await resumeOverServe(child.name, cutChild.id);
+        const [orphan] = await childRuns();
+        assertEquals(orphan.status, "cancelled");
+        assertEquals(orphan.tags["cancel_reason"], PARENT_ENDED_CANCEL_REASON);
+        assertEquals(recordCalls, []);
+        return;
+      }
+
+      const refused = await resumeOverServe(parent.name, parentRunId);
+      assertEquals(refused.includes(cutChild.id), true);
+      assertEquals(refused.includes("swamp workflow recover"), true);
+      const [stillWaiting] = await runRepo.findAllByWorkflowId(parentId);
+      assertEquals(stillWaiting.status, "suspended");
+
+      cutChild.resetUnknownStepsForRecovery();
+      await runRepo.save(childId, cutChild);
+      await resumeOverServe(child.name, cutChild.id);
+      const [resumedChild] = await childRuns();
+      assertEquals(
+        resumedChild.status,
+        resume === "fails" ? "failed" : "succeeded",
+      );
+      assertEquals(recordCalls, ["cleanup", "notify"]);
+
+      await resumeOverServe(parent.name, parentRunId);
+      const [resumedParent] = await runRepo.findAllByWorkflowId(parentId);
+      assertEquals((await childRuns()).length, 1);
+      if (resume === "fails") {
+        assertEquals(resumedParent.status, "failed");
+        assertEquals(statuses(resumedParent)["outer/call-child"], "failed");
+      } else {
+        assertEquals(resumedParent.status, "succeeded");
+        assertEquals(
+          statuses(resumedParent)["outer/call-child"],
+          "succeeded",
+        );
+      }
+    } finally {
+      tracker.close();
+      modelRegistry.invalidateType(modelType);
+    }
+  });
+}
+
+async function cancelSuspendedRun(
+  workflowRepo: YamlWorkflowRepository,
+  runRepo: Parameters<typeof createWorkflowCancelSuspendedDeps>[1],
+  runId: string,
+): Promise<WorkflowCancelSuspendedData> {
+  for await (
+    const event of workflowCancelSuspended(
+      createLibSwampContext(),
+      createWorkflowCancelSuspendedDeps(
+        workflowRepo,
+        runRepo,
+        () => true,
+        () => Promise.resolve(null),
+      ),
+      { runId, reason: "operator" },
+    )
+  ) {
+    if (event.kind === "completed") return event.data;
+    if (event.kind === "error") throw new Error(event.error.message);
+  }
+  throw new Error("no completed event");
+}
+
+Deno.test({
+  name:
+    "serve shutdown: a nested run it cuts off is interrupted, its parent waits on it, and once the child is recovered and resumed the parent adopts its outcome without starting another child",
+  ...testOpts,
+  fn: () => shutdownDuringNestedRun("succeeds"),
+});
+
+Deno.test({
+  name:
+    "serve shutdown: a nested run it cuts off runs its cleanup when its resume fails, and its parent's step fails from that outcome",
+  ...testOpts,
+  fn: () => shutdownDuringNestedRun("fails"),
+});
+
+Deno.test({
+  name:
+    "serve shutdown: a nested run cut off again while it is resumed, long after it first started, is interrupted again rather than cancelled, and its parent still adopts it",
+  ...testOpts,
+  fn: () => shutdownDuringNestedRun("child-cut-off-again"),
+});
+
+Deno.test({
+  name:
+    "serve shutdown: cancelling the recovered parent of a nested run it cut off reports that child, which is then settled as orphaned",
+  ...testOpts,
+  fn: () => shutdownDuringNestedRun("parent-cancelled"),
+});

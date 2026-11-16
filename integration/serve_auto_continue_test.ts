@@ -1328,3 +1328,163 @@ Deno.test({
       assertEquals(serve.audit, []);
     }),
 });
+
+/** both records are rewritten as a serve shutdown leaves them */
+async function shutdownNestedPair(
+  repoDir: string,
+  parent: Workflow,
+  child: Workflow,
+): Promise<{ parentRunId: string; childRunId: string }> {
+  const workflows = new YamlWorkflowRepository(repoDir);
+  await workflows.save(child);
+  await workflows.save(parent);
+  const { repoDir: resolved, repoContext, datastoreConfig, syncService } =
+    await requireInitializedRepoUnlocked({ repoDir, outputMode: "log" });
+  let parentRunId: string | undefined;
+  await executeWorkflowWithLocks(
+    resolved,
+    repoContext,
+    datastoreConfig,
+    { workflowIdOrName: parent.name, inputs: {} },
+    new AbortController().signal,
+    (event: WorkflowRunEvent) => {
+      if (event.kind === "started" && event.parentRunId === undefined) {
+        parentRunId = event.runId;
+      }
+    },
+    syncService,
+    undefined,
+    { syncGate: undefined },
+  );
+  if (!parentRunId) throw new Error("no run id observed");
+  const repo = repoContext.workflowRunRepo;
+  const childId = createWorkflowId(child.id);
+  const [ranChild] = await repo.findAllByWorkflowId(childId);
+  const childData = ranChild.toData();
+  childData.status = "running";
+  childData.completedAt = undefined;
+  childData.instanceId = "serve-gone";
+  childData.jobs[0].status = "running";
+  childData.jobs[0].completedAt = undefined;
+  const second = childData.jobs[0].steps.find((s) => s.stepName === "second")!;
+  second.status = "running";
+  second.completedAt = undefined;
+  const cutChild = WorkflowRun.fromData(childData);
+  cutChild.interrupt("server_shutdown");
+  cutChild.markContinuable(new Date());
+
+  const parentId = createWorkflowId(parent.id);
+  const ranParent = await repo.findById(
+    parentId,
+    createWorkflowRunId(parentRunId),
+  );
+  const parentData = ranParent!.toData();
+  parentData.status = "running";
+  parentData.completedAt = undefined;
+  parentData.instanceId = "serve-gone";
+  parentData.jobs[0].status = "running";
+  parentData.jobs[0].completedAt = undefined;
+  parentData.jobs[0].steps[0].status = "running";
+  parentData.jobs[0].steps[0].completedAt = undefined;
+  parentData.jobs[0].steps[0].output = undefined;
+  const cutParent = WorkflowRun.fromData(parentData);
+  cutParent.interrupt("server_shutdown");
+  cutParent.markContinuable(new Date());
+  assert(cutParent.awaitCutOffNestedRun(cutChild));
+  await repo.save(childId, cutChild);
+  await repo.save(parentId, cutParent);
+  return { parentRunId, childRunId: cutChild.id };
+}
+
+function callingParent(child: Workflow): Workflow {
+  return Workflow.create({
+    name: `${child.name}-parent`,
+    jobs: [Job.create({
+      name: "outer",
+      steps: [Step.create({
+        name: "call-child",
+        task: StepTask.workflow(child.name),
+      })],
+    })],
+  });
+}
+
+Deno.test({
+  ...TEST,
+  name:
+    "auto-continue: a nested run a shutdown cut off is continued first, and its parent, deferred until then, adopts its outcome without starting another child",
+  fn: () =>
+    withRepo(async (repoDir) => {
+      const counter = join(repoDir, "ran.txt");
+      const child = twoStepWorkflow(
+        { name: "nested-guarded", guard: "${{ false }}" },
+        counter,
+      );
+      const parent = callingParent(child);
+      const { parentRunId, childRunId } = await shutdownNestedPair(
+        repoDir,
+        parent,
+        child,
+      );
+      await Deno.writeTextFile(counter, "");
+      const serve = await serveOver(repoDir, serveHolder("a"));
+
+      const first = await continueInterruptedRuns(serve.ctx, "boot");
+      assertEquals(first.continued, [childRunId]);
+      assertEquals(first.deferred.map((t) => t.runId), [parentRunId]);
+      await finished(serve, childRunId);
+      assertEquals(
+        (await storedRun(serve, child, childRunId))?.status,
+        "succeeded",
+      );
+
+      const second = await continueInterruptedRuns(serve.ctx, "sweep", {
+        targets: first.deferred,
+      });
+      assertEquals(second.continued, [parentRunId]);
+      await finished(serve, parentRunId);
+
+      const resumed = await storedRun(serve, parent, parentRunId);
+      assertEquals(resumed?.status, "succeeded");
+      assertEquals(
+        resumed?.getJob("outer")?.getStep("call-child")?.status,
+        "succeeded",
+      );
+      assertEquals(await ranSteps(counter), ["second"]);
+      const childRuns = await serve.ctx.repoContext.workflowRunRepo
+        .findAllByWorkflowId(createWorkflowId(child.id));
+      assertEquals(childRuns.map((run) => run.id), [childRunId]);
+    }),
+});
+
+Deno.test({
+  ...TEST,
+  name:
+    "auto-continue: a nested run cut off at an unguarded step is refused, and its parent stays deferred with a refusal naming it",
+  fn: () =>
+    withRepo(async (repoDir) => {
+      const counter = join(repoDir, "ran.txt");
+      const child = twoStepWorkflow({ name: "nested-unguarded" }, counter);
+      const parent = callingParent(child);
+      const { parentRunId, childRunId } = await shutdownNestedPair(
+        repoDir,
+        parent,
+        child,
+      );
+      const serve = await serveOver(repoDir, serveHolder("a"));
+
+      const result = await continueInterruptedRuns(serve.ctx, "boot");
+      assertEquals(result.continued, []);
+      assertEquals(result.deferred.map((t) => t.runId), [parentRunId]);
+      const reasons = Object.fromEntries(
+        result.refused.map((r) => [r.runId, r]),
+      );
+      assertEquals(reasons[childRunId]?.reason, "unguarded_step");
+      assertEquals(reasons[parentRunId]?.reason, "nested_run_unsettled");
+      assertStringIncludes(reasons[parentRunId]?.message ?? "", childRunId);
+      assertEquals(
+        (await storedRun(serve, parent, parentRunId))?.status,
+        "interrupted",
+      );
+    }),
+});

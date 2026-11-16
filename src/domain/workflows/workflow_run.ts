@@ -56,6 +56,7 @@ import {
   parseParentRunLink,
   persistedLink,
   type RunLink,
+  sameRunId,
 } from "./nested_run_ref.ts";
 import {
   parseStoredWait,
@@ -777,6 +778,15 @@ export class StepRun {
     this._status = "waiting_approval";
     this._resetByResume = false;
     this._nestedRun = { kind: "valid", ref: { ...ref } };
+  }
+
+  rewaitOnNestedRun(ref: NestedRunRef): void {
+    this._completedAt = undefined;
+    this._error = undefined;
+    this._errorCode = undefined;
+    this._allowedFailure = false;
+    this._stoppedByAbort = false;
+    this.waitForNestedRun(ref);
   }
 
   rejectNested(decision: ApprovalDecisionData, error: string): void {
@@ -1850,6 +1860,45 @@ export class WorkflowRun implements TriggerEvaluationContext {
       kind: "valid",
       ref: { ...ref, ancestorWorkflowNames: [...ref.ancestorWorkflowNames] },
     };
+  }
+
+  startedByStepOf(
+    parent: WorkflowRun,
+  ): { jobName: string; stepName: string } | undefined {
+    const link = this._parentRun;
+    if (
+      link?.kind !== "valid" || !sameRunId(link.ref.runId, parent.id) ||
+      !sameRunId(link.ref.workflowId, parent.workflowId)
+    ) {
+      return undefined;
+    }
+    return { jobName: link.ref.jobName, stepName: link.ref.stepName };
+  }
+
+  /**
+   * a child that started before its step did belongs to an earlier attempt,
+   * so only one this attempt started is waited on again
+   */
+  awaitCutOffNestedRun(child: WorkflowRun): boolean {
+    if (this._status !== "interrupted") return false;
+    const started = child.startedByStepOf(this);
+    if (started === undefined) return false;
+    const step = this.getJob(started.jobName)?.getStep(started.stepName);
+    const stepStartedAt = step?.startedAt;
+    const childStartedAt = child.startedAt;
+    if (
+      step?.status !== "unknown" || stepStartedAt === undefined ||
+      childStartedAt === undefined ||
+      childStartedAt.getTime() < stepStartedAt.getTime()
+    ) {
+      return false;
+    }
+    step.rewaitOnNestedRun({
+      workflowId: child.workflowId,
+      workflowName: child.workflowName,
+      runId: child.id,
+    });
+    return true;
   }
 
   get jobs(): ReadonlyArray<JobRun> {

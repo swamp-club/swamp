@@ -3327,6 +3327,134 @@ Deno.test("WorkflowRun.interrupt: keeps waiting on the nested run, since an inte
   assertEquals(run.detachedNestedRuns(), []);
 });
 
+function cutOffParentAndChild(
+  stepStartedAt: Date = new Date(Date.now() - 60_000),
+): { parent: WorkflowRun; child: WorkflowRun } {
+  const parent = WorkflowRun.create(
+    Workflow.create({
+      name: "parent",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "call-child",
+              task: StepTask.workflow("child"),
+            }),
+          ],
+        }),
+      ],
+    }),
+  );
+  parent.start();
+  parent.getJob("main")!.start();
+  parent.getJob("main")!.getStep("call-child")!.start(stepStartedAt);
+  const child = WorkflowRun.create(createTestWorkflow());
+  child.recordParentRun({
+    workflowId: parent.workflowId,
+    workflowName: parent.workflowName,
+    runId: parent.id,
+    jobName: "main",
+    stepName: "call-child",
+    nestingDepth: 1,
+    ancestorWorkflowNames: ["parent"],
+  });
+  child.start();
+  const step = parent.getJob("main")!.getStep("call-child")!;
+  step.failStoppedByAbort('Nested workflow "child" was cancelled.');
+  step.markAllowedFailure();
+  parent.interrupt("server_shutdown");
+  return { parent, child };
+}
+
+Deno.test("WorkflowRun.startedByStepOf: names the step only for a child whose parentRun names the parent", () => {
+  const { parent, child } = cutOffParentAndChild();
+  assertEquals(child.startedByStepOf(parent), {
+    jobName: "main",
+    stepName: "call-child",
+  });
+
+  const other = cutOffParentAndChild().parent;
+  assertEquals(child.startedByStepOf(other), undefined);
+
+  const sameIdOtherWorkflow = WorkflowRun.fromData({
+    ...parent.toData(),
+    workflowId: "55555555-5555-4555-8555-555555555555",
+  });
+  assertEquals(child.startedByStepOf(sameIdOtherWorkflow), undefined);
+
+  const broken = WorkflowRun.fromData({
+    ...child.toData(),
+    parentRun: { runId: parent.id },
+  });
+  assertEquals(broken.startedByStepOf(parent), undefined);
+  assertEquals(
+    WorkflowRun.create(createTestWorkflow()).startedByStepOf(parent),
+    undefined,
+  );
+});
+
+Deno.test("WorkflowRun.awaitCutOffNestedRun: the cut-off step waits on its child again, and a recovery keeps the wait", () => {
+  const { parent, child } = cutOffParentAndChild();
+
+  assertEquals(parent.awaitCutOffNestedRun(child), true);
+
+  const step = parent.getJob("main")!.getStep("call-child")!;
+  assertEquals(step.status, "waiting_approval");
+  assertEquals(step.isNestedWait, true);
+  assertEquals(step.error, undefined);
+  assertEquals(step.allowedFailure, false);
+  assertEquals(step.stoppedByAbort, false);
+  assertEquals(parent.findNestedWaits(), [{
+    jobName: "main",
+    stepName: "call-child",
+    link: {
+      kind: "valid",
+      ref: {
+        workflowId: child.workflowId,
+        workflowName: child.workflowName,
+        runId: child.id,
+      },
+    },
+  }]);
+
+  parent.resetUnknownStepsForRecovery();
+  const recovered = WorkflowRun.fromData(parent.toData());
+  assertEquals(recovered.getJob("main")!.status, "pending");
+  assertEquals(recovered.findNestedWaits().length, 1);
+  assertEquals(recovered.unknownSteps(), []);
+});
+
+Deno.test("WorkflowRun.awaitCutOffNestedRun: leaves the step alone unless the run is interrupted, the step unknown and the child of this attempt", () => {
+  const running = cutOffParentAndChild();
+  const notInterrupted = WorkflowRun.fromData({
+    ...running.parent.toData(),
+    status: "cancelled",
+  });
+  assertEquals(notInterrupted.awaitCutOffNestedRun(running.child), false);
+
+  const settled = cutOffParentAndChild();
+  settled.parent.getJob("main")!.getStep("call-child")!.fail("failed");
+  assertEquals(settled.parent.awaitCutOffNestedRun(settled.child), false);
+  assertEquals(
+    settled.parent.getJob("main")!.getStep("call-child")!.status,
+    "failed",
+  );
+
+  const earlier = cutOffParentAndChild(new Date(Date.now() + 60_000));
+  assertEquals(earlier.parent.awaitCutOffNestedRun(earlier.child), false);
+  assertEquals(
+    earlier.parent.getJob("main")!.getStep("call-child")!.status,
+    "unknown",
+  );
+
+  const stranger = cutOffParentAndChild();
+  assertEquals(
+    stranger.parent.awaitCutOffNestedRun(cutOffParentAndChild().child),
+    false,
+  );
+});
+
 Deno.test("WorkflowRun.parentRun: round-trips, and a malformed link is kept as written", () => {
   const run = WorkflowRun.create(createTestWorkflow());
   run.recordParentRun({
