@@ -167,6 +167,21 @@ export const READ_MODEL_LOCK_FILE = "read_model.lock";
 /** how long a command's end waits for a catch-up under way */
 const CLOSE_WAIT_MS = 500;
 
+/** inline writes of a catch-up's page that run at once */
+export const POOLED_WRITES = 16;
+
+interface PooledWrite {
+  readonly folded: string;
+  /** directories the write creates, which a later key under them waits for */
+  readonly creates: readonly string[];
+  readonly done: Promise<void>;
+}
+
+/** case-folded and NFC, as case-insensitive or normalising filesystems compare */
+function foldPath(path: string): string {
+  return path.normalize("NFC").toLowerCase();
+}
+
 /** a longer tail is replayed in full rather than held in memory to be netted */
 export const TAIL_NET_MAX_COMMITS = 5_000;
 /** a shorter tail, a write's own catch-up among them, is never read twice to be netted */
@@ -270,6 +285,8 @@ export interface SqliteReadModelOptions {
    * recovery does; a net replay by default
    */
   readonly netReplay?: boolean;
+  /** inline writes a catch-up's page runs at once; 1 writes one at a time */
+  readonly pooledWrites?: number;
   readonly spellingFolding?: SpellingFolding;
   /**
    * a partition's seqs can have holes where serve left out commits the caller
@@ -478,6 +495,7 @@ export class SqliteReadModel implements ReadModel {
   readonly #syncFile: (path: string) => Promise<void>;
   readonly #atRiskCopyBytes: number;
   readonly #netReplay: boolean;
+  readonly #pooledWrites: number;
   readonly #follower: boolean;
   readonly #writerInstance: string | undefined;
   readonly #holdsOwnWork: ((commit: Commit) => boolean) | undefined;
@@ -526,6 +544,13 @@ export class SqliteReadModel implements ReadModel {
    * meets first is netted with the tail after it
    */
   #netBase = false;
+  /**
+   * a catch-up's inline writes under way, set only for a batch that does not
+   * sync; anything else on the disk that could meet one waits for it first
+   */
+  #pool: PooledWrite[] | undefined;
+  /** the first pooled write that failed: the page then rolls back whole */
+  #poolFailure: { readonly error: unknown } | undefined;
   /** the page's chunk prefetch, which a write that reads a chunk waits for */
   #prefetched: Promise<unknown> | undefined;
   /** pages the tail net plan read, applied before the store is read again */
@@ -577,6 +602,7 @@ export class SqliteReadModel implements ReadModel {
     this.#atRiskCopyBytes = options.atRiskCopyBytes ??
       DEFAULT_AT_RISK_COPY_BYTES;
     this.#netReplay = options.netReplay ?? true;
+    this.#pooledWrites = options.pooledWrites ?? POOLED_WRITES;
     this.#follower = options.follower === true;
     this.#recordsChanged = options.recordsChanged;
     this.#writerInstance = options.writerInstance;
@@ -2741,6 +2767,10 @@ export class SqliteReadModel implements ReadModel {
         (error: unknown) => ({ error }),
       );
       this.#prefetched = prefetched;
+      this.#pool = batch.syncs || this.#recovering || this.#pooledWrites < 2
+        ? undefined
+        : [];
+      this.#poolFailure = undefined;
       try {
         for (const change of page) {
           signal.throwIfAborted();
@@ -2748,8 +2778,12 @@ export class SqliteReadModel implements ReadModel {
           met.push(change.commit);
         }
         await this.#awaitPrefetched();
+        await this.#drainPool();
       } catch (error) {
         await prefetched;
+        // with a pooled write lost, which commits' files landed is unknown:
+        // the page rolls back, as after a crash, and is applied again
+        if (await this.#settlePool() !== undefined) throw error;
         try {
           await batch.barrier();
           this.#catalog.commitBatch();
@@ -2779,6 +2813,8 @@ export class SqliteReadModel implements ReadModel {
       await this.#tellRecordsChanged(changes);
       return applied;
     } finally {
+      await this.#settlePool();
+      this.#pool = undefined;
       this.#prefetched = undefined;
       this.#pageChanges = undefined;
       batch.discard();
@@ -2786,6 +2822,32 @@ export class SqliteReadModel implements ReadModel {
       this.#state.rollbackBatch();
       this.#pageInFlight = undefined;
       settled.resolve();
+    }
+  }
+
+  async #settlePool(): Promise<{ readonly error: unknown } | undefined> {
+    const pending = this.#pool?.splice(0) ?? [];
+    await Promise.all(pending.map((write) => write.done));
+    return this.#poolFailure;
+  }
+
+  async #drainPool(): Promise<void> {
+    const failure = await this.#settlePool();
+    if (failure !== undefined) throw failure.error;
+  }
+
+  /** a pooled write at, above or below the path, or making a directory over it */
+  async #drainOverlapping(path: string): Promise<void> {
+    const pool = this.#pool;
+    if (pool === undefined || pool.length === 0) return;
+    const folded = foldPath(path);
+    if (
+      pool.some((write) =>
+        within(folded, write.folded) || within(write.folded, folded) ||
+        write.creates.some((dir) => within(folded, dir))
+      )
+    ) {
+      await this.#drainPool();
     }
   }
 
@@ -3230,6 +3292,7 @@ export class SqliteReadModel implements ReadModel {
     assertContainedPath(key, root);
     const segments = key.split("/");
     const path = join(root, ...segments);
+    await this.#drainOverlapping(path);
     // A file and a directory claiming one path is permanent: retrying would
     // block every later commit. A put is skipped like a refused key, and stays
     // indexed. Under a file, a tombstone has nothing to remove.
@@ -3633,6 +3696,8 @@ export class SqliteReadModel implements ReadModel {
     signal: AbortSignal,
     source: ChangeSource,
   ): Promise<void> {
+    // a removal can take emptied directories with it
+    await this.#drainPool();
     await this.#noteRewriting(key, path);
     await this.#guardExisting(
       namespace,
@@ -3735,20 +3800,39 @@ export class SqliteReadModel implements ReadModel {
       const bytes = "inline" in content
         ? decodeBase64(content.inline)
         : this.#chunkStore.read(namespaceOf(namespace), content.blob, signal);
-      await batch.write(
-        path,
-        stats === undefined || bytes instanceof Uint8Array
-          ? bytes
-          : stats.count(bytes),
-        signal,
-        {
-          absentDirectories,
-          written: (info) => {
-            written.info = info;
+      const pool = this.#pool;
+      if (pool !== undefined && bytes instanceof Uint8Array) {
+        if (pool.length >= this.#pooledWrites) {
+          await pool.shift()!.done;
+          if (this.#poolFailure !== undefined) throw this.#poolFailure.error;
+        }
+        this.#stats?.bump("writes_pooled");
+        pool.push({
+          folded: foldPath(path),
+          creates: (absentDirectories ?? []).map(foldPath),
+          done: batch.write(path, bytes, signal, {
+            ...(absentDirectories === undefined ? {} : { absentDirectories }),
+            ...(content.access === undefined ? {} : { access: content.access }),
+          }).catch((error: unknown) => {
+            this.#poolFailure ??= { error };
+          }),
+        });
+      } else {
+        await batch.write(
+          path,
+          stats === undefined || bytes instanceof Uint8Array
+            ? bytes
+            : stats.count(bytes),
+          signal,
+          {
+            absentDirectories,
+            written: (info) => {
+              written.info = info;
+            },
+            ...(content.access === undefined ? {} : { access: content.access }),
           },
-          ...(content.access === undefined ? {} : { access: content.access }),
-        },
-      );
+        );
+      }
     } catch (error) {
       // A failed write leaves the file as it was. One that only meant to
       // fix the access keeps the right bytes rather than lose them.

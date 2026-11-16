@@ -4107,7 +4107,9 @@ Ownership, the record index, catalog actions and the cursor are recorded as
 in a full replay, and the path checks run for every change. A key skips writes
 only when its top directory was absent before the catch-up and no other key
 the first pass read is its path prefix or lies under it, so its file can never
-decide another key's file and directory conflict. A recovery, a partition
+decide another key's file and directory conflict, and no other key's directory
+differs from one of its own only by case or composition, since whichever write
+makes a directory spells it. A recovery, a partition
 catch-up and the rest of a catch-up that meets a compacted base after it has
 applied commits replay in full, and so does one resumed after a crash: from
 the bound on, every file is where a full replay leaves it. On the dogfood
@@ -4118,7 +4120,11 @@ of `TAIL_NET_MIN_COMMITS` to `TAIL_NET_MAX_COMMITS` commits, so a write's own
 catch-up still reads only its new commit): it leaves off disk a write a later write of
 the key in the tail replaces, under the same path-prefix rule, but never skips
 a removal, and only for a key the read model owns a file for or whose path
-holds nothing, since its files are already on disk.
+holds nothing, since its files are already on disk. A catch-up's page runs up to
+`POOLED_WRITES` (16) inline writes at once when its batch does not sync; any
+other change to the disk that could meet one (a removal, a write at, above or
+below its path, or under a directory it makes) waits for it first, and a page
+with a failed pooled write rolls back whole, as after a crash.
 
 **Fetching chunks for a page (swamp-club#4457).** Before a page applies, the
 read model fetches together every chunk the page's writes will read: puts of

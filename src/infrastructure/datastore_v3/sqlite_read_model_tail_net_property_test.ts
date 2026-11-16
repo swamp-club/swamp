@@ -33,7 +33,11 @@ import {
 import { findSpan, withCapturedSpans } from "../tracing/span_test_helpers.ts";
 import { readModelStateDir } from "./record_path_guard.ts";
 import { SqliteCommitStore } from "./sqlite_commit_store.ts";
-import { SqliteReadModel, TAIL_NET_MIN_COMMITS } from "./sqlite_read_model.ts";
+import {
+  POOLED_WRITES,
+  SqliteReadModel,
+  TAIL_NET_MIN_COMMITS,
+} from "./sqlite_read_model.ts";
 import { v3CacheRoot } from "./v3_datastore.ts";
 
 type Change =
@@ -48,13 +52,13 @@ type Change =
 const change: fc.Arbitrary<Change> = fc.oneof(
   fc.record({
     put: fc.constant(true as const),
-    name: fc.constantFrom("a", "b", "c"),
+    name: fc.constantFrom("a", "b", "c", "A"),
     version: fc.constantFrom(1, 2),
     text: fc.constantFrom("x", "y", "z"),
   }),
   fc.record({
     put: fc.constant(false as const),
-    name: fc.constantFrom("a", "b", "c"),
+    name: fc.constantFrom("a", "b", "c", "A"),
     version: fc.constantFrom(1, 2),
   }),
 );
@@ -120,8 +124,8 @@ async function filesUnder(
 async function project(
   head: readonly (readonly Change[])[],
   tail: readonly (readonly Change[])[],
-  netReplay: boolean,
-): Promise<{ files: Record<string, string>; skipped: number }> {
+  options: { readonly netReplay: boolean; readonly pooledWrites: number },
+): Promise<{ files: Record<string, string>; skipped: number; pooled: number }> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-tail-net-" });
   const repoDir = join(dir, "repo");
   const store = SqliteCommitStore.open(join(dir, "commits.db"));
@@ -130,7 +134,7 @@ async function project(
     chunkStore: new ChunkStore(new MemoryStorage()),
     cacheRoot: (ns) => v3CacheRoot(repoDir, ns),
     stateDir: readModelStateDir(repoDir),
-    netReplay,
+    ...options,
   });
   try {
     let seq = 0;
@@ -150,12 +154,14 @@ async function project(
     await readModel.catchUp(new AbortController().signal);
     for (const changes of tail) await append(changes);
     let skipped = 0;
+    let pooled = 0;
     await withCapturedSpans(async (spans) => {
       await readModel.catchUp(new AbortController().signal);
       const span = findSpan(spans, "swamp.datastore.v3.readmodel.catchup");
       skipped = Number(
         span.attributes["swamp.datastore.v3.writes_skipped"] ?? 0,
       );
+      pooled = Number(span.attributes["swamp.datastore.v3.writes_pooled"] ?? 0);
     });
     return {
       files: await filesUnder(
@@ -163,6 +169,7 @@ async function project(
         readModelStateDir(repoDir),
       ),
       skipped,
+      pooled,
     };
   } finally {
     await readModel.close();
@@ -177,20 +184,30 @@ async function project(
 
 Deno.test("SqliteReadModel.catchUp: a netted tail over files already on disk leaves exactly the files a full replay does", async () => {
   let netted = 0;
+  let pooled = 0;
   await fc.assert(
     fc.asyncProperty(
       commits(1, 4),
       commits(TAIL_NET_MIN_COMMITS, TAIL_NET_MIN_COMMITS + 8),
       async (head, tail) => {
-        const full = await project(head, tail, false);
-        const net = await project(head, tail, true);
+        const full = await project(head, tail, {
+          netReplay: false,
+          pooledWrites: 1,
+        });
+        const net = await project(head, tail, {
+          netReplay: true,
+          pooledWrites: POOLED_WRITES,
+        });
         assertEquals(net.files, full.files);
         assertEquals(full.skipped, 0);
+        assertEquals(full.pooled, 0);
         netted += net.skipped;
+        pooled += net.pooled;
       },
     ),
     { numRuns: 40 },
   );
-  // the property is vacuous unless some runs skipped writes
+  // the property is vacuous unless some runs skipped and pooled writes
   assertEquals(netted > 0, true);
+  assertEquals(pooled > 0, true);
 });

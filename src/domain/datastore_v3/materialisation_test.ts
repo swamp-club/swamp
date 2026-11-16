@@ -288,3 +288,15 @@ Deno.test("NetReplayPlanner.seed: with no tail nothing is skipped (swamp-club#39
   assertEquals(plan.skipsWrite("", "data/x", 3), false);
   assertEquals(plan.bound, 0);
 });
+
+Deno.test("NetReplayPlanner: keys whose directories differ only by case or composition replay in full", () => {
+  const plan = planOf([
+    ["p", [change("data/A/2/raw", true)]],
+    ["p", [change("data/a/1/raw", true)]],
+    ["p", [change("data/a/1/raw", true)]],
+    ["p", [change("data/b/1/raw", true)]],
+    ["p", [change("data/b/1/raw", true)]],
+  ]);
+  assertEquals(plan.skipsWrite("", "data/a/1/raw", 2), false);
+  assertEquals(plan.skipsWrite("", "data/b/1/raw", 4), true);
+});

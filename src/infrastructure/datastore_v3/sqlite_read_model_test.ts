@@ -3755,3 +3755,41 @@ Deno.test("SqliteReadModel.catchUp: a page's failed chunk fetch still fails the 
     }
   });
 });
+
+Deno.test({
+  name:
+    "SqliteReadModel.catchUp: a page whose pooled write fails rolls back whole, and is applied again",
+  // directory permissions do not refuse a write on Windows
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withEnv(async (env) => {
+      await env.append(1, "", [await savePut("a", 1), versionOp("a", 1)]);
+      const readModel = env.open({ netReplay: false });
+      try {
+        await readModel.catchUp(signal());
+        const cursor = readModel.cursor();
+        await env.append(2, "", [
+          await savePut("a", 1, "a again", undefined, "data.append"),
+          versionOp("a", 1),
+        ]);
+        await env.append(3, "", [await savePut("b", 1), versionOp("b", 1)]);
+        const behavior = dirname(dirname(dirname(env.contentPath("", "a", 1))));
+        await Deno.chmod(behavior, 0o500);
+        try {
+          await assertRejects(() => readModel.catchUp(signal()));
+          assertEquals(readModel.cursor(), cursor);
+        } finally {
+          await Deno.chmod(behavior, 0o755);
+        }
+        await readModel.catchUp(signal());
+        assertEquals(
+          await readOrAbsent(env.contentPath("", "a", 1)),
+          "a again",
+        );
+        assertEquals(await readOrAbsent(env.contentPath("", "b", 1)), "b@1");
+      } finally {
+        await readModel.close();
+      }
+    });
+  },
+});
