@@ -164,14 +164,27 @@ reached.
 directions, never buffered, so SSE and the worker data plane pass through. A
 WebSocket is relayed frame by frame between the caller's socket and one the
 router opens to the child, with the query, subprotocols, `Origin` and cookies
-carried over. The router passes `Authorization`, `Host` and cookies through
+carried over. The router passes `Authorization`, `Origin` and cookies through
 untouched: each serve authenticates its own callers and the router adds no
-credential. It overwrites the forwarding header with the caller's address, so a
-caller cannot supply its own, and sets `X-Forwarded-Prefix` to `/w/<name>` for
-a workspace and removes it for the root, so a worker's data plane follows the
-workspace it connected to. A host that is itself behind a proxy is told so
-in `host.yaml` and passes on the address that proxy reports. A workspace that
-is not running answers 503 with its state. An unknown name answers 404.
+credential. It overwrites `X-Forwarded-For` with the caller's address,
+`X-Forwarded-Host` with the caller's `Host` and `X-Forwarded-Proto` with the
+listener's protocol, so a caller cannot supply its own. Serve reads the
+protocol for its dashboard session cookie's `Secure` flag and expected origin,
+so the router, which terminates TLS, must send it. It sets
+`X-Forwarded-Prefix` to `/w/<name>` for a workspace and removes it for the
+root, so a worker's data plane follows the workspace it connected to. A host
+that is itself behind a proxy is told so in `host.yaml` and passes on what that
+proxy reports, with a workspace's `/w/<name>` appended to the proxy's prefix. A
+workspace that is not running answers 503 with its state. An unknown name
+answers 404.
+
+HTTP goes to the child over `node:http`, not `fetch`: Deno's `fetch` sends a
+streamed body chunked and drops its `Content-Length`, which the v3 datastore's
+chunk upload requires. `node:http` keeps `Content-Length` and `Host` and does
+not decode the reply. A WebSocket is opened with Deno's client, which sets
+`Host` from the URL, so a child reads the public host from `X-Forwarded-Host`.
+That client cannot see why a child refused a handshake, so a refused upgrade
+reaches the caller as 502.
 
 The worker data plane is HTTP/2 only under TLS and HTTP/1.1 over plain TCP,
 with the same handlers. The hop from the router to a child is plain loopback
@@ -204,6 +217,11 @@ public name, `--trust-proxy` and `--exit-on-stdin-close`. The child reports the
 port it got on its `--json` listening line. A workspace is also given the
 root's address, which [Sign-in](#sign-in) uses. The child's environment is set
 explicitly.
+
+A serve with auth mode `none` relies on its loopback bind and its Host check to
+stay private. Behind the router that bind no longer hides it, so a host whose
+listener is off loopback refuses to start or route to a child in auth mode
+`none`.
 
 `--exit-on-stdin-close` is a new hidden flag: serve starts its drain when stdin
 reaches end of file, as the dashboard child already does. The host keeps each
