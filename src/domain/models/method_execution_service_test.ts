@@ -42,6 +42,7 @@ import {
   type RemoteStepRequest,
   setRemoteOnlyMode,
   setRemoteStepDispatcher,
+  StepWithdrawnError,
   withRemoteOutputs,
 } from "../remote/remote_dispatch.ts";
 import { fromResourceHandle } from "../data/data_record_mapper.ts";
@@ -8087,4 +8088,32 @@ Deno.test("dataSplicePlacer: data whose text changed after evaluation is refused
     Error,
     "shell_data_placement_refused",
   );
+});
+
+Deno.test("executeWorkflow - a placed step a planned restart withdrew records its output cancelled, not failed", async () => {
+  const service = new DefaultMethodExecutionService();
+  const model = createTestModel({});
+  const definition = Definition.create({
+    name: "remote-def",
+    methods: { start: { arguments: {} } },
+  });
+  setRemoteStepDispatcher({
+    executeRemote: () => Promise.reject(new StepWithdrawnError()),
+    releaseAffinity: () => {},
+  });
+  try {
+    const { repo: outputRepo, saved } = createMockOutputRepo();
+    const { context } = createTestContext({
+      modelType: model.type,
+      outputRepository: outputRepo,
+      placement: { target: "w1" },
+    });
+    await assertRejects(
+      () => service.executeWorkflow(definition, model, "start", context),
+      StepWithdrawnError,
+    );
+    assertEquals(saved[saved.length - 1].output.status, "cancelled");
+  } finally {
+    setRemoteStepDispatcher(null);
+  }
 });

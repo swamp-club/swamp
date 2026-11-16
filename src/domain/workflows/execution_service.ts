@@ -53,8 +53,8 @@ import {
   handedOver,
   hasUnfinishedWork,
   type RunHandover,
-  StepWithdrawnError,
 } from "./run_handover.ts";
+import { StepWithdrawnError } from "../remote/remote_dispatch.ts";
 import type { RunStartKeyData } from "./run_start_key.ts";
 import { unclaimedRuns, type WorkflowRunClaims } from "./run_claim.ts";
 import {

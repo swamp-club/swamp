@@ -24,7 +24,7 @@ import {
 } from "../domain/vaults/run_vault_access.ts";
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
-import { StepWithdrawnError } from "../domain/workflows/run_handover.ts";
+import { StepWithdrawnError } from "../domain/remote/remote_dispatch.ts";
 import { withCapturedSpans } from "../infrastructure/tracing/span_test_helpers.ts";
 import { z } from "zod";
 import {
@@ -35,6 +35,7 @@ import {
   DispatchService,
   withWrittenVersions,
   WorkerAffinityLostError,
+  WorkerIneligibleError,
 } from "./dispatch_service.ts";
 import {
   type ActiveDispatch,
@@ -3798,4 +3799,23 @@ Deno.test("DispatchService: a step a worker took runs on through a planned resta
 
   const result = await pending;
   assertEquals(result.outputs.length, 1);
+});
+
+Deno.test("DispatchService: a step refused for its own cause during a planned restart keeps that cause, not a withdrawal", async () => {
+  const h = createHarness({
+    workers: [snapshot({ name: "w1", status: "draining" })],
+  });
+  h.service.beginHandover();
+
+  await assertRejects(
+    () =>
+      h.service.executeRemote(
+        stepRequest({
+          workflowRunId: "run-1",
+          jobName: "main",
+          placement: { labels: {}, platform: "linux", lane: { worker: "w1" } },
+        }),
+      ),
+    WorkerIneligibleError,
+  );
 });

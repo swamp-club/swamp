@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { StepWithdrawnError } from "../domain/workflows/run_handover.ts";
+import { StepWithdrawnError } from "../domain/remote/remote_dispatch.ts";
 import { currentRunProgress } from "../domain/remote/run_progress.ts";
 import {
   currentVaultAccess,
@@ -713,8 +713,13 @@ export class DispatchService {
         }
       }
     } catch (caught) {
+      // only the handover's own abort of the wait: any other failure keeps
+      // its cause and fails the step as before
+      const handoverAbort = caught instanceof StepWithdrawnError ||
+        (caught instanceof DOMException && caught.name === "AbortError");
       const error = withdrawable && attemptWorker === undefined &&
-          this.#handover.signal.aborted && !request.signal?.aborted
+          handoverAbort && this.#handover.signal.aborted &&
+          !request.signal?.aborted
         ? new StepWithdrawnError()
         : caught;
       failure = error;

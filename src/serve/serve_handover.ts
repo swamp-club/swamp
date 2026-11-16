@@ -19,7 +19,11 @@
 
 import type { ControlPlaneStore } from "../domain/datastore/control_plane_store.ts";
 import type { RunHandover } from "../domain/workflows/run_handover.ts";
-import type { RunParker } from "../domain/workflows/workflow_run.ts";
+import type {
+  RunParker,
+  WorkflowRun,
+} from "../domain/workflows/workflow_run.ts";
+import { refusalIsRetried } from "../domain/workflows/auto_continuation.ts";
 import type { PendingRunOwner } from "../infrastructure/persistence/run_tracker_store.ts";
 import { processHostIdentity } from "../infrastructure/runtime/process.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
@@ -186,6 +190,17 @@ export async function forgetParkedRun(
       error: error instanceof Error ? error.message : String(error),
     });
   }
+}
+
+/**
+ * the marker has done its job once the run reads continued or gone, or carries
+ * a refusal for this interruption that nothing retries
+ */
+export function parkedRunHandled(run: WorkflowRun | null): boolean {
+  if (run === null || !run.isParked) return true;
+  const refused = run.autoContinuation?.refused;
+  return refused !== undefined && !refusalIsRetried(refused.reason) &&
+    refused.interruptedAt === run.continuableSince?.toISOString();
 }
 
 /** a parker that cannot be named counts as gone, as a reaped owner does */

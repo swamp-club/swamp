@@ -88,7 +88,8 @@ import {
   WorkflowSuspendedError,
 } from "./execution_service.ts";
 import { computeStepsToReset } from "./resume_reset.ts";
-import { type RunHandover, StepWithdrawnError } from "./run_handover.ts";
+import type { RunHandover } from "./run_handover.ts";
+import { StepWithdrawnError } from "../remote/remote_dispatch.ts";
 import { NestedRunPendingError } from "./nested_run_link.ts";
 import {
   acquireContinuation,

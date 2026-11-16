@@ -328,6 +328,7 @@ import {
 import {
   forgetParkedRun,
   listParkedRuns,
+  parkedRunHandled,
   parkerAsOwner,
   ServeHandover,
 } from "../../serve/serve_handover.ts";
@@ -10540,11 +10541,14 @@ export const serveCommand = new Command()
         }
         if (due.length === 0) return;
         await continueInterruptedAtLead("sweep", due);
-        // continued, refused or no longer parked: either way handled
+        // a pass that judged nothing (shutdown, an unusable claim store, a
+        // failed read) leaves the record parked, so its marker stays
         for (const target of due) {
-          if (!pendingInterrupted.has(target.runId)) {
-            await forgetParkedRun(store, target.runId);
-          }
+          const run = await repoContext.workflowRunRepo.findById(
+            createWorkflowId(target.workflowId),
+            createWorkflowRunId(target.runId),
+          );
+          if (parkedRunHandled(run)) await forgetParkedRun(store, target.runId);
         }
       } catch (error) {
         logger.warn(

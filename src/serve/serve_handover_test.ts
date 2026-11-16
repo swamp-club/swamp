@@ -20,10 +20,16 @@
 import { assertEquals } from "@std/assert";
 import type { ControlPlaneStore } from "../domain/datastore/control_plane_store.ts";
 import { createWorkflowRunId } from "../domain/workflows/workflow_id.ts";
+import { Job } from "../domain/workflows/job.ts";
+import { Step } from "../domain/workflows/step.ts";
+import { StepTask } from "../domain/workflows/step_task.ts";
+import { Workflow } from "../domain/workflows/workflow.ts";
+import { WorkflowRun } from "../domain/workflows/workflow_run.ts";
 import {
   findParkedRun,
   forgetParkedRun,
   listParkedRuns,
+  parkedRunHandled,
   parkedRunKey,
   parkerAsOwner,
   ServeHandover,
@@ -115,4 +121,52 @@ Deno.test("parkerAsOwner: a parker missing its instance or pid cannot be judged 
     pid: 1,
     host: "h",
   });
+});
+
+function parkedRun(): WorkflowRun {
+  const run = WorkflowRun.create(
+    Workflow.create({
+      name: "marker-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [Step.create({ name: "a", task: StepTask.model("m", "run") })],
+        }),
+      ],
+    }),
+  );
+  run.start(4242, "serve-old");
+  run.park({ instanceId: "serve-old", pid: 4242 }, new Date());
+  return run;
+}
+
+Deno.test("parkedRunHandled: a marker is kept while its run still waits to be continued", () => {
+  assertEquals(parkedRunHandled(parkedRun()), false);
+});
+
+Deno.test("parkedRunHandled: a marker goes once the run is gone, continued, or refused for good", () => {
+  assertEquals(parkedRunHandled(null), true);
+
+  const continued = parkedRun();
+  continued.resetUnknownStepsForRecovery({ holder: "serve:b", at: new Date() });
+  assertEquals(parkedRunHandled(continued), true);
+
+  const optedOut = parkedRun();
+  optedOut.recordAutoContinuationRefusal({
+    reason: "opted_out",
+    steps: [],
+    message: "The workflow sets autoContinue: false.",
+  }, new Date());
+  assertEquals(parkedRunHandled(optedOut), true);
+});
+
+Deno.test("parkedRunHandled: a refusal that is judged again keeps the marker", () => {
+  const waiting = parkedRun();
+  waiting.recordAutoContinuationRefusal({
+    reason: "nested_run_unsettled",
+    steps: [],
+    message: "A nested run is still open.",
+  }, new Date());
+
+  assertEquals(parkedRunHandled(waiting), false);
 });

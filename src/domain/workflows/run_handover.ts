@@ -41,14 +41,3 @@ export function hasUnfinishedWork(run: Pick<WorkflowRun, "jobs">): boolean {
     job.status === "pending" || job.status === "running"
   );
 }
-
-/**
- * a step a planned restart took back before any worker took it: it never
- * started, so it goes back to pending for the run's continuation
- */
-export class StepWithdrawnError extends Error {
-  constructor() {
-    super("Withdrawn by a planned restart before a worker took the step");
-    this.name = "StepWithdrawnError";
-  }
-}
