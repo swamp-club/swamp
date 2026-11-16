@@ -26,7 +26,11 @@ import {
 import { join } from "@std/path";
 import { hostname } from "node:os";
 import { ActiveRun as TrackedRun } from "../domain/models/active_run.ts";
-import { RunTrackerStore } from "../infrastructure/persistence/run_tracker_store.ts";
+import {
+  localTrackerProcess,
+  RunTrackerStore,
+  type TrackerProcess,
+} from "../infrastructure/persistence/run_tracker_store.ts";
 import {
   awaitAbortedRun,
   cancelSuspendedRunAndPush,
@@ -462,9 +466,13 @@ function trackerRow(
 
 async function withTracker(
   fn: (tracker: RunTrackerStore) => Promise<void>,
+  process?: TrackerProcess,
 ): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-serve-cancel-test-" });
-  const tracker = new RunTrackerStore(join(dir, "run_tracker.db"));
+  const tracker = new RunTrackerStore(
+    join(dir, "run_tracker.db"),
+    process ? { process } : {},
+  );
   try {
     await fn(tracker);
   } finally {
@@ -553,7 +561,53 @@ Deno.test("ownerGoneDecider: a tracker row this instance wrote under its own pid
   });
 });
 
-Deno.test("ownerGoneDecider: a previous instance's row under this process's reused pid still gets the process-alive reply (swamp-club#3740, swamp-club#3739)", async () => {
+const predecessor = (startTime?: string): TrackerProcess => ({
+  pid: Deno.pid,
+  ...(startTime !== undefined ? { startTime } : {}),
+  probe: () => ({ present: true, zombie: false }),
+});
+
+for (
+  const [label, process, needsStartTime] of [
+    ["another start time", predecessor("predecessor-start"), true],
+    ["no start time", predecessor(), false],
+  ] as const
+) {
+  Deno.test({
+    name:
+      `ownerGoneDecider: a previous instance's row under this process's reused pid is gone (${label})`,
+    // a start time compares only where this process can read its own
+    ignore: needsStartTime && localTrackerProcess().startTime === undefined,
+  }, async () => {
+    await withTracker(async (tracker) => {
+      const run = runningRun(makeWorkflow("deploy"), Deno.pid, "old-instance");
+      tracker.register(trackerRow(run, Deno.pid, "old-instance"));
+      let deadPid: number | undefined;
+
+      const gone = await ownerGoneDecider(
+        {
+          activeRunRegistry: new ActiveRunRegistry(),
+          runTracker: tracker,
+          instanceId: "new-instance",
+          controlPlaneStore: controlPlaneWith([]),
+        },
+        (pid) => {
+          deadPid = pid;
+        },
+      )(run);
+
+      assertEquals(gone.gone, true);
+      assertEquals(deadPid, Deno.pid);
+    }, process);
+  });
+}
+
+Deno.test({
+  name:
+    "ownerGoneDecider: a row this process wrote under another instance id is never gone",
+  // without a readable start time only the instance id is left to judge by
+  ignore: localTrackerProcess().startTime === undefined,
+}, async () => {
   await withTracker(async (tracker) => {
     const run = runningRun(makeWorkflow("deploy"), Deno.pid, "old-instance");
     tracker.register(trackerRow(run, Deno.pid, "old-instance"));
@@ -566,14 +620,7 @@ Deno.test("ownerGoneDecider: a previous instance's row under this process's reus
     })(run);
 
     assertEquals(gone.gone, false);
-    if (!gone.gone) {
-      assertEquals(
-        gone.why.includes("this serve instance is running it"),
-        false,
-      );
-      assertStringIncludes(gone.why, "is still alive");
-    }
-  });
+  }, localTrackerProcess());
 });
 
 Deno.test("ownerGoneDecider: a run this instance drives is never gone", async () => {
