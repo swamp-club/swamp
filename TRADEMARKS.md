@@ -66,9 +66,11 @@ trademarks. This Policy covers our Marks whether they are registered or not.
 The following trademarks are ones that are reserved exclusively to our use and
 are not covered by the Policy:
 
-<img src="sc-mark.png" width="64" height="64"/>
+<img src="swamp-club-monogram-color.png" width="64" height="64" alt="Swamp Club monogram"/>
 
-<img src="swamp-club-wordmark.png" width="368" height="128"/>
+<img src="swamp-club-wordmark-color.png" width="368" height="41" alt="Swamp Club wordmark"/>
+
+<img src="swamp-club-wordmark.png" width="368" height="128" alt="Swamp Club stacked wordmark"/>
 
 Contact us as described in "Where to get further information" below if you have
 questions or want to ask permission to use any of these excluded trademarks.
