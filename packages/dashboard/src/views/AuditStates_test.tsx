@@ -40,6 +40,7 @@ Deno.test("AuditDisabledState: explains the log, shows the config to copy and li
   assertStringIncludes(html, "Who ran, approved or changed what");
   assertStringIncludes(html, "A live activity feed");
   assertStringIncludes(html, ".swamp/serve.yaml");
+  assertStringIncludes(html, "doesn&#x27;t exist yet, create it");
   assertStringIncludes(html, "target: security-audit");
   assertStringIncludes(html, "Copy serve.yaml snippet");
   assertStringIncludes(html, "swamp serve check-config");

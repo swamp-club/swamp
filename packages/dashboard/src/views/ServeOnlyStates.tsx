@@ -24,6 +24,7 @@ import {
   Benefit,
   CopyableSnippet,
   type CopyFn,
+  SERVE_CONFIG_CREATE_NOTE,
   SERVE_CONFIG_PATH,
 } from "./AuditStates.tsx";
 
@@ -217,7 +218,8 @@ export function WebhooksLocalState({ copy }: { copy: CopyFn }) {
           <li>
             Add a <code>webhooks</code> list to <code>{SERVE_CONFIG_PATH}</code>
             {" "}
-            (or the file you pass to <code>swamp serve --config</code>):
+            (or the file you pass to <code>swamp serve --config</code>).{" "}
+            {SERVE_CONFIG_CREATE_NOTE}
             <CopyableSnippet
               code={WEBHOOK_SNIPPET}
               label="serve.yaml"

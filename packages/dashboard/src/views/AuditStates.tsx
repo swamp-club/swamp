@@ -43,6 +43,10 @@ export const AUDIT_MANUAL_LINKS = [
 /** The default serve config path (`swamp serve --config`). */
 export const SERVE_CONFIG_PATH = ".swamp/serve.yaml";
 
+/** serve runs without the default file, so a new repo has none to edit. */
+export const SERVE_CONFIG_CREATE_NOTE =
+  "If the file doesn't exist yet, create it: serve runs without one, and this snippet is a complete file on its own:";
+
 /**
  * The smallest config that turns the audit log on. A store without `type`
  * and `config` uses the repo's shared datastore; serve logs a warning
@@ -212,7 +216,8 @@ export function AuditDisabledState({ copy }: { copy: CopyFn }) {
           <li>
             Add an <code>audit</code> block to <code>{SERVE_CONFIG_PATH}</code>
             {" "}
-            (or the file you pass to <code>swamp serve --config</code>):
+            (or the file you pass to <code>swamp serve --config</code>).{" "}
+            {SERVE_CONFIG_CREATE_NOTE}
             <CopyableSnippet
               code={AUDIT_CONFIG_SNIPPET}
               label="serve.yaml"

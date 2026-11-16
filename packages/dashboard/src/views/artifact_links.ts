@@ -104,12 +104,33 @@ export interface SearchItem {
   tags?: Record<string, string>;
 }
 
+/** Workflow-scope data, such as a workflow's summary report, is named by its workflow. */
+export function isWorkflowOwned(row: SearchItem): boolean {
+  return row.modelType === "workflow";
+}
+
+/**
+ * The behavior names to filter data by; a workflow is not a behavior, so the
+ * server would refuse its name. The selected name stays while its rows load.
+ */
+export function behaviorFilterOptions(
+  rows: SearchItem[],
+  selected: string,
+): string[] {
+  const names = rows
+    .filter((row) => !isWorkflowOwned(row))
+    .map((row) => row.modelName);
+  return [
+    ...new Set([selected, ...names].filter((m): m is string => Boolean(m))),
+  ];
+}
+
 /**
  * The data page for a search row, or null when the row has no model page:
  * workflow-owned data, or a row whose owner name was never recorded.
  */
 export function dataRowLink(row: SearchItem): RouteState | null {
-  if (!row.modelName || row.modelType === "workflow") return null;
+  if (!row.modelName || isWorkflowOwned(row)) return null;
   return {
     view: "models",
     detail: { kind: "data", modelName: row.modelName, dataName: row.name },
