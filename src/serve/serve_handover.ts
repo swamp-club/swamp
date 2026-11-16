@@ -31,7 +31,6 @@ import { withStoreDeadline } from "./pending_run_owner.ts";
 
 const logger = getSwampLogger(["serve", "handover"]);
 
-/** the key a parked run's marker is kept under, listed by the new process */
 export const PARKED_RUN_PREFIX = "parked/";
 
 export function parkedRunKey(runId: string): string {
@@ -75,7 +74,6 @@ export class ServeHandover {
     this.#controller.abort();
   }
 
-  /** a run's handover; eventSeq reads the last seq its stream sent */
   forRun(eventSeq?: () => number): RunHandover {
     const instanceId = this.#instanceId;
     return {

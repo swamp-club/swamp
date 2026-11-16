@@ -35,7 +35,6 @@ export function handedOver(handover: RunHandover | undefined): boolean {
   return handover?.signal.aborted ?? false;
 }
 
-/** work left for the continuation: a job the walk never finished */
 export function hasUnfinishedWork(run: Pick<WorkflowRun, "jobs">): boolean {
   return run.jobs.some((job) =>
     job.status === "pending" || job.status === "running"

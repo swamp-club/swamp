@@ -30,7 +30,6 @@ export interface RolloutLanes<T> {
   /** a positive limit caps the lanes in flight; otherwise there is none */
   readonly limit: number | undefined;
   readonly signal?: AbortSignal;
-  /** a planned restart: no further lane starts, running lanes finish */
   readonly handover?: AbortSignal;
   start(lane: string): AsyncIterable<T>;
   /** read once the lane's stream has ended */

@@ -138,10 +138,6 @@ async function withRepo(fn: (repoDir: string) => Promise<void>): Promise<void> {
   }
 }
 
-/**
- * the old process: runs the workflow and begins its planned restart while the
- * first step runs, so the run parks once that step has finished
- */
 async function parkedRun(
   repoDir: string,
   workflow: Workflow,
@@ -241,7 +237,7 @@ Deno.test({
 
       const { runId, kinds } = await parkedRun(repoDir, workflow, markers);
 
-      // the parked event never reaches a client: it reattaches instead
+      // the engine ends the run parked, never completed
       assertEquals(kinds.includes("parked"), true);
       assertEquals(kinds.includes("completed"), false);
       assertEquals(await ranSteps(counter), ["first"]);

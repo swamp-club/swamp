@@ -2039,7 +2039,6 @@ export class WorkflowRun implements TriggerEvaluationContext {
     this.markContinuable(at);
   }
 
-  /** stopped by a planned restart at a step boundary, with nothing to re-run */
   get isParked(): boolean {
     return this._status === "interrupted" &&
       this._tags["interrupt_reason"] === SERVER_RESTART_REASON &&
@@ -2851,7 +2850,6 @@ export function isServeDrivenRun(
   return run.triggeringPrincipal !== undefined || run.instanceId !== undefined;
 }
 
-/** the interruption reason of a run a planned restart parked */
 export const SERVER_RESTART_REASON = "server_restart";
 
 const PARKED_BY_INSTANCE_TAG = "parked_by_instance";
