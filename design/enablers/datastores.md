@@ -5507,9 +5507,13 @@ or below that seq. **There's no local fold and no local partition rebuild.**
 - **One read model per copy:** a member's serve copy lives under its own
   checkout's `.swamp/`, as its read model does, so the read model an install
   checks is the only one that reads the copy's feed.
-- **Read grants:** a difference is filtered by what the caller may read now, as
-  the change feed is; a grant change reaches rows written since, and a whole
-  install (after a full base load, or past the horizon) reconciles the rest.
+- **Read grants:** whether a caller may read a base record follows its
+  partition, its key and the caller's grants (`baseRecordReadAccessOf`), never
+  the content a fold writes, so no fold can make a record a caller held
+  unreadable to them. A difference is filtered as the change feed is, and a
+  grant or rename change takes effect from then on in both. Neither deletes
+  what a copy already holds; a whole install (after a full base load, or past
+  the horizon) reconciles it, as it does today.
   - **Fallback to the full base load** when the difference's estimated rows
     exceed the whole base's.
 - **Asking serve's index:** serve keeps its newest commits uncompacted, so a

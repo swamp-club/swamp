@@ -352,3 +352,59 @@ Deno.test({
     });
   },
 });
+
+Deno.test({
+  name:
+    "datastore base partition: whether a caller sees a rewritten record follows its key and grants, never the content a fold wrote, as the feed decides it",
+  ...options,
+  fn: async () => {
+    await withServer([...writer(), ...bobReadsWebData()], async (server) => {
+      const { web } = partitionKeys(server);
+      const type = server.modelType.normalized;
+      const output =
+        `outputs/${type}/create/${server.model.id}-2026-01-01T00-00-00-000Z.yaml`;
+      const outputPut = (text: string) => ({
+        kind: "put",
+        intent: {
+          kind: "output.save",
+          model: { type, id: server.model.id },
+          outputId: "o",
+        },
+        key: output,
+        inline: btoa(text),
+      });
+      await commit(server, [...saveOps(server, "vpc", 1), outputPut("one")]);
+      await compactAll(server);
+      const keysOf = (json: Record<string, unknown>) =>
+        (json.entries as { kind: string; key?: string }[])
+          .filter((e) => e.kind === "record").map((e) => e.key);
+      const whole = await getJson(partitionUrl(server, web), "bob-token");
+      const first = whole.json.seq as number;
+      assertEquals(keysOf(whole.json).includes(output), false);
+      const point = await server.v3.commitStore.compactionPoint();
+
+      // the same keys written again, with other content
+      await commit(server, [...saveOps(server, "vpc", 2), outputPut("two")]);
+      const feed = await getJson(
+        `${server.url}/changes?cursor=${point}`,
+        "bob-token",
+      );
+      await compactAll(server);
+      const bob = await getJson(partitionUrl(server, web, first), "bob-token");
+      const alice = await getJson(
+        partitionUrl(server, web, first),
+        "alice-token",
+      );
+      // bob: never the output, before or after; alice: the rewrite
+      assertEquals(keysOf(bob.json).includes(output), false);
+      assert(keysOf(bob.json).some((k) => k?.includes("/vpc/2/")));
+      assert(keysOf(alice.json).includes(output));
+      // the feed held the same line: the commit writing the output is not bob's
+      assertEquals(
+        (feed.json.changes as unknown[]).length,
+        0,
+        "a commit with a record bob may not read is withheld whole",
+      );
+    });
+  },
+});

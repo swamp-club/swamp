@@ -277,3 +277,35 @@ Deno.test("callerReplyHeaders: a serve without authentication names no principal
     ],
   );
 });
+
+Deno.test("matchDatastoreRoute: the base index and a partition's base are their own routes, named by template", () => {
+  assertEquals(matchDatastoreRoute("/api/v1/datastore/ns/base/index"), {
+    kind: "base-index",
+    namespace: "ns",
+  });
+  assertEquals(matchDatastoreRoute("/api/v1/datastore/ns/base/partition"), {
+    kind: "base-partition",
+    namespace: "ns",
+  });
+  assertEquals(matchDatastoreRoute("/api/v1/datastore/ns/base"), {
+    kind: "base",
+    namespace: "ns",
+  });
+  for (
+    const path of [
+      "/api/v1/datastore/ns/base/other",
+      "/api/v1/datastore/ns/base/index/extra",
+      "/api/v1/datastore/ns/base/partition/p",
+    ]
+  ) {
+    assertEquals(matchDatastoreRoute(path), undefined, path);
+  }
+  assertEquals(
+    resolveHttpRoute("/api/v1/datastore/ns/base/index"),
+    "/api/v1/datastore/{namespace}/base/index",
+  );
+  assertEquals(
+    resolveHttpRoute("/api/v1/datastore/ns/base/partition"),
+    "/api/v1/datastore/{namespace}/base/partition",
+  );
+});
