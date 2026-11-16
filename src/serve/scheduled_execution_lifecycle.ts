@@ -78,6 +78,8 @@ export class ScheduledExecutionLifecycle<S extends LifecycleScheduler>
   readonly #deps: ScheduledExecutionLifecycleDeps<S>;
   #current: S | null = null;
   readonly #retiring = new Map<S, Promise<void>>();
+  /** the schedulers shutdown stopped, which may hold runs past the grace */
+  #stopped: S[] = [];
   #maxConcurrentRuns: number | undefined;
   #ranScheduler = false;
   #closed = false;
@@ -274,24 +276,49 @@ export class ScheduledExecutionLifecycle<S extends LifecycleScheduler>
     }
   }
 
-  async stop(): Promise<readonly StoppedTriggerRun[]> {
+  async stop(
+    abortGraceMs?: number,
+    cleanupGraceMs?: number,
+  ): Promise<readonly StoppedTriggerRun[]> {
     this.#closed = true;
+    // before the awaits: if one throws, the runs are still reported unsettled
+    this.#stopped = [
+      ...(this.#current ? [this.#current] : []),
+      ...this.#retiring.keys(),
+    ];
     await this.#starting;
     await this.#settleReplays();
     const current = this.#current;
     this.#current = null;
     const retiring = [...this.#retiring.entries()];
-    const results = await Promise.allSettled([
-      ...(current ? [current.stop()] : []),
-      ...retiring.map(([service]) => service.stop()),
+    this.#stopped = [
+      ...(current ? [current] : []),
+      ...retiring.map(([service]) => service),
+    ];
+    // a retirement waits for its scheduler to go idle, so it shares the grace
+    const retired = Promise.allSettled(
+      retiring.map(([, retirement]) => retirement),
+    );
+    const [results] = await Promise.all([
+      Promise.allSettled(
+        this.#stopped.map((service) =>
+          service.stop(abortGraceMs, cleanupGraceMs)
+        ),
+      ),
+      abortGraceMs === undefined
+        ? retired
+        : settleWithin(retired, abortGraceMs),
     ]);
-    await Promise.allSettled(retiring.map(([, retirement]) => retirement));
     const aborted: StoppedTriggerRun[] = [];
     for (const result of results) {
       if (result.status === "rejected") throw result.reason;
       for (const run of result.value) aborted.push(run);
     }
     return aborted;
+  }
+
+  hasUnsettledRuns(): boolean {
+    return this.#stopped.some((service) => service.hasUnsettledRuns());
   }
 
   #settleReplays(): Promise<void> {
@@ -319,6 +346,23 @@ export class ScheduledExecutionLifecycle<S extends LifecycleScheduler>
     } finally {
       boundDone.abort();
     }
+  }
+}
+
+async function settleWithin(
+  promise: Promise<unknown>,
+  timeoutMs: number,
+): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      promise,
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
   }
 }
 

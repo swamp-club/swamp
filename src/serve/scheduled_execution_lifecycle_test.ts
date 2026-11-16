@@ -54,11 +54,19 @@ class FakeScheduler implements LifecycleScheduler {
   }
 
   aborted: StoppedTriggerRun[] = [];
+  readonly graces: (number | undefined)[] = [];
+  /** its runs go on after the abort, as a method that ignores it does */
+  ignoresAbort = false;
 
-  stop(): Promise<readonly StoppedTriggerRun[]> {
+  stop(abortGraceMs?: number): Promise<readonly StoppedTriggerRun[]> {
     this.calls.push("stop");
-    this.finish();
+    this.graces.push(abortGraceMs);
+    if (!this.ignoresAbort) this.finish();
     return Promise.resolve(this.aborted);
+  }
+
+  hasUnsettledRuns(): boolean {
+    return this.busy.size > 0;
   }
 
   startCatchUp(): void {
@@ -388,6 +396,25 @@ Deno.test("ScheduledExecutionLifecycle: stop returns the runs every scheduler ab
   await off;
 
   assertEquals(aborted.map((run) => run.runId).sort(), ["new-1", "old-1"]);
+});
+
+Deno.test("ScheduledExecutionLifecycle: stop passes the abort grace to every scheduler, and a retiring one whose run ignores the abort holds it no longer than that", async () => {
+  const h = harness();
+  await h.lifecycle.turnOn(undefined);
+  const retiring = h.built[0];
+  retiring.run("nightly");
+  retiring.ignoresAbort = true;
+  await h.lifecycle.turnOff();
+  await h.lifecycle.turnOn(undefined);
+  const current = h.built[1];
+
+  await h.lifecycle.stop(10);
+
+  assertEquals(retiring.graces, [10]);
+  assertEquals(current.graces, [10]);
+  assertEquals(h.lifecycle.hasUnsettledRuns(), true);
+  retiring.finish();
+  assertEquals(h.lifecycle.hasUnsettledRuns(), false);
 });
 
 function heldReplayHarness(

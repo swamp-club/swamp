@@ -18,13 +18,21 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import { waitFor } from "@swamp-club/swamp-testing";
 import {
+  cleanupGraceWithin,
   type DrainableRunRegistry,
   type DrainableTriggerSource,
   runShutdownDrain,
+  SHUTDOWN_ABORT_MESSAGE,
   type StoppedTriggerRun,
 } from "./shutdown_drain.ts";
 import type { ActiveRun } from "./active_run_registry.ts";
+import {
+  isInterruption,
+  RunInterruption,
+} from "../domain/workflows/run_interruption.ts";
+import { CLEANUP_GRACE_TIMEOUT_MS } from "../domain/models/cancel_cause.ts";
 import { RunEventBuffer } from "./run_event_buffer.ts";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 
@@ -42,9 +50,21 @@ class FakeSource implements DrainableTriggerSource {
     return this.drainImpl();
   }
   aborted: StoppedTriggerRun[] = [];
-  stop(): Promise<readonly StoppedTriggerRun[]> {
+  graces: (number | undefined)[] = [];
+  cleanupGraces: (number | undefined)[] = [];
+  stopGate: Promise<void> = Promise.resolve();
+  stop(
+    abortGraceMs?: number,
+    cleanupGraceMs?: number,
+  ): Promise<readonly StoppedTriggerRun[]> {
     this.log.push(`${this.name}.stop`);
-    return Promise.resolve(this.aborted);
+    this.graces.push(abortGraceMs);
+    this.cleanupGraces.push(cleanupGraceMs);
+    return this.stopGate.then(() => this.aborted);
+  }
+  unsettled = false;
+  hasUnsettledRuns(): boolean {
+    return this.unsettled;
   }
 }
 
@@ -246,4 +266,133 @@ Deno.test("runShutdownDrain: a source whose stop fails contributes no runs and t
   });
 
   assertEquals(aborted.map((run) => run.runId), ["cron-1"]);
+});
+
+Deno.test("runShutdownDrain: aborts registry runs as an interruption, so the run is continued rather than cleaned up", async () => {
+  const log: string[] = [];
+  const run = fakeRun("r1");
+
+  await runShutdownDrain({
+    webhookService: null,
+    scheduledExecution: null,
+    activeRunRegistry: new FakeRegistry(log, [run]),
+    drainTimeoutMs: 0,
+    abortGraceMs: 5_000,
+  });
+
+  assertEquals(isInterruption(run.controller.signal), true);
+});
+
+Deno.test("runShutdownDrain: stops both sources with the abort grace and aborts the registry runs alongside, not after them", async () => {
+  const log: string[] = [];
+  const run = fakeRun("r1");
+  const webhooks = new FakeSource(log, "webhooks");
+  const schedules = new FakeSource(log, "schedules");
+  const stopping = Promise.withResolvers<void>();
+  webhooks.stopGate = stopping.promise;
+  schedules.stopGate = stopping.promise;
+
+  const done = runShutdownDrain({
+    webhookService: webhooks,
+    scheduledExecution: schedules,
+    activeRunRegistry: new FakeRegistry(log, [run]),
+    drainTimeoutMs: 0,
+    abortGraceMs: 5_000,
+  });
+  await waitFor(
+    () => log.includes("registry.drainAll(5000)"),
+    "the registry's abort grace",
+  );
+  assertEquals(run.controller.signal.aborted, true);
+  stopping.resolve();
+  await done;
+
+  assertEquals(webhooks.graces, [5_000]);
+  assertEquals(schedules.graces, [5_000]);
+});
+
+Deno.test("runShutdownDrain: a registry run a user cancelled first keeps its cancel reason, is waited for up to one cleanup grace more, and is reported for settling only if it outlasts that", async () => {
+  for (const finishes of [false, true]) {
+    const log: string[] = [];
+    const cancelled = fakeRun("cancelled-1");
+    cancelled.controller.abort(new Error("cancelled by user:alice"));
+    const live = fakeRun("live-1");
+    const registry: FakeRegistry = new FakeRegistry(
+      log,
+      [cancelled, live],
+      () => {
+        if (finishes) registry.finishAll();
+        return Promise.resolve();
+      },
+    );
+
+    const aborted = await runShutdownDrain({
+      webhookService: null,
+      scheduledExecution: null,
+      activeRunRegistry: registry,
+      drainTimeoutMs: 0,
+      abortGraceMs: 5_000,
+    });
+
+    assertEquals(isInterruption(cancelled.controller.signal), false);
+    assertEquals(isInterruption(live.controller.signal), true);
+    assertEquals(log, [
+      `registry.drainAll(${CLEANUP_GRACE_TIMEOUT_MS + 5_000})`,
+    ]);
+    assertEquals(
+      aborted.map((run) => [run.runId, run.cancelledBeforeShutdown]),
+      finishes
+        ? [["live-1", undefined]]
+        : [["live-1", undefined], ["cancelled-1", {
+          reason: "cancelled by user:alice",
+        }]],
+      finishes ? "finished" : "outlasted",
+    );
+  }
+});
+
+Deno.test("cleanupGraceWithin: what is left of the deadline less the reserve, at most the cleanup grace and never negative", () => {
+  assertEquals(cleanupGraceWithin(22_000, 10_000), 12_000);
+  assertEquals(cleanupGraceWithin(120_000, 10_000), CLEANUP_GRACE_TIMEOUT_MS);
+  assertEquals(cleanupGraceWithin(4_000, 10_000), 0);
+});
+
+Deno.test("runShutdownDrain: reads the cleanup grace once the drain ends and hands it to every source and the registry wait", async () => {
+  const log: string[] = [];
+  const gate = Promise.withResolvers<void>();
+  let drained = false;
+  const cancelled = fakeRun("cancelled-1");
+  cancelled.controller.abort(new Error("cancelled by user"));
+  const webhooks = new FakeSource(log, "webhooks", async () => {
+    await gate.promise;
+    drained = true;
+  });
+  const schedules = new FakeSource(log, "schedules");
+  const readAtDrainEnd: boolean[] = [];
+
+  const done = runShutdownDrain({
+    webhookService: webhooks,
+    scheduledExecution: schedules,
+    activeRunRegistry: new FakeRegistry(log, [cancelled]),
+    drainTimeoutMs: 45_000,
+    abortGraceMs: 5_000,
+    cleanupGraceMs: () => {
+      readAtDrainEnd.push(drained);
+      return 1_000;
+    },
+  });
+  gate.resolve();
+  await done;
+
+  assertEquals(readAtDrainEnd, [true]);
+  assertEquals(webhooks.cleanupGraces, [1_000]);
+  assertEquals(schedules.cleanupGraces, [1_000]);
+  assertEquals(log.includes("registry.drainAll(6000)"), true);
+});
+
+Deno.test("runShutdownDrain: the shutdown interruption carries the message that tells it from a user cancel", () => {
+  assertEquals(
+    new RunInterruption("server_shutdown").message,
+    SHUTDOWN_ABORT_MESSAGE,
+  );
 });

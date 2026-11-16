@@ -27,6 +27,7 @@ import {
 } from "../domain/vaults/run_vault_access.ts";
 import type { ServeRunVaultScope } from "./run_vault_access_policy.ts";
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import { isInterruption } from "../domain/workflows/run_interruption.ts";
 import { z } from "zod";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { propagation, type Span, trace } from "@opentelemetry/api";
@@ -2041,6 +2042,39 @@ Deno.test("WebhookService.stop: reports the run it aborted, with the server shut
     ["run-1", "deploy"],
   ]);
   assertEquals(aborted[0].startedAt instanceof Date, true);
+});
+
+Deno.test("WebhookService.stop: with an abort grace, a run that ignores the abort is reported as an interruption and left in flight", async () => {
+  const gate = Promise.withResolvers<void>();
+  const signals: AbortSignal[] = [];
+  const executeWorkflow = ((
+    _repoDir: string,
+    _repoContext: unknown,
+    _datastoreConfig: unknown,
+    _input: unknown,
+    signal: AbortSignal,
+    onEvent: (event: unknown) => void,
+  ) => {
+    signals.push(signal);
+    onEvent({ kind: "started", runId: "run-1", workflowName: "deploy" });
+    return gate.promise;
+  }) as unknown as NonNullable<
+    ConstructorParameters<typeof WebhookService>[0]["executeWorkflow"]
+  >;
+  const { service, events } = await triggerService({ executeWorkflow });
+  await service.handleRequest(await signedDelivery("{}"));
+  await waitFor(
+    () => events.some((e) => e.kind === "webhook_started"),
+    "run started",
+  );
+
+  const aborted = await service.stop(10);
+
+  assertEquals(isInterruption(signals[0]), true);
+  assertEquals(aborted.map((run) => run.runId), ["run-1"]);
+  assertEquals(service.hasUnsettledRuns(), true);
+  gate.resolve();
+  await waitFor(() => !service.hasUnsettledRuns(), "the run settles");
 });
 
 Deno.test("WebhookService.stop: leaves out a run cancelled first, so it stays cancelled", async () => {

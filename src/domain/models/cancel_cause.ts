@@ -21,6 +21,12 @@ export const TIMED_OUT_CAUSE = "timed out";
 
 export const CLEANUP_GRACE_EXPIRED_CAUSE = "cleanup grace expired";
 
+/**
+ * cleanup steps run with a fresh signal bounded by this timeout so they cannot
+ * hang indefinitely
+ */
+export const CLEANUP_GRACE_TIMEOUT_MS = 30_000;
+
 const cleanupGraceSignals = new WeakSet<AbortSignal>();
 
 /**

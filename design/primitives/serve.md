@@ -1850,7 +1850,24 @@ run, up to `--max-concurrent-webhook-runs`), cron (every in-flight
 scheduled run, up to `--max-concurrent-scheduled-runs`) and API runs then drain
 together against one `--shutdown-drain-timeout` deadline (default 30 s,
 `runShutdownDrain` in `src/serve/shutdown_drain.ts`); whatever is left is
-aborted and gets 5 s more. It marks aborted workflow runs
+aborted, webhook, cron and API runs at once, and all share 5 s more
+(`SHUTDOWN_ABORT_GRACE_MS`): the webhook and scheduler services' `stop()` wait
+no longer than that, and a run still going after it is reported anyway and
+keeps the v3 writer markers. A run a user cancelled before the shutdown, from
+any of the three sources, is still running its cleanup: while one is in flight
+its source waits longer (`stopGraceFor`): up to the cleanup grace (30 s), but
+never more than what is left of the shutdown deadline once the drain ends, less
+the 5 s abort grace and the 5 s interrupted-run push (`cleanupGraceWithin`), so
+shutdown still fits the pod grace period. Such a run is never marked
+`interrupted`. A cleanup that
+outlasts the wait is cut off, and the source reports the run as
+`cancelledBeforeShutdown`, so `interruptShutdownRuns` saves its record
+`cancelled` (behind the same write fence) rather than leaving it `running` for
+the next boot to reap as crashed and offer for recovery. The abort is a `RunInterruption`
+(`src/domain/workflows/run_interruption.ts`), not a cancellation: the run is
+to be continued, so no `always`, `completed` or `failed` cleanup step or job
+starts, work the abort never started is settled for the resume to reopen, and
+the in-flight step is stopped (swamp-club#4763). It marks aborted workflow runs
 `interrupted("server_shutdown")` in the run repository and, on a remote
 datastore, pushes those records under the shared sync gate
 (`interruptShutdownRuns` in `src/serve/shutdown_interrupt.ts`,
@@ -1881,7 +1898,10 @@ abort signal, a listing does not and is cut off by the 15 s bound, and once
 aborted the replay queues and deletes nothing, so the runs stay pending for
 the next start (swamp-club#4660).
 The fence covers the top-level runs shutdown interrupts, not the child runs of
-nested workflows, which shutdown does not track. One 5 s deadline bounds the
+nested workflows, which shutdown does not track. A child run in flight takes
+its parent's interruption, so it starts no cleanup either, but it ends
+`cancelled` rather than `interrupted`, and the parent's resume re-runs its
+workflow step as a new child: the cut-off child's cleanup never runs. One 5 s deadline bounds the
 gate wait and the push together;
 a push that fails or misses it is logged as a warning, and the datastore keeps
 the run's last pushed status until a later write settles it. On a v3

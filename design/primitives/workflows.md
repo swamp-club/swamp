@@ -4470,8 +4470,11 @@ When a workflow is cancelled (by `--timeout`, Ctrl+C, or `swamp workflow
 cancel`), steps with `always`, `completed` or `failed` dependency conditions
 still run, whether the cancellation stopped an in-flight step, interrupted a
 level, or found every step so far finished successfully, so cleanup branches
-(notifications, resource teardown, metric reporting, rollback) can run. The
-engine evaluates the remaining steps in topological order:
+(notifications, resource teardown, metric reporting, rollback) can run. A
+serve shutdown is not a cancellation: its abort interrupts the run, which is
+continued later, so none of these cleanup steps starts (see Rolling restart in
+[serve](serve.md)). The engine evaluates the remaining steps in topological
+order:
 
 - Steps whose dependency conditions are met run with a fresh 30-second cleanup
   signal. `always` is true unconditionally; `completed` is true when the

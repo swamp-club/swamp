@@ -24,6 +24,15 @@
  */
 
 import type { ActiveRun } from "./active_run_registry.ts";
+import {
+  isInterruption,
+  RunInterruption,
+  stopGraceFor,
+} from "../domain/workflows/run_interruption.ts";
+import {
+  cancelCause,
+  CLEANUP_GRACE_TIMEOUT_MS,
+} from "../domain/models/cancel_cause.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 
 const logger = getSwampLogger(["serve", "shutdown"]);
@@ -37,17 +46,33 @@ export interface StoppedTriggerRun {
   readonly workflowId?: string;
   readonly workflowName: string;
   readonly startedAt: Date;
+  /** set when a user cancelled it first: shutdown settles it, never interrupts it */
+  readonly cancelledBeforeShutdown?: CancelledBeforeShutdown;
+}
+
+/** a run a user cancelled before shutdown, still running its cleanup when the wait ended */
+export interface CancelledBeforeShutdown {
+  readonly reason?: string;
 }
 
 export interface DrainableTriggerSource {
   drain(timeoutMs: number): Promise<void>;
-  /** the runs it aborted, leaving out any already cancelled on purpose */
-  stop(): Promise<readonly StoppedTriggerRun[]>;
+  /**
+   * the runs it aborted, and the cancelled ones still running; waits at most
+   * stopGraceFor's bound when abortGraceMs is given
+   */
+  stop(
+    abortGraceMs?: number,
+    cleanupGraceMs?: number,
+  ): Promise<readonly StoppedTriggerRun[]>;
+  /** a run stop() aborted is still going, so it may still be writing */
+  hasUnsettledRuns(): boolean;
 }
 
 export type ShutdownAbortedRun =
   & Pick<ActiveRun, "runId" | "kind" | "resourceName" | "startedAt">
-  & Partial<Pick<ActiveRun, "resourceId">>;
+  & Partial<Pick<ActiveRun, "resourceId">>
+  & { readonly cancelledBeforeShutdown?: CancelledBeforeShutdown };
 
 export interface DrainableRunRegistry {
   readonly size: number;
@@ -63,12 +88,26 @@ export interface DrainableRunRegistry {
  */
 export const SHUTDOWN_ABORT_GRACE_MS = 5_000;
 
+/**
+ * the extra wait a cancelled run's cleanup gets, from what is left of the
+ * shutdown deadline once the drain ends, less what the stages after the drain
+ * need, so the wait never carries shutdown past its deadline
+ */
+export function cleanupGraceWithin(leftMs: number, reservedMs: number): number {
+  return Math.max(0, Math.min(CLEANUP_GRACE_TIMEOUT_MS, leftMs - reservedMs));
+}
+
 export interface ShutdownDrainDeps {
   readonly webhookService: DrainableTriggerSource | null;
   readonly scheduledExecution: DrainableTriggerSource | null;
   readonly activeRunRegistry: DrainableRunRegistry | null;
   readonly drainTimeoutMs: number;
   readonly abortGraceMs: number;
+  /**
+   * read once the drain ends: how long a cancelled run's cleanup may extend
+   * the wait; the engine's cleanup grace when unset
+   */
+  readonly cleanupGraceMs?: () => number;
   readonly onAborting?: (undrained: number) => void;
 }
 
@@ -119,28 +158,63 @@ export async function runShutdownDrain(
     }
   });
 
-  const stopped = [
-    ...await stopSource("webhooks", webhookService),
-    ...await stopSource("schedules", scheduledExecution),
-  ];
-
-  const remaining = activeRunRegistry?.list() ?? [];
+  // every source is aborted at once, so all share the one abort grace
+  const registered = activeRunRegistry?.list() ?? [];
+  // a run a user cancelled first stays cancelled and its cleanup is waited for,
+  // as the trigger sources' stop does
+  const cleanupGraceMs = deps.cleanupGraceMs?.();
+  const registryWait = stopGraceFor(
+    registered,
+    deps.abortGraceMs,
+    cleanupGraceMs,
+  );
+  const remaining = registered.filter((run) => !run.controller.signal.aborted);
   if (remaining.length > 0) {
     deps.onAborting?.(remaining.length);
     logger.info`Aborting ${remaining.length} undrained run(s)...`;
     for (const run of remaining) {
-      run.controller.abort(new Error(SHUTDOWN_ABORT_MESSAGE));
+      run.controller.abort(new RunInterruption("server_shutdown"));
     }
-    await activeRunRegistry!.drainAll(deps.abortGraceMs);
   }
+  const [webhookRuns, scheduledRuns] = await Promise.all([
+    stopSource("webhooks", webhookService, deps.abortGraceMs, cleanupGraceMs),
+    stopSource(
+      "schedules",
+      scheduledExecution,
+      deps.abortGraceMs,
+      cleanupGraceMs,
+    ),
+    registered.length > 0
+      ? activeRunRegistry!.drainAll(registryWait)
+      : Promise.resolve(),
+  ]);
+  const stopped = [...webhookRuns, ...scheduledRuns];
+  const stillRegistered = new Set(
+    (activeRunRegistry?.list() ?? []).map((run) => run.runId),
+  );
+  const cancelledLeft = registered.filter((run) =>
+    run.controller.signal.aborted && !isInterruption(run.controller.signal) &&
+    stillRegistered.has(run.runId)
+  );
   return [
     ...remaining,
+    ...cancelledLeft.map((run): ShutdownAbortedRun => ({
+      runId: run.runId,
+      kind: run.kind,
+      resourceName: run.resourceName,
+      ...(run.resourceId !== undefined ? { resourceId: run.resourceId } : {}),
+      startedAt: run.startedAt,
+      cancelledBeforeShutdown: { reason: cancelCause(run.controller.signal) },
+    })),
     ...stopped.map((run): ShutdownAbortedRun => ({
       runId: run.runId,
       kind: "workflow-run",
       resourceName: run.workflowName,
       ...(run.workflowId !== undefined ? { resourceId: run.workflowId } : {}),
       startedAt: run.startedAt,
+      ...(run.cancelledBeforeShutdown
+        ? { cancelledBeforeShutdown: run.cancelledBeforeShutdown }
+        : {}),
     })),
   ];
 }
@@ -148,10 +222,12 @@ export async function runShutdownDrain(
 async function stopSource(
   name: string,
   source: DrainableTriggerSource | null,
+  abortGraceMs: number,
+  cleanupGraceMs: number | undefined,
 ): Promise<readonly StoppedTriggerRun[]> {
   if (!source) return [];
   try {
-    return await source.stop();
+    return await source.stop(abortGraceMs, cleanupGraceMs);
   } catch (error) {
     logger.warn("Stopping {source} failed: {error}", {
       source: name,
