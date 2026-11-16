@@ -100,6 +100,31 @@ function batchLanes(events: AnyEvent[]): string[][] {
   );
 }
 
+// a lane started past a halt holds its dispatch with no timeout; releasing the
+// held lanes lets the run settle so the dispatch counts name the extra lane
+async function settleOrRelease<T>(
+  running: Promise<T>,
+  held: FleetWorker[],
+  ms = 60_000,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<"timed out">((resolve) => {
+    timer = setTimeout(() => resolve("timed out"), ms);
+  });
+  try {
+    const first = await Promise.race([
+      running.then(() => "settled" as const),
+      timedOut,
+    ]);
+    if (first === "timed out") {
+      for (const worker of held) worker.release(true);
+    }
+    return await running;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function recordOf(fleet: Fleet, name: string, runId: string) {
   const workflow = await fleet.repoContext.workflowRepo.findByName(name);
   return await fleet.runRecord(workflow!, runId);
@@ -246,10 +271,20 @@ Deno.test({
         { concurrency: 2 },
       )],
     });
-    const running = fleet.runWorkflow("budget");
-    await waitFor(() => w[4].heldCount === 1, "w-5 in flight");
+    const events: WorkflowRunEvent[] = [];
+    const running = fleet.runWorkflow("budget", { events });
+    const failedLanes = () =>
+      events.flatMap((e) =>
+        e.kind === "step_failed" && e.jobId === "patch" ? [e.stepId] : []
+      ).sort();
+    // w-5 settling before the third failure is counted would start w-6
+    await waitFor(
+      () => failedLanes().length === 3 && w[4].heldCount === 1,
+      "the three failures counted with w-5 in flight",
+    );
+    assertEquals(failedLanes(), ["apply[w-2]", "apply[w-3]", "apply[w-4]"]);
     w[4].release(true);
-    const run = await running;
+    const run = await settleOrRelease(running, w.slice(4));
 
     assertEquals(run.status, "failed");
     assertEquals(
