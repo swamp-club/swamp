@@ -168,7 +168,7 @@ export const READ_MODEL_LOCK_FILE = "read_model.lock";
 const CLOSE_WAIT_MS = 500;
 
 /** a longer tail is replayed in full rather than held in memory to be netted */
-export const TAIL_NET_MAX_COMMITS = 20_000;
+export const TAIL_NET_MAX_COMMITS = 5_000;
 /** a shorter tail, a write's own catch-up among them, is never read twice to be netted */
 export const TAIL_NET_MIN_COMMITS = 16;
 
@@ -526,6 +526,8 @@ export class SqliteReadModel implements ReadModel {
    * meets first is netted with the tail after it
    */
   #netBase = false;
+  /** pages the tail net plan read, applied before the store is read again */
+  #readAhead: (readonly CommitChange[])[] = [];
   readonly #paths = new PathCache();
   /** set when this section reset the state, which a targeted recovery cannot build on */
   #resetInSection = false;
@@ -1535,6 +1537,7 @@ export class SqliteReadModel implements ReadModel {
     } finally {
       this.#net = undefined;
       this.#netBase = false;
+      this.#readAhead = [];
     }
   }
 
@@ -1598,11 +1601,15 @@ export class SqliteReadModel implements ReadModel {
           signal.throwIfAborted();
           let page;
           try {
-            page = await this.#commitStore.changesSince(cursor, this.#pageSize);
+            page = await this.#time(
+              "feed",
+              () => this.#commitStore.changesSince(cursor, this.#pageSize),
+            );
           } catch (error) {
             if (error instanceof CommitsCompactedError) return undefined;
             throw error;
           }
+          this.#readAhead.push(page);
           for (const change of page) {
             tail.push({
               namespace: change.commit.namespace,
@@ -1617,40 +1624,35 @@ export class SqliteReadModel implements ReadModel {
         }
         span.setAttribute("swamp.datastore.v3.commits", tail.length);
         if (tail.length < 2) return undefined;
+        // a write at or below a recorded mark is kept off disk skipped or not, so no seeding
         const planner = this.#netPlanner();
-        const allowed = new Set<string>();
+        for (const commit of tail) planner.add(commit);
+        const plan = planner.finish(() => true);
+        // only a key with a write to skip is looked at on disk
+        const judged = new Map<string, boolean>();
+        let skippable = 0;
         for (const commit of tail) {
           for (const change of commit.changes) {
             const key = change.key.toString();
-            const id = `${commit.namespace}\0${key}`;
-            if (allowed.has(id) || planner.ignored(commit.namespace, key)) {
+            if (
+              change.put === null ||
+              !plan.skipsWrite(commit.namespace, key, commit.position)
+            ) {
               continue;
             }
-            // a write at or below a recorded mark is kept off disk skipped or not, so no seeding
-            if (
-              this.#state.fileOwnership(commit.namespace, key) !== undefined ||
-              await this.#nothingAt(commit.namespace, key)
-            ) {
-              allowed.add(id);
+            const id = `${commit.namespace}\0${key}`;
+            let owned = judged.get(id);
+            if (owned === undefined) {
+              owned = this.#state.fileOwnership(commit.namespace, key) !==
+                  undefined || await this.#nothingAt(commit.namespace, key);
+              judged.set(id, owned);
             }
+            if (owned) skippable++;
           }
         }
-        for (const commit of tail) planner.add(commit);
-        const plan = planner.finish(() => true);
-        let skippable = 0;
         const skips = (namespace: string, key: string, position: number) =>
-          allowed.has(`${namespace}\0${key}`) &&
+          judged.get(`${namespace}\0${key}`) === true &&
           plan.skipsWrite(namespace, key, position);
-        for (const commit of tail) {
-          for (const change of commit.changes) {
-            if (
-              change.put !== null &&
-              skips(commit.namespace, change.key.toString(), commit.position)
-            ) {
-              skippable++;
-            }
-          }
-        }
         span.setAttributes({
           "swamp.datastore.v3.bound": plan.bound,
           "swamp.datastore.v3.writes_skippable": skippable,
@@ -1755,7 +1757,7 @@ export class SqliteReadModel implements ReadModel {
       signal.throwIfAborted();
       let page;
       try {
-        page = await this.#time(
+        page = this.#readAhead.shift() ?? await this.#time(
           "feed",
           () =>
             this.#commitStore.changesSince(

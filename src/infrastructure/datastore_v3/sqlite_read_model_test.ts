@@ -3635,3 +3635,46 @@ Deno.test("SqliteReadModel.catchUp: a tail over files on disk skips a key's repl
     }
   });
 });
+
+Deno.test("SqliteReadModel.catchUp: a netted tail reads each of its commits from the store once", async () => {
+  await withEnv(async (env) => {
+    await env.append(1, "", [await savePut("a", 1), versionOp("a", 1)]);
+    const readModel = env.open();
+    try {
+      await readModel.catchUp(signal());
+      const tail = TAIL_NET_MIN_COMMITS + 4;
+      for (let seq = 2; seq < 2 + tail; seq++) {
+        await env.append(seq, "", [
+          await savePut("a", 1, `a@${seq}`, undefined, "data.append"),
+          versionOp("a", 1),
+        ]);
+      }
+      let read = 0;
+      const original = env.store.changesSince;
+      env.store.changesSince = async (cursor, limit) => {
+        const page = await original.call(env.store, cursor, limit);
+        read += page.length;
+        return page;
+      };
+      try {
+        await withCapturedSpans(async (spans) => {
+          await readModel.catchUp(signal());
+          const span = findSpan(spans, "swamp.datastore.v3.readmodel.catchup");
+          assertEquals(
+            span.attributes["swamp.datastore.v3.writes_skipped"],
+            tail - 1,
+          );
+        });
+      } finally {
+        env.store.changesSince = original;
+      }
+      assertEquals(read, tail);
+      assertEquals(
+        await readOrAbsent(env.contentPath("", "a", 1)),
+        `a@${1 + tail}`,
+      );
+    } finally {
+      await readModel.close();
+    }
+  });
+});
