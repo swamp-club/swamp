@@ -182,7 +182,7 @@ async function runWorkerFrom(
     const ignoredPath = new URL(options.dataPlaneUrl).pathname;
     if (ignoredPath !== "/") {
       logger.warn(
-        "--data-plane-url path {path} is ignored: only its origin is used, and the data plane follows the path prefix serve declares",
+        "--data-plane-url path {path} is ignored: only its origin is used",
         { path: ignoredPath },
       );
     }
