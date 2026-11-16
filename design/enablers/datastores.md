@@ -6591,10 +6591,11 @@ leader election and followers").
   index, so the command removes the run indexes, as a recovery does once it has
   run: its replay puts back the committed run records, and an index only
   repairs itself when its count of runs differs. An interrupted writer's
-  recovery marks them for repair instead (`markRunIndexesForRepair`, a
-  `.runs-index.repair` beside each index that reads as damaged until the index
-  is written whole), so the next read stats every record and reads only those
-  whose fingerprint changed, rather than rebuilding from every record.
+  recovery parks them for repair instead (`markRunIndexesForRepair` renames
+  each to `.runs-index.repair.json`): an older swamp finds no index and
+  rebuilds, as before, while this one reads the parked index as damaged, stats
+  every record and reads only those changed, written or removed since, then
+  writes the index back, rather than rebuilding from every record.
 - A command cut off from the storage before it changed anything fails with a
   stable code and exits 75 (swamp-club#3802), when the failure passes the same
   `isNetworkFailure` test (which also counts a connection lost while a response

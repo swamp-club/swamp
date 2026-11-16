@@ -6389,29 +6389,48 @@ Deno.test("YamlWorkflowRunRepository.isRunDamaged: a realistic record cut short 
   });
 });
 
-Deno.test("markRunIndexesForRepair: the next read checks the index against its records, reading only the changed ones, and never rebuilds it", async () => {
+Deno.test("markRunIndexesForRepair: the index is parked where an older swamp sees none, and the next read repairs it from the records that changed, appeared or went, never rebuilding", async () => {
   await withTempDir(async (dir) => {
     const repo = new YamlWorkflowRunRepository(dir);
     const workflow = createTestWorkflow();
-    const run = WorkflowRun.create(workflow);
-    run.start();
-    await repo.save(workflow.id, run);
+    const changed = WorkflowRun.create(workflow);
+    changed.start();
+    await repo.save(workflow.id, changed);
     const runningRecord = await Deno.readTextFile(
-      repo.getPath(workflow.id, run.id),
+      repo.getPath(workflow.id, changed.id),
     );
-    run.interruptOrphaned("test", []);
-    await repo.save(workflow.id, run);
-    await replaceRecord(repo, workflow.id, run, runningRecord);
-    // the index still says interrupted and its count agrees: it is trusted
-    assertEquals((await repo.findGlobalByStatus("running")).length, 0);
+    changed.interruptOrphaned("test", []);
+    await repo.save(workflow.id, changed);
+    const removed = WorkflowRun.create(workflow);
+    removed.start();
+    await repo.save(workflow.id, removed);
+    const indexDir = join(dir, ".swamp", "workflow-runs", workflow.id);
 
     await markRunIndexesForRepair(dir);
-    const indexDir = join(dir, ".swamp", "workflow-runs", workflow.id);
-    assertEquals((await readRunIndex(indexDir))?.damaged, true);
+    // an older swamp finds no index and rebuilds from every record
+    assertEquals(
+      await Deno.lstat(getIndexPath(indexDir)).then(() => true, () => false),
+      false,
+    );
+    // behind the parked index: one record changed, one written, one removed,
+    // as a writer killed mid-save, mid-create or mid-delete leaves them
+    await replaceRecord(repo, workflow.id, changed, runningRecord);
+    const added = WorkflowRun.create(workflow);
+    added.start();
+    const created = new YamlWorkflowRunRepository(join(dir, "elsewhere"));
+    await created.save(workflow.id, added);
+    await Deno.copyFile(
+      created.getPath(workflow.id, added.id),
+      repo.getPath(workflow.id, added.id),
+    );
+    await Deno.remove(repo.getPath(workflow.id, removed.id));
 
     await withCapturedSpans(async (spans) => {
       const running = await repo.findGlobalByStatus("running");
-      assertEquals(running.map((found) => found.run.id), [run.id]);
+      assertEquals(
+        running.map((found) => found.run.id).sort(),
+        [added.id, changed.id].sort(),
+      );
       assertEquals(
         spans.some((span) => span.name === "swamp.workflow_runs.index.rebuild"),
         false,
@@ -6421,6 +6440,12 @@ Deno.test("markRunIndexesForRepair: the next read checks the index against its r
         true,
       );
     });
+    const index = await readRunIndex(indexDir);
+    assertEquals(index?.damaged, undefined);
+    assertEquals(
+      Object.keys(index?.entries ?? {}).sort(),
+      [added.id, changed.id].sort(),
+    );
     assertEquals(
       await Deno.lstat(join(indexDir, RUNS_INDEX_REPAIR_FILENAME)).then(
         () => true,
@@ -6428,6 +6453,5 @@ Deno.test("markRunIndexesForRepair: the next read checks the index against its r
       ),
       false,
     );
-    assertEquals((await readRunIndex(indexDir))?.damaged, undefined);
   });
 });

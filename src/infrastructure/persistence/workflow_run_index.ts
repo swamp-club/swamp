@@ -27,8 +27,11 @@ import { inTimeSlices } from "./scan_permits.ts";
 
 export const RUNS_INDEX_FILENAME = ".runs-index.json";
 export const RUNS_INDEX_LOCK_FILENAME = ".runs-index.lock";
-/** beside an index whose entries may be stale: its next read repairs it */
-export const RUNS_INDEX_REPAIR_FILENAME = ".runs-index.repair";
+/**
+ * an index parked while its entries may be stale: a swamp that knows it seeds
+ * a repair from it, an older one finds no index and rebuilds
+ */
+export const RUNS_INDEX_REPAIR_FILENAME = ".runs-index.repair.json";
 
 // Bump when WorkflowRunIndexEntry gains or removes fields so that
 // old on-disk indices are rebuilt instead of serving stale data.
@@ -138,9 +141,9 @@ export async function removeRunIndexes(
 }
 
 /**
- * each index is checked against its records on its next read, which stats
- * them all and reads only those that changed; one that cannot be marked is
- * removed instead, and rebuilt from every record
+ * each index is parked, then checked against its records on its next read,
+ * which stats them all and reads only those that changed or are new; one that
+ * cannot be parked is removed instead, and rebuilt from every record
  */
 export async function markRunIndexesForRepair(repoDir: string): Promise<void> {
   const root = swampPath(repoDir, SWAMP_SUBDIRS.workflowRuns);
@@ -150,7 +153,7 @@ export async function markRunIndexesForRepair(repoDir: string): Promise<void> {
   } catch (error) {
     if (error instanceof Deno.errors.NotFound) return;
     getSwampLogger(["workflow-runs", "index"])
-      .warn`Marking the workflow run indexes of ${repoDir} for repair failed; removing them instead: ${error}`;
+      .warn`Parking the workflow run indexes of ${repoDir} for repair failed; removing them instead: ${error}`;
     await removeStaleRunIndexes(repoDir);
     return;
   }
@@ -163,10 +166,13 @@ export async function markRunIndexesForRepair(repoDir: string): Promise<void> {
       continue;
     }
     try {
-      await Deno.writeTextFile(join(dir, RUNS_INDEX_REPAIR_FILENAME), "");
+      await Deno.rename(
+        getIndexPath(dir),
+        join(dir, RUNS_INDEX_REPAIR_FILENAME),
+      );
     } catch (error) {
       getSwampLogger(["workflow-runs", "index"])
-        .warn`Marking the run index of ${dir} for repair failed; removing it instead: ${error}`;
+        .warn`Parking the run index of ${dir} for repair failed; removing it instead: ${error}`;
       await deleteRunIndex(dir).catch(() => {});
     }
   }
@@ -282,10 +288,11 @@ function headerInBytes(content: Uint8Array): {
  */
 export async function readRunIndexHeader(
   workflowRunsDir: string,
+  path: string = getIndexPath(workflowRunsDir),
 ): Promise<RunIndexHeader | null> {
   let file: Deno.FsFile;
   try {
-    file = await Deno.open(getIndexPath(workflowRunsDir), { read: true });
+    file = await Deno.open(path, { read: true });
   } catch (error) {
     if (error instanceof Deno.errors.NotFound) return null;
     throw error;
@@ -350,13 +357,33 @@ export async function readRunIndex(
   workflowRunsDir: string,
   signal?: AbortSignal,
 ): Promise<ReadIndexResult | null> {
+  const index = await readRunIndexFile(
+    workflowRunsDir,
+    getIndexPath(workflowRunsDir),
+    signal,
+  );
+  if (index !== null) return index;
+  const parked = await readRunIndexFile(
+    workflowRunsDir,
+    join(workflowRunsDir, RUNS_INDEX_REPAIR_FILENAME),
+    signal,
+  );
+  if (parked === null || parked.version !== INDEX_SCHEMA_VERSION) return parked;
+  return { ...parked, damaged: true };
+}
+
+async function readRunIndexFile(
+  workflowRunsDir: string,
+  path: string,
+  signal?: AbortSignal,
+): Promise<ReadIndexResult | null> {
   let content: Uint8Array;
   try {
-    const peeked = await readRunIndexHeader(workflowRunsDir);
+    const peeked = await readRunIndexHeader(workflowRunsDir, path);
     if (peeked && peeked.version !== INDEX_SCHEMA_VERSION) {
       return { entries: {}, version: peeked.version };
     }
-    content = await Deno.readFile(getIndexPath(workflowRunsDir));
+    content = await Deno.readFile(path);
   } catch {
     return null;
   }
@@ -398,19 +425,9 @@ export async function readRunIndex(
     },
     signal,
   );
-  if (!damaged) damaged = await markedForRepair(workflowRunsDir);
   return damaged
     ? { entries, version: INDEX_SCHEMA_VERSION, damaged }
     : { entries, version: INDEX_SCHEMA_VERSION };
-}
-
-async function markedForRepair(workflowRunsDir: string): Promise<boolean> {
-  try {
-    await Deno.lstat(join(workflowRunsDir, RUNS_INDEX_REPAIR_FILENAME));
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 function headerLine(compactedBytes: number): string {
@@ -528,11 +545,18 @@ export async function compactRunIndex(workflowRunsDir: string): Promise<void> {
 export async function deleteRunIndex(
   workflowRunsDir: string,
 ): Promise<void> {
-  const path = getIndexPath(workflowRunsDir);
-  try {
-    await Deno.remove(path);
-  } catch (error) {
-    if (!(error instanceof Deno.errors.NotFound)) throw error;
+  // a parked index goes too: the next read rebuilds from every record
+  for (
+    const path of [
+      getIndexPath(workflowRunsDir),
+      join(workflowRunsDir, RUNS_INDEX_REPAIR_FILENAME),
+    ]
+  ) {
+    try {
+      await Deno.remove(path);
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    }
   }
 }
 
