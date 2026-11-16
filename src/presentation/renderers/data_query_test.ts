@@ -375,6 +375,134 @@ Deno.test("renderQueryResultsTerminal: scalar limit footer is plain text", () =>
   assertEquals(output, "a\nb\n\nShowing 2 results (limit reached)");
 });
 
+const INVENTORY = {
+  host: "ubuntu-1",
+  packages: Array.from({ length: 8 }, (_, i) => ({
+    name: `pkg-${i}`,
+    version: `1.${i}.0`,
+  })),
+};
+
+Deno.test("renderQueryResultsTerminal: a map projection with a nested array prints as indented JSON", () => {
+  const output = renderQueryResultsTerminal({
+    predicate: 'name == "installed"',
+    select: "content",
+    results: [],
+    projected: {
+      shape: "map",
+      columns: Object.keys(INVENTORY),
+      rows: [INVENTORY],
+    },
+    total: 1,
+    limited: false,
+  });
+  const expected = JSON.stringify(INVENTORY, null, 2);
+  assertEquals(output, expected);
+  const widest = Math.max(...expected.split("\n").map((l) => l.length));
+  for (const line of output.split("\n")) {
+    assertEquals(line.length <= widest, true);
+  }
+});
+
+Deno.test("renderQueryResultsTerminal: a list projection with a nested object prints as indented JSON", () => {
+  const output = renderQueryResultsTerminal({
+    predicate: "true",
+    select: "attributes.pair",
+    results: [],
+    projected: { shape: "list", rows: [["a", { b: 1 }], ["c", 2]] },
+    total: 2,
+    limited: false,
+  });
+  assertEquals(
+    output,
+    '[\n  "a",\n  {\n    "b": 1\n  }\n]\n[\n  "c",\n  2\n]',
+  );
+});
+
+Deno.test("renderQueryResultsTerminal: a flat map projection still prints a table", () => {
+  const output = stripAnsiCode(renderQueryResultsTerminal({
+    predicate: "true",
+    select: '{"name": name, "version": version}',
+    results: [],
+    projected: {
+      shape: "map",
+      columns: ["name", "version"],
+      rows: [{ name: "a", version: 1 }, { name: "b", version: 2 }],
+    },
+    total: 2,
+    limited: false,
+  }));
+  assertStringIncludes(output, "name");
+  assertStringIncludes(output, "version");
+  assertStringIncludes(output, "│");
+  assertEquals(output.includes("{"), false);
+});
+
+Deno.test("renderQueryResultsTerminal: a nested value under a key only a later row has switches the whole result to JSON", () => {
+  const rows = [{ name: "a" }, { name: "b", extra: [1, 2] }];
+  const output = renderQueryResultsTerminal({
+    predicate: "true",
+    select: "attributes",
+    results: [],
+    projected: { shape: "map", columns: ["name"], rows },
+    total: 2,
+    limited: false,
+  });
+  assertEquals(
+    output,
+    rows.map((r) => JSON.stringify(r, null, 2)).join("\n"),
+  );
+});
+
+Deno.test("renderQueryResultsTerminal: a failed map projection prints as {} in its position among nested rows", () => {
+  const output = renderQueryResultsTerminal({
+    predicate: "true",
+    select: "attributes",
+    results: [],
+    projected: {
+      shape: "map",
+      columns: ["items"],
+      rows: [{ items: [1] }, {}, { items: [2] }],
+    },
+    total: 3,
+    limited: false,
+  });
+  assertEquals(
+    output,
+    '{\n  "items": [\n    1\n  ]\n}\n{}\n{\n  "items": [\n    2\n  ]\n}',
+  );
+});
+
+Deno.test("renderQueryResultsTerminal: the limit footer on nested output is plain text", () => {
+  const output = renderQueryResultsTerminal({
+    predicate: "true",
+    select: "attributes",
+    results: [],
+    projected: { shape: "map", columns: ["a"], rows: [{ a: { b: 1 } }] },
+    total: 1,
+    limited: true,
+  });
+  assertEquals(
+    output,
+    '{\n  "a": {\n    "b": 1\n  }\n}\n\nShowing 1 results (limit reached)',
+  );
+});
+
+Deno.test("renderQueryResultsTerminal: a very large nested array renders and parses back to its input", () => {
+  const content = {
+    packages: Array.from({ length: 100_000 }, (_, i) => `pkg-${i}`),
+  };
+  const output = renderQueryResultsTerminal({
+    predicate: 'name == "installed"',
+    select: "content",
+    results: [],
+    projected: { shape: "map", columns: ["packages"], rows: [content] },
+    total: 1,
+    limited: false,
+  });
+  assertEquals(JSON.parse(output), content);
+});
+
 Deno.test("renderJson: projected base64 content and its encoding pass through", () => {
   const renderer = createDataQueryRenderer("json");
   const output = captureJsonOutput(() => {
