@@ -313,7 +313,7 @@ Deno.test({
           raw.dispatchCredential as string,
           {
             sessionCredential: () => "control-credential",
-            dataPlaneUrl: o.dataPlaneUrl,
+            dataPlaneUrl: () => o.dataPlaneUrl,
             cacheDirPath: dir,
           },
         );
@@ -504,7 +504,7 @@ Deno.test("remote secrets baseline: dispatch payload: the supervisor does not ch
   registerDispatchHandler({
     channel,
     sessionCredential: () => "cred",
-    dataPlaneUrl: "http://127.0.0.1:9",
+    dataPlaneUrl: () => "http://127.0.0.1:9",
     cacheDirPath: "/nonexistent-cache",
     capacity: 1,
     onDispatch: (event) => started.push(event.kind),
@@ -594,7 +594,7 @@ Deno.test({
             raw.dispatchCredential as string,
             {
               sessionCredential: () => "control-credential",
-              dataPlaneUrl: o.dataPlaneUrl,
+              dataPlaneUrl: () => o.dataPlaneUrl,
               cacheDirPath: dir,
             },
           ),

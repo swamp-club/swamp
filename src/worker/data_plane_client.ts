@@ -186,7 +186,7 @@ export class DataPlaneClient {
       refusalsToCaller?: boolean;
     },
   ): Promise<Response> {
-    const url = new URL(path, this.#options.baseUrl);
+    const url = routeUrl(this.#options.baseUrl, path);
     const timeoutMs = init?.timeoutMs !== undefined
       ? init.timeoutMs
       : init?.write
@@ -612,10 +612,46 @@ export function createDataPlaneFetch(
   return (input, init) => baseFetch(input, { ...init, client });
 }
 
-export function dataPlaneUrlFromConnectUrl(connectUrl: string): string {
+function routeUrl(baseUrl: string, route: string): URL {
+  const base = new URL(baseUrl);
+  if (!base.pathname.endsWith("/")) {
+    base.pathname = `${base.pathname}/`;
+  }
+  // ./ keeps a colon in the route's first segment from parsing as a scheme
+  const url = new URL(`./${route.replace(/^\/+/, "")}`, base);
+  // dot segments must not carry the credential out of the base path
+  if (!url.pathname.startsWith(base.pathname)) {
+    throw new Error(`Data plane route ${route} leaves the base path`);
+  }
+  return url;
+}
+
+/**
+ * A proxy's declared prefix counts only when it starts the worker's own connect
+ * path, so a proxy can shorten that path but never point it elsewhere.
+ */
+function mountPrefix(connectedPath: string, declaredPrefix?: string): string {
+  if (declaredPrefix === undefined) {
+    return "/";
+  }
+  const prefix = declaredPrefix.replace(/\/+$/, "");
+  if (!prefix.startsWith("/")) {
+    return "/";
+  }
+  const connected = connectedPath.replace(/\/+$/, "");
+  if (connected !== prefix && !connected.startsWith(`${prefix}/`)) {
+    return "/";
+  }
+  return `${prefix}/`;
+}
+
+export function dataPlaneUrlFromConnectUrl(
+  connectUrl: string,
+  forwardedPrefix?: string,
+): string {
   const url = new URL(connectUrl);
   url.protocol = url.protocol === "wss:" ? "https:" : "http:";
-  url.pathname = "/";
+  url.pathname = mountPrefix(url.pathname, forwardedPrefix);
   url.search = "";
   url.hash = "";
   logger.debug("Derived data plane url {url}", { url: url.href });

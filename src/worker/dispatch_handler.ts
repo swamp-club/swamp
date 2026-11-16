@@ -90,7 +90,7 @@ export interface DispatchHandlerOptions {
   lifecycleTrace?: TraceCarrier;
   channel: RpcChannel;
   sessionCredential: () => string;
-  dataPlaneUrl: string;
+  dataPlaneUrl: () => string;
   cacheDirPath: string;
   caCerts?: string[];
   capacity: number;
@@ -215,7 +215,7 @@ export function buildRunnerBootstrapParams(
 ): RunnerBootstrapParams {
   return {
     sessionCredential: dispatchCredential ?? options.sessionCredential(),
-    dataPlaneUrl: options.dataPlaneUrl,
+    dataPlaneUrl: options.dataPlaneUrl(),
     cacheDirPath: options.cacheDirPath,
     ...(scratchDirPath !== undefined ? { scratchDirPath } : {}),
     dispatch: params,

@@ -26,6 +26,7 @@ import {
 import { join } from "@std/path";
 import { waitFor } from "@swamp-club/swamp-testing";
 import {
+  enrolledDataPlaneUrl,
   releaseWorkerCacheDir,
   runWorker,
   type WorkerStatusEvent,
@@ -1158,4 +1159,55 @@ Deno.test("runWorker: a dispatch sent before the enroll reply is never run when 
   await waitFor(() => answered, "early dispatch answered");
   // the worker drops the connection as it stops, so serve gets no step result
   assertInstanceOf(outcome, ChannelClosedError);
+});
+
+Deno.test("enrolledDataPlaneUrl: an orchestrator that reports no prefix keeps the root", () => {
+  assertEquals(
+    enrolledDataPlaneUrl({ url: "wss://h/w/x" }, {}),
+    "https://h/",
+  );
+  assertEquals(
+    enrolledDataPlaneUrl({ url: "ws://test:1" }, {}),
+    "http://test:1/",
+  );
+});
+
+Deno.test("enrolledDataPlaneUrl: keeps the prefix a trusted proxy declared", () => {
+  assertEquals(
+    enrolledDataPlaneUrl({ url: "wss://h/w/x" }, { forwardedPrefix: "/w/x" }),
+    "https://h/w/x/",
+  );
+  assertEquals(
+    enrolledDataPlaneUrl({ url: "wss://h/ws" }, { forwardedPrefix: "/w/x" }),
+    "https://h/",
+  );
+});
+
+Deno.test("enrolledDataPlaneUrl: a forwardedPrefix that is not a string counts as absent", () => {
+  assertEquals(
+    enrolledDataPlaneUrl(
+      { url: "wss://h/w/x" },
+      { forwardedPrefix: 42 as unknown as string },
+    ),
+    "https://h/",
+  );
+});
+
+Deno.test("enrolledDataPlaneUrl: only the origin of an explicit data plane URL is used", () => {
+  for (const forwardedPrefix of [undefined, "/", "/w/x"]) {
+    assertEquals(
+      enrolledDataPlaneUrl(
+        { url: "wss://h/w/x", dataPlaneUrl: "https://dp:9443/swamp" },
+        { forwardedPrefix },
+      ),
+      "https://dp:9443/",
+    );
+  }
+  assertEquals(
+    enrolledDataPlaneUrl(
+      { url: "wss://h", dataPlaneUrl: "https://dp:9443" },
+      {},
+    ),
+    "https://dp:9443/",
+  );
 });

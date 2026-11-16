@@ -1659,6 +1659,16 @@ function forwardedHeaderValue(req: Request, name: string): string | null {
   return value && value.length > 0 ? value : null;
 }
 
+/** Only a proxy serve trusts may declare the prefix it removed. */
+export function forwardedPrefixOf(
+  req: Request,
+  trustProxy: boolean,
+): string | undefined {
+  return trustProxy
+    ? forwardedHeaderValue(req, "x-forwarded-prefix") ?? undefined
+    : undefined;
+}
+
 export function validateDashboardSessionOrigin(
   req: Request,
   tlsEnabled: boolean,
@@ -2702,7 +2712,7 @@ const daemonEnableCommand = new Command()
   )
   .option(
     "--trust-proxy",
-    "Trust X-Forwarded-For header for client IP in token auth rate limiting",
+    "Trust X-Forwarded-For for client IP in token auth rate limiting, and X-Forwarded-Prefix for the path prefix workers send their data plane under",
   )
   .option(
     "--verify-on-enroll",
@@ -3648,7 +3658,7 @@ export const serveCommand = new Command()
   )
   .option(
     "--trust-proxy",
-    "Trust X-Forwarded-For header for client IP in token auth rate limiting (enable when behind a reverse proxy)",
+    "Trust X-Forwarded-For for client IP in token auth rate limiting, and X-Forwarded-Prefix for the path prefix workers send their data plane under (enable when behind a reverse proxy)",
   )
   .option(
     "--ws-idle-timeout <duration:string>",
@@ -8782,6 +8792,8 @@ export const serveCommand = new Command()
         }
         if (upgrade.toLowerCase() === "websocket") {
           const remoteAddr = clientAddress();
+          // Read before any upgrade below, which closes the request's headers.
+          const forwardedPrefix = forwardedPrefixOf(req, Boolean(trustProxy));
 
           const originCheck = validateWebSocketOrigin(
             req.headers.get("origin"),
@@ -8847,7 +8859,12 @@ export const serveCommand = new Command()
               );
               markPeerSocket(socket);
               setConnectionSourceIp(socket, remoteAddr);
-              handleConnection(socket, connectionCtx, null);
+              handleConnection(
+                socket,
+                connectionCtx,
+                null,
+                forwardedPrefix,
+              );
               return response;
             }
             const dashboardSessionId = extracted === null
@@ -9024,7 +9041,12 @@ export const serveCommand = new Command()
             if (forwardCredential !== undefined) {
               rememberForwardCredential(socket, forwardCredential);
             }
-            handleConnection(socket, connectionCtx, principal);
+            handleConnection(
+              socket,
+              connectionCtx,
+              principal,
+              forwardedPrefix,
+            );
             return response;
           }
           const forwardCredential = leaderLink === undefined
@@ -9047,7 +9069,12 @@ export const serveCommand = new Command()
           if (forwardCredential !== undefined) {
             rememberForwardCredential(socket, forwardCredential);
           }
-          handleConnection(socket, connectionCtx, null);
+          handleConnection(
+            socket,
+            connectionCtx,
+            null,
+            forwardedPrefix,
+          );
           return response;
         }
 

@@ -38,6 +38,7 @@ import {
   cancelSuccessBody,
   checkOAuthClientSecret,
   collectServeExtraArgs,
+  forwardedPrefixOf,
   isUnreachableBindHost,
   legacyHealthBody,
   listenerGraceElapsed,
@@ -2554,4 +2555,35 @@ Deno.test("respondToBulkCancel: answers with the number of runs cancelled, and a
   assertEquals(refused.cancelledCount, undefined);
   assertEquals(refused.response.status, 400);
   await refused.response.body?.cancel();
+});
+
+Deno.test("forwardedPrefixOf: reads the declared prefix only behind a trusted proxy", () => {
+  const req = new Request("http://serve/", {
+    headers: { "x-forwarded-prefix": "/w/x" },
+  });
+  assertEquals(forwardedPrefixOf(req, true), "/w/x");
+  assertEquals(forwardedPrefixOf(req, false), undefined);
+});
+
+Deno.test("forwardedPrefixOf: takes the first of several values and ignores an empty one", () => {
+  assertEquals(
+    forwardedPrefixOf(
+      new Request("http://serve/", {
+        headers: { "x-forwarded-prefix": "/w/x, /other" },
+      }),
+      true,
+    ),
+    "/w/x",
+  );
+  assertEquals(
+    forwardedPrefixOf(
+      new Request("http://serve/", { headers: { "x-forwarded-prefix": "" } }),
+      true,
+    ),
+    undefined,
+  );
+  assertEquals(
+    forwardedPrefixOf(new Request("http://serve/"), true),
+    undefined,
+  );
 });

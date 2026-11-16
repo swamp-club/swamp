@@ -1831,29 +1831,34 @@ export function handleConnection(
   socket: WebSocket,
   ctx: ConnectionContext,
   principal: Principal | null,
+  forwardedPrefix?: string,
 ): void {
   const activeRequests = new Map<string, AbortController>();
   const activeSubscriptions = new Set<string>();
   const subscriptionTimers = new Map<string, ReturnType<typeof setInterval>>();
-  const workerAttachment = ctx.workerGateway?.attachTransport({
-    send: (data) => {
-      if (socket.readyState === WebSocket.OPEN) {
-        socket.send(data);
-      } else {
-        let frameType = "unknown";
-        let frameId = "unknown";
-        try {
-          const parsed = JSON.parse(data) as Record<string, unknown>;
-          if (typeof parsed.type === "string") frameType = parsed.type;
-          if (typeof parsed.id === "string") frameId = parsed.id;
-        } catch { /* best-effort */ }
-        logger.warn(
-          "Dropped RPC frame {frameType} (id {frameId}): socket readyState is {readyState}",
-          { frameType, frameId, readyState: socket.readyState },
-        );
-      }
+  const workerAttachment = ctx.workerGateway?.attachTransport(
+    {
+      send: (data) => {
+        if (socket.readyState === WebSocket.OPEN) {
+          socket.send(data);
+        } else {
+          let frameType = "unknown";
+          let frameId = "unknown";
+          try {
+            const parsed = JSON.parse(data) as Record<string, unknown>;
+            if (typeof parsed.type === "string") frameType = parsed.type;
+            if (typeof parsed.id === "string") frameId = parsed.id;
+          } catch { /* best-effort */ }
+          logger.warn(
+            "Dropped RPC frame {frameType} (id {frameId}): socket readyState is {readyState}",
+            { frameType, frameId, readyState: socket.readyState },
+          );
+        }
+      },
     },
-  }, () => socket.close());
+    () => socket.close(),
+    forwardedPrefix,
+  );
 
   const sessionTimeout = principal
     ? setTimeout(() => {

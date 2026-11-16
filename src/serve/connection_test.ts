@@ -5430,6 +5430,28 @@ function connectForTeardown(): LiveSocket & { fed: string[] } {
   return { socket, log, fed };
 }
 
+Deno.test("handleConnection: passes the declared prefix to the worker gateway", () => {
+  for (const forwardedPrefix of ["/w/x", undefined]) {
+    const seen: Array<string | undefined> = [];
+    const socket = {
+      readyState: WebSocket.OPEN,
+      send() {},
+      close() {},
+    } as unknown as WebSocket;
+    const ctx = {
+      workerGateway: {
+        attachTransport: (_t: unknown, _c: unknown, path?: string) => {
+          seen.push(path);
+          return { feed: () => true, closed: () => {} };
+        },
+      },
+    } as unknown as ConnectionContext;
+    handleConnection(socket, ctx, null, forwardedPrefix);
+    assertEquals(seen, [forwardedPrefix]);
+    socket.onclose?.(new CloseEvent("close"));
+  }
+});
+
 Deno.test("closeSession: tears the session's work down before the close handshake", () => {
   const { socket, log } = connectForTeardown();
 

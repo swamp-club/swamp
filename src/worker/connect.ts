@@ -176,11 +176,20 @@ async function runWorkerFrom(
   dispatches: DispatchCount,
 ): Promise<WorkerExitResult> {
   const instanceUuid = crypto.randomUUID();
+  if (
+    options.dataPlaneUrl !== undefined && URL.canParse(options.dataPlaneUrl)
+  ) {
+    const ignoredPath = new URL(options.dataPlaneUrl).pathname;
+    if (ignoredPath !== "/") {
+      logger.warn(
+        "--data-plane-url path {path} is ignored: only its origin is used",
+        { path: ignoredPath },
+      );
+    }
+  }
   const credential: WorkerCredential = { token: options.token };
   const session: SessionState = { credential: "", expiresAtMs: 0 };
   const gate: GateState = { admitted: options.admitGatePass === undefined };
-  const dataPlaneUrl = options.dataPlaneUrl ??
-    dataPlaneUrlFromConnectUrl(options.url);
   const machineId = await loadOrCreateMachineId(cacheDir);
   const httpClient = options.caCerts?.length
     ? createTlsHttpClient({ caCerts: options.caCerts })
@@ -281,7 +290,6 @@ async function runWorkerFrom(
           machineId,
           session,
           gate,
-          dataPlaneUrl,
           cacheDirPath: join(cacheDir, "bundles"),
           concurrency,
           onDispatchHandlerRegistered: (handle, channel, close) => {
@@ -467,6 +475,24 @@ interface GateState {
   pending?: Promise<void>;
 }
 
+/** Only the origin of an explicit --data-plane-url is used; its path is ignored. */
+export function enrolledDataPlaneUrl(
+  options: Pick<RunWorkerOptions, "url" | "dataPlaneUrl">,
+  result: Pick<EnrollResult, "forwardedPrefix">,
+): string {
+  if (options.dataPlaneUrl !== undefined) {
+    // an unparseable URL is left for the request to refuse
+    return URL.canParse(options.dataPlaneUrl)
+      ? `${new URL(options.dataPlaneUrl).origin}/`
+      : options.dataPlaneUrl;
+  }
+  // the reply is not schema-checked, so a malformed field counts as absent
+  const forwardedPrefix = typeof result.forwardedPrefix === "string"
+    ? result.forwardedPrefix
+    : undefined;
+  return dataPlaneUrlFromConnectUrl(options.url, forwardedPrefix);
+}
+
 interface ConnectOnceArgs {
   options: RunWorkerOptions;
   credential: WorkerCredential;
@@ -475,7 +501,6 @@ interface ConnectOnceArgs {
   machineId: string;
   session: SessionState;
   gate: GateState;
-  dataPlaneUrl: string;
   cacheDirPath: string;
   concurrency: number;
   onDispatchHandlerRegistered: (
@@ -560,11 +585,18 @@ function connectOnce(args: ConnectOnceArgs): Promise<string> {
       // is complete; a failed enrollment refuses them
       const ready = Promise.withResolvers<void>();
       ready.promise.catch(() => {});
+      // per connection: a reconnect may enroll with a serve that reports no prefix
+      let dataPlaneUrl: string | undefined;
       const handle = registerDispatchHandler({
         lifecycleTrace,
         channel,
         sessionCredential: () => session.credential,
-        dataPlaneUrl: args.dataPlaneUrl,
+        dataPlaneUrl: () => {
+          if (dataPlaneUrl === undefined) {
+            throw new Error("data plane URL read before enrollment");
+          }
+          return dataPlaneUrl;
+        },
         cacheDirPath: args.cacheDirPath,
         caCerts: options.caCerts,
         capacity: args.concurrency,
@@ -605,6 +637,7 @@ function connectOnce(args: ConnectOnceArgs): Promise<string> {
       ).then((result) => {
         session.credential = result.sessionCredential;
         session.expiresAtMs = result.sessionExpiresAtMs;
+        dataPlaneUrl = enrolledDataPlaneUrl(options, result);
         // until admitted, a reconnect asks for a pass again and a refusal
         // stops the worker (fails closed)
         const admitGatePass = options.admitGatePass;
