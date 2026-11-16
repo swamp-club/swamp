@@ -526,6 +526,8 @@ export class SqliteReadModel implements ReadModel {
    * meets first is netted with the tail after it
    */
   #netBase = false;
+  /** the page's chunk prefetch, which a write that reads a chunk waits for */
+  #prefetched: Promise<unknown> | undefined;
   /** pages the tail net plan read, applied before the store is read again */
   #readAhead: (readonly CommitChange[])[] = [];
   readonly #paths = new PathCache();
@@ -2732,14 +2734,22 @@ export class SqliteReadModel implements ReadModel {
     };
     try {
       let applied = 0;
+      // the inline writes before a page's first chunked one go on while its
+      // chunks arrive; the outcome is held so it is never left unhandled
+      const prefetched = this.#prefetchChunks(page, signal).then(
+        () => undefined,
+        (error: unknown) => ({ error }),
+      );
+      this.#prefetched = prefetched;
       try {
-        await this.#prefetchChunks(page, signal);
         for (const change of page) {
           signal.throwIfAborted();
           if (await this.#apply(change, advance, signal, batch)) applied++;
           met.push(change.commit);
         }
+        await this.#awaitPrefetched();
       } catch (error) {
+        await prefetched;
         try {
           await batch.barrier();
           this.#catalog.commitBatch();
@@ -2769,6 +2779,7 @@ export class SqliteReadModel implements ReadModel {
       await this.#tellRecordsChanged(changes);
       return applied;
     } finally {
+      this.#prefetched = undefined;
       this.#pageChanges = undefined;
       batch.discard();
       this.#catalog.rollbackBatch();
@@ -2776,6 +2787,11 @@ export class SqliteReadModel implements ReadModel {
       this.#pageInFlight = undefined;
       settled.resolve();
     }
+  }
+
+  async #awaitPrefetched(): Promise<void> {
+    const outcome = await this.#prefetched;
+    if (outcome !== undefined) throw (outcome as { error: unknown }).error;
   }
 
   async #releaseFetched(signal: AbortSignal): Promise<void> {
@@ -3715,6 +3731,7 @@ export class SqliteReadModel implements ReadModel {
     const stats = this.#stats;
     const started = performance.now();
     try {
+      if (!("inline" in content)) await this.#awaitPrefetched();
       const bytes = "inline" in content
         ? decodeBase64(content.inline)
         : this.#chunkStore.read(namespaceOf(namespace), content.blob, signal);

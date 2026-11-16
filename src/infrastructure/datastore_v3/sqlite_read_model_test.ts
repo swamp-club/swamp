@@ -3678,3 +3678,80 @@ Deno.test("SqliteReadModel.catchUp: a netted tail reads each of its commits from
     }
   });
 });
+
+/** a storage whose prefetch waits until the test lets it finish, or fails */
+class GatedPrefetchStorage extends MemoryStorage {
+  readonly gate = Promise.withResolvers<void>();
+  failWith: Error | undefined;
+  prefetch(): Promise<void> {
+    return this.failWith !== undefined
+      ? Promise.reject(this.failWith)
+      : this.gate.promise;
+  }
+}
+
+async function chunkedPage(env: Env, storage: GatedPrefetchStorage) {
+  const chunks = new ChunkStore(storage);
+  await env.append(1, "", [await savePut("a", 1), versionOp("a", 1)]);
+  const blobs = [];
+  for (const fill of [3, 4]) {
+    blobs.push(
+      await chunks.write(
+        SOLO_NAMESPACE,
+        new Uint8Array(20_000).fill(fill),
+        signal(),
+      ),
+    );
+  }
+  await env.append(2, "", [
+    await blobPut("b", 1, blobs[0]),
+    versionOp("b", 1),
+    await blobPut("c", 1, blobs[1]),
+    versionOp("c", 1),
+  ]);
+  return chunks;
+}
+
+Deno.test("SqliteReadModel.catchUp: a page's inline writes go on while its chunks are fetched", async () => {
+  await withEnv(async (env) => {
+    const storage = new GatedPrefetchStorage();
+    const chunkStore = await chunkedPage(env, storage);
+    const readModel = env.open({ chunkStore, netReplay: false });
+    try {
+      const caughtUp = readModel.catchUp(signal());
+      await waitFor(
+        async () => await readOrAbsent(env.contentPath("", "a", 1)) === "a@1",
+        "the inline write before the chunks arrive",
+      );
+      assertEquals(await readOrAbsent(env.contentPath("", "b", 1)), undefined);
+      storage.gate.resolve();
+      await caughtUp;
+      assertEquals(
+        (await Deno.readFile(env.contentPath("", "b", 1))).length,
+        20_000,
+      );
+    } finally {
+      storage.gate.resolve();
+      await readModel.close();
+    }
+  });
+});
+
+Deno.test("SqliteReadModel.catchUp: a page's failed chunk fetch still fails the catch-up", async () => {
+  await withEnv(async (env) => {
+    const storage = new GatedPrefetchStorage();
+    const chunkStore = await chunkedPage(env, storage);
+    const readModel = env.open({ chunkStore, netReplay: false });
+    try {
+      storage.failWith = new Error("serve went away");
+      await assertRejects(
+        () => readModel.catchUp(signal()),
+        Error,
+        "serve went away",
+      );
+      assertEquals(await readOrAbsent(env.contentPath("", "b", 1)), undefined);
+    } finally {
+      await readModel.close();
+    }
+  });
+});
