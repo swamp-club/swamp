@@ -28,6 +28,7 @@ import { WorkflowRun } from "../domain/workflows/workflow_run.ts";
 import {
   findParkedRun,
   forgetParkedRun,
+  handsOverRuns,
   listParkedRuns,
   parkedRunHandled,
   parkedRunKey,
@@ -184,4 +185,11 @@ Deno.test("findParkedRun: a run id that could name another key is never read", a
 
   assertEquals(await findParkedRun(watched, "../active-runs/x"), undefined);
   assertEquals(reads, []);
+});
+
+Deno.test("handsOverRuns: runs park only with a drain and a store a later process can continue them through", () => {
+  assertEquals(handsOverRuns(30_000, true), true);
+  // nothing would continue a parked run, so it drains to completion
+  assertEquals(handsOverRuns(30_000, false), false);
+  assertEquals(handsOverRuns(0, true), false);
 });

@@ -5765,6 +5765,7 @@ Deno.test("validateServerRequest: data.query rejects a bad sort direction, a lon
 async function parkedAttachCtx(
   grants: Grant[],
   park: boolean,
+  refused = false,
 ): Promise<ConnectionContext & Disposable> {
   const workflow = Workflow.create({
     name: "deploy-pipeline",
@@ -5784,6 +5785,13 @@ async function parkedAttachCtx(
   run.jobs[0].steps[0].start();
   run.jobs[0].steps[0].succeed();
   if (park) run.park({ instanceId: "instance-old", pid: 4242 }, new Date());
+  if (refused) {
+    run.recordAutoContinuationRefusal({
+      reason: "opted_out",
+      steps: [],
+      message: "The workflow sets autoContinue: false.",
+    }, new Date());
+  }
   const markers = createMockControlPlaneStore();
   const handover = new ServeHandover("instance-new");
   handover.useMarkerStore(markers);
@@ -5844,5 +5852,17 @@ Deno.test("handleRunAttach: a marker whose run no longer reads parked is answere
   });
 
   assertEquals(sent[0].type, "error");
+  assertEquals((sent[0].error as Record<string, unknown>).code, "not_found");
+});
+
+Deno.test("handleRunAttach: a parked run serve refused is not retried for, since only an operator continues it", async () => {
+  using ctx = await parkedAttachCtx([runAttachGrant], true, true);
+  const runId = (ctx as unknown as { runId: string }).runId;
+
+  const sent = await sendAndCollect(ctx, "run.attach", "attach-refused", {
+    runId,
+  });
+
+  assertEquals(sent.some((frame) => frame.type === "run.elsewhere"), false);
   assertEquals((sent[0].error as Record<string, unknown>).code, "not_found");
 });

@@ -327,6 +327,7 @@ import {
 } from "../../domain/access/principal.ts";
 import {
   forgetParkedRun,
+  handsOverRuns,
   listParkedRuns,
   parkedRunHandled,
   parkerAsOwner,
@@ -9994,7 +9995,12 @@ export const serveCommand = new Command()
       admission.beginDraining();
       // runs park at their next step boundary within the drain; with no drain
       // the abort below settles them
-      if (shutdownDrainTimeoutMs > 0) {
+      if (
+        handsOverRuns(
+          shutdownDrainTimeoutMs,
+          repoContext.continuationClaims !== undefined,
+        )
+      ) {
         dispatchService.beginHandover();
         serveHandover.begin();
       }

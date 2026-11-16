@@ -205,6 +205,17 @@ export function parkedRunHandled(run: WorkflowRun | null): boolean {
     refused.interruptedAt === run.continuableSince?.toISOString();
 }
 
+/**
+ * a run parks only where a later process can continue it; elsewhere the drain
+ * lets it run to completion, as a run nothing would continue must
+ */
+export function handsOverRuns(
+  drainTimeoutMs: number,
+  continuable: boolean,
+): boolean {
+  return drainTimeoutMs > 0 && continuable;
+}
+
 /** a parker that cannot be named counts as gone, as a reaped owner does */
 export function parkerAsOwner(parker: RunParker): PendingRunOwner | undefined {
   if (parker.instanceId === undefined || parker.pid === undefined) {

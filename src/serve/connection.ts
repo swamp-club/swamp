@@ -21,7 +21,7 @@ import {
   createWorkflowId,
   createWorkflowRunId,
 } from "../domain/workflows/workflow_id.ts";
-import { findParkedRun } from "./serve_handover.ts";
+import { findParkedRun, parkedRunHandled } from "./serve_handover.ts";
 import { z } from "zod";
 import { principalToString } from "../domain/access/principal.ts";
 import {
@@ -4827,9 +4827,11 @@ async function answerParkedAttach(
     });
     return false;
   }
+  // a run serve refused waits for an operator, so the client is not told to retry
   if (
     parkedRun === null ||
-    !(parkedRun.isParked || parkedRun.awaitsAutomaticContinuation)
+    !(parkedRun.awaitsAutomaticContinuation ||
+      (parkedRun.isParked && !parkedRunHandled(parkedRun)))
   ) {
     return false;
   }
