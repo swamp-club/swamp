@@ -72,10 +72,19 @@ export interface ManagedServeStep {
 
 export const SAFE_RESTART_EXIT_CODE = 75;
 
+const POLICY_FIELDS = [
+  "restartDelayMs",
+  "initialBackoffMs",
+  "maxBackoffMs",
+  "crashWindowMs",
+  "maxCrashesInWindow",
+] as const satisfies ReadonlyArray<keyof ManagedServePolicy>;
+
 export function parseManagedServePolicy(
   policy: ManagedServePolicy,
 ): ManagedServePolicy {
-  for (const [field, value] of Object.entries(policy)) {
+  for (const field of POLICY_FIELDS) {
+    const value = policy[field];
     if (!Number.isSafeInteger(value) || value <= 0) {
       throw new UserError(
         `Invalid serve restart policy: ${field} must be a positive whole number, got ${value}.`,
@@ -197,8 +206,7 @@ export class ManagedServe {
     }
   }
 
-  // deleted is final in HostedWorkspace, which refuses a later change; the
-  // entity does not enforce it
+  // deleted is not final here; a later wanted event takes it back to running
   #onWanted(wanted: WantedServeState): ManagedServeStep {
     const next = this.#with({ wanted });
     if (next.observed === "failed") return next.#wait();
@@ -245,6 +253,7 @@ export class ManagedServe {
     if (code === SAFE_RESTART_EXIT_CODE) {
       return this.#with({
         observed: "backoff",
+        backoffMs: policy.restartDelayMs,
         retryAt: now + policy.restartDelayMs,
       }).#wait();
     }

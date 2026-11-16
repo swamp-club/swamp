@@ -106,6 +106,7 @@ Deno.test("ManagedServe.step: exit 75 restarts after the restart delay and is no
   const { next, action } = readyServe().step(exited(75), 1_000);
   assertEquals(next.observed, "backoff");
   assertEquals(next.crashCount, 0);
+  assertEquals(next.backoffMs, 500);
   assertEquals(action, { kind: "wait", until: 1_500 });
   assertEquals(next.step(TICK, 1_499).action, { kind: "wait", until: 1_500 });
   const restarted = next.step(TICK, 1_500);
@@ -289,6 +290,15 @@ Deno.test("parseManagedServePolicy: refuses values that are not positive whole n
       "crashWindowMs",
     );
   }
+});
+
+Deno.test("parseManagedServePolicy: refuses a policy missing a field", () => {
+  const { crashWindowMs: _, ...partial } = POLICY;
+  assertThrows(
+    () => parseManagedServePolicy(partial as ManagedServePolicy),
+    UserError,
+    "crashWindowMs",
+  );
 });
 
 Deno.test("parseManagedServePolicy: refuses delays larger than the backoff cap", () => {
