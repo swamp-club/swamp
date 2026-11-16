@@ -291,9 +291,10 @@ seconds while the tab is in view. Its requests are in
   nothing, so the page re-reads its candidate-set, offer and comparison
   lists when the tab comes back into view, and every 5 seconds while the tab
   is in view and the work is unfinished: no set yet, a set with no offer
-  made from it, a `picked` offer, or a `built` offer whose option has no
-  comparison. It stops once the shown set's offer is settled, and a hidden
-  tab reads nothing. A body is re-read when its row's version changes. The
+  made from it, a `picked` offer, a `built` offer whose option has no
+  comparison, or an offer the page has just handed to the agent with Launch
+  or Use my own agent, until that offer changes. It stops once the shown
+  set's offer is settled, and a hidden tab reads nothing. A body is re-read when its row's version changes. The
   sidebar's probes re-read on return too.
 - **Reading progress.** While the shown set has no offer, the page reads the
   newest run of `@swamp/agent-sessions/swampify-understand` started since

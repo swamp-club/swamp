@@ -34,26 +34,29 @@ import "../styles/swampify.css";
 /** The page wired to serve: reads its items and comparison bodies itself. */
 export function Swampify({ optionId }: { optionId: string | null }) {
   const state = useSwampify();
+  const { expectPick } = state;
   const { records, load } = useComparisonRecords();
   const { request } = useSwamp();
   const launch = useCallback<SwampifyLauncher>(async (text, harness) => {
     const reply = await request<
       { data?: { opened?: boolean; command?: string; prompt?: string } }
     >("swampify.launch", { text, harness, trustConfirmed: true });
+    expectPick();
     return {
       opened: reply.data?.opened === true,
       command: reply.data?.command ?? "",
       ...(reply.data?.prompt ? { prompt: reply.data.prompt } : {}),
     };
-  }, [request]);
+  }, [request, expectPick]);
   const handOff = useCallback<SwampifyHandOff>(async (text, harness) => {
     const reply = await request<{ data?: { prompt?: string } }>(
       "swampify.handoff",
       { text, harness },
     );
     if (!reply.data?.prompt) throw new Error("The brief was not saved.");
+    expectPick();
     return { prompt: reply.data.prompt };
-  }, [request]);
+  }, [request, expectPick]);
   return (
     <SwampifyPage
       state={state}

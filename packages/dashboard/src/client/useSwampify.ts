@@ -186,6 +186,8 @@ export interface SwampifyState {
   readonly comparisonsLimited: boolean;
   /** The readers' run for the shown set, read only while it is being read. */
   readonly reading: SwampifyReadingProgress | null;
+  /** Call once the page has handed a build to the agent. */
+  readonly expectPick: () => void;
 }
 
 /** The shown candidate set and offer, their bodies, and comparisons by option. */
@@ -202,6 +204,13 @@ export function useSwampify(): SwampifyState {
     [comparisonReq.data],
   );
   const byOption = useMemo(() => comparisonsByOption(parsed.rows), [parsed]);
+  // Held against the offer version shown at the hand-off, so any rewrite of
+  // the offer ends it.
+  const offerKey = offer.list.value ? swampifyRowKey(offer.list.value) : null;
+  const offerKeyRef = useRef(offerKey);
+  offerKeyRef.current = offerKey;
+  const [handedOffAt, setHandedOffAt] = useState<string | null>(null);
+  const expectPick = useCallback(() => setHandedOffAt(offerKeyRef.current), []);
   const stage = swampifyStage({
     answered: set.answered && offer.answered &&
       (comparisonReq.data !== null || comparisonReq.error !== null),
@@ -209,6 +218,7 @@ export function useSwampify(): SwampifyState {
     offerRow: offer.list.value,
     offer: offer.body.value,
     comparisons: byOption,
+    handedOff: handedOffAt !== null && handedOffAt === offerKey,
   });
   const setGeneratedAt = set.list.value?.tags[SWAMPIFY_GENERATED_AT_TAG];
   const readingReq = useRequest(
@@ -244,6 +254,7 @@ export function useSwampify(): SwampifyState {
     },
     comparisonsLimited: parsed.limited,
     reading,
+    expectPick,
   };
 }
 

@@ -356,6 +356,18 @@ Deno.test("swampifyStage: building while the offer is picked, comparing while a 
   );
 });
 
+Deno.test("swampifyStage: building after the page hands off a build, until the offer moves on", () => {
+  assertEquals(swampifyStage(stageInput({ handedOff: true })), "building");
+  assertEquals(swampifyStage(stageInput({ handedOff: false })), "settled");
+  assertEquals(
+    swampifyStage(stageInput({
+      handedOff: true,
+      offer: offerReading("offered", "2026-11-01T09:00:00.000Z"),
+    })),
+    "reading",
+  );
+});
+
 Deno.test("swampifyStage: settled once the offer for the shown set is offered, declined, compared or unreadable", () => {
   assertEquals(swampifyStage(stageInput()), "settled");
   assertEquals(

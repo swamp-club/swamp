@@ -316,6 +316,8 @@ export interface SwampifyStageInput {
   /** The shown offer's body; null while it loads or after it failed. */
   readonly offer: SwampifyOfferReading | null;
   readonly comparisons: ReadonlyMap<string, SwampifyRow>;
+  /** The page handed a build to the agent since this offer version loaded. */
+  readonly handedOff?: boolean;
 }
 
 export function swampifyStage(input: SwampifyStageInput): SwampifyStage {
@@ -332,7 +334,8 @@ export function swampifyStage(input: SwampifyStageInput): SwampifyStage {
   ) {
     return "reading";
   }
-  if (offer.state.kind === "picked") return "building";
+  // The agent records the pick in its own window, which leaves the tab in view.
+  if (offer.state.kind === "picked" || input.handedOff) return "building";
   if (
     offer.state.kind === "built" &&
     !input.comparisons.has(offer.state.optionId)

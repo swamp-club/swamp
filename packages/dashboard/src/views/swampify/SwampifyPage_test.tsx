@@ -118,6 +118,7 @@ function state(
     comparisons: loadable(comparisons),
     comparisonsLimited: limited,
     reading,
+    expectPick: noop,
   };
 }
 
