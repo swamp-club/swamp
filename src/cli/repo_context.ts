@@ -3625,6 +3625,13 @@ export async function acquirePublishLocksOrDefer(
   }
 }
 
+interface LockCheck {
+  started: boolean;
+  /** index of the lock being read, or last read */
+  reading: number;
+  state: "reading" | "confirmed" | "refused";
+}
+
 export async function acquireModelLocks(
   config: DatastoreConfig,
   models: Array<{ modelType: string; modelId: string }>,
@@ -3898,21 +3905,30 @@ export async function acquireModelLocks(
   // names its holder. The check and upload are not atomic
   const assertModelLocksHeld = async (
     refused: readonly WrittenVersion[],
+    signal: AbortSignal,
+    check: LockCheck,
   ) => {
+    check.started = true;
     const lost: LostModelLock[] = [];
     for (const [i, lock] of heldLocks.entries()) {
       const taken = heldLockTaken[i];
       if (taken === undefined) continue;
-      // A read that fails here fails the push, like the upload after it
-      // would: a push that cannot confirm its lock does not go ahead.
+      check.reading = i;
+      // a read that fails, or outlives the deadline, leaves the check reading,
+      // and pushOnce discards the run's versions as for a lost lock
       const info = await lock.inspect();
+      signal.throwIfAborted();
       if (lockStillNames(info, taken)) continue;
       lost.push({
         ...heldLockModels[i],
         ...(info ? { heldBy: { holder: info.holder, pid: info.pid } } : {}),
       });
     }
-    if (lost.length === 0) return;
+    if (lost.length === 0) {
+      check.state = "confirmed";
+      return;
+    }
+    check.state = "refused";
     // refused versions stay marked dirty and a later push would upload them
     // over the other run's, so discard them first, even if the datastore is
     // unreachable, then pull the lost models; best effort
@@ -3947,6 +3963,38 @@ export async function acquireModelLocks(
     throw new ModelLockLostError(lost);
   };
 
+  // a lock that cannot be read may have been taken over, so the run's versions
+  // go as for a lost lock; no pull follows, the datastore is unreachable
+  const discardUnconfirmed = async (
+    refused: readonly WrittenVersion[],
+    from: number,
+    cause: unknown,
+  ): Promise<never> => {
+    const unread = heldLockModels.filter((_, i) =>
+      i >= from && heldLockTaken[i] !== undefined
+    );
+    try {
+      const repoContext = options?.repoContext;
+      if (
+        customSyncService && refused.length > 0 &&
+        repoContext !== undefined && isCustomDatastoreConfig(config) &&
+        config.cachePath
+      ) {
+        await discardRefusedVersions(
+          refused,
+          repoContext,
+          customSyncService,
+          config.cachePath,
+          config.namespace,
+          refusalRestore(config),
+        );
+      }
+    } finally {
+      catalogStore?.invalidate();
+    }
+    throw new ModelLockLostError(unread, { unconfirmedBy: cause });
+  };
+
   // each attempt is bounded inside the wrapped call, so time spent waiting on
   // serve's sync gate never counts toward the deadline
   const syncTimeoutMs = isCustomDatastoreConfig(config)
@@ -3965,11 +4013,13 @@ export async function acquireModelLocks(
       const pushNs = config.namespace;
       const provider = customProvider;
       const syncService = customSyncService;
+      const flush = caps?.twoPhaseSync && syncService.preparePush &&
+          syncService.commitPush
+        ? flushTwoPhasePush
+        : flushSinglePhasePush;
+      const check: LockCheck = { started: false, reading: 0, state: "reading" };
 
-      if (
-        caps?.twoPhaseSync && syncService.preparePush &&
-        syncService.commitPush
-      ) {
+      try {
         await wrapSync(
           () =>
             runBoundedSync(
@@ -3977,9 +4027,12 @@ export async function acquireModelLocks(
               "push",
               syncTimeoutMs,
               async (signal) => {
-                await assertModelLocksHeld(versions);
+                await assertModelLocksHeld(versions, signal, check);
+                // an attempt abandoned at the deadline must not stage or
+                // upload over the versions pushOnce discarded
+                signal.throwIfAborted();
                 await beforePush?.();
-                return await flushTwoPhasePush(
+                return await flush(
                   provider,
                   syncService,
                   config,
@@ -3995,30 +4048,17 @@ export async function acquireModelLocks(
             ),
           kind,
         );
-      } else {
+      } catch (error) {
+        // nothing to discard: the push error stands, with its own advice
+        if (
+          !check.started || check.state !== "reading" || versions.length === 0
+        ) {
+          throw error;
+        }
+        // under serve's sync gate, as the lost-lock discard is: its interim
+        // deletes are marked, and another run's push would upload them
         await wrapSync(
-          () =>
-            runBoundedSync(
-              config.type,
-              "push",
-              syncTimeoutMs,
-              async (signal) => {
-                await assertModelLocksHeld(versions);
-                await beforePush?.();
-                return await flushSinglePhasePush(
-                  provider,
-                  syncService,
-                  config,
-                  caps,
-                  unique,
-                  pushNs,
-                  catalogStore,
-                  logger,
-                  progressWriter,
-                  signal,
-                );
-              },
-            ),
+          () => discardUnconfirmed(versions, check.reading, error),
           kind,
         );
       }

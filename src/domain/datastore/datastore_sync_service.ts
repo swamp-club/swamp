@@ -463,19 +463,38 @@ export interface LostModelLock {
  */
 export class ModelLockLostError extends UserError {
   readonly lost: readonly LostModelLock[];
+  /** set when the locks could not be read, so whether they were lost is unknown */
+  readonly unconfirmed: boolean;
 
-  constructor(lost: readonly LostModelLock[]) {
+  constructor(
+    lost: readonly LostModelLock[],
+    options: { unconfirmedBy?: unknown } = {},
+  ) {
+    const unconfirmed = "unconfirmedBy" in options;
     const names = lost.map((l) =>
-      `${l.modelType}/${l.modelId} (${
-        l.heldBy
-          ? `now held by ${l.heldBy.holder}, pid ${l.heldBy.pid}`
-          : "now released"
-      })`
+      unconfirmed
+        ? `${l.modelType}/${l.modelId}`
+        : `${l.modelType}/${l.modelId} (${
+          l.heldBy
+            ? `now held by ${l.heldBy.holder}, pid ${l.heldBy.pid}`
+            : "now released"
+        })`
     ).join(", ");
+    const cause = options.unconfirmedBy;
+    // a cause's own remedies (a timeout's lock release --force) would
+    // contradict this error's, so only its first line is kept
+    const reason = cause instanceof SyncTimeoutError
+      ? `the ${cause.direction} timed out after ${cause.timeoutMs}ms`
+      : (cause instanceof Error ? cause.message : String(cause)).split("\n")[0];
+    const opening = unconfirmed
+      ? `This run could not confirm its lock on ${names} before pushing ` +
+        `(${reason.replace(/\.$/, "")}): another process may have taken ` +
+        `the lock over and written the same data version.`
+      : `This run lost its lock on ${names} before pushing: the lock was ` +
+        `force-released or taken over by another process, which may have ` +
+        `written the same data version.`;
     const worded = wordedText((w) =>
-      `This run lost its lock on ${names} before pushing: the lock was ` +
-      `force-released or taken over by another process, which may have ` +
-      `written the same data version.\nNothing was pushed: this run's data ` +
+      `${opening}\nNothing was pushed: this run's data ` +
       `was discarded from this host, and the ${w.noun}'s data is refreshed ` +
       `from the datastore when it can be reached. Run the method or ` +
       `workflow again.`
@@ -484,6 +503,7 @@ export class ModelLockLostError extends UserError {
     markModelWording(this, worded.modelText);
     this.name = "ModelLockLostError";
     this.lost = lost;
+    this.unconfirmed = unconfirmed;
   }
 }
 

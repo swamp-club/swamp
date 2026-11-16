@@ -156,6 +156,48 @@ Deno.test("ModelLockLostError: names each model, its current holder, and says no
   assertStringIncludes(err.message, "Run the method or workflow again");
 });
 
+Deno.test("ModelLockLostError: a lock that could not be read names the cause, claims no holder, and says nothing was pushed", () => {
+  const err = new ModelLockLostError([
+    { modelType: "aws/s3", modelId: "a1" },
+    { modelType: "aws/s3", modelId: "a2" },
+  ], { unconfirmedBy: new Error("S3 getObject timed out after 30000ms.") });
+  assertEquals(err.code, "model_lock_lost");
+  assertEquals(err.unconfirmed, true);
+  assertEquals(isUnpublishedDataError(err), true);
+  assertStringIncludes(
+    err.message,
+    "could not confirm its lock on aws/s3/a1, aws/s3/a2 before pushing " +
+      "(S3 getObject timed out after 30000ms)",
+  );
+  assertEquals(err.message.includes("now released"), false);
+  assertEquals(err.message.includes("force-released"), false);
+  assertStringIncludes(err.message, "version.\nNothing was pushed");
+  assertStringIncludes(err.message, "data was discarded from this host");
+  assertStringIncludes(err.message, "Run the method or workflow again");
+});
+
+Deno.test("ModelLockLostError: a lock read cut off by the sync deadline gives a one-line reason, without the timeout's own remedies", () => {
+  const err = new ModelLockLostError([{ modelType: "aws/s3", modelId: "a1" }], {
+    unconfirmedBy: new SyncTimeoutError("@swamp/s3-datastore", "push", 300_000),
+  });
+  assertStringIncludes(
+    err.message,
+    "before pushing (the push timed out after 300000ms):",
+  );
+  assertEquals(err.message.includes("Try one of"), false);
+  assertEquals(err.message.includes("lock release --force"), false);
+  assertEquals(err.message.includes("--timeout"), false);
+  assertStringIncludes(err.message, "Run the method or workflow again");
+});
+
+Deno.test("ModelLockLostError: a multi-line lock read error keeps only its first line", () => {
+  const err = new ModelLockLostError([{ modelType: "aws/s3", modelId: "a1" }], {
+    unconfirmedBy: new Error("getObject failed.\n  • retry with sudo"),
+  });
+  assertStringIncludes(err.message, "before pushing (getObject failed):");
+  assertEquals(err.message.includes("sudo"), false);
+});
+
 Deno.test("UnpublishedDataVersionError: names the versions and the causes left once the last push runs alone (swamp-club#3860)", () => {
   const err = new UnpublishedDataVersionError([{
     modelType: "command/shell",

@@ -41,6 +41,7 @@ import {
   renderError,
   tlsErrorHint,
 } from "./error_output.ts";
+import { ModelLockLostError } from "../../domain/datastore/datastore_sync_service.ts";
 import { V3CopySetupRacedError } from "../../domain/datastore_v3/copy_setup_raced_error.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
@@ -681,6 +682,17 @@ Deno.test(
     assertEquals(dup.rollback, { status: "unsettled", lockfilePath });
   },
 );
+
+Deno.test("exitCodeForError: returns 1 for a push that could not confirm its model lock, whose data was discarded", () => {
+  assertEquals(
+    exitCodeForError(
+      new ModelLockLostError([{ modelType: "t", modelId: "m" }], {
+        unconfirmedBy: new Error("getObject timed out"),
+      }),
+    ),
+    1,
+  );
+});
 
 Deno.test("exitCodeForError: returns 75 for a write a serve follower refused (swamp-club#4096)", () => {
   assertEquals(exitCodeForError(new ServeNotLeaderError(undefined)), 75);
