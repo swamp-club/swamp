@@ -472,7 +472,9 @@ Deno.test("ServeLock: a renewed fenced lease keeps its fence and floor", async (
   const serve = new FakeServe();
   serve.fence = 5;
   serve.floor = [{ name: "vpc", highWater: 1 }];
-  const subject = lock(serve, { root: ROOT, ttlMs: 30 });
+  // A fenced lease lapses if its first renewal misses the deadline: a TTL a
+  // loaded host's scheduler stall cannot outlast.
+  const subject = lock(serve, { root: ROOT, ttlMs: 1_500 });
   await subject.acquire();
   serve.fence = undefined;
   serve.floor = undefined;
