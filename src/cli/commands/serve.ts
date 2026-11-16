@@ -8785,6 +8785,8 @@ export const serveCommand = new Command()
         }
         if (upgrade.toLowerCase() === "websocket") {
           const remoteAddr = clientAddress();
+          // Read before any upgrade below, which closes the request's headers.
+          const forwardedPrefix = forwardedPrefixOf(req, Boolean(trustProxy));
 
           const originCheck = validateWebSocketOrigin(
             req.headers.get("origin"),
@@ -8854,7 +8856,7 @@ export const serveCommand = new Command()
                 socket,
                 connectionCtx,
                 null,
-                forwardedPrefixOf(req, Boolean(trustProxy)),
+                forwardedPrefix,
               );
               return response;
             }
@@ -9036,7 +9038,7 @@ export const serveCommand = new Command()
               socket,
               connectionCtx,
               principal,
-              forwardedPrefixOf(req, Boolean(trustProxy)),
+              forwardedPrefix,
             );
             return response;
           }
@@ -9064,7 +9066,7 @@ export const serveCommand = new Command()
             socket,
             connectionCtx,
             null,
-            forwardedPrefixOf(req, Boolean(trustProxy)),
+            forwardedPrefix,
           );
           return response;
         }
