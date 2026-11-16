@@ -3784,7 +3784,7 @@ export const serveCommand = new Command()
       "trigger overrides from serve.yaml. " +
       "Writes a PID file to .swamp/serve.pid; use 'swamp serve reload' to trigger a reload",
   )
-  // only swamp serve host passes it, so it has no serve.yaml key or env var
+  // for a supervising parent that holds the pipe: no serve.yaml key or env var
   .option(
     "--exit-on-stdin-close",
     "Drain and exit when stdin reaches end of file",
@@ -10230,8 +10230,7 @@ export const serveCommand = new Command()
       },
       includePosixSignals: !reloadOnHangup,
     });
-    // never rejects; not awaited, since a stdin left open after a SIGTERM
-    // drain must not hold the process
+    // not awaited: a stdin left open after a SIGTERM drain must not hold the process
     void stdinShutdownTrigger(
       options.exitOnStdinClose === true,
       () => Deno.stdin.readable,

@@ -99,7 +99,7 @@ without it the default file is optional.
 | `--hydration-timeout` | `SWAMP_HYDRATION_TIMEOUT` | 60 s | Startup pull of the remote datastore |
 | `--shutdown-drain-timeout` | `SWAMP_SHUTDOWN_DRAIN_TIMEOUT` | 30 s | How long shutdown waits for in-flight runs; `0` aborts at once; in serve.yaml quote the value (`"0"`) |
 | `--shutdown-listener-grace` | `SWAMP_SHUTDOWN_LISTENER_GRACE` | 1 s, `0` with `--reuse-port` | How long shutdown keeps listening after `/ready` turns 503; never more than the drain timeout in force when shutdown starts. A reload changes it (see Rolling restart) |
-| `--exit-on-stdin-close` (hidden) | — | off | End of file on stdin starts the same drain SIGTERM starts; stdin is never read without it. Only `swamp serve host` passes it, so it has no serve.yaml key |
+| `--exit-on-stdin-close` (hidden) | — | off | End of file on stdin starts the same drain SIGTERM starts; stdin is never read without it. For a supervising parent that holds the pipe ([serve workspaces](../surfaces/serve-workspaces.md)), so it has no serve.yaml key |
 | `--datastore-poll-interval` | `SWAMP_DATASTORE_POLL_INTERVAL` | 30 s | Config, access and runtime pollers; min 1 s; no effect without a remote datastore or managedConfig |
 | `--continuation-sweep-interval` | `SWAMP_CONTINUATION_SWEEP_INTERVAL` | 30 s | How often serve looks for suspended runs that need no further decision and continues them; `0` disables; whole seconds or larger; in serve.yaml quote the value (`"0"`) |
 | `--max-signal-wait-timeout` | `SWAMP_MAX_SIGNAL_WAIT_TIMEOUT` | 1 y | Longest `timeout` a `wait_for_signal` step may ask for on this server; at most one year; a step that asks for more fails when it would start waiting |
