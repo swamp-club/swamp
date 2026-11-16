@@ -120,7 +120,7 @@ export const workerConnectCommand = new Command()
   )
   .option(
     "--data-plane-url <url:string>",
-    "Override the data-plane base URL, path included (defaults to the connect URL over HTTP)",
+    "Override the data-plane base URL (defaults to the connect URL over HTTP)",
   )
   .option(
     "--cache-dir <dir:string>",

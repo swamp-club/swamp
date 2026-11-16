@@ -1193,14 +1193,21 @@ Deno.test("enrolledDataPlaneUrl: a forwardedPrefix that is not a string counts a
   );
 });
 
-Deno.test("enrolledDataPlaneUrl: an explicit data plane URL is used as written", () => {
+Deno.test("enrolledDataPlaneUrl: only the origin of an explicit data plane URL is used", () => {
   for (const forwardedPrefix of [undefined, "/", "/w/x"]) {
     assertEquals(
       enrolledDataPlaneUrl(
         { url: "wss://h/w/x", dataPlaneUrl: "https://dp:9443/swamp" },
         { forwardedPrefix },
       ),
-      "https://dp:9443/swamp",
+      "https://dp:9443/",
     );
   }
+  assertEquals(
+    enrolledDataPlaneUrl(
+      { url: "wss://h", dataPlaneUrl: "https://dp:9443" },
+      {},
+    ),
+    "https://dp:9443/",
+  );
 });

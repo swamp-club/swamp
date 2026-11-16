@@ -110,10 +110,10 @@ in `X-Forwarded-Prefix`; serve reads that header only with `--trust-proxy` and
 passes it to the worker in the enroll reply (`forwardedPrefix`). The worker
 keeps the prefix only when it starts its own connect path, and the client joins
 each route onto that base instead of resolving it as an absolute path. Without
-the header every worker keeps the root, as now. An explicit `--data-plane-url`
-is used as written, path included. The proof is a test that runs every client
-against a serve stand-in behind a forwarder that strips a prefix. A client the
-list above missed fails there.
+the header every worker keeps the root, as now. Only the origin of an explicit
+`--data-plane-url` is used; a path in it is ignored. The proof is a test that
+runs every client against a serve stand-in behind a forwarder that strips a
+prefix. A client the list above missed fails there.
 
 Apart from passing that header on, serve needs no change for this. Behind a
 forwarder it already takes the public host name in `--trusted-hosts` for its

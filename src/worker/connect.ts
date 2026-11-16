@@ -176,6 +176,17 @@ async function runWorkerFrom(
   dispatches: DispatchCount,
 ): Promise<WorkerExitResult> {
   const instanceUuid = crypto.randomUUID();
+  if (
+    options.dataPlaneUrl !== undefined && URL.canParse(options.dataPlaneUrl)
+  ) {
+    const ignoredPath = new URL(options.dataPlaneUrl).pathname;
+    if (ignoredPath !== "/") {
+      logger.warn(
+        "--data-plane-url path {path} is ignored: only its origin is used, and the data plane follows the path prefix serve declares",
+        { path: ignoredPath },
+      );
+    }
+  }
   const credential: WorkerCredential = { token: options.token };
   const session: SessionState = { credential: "", expiresAtMs: 0 };
   const gate: GateState = { admitted: options.admitGatePass === undefined };
@@ -464,13 +475,16 @@ interface GateState {
   pending?: Promise<void>;
 }
 
-/** An explicit --data-plane-url is used as written, path included. */
+/** Only the origin of an explicit --data-plane-url is used; its path is ignored. */
 export function enrolledDataPlaneUrl(
   options: Pick<RunWorkerOptions, "url" | "dataPlaneUrl">,
   result: Pick<EnrollResult, "forwardedPrefix">,
 ): string {
   if (options.dataPlaneUrl !== undefined) {
-    return options.dataPlaneUrl;
+    // an unparseable URL is left for the request to refuse
+    return URL.canParse(options.dataPlaneUrl)
+      ? `${new URL(options.dataPlaneUrl).origin}/`
+      : options.dataPlaneUrl;
   }
   // the reply is not schema-checked, so a malformed field counts as absent
   const forwardedPrefix = typeof result.forwardedPrefix === "string"
