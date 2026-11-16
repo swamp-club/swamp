@@ -95,14 +95,26 @@ export function createHttpForwarder(signal: AbortSignal): HttpForwarder {
         return;
       }
 
+      // a caller that hangs up before the reply is passed on as the child's own
+      // request aborting, which serve treats as the caller gone (a lock taken
+      // then is released); Deno aborts req.signal only after a reply has ended
+      const callerGone = () => outgoing.destroy();
+      req.signal.addEventListener("abort", callerGone, { once: true });
+      const forgetCaller = () =>
+        req.signal.removeEventListener("abort", callerGone);
+
       // an error event with no listener throws and would stop the host, so
       // both node streams keep one for their whole life
-      outgoing.on("error", unreachable);
+      outgoing.on("error", (error) => {
+        forgetCaller();
+        unreachable(error);
+      });
       outgoing.on("upgrade", (_res, socket) => {
         socket.destroy();
         unreachable(new Error("the child switched protocols unasked"));
       });
       outgoing.on("response", (incoming) => {
+        incoming.on("close", forgetCaller);
         incoming.on("error", (error) => {
           logger
             .debug`A reply from the child on port ${port} ended early: ${error}`;

@@ -31,6 +31,8 @@ const decoder = new TextDecoder();
 
 interface StandIn {
   readonly port: number;
+  /** set while a /hold or /ws-hold request waits, and when its caller left */
+  readonly hold: { waiting: boolean; aborted: boolean };
   /** resolves the SSE route's second event */
   releaseSse(): void;
   readonly cancelled: { value: boolean };
@@ -41,6 +43,7 @@ interface StandIn {
 function startStandIn(who: string): StandIn {
   let releaseSse = () => {};
   const cancelled = { value: false };
+  const hold = { waiting: false, aborted: false };
   const server = Deno.serve(
     { hostname: "127.0.0.1", port: 0, onListen() {} },
     async (req) => {
@@ -63,6 +66,17 @@ function startStandIn(who: string): StandIn {
         subprotocols: req.headers.get("sec-websocket-protocol"),
       };
       switch (url.pathname) {
+        case "/hold":
+        case "/ws-hold": {
+          hold.waiting = true;
+          await new Promise<void>((resolve) => {
+            req.signal.addEventListener("abort", () => {
+              hold.aborted = true;
+              resolve();
+            }, { once: true });
+          });
+          return new Response(null, { status: 499 });
+        }
         case "/ws": {
           const offered = seen.subprotocols?.split(",")[0]?.trim();
           const { socket, response } = Deno.upgradeWebSocket(
@@ -161,6 +175,7 @@ function startStandIn(who: string): StandIn {
   );
   return {
     port: server.addr.port,
+    hold,
     releaseSse: () => releaseSse(),
     cancelled,
     shutdown: () => server.shutdown(),
@@ -183,7 +198,7 @@ function startRouter(
     protocol: "https",
     trustProxy,
     signal: shutdownSignal.signal,
-    webSocketOpenTimeoutMs: 5_000,
+    webSocketOpenTimeoutMs: 60_000,
   });
   const server = Deno.serve(
     { hostname: "127.0.0.1", port: 0, onListen() {} },
@@ -587,6 +602,41 @@ Deno.test("workspace router: a caller dropping a stream releases the child's str
     await reply.body!.getReader().read();
     caller.abort();
     await waitFor(() => child.cancelled.value, "the child's stream cancelled");
+  });
+});
+
+Deno.test("workspace router: a caller that hangs up before the reply aborts the child's request", async () => {
+  await withFixture(async ({ router, child }) => {
+    const caller = new AbortController();
+    const pending = fetch(`${base(router)}/w/edge-dns/hold`, {
+      signal: caller.signal,
+    }).then((r) => r.body?.cancel(), () => {});
+    await waitFor(() => child.hold.waiting, "the child holding its reply");
+    caller.abort();
+    await pending;
+    await waitFor(() => child.hold.aborted, "the child's request aborted");
+  });
+});
+
+Deno.test("workspace router: a caller that hangs up during a WebSocket handshake leaves the child no open handshake", async () => {
+  await withFixture(async ({ router, child }) => {
+    const req = http.request({
+      host: "127.0.0.1",
+      port: router.port,
+      path: "/w/edge-dns/ws-hold",
+      agent: false,
+      headers: {
+        connection: "Upgrade",
+        upgrade: "websocket",
+        "sec-websocket-version": "13",
+        "sec-websocket-key": btoa("0123456789abcdef"),
+      },
+    });
+    req.on("error", () => {});
+    req.end();
+    await waitFor(() => child.hold.waiting, "the child holding the handshake");
+    req.destroy();
+    await waitFor(() => child.hold.aborted, "the child's handshake aborted");
   });
 });
 

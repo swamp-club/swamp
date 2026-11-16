@@ -93,8 +93,17 @@ export function createWorkspaceRouter(
     }
     upstream.binaryType = "arraybuffer";
     const toCaller: Array<string | ArrayBuffer> = [];
+    let queuedBytes = 0;
     let closeFromChild: { code: number; reason: string } | undefined;
-    upstream.onmessage = (e) => toCaller.push(e.data);
+    const queueForCaller = (data: string | ArrayBuffer) => {
+      queuedBytes += typeof data === "string" ? data.length : data.byteLength;
+      if (queuedBytes > MAX_BUFFERED_BYTES) {
+        closeQuietly(upstream, 1000, "The other side is not reading.");
+        return;
+      }
+      toCaller.push(data);
+    };
+    upstream.onmessage = (e) => queueForCaller(e.data);
 
     // the WebSocket API hides a refused handshake's status, so a child's 401
     // or 421 reaches the caller as this 502
@@ -103,11 +112,14 @@ export function createWorkspaceRouter(
         const settle = (result: "open" | "refused" | "timeout") => {
           clearTimeout(timer);
           signal.removeEventListener("abort", onAbort);
+          req.signal.removeEventListener("abort", onAbort);
           resolve(result);
         };
         const onAbort = () => settle("refused");
         const timer = setTimeout(() => settle("timeout"), openTimeoutMs);
         signal.addEventListener("abort", onAbort, { once: true });
+        // a caller that hangs up during the handshake leaves no upstream open
+        req.signal.addEventListener("abort", onAbort, { once: true });
         upstream.addEventListener("open", () => settle("open"), {
           once: true,
         });
@@ -143,7 +155,7 @@ export function createWorkspaceRouter(
     socket.binaryType = "arraybuffer";
     upstream.onmessage = (e) => {
       if (socket.readyState === WebSocket.OPEN) relay(socket, e.data);
-      else toCaller.push(e.data);
+      else queueForCaller(e.data);
     };
     const closeBoth = (reason: string) => {
       closeQuietly(socket, 1000, reason);
