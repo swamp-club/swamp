@@ -678,7 +678,12 @@ export async function startDetachedResume(
             : String(disposeErr),
         });
       }
-      registry.deregister(runId);
+      // a client reattaching after a restart may arrive once this has ended
+      if (resolvedRun.parker !== undefined && !parkedRun) {
+        registry.deregisterRetained(runId);
+      } else {
+        registry.deregister(runId);
+      }
       try {
         if (ctx.controlPlaneStore && ctx.instanceId) {
           deleteActiveRun(ctx.controlPlaneStore, ctx.instanceId, runId);

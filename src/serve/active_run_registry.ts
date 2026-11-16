@@ -86,8 +86,16 @@ export interface ActiveRunRegistryOptions {
   cancelIntents?: CancelIntentRecorder;
 }
 
+/**
+ * how long a run continued after a restart stays attachable once it ends: a
+ * client reattaching to it retries for this long, and may arrive after it ended
+ */
+export const CONTINUED_RUN_RETENTION_MS = 120_000;
+
 export class ActiveRunRegistry {
   readonly #runs = new Map<string, ActiveRun>();
+  // ended continued runs, attachable only; never drained, cancelled or counted
+  readonly #ended = new Map<string, ActiveRun>();
   #maxConcurrent: number;
   #maxPerPrincipal: number | undefined;
   #maxRunDurationMs: number | undefined;
@@ -198,6 +206,21 @@ export class ActiveRunRegistry {
     };
   }
 
+  /** keeps an ended continued run attachable for `retainMs` */
+  deregisterRetained(
+    runId: string,
+    retainMs = CONTINUED_RUN_RETENTION_MS,
+  ): void {
+    const run = this.#runs.get(runId);
+    this.deregister(runId);
+    if (run === undefined || retainMs <= 0) return;
+    this.#ended.set(runId, run);
+    const timer = setTimeout(() => {
+      if (this.#ended.get(runId) === run) this.#ended.delete(runId);
+    }, retainMs);
+    Deno.unrefTimer(timer);
+  }
+
   deregister(runId: string): void {
     this.#runs.delete(runId);
     for (const [childId, parentId] of this.#nested) {
@@ -240,7 +263,8 @@ export class ActiveRunRegistry {
     const run = this.#runs.get(runId);
     if (run) return run;
     const parentId = this.#nested.get(runId);
-    return parentId === undefined ? undefined : this.#runs.get(parentId);
+    if (parentId !== undefined) return this.#runs.get(parentId);
+    return this.#ended.get(runId);
   }
 
   cancel(runId: string, reason = "cancelled by user"): boolean {

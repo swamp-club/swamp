@@ -261,6 +261,10 @@ Deno.test({
       assertEquals(run?.status, "succeeded");
       assertEquals(await ranSteps(counter), ["first", "second", "third"]);
       assertEquals(run?.autoContinuation?.count, 0);
+      // a client reattaching after the continued run ended still gets its end
+      const ended = serve.registry.findForAttach(runId);
+      assertEquals(ended?.buffer.finished, true);
+      assertEquals(serve.registry.get(runId), undefined);
       assertEquals(run?.autoContinuation?.resetSteps, []);
     }),
 });
