@@ -833,7 +833,11 @@ Deno.test("flushOfflineEntries: each write a flush rejects is named in the notic
 function batching<T extends FakePort>(
   port: T,
   options: { readonly cutOff?: boolean; readonly unavailable?: boolean } = {},
-): T & { readonly batches: number[]; readonly reads: { histories: number } } {
+): T & {
+  readonly batches: number[];
+  readonly reads: { histories: number };
+  sendBatch: NonNullable<OfflineFlushPort["sendBatch"]>;
+} {
   const batches: number[] = [];
   const reads = { histories: 0 };
   const partitionCommits = port.partitionCommits.bind(port);
@@ -882,6 +886,7 @@ function batching<T extends FakePort>(
   }) as unknown as T & {
     readonly batches: number[];
     readonly reads: { histories: number };
+    sendBatch: NonNullable<OfflineFlushPort["sendBatch"]>;
   };
 }
 
@@ -992,4 +997,28 @@ Deno.test("flushOfflineEntries: a block built on a stale head is refused, its en
       commit.ops,
     ]);
   assertEquals(ours(port.commits), ours(alone.commits));
+});
+
+Deno.test("flushOfflineEntries: an entry of a batch that landed after one cut off is settled as landed, and the cut-off one is marked", async () => {
+  const port = batching(new FakePort());
+  const sendBatch = port.sendBatch.bind(port);
+  port.sendBatch = async (sends) => {
+    const results = [...(await sendBatch(sends))!];
+    results[0] = {
+      status: "rejected",
+      reason: new ServeUnreachableError(
+        "https://serve.test",
+        "maybe",
+        new Error("connection lost"),
+      ),
+    };
+    return results;
+  };
+  const report = await flush(port, [
+    await offlineEntry(1, "q1", 1),
+    await offlineEntry(2, "q2", 2),
+  ]);
+  assertEquals(port.sentMaybe.map((line) => line.split(" ")[0]), ["q1"]);
+  assertEquals(port.settled, ["q2"]);
+  assertEquals(report.landed, 1);
 });

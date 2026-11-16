@@ -1571,3 +1571,20 @@ Deno.test("ServeLock.acquire: an adopted explicit lease is never recorded, and n
   await subject.release();
   assertEquals(leases.forgotten, []);
 });
+
+Deno.test("ServeLock.acquire: an acquire that fails for good lets what waited on its catch-up go on, and one that succeeds does not", async () => {
+  const serve = new FakeServe();
+  serve.answers = [
+    new ServeUnreachableError(serve.baseUrl, "never", new Error("refused")),
+  ];
+  let gaveUp = 0;
+  const failing = lock(serve, { onGiveUp: () => gaveUp++ });
+  await assertRejects(() => failing.acquire(), ServeUnreachableError);
+  assertEquals(gaveUp, 1);
+
+  const fine = new FakeServe();
+  const held = lock(fine, { onGiveUp: () => gaveUp++ });
+  await held.acquire();
+  await held.release();
+  assertEquals(gaveUp, 1);
+});

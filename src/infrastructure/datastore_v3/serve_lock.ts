@@ -75,8 +75,8 @@ const logger = getSwampLogger(["datastore", "lock", "serve"]);
 export const SERVE_LOCK_TTL_MS = 30_000;
 export const SERVE_LOCK_REQUEST_WAIT_MS = 10_000;
 /**
- * commits a catch-up under a lock may still have to apply, about two seconds
- * of projection; further behind, the lock is released while the copy catches up
+ * commits a catch-up under a lock may still have to apply; further behind,
+ * the lock is released while the copy catches up
  */
 export const LOCK_CATCH_UP_MAX_COMMITS = 128;
 let lockCatchUpMaxCommits = LOCK_CATCH_UP_MAX_COMMITS;
@@ -84,7 +84,7 @@ let lockCatchUpMaxCommits = LOCK_CATCH_UP_MAX_COMMITS;
 export function setLockCatchUpMaxCommitsForTesting(max?: number): void {
   lockCatchUpMaxCommits = max ?? LOCK_CATCH_UP_MAX_COMMITS;
 }
-/** catch-ups under the lock kept bounded; the round after catches up in full */
+/** bounded rounds before the rest is caught up under the lock, with a warning */
 export const LOCK_CATCH_UP_ROUNDS = 3;
 const RETRY_INTERVAL_MS = 100;
 const MAX_BACKOFF_MS = 1_000;
@@ -145,6 +145,8 @@ export interface ServeLockOptions {
    * lease held; true when that put the checkout offline
    */
   readonly onCatchUpUnreachable?: (error: ServeUnreachableError) => boolean;
+  /** the acquire failed for good: whatever waited on its catch-up stops waiting */
+  readonly onGiveUp?: () => void;
   /** where the checkout's copy stands, for serve to answer with the lease */
   readonly catchUpRequest?: () => CatchUpRequest | undefined;
   /**
@@ -306,7 +308,10 @@ export class ServeLock implements DistributedLock {
         : this.#options.onUnreachable?.(unreachable) === true;
     }
     const now = goneOffline ? this.#options.offline?.() : undefined;
-    if (now === undefined) throw error;
+    if (now === undefined) {
+      this.#options.onGiveUp?.();
+      throw error;
+    }
     await this.#acquireOffline(now);
   }
 

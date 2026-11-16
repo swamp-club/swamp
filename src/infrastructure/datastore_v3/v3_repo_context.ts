@@ -739,6 +739,14 @@ function endDeferral(handle: V3Datastore): void {
   deferredCatchUps.delete(handle);
 }
 
+/** a lock that gave up: the feed watches it held back read on */
+export function endDeferralsAt(datastorePath: string): void {
+  const path = resolve(datastorePath);
+  for (const [handle] of [...deferredCatchUps]) {
+    if (resolve(handle.datastorePath) === path) endDeferral(handle);
+  }
+}
+
 /** whether a writer hold at `datastorePath` left its catch-up to a lock */
 export function catchUpDeferredTo(datastorePath: string): boolean {
   const path = resolve(datastorePath);

@@ -1535,18 +1535,15 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
           );
         },
         async assertReadModelWithin(maxCommits: number) {
-          let pending: number;
-          try {
-            pending = (await commitStore.changesSince(
-              readModel.cursor(),
-              maxCommits + 1,
-            )).length;
-          } catch (error) {
-            if (error instanceof CommitsCompactedError) {
-              throw new LockCatchUpBehindError(undefined);
-            }
-            throw error;
+          const cursor = readModel.cursor();
+          // as changesSince refuses it: the read model must load a base
+          if (cursor < await commitStore.compactionPoint()) {
+            throw new LockCatchUpBehindError(undefined);
           }
+          const pending = await commitStore.countChangesSince(
+            cursor,
+            maxCommits + 1,
+          );
           if (pending > maxCommits) throw new LockCatchUpBehindError(pending);
         },
         serveCatchUpRequest: () => serveCatchUp.request(),

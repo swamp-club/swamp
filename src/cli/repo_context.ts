@@ -307,6 +307,7 @@ import {
   catchUpDeferredAt,
   catchUpDeferredTo,
   catchUpV3HandlesAt,
+  endDeferralsAt,
   goServeOfflineAt,
   goServeOfflineAtLock,
   holdV3Writer,
@@ -1814,6 +1815,7 @@ function serveLockOf(
     // hold's catch-up would have
     onUnreachable: (error) => goServeOfflineAt(root, error),
     onCatchUpUnreachable: (error) => goServeOfflineAtLock(root, error),
+    onGiveUp: () => endDeferralsAt(root),
     // serve answers the lock with what the copy lacks, sparing a catch-up
     catchUpRequest: () => serveCatchUpRequestAt(root),
     // registered while held, so the checkout's commits to the partition name

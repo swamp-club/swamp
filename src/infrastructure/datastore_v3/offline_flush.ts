@@ -388,7 +388,7 @@ export async function flushOfflineEntries(
   return report;
 }
 
-/** the run of entries from `start` sharing its partition and lease, none sent before */
+/** an entry sent before without an answer goes alone, for its age check */
 function blockFrom(
   entries: readonly OutboxEntry[],
   start: number,
@@ -414,7 +414,7 @@ function blockFrom(
 }
 
 interface BlockOutcome {
-  /** the outcomes of the block's first entries, in order */
+  /** may be shorter than the block */
   readonly outcomes: readonly EntryOutcome[];
   /** the entry after them goes alone, with every retry a single send has */
   readonly single: boolean;
@@ -422,11 +422,7 @@ interface BlockOutcome {
   readonly unavailable?: boolean;
 }
 
-/**
- * builds each entry as it would be built alone once the ones before it landed,
- * on the partition read once and the earlier entries applied to it, then sends
- * them as one request
- */
+/** each entry is built on the partition read once, with the earlier ones applied */
 function flushBlock(
   port: OfflineFlushPort,
   block: readonly OutboxEntry[],
@@ -564,8 +560,8 @@ async function flushBlockIn(
   const outcomes: EntryOutcome[] = [];
   let stopping = false;
   for (const [index, result] of results.entries()) {
+    // one that landed is recorded so even after one before it was cut off
     if (result.status === "fulfilled") {
-      if (stopping) break;
       outcomes.push(built[index].landed);
       continue;
     }
