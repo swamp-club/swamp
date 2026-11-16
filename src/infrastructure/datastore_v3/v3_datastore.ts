@@ -1076,6 +1076,8 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
         head: (ns, partition) => serveCatchUp.headOf(ns, partition),
         send: (commit, leaseId) =>
           serveSink.upstream.appendUnderLease(commit, leaseId),
+        sendBatch: async (sends) =>
+          await serveSink.upstream.appendBatchUnderLease?.(sends),
         encodeMetadata: (metadata) =>
           new TextEncoder().encode(
             stringifyYaml(

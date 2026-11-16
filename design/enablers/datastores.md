@@ -8805,9 +8805,20 @@ removing the file while it keeps any.
 
 **The flush** (`offline_flush.ts`). It runs inside the outbox recovery, so
 only under the writer hold: read-only commands never flush. Once serve is
-reachable, entries go in outbox order, one at a time, each built under its
-original txnId, so a flush cut off part-way settles what landed and never
-lands an entry twice.
+reachable, entries go in outbox order, each built under its original txnId,
+so a flush cut off part-way settles what landed and never lands an entry
+twice.
+
+- **In blocks, as if one at a time.** A run of up to `FLUSH_BLOCK_ENTRIES`
+  (16) entries of one partition and lease, none sent before, is built
+  together and sent as one `POST commits` when serve takes batches: the
+  partition's state and history are read once, and each entry is rebased as
+  it would be once the ones before it landed, on that state with the earlier
+  entries applied and their commits in its history, their carry merged and
+  their txnIds counted as the flush's own. Landed entries settle in order. A
+  request that may have run marks every entry it carried sent without an
+  answer and stops the flush; an entry serve refused, or whose rebuild failed,
+  goes alone with every retry below, and the ones after it start a new block.
 
 - **Rebased, always.** Every entry that records a data version goes
   through `rebaseOfflineCommits` (`offline_rebase.ts`), even when its base
@@ -8821,8 +8832,8 @@ lands an entry twice.
   versions (without another writer meanwhile nothing moves; after one, the
   skipped numbers stay empty). Runs, outputs and auto-definitions pass
   through.
-- **Later entries follow earlier ones.** Entries are sent one at a time,
-  so each landed entry hands what it renumbered, the metadata digests it
+- **Later entries follow earlier ones.** Each entry is built on the ones
+  before it, so each landed entry hands what it renumbered, the metadata digests it
   rewrote and the corrected `createdAt` of its versions (the rebase's
   `OfflineRebaseCarry`) to the partition's later entries: a removal or an
   append of a version an earlier offline entry wrote names that version as

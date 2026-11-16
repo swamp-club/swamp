@@ -172,6 +172,16 @@ export type ServeUpstreamCommitStore =
       commit: Commit,
       leaseId: string | undefined,
     ): Promise<CommitStoreAppendResult>;
+    /**
+     * the commits in order as one request, each settled as appendUnderLease
+     * would settle it alone; undefined when serve takes no batches
+     */
+    appendBatchUnderLease?(
+      sends: readonly {
+        readonly commit: Commit;
+        readonly leaseId: string | undefined;
+      }[],
+    ): Promise<PromiseSettledResult<CommitStoreAppendResult>[] | undefined>;
   };
 
 export interface ServeCommitSink extends OutboxCommitSink {
@@ -822,6 +832,42 @@ export function createServeCommitSink(
       );
     },
     appendUnderLease: forward,
+    async appendBatchUnderLease(sends) {
+      if (
+        sends.length < 1 || sends.length > MAX_BATCH_COMMITS ||
+        client.postCommits === undefined ||
+        client.takesCommitBatches?.() !== true ||
+        options.offline?.() !== undefined
+      ) {
+        return undefined;
+      }
+      const previous = batchGate;
+      let open!: () => void;
+      batchGate = new Promise<void>((resolve) => open = resolve);
+      await previous;
+      try {
+        const settled = sends.map(() =>
+          Promise.withResolvers<CommitStoreAppendResult>()
+        );
+        // held before any is settled, so a refusal is never left unhandled
+        const outcomes = Promise.allSettled(settled.map((one) => one.promise));
+        await sendBatch(
+          sends.map(({ commit, leaseId }, index) => ({
+            commit,
+            // named only, as appendUnderLease names it: never sent again under none
+            lease: leaseId === undefined
+              ? undefined
+              : { leaseId, fence: 0, floor: [] },
+            resolve: settled[index].resolve,
+            reject: settled[index].reject,
+          })),
+          undefined,
+        );
+        return await outcomes;
+      } finally {
+        open();
+      }
+    },
   };
   const sink = createOutboxCommitSink({
     commitStore: upstream,

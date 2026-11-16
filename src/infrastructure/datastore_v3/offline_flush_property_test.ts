@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { CommitNotTriedError } from "./commit_log_unit_of_work.ts";
 import { assertEquals } from "@std/assert";
 import fc from "fast-check";
 import type { Commit } from "../../domain/datastore_v3/commit.ts";
@@ -166,6 +167,33 @@ class Model implements OfflineFlushPort {
   }
 }
 
+/** takes batches as serve does: in order, stopping at the first refusal */
+class BatchingModel extends Model {
+  async sendBatch(
+    sends: readonly { readonly commit: Commit }[],
+  ): Promise<readonly PromiseSettledResult<unknown>[]> {
+    const results: PromiseSettledResult<unknown>[] = [];
+    let refused = false;
+    for (const { commit } of sends) {
+      if (refused) {
+        results.push({
+          status: "rejected",
+          reason: new CommitNotTriedError(commit.partition.toString()),
+        });
+        continue;
+      }
+      try {
+        await this.send(commit);
+        results.push({ status: "fulfilled", value: undefined });
+      } catch (error) {
+        refused = true;
+        results.push({ status: "rejected", reason: error });
+      }
+    }
+    return results;
+  }
+}
+
 const minuteAt = (minute: number) =>
   new Date(Date.parse("2026-10-30T09:00:00.000Z") + minute * 60_000)
     .toISOString();
@@ -194,87 +222,89 @@ const step: fc.Arbitrary<Step> = fc.oneof(
   }),
 );
 
-Deno.test("flushOfflineEntries (property): every offline entry ends landed once, rejected or quarantined, whatever the interleaving", async () => {
-  await fc.assert(
-    fc.asyncProperty(
-      fc.array(step, { minLength: 1, maxLength: 14 }),
-      async (steps) => {
-        const model = new Model();
-        const queuedTxnIds: string[] = [];
-        let next = 0;
-        for (const current of steps) {
-          if (current.kind === "offline") {
-            const txnId = `offline-${next++}`;
-            queuedTxnIds.push(txnId);
-            const base = model.history.partition.seq;
-            model.outbox.set(txnId, {
-              sequence: next,
-              createdAt: 0,
-              unitId: `unit-${next}`,
-              base: { seq: base, txnId: undefined },
-              state: "offline",
-              commit: fixtureCommit({
-                seq: base + 1,
-                txnId,
+for (const batched of [false, true]) {
+  Deno.test(`flushOfflineEntries (property${batched ? ", batched" : ""}): every offline entry ends landed once, rejected or quarantined, whatever the interleaving`, async () => {
+    await fc.assert(
+      fc.asyncProperty(
+        fc.array(step, { minLength: 1, maxLength: 14 }),
+        async (steps) => {
+          const model = batched ? new BatchingModel() : new Model();
+          const queuedTxnIds: string[] = [];
+          let next = 0;
+          for (const current of steps) {
+            if (current.kind === "offline") {
+              const txnId = `offline-${next++}`;
+              queuedTxnIds.push(txnId);
+              const base = model.history.partition.seq;
+              model.outbox.set(txnId, {
+                sequence: next,
+                createdAt: 0,
+                unitId: `unit-${next}`,
+                base: { seq: base, txnId: undefined },
+                state: "offline",
+                commit: fixtureCommit({
+                  seq: base + 1,
+                  txnId,
+                  ops: await saveOps({
+                    name: "out",
+                    version: model.highWater() + 1,
+                  }),
+                  executedAt: minuteAt(current.minute),
+                }),
+              });
+            } else if (current.kind === "online") {
+              model.land(fixtureCommit({
+                seq: model.history.partition.seq + 1,
+                txnId: `online-${next++}`,
+                at: minuteAt(current.minute),
+                fence: 1,
                 ops: await saveOps({
                   name: "out",
-                  version: model.highWater() + 1,
+                  version: model.history.partition.versions("out").at(-1)! +
+                      1 || 1,
+                  createdAt: minuteAt(current.minute),
                 }),
-                executedAt: minuteAt(current.minute),
-              }),
-            });
-          } else if (current.kind === "online") {
-            model.land(fixtureCommit({
-              seq: model.history.partition.seq + 1,
-              txnId: `online-${next++}`,
-              at: minuteAt(current.minute),
-              fence: 1,
-              ops: await saveOps({
-                name: "out",
-                version: model.history.partition.versions("out").at(-1)! +
-                    1 || 1,
-                createdAt: minuteAt(current.minute),
-              }),
-            }));
-          } else {
-            model.answers = [...current.answers];
-            await flushOfflineEntries(model, model.queued(), {
-              writer: { host: "h", pid: 1, instance: "p" },
-              fence: 1,
-              clock: () => new Date("2026-10-30T12:00:00.000Z"),
-            });
+              }));
+            } else {
+              model.answers = [...current.answers];
+              await flushOfflineEntries(model, model.queued(), {
+                writer: { host: "h", pid: 1, instance: "p" },
+                fence: 1,
+                clock: () => new Date("2026-10-30T12:00:00.000Z"),
+              });
+            }
           }
-        }
-        model.answers = [];
-        await flushOfflineEntries(model, model.queued(), {
-          writer: { host: "h", pid: 1, instance: "p" },
-          fence: 1,
-          clock: () => new Date("2026-10-30T12:00:00.000Z"),
-        });
+          model.answers = [];
+          await flushOfflineEntries(model, model.queued(), {
+            writer: { host: "h", pid: 1, instance: "p" },
+            fence: 1,
+            clock: () => new Date("2026-10-30T12:00:00.000Z"),
+          });
 
-        const landed = model.commits.map((commit) => commit.txnId);
-        for (const txnId of queuedTxnIds) {
-          const kept = model.outbox.get(txnId);
-          const times = landed.filter((id) => id === txnId).length;
-          if (kept === undefined) {
-            assertEquals(times, 1, `${txnId} settled without landing once`);
-          } else {
-            assertEquals(times, 0, `${txnId} both landed and kept`);
-            assertEquals(
-              kept.state === "rejected" || kept.state === "quarantined",
-              true,
-              `${txnId} left ${kept.state ?? "pending"}`,
-            );
+          const landed = model.commits.map((commit) => commit.txnId);
+          for (const txnId of queuedTxnIds) {
+            const kept = model.outbox.get(txnId);
+            const times = landed.filter((id) => id === txnId).length;
+            if (kept === undefined) {
+              assertEquals(times, 1, `${txnId} settled without landing once`);
+            } else {
+              assertEquals(times, 0, `${txnId} both landed and kept`);
+              assertEquals(
+                kept.state === "rejected" || kept.state === "quarantined",
+                true,
+                `${txnId} left ${kept.state ?? "pending"}`,
+              );
+            }
           }
-        }
-        for (const txnId of model.outbox.keys()) {
-          assertEquals(queuedTxnIds.includes(txnId), true);
-        }
-      },
-    ),
-    { numRuns: 200 },
-  );
-});
+          for (const txnId of model.outbox.keys()) {
+            assertEquals(queuedTxnIds.includes(txnId), true);
+          }
+        },
+      ),
+      { numRuns: 200 },
+    );
+  });
+}
 
 type EditStep =
   | { readonly kind: "save"; readonly minute: number }
@@ -311,192 +341,203 @@ interface OwnVersion {
   readonly saveTxnId: string;
 }
 
-Deno.test("flushOfflineEntries (property): offline saves, appends and removals across entries never touch another writer's version, and every one lands", async () => {
-  await fc.assert(
-    fc.asyncProperty(
-      fc.array(editStep, { minLength: 1, maxLength: 16 }),
-      async (steps) => {
-        const model = new Model();
-        const queuedTxnIds: string[] = [];
-        const own: OwnVersion[] = [];
-        const theirs = new Map<number, string>();
-        let next = 0;
-        const currentNumber = (version: OwnVersion): number => {
-          const saving = model.outbox.get(version.saveTxnId);
-          if (saving !== undefined) return version.queued;
-          return model.carry.versions.find((carried) =>
-            carried.from === version.queued
-          )?.to ?? version.queued;
-        };
-        const landedMetadata = (number: number): DataMetadata | undefined => {
-          for (const commit of [...model.commits].reverse()) {
+async function playEdits(
+  steps: readonly EditStep[],
+  batched: boolean,
+) {
+  const model = batched ? new BatchingModel() : new Model();
+  const queuedTxnIds: string[] = [];
+  const own: OwnVersion[] = [];
+  const theirs = new Map<number, string>();
+  let next = 0;
+  const currentNumber = (version: OwnVersion): number => {
+    const saving = model.outbox.get(version.saveTxnId);
+    if (saving !== undefined) return version.queued;
+    return model.carry.versions.find((carried) =>
+      carried.from === version.queued
+    )?.to ?? version.queued;
+  };
+  const landedMetadata = (number: number): DataMetadata | undefined => {
+    for (const commit of [...model.commits].reverse()) {
+      for (const op of commit.ops) {
+        if (
+          op.kind === "data-version" && op.metadata.name === "out" &&
+          op.metadata.version === number
+        ) {
+          return op.metadata;
+        }
+      }
+    }
+    return undefined;
+  };
+  const queue = (ops: readonly Op[], minute: number): string => {
+    const txnId = `offline-${next++}`;
+    queuedTxnIds.push(txnId);
+    const base = model.history.partition.seq;
+    model.outbox.set(txnId, {
+      sequence: next,
+      createdAt: 0,
+      unitId: `unit-${next}`,
+      base: { seq: base, txnId: undefined },
+      state: "offline",
+      commit: fixtureCommit({
+        seq: base + 1,
+        txnId,
+        ops,
+        executedAt: minuteAt(minute),
+      }),
+    });
+    return txnId;
+  };
+  const flush = (cutAfter: number | undefined) => {
+    model.answers = cutAfter === undefined
+      ? []
+      : [...Array(cutAfter).fill("land"), "unreachable"];
+    return flushOfflineEntries(model, model.queued(), {
+      writer: { host: "h", pid: 1, instance: "p" },
+      fence: 1,
+      clock: () => new Date("2026-10-30T12:00:00.000Z"),
+    });
+  };
+  for (const current of steps) {
+    if (current.kind === "save") {
+      const version = model.highWater() + 1;
+      const txnId = queue(
+        await saveOps({ name: "out", version }),
+        current.minute,
+      );
+      own.push({ queued: version, saveTxnId: txnId });
+    } else if (
+      current.kind === "append" || current.kind === "delete" ||
+      current.kind === "gc"
+    ) {
+      if (own.length === 0) continue;
+      const index = current.pick % own.length;
+      const target = own[index];
+      const number = currentNumber(target);
+      if (current.kind === "append") {
+        const held = model.outbox.has(target.saveTxnId)
+          ? metadata("out", number)
+          : landedMetadata(number);
+        if (held === undefined) continue;
+        const bytes = encodeMetadata(held);
+        const expect = model.outbox.has(target.saveTxnId)
+          ? await sha256Hex(bytes)
+          : model.history.partition.record(
+            fixtureChanges().dataKey("out", number, "metadata.yaml"),
+          )?.sha256;
+        if (expect === undefined) continue;
+        queue(
+          await toOps(
+            fixtureChanges().writeVersion({ kind: "data.append" }, {
+              name: "out",
+              version: number,
+              metadata: held,
+              metadataBytes: bytes,
+              metadataExpect: { sha256: expect },
+              raw: new TextEncoder().encode(`more ${next}`),
+            }),
+          ),
+          current.minute,
+        );
+      } else {
+        queue(
+          await toOps(
+            fixtureChanges().removeVersion(
+              current.kind === "delete" ? "data.delete" : "data.gc",
+              "out",
+              number,
+            ),
+          ),
+          current.minute,
+        );
+        own.splice(index, 1);
+      }
+    } else if (current.kind === "online") {
+      // Another writer numbers from serve's log alone, so it may take
+      // a number the checkout holds queued.
+      const version = model.history.partition.highWater("out") + 1;
+      const commit = fixtureCommit({
+        seq: model.history.partition.seq + 1,
+        txnId: `online-${next++}`,
+        at: minuteAt(current.minute),
+        fence: 1,
+        ops: await saveOps({
+          name: "out",
+          version,
+          text: `theirs ${version}`,
+          createdAt: minuteAt(current.minute),
+        }),
+      });
+      model.land(commit);
+      const digest = model.history.partition.record(
+        fixtureChanges().dataKey("out", version, "raw"),
+      )?.sha256;
+      if (digest !== undefined) theirs.set(version, digest);
+    } else if (current.kind === "flush") {
+      await flush(current.cutAfter);
+    }
+  }
+  await flush(undefined);
+  return { model, queuedTxnIds, theirs, own, currentNumber };
+}
+
+for (const batched of [false, true]) {
+  Deno.test(`flushOfflineEntries (property${batched ? ", batched" : ""}): offline saves, appends and removals across entries never touch another writer's version, and every one lands`, async () => {
+    await fc.assert(
+      fc.asyncProperty(
+        fc.array(editStep, { minLength: 1, maxLength: 16 }),
+        async (steps) => {
+          const { model, queuedTxnIds, theirs, own, currentNumber } =
+            await playEdits(steps, batched);
+
+          const landed = model.commits.map((commit) => commit.txnId);
+          for (const txnId of queuedTxnIds) {
+            assertEquals(
+              model.outbox.get(txnId)?.state,
+              undefined,
+              `${txnId} was kept, not landed`,
+            );
+            assertEquals(landed.filter((id) => id === txnId).length, 1);
+          }
+          for (const [version, digest] of theirs) {
+            assertEquals(
+              model.history.partition.versions("out").includes(version),
+              true,
+              `their version ${version} was removed`,
+            );
+            assertEquals(
+              model.history.partition.record(
+                fixtureChanges().dataKey("out", version, "raw"),
+              )?.sha256,
+              digest,
+              `their version ${version} was changed`,
+            );
+          }
+          const restated = new Set<number>();
+          for (const commit of model.commits) {
             for (const op of commit.ops) {
               if (
-                op.kind === "data-version" && op.metadata.name === "out" &&
-                op.metadata.version === number
+                op.kind === "data-version" &&
+                op.metadata.tags["_swamp.restates"] !== undefined
               ) {
-                return op.metadata;
+                restated.add(op.metadata.version);
               }
             }
           }
-          return undefined;
-        };
-        const queue = (ops: readonly Op[], minute: number): string => {
-          const txnId = `offline-${next++}`;
-          queuedTxnIds.push(txnId);
-          const base = model.history.partition.seq;
-          model.outbox.set(txnId, {
-            sequence: next,
-            createdAt: 0,
-            unitId: `unit-${next}`,
-            base: { seq: base, txnId: undefined },
-            state: "offline",
-            commit: fixtureCommit({
-              seq: base + 1,
-              txnId,
-              ops,
-              executedAt: minuteAt(minute),
-            }),
-          });
-          return txnId;
-        };
-        const flush = (cutAfter: number | undefined) => {
-          model.answers = cutAfter === undefined
-            ? []
-            : [...Array(cutAfter).fill("land"), "unreachable"];
-          return flushOfflineEntries(model, model.queued(), {
-            writer: { host: "h", pid: 1, instance: "p" },
-            fence: 1,
-            clock: () => new Date("2026-10-30T12:00:00.000Z"),
-          });
-        };
-        for (const current of steps) {
-          if (current.kind === "save") {
-            const version = model.highWater() + 1;
-            const txnId = queue(
-              await saveOps({ name: "out", version }),
-              current.minute,
-            );
-            own.push({ queued: version, saveTxnId: txnId });
-          } else if (
-            current.kind === "append" || current.kind === "delete" ||
-            current.kind === "gc"
-          ) {
-            if (own.length === 0) continue;
-            const index = current.pick % own.length;
-            const target = own[index];
-            const number = currentNumber(target);
-            if (current.kind === "append") {
-              const held = model.outbox.has(target.saveTxnId)
-                ? metadata("out", number)
-                : landedMetadata(number);
-              if (held === undefined) continue;
-              const bytes = encodeMetadata(held);
-              const expect = model.outbox.has(target.saveTxnId)
-                ? await sha256Hex(bytes)
-                : model.history.partition.record(
-                  fixtureChanges().dataKey("out", number, "metadata.yaml"),
-                )?.sha256;
-              if (expect === undefined) continue;
-              queue(
-                await toOps(
-                  fixtureChanges().writeVersion({ kind: "data.append" }, {
-                    name: "out",
-                    version: number,
-                    metadata: held,
-                    metadataBytes: bytes,
-                    metadataExpect: { sha256: expect },
-                    raw: new TextEncoder().encode(`more ${next}`),
-                  }),
-                ),
-                current.minute,
-              );
-            } else {
-              queue(
-                await toOps(
-                  fixtureChanges().removeVersion(
-                    current.kind === "delete" ? "data.delete" : "data.gc",
-                    "out",
-                    number,
-                  ),
-                ),
-                current.minute,
-              );
-              own.splice(index, 1);
-            }
-          } else if (current.kind === "online") {
-            // Another writer numbers from serve's log alone, so it may take
-            // a number the checkout holds queued.
-            const version = model.history.partition.highWater("out") + 1;
-            const commit = fixtureCommit({
-              seq: model.history.partition.seq + 1,
-              txnId: `online-${next++}`,
-              at: minuteAt(current.minute),
-              fence: 1,
-              ops: await saveOps({
-                name: "out",
-                version,
-                text: `theirs ${version}`,
-                createdAt: minuteAt(current.minute),
-              }),
-            });
-            model.land(commit);
-            const digest = model.history.partition.record(
-              fixtureChanges().dataKey("out", version, "raw"),
-            )?.sha256;
-            if (digest !== undefined) theirs.set(version, digest);
-          } else if (current.kind === "flush") {
-            await flush(current.cutAfter);
-          }
-        }
-        await flush(undefined);
-
-        const landed = model.commits.map((commit) => commit.txnId);
-        for (const txnId of queuedTxnIds) {
-          assertEquals(
-            model.outbox.get(txnId)?.state,
-            undefined,
-            `${txnId} was kept, not landed`,
-          );
-          assertEquals(landed.filter((id) => id === txnId).length, 1);
-        }
-        for (const [version, digest] of theirs) {
-          assertEquals(
-            model.history.partition.versions("out").includes(version),
-            true,
-            `their version ${version} was removed`,
+          const ownLive = model.history.partition.versions("out").filter((v) =>
+            !theirs.has(v) && !restated.has(v)
           );
           assertEquals(
-            model.history.partition.record(
-              fixtureChanges().dataKey("out", version, "raw"),
-            )?.sha256,
-            digest,
-            `their version ${version} was changed`,
+            ownLive,
+            own.map(currentNumber).sort((a, b) => a - b),
           );
-        }
-        const restated = new Set<number>();
-        for (const commit of model.commits) {
-          for (const op of commit.ops) {
-            if (
-              op.kind === "data-version" &&
-              op.metadata.tags["_swamp.restates"] !== undefined
-            ) {
-              restated.add(op.metadata.version);
-            }
-          }
-        }
-        const ownLive = model.history.partition.versions("out").filter((v) =>
-          !theirs.has(v) && !restated.has(v)
-        );
-        assertEquals(
-          ownLive,
-          own.map(currentNumber).sort((a, b) => a - b),
-        );
-      },
-    ),
-    { numRuns: 150 },
-  );
-});
+        },
+      ),
+      { numRuns: 150 },
+    );
+  });
+}
 
 async function sha256Hex(bytes: Uint8Array): Promise<string> {
   const digest = new Uint8Array(
@@ -504,3 +545,24 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
   );
   return Array.from(digest, (b) => b.toString(16).padStart(2, "0")).join("");
 }
+
+Deno.test("flushOfflineEntries (property): a batched flush lands every entry exactly as entries sent one at a time do", async () => {
+  await fc.assert(
+    fc.asyncProperty(
+      fc.array(editStep, { minLength: 1, maxLength: 16 }),
+      async (generated) => {
+        // nothing cut off, so both flushes see the same serve
+        const steps = generated.map((step) =>
+          step.kind === "flush" ? { ...step, cutAfter: undefined } : step
+        );
+        const alone = (await playEdits(steps, false)).model;
+        const batched = (await playEdits(steps, true)).model;
+        const landed = (model: Model) =>
+          model.commits.map((commit) => [commit.txnId, commit.seq, commit.ops]);
+        assertEquals(landed(batched), landed(alone));
+        assertEquals(batched.carry, alone.carry);
+      },
+    ),
+    { numRuns: 200 },
+  );
+});

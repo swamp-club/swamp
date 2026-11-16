@@ -42,6 +42,7 @@ import {
   type OfflineRebaseCarry,
 } from "../../domain/datastore_v3/offline_rebase.ts";
 import type { Op } from "../../domain/datastore_v3/op.ts";
+import { CommitNotTriedError } from "./commit_log_unit_of_work.ts";
 import { configure, type LogRecord } from "@logtape/logtape";
 import { initializeLogging } from "../logging/logger.ts";
 import {
@@ -826,4 +827,133 @@ Deno.test("flushOfflineEntries: each write a flush rejects is named in the notic
     resetServeOfflineForTesting();
     await initializeLogging({ _reset: true });
   }
+});
+
+/** takes batches as serve does: in order, stopping at the first refusal */
+function batching<T extends FakePort>(
+  port: T,
+  options: { readonly cutOff?: boolean; readonly unavailable?: boolean } = {},
+): T & { readonly batches: number[]; readonly reads: { histories: number } } {
+  const batches: number[] = [];
+  const reads = { histories: 0 };
+  const partitionCommits = port.partitionCommits.bind(port);
+  return Object.assign(port, {
+    batches,
+    reads,
+    partitionCommits() {
+      reads.histories++;
+      return partitionCommits();
+    },
+    async sendBatch(
+      sends: readonly {
+        readonly commit: Commit;
+        readonly leaseId: string | undefined;
+      }[],
+    ): Promise<readonly PromiseSettledResult<unknown>[] | undefined> {
+      if (options.unavailable === true) return undefined;
+      batches.push(sends.length);
+      const results: PromiseSettledResult<unknown>[] = [];
+      let refused = false;
+      for (const { commit, leaseId } of sends) {
+        if (refused) {
+          results.push({
+            status: "rejected",
+            reason: new CommitNotTriedError(commit.partition.toString()),
+          });
+          continue;
+        }
+        try {
+          await port.send(commit, leaseId);
+          results.push(
+            options.cutOff === true
+              ? {
+                status: "rejected",
+                reason: new ServeCommitMayLandError(0, undefined, "cut off"),
+              }
+              : { status: "fulfilled", value: undefined },
+          );
+        } catch (error) {
+          refused = true;
+          results.push({ status: "rejected", reason: error });
+        }
+      }
+      return results;
+    },
+  }) as unknown as T & {
+    readonly batches: number[];
+    readonly reads: { histories: number };
+  };
+}
+
+async function threeQueued(): Promise<OutboxEntry[]> {
+  return [
+    await offlineEntry(1, "q1", 1),
+    await offlineEntry(2, "q2", 2),
+    await offlineEntry(3, "q3", 3),
+  ];
+}
+
+Deno.test("flushOfflineEntries: entries of one partition go as one batch, read its history once, and land as they would alone", async () => {
+  const theirs = async () =>
+    fixtureCommit({
+      seq: 1,
+      txnId: "theirs",
+      ops: await saveOps({ name: "out", version: 1 }),
+    });
+  const alone = new FakePort();
+  alone.land(await theirs());
+  const aloneReport = await flush(alone, await threeQueued());
+
+  const port = batching(new FakePort());
+  port.land(await theirs());
+  const report = await flush(port, await threeQueued());
+
+  assertEquals(port.batches, [3]);
+  assertEquals(port.reads.histories, 1);
+  assertEquals(report.landed, 3);
+  assertEquals(port.settled, ["q1", "q2", "q3"]);
+  assertEquals(
+    port.history.partition.versions("out"),
+    alone.history.partition.versions("out"),
+  );
+  assertEquals(report.renumbered, aloneReport.renumbered);
+  assertEquals(report.latest, aloneReport.latest);
+  assertEquals(
+    port.commits.map((commit) => [commit.txnId, commit.seq, commit.ops]),
+    alone.commits.map((commit) => [commit.txnId, commit.seq, commit.ops]),
+  );
+});
+
+Deno.test("flushOfflineEntries: an entry a batch has refused is sent again alone, renumbered past what serve holds, never rejected", async () => {
+  const port = batching(new LaggingPort());
+  port.land(fixtureCommit({
+    seq: 1,
+    txnId: "theirs",
+    ops: await saveOps({ name: "out", version: 1 }),
+  }));
+  const report = await flush(port, await threeQueued());
+  assertEquals([report.rejected, report.waiting, report.landed], [0, 0, 3]);
+  assertEquals(port.marks, []);
+  assertEquals(port.history.partition.versions("out").length, 4);
+});
+
+Deno.test("flushOfflineEntries: a batch cut off marks every entry it carried as sent without an answer", async () => {
+  const port = batching(new FakePort(), { cutOff: true });
+  const report = await flush(port, await threeQueued());
+  assertEquals(port.batches, [3]);
+  assertEquals(report.landed, 0);
+  assertEquals(report.waiting, 3);
+  assertEquals(port.settled, []);
+  assertEquals(
+    port.sentMaybe.map((line) => line.split(" ")[0]),
+    ["q1", "q2", "q3"],
+  );
+});
+
+Deno.test("flushOfflineEntries: without serve's batches every entry is sent alone", async () => {
+  const port = batching(new FakePort(), { unavailable: true });
+  const report = await flush(port, await threeQueued());
+  assertEquals(report.landed, 3);
+  assertEquals(port.sends.length, 3);
+  assertEquals(port.batches, []);
 });

@@ -1050,7 +1050,7 @@ Deno.test({
 
 Deno.test({
   name:
-    "serve offline: a flush cut off after serve took a commit resumes without landing it twice",
+    "serve offline: a flush cut off after serve took its batch of commits resumes without landing any twice",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
@@ -1081,7 +1081,8 @@ Deno.test({
           }
           commits++;
           const reply = await forward();
-          if (commits !== 2) return reply;
+          // both queued entries go in one request
+          if (commits !== 1) return reply;
           return new Response(
             new ReadableStream({
               start(controller) {
@@ -1092,7 +1093,7 @@ Deno.test({
           );
         };
         await command(scratch, alice, env, () => Promise.resolve());
-        assertEquals(commits, 2);
+        assertEquals(commits, 1);
         proxy.answer = undefined;
         await command(scratch, alice, env, () => Promise.resolve());
 
