@@ -25,6 +25,8 @@ export interface ForwardingOptions {
   readonly protocol: ListenerProtocol;
   /** whether the router itself sits behind a proxy whose forwarding headers it believes */
   readonly trustProxy: boolean;
+  /** the path the router removed, `/w/<name>`; undefined for the root workspace */
+  readonly removedPrefix: string | undefined;
 }
 
 const HOP_BY_HOP = [
@@ -65,6 +67,9 @@ export function forwardRequestHeaders(
     proto: options.trustProxy
       ? firstEntry(req.headers.get("x-forwarded-proto"))?.toLowerCase()
       : undefined,
+    prefix: options.trustProxy
+      ? outerPrefix(req.headers.get("x-forwarded-prefix"))
+      : "",
   };
   // a chunked body's length is not the declared one; node frames it afresh
   if (req.headers.has("transfer-encoding")) headers.delete("content-length");
@@ -85,6 +90,11 @@ export function forwardRequestHeaders(
       ? prior.proto
       : options.protocol,
   );
+  // a worker roots its data plane at this prefix, so the root's callers get
+  // none of their own and a workspace's get the path the router removed
+  const prefix = prior.prefix + (options.removedPrefix ?? "");
+  if (prefix.length > 0) headers.set("x-forwarded-prefix", prefix);
+  else headers.delete("x-forwarded-prefix");
   return headers;
 }
 
@@ -125,6 +135,13 @@ function dropHopByHop(headers: Headers): void {
     .map((token) => token.trim().toLowerCase())
     .filter((token) => token.length > 0);
   for (const name of [...HOP_BY_HOP, ...named]) headers.delete(name);
+}
+
+// a prefix that is not an absolute path is dropped rather than joined
+function outerPrefix(value: string | null): string {
+  const first = firstEntry(value);
+  if (first === null || !first.startsWith("/")) return "";
+  return first.replace(/\/+$/, "");
 }
 
 function firstEntry(value: string | null): string | null {

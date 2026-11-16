@@ -30,6 +30,7 @@ const DIRECT: ForwardingOptions = {
   peer: "203.0.113.7",
   protocol: "https",
   trustProxy: false,
+  removedPrefix: "/w/a",
 };
 
 function request(headers: Record<string, string>): Request {
@@ -119,7 +120,12 @@ Deno.test("forwardRequestHeaders: behind a trusted proxy the reported values are
       "x-forwarded-host": "serve.acme.internal, inner",
       "x-forwarded-proto": "HTTPS",
     }),
-    { peer: "10.0.0.2", protocol: "http", trustProxy: true },
+    {
+      peer: "10.0.0.2",
+      protocol: "http",
+      trustProxy: true,
+      removedPrefix: "/w/a",
+    },
   );
   assertEquals(
     headers.get("x-forwarded-for"),
@@ -132,11 +138,46 @@ Deno.test("forwardRequestHeaders: behind a trusted proxy the reported values are
 Deno.test("forwardRequestHeaders: behind a trusted proxy missing or unusable values fall back to the router's own", () => {
   const headers = forwardRequestHeaders(
     request({ host: "serve.acme.internal", "x-forwarded-proto": "gopher" }),
-    { peer: "10.0.0.2", protocol: "https", trustProxy: true },
+    {
+      peer: "10.0.0.2",
+      protocol: "https",
+      trustProxy: true,
+      removedPrefix: undefined,
+    },
   );
   assertEquals(headers.get("x-forwarded-for"), "10.0.0.2");
   assertEquals(headers.get("x-forwarded-host"), "serve.acme.internal");
   assertEquals(headers.get("x-forwarded-proto"), "https");
+});
+
+Deno.test("forwardRequestHeaders: a workspace's callers get the removed path as their prefix, replacing one a direct caller sent", () => {
+  const headers = forwardRequestHeaders(
+    request({ host: "serve.acme.internal", "x-forwarded-prefix": "/evil" }),
+    DIRECT,
+  );
+  assertEquals(headers.get("x-forwarded-prefix"), "/w/a");
+});
+
+Deno.test("forwardRequestHeaders: the root workspace's callers get no prefix, even one a direct caller sent", () => {
+  const headers = forwardRequestHeaders(
+    request({ host: "serve.acme.internal", "x-forwarded-prefix": "/evil" }),
+    { ...DIRECT, removedPrefix: undefined },
+  );
+  assertEquals(headers.has("x-forwarded-prefix"), false);
+});
+
+Deno.test("forwardRequestHeaders: behind a trusted proxy the removed path is appended to the proxy's prefix", () => {
+  const trusted = { ...DIRECT, trustProxy: true };
+  const prefixOf = (sent: string, removedPrefix: string | undefined) =>
+    forwardRequestHeaders(
+      request({ host: "h", "x-forwarded-prefix": sent }),
+      { ...trusted, removedPrefix },
+    ).get("x-forwarded-prefix");
+  assertEquals(prefixOf("/swamp/", "/w/a"), "/swamp/w/a");
+  assertEquals(prefixOf("/swamp, /inner", "/w/a"), "/swamp/w/a");
+  assertEquals(prefixOf("/swamp", undefined), "/swamp");
+  assertEquals(prefixOf("not-a-path", "/w/a"), "/w/a");
+  assertEquals(prefixOf("/", undefined), null);
 });
 
 Deno.test("forwardWebSocketHeaders: the handshake headers are left to the router's own client", () => {

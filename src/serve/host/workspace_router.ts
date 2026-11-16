@@ -222,6 +222,9 @@ export function createWorkspaceRouter(
         peer: info.remoteAddr.hostname,
         protocol: options.protocol,
         trustProxy: options.trustProxy,
+        removedPrefix: match.kind === "workspace"
+          ? `/w/${match.name}`
+          : undefined,
       };
       if (req.headers.get("upgrade")?.toLowerCase() === "websocket") {
         return relayWebSocket(req, route.port, pathAndQuery, forwarding);

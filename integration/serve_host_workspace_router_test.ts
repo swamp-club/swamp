@@ -60,6 +60,7 @@ function startStandIn(who: string): StandIn {
         forwardedFor: req.headers.get("x-forwarded-for"),
         forwardedHost: req.headers.get("x-forwarded-host"),
         forwardedProto: req.headers.get("x-forwarded-proto"),
+        forwardedPrefix: req.headers.get("x-forwarded-prefix"),
         forwarded: req.headers.get("forwarded"),
         contentLength: req.headers.get("content-length"),
         transferEncoding: req.headers.get("transfer-encoding"),
@@ -332,6 +333,7 @@ Deno.test("workspace router: a child sees the caller's public host and protocol 
         "x-forwarded-for": "10.9.9.9",
         "x-forwarded-host": "evil.example",
         "x-forwarded-proto": "http",
+        "x-forwarded-prefix": "/evil",
         forwarded: "for=10.9.9.9",
       },
     });
@@ -339,6 +341,7 @@ Deno.test("workspace router: a child sees the caller's public host and protocol 
     assertEquals(seen.forwardedFor, "127.0.0.1");
     assertEquals(seen.forwardedHost, "serve.acme.internal");
     assertEquals(seen.forwardedProto, "https");
+    assertEquals(seen.forwardedPrefix, "/w/edge-dns");
     assertEquals(seen.forwarded, null);
   });
 });
@@ -351,12 +354,14 @@ Deno.test("workspace router: behind a trusted proxy the proxy's forwarding heade
         "x-forwarded-for": "198.51.100.1",
         "x-forwarded-host": "serve.acme.internal",
         "x-forwarded-proto": "https",
+        "x-forwarded-prefix": "/swamp",
       },
     });
     const seen = JSON.parse(reply.body);
     assertEquals(seen.forwardedFor, "198.51.100.1, 127.0.0.1");
     assertEquals(seen.forwardedHost, "serve.acme.internal");
     assertEquals(seen.forwardedProto, "https");
+    assertEquals(seen.forwardedPrefix, "/swamp/w/edge-dns");
   }, { trustProxy: true });
 });
 
@@ -507,6 +512,7 @@ Deno.test("workspace router: a WebSocket is relayed with its subprotocol, Origin
       assertEquals(seen.subprotocols, "bearer.swamp_abc, other");
       assertEquals(seen.forwardedFor, "127.0.0.1");
       assertEquals(seen.forwardedProto, "https");
+      assertEquals(seen.forwardedPrefix, "/w/edge-dns");
 
       ws.send("text frame");
       ws.send(new Uint8Array([1, 2, 3]));
@@ -556,13 +562,16 @@ Deno.test("workspace router: a stopped workspace answers 503 naming its state, a
   });
 });
 
-Deno.test("workspace router: a path outside /w/ reaches the root unchanged", async () => {
+Deno.test("workspace router: a path outside /w/ reaches the root unchanged, with no prefix", async () => {
   await withFixture(async ({ router }) => {
-    const reply = await fetch(`${base(router)}/api/v1/request?x=y`);
+    const reply = await fetch(`${base(router)}/api/v1/request?x=y`, {
+      headers: { "x-forwarded-prefix": "/evil" },
+    });
     const seen = await reply.json();
     assertEquals(seen.who, "root");
     assertEquals(seen.path, "/api/v1/request");
     assertEquals(seen.search, "?x=y");
+    assertEquals(seen.forwardedPrefix, null);
   });
 });
 
