@@ -27,7 +27,11 @@ import { LoadError } from "../components/LoadError.tsx";
 import { Skeleton } from "../components/Skeleton.tsx";
 import { loadState } from "../client/load_state.ts";
 import { formatCount, pluralize } from "../lib/format.ts";
-import { dataRowLink } from "./artifact_links.ts";
+import {
+  behaviorFilterOptions,
+  dataRowLink,
+  isWorkflowOwned,
+} from "./artifact_links.ts";
 import { DATA_COLUMNS, DataTableSkeleton } from "./PageSkeletons.tsx";
 import {
   ALL_BEHAVIORS_LABEL,
@@ -56,14 +60,7 @@ export function Data() {
   const allItems = extractArray<DataItem>(dataReq.data);
   const state = loadState(dataReq, () => allItems.length === 0);
 
-  // Keep the chosen model selectable while its results load.
-  const models = [
-    ...new Set(
-      [modelFilter, ...allItems.map((i) => i.modelName)].filter(
-        (m): m is string => Boolean(m),
-      ),
-    ),
-  ];
+  const models = behaviorFilterOptions(allItems, modelFilter);
   const totalPages = Math.ceil(allItems.length / PAGE_SIZE);
   const items = allItems.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
 
@@ -161,18 +158,40 @@ export function Data() {
                             : item.name;
                         })()}
                       </td>
-                      <td
-                        className="mono"
-                        style={{
-                          fontSize: "0.78rem",
-                          color: "var(--accent)",
-                          cursor: "pointer",
-                        }}
-                        onClick={() =>
-                          item.modelName && handleModelChange(item.modelName)}
-                      >
-                        {item.modelName ?? "—"}
-                      </td>
+                      {item.modelName && isWorkflowOwned(item)
+                        ? (
+                          <td
+                            className="mono"
+                            style={{ fontSize: "0.78rem" }}
+                          >
+                            <RouteLink
+                              to={{
+                                view: "workflows",
+                                detail: {
+                                  kind: "workflow",
+                                  workflowName: item.modelName,
+                                },
+                              }}
+                            >
+                              {item.modelName}
+                            </RouteLink>
+                          </td>
+                        )
+                        : (
+                          <td
+                            className="mono"
+                            style={{
+                              fontSize: "0.78rem",
+                              color: "var(--accent)",
+                              cursor: "pointer",
+                            }}
+                            onClick={() =>
+                              item.modelName &&
+                              handleModelChange(item.modelName)}
+                          >
+                            {item.modelName ?? "—"}
+                          </td>
+                        )}
                       <td
                         style={{
                           fontSize: "0.82rem",

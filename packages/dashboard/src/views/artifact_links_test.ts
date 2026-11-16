@@ -19,7 +19,9 @@
 
 import { assertEquals } from "@std/assert";
 import {
+  behaviorFilterOptions,
   dataRowLink,
+  isWorkflowOwned,
   partitionModelData,
   stepArtifactLink,
   workflowReportLinks,
@@ -194,6 +196,39 @@ Deno.test("dataRowLink: only model-owned rows with a name get a link", () => {
     dataRowLink({ name: "r", modelName: "wf", modelType: "workflow" }),
     null,
   );
+});
+
+Deno.test("isWorkflowOwned: only workflow-scope rows", () => {
+  assertEquals(
+    isWorkflowOwned({ name: "r", modelName: "wf", modelType: "workflow" }),
+    true,
+  );
+  assertEquals(
+    isWorkflowOwned({ name: "s", modelName: "m", modelType: "command/shell" }),
+    false,
+  );
+  assertEquals(isWorkflowOwned({ name: "s" }), false);
+});
+
+Deno.test("behaviorFilterOptions: behavior names only, deduplicated, selection kept", () => {
+  const rows = [
+    { name: "result", modelName: "echoer", modelType: "command/shell" },
+    { name: "log", modelName: "echoer", modelType: "command/shell" },
+    {
+      name: "report-swamp-workflow-summary",
+      modelName: "scan-wf",
+      modelType: "workflow",
+    },
+    { name: "orphan" },
+    { name: "state", modelName: "inventory", modelType: "x/y" },
+  ];
+  assertEquals(behaviorFilterOptions(rows, ""), ["echoer", "inventory"]);
+  // A chosen behavior stays selectable while its filtered rows load.
+  assertEquals(behaviorFilterOptions([], "inventory"), ["inventory"]);
+  assertEquals(behaviorFilterOptions(rows, "inventory"), [
+    "inventory",
+    "echoer",
+  ]);
 });
 
 Deno.test("partitionModelData: reports by name and variant, JSON halves hidden", () => {

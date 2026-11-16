@@ -49,6 +49,7 @@ Deno.test("WebhooksLocalState: says webhooks need swamp serve and shows the serv
   assertStringIncludes(html, 'data-local-state="webhooks"');
   assertStringIncludes(html, "Webhooks off");
   assertStringIncludes(html, ".swamp/serve.yaml");
+  assertStringIncludes(html, "doesn&#x27;t exist yet, create it");
   assertStringIncludes(html, "webhooks:");
   assertStringIncludes(html, "swamp serve check-config");
   for (const link of WEBHOOK_MANUAL_LINKS) {
