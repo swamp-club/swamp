@@ -173,6 +173,21 @@ Deno.test("serveCommand has --key-file option", async () => {
   assertEquals(keyOpt !== undefined, true);
 });
 
+Deno.test("serveCommand has a hidden --exit-on-stdin-close option that serve daemon enable does not", async () => {
+  const { serveCommand } = await import("./serve.ts");
+  const opt = serveCommand.getOptions(true).find((o) =>
+    o.name === "exit-on-stdin-close"
+  );
+  assertEquals(opt?.hidden, true);
+  const daemonEnable = serveCommand.getCommand("daemon")!.getCommand(
+    "enable",
+  )!;
+  assertEquals(
+    daemonEnable.getOptions(true).some((o) => o.name === "exit-on-stdin-close"),
+    false,
+  );
+});
+
 Deno.test("serveCommand has --datastore-poll-interval option", async () => {
   const { serveCommand } = await import("./serve.ts");
   const options = serveCommand.getOptions();
