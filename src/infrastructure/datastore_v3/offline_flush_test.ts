@@ -957,3 +957,39 @@ Deno.test("flushOfflineEntries: without serve's batches every entry is sent alon
   assertEquals(port.sends.length, 3);
   assertEquals(port.batches, []);
 });
+
+Deno.test("flushOfflineEntries: a block built on a stale head is refused, its entry sent again alone, and every entry lands as it would unbatched", async () => {
+  const alone = new FakePort();
+  await flush(alone, await threeQueued());
+
+  const port = batching(new FakePort());
+  // the block reads a head one behind serve's, so its first entry's seq is wrong
+  let stale = true;
+  const head = port.head.bind(port);
+  port.head = async () => {
+    const seq = await head();
+    if (!stale) return seq;
+    stale = false;
+    port.land(fixtureCommit({
+      seq: seq + 1,
+      txnId: "raced",
+      ops: await saveOps({ name: "other", version: 1 }),
+    }));
+    return seq;
+  };
+  const report = await flush(port, await threeQueued());
+
+  assertEquals(report.landed, 3);
+  assertEquals(report.rejected, 0);
+  assertEquals(port.batches[0], 3);
+  assertEquals(
+    port.sends.filter((send) => send.startsWith("q1 ")).length,
+    2,
+  );
+  const ours = (commits: readonly Commit[]) =>
+    commits.filter((commit) => commit.txnId !== "raced").map((commit) => [
+      commit.txnId,
+      commit.ops,
+    ]);
+  assertEquals(ours(port.commits), ours(alone.commits));
+});
