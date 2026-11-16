@@ -33,6 +33,7 @@ import type {
   CrashWorkerMessage,
   CrashWorkerRequest,
 } from "./sqlite_commit_store_crash_worker.ts";
+import { startLoadedWorker } from "./graph_worker.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const tempDir = await Deno.makeTempDir({ prefix: "swamp-commit-crash-" });
@@ -119,15 +120,19 @@ Deno.test("SqliteCommitStore crash: a writer killed before COMMIT leaves no row"
     await SqliteCommitStore.open(path).close();
 
     const commit = await save(1);
-    const worker = new Worker(
-      new URL("./sqlite_commit_store_crash_worker.ts", import.meta.url).href,
-      { type: "module" },
-    );
     let written = false;
+    // fits the default 10s wait that bounded the load before
+    const worker = await startLoadedWorker<CrashWorkerMessage>(
+      new URL("./sqlite_commit_store_crash_worker.ts", import.meta.url),
+      {
+        loadTimeoutMs: 5_000,
+        attempts: 2,
+        onMessage: (message) => {
+          if (message === "written") written = true;
+        },
+      },
+    );
     try {
-      worker.onmessage = (event: MessageEvent<CrashWorkerMessage>) => {
-        if (event.data === "written") written = true;
-      };
       worker.postMessage(
         {
           dbPath: path,

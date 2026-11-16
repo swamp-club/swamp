@@ -23,6 +23,7 @@
  */
 
 import { SqliteCommitStore } from "../src/infrastructure/datastore_v3/sqlite_commit_store.ts";
+import { LOADED } from "./graph_worker.ts";
 
 export interface CompactionCrashRequest {
   readonly dbPath: string;
@@ -31,6 +32,8 @@ export interface CompactionCrashRequest {
 export type CompactionCrashMessage = "folded";
 
 declare const self: Worker;
+
+self.postMessage(LOADED);
 
 self.onmessage = async (event: MessageEvent<CompactionCrashRequest>) => {
   const store = SqliteCommitStore.open(event.data.dbPath);

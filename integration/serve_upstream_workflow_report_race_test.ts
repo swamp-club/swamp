@@ -40,6 +40,7 @@ import type {
   WorkflowRunWorkerMessage,
   WorkflowRunWorkerRequest,
 } from "./serve_upstream_workflow_run_worker.ts";
+import { startLoadedWorker } from "./graph_worker.ts";
 import {
   BARRIER_REPORT,
   type WorkflowReportBarrier,
@@ -97,29 +98,25 @@ function runWorkflows(
     barrier?: WorkflowReportBarrier;
   } = {},
 ): Promise<Runs> {
-  const worker = new Worker(
-    new URL("./serve_upstream_workflow_run_worker.ts", import.meta.url).href,
-    { type: "module" },
-  );
-  let loaded = false;
   let done: Extract<WorkflowRunWorkerMessage, { kind: "done" }> | undefined;
   let failed: string | undefined;
-  worker.onmessage = (event: MessageEvent<WorkflowRunWorkerMessage>) => {
-    const message = event.data;
-    if (message.kind === "loaded") loaded = true;
-    else if (message.kind === "done") done = message;
-    else failed = message.error;
-  };
-  worker.onerror = (event) => {
-    event.preventDefault();
-    failed = event.message;
-  };
   return (async () => {
+    let worker: Worker | undefined;
     try {
-      await waitFor(
-        () => loaded || failed !== undefined,
-        `${token}'s worker to load`,
-        { timeoutMs: 120_000 },
+      worker = await startLoadedWorker<WorkflowRunWorkerMessage>(
+        new URL("./serve_upstream_workflow_run_worker.ts", import.meta.url),
+        {
+          loadTimeoutMs: 40_000,
+          attempts: 3,
+          onMessage: (message) => {
+            if (message.kind === "done") done = message;
+            else if (message.kind === "failed") failed = message.error;
+          },
+          onError: (event) => {
+            event.preventDefault();
+            failed = event.message;
+          },
+        },
       );
       worker.postMessage(
         {
@@ -145,7 +142,7 @@ function runWorkflows(
         { timeoutMs: 240_000, intervalMs: 50 },
       );
     } finally {
-      worker.terminate();
+      worker?.terminate();
     }
     if (done === undefined) throw new Error(`${token} failed: ${failed}`);
     return done;

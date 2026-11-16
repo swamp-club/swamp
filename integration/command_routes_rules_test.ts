@@ -60,6 +60,7 @@ import type {
   RouteWorkerRequest,
   RouteWorkerResponse,
 } from "./command_route_worker.ts";
+import { startLoadedWorker } from "./graph_worker.ts";
 import {
   completionOwners,
   completionValues,
@@ -557,34 +558,79 @@ Deno.test("command routes: a completion callback naming a hidden command is refu
 
 // a worker that exits or stalls without answering would otherwise hold the
 // test, and with it the whole run, until an outer cap with no route named
-const WORKER_DEADLINE_MS = 300_000;
+const WORKER_DEADLINE_MS = 120_000;
+// the request loads command modules after the worker starts, and only reads,
+// so a stalled one is asked again of a fresh worker
+const WORKER_ATTEMPTS = 3;
 
-function inWorker(request: RouteWorkerRequest): Promise<RouteWorkerResponse> {
-  const worker = new Worker(
-    new URL("./command_route_worker.ts", import.meta.url).href,
-    { type: "module" },
-  );
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  return new Promise<RouteWorkerResponse>((resolve) => {
-    timer = setTimeout(
-      () =>
-        resolve({
-          ok: false,
-          error: `no answer within ${WORKER_DEADLINE_MS}ms`,
-        }),
-      WORKER_DEADLINE_MS,
+async function inWorker(
+  request: RouteWorkerRequest,
+): Promise<RouteWorkerResponse> {
+  let response: RouteWorkerResponse | undefined;
+  for (let attempt = 1; attempt <= WORKER_ATTEMPTS; attempt++) {
+    response = await inWorkerOnce(request);
+    if (response.ok || !response.error.startsWith(NO_ANSWER)) return response;
+  }
+  return {
+    ok: false,
+    error:
+      `${NO_ANSWER} ${WORKER_DEADLINE_MS}ms in ${WORKER_ATTEMPTS} attempts`,
+  };
+}
+
+const NO_ANSWER = "no answer within";
+
+async function inWorkerOnce(
+  request: RouteWorkerRequest,
+): Promise<RouteWorkerResponse> {
+  const started = Date.now();
+  let answer: (response: RouteWorkerResponse) => void = () => {};
+  const answered = new Promise<RouteWorkerResponse>((resolve) => {
+    answer = resolve;
+  });
+  let worker: Worker;
+  try {
+    worker = await startLoadedWorker<RouteWorkerResponse>(
+      new URL("./command_route_worker.ts", import.meta.url),
+      {
+        loadTimeoutMs: WORKER_DEADLINE_MS,
+        attempts: 1,
+        onMessage: answer,
+        onError: (event) => {
+          event.preventDefault();
+          answer({ ok: false, error: event.message });
+        },
+      },
     );
-    worker.onmessage = (event: MessageEvent<RouteWorkerResponse>) =>
-      resolve(event.data);
-    worker.onerror = (event) => {
-      event.preventDefault();
-      resolve({ ok: false, error: event.message });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      ok: false,
+      error: message.includes("did not load")
+        ? `${NO_ANSWER} ${WORKER_DEADLINE_MS}ms`
+        : message,
     };
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
     worker.postMessage(request);
-  }).finally(() => {
+    return await Promise.race([
+      answered,
+      new Promise<RouteWorkerResponse>((resolve) => {
+        timer = setTimeout(
+          () =>
+            resolve({
+              ok: false,
+              error: `${NO_ANSWER} ${WORKER_DEADLINE_MS}ms`,
+            }),
+          Math.max(0, WORKER_DEADLINE_MS - (Date.now() - started)),
+        );
+      }),
+    ]);
+  } finally {
     clearTimeout(timer);
     worker.terminate();
-  });
+  }
 }
 
 async function inBatches<T, R>(

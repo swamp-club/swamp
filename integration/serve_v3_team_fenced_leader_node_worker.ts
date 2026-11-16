@@ -90,6 +90,7 @@ import { ServeLeadership } from "../src/serve/serve_leadership.ts";
 import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
 import { TEST_TIMINGS } from "./datastore_v3_litestream_helpers.ts";
 import { createServeCtx, type Frame } from "./serve_request_harness.ts";
+import { LOADED } from "./graph_worker.ts";
 
 export type FencedNodeRequest =
   | {
@@ -659,3 +660,5 @@ self.onmessage = async (event: MessageEvent<FencedNodeRequest>) => {
     );
   }
 };
+
+self.postMessage(LOADED);

@@ -70,6 +70,7 @@ import type {
   OutboxCrashPause,
   OutboxCrashRequest,
 } from "./datastore_v3_outbox_crash_worker.ts";
+import { startLoadedWorker } from "./graph_worker.ts";
 
 await initializeLogging({});
 
@@ -115,32 +116,34 @@ async function killWriter(
     "auto-definitions",
     `${id}.yaml`,
   );
-  const worker = new Worker(
-    new URL("./datastore_v3_outbox_crash_worker.ts", import.meta.url).href,
-    { type: "module" },
-  );
   let killed = false;
   let failed: string | undefined;
   let done = false;
+  const worker: Worker = await startLoadedWorker<OutboxCrashMessage>(
+    new URL("./datastore_v3_outbox_crash_worker.ts", import.meta.url),
+    {
+      loadTimeoutMs: 20_000,
+      attempts: 3,
+      onMessage: async (message) => {
+        if ("failed" in message) failed = message.failed;
+        else if ("done" in message) done = true;
+        else if (message.paused === options.killAt) {
+          worker.terminate();
+          killed = true;
+        } else {
+          await options.onPause?.(message.paused);
+          worker.postMessage("resume");
+        }
+      },
+      // A worker that throws outside its own catch fails the wait at once
+      // rather than at its deadline.
+      onError: (event) => {
+        event.preventDefault();
+        failed = event.message;
+      },
+    },
+  );
   try {
-    worker.onmessage = async (event: MessageEvent<OutboxCrashMessage>) => {
-      const message = event.data;
-      if ("failed" in message) failed = message.failed;
-      else if ("done" in message) done = true;
-      else if (message.paused === options.killAt) {
-        worker.terminate();
-        killed = true;
-      } else {
-        await options.onPause?.(message.paused);
-        worker.postMessage("resume");
-      }
-    };
-    // A worker that fails to load, or throws outside its own catch, fails
-    // the wait at once rather than at its deadline.
-    worker.onerror = (event) => {
-      event.preventDefault();
-      failed = event.message;
-    };
     worker.postMessage(
       {
         datastorePath,
@@ -154,8 +157,7 @@ async function killWriter(
         pauses: options.pauses,
       } satisfies OutboxCrashRequest,
     );
-    // the wait covers the worker loading its module graph as well as its
-    // commit, which a loaded host can stretch past the default timeout
+    // a loaded host can stretch the commit past the default timeout
     await waitFor(
       () => killed || failed !== undefined || done,
       "the writer to reach its kill point",

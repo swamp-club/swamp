@@ -54,6 +54,7 @@ import type { FilesystemDatastoreConfig } from "../src/domain/datastore/datastor
 import { createNamespaceListDeps } from "../src/libswamp/datastores/namespace_list.ts";
 import { commitIn, TEST_TIMINGS } from "./datastore_v3_litestream_helpers.ts";
 import { DatastoreOwner } from "../src/domain/datastore_v3/datastore_owner.ts";
+import { LOADED } from "./graph_worker.ts";
 
 export type MachineRequest =
   | {
@@ -111,6 +112,8 @@ export type MachineResponse =
   | { readonly ok: false; readonly error: string; readonly code?: string };
 
 declare const self: Worker;
+
+self.postMessage(LOADED);
 
 let init: Extract<MachineRequest, { kind: "init" }> | undefined;
 let upkeep: V3ReplicationUpkeep | undefined;

@@ -43,6 +43,7 @@ import {
 import { v3WriterFence } from "../src/infrastructure/datastore_v3/v3_writer_lock.ts";
 import { FileSystemStorage } from "../src/infrastructure/persistence/fs_datastore_storage.ts";
 import { requireInitializedRepoUnlocked } from "../src/cli/repo_context.ts";
+import { LOADED } from "./graph_worker.ts";
 
 export interface ClaimRaceRequest {
   readonly repoDir: string;
@@ -60,6 +61,8 @@ export type ClaimRaceMessage =
   | { readonly failed: string };
 
 declare const self: Worker;
+
+self.postMessage(LOADED);
 
 let commit: (() => void) | undefined;
 

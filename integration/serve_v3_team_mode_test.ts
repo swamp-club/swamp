@@ -28,6 +28,7 @@ import type {
   TeamNodeResponse,
   TeamNodeState,
 } from "./serve_v3_team_machine_worker.ts";
+import { startLoadedWorker } from "./graph_worker.ts";
 
 const OWNER = "http://serve.example:9090";
 
@@ -67,9 +68,26 @@ async function withTeam(
   try {
     await fn({
       async node(name, options = {}) {
-        const worker = new Worker(
+        let pending:
+          | { done(value: unknown): void; fail(error: Error): void }
+          | undefined;
+        const worker = await startLoadedWorker<TeamNodeResponse>(
           new URL("./serve_v3_team_machine_worker.ts", import.meta.url),
-          { type: "module" },
+          {
+            loadTimeoutMs: 20_000,
+            attempts: 3,
+            onMessage: (response) => {
+              if (response.ok) {
+                pending?.done(response.value);
+              } else {
+                pending?.fail(new Error(`${response.code}: ${response.error}`));
+              }
+            },
+            onError: (event) => {
+              event.preventDefault();
+              pending?.fail(new Error(event.message));
+            },
+          },
         );
         workers.push(worker);
         let queue: Promise<unknown> = Promise.resolve();
@@ -90,15 +108,7 @@ async function withTeam(
               worker.terminate();
               fail(dead);
             }, limit);
-            worker.onmessage = (event: MessageEvent<TeamNodeResponse>) => {
-              const response = event.data;
-              if (response.ok) done(response.value);
-              else fail(new Error(`${response.code}: ${response.error}`));
-            };
-            worker.onerror = (event) => {
-              event.preventDefault();
-              fail(new Error(event.message));
-            };
+            pending = { done, fail };
             worker.postMessage(request);
           }).finally(() => clearTimeout(timer));
         };

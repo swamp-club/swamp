@@ -36,6 +36,7 @@ import { createOutboxCommitSink } from "../src/infrastructure/datastore_v3/outbo
 import { SqliteCommitOutbox } from "../src/infrastructure/datastore_v3/sqlite_commit_outbox.ts";
 import { SqliteCommitStore } from "../src/infrastructure/datastore_v3/sqlite_commit_store.ts";
 import { FileSystemStorage } from "../src/infrastructure/persistence/fs_datastore_storage.ts";
+import { LOADED } from "./graph_worker.ts";
 
 export type OutboxCrashPause =
   | "before-prepare"
@@ -60,6 +61,8 @@ export type OutboxCrashMessage =
   | { readonly failed: string };
 
 declare const self: Worker;
+
+self.postMessage(LOADED);
 
 let resume: (() => void) | undefined;
 

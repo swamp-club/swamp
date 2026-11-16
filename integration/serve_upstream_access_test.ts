@@ -36,6 +36,7 @@ import {
   ServeUpstreamState,
 } from "../src/infrastructure/datastore_v3/serve_upstream_state.ts";
 import { datastoreRecords } from "./usecase_v3_fixtures.ts";
+import { startLoadedWorker } from "./graph_worker.ts";
 import type { GrantSpec } from "./serve_upstream_server_worker.ts";
 import {
   type Client,
@@ -393,13 +394,15 @@ Deno.test({
 });
 
 async function holdLease(root: string): Promise<{ release(): Promise<void> }> {
-  const worker = new Worker(
-    new URL("./serve_upstream_lease_holder_worker.ts", import.meta.url).href,
-    { type: "module" },
-  );
   const messages: string[] = [];
-  worker.onmessage = (event: MessageEvent<string>) =>
-    void messages.push(event.data);
+  const worker = await startLoadedWorker<string>(
+    new URL("./serve_upstream_lease_holder_worker.ts", import.meta.url),
+    {
+      loadTimeoutMs: 20_000,
+      attempts: 3,
+      onMessage: (message) => void messages.push(message),
+    },
+  );
   const reply = async (expected: string) => {
     await waitFor(
       () => messages.some((m) => m === expected || m.startsWith("failed")),
@@ -412,7 +415,6 @@ async function holdLease(root: string): Promise<{ release(): Promise<void> }> {
       throw new Error(failed);
     }
   };
-  await reply("loaded");
   worker.postMessage({ kind: "hold", root });
   await reply("held");
   return {

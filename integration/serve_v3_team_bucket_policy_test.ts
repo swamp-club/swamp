@@ -70,6 +70,7 @@ import type {
   NodeResponse,
   Opened,
 } from "./serve_v3_team_bucket_node_worker.ts";
+import { startLoadedWorker } from "./graph_worker.ts";
 
 await initializeLogging({});
 
@@ -130,9 +131,23 @@ async function withTeam(fn: (team: Team) => Promise<void>): Promise<void> {
     await fn({
       modelType,
       async node(name) {
-        const worker = new Worker(
+        let pending:
+          | { done(value: unknown): void; fail(error: Error): void }
+          | undefined;
+        const worker = await startLoadedWorker<NodeResponse>(
           new URL("./serve_v3_team_bucket_node_worker.ts", import.meta.url),
-          { type: "module" },
+          {
+            loadTimeoutMs: 40_000,
+            attempts: 3,
+            onMessage: (response) => {
+              if (response.ok) pending?.done(response.value);
+              else pending?.fail(new Error(`node-${name}: ${response.error}`));
+            },
+            onError: (event) => {
+              event.preventDefault();
+              pending?.fail(new Error(event.message));
+            },
+          },
         );
         workers.push(worker);
         let queue: Promise<unknown> = Promise.resolve();
@@ -148,15 +163,7 @@ async function withTeam(fn: (team: Team) => Promise<void>): Promise<void> {
               worker.terminate();
               fail(dead);
             }, REQUEST_TIMEOUT_MS);
-            worker.onmessage = (event: MessageEvent<NodeResponse>) => {
-              const response = event.data;
-              if (response.ok) done(response.value);
-              else fail(new Error(`node-${name}: ${response.error}`));
-            };
-            worker.onerror = (event) => {
-              event.preventDefault();
-              fail(new Error(event.message));
-            };
+            pending = { done, fail };
             worker.postMessage(request);
           }).finally(() => clearTimeout(timer));
         };

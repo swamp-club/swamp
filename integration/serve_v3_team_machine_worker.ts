@@ -50,6 +50,7 @@ import {
 } from "../src/serve/datastore_locks.ts";
 import { ControlPlaneLeaseStore } from "../src/infrastructure/datastore_v3/control_plane_lease_store.ts";
 import { commitIn } from "./datastore_v3_litestream_helpers.ts";
+import { LOADED } from "./graph_worker.ts";
 
 export type TeamNodeRequest =
   | {
@@ -326,3 +327,5 @@ self.onmessage = async (event: MessageEvent<TeamNodeRequest>) => {
     );
   }
 };
+
+self.postMessage(LOADED);

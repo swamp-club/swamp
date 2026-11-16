@@ -31,6 +31,7 @@ import type {
   StartRaceMessage,
   StartRaceRequest,
 } from "./datastore_v3_reader_start_race_worker.ts";
+import { startLoadedWorker } from "./graph_worker.ts";
 
 const SERVE: CheckoutView = {
   kind: "serve",
@@ -53,24 +54,26 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-function startOther(request: StartRaceRequest) {
+async function startOther(request: StartRaceRequest) {
   const messages: StartRaceMessage[] = [];
-  const worker = new Worker(
-    new URL("./datastore_v3_reader_start_race_worker.ts", import.meta.url).href,
-    { type: "module" },
+  const worker = await startLoadedWorker<StartRaceMessage>(
+    new URL("./datastore_v3_reader_start_race_worker.ts", import.meta.url),
+    {
+      loadTimeoutMs: 20_000,
+      attempts: 3,
+      onMessage: (message) => {
+        messages.push(message);
+      },
+      onError: (event) => {
+        event.preventDefault();
+        messages.push({ failed: event.message });
+      },
+    },
   );
-  worker.onmessage = (event: MessageEvent<StartRaceMessage>) => {
-    messages.push(event.data);
-  };
-  worker.onerror = (event) => {
-    event.preventDefault();
-    messages.push({ failed: event.message });
-  };
   worker.postMessage(request);
   const seen = (
     test: (m: StartRaceMessage) => boolean,
     description: string,
-    // a first message waits on the worker loading its whole module graph
     timeoutMs = 120_000,
   ) =>
     waitFor(
@@ -96,7 +99,7 @@ Deno.test("alignCheckoutView: a reader waiting for the lease reads once the writ
     const releaseLease = await acquireV3WriterLock(datastorePath, {
       maxWaitMs: 0,
     });
-    const reader = startOther({
+    const reader = await startOther({
       kind: "align",
       repoDir,
       datastorePath,
@@ -135,7 +138,7 @@ Deno.test("alignCheckoutView: a reader waiting for the lease reads once the writ
 Deno.test("ReadModelState.open: a new database another process is switching or migrating is opened once its write lock goes", async () => {
   await withTempDir(async (dir) => {
     const dbPath = join(dir, "read_model.db");
-    const holder = startOther({ kind: "hold", dbPath, holdMs: 300 });
+    const holder = await startOther({ kind: "hold", dbPath, holdMs: 300 });
     try {
       await holder.seen(
         (m) => "locked" in m,

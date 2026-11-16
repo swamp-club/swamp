@@ -61,6 +61,7 @@ import type {
 } from "./serve_upstream_server_worker.ts";
 import { UNSET_ENV } from "./usecase_sync_fixtures.ts";
 import type { WorkflowReportBarrier } from "./workflow_report_barrier.ts";
+import { startLoadedWorker } from "./graph_worker.ts";
 
 /**
  * A team member's grants: read, write and run every behavior, read and
@@ -195,11 +196,6 @@ export interface Scratch {
 }
 
 async function startServe(options: ServeOptions): Promise<Serve> {
-  const worker = new Worker(
-    new URL("./serve_upstream_server_worker.ts", import.meta.url).href,
-    { type: "module" },
-  );
-  let loaded = false;
   let ready: Extract<ServeWorkerMessage, { kind: "ready" }> | undefined;
   let failed: string | undefined;
   let stopped = false;
@@ -217,9 +213,8 @@ async function startServe(options: ServeOptions): Promise<Serve> {
   let ranReply:
     | { statuses: readonly string[]; errors: readonly string[] }
     | undefined;
-  worker.onmessage = (event: MessageEvent<ServeWorkerMessage>) => {
-    const message = event.data;
-    if (message.kind === "loaded") loaded = true;
+  const onMessage = (message: ServeWorkerMessage) => {
+    if (message.kind === "loaded") return;
     else if (message.kind === "ready") ready = message;
     else if (message.kind === "failed") failed = message.error;
     else if (message.kind === "stopped") stopped = true;
@@ -234,18 +229,21 @@ async function startServe(options: ServeOptions): Promise<Serve> {
     else if (message.kind === "ran-method") ranMethod = message;
     else logReply = message.entries;
   };
-  worker.onerror = (event) => {
-    event.preventDefault();
-    failed = event.message;
-  };
+  // The worker loads its module graph first, which a loaded host can
+  // stretch well past the default wait.
+  const worker = await startLoadedWorker<ServeWorkerMessage>(
+    new URL("./serve_upstream_server_worker.ts", import.meta.url),
+    {
+      loadTimeoutMs: 40_000,
+      attempts: 3,
+      onMessage,
+      onError: (event) => {
+        event.preventDefault();
+        failed = event.message;
+      },
+    },
+  );
   try {
-    // The worker loads its module graph first, which a loaded host can
-    // stretch well past the default wait.
-    await waitFor(
-      () => loaded || failed !== undefined,
-      "serve's worker to load",
-      { timeoutMs: 120_000 },
-    );
     worker.postMessage(
       {
         kind: "start",

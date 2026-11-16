@@ -31,6 +31,7 @@ import type {
   LockWorkerMessage,
   LockWorkerRequest,
 } from "./extension_catalog_migration_lock_worker.ts";
+import { startLoadedWorker } from "./graph_worker.ts";
 
 const V3_MIGRATION_KEY = "migration_applied:per-extension-aggregate-v3";
 
@@ -82,15 +83,18 @@ function seedPendingCatalog(repoRoot: string): string {
 Deno.test("ExtensionCatalogStore: a writer committing during the v3 data migration does not wipe the catalog", async () => {
   await withTempDir(async (repoRoot) => {
     const dbPath = seedPendingCatalog(repoRoot);
-    const worker = new Worker(
-      new URL("./extension_catalog_migration_lock_worker.ts", import.meta.url)
-        .href,
-      { type: "module" },
-    );
     const received: LockWorkerMessage[] = [];
-    worker.onmessage = (event: MessageEvent<LockWorkerMessage>) => {
-      received.push(event.data);
-    };
+    // fits the default 10s wait that bounded the load before
+    const worker = await startLoadedWorker<LockWorkerMessage>(
+      new URL("./extension_catalog_migration_lock_worker.ts", import.meta.url),
+      {
+        loadTimeoutMs: 5_000,
+        attempts: 2,
+        onMessage: (message) => {
+          received.push(message);
+        },
+      },
+    );
     try {
       worker.postMessage(
         { kind: "lock", dbPath } satisfies LockWorkerRequest,

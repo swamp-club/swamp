@@ -26,6 +26,7 @@ import {
   completionOwnersUnder,
   completionValuesUnder,
 } from "./command_completion_helpers.ts";
+import { LOADED } from "./graph_worker.ts";
 
 export interface RouteWorkerRequest {
   /** undefined builds the full tree */
@@ -73,7 +74,8 @@ async function loadCli(): Promise<CliEntry & ErrorHandlerEntry> {
 // started before the handler is set, so no message waits on it unheard; a
 // failure surfaces in the handler that awaits it
 const cli = loadCli();
-cli.catch(() => {});
+// loaded either way: a failed load answers the request with its error
+cli.then(() => self.postMessage(LOADED), () => self.postMessage(LOADED));
 
 function resolvePath(root: AnyCommand, path: string[]): AnyCommand | undefined {
   let current: AnyCommand | undefined = root;
