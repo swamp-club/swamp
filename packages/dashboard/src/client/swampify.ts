@@ -50,6 +50,8 @@ import {
   type SwampifyOfferSummary,
   type SwampifySkipped,
 } from "../lib/agent_sessions/swampify.ts";
+import { sameInstant } from "../lib/swampify_view.ts";
+import { extractArray } from "./extract.ts";
 import {
   type VisibilityDocument,
   visibleIntervalMs,
@@ -276,11 +278,8 @@ export function parseComparisonReply(
   return "content" in read ? readSwampifyComparison(read.content) : read;
 }
 
-/** How often the page re-reads while a picked option is being built. */
-export const SWAMPIFY_BUILD_POLL_MS = 15_000;
-
-/** How often the page re-reads while it waits for the first assessment. */
-export const SWAMPIFY_WAIT_POLL_MS = 5_000;
+/** How often the page re-reads while the agent's work is unfinished. */
+export const SWAMPIFY_POLL_MS = 5_000;
 
 /** The type the kick-off creates its swampify behavior from. */
 export const SWAMPIFY_BEHAVIOR_TYPE = "@swamp/agent-sessions";
@@ -296,19 +295,113 @@ export function hasSwampifyBehavior(
 }
 
 /**
- * The page's poll: only while the tab is in view and the shown offer is
- * picked, since the build happens in the agent's session and tells the page
- * nothing.
+ * Where the agent's work stands, as the page's lists last answered:
+ * `loading` until every list has answered once, then waiting for a set,
+ * reading it (no offer from it yet), building a pick, comparing a build, or
+ * settled.
+ */
+export type SwampifyStage =
+  | "loading"
+  | "waiting"
+  | "reading"
+  | "building"
+  | "comparing"
+  | "settled";
+
+export interface SwampifyStageInput {
+  /** Every list has answered at least once, with rows or an error. */
+  readonly answered: boolean;
+  readonly setRow: SwampifyRow | undefined;
+  readonly offerRow: SwampifyRow | undefined;
+  /** The shown offer's body; null while it loads or after it failed. */
+  readonly offer: SwampifyOfferReading | null;
+  readonly comparisons: ReadonlyMap<string, SwampifyRow>;
+}
+
+export function swampifyStage(input: SwampifyStageInput): SwampifyStage {
+  if (!input.answered) return "loading";
+  if (input.setRow === undefined) return "waiting";
+  if (input.offerRow === undefined || input.offer === null) return "reading";
+  if (input.offer.kind !== "record") return "settled";
+  const offer = input.offer.record;
+  // A new kick-off assesses again while the last offer is still shown.
+  const setGeneratedAt = input.setRow.tags[SWAMPIFY_GENERATED_AT_TAG];
+  if (
+    setGeneratedAt !== undefined &&
+    !sameInstant(offer.candidateSet.generatedAt, setGeneratedAt)
+  ) {
+    return "reading";
+  }
+  if (offer.state.kind === "picked") return "building";
+  if (
+    offer.state.kind === "built" &&
+    !input.comparisons.has(offer.state.optionId)
+  ) {
+    return "comparing";
+  }
+  return "settled";
+}
+
+/**
+ * The page's poll: while the tab is in view and the agent's work is
+ * unfinished, since the agent writes from its own process and tells the page
+ * nothing. A flat interval: the data lands minutes in, so backing off would
+ * only show it later.
  */
 export function swampifyPollMs(
-  offer: SwampifyOfferReading | null,
+  stage: SwampifyStage,
   visible: boolean,
-  waitingForSet = false,
 ): number | null {
-  if (waitingForSet) return visibleIntervalMs(SWAMPIFY_WAIT_POLL_MS, visible);
-  const picked = offer?.kind === "record" &&
-    offer.record.state.kind === "picked";
-  return visibleIntervalMs(picked ? SWAMPIFY_BUILD_POLL_MS : null, visible);
+  const unfinished = stage !== "loading" && stage !== "settled";
+  return visibleIntervalMs(unfinished ? SWAMPIFY_POLL_MS : null, visible);
+}
+
+/** The workflow the swampify skill reads candidates with. */
+export const SWAMPIFY_UNDERSTAND_WORKFLOW =
+  "@swamp/agent-sessions/swampify-understand";
+
+/**
+ * The newest reading run started since the shown set was assessed. Run
+ * search, unlike history search, is a read the local dashboard forwards.
+ */
+export function swampifyReadingPayload(
+  setGeneratedAt: string,
+): Record<string, unknown> {
+  return {
+    workflow: SWAMPIFY_UNDERSTAND_WORKFLOW,
+    since: setGeneratedAt,
+    limit: 1,
+  };
+}
+
+export interface SwampifyReadingProgress {
+  readonly status: string;
+  /** Null until the run has recorded its readings. */
+  readonly completed: number | null;
+  readonly total: number | null;
+}
+
+function count(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0
+    ? value
+    : null;
+}
+
+/** Reads a `workflow.run.search` reply: its first run, or null. */
+export function parseReadingProgress(
+  reply: unknown,
+): SwampifyReadingProgress | null {
+  const run = extractArray<unknown>(reply)[0];
+  if (!isRecord(run) || typeof run.status !== "string") return null;
+  const progress = isRecord(run.stepProgress) ? run.stepProgress : {};
+  const completed = count(progress.completed);
+  const total = count(progress.total);
+  const known = completed !== null && total !== null && completed <= total;
+  return {
+    status: run.status,
+    completed: known ? completed : null,
+    total: known ? total : null,
+  };
 }
 
 /** Re-reads each of the page's lists when the tab comes back into view. */

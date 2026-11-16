@@ -45,11 +45,17 @@ import {
   parseCandidateSetReply,
   parseComparisonReply,
   parseOfferReply,
+  parseReadingProgress,
   parseSwampifyRows,
   shownCandidateSet,
   shownOffer,
+  SWAMPIFY_UNDERSTAND_WORKFLOW,
+  swampifyReadingPayload,
   type SwampifyRow,
 } from "../packages/dashboard/src/client/swampify.ts";
+import { FORWARDED_READS } from "../src/serve/local/local_actions.ts";
+import type { Workflow } from "../src/domain/workflows/workflow.ts";
+import { WorkflowRun } from "../src/domain/workflows/workflow_run.ts";
 import { offerView } from "../packages/dashboard/src/lib/swampify_view.ts";
 import {
   fixtureCandidateSet,
@@ -62,6 +68,7 @@ import {
   errorFrame,
   grant,
   saveModel,
+  saveWorkflow,
   sendRequest,
   type ServeRepo,
   withServeRepo,
@@ -328,4 +335,86 @@ Deno.test("swampify page: the probe and every list read tags only, never a body"
     assertEquals((await rows(ctx, offerListPayload())).length, 2);
     assertEquals((await rows(ctx, comparisonListPayload())).length, 2);
   });
+});
+
+async function saveReadingRun(
+  repo: ServeRepo,
+  workflow: Workflow,
+  startedAt: string,
+  completed: number,
+  total: number,
+): Promise<void> {
+  const created = WorkflowRun.create(workflow).toData();
+  const template = created.jobs[0].steps[0];
+  const run = WorkflowRun.fromData({
+    ...created,
+    status: completed === total ? "succeeded" : "running",
+    startedAt,
+    jobs: [{
+      ...created.jobs[0],
+      status: completed === total ? "succeeded" : "running",
+      steps: Array.from({ length: total }, (_, i) => ({
+        ...template,
+        name: `verdict-${i}`,
+        status: i < completed ? "succeeded" : "pending",
+      })),
+    }],
+  });
+  await repo.repoContext.workflowRunRepo.save(workflow.id, run);
+}
+
+Deno.test("swampify page: reading progress is the newest understand run since the shown set, with its step counts", async () => {
+  await withSwampify(async (repo) => {
+    const reader = await saveModel(repo, "swampify-reader");
+    const understand = await saveWorkflow(
+      repo,
+      SWAMPIFY_UNDERSTAND_WORKFLOW,
+      reader,
+    );
+    // an earlier kick-off's run, before the shown set was assessed
+    await saveReadingRun(repo, understand, "2026-11-10T09:30:00.000Z", 6, 6);
+    await saveReadingRun(repo, understand, "2026-11-11T09:05:00.000Z", 3, 8);
+    const ctx = createServeCtx(repo, [
+      ...READ_SHOWN,
+      grant({
+        actions: ["read"],
+        resource: { kind: "workflow", pattern: "*" },
+      }),
+    ]);
+
+    const reply = await ask(
+      ctx,
+      "workflow.run.search",
+      swampifyReadingPayload(NEWER_SET_AT),
+    );
+    assertEquals(reply.error, undefined);
+    assertEquals(parseReadingProgress({ data: reply.data }), {
+      status: "running",
+      completed: 3,
+      total: 8,
+    });
+
+    const none = await ask(
+      ctx,
+      "workflow.run.search",
+      swampifyReadingPayload("2026-11-12T09:00:00.000Z"),
+    );
+    assertEquals(parseReadingProgress({ data: none.data }), null);
+  });
+});
+
+Deno.test("swampify page: every read the page sends is one the local dashboard forwards", async () => {
+  const source = await Deno.readTextFile(
+    new URL(
+      "../packages/dashboard/src/client/useSwampify.ts",
+      import.meta.url,
+    ),
+  );
+  const types = [
+    ...source.matchAll(/(?:useRequest|request)(?:<[^>]*>)?\(\s*"([a-z.]+)"/g),
+  ].map((m) => m[1]);
+  assert(types.includes("workflow.run.search"), types.join(", "));
+  for (const type of types) {
+    assert(FORWARDED_READS.has(type), `${type} is not forwarded locally`);
+  }
 });
