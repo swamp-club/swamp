@@ -31,10 +31,13 @@ import type { LockAcquireReply, LockLease } from "./serve_datastore_client.ts";
 import {
   closeServeLockClients,
   createServeLock,
+  LOCK_CATCH_UP_MAX_COMMITS,
+  LOCK_CATCH_UP_ROUNDS,
   ServeLeaseLapsedError,
   ServeLock,
   type ServeLockClient,
 } from "./serve_lock.ts";
+import { LockCatchUpBehindError } from "./serve_catch_up.ts";
 import {
   registerServeUpstream,
   resetServeUpstreamBindingsForTesting,
@@ -1327,5 +1330,171 @@ Deno.test("ServeLock: a lapse met while the hold is released by the commit never
     assertEquals(lost, []);
   } finally {
     resetServeLeasesForTesting();
+  }
+});
+
+Deno.test("ServeLock.acquire: a copy too far behind catches up with the lock released, then takes it again, still bounded", async () => {
+  const serve = new FakeServe();
+  const bounds: (number | undefined)[] = [];
+  const events: string[] = [];
+  const subject = lock(serve, {
+    onAcquired: (_delivered, maxCommits) => {
+      bounds.push(maxCommits);
+      events.push("under the lock");
+      return bounds.length === 1
+        ? Promise.reject(new LockCatchUpBehindError(751))
+        : Promise.resolve();
+    },
+    catchUpOutside: () => {
+      events.push("outside");
+      return Promise.resolve();
+    },
+  });
+  await subject.acquire();
+  assertEquals(bounds, [LOCK_CATCH_UP_MAX_COMMITS, LOCK_CATCH_UP_MAX_COMMITS]);
+  assertEquals(events, ["under the lock", "outside", "under the lock"]);
+  assert(serve.calls.includes("release lease-1"));
+  assertEquals(subject.lease?.leaseId, "lease-2");
+  await subject.release();
+});
+
+Deno.test("ServeLock.acquire: a copy still behind after the bounded rounds catches up the rest under the lock and succeeds", async () => {
+  const serve = new FakeServe();
+  const bounds: (number | undefined)[] = [];
+  let outside = 0;
+  const subject = lock(serve, {
+    onAcquired: (_delivered, maxCommits) => {
+      bounds.push(maxCommits);
+      return maxCommits === undefined
+        ? Promise.resolve()
+        : Promise.reject(new LockCatchUpBehindError(200));
+    },
+    catchUpOutside: () => {
+      outside++;
+      return Promise.resolve();
+    },
+  });
+  await subject.acquire();
+  assertEquals(outside, LOCK_CATCH_UP_ROUNDS);
+  assertEquals(bounds, [
+    ...Array(LOCK_CATCH_UP_ROUNDS).fill(LOCK_CATCH_UP_MAX_COMMITS),
+    undefined,
+  ]);
+  assert(subject.lease !== undefined);
+  await subject.release();
+});
+
+Deno.test("ServeLock.acquire: a copy that goes offline while catching up outside the lock takes the lock offline", async () => {
+  resetServeLeasesForTesting();
+  const serve = new FakeServe();
+  const events: string[] = [];
+  let offline = false;
+  const subject = lock(serve, {
+    root: ROOT,
+    onAcquired: (_delivered, maxCommits) =>
+      maxCommits !== undefined && !offline
+        ? Promise.reject(new LockCatchUpBehindError(undefined))
+        : Promise.resolve(),
+    catchUpOutside: () => {
+      offline = true;
+      return Promise.resolve();
+    },
+    localLock: () => localLock(events),
+    offline: () => offline ? { skewMs: WRITER_LEASE_CLOCK_SKEW_MS } : undefined,
+  });
+  await subject.acquire();
+  assertEquals(
+    serve.calls.filter((call) => call.startsWith("acquire")).length,
+    1,
+  );
+  assertEquals(subject.lease, undefined);
+  assertEquals(events, ["local acquire"]);
+  await subject.release();
+});
+
+function liveExplicitLease(leaseId: string): ExplicitLease {
+  return {
+    leaseId,
+    lockKey: KEY,
+    fence: 21,
+    holdMs: 3_600_000,
+    expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+    floor: [],
+  };
+}
+
+Deno.test("ServeLock.acquire: a catch-up under the lock that finds serve unreachable goes offline with a live explicit lease", async () => {
+  resetServeLeasesForTesting();
+  resetUnrenewedLeasesForTesting();
+  const serve = new FakeServe();
+  const events: string[] = [];
+  const explicit = liveExplicitLease("0b6c4bb4-9d61-4f0c-9a43-6f0c1f7b2a61");
+  let offline = false;
+  const subject = lock(serve, {
+    root: ROOT,
+    adopt: () => Promise.resolve(explicit),
+    localLock: () => localLock(events),
+    onAcquired: () =>
+      offline ? Promise.resolve() : Promise.reject(
+        new ServeUnreachableError(
+          serve.baseUrl,
+          "never",
+          new Error("fetch failed"),
+        ),
+      ),
+    onCatchUpUnreachable: () => {
+      offline = true;
+      return true;
+    },
+    offline: () => offline ? { skewMs: WRITER_LEASE_CLOCK_SKEW_MS } : undefined,
+  });
+  await subject.acquire();
+  assert(offline);
+  assertEquals(subject.lease?.leaseId, explicit.leaseId);
+  assertEquals(heldServeLeaseOf(ROOT, PARTITION)?.leaseId, explicit.leaseId);
+  await subject.release();
+});
+
+Deno.test("ServeLock.acquire: a catch-up under the lock that finds serve unreachable exits 75 without a live explicit lease", async () => {
+  const cases: Array<[string, ExplicitLease | undefined]> = [
+    ["no explicit lease", undefined],
+    ["an ended explicit lease", {
+      ...liveExplicitLease("0b6c4bb4-9d61-4f0c-9a43-6f0c1f7b2a62"),
+      expiresAt: new Date(Date.now() + WRITER_LEASE_CLOCK_SKEW_MS / 2)
+        .toISOString(),
+    }],
+  ];
+  for (const [name, explicit] of cases) {
+    resetServeLeasesForTesting();
+    resetUnrenewedLeasesForTesting();
+    const serve = new FakeServe();
+    let asked = 0;
+    const subject = lock(serve, {
+      root: ROOT,
+      adopt: () => Promise.resolve(explicit),
+      localLock: () => localLock([]),
+      onAcquired: () =>
+        Promise.reject(
+          new ServeUnreachableError(
+            serve.baseUrl,
+            "never",
+            new Error("fetch failed"),
+          ),
+        ),
+      onUnreachable: () => true,
+      onCatchUpUnreachable: () => {
+        asked++;
+        return true;
+      },
+      offline: () => undefined,
+    });
+    await assertRejects(
+      () => subject.acquire(),
+      ServeUnreachableError,
+      undefined,
+      name,
+    );
+    assertEquals(asked, 0, name);
+    assertEquals(subject.lease, undefined, name);
   }
 });

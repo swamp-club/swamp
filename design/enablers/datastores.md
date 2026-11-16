@@ -8037,7 +8037,18 @@ by the offline rules again once the lock is held, the feed watch holds its own
 catch-up until the lock's applied and then reads only what is still missing,
 and the run is refused if its name now resolves to another definition than
 the locked one. A run that ends up taking no lock catches up first
-(`catchUpDeferred`). Managed-config adoption plans first and catches up only
+(`catchUpDeferred`).
+
+A catch-up under a lock takes on at most `LOCK_CATCH_UP_MAX_COMMITS` (128)
+commits still to project, the copy's and the read model's together
+(`serve_lock.ts`). A copy further behind, or behind serve's compaction,
+releases the lock, catches up outside it (`catchUpBeforeLockAt`, which may go
+offline by the hold's rule) and asks again, up to `LOCK_CATCH_UP_ROUNDS` (3)
+times; after that the rest is caught up under the lock with a warning. The
+feed watch keeps waiting through the rounds. A catch-up under the lock that
+finds serve unreachable goes offline (`goServeOfflineAtLock`) only while an
+explicit lease on the key is live by serve's clock less the skew; otherwise the
+command exits 75 `datastore_v3_serve_unreachable`. Managed-config adoption plans first and catches up only
 when it has something to commit.
 
 **Model locks.** A checkout picks a behavior's next data version from its
@@ -8113,8 +8124,8 @@ below describes them.
   the command's action runs.
 - **Catch-up under the lock.** Once the lease is taken, every handle the
   process opened on the copy catches up from serve, read model included
-  (`catchUpV3HandlesAt`), before `acquire` resolves; `holdV3Writer`'s
-  catch-up ran before the lock was taken. The work under the lock therefore
+  (`catchUpV3HandlesAt`), before `acquire` resolves, bounded as above;
+  `holdV3Writer`'s catch-up ran before the lock was taken. The work under the lock therefore
   allocates versions after every version another machine wrote.
 - **Held until the commit lands.** `model method run` releases its locks in
   `runCommandInRootUnit` after the root unit has ended, and the root's commit

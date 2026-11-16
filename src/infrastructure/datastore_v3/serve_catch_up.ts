@@ -144,6 +144,25 @@ export function serveAccessCheck(
  */
 export const SERVE_PARTITION_PAGE = 1000;
 
+/**
+ * a catch-up asked to stay small found more to apply than it may take on;
+ * what it applied is kept, the rest is the caller's to read
+ */
+export class LockCatchUpBehindError extends Error {
+  /** commits applied before it stopped; undefined when serve compacted past the copy */
+  readonly pending: number | undefined;
+
+  constructor(pending: number | undefined) {
+    super(
+      pending === undefined
+        ? "Serve compacted its log past this checkout's copy"
+        : `This checkout's copy is at least ${pending} commits behind serve`,
+    );
+    this.name = "LockCatchUpBehindError";
+    this.pending = pending;
+  }
+}
+
 export const SERVE_BASE_PAGE = 1000;
 
 export const BASE_LOAD_ATTEMPTS = 3;
@@ -271,11 +290,13 @@ export class ServeCatchUp {
 
   /**
    * `delivered` is a first page serve sent with another reply; it is used only
-   * while the copy still stands where it was asked from
+   * while the copy still stands where it was asked from. With `maxCommits`,
+   * applying more than that many rejects with LockCatchUpBehindError
    */
   catchUp(
     signal: AbortSignal,
     delivered?: DeliveredCatchUp,
+    maxCommits?: number,
   ): Promise<ServeCatchUpReport> {
     this.#feed ??= withSpan(
       "swamp.datastore.v3.serve.catchup",
@@ -284,7 +305,11 @@ export class ServeCatchUp {
         const report = await this.#repairingDivergence(
           signal,
           (repaired) =>
-            this.#catchUpFeed(signal, repaired ? undefined : delivered),
+            this.#catchUpFeed(
+              signal,
+              repaired ? undefined : delivered,
+              maxCommits,
+            ),
         );
         span.setAttribute("swamp.datastore.v3.commits", report.applied);
         return report;
@@ -298,6 +323,7 @@ export class ServeCatchUp {
   async #catchUpFeed(
     signal: AbortSignal,
     delivered: DeliveredCatchUp | undefined,
+    maxCommits: number | undefined,
   ): Promise<ServeCatchUpReport> {
     const anchor = this.#state.feedAnchor();
     const overtaken = delivered !== undefined &&
@@ -330,7 +356,9 @@ export class ServeCatchUp {
           : await pageAtMost(
             "changes",
             cursor,
-            limit,
+            maxCommits === undefined
+              ? limit
+              : Math.max(1, Math.min(limit, maxCommits - applied + 1)),
             (at) =>
               this.#client.changes(
                 cursor,
@@ -340,6 +368,13 @@ export class ServeCatchUp {
               ),
           );
       } catch (error) {
+        // a base load is a whole partition set's worth: never under a lock
+        if (
+          maxCommits !== undefined &&
+          error instanceof ServeCommitsCompactedError
+        ) {
+          throw new LockCatchUpBehindError(undefined);
+        }
         // Serve compacted past the cursor: load its base, then read on.
         if (
           !(error instanceof ServeCommitsCompactedError) ||
@@ -388,6 +423,12 @@ export class ServeCatchUp {
         }
       } catch (error) {
         if (
+          maxCommits !== undefined &&
+          error instanceof ServeCommitsCompactedError
+        ) {
+          throw new LockCatchUpBehindError(undefined);
+        }
+        if (
           !(error instanceof ServeCommitsCompactedError) ||
           ++loads > BASE_LOAD_ATTEMPTS
         ) {
@@ -407,6 +448,9 @@ export class ServeCatchUp {
         )
       ) {
         continue;
+      }
+      if (maxCommits !== undefined && applied > maxCommits) {
+        throw new LockCatchUpBehindError(applied);
       }
       if (!page.more) return { applied };
     }

@@ -179,6 +179,7 @@ import { v3ForeignContentFetcher } from "./v3_foreign_content.ts";
 import { isChunkQuarantine } from "../../domain/datastore/datastore_storage.ts";
 import { serveUpstreamAt } from "./serve_upstream_registry.ts";
 import { ServeUnreachableError } from "./serve_upstream_errors.ts";
+import { LockCatchUpBehindError } from "./serve_catch_up.ts";
 import { reportQueuedOffline, resetServeOffline } from "./serve_offline.ts";
 import { type ServeFeedWatch, watchServeFeed } from "./serve_feed_client.ts";
 
@@ -784,6 +785,46 @@ export function goServeOfflineAt(
 }
 
 /**
+ * a lock that found the copy too far behind to catch up under it: the copy and
+ * read model catch up here with the lock released, and may go offline as the
+ * writer hold's catch-up may
+ */
+export async function catchUpBeforeLockAt(
+  datastorePath: string,
+  options?: CatchUpOptions,
+): Promise<void> {
+  const path = resolve(datastorePath);
+  for (const handle of [...opened.values()]) {
+    if (resolve(handle.datastorePath) !== path) continue;
+    if (handle.catchUpForWrite === undefined) {
+      await handle.catchUp(undefined, options);
+      continue;
+    }
+    await handle.catchUpForWrite(undefined, { mayGoOffline: true });
+    await (handle.catchUpReadModel?.(undefined, options) ??
+      handle.catchUp(undefined, options));
+  }
+}
+
+/**
+ * a catch-up under a lock found serve unreachable: the writer hold's offline
+ * rule applies to every copy at the path; true when the checkout went offline
+ */
+export function goServeOfflineAtLock(
+  datastorePath: string,
+  error: unknown,
+): boolean {
+  const path = resolve(datastorePath);
+  let offline = false;
+  for (const handle of [...opened.values()]) {
+    if (resolve(handle.datastorePath) !== path) continue;
+    if (handle.goOfflineOnUnreachable?.(error) === true) offline = true;
+    endDeferral(handle);
+  }
+  return offline;
+}
+
+/**
  * handles holdV3Writer just caught up from serve: the repository open that
  * follows it brings only the read model up, not serve's feed again
  */
@@ -848,12 +889,14 @@ export function serveCatchUpRequestAt(
 /**
  * a serve-mode checkout calls it once it holds a lock at serve, so the work
  * under the lock reads every version another machine wrote; holdV3Writer's
- * catch-up ran before the lock was taken
+ * catch-up ran before the lock was taken. With `maxCommits`, more than that
+ * many still to apply rejects with LockCatchUpBehindError
  */
 export async function catchUpV3HandlesAt(
   datastorePath: string,
   options?: CatchUpOptions,
   delivered?: DeliveredCatchUp,
+  maxCommits?: number,
 ): Promise<void> {
   const path = resolve(datastorePath);
   const handles = [...opened.values()].filter((handle) =>
@@ -861,17 +904,29 @@ export async function catchUpV3HandlesAt(
   );
   for (const handle of handles) {
     if (handle.catchUpForWrite !== undefined) {
-      // a page asked for one copy is that copy's alone
       try {
-        await handle.catchUpForWrite(
-          undefined,
-          delivered !== undefined && handles.length === 1
+        await handle.catchUpForWrite(undefined, {
+          // a page asked for one copy is that copy's alone
+          ...(delivered !== undefined && handles.length === 1
             ? { delivered }
-            : undefined,
-        );
-      } finally {
-        endDeferral(handle);
+            : {}),
+          ...(maxCommits !== undefined ? { maxCommits } : {}),
+        });
+        if (maxCommits !== undefined) {
+          await handle.assertReadModelWithin?.(maxCommits);
+        }
+      } catch (error) {
+        // the lock catches up outside itself and retakes, or goes offline:
+        // the feed watch keeps waiting until then
+        if (
+          !(error instanceof LockCatchUpBehindError) &&
+          !(error instanceof ServeUnreachableError)
+        ) {
+          endDeferral(handle);
+        }
+        throw error;
       }
+      endDeferral(handle);
       await (handle.catchUpReadModel?.(undefined, options) ??
         handle.catchUp(undefined, options));
     } else {
