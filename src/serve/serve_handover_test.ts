@@ -32,6 +32,7 @@ import {
   listParkedRuns,
   parkedRunHandled,
   parkedRunKey,
+  parkedRunsAreContinuable,
   parkerAsOwner,
   ServeHandover,
 } from "./serve_handover.ts";
@@ -192,4 +193,11 @@ Deno.test("handsOverRuns: runs park only with a drain and a store a later proces
   // nothing would continue a parked run, so it drains to completion
   assertEquals(handsOverRuns(30_000, false), false);
   assertEquals(handsOverRuns(0, true), false);
+});
+
+Deno.test("parkedRunsAreContinuable: only with claims and run records the next process reads current", () => {
+  assertEquals(parkedRunsAreContinuable(true, false), true);
+  assertEquals(parkedRunsAreContinuable(false, false), false);
+  // a synced copy would read the parked run as still running and drop it
+  assertEquals(parkedRunsAreContinuable(true, true), false);
 });

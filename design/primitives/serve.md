@@ -1850,9 +1850,11 @@ run, up to `--max-concurrent-webhook-runs`), cron (every in-flight
 scheduled run, up to `--max-concurrent-scheduled-runs`) and API runs then drain
 together against one `--shutdown-drain-timeout` deadline (default 30 s,
 `runShutdownDrain` in `src/serve/shutdown_drain.ts`). With a drain timeout
-above 0, and continuation claims a later process can continue a parked run
-through (`handsOverRuns`; otherwise runs drain to completion as they always
-did), the drain is a handover (swamp-club#4737): before it begins, serve
+above 0, continuation claims a later process can continue a parked run
+through, and run records that process reads current (a filesystem or v3
+datastore, not a synced copy that falls behind after boot;
+`parkedRunsAreContinuable` and `handsOverRuns`, otherwise runs drain to
+completion as they always did), the drain is a handover (swamp-club#4737): before it begins, serve
 fires its `ServeHandover` (`src/serve/serve_handover.ts`) and the dispatch
 service's `beginHandover`, so no run starts new work (a step, a guard, a job,
 a forEach iteration, a fan-out lane, a nested run's step) while the steps in

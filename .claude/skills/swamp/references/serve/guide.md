@@ -825,12 +825,12 @@ runs signalled by a local command. Things to know:
 - A run reset by `swamp workflow recover` is never resumed by serve, with no
   event: run `swamp workflow resume` as recover says. A run recovered before the
   upgrade is not protected this way.
-- Where serve can continue runs automatically, a planned restart parks each run
-  between steps (reason `server_restart`, nothing `unknown`): no new step
-  starts, running steps finish within `--shutdown-drain-timeout`, and the next
-  process continues the run under the same id once the old one has exited,
-  unless `autoContinue: false`. A `--server` client streaming it reattaches and
-  sees it finish.
+- On a filesystem or v3 datastore where serve continues runs automatically, a
+  planned restart parks each run between steps (reason `server_restart`, nothing
+  `unknown`): no new step starts, running steps finish within
+  `--shutdown-drain-timeout`, and the next process continues the run under the
+  same id once the old one has exited, unless `autoContinue: false`. A
+  `--server` client streaming it reattaches and sees it finish.
 - A run a restart, crash or dead peer interrupted is continued by serve itself
   when every cut-off step has a guard and the workflow does not set
   `autoContinue: false` (audit `workflow.auto_continue`). Otherwise it stays

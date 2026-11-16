@@ -330,6 +330,7 @@ import {
   handsOverRuns,
   listParkedRuns,
   parkedRunHandled,
+  parkedRunsAreContinuable,
   parkerAsOwner,
   ServeHandover,
 } from "../../serve/serve_handover.ts";
@@ -5979,12 +5980,6 @@ export const serveCommand = new Command()
           staleMs: staleTtlMs ?? DEFAULT_STALE_TTL_MS,
         })
         : undefined;
-    // parked runs are listed only where a later process can continue them
-    serveHandover.useMarkerStore(
-      repoContext.continuationClaims !== undefined
-        ? controlPlaneStore
-        : undefined,
-    );
     // on a synced datastore a resume uses this instance's own copy, so a run
     // serve continues itself is compared with the remote first where the remote
     // can be read without replacing the copy
@@ -5993,6 +5988,13 @@ export const serveCommand = new Command()
       runsLiveInDatastore(
         new DefaultDatastorePathResolver(resolvedRepoDir, datastoreConfig),
       );
+    const parkedRunsContinuable = parkedRunsAreContinuable(
+      repoContext.continuationClaims !== undefined,
+      runRecordsSynced,
+    );
+    serveHandover.useMarkerStore(
+      parkedRunsContinuable ? controlPlaneStore : undefined,
+    );
     repoContext.runRecordCurrency = runRecordsSynced
       ? runRecordCurrencyOver(
         datastoreConfig,
@@ -9996,10 +9998,7 @@ export const serveCommand = new Command()
       // runs park at their next step boundary within the drain; with no drain
       // the abort below settles them
       if (
-        handsOverRuns(
-          shutdownDrainTimeoutMs,
-          repoContext.continuationClaims !== undefined,
-        )
+        handsOverRuns(shutdownDrainTimeoutMs, parkedRunsContinuable)
       ) {
         dispatchService.beginHandover();
         serveHandover.begin();

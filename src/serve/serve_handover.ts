@@ -206,6 +206,18 @@ export function parkedRunHandled(run: WorkflowRun | null): boolean {
 }
 
 /**
+ * the next process must claim a parked run and read its parked record current;
+ * a synced copy falls behind after boot, so there it would miss a run parked
+ * after its boot pass
+ */
+export function parkedRunsAreContinuable(
+  hasContinuationClaims: boolean,
+  runRecordsSynced: boolean,
+): boolean {
+  return hasContinuationClaims && !runRecordsSynced;
+}
+
+/**
  * a run parks only where a later process can continue it; elsewhere the drain
  * lets it run to completion, as a run nothing would continue must
  */
