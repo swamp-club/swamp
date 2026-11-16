@@ -903,9 +903,15 @@ Deno.test({
           process: { ...here, startTime: "not-its-start-time" },
         });
         await writeCommand(env, 1);
-        const presence = (await presenceOf(env))!;
+        // the sidecar may already have judged its owner gone and removed this
+        const litestreamPid = (await presenceOf(env))?.litestreamPid;
+        const supervisors = env.launchedSupervisors();
+        assert(supervisors.length > 0, "a sidecar was started");
         await waitFor(
-          () => sidecarGone(presence),
+          () =>
+            supervisors.every((pid) => !hostLitestreamProcesses.isAlive(pid)) &&
+            (litestreamPid === undefined ||
+              !hostLitestreamProcesses.isAlive(litestreamPid)),
           "the sidecar to judge its owner gone",
           { timeoutMs: 5_000 },
         );

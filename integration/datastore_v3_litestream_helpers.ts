@@ -103,6 +103,8 @@ export interface ReplicationEnv {
   readonly privateRoot: string;
   readonly config: { readonly type: "filesystem"; readonly path: string };
   paths(): Promise<ReplicationPaths>;
+  /** supervisors launched in this env, known even once a presence is removed */
+  launchedSupervisors(): number[];
 }
 
 /** under /tmp because the macOS TMPDIR is too long for a socket path */
@@ -124,6 +126,7 @@ export async function withReplicationEnv(
   const repoDir = join(root, "repo");
   await Deno.mkdir(repoDir, { recursive: true });
   let paths: Promise<ReplicationPaths> | undefined;
+  const launched = new Set<number>();
   const env: ReplicationEnv = {
     root,
     datastorePath,
@@ -139,6 +142,7 @@ export async function withReplicationEnv(
         await Deno.mkdir(dirname(commitsDb), { recursive: true });
         return await replicationPathsFor(commitsDb, privateRoot);
       })(),
+    launchedSupervisors: () => [...launched],
   };
   setV3ReplicationForTesting(
     {
@@ -148,6 +152,7 @@ export async function withReplicationEnv(
         launch: (launch) => {
           const pid = hostLitestreamProcesses.launch(launch);
           startedPids.add(pid);
+          launched.add(pid);
           return pid;
         },
       },
