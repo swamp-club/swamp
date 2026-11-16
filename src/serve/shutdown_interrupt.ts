@@ -139,6 +139,9 @@ export async function interruptShutdownRuns(
   );
   if (workflowRuns.length === 0) return { interrupted };
   const { repoContext, syncService } = deps;
+  // the top-level and child fence waits share one budget, so shutdown waits
+  // on fences once however many parents and levels there are
+  const fenceDeadline = Date.now() + RUN_WRITE_FENCE_WAIT_MS;
   await deps.runWriteFence?.close(workflowRuns.map((r) => r.runId));
   const settleTrackerRow = (
     run: {
@@ -202,8 +205,6 @@ export async function interruptShutdownRuns(
   let pushError: string | undefined;
   const notSaved: string[] = [];
   const childRunIds: string[] = [];
-  // one wait shared by every child fence, however many parents and levels
-  const childFenceDeadline = Date.now() + RUN_WRITE_FENCE_WAIT_MS;
   const topLevelIds = new Set(workflowRuns.map((r) => r.runId));
   type LoadedRun = (typeof loaded)[number];
   // Linked before the parent's save, so a child that later fails to save
@@ -218,7 +219,7 @@ export async function interruptShutdownRuns(
     if (linked.length === 0) return [];
     await deps.runWriteFence?.close(
       linked.map(({ run }) => run.id),
-      Math.max(0, childFenceDeadline - Date.now()),
+      Math.max(0, fenceDeadline - Date.now()),
     );
     const current: LoadedRun[] = [];
     for (const { run, workflowId } of linked) {

@@ -255,7 +255,6 @@ async function interruptRecoverResume(scenario: Scenario): Promise<void> {
       const childId = createWorkflowId(child.id);
       const childRuns = await runRepo.findAllByWorkflowId(childId);
       const nested = scenario === "nested";
-      // The cut-off child is interrupted with its parent, which waits on it.
       assertEquals(
         result.interrupted,
         nested ? [aborted[0].runId, childRuns[0].id] : [aborted[0].runId],
@@ -323,7 +322,6 @@ async function interruptRecoverResume(scenario: Scenario): Promise<void> {
         true,
       );
       if (scenario !== "plain") {
-        // the resume adopts the cut-off child rather than starting another
         const after = await runRepo.findAllByWorkflowId(childId);
         assertEquals(after.map((r) => r.status), ["succeeded"]);
       }

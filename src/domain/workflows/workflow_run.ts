@@ -780,7 +780,6 @@ export class StepRun {
     this._nestedRun = { kind: "valid", ref: { ...ref } };
   }
 
-  /** the outcome an interrupted step recorded is dropped: it waits again */
   rewaitOnNestedRun(ref: NestedRunRef): void {
     this._completedAt = undefined;
     this._error = undefined;
@@ -1863,7 +1862,6 @@ export class WorkflowRun implements TriggerEvaluationContext {
     };
   }
 
-  /** only a valid parentRun naming `parent` by run and workflow id answers */
   startedByStepOf(
     parent: WorkflowRun,
   ): { jobName: string; stepName: string } | undefined {

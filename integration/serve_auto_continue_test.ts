@@ -1329,11 +1329,7 @@ Deno.test({
     }),
 });
 
-/**
- * runs the parent and its child to the end, then rewrites both records as a
- * serve shutdown leaves them: the child cut off mid-step, the parent's step
- * waiting on it
- */
+/** both records are rewritten as a serve shutdown leaves them */
 async function shutdownNestedPair(
   repoDir: string,
   parent: Workflow,
