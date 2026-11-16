@@ -3594,3 +3594,36 @@ Deno.test("SqliteReadModel.recover: a stored version whose metadata differs from
     }
   });
 });
+
+Deno.test("SqliteReadModel.catchUp: a tail over files on disk skips a key's replaced writes, never those of a key whose path holds a file the read model does not own", async () => {
+  await withEnv(async (env) => {
+    await env.append(1, "", [await savePut("a", 1), versionOp("a", 1)]);
+    const readModel = env.open();
+    try {
+      await readModel.catchUp(signal());
+      const stray = env.contentPath("", "b", 1);
+      await Deno.mkdir(join(stray, ".."), { recursive: true });
+      await Deno.writeTextFile(stray, "not the read model's");
+      await env.append(2, "", [
+        await savePut("a", 1, "a again", undefined, "data.append"),
+        versionOp("a", 1),
+        await savePut("b", 1, "b first"),
+        versionOp("b", 1),
+      ]);
+      await env.append(3, "", [
+        await savePut("a", 1, "a last", undefined, "data.append"),
+        versionOp("a", 1),
+        await savePut("b", 1, "b last", undefined, "data.append"),
+        versionOp("b", 1),
+      ]);
+      await withCapturedSpans(async (spans) => {
+        await readModel.catchUp(signal());
+        const span = findSpan(spans, "swamp.datastore.v3.readmodel.catchup");
+        assertEquals(span.attributes["swamp.datastore.v3.writes_skipped"], 1);
+      });
+      assertEquals(await readOrAbsent(env.contentPath("", "a", 1)), "a last");
+    } finally {
+      await readModel.close();
+    }
+  });
+});

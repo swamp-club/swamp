@@ -4113,6 +4113,12 @@ applied commits replay in full, and so does one resumed after a crash: from
 the bound on, every file is where a full replay leaves it. On the dogfood
 repos a clone wrote 13.7k files instead of 40-48k.
 
+A catch-up from a later cursor nets its tail too (`#planTailNet`, up to
+`TAIL_NET_MAX_COMMITS` commits): it leaves off disk a write a later write of
+the key in the tail replaces, under the same path-prefix rule, but never skips
+a removal, and only for a key the read model owns a file for or whose path
+holds nothing, since its files are already on disk.
+
 **Fetching chunks for a page (swamp-club#4457).** Before a page applies, the
 read model fetches together every chunk the page's writes will read: puts of
 keys the checkout projects, less the writes a net replay skips

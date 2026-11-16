@@ -75,6 +75,7 @@ import {
   decideFile,
   finalKeyStates,
   type KeyChange,
+  type NetReplayCommit,
   type NetReplayPlan,
   NetReplayPlanner,
 } from "../../domain/datastore_v3/materialisation.ts";
@@ -165,6 +166,9 @@ export const READ_MODEL_LOCK_FILE = "read_model.lock";
 
 /** how long a command's end waits for a catch-up under way */
 const CLOSE_WAIT_MS = 500;
+
+/** a longer tail is replayed in full rather than held in memory to be netted */
+export const TAIL_NET_MAX_COMMITS = 20_000;
 
 export const AT_RISK_DIR = "at-risk";
 
@@ -1516,11 +1520,13 @@ export class SqliteReadModel implements ReadModel {
     signal: AbortSignal,
     options: { readonly net?: boolean } = {},
   ): Promise<CatchUpResult> {
-    if (
-      options.net === true && this.#netReplay && this.#state.cursor() === 0
-    ) {
-      this.#netBase = true;
-      this.#net = await this.#planNetReplay(signal);
+    if (options.net === true && this.#netReplay) {
+      if (this.#state.cursor() === 0) {
+        this.#netBase = true;
+        this.#net = await this.#planNetReplay(signal);
+      } else {
+        this.#net = await this.#planTailNet(signal);
+      }
     }
     try {
       return await this.#catchUpFeedNow(signal);
@@ -1565,6 +1571,101 @@ export class SqliteReadModel implements ReadModel {
         return this.#readNetPlan(planner, point, signal, span);
       },
     );
+  }
+
+  /**
+   * a tail over files already on disk skips only writes a later write of the
+   * key replaces, never a removal, and only of a key whose path holds nothing
+   * the read model does not own; undefined when there is nothing to net
+   */
+  #planTailNet(signal: AbortSignal): Promise<NetReplayPlan | undefined> {
+    return withSpan(
+      "swamp.datastore.v3.readmodel.tail_net_plan",
+      {},
+      async (span) => {
+        const tail: NetReplayCommit[] = [];
+        let cursor = this.#state.cursor();
+        for (;;) {
+          signal.throwIfAborted();
+          let page;
+          try {
+            page = await this.#commitStore.changesSince(cursor, this.#pageSize);
+          } catch (error) {
+            if (error instanceof CommitsCompactedError) return undefined;
+            throw error;
+          }
+          for (const change of page) {
+            tail.push({
+              namespace: change.commit.namespace,
+              partition: change.commit.partition.toString(),
+              position: change.cursor,
+              changes: finalKeyStates(change.commit),
+            });
+            cursor = change.cursor;
+          }
+          if (tail.length > TAIL_NET_MAX_COMMITS) return undefined;
+          if (page.length < this.#pageSize) break;
+        }
+        span.setAttribute("swamp.datastore.v3.commits", tail.length);
+        if (tail.length < 2) return undefined;
+        const planner = this.#netPlanner();
+        const allowed = new Set<string>();
+        for (const commit of tail) {
+          for (const change of commit.changes) {
+            const key = change.key.toString();
+            const id = `${commit.namespace}\0${key}`;
+            if (allowed.has(id) || planner.ignored(commit.namespace, key)) {
+              continue;
+            }
+            // a write at or below a recorded mark is kept off disk skipped or not, so no seeding
+            if (
+              this.#state.fileOwnership(commit.namespace, key) !== undefined ||
+              await this.#nothingAt(commit.namespace, key)
+            ) {
+              allowed.add(id);
+            }
+          }
+        }
+        for (const commit of tail) planner.add(commit);
+        const plan = planner.finish(() => true);
+        let skippable = 0;
+        const skips = (namespace: string, key: string, position: number) =>
+          allowed.has(`${namespace}\0${key}`) &&
+          plan.skipsWrite(namespace, key, position);
+        for (const commit of tail) {
+          for (const change of commit.changes) {
+            if (
+              change.put !== null &&
+              skips(commit.namespace, change.key.toString(), commit.position)
+            ) {
+              skippable++;
+            }
+          }
+        }
+        span.setAttributes({
+          "swamp.datastore.v3.bound": plan.bound,
+          "swamp.datastore.v3.writes_skippable": skippable,
+          "swamp.datastore.v3.writes_kept_for_prefix": plan.keptForPrefix,
+        });
+        if (skippable === 0) return undefined;
+        return {
+          ...plan,
+          skipsWrite: skips,
+          skipsRemoval: () => false,
+        };
+      },
+    );
+  }
+
+  /** a refused or unprojected key counts as occupied: it is never netted */
+  async #nothingAt(namespace: string, key: string): Promise<boolean> {
+    try {
+      await Deno.lstat(join(this.#cacheRoot(namespace), ...key.split("/")));
+      return false;
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) return true;
+      return false;
+    }
   }
 
   #netPlanner(): NetReplayPlanner {
