@@ -900,6 +900,7 @@ export class ServeDatastoreClient {
     since: number | undefined,
     namespace: string,
     signal: AbortSignal,
+    limit?: number,
   ): Promise<ServePartitionBase | "gone" | "too-large"> {
     let body: Record<string, unknown>;
     try {
@@ -910,6 +911,7 @@ export class ServeDatastoreClient {
           query: {
             partition,
             ...(since === undefined ? {} : { since: String(since) }),
+            ...(limit === undefined ? {} : { limit: String(limit) }),
           },
         },
         signal,

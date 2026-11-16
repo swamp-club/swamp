@@ -5425,7 +5425,9 @@ or below that seq. **There's no local fold and no local partition rebuild.**
 - **Which commits an install removes:**
   - **whole** (up to 1,000 base rows): every commit at or below the seq; the
     partition's snapshot at that seq is rebuilt from the copy's own commits,
-    which is cheap at that size;
+    which is cheap at that size, unless the copy already has a snapshot at or
+    above the seq, which is kept (a rebuild below it would replay from seq 1,
+    over commits an earlier base took);
   - **by difference:** only down to the partition's latest snapshot, so no
     snapshot (a body of every record) is ever rewritten. The commits kept
     between that snapshot and the seq are **history-only**: a partition
@@ -5486,14 +5488,44 @@ or below that seq. **There's no local fold and no local partition rebuild.**
     serve moving to a new seq mid-staging starts it over, and a swap that is
     refused clears its staging so it never blocks the next partition.
   - **A difference that cannot be installed at a tail** (serve has forgotten
-    its removals, it is past serve's row limit, or it would not fit even a
-    whole budget) is staged and swapped in whole instead, never deferred for
-    good.
+    its removals, or it is too large for a whole 1 s budget, by serve's 413,
+    by its size, by the reply's byte limit, or by a read that had most of a
+    budget and still did not arrive) is staged and swapped in whole instead,
+    never deferred for good. A passing failure to read a difference (a 5xx, a
+    reset) is refused for that command only and keeps the difference path.
+  - **A staging page that fails with most of a budget still left** halves its
+    page size for the next command (down to 50 entries), remembered per
+    partition until it is swapped in; a page cut short by the end of a budget
+    keeps its size. **Serve refusing a page** (a 4xx, such as a token from
+    before a takeover) clears the staging, which starts over.
+  - **A staged partition whose swap no single budget could fit** (above about
+    330 k rows at the padded estimate) is refused, its staging cleared, and the
+    partition marked to wait for the copy's next full base load. That load
+    records it as serve-sourced, after which it follows by difference, and the
+    mark goes with the rest of the copy's content. The next hot partition is
+    staged meanwhile.
+- **One read model per copy:** a member's serve copy lives under its own
+  checkout's `.swamp/`, as its read model does, so the read model an install
+  checks is the only one that reads the copy's feed.
+- **Read grants:** a difference is filtered by what the caller may read now, as
+  the change feed is; a grant change reaches rows written since, and a whole
+  install (after a full base load, or past the horizon) reconciles the rest.
   - **Fallback to the full base load** when the difference's estimated rows
     exceed the whole base's.
+- **Asking serve's index:** serve keeps its newest commits uncompacted, so a
+  member copy sits above the 2,500-commit trigger most of the time. A copy
+  records when it last asked serve's index and whether it found nothing to do;
+  after a run with nothing to do it does not ask again for 10 minutes (serve
+  folds hourly), unless a staging is under way. Partitions that only wait for a
+  full base load (contested, or too big to swap) do not count as work. Serve
+  answers the index from one read per compaction point.
+- **"Too big to swap"** is judged against the fixed 1 s budget, never against
+  the share another copy left in the same command, which only defers it.
 - **Observability:** `swamp.datastore.v3.follow_compaction` records, per
   command, the budget used, the partitions installed, deferred and refused, the
-  pages staged and partitions swapped in, and the rows written.
+  pages staged and partitions swapped in, and the rows written. Its children
+  `swamp.datastore.v3.follow.stage_page`, `.swap` and `.install` each name their
+  partition and rows, so a single swap or install is timed on its own.
 - **Serve's own follower copy** isn't covered. Under the physical-follower
   takeover design it's a byte-identical copy of the leader's lineage and takes
   the leader's compaction with it. If that design isn't in place when this

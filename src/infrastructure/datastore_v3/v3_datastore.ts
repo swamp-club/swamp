@@ -623,7 +623,6 @@ export interface V3Datastore {
   assertReadModelWithin?(maxCommits: number): Promise<void>;
   /** where the copy's feed stands, for serve to answer with what it lacks */
   serveCatchUpRequest?(): CatchUpRequest;
-  /** installs serve's base for partitions serve compacted past, within `budgetMs` */
   followServeCompaction?(budgetMs: number): Promise<FollowCompactionReport>;
   /**
    * the writer hold's offline rule, for a write whose first contact with serve

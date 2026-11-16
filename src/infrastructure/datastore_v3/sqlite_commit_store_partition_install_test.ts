@@ -506,3 +506,60 @@ Deno.test("SqliteCommitStore.readBaseOfPartitionPage: a token naming the partiti
     assertEquals(page.entries.length > 0, true);
   });
 });
+
+Deno.test("SqliteCommitStore.readBaseIndex: answers from one read per compaction point", async () => {
+  await withStores(async (serve, _copy, paths) => {
+    for (let s = 1; s <= 2; s++) await serve.append(await save("a", s, s));
+    await serve.compactHistory(1);
+    const first = await serve.readBaseIndex("");
+    // a row written behind the store's back is not seen until the point moves
+    const db = new DatabaseSync(paths.serve);
+    try {
+      db.exec("DELETE FROM base_records");
+    } finally {
+      db.close();
+    }
+    assertEquals(await serve.readBaseIndex(""), first);
+    await serve.compactHistory(2);
+    assertEquals((await serve.readBaseIndex(""))[0].seq, 2);
+  });
+});
+
+Deno.test("SqliteCommitStore.installPartitionBase: a whole install below the copy's newest snapshot keeps that snapshot, never rebuilding from commits a base already took", async () => {
+  await withStores(async (serve, copy, paths) => {
+    for (let seq = 1; seq <= 3; seq++) {
+      await both(serve, copy, await save("a", seq, seq));
+    }
+    await serve.compactHistory(3);
+    await copy.installPartitionBase(installOf(await readOf(serve), "whole"));
+    for (let seq = 4; seq <= 9; seq++) {
+      await both(serve, copy, await save("a", seq, seq));
+    }
+    const snapshot = () =>
+      rows(
+        paths.copy,
+        `SELECT seq, body FROM partition_snapshots WHERE partition = '${PARTITION}'`,
+      )[0] as { seq: number; body: string };
+    assertEquals(snapshot().seq, 8);
+    await serve.compactHistory(6);
+    const outcome = await copy.installPartitionBase(
+      installOf(await readOf(serve), "whole"),
+    );
+    assertEquals(outcome.kind, "installed");
+    // the snapshot at 8 holds versions 1-3, which no stored commit holds any more
+    assertEquals(snapshot().seq, 8);
+    const live = (JSON.parse(snapshot().body).names as {
+      name: string;
+      live: number[];
+    }[]).find((n) => n.name === "a")?.live;
+    assertEquals(live?.includes(1), true);
+    assertEquals(
+      rows(
+        paths.copy,
+        `SELECT seq FROM commits WHERE partition = '${PARTITION}' ORDER BY seq`,
+      )
+        .map((r) => r.seq),
+      [7, 8, 9],
+    );
+  }, { snapshotInterval: 4 });
+});

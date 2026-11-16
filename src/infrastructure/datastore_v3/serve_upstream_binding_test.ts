@@ -17,7 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertNotEquals } from "@std/assert";
+import { assert, assertEquals, assertNotEquals } from "@std/assert";
+import { resolve } from "@std/path";
 import { serveCallerFingerprint } from "./checkout_view.ts";
 import {
   keepsProbedCopy,
@@ -177,4 +178,12 @@ Deno.test("keepsProbedCopy: never a copy another caller reset, or whose principa
     false,
   );
   assertEquals(keepsProbedCopy(probe, undefined, "user:p"), false);
+});
+
+Deno.test("serveUpstreamLocalRoot: two checkouts of one serve and namespace get copies of their own, each under its checkout", () => {
+  const a = serveUpstreamLocalRoot("/work/a", "https://serve.test", "");
+  const b = serveUpstreamLocalRoot("/work/b", "https://serve.test", "");
+  assert(a !== b);
+  assert(a.startsWith(resolve("/work/a")));
+  assert(b.startsWith(resolve("/work/b")));
 });

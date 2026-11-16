@@ -522,6 +522,17 @@ const MIGRATIONS: readonly SqliteMigration[] = [
         complete INTEGER NOT NULL,
         rows INTEGER NOT NULL DEFAULT 0
       ) STRICT;
+      CREATE TABLE IF NOT EXISTS follow_state (
+        namespace TEXT PRIMARY KEY,
+        checked_at INTEGER NOT NULL,
+        idle INTEGER NOT NULL
+      ) STRICT, WITHOUT ROWID;
+      CREATE TABLE IF NOT EXISTS staging_page_limits (
+        namespace TEXT NOT NULL,
+        partition TEXT NOT NULL,
+        entries INTEGER NOT NULL,
+        PRIMARY KEY (namespace, partition)
+      ) STRICT, WITHOUT ROWID;
       CREATE TABLE IF NOT EXISTS staged_records (
         record_key TEXT PRIMARY KEY,
         sha256 TEXT NOT NULL,
@@ -811,6 +822,10 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
   readonly #afterAppendWrites: ((commit: Commit) => void) | undefined;
   /** {@link SqliteCommitStoreOptions.follower}. */
   readonly #follower: boolean;
+  readonly #indexCache = new Map<
+    string,
+    { point: number; entries: readonly BaseIndexEntry[] }
+  >();
   #connectionKey: string | undefined;
   /** Append transactions committed; see {@link appendTransactions}. */
   #appendTransactions = 0;
@@ -2659,11 +2674,48 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
     if (this.#closed) return Promise.reject(closedError());
     try {
       return Promise.resolve(
-        this.#readTransaction(() => this.#base.readIndex(namespace)),
+        this.#readTransaction(() => {
+          // the base changes only when a fold moves the point, so one read per point
+          const point = this.#point();
+          const cached = this.#indexCache.get(namespace);
+          if (cached?.point === point) return cached.entries;
+          const entries = this.#base.readIndex(namespace);
+          this.#indexCache.set(namespace, { point, entries });
+          return entries;
+        }),
       );
     } catch (error) {
       return Promise.reject(error);
     }
+  }
+
+  /** when this copy last asked serve's index, and whether it found nothing to do */
+  followState(
+    namespace: string,
+  ): Promise<{ checkedAt: number; idle: boolean } | undefined> {
+    if (this.#closed) return Promise.reject(closedError());
+    const row = this.#db.prepare(
+      "SELECT checked_at, idle FROM follow_state WHERE namespace = ?",
+    ).get(namespace) as { checked_at: number; idle: number } | undefined;
+    return Promise.resolve(
+      row === undefined
+        ? undefined
+        : { checkedAt: row.checked_at, idle: row.idle === 1 },
+    );
+  }
+
+  setFollowState(
+    namespace: string,
+    checkedAt: number,
+    idle: boolean,
+  ): Promise<void> {
+    if (this.#closed) return Promise.reject(closedError());
+    return this.#enqueue(() => {
+      this.#db.prepare(
+        "INSERT OR REPLACE INTO follow_state (namespace, checked_at, idle) VALUES (?, ?, ?)",
+      ).run(namespace, checkedAt, idle ? 1 : 0);
+      return Promise.resolve();
+    });
   }
 
   /**
@@ -3243,15 +3295,15 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
     );
   }
 
-  /** commits a base install could still fold: above their partition's compacted seq */
-  foldableCommits(): Promise<number> {
+  /** commits a base install could still fold, counted no further than `atMost` */
+  foldableCommits(atMost = Number.MAX_SAFE_INTEGER): Promise<number> {
     if (this.#closed) return Promise.reject(closedError());
     return Promise.resolve(
       Number(
         (this.#db.prepare(
-          "SELECT COUNT(*) AS n FROM commits AS c WHERE NOT EXISTS (SELECT 1 FROM compacted_partitions AS p " +
-            "WHERE p.namespace = c.namespace AND p.partition = c.partition AND p.seq >= c.seq)",
-        ).get() as { n: number }).n,
+          "SELECT COUNT(*) AS n FROM (SELECT 1 FROM commits AS c WHERE NOT EXISTS (SELECT 1 FROM compacted_partitions AS p " +
+            "WHERE p.namespace = c.namespace AND p.partition = c.partition AND p.seq >= c.seq) LIMIT ?)",
+        ).get(atMost) as { n: number }).n,
       ),
     );
   }
@@ -3426,6 +3478,41 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
     });
   }
 
+  /** the page size staging this partition last fell back to, if any */
+  stagingPageLimit(
+    namespace: string,
+    partition: string,
+  ): Promise<number | undefined> {
+    if (this.#closed) return Promise.reject(closedError());
+    return Promise.resolve(
+      (this.#db.prepare(
+        "SELECT entries FROM staging_page_limits WHERE namespace = ? AND partition = ?",
+      ).get(namespace, partition) as { entries: number } | undefined)
+        ?.entries,
+    );
+  }
+
+  /** undefined forgets it, once the partition is swapped in */
+  setStagingPageLimit(
+    namespace: string,
+    partition: string,
+    entries: number | undefined,
+  ): Promise<void> {
+    if (this.#closed) return Promise.reject(closedError());
+    return this.#enqueue(() => {
+      if (entries === undefined) {
+        this.#db.prepare(
+          "DELETE FROM staging_page_limits WHERE namespace = ? AND partition = ?",
+        ).run(namespace, partition);
+      } else {
+        this.#db.prepare(
+          "INSERT OR REPLACE INTO staging_page_limits (namespace, partition, entries) VALUES (?, ?, ?)",
+        ).run(namespace, partition, entries);
+      }
+      return Promise.resolve();
+    });
+  }
+
   /** forgets a staged partition, for one serve has moved past or refused */
   clearStagedPartition(): Promise<void> {
     if (this.#closed) return Promise.reject(closedError());
@@ -3491,7 +3578,9 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
         ),
       );
     }
-    return this.#enqueue(() => this.#installStaged(readModelCursor));
+    return this.#enqueue(() => this.#installStaged(readModelCursor)).finally(
+      () => this.#notifyHeadMoved(true),
+    );
   }
 
   async #installStaged(
@@ -3622,11 +3711,7 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
     }
   }
 
-  /**
-   * Installs serve's base for one partition, whole or as a difference. It
-   * never folds past what the read model applied, never past the copy's own
-   * head, and leaves the compaction point and feed cursor where they were.
-   */
+  /** never folds past what the read model applied or the copy's own head */
   installPartitionBase(
     install: PartitionBaseInstall,
   ): Promise<PartitionInstallOutcome> {
@@ -3638,7 +3723,9 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
         ),
       );
     }
-    return this.#enqueue(() => this.#installPartition(install));
+    return this.#enqueue(() => this.#installPartition(install)).finally(() =>
+      this.#notifyHeadMoved(true)
+    );
   }
 
   async #installPartition(
@@ -3663,14 +3750,19 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
     if (ready !== undefined) return ready;
     let snapshot: { seq: number; body: string } | undefined;
     let through: number;
-    if (install.mode === "whole") {
+    const latest = this.#selectSnapshot.get(namespace, partition) as
+      | { seq: number }
+      | undefined;
+    if (install.mode === "whole" && (latest?.seq ?? 0) < seq) {
+      // a rebuild below the newest snapshot would replay from seq 1, over commits a base already took
+      if (latest === undefined && compacted > 0) {
+        return { kind: "skipped", reason: "no-snapshot" };
+      }
       const rebuilt = await this.#rebuild(namespace, key, seq);
       snapshot = { seq: rebuilt.seq, body: JSON.stringify(rebuilt.snapshot()) };
       through = rebuilt.seq;
     } else {
-      const latest = this.#selectSnapshot.get(namespace, partition) as
-        | { seq: number }
-        | undefined;
+      // the newest snapshot needs no commit at or below it
       through = Math.min(seq, latest?.seq ?? 0);
     }
     const removing = await this.#foldable(namespace, partition, through);
@@ -3808,7 +3900,10 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
     }
   }
 
-  /** why a partition cannot take serve's base at `seq` now, if it cannot */
+  /**
+   * why a partition cannot take serve's base at `seq` now, if it cannot; the
+   * cursor is the copy's only reader's, as a serve copy lives under its checkout
+   */
   #installReady(
     namespace: string,
     partition: string,
@@ -4374,7 +4469,6 @@ const BASE_SECTIONS: readonly BaseSection[] = [
   },
 ];
 
-/** A partition being staged a page at a time for a whole install. */
 export interface StagedPartition {
   readonly namespace: string;
   readonly partition: string;
@@ -4404,7 +4498,12 @@ export type PartitionInstallOutcome =
   }
   | {
     readonly kind: "skipped";
-    readonly reason: "not-newer" | "no-source" | "behind" | "read-model-behind";
+    readonly reason:
+      | "not-newer"
+      | "no-source"
+      | "behind"
+      | "read-model-behind"
+      | "no-snapshot";
   };
 
 export class ChunkCountDriftError extends Error {

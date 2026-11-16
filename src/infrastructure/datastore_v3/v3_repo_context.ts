@@ -180,7 +180,10 @@ import { isChunkQuarantine } from "../../domain/datastore/datastore_storage.ts";
 import { serveUpstreamAt } from "./serve_upstream_registry.ts";
 import { ServeUnreachableError } from "./serve_upstream_errors.ts";
 import { LockCatchUpBehindError } from "./serve_catch_up.ts";
-import { followEachWithin } from "./serve_compaction_follow.ts";
+import {
+  FOLLOW_COMPACTION_BUDGET_MS,
+  followEachWithin,
+} from "./serve_compaction_follow.ts";
 import {
   reportQueuedOffline,
   resetServeOffline,
@@ -2026,9 +2029,6 @@ async function recoverDroppedWork(
     keep(`its recovery failed: ${errorMessage(error)}`);
   }
 }
-
-/** the most a command's exit waits on following serve's compaction */
-export const FOLLOW_COMPACTION_BUDGET_MS = 1_000;
 
 /**
  * After the command's output and before its datastores close: each serve-mode
