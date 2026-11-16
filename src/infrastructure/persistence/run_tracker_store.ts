@@ -73,7 +73,7 @@ export interface TrackerProcess {
   probe(pid: number): OwnerProbe;
 }
 
-/** a process whose state cannot be read counts as present, with no start time */
+/** an unreadable state falls back to the pid probe, with no start time */
 function probeOwner(pid: number): OwnerProbe {
   const state = processStateOf(pid);
   if (state !== undefined) {
