@@ -439,7 +439,11 @@ export function createServeCommitSink(
     const signal = options.signal();
     const envelope = envelopeOf(commit, leaseId);
     const refs = [...new Set(commit.chunkRefs())];
-    let chunks = await carried(commit, refs);
+    let chunks = await withSpan(
+      "swamp.datastore.v3.serve.carry_chunks",
+      {},
+      () => carried(commit, refs),
+    );
     let reply: CommitReply;
     try {
       try {

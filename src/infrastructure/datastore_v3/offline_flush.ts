@@ -77,6 +77,7 @@ import {
   ServeUpstreamUpgradeRequiredError,
 } from "./serve_upstream_errors.ts";
 import { emitServeOfflineNotice } from "./serve_offline.ts";
+import { withSpan } from "../tracing/tracer.ts";
 
 const logger = getSwampLogger(["datastore", "v3", "offline"]);
 
@@ -339,7 +340,35 @@ export async function flushOfflineEntries(
   return report;
 }
 
-async function flushEntry(
+function flushEntry(
+  port: OfflineFlushPort,
+  entry: OutboxEntry,
+  options: { readonly writer: CommitWriter; readonly fence: number },
+  clock: () => Date,
+  flushed: ReadonlySet<string>,
+  carry: OfflineRebaseCarry,
+  reserved: (name: string) => ReadonlySet<number>,
+): Promise<EntryOutcome> {
+  return withSpan(
+    "swamp.datastore.v3.offline_flush.entry",
+    {},
+    async (span) => {
+      const outcome = await flushEntryIn(
+        port,
+        entry,
+        options,
+        clock,
+        flushed,
+        carry,
+        reserved,
+      );
+      span.setAttribute("swamp.datastore.v3.outcome", outcome.kind);
+      return outcome;
+    },
+  );
+}
+
+async function flushEntryIn(
   port: OfflineFlushPort,
   entry: OutboxEntry,
   options: { readonly writer: CommitWriter; readonly fence: number },
@@ -381,13 +410,22 @@ async function flushEntry(
     let seq: number;
     let built: Commit;
     try {
-      await port.catchUpPartition(namespace, commit.partition);
+      await withSpan(
+        "swamp.datastore.v3.offline_flush.catch_up",
+        {},
+        () => port.catchUpPartition(namespace, commit.partition),
+      );
       const partition = await port.partitionState(namespace, commit.partition);
       seq = await port.head(namespace, commit.partition);
-      const lookups = await lookupsOf(port, namespace, commit, partition, {
-        baseSeq: entry.base.seq,
-        flushed,
-      });
+      const lookups = await withSpan(
+        "swamp.datastore.v3.offline_flush.lookups",
+        {},
+        () =>
+          lookupsOf(port, namespace, commit, partition, {
+            baseSeq: entry.base.seq,
+            flushed,
+          }),
+      );
       const [rebased] = await asEntryOwn(() =>
         rebaseOfflineCommits([commit], partition, lookups, {
           encodeMetadata: port.encodeMetadata,
