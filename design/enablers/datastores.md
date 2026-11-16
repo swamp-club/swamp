@@ -5308,6 +5308,246 @@ writer by `DEFAULT_COMPACTION_POLICY`; run-record artifacts resolve through
 `resolveRunArtifact`, and new `DataArtifactRef`s record `sha256`. Pruning
 `compacted_txns` came with the commit outbox (swamp-club#3490).
 
+### v3 team-mode copies: following serve's compaction, catch-up by difference and bounded recovery
+
+A member's serve-mode copy of the commit log must stay bounded and cheap to
+bring current, and recovery and rebuilds must not grow with history. This
+section records the agreed design. Its mechanisms are built one at a time. Each
+one keeps the read model's correctness rule (a targeted path equals a full
+rebuild, row for row) and sits behind the same refusals that send recovery from
+a fast path to a slow one: `#targetedFallback`, `#boundedScopes` and
+`sameStoredVersions` in the read model. Figures are marked (M) measured or
+(I) inferred. The measurements come from the dogfood VMs' 44 h team-mode
+history (52,548 commits).
+
+**What the code does today.**
+
+- **Serve's leader compacts by two rules.**
+  - The hourly maintenance tick folds by count: it keeps the newest 2,500
+    commits and runs when at least 500 are foldable (`DEFAULT_COMPACTION_POLICY`).
+  - After every hourly retention pass, `compactRetentionQuietly` folds
+    everything older than 24 h with no count floor (`compactionBound` with a
+    cutoff).
+  - At 1,100-1,700 commits an hour under load (M), the count floor is passed in
+    about 2 h. So **a member idle for about 2 h of others' work is behind
+    serve's compaction point. That's the everyday case, not the weekend one.**
+- **A member copy is a follower store.**
+  - Serve leaves out commits the caller may not read, so its partitions have
+    seq holes.
+  - Its cursors are its own, not serve's. It stores its own landed commits as
+    soon as they land (`applyStamped`, `catchUpPartition`), ahead of other
+    partitions' commits serve ordered before them. A commit reply carries no
+    serve cursor.
+- **A copy never compacts** since the exit-time fold was removed: folding at
+  exit stalled every member at once. So a copy grows without bound (about 54 MB
+  in 44 h, M).
+- **A copy behind serve's point** reloads the whole base (`installObservedBase`).
+  The read model then reloads every file and catalog row (`#loadBaseNow`).
+- **Serve's base is filtered per caller,** by the changes feed's rule.
+- **Serve's own follower copy** takes the leader's commits at the leader's
+  cursors (`appendFromLeader`). It never compacts, because the maintenance
+  timer runs only on the leader.
+- **Partition sizes are heavily skewed** (M):
+  - 4,309 partitions;
+  - base records per partition: p50 4, p95 4, max 78,735;
+  - the top three (model `command/shell` partitions) hold about 78 % of
+    files, and the hottest takes 17 % of commits (124 an hour at p50, 742 at
+    the max);
+  - no record key is under more than one partition (0 of 182,785), and there
+    are no file/directory conflicts across partitions.
+
+#### Base install by partition (a copy follows serve's compaction; catch-up by difference)
+
+One primitive serves two needs: a caught-up copy following serve's compaction,
+and a behind copy catching up. A copy installs **serve's base** for each
+partition where serve's compacted seq is past its own. It drops its commits at
+or below that seq. **There's no local fold and no local partition rebuild.**
+
+- **Threshold:**
+  - a partition with **≤ 1,000 base rows** is installed whole;
+  - **above that, by difference:** only the rows that changed since the copy's
+    last install from serve.
+  - A hot partition is the one serve's folds keep advancing, so installing it
+    whole each time would cost O(partition size), like the exit-time fold did.
+- **Serve's store** records, per base row (`base_records`, `base_versions`,
+  `base_catalog`, `base_forwards`), the `changed_seq` of the fold that last
+  wrote it. It records the rows a fold deletes in `base_removed`, and keeps a
+  **difference horizon** per partition.
+  - `base_removed` is pruned after the retention age, or under a size cap, and
+    the horizon moves with it.
+  - A difference request below the horizon answers "gone", and the copy
+    installs the partition whole.
+- **Serve's API**, read-only and behind the per-caller filter:
+  - a base index (each readable partition's compacted seq, and any partition
+    it shares a file key or a lexical conflict with);
+  - the base filtered to a list of partitions;
+  - a partition's difference since a seq.
+- **The copy** records, per partition, whether its base came from serve and at
+  which seq.
+  - A difference applies only to a base that came from serve. Equality holds by
+    induction from the last install.
+  - A partition the copy compacted locally (before this design) is equal to
+    serve's only by projection, so it's installed whole once.
+- **One install, per partition, in one transaction under the copy's writer
+  lock:**
+  1. replace (or, by difference, upsert and delete) the partition's base rows,
+     `compacted_partitions` and `compacted_txns`;
+  2. adjust `chunk_refs` and `chunk_partitions` per partition or per row, and
+     release a chunk whose count reaches zero, as a fold does;
+  3. write file ownership with its mark **rebased** below the partition's
+     lowest kept local cursor;
+  4. delete the commits at or below the new seq.
+- **Refusals that fall back to the full base load:**
+  - `chunk_refs` isn't the sum of `chunk_partitions` for the partition's
+    chunks;
+  - the base index reports a contested key. None exist today, so this is a
+    guard only;
+  - an outbox entry sits below serve's compacted seq. That's divergence, so
+    refuse and leave it to the divergence path.
+- **Never drop a commit still in the copy's outbox.** Serve's `compacted_txns`
+  are installed, so a retry of a folded commit is still a duplicate.
+- **Forwards are partition-local:** a forward's target is a bare name, resolved
+  at read time in the same model's catalog.
+- **The read model is untouched** for a caught-up copy: it has applied every
+  reinstalled commit, and the copy's global compaction point doesn't move.
+  - A behind copy's read model applies the difference by name, using targeted
+    recovery's restore and catalog steps scoped to the reinstalled partitions.
+- **When it runs:**
+  - **A caught-up copy:** inside a command, after its output is flushed and
+    before it returns. **Never at exit.** At most 1 s per command, resumable
+    between partition batches. It's skipped when another process holds the
+    copy's writer lock, and triggered when the copy holds at least 2,500
+    commits below serve's point.
+  - An active member has about 100-160 partitions an hour (M), and about 750
+    changed rows an hour per hot partition (M: distinct keys over 5 h). That's
+    tens of ms (I).
+  - **A behind copy:** the first command takes **one bounded batch,
+    ≤ 5 s for a day away.** A day is about 2,500 partitions (M): about 10 k
+    rows whole, plus the hot partitions' changed rows (≤ about 40-50 k, I).
+    Anything left continues at later commands' tails.
+  - **A hot partition installed whole** (its first install, or past the
+    horizon) runs only in that first-command batch, never at a command's tail.
+  - **Fallback to the full base load** when the difference's estimated rows
+    exceed the whole base's.
+- **Observability:** a fold span on serve and on the copy, recording the
+  partitions and commits folded and the time taken.
+- **Serve's own follower copy** isn't covered. Under the physical-follower
+  takeover design it's a byte-identical copy of the leader's lineage and takes
+  the leader's compaction with it. If that design isn't in place when this
+  ships, the follower folds locally through the leader's published point in
+  the background: its cursors already match the leader's.
+
+#### Retention
+
+- **Age:** `retainMs` is 72 h. **Count:** a cap at the lower of:
+  - **the replay budget:** the commits a returning member can replay within
+    30 s. The read model's catch-up costs about 14 ms per commit (I, from 160
+    commits in 2.1-2.3 s), so that's about 2,000-2,500 today;
+  - **32 MB of retained commit bodies,** about 30 k commits at about 1 KB each
+    (I).
+- Both the hourly fold and the retention fold use the cap.
+- **Under load this keeps today's floor,** and **base install by difference
+  carries everyday catch-up.** The 72 h age governs only quiet datastores.
+- No compaction waits for members: serve keeps no member positions, and
+  catch-up by difference covers the case.
+- A retained log costs a cold restore about 37 ms per MB (I; restore cost
+  follows the replication tail since the last snapshot more than the database
+  size). Under the physical-follower takeover design it doesn't slow takeover.
+
+#### Recovery: the catalog undo log
+
+- **What's recorded:** every catalog write records the pre-images of the rows
+  it changes (catalog rows, live versions, and the file entries the catalog
+  owns), in the same transaction, keyed by the writer's unit and instance.
+- **When a unit's rows go away:** once its commits are in the log and the read
+  model's state cursor is past them.
+- **Recovery after a dead writer:**
+  1. restore the dead writer's pre-images in reverse;
+  2. apply only the commits after its start, for those names.
+- **What it removes** (on 17 names, 73,856 actions, M):
+  - the catalog write, which re-applies whole histories (13.9-21.9 s);
+  - the history read (about 14 s);
+  - most of the scan (21.2 s).
+
+  Restoring files the writer changed stays per name.
+- **It's a fast path.** Recovery falls back to targeted recovery, then to full
+  recovery, when the undo rows are missing, incomplete, or from another writer
+  instance, datastore identity or lineage.
+- **The compare step** stays, on a sample of names, until crash-point
+  differential tests prove undo-then-apply equals targeted recovery.
+- **The cost on every write** (an extra insert per changed catalog row) is
+  measured before the mechanism ships.
+- **Takeover:** the undo log is local to a copy's read model. A takeover that
+  restores or reseeds the copy discards it in the same step that resets the
+  read model's state, and recovery falls back to targeted recovery. It's never
+  carried across a lineage change.
+- A copy written before the undo log existed takes the fallback on its first
+  recovery.
+
+#### A moved filesystem datastore with a replica
+
+- **Today:** `v3CommitsDbPath` keys the local copy by a hash of the
+  datastore's canonical absolute path. A move restores in full, starts a new
+  lineage, and leaves the old copy directory behind. Bucket datastores and
+  member copies aren't affected.
+- **The key:** a datastore inside the checkout is keyed on its path relative
+  to the checkout; one outside keeps the absolute key.
+- **Migration:** on open, if the new key's directory is missing and the old
+  key's exists, it's renamed once, under the writer lock.
+- **Orphans:** a sweep removes copy directories whose datastore identity
+  matches no configured datastore.
+- **Datastore identity** (the commit log's lineage or store id) is recorded in
+  the view record and in each copy directory. That's also what tells a deleted
+  external datastore (a different identity) from a moved one (the same
+  identity), which an old view record without a repo id can't.
+- The view record's rewrite without the writer lease after a move stays as is:
+  two views of one checkout aren't supported. A conditional write would close
+  it.
+
+#### Bounded full rebuild (proposed, pending the joining measurement)
+
+- **Today:** a full rebuild replays every retained commit in order, and the
+  replay guard makes per-file chunk calls. That's about 1,988 s on serve's copy
+  and 536 s on a member (M).
+- **Joining** (a fresh member clone plus its first `data list`) is 37.5-40.7 s
+  against v2's 2.95-3.61 s, and it grows with history (M).
+- **Targets:** a full rebuild under 60 s, and joining at most 1.5× v2.
+- **Proposed:**
+  1. base first, then replay only the retained log, which the retention cap
+     bounds;
+  2. install and replay partitions in parallel, since none are contested;
+  3. write the catalog first and answer `data list` from it, then the files in
+     parallel batches;
+  4. batch the replay guard's `missing`, `verifyParts` and `putParts` calls per
+     page, still storing and syncing chunks before any file that references
+     them.
+
+  The read model writes every file eagerly today, and readers open files from
+  disk, so lazy files would be a new mechanism. Lazy files, or a join base cut
+  at serve's head, are decided only once a phase breakdown of joining is
+  measured.
+
+#### Compatibility
+
+Serve's store and member copies share one `commits.db` schema. Base install by
+partition adds `changed_seq`, `base_removed`, the per-partition horizon and the
+copy's per-partition source marker.
+
+| Case | Rule |
+|---|---|
+| A new member and an old serve | The new serve names a `base-difference` feature in the datastore features header. Without it, the member doesn't compact its copy and takes the full base load when behind. It never fails. If the feature disappears mid-run, it stops between batches |
+| An old member and a new serve | Unaffected: the endpoints are additive, and existing responses gain no fields |
+| A new store opened by an older swamp | Refused before anything changes, with `datastore_v3_schema_newer` ("upgrade swamp"). It's a downgrade barrier, like every schema bump |
+| A member copy after a downgrade | The same refusal, never treated as corruption. Upgrade again, or remove only `commits.db` and its `-wal` and `-shm`, keeping `commits-outbox.db`: the older swamp loads the base and flushes the outbox |
+| A follower older than the leader | It refuses the leader's newer lineage: followers are upgraded before the leader |
+
+- **No per-row backfill.** Rows present before the upgrade keep a NULL
+  `changed_seq`. The migration writes one horizon per partition at its
+  compacted seq, so a difference request below it answers "gone" and NULL rows
+  are never returned as changed.
+- **A re-upgrade after a rollback** resets every horizon, so no copy applies a
+  difference across writes an older swamp made.
+
 ### v3 stream directories (datastore rework Phase 3)
 
 swamp-club#3278 answers where `audit/`, `telemetry/`, `logs/` and `files/`
