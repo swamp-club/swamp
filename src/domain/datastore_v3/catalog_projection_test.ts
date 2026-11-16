@@ -18,12 +18,14 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import fc from "fast-check";
 import type { DataMetadata } from "../data/data_metadata.ts";
 import {
   type CatalogAction,
   greatestLiveIn,
   liveAfter,
   type LiveDataVersion,
+  LiveVersionIndex,
   projectCatalog,
 } from "./catalog_projection.ts";
 import type { Op } from "./op.ts";
@@ -277,4 +279,63 @@ Deno.test("projectCatalog: a versioned delete after an expiry in one commit upse
     { kind: "remove-version", name: "a", version: 1 },
     { kind: "upsert-version", metadata: meta(2) },
   ]);
+});
+
+function liveEntry(version: number): LiveDataVersion {
+  return { version, metadata: { version } as unknown as DataMetadata };
+}
+
+Deno.test("LiveVersionIndex: keeps the same live versions and greatest live version as rebuilding the list each change (swamp-club#4702)", () => {
+  const arbChanges = fc.record({
+    put: fc.uniqueArray(fc.integer({ min: 1, max: 200 }), { maxLength: 4 }),
+    removed: fc.uniqueArray(fc.integer({ min: 1, max: 200 }), {
+      maxLength: 3,
+    }),
+    excluding: fc.uniqueArray(fc.integer({ min: 1, max: 200 }), {
+      maxLength: 3,
+    }),
+  });
+  fc.assert(
+    fc.property(
+      fc.uniqueArray(fc.integer({ min: 1, max: 200 }), { maxLength: 30 }),
+      fc.array(arbChanges, { maxLength: 40 }),
+      (start, steps) => {
+        const index = new LiveVersionIndex(start.map(liveEntry));
+        let list = [...start].sort((a, b) => a - b).map(liveEntry);
+        for (const step of steps) {
+          const excluding = new Set(step.excluding);
+          assertEquals(
+            index.greatestExcluding(excluding),
+            greatestLiveIn(() => list)("n", excluding),
+          );
+          const changes = {
+            put: step.put.filter((v) => !step.removed.includes(v)).map(
+              liveEntry,
+            ),
+            removed: step.removed,
+          };
+          index.apply(changes);
+          list = liveAfter(list, changes);
+          assertEquals(index.toArray(), list);
+        }
+      },
+    ),
+    { numRuns: 500 },
+  );
+});
+
+Deno.test("LiveVersionIndex: finding the greatest live version looks past only the excluded versions, however many are live (swamp-club#4702)", () => {
+  const index = new LiveVersionIndex(
+    Array.from({ length: 10_000 }, (_, i) => liveEntry(i + 1)),
+  );
+  let looked = 0;
+  const excluding = new Set([10_000, 9_999, 9_998]);
+  const counting = {
+    has(version: number) {
+      looked++;
+      return excluding.has(version);
+    },
+  } as ReadonlySet<number>;
+  assertEquals(index.greatestExcluding(counting)?.version, 9_997);
+  assertEquals(looked, excluding.size + 1);
 });

@@ -309,3 +309,38 @@ Deno.test("ReadModelState.stageBase: prepares no statement however many entries 
     });
   }
 });
+
+Deno.test("ReadModelState.presentKeyCount: counts a namespace's present keys as presentKeys lists them (swamp-club#4702)", async () => {
+  await withStatePath((path) => {
+    const state = ReadModelState.open(path);
+    let seq = 0;
+    const apply = (namespace: string, files: [string, boolean][]) =>
+      state.recordApplied({
+        namespace,
+        partition: "p",
+        seq: ++seq,
+        records: new Map(),
+        versions: new Map(),
+        files: new Map(
+          files.map((
+            [key, present],
+          ) => [key, { owner: "p", mark: seq, present }]),
+        ),
+      });
+    try {
+      assertEquals(state.presentKeyCount(""), 0);
+      apply("", [["data/a/1/raw", true], ["data/b/1/raw", true]]);
+      apply("team", [["data/c/1/raw", true]]);
+      apply("", [["data/a/1/raw", false]]);
+      for (const namespace of ["", "team", "other"]) {
+        assertEquals(
+          state.presentKeyCount(namespace),
+          state.presentKeys(namespace).size,
+        );
+      }
+      assertEquals(state.presentKeyCount(""), 1);
+    } finally {
+      state.close();
+    }
+  });
+});

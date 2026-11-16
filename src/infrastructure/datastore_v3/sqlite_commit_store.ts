@@ -80,7 +80,12 @@ import {
   type PartitionBase,
   type PartitionHead,
   type PartitionLeaseMarks,
+  type PartitionPageOfNames,
 } from "../../domain/datastore_v3/commit_store.ts";
+import {
+  catalogNamesOfCommit,
+  catalogNamesOfRawCommit,
+} from "../../domain/datastore_v3/name_history_replay.ts";
 import {
   type BaseRecord,
   type CompactedBaseWriter,
@@ -2118,6 +2123,52 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
     return changes;
   }
 
+  async readPartitionOfNames(
+    namespace: string,
+    partition: PartitionKey,
+    fromSeq: number,
+    limit: number,
+    names: ReadonlySet<string>,
+  ): Promise<PartitionPageOfNames> {
+    this.#assertOpen();
+    requirePositive(fromSeq, "fromSeq");
+    requirePositive(limit, "limit");
+    const rows = this.#readTransaction(() => {
+      const compacted = this.#compactedSeq(namespace, partition.toString());
+      if (fromSeq <= compacted) {
+        throw new CommitsCompactedError(
+          this.#point(),
+          `Partition ${partition} is compacted through seq ${compacted}; commits from seq ${fromSeq} cannot be read`,
+          compacted,
+        );
+      }
+      return this.#selectPartitionPage.all(
+        namespace,
+        partition.toString(),
+        fromSeq,
+        limit,
+      ) as unknown as CommitRow[];
+    });
+    const changes: CommitChange[] = [];
+    for (const row of rows) {
+      let touched: string[] | undefined;
+      try {
+        touched = catalogNamesOfRawCommit(JSON.parse(row.body));
+      } catch {
+        touched = undefined;
+      }
+      // a row the filter cannot read is decoded, so parseRow reports it
+      if (touched !== undefined && !touched.some((name) => names.has(name))) {
+        continue;
+      }
+      const commit = await parseRow(row);
+      if (catalogNamesOfCommit(commit).some((name) => names.has(name))) {
+        changes.push({ cursor: row.cursor, commit });
+      }
+    }
+    return { changes, seqs: rows.map((row) => row.seq) };
+  }
+
   /**
    * A partition's head and the txnId of the commit at it (swamp-club#3490),
    * for the commit outbox's base: the stored commit's, else the compacted
@@ -2372,6 +2423,10 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
         | { seq: number }
         | undefined;
       if (current !== undefined && current.seq >= commit.seq) continue;
+      // a rebuild costs the partition's size, so a spent budget stops before
+      // one; nothing of this batch is written yet, and the first batch of a
+      // run always finishes, so a backlog still folds run by run
+      if (totals.batches > 0) options.signal?.throwIfAborted();
       const rebuilt = await this.#rebuild(
         commit.namespace,
         commit.partition,

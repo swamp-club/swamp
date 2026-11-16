@@ -49,8 +49,11 @@ import {
   savePut,
   versionOp,
 } from "../../domain/datastore_v3/v3_test_helpers.ts";
+import fc from "fast-check";
+import { catalogNamesOfCommit } from "../../domain/datastore_v3/name_history_replay.ts";
 import {
   CommitsCompactedError,
+  CommitStoreCorruptError,
   InvalidBasePageTokenError,
   ObservedDropRefusedError,
 } from "../../domain/datastore_v3/commit_store.ts";
@@ -2177,5 +2180,183 @@ Deno.test("SqliteCommitStore.readPartitionBase: reads only the names asked for, 
       ),
       undefined,
     );
+  });
+});
+
+Deno.test("SqliteCommitStore.readPartitionOfNames: holds exactly the page's commits of the names, and every seq the page held (swamp-club#4702)", async () => {
+  const arbStep = fc.record({
+    name: fc.constantFrom("a", "b", "c"),
+    kind: fc.constantFrom("save", "delete", "put"),
+  });
+  await fc.assert(
+    fc.asyncProperty(
+      fc.array(arbStep, { minLength: 1, maxLength: 12 }),
+      fc.subarray(["a", "b", "c"]),
+      fc.integer({ min: 1, max: 5 }),
+      async (steps, chosen, limit) => {
+        await withStore(async (store) => {
+          const versions = new Map<string, number>();
+          for (const [i, step] of steps.entries()) {
+            const version = (versions.get(step.name) ?? 0) + 1;
+            const ops = step.kind === "save"
+              ? [
+                await savePut(step.name, version),
+                versionOp(step.name, version),
+              ]
+              : step.kind === "put"
+              ? [await savePut(step.name, version)]
+              : [deleteVersion(step.name, Math.max(1, version - 1))];
+            if (step.kind === "save") versions.set(step.name, version);
+            await store.append(modelCommit(i + 1, ops, { fence: 1 }));
+          }
+          const names = new Set(chosen);
+          let from = 1;
+          for (;;) {
+            const whole = await store.readPartition(
+              "",
+              modelPartition(),
+              from,
+              limit,
+            );
+            const page = await store.readPartitionOfNames(
+              "",
+              modelPartition(),
+              from,
+              limit,
+              names,
+            );
+            assertEquals(
+              page.seqs,
+              whole.map((change) => change.commit.seq),
+            );
+            assertEquals(
+              page.changes.map((change) => change.commit.seq),
+              whole.filter((change) =>
+                catalogNamesOfCommit(change.commit).some((name) =>
+                  names.has(name)
+                )
+              ).map((change) => change.commit.seq),
+            );
+            if (whole.length < limit) break;
+            from = whole.at(-1)!.commit.seq + 1;
+          }
+        });
+      },
+    ),
+    { numRuns: 100 },
+  );
+});
+
+Deno.test("SqliteCommitStore.readPartitionOfNames: decodes only commits of the names, so a damaged commit of another name is not read (swamp-club#4702)", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "commits.db");
+    const store = SqliteCommitStore.open(path);
+    try {
+      await store.append(await save(1));
+      await store.append(
+        modelCommit(2, [await savePut("b", 1), versionOp("b", 1)], {
+          fence: 1,
+        }),
+      );
+      await store.append(await save(3));
+    } finally {
+      await store.close();
+    }
+    const db = new DatabaseSync(path);
+    try {
+      const row = db.prepare("SELECT body FROM commits WHERE seq = 2")
+        .get() as {
+          body: string;
+        };
+      db.prepare("UPDATE commits SET body = ? WHERE seq = 2").run(
+        JSON.stringify({ ...JSON.parse(row.body), damaged: true }),
+      );
+    } finally {
+      db.close();
+    }
+    const reopened = SqliteCommitStore.open(path);
+    try {
+      await assertRejects(
+        () => reopened.readPartition("", modelPartition(), 1, 10),
+        CommitStoreCorruptError,
+      );
+      const page = await reopened.readPartitionOfNames(
+        "",
+        modelPartition(),
+        1,
+        10,
+        new Set(["a"]),
+      );
+      assertEquals(page.seqs, [1, 2, 3]);
+      assertEquals(page.changes.map((change) => change.commit.seq), [1, 3]);
+      await assertRejects(
+        () =>
+          reopened.readPartitionOfNames(
+            "",
+            modelPartition(),
+            1,
+            10,
+            new Set(["b"]),
+          ),
+        CommitStoreCorruptError,
+      );
+    } finally {
+      await reopened.close();
+    }
+  });
+});
+
+/** a budget that runs out after `checks` looks, standing in for time passing */
+function budgetOf(checks: number): AbortSignal {
+  let looked = 0;
+  const reason = new DOMException("budget spent", "TimeoutError");
+  return {
+    get aborted() {
+      return looked > checks;
+    },
+    reason,
+    throwIfAborted() {
+      looked++;
+      if (looked > checks) throw reason;
+    },
+  } as unknown as AbortSignal;
+}
+
+async function interleavedHistory(store: SqliteCommitStore): Promise<void> {
+  for (let seq = 1; seq <= 3; seq++) {
+    await store.append(await save(seq));
+    await store.append(leaseCommit(seq, 1));
+  }
+}
+
+Deno.test("SqliteCommitStore.compactHistory: a budget spent inside a batch stops before its next snapshot rebuild, not after the batch (swamp-club#4702)", async () => {
+  await withStore(async (store) => {
+    await interleavedHistory(store);
+    // two looks: the first and second batches' starts
+    await assertRejects(() =>
+      store.compactHistory(Number.MAX_SAFE_INTEGER, {
+        batchSize: 2,
+        signal: budgetOf(2),
+      })
+    );
+    assertEquals((await store.history()).compactedThrough, 2);
+  });
+});
+
+Deno.test("SqliteCommitStore.compactHistory: budgeted runs each fold at least one batch, so a backlog still folds run by run (swamp-club#4702)", async () => {
+  await withStore(async (store) => {
+    await interleavedHistory(store);
+    let runs = 0;
+    while ((await store.history()).compactedThrough < 6) {
+      assert(++runs <= 3, "a budgeted run folded nothing");
+      await store.compactHistory(Number.MAX_SAFE_INTEGER, {
+        batchSize: 2,
+        // spent as soon as the first batch has started
+        signal: budgetOf(1),
+      }).catch((error) => {
+        if (!(error instanceof DOMException)) throw error;
+      });
+    }
+    assertEquals((await store.history()).compactedThrough, 6);
   });
 });

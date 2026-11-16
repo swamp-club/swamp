@@ -19,6 +19,8 @@
 
 import { logBucketWriteRetriesAt } from "../src/infrastructure/datastore_v3/bucket_write_retry.ts";
 import "../src/domain/models/models.ts";
+import { readModelStateDir } from "../src/infrastructure/datastore_v3/record_path_guard.ts";
+import { CHECKOUT_VIEW_FILE } from "../src/infrastructure/datastore_v3/checkout_view.ts";
 import {
   assert,
   assertEquals,
@@ -1907,3 +1909,62 @@ Deno.test({
     });
   },
 });
+
+async function openRecoverEntries(dir: string): Promise<unknown[]> {
+  const entries: unknown[] = [];
+  await withCapturedSpans(async (spans) => {
+    await requireInitializedRepoReadOnly({ repoDir: dir, outputMode: "json" });
+    await closeV3Datastores();
+    for (const span of spans) {
+      if (span.name === "swamp.datastore.v3.readmodel.recover") {
+        entries.push(
+          span.attributes["swamp.datastore.v3.readmodel.recover.entry"],
+        );
+      }
+    }
+  });
+  return entries;
+}
+
+for (
+  const recordedBy of ["this swamp", "a swamp from before repoIds were kept"]
+) {
+  Deno.test({
+    name:
+      `v3 bucket: a checkout moved after ${recordedBy} recorded its view keeps it, and rebuilds nothing (swamp-club#4702)`,
+    ignore: Deno.build.os === "windows",
+    async fn() {
+      await withRoot(async (root, bucket) => {
+        const repoDir = join(root, "repo");
+        await initRepo(repoDir);
+        assertEquals(errorOf(await setupBucket(repoDir, bucket)), undefined);
+        await openRecoverEntries(repoDir);
+        const viewFile = join(readModelStateDir(repoDir), CHECKOUT_VIEW_FILE);
+        const recorded = JSON.parse(await Deno.readTextFile(viewFile)).view;
+        if (recordedBy !== "this swamp") {
+          await Deno.writeTextFile(
+            viewFile,
+            JSON.stringify({
+              view: {
+                kind: "solo",
+                datastore: recorded.datastore,
+                namespace: recorded.namespace,
+              },
+            }),
+          );
+        }
+        const moved = join(root, "moved");
+        await Deno.rename(repoDir, moved);
+        const entries = await openRecoverEntries(moved);
+        assert(!entries.includes("view_change"), JSON.stringify(entries));
+        const after = JSON.parse(
+          await Deno.readTextFile(
+            join(readModelStateDir(moved), CHECKOUT_VIEW_FILE),
+          ),
+        ).view;
+        assertEquals(after.location, recorded.location);
+        assertEquals(after.repoId, recorded.repoId);
+      });
+    },
+  });
+}

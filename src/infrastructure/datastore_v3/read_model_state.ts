@@ -1247,6 +1247,13 @@ export class ReadModelState {
     ).get() as { count: number }).count;
   }
 
+  presentKeyCount(namespace: string): number {
+    this.#requireOpen();
+    return (this.#db.prepare(
+      "SELECT COUNT(*) AS count FROM materialised_keys WHERE namespace = ? AND present = 1",
+    ).get(namespace) as { count: number }).count;
+  }
+
   presentKeys(namespace: string): Set<string> {
     this.#requireOpen();
     return new Set(
@@ -1288,18 +1295,19 @@ export class ReadModelState {
       .map((row) => row.record_key);
   }
 
-  liveVersions(
+  /** live versions as stored, unparsed, so a caller parses only what it needs */
+  liveVersionRows(
     namespace: string,
     partition: string,
     name: string,
-  ): LiveDataVersion[] {
+  ): { readonly version: number; readonly metadata: string }[] {
     this.#requireOpen();
-    return (this.#db.prepare(
-      "SELECT metadata FROM data_versions WHERE namespace = ? AND partition = ? AND name = ? ORDER BY version",
-    ).all(namespace, partition, name) as { metadata: string }[]).map((row) => {
-      const metadata = DataMetadataSchema.parse(JSON.parse(row.metadata));
-      return { version: metadata.version, metadata };
-    });
+    return this.#db.prepare(
+      "SELECT version, metadata FROM data_versions WHERE namespace = ? AND partition = ? AND name = ? ORDER BY version",
+    ).all(namespace, partition, name) as {
+      version: number;
+      metadata: string;
+    }[];
   }
 
   unreadableRecord(

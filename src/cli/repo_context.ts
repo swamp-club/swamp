@@ -1129,6 +1129,7 @@ export async function requireInitializedRepoReadOnly(
     ? await v3RepositoryFactoryConfig(repoPath.value, v3, {
       managedConfig: marker?.datastore?.managedConfig === true,
       readOnly: true,
+      repoId: marker?.repoId,
     })
     : {};
   const repoContext = createRepositoryContext({
@@ -1472,6 +1473,7 @@ export function requireInitializedRepo(
     const v3Factory = v3 !== undefined
       ? await v3RepositoryFactoryConfig(repoPath.value, v3, {
         managedConfig: marker?.datastore?.managedConfig === true,
+        repoId: marker?.repoId,
       })
       : {};
     const repoContext = createRepositoryContext({
@@ -1675,6 +1677,7 @@ export async function requireInitializedRepoUnlocked(
   const v3Factory = v3 !== undefined
     ? await v3RepositoryFactoryConfig(repoPath.value, v3, {
       managedConfig: marker?.datastore?.managedConfig === true,
+      repoId: marker?.repoId,
     })
     : {};
   const repoContext = createRepositoryContext({

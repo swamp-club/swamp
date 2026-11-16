@@ -23,8 +23,9 @@
  * opened with another view rebuilds the projection first
  */
 
+import { getLogger } from "@logtape/logtape";
 import { createHash } from "node:crypto";
-import { join, resolve } from "@std/path";
+import { isAbsolute, join, relative, resolve, SEPARATOR } from "@std/path";
 import { resolveLockTimeoutMs } from "../../domain/datastore/datastore_config.ts";
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import { removeStaleOutputSummaries } from "../persistence/output_summary_index.ts";
@@ -39,6 +40,8 @@ import {
   v3SharedCommitsDbPath,
 } from "./v3_datastore.ts";
 import { acquireV3WriterLock, V3WriterBusyError } from "./v3_writer_lock.ts";
+
+const logger = getLogger(["swamp", "datastore", "checkout-view"]);
 
 export const CHECKOUT_VIEW_FILE = "checkout_view.json";
 
@@ -60,6 +63,13 @@ export type CheckoutView =
     readonly kind: "solo";
     readonly datastore: string;
     readonly namespace: string;
+    /**
+     * with `location`, what the view is keyed on, so moving the checkout keeps
+     * it; absent for a repo whose marker has no repoId, keyed on `datastore`
+     */
+    readonly repoId?: string;
+    /** the datastore's path relative to the checkout, or absolute outside it */
+    readonly location?: string;
   };
 
 /**
@@ -75,31 +85,118 @@ export function checkoutViewOf(
   namespace: string,
   copyId: string | undefined,
   principal?: string,
+  checkout?: { readonly repoDir: string; readonly repoId?: string },
 ): CheckoutView {
   const serve = serveUpstreamAt(datastorePath);
-  return serve !== undefined
-    ? {
+  if (serve !== undefined) {
+    return {
       kind: "serve",
       root: resolve(datastorePath),
       copy: copyId ?? "",
       caller: serveCallerFingerprint(serve.target.token),
       ...(principal !== undefined ? { principal } : {}),
       serverUrl: serve.target.serverUrl,
-    }
-    : { kind: "solo", datastore: resolve(datastorePath), namespace };
+    };
+  }
+  const datastore = resolve(datastorePath);
+  const repoId = checkout?.repoId;
+  return repoId === undefined || repoId === ""
+    ? { kind: "solo", datastore, namespace }
+    : {
+      kind: "solo",
+      datastore,
+      namespace,
+      repoId,
+      location: locationIn(checkout!.repoDir, datastore),
+    };
 }
 
-function sameView(a: CheckoutView, b: CheckoutView): boolean {
+function locationIn(repoDir: string, datastore: string): string {
+  const rel = relative(resolve(repoDir), datastore);
+  const inside = rel === "" ||
+    (!isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${SEPARATOR}`));
+  return inside ? rel.split(SEPARATOR).join("/") : datastore;
+}
+
+function atLocation(datastore: string, location: string): boolean {
+  if (location === "" || isAbsolute(location)) return false;
+  const tail = location.split("/");
+  const segments = resolve(datastore).split(SEPARATOR);
+  if (segments.length <= tail.length) return false;
+  return tail.every((segment, i) =>
+    segments[segments.length - tail.length + i] === segment
+  );
+}
+
+// a view is flat: its sorted keys make the comparison independent of order
+function flatJson(view: CheckoutView): string {
+  return JSON.stringify(view, Object.keys(view).sort());
+}
+
+/**
+ * "legacy": a solo record from before repoIds were kept, at the view's place
+ * inside the checkout, which is the same view only if it moved here
+ */
+function sameView(a: CheckoutView, b: CheckoutView): boolean | "legacy" {
   if (a.kind === "serve" && b.kind === "serve") {
     const sameCaller = a.principal !== undefined && b.principal !== undefined
       ? a.principal === b.principal
       : a.caller === b.caller;
-    return a.root === b.root && a.copy === b.copy && sameCaller;
+    // a copy's random id moves with it; only a copy without one is its root
+    const sameCopy = a.copy !== "" && b.copy !== ""
+      ? a.copy === b.copy
+      : a.root === b.root && a.copy === b.copy;
+    return sameCopy && sameCaller;
   }
   if (a.kind === "solo" && b.kind === "solo") {
-    return a.datastore === b.datastore && a.namespace === b.namespace;
+    if (a.namespace !== b.namespace) return false;
+    if (a.repoId !== undefined && b.repoId !== undefined) {
+      return a.repoId === b.repoId && a.location === b.location;
+    }
+    if (a.datastore === b.datastore) return true;
+    const keyed = a.repoId !== undefined ? a : b;
+    const older = keyed === a ? b : a;
+    return keyed.location !== undefined &&
+        atLocation(older.datastore, keyed.location)
+      ? "legacy"
+      : false;
   }
   return false;
+}
+
+/**
+ * the recorded path is gone, as a move leaves it, or names this very
+ * directory, as a bind mount does; a path still holding another datastore is
+ * another view
+ */
+async function movedHere(recorded: string, current: string): Promise<boolean> {
+  let before: Deno.FileInfo;
+  try {
+    before = await Deno.stat(recorded);
+  } catch (error) {
+    // a path that cannot be read is not shown to be this one: rebuild
+    return error instanceof Deno.errors.NotFound;
+  }
+  let now: Deno.FileInfo;
+  try {
+    now = await Deno.stat(current);
+  } catch {
+    return false;
+  }
+  return before.ino !== null && before.ino === now.ino &&
+    before.dev === now.dev;
+}
+
+/**
+ * the record to keep for a current view: its paths as they are now, and the
+ * principal once serve has named it
+ */
+function refreshedView(recorded: CheckoutView, view: CheckoutView) {
+  if (recorded.kind === "serve" && view.kind === "serve") {
+    const principal = view.principal ?? recorded.principal;
+    return { ...view, ...(principal !== undefined ? { principal } : {}) };
+  }
+  return view;
 }
 
 interface RecordedView {
@@ -176,7 +273,10 @@ async function readRecordedView(
         (view.principal === undefined ||
           typeof view.principal === "string")) ||
       (view?.kind === "solo" && typeof view.datastore === "string" &&
-        typeof view.namespace === "string")
+        typeof view.namespace === "string" &&
+        (view.repoId === undefined ||
+          (typeof view.repoId === "string" &&
+            typeof view.location === "string")))
     ) {
       return parsed.rebuilding === true ? { view, rebuilding: true } : { view };
     }
@@ -198,12 +298,17 @@ async function writeRecordedView(
   );
 }
 
-function isCurrent(
+async function isCurrent(
   recorded: RecordedView | "absent" | "unreadable",
   view: CheckoutView,
-): boolean {
-  return typeof recorded === "object" && recorded.rebuilding !== true &&
-    sameView(recorded.view, view);
+): Promise<boolean> {
+  if (typeof recorded !== "object" || recorded.rebuilding === true) {
+    return false;
+  }
+  const same = sameView(recorded.view, view);
+  if (same !== "legacy") return same;
+  return recorded.view.kind === "solo" && view.kind === "solo" &&
+    await movedHere(recorded.view.datastore, view.datastore);
 }
 
 /**
@@ -226,7 +331,9 @@ async function leaseUnlessAligned(
         throw error;
       }
     }
-    if (isCurrent(await readRecordedView(repoDir), view)) return "aligned";
+    if (await isCurrent(await readRecordedView(repoDir), view)) {
+      return "aligned";
+    }
     await new Promise((done) =>
       setTimeout(done, Math.min(retryMs, Math.max(0, deadline - Date.now())))
     );
@@ -246,15 +353,20 @@ export async function alignCheckoutView(
   options: { readonly holdsWriterLock: boolean },
 ): Promise<void> {
   const quick = await readRecordedView(repoDir);
-  if (isCurrent(quick, view)) {
-    // the same view, now named by its principal, so a later rotated token of
-    // that principal is the same view too
-    if (
-      typeof quick === "object" && quick.view.kind === "serve" &&
-      view.kind === "serve" && quick.view.principal === undefined &&
-      view.principal !== undefined
-    ) {
-      await writeRecordedView(repoDir, { view });
+  if (await isCurrent(quick, view)) {
+    // a moved checkout, an upgraded record or a newly named principal keeps
+    // the view: the record is brought up to date, never rebuilt
+    const recorded = (quick as RecordedView).view;
+    const refreshed = refreshedView(recorded, view);
+    if (flatJson(refreshed) !== flatJson(recorded)) {
+      // the record still names this view, so a checkout it cannot be
+      // written in (mounted read-only) reads on
+      try {
+        await writeRecordedView(repoDir, { view: refreshed });
+      } catch (error) {
+        logger
+          .debug`Could not bring ${repoDir}'s checkout view record up to date; it still names this view: ${error}`;
+      }
     }
     return;
   }
@@ -269,7 +381,7 @@ export async function alignCheckoutView(
   try {
     // Looked at again under the lease: another process may have rebuilt.
     const recorded = await readRecordedView(repoDir);
-    if (isCurrent(recorded, view)) return;
+    if (await isCurrent(recorded, view)) return;
     if (recorded === "absent" && view.kind === "solo") {
       await writeRecordedView(repoDir, { view });
       return;

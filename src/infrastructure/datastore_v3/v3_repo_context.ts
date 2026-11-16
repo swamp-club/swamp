@@ -1552,6 +1552,8 @@ export async function v3RepositoryFactoryConfig(
   options: {
     readonly managedConfig?: boolean;
     readonly readOnly?: boolean;
+    /** the marker's repoId, which a solo view is keyed on with its location */
+    readonly repoId?: string;
   } = {},
 ): Promise<
   Pick<
@@ -1612,6 +1614,7 @@ export async function v3RepositoryFactoryConfig(
       config.namespace ?? "",
       handle.serveCopyId,
       handle.servePrincipal,
+      { repoDir, repoId: options.repoId },
     ),
     { holdsWriterLock: writer },
   );
@@ -2000,6 +2003,9 @@ export async function closeV3Datastores(
   await withSpan("swamp.datastore.v3.close.compact", {}, async () => {
     for (const handle of unreachable ? [] : handles) {
       if (!holdsV3WriterLock(handle.datastorePath)) continue;
+      // a copy of serve's log is serve's to compact; folding it at exit stalls
+      // every member at once
+      if (serveUpstreamAt(handle.datastorePath) !== undefined) continue;
       // a sidecar already gone (signalled with this process) replicates nothing
       // more, so no commit is made that no replica could hold
       const use = replications.get(resolve(handle.datastorePath))?.[0];

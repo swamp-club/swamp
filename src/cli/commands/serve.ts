@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { ServeBootTrace } from "../../serve/serve_boot_trace.ts";
 import { logBucketWriteRetriesAt } from "../../infrastructure/datastore_v3/bucket_write_retry.ts";
 import { IntegrationDirectory } from "../../domain/access/integration_directory.ts";
 import {
@@ -3850,6 +3851,7 @@ export const serveCommand = new Command()
       "--cert-file server.crt --key-file server.key --auth-mode token",
   )
   .action(async function (options: AnyOptions) {
+    using bootTrace = new ServeBootTrace();
     const ctx = createContext(options as GlobalOptions, ["serve"]);
     const repoDir = resolveRepoDir(options.repoDir as string | undefined);
     // Runs here are triggered remotely: nobody at serve's terminal answers a
@@ -4079,6 +4081,7 @@ export const serveCommand = new Command()
       }
     }
 
+    bootTrace.phase("config");
     ctx.logger.info`Initializing repository at ${repoDir}`;
 
     await ownV3SidecarsFromThisProcess();
@@ -4104,6 +4107,7 @@ export const serveCommand = new Command()
       // owner's
       v3OwnerCheck: { as: "serve", address: ownerAddress },
     });
+    bootTrace.phase("repo_open");
     takeRetentionCandidate();
 
     // one gate per serve process, shared by pollers, WebSocket mutation
@@ -4412,6 +4416,7 @@ export const serveCommand = new Command()
     // the first check of local models records their current state so the first
     // run does not pay for it
     await refreshLocalModelsForRun();
+    bootTrace.phase("extensions");
     // an auto-install takes its turn with that refresh and hot-reload, so a
     // run's refresh never rebundles a half-installed extension
     getAutoResolver()?.setInstallScheduler(withExtensionMutation);
@@ -5791,6 +5796,7 @@ export const serveCommand = new Command()
       },
     });
     if (grantReloadMode === "auto") await grantsDirectoryPoller.start();
+    bootTrace.phase("access");
     const grantSettingsReload = createGrantSettingsReload({
       repoDir: resolvedRepoDir,
       authConfig,
@@ -6148,6 +6154,7 @@ export const serveCommand = new Command()
     const runningRuns = await repoContext.workflowRunRepo.findGlobalByStatus(
       "running",
     );
+    bootTrace.phase("running_runs_found");
     // settled runs are pushed so the datastore does not keep them running; one
     // deadline bounds the gate wait and the push together, and a push that gets
     // the gate past it is skipped
@@ -6325,6 +6332,7 @@ export const serveCommand = new Command()
           { reaped: reapResult.reaped },
         );
       }
+      bootTrace.phase("workflow_runs_reaped");
 
       // method runs a dead owner left running on this host, judged on host and
       // pid not instance id, since this serve's id is new; best-effort, an
@@ -6353,6 +6361,7 @@ export const serveCommand = new Command()
         );
       }
 
+      bootTrace.phase("method_runs_settled");
       logger.info("Boot: sweeping stale records");
       const swept = await sweepStaleRecords({
         repoContext,
@@ -6384,6 +6393,7 @@ export const serveCommand = new Command()
       }
     };
     if (!v3Follows) await settleLeftRuns(runningRuns);
+    bootTrace.phase("runs_settled");
 
     const datastoreResolver = new DefaultDatastorePathResolver(
       resolvedRepoDir,
@@ -10264,6 +10274,7 @@ export const serveCommand = new Command()
       }
     };
     if (hasRemoteControlPlane && !v3Follows) await reconcileRemoteAtLead();
+    bootTrace.phase("services");
 
     // interrupted workflow rows whose record is not running would otherwise be
     // kept by retention for good
@@ -11243,6 +11254,8 @@ export const serveCommand = new Command()
       }
     }
     admission.open();
+    bootTrace.phase("listen");
+    bootTrace.end(!shuttingDown);
     if (!shuttingDown) {
       isReady = true;
       logger.info("Startup complete — /ready is now serving 200");

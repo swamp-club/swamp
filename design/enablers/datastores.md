@@ -7641,10 +7641,23 @@ hold, and its cursor is the other log's, so the new log's commits may never
 apply. So the checkout records the view its projection was built from in
 `checkout_view.json` in its read-model state directory: a serve root, the
 copy's id, the token fingerprint and, once serve has named it, the
-principal; or the solo datastore's path and namespace. Two serve views with
-a principal each compare principals, so a rotated token of the same
-principal is the same view; otherwise they compare fingerprints. A current
-view recorded without a principal is rewritten with it. The copy's id is random, made with the copy's `serve_upstream.db`
+principal; or the solo datastore's path and namespace, with the marker's
+`repoId` and the datastore's location (its path relative to the checkout when
+it lies inside it, else its absolute path). Two serve views with a principal
+each compare principals, so a rotated token of the same principal is the same
+view; otherwise they compare fingerprints. Two serve copies compare their ids,
+and their roots only when one has no id, so a copy moved with its checkout is
+the same view. Two solo views with a `repoId` each compare it, the location
+and the namespace, so moving or renaming the checkout keeps the view; a repo
+whose marker has no `repoId` (very old) compares the datastore's path, and a
+move rebuilds it once. A current view is rewritten when its record differs (a
+moved root or path, a principal newly named, a solo record from before
+`repoId` was kept), never rebuilt for it (swamp-club#4702). A solo record from
+before `repoId` was kept lives in the checkout it describes, so one whose path
+ends at the view's location inside the checkout is the same view: a checkout
+moved before its first command under this swamp keeps its view too. A datastore
+at the checkout's root, or outside it, has no such location and compares its
+path. The copy's id is random, made with the copy's `serve_upstream.db`
 (swamp-club#4049), so a copy moved aside and started afresh at the same root
 is another view; every reset takes a new one (swamp-club#4089), so a reset for
 a change of access, which keeps the token, is another view too. A view
@@ -7687,11 +7700,30 @@ checkout under different tokens or views at once are not supported. The read
 model's `at-risk/` copies (swamp-club#3617) survive a rebuild, so they may
 hold bytes of the previous view; no command reads them as records.
 
+Known limits of a moved checkout (swamp-club#4702):
+
+- A filesystem datastore with a replica keys its local copy by the hash of the
+  datastore's path (`v3CommitsDbPath`, `v3_datastore.ts:296`). Moving the
+  checkout keys a new copy: the next command restores it in full from the
+  replica and starts a new lineage, and the old copy's directory is left in
+  the checkout. Bucket datastores keep `commits.db` at the datastore's own
+  path and member serve copies are keyed by server address and namespace, so
+  neither is affected.
+- The extension catalog keys bundled sources by absolute path
+  (`bundle_freshness.ts:290`), so after a move every extension is bundled
+  again once on the next load.
+- A relative datastore path that points outside the checkout names another
+  datastore once the checkout moves, so that view is rebuilt.
+
 The registry (`serve_upstream_registry.ts`) tells the helpers the root's
 upstream is serve. `v3ReplicaFor` answers none for it, so there is no restore,
 lineage or Litestream sidecar. The local root's own lease serialises this
 machine's processes; it is never the bucket's writer lease. The end-of-command
-retention pass is skipped, because serve keeps the datastore.
+retention pass and closing compaction are skipped, because serve keeps the
+datastore: a copy folding its own log at exit stalled every member's command
+at once, since all copies cross the policy's threshold together
+(swamp-club#4702). Until a copy follows serve's compaction point from serve's
+base, a copy's `commits.db` grows with the log.
 
 **Follower mode.** Serve filters single commits a caller may not read, so the
 seqs a caller sees of a partition can have permanent holes. A store opened
