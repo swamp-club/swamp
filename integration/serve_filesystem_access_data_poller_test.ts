@@ -690,7 +690,7 @@ for (const layout of LAYOUTS) {
         assertEquals(first.totalCreated, 1);
         assertEquals(await source.detect(), 0, "a first reload");
 
-        // the release case: a changed grant file revokes one grant, creates one
+        // what each release that edits a grant file does
         const changed = await reconcileAsServe(b, writes, grantsFile("b-*"));
         assertEquals([changed.totalCreated, changed.totalRevoked], [1, 1]);
         assertEquals(await source.detect(), 0, "a changed grant file");

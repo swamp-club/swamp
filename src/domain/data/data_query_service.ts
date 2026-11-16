@@ -1838,7 +1838,8 @@ export class DataQueryService {
   /**
    * re-reads only these types' records into the catalog, for a poller that
    * pulled or saw changes to them alone; additive like a full backfill, and a
-   * catalog not yet populated is left to its full backfill
+   * catalog not yet populated is left to its full backfill. Rename forwards are
+   * not recorded, since access records are never renamed.
    */
   async refreshTypes(types: readonly ModelType[]): Promise<void> {
     if (!this.backfill || !this.catalogStore.isPopulated()) return;
@@ -1846,7 +1847,9 @@ export class DataQueryService {
     for (const type of types) {
       await this.collectRows(await this.dataRepo.findAllForType(type), rows);
     }
-    await this.commitRows(rows, types.map((type) => type.normalized));
+    // one transaction: the catalog is populated, so a reader between an
+    // upsert and its flag pass would see two latest rows for one name
+    this.catalogStore.upsertNamesRecomputingFlags(rows);
   }
 
   private async collectRows(
@@ -1902,17 +1905,12 @@ export class DataQueryService {
    * are derived over, with a yield between chunks, so a large rebuild never
    * holds the event loop for the whole commit; flags skip pending versions
    */
-  private async commitRows(
-    rows: readonly CatalogRow[],
-    types?: readonly string[],
-  ): Promise<void> {
+  private async commitRows(rows: readonly CatalogRow[]): Promise<void> {
     for (const chunk of nameAlignedChunks(rows, BACKFILL_CHUNK_ROWS)) {
       this.catalogStore.bulkUpsert(chunk, computeLatestFlags);
       await yieldToEventLoop();
     }
-    await this.catalogStore.enforceUniqueLatestInChunks(computeLatestFlags, {
-      types,
-    });
+    await this.catalogStore.enforceUniqueLatestInChunks(computeLatestFlags);
   }
 
   private backfillSync(): void {

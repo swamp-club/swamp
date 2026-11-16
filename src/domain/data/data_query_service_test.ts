@@ -7000,12 +7000,11 @@ Deno.test("DataQueryService: a backfill larger than one chunk lets timers run be
   };
   // a timer firing with some commits made and more to come ran between them
   const seenBetween: number[] = [];
-  let ticking = true;
   const tick = () => {
     if (commits > 0) seenBetween.push(commits);
-    if (ticking) setTimeout(tick, 0);
+    timer = setTimeout(tick, 0);
   };
-  setTimeout(tick, 0);
+  let timer = setTimeout(tick, 0);
   try {
     const service = new DataQueryService(
       catalog,
@@ -7013,7 +7012,7 @@ Deno.test("DataQueryService: a backfill larger than one chunk lets timers run be
     );
     await service.query('modelName == "ingest"');
   } finally {
-    ticking = false;
+    clearTimeout(timer);
   }
 
   assert(commits > 1, `expected chunked commits, got ${commits}`);
@@ -7066,10 +7065,32 @@ Deno.test("DataQueryService.refreshTypes: re-reads only the given types and keep
   await service.query("true");
   assertEquals(latestVersions(catalog, "access-model"), ["d-0@1", "d-1@1"]);
 
-  // a peer adds versions to both types; only the access type is refreshed
   writeTypeData(dir, "access-model", 3, 2, "access");
   writeTypeData(dir, "other-model", 2, 2, "other");
-  await service.refreshTypes([ModelType.create("access-model")]);
+  // a peer's GC removed d-0@1, so only the stored row still flags it latest
+  Deno.removeSync(
+    join(dir, ".swamp", "data", "access-model", "model-001", "d-0", "1"),
+    { recursive: true },
+  );
+  // a reader running between the refresh's steps never sees two latest rows
+  let mostLatest = 0;
+  const tick = () => {
+    for (const name of ["d-0", "d-1"]) {
+      const latest = [...catalog.iterate()].filter((row) =>
+        row.type_normalized === "access-model" && row.data_name === name &&
+        row.is_latest === 1
+      ).length;
+      mostLatest = Math.max(mostLatest, latest);
+    }
+    timer = setTimeout(tick, 0);
+  };
+  let timer = setTimeout(tick, 0);
+  try {
+    await service.refreshTypes([ModelType.create("access-model")]);
+  } finally {
+    clearTimeout(timer);
+  }
+  assertEquals(mostLatest, 1);
 
   assertEquals(catalog.isPopulated(), true);
   assertEquals(latestVersions(catalog, "access-model"), [

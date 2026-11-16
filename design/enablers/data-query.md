@@ -873,7 +873,9 @@ After a `pullChanged()` that reports work, core sets `synced = true` and the
 caller invalidates the catalog (`catalogStore.invalidate()`). The access,
 integration and delegation pollers are the exception: they pull only their own
 record types, so they refresh those types' rows (`DataQueryService.refreshTypes`,
-additive like a backfill) and keep the catalog populated. The next query
+additive like a backfill) and keep the catalog populated. The refresh writes its
+rows and recomputes each touched name's latest flags in one transaction, so a
+reader never sees two latest rows for one name. The next query
 then backfills from the freshly pulled cache (`src/cli/repo_context.ts`
 `acquireModelLocks`). There is no incremental row-level update from a pull
 diff: `pullChanged()` returns `Promise<number | void>`, not a structured diff.

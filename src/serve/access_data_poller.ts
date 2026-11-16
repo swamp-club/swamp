@@ -108,7 +108,6 @@ interface AccessDataPollerCommonOptions {
   reloading?: string;
   /** a workflow step's own write shows as no change here, so don't wait for one */
   reloadEveryCycle?: boolean;
-  /** brings the catalog rows of the polled records up to date after a change */
   catalogRefresh: () => Promise<void> | void;
   pollIntervalMs?: number;
 }

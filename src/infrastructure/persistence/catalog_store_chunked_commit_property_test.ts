@@ -178,9 +178,10 @@ Deno.test("CatalogStore: a rebuild committed in name-aligned chunks leaves the c
           for (const chunk of chunks) {
             chunked.bulkUpsert(chunk, computeLatestFlags);
           }
-          await chunked.enforceUniqueLatestInChunks(computeLatestFlags, {
-            chunkRows: enforceRows,
-          });
+          await chunked.enforceUniqueLatestInChunks(
+            computeLatestFlags,
+            enforceRows,
+          );
 
           assertEquals(contents(chunked), contents(whole));
           if (chunks.length > 1) coverage.split++;
@@ -196,7 +197,11 @@ Deno.test("CatalogStore: a rebuild committed in name-aligned chunks leaves the c
     ),
     { numRuns: 300 },
   );
-  console.error(`chunked commit coverage: ${JSON.stringify(coverage)}`);
+  assertEquals(
+    Object.values(coverage).every((count) => count > 0),
+    true,
+    `every case was generated: ${JSON.stringify(coverage)}`,
+  );
 });
 
 Deno.test("nameAlignedChunks: never splits one data name's rows, and cuts once a chunk reaches its size", () => {
@@ -228,7 +233,6 @@ Deno.test("nameAlignedChunks: never splits one data name's rows, and cuts once a
           if (index < chunks.length - 1) {
             const last = chunk[chunk.length - 1].data_name;
             const sizeOfLast = chunk.filter((r) => r.data_name === last).length;
-            // a chunk is cut only when the rows before its last name filled it
             assertEquals(chunk.length - sizeOfLast < size, true);
           }
         });
@@ -238,32 +242,25 @@ Deno.test("nameAlignedChunks: never splits one data name's rows, and cuts once a
   );
 });
 
-Deno.test("CatalogStore.enforceUniqueLatestInChunks: limited to types, it leaves other types' flags as they were", async () => {
+Deno.test("CatalogStore.upsertNamesRecomputingFlags: a new version takes latest from the stored one in the same write, and a pending row is never overwritten", () => {
   const store = new CatalogStore(":memory:");
   try {
-    for (const type of TYPES) {
-      for (const version of [1, 2]) {
-        store.upsert(
-          rowOf(type, "m-1", "one", version, "", {
-            latest: 1,
-            stepLatest: 1,
-            pending: false,
-          }),
-        );
-      }
-    }
-    await store.enforceUniqueLatestInChunks(computeLatestFlags, {
-      types: ["t-a"],
-    });
-    assertEquals(
-      contents(store).map((line) => line.split(" pending")[0]),
-      [
-        "t-a/m-1/one@1 latest=0 step=0",
-        "t-a/m-1/one@2 latest=1 step=1",
-        "t-b/m-1/one@1 latest=1 step=1",
-        "t-b/m-1/one@2 latest=1 step=1",
-      ],
-    );
+    const row = (version: number, pending = false) =>
+      rowOf("t-a", "m-1", "one", version, "", {
+        latest: 0,
+        stepLatest: 0,
+        pending,
+      });
+    store.upsert({ ...row(1), is_latest: 1, is_step_latest: 1 });
+    store.upsert(row(3, true));
+
+    store.upsertNamesRecomputingFlags([row(1), row(2), row(3)]);
+
+    assertEquals(contents(store), [
+      "t-a/m-1/one@1 latest=0 step=0 pending=0 id=id-t-a-m-1-one-1",
+      "t-a/m-1/one@2 latest=1 step=1 pending=0 id=id-t-a-m-1-one-2",
+      "t-a/m-1/one@3 latest=0 step=0 pending=1 id=id-t-a-m-1-one-3",
+    ]);
   } finally {
     store.close();
   }

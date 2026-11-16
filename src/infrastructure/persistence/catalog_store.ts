@@ -771,21 +771,59 @@ export class CatalogStore {
   ): void {
     this.db.exec("BEGIN IMMEDIATE");
     try {
-      const pending = new Set(
-        (this.db.prepare(
-          `SELECT namespace, type_normalized, model_id, data_name, version
+      this.#writeUnlessPending(rows, computeFlags);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  /**
+   * bulkUpsert for a populated catalog: each written name's flags are
+   * recomputed over its stored rows in the same transaction, so no reader sees
+   * two latest rows for one name
+   */
+  upsertNamesRecomputingFlags(rows: readonly CatalogRow[]): void {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const written = this.#writeUnlessPending(rows);
+      const groups = new Map(written.map((row) => [groupKeyOf(row), row]));
+      for (const row of groups.values()) {
+        this.recomputeGroupFlags(
+          row.namespace,
+          row.type_normalized,
+          row.model_id,
+          row.data_name,
+          () => {},
+        );
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  #writeUnlessPending(
+    rows: readonly CatalogRow[],
+    computeFlags?: (rows: CatalogRow[]) => void,
+  ): CatalogRow[] {
+    const pending = new Set(
+      (this.db.prepare(
+        `SELECT namespace, type_normalized, model_id, data_name, version
            FROM catalog WHERE is_pending = 1`,
-        ).all() as {
-          namespace: string;
-          type_normalized: string;
-          model_id: string;
-          data_name: string;
-          version: number;
-        }[]).map(rowKey),
-      );
-      const toWrite = rows.filter((row) => !pending.has(rowKey(row)));
-      computeFlags?.(toWrite);
-      const stmt = this.db.prepare(`
+      ).all() as {
+        namespace: string;
+        type_normalized: string;
+        model_id: string;
+        data_name: string;
+        version: number;
+      }[]).map(rowKey),
+    );
+    const toWrite = rows.filter((row) => !pending.has(rowKey(row)));
+    computeFlags?.(toWrite);
+    const stmt = this.db.prepare(`
         INSERT OR REPLACE INTO catalog (
           namespace, type_normalized, model_id, data_name, id, version, is_latest, is_step_latest, model_name,
           spec_name, data_type, content_type, lifetime, garbage_collection, lifecycle, owner_type,
@@ -794,44 +832,40 @@ export class CatalogStore {
           is_pending, pending_pid, pending_host
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
-      for (const row of toWrite) {
-        stmt.run(
-          row.namespace,
-          row.type_normalized,
-          row.model_id,
-          row.data_name,
-          row.id,
-          row.version,
-          row.is_latest,
-          row.is_step_latest,
-          row.model_name,
-          row.spec_name,
-          row.data_type,
-          row.content_type,
-          row.lifetime,
-          row.garbage_collection,
-          row.lifecycle,
-          row.owner_type,
-          row.streaming,
-          row.size,
-          row.created_at,
-          row.tags,
-          row.owner_ref,
-          row.workflow_run_id,
-          row.workflow_name,
-          row.job_name,
-          row.step_name,
-          row.source,
-          row.is_pending ?? 0,
-          row.pending_pid ?? 0,
-          row.pending_host ?? "",
-        );
-      }
-      this.db.exec("COMMIT");
-    } catch (error) {
-      this.db.exec("ROLLBACK");
-      throw error;
+    for (const row of toWrite) {
+      stmt.run(
+        row.namespace,
+        row.type_normalized,
+        row.model_id,
+        row.data_name,
+        row.id,
+        row.version,
+        row.is_latest,
+        row.is_step_latest,
+        row.model_name,
+        row.spec_name,
+        row.data_type,
+        row.content_type,
+        row.lifetime,
+        row.garbage_collection,
+        row.lifecycle,
+        row.owner_type,
+        row.streaming,
+        row.size,
+        row.created_at,
+        row.tags,
+        row.owner_ref,
+        row.workflow_run_id,
+        row.workflow_name,
+        row.job_name,
+        row.step_name,
+        row.source,
+        row.is_pending ?? 0,
+        row.pending_pid ?? 0,
+        row.pending_host ?? "",
+      );
     }
+    return toWrite;
   }
 
   /**
@@ -2316,20 +2350,12 @@ export class CatalogStore {
     }
   }
 
-  /**
-   * enforceUniqueLatest in transactions cut between data names with a yield
-   * between them, so a large catalog never holds the event loop for one pass
-   */
+  /** safe to chunk because each cut falls between data names */
   async enforceUniqueLatestInChunks(
     computeFlags: (rows: CatalogRow[]) => void,
-    options: { types?: readonly string[]; chunkRows?: number } = {},
+    chunkRows: number = ITERATE_PAGE_SIZE,
   ): Promise<number> {
-    const chunkRows = options.chunkRows ?? ITERATE_PAGE_SIZE;
-    const types = options.types ?? [];
-    const typeWhere = options.types === undefined
-      ? ""
-      : ` AND type_normalized IN (${types.map(() => "?").join(", ")})`;
-    const flagged = `(is_latest = 1 OR is_step_latest = 1)${typeWhere}`;
+    const flagged = "(is_latest = 1 OR is_step_latest = 1)";
     const order =
       "ORDER BY namespace, type_normalized, model_id, data_name, version";
     let after: string[] | undefined;
@@ -2344,7 +2370,6 @@ export class CatalogStore {
         const page = this.db.prepare(
           `SELECT * FROM catalog WHERE ${flagged}${afterWhere} ${order} LIMIT ?`,
         ).all(
-          ...types,
           ...(after ?? []),
           chunkRows + 1,
         ) as unknown as CatalogRow[];
