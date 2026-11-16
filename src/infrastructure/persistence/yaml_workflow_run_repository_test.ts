@@ -6455,3 +6455,37 @@ Deno.test("markRunIndexesForRepair: the index is parked where an older swamp see
     );
   });
 });
+
+Deno.test("markRunIndexesForRepair: a run saved while the index is parked leaves it parked, and the next read repairs it with the new run", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const first = WorkflowRun.create(workflow);
+    first.start();
+    await repo.save(workflow.id, first);
+    const indexDir = join(dir, ".swamp", "workflow-runs", workflow.id);
+
+    await markRunIndexesForRepair(dir);
+    const later = WorkflowRun.create(workflow);
+    later.start();
+    await repo.save(workflow.id, later);
+
+    // no fresh index of one run stands in for the parked one
+    assertEquals(
+      await Deno.lstat(getIndexPath(indexDir)).then(() => true, () => false),
+      false,
+    );
+    assertEquals(
+      await Deno.lstat(join(indexDir, RUNS_INDEX_REPAIR_FILENAME)).then(
+        () => true,
+        () => false,
+      ),
+      true,
+    );
+    const running = await repo.findGlobalByStatus("running");
+    assertEquals(
+      running.map((found) => found.run.id).sort(),
+      [first.id, later.id].sort(),
+    );
+  });
+});

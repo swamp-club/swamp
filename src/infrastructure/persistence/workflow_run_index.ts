@@ -501,6 +501,11 @@ export async function appendRunIndexLines(
   const header = await readRunIndexHeader(workflowRunsDir);
   if (header === null) {
     if (!options.create) return { kind: "absent" };
+    // a parked index is repaired, new runs and all, on its next read
+    const parked = await Deno.lstat(
+      join(workflowRunsDir, RUNS_INDEX_REPAIR_FILENAME),
+    ).then(() => true, () => false);
+    if (parked) return { kind: "absent" };
     const body = await linesText(lines);
     const bytes = utf8.encode(body).length;
     await atomicWriteTextFile(path, headerLine(bytes) + body);

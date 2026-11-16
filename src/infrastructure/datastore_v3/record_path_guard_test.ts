@@ -166,6 +166,7 @@ Deno.test("isCheckoutLocalKey: dot paths, run logs and pulled extension sources 
   const local = [
     "workflow-runs/w1/.runs-index.json",
     "workflow-runs/w1/.runs-index.lock",
+    "workflow-runs/w1/.runs-index.repair.json",
     "config/.lock",
     "data/t/m/.0f4e2a6c-1b3d-4c5e-8f90-a1b2c3d4e5f6.tmp",
     "data/t/m/.lock",

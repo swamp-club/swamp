@@ -560,7 +560,7 @@ async function flushBlockIn(
   const outcomes: EntryOutcome[] = [];
   let stopping = false;
   for (const [index, result] of results.entries()) {
-    // one that landed is recorded so even after one before it was cut off
+    // a landed entry is recorded even after an earlier one was cut off
     if (result.status === "fulfilled") {
       outcomes.push(built[index].landed);
       continue;
@@ -580,7 +580,12 @@ async function flushBlockIn(
     }
     if (stopping) break;
     // a refused entry is sent again alone; the ones after it were not tried
-    return { outcomes, single: !(error instanceof CommitNotTriedError) };
+    // with nothing settled the entry goes alone, so the flush always moves on
+    return {
+      outcomes,
+      single: outcomes.length === 0 ||
+        !(error instanceof CommitNotTriedError),
+    };
   }
   if (stopping) return { outcomes, single: false };
   return { outcomes, single: built.length < block.length };

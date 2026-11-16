@@ -1022,3 +1022,19 @@ Deno.test("flushOfflineEntries: an entry of a batch that landed after one cut of
   assertEquals(port.settled, ["q2"]);
   assertEquals(report.landed, 1);
 });
+
+Deno.test("flushOfflineEntries: a batch reply that tried nothing sends the entries alone, and the flush moves on", async () => {
+  const port = batching(new FakePort());
+  let batches = 0;
+  port.sendBatch = (sends) => {
+    // fails the test rather than hanging it if the flush resends the block
+    if (++batches > 3) throw new Error("the same block was sent again");
+    return Promise.resolve(sends.map(({ commit }) => ({
+      status: "rejected" as const,
+      reason: new CommitNotTriedError(commit.partition.toString()),
+    })));
+  };
+  const report = await flush(port, await threeQueued());
+  assertEquals(report.landed, 3);
+  assertEquals(port.settled, ["q1", "q2", "q3"]);
+});
