@@ -357,6 +357,9 @@ export interface CommitStore {
    */
   changesSince(cursor: number, limit: number): Promise<readonly CommitChange[]>;
 
+  /** how many commits landed after `cursor`, counting at most `atMost`, without reading them */
+  countChangesSince?(cursor: number, atMost: number): Promise<number>;
+
   /**
    * The subset of `hashes` that some stored commit of `namespace` names as a
    * chunk (`Commit.chunkRefs`), whether or not a later commit replaced or

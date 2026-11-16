@@ -232,6 +232,28 @@ export class NetReplayPlanner {
           prefixed.add(idOf(namespace, key));
         }
       }
+      // whichever write makes a directory spells it, so keys whose directories
+      // differ only by case or composition replay in full
+      const spellings = new Map<string, Set<string>>();
+      for (const key of keys) {
+        const segments = key.split("/");
+        for (let i = 1; i < segments.length; i++) {
+          const dir = segments.slice(0, i).join("/");
+          const seen = spellings.get(foldKey(dir)) ?? new Set<string>();
+          seen.add(dir);
+          spellings.set(foldKey(dir), seen);
+        }
+      }
+      for (const key of keys) {
+        const segments = key.split("/");
+        for (let i = 1; i < segments.length; i++) {
+          const dir = segments.slice(0, i).join("/");
+          if ((spellings.get(foldKey(dir))?.size ?? 0) > 1) {
+            prefixed.add(idOf(namespace, key));
+            break;
+          }
+        }
+      }
     }
     const eligible = new Set<string>();
     const skipped = new Set<string>();

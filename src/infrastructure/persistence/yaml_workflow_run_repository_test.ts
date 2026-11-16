@@ -37,7 +37,9 @@ import {
   getIndexPath,
   INDEX_COMPACTION_FLOOR_BYTES,
   INDEX_SCHEMA_VERSION,
+  markRunIndexesForRepair,
   readRunIndex,
+  RUNS_INDEX_REPAIR_FILENAME,
   withIndexQueue,
   writeRunIndex,
 } from "./workflow_run_index.ts";
@@ -6384,5 +6386,106 @@ Deno.test("YamlWorkflowRunRepository.isRunDamaged: a realistic record cut short 
     await repo.save(workflow.id, run);
     assertFalse(await repo.isRunDamaged(workflow.id, run.id));
     assertEquals(await Deno.readTextFile(path), content);
+  });
+});
+
+Deno.test("markRunIndexesForRepair: the index is parked where an older swamp sees none, and the next read repairs it from the records that changed, appeared or went, never rebuilding", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const changed = WorkflowRun.create(workflow);
+    changed.start();
+    await repo.save(workflow.id, changed);
+    const runningRecord = await Deno.readTextFile(
+      repo.getPath(workflow.id, changed.id),
+    );
+    changed.interruptOrphaned("test", []);
+    await repo.save(workflow.id, changed);
+    const removed = WorkflowRun.create(workflow);
+    removed.start();
+    await repo.save(workflow.id, removed);
+    const indexDir = join(dir, ".swamp", "workflow-runs", workflow.id);
+
+    await markRunIndexesForRepair(dir);
+    // an older swamp finds no index and rebuilds from every record
+    assertEquals(
+      await Deno.lstat(getIndexPath(indexDir)).then(() => true, () => false),
+      false,
+    );
+    // behind the parked index: one record changed, one written, one removed,
+    // as a writer killed mid-save, mid-create or mid-delete leaves them
+    await replaceRecord(repo, workflow.id, changed, runningRecord);
+    const added = WorkflowRun.create(workflow);
+    added.start();
+    const created = new YamlWorkflowRunRepository(join(dir, "elsewhere"));
+    await created.save(workflow.id, added);
+    await Deno.copyFile(
+      created.getPath(workflow.id, added.id),
+      repo.getPath(workflow.id, added.id),
+    );
+    await Deno.remove(repo.getPath(workflow.id, removed.id));
+
+    await withCapturedSpans(async (spans) => {
+      const running = await repo.findGlobalByStatus("running");
+      assertEquals(
+        running.map((found) => found.run.id).sort(),
+        [added.id, changed.id].sort(),
+      );
+      assertEquals(
+        spans.some((span) => span.name === "swamp.workflow_runs.index.rebuild"),
+        false,
+      );
+      assertEquals(
+        spans.some((span) => span.name === "swamp.workflow_runs.index.repair"),
+        true,
+      );
+    });
+    const index = await readRunIndex(indexDir);
+    assertEquals(index?.damaged, undefined);
+    assertEquals(
+      Object.keys(index?.entries ?? {}).sort(),
+      [added.id, changed.id].sort(),
+    );
+    assertEquals(
+      await Deno.lstat(join(indexDir, RUNS_INDEX_REPAIR_FILENAME)).then(
+        () => true,
+        () => false,
+      ),
+      false,
+    );
+  });
+});
+
+Deno.test("markRunIndexesForRepair: a run saved while the index is parked leaves it parked, and the next read repairs it with the new run", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const first = WorkflowRun.create(workflow);
+    first.start();
+    await repo.save(workflow.id, first);
+    const indexDir = join(dir, ".swamp", "workflow-runs", workflow.id);
+
+    await markRunIndexesForRepair(dir);
+    const later = WorkflowRun.create(workflow);
+    later.start();
+    await repo.save(workflow.id, later);
+
+    // no fresh index of one run stands in for the parked one
+    assertEquals(
+      await Deno.lstat(getIndexPath(indexDir)).then(() => true, () => false),
+      false,
+    );
+    assertEquals(
+      await Deno.lstat(join(indexDir, RUNS_INDEX_REPAIR_FILENAME)).then(
+        () => true,
+        () => false,
+      ),
+      true,
+    );
+    const running = await repo.findGlobalByStatus("running");
+    assertEquals(
+      running.map((found) => found.run.id).sort(),
+      [first.id, later.id].sort(),
+    );
   });
 });

@@ -64,6 +64,7 @@ import { CatalogStore } from "../persistence/catalog_store.ts";
 import { FileSystemUnifiedDataRepository } from "../persistence/unified_data_repository.ts";
 import { Data } from "../../domain/data/data.ts";
 import { readModelStateDir } from "./record_path_guard.ts";
+import { DurableWriteBatch } from "./atomic_stream_write.ts";
 import {
   SqliteCommitStore,
   type SqliteCommitStoreOptions,
@@ -74,6 +75,7 @@ import {
   READ_MODEL_STATE_FILE,
   SqliteReadModel,
   type SqliteReadModelOptions,
+  TAIL_NET_MIN_COMMITS,
   TARGETED_FILES_FLOOR,
   TARGETED_NAMES_FLOOR,
 } from "./sqlite_read_model.ts";
@@ -3590,6 +3592,263 @@ Deno.test("SqliteReadModel.recover: a stored version whose metadata differs from
       assertEquals(attributes["path"], "full");
       assertEquals(attributes["fallback"], "versions_mismatch");
     } finally {
+      await readModel.close();
+    }
+  });
+});
+
+Deno.test("SqliteReadModel.catchUp: a tail over files on disk skips a key's replaced writes, never those of a key whose path holds a file the read model does not own", async () => {
+  await withEnv(async (env) => {
+    await env.append(1, "", [await savePut("a", 1), versionOp("a", 1)]);
+    const readModel = env.open();
+    try {
+      await readModel.catchUp(signal());
+      const stray = env.contentPath("", "b", 1);
+      await Deno.mkdir(join(stray, ".."), { recursive: true });
+      await Deno.writeTextFile(stray, "not the read model's");
+      await env.append(2, "", [
+        await savePut("a", 1, "a again", undefined, "data.append"),
+        versionOp("a", 1),
+        await savePut("b", 1, "b first"),
+        versionOp("b", 1),
+      ]);
+      // a tail long enough to be netted
+      for (let seq = 3; seq < 2 + TAIL_NET_MIN_COMMITS; seq++) {
+        await env.append(seq, "", [
+          await savePut(`c${seq}`, 1),
+          versionOp(`c${seq}`, 1),
+        ]);
+      }
+      await env.append(2 + TAIL_NET_MIN_COMMITS, "", [
+        await savePut("a", 1, "a last", undefined, "data.append"),
+        versionOp("a", 1),
+        await savePut("b", 1, "b last", undefined, "data.append"),
+        versionOp("b", 1),
+      ]);
+      await withCapturedSpans(async (spans) => {
+        await readModel.catchUp(signal());
+        const span = findSpan(spans, "swamp.datastore.v3.readmodel.catchup");
+        assertEquals(span.attributes["swamp.datastore.v3.writes_skipped"], 1);
+      });
+      assertEquals(await readOrAbsent(env.contentPath("", "a", 1)), "a last");
+    } finally {
+      await readModel.close();
+    }
+  });
+});
+
+Deno.test("SqliteReadModel.catchUp: a netted tail reads each of its commits from the store once", async () => {
+  await withEnv(async (env) => {
+    await env.append(1, "", [await savePut("a", 1), versionOp("a", 1)]);
+    const readModel = env.open();
+    try {
+      await readModel.catchUp(signal());
+      const tail = TAIL_NET_MIN_COMMITS + 4;
+      for (let seq = 2; seq < 2 + tail; seq++) {
+        await env.append(seq, "", [
+          await savePut("a", 1, `a@${seq}`, undefined, "data.append"),
+          versionOp("a", 1),
+        ]);
+      }
+      let read = 0;
+      const original = env.store.changesSince;
+      env.store.changesSince = async (cursor, limit) => {
+        const page = await original.call(env.store, cursor, limit);
+        read += page.length;
+        return page;
+      };
+      try {
+        await withCapturedSpans(async (spans) => {
+          await readModel.catchUp(signal());
+          const span = findSpan(spans, "swamp.datastore.v3.readmodel.catchup");
+          assertEquals(
+            span.attributes["swamp.datastore.v3.writes_skipped"],
+            tail - 1,
+          );
+        });
+      } finally {
+        env.store.changesSince = original;
+      }
+      assertEquals(read, tail);
+      assertEquals(
+        await readOrAbsent(env.contentPath("", "a", 1)),
+        `a@${1 + tail}`,
+      );
+    } finally {
+      await readModel.close();
+    }
+  });
+});
+
+/** a storage whose prefetch waits until the test lets it finish, or fails */
+class GatedPrefetchStorage extends MemoryStorage {
+  readonly gate = Promise.withResolvers<void>();
+  failWith: Error | undefined;
+  prefetch(): Promise<void> {
+    return this.failWith !== undefined
+      ? Promise.reject(this.failWith)
+      : this.gate.promise;
+  }
+}
+
+async function chunkedPage(env: Env, storage: GatedPrefetchStorage) {
+  const chunks = new ChunkStore(storage);
+  await env.append(1, "", [await savePut("a", 1), versionOp("a", 1)]);
+  const blobs = [];
+  for (const fill of [3, 4]) {
+    blobs.push(
+      await chunks.write(
+        SOLO_NAMESPACE,
+        new Uint8Array(20_000).fill(fill),
+        signal(),
+      ),
+    );
+  }
+  await env.append(2, "", [
+    await blobPut("b", 1, blobs[0]),
+    versionOp("b", 1),
+    await blobPut("c", 1, blobs[1]),
+    versionOp("c", 1),
+  ]);
+  return chunks;
+}
+
+Deno.test("SqliteReadModel.catchUp: a page's inline writes go on while its chunks are fetched", async () => {
+  await withEnv(async (env) => {
+    const storage = new GatedPrefetchStorage();
+    const chunkStore = await chunkedPage(env, storage);
+    const readModel = env.open({ chunkStore, netReplay: false });
+    try {
+      const caughtUp = readModel.catchUp(signal());
+      await waitFor(
+        async () => await readOrAbsent(env.contentPath("", "a", 1)) === "a@1",
+        "the inline write before the chunks arrive",
+      );
+      assertEquals(await readOrAbsent(env.contentPath("", "b", 1)), undefined);
+      storage.gate.resolve();
+      await caughtUp;
+      assertEquals(
+        (await Deno.readFile(env.contentPath("", "b", 1))).length,
+        20_000,
+      );
+    } finally {
+      storage.gate.resolve();
+      await readModel.close();
+    }
+  });
+});
+
+Deno.test("SqliteReadModel.catchUp: a page's failed chunk fetch still fails the catch-up", async () => {
+  await withEnv(async (env) => {
+    const storage = new GatedPrefetchStorage();
+    const chunkStore = await chunkedPage(env, storage);
+    const readModel = env.open({ chunkStore, netReplay: false });
+    try {
+      storage.failWith = new Error("serve went away");
+      await assertRejects(
+        () => readModel.catchUp(signal()),
+        Error,
+        "serve went away",
+      );
+      assertEquals(await readOrAbsent(env.contentPath("", "b", 1)), undefined);
+    } finally {
+      await readModel.close();
+    }
+  });
+});
+
+Deno.test({
+  name:
+    "SqliteReadModel.catchUp: a page whose pooled write fails rolls back whole, and is applied again",
+  // directory permissions do not refuse a write on Windows
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withEnv(async (env) => {
+      await env.append(1, "", [await savePut("a", 1), versionOp("a", 1)]);
+      const readModel = env.open({ netReplay: false });
+      try {
+        await readModel.catchUp(signal());
+        const cursor = readModel.cursor();
+        await env.append(2, "", [
+          await savePut("a", 1, "a again", undefined, "data.append"),
+          versionOp("a", 1),
+        ]);
+        await env.append(3, "", [await savePut("b", 1), versionOp("b", 1)]);
+        const behavior = dirname(dirname(dirname(env.contentPath("", "a", 1))));
+        await Deno.chmod(behavior, 0o500);
+        try {
+          await assertRejects(() => readModel.catchUp(signal()));
+          assertEquals(readModel.cursor(), cursor);
+        } finally {
+          await Deno.chmod(behavior, 0o755);
+        }
+        await readModel.catchUp(signal());
+        assertEquals(
+          await readOrAbsent(env.contentPath("", "a", 1)),
+          "a again",
+        );
+        assertEquals(await readOrAbsent(env.contentPath("", "b", 1)), "b@1");
+      } finally {
+        await readModel.close();
+      }
+    });
+  },
+});
+
+/** a batch that does not sync, holding the write to `held` until released */
+class HeldWriteBatch extends DurableWriteBatch {
+  readonly started: string[] = [];
+  readonly gate = Promise.withResolvers<void>();
+
+  constructor(readonly held: string) {
+    super({ sync: false });
+  }
+
+  override async write(
+    path: string,
+    content: Uint8Array | ReadableStream<Uint8Array>,
+    signal: AbortSignal,
+    options?: Parameters<DurableWriteBatch["write"]>[3],
+  ): Promise<void> {
+    this.started.push(path);
+    if (path === this.held) await this.gate.promise;
+    return await super.write(path, content, signal, options);
+  }
+}
+
+Deno.test("SqliteReadModel.catchUp: a write under a directory a pooled write is still making waits for it", async () => {
+  await withEnv(async (env) => {
+    await env.append(1, "", [await savePut("a", 1), versionOp("a", 1)]);
+    const making = env.contentPath("", "n", 1);
+    const under = env.contentPath("", "n", 2);
+    const batch = new HeldWriteBatch(making);
+    let drained = false;
+    const readModel = env.open({
+      netReplay: false,
+      writeBatch: () => batch,
+      onPoolDrain: () => {
+        drained = true;
+      },
+    });
+    try {
+      await readModel.catchUp(signal());
+      batch.started.length = 0;
+      drained = false;
+      await env.append(2, "", [
+        await savePut("n", 1),
+        versionOp("n", 1),
+        await savePut("n", 2),
+        versionOp("n", 2),
+      ]);
+      const caughtUp = readModel.catchUp(signal());
+      await waitFor(() => drained, "the page waiting for its pooled writes");
+      assertEquals(batch.started, [making]);
+      batch.gate.resolve();
+      await caughtUp;
+      assertEquals(batch.started, [making, under]);
+      assertEquals(await readOrAbsent(under), "n@2");
+    } finally {
+      batch.gate.resolve();
       await readModel.close();
     }
   });

@@ -87,7 +87,8 @@ export function isCheckoutLocalKey(segments: readonly string[]): boolean {
   if (name === ".DS_Store") return true;
   if (
     segments[0] === "workflow-runs" &&
-    (name === ".runs-index.json" || name === ".runs-index.lock")
+    (name === ".runs-index.json" || name === ".runs-index.lock" ||
+      name === ".runs-index.repair.json")
   ) {
     return true;
   }

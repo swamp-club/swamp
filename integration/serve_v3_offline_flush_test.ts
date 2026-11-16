@@ -25,7 +25,9 @@ import {
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { walk } from "@std/fs";
+import { createHash } from "node:crypto";
 import { join, SEPARATOR } from "@std/path";
+import { localProcess } from "../src/infrastructure/datastore_v3/process_identity.ts";
 import {
   acquireModelLocks,
   assertOfflineRunAllowed,
@@ -40,6 +42,7 @@ import {
 } from "../src/domain/datastore_v3/offline_write_policy.ts";
 import { ServeNotLeaderError } from "../src/domain/datastore_v3/serve_leader.ts";
 import { setServeReadRefusalBudgetForTesting } from "../src/infrastructure/datastore_v3/serve_datastore_client.ts";
+import { setLockCatchUpMaxCommitsForTesting } from "../src/infrastructure/datastore_v3/serve_lock.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { captureLogs } from "./remote_secrets_baseline_harness.ts";
 import {
@@ -1047,7 +1050,7 @@ Deno.test({
 
 Deno.test({
   name:
-    "serve offline: a flush cut off after serve took a commit resumes without landing it twice",
+    "serve offline: a flush cut off after serve took its batch of commits resumes without landing any twice",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
@@ -1078,7 +1081,8 @@ Deno.test({
           }
           commits++;
           const reply = await forward();
-          if (commits !== 2) return reply;
+          // both queued entries go in one request
+          if (commits !== 1) return reply;
           return new Response(
             new ReadableStream({
               start(controller) {
@@ -1089,7 +1093,7 @@ Deno.test({
           );
         };
         await command(scratch, alice, env, () => Promise.resolve());
-        assertEquals(commits, 2);
+        assertEquals(commits, 1);
         proxy.answer = undefined;
         await command(scratch, alice, env, () => Promise.resolve());
 
@@ -1384,6 +1388,269 @@ Deno.test({
         assertEquals(exitCodeForError(refused), 75);
         proxy.up();
         assertEquals(await servedVersions(serve), [1]);
+      });
+    });
+  },
+});
+
+/**
+ * serve grants locks, answered without their catch-up, but a read of its
+ * changes feed loses the connection after its headers
+ */
+function dropChangesReads(proxy: OfflineProxy): string[] {
+  const dropped: string[] = [];
+  proxy.answer = async (request, forward) => {
+    const path = new URL(request.url).pathname;
+    if (request.method === "POST" && /\/locks$/.test(path)) {
+      const granted = await forward();
+      const body = await granted.json();
+      delete body.catchUp;
+      return Response.json(body, {
+        status: granted.status,
+        headers: granted.headers,
+      });
+    }
+    if (request.method !== "GET" || !/\/changes$/.test(path)) {
+      return undefined;
+    }
+    dropped.push(path);
+    const answered = await forward();
+    await answered.body?.cancel();
+    return new Response(
+      new ReadableStream({
+        start(controller) {
+          controller.error(new Error("connection lost"));
+        },
+      }),
+      { status: answered.status, headers: answered.headers },
+    );
+  };
+  return dropped;
+}
+
+Deno.test({
+  name:
+    "serve offline at the lock's catch-up: under a live explicit lease a lock granted whose catch-up loses serve takes the checkout offline, the command queues, and the next lands it",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withScratch(async (scratch) => {
+      const serve = await scratch.serve({ grants: TEAM });
+      const alice = await scratch.client("a");
+      await withProxy(serve, async (proxy) => {
+        const env = serveEnv(proxy, "alice-token");
+        await command(
+          scratch,
+          alice,
+          env,
+          (ctx) => saveOut(ctx, serve, "online"),
+        );
+        const lease = await takeLease(scratch, serve, alice, env);
+
+        const dropped = dropChangesReads(proxy);
+        assertEquals(
+          await lockedSave(scratch, serve, alice, env, "offline", {
+            deferred: true,
+          }),
+          2,
+        );
+        assert(dropped.length > 0);
+        assertEquals(await servedVersions(serve), [1]);
+
+        proxy.answer = undefined;
+        await command(scratch, alice, env, () => Promise.resolve());
+        assertEquals(await servedVersions(serve), [1, 2]);
+        const fenced = (await serve.log()).filter((entry) =>
+          entry.keys.some((key) => /\/out\/2\//.test(key))
+        );
+        assert(fenced.every((entry) => entry.leaseFence === lease.fence));
+      });
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "serve offline at the lock's catch-up: without an explicit lease a lock granted whose catch-up loses serve exits 75 as unreachable, before it changes anything",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withScratch(async (scratch) => {
+      const serve = await scratch.serve({ grants: TEAM });
+      const alice = await scratch.client("a");
+      await withProxy(serve, async (proxy) => {
+        const env = serveEnv(proxy, "alice-token");
+        await command(
+          scratch,
+          alice,
+          env,
+          (ctx) => saveOut(ctx, serve, "online"),
+        );
+        const dropped = dropChangesReads(proxy);
+        const refused = await assertRejects(() =>
+          lockedSave(scratch, serve, alice, env, "offline", {
+            deferred: true,
+          })
+        );
+        assert(dropped.length > 0);
+        assertEquals(exitCodeForError(refused), 75);
+        assertEquals(
+          (refused as { code?: string }).code,
+          "datastore_v3_serve_unreachable",
+        );
+        proxy.answer = undefined;
+        assertEquals(await servedVersions(serve), [1]);
+      });
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "serve online, catch-up at the lock: a copy further behind than a lock may catch up releases the lock, catches up outside it and takes it again",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withScratch(async (scratch) => {
+      const serve = await scratch.serve({ grants: TEAM });
+      const alice = await scratch.client("a");
+      const bob = await scratch.client("b");
+      const bobEnv = serveEnv(serve, "bob-token");
+      await withProxy(serve, async (proxy) => {
+        const env = serveEnv(proxy, "alice-token");
+        await command(
+          scratch,
+          alice,
+          env,
+          (ctx) => saveOut(ctx, serve, "alice"),
+        );
+        for (let i = 0; i < 3; i++) {
+          await writeCommand(scratch, bob, bobEnv, async (repos) => {
+            await repos.unifiedDataRepo.save(
+              serve.modelType,
+              serve.models.web,
+              dataOf("out", DATA_ID),
+              json({ by: `bob ${i}` }),
+            );
+          });
+        }
+        const locks: string[] = [];
+        proxy.answer = (request) => {
+          const path = new URL(request.url).pathname;
+          if (/\/locks(\/|$)/.test(path)) {
+            locks.push(request.method);
+          }
+          return Promise.resolve(undefined);
+        };
+        setLockCatchUpMaxCommitsForTesting(1);
+        try {
+          assertEquals(
+            await lockedSave(scratch, serve, alice, env, "alice again", {
+              deferred: true,
+            }),
+            5,
+          );
+        } finally {
+          setLockCatchUpMaxCommitsForTesting();
+        }
+        const asks = locks.filter((method) => method === "POST");
+        assertEquals(asks.length, 2);
+        assert(locks.indexOf("DELETE") < locks.lastIndexOf("POST"));
+        assertEquals(await servedVersions(serve), [1, 2, 3, 4, 5]);
+      });
+    });
+  },
+});
+
+/**
+ * a command lease granted at serve and recorded as a command of this checkout
+ * held it, in a process that no longer runs
+ */
+async function leaseLeftByDeadCommand(
+  scratch: Scratch,
+  serve: Serve,
+  client: Client,
+  env: Record<string, string | undefined>,
+): Promise<{ leaseId: string; record: string }> {
+  return await withClientEnv(scratch, env, ["model", "method"], async () => {
+    try {
+      const resolution = await resolveDatastoreForRepo(client.repoDir);
+      const root = (await v3LocationOf(resolution)).path;
+      const binding = serveUpstreamAt(root)!;
+      const serveClient = binding.client();
+      try {
+        const lockKey =
+          `data/${serve.modelType.normalized}/${serve.models.web}/.lock`;
+        const reply = await serveClient.acquireLock(
+          lockKey,
+          30_000,
+          0,
+          new AbortController().signal,
+        );
+        assert(reply.acquired);
+        const leaseId = reply.lease.leaseId;
+        const record = join(root, "command_leases", `${leaseId}.json`);
+        await Deno.mkdir(join(root, "command_leases"), { recursive: true });
+        await Deno.writeTextFile(
+          record,
+          JSON.stringify({
+            leaseId,
+            lockKey,
+            serverUrl: binding.target.serverUrl,
+            caller: createHash("sha256").update(binding.target.token ?? "")
+              .digest("hex"),
+            // no process has this pid
+            pid: 2_000_000_000,
+            process: (await localProcess()).identity,
+          }),
+        );
+        return { leaseId, record };
+      } finally {
+        serveClient.close();
+      }
+    } finally {
+      await endCommand();
+    }
+  });
+}
+
+Deno.test({
+  name:
+    "serve online, a killed command's lock: the next command of the checkout releases the lease its dead predecessor held and takes the lock without waiting out its TTL",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withScratch(async (scratch) => {
+      const serve = await scratch.serve({ grants: TEAM });
+      const alice = await scratch.client("a");
+      await withProxy(serve, async (proxy) => {
+        const env = serveEnv(proxy, "alice-token");
+        await command(
+          scratch,
+          alice,
+          env,
+          (ctx) => saveOut(ctx, serve, "first"),
+        );
+        const dead = await leaseLeftByDeadCommand(scratch, serve, alice, env);
+        const locks: string[] = [];
+        proxy.answer = (request) => {
+          const path = new URL(request.url).pathname;
+          if (/\/locks(\/|$)/.test(path)) {
+            locks.push(`${request.method} ${path.split("/").at(-1)}`);
+          }
+          return Promise.resolve(undefined);
+        };
+        assertEquals(
+          await lockedSave(scratch, serve, alice, env, "after the kill"),
+          2,
+        );
+        assertEquals(locks[0], `DELETE ${dead.leaseId}`);
+        assertEquals(locks[1], "POST locks");
+        assertEquals(
+          await Deno.stat(dead.record).catch(() => undefined),
+          undefined,
+        );
+        assertEquals(await servedVersions(serve), [1, 2]);
       });
     });
   },

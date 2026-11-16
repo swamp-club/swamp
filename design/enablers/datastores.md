@@ -4110,11 +4110,24 @@ Ownership, the record index, catalog actions and the cursor are recorded as
 in a full replay, and the path checks run for every change. A key skips writes
 only when its top directory was absent before the catch-up and no other key
 the first pass read is its path prefix or lies under it, so its file can never
-decide another key's file and directory conflict. A recovery, a partition
+decide another key's file and directory conflict, and no other key's directory
+differs from one of its own only by case or composition, since whichever write
+makes a directory spells it. A recovery, a partition
 catch-up and the rest of a catch-up that meets a compacted base after it has
 applied commits replay in full, and so does one resumed after a crash: from
 the bound on, every file is where a full replay leaves it. On the dogfood
 repos a clone wrote 13.7k files instead of 40-48k.
+
+A catch-up from a later cursor nets its tail too (`#planTailNet`, for a tail
+of `TAIL_NET_MIN_COMMITS` to `TAIL_NET_MAX_COMMITS` commits, so a write's own
+catch-up still reads only its new commit): it leaves off disk a write a later write of
+the key in the tail replaces, under the same path-prefix rule, but never skips
+a removal, and only for a key the read model owns a file for or whose path
+holds nothing, since its files are already on disk. A catch-up's page runs up to
+`POOLED_WRITES` (16) inline writes at once when its batch does not sync; any
+other change to the disk that could meet one (a removal, a write at, above or
+below its path, or under a directory it makes) waits for it first, and a page
+with a failed pooled write rolls back whole, as after a crash.
 
 **Fetching chunks for a page (swamp-club#4457).** Before a page applies, the
 read model fetches together every chunk the page's writes will read: puts of
@@ -6578,9 +6591,14 @@ leader election and followers").
   landed (a token of the same name) rather than redo it, so the message says to
   check what the command changed before running it again. The failed run's
   dropped final save had already written its entry in the checkout-local run
-  index, so the command removes the run indexes, as every recovery does once it
-  has run: its replay puts back the committed run records, and an index only
-  repairs itself when its count of runs differs.
+  index, so the command removes the run indexes, as a recovery does once it has
+  run: its replay puts back the committed run records, and an index only
+  repairs itself when its count of runs differs. An interrupted writer's
+  recovery parks them for repair instead (`markRunIndexesForRepair` renames
+  each to `.runs-index.repair.json`): an older swamp finds no index and
+  rebuilds, as before, while this one reads the parked index as damaged, stats
+  every record and reads only those changed, written or removed since, then
+  writes the index back, rather than rebuilding from every record.
 - A command cut off from the storage before it changed anything fails with a
   stable code and exits 75 (swamp-club#3802), when the failure passes the same
   `isNetworkFailure` test (which also counts a connection lost while a response
@@ -8040,7 +8058,18 @@ by the offline rules again once the lock is held, the feed watch holds its own
 catch-up until the lock's applied and then reads only what is still missing,
 and the run is refused if its name now resolves to another definition than
 the locked one. A run that ends up taking no lock catches up first
-(`catchUpDeferred`). Managed-config adoption plans first and catches up only
+(`catchUpDeferred`).
+
+A catch-up under a lock takes on at most `LOCK_CATCH_UP_MAX_COMMITS` (128)
+commits still to project, the copy's and the read model's together
+(`serve_lock.ts`). A copy further behind, or behind serve's compaction,
+releases the lock, catches up outside it (`catchUpBeforeLockAt`, which may go
+offline by the hold's rule) and asks again, up to `LOCK_CATCH_UP_ROUNDS` (3)
+times; after that the rest is caught up under the lock with a warning. The
+feed watch keeps waiting through the rounds. A catch-up under the lock that
+finds serve unreachable goes offline (`goServeOfflineAtLock`) only while an
+explicit lease on the key is live by serve's clock less the skew; otherwise the
+command exits 75 `datastore_v3_serve_unreachable`. Managed-config adoption plans first and catches up only
 when it has something to commit.
 
 **Model locks.** A checkout picks a behavior's next data version from its
@@ -8114,10 +8143,19 @@ below describes them.
   always false: serve's locks are never broken from a checkout. Serve
   unreachable while acquiring is `ServeUnreachableError` (exit 75), before
   the command's action runs.
+- **A dead command's lease.** Each command lease is recorded under the
+  datastore root (`command_leases/`: lease id, key, serve, caller fingerprint
+  and the process identity the writer marker uses) until its release. Before
+  asking for a lock, a command releases each recorded lease on the key, for
+  its caller at its serve, whose process is gone from this host
+  (`judgeRecordedProcess`: exited, a zombie, or its pid reused; a frozen
+  process is alive, and one on another host or boot unknown), then asks as
+  usual: the new lease's fence is above the dead one's, and its TTL is never
+  waited out. Explicit leases are never recorded.
 - **Catch-up under the lock.** Once the lease is taken, every handle the
   process opened on the copy catches up from serve, read model included
-  (`catchUpV3HandlesAt`), before `acquire` resolves; `holdV3Writer`'s
-  catch-up ran before the lock was taken. The work under the lock therefore
+  (`catchUpV3HandlesAt`), before `acquire` resolves, bounded as above;
+  `holdV3Writer`'s catch-up ran before the lock was taken. The work under the lock therefore
   allocates versions after every version another machine wrote.
 - **Held until the commit lands.** `model method run` releases its locks in
   `runCommandInRootUnit` after the root unit has ended, and the root's commit
@@ -8775,9 +8813,20 @@ removing the file while it keeps any.
 
 **The flush** (`offline_flush.ts`). It runs inside the outbox recovery, so
 only under the writer hold: read-only commands never flush. Once serve is
-reachable, entries go in outbox order, one at a time, each built under its
-original txnId, so a flush cut off part-way settles what landed and never
-lands an entry twice.
+reachable, entries go in outbox order, each built under its original txnId,
+so a flush cut off part-way settles what landed and never lands an entry
+twice.
+
+- **In blocks, as if one at a time.** A run of up to `FLUSH_BLOCK_ENTRIES`
+  (16) entries of one partition and lease, none sent before, is built
+  together and sent as one `POST commits` when serve takes batches: the
+  partition's state and history are read once, and each entry is rebased as
+  it would be once the ones before it landed, on that state with the earlier
+  entries applied and their commits in its history, their carry merged and
+  their txnIds counted as the flush's own. Landed entries settle in order. A
+  request that may have run marks every entry it carried sent without an
+  answer and stops the flush; an entry serve refused, or whose rebuild failed,
+  goes alone with every retry below, and the ones after it start a new block.
 
 - **Rebased, always.** Every entry that records a data version goes
   through `rebaseOfflineCommits` (`offline_rebase.ts`), even when its base
@@ -8791,8 +8840,8 @@ lands an entry twice.
   versions (without another writer meanwhile nothing moves; after one, the
   skipped numbers stay empty). Runs, outputs and auto-definitions pass
   through.
-- **Later entries follow earlier ones.** Entries are sent one at a time,
-  so each landed entry hands what it renumbered, the metadata digests it
+- **Later entries follow earlier ones.** Each entry is built on the ones
+  before it, so each landed entry hands what it renumbered, the metadata digests it
   rewrote and the corrected `createdAt` of its versions (the rebase's
   `OfflineRebaseCarry`) to the partition's later entries: a removal or an
   append of a version an earlier offline entry wrote names that version as

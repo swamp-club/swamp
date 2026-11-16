@@ -41,6 +41,7 @@ import { runPartition, runPut } from "./commit_log_test_helpers.ts";
 import type { ObservedBaseEntry } from "../../domain/datastore_v3/observed_base.ts";
 import {
   BASE_LOAD_ATTEMPTS,
+  LockCatchUpBehindError,
   OBSERVED_BASE_STAGING_PREFIX,
   SERVE_PARTITION_PAGE,
   serveAccessCheck,
@@ -1933,5 +1934,55 @@ Deno.test("ServeCatchUp.catchUp: a repair is left to the next catch-up while thi
     ready = true;
     await catchUp.catchUp(signal());
     assertEquals(await copyTxnIds(store), serveTxnIds(leader));
+  });
+});
+
+Deno.test("ServeCatchUp.catchUp: with maxCommits, a copy further behind keeps what it applied and rejects as behind", async () => {
+  await withCheckout(async ({ store, state, serve, catchUp }) => {
+    for (let seq = 1; seq <= 5; seq++) serve.land(await other(seq));
+    const error = await assertRejects(
+      () => catchUp.catchUp(signal(), undefined, 2),
+      LockCatchUpBehindError,
+    );
+    assertEquals(error.pending, 3);
+    // never more than one past the bound is read under it
+    assertEquals(serve.changesReads.map((read) => read.limit), [3]);
+    assertEquals(await copySeqs(store, MODEL), [1, 2, 3]);
+    assert(state.feedCursor() > 0);
+  });
+});
+
+Deno.test("ServeCatchUp.catchUp: with maxCommits, a copy within it catches up as without", async () => {
+  await withCheckout(async ({ store, serve, catchUp }) => {
+    for (let seq = 1; seq <= 2; seq++) serve.land(await other(seq));
+    await catchUp.catchUp(signal(), undefined, 2);
+    assertEquals(await copySeqs(store, MODEL), [1, 2]);
+  });
+});
+
+Deno.test("ServeCatchUp.catchUp: with maxCommits, a page sent with the lock past the bound is applied, then rejects as behind", async () => {
+  await withCheckout(async ({ store, serve, catchUp }) => {
+    for (let seq = 1; seq <= 3; seq++) serve.land(await other(seq));
+    const asked = catchUp.request();
+    const page = await serve.changes(asked.cursor, signal(), 10);
+    const reads = serve.requests.changes;
+    await assertRejects(
+      () => catchUp.catchUp(signal(), { requested: asked, page }, 2),
+      LockCatchUpBehindError,
+    );
+    assertEquals(serve.requests.changes, reads);
+    assertEquals(await copySeqs(store, MODEL), [1, 2, 3]);
+  });
+});
+
+Deno.test("ServeCatchUp.catchUp: with maxCommits, a log compacted past the copy rejects as behind instead of loading the base", async () => {
+  await withCheckout(async ({ state, serve, catchUp }) => {
+    serve.changesFault = new ServeCommitsCompactedError(9, "compacted");
+    const error = await assertRejects(
+      () => catchUp.catchUp(signal(), undefined, 2),
+      LockCatchUpBehindError,
+    );
+    assertEquals(error.pending, undefined);
+    assertEquals(state.feedCursor(), 0);
   });
 });

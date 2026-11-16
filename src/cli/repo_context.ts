@@ -303,10 +303,13 @@ import { decideOfflineWork } from "../domain/datastore_v3/offline_write_policy.t
 import { partitionOf } from "../domain/datastore_v3/partition_key.ts";
 import type { MethodKind } from "../domain/models/model.ts";
 import {
+  catchUpBeforeLockAt,
   catchUpDeferredAt,
   catchUpDeferredTo,
   catchUpV3HandlesAt,
+  endDeferralsAt,
   goServeOfflineAt,
+  goServeOfflineAtLock,
   holdV3Writer,
   serveCatchUpRequestAt,
   v3BucketNamespacedStoreAt,
@@ -1794,17 +1797,25 @@ function serveLockOf(
     lockKey: serveKey,
     displayKey,
     maxWaitMs,
-    onAcquired: async (delivered) => {
+    onAcquired: async (delivered, maxCommits) => {
       await catchUpV3HandlesAt(
         root,
         options?.ignoresStop === true ? { ignoresStop: true } : undefined,
         delivered,
+        maxCommits,
       );
       nameLockHolder(root);
     },
+    catchUpOutside: () =>
+      catchUpBeforeLockAt(
+        root,
+        options?.ignoresStop === true ? { ignoresStop: true } : undefined,
+      ),
     // a lock that is a deferred hold's first contact goes offline as the
     // hold's catch-up would have
     onUnreachable: (error) => goServeOfflineAt(root, error),
+    onCatchUpUnreachable: (error) => goServeOfflineAtLock(root, error),
+    onGiveUp: () => endDeferralsAt(root),
     // serve answers the lock with what the copy lacks, sparing a catch-up
     catchUpRequest: () => serveCatchUpRequestAt(root),
     // registered while held, so the checkout's commits to the partition name

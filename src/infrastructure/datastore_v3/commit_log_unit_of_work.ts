@@ -1539,21 +1539,30 @@ async function appendGroupIn(
   const stored: StoredContent[] = [];
   const chunks = options.chunkStore.beginBatch(options.namespace);
   try {
-    await storeGroup(
-      group,
-      options,
-      storedOps,
-      superseded,
-      chunks,
-      ops,
-      stored,
+    await withSpan(
+      "swamp.datastore.v3.commit.store_content",
+      {},
+      () =>
+        storeGroup(
+          group,
+          options,
+          storedOps,
+          superseded,
+          chunks,
+          ops,
+          stored,
+        ),
     );
     if (ops.length === 0) {
       const gone = isWithdrawn(group);
       if (gone) await discardEntries(options, unitOutbox, [group]);
       return gone;
     }
-    await chunks.commit(options.signal);
+    await withSpan(
+      "swamp.datastore.v3.commit.chunks_durable",
+      {},
+      () => chunks.commit(options.signal),
+    );
   } catch (error) {
     throw storagePhase(error);
   } finally {

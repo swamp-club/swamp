@@ -85,6 +85,7 @@ import { CatalogStore } from "../persistence/catalog_store.ts";
 import { writeDatastoreFormatMarker } from "../persistence/datastore_format_marker_writer.ts";
 import { FileSystemStorage } from "../persistence/fs_datastore_storage.ts";
 import {
+  LockCatchUpBehindError,
   serveAccessCheck,
   ServeCatchUp,
   serveLogCheck,
@@ -606,8 +607,15 @@ export interface V3Datastore {
       readonly mayGoOffline?: boolean;
       /** a first page serve sent with a lock, used while still current */
       readonly delivered?: DeliveredCatchUp;
+      /** more to apply than this rejects with LockCatchUpBehindError */
+      readonly maxCommits?: number;
     },
   ): Promise<void>;
+  /**
+   * LockCatchUpBehindError when the read model has more than `maxCommits` of
+   * the copy's commits still to apply, or the copy compacted past it
+   */
+  assertReadModelWithin?(maxCommits: number): Promise<void>;
   /** where the copy's feed stands, for serve to answer with what it lacks */
   serveCatchUpRequest?(): CatchUpRequest;
   /**
@@ -1068,6 +1076,8 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
         head: (ns, partition) => serveCatchUp.headOf(ns, partition),
         send: (commit, leaseId) =>
           serveSink.upstream.appendUnderLease(commit, leaseId),
+        sendBatch: async (sends) =>
+          await serveSink.upstream.appendBatchUnderLease?.(sends),
         encodeMetadata: (metadata) =>
           new TextEncoder().encode(
             stringifyYaml(
@@ -1243,13 +1253,14 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
     mode: "read" | "write",
     mayGoOffline = false,
     delivered?: DeliveredCatchUp,
+    maxCommits?: number,
   ): Promise<void> => {
     if (serveCatchUp === undefined) return;
     // offline for the rest of the command: the copy is read as it is, and
     // nothing waits on a serve it could not reach
     if (serveOfflineAt(options.datastorePath) !== undefined) return;
     try {
-      await serveCatchUp.catchUp(signal, delivered);
+      await serveCatchUp.catchUp(signal, delivered, maxCommits);
       reachedServe = true;
       // a catch-up that read serve's feed heard serve, whatever its features
       const initiator = serveClient!.initiatorMode() ?? { kind: "not-checked" };
@@ -1511,6 +1522,7 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
           catchUpOptions?: {
             readonly mayGoOffline?: boolean;
             readonly delivered?: DeliveredCatchUp;
+            readonly maxCommits?: number;
           },
         ) {
           // a write under way lands after a stop: it never follows commandStopSignal
@@ -1519,7 +1531,20 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
             "write",
             catchUpOptions?.mayGoOffline === true,
             catchUpOptions?.delivered,
+            catchUpOptions?.maxCommits,
           );
+        },
+        async assertReadModelWithin(maxCommits: number) {
+          const cursor = readModel.cursor();
+          // as changesSince refuses it: the read model must load a base
+          if (cursor < await commitStore.compactionPoint()) {
+            throw new LockCatchUpBehindError(undefined);
+          }
+          const pending = await commitStore.countChangesSince(
+            cursor,
+            maxCommits + 1,
+          );
+          if (pending > maxCommits) throw new LockCatchUpBehindError(pending);
         },
         serveCatchUpRequest: () => serveCatchUp.request(),
         goOfflineOnUnreachable: (error: unknown) => goOfflineOn(error),

@@ -60,6 +60,11 @@ import {
 import { serveUpstreamAt } from "./serve_upstream_registry.ts";
 import { serveClockOf } from "./serve_offline.ts";
 import { describeHolder, outlastsWait } from "./serve_lease_holder.ts";
+import { LockCatchUpBehindError } from "./serve_catch_up.ts";
+import {
+  type CommandLeaseRecords,
+  commandLeaseRecordsAt,
+} from "./serve_command_leases.ts";
 import {
   latchServeUnreachable,
   serveDatastoreClientFor,
@@ -69,6 +74,18 @@ const logger = getSwampLogger(["datastore", "lock", "serve"]);
 
 export const SERVE_LOCK_TTL_MS = 30_000;
 export const SERVE_LOCK_REQUEST_WAIT_MS = 10_000;
+/**
+ * commits a catch-up under a lock may still have to apply; further behind,
+ * the lock is released while the copy catches up
+ */
+export const LOCK_CATCH_UP_MAX_COMMITS = 128;
+let lockCatchUpMaxCommits = LOCK_CATCH_UP_MAX_COMMITS;
+
+export function setLockCatchUpMaxCommitsForTesting(max?: number): void {
+  lockCatchUpMaxCommits = max ?? LOCK_CATCH_UP_MAX_COMMITS;
+}
+/** bounded rounds before the rest is caught up under the lock, with a warning */
+export const LOCK_CATCH_UP_ROUNDS = 3;
 const RETRY_INTERVAL_MS = 100;
 const MAX_BACKOFF_MS = 1_000;
 
@@ -109,9 +126,27 @@ export interface ServeLockOptions {
   /**
    * Runs once the lease is taken, before `acquire` resolves, with the
    * catch-up serve answered with the lease, if any; a failure releases the
-   * lease and rejects `acquire`.
+   * lease and rejects `acquire`. With `maxCommits`, a copy further behind
+   * rejects with LockCatchUpBehindError.
    */
-  readonly onAcquired?: (delivered?: DeliveredCatchUp) => Promise<void>;
+  readonly onAcquired?: (
+    delivered?: DeliveredCatchUp,
+    maxCommits?: number,
+  ) => Promise<void>;
+  /**
+   * where the command leases this checkout holds are recorded, so the next
+   * command releases one its dead predecessor held instead of waiting its TTL
+   */
+  readonly commandLeases?: CommandLeaseRecords;
+  /** the copy's catch-up with the lock released, for a copy too far behind */
+  readonly catchUpOutside?: () => Promise<void>;
+  /**
+   * the catch-up under the lock found serve unreachable, with a live explicit
+   * lease held; true when that put the checkout offline
+   */
+  readonly onCatchUpUnreachable?: (error: ServeUnreachableError) => boolean;
+  /** the acquire failed for good: whatever waited on its catch-up stops waiting */
+  readonly onGiveUp?: () => void;
   /** where the checkout's copy stands, for serve to answer with the lease */
   readonly catchUpRequest?: () => CatchUpRequest | undefined;
   /**
@@ -166,6 +201,8 @@ export class ServeLock implements DistributedLock {
   /** a lapse met while releasing: it fires if the hold outlives the release */
   #lapsedWhileReleasing: string | undefined;
   #localOnly = false;
+  /** the last acquire failed in onAcquired, after serve granted the lease */
+  #settleFailed = false;
   /** the adoption a serve_not_leader refused, while still live */
   #adoptionRefused:
     | { readonly refusal: unknown; readonly offline: ServeUnreachableError }
@@ -206,23 +243,81 @@ export class ServeLock implements DistributedLock {
       return;
     }
     if (await this.#offlineUnrenewed()) return;
-    try {
-      await this.#acquireOnline(signal);
-    } catch (error) {
-      const refused = this.#adoptionRefused;
-      this.#adoptionRefused = undefined;
-      const unreachable = error instanceof ServeUnreachableError
-        ? error
-        : refused !== undefined && refused.refusal === error
-        ? refused.offline
+    const outside = this.#options.catchUpOutside;
+    for (let round = 1;; round++) {
+      const maxCommits = outside !== undefined && round <= LOCK_CATCH_UP_ROUNDS
+        ? lockCatchUpMaxCommits
         : undefined;
-      const goneOffline = unreachable !== undefined &&
-        this.#lease === undefined &&
-        this.#options.onUnreachable?.(unreachable) === true;
-      const now = goneOffline ? this.#options.offline?.() : undefined;
-      if (now === undefined) throw error;
-      await this.#acquireOffline(now);
+      this.#settleFailed = false;
+      try {
+        await this.#acquireOnline(signal, maxCommits);
+        return;
+      } catch (error) {
+        if (
+          !(error instanceof LockCatchUpBehindError) ||
+          maxCommits === undefined || this.#lease !== undefined
+        ) {
+          await this.#afterFailure(error);
+          return;
+        }
+        this.#settleFailed = false;
+        const behind = error.pending === undefined
+          ? "behind serve's compaction"
+          : `${error.pending} or more commits behind`;
+        if (round === LOCK_CATCH_UP_ROUNDS) {
+          logger
+            .warn`This checkout's copy was still ${behind} serve after ${round} catch-ups outside the lock on ${this.#displayKey()}; the rest is caught up under it`;
+        } else {
+          logger
+            .debug`This checkout's copy is ${behind} serve; catching up with the lock on ${this.#displayKey()} released`;
+        }
+        try {
+          await outside!();
+        } catch (outsideError) {
+          await this.#afterFailure(outsideError);
+          return;
+        }
+        const now = this.#options.offline?.();
+        if (now !== undefined) {
+          await this.#acquireOffline(now);
+          return;
+        }
+      }
     }
+  }
+
+  /**
+   * an unreachable serve goes offline by the offline rules; one met by the
+   * catch-up under the lock only with a live explicit lease, the rest exit 75
+   */
+  async #afterFailure(error: unknown): Promise<void> {
+    const refused = this.#adoptionRefused;
+    this.#adoptionRefused = undefined;
+    const atCatchUp = this.#settleFailed;
+    this.#settleFailed = false;
+    const unreachable = error instanceof ServeUnreachableError
+      ? error
+      : refused !== undefined && refused.refusal === error
+      ? refused.offline
+      : undefined;
+    let goneOffline = false;
+    if (unreachable !== undefined && this.#lease === undefined) {
+      goneOffline = atCatchUp
+        ? await this.#explicitLiveFor(unreachable.serveUrl) &&
+          this.#options.onCatchUpUnreachable?.(unreachable) === true
+        : this.#options.onUnreachable?.(unreachable) === true;
+    }
+    const now = goneOffline ? this.#options.offline?.() : undefined;
+    if (now === undefined) {
+      this.#options.onGiveUp?.();
+      throw error;
+    }
+    await this.#acquireOffline(now);
+  }
+
+  async #explicitLiveFor(baseUrl: string): Promise<boolean> {
+    const explicit = await this.#options.adopt?.();
+    return explicit !== undefined && this.#liveFor(explicit, baseUrl);
   }
 
   /**
@@ -256,9 +351,13 @@ export class ServeLock implements DistributedLock {
     return true;
   }
 
-  async #acquireOnline(signal: AbortSignal | undefined): Promise<void> {
-    if (await this.#adoptExplicit()) return;
+  async #acquireOnline(
+    signal: AbortSignal | undefined,
+    maxCommits: number | undefined,
+  ): Promise<void> {
+    if (await this.#adoptExplicit(maxCommits)) return;
     const client = this.#options.client();
+    await this.#releaseDeadPredecessors(client);
     const hold = new AbortController();
     let delivered: DeliveredCatchUp | undefined;
     const started = this.#now();
@@ -336,10 +435,56 @@ export class ServeLock implements DistributedLock {
       if (this.#lease === undefined) client.close?.();
       throw error;
     }
-    await this.#settleAcquired(delivered);
+    await this.#recordCommandLease();
+    await this.#settleAcquired(delivered, maxCommits);
   }
 
-  async #adoptExplicit(): Promise<boolean> {
+  /**
+   * a lease on this key that a command of this checkout held when its process
+   * died is ended at serve, so this one takes the lock with a fence above it
+   */
+  async #releaseDeadPredecessors(client: ServeLockClient): Promise<void> {
+    const leases = this.#options.commandLeases;
+    if (leases === undefined) return;
+    let dead: readonly string[];
+    try {
+      dead = await leases.deadOn(this.#options.lockKey);
+    } catch (error) {
+      logger
+        .debug`Could not read the leases this checkout's commands hold: ${error}`;
+      return;
+    }
+    for (const leaseId of dead) {
+      try {
+        await client.releaseLock(
+          leaseId,
+          AbortSignal.timeout(RELEASE_DEADLINE_MS),
+        );
+        await leases.forget(leaseId);
+        logger
+          .info`Released the lock ${this.#displayKey()} that a command of this checkout held when it stopped`;
+      } catch (error) {
+        // the ask below waits for its TTL, as without the record
+        logger
+          .debug`Could not release the lease ${leaseId} a stopped command of this checkout held: ${error}`;
+      }
+    }
+  }
+
+  async #recordCommandLease(): Promise<void> {
+    const lease = this.#lease;
+    if (lease === undefined || this.#options.commandLeases === undefined) {
+      return;
+    }
+    try {
+      await this.#options.commandLeases.record(lease);
+    } catch (error) {
+      logger
+        .debug`Could not record the lease on ${this.#displayKey()}, which a later command then waits out: ${error}`;
+    }
+  }
+
+  async #adoptExplicit(maxCommits: number | undefined): Promise<boolean> {
     // Read once without the local lock, so a checkout holding no explicit
     // lease never takes it; read again under it below.
     if (
@@ -358,7 +503,7 @@ export class ServeLock implements DistributedLock {
     } finally {
       if (!adopted) await local?.release();
     }
-    if (adopted) await this.#settleAcquired();
+    if (adopted) await this.#settleAcquired(undefined, maxCommits);
     return adopted;
   }
 
@@ -502,10 +647,14 @@ export class ServeLock implements DistributedLock {
     }
   }
 
-  async #settleAcquired(delivered?: DeliveredCatchUp): Promise<void> {
+  async #settleAcquired(
+    delivered?: DeliveredCatchUp,
+    maxCommits?: number,
+  ): Promise<void> {
     try {
-      await this.#options.onAcquired?.(delivered);
+      await this.#options.onAcquired?.(delivered, maxCommits);
     } catch (error) {
+      this.#settleFailed = true;
       await this.release();
       throw error;
     }
@@ -623,6 +772,11 @@ export class ServeLock implements DistributedLock {
       return;
     }
     if (lease === undefined || client === undefined) return;
+    await this.#options.commandLeases?.forget(lease.leaseId).catch(
+      (error) =>
+        logger
+          .debug`Could not remove the record of the lease on ${this.#displayKey()}: ${error}`,
+    );
     const releasedByCommit = serveLeaseReleasedByCommit(lease.leaseId);
     withdrawServeLeaseRelease(lease.leaseId);
     if (releasedByCommit) {
@@ -881,6 +1035,11 @@ export function createServeLock(
   return new ServeLock({
     ...options,
     client: () => lockClientFor(binding),
+    commandLeases: commandLeaseRecordsAt(
+      datastorePath,
+      binding.target.serverUrl,
+      binding.target.token,
+    ),
   });
 }
 

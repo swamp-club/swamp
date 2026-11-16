@@ -75,6 +75,7 @@ import {
   decideFile,
   finalKeyStates,
   type KeyChange,
+  type NetReplayCommit,
   type NetReplayPlan,
   NetReplayPlanner,
 } from "../../domain/datastore_v3/materialisation.ts";
@@ -165,6 +166,26 @@ export const READ_MODEL_LOCK_FILE = "read_model.lock";
 
 /** how long a command's end waits for a catch-up under way */
 const CLOSE_WAIT_MS = 500;
+
+/** inline writes of a catch-up's page that run at once */
+export const POOLED_WRITES = 16;
+
+interface PooledWrite {
+  readonly folded: string;
+  /** directories the write creates, which a later key under them waits for */
+  readonly creates: readonly string[];
+  readonly done: Promise<void>;
+}
+
+/** case-folded and NFC, as case-insensitive or normalising filesystems compare */
+function foldPath(path: string): string {
+  return path.normalize("NFC").toLowerCase();
+}
+
+/** a longer tail is replayed in full rather than held in memory to be netted */
+export const TAIL_NET_MAX_COMMITS = 5_000;
+/** a shorter tail, a write's own catch-up among them, is never read twice to be netted */
+export const TAIL_NET_MIN_COMMITS = 16;
 
 export const AT_RISK_DIR = "at-risk";
 
@@ -264,6 +285,10 @@ export interface SqliteReadModelOptions {
    * recovery does; a net replay by default
    */
   readonly netReplay?: boolean;
+  /** inline writes a catch-up's page runs at once; 1 writes one at a time */
+  readonly pooledWrites?: number;
+  /** called as the page waits for its pooled writes */
+  readonly onPoolDrain?: () => void;
   readonly spellingFolding?: SpellingFolding;
   /**
    * a partition's seqs can have holes where serve left out commits the caller
@@ -472,6 +497,8 @@ export class SqliteReadModel implements ReadModel {
   readonly #syncFile: (path: string) => Promise<void>;
   readonly #atRiskCopyBytes: number;
   readonly #netReplay: boolean;
+  readonly #pooledWrites: number;
+  readonly #onPoolDrain: (() => void) | undefined;
   readonly #follower: boolean;
   readonly #writerInstance: string | undefined;
   readonly #holdsOwnWork: ((commit: Commit) => boolean) | undefined;
@@ -520,6 +547,17 @@ export class SqliteReadModel implements ReadModel {
    * meets first is netted with the tail after it
    */
   #netBase = false;
+  /**
+   * a catch-up's inline writes under way, set only for a batch that does not
+   * sync; anything else on the disk that could meet one waits for it first
+   */
+  #pool: PooledWrite[] | undefined;
+  /** the first pooled write that failed: the page then rolls back whole */
+  #poolFailure: { readonly error: unknown } | undefined;
+  /** the page's chunk prefetch, which a write that reads a chunk waits for */
+  #prefetched: Promise<unknown> | undefined;
+  /** pages the tail net plan read, applied before the store is read again */
+  #readAhead: (readonly CommitChange[])[] = [];
   readonly #paths = new PathCache();
   /** set when this section reset the state, which a targeted recovery cannot build on */
   #resetInSection = false;
@@ -567,6 +605,8 @@ export class SqliteReadModel implements ReadModel {
     this.#atRiskCopyBytes = options.atRiskCopyBytes ??
       DEFAULT_AT_RISK_COPY_BYTES;
     this.#netReplay = options.netReplay ?? true;
+    this.#pooledWrites = options.pooledWrites ?? POOLED_WRITES;
+    this.#onPoolDrain = options.onPoolDrain;
     this.#follower = options.follower === true;
     this.#recordsChanged = options.recordsChanged;
     this.#writerInstance = options.writerInstance;
@@ -1516,17 +1556,20 @@ export class SqliteReadModel implements ReadModel {
     signal: AbortSignal,
     options: { readonly net?: boolean } = {},
   ): Promise<CatchUpResult> {
-    if (
-      options.net === true && this.#netReplay && this.#state.cursor() === 0
-    ) {
-      this.#netBase = true;
-      this.#net = await this.#planNetReplay(signal);
+    if (options.net === true && this.#netReplay) {
+      if (this.#state.cursor() === 0) {
+        this.#netBase = true;
+        this.#net = await this.#planNetReplay(signal);
+      } else {
+        this.#net = await this.#planTailNet(signal);
+      }
     }
     try {
       return await this.#catchUpFeedNow(signal);
     } finally {
       this.#net = undefined;
       this.#netBase = false;
+      this.#readAhead = [];
     }
   }
 
@@ -1565,6 +1608,107 @@ export class SqliteReadModel implements ReadModel {
         return this.#readNetPlan(planner, point, signal, span);
       },
     );
+  }
+
+  /**
+   * a tail over files already on disk skips only writes a later write of the
+   * key replaces, never a removal, and only of a key whose path holds nothing
+   * the read model does not own; undefined when there is nothing to net
+   */
+  #planTailNet(signal: AbortSignal): Promise<NetReplayPlan | undefined> {
+    return withSpan(
+      "swamp.datastore.v3.readmodel.tail_net_plan",
+      {},
+      async (span) => {
+        const tail: NetReplayCommit[] = [];
+        let cursor = this.#state.cursor();
+        const counted = await this.#commitStore.countChangesSince?.(
+          cursor,
+          TAIL_NET_MIN_COMMITS,
+        );
+        if (counted === undefined || counted < TAIL_NET_MIN_COMMITS) {
+          return undefined;
+        }
+        for (;;) {
+          signal.throwIfAborted();
+          let page;
+          try {
+            page = await this.#time(
+              "feed",
+              () => this.#commitStore.changesSince(cursor, this.#pageSize),
+            );
+          } catch (error) {
+            if (error instanceof CommitsCompactedError) return undefined;
+            throw error;
+          }
+          this.#readAhead.push(page);
+          for (const change of page) {
+            tail.push({
+              namespace: change.commit.namespace,
+              partition: change.commit.partition.toString(),
+              position: change.cursor,
+              changes: finalKeyStates(change.commit),
+            });
+            cursor = change.cursor;
+          }
+          if (tail.length > TAIL_NET_MAX_COMMITS) return undefined;
+          if (page.length < this.#pageSize) break;
+        }
+        span.setAttribute("swamp.datastore.v3.commits", tail.length);
+        if (tail.length < 2) return undefined;
+        // a write at or below a recorded mark is kept off disk skipped or not, so no seeding
+        const planner = this.#netPlanner();
+        for (const commit of tail) planner.add(commit);
+        const plan = planner.finish(() => true);
+        // only a key with a write to skip is looked at on disk
+        const judged = new Map<string, boolean>();
+        let skippable = 0;
+        for (const commit of tail) {
+          for (const change of commit.changes) {
+            const key = change.key.toString();
+            if (
+              change.put === null ||
+              !plan.skipsWrite(commit.namespace, key, commit.position)
+            ) {
+              continue;
+            }
+            const id = `${commit.namespace}\0${key}`;
+            let owned = judged.get(id);
+            if (owned === undefined) {
+              owned = this.#state.fileOwnership(commit.namespace, key) !==
+                  undefined || await this.#nothingAt(commit.namespace, key);
+              judged.set(id, owned);
+            }
+            if (owned) skippable++;
+          }
+        }
+        const skips = (namespace: string, key: string, position: number) =>
+          judged.get(`${namespace}\0${key}`) === true &&
+          plan.skipsWrite(namespace, key, position);
+        span.setAttributes({
+          "swamp.datastore.v3.bound": plan.bound,
+          "swamp.datastore.v3.writes_skippable": skippable,
+          "swamp.datastore.v3.writes_kept_for_prefix": plan.keptForPrefix,
+        });
+        if (skippable === 0) return undefined;
+        return {
+          ...plan,
+          skipsWrite: skips,
+          skipsRemoval: () => false,
+        };
+      },
+    );
+  }
+
+  /** a refused or unprojected key counts as occupied: it is never netted */
+  async #nothingAt(namespace: string, key: string): Promise<boolean> {
+    try {
+      await Deno.lstat(join(this.#cacheRoot(namespace), ...key.split("/")));
+      return false;
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) return true;
+      return false;
+    }
   }
 
   #netPlanner(): NetReplayPlanner {
@@ -1645,7 +1789,7 @@ export class SqliteReadModel implements ReadModel {
       signal.throwIfAborted();
       let page;
       try {
-        page = await this.#time(
+        page = this.#readAhead.shift() ?? await this.#time(
           "feed",
           () =>
             this.#commitStore.changesSince(
@@ -2620,14 +2764,30 @@ export class SqliteReadModel implements ReadModel {
     };
     try {
       let applied = 0;
+      // the inline writes before a page's first chunked one go on while its
+      // chunks arrive; the outcome is held so it is never left unhandled
+      const prefetched = this.#prefetchChunks(page, signal).then(
+        () => undefined,
+        (error: unknown) => ({ error }),
+      );
+      this.#prefetched = prefetched;
+      this.#pool = batch.syncs || this.#recovering || this.#pooledWrites < 2
+        ? undefined
+        : [];
+      this.#poolFailure = undefined;
       try {
-        await this.#prefetchChunks(page, signal);
         for (const change of page) {
           signal.throwIfAborted();
           if (await this.#apply(change, advance, signal, batch)) applied++;
           met.push(change.commit);
         }
+        await this.#awaitPrefetched();
+        await this.#drainPool();
       } catch (error) {
+        await prefetched;
+        // with a pooled write lost, which commits' files landed is unknown:
+        // the page rolls back, as after a crash, and is applied again
+        if (await this.#settlePool() !== undefined) throw error;
         try {
           await batch.barrier();
           this.#catalog.commitBatch();
@@ -2657,6 +2817,9 @@ export class SqliteReadModel implements ReadModel {
       await this.#tellRecordsChanged(changes);
       return applied;
     } finally {
+      await this.#settlePool();
+      this.#pool = undefined;
+      this.#prefetched = undefined;
       this.#pageChanges = undefined;
       batch.discard();
       this.#catalog.rollbackBatch();
@@ -2664,6 +2827,38 @@ export class SqliteReadModel implements ReadModel {
       this.#pageInFlight = undefined;
       settled.resolve();
     }
+  }
+
+  async #settlePool(): Promise<{ readonly error: unknown } | undefined> {
+    const pending = this.#pool?.splice(0) ?? [];
+    await Promise.all(pending.map((write) => write.done));
+    return this.#poolFailure;
+  }
+
+  async #drainPool(): Promise<void> {
+    if ((this.#pool?.length ?? 0) > 0) this.#onPoolDrain?.();
+    const failure = await this.#settlePool();
+    if (failure !== undefined) throw failure.error;
+  }
+
+  /** a pooled write at, above or below the path, or making a directory over it */
+  async #drainOverlapping(path: string): Promise<void> {
+    const pool = this.#pool;
+    if (pool === undefined || pool.length === 0) return;
+    const folded = foldPath(path);
+    if (
+      pool.some((write) =>
+        within(folded, write.folded) || within(write.folded, folded) ||
+        write.creates.some((dir) => within(folded, dir))
+      )
+    ) {
+      await this.#drainPool();
+    }
+  }
+
+  async #awaitPrefetched(): Promise<void> {
+    const outcome = await this.#prefetched;
+    if (outcome !== undefined) throw (outcome as { error: unknown }).error;
   }
 
   async #releaseFetched(signal: AbortSignal): Promise<void> {
@@ -3102,6 +3297,7 @@ export class SqliteReadModel implements ReadModel {
     assertContainedPath(key, root);
     const segments = key.split("/");
     const path = join(root, ...segments);
+    await this.#drainOverlapping(path);
     // A file and a directory claiming one path is permanent: retrying would
     // block every later commit. A put is skipped like a refused key, and stays
     // indexed. Under a file, a tombstone has nothing to remove.
@@ -3505,6 +3701,8 @@ export class SqliteReadModel implements ReadModel {
     signal: AbortSignal,
     source: ChangeSource,
   ): Promise<void> {
+    // a removal can take emptied directories with it
+    await this.#drainPool();
     await this.#noteRewriting(key, path);
     await this.#guardExisting(
       namespace,
@@ -3603,23 +3801,43 @@ export class SqliteReadModel implements ReadModel {
     const stats = this.#stats;
     const started = performance.now();
     try {
+      if (!("inline" in content)) await this.#awaitPrefetched();
       const bytes = "inline" in content
         ? decodeBase64(content.inline)
         : this.#chunkStore.read(namespaceOf(namespace), content.blob, signal);
-      await batch.write(
-        path,
-        stats === undefined || bytes instanceof Uint8Array
-          ? bytes
-          : stats.count(bytes),
-        signal,
-        {
-          absentDirectories,
-          written: (info) => {
-            written.info = info;
+      const pool = this.#pool;
+      if (pool !== undefined && bytes instanceof Uint8Array) {
+        if (pool.length >= this.#pooledWrites) {
+          await pool.shift()!.done;
+          if (this.#poolFailure !== undefined) throw this.#poolFailure.error;
+        }
+        this.#stats?.bump("writes_pooled");
+        pool.push({
+          folded: foldPath(path),
+          creates: (absentDirectories ?? []).map(foldPath),
+          done: batch.write(path, bytes, signal, {
+            ...(absentDirectories === undefined ? {} : { absentDirectories }),
+            ...(content.access === undefined ? {} : { access: content.access }),
+          }).catch((error: unknown) => {
+            this.#poolFailure ??= { error };
+          }),
+        });
+      } else {
+        await batch.write(
+          path,
+          stats === undefined || bytes instanceof Uint8Array
+            ? bytes
+            : stats.count(bytes),
+          signal,
+          {
+            absentDirectories,
+            written: (info) => {
+              written.info = info;
+            },
+            ...(content.access === undefined ? {} : { access: content.access }),
           },
-          ...(content.access === undefined ? {} : { access: content.access }),
-        },
-      );
+        );
+      }
     } catch (error) {
       // A failed write leaves the file as it was. One that only meant to
       // fix the access keeps the right bytes rather than lose them.

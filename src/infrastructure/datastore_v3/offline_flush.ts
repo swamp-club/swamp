@@ -77,10 +77,15 @@ import {
   ServeUpstreamUpgradeRequiredError,
 } from "./serve_upstream_errors.ts";
 import { emitServeOfflineNotice } from "./serve_offline.ts";
+import { CommitNotTriedError } from "./commit_log_unit_of_work.ts";
+import { withSpan } from "../tracing/tracer.ts";
 
 const logger = getSwampLogger(["datastore", "v3", "offline"]);
 
 const FLUSH_SEQ_GAP_ATTEMPTS = 8;
+
+/** entries of one partition and lease built together and sent as one request */
+export const FLUSH_BLOCK_ENTRIES = 16;
 
 export interface OfflineFlushPort {
   catchUpPartition(namespace: string, partition: PartitionKey): Promise<void>;
@@ -94,6 +99,16 @@ export interface OfflineFlushPort {
   ): Promise<readonly Commit[]>;
   head(namespace: string, partition: PartitionKey): Promise<number>;
   send(commit: Commit, leaseId: string | undefined): Promise<unknown>;
+  /**
+   * the commits in order as one request, each settled as send would settle it
+   * alone; undefined when serve takes no batches
+   */
+  sendBatch?(
+    sends: readonly {
+      readonly commit: Commit;
+      readonly leaseId: string | undefined;
+    }[],
+  ): Promise<readonly PromiseSettledResult<unknown>[] | undefined>;
   encodeMetadata(metadata: DataMetadata): Uint8Array;
   storeChunks(namespace: string, bytes: Uint8Array): Promise<BlobRef>;
   mark(
@@ -231,37 +246,15 @@ export async function flushOfflineEntries(
     return carry;
   };
   let stopped = false;
-  for (const entry of entries) {
-    options.signal?.throwIfAborted();
+  let batching = port.sendBatch !== undefined;
+  // set when a block leaves its next entry to a send of its own
+  let aloneNext = false;
+  const record = async (
+    entry: OutboxEntry,
+    outcome: EntryOutcome,
+  ): Promise<void> => {
     const partition = entry.commit.partition.toString();
-    if (stopped || held.has(partition)) {
-      waiting++;
-      continue;
-    }
     const key = outboxKeyOf(entry.commit);
-    let outcome: EntryOutcome;
-    try {
-      outcome = await flushEntry(
-        port,
-        entry,
-        options,
-        clock,
-        flushed,
-        await carryOf(entry),
-        reservedBy(entries, entry, flushed),
-      );
-    } catch (error) {
-      if (stopsTheFlush(error)) throw error;
-      if (isEntryOwnError(error)) {
-        outcome = { kind: "rejected", reason: messageOf(error) };
-      } else {
-        // A local failure that may pass (a full disk, a refused
-        // permission): the entry stays queued and is tried again.
-        logger
-          .warn`Could not send a change this checkout saved offline to ${partition}; it stays queued and a later command tries again: ${error}`;
-        outcome = { kind: "stop" };
-      }
-    }
     switch (outcome.kind) {
       case "landed":
         landed++;
@@ -323,6 +316,62 @@ export async function flushOfflineEntries(
         }
         break;
     }
+  };
+  for (let index = 0; index < entries.length;) {
+    options.signal?.throwIfAborted();
+    const entry = entries[index];
+    const partition = entry.commit.partition.toString();
+    if (stopped || held.has(partition)) {
+      waiting++;
+      index++;
+      continue;
+    }
+    const block = batching && !aloneNext ? blockFrom(entries, index) : [];
+    aloneNext = false;
+    if (block.length > 1) {
+      const sent = await flushBlock(
+        port,
+        block,
+        entries,
+        options,
+        clock,
+        flushed,
+        await carryOf(entry),
+      );
+      if (sent.unavailable) batching = false;
+      for (const [offset, outcome] of sent.outcomes.entries()) {
+        await record(block[offset], outcome);
+      }
+      index += sent.outcomes.length;
+      aloneNext = sent.single;
+      continue;
+    }
+    const single = entries[index];
+    let outcome: EntryOutcome;
+    try {
+      outcome = await flushEntry(
+        port,
+        single,
+        options,
+        clock,
+        flushed,
+        await carryOf(single),
+        reservedBy(entries, single, flushed),
+      );
+    } catch (error) {
+      if (stopsTheFlush(error)) throw error;
+      if (isEntryOwnError(error)) {
+        outcome = { kind: "rejected", reason: messageOf(error) };
+      } else {
+        // A local failure that may pass (a full disk, a refused
+        // permission): the entry stays queued and is tried again.
+        logger
+          .warn`Could not send a change this checkout saved offline to ${single.commit.partition.toString()}; it stays queued and a later command tries again: ${error}`;
+        outcome = { kind: "stop" };
+      }
+    }
+    await record(single, outcome);
+    index++;
   }
   const report = {
     landed,
@@ -339,7 +388,238 @@ export async function flushOfflineEntries(
   return report;
 }
 
-async function flushEntry(
+/** an entry sent before without an answer goes alone, for its age check */
+function blockFrom(
+  entries: readonly OutboxEntry[],
+  start: number,
+): OutboxEntry[] {
+  const first = entries[start];
+  const block: OutboxEntry[] = [];
+  for (
+    let index = start;
+    index < entries.length && block.length < FLUSH_BLOCK_ENTRIES;
+    index++
+  ) {
+    const entry = entries[index];
+    if (
+      entry.sentMaybeAt !== undefined ||
+      !entry.commit.partition.equals(first.commit.partition) ||
+      entry.lease?.leaseId !== first.lease?.leaseId
+    ) {
+      break;
+    }
+    block.push(entry);
+  }
+  return block;
+}
+
+interface BlockOutcome {
+  /** may be shorter than the block */
+  readonly outcomes: readonly EntryOutcome[];
+  /** the entry after them goes alone, with every retry a single send has */
+  readonly single: boolean;
+  /** serve takes no batches: the rest of the flush sends alone */
+  readonly unavailable?: boolean;
+}
+
+/** each entry is built on the partition read once, with the earlier ones applied */
+function flushBlock(
+  port: OfflineFlushPort,
+  block: readonly OutboxEntry[],
+  entries: readonly OutboxEntry[],
+  options: { readonly writer: CommitWriter; readonly fence: number },
+  clock: () => Date,
+  flushed: ReadonlySet<string>,
+  carry: OfflineRebaseCarry,
+): Promise<BlockOutcome> {
+  return withSpan(
+    "swamp.datastore.v3.offline_flush.block",
+    { "swamp.datastore.v3.commits": block.length },
+    async (span) => {
+      const outcome = await flushBlockIn(
+        port,
+        block,
+        entries,
+        options,
+        clock,
+        flushed,
+        carry,
+      );
+      span.setAttribute(
+        "swamp.datastore.v3.landed",
+        outcome.outcomes.filter((one) => one.kind === "landed").length,
+      );
+      return outcome;
+    },
+  );
+}
+
+async function flushBlockIn(
+  port: OfflineFlushPort,
+  block: readonly OutboxEntry[],
+  entries: readonly OutboxEntry[],
+  options: { readonly writer: CommitWriter; readonly fence: number },
+  clock: () => Date,
+  flushed: ReadonlySet<string>,
+  carry: OfflineRebaseCarry,
+): Promise<BlockOutcome> {
+  const first = block[0].commit;
+  const namespace = first.namespace;
+  let partition: Partition;
+  let head: number;
+  let history: Commit[];
+  try {
+    await withSpan(
+      "swamp.datastore.v3.offline_flush.catch_up",
+      {},
+      () => port.catchUpPartition(namespace, first.partition),
+    );
+    partition = await port.partitionState(namespace, first.partition);
+    head = await port.head(namespace, first.partition);
+    history = [...await port.partitionCommits(namespace, first.partition)];
+  } catch (error) {
+    if (error instanceof ServeUnreachableError) {
+      return { outcomes: [{ kind: "stop" }], single: false };
+    }
+    // the first entry alone meets the same failure and settles it as ever
+    return { outcomes: [], single: true };
+  }
+  const built: {
+    readonly entry: OutboxEntry;
+    readonly commit: Commit;
+    readonly landed: Extract<EntryOutcome, { kind: "landed" }>;
+  }[] = [];
+  const builtFlushed = new Set(flushed);
+  let builtCarry = carry;
+  for (const entry of block) {
+    try {
+      const lookups = await withSpan(
+        "swamp.datastore.v3.offline_flush.lookups",
+        {},
+        () =>
+          lookupsOf(port, namespace, entry.commit, partition, {
+            baseSeq: entry.base.seq,
+            flushed: builtFlushed,
+            history,
+          }),
+      );
+      const [rebased] = await asEntryOwn(() =>
+        rebaseOfflineCommits([entry.commit], partition, lookups, {
+          encodeMetadata: port.encodeMetadata,
+          restate: true,
+          carry: builtCarry,
+          reserved: reservedBy(entries, entry, builtFlushed),
+          floor: () => 0,
+        })
+      );
+      // a rejected rebuild is the entry's own to settle, alone
+      if (rebased.kind === "rejected") break;
+      const ops = rebased.kind === "unchanged"
+        ? rebased.commit.ops
+        : await opsOf(port, namespace, rebased.changes);
+      const landed: Extract<EntryOutcome, { kind: "landed" }> =
+        rebased.kind === "unchanged"
+          ? {
+            kind: "landed",
+            renumbered: [],
+            latest: [],
+            carry: EMPTY_REBASE_CARRY,
+          }
+          : {
+            kind: "landed",
+            renumbered: rebased.renumbered,
+            latest: rebased.latest,
+            carry: rebased.carry,
+          };
+      const commit = await asEntryOwn(() =>
+        Promise.resolve(
+          buildCommit(entry.commit, ops, head + built.length, options, clock),
+        )
+      );
+      // as the copy would hold it once the entry before it landed
+      partition.appendObserved(commit);
+      history.push(commit);
+      builtFlushed.add(entry.commit.txnId);
+      builtCarry = mergeRebaseCarry(builtCarry, landed.carry);
+      built.push({ entry, commit, landed });
+    } catch {
+      // whatever stopped this build happens again alone, where it is settled
+      break;
+    }
+  }
+  if (built.length === 0) return { outcomes: [], single: true };
+  const results = await port.sendBatch!(
+    built.map(({ entry, commit }) => ({
+      commit,
+      leaseId: entry.lease?.leaseId,
+    })),
+  );
+  if (results === undefined) {
+    return { outcomes: [], single: true, unavailable: true };
+  }
+  const outcomes: EntryOutcome[] = [];
+  let stopping = false;
+  for (const [index, result] of results.entries()) {
+    // a landed entry is recorded even after an earlier one was cut off
+    if (result.status === "fulfilled") {
+      outcomes.push(built[index].landed);
+      continue;
+    }
+    const error = result.reason;
+    // a request cut off may have landed every entry it carried: each is
+    // marked so, and a later flush sends it alone
+    if (error instanceof ServeUnreachableError) {
+      stopping = true;
+      outcomes.push({ kind: "stop", sentMaybe: error.sent === "maybe" });
+      continue;
+    }
+    if (error instanceof ServeCommitMayLandError) {
+      stopping = true;
+      outcomes.push({ kind: "stop", sentMaybe: true });
+      continue;
+    }
+    if (stopping) break;
+    // a refused entry is sent again alone; the ones after it were not tried
+    // with nothing settled the entry goes alone, so the flush always moves on
+    return {
+      outcomes,
+      single: outcomes.length === 0 ||
+        !(error instanceof CommitNotTriedError),
+    };
+  }
+  if (stopping) return { outcomes, single: false };
+  return { outcomes, single: built.length < block.length };
+}
+
+function flushEntry(
+  port: OfflineFlushPort,
+  entry: OutboxEntry,
+  options: { readonly writer: CommitWriter; readonly fence: number },
+  clock: () => Date,
+  flushed: ReadonlySet<string>,
+  carry: OfflineRebaseCarry,
+  reserved: (name: string) => ReadonlySet<number>,
+): Promise<EntryOutcome> {
+  return withSpan(
+    "swamp.datastore.v3.offline_flush.entry",
+    {},
+    async (span) => {
+      const outcome = await flushEntryIn(
+        port,
+        entry,
+        options,
+        clock,
+        flushed,
+        carry,
+        reserved,
+      );
+      span.setAttribute("swamp.datastore.v3.outcome", outcome.kind);
+      return outcome;
+    },
+  );
+}
+
+async function flushEntryIn(
   port: OfflineFlushPort,
   entry: OutboxEntry,
   options: { readonly writer: CommitWriter; readonly fence: number },
@@ -381,13 +661,22 @@ async function flushEntry(
     let seq: number;
     let built: Commit;
     try {
-      await port.catchUpPartition(namespace, commit.partition);
+      await withSpan(
+        "swamp.datastore.v3.offline_flush.catch_up",
+        {},
+        () => port.catchUpPartition(namespace, commit.partition),
+      );
       const partition = await port.partitionState(namespace, commit.partition);
       seq = await port.head(namespace, commit.partition);
-      const lookups = await lookupsOf(port, namespace, commit, partition, {
-        baseSeq: entry.base.seq,
-        flushed,
-      });
+      const lookups = await withSpan(
+        "swamp.datastore.v3.offline_flush.lookups",
+        {},
+        () =>
+          lookupsOf(port, namespace, commit, partition, {
+            baseSeq: entry.base.seq,
+            flushed,
+          }),
+      );
       const [rebased] = await asEntryOwn(() =>
         rebaseOfflineCommits([commit], partition, lookups, {
           encodeMetadata: port.encodeMetadata,
@@ -622,14 +911,21 @@ async function lookupsOf(
   namespace: string,
   entryCommit: Commit,
   state: Partition,
-  seen: { readonly baseSeq: number; readonly flushed: ReadonlySet<string> },
+  seen: {
+    readonly baseSeq: number;
+    readonly flushed: ReadonlySet<string>;
+    /** the partition's commits read once for a block, with its built ones */
+    readonly history?: readonly Commit[];
+  },
 ): Promise<OfflineRebaseLookups> {
   const partition = entryCommit.partition;
   const observations = new Map<string, VersionObservation>();
   const contents = new Map<string, VersionContent>();
   const stored = new Set<string>();
   const own = await port.ownLanded?.(namespace, partition) ?? new Set();
-  for (const commit of await port.partitionCommits(namespace, partition)) {
+  const history = seen.history ??
+    await port.partitionCommits(namespace, partition);
+  for (const commit of history) {
     const ownOffline = seen.flushed.has(commit.txnId) || own.has(commit.txnId);
     for (const op of commit.ops) {
       if (op.kind !== "data-version") continue;
