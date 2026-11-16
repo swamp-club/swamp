@@ -1835,12 +1835,7 @@ export class DataQueryService {
     this.catalogStore.markPopulated(generation);
   }
 
-  /**
-   * re-reads only these types' records into the catalog, for a poller that
-   * pulled or saw changes to them alone; additive like a full backfill, and a
-   * catalog not yet populated is left to its full backfill. Rename forwards are
-   * not recorded, since access records are never renamed.
-   */
+  // rename forwards are not recorded: access records are never renamed
   async refreshTypes(types: readonly ModelType[]): Promise<void> {
     if (!this.backfill || !this.catalogStore.isPopulated()) return;
     const rows: CatalogRow[] = [];

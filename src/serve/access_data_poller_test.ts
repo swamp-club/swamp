@@ -31,7 +31,9 @@ import {
   ACCESS_DATA_SUBDIRS,
   AccessDataPoller,
   createAccessDataPoller,
+  typeScopedCatalogRefresh,
 } from "./access_data_poller.ts";
+import { ModelType } from "../domain/models/model_type.ts";
 import { FilesystemAccessDataChangeSource } from "./filesystem_access_data_change_source.ts";
 import { EventBus } from "../domain/events/event_bus.ts";
 import { createModelUpdated } from "../domain/events/types.ts";
@@ -1287,4 +1289,42 @@ Deno.test("AccessDataPoller.setPollIntervalMs: a running poller re-arms at the r
   } finally {
     await poller.stop();
   }
+});
+
+Deno.test("typeScopedCatalogRefresh: refreshes each type and its @-prefixed orphan directory, and keeps the catalog populated", async () => {
+  const refreshed: string[] = [];
+  let invalidations = 0;
+  const refresh = typeScopedCatalogRefresh(
+    {
+      refreshTypes: (types) => {
+        refreshed.push(...types.map((type) => type.normalized));
+        return Promise.resolve();
+      },
+    },
+    { invalidate: () => invalidations++ },
+    [ModelType.create("swamp/grant"), ModelType.create("swamp/group")],
+  );
+
+  await refresh();
+
+  assertEquals(refreshed, [
+    "swamp/grant",
+    "@swamp/grant",
+    "swamp/group",
+    "@swamp/group",
+  ]);
+  assertEquals(invalidations, 0);
+});
+
+Deno.test("typeScopedCatalogRefresh: a failed refresh invalidates the catalog instead of failing the cycle", async () => {
+  let invalidations = 0;
+  const refresh = typeScopedCatalogRefresh(
+    { refreshTypes: () => Promise.reject(new Error("database is locked")) },
+    { invalidate: () => invalidations++ },
+    [ModelType.create("swamp/grant")],
+  );
+
+  await refresh();
+
+  assertEquals(invalidations, 1);
 });

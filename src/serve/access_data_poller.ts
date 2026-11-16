@@ -44,7 +44,7 @@ import type { DatastoreEngine } from "../domain/datastore/datastore_format.ts";
 import type { DatastorePathResolver } from "../domain/datastore/datastore_path_resolver.ts";
 import { FilesystemAccessDataChangeSource } from "./filesystem_access_data_change_source.ts";
 import type { DataQueryService } from "../domain/data/data_query_service.ts";
-import type { ModelType } from "../domain/models/model_type.ts";
+import { ModelType } from "../domain/models/model_type.ts";
 import type { CatalogStore } from "../infrastructure/persistence/catalog_store.ts";
 
 const logger = getLogger(["swamp", "serve", "access-data-poller"]);
@@ -80,9 +80,14 @@ export function typeScopedCatalogRefresh(
   catalog: Pick<CatalogStore, "invalidate">,
   types: readonly ModelType[],
 ): () => Promise<void> {
+  // the pollers also watch the @-prefixed directories orphaned records live in
+  const watched = types.flatMap((type) => [
+    type,
+    ModelType.create(`@${type.normalized}`),
+  ]);
   return async () => {
     try {
-      await query.refreshTypes(types);
+      await query.refreshTypes(watched);
     } catch (error) {
       logger
         .warn`Refreshing the catalog rows of ${
