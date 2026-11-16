@@ -246,19 +246,37 @@ export function renderQueryResultsMarkdown(
     : renderDefaultTable(data, showNamespace);
 }
 
+function isNested(value: unknown): boolean {
+  return value !== null && typeof value === "object";
+}
+
+function hasNestedCell(
+  projected: Extract<ProjectedData, { shape: "map" | "list" }>,
+): boolean {
+  for (const row of projected.rows) {
+    if (row == null) continue;
+    const cells = Array.isArray(row) ? row : Object.values(row);
+    for (const cell of cells) {
+      if (isNested(cell)) return true;
+    }
+  }
+  return false;
+}
+
 /**
- * scalars are data, not markdown: marked would restyle markdown syntax in the
- * content and overflows its stack on a multi-megabyte line
+ * projected values are data, not markdown: marked would restyle markdown syntax
+ * in the content and overflows its stack on a multi-megabyte line
  */
-function renderScalarsPlain(
-  projected: Extract<ProjectedData, { shape: "scalar" }>,
+function renderValuesPlain(
+  values: readonly unknown[],
   data: DataQueryData,
+  separator = "\n",
 ): string {
-  let out = projected.values.map((v) => {
+  let out = values.map((v) => {
     if (v === null || v === undefined) return "";
     if (typeof v === "object") return JSON.stringify(v, null, 2);
     return String(v);
-  }).join("\n");
+  }).join(separator);
   if (data.limited) {
     out += `\n\nShowing ${data.total} results (limit reached)`;
   }
@@ -266,15 +284,20 @@ function renderScalarsPlain(
 }
 
 /**
- * the default table scales linearly in rows; the map/list branch is bounded by
- * the markdown parser, so it suits only small result sets
+ * the default table scales linearly in rows; the flat map/list table is bounded
+ * by the markdown parser, so it suits only small result sets
  */
 export function renderQueryResultsTerminal(
   data: DataQueryData,
   showNamespace = false,
 ): string {
   if (data.projected?.shape === "scalar") {
-    return renderScalarsPlain(data.projected, data);
+    return renderValuesPlain(data.projected.values, data);
+  }
+  // one nested cell makes the whole result JSON: a table is as wide as its
+  // widest cell, and a half-table listing reads worse than either form
+  if (data.projected && hasNestedCell(data.projected)) {
+    return renderValuesPlain(data.projected.rows, data, "\n\n");
   }
   if (data.projected) {
     return renderMarkdownToTerminal(
