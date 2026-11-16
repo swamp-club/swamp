@@ -612,7 +612,6 @@ export function createDataPlaneFetch(
   return (input, init) => baseFetch(input, { ...init, client });
 }
 
-/** Routes join onto the base path; a base with no path resolves them at the root. */
 function routeUrl(baseUrl: string, route: string): URL {
   const base = new URL(baseUrl);
   if (!base.pathname.endsWith("/")) {
@@ -646,7 +645,6 @@ function mountPrefix(connectedPath: string, declaredPrefix?: string): string {
   return `${prefix}/`;
 }
 
-/** forwardedPrefix is the prefix a trusted proxy declared, as serve reports it. */
 export function dataPlaneUrlFromConnectUrl(
   connectUrl: string,
   forwardedPrefix?: string,

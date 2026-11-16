@@ -415,8 +415,8 @@ proxy, without its dashboard.
    hold stdin. Tests use a fake port. The `Deno.Command` adapter stays thin,
    since tests here do not spawn processes. After 3 and 4.
 6. **The router.** Prefix match, streamed HTTP forward, WebSocket relay, the
-   forwarding and prefix headers, 503 and 404. It takes a lookup from name to port and
-   state, so it needs no supervisor. Done when the integration test in
+   forwarding and prefix headers, 503 and 404. It takes a lookup from name to
+   port and state, so it needs no supervisor. Done when the integration test in
    [Domain model](#domain-model) passes (`src/serve/host/`).
 7. **`swamp serve host`.** It reads `host.yaml`, scans and watches
    `workspaces/`, starts the root and each workspace with the child flags, and

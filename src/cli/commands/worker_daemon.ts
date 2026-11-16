@@ -280,7 +280,7 @@ export const workerDaemonEnableCommand = new Command()
   )
   .option(
     "--data-plane-url <url:string>",
-    "Override the data-plane base URL",
+    "Override the data-plane base URL, path included",
   )
   .option(
     "--max-dispatches <n:number>",

@@ -2711,7 +2711,7 @@ const daemonEnableCommand = new Command()
   )
   .option(
     "--trust-proxy",
-    "Trust X-Forwarded-For header for client IP in token auth rate limiting",
+    "Trust X-Forwarded-For header for client IP in token auth rate limiting, and the path prefix the proxy declares for workers",
   )
   .option(
     "--verify-on-enroll",
@@ -3657,7 +3657,7 @@ export const serveCommand = new Command()
   )
   .option(
     "--trust-proxy",
-    "Trust X-Forwarded-For header for client IP in token auth rate limiting (enable when behind a reverse proxy)",
+    "Trust X-Forwarded-For header for client IP in token auth rate limiting, and the path prefix the proxy declares for workers (enable when behind a reverse proxy)",
   )
   .option(
     "--ws-idle-timeout <duration:string>",

@@ -357,24 +357,19 @@ Deno.test("dataPlaneUrlFromConnectUrl: maps ws→http and wss→https", () => {
 
 Deno.test("dataPlaneUrlFromConnectUrl: keeps a declared prefix that starts the connect path", () => {
   const cases: Array<[string, string | undefined, string]> = [
-    // no prefix declared: the root, whatever the connect path
     ["wss://h/w/x", undefined, "https://h/"],
     ["wss://h/ws", undefined, "https://h/"],
     ["ws://h:9090", undefined, "http://h:9090/"],
-    // a declared prefix that starts the connect path
     ["wss://h/w/x", "/w/x", "https://h/w/x/"],
     ["wss://h/w/x/", "/w/x", "https://h/w/x/"],
     ["wss://h/w/x", "/w/x/", "https://h/w/x/"],
     ["wss://h/w/x/ws", "/w/x", "https://h/w/x/"],
-    // a prefix of slash alone, or empty: the root
     ["wss://h/w/x", "/", "https://h/"],
     ["wss://h/w/x", "", "https://h/"],
-    // a prefix that does not start the connect path
     ["wss://h/ws", "/w/x", "https://h/"],
     ["wss://h/w/xy", "/w/x", "https://h/"],
     ["wss://h/w", "/w/x", "https://h/"],
     ["wss://h", "/w/x", "https://h/"],
-    // a prefix that is not absolute
     ["wss://h/w/x", "w/x", "https://h/"],
   ];
   for (const [connectUrl, forwardedPrefix, expected] of cases) {
