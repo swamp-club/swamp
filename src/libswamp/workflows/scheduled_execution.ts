@@ -2075,7 +2075,7 @@ export class ScheduledExecutionService {
       } else if (parked) {
         // the next serve process continues it, holding off the next fire
         logger.info(
-          "Scheduled run parked for the restart for workflow {name} (run: {runId})",
+          "Scheduled run for workflow {name} parked for a serve restart; its next fire waits until it is continued (run: {runId})",
           { name: workflowName, runId },
         );
       } else if (suspended) {

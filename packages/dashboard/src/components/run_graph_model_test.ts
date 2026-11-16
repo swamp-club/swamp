@@ -19,6 +19,7 @@
 
 import { assertEquals } from "@std/assert";
 import {
+  awaitingContinuation,
   buildRunGraph,
   describeCondition,
   displayStatus,
@@ -348,4 +349,16 @@ Deno.test("buildRunGraph: a parked run's unstarted work shows pending, not stopp
     "cancelled",
     "cancelled",
   ]);
+});
+
+Deno.test("awaitingContinuation: a parked run serve refused is not shown as about to continue", () => {
+  assertEquals(awaitingContinuation({ parked: true }), true);
+  assertEquals(
+    awaitingContinuation({
+      parked: true,
+      autoContinuation: { refused: { reason: "opted_out" } },
+    }),
+    false,
+  );
+  assertEquals(awaitingContinuation({}), false);
 });

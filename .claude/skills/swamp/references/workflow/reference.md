@@ -1228,9 +1228,10 @@ separate from `autoResume`). `swamp workflow history get` names the reason.
 A planned restart (SIGTERM, a rolling one included) parks runs instead: serve
 starts no new step, lets running ones finish within `--shutdown-drain-timeout`,
 and records the run `interrupted` with reason `server_restart` and no `unknown`
-step (history shows it as parked). The next serve process continues it under the
-same id once the old one has exited, with nothing re-run, unless the workflow
-sets `autoContinue: false`; a client streaming it with `--server` keeps
+step. History shows it as parked; in `--json` the status stays `interrupted` and
+`parked: true` is a flag beside it. The next serve process continues it under
+the same id once the old one has exited, with nothing re-run, unless the
+workflow sets `autoContinue: false`; a client streaming it with `--server` keeps
 streaming. Only a step still running when the drain timeout ends is cut off as
 above.
 

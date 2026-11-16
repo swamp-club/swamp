@@ -144,6 +144,16 @@ export interface RunGraph {
 
 const FINISHED_RUN = new Set(["cancelled", "interrupted", "failed"]);
 
+/** parked and not refused: serve is still to continue it */
+export function awaitingContinuation(
+  run: {
+    parked?: boolean;
+    autoContinuation?: { refused?: unknown };
+  },
+): boolean {
+  return run.parked === true && run.autoContinuation?.refused === undefined;
+}
+
 /** a parked run's work is still to come, so it is not shown stopped */
 function runStatusOf(run: Pick<RunLike, "status" | "parked">): string {
   return run.parked === true ? "parked" : run.status;

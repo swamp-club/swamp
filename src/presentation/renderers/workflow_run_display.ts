@@ -170,9 +170,12 @@ function renderLogWorkflowRun(data: WorkflowRunView): void {
   }
 
   if (data.parked === true) {
+    // a refusal below names why serve will not continue it
     writeOutput(
       yellow(
-        "Parked for a serve restart: continued automatically under the same run id",
+        data.autoContinuation?.refused !== undefined
+          ? "Parked for a serve restart"
+          : "Parked for a serve restart: the next serve process continues it under the same run id unless the workflow sets autoContinue: false",
       ),
     );
   } else if (data.interruptReason !== undefined) {
