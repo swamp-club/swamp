@@ -29,6 +29,11 @@ import { errorPaths, markErrorPaths, UserError } from "../domain/errors.ts";
 import { executeWorkflowWithLocks } from "./deps.ts";
 import type { RunWriteFence } from "../domain/workflows/run_write_fence.ts";
 import {
+  RunInterruption,
+  stopGraceFor,
+} from "../domain/workflows/run_interruption.ts";
+import { cancelCause } from "../domain/models/cancel_cause.ts";
+import {
   VaultAccessDeniedError,
   withoutVaultAccess,
 } from "../domain/vaults/run_vault_access.ts";
@@ -710,6 +715,8 @@ export interface AbortedWebhookRun {
   readonly workflowId?: string;
   readonly workflowName: string;
   readonly startedAt: Date;
+  /** a user or a cancel request cancelled it first and its cleanup outlasted the wait */
+  readonly cancelledBeforeShutdown?: { readonly reason?: string };
 }
 
 interface RunningWebhookRun {
@@ -1264,17 +1271,61 @@ export class WebhookService {
     }
   }
 
-  async stop(): Promise<readonly AbortedWebhookRun[]> {
+  /**
+   * waits at most stopGraceFor's bound when abortGraceMs is given, leaving the
+   * rest in flight (see hasUnsettledRuns); otherwise waits for every run
+   */
+  async stop(
+    abortGraceMs?: number,
+    cleanupGraceMs?: number,
+  ): Promise<readonly AbortedWebhookRun[]> {
     this.stopped = true;
     for (const entry of this.runQueue) entry.queueObservation?.end("cancelled");
     this.runQueue.length = 0;
+    const waitMs = abortGraceMs === undefined ? undefined : stopGraceFor(
+      this.running.values(),
+      abortGraceMs,
+      cleanupGraceMs,
+    );
     for (const entry of this.running.values()) this.abortForStop(entry);
-    while (this.inFlight.size > 0) {
-      await Promise.allSettled([...this.inFlight.keys()]);
+    if (waitMs === undefined) {
+      while (this.inFlight.size > 0) {
+        await Promise.allSettled([...this.inFlight.keys()]);
+      }
+    } else {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          Promise.allSettled([...this.inFlight.keys()]),
+          new Promise<void>((resolve) => {
+            timer = setTimeout(resolve, waitMs);
+          }),
+        ]);
+      } finally {
+        clearTimeout(timer);
+      }
     }
     await this.deps.cancelIntents?.settled();
-    // read once the runs settled: a run aborted before its started event has its id by now
+    // read after the wait: a run aborted before its started event has its id by
+    // then, unless the grace ran out first; such a run has no record to interrupt
     const aborted: AbortedWebhookRun[] = [];
+    // still running after the wait, so its record is still running too
+    for (const entry of this.running.values()) {
+      if (this.abortedAtStop.has(entry)) continue;
+      if (!entry.controller.signal.aborted) continue;
+      if (entry.runId === "" || !entry.startedAt || !entry.workflow) continue;
+      aborted.push({
+        runId: entry.runId,
+        ...(entry.workflow.id !== undefined
+          ? { workflowId: entry.workflow.id }
+          : {}),
+        workflowName: entry.workflow.name,
+        startedAt: entry.startedAt,
+        cancelledBeforeShutdown: {
+          reason: cancelCause(entry.controller.signal),
+        },
+      });
+    }
     for (const entry of this.abortedAtStop) {
       if (entry.runId === "" || !entry.startedAt || !entry.workflow) continue;
       aborted.push({
@@ -1294,7 +1345,12 @@ export class WebhookService {
     // a run cancelled first, by a user or a webhook cancel request, stays cancelled
     if (entry.controller.signal.aborted) return;
     this.abortedAtStop.add(entry);
-    entry.controller.abort(new Error("server shutdown"));
+    entry.controller.abort(new RunInterruption("server_shutdown"));
+  }
+
+  /** a run is in flight: after stop(), one its wait did not outlast */
+  hasUnsettledRuns(): boolean {
+    return this.inFlight.size > 0;
   }
 
   workflowOfRun(runId: string): { id?: string; name: string } | undefined {

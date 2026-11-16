@@ -34,6 +34,8 @@ import {
 import { pushNamespaceCounted } from "../infrastructure/persistence/push_paths.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { ActiveRun } from "./active_run_registry.ts";
+import type { CancelledBeforeShutdown } from "./shutdown_drain.ts";
+import { cancelAndSettle } from "../domain/workflows/abort_settlement.ts";
 import { type SyncGate, withSharedSyncGate } from "./sync_gate.ts";
 import { recordUnpushedInterrupts } from "./unpushed_interrupts.ts";
 import type { ServeRunWriteFence } from "./run_write_fence.ts";
@@ -74,6 +76,8 @@ export interface ShutdownInterruptDeps {
   readonly syncGate?: SyncGate;
   readonly pushTimeoutMs?: number;
   readonly onInterrupted?: (runId: string) => void;
+  /** a run a user cancelled first whose cleanup shutdown cut off, saved cancelled */
+  readonly onCancelled?: (runId: string) => void;
   /**
    * The run tracker whose rows the aborted runs settle as interrupted. A
    * row left running makes the next boot's reaper skip the run.
@@ -87,6 +91,8 @@ export interface ShutdownInterruptDeps {
 
 export interface ShutdownInterruptResult {
   readonly interrupted: readonly string[];
+  /** runs a user cancelled first, left running by the cut-off, now saved cancelled */
+  readonly cancelled?: readonly string[];
   readonly pushError?: string;
   /**
    * runs whose interrupted record may not have reached the datastore: all when
@@ -117,18 +123,32 @@ export async function interruptShutdownRuns(
   remaining: ReadonlyArray<
     & Pick<ActiveRun, "runId" | "kind" | "startedAt">
     & Partial<Pick<ActiveRun, "resourceId" | "controller">>
+    & { readonly cancelledBeforeShutdown?: CancelledBeforeShutdown }
   >,
   deps: ShutdownInterruptDeps,
 ): Promise<ShutdownInterruptResult> {
   const interrupted: string[] = [];
+  const cancelled: string[] = [];
   const workflowRuns = remaining.filter((r) =>
     r.kind === "workflow-run" || r.kind === "workflow-resume"
   );
   if (workflowRuns.length === 0) return { interrupted };
   const { repoContext, syncService } = deps;
   await deps.runWriteFence?.close(workflowRuns.map((r) => r.runId));
-  const settleTrackerRow = (runId: string, recordInterrupted = false) => {
+  const settleTrackerRow = (
+    run: (typeof workflowRuns)[number],
+    recordInterrupted = false,
+  ) => {
+    const { runId } = run;
     try {
+      if (run.cancelledBeforeShutdown) {
+        deps.runTracker?.complete(
+          runId,
+          "cancelled",
+          run.cancelledBeforeShutdown.reason,
+        );
+        return;
+      }
       deps.runTracker?.complete(runId, "interrupted", "server_shutdown");
       // a run that settled as cancelled before its record was interrupted
       if (recordInterrupted) {
@@ -156,7 +176,11 @@ export async function interruptShutdownRuns(
     logger.warn("Failed to load workflow runs for interrupt: {error}", {
       error: err instanceof Error ? err.message : String(err),
     });
-    for (const run of workflowRuns) settleTrackerRow(run.runId);
+    // a cancelled run's record was not loaded, so it is still running: its row
+    // is left for the boot reaper rather than read cancelled beside it
+    for (const run of workflowRuns) {
+      if (!run.cancelledBeforeShutdown) settleTrackerRow(run);
+    }
     return await reported(
       { interrupted },
       workflowRuns.map((r) => r.runId),
@@ -178,7 +202,7 @@ export async function interruptShutdownRuns(
       // together; a push that misses it is left to finish or fail on its own.
       flush: syncService
         ? async () => {
-          if (interrupted.length === 0) return;
+          if (interrupted.length === 0 && cancelled.length === 0) return;
           const controller = new AbortController();
           const deadline = new Promise<never>((_, reject) => {
             controller.signal.addEventListener(
@@ -229,6 +253,26 @@ export async function interruptShutdownRuns(
       for (const run of workflowRuns) {
         try {
           const match = loaded.find((r) => r.run.id === run.runId);
+          // the user cancelled it, so it is never interrupted: one its cleanup
+          // finished stays as it is, one the cut-off left running is settled
+          if (run.cancelledBeforeShutdown) {
+            if (match?.run.status === "running") {
+              cancelAndSettle(
+                match.run,
+                undefined,
+                run.cancelledBeforeShutdown.reason,
+              );
+              await repoContext.workflowRunRepo.save(
+                match.workflowId,
+                match.run,
+              );
+              deps.runWriteFence?.takeOver(run.runId);
+              cancelled.push(run.runId);
+              settleTrackerRow(run);
+              deps.onCancelled?.(run.runId);
+            }
+            continue;
+          }
           if (
             match &&
             (match.run.status === "running" ||
@@ -246,7 +290,7 @@ export async function interruptShutdownRuns(
             // withdrawn rather than landing over the interrupt
             deps.runWriteFence?.takeOver(run.runId);
             interrupted.push(run.runId);
-            settleTrackerRow(run.runId, true);
+            settleTrackerRow(run, true);
             deps.onInterrupted?.(run.runId);
           }
         } catch (err) {
@@ -255,7 +299,7 @@ export async function interruptShutdownRuns(
             error: err instanceof Error ? err.message : String(err),
           });
           notSaved.push(run.runId);
-          settleTrackerRow(run.runId);
+          settleTrackerRow(run);
         }
       }
     },
@@ -276,11 +320,15 @@ export async function interruptShutdownRuns(
     }
   }
   return await reported(
-    pushError === undefined ? { interrupted } : { interrupted, pushError },
+    {
+      interrupted,
+      ...(cancelled.length > 0 ? { cancelled } : {}),
+      ...(pushError === undefined ? {} : { pushError }),
+    },
     pushError === undefined ? notSaved : commitsLocally
       // Every aborted run: a commit that missed may not have saved them all.
       ? workflowRuns.map((r) => r.runId)
-      : [...interrupted, ...notSaved],
+      : [...interrupted, ...cancelled, ...notSaved],
     workflowRuns,
     deps,
     loaded,

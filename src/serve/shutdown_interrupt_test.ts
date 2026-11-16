@@ -843,3 +843,93 @@ Deno.test("interruptShutdownRuns: only a run the shutdown itself cut off is stam
   assertEquals(byUser.continuableSince, undefined);
   assertEquals(unsaved.continuableSince, undefined);
 });
+
+Deno.test("interruptShutdownRuns: a run a user cancelled first that the cut-off left running is saved cancelled, never interrupted", async () => {
+  const wf = workflow();
+  const run = runningRun(wf);
+  const { events, repoContext } = harness([run], wf.id);
+  const rows: string[] = [];
+
+  const result = await interruptShutdownRuns([{
+    ...active(run),
+    cancelledBeforeShutdown: { reason: "cancelled by user:alice" },
+  }], {
+    repoContext,
+    runTracker: {
+      complete: (runId: string, status: ActiveRunStatus, reason?: string) => {
+        rows.push(`${runId} ${status} ${reason}`);
+      },
+      interruptCancelled: () => {
+        rows.push("interruptCancelled");
+      },
+    },
+  });
+
+  assertEquals(result, { interrupted: [], cancelled: [run.id] });
+  assertEquals(events, ["load", `save ${run.id} cancelled`]);
+  assertEquals(run.tags["cancel_reason"], "cancelled by user:alice");
+  assertEquals(rows, [`${run.id} cancelled cancelled by user:alice`]);
+});
+
+Deno.test("interruptShutdownRuns: a run a user cancelled first whose cleanup finished stays cancelled and is not saved again", async () => {
+  const wf = workflow();
+  const run = runningRun(wf);
+  run.endAsCancelled("cancelled by user");
+  const { events, repoContext } = harness([run], wf.id);
+
+  const result = await interruptShutdownRuns([{
+    ...active(run),
+    cancelledBeforeShutdown: {},
+  }], { repoContext });
+
+  assertEquals(result, { interrupted: [] });
+  assertEquals(events, ["load"]);
+  assertEquals(run.status, "cancelled");
+});
+
+Deno.test("interruptShutdownRuns: a failed push reports a run the cut-off saved cancelled as unpushed, beside the interrupted ones", async () => {
+  const wf = workflow();
+  const interruptedRun = runningRun(wf);
+  const cancelledRun = runningRun(wf);
+  const { repoContext } = harness([interruptedRun, cancelledRun], wf.id);
+
+  const result = await interruptShutdownRuns([
+    active(interruptedRun),
+    { ...active(cancelledRun), cancelledBeforeShutdown: {} },
+  ], {
+    repoContext,
+    syncService: {
+      pushChanged: () => Promise.reject(new Error("S3 unreachable")),
+    },
+  });
+
+  assertEquals(result, {
+    interrupted: [interruptedRun.id],
+    cancelled: [cancelledRun.id],
+    pushError: "S3 unreachable",
+    unpushed: [interruptedRun.id, cancelledRun.id],
+  });
+});
+
+Deno.test("interruptShutdownRuns: a failed load leaves a cancelled run's row for the boot reaper, since its record is still running", async () => {
+  const wf = workflow();
+  const run = runningRun(wf);
+  const { repoContext } = harness([run], wf.id);
+  const runTracker = tracker();
+
+  await interruptShutdownRuns(
+    [{ ...active(run), cancelledBeforeShutdown: {} }],
+    {
+      repoContext: {
+        ...repoContext,
+        workflowRunRepo: {
+          ...repoContext.workflowRunRepo,
+          findGlobalByStatus: () => Promise.reject(new Error("unreadable")),
+        },
+      },
+      runTracker,
+    },
+  );
+
+  assertEquals(runTracker.completed, []);
+});

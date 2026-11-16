@@ -20,6 +20,7 @@
 import { CancelIntentRecorder } from "../../domain/workflows/continuation_claim.ts";
 import { assert, assertEquals, assertGreater } from "@std/assert";
 import { type Span, trace } from "@opentelemetry/api";
+import { isInterruption } from "../../domain/workflows/run_interruption.ts";
 import {
   findSpan,
   isChildOf,
@@ -445,6 +446,36 @@ Deno.test("ScheduledExecutionService.stop: reports the run it aborted, with the 
     [{ runId: "run-1", workflowName: "wf" }],
   );
   assertEquals(aborted[0].startedAt instanceof Date, true);
+});
+
+Deno.test("ScheduledExecutionService.stop: with an abort grace, a run that ignores the abort is reported as an interruption and left in flight", async () => {
+  const gate = Promise.withResolvers<void>();
+  const signals: AbortSignal[] = [];
+  const service = new ScheduledExecutionService({
+    workflowRepo: createMockWorkflowRepo([]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: (input, signal, onEvent) => {
+      signals.push(signal);
+      onEvent({
+        kind: "started",
+        runId: "run-1",
+        workflowName: input.workflowIdOrName,
+        jobs: [],
+      });
+      return gate.promise;
+    },
+  });
+  await service.start();
+  service.enqueueForReplay({ pendingRunId: "p-1", workflowIdOrName: "wf" });
+  await waitFor(() => signals.length === 1, "run started");
+
+  const aborted = await service.stop(10);
+
+  assertEquals(isInterruption(signals[0]), true);
+  assertEquals(aborted.map(({ runId }) => runId), ["run-1"]);
+  assertEquals(service.hasUnsettledRuns(), true);
+  gate.resolve();
+  await waitFor(() => !service.hasUnsettledRuns(), "the run settles");
 });
 
 Deno.test("ScheduledExecutionService.stop: leaves out a run a user cancelled first, so it stays cancelled", async () => {

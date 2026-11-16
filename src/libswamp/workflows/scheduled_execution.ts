@@ -24,6 +24,11 @@ import {
 import { withoutVaultAccess } from "../../domain/vaults/run_vault_access.ts";
 import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
 import {
+  RunInterruption,
+  stopGraceFor,
+} from "../../domain/workflows/run_interruption.ts";
+import { cancelCause } from "../../domain/models/cancel_cause.ts";
+import {
   isSchedulePauseActiveAt,
   type SchedulePause,
   type SchedulePauseRepository,
@@ -384,6 +389,8 @@ export interface AbortedScheduledRun {
   readonly runId: string;
   readonly workflowName: string;
   readonly startedAt: Date;
+  /** a user cancelled it first and its cleanup outlasted the wait */
+  readonly cancelledBeforeShutdown?: { readonly reason?: string };
 }
 
 interface RunningScheduledRun {
@@ -556,7 +563,14 @@ export class ScheduledExecutionService {
     ]);
   }
 
-  async stop(): Promise<readonly AbortedScheduledRun[]> {
+  /**
+   * waits at most stopGraceFor's bound when abortGraceMs is given, leaving the
+   * rest in flight (see hasUnsettledRuns); otherwise waits for every run
+   */
+  async stop(
+    abortGraceMs?: number,
+    cleanupGraceMs?: number,
+  ): Promise<readonly AbortedScheduledRun[]> {
     this.stopped = true;
     this.abortBackgroundReads();
     await this.watcher.stop();
@@ -564,10 +578,19 @@ export class ScheduledExecutionService {
 
     this.runQueue.length = 0;
 
+    const waitMs = abortGraceMs === undefined ? undefined : stopGraceFor(
+      this.running.values(),
+      abortGraceMs,
+      cleanupGraceMs,
+    );
     for (const [workflowId, entry] of this.running) {
       logger.info(
-        "Aborting in-flight scheduled run for workflow {workflowId}",
-        { workflowId },
+        "Aborting in-flight scheduled run for workflow {name}",
+        {
+          workflowId,
+          name: entry.workflowName ?? this.workflowNames.get(workflowId) ??
+            workflowId,
+        },
       );
       this.abortForStop(workflowId, entry);
     }
@@ -576,8 +599,12 @@ export class ScheduledExecutionService {
       Promise.allSettled([this.catchUpRun]),
       FIRE_SETTLE_TIMEOUT_MS,
     );
-    while (this.inFlight.size > 0) {
-      await Promise.allSettled([...this.inFlight]);
+    if (waitMs === undefined) {
+      while (this.inFlight.size > 0) {
+        await Promise.allSettled([...this.inFlight]);
+      }
+    } else {
+      await settleWithin(Promise.allSettled([...this.inFlight]), waitMs);
     }
     await settleWithin(
       Promise.allSettled([
@@ -590,13 +617,30 @@ export class ScheduledExecutionService {
     );
 
     await this.deps.cancelIntents?.settled();
+    // still running after the wait, so its record is still running too
+    const cancelledLeft: AbortedScheduledRun[] = [];
+    for (const [workflowId, entry] of this.running) {
+      if (this.abortedAtStop.has(workflowId)) continue;
+      if (!entry.controller.signal.aborted) continue;
+      if (entry.runId === "" || !entry.startedAt) continue;
+      cancelledLeft.push({
+        runId: entry.runId,
+        workflowName: entry.workflowName ?? workflowId,
+        startedAt: entry.startedAt,
+        cancelledBeforeShutdown: {
+          reason: cancelCause(entry.controller.signal),
+        },
+      });
+    }
+
     this.running.clear();
     this.workflowNames.clear();
     this.eventHandler = null;
 
     logger.info("Scheduled execution service stopped");
-    // read once the runs settled: a run aborted before its started event has its id by now
-    const aborted: AbortedScheduledRun[] = [];
+    // read after the wait: a run aborted before its started event has its id by
+    // then, unless the grace ran out first; such a run has no record to interrupt
+    const aborted: AbortedScheduledRun[] = [...cancelledLeft];
     for (const [workflowId, entry] of this.abortedAtStop) {
       if (entry.runId === "" || !entry.startedAt) continue;
       aborted.push({
@@ -613,7 +657,12 @@ export class ScheduledExecutionService {
     // a run a user cancelled first stays cancelled
     if (entry.controller.signal.aborted) return;
     this.abortedAtStop.set(workflowId, entry);
-    entry.controller.abort(new Error("server shutdown"));
+    entry.controller.abort(new RunInterruption("server_shutdown"));
+  }
+
+  /** a run is in flight: after stop(), one its wait did not outlast */
+  hasUnsettledRuns(): boolean {
+    return this.inFlight.size > 0;
   }
 
   private abortBackgroundReads(): void {

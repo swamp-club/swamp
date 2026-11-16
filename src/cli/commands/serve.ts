@@ -510,6 +510,7 @@ import { setProcessGroupIsolation } from "../../infrastructure/process/process_g
 import { setProcessArgumentParsePolicy } from "../../domain/untrusted_parse.ts";
 import { warnIfRunningAsInit } from "../../infrastructure/process/init_process.ts";
 import {
+  cleanupGraceWithin,
   runShutdownDrain,
   SHUTDOWN_ABORT_GRACE_MS,
 } from "../../serve/shutdown_drain.ts";
@@ -10022,15 +10023,27 @@ export const serveCommand = new Command()
         activeRunRegistry: activeRunRegistry ?? null,
         drainTimeoutMs: shutdownDrainTimeoutMs,
         abortGraceMs: SHUTDOWN_ABORT_GRACE_MS,
+        // the abort grace and the interrupted run push come after this wait
+        cleanupGraceMs: () =>
+          cleanupGraceWithin(
+            shutdownDeadline.left(),
+            SHUTDOWN_ABORT_GRACE_MS + SHUTDOWN_PUSH_TIMEOUT_MS,
+          ),
         onAborting: (undrained) => {
           if (isJson) {
             console.log(JSON.stringify({ status: "aborting", undrained }));
           }
         },
       });
-      // a run still registered past the abort grace may still be writing, so on
-      // v3 the next command must recover what it leaves uncommitted
-      if ((activeRunRegistry?.size ?? 0) > 0) keepV3WriterMarkers();
+      // a run still going past the abort grace may still be writing, so on v3
+      // the next command must recover what it leaves uncommitted
+      if (
+        (activeRunRegistry?.size ?? 0) > 0 ||
+        (webhookService?.hasUnsettledRuns() ?? false) ||
+        scheduler.hasUnsettledRuns()
+      ) {
+        keepV3WriterMarkers();
+      }
       // closing the listener ends every open WebSocket, so it waits for the
       // drain, and for the grace load balancers need to see /ready turn 503;
       // the stages below run meanwhile, so the grace never lengthens shutdown
@@ -10056,6 +10069,13 @@ export const serveCommand = new Command()
               console.log(JSON.stringify({ status: "interrupted", runId }));
             }
             logger.info`Interrupted workflow run ${runId} (server shutdown)`;
+          },
+          onCancelled: (runId) => {
+            if (isJson) {
+              console.log(JSON.stringify({ status: "cancelled", runId }));
+            }
+            logger
+              .info`Saved cancelled workflow run ${runId}: shutdown cut off its cleanup`;
           },
         });
         unpushedRunIds = interruptResult.unpushed ?? [];

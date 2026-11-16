@@ -130,6 +130,7 @@ import {
   shouldJobRun,
   shouldStepRun,
 } from "./abort_settlement.ts";
+import { isInterruption } from "./run_interruption.ts";
 import {
   checkSuspendedRunResume,
   planFailedRunResume,
@@ -203,7 +204,11 @@ import {
 import type { OutputRepository } from "../models/repositories.ts";
 import type { RunTrackerRepository } from "../models/run_tracker_repository.ts";
 import { ActiveRun, type ActiveRunStatus } from "../models/active_run.ts";
-import { cancelCause, cleanupGraceSignal } from "../models/cancel_cause.ts";
+import {
+  cancelCause,
+  CLEANUP_GRACE_TIMEOUT_MS,
+  cleanupGraceSignal,
+} from "../models/cancel_cause.ts";
 import { hostname } from "node:os";
 import type {
   ForeignContentFetcher,
@@ -968,11 +973,7 @@ export interface StepExecutor {
   readonly awaitsStartRecorded?: boolean;
 }
 
-/**
- * cleanup steps run with a fresh signal bounded by this timeout so they cannot
- * hang indefinitely
- */
-export const CLEANUP_GRACE_TIMEOUT_MS = 30_000;
+export { CLEANUP_GRACE_TIMEOUT_MS };
 
 /**
  * after an abort the job runner stops reading a step's events, so a nested step
@@ -5472,14 +5473,17 @@ export class WorkflowExecutionService {
         }
         // A level reached after abort with nothing failed starts no work; its
         // cleanup steps run under the cleanup signal, the rest are settled.
+        // After an interruption every level is settled and no cleanup runs.
+        const byInterruption = isInterruption(options.signal);
         const reachedAfterAbort: boolean = (options.signal?.aborted ?? false) &&
           run.status !== "suspended" &&
-          (jobReachedAfterAbort || (!jobFailed && !jobUndecided));
+          (byInterruption || jobReachedAfterAbort ||
+            (!jobFailed && !jobUndecided));
         jobReachedAfterAbort = reachedAfterAbort;
         const cleanupMode: boolean = !reachedAfterAbort &&
           (jobFailed || jobUndecided) && (options.signal?.aborted ?? false);
         const cleanupSignal: AbortSignal | undefined =
-          cleanupMode || reachedAfterAbort
+          cleanupMode || (reachedAfterAbort && !byInterruption)
             ? cleanupGraceSignal(CLEANUP_GRACE_TIMEOUT_MS)
             : undefined;
         const cleanupOptions = {
@@ -5569,7 +5573,10 @@ export class WorkflowExecutionService {
             ? levelStepRun.status === "pending"
             : levelIterations.has(stepName);
           if (reachedAfterAbort && yetToStart) {
-            if (!levelStep || !runsAfterFailure(levelStep, job, jobRun)) {
+            if (
+              byInterruption || !levelStep ||
+              !runsAfterFailure(levelStep, job, jobRun)
+            ) {
               settleLevelStep(stepName);
               return undefined;
             }
@@ -6344,9 +6351,12 @@ export class WorkflowExecutionService {
     for (const level of levels) {
       if (options.signal?.aborted) {
         // as a plain job: after the abort only cleanup steps run, under the
-        // cleanup grace signal; the rest are settled
+        // cleanup grace signal, and none after an interruption; the rest are
+        // settled
+        const interrupted = isInterruption(options.signal);
         const runnable = level.filter((name) =>
-          pending(name) && runsAfterFailure(job.getStep(name)!, job, view)
+          !interrupted && pending(name) &&
+          runsAfterFailure(job.getStep(name)!, job, view)
         );
         settle(level.filter((name) => !runnable.includes(name)));
         if (runnable.length === 0) continue;
@@ -8372,8 +8382,10 @@ export class WorkflowExecutionService {
     afterAbort: boolean;
   } {
     const aborted = signal?.aborted ?? false;
+    // an interruption never enters cleanup mode: what failed is settled
+    const interrupted = isInterruption(signal);
     const afterAbort = aborted && run.status !== "suspended" &&
-      (alreadyAfterAbort ||
+      (alreadyAfterAbort || (interrupted && anyJobFailed) ||
         (!anyJobFailed &&
           run.jobs.some((j) => j.status === "succeeded") &&
           !run.jobs.some((j) =>
@@ -8398,7 +8410,7 @@ export class WorkflowExecutionService {
         const job = workflow.getJob(jobName);
         const jobRun = run.getJob(jobName);
         if (!job || jobRun?.status !== "pending") continue;
-        if (jobRunsAfterFailure(job, workflow, run)) {
+        if (!interrupted && jobRunsAfterFailure(job, workflow, run)) {
           cleanupJobs.add(jobName);
           continue;
         }

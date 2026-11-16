@@ -100,6 +100,7 @@ import {
 } from "./continuation_claim.ts";
 import { RunNotSuspendedError } from "./suspended_run_resolver.ts";
 import { completeAndSettle } from "./abort_settlement.ts";
+import { RunInterruption } from "./run_interruption.ts";
 import { extractExpressions } from "../expressions/expression_parser.ts";
 import {
   claimsFor,
@@ -14267,6 +14268,245 @@ Deno.test("abort cleanup: a cleanup job runs under the cleanup grace signal, not
   });
 });
 
+const SHUTDOWN = () => new RunInterruption("server_shutdown");
+
+function interruptedCleanupWorkflow(): Workflow {
+  return Workflow.create({
+    name: "interrupted-cleanup-wf",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          modelStep("a"),
+          modelStep("rollback", onStep("a", TriggerCondition.failed())),
+          modelStep("notify", onStep("a", TriggerCondition.always())),
+        ],
+      }),
+      Job.create({
+        name: "teardown",
+        dependsOn: [{ job: "main", condition: TriggerCondition.failed() }],
+        steps: [modelStep("t")],
+      }),
+    ],
+  });
+}
+
+Deno.test("abort cleanup: an interruption starts no cleanup step or job, settles them for the resume, and leaves the stopped step for interrupt to mark unknown", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = interruptedCleanupWorkflow();
+    const executor = new AbortingStepExecutor("a", "reject", null, SHUTDOWN());
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    const { run } = await runUntilAborted(
+      service,
+      workflow,
+      executor.controller.signal,
+    );
+
+    assertEquals(run.status, "cancelled");
+    assertEquals(executor.count("main/rollback"), 0);
+    assertEquals(executor.count("main/notify"), 0);
+    assertEquals(executor.count("teardown/t"), 0);
+    assertEquals(run.getJob("main")!.getStep("a")!.stoppedByAbort, true);
+    assertCancelledBeforeStart(run, "main", ["rollback", "notify"]);
+    assertCancelledBeforeStart(run, "teardown", ["t"]);
+
+    run.interrupt("server_shutdown");
+    assertEquals(run.getJob("main")!.getStep("a")!.status, "unknown");
+  });
+});
+
+Deno.test("abort cleanup: the same workflow cancelled rather than interrupted still runs its cleanup step and job", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = interruptedCleanupWorkflow();
+    const executor = new AbortingStepExecutor("a");
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    await runUntilAborted(service, workflow, executor.controller.signal);
+
+    assertEquals(executor.count("main/rollback"), 1);
+    assertEquals(executor.count("main/notify"), 1);
+    assertEquals(executor.count("teardown/t"), 1);
+  });
+});
+
+Deno.test("abort cleanup: after an interruption an always-gated step reached with nothing failed does not start", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "interrupted-after-abort-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            modelStep("a"),
+            modelStep("cleanup", onStep("a", TriggerCondition.always())),
+          ],
+        }),
+        Job.create({
+          name: "after",
+          dependsOn: [{ job: "main", condition: TriggerCondition.always() }],
+          steps: [modelStep("c")],
+        }),
+      ],
+    });
+    // `a` finishes despite the abort, so the next level is reached after it
+    const executor = new AbortingStepExecutor(
+      "a",
+      "succeed",
+      null,
+      SHUTDOWN(),
+    );
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    const { run } = await runUntilAborted(
+      service,
+      workflow,
+      executor.controller.signal,
+    );
+
+    assertEquals(run.getJob("main")!.getStep("a")!.status, "succeeded");
+    assertEquals(executor.count("main/cleanup"), 0);
+    assertEquals(executor.count("after/c"), 0);
+    assertCancelledBeforeStart(run, "main", ["cleanup"]);
+  });
+});
+
+function fanOutCleanupWorkflow(): Workflow {
+  return withFanOutJob(
+    Workflow.create({
+      name: "fan-out-cleanup-wf",
+      jobs: [
+        Job.create({
+          name: "deploy",
+          steps: [
+            modelStep("push"),
+            modelStep("revert", onStep("push", TriggerCondition.failed())),
+          ],
+        }),
+      ],
+    }),
+    "deploy",
+  );
+}
+
+Deno.test("abort cleanup: an interruption starts no cleanup step in a fan-out lane", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = fanOutCleanupWorkflow();
+    const executor = new AbortingStepExecutor(
+      "push[w-a]",
+      "reject",
+      null,
+      SHUTDOWN(),
+    );
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    const { run } = await withPoolReader(
+      [poolWorker("w-a")],
+      () => runUntilAborted(service, workflow, executor.controller.signal),
+    );
+
+    assertEquals(executor.count("deploy/push[w-a]"), 1);
+    assertEquals(executor.count("deploy/revert[w-a]"), 0);
+    assertCancelledBeforeStart(run, "deploy", ["revert[w-a]"]);
+  });
+});
+
+Deno.test("abort cleanup: a fan-out lane cancelled rather than interrupted still runs its cleanup step", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = fanOutCleanupWorkflow();
+    const executor = new AbortingStepExecutor("push[w-a]");
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    await withPoolReader(
+      [poolWorker("w-a")],
+      () => runUntilAborted(service, workflow, executor.controller.signal),
+    );
+
+    assertEquals(executor.count("deploy/revert[w-a]"), 1);
+  });
+});
+
+function nestedCleanupWorkflows(): Workflow[] {
+  const child = Workflow.create({
+    name: "nested-cleanup-child",
+    jobs: [
+      Job.create({
+        name: "child-job",
+        steps: [
+          modelStep("slow"),
+          modelStep("undo", onStep("slow", TriggerCondition.always())),
+        ],
+      }),
+    ],
+  });
+  const parent = Workflow.create({
+    name: "nested-cleanup-parent",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "call-child",
+            task: StepTask.workflow("nested-cleanup-child"),
+          }),
+        ],
+      }),
+    ],
+  });
+  return [parent, child];
+}
+
+for (
+  const [label, reason, cleanupCalls] of [
+    ["an interruption starts no", SHUTDOWN(), 0],
+    ["a cancel still runs the", undefined, 1],
+  ] as const
+) {
+  Deno.test(`abort cleanup: in a nested workflow ${label} cleanup step`, async () => {
+    await withTempDir(async (tempDir) => {
+      const workflows = nestedCleanupWorkflows();
+      const executor = new AbortingStepExecutor("slow", "reject", null, reason);
+      const { service } = await setupNestedCancel(
+        tempDir,
+        workflows,
+        executor,
+      );
+
+      await finishedRun(
+        service.run(workflows[0].name, { signal: executor.controller.signal }),
+      );
+
+      assertEquals(executor.count("child-job/slow"), 1);
+      assertEquals(executor.count("child-job/undo"), cleanupCalls);
+    });
+  });
+}
+
 Deno.test("abort cleanup: a level that suspends at an approval gate keeps its queued steps pending", async () => {
   await withTempDir(async (tempDir) => {
     const workflow = Workflow.create({
@@ -14419,6 +14659,33 @@ async function approveGate(
   gate.succeed();
   await runRepo.save(workflow.id, run);
 }
+
+Deno.test("abort cleanup: an interruption beside a suspended sibling starts no failed-gated step after its dependency fails on the abort", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = besideSuspendedSibling("beside-suspended-cleanup-wf", [
+      modelStep("w1"),
+      modelStep("undo", onStep("w1", TriggerCondition.failed())),
+    ]);
+    const executor = new AbortingStepExecutor("w1", "reject", null, SHUTDOWN());
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    const { run } = await runUntilAborted(
+      service,
+      workflow,
+      executor.controller.signal,
+    );
+
+    assertEquals(run.status, "suspended");
+    assertEquals(executor.count("b/w1"), 1);
+    assertEquals(executor.count("b/undo"), 0);
+    assertLeftPending(run, "b", ["undo"]);
+  });
+});
 
 Deno.test("abort cleanup: a lone step in the first level of a job beside a suspended sibling stays pending, not started under the abort", async () => {
   await withTempDir(async (tempDir) => {
