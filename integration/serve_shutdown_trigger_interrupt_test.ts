@@ -27,7 +27,7 @@ import { Step } from "../src/domain/workflows/step.ts";
 import { StepTask } from "../src/domain/workflows/step_task.ts";
 import { TriggerCondition } from "../src/domain/workflows/trigger_condition.ts";
 import { assessRecoveryForRun } from "../src/domain/workflows/recovery_assessment.ts";
-import type { WorkflowRun } from "../src/domain/workflows/workflow_run.ts";
+import { WorkflowRun } from "../src/domain/workflows/workflow_run.ts";
 import { createWorkflowId } from "../src/domain/workflows/workflow_id.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
@@ -514,7 +514,11 @@ for (const trigger of ["webhook", "cron"] as const) {
   });
 }
 
-type NestedResume = "succeeds" | "fails" | "parent-cancelled";
+type NestedResume =
+  | "succeeds"
+  | "fails"
+  | "parent-cancelled"
+  | "child-cut-off-again";
 
 async function shutdownDuringNestedRun(resume: NestedResume): Promise<void> {
   await withRepo(async (repoDir) => {
@@ -672,7 +676,7 @@ async function shutdownDuringNestedRun(resume: NestedResume): Promise<void> {
       const childId = createWorkflowId(child.id);
       const childRuns = () => runRepo.findAllByWorkflowId(childId);
       const [cutParent] = await runRepo.findAllByWorkflowId(parentId);
-      const [cutChild] = await childRuns();
+      let [cutChild] = await childRuns();
       assertEquals(recordCalls, []);
       assertEquals(result.interrupted, [parentRunId, cutChild.id]);
       assertEquals(cutParent.status, "interrupted");
@@ -699,16 +703,19 @@ async function shutdownDuringNestedRun(resume: NestedResume): Promise<void> {
       });
       assertEquals(tracker.findById(cutChild.id)?.status, "interrupted");
 
-      const ctx = {
-        repoDir: resolved,
-        repoContext,
-        datastoreConfig,
-        datastoreResolver,
-        syncService,
-        runTracker: tracker,
-        authConfig: { mode: "none" },
-        activeRunRegistry: new ActiveRunRegistry(),
-      } as unknown as ConnectionContext;
+      // replaced by each simulated restart, as a new serve has a new registry
+      let resumeRegistry = new ActiveRunRegistry();
+      const ctx = () =>
+        ({
+          repoDir: resolved,
+          repoContext,
+          datastoreConfig,
+          datastoreResolver,
+          syncService,
+          runTracker: tracker,
+          authConfig: { mode: "none" },
+          activeRunRegistry: resumeRegistry,
+        }) as unknown as ConnectionContext;
       const resumeOverServe = async (workflowName: string, runId: string) => {
         const sent: string[] = [];
         await handleWorkflowResume(
@@ -716,7 +723,7 @@ async function shutdownDuringNestedRun(resume: NestedResume): Promise<void> {
             readyState: WebSocket.OPEN,
             send: (message: string) => sent.push(message),
           } as unknown as WebSocket,
-          ctx,
+          ctx(),
           `resume-${crypto.randomUUID()}`,
           { workflowIdOrName: workflowName, runId },
           new AbortController(),
@@ -724,6 +731,39 @@ async function shutdownDuringNestedRun(resume: NestedResume): Promise<void> {
         );
         return sent.join("\n");
       };
+
+      if (resume === "child-cut-off-again") {
+        // first started well before its resume, as a run continued after a
+        // restart is
+        const backdated = WorkflowRun.fromData({
+          ...cutChild.toData(),
+          startedAt: new Date(Date.now() - 600_000).toISOString(),
+        });
+        backdated.resetUnknownStepsForRecovery();
+        await runRepo.save(childId, backdated);
+        waitStarted = false;
+        const resuming = resumeOverServe(child.name, cutChild.id);
+        await waitFor(() => waitStarted, "the resumed child's slow step");
+        const abortedAgain = await runShutdownDrain({
+          webhookService: null,
+          scheduledExecution: null,
+          activeRunRegistry: resumeRegistry,
+          drainTimeoutMs: 0,
+          abortGraceMs: SHUTDOWN_ABORT_GRACE_MS,
+        });
+        const again = await interruptShutdownRuns(abortedAgain, {
+          repoContext,
+          runTracker: tracker,
+        });
+        await resuming;
+        assertEquals(again.interrupted, [cutChild.id]);
+        [cutChild] = await childRuns();
+        assertEquals(cutChild.status, "interrupted");
+        assertEquals(recordCalls, []);
+        const [stillInterrupted] = await runRepo.findAllByWorkflowId(parentId);
+        assertEquals(stillInterrupted.findNestedWaits().length, 1);
+        resumeRegistry = new ActiveRunRegistry();
+      }
 
       cutParent.resetUnknownStepsForRecovery();
       await runRepo.save(parentId, cutParent);
@@ -821,6 +861,13 @@ Deno.test({
     "serve shutdown: a nested run it cuts off runs its cleanup when its resume fails, and its parent's step fails from that outcome",
   ...testOpts,
   fn: () => shutdownDuringNestedRun("fails"),
+});
+
+Deno.test({
+  name:
+    "serve shutdown: a nested run cut off again while it is resumed, long after it first started, is interrupted again rather than cancelled, and its parent still adopts it",
+  ...testOpts,
+  fn: () => shutdownDuringNestedRun("child-cut-off-again"),
 });
 
 Deno.test({

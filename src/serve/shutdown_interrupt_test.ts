@@ -1315,3 +1315,39 @@ Deno.test("interruptShutdownRuns: a parent whose save fails leaves its nested ru
   assertEquals(events.includes(`close ${child.id}`), false);
   assertEquals(child.status, "running");
 });
+
+Deno.test("interruptShutdownRuns: a resumed run whose record started long before the resume is read by id, interrupted, and linked to its nested run", async () => {
+  const wf = callingWorkflow();
+  const resumed = serveRun(wf, "shutdown");
+  const parent = WorkflowRun.fromData({
+    ...resumed.toData(),
+    startedAt: new Date(Date.now() - 3_600_000).toISOString(),
+  });
+  const child = serveRun(wf, "shutdown", parent);
+  const { events, repoContext } = harness([parent, child], wf.id);
+  // filters on a record's first start, as the run repository does
+  const sinceHonouring: ShutdownInterruptDeps["repoContext"] = {
+    ...repoContext,
+    workflowRunRepo: {
+      ...repoContext.workflowRunRepo,
+      findGlobalByStatus: async (status, since) =>
+        (await repoContext.workflowRunRepo.findGlobalByStatus(status, since))
+          .filter(({ run }) =>
+            since === undefined ||
+            (run.startedAt?.getTime() ?? 0) >= since.getTime()
+          ),
+    },
+  };
+
+  const result = await interruptShutdownRuns(
+    [{ ...active(parent, "workflow-resume"), resourceId: wf.id }],
+    { repoContext: sinceHonouring },
+  );
+
+  assertEquals(result, { interrupted: [parent.id, child.id] });
+  assertEquals(savesOf(events), [
+    `save ${parent.id} interrupted`,
+    `save ${child.id} interrupted`,
+  ]);
+  assertEquals(linkedTo(parent, child), true);
+});

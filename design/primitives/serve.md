@@ -1879,7 +1879,13 @@ stamped `continuableSince`, and the next boot (or a new leader) continues it by
 itself when every step the abort cut off has a guard (swamp-club#4693, see
 Automatic continuation under Recovery in `design/primitives/workflows.md`). A run a user or a
 webhook cancel request cancelled before the abort is not reported and stays
-`cancelled`. Before it loads them it closes their run write fence
+`cancelled`. It loads them with one scan of the running and cancelled runs
+started since the earliest of their starts, less 60 s. That scan filters on a
+record's first start, which a resume (manual, past an approval gate, or an
+automatic continuation) can predate by far, so a run the scan missed is read
+by its id; without that, a run resumed long after it began ended `cancelled`
+at a shutdown rather than `interrupted` (swamp-club#4802). Before it loads them
+it closes their run write fence
 (`ServeRunWriteFence`, `src/serve/run_write_fence.ts`) and waits up to 2 s for
 a save already under way. An executor can outlive the abort grace, as one whose
 remote step answers after the abort does; with the fence closed it can no

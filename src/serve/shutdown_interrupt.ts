@@ -45,7 +45,10 @@ import {
 import { keepActiveRunRecords } from "./active_run_tracker.ts";
 import { SHUTDOWN_ABORT_MESSAGE } from "./shutdown_drain.ts";
 import type { WorkflowRun } from "../domain/workflows/workflow_run.ts";
-import { createWorkflowRunId } from "../domain/workflows/workflow_id.ts";
+import {
+  createWorkflowId,
+  createWorkflowRunId,
+} from "../domain/workflows/workflow_id.ts";
 import { MAX_WORKFLOW_NESTING_DEPTH } from "../domain/workflows/nested_run_ref.ts";
 import type { ControlPlaneStore } from "../domain/datastore/control_plane_store.ts";
 import {
@@ -201,7 +204,35 @@ export async function interruptShutdownRuns(
       commitsThroughCommitLog(repoContext),
     );
   }
-  const loaded = allRuns;
+  const loaded = [...allRuns];
+  // The scan filters on a record's first start, which a resume can predate by
+  // far, so a top-level run it missed is read by id.
+  for (const run of workflowRuns) {
+    if (
+      run.resourceId === undefined ||
+      loaded.some((r) => r.run.id === run.runId)
+    ) {
+      continue;
+    }
+    try {
+      const workflowId = createWorkflowId(run.resourceId);
+      const found = await repoContext.workflowRunRepo.findById(
+        workflowId,
+        createWorkflowRunId(run.runId),
+      );
+      if (found?.status === "running" || found?.status === "cancelled") {
+        loaded.push({ run: found, workflowId });
+      }
+    } catch (err) {
+      logger.warn(
+        "Failed to load workflow run {runId} for interrupt: {error}",
+        {
+          runId: run.runId,
+          error: err instanceof Error ? err.message : String(err),
+        },
+      );
+    }
+  }
   let pushError: string | undefined;
   const notSaved: string[] = [];
   const childRunIds: string[] = [];
