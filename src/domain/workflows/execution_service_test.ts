@@ -26794,6 +26794,158 @@ Deno.test("execute: an empty forEach is kept as a skipped step and announced wit
   });
 });
 
+// "after" depends only on the empty "fan", which depends on "upstream"
+function behindEmptyForEachWorkflow(
+  name: string,
+  upstream: Step,
+  condition: TriggerCondition,
+): Workflow {
+  return Workflow.create({
+    name,
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          upstream,
+          Step.create({
+            name: "fan",
+            task: StepTask.model("test-model", "run"),
+            forEach: { item: "x", in: "${{ inputs.items }}" },
+            dependsOn: [{
+              step: upstream.name,
+              condition: TriggerCondition.succeeded(),
+            }],
+          }),
+          Step.create({
+            name: "after",
+            task: StepTask.model("test-model", "run"),
+            dependsOn: [{ step: "fan", condition }],
+          }),
+        ],
+      }),
+    ],
+  });
+}
+
+class HeldUpstreamExecutor implements StepExecutor {
+  readonly gate = Promise.withResolvers<void>();
+  slowStarted = false;
+  slowFinished = false;
+  afterSawSlowFinished: boolean | undefined;
+
+  async execute(step: Step, ctx: StepExecutionContext): Promise<unknown> {
+    if (ctx.stepName === "slow") {
+      this.slowStarted = true;
+      await this.gate.promise;
+      this.slowFinished = true;
+    }
+    if (ctx.stepName === "after") {
+      this.afterSawSlowFinished = this.slowFinished;
+    }
+    return { executed: true, step: step.name };
+  }
+}
+
+for (
+  const [label, condition] of [
+    ["always", TriggerCondition.always()],
+    ["skipped", TriggerCondition.skipped()],
+  ] as const
+) {
+  Deno.test(`execute: a dependent of an empty forEach waits for the forEach's own dependency (${label})`, async () => {
+    await withTempDir(async (tempDir) => {
+      const workflowRepo = new InMemoryWorkflowRepository();
+      const runRepo = new InMemoryWorkflowRunRepository();
+      const executor = new HeldUpstreamExecutor();
+      const workflow = behindEmptyForEachWorkflow(
+        `behind-empty-foreach-${label}`,
+        Step.create({
+          name: "slow",
+          task: StepTask.model("test-model", "run"),
+        }),
+        condition,
+      );
+      await workflowRepo.save(workflow);
+      const service = new WorkflowExecutionService(
+        workflowRepo,
+        runRepo,
+        tempDir,
+        executor,
+        undefined,
+        new CatalogStore(join(tempDir, "_catalog.db")),
+      );
+
+      const events: WorkflowExecutionEvent[] = [];
+      const running = (async () => {
+        let completed: WorkflowRun | undefined;
+        for await (
+          const event of service.run(workflow.name, { inputs: { items: [] } })
+        ) {
+          events.push(event);
+          if (event.kind === "completed") completed = event.run;
+        }
+        return completed;
+      })();
+      await waitFor(() => executor.slowStarted, "slow started");
+      executor.gate.resolve();
+      const completed = await running;
+
+      assertEquals(executor.afterSawSlowFinished, true);
+      assertEquals(emptyCollectionSkips(events).map((e) => e.stepId), ["fan"]);
+      assertEquals(completed?.status, "succeeded");
+      const main = completed!.getJob("main")!;
+      assertEquals(main.getStep("fan")!.status, "skipped");
+      assertEquals(main.getStep("after")!.status, "succeeded");
+    });
+  });
+}
+
+Deno.test("resume: a dependent of an empty forEach behind an approval gate waits for the approval", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+    const workflow = behindEmptyForEachWorkflow(
+      "behind-empty-foreach-gate",
+      Step.create({
+        name: "gate",
+        task: StepTask.manualApproval("Continue?"),
+      }),
+      TriggerCondition.always(),
+    );
+    await workflowRepo.save(workflow);
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+
+    const suspended = await suspendedEventOf(
+      service.run(workflow.name, { inputs: { items: [] } }),
+    );
+    assertEquals(suspended?.stepId, "gate");
+    assertEquals(executor.executedSteps, []);
+    const paused = await runRepo.findById(workflow.id, suspended!.run.id);
+    assertEquals(paused!.getJob("main")!.getStep("after")!.status, "pending");
+
+    paused!.getJob("main")!.getStep("gate")!.succeed();
+    await runRepo.save(workflow.id, paused!);
+    let completed: WorkflowRun | undefined;
+    for await (
+      const event of service.resume(workflow.name, suspended!.run.id)
+    ) {
+      if (event.kind === "completed") completed = event.run;
+    }
+
+    assertEquals(executor.executedSteps, ["main/after"]);
+    assertEquals(completed?.status, "succeeded");
+    assertEquals(completed!.getJob("main")!.getStep("fan")!.status, "skipped");
+  });
+});
+
 Deno.test("execute: a non-empty forEach emits no empty-collection skip", async () => {
   await withTempDir(async (tempDir) => {
     const workflowRepo = new InMemoryWorkflowRepository();

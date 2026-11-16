@@ -35,6 +35,7 @@ import {
   type ForEachBinding,
   ForEachExpansionService,
 } from "./for_each_expansion_service.ts";
+import { buildExpandedStepGraph } from "./expanded_step_graph.ts";
 import { coerceToSuffix } from "./data_suffix.ts";
 import { coerceInputTypes } from "../inputs/input_coercion.ts";
 import { deepMerge } from "../inputs/input_merge.ts";
@@ -5411,36 +5412,9 @@ export class WorkflowExecutionService {
         dependencies: step.getDependencyNames(),
       }));
 
-      let effectiveNodes = stepNodes;
-      if (expandedStepsMap) {
-        effectiveNodes = [];
-        for (const node of stepNodes) {
-          const expanded = expandedStepsMap.get(node.name);
-          if (expanded && expanded.length > 0) {
-            // create nodes for each expanded step, grouped under the forEach
-            // step so its iterations run in list order
-            for (const [index, exp] of expanded.entries()) {
-              effectiveNodes.push({
-                name: exp.expandedName,
-                weight: node.weight,
-                group: exp.forEachVar.name !== ""
-                  ? { key: node.name, index }
-                  : undefined,
-                dependencies: node.dependencies.flatMap((dep) => {
-                  const depExpanded = expandedStepsMap!.get(dep);
-                  return depExpanded && depExpanded.length > 0
-                    ? depExpanded.map((d) => d.expandedName)
-                    : [dep];
-                }),
-              });
-            }
-          } else if (!expanded || expanded.length === 0) {
-            continue;
-          } else {
-            effectiveNodes.push(node);
-          }
-        }
-      }
+      const effectiveNodes = expandedStepsMap
+        ? buildExpandedStepGraph(stepNodes, expandedStepsMap)
+        : stepNodes;
 
       const sortedSteps = this.sortService.sort(effectiveNodes);
       const globalLimit = readGlobalConcurrencyLimit();
