@@ -47,6 +47,7 @@ import type {
   ClientWorkerMessage,
   ClientWorkerRequest,
 } from "./serve_upstream_client_worker.ts";
+import { startLoadedWorker } from "./graph_worker.ts";
 
 await initializeLogging({});
 
@@ -80,28 +81,24 @@ function startClient(
   label: string,
   count: number,
 ): { started: Promise<void>; finished: Promise<Written> } {
-  const worker = new Worker(
-    new URL("./serve_upstream_client_worker.ts", import.meta.url).href,
-    { type: "module" },
-  );
-  let loaded = false;
+  let worker: Worker | undefined;
   let done: Extract<ClientWorkerMessage, { kind: "done" }> | undefined;
   let failed: string | undefined;
-  worker.onmessage = (event: MessageEvent<ClientWorkerMessage>) => {
-    const message = event.data;
-    if (message.kind === "loaded") loaded = true;
-    else if (message.kind === "done") done = message;
-    else failed = message.error;
-  };
-  worker.onerror = (event) => {
-    event.preventDefault();
-    failed = event.message;
-  };
   const started = (async () => {
-    await waitFor(
-      () => loaded || failed !== undefined,
-      `client ${label}'s worker to load`,
-      { timeoutMs: 120_000 },
+    worker = await startLoadedWorker<ClientWorkerMessage>(
+      new URL("./serve_upstream_client_worker.ts", import.meta.url),
+      {
+        loadTimeoutMs: 40_000,
+        attempts: 3,
+        onMessage: (message) => {
+          if (message.kind === "done") done = message;
+          else if (message.kind === "failed") failed = message.error;
+        },
+        onError: (event) => {
+          event.preventDefault();
+          failed = event.message;
+        },
+      },
     );
     worker.postMessage(
       {
@@ -131,7 +128,7 @@ function startClient(
         { timeoutMs: 180_000, intervalMs: 50 },
       );
     } finally {
-      worker.terminate();
+      worker?.terminate();
     }
     if (done === undefined) {
       throw new Error(`client ${label} failed: ${failed}`);
@@ -319,13 +316,15 @@ Deno.test({
 
 /** another command of the checkout writing: a Worker holds its writer lease */
 async function holdWriter(root: string): Promise<{ release(): Promise<void> }> {
-  const worker = new Worker(
-    new URL("./serve_upstream_lease_holder_worker.ts", import.meta.url).href,
-    { type: "module" },
-  );
   const messages: string[] = [];
-  worker.onmessage = (event: MessageEvent<string>) =>
-    void messages.push(event.data);
+  const worker = await startLoadedWorker<string>(
+    new URL("./serve_upstream_lease_holder_worker.ts", import.meta.url),
+    {
+      loadTimeoutMs: 20_000,
+      attempts: 3,
+      onMessage: (message) => void messages.push(message),
+    },
+  );
   const reply = async (expected: string) => {
     await waitFor(
       () => messages.some((m) => m === expected || m.startsWith("failed")),
@@ -338,7 +337,6 @@ async function holdWriter(root: string): Promise<{ release(): Promise<void> }> {
       throw new Error(failed);
     }
   };
-  await reply("loaded");
   worker.postMessage({ kind: "hold", root });
   await reply("held");
   return {

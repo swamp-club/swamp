@@ -24,6 +24,7 @@
  */
 
 import { acquireV3WriterLock } from "../src/infrastructure/datastore_v3/v3_writer_lock.ts";
+import { LOADED } from "./graph_worker.ts";
 
 declare const self: Worker;
 
@@ -48,4 +49,4 @@ self.onmessage = async (
   }
 };
 
-self.postMessage("loaded");
+self.postMessage(LOADED);

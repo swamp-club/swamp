@@ -70,6 +70,7 @@ import type {
   ClaimRaceRequest,
 } from "./datastore_v3_claim_race_worker.ts";
 import { join } from "@std/path";
+import { startLoadedWorker } from "./graph_worker.ts";
 
 await initializeLogging({});
 
@@ -431,19 +432,22 @@ Deno.test("datastore claim: a claim through serve, which holds the lease, makes 
   });
 });
 
-function startWriter(request: ClaimRaceRequest) {
+async function startWriter(request: ClaimRaceRequest) {
   const messages: ClaimRaceMessage[] = [];
-  const worker = new Worker(
-    new URL("./datastore_v3_claim_race_worker.ts", import.meta.url).href,
-    { type: "module" },
+  const worker = await startLoadedWorker<ClaimRaceMessage>(
+    new URL("./datastore_v3_claim_race_worker.ts", import.meta.url),
+    {
+      loadTimeoutMs: 20_000,
+      attempts: 3,
+      onMessage: (message) => {
+        messages.push(message);
+      },
+      onError: (event) => {
+        event.preventDefault();
+        messages.push({ failed: event.message });
+      },
+    },
   );
-  worker.onmessage = (event: MessageEvent<ClaimRaceMessage>) => {
-    messages.push(event.data);
-  };
-  worker.onerror = (event) => {
-    event.preventDefault();
-    messages.push({ failed: event.message });
-  };
   worker.postMessage(request);
   const seen = (test: (m: ClaimRaceMessage) => boolean) =>
     waitFor(
@@ -466,7 +470,7 @@ function startWriter(request: ClaimRaceRequest) {
 Deno.test("datastore claim: a writer that holds the lease when the claim is asked for commits before the claim, never after it", async () => {
   await withV3RowRepos({}, async (repos, datastorePath) => {
     await closeV3Datastores();
-    const writer = startWriter({
+    const writer = await startWriter({
       repoDir: repos.repoB,
       datastorePath,
       id: crypto.randomUUID(),
@@ -494,7 +498,7 @@ Deno.test("datastore claim: a writer that waits for the lease while the claim la
   await withV3RowRepos({}, async (repos, datastorePath) => {
     await closeV3Datastores();
     const log = await claimLog(repos.repoA);
-    const writer = startWriter({
+    const writer = await startWriter({
       repoDir: repos.repoB,
       datastorePath,
       id: crypto.randomUUID(),

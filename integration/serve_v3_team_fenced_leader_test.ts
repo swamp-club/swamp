@@ -80,6 +80,7 @@ import type {
   Opened,
   StoredCommit,
 } from "./serve_v3_team_fenced_leader_node_worker.ts";
+import { startLoadedWorker } from "./graph_worker.ts";
 
 await initializeLogging({});
 
@@ -130,9 +131,23 @@ async function withTeam(fn: (team: Team) => Promise<void>): Promise<void> {
   const nodes: Node[] = [];
   const pids = new Set<number>();
   const node = async (name: string): Promise<Node> => {
-    const worker = new Worker(
+    let pending:
+      | { done(value: unknown): void; fail(error: Error): void }
+      | undefined;
+    const worker = await startLoadedWorker<FencedNodeResponse>(
       new URL("./serve_v3_team_fenced_leader_node_worker.ts", import.meta.url),
-      { type: "module" },
+      {
+        loadTimeoutMs: 40_000,
+        attempts: 3,
+        onMessage: (response) => {
+          if (response.ok) pending?.done(response.value);
+          else pending?.fail(new Error(`node-${name}: ${response.error}`));
+        },
+        onError: (event) => {
+          event.preventDefault();
+          pending?.fail(new Error(event.message));
+        },
+      },
     );
     workers.push(worker);
     let queue: Promise<unknown> = Promise.resolve();
@@ -150,15 +165,7 @@ async function withTeam(fn: (team: Team) => Promise<void>): Promise<void> {
           worker.terminate();
           fail(dead);
         }, limit);
-        worker.onmessage = (event: MessageEvent<FencedNodeResponse>) => {
-          const response = event.data;
-          if (response.ok) done(response.value);
-          else fail(new Error(`node-${name}: ${response.error}`));
-        };
-        worker.onerror = (event) => {
-          event.preventDefault();
-          fail(new Error(event.message));
-        };
+        pending = { done, fail };
         worker.postMessage(request);
       }).finally(() => clearTimeout(timer));
     };

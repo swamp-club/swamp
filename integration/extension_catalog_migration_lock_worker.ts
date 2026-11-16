@@ -22,6 +22,7 @@
 // opening the store
 
 import { DatabaseSync } from "node:sqlite";
+import { LOADED } from "./graph_worker.ts";
 
 export type LockWorkerRequest =
   | { kind: "lock"; dbPath: string }
@@ -29,6 +30,8 @@ export type LockWorkerRequest =
 export type LockWorkerMessage = "locked" | "committed";
 
 declare const self: Worker;
+
+self.postMessage(LOADED);
 
 let db: DatabaseSync | undefined;
 

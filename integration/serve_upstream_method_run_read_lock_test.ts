@@ -50,6 +50,7 @@ import type {
   MethodRunWorkerMessage,
   MethodRunWorkerRequest,
 } from "./serve_upstream_method_run_worker.ts";
+import { startLoadedWorker } from "./graph_worker.ts";
 
 await initializeLogging({});
 
@@ -139,29 +140,25 @@ function memberRun(
   done: () => boolean;
   result: Promise<{ error?: string; exitCode: number }>;
 } {
-  const worker = new Worker(
-    new URL("./serve_upstream_method_run_worker.ts", import.meta.url).href,
-    { type: "module" },
-  );
-  let loaded = false;
   let done: Extract<MethodRunWorkerMessage, { kind: "done" }> | undefined;
   let failed: string | undefined;
-  worker.onmessage = (event: MessageEvent<MethodRunWorkerMessage>) => {
-    const message = event.data;
-    if (message.kind === "loaded") loaded = true;
-    else if (message.kind === "done") done = message;
-    else failed = message.error;
-  };
-  worker.onerror = (event) => {
-    event.preventDefault();
-    failed = event.message;
-  };
   const result = (async () => {
+    let worker: Worker | undefined;
     try {
-      await waitFor(
-        () => loaded || failed !== undefined,
-        "the member's worker to load",
-        { timeoutMs: 120_000 },
+      worker = await startLoadedWorker<MethodRunWorkerMessage>(
+        new URL("./serve_upstream_method_run_worker.ts", import.meta.url),
+        {
+          loadTimeoutMs: 40_000,
+          attempts: 3,
+          onMessage: (message) => {
+            if (message.kind === "done") done = message;
+            else if (message.kind === "failed") failed = message.error;
+          },
+          onError: (event) => {
+            event.preventDefault();
+            failed = event.message;
+          },
+        },
       );
       worker.postMessage(
         {
@@ -180,7 +177,7 @@ function memberRun(
         { timeoutMs: 240_000, intervalMs: 50 },
       );
     } finally {
-      worker.terminate();
+      worker?.terminate();
     }
     if (done === undefined) throw new Error(`member failed: ${failed}`);
     return {

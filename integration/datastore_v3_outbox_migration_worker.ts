@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { SqliteCommitOutbox } from "../src/infrastructure/datastore_v3/sqlite_commit_outbox.ts";
+import { LOADED } from "./graph_worker.ts";
 
 export interface OutboxOpenRequest {
   readonly path: string;
@@ -32,8 +33,10 @@ export type OutboxOpenResult =
 
 const scope = self as unknown as {
   onmessage: ((event: MessageEvent<OutboxOpenRequest>) => void) | null;
-  postMessage(message: OutboxOpenResult): void;
+  postMessage(message: OutboxOpenResult | typeof LOADED): void;
 };
+
+scope.postMessage(LOADED);
 
 scope.onmessage = async (event) => {
   const { path, start } = event.data;

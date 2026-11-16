@@ -33,6 +33,7 @@ import type {
   OutboxOpenRequest,
   OutboxOpenResult,
 } from "./datastore_v3_outbox_migration_worker.ts";
+import { startLoadedWorker } from "./graph_worker.ts";
 
 const OPENERS = 4;
 
@@ -113,16 +114,32 @@ async function raceOpeners(schema: number): Promise<void> {
 
     const start = new SharedArrayBuffer(4);
     const results: OutboxOpenResult[] = [];
-    for (let i = 0; i < OPENERS; i++) {
-      const worker = new Worker(
-        new URL("./datastore_v3_outbox_migration_worker.ts", import.meta.url)
-          .href,
-        { type: "module" },
-      );
-      workers.push(worker);
-      worker.onmessage = (event: MessageEvent<OutboxOpenResult>) => {
-        results.push(event.data);
-      };
+    const starts = await Promise.allSettled(
+      Array.from(
+        { length: OPENERS },
+        () =>
+          startLoadedWorker<OutboxOpenResult>(
+            new URL(
+              "./datastore_v3_outbox_migration_worker.ts",
+              import.meta.url,
+            ),
+            {
+              loadTimeoutMs: 20_000,
+              attempts: 3,
+              onMessage: (message) => {
+                results.push(message);
+              },
+            },
+          ),
+      ),
+    );
+    for (const started of starts) {
+      if (started.status === "fulfilled") workers.push(started.value);
+    }
+    for (const started of starts) {
+      if (started.status === "rejected") throw started.reason;
+    }
+    for (const worker of workers) {
       worker.postMessage({ path, start } satisfies OutboxOpenRequest);
     }
     await waitFor(

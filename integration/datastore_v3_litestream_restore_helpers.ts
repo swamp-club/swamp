@@ -40,6 +40,7 @@ import type {
   MachineRequest,
   MachineResponse,
 } from "./datastore_v3_litestream_machine_worker.ts";
+import { startLoadedWorker } from "./graph_worker.ts";
 
 export const ignore = SIDECAR_TESTS_IGNORED;
 
@@ -116,16 +117,25 @@ export async function withMachines(
     replicaRoot,
     replica,
     async machine(name, machineOptions = {}) {
-      const worker = new Worker(
+      let respond: ((response: MachineResponse) => void) | undefined;
+      let failPending: ((error: Error) => void) | undefined;
+      const worker = await startLoadedWorker<MachineResponse>(
         new URL("./datastore_v3_litestream_machine_worker.ts", import.meta.url),
-        { type: "module" },
+        {
+          loadTimeoutMs: 40_000,
+          attempts: 3,
+          onMessage: (response) => respond?.(response),
+          onError: (event) => {
+            event.preventDefault();
+            failPending?.(new Error(event.message));
+          },
+        },
       );
       let queue: Promise<unknown> = Promise.resolve();
       let alive = true;
       // set once this worker is given up on: it is terminated, so no later
       // request can be answered
       let dead: Error | undefined;
-      let failPending: ((error: Error) => void) | undefined;
       const call = (request: MachineRequest, timeoutMs: number) => {
         if (dead !== undefined) return Promise.reject(dead);
         const limit = timeoutMs + (request.kind === "pause" ? request.ms : 0);
@@ -139,14 +149,9 @@ export async function withMachines(
             worker.terminate();
             fail(dead);
           }, limit);
-          worker.onmessage = (event: MessageEvent<MachineResponse>) => {
-            const response = event.data;
+          respond = (response) => {
             if (response.ok) done(response.value);
             else fail(new MachineError(response.error, response.code));
-          };
-          worker.onerror = (event) => {
-            event.preventDefault();
-            fail(new Error(event.message));
           };
           worker.postMessage(request);
         }).finally(() => clearTimeout(timer));

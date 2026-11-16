@@ -27,6 +27,7 @@ import {
   type CheckoutView,
 } from "../src/infrastructure/datastore_v3/checkout_view.ts";
 import type { V3Datastore } from "../src/infrastructure/datastore_v3/v3_datastore.ts";
+import { LOADED } from "./graph_worker.ts";
 
 export type StartRaceRequest =
   | {
@@ -45,6 +46,8 @@ export type StartRaceMessage =
   | { readonly failed: string };
 
 declare const self: Worker;
+
+self.postMessage(LOADED);
 
 let release: (() => void) | undefined;
 

@@ -65,6 +65,7 @@ import {
 } from "./serve_upstream_fixtures.ts";
 import type { GrantSpec } from "./serve_upstream_server_worker.ts";
 import type { RunOwnerRequest } from "./serve_upstream_run_owner_worker.ts";
+import { startLoadedWorker } from "./graph_worker.ts";
 
 await initializeLogging({});
 
@@ -157,13 +158,15 @@ async function holdWriter(
   client: Client,
   env: Record<string, string | undefined>,
 ): Promise<{ stop(): Promise<void> }> {
-  const worker = new Worker(
-    new URL("./serve_upstream_run_owner_worker.ts", import.meta.url).href,
-    { type: "module" },
-  );
   const messages: string[] = [];
-  worker.onmessage = (event: MessageEvent<string>) =>
-    void messages.push(event.data);
+  const worker = await startLoadedWorker<string>(
+    new URL("./serve_upstream_run_owner_worker.ts", import.meta.url),
+    {
+      loadTimeoutMs: 20_000,
+      attempts: 3,
+      onMessage: (message) => void messages.push(message),
+    },
+  );
   const reply = async (expected: string) => {
     await waitFor(
       () => messages.some((m) => m === expected || m.startsWith("failed")),
@@ -176,7 +179,6 @@ async function holdWriter(
       throw new Error(failed);
     }
   };
-  await reply("loaded");
   worker.postMessage(
     {
       kind: "hold",

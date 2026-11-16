@@ -23,6 +23,7 @@ import "../src/domain/models/models.ts";
 import { requireInitializedRepoUnlocked } from "../src/cli/repo_context.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { endCommand, withClientEnv } from "./serve_upstream_fixtures.ts";
+import { LOADED } from "./graph_worker.ts";
 
 export type RunOwnerRequest =
   | {
@@ -75,4 +76,4 @@ self.onmessage = (event: MessageEvent<RunOwnerRequest>) => {
   );
 };
 
-self.postMessage("loaded");
+self.postMessage(LOADED);

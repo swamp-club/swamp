@@ -84,6 +84,7 @@ import {
   type Frame,
   sendRequest,
 } from "./serve_request_harness.ts";
+import { LOADED } from "./graph_worker.ts";
 
 export type NodeRequest =
   | {
@@ -558,3 +559,5 @@ self.onmessage = async (event: MessageEvent<NodeRequest>) => {
     );
   }
 };
+
+self.postMessage(LOADED);

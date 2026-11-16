@@ -22,6 +22,7 @@
 // be terminated before it can commit
 
 import { DatabaseSync } from "node:sqlite";
+import { LOADED } from "./graph_worker.ts";
 
 export interface CrashWorkerRequest {
   readonly dbPath: string;
@@ -36,6 +37,8 @@ export interface CrashWorkerRequest {
 export type CrashWorkerMessage = "written";
 
 declare const self: Worker;
+
+self.postMessage(LOADED);
 
 self.onmessage = (event: MessageEvent<CrashWorkerRequest>) => {
   const request = event.data;

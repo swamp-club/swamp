@@ -60,6 +60,7 @@ import type {
   CompactionCrashMessage,
   CompactionCrashRequest,
 } from "./datastore_v3_compaction_crash_worker.ts";
+import { startLoadedWorker } from "./graph_worker.ts";
 
 const PARTITION = modelPartition();
 const signal = () => AbortSignal.timeout(30_000);
@@ -562,16 +563,18 @@ Deno.test("compaction: a writer stopped inside a batch's transaction leaves comm
     ]);
     const path = join(env.dir, "commits.db");
     const before = dump(path);
-    const worker = new Worker(
-      new URL("./datastore_v3_compaction_crash_worker.ts", import.meta.url)
-        .href,
-      { type: "module" },
-    );
     let folded = false;
+    const worker = await startLoadedWorker<CompactionCrashMessage>(
+      new URL("./datastore_v3_compaction_crash_worker.ts", import.meta.url),
+      {
+        loadTimeoutMs: 20_000,
+        attempts: 3,
+        onMessage: (message) => {
+          if (message === "folded") folded = true;
+        },
+      },
+    );
     try {
-      worker.onmessage = (event: MessageEvent<CompactionCrashMessage>) => {
-        if (event.data === "folded") folded = true;
-      };
       worker.postMessage(
         { dbPath: path, through: 3 } satisfies CompactionCrashRequest,
       );
