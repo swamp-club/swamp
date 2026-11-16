@@ -147,6 +147,23 @@ function walkedRows(groups: readonly Group[]): CatalogRow[] {
   );
 }
 
+function nameOf(row: CatalogRow): string {
+  return `${row.type_normalized}/${row.model_id}/${row.data_name}`;
+}
+
+// the most non-pending rows any of these names flags latest
+function mostLatestPerName(
+  store: CatalogStore,
+  names: ReadonlySet<string>,
+): number {
+  const counts = new Map<string, number>();
+  for (const row of store.iterate()) {
+    if (!names.has(nameOf(row)) || row.is_pending === 1) continue;
+    counts.set(nameOf(row), (counts.get(nameOf(row)) ?? 0) + row.is_latest);
+  }
+  return Math.max(0, ...counts.values());
+}
+
 function contents(store: CatalogStore): string[] {
   return [...store.iterate()]
     .map((row) =>
@@ -156,7 +173,7 @@ function contents(store: CatalogStore): string[] {
     .sort();
 }
 
-Deno.test("CatalogStore: a rebuild committed in name-aligned chunks leaves the catalog a single-transaction rebuild leaves, over random walks, stale flags and pending rows", async () => {
+Deno.test("CatalogStore: a rebuild committed in name-aligned chunks leaves the catalog a single-transaction rebuild leaves, and never flags two latest rows for a committed name, over random walks, stale flags and pending rows", async () => {
   const coverage = { split: 0, pending: 0, steps: 0 };
   await fc.assert(
     fc.asyncProperty(
@@ -171,12 +188,26 @@ Deno.test("CatalogStore: a rebuild committed in name-aligned chunks leaves the c
           seed(chunked, groups);
           const rows = walkedRows(groups);
 
-          whole.bulkUpsert(rows, computeLatestFlags);
+          whole.upsertNamesRecomputingFlags(rows);
           whole.enforceUniqueLatest(computeLatestFlags);
 
           const chunks = nameAlignedChunks(rows, chunkRows);
           for (const chunk of chunks) {
-            chunked.bulkUpsert(chunk, computeLatestFlags);
+            const pending = new Set(
+              [...chunked.iterate()].filter((row) => row.is_pending === 1)
+                .map((row) => `${nameOf(row)}@${row.version}`),
+            );
+            // names this chunk writes; a pending version is never overwritten
+            const written = new Set(
+              chunk.filter((row) =>
+                !pending.has(`${nameOf(row)}@${row.version}`)
+              )
+                .map(nameOf),
+            );
+            chunked.upsertNamesRecomputingFlags(chunk);
+            // what a reader that does not wait for the rebuild sees
+            const most = mostLatestPerName(chunked, written);
+            assertEquals(most <= 1, true, `${most} latest rows for one name`);
           }
           await chunked.enforceUniqueLatestInChunks(
             computeLatestFlags,

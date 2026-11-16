@@ -175,7 +175,11 @@ export function computeLatestFlags(rows: CatalogRow[]): void {
 
 const backfillsByCatalog = new WeakMap<
   CatalogStore,
-  { dataRepo: UnifiedDataRepository; promise: Promise<void> }
+  {
+    dataRepo: UnifiedDataRepository;
+    generation: number;
+    promise: Promise<void>;
+  }
 >();
 
 const BACKFILL_CHUNK_ROWS = 1000;
@@ -771,8 +775,9 @@ export class DataQueryService {
       await inFlight;
       return;
     }
+    const generation = this.catalogStore.generation();
     const promise = this.backfillAsync();
-    const entry = { dataRepo: this.dataRepo, promise };
+    const entry = { dataRepo: this.dataRepo, generation, promise };
     backfillsByCatalog.set(this.catalogStore, entry);
     try {
       await promise;
@@ -784,11 +789,15 @@ export class DataQueryService {
   }
 
   // shared by every service on this catalog that reads the same data, so the
-  // queries that find it unpopulated walk the disk once between them
+  // queries that find it unpopulated walk the disk once between them; one an
+  // invalidation overtook cannot populate, so it is not joined
   private backfillInFlight(): Promise<void> | undefined {
     if (!this.backfill) return undefined;
     const entry = backfillsByCatalog.get(this.catalogStore);
-    return entry?.dataRepo === this.dataRepo ? entry.promise : undefined;
+    return entry?.dataRepo === this.dataRepo &&
+        entry.generation === this.catalogStore.generation()
+      ? entry.promise
+      : undefined;
   }
 
   specNameFallback(predicate: string): SpecNameFallback | null {
@@ -1896,13 +1905,13 @@ export class DataQueryService {
   }
 
   /**
-   * one transaction per chunk cut between data names, the unit latest flags
-   * are derived over, with a yield between chunks, so a large rebuild never
-   * holds the event loop for the whole commit; flags skip pending versions
+   * one transaction per chunk cut between data names, with a yield between
+   * chunks; each name's flags are recomputed against its stored rows as its
+   * chunk commits, so a reader that does not wait never sees two latest rows
    */
   private async commitRows(rows: readonly CatalogRow[]): Promise<void> {
     for (const chunk of nameAlignedChunks(rows, BACKFILL_CHUNK_ROWS)) {
-      this.catalogStore.bulkUpsert(chunk, computeLatestFlags);
+      this.catalogStore.upsertNamesRecomputingFlags(chunk);
       await yieldToEventLoop();
     }
     await this.catalogStore.enforceUniqueLatestInChunks(computeLatestFlags);

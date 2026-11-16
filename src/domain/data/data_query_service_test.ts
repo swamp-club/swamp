@@ -52,6 +52,7 @@ import { BinaryContentPredicateError } from "./binary_content_predicate_error.ts
 import { ModelType } from "../models/model_type.ts";
 import { Data } from "./data.ts";
 import { createQuerySort, type QueryCursorPosition } from "./query_sort.ts";
+import { waitFor } from "@swamp-club/swamp-testing";
 
 function makeRow(overrides: Partial<CatalogRow> = {}): CatalogRow {
   return {
@@ -6993,9 +6994,9 @@ Deno.test("DataQueryService: a backfill larger than one chunk lets timers run be
   writeTypeData(dir, "test-model", 60, 20);
 
   let commits = 0;
-  const bulkUpsert = catalog.bulkUpsert.bind(catalog);
-  catalog.bulkUpsert = (rows, computeFlags) => {
-    bulkUpsert(rows, computeFlags);
+  const upsert = catalog.upsertNamesRecomputingFlags.bind(catalog);
+  catalog.upsertNamesRecomputingFlags = (rows) => {
+    upsert(rows);
     commits++;
   };
   // a timer firing with some commits made and more to come ran between them
@@ -7115,4 +7116,73 @@ Deno.test("DataQueryService.refreshTypes: leaves an unpopulated catalog to its f
 
   assertEquals(catalog.count(), 0);
   assertEquals(catalog.isPopulated(), false);
+});
+
+Deno.test("DataQueryService: a reader that does not wait for a backfill never sees two latest rows for one name", async () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-query-backfill-flags-" });
+  const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
+  using _cleanup = cleanupOnDispose(catalog, dir);
+  writeTypeData(dir, "test-model", 1, 2);
+  // a newer version the walk cannot see: written through after the walk read
+  // the name, or held only remotely
+  catalog.upsert(makeRow({ data_name: "d-0", version: 5, id: "newer" }));
+  catalog.invalidate();
+
+  let mostLatest = 0;
+  const tick = () => {
+    const latest =
+      [...catalog.iterate()].filter((row) =>
+        row.data_name === "d-0" && row.is_latest === 1
+      ).length;
+    mostLatest = Math.max(mostLatest, latest);
+    timer = setTimeout(tick, 0);
+  };
+  let timer = setTimeout(tick, 0);
+  try {
+    await new DataQueryService(
+      catalog,
+      new FileSystemUnifiedDataRepository(dir, undefined, catalog),
+    ).query("true");
+  } finally {
+    clearTimeout(timer);
+  }
+
+  assertEquals(mostLatest, 1);
+  assertEquals(latestVersions(catalog, "test-model"), ["d-0@5"]);
+});
+
+Deno.test("DataQueryService: a query never joins a backfill an invalidation overtook", async () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-query-backfill-stale-" });
+  const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
+  using _cleanup = cleanupOnDispose(catalog, dir);
+  writeTypeData(dir, "test-model", 2, 1);
+  const dataRepo = new FileSystemUnifiedDataRepository(dir, undefined, catalog);
+  let walks = 0;
+  let invalidated = false;
+  let release = () => {};
+  const held = new Promise<void>((resolve) => release = resolve);
+  const findAllGlobal = dataRepo.findAllGlobal.bind(dataRepo);
+  dataRepo.findAllGlobal = async (options) => {
+    walks++;
+    const found = await findAllGlobal(options);
+    // the first walk is overtaken by an invalidation and held until released
+    if (walks === 1) {
+      catalog.invalidate();
+      invalidated = true;
+      await held;
+    }
+    return found;
+  };
+
+  const first = new DataQueryService(catalog, dataRepo).ensurePopulated();
+  await waitFor(() => invalidated, "the first walk was overtaken");
+  const second = new DataQueryService(catalog, dataRepo).ensurePopulated();
+  try {
+    await waitFor(() => walks === 2, "the second query starts its own walk");
+    await second;
+    assertEquals(catalog.isPopulated(), true);
+  } finally {
+    release();
+    await first;
+  }
 });
