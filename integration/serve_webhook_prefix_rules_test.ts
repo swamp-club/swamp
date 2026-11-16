@@ -120,6 +120,8 @@ Deno.test("serve webhook prefix: serve answers no path under the webhook route-f
       "src/serve/serve_config.ts: prefix / via startsWith",
       // validates a configured webhook route, matches no request
       "src/serve/webhook.ts: prefix / via startsWith",
+      // checks a proxy's X-Forwarded-Prefix value, matches no request
+      "src/serve/host/forwarding_headers.ts: prefix / via startsWith",
     ],
     `serve paths overlapping ${WEBHOOK_ROUTE_PREFIX}`,
     `Webhook route files own ${WEBHOOK_ROUTE_PREFIX} and are matched before ` +
