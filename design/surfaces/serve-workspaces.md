@@ -101,26 +101,26 @@ path:
   the path reset to `/`, and resolves each route against that base as an
   absolute path (`src/worker/data_plane_client.ts`).
 
-The worker cannot simply keep its whole connect path: serve accepts a control
-socket on any path, so a worker connected straight to serve at a stray path
-such as `/ws` works today with its data plane at the root. Serve therefore
-reports the path it received the control socket on in the enroll reply
-(`connectPath`), and the worker keeps only the part of its connect path serve
-did not see: the prefix a forwarder removed. A serve that does not report a
-path, a path serve saw in full, and a path a forwarder rewrote all keep the
-root, as before. The client then joins each route onto that base instead of
-resolving it as an absolute path. An explicit `--data-plane-url` is used as
-written, path included. The proof is a test that runs every client against a
-serve stand-in behind a forwarder that strips a prefix. A client the list above
-missed fails there.
+The worker cannot keep its whole connect path, or even infer the prefix a
+forwarder removed: serve accepts a control socket on any path, so existing
+proxies that route the socket on a path of its own reach serve today with the
+data plane at the root, and either inference would move them. The prefix is
+therefore declared, never inferred. A forwarder that removes a prefix sends it
+in `X-Forwarded-Prefix`; serve reads that header only with `--trust-proxy` and
+passes it to the worker in the enroll reply (`forwardedPrefix`). The worker
+keeps the prefix only when it starts its own connect path, and the client joins
+each route onto that base instead of resolving it as an absolute path. Without
+the header every worker keeps the root, as now. An explicit `--data-plane-url`
+is used as written, path included. The proof is a test that runs every client
+against a serve stand-in behind a forwarder that strips a prefix. A client the
+list above missed fails there.
 
-Apart from reporting that path, serve needs no change for this. Behind a
-forwarder it already takes the public
-host name in `--trusted-hosts` for its `Host` and `Origin` checks, and reads
-the caller's IP from the forwarding header with `--trust-proxy`. Its `--address`
-already names the address clients use, which the owner claim compares. The URLs
-serve hands out in `/auth/info` and the device flow are the OAuth provider's,
-not its own.
+Apart from passing that header on, serve needs no change for this. Behind a
+forwarder it already takes the public host name in `--trusted-hosts` for its
+`Host` and `Origin` checks, and reads the caller's IP from the forwarding header
+with `--trust-proxy`. Its `--address` already names the address clients use,
+which the owner claim compares. The URLs serve hands out in `/auth/info` and the
+device flow are the OAuth provider's, not its own.
 
 This part stands alone: it lets an ordinary serve sit under a path on a shared
 reverse proxy. The dashboard is the exception; see [Dashboard](#dashboard).
@@ -167,7 +167,9 @@ router opens to the child, with the query, subprotocols, `Origin` and cookies
 carried over. The router passes `Authorization`, `Host` and cookies through
 untouched: each serve authenticates its own callers and the router adds no
 credential. It overwrites the forwarding header with the caller's address, so a
-caller cannot supply its own. A host that is itself behind a proxy is told so
+caller cannot supply its own, and sets `X-Forwarded-Prefix` to `/w/<name>` for
+a workspace and removes it for the root, so a worker's data plane follows the
+workspace it connected to. A host that is itself behind a proxy is told so
 in `host.yaml` and passes on the address that proxy reports. A workspace that
 is not running answers 503 with its state. An unknown name answers 404.
 
@@ -378,21 +380,21 @@ binary belong in `swamp-uat` and are not listed.
 
 ### Addresses with a path
 
-1. **The worker's data plane keeps the connect URL's path.** Serve reports the
-   path it received the control socket on in the enroll reply,
-   `dataPlaneUrlFromConnectUrl` keeps the part of the connect path serve did
-   not see, and the client joins each route onto its base instead of resolving
-   it as an absolute path. Done when a worker connected at `…/w/x` through a
-   forwarder that strips `/w/x` sends its data-plane requests under `/w/x/`,
-   and a worker connected with no path, or straight to serve at any path,
-   sends the requests it sends today (`src/worker/data_plane_client.ts`).
+1. **The worker's data plane keeps the connect URL's path.** Serve passes a
+   trusted proxy's `X-Forwarded-Prefix` to the worker in the enroll reply,
+   `dataPlaneUrlFromConnectUrl` keeps it when it starts the connect path, and
+   the client joins each route onto its base instead of resolving it as an
+   absolute path. Done when a worker connected at `…/w/x` through a forwarder
+   that strips `/w/x` and declares it sends its data-plane requests under
+   `/w/x/`, and a worker with no declared prefix sends the requests it sends
+   today (`src/worker/data_plane_client.ts`).
 2. **Every client works behind a prefix.** An integration test puts a forwarder
    that strips a prefix in front of an in-process serve and runs each client
    through it: the CLI's WebSocket and `/api/v1/request` calls, server login,
    workflow cancel, the v3 datastore client, and a worker's control socket and
-   data plane, with the worker enrolling through the forwarder so its data
-   plane follows the path serve reports. A small fix for a client that fails goes in the same PR. A large
-   one becomes its own issue. After 1.
+   data plane, with the forwarder declaring the prefix it removes so the
+   worker's data plane follows it. A small fix for a client that fails goes in
+   the same PR. A large one becomes its own issue. After 1.
 
 After these two, an ordinary serve works under a path on a shared reverse
 proxy, without its dashboard.
@@ -413,7 +415,7 @@ proxy, without its dashboard.
    hold stdin. Tests use a fake port. The `Deno.Command` adapter stays thin,
    since tests here do not spawn processes. After 3 and 4.
 6. **The router.** Prefix match, streamed HTTP forward, WebSocket relay, the
-   forwarding header, 503 and 404. It takes a lookup from name to port and
+   forwarding and prefix headers, 503 and 404. It takes a lookup from name to port and
    state, so it needs no supervisor. Done when the integration test in
    [Domain model](#domain-model) passes (`src/serve/host/`).
 7. **`swamp serve host`.** It reads `host.yaml`, scans and watches

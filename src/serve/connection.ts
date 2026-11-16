@@ -1831,7 +1831,7 @@ export function handleConnection(
   socket: WebSocket,
   ctx: ConnectionContext,
   principal: Principal | null,
-  connectPath?: string,
+  forwardedPrefix?: string,
 ): void {
   const activeRequests = new Map<string, AbortController>();
   const activeSubscriptions = new Set<string>();
@@ -1857,7 +1857,7 @@ export function handleConnection(
       },
     },
     () => socket.close(),
-    connectPath,
+    forwardedPrefix,
   );
 
   const sessionTimeout = principal

@@ -612,43 +612,48 @@ export function createDataPlaneFetch(
   return (input, init) => baseFetch(input, { ...init, client });
 }
 
-/** Routes join onto the base path; a base with no path gives the URLs it always did. */
+/** Routes join onto the base path; a base with no path resolves them at the root. */
 function routeUrl(baseUrl: string, route: string): URL {
   const base = new URL(baseUrl);
   if (!base.pathname.endsWith("/")) {
     base.pathname = `${base.pathname}/`;
   }
   // ./ keeps a colon in the route's first segment from parsing as a scheme
-  return new URL(`./${route.replace(/^\/+/, "")}`, base);
+  const url = new URL(`./${route.replace(/^\/+/, "")}`, base);
+  // dot segments must not carry the credential out of the base path
+  if (!url.pathname.startsWith(base.pathname)) {
+    throw new Error(`Data plane route ${route} leaves the base path`);
+  }
+  return url;
 }
 
 /**
- * The part of the worker's connect path that serve did not see: the prefix a
- * forwarder removed. Anything else keeps the root, as before serve reported it.
+ * A proxy's declared prefix counts only when it starts the worker's own connect
+ * path, so a proxy can shorten that path but never point it elsewhere.
  */
-function mountPrefix(connectedPath: string, servedPath?: string): string {
-  if (servedPath === undefined) {
+function mountPrefix(connectedPath: string, declaredPrefix?: string): string {
+  if (declaredPrefix === undefined) {
+    return "/";
+  }
+  const prefix = declaredPrefix.replace(/\/+$/, "");
+  if (!prefix.startsWith("/")) {
     return "/";
   }
   const connected = connectedPath.replace(/\/+$/, "");
-  const served = servedPath.replace(/\/+$/, "");
-  if (served !== "" && !served.startsWith("/")) {
+  if (connected !== prefix && !connected.startsWith(`${prefix}/`)) {
     return "/";
   }
-  if (served.length >= connected.length || !connected.endsWith(served)) {
-    return "/";
-  }
-  return `${connected.slice(0, connected.length - served.length)}/`;
+  return `${prefix}/`;
 }
 
-/** connectPath is the path serve received the control socket on, when it reports one. */
+/** forwardedPrefix is the prefix a trusted proxy declared, as serve reports it. */
 export function dataPlaneUrlFromConnectUrl(
   connectUrl: string,
-  connectPath?: string,
+  forwardedPrefix?: string,
 ): string {
   const url = new URL(connectUrl);
   url.protocol = url.protocol === "wss:" ? "https:" : "http:";
-  url.pathname = mountPrefix(url.pathname, connectPath);
+  url.pathname = mountPrefix(url.pathname, forwardedPrefix);
   url.search = "";
   url.hash = "";
   logger.debug("Derived data plane url {url}", { url: url.href });

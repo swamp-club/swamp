@@ -374,7 +374,7 @@ Deno.test({
           registerDispatchHandler({
             channel: worker.channel,
             sessionCredential: () => worker.enrollResult.sessionCredential,
-            dataPlaneUrl: o.dataPlaneUrl,
+            dataPlaneUrl: () => o.dataPlaneUrl,
             cacheDirPath: join(dir, "worker-cache"),
             capacity: 1,
             runnerCommand: RUNNER_COMMAND,

@@ -340,7 +340,7 @@ interface SocketState {
   channel: RpcChannel;
   closeSocket: (() => void) | null;
   workerName: string | null;
-  connectPath: string | undefined;
+  forwardedPrefix: string | undefined;
 }
 
 export class WorkerGateway {
@@ -424,7 +424,7 @@ export class WorkerGateway {
   attachTransport(
     transport: RpcTransport,
     close?: () => void,
-    connectPath?: string,
+    forwardedPrefix?: string,
   ): {
     feed: (raw: string) => boolean;
     closed: () => void;
@@ -433,7 +433,7 @@ export class WorkerGateway {
       channel: new RpcChannel(transport),
       closeSocket: close ?? null,
       workerName: null,
-      connectPath,
+      forwardedPrefix,
     };
     state.channel.register(
       RemoteMethod.enroll,
@@ -1298,9 +1298,9 @@ export class WorkerGateway {
         sessionExpiresAtMs: session.expiresAtMs,
         protocolVersion: params.protocolVersion,
         ...(gatePass === undefined ? {} : { gatePass }),
-        ...(state.connectPath === undefined
+        ...(state.forwardedPrefix === undefined
           ? {}
-          : { connectPath: state.connectPath }),
+          : { forwardedPrefix: state.forwardedPrefix }),
       };
     });
   }

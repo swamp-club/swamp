@@ -5430,8 +5430,8 @@ function connectForTeardown(): LiveSocket & { fed: string[] } {
   return { socket, log, fed };
 }
 
-Deno.test("handleConnection: passes the path the socket arrived on to the worker gateway", () => {
-  for (const connectPath of ["/w/x", undefined]) {
+Deno.test("handleConnection: passes the declared prefix to the worker gateway", () => {
+  for (const forwardedPrefix of ["/w/x", undefined]) {
     const seen: Array<string | undefined> = [];
     const socket = {
       readyState: WebSocket.OPEN,
@@ -5446,8 +5446,8 @@ Deno.test("handleConnection: passes the path the socket arrived on to the worker
         },
       },
     } as unknown as ConnectionContext;
-    handleConnection(socket, ctx, null, connectPath);
-    assertEquals(seen, [connectPath]);
+    handleConnection(socket, ctx, null, forwardedPrefix);
+    assertEquals(seen, [forwardedPrefix]);
     socket.onclose?.(new CloseEvent("close"));
   }
 });

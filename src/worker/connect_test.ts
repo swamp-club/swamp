@@ -1161,7 +1161,7 @@ Deno.test("runWorker: a dispatch sent before the enroll reply is never run when 
   assertInstanceOf(outcome, ChannelClosedError);
 });
 
-Deno.test("enrolledDataPlaneUrl: an orchestrator that reports no path keeps the root", () => {
+Deno.test("enrolledDataPlaneUrl: an orchestrator that reports no prefix keeps the root", () => {
   assertEquals(
     enrolledDataPlaneUrl({ url: "wss://h/w/x" }, {}),
     "https://h/",
@@ -1172,33 +1172,33 @@ Deno.test("enrolledDataPlaneUrl: an orchestrator that reports no path keeps the 
   );
 });
 
-Deno.test("enrolledDataPlaneUrl: keeps the prefix the orchestrator did not see", () => {
+Deno.test("enrolledDataPlaneUrl: keeps the prefix a trusted proxy declared", () => {
   assertEquals(
-    enrolledDataPlaneUrl({ url: "wss://h/w/x" }, { connectPath: "/" }),
+    enrolledDataPlaneUrl({ url: "wss://h/w/x" }, { forwardedPrefix: "/w/x" }),
     "https://h/w/x/",
   );
   assertEquals(
-    enrolledDataPlaneUrl({ url: "wss://h/ws" }, { connectPath: "/ws" }),
+    enrolledDataPlaneUrl({ url: "wss://h/ws" }, { forwardedPrefix: "/w/x" }),
     "https://h/",
   );
 });
 
-Deno.test("enrolledDataPlaneUrl: a connectPath that is not a string counts as absent", () => {
+Deno.test("enrolledDataPlaneUrl: a forwardedPrefix that is not a string counts as absent", () => {
   assertEquals(
     enrolledDataPlaneUrl(
       { url: "wss://h/w/x" },
-      { connectPath: 42 as unknown as string },
+      { forwardedPrefix: 42 as unknown as string },
     ),
     "https://h/",
   );
 });
 
 Deno.test("enrolledDataPlaneUrl: an explicit data plane URL is used as written", () => {
-  for (const connectPath of [undefined, "/", "/w/x"]) {
+  for (const forwardedPrefix of [undefined, "/", "/w/x"]) {
     assertEquals(
       enrolledDataPlaneUrl(
         { url: "wss://h/w/x", dataPlaneUrl: "https://dp:9443/swamp" },
-        { connectPath },
+        { forwardedPrefix },
       ),
       "https://dp:9443/swamp",
     );

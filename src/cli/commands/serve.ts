@@ -1658,6 +1658,16 @@ function forwardedHeaderValue(req: Request, name: string): string | null {
   return value && value.length > 0 ? value : null;
 }
 
+/** Only a proxy serve trusts may declare the prefix it removed. */
+export function forwardedPrefixOf(
+  req: Request,
+  trustProxy: boolean,
+): string | undefined {
+  return trustProxy
+    ? forwardedHeaderValue(req, "x-forwarded-prefix") ?? undefined
+    : undefined;
+}
+
 export function validateDashboardSessionOrigin(
   req: Request,
   tlsEnabled: boolean,
@@ -8844,7 +8854,7 @@ export const serveCommand = new Command()
                 socket,
                 connectionCtx,
                 null,
-                new URL(req.url).pathname,
+                forwardedPrefixOf(req, Boolean(trustProxy)),
               );
               return response;
             }
@@ -9026,7 +9036,7 @@ export const serveCommand = new Command()
               socket,
               connectionCtx,
               principal,
-              new URL(req.url).pathname,
+              forwardedPrefixOf(req, Boolean(trustProxy)),
             );
             return response;
           }
@@ -9054,7 +9064,7 @@ export const serveCommand = new Command()
             socket,
             connectionCtx,
             null,
-            new URL(req.url).pathname,
+            forwardedPrefixOf(req, Boolean(trustProxy)),
           );
           return response;
         }

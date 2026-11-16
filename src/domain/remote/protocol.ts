@@ -262,10 +262,10 @@ export interface EnrollResult {
    */
   gatePass?: string;
   /**
-   * the path serve received the control socket on; absent from an
-   * orchestrator that predates it, and the worker then keeps the root
+   * the X-Forwarded-Prefix a trusted proxy declared on the control socket;
+   * without it the worker keeps its data plane at the root
    */
-  connectPath?: string;
+  forwardedPrefix?: string;
 }
 
 export interface SessionRefreshResult {

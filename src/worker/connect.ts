@@ -467,16 +467,16 @@ interface GateState {
 /** An explicit --data-plane-url is used as written, path included. */
 export function enrolledDataPlaneUrl(
   options: Pick<RunWorkerOptions, "url" | "dataPlaneUrl">,
-  result: Pick<EnrollResult, "connectPath">,
+  result: Pick<EnrollResult, "forwardedPrefix">,
 ): string {
   if (options.dataPlaneUrl !== undefined) {
     return options.dataPlaneUrl;
   }
   // the reply is not schema-checked, so a malformed field counts as absent
-  const connectPath = typeof result.connectPath === "string"
-    ? result.connectPath
+  const forwardedPrefix = typeof result.forwardedPrefix === "string"
+    ? result.forwardedPrefix
     : undefined;
-  return dataPlaneUrlFromConnectUrl(options.url, connectPath);
+  return dataPlaneUrlFromConnectUrl(options.url, forwardedPrefix);
 }
 
 interface ConnectOnceArgs {
@@ -571,7 +571,7 @@ function connectOnce(args: ConnectOnceArgs): Promise<string> {
       // is complete; a failed enrollment refuses them
       const ready = Promise.withResolvers<void>();
       ready.promise.catch(() => {});
-      // per connection: a reconnect may enroll with a serve that reports no path
+      // per connection: a reconnect may enroll with a serve that reports no prefix
       let dataPlaneUrl: string | undefined;
       const handle = registerDispatchHandler({
         lifecycleTrace,

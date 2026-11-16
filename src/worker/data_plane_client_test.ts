@@ -355,38 +355,33 @@ Deno.test("dataPlaneUrlFromConnectUrl: maps ws→http and wss→https", () => {
   );
 });
 
-Deno.test("dataPlaneUrlFromConnectUrl: keeps only the prefix serve did not see", () => {
+Deno.test("dataPlaneUrlFromConnectUrl: keeps a declared prefix that starts the connect path", () => {
   const cases: Array<[string, string | undefined, string]> = [
-    // serve that does not report a path: the root, as always
+    // no prefix declared: the root, whatever the connect path
     ["wss://h/w/x", undefined, "https://h/"],
+    ["wss://h/ws", undefined, "https://h/"],
     ["ws://h:9090", undefined, "http://h:9090/"],
-    // no path at all
-    ["wss://h", "/", "https://h/"],
-    ["wss://h/", "/", "https://h/"],
-    // a forwarder removed the prefix
-    ["wss://h/w/x", "/", "https://h/w/x/"],
-    ["wss://h/w/x/", "/", "https://h/w/x/"],
-    ["wss://h/w/x", "", "https://h/w/x/"],
-    ["wss://h/w/x/ws", "/ws", "https://h/w/x/"],
-    ["wss://h/w/x/ws/", "/ws", "https://h/w/x/"],
-    ["wss://h/w/x/ws", "/ws/", "https://h/w/x/"],
-    // serve saw the whole path: a stray path, or a forwarder that keeps it
-    ["wss://h/ws", "/ws", "https://h/"],
-    ["wss://h/w/x", "/w/x", "https://h/"],
-    ["wss://h/w/x/", "/w/x", "https://h/"],
-    // not a suffix: a forwarder that rewrites the path
-    ["wss://h/a", "/b", "https://h/"],
-    ["wss://h/w/xws", "/ws", "https://h/"],
-    // a reported path longer than the connect path
-    ["wss://h/ws", "/w/x/ws", "https://h/"],
-    // a reported path that is not absolute
-    ["wss://h/w/xws", "ws", "https://h/"],
+    // a declared prefix that starts the connect path
+    ["wss://h/w/x", "/w/x", "https://h/w/x/"],
+    ["wss://h/w/x/", "/w/x", "https://h/w/x/"],
+    ["wss://h/w/x", "/w/x/", "https://h/w/x/"],
+    ["wss://h/w/x/ws", "/w/x", "https://h/w/x/"],
+    // a prefix of slash alone, or empty: the root
+    ["wss://h/w/x", "/", "https://h/"],
+    ["wss://h/w/x", "", "https://h/"],
+    // a prefix that does not start the connect path
+    ["wss://h/ws", "/w/x", "https://h/"],
+    ["wss://h/w/xy", "/w/x", "https://h/"],
+    ["wss://h/w", "/w/x", "https://h/"],
+    ["wss://h", "/w/x", "https://h/"],
+    // a prefix that is not absolute
+    ["wss://h/w/x", "w/x", "https://h/"],
   ];
-  for (const [connectUrl, connectPath, expected] of cases) {
+  for (const [connectUrl, forwardedPrefix, expected] of cases) {
     assertEquals(
-      dataPlaneUrlFromConnectUrl(connectUrl, connectPath),
+      dataPlaneUrlFromConnectUrl(connectUrl, forwardedPrefix),
       expected,
-      `${connectUrl} with ${connectPath}`,
+      `${connectUrl} with ${forwardedPrefix}`,
     );
   }
 });
@@ -428,6 +423,16 @@ Deno.test("DataPlaneClient: joins each route onto the base path", async () => {
       "https://h/w/x/data/resource",
     ]);
   }
+});
+
+Deno.test("DataPlaneClient: a route with dot segments cannot leave the base path", async () => {
+  const { client, urls } = clientAt("https://h/w/x/");
+  await assertRejects(
+    () => client.readArtifact("/data/../../y/data/t"),
+    Error,
+    "leaves the base path",
+  );
+  assertEquals(urls, []);
 });
 
 Deno.test("DataPlaneClient: a route keeps its query and a colon in its first segment", async () => {

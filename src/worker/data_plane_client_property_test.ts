@@ -30,22 +30,22 @@ const arbPath = fc.array(arbSegment, { maxLength: 5 }).chain((segments) =>
     `/${segments.join("/")}${slash && segments.length > 0 ? "/" : ""}`
   )
 );
-const arbServed = fc.oneof(
+const arbDeclared = fc.oneof(
   fc.constant(undefined),
   arbPath,
   fc.string({ maxLength: 20 }),
 );
 
-Deno.test("dataPlaneUrlFromConnectUrl: a reported path can only shorten the connect path", () => {
+Deno.test("dataPlaneUrlFromConnectUrl: a declared prefix can only shorten the connect path", () => {
   fc.assert(
     fc.property(
       fc.constantFrom("ws://h:9090", "wss://orch.internal"),
       arbPath,
-      arbServed,
-      (origin, path, served) => {
+      arbDeclared,
+      (origin, path, declared) => {
         const connect = new URL(`${origin}${path}`);
         const derived = new URL(
-          dataPlaneUrlFromConnectUrl(connect.href, served),
+          dataPlaneUrlFromConnectUrl(connect.href, declared),
         );
         assertEquals(derived.host, connect.host);
         assertEquals(

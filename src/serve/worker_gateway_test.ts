@@ -153,7 +153,10 @@ function mintRecord(name: string, createdAt: string): EnrollmentToken {
   };
 }
 
-function connectWorkerSocket(gateway: WorkerGateway, connectPath?: string): {
+function connectWorkerSocket(
+  gateway: WorkerGateway,
+  forwardedPrefix?: string,
+): {
   workerChannel: RpcChannel;
   dropSocket: () => void;
 } {
@@ -166,7 +169,7 @@ function connectWorkerSocket(gateway: WorkerGateway, connectPath?: string): {
         void Promise.resolve().then(() => workerChannel.handleRaw(data)),
     },
     () => attached.closed(),
-    connectPath,
+    forwardedPrefix,
   );
   return { workerChannel, dropSocket: () => attached.closed() };
 }
@@ -445,20 +448,20 @@ Deno.test("WorkerGateway: enrollment hands the worker this serve's gate pass", a
   assertEquals(result.gatePass, "cHJvb2Y.c2ln");
 });
 
-Deno.test("WorkerGateway: enrollment tells the worker the path its socket arrived on", async () => {
-  for (const connectPath of ["/", "/ws"]) {
+Deno.test("WorkerGateway: enrollment passes on the prefix a trusted proxy declared", async () => {
+  for (const forwardedPrefix of ["/w/x", "/"]) {
     const h = createHarness();
-    const { workerChannel } = connectWorkerSocket(h.gateway, connectPath);
+    const { workerChannel } = connectWorkerSocket(h.gateway, forwardedPrefix);
     const result = await enroll(workerChannel);
-    assertEquals(result.connectPath, connectPath);
+    assertEquals(result.forwardedPrefix, forwardedPrefix);
   }
 });
 
-Deno.test("WorkerGateway: a socket attached without a path sends no connectPath", async () => {
+Deno.test("WorkerGateway: a socket attached without a declared prefix sends no forwardedPrefix", async () => {
   const h = createHarness();
   const { workerChannel } = connectWorkerSocket(h.gateway);
   const result = await enroll(workerChannel);
-  assertEquals("connectPath" in result, false);
+  assertEquals("forwardedPrefix" in result, false);
 });
 
 Deno.test("WorkerGateway: a worker that does not ask for the pass is not sent it", async () => {
