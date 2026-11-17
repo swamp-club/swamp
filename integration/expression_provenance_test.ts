@@ -704,6 +704,95 @@ Deno.test("provenance: a guard sharing its text with a task input reads data mat
   });
 });
 
+function sharedGuardWorkflow() {
+  return workflowOf("guarded-replay", [
+    Step.create({
+      name: "capture",
+      guard: "${{ inputs.text }}",
+      task: StepTask.modelMethod("consumer", "run", {
+        value: "${{ inputs.text }}",
+        flag: "${{ false }}",
+      }),
+    }),
+  ], TEXT_INPUT);
+}
+
+async function editEvaluatedWorkflow(
+  h: { dir: string },
+  edit: (data: Record<string, unknown>) => void,
+): Promise<void> {
+  const path = join(
+    h.dir,
+    ".swamp",
+    "workflows-evaluated",
+    "workflow-guarded-replay.yaml",
+  );
+  const data = parseYaml(await Deno.readTextFile(path)) as Record<
+    string,
+    unknown
+  >;
+  edit(data);
+  await Deno.writeTextFile(path, stringifyYaml(data));
+}
+
+Deno.test("provenance: --last-evaluated replay of a guard sharing its text with a task input reads data as data", async () => {
+  await withRepo(async (h) => {
+    await h.repo.definitionRepo.save(
+      h.type,
+      consumer({ value: "${{ inputs.value }}" }),
+    );
+    const workflow = sharedGuardWorkflow();
+    await runWorkflow(h, workflow, { text: "${{ false }}" });
+    await editEvaluatedWorkflow(h, (data) => {
+      const jobs = data.jobs as { steps: { guard?: string }[] }[];
+      assertEquals(jobs[0].steps[0].guard, "${{ inputs.text }}");
+    });
+    await runWorkflow(h, workflow, { text: "${{ false }}" }, "succeeded", true);
+    assertEquals(h.executions, []);
+  });
+});
+
+for (
+  const [label, tamper] of [
+    [
+      "a provenance record marking the guard as data",
+      (data: Record<string, unknown>) => {
+        const provenance = data.provenance as { whole: string[] };
+        provenance.whole.push("jobs[0].steps[0].guard");
+      },
+    ],
+    [
+      "a guard the workflow source never wrote",
+      (data: Record<string, unknown>) => {
+        const jobs = data.jobs as { steps: { guard?: string }[] }[];
+        jobs[0].steps[0].guard = "${{ !inputs.text }}";
+      },
+    ],
+  ] as const
+) {
+  Deno.test(`provenance: --last-evaluated replay refuses ${label}`, async () => {
+    await withRepo(async (h) => {
+      await h.repo.definitionRepo.save(
+        h.type,
+        consumer({ value: "${{ inputs.value }}" }),
+      );
+      const workflow = sharedGuardWorkflow();
+      await runWorkflow(h, workflow, { text: "" });
+      assertEquals(h.executions, [{ value: "" }]);
+      await editEvaluatedWorkflow(h, tamper);
+      await runWorkflow(h, workflow, { text: "" }, "failed", true);
+      assertEquals(h.executions, [{ value: "" }]);
+      const run = await h.repo.workflowRunRepo.findLatestByWorkflowId(
+        workflow.id,
+      );
+      const errors = run?.jobs.flatMap((job) =>
+        job.steps.map((step) => step.error)
+      ).filter((error) => error !== undefined);
+      assertEquals(errors, ["UserError: Guard must be an authored expression"]);
+    });
+  });
+}
+
 Deno.test("provenance: a child workflow keeps parent data matching an authored reference literal", async () => {
   await withRepo(async (h) => {
     await h.repo.definitionRepo.save(
