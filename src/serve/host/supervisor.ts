@@ -389,6 +389,8 @@ export function createServeSupervisor(
       refuseWhenClosing();
       const entry = entryOf(id);
       entry.refusal = null;
+      // an operator bringing a stopped or failed serve back is no restart
+      if (entry.child === null) entry.unrequestedExit = false;
       apply(entry, { kind: "resume" });
     },
 

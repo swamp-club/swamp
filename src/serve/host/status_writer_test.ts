@@ -299,3 +299,17 @@ Deno.test("createStatusWriter: a status reported at any moment around the end of
     );
   }
 });
+
+Deno.test("createStatusWriter: forget during a write that then fails does not wait out a retry", async () => {
+  const { promise: failing, reject } = Promise.withResolvers<void>();
+  const writer = createStatusWriter({
+    workspacesDir: "/unused",
+    retryMs: 3_600_000,
+    write: () => failing,
+  });
+  writer.report(status({ observed: "ready" }));
+  const forgetting = writer.forget("edge-dns");
+  reject(new Error("disk full"));
+  await forgetting;
+  await writer.drain();
+});

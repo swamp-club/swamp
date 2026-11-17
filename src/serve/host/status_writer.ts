@@ -138,7 +138,7 @@ export function createStatusWriter(options: StatusWriterOptions): StatusWriter {
           }
           // no event follows a stable state such as failed, so the file is retried on a timer,
           // not on the folder watch its own write would wake; shutdown never waits on it
-          if (shuttingDown) break;
+          if (shuttingDown || slot.forgotten) break;
           slot.dirty = true;
           await waitOrWake(slot);
         }

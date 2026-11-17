@@ -408,7 +408,9 @@ The host reads the wanted files with each rescan of `workspaces/`
   once the workspace has a serve, and changes nothing: the workspace keeps the
   last state read whole, or `active` when the host has read none. A wanted file
   the scan listed but that is gone when it is read, as while an editor saves by
-  removing and recreating it, also changes nothing; the next scan decides.
+  removing and recreating it, also changes nothing; the next scan decides. A
+  scan that lists the folder in that gap reads no file, which means `active`,
+  until the next scan sees the file again.
 - A wanted file that is `active` or `suspended` with no folder beside it is left
   alone until the folder appears.
 - A folder removed by hand stops its serve, as before, and its status file is

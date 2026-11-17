@@ -773,3 +773,27 @@ Deno.test("createServeSupervisor: a resume the operator asks for after a crash i
   assertEquals(supervisor.lookup(EDGE)?.restarts, 0);
   await supervisor.shutdown();
 });
+
+Deno.test("createServeSupervisor: resuming a failed serve is no restart", async () => {
+  const { port, clock, supervisor } = harness();
+  supervisor.add(spec(EDGE));
+  for (let crash = 1; crash <= POLICY.maxCrashesInWindow; crash++) {
+    port.last(EDGE).exit(1);
+    await waitFor(
+      () => {
+        const observed = supervisor.lookup(EDGE)?.observed;
+        return observed === "backoff" || observed === "failed";
+      },
+      "the serve to back off or fail",
+    );
+    if (supervisor.lookup(EDGE)?.observed === "failed") break;
+    const live = clock.active().filter((t) => t.ms !== READY_TIMEOUT_MS);
+    clock.fire(live[live.length - 1]);
+  }
+  assertEquals(supervisor.lookup(EDGE)?.observed, "failed");
+  const before = supervisor.lookup(EDGE)!.restarts;
+  supervisor.resume(EDGE);
+  assertEquals(supervisor.lookup(EDGE)?.observed, "starting");
+  assertEquals(supervisor.lookup(EDGE)?.restarts, before);
+  await supervisor.shutdown();
+});
