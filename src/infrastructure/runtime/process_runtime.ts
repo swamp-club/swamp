@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { AsyncLocalStorage } from "node:async_hooks";
+import { keepAcrossAmbientReset } from "./ambient_context.ts";
 
 /**
  * the state one swamp process keeps for itself: writer holds, open datastore
@@ -39,6 +40,7 @@ export class ProcessRuntime {
 export const PROCESS_RUNTIME = new ProcessRuntime("process");
 
 const current = new AsyncLocalStorage<ProcessRuntime>();
+keepAcrossAmbientReset(current);
 
 export function currentProcessRuntime(): ProcessRuntime {
   return current.getStore() ?? PROCESS_RUNTIME;

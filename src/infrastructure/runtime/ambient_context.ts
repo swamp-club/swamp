@@ -26,6 +26,27 @@ import { AsyncLocalStorage } from "node:async_hooks";
 
 const rootContext = AsyncLocalStorage.snapshot();
 
-export function runOutsideAmbientContext<T>(fn: () => T): T {
-  return rootContext(fn);
+// stores that describe the process rather than a run, so a reset carries them
+const keptStores: AsyncLocalStorage<unknown>[] = [];
+
+export function keepAcrossAmbientReset<T>(store: AsyncLocalStorage<T>): void {
+  keptStores.push(store as AsyncLocalStorage<unknown>);
+}
+
+/** the kept stores' values now, to run in later from a context that lacks them */
+export type KeptStores = readonly unknown[];
+
+export function captureKeptStores(): KeptStores {
+  return keptStores.map((store) => store.getStore());
+}
+
+export function runOutsideAmbientContext<T>(
+  fn: () => T,
+  kept: KeptStores = captureKeptStores(),
+): T {
+  const within = (index: number): T =>
+    index === keptStores.length
+      ? fn()
+      : keptStores[index].run(kept[index], () => within(index + 1));
+  return rootContext(() => within(0));
 }

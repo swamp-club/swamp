@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { AsyncLocalStorage } from "node:async_hooks";
+import { keepAcrossAmbientReset } from "../runtime/ambient_context.ts";
 import { assertEquals, assertMatch, assertStringIncludes } from "@std/assert";
 import { OUTPUT_SUMMARIES_DIR } from "./output_summary_index.ts";
 import { swampPath } from "./paths.ts";
@@ -77,6 +78,8 @@ export function assertPathMatches(
 type EnvOverrides = Readonly<Record<string, string | undefined>>;
 
 const mockedEnv = new AsyncLocalStorage<EnvOverrides>();
+// a test actor's env belongs to it, as a process's does, so an ambient reset keeps it
+keepAcrossAmbientReset(mockedEnv);
 let envReadersPatched = false;
 
 // patched once and for good: overrides live in the async context, so two

@@ -17,9 +17,22 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects, assertThrows } from "@std/assert";
+import {
+  assertEquals,
+  assertRejects,
+  assertStrictEquals,
+  assertThrows,
+} from "@std/assert";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { runOutsideAmbientContext } from "./ambient_context.ts";
+import {
+  captureKeptStores,
+  runOutsideAmbientContext,
+} from "./ambient_context.ts";
+import {
+  currentProcessRuntime,
+  PROCESS_RUNTIME,
+  ProcessRuntime,
+} from "./process_runtime.ts";
 
 Deno.test("runOutsideAmbientContext: hides a store entered around the call", async () => {
   const store = new AsyncLocalStorage<string>();
@@ -69,5 +82,31 @@ Deno.test("runOutsideAmbientContext: returns the value and throws the error of f
       runOutsideAmbientContext(() => Promise.reject(new Error("async boom"))),
     Error,
     "async boom",
+  );
+});
+
+Deno.test("runOutsideAmbientContext: keeps the ProcessRuntime while it hides a run's store", async () => {
+  const runStore = new AsyncLocalStorage<string>();
+  const other = new ProcessRuntime(`other-${crypto.randomUUID()}`);
+  const seen = await other.run(() =>
+    runStore.run(
+      "a run",
+      () =>
+        runOutsideAmbientContext(() =>
+          Promise.resolve([runStore.getStore(), currentProcessRuntime()])
+        ),
+    )
+  );
+  assertEquals(seen[0], undefined);
+  assertStrictEquals(seen[1], other);
+});
+
+Deno.test("runOutsideAmbientContext: captured kept stores are re-entered from a context without them", () => {
+  const other = new ProcessRuntime(`other-${crypto.randomUUID()}`);
+  const kept = other.run(() => captureKeptStores());
+  assertStrictEquals(currentProcessRuntime(), PROCESS_RUNTIME);
+  assertStrictEquals(
+    runOutsideAmbientContext(() => currentProcessRuntime(), kept),
+    other,
   );
 });

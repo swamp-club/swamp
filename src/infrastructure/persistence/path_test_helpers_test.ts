@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { runOutsideAmbientContext } from "../runtime/ambient_context.ts";
 import {
   assertEquals,
   AssertionError,
@@ -160,4 +161,13 @@ Deno.test("withMockedEnv: code running alongside, outside fn, reads the real env
   assertEquals(Deno.env.has(name), false);
   outsideRead.resolve();
   assertEquals(await mocked, "mocked");
+});
+
+Deno.test("withMockedEnv: an ambient reset inside fn still reads the overrides", () => {
+  const name = uniqueEnvName();
+  const seen = withMockedEnv(
+    { [name]: "mocked" },
+    () => runOutsideAmbientContext(() => Deno.env.get(name)),
+  );
+  assertEquals(seen, "mocked");
 });

@@ -122,8 +122,10 @@ import {
   runVaultScopeContext,
   serviceRunVaultScope,
 } from "../../serve/run_vault_access_policy.ts";
-import { runOutsideAmbientContext } from "../../infrastructure/runtime/ambient_context.ts";
-import { currentProcessRuntime } from "../../infrastructure/runtime/process_runtime.ts";
+import {
+  captureKeptStores,
+  runOutsideAmbientContext,
+} from "../../infrastructure/runtime/ambient_context.ts";
 import {
   auditScheduledEvent,
   auditWebhookEvent,
@@ -853,15 +855,15 @@ type AnyOptions = any;
 
 /**
  * outside any ambient run store, whose vault scope, locks or leases Deno could
- * leave a handler in; inside the ProcessRuntime serve was built in, which
- * Deno.serve never carries into a handler
+ * leave a handler in; inside the kept stores serve was built in (its
+ * ProcessRuntime), which Deno.serve never carries into a handler
  */
 export function unscopedHttpHandler<A extends Deno.Addr>(
   handler: Deno.ServeHandler<A>,
 ): Deno.ServeHandler<A> {
-  const runtime = currentProcessRuntime();
+  const kept = captureKeptStores();
   return (req, info) =>
-    runOutsideAmbientContext(() => runtime.run(() => handler(req, info)));
+    runOutsideAmbientContext(() => handler(req, info), kept);
 }
 
 const logger = getSwampLogger(["serve"]);
