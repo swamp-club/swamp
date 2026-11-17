@@ -23,6 +23,7 @@ import { waitFor } from "@swamp-club/swamp-testing";
 import { UserError } from "../../domain/errors.ts";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import {
+  listeningUrl,
   readHostYaml,
   serveUntilStopped,
   type StopSignals,
@@ -91,6 +92,16 @@ class FakeHost {
     this.#finished.resolve();
   }
 }
+
+Deno.test("listeningUrl: brackets an IPv6 listener and leaves the rest as they are", () => {
+  assertEquals(listeningUrl("http", "::1", 8080), "http://[::1]:8080");
+  assertEquals(listeningUrl("https", "0.0.0.0", 443), "https://0.0.0.0:443");
+  assertEquals(listeningUrl("http", "localhost", 80), "http://localhost:80");
+  assertEquals(
+    new URL(listeningUrl("https", "fe80::1", 8443)).port,
+    "8443",
+  );
+});
 
 Deno.test("readHostYaml: reads host.yaml from the host folder", async () => {
   await withTempDir(async (dir) => {

@@ -74,7 +74,7 @@ export const serveHostCommand = new Command()
     renderer.listening({
       host: host.hostname,
       port: host.port,
-      url: `${config.protocol}://${host.hostname}:${host.port}`,
+      url: listeningUrl(config.protocol, host.hostname, host.port),
       address: config.address,
       root: config.root !== null,
       workspaces: host.workspaces.length,
@@ -82,6 +82,15 @@ export const serveHostCommand = new Command()
     await serveUntilStopped(host, PROCESS_STOP_SIGNALS);
     renderer.stopped();
   });
+
+export function listeningUrl(
+  protocol: string,
+  hostname: string,
+  port: number,
+): string {
+  const host = hostname.includes(":") ? `[${hostname}]` : hostname;
+  return `${protocol}://${host}:${port}`;
+}
 
 export interface StopSignals {
   /** the returned function unregisters the listener */

@@ -235,8 +235,10 @@ explicitly.
 A serve with auth mode `none` relies on its loopback bind and its Host check to
 stay private. Behind the router that bind no longer hides it, so a host whose
 listener is off loopback refuses to start or route to a child in auth mode
-`none`. A host on loopback with `trust-proxy: true` refuses it too, since the
-proxy in front is usually public, unless `host.yaml` sets
+`none`. A host on loopback behind a proxy refuses it too, since the proxy in
+front is usually public: one with `trust-proxy: true`, or one whose `address`
+is not a loopback name, since each child trusts that name in its Host check and
+something must forward it to a loopback listener. `host.yaml` can set
 `allow-unauthenticated-behind-proxy: true` for a proxy that authenticates every
 caller. A child reports its auth mode as `authMode` on its `--json` listening
 line. A refused child is stopped as a requested stop, never restarted, and
@@ -274,7 +276,7 @@ the field that is wrong:
 | `listen.cert-file`, `listen.key-file` | none                          | Given together; relative to the host folder                                              |
 | `root`                               | none                          | The root workspace's repo; relative to the host folder, never inside `workspaces/`; a folder without `.swamp.yaml` is refused at startup |
 | `trust-proxy`                        | `false`                       | The host is behind a proxy, whose forwarding headers it passes on                        |
-| `allow-unauthenticated-behind-proxy` | `false`                       | Admits a child in auth mode `none` behind a proxy; only with `trust-proxy` on loopback   |
+| `allow-unauthenticated-behind-proxy` | `false`                       | Admits a child in auth mode `none` behind a proxy; only on a loopback listener with `trust-proxy` or a public `address` |
 
 The host binds its listener before it starts any child, so a listener that
 cannot bind starts nothing. SIGTERM and SIGINT stop the watcher, drain every

@@ -70,7 +70,10 @@ function lookupOf(statuses: ServeStatus[]) {
 }
 
 Deno.test("noAuthAdmission: a loopback host admits every child", () => {
-  assertEquals(noAuthAdmission(config("address: http://a\n")), undefined);
+  assertEquals(
+    noAuthAdmission(config("address: http://127.0.0.1:8080\n")),
+    undefined,
+  );
 });
 
 Deno.test("noAuthAdmission: a host behind a proxy refuses only a child in auth mode none", () => {

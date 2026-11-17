@@ -130,10 +130,27 @@ Deno.test("HostConfig.parse: refuses a root inside workspaces/", () => {
   );
 });
 
-Deno.test("HostConfig.parse: allow-unauthenticated-behind-proxy needs trust-proxy on loopback", () => {
-  assertStringIncludes(
-    refusal("address: http://a\nallow-unauthenticated-behind-proxy: true\n"),
-    "allow-unauthenticated-behind-proxy applies only",
+Deno.test("HostConfig.parse: allow-unauthenticated-behind-proxy needs a loopback host behind a proxy", () => {
+  for (
+    const address of [
+      "http://127.0.0.1:8080",
+      "http://localhost",
+      "http://[::1]",
+    ]
+  ) {
+    assertStringIncludes(
+      refusal(
+        `address: ${address}\nallow-unauthenticated-behind-proxy: true\n`,
+      ),
+      "allow-unauthenticated-behind-proxy applies only",
+      address,
+    );
+  }
+  assertEquals(
+    parse(
+      "address: https://serve.acme.internal\nallow-unauthenticated-behind-proxy: true\n",
+    ).allowUnauthenticatedBehindProxy,
+    true,
   );
   assertStringIncludes(
     refusal(
@@ -149,7 +166,16 @@ Deno.test("HostConfig.parse: allow-unauthenticated-behind-proxy needs trust-prox
 });
 
 Deno.test("HostConfig.noAuthRefusal: refuses auth mode none off loopback and behind a proxy unless overridden", () => {
-  assertEquals(parse("address: http://a\n").noAuthRefusal(), null);
+  for (
+    const address of [
+      "http://127.0.0.1:8080",
+      "http://localhost",
+      "http://127.0.0.2",
+      "http://[::1]:8080",
+    ]
+  ) {
+    assertEquals(parse(`address: ${address}\n`).noAuthRefusal(), null, address);
+  }
   assertStringIncludes(
     parse(
       "address: https://a\nlisten: {host: 0.0.0.0, cert-file: c, key-file: k}\n",
@@ -165,6 +191,22 @@ Deno.test("HostConfig.noAuthRefusal: refuses auth mode none off loopback and beh
   assertEquals(
     parse(
       "address: https://a\ntrust-proxy: true\nallow-unauthenticated-behind-proxy: true\n",
+    ).noAuthRefusal(),
+    null,
+  );
+});
+
+Deno.test("HostConfig.noAuthRefusal: a loopback host whose address is a public name is behind an undeclared proxy", () => {
+  const undeclared = parse("address: https://serve.acme.internal\n");
+  assertStringIncludes(undeclared.noAuthRefusal()!, "serve.acme.internal");
+  assertStringIncludes(undeclared.noAuthRefusal()!, "not loopback");
+  assertStringIncludes(
+    undeclared.noAuthRefusal()!,
+    "allow-unauthenticated-behind-proxy",
+  );
+  assertEquals(
+    parse(
+      "address: https://serve.acme.internal\nallow-unauthenticated-behind-proxy: true\n",
     ).noAuthRefusal(),
     null,
   );

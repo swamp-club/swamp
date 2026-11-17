@@ -432,8 +432,15 @@ Deno.test("serve host: listens with TLS using the certificate host.yaml names", 
   }
 });
 
-Deno.test("serve host: behind a proxy a workspace in auth mode none is refused unless host.yaml allows it", async () => {
-  for (const allow of [false, true]) {
+Deno.test("serve host: behind a proxy, declared or not, a workspace in auth mode none is refused unless host.yaml allows it", async () => {
+  const cases = [
+    { proxy: ["trust-proxy: true"], allow: false },
+    { proxy: ["trust-proxy: true"], allow: true },
+    // a public address on a loopback listener means an undeclared proxy
+    { proxy: [], allow: false },
+    { proxy: [], allow: true },
+  ];
+  for (const { proxy, allow } of cases) {
     await using folder = await hostFolder();
     await makeRepo(join(folder.dir, "workspaces", "open"));
     await makeRepo(join(folder.dir, "workspaces", "guarded"));
@@ -441,7 +448,7 @@ Deno.test("serve host: behind a proxy a workspace in auth mode none is refused u
     const yaml = [
       "address: https://serve.acme.internal",
       "listen: {port: 0}",
-      "trust-proxy: true",
+      ...proxy,
       ...(allow ? ["allow-unauthenticated-behind-proxy: true"] : []),
     ].join("\n");
     const host = await start(folder.dir, yaml, port);

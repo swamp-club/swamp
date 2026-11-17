@@ -123,9 +123,12 @@ export class HostConfig {
     const trustProxy = yaml["trust-proxy"] ?? false;
     const allowBehindProxy = yaml["allow-unauthenticated-behind-proxy"] ??
       false;
-    if (allowBehindProxy && (!trustProxy || offLoopback)) {
+    if (
+      allowBehindProxy &&
+      (offLoopback || (!trustProxy && isLoopbackName(address)))
+    ) {
       throw invalid(
-        "allow-unauthenticated-behind-proxy applies only to a host on loopback with trust-proxy: true",
+        "allow-unauthenticated-behind-proxy applies only to a host on loopback behind a proxy: one with trust-proxy: true, or whose address is not a loopback name",
       );
     }
 
@@ -165,8 +168,18 @@ export class HostConfig {
     if (this.offLoopback) {
       return `the host listens off loopback on ${this.listen.host}, so a workspace must use auth mode token or oauth`;
     }
-    if (this.trustProxy && !this.allowUnauthenticatedBehindProxy) {
-      return "the host is behind a proxy (trust-proxy: true), so a workspace must use auth mode token or oauth; for a proxy that authenticates every caller, set allow-unauthenticated-behind-proxy: true in host.yaml";
+    if (this.allowUnauthenticatedBehindProxy) return null;
+    const override =
+      "for a proxy that authenticates every caller, set allow-unauthenticated-behind-proxy: true in host.yaml";
+    if (this.trustProxy) {
+      return `the host is behind a proxy (trust-proxy: true), so a workspace must use auth mode token or oauth; ${override}`;
+    }
+    // a loopback listener serving a public name has something forwarding to
+    // it, and each child trusts that name, so its Host check no longer hides it
+    if (!isLoopbackName(this.address)) {
+      return `the host's address names ${
+        new URL(this.address).hostname
+      }, which is not loopback, so something forwards to this host and a workspace must use auth mode token or oauth; ${override}`;
     }
     return null;
   }
@@ -189,6 +202,12 @@ function parseAddress(raw: string): string {
     throw invalid(`address ${raw} must not carry a query or fragment`);
   }
   return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
+}
+
+function isLoopbackName(address: string): boolean {
+  const hostname = new URL(address).hostname.replace(/^\[|\]$/g, "");
+  return hostname === "localhost" || hostname === "::1" ||
+    /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(hostname);
 }
 
 function isWithin(parent: string, child: string): boolean {
