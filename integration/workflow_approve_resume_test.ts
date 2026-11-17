@@ -297,7 +297,7 @@ interface FakeServe {
 
 function fakeServe(
   approveReply: Record<string, unknown>,
-  resume: { status: string } | { refuse: string },
+  resume: { status: string } | { suspend: true } | { refuse: string },
 ): FakeServe {
   const requests: FakeServe["requests"] = [];
   const server = Deno.serve(
@@ -333,6 +333,25 @@ function fakeServe(
             id: request.id,
             error: { code: "forbidden", message: resume.refuse },
           }));
+          return;
+        }
+        if ("suspend" in resume) {
+          socket.send(JSON.stringify({
+            type: "event",
+            id: request.id,
+            event: {
+              kind: "suspended",
+              run: {
+                id: RUN_ID,
+                workflowName: "wipe-drive",
+                status: "suspended",
+              },
+              jobId: "main",
+              stepId: "second-gate",
+              prompt: "approve again",
+            },
+          }));
+          socket.send(JSON.stringify({ type: "done", id: request.id }));
           return;
         }
         socket.send(JSON.stringify({
@@ -472,6 +491,60 @@ Deno.test({
       assertStringIncludes(error.message, "Not authorized");
       assertEquals(JSON.parse(lines[0]).approved, true);
       assertEquals(resumeRequests(serve).length, 1);
+    } finally {
+      await serve.shutdown();
+    }
+  },
+});
+
+const PARENT_RUN_ID = "0a5c1e8e-7f4b-4c55-9a3e-2b1c0d9e8f7a";
+
+function nestedApproveReply(): Record<string, unknown> {
+  return approveReply({
+    awaitingParent: {
+      workflowId: "parent-id",
+      workflowName: "parent-wf",
+      runId: PARENT_RUN_ID,
+      resumeCommand: `swamp workflow resume parent-wf --run ${PARENT_RUN_ID}`,
+    },
+  });
+}
+
+function logArgs(url: string): string[] {
+  return remoteArgs(url).filter((arg) => arg !== "--json");
+}
+
+Deno.test({
+  name:
+    "workflow approve --resume --server: a nested run that finishes names the parent's resume command on the same server",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const serve = fakeServe(nestedApproveReply(), { status: "succeeded" });
+    try {
+      const { lines } = await runApprove(logArgs(serve.url));
+      assertEquals(resumeRequests(serve).length, 1);
+      assertStringIncludes(
+        lines.join("\n"),
+        `Resume it with: swamp workflow resume parent-wf --run ${PARENT_RUN_ID} --server ${serve.url}`,
+      );
+    } finally {
+      await serve.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "workflow approve --resume --server: a nested run that suspends again names no parent command",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const serve = fakeServe(nestedApproveReply(), { suspend: true });
+    try {
+      const { lines } = await runApprove(logArgs(serve.url));
+      assertEquals(resumeRequests(serve).length, 1);
+      assertEquals(lines.join("\n").includes("parent-wf"), false);
     } finally {
       await serve.shutdown();
     }

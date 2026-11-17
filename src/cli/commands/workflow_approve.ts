@@ -50,7 +50,10 @@ import {
 } from "../remote_run.ts";
 import type { WorkflowApproveResponse } from "../../serve/protocol.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
-import { parentResumeCommand } from "./nested_run_hints.ts";
+import {
+  parentResumeCommand,
+  renderAwaitingParent,
+} from "./nested_run_hints.ts";
 import { quoteShellWord } from "../../domain/shell_word.ts";
 import { RunTrackerStore } from "../../infrastructure/persistence/run_tracker_store.ts";
 import {
@@ -123,7 +126,7 @@ export function renderApproveResult(
     cliCtx.logger
       .info`Serve does not resume a run a member drives: the run's owner resumes ${data.runId}`;
   }
-  // the resume prints its own next steps, the parent run's included
+  // the resume, or approve after it, names the parent run once it finishes
   if (resume?.resuming) {
     cliCtx.logger.info`Resuming run ${data.runId}`;
     return;
@@ -262,7 +265,7 @@ export const workflowApproveCommand = withRemoteOptions(
       );
       if (decision === "resume") {
         const { resumeRunOverServer } = await import("./workflow_resume.ts");
-        await resumeRunOverServer(
+        const finished = await resumeRunOverServer(
           cliCtx,
           { server, token, serverOption: options.server as string | undefined },
           {
@@ -271,6 +274,13 @@ export const workflowApproveCommand = withRemoteOptions(
             inputs: {},
           },
         );
+        // serve names the parent only to a reader of it, and only serve can
+        // find it: the run is not in this checkout
+        if (finished && approved.awaitingParent) {
+          renderAwaitingParent(cliCtx, approved.awaitingParent, {
+            server: options.server as string | undefined,
+          });
+        }
       }
       return;
     }

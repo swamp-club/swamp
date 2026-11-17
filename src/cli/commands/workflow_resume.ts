@@ -128,11 +128,12 @@ export interface WorkflowResumeRequest {
   tracestate?: string;
 }
 
+/** resolves true when the run finished, not suspended again or cut off */
 export async function resumeRunOverServer(
   cliCtx: CommandContext,
   connection: { server: string; token?: string; serverOption?: string },
   request: WorkflowResumeRequest,
-): Promise<void> {
+): Promise<boolean> {
   const abort = new AbortController();
   const timeoutMs = request.timeout
     ? parseTimerDuration(request.timeout)
@@ -154,6 +155,8 @@ export async function resumeRunOverServer(
   const disarmTimeout = timeoutMs !== undefined
     ? abortOnTimeout(abort, timeoutMs)
     : undefined;
+  const handlers = renderer.handlers();
+  let finished = false;
   try {
     // an older server ignores fromJob and resets the --from step in every
     // job that has it, so --job is sent only to one that says it honours
@@ -198,7 +201,13 @@ export async function resumeRunOverServer(
           ),
         },
       }) as AsyncIterable<WorkflowRunEvent>,
-      renderer.handlers(),
+      {
+        ...handlers,
+        completed: (e) => {
+          finished = true;
+          handlers.completed(e);
+        },
+      },
     );
   } finally {
     disarmTimeout?.();
@@ -207,6 +216,7 @@ export async function resumeRunOverServer(
   if (renderer.workflowFailed()) {
     Deno.exitCode = 1;
   }
+  return finished;
 }
 
 export async function resumeRunLocally(
