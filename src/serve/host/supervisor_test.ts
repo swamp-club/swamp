@@ -38,6 +38,7 @@ import type {
 import {
   createServeSupervisor,
   type ServeAdmission,
+  type ServeStatus,
   type ServeSupervisor,
   type SupervisorClock,
 } from "./supervisor.ts";
@@ -200,7 +201,10 @@ function spec(
   };
 }
 
-function harness(admit?: ServeAdmission): {
+function harness(
+  admit?: ServeAdmission,
+  onStatus?: (status: ServeStatus) => void,
+): {
   port: FakePort;
   clock: FakeClock;
   supervisor: ServeSupervisor;
@@ -214,6 +218,7 @@ function harness(admit?: ServeAdmission): {
     policy: POLICY,
     readyTimeoutMs: READY_TIMEOUT_MS,
     stopGraceMs: STOP_GRACE_MS,
+    onStatus,
   });
   return { port, clock, supervisor };
 }
@@ -649,5 +654,146 @@ Deno.test("createServeSupervisor: a deleted serve wanted running again starts a 
   assertEquals(port.of(EDGE).length, 2);
   await startReady(port, supervisor, EDGE, 41_002);
   assertEquals(supervisor.lookup(EDGE)?.wanted, "running");
+  await supervisor.shutdown();
+});
+
+Deno.test("createServeSupervisor: a serve added as suspended is never spawned until it is wanted running", () => {
+  const { port, supervisor } = harness();
+  supervisor.add(spec(EDGE), "suspended");
+  assertEquals(port.children.length, 0);
+  assertEquals(supervisor.lookup(EDGE)?.wanted, "suspended");
+  assertEquals(supervisor.lookup(EDGE)?.observed, "stopped");
+  supervisor.setWanted(EDGE, "running");
+  assertEquals(port.children.length, 1);
+});
+
+Deno.test("createServeSupervisor: onStatus reports each change of state once", async () => {
+  const seen: string[] = [];
+  const { port, supervisor } = harness(undefined, (status) => {
+    seen.push(`${status.wanted}/${status.observed}/${status.restarts}`);
+  });
+  supervisor.add(spec(EDGE));
+  await startReady(port, supervisor, EDGE, 41_001);
+  supervisor.reload();
+  supervisor.setWanted(EDGE, "suspended");
+  await waitFor(
+    () => supervisor.lookup(EDGE)?.observed === "stopped",
+    "the serve to stop",
+  );
+  assertEquals(seen, [
+    "running/starting/0",
+    "running/ready/0",
+    "suspended/ready/0",
+    "suspended/stopped/0",
+  ]);
+  await supervisor.shutdown();
+});
+
+Deno.test("createServeSupervisor: onStatus that throws is logged and the serve carries on", async () => {
+  const { port, supervisor } = harness(undefined, () => {
+    throw new Error("disk full");
+  });
+  supervisor.add(spec(EDGE));
+  await startReady(port, supervisor, EDGE, 41_001);
+  await supervisor.shutdown();
+});
+
+Deno.test("createServeSupervisor: restarts counts spawns after an unrequested exit, not a stop the host asked for", async () => {
+  const { port, clock, supervisor } = harness();
+  supervisor.add(spec(EDGE));
+  port.last(EDGE).exit(1);
+  await waitFor(
+    () => supervisor.lookup(EDGE)?.observed === "backoff",
+    "the serve to back off",
+  );
+  assertEquals(supervisor.lookup(EDGE)?.restarts, 0);
+  clock.fire(clock.armed(POLICY.initialBackoffMs));
+  assertEquals(supervisor.lookup(EDGE)?.restarts, 1);
+
+  await startReady(port, supervisor, EDGE, 41_001);
+  supervisor.setWanted(EDGE, "suspended");
+  await waitFor(
+    () => supervisor.lookup(EDGE)?.observed === "stopped",
+    "the serve to stop",
+  );
+  supervisor.setWanted(EDGE, "running");
+  assertEquals(port.of(EDGE).length, 3);
+  assertEquals(supervisor.lookup(EDGE)?.restarts, 1);
+
+  port.throwOnNextSpawn = true;
+  await startReady(port, supervisor, EDGE, 41_002);
+  port.last(EDGE).exit(SAFE_RESTART_EXIT_CODE);
+  await waitFor(
+    () => supervisor.lookup(EDGE)?.observed === "backoff",
+    "the serve to back off",
+  );
+  clock.fire(clock.armed(POLICY.restartDelayMs));
+  assertEquals(supervisor.lookup(EDGE)?.restarts, 2, "a failed spawn counts");
+  // the failed spawn is the second crash, so the backoff has doubled
+  clock.fire(clock.armed(POLICY.initialBackoffMs * 2));
+  assertEquals(supervisor.lookup(EDGE)?.restarts, 3);
+  await supervisor.shutdown();
+});
+
+Deno.test("createServeSupervisor: whenStopped settles once the child exits, at once with no child, and on shutdown", async () => {
+  const { port, supervisor } = harness();
+  supervisor.add(spec(EDGE), "suspended");
+  await supervisor.whenStopped(EDGE);
+
+  supervisor.setWanted(EDGE, "running");
+  const child = await startReady(port, supervisor, EDGE, 41_001);
+  child.ignoresTerminate = true;
+  let stopped = false;
+  const waiting = supervisor.whenStopped(EDGE).then(() => stopped = true);
+  supervisor.setWanted(EDGE, "deleted");
+  await Promise.resolve();
+  assertEquals(stopped, false, "a child still draining is not stopped");
+  child.exit(0);
+  await waiting;
+  assertEquals(supervisor.lookup(EDGE)?.observed, "stopped");
+
+  supervisor.setWanted(EDGE, "running");
+  await startReady(port, supervisor, EDGE, 41_002);
+  const onShutdown = supervisor.whenStopped(EDGE);
+  await supervisor.shutdown();
+  await onShutdown;
+});
+
+Deno.test("createServeSupervisor: a resume the operator asks for after a crash is no restart", async () => {
+  const { port, supervisor } = harness();
+  supervisor.add(spec(EDGE));
+  port.last(EDGE).exit(1);
+  await waitFor(
+    () => supervisor.lookup(EDGE)?.observed === "backoff",
+    "the serve to back off",
+  );
+  supervisor.setWanted(EDGE, "suspended");
+  supervisor.setWanted(EDGE, "running");
+  assertEquals(port.of(EDGE).length, 2);
+  assertEquals(supervisor.lookup(EDGE)?.restarts, 0);
+  await supervisor.shutdown();
+});
+
+Deno.test("createServeSupervisor: resuming a failed serve is no restart", async () => {
+  const { port, clock, supervisor } = harness();
+  supervisor.add(spec(EDGE));
+  for (let crash = 1; crash <= POLICY.maxCrashesInWindow; crash++) {
+    port.last(EDGE).exit(1);
+    await waitFor(
+      () => {
+        const observed = supervisor.lookup(EDGE)?.observed;
+        return observed === "backoff" || observed === "failed";
+      },
+      "the serve to back off or fail",
+    );
+    if (supervisor.lookup(EDGE)?.observed === "failed") break;
+    const live = clock.active().filter((t) => t.ms !== READY_TIMEOUT_MS);
+    clock.fire(live[live.length - 1]);
+  }
+  assertEquals(supervisor.lookup(EDGE)?.observed, "failed");
+  const before = supervisor.lookup(EDGE)!.restarts;
+  supervisor.resume(EDGE);
+  assertEquals(supervisor.lookup(EDGE)?.observed, "starting");
+  assertEquals(supervisor.lookup(EDGE)?.restarts, before);
   await supervisor.shutdown();
 });

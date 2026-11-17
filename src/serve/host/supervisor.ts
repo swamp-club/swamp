@@ -73,6 +73,8 @@ export interface ServeSupervisorOptions {
   readonly policy?: ManagedServePolicy;
   readonly readyTimeoutMs?: number;
   readonly stopGraceMs?: number;
+  /** called inside the event that changed the status; it must not block */
+  readonly onStatus?: (status: ServeStatus) => void;
 }
 
 export interface ServeStatus {
@@ -86,14 +88,18 @@ export interface ServeStatus {
   /** why admission stopped the serve; cleared when it is wanted running */
   readonly refusal: string | null;
   readonly crashCount: number;
+  /** spawns after an exit the host did not ask for, over the host's lifetime */
+  readonly restarts: number;
   readonly lastExit: ServeChildExit | null;
 }
 
 export interface ServeSupervisor {
-  add(spec: ServeChildSpec): void;
+  add(spec: ServeChildSpec, wanted?: WantedServeState): void;
   setWanted(id: ServeId, wanted: WantedServeState): void;
   resume(id: ServeId): void;
   lookup(id: ServeId): ServeStatus | undefined;
+  /** settles once the serve has no live child */
+  whenStopped(id: ServeId): Promise<void>;
   /** returns how many ready children were asked */
   reload(): number;
   /** stops every child through its drain path; changes no wanted state */
@@ -118,12 +124,17 @@ interface Entry {
   cancelRetry: (() => void) | null;
   /** the ready deadline, then the kill escalation, of the live child */
   cancelStopTimer: (() => void) | null;
+  restarts: number;
+  /** the last child exited without being asked to, so the next spawn is a restart */
+  unrequestedExit: boolean;
+  stoppedWaiters: (() => void)[];
+  notified: string | null;
 }
 
 export function createServeSupervisor(
   options: ServeSupervisorOptions,
 ): ServeSupervisor {
-  const { processPort, admit } = options;
+  const { processPort, admit, onStatus } = options;
   const clock = options.clock ?? SYSTEM_CLOCK;
   const policy = parseManagedServePolicy(
     options.policy ?? DEFAULT_MANAGED_SERVE_POLICY,
@@ -166,6 +177,48 @@ export function createServeSupervisor(
     const { next, action } = entry.serve.step(event, clock.now());
     entry.serve = next;
     carryOut(entry, action);
+    settle(entry);
+  };
+
+  const statusOf = (entry: Entry): ServeStatus => {
+    const { serve, child } = entry;
+    return {
+      id: serve.id,
+      wanted: serve.wanted,
+      observed: serve.observed,
+      port: serve.observed === "ready" ? child?.port ?? null : null,
+      authMode: child?.authMode ?? null,
+      refusal: entry.refusal,
+      crashCount: serve.crashCount,
+      restarts: entry.restarts,
+      lastExit: entry.lastExit,
+    };
+  };
+
+  const settle = (entry: Entry) => {
+    if (entry.child === null && entry.stoppedWaiters.length > 0) {
+      const waiters = entry.stoppedWaiters;
+      entry.stoppedWaiters = [];
+      for (const resolve of waiters) resolve();
+    }
+    if (onStatus === undefined) return;
+    const status = statusOf(entry);
+    const key = JSON.stringify([
+      status.wanted,
+      status.observed,
+      status.refusal,
+      status.restarts,
+    ]);
+    if (key === entry.notified) return;
+    entry.notified = key;
+    try {
+      onStatus(status);
+    } catch (error) {
+      logger.error("Reporting the status of serve {serve} failed: {error}", {
+        serve: serveIdKey(entry.spec.id),
+        error,
+      });
+    }
   };
 
   const carryOut = (entry: Entry, action: ManagedServeAction) => {
@@ -190,12 +243,15 @@ export function createServeSupervisor(
   };
 
   const spawn = (entry: Entry) => {
+    if (entry.unrequestedExit) entry.restarts++;
+    entry.unrequestedExit = false;
     let handle: ServeChild;
     try {
       handle = processPort.spawn(entry.spec);
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       entry.lastExit = { code: null, stderrTail: [reason] };
+      entry.unrequestedExit = true;
       apply(entry, { kind: "exited", code: null });
       return;
     }
@@ -261,6 +317,7 @@ export function createServeSupervisor(
     entry.cancelStopTimer = null;
     entry.child = null;
     entry.lastExit = exit;
+    entry.unrequestedExit = !child.requested;
     if (exit.code === SAFE_RESTART_EXIT_CODE && wasReady) {
       logger.info("Serve {serve} exited for a safe restart", {
         serve: serveIdKey(entry.spec.id),
@@ -293,7 +350,7 @@ export function createServeSupervisor(
   };
 
   return {
-    add(spec) {
+    add(spec, wanted = "running") {
       refuseWhenClosing();
       const key = serveIdKey(spec.id);
       if (entries.has(key)) {
@@ -310,15 +367,21 @@ export function createServeSupervisor(
         refusal: null,
         cancelRetry: null,
         cancelStopTimer: null,
+        restarts: 0,
+        unrequestedExit: false,
+        stoppedWaiters: [],
+        notified: null,
       };
       entries.set(key, entry);
-      apply(entry, { kind: "wanted", wanted: "running" });
+      apply(entry, { kind: "wanted", wanted });
     },
 
     setWanted(id, wanted) {
       refuseWhenClosing();
       const entry = entryOf(id);
       if (wanted === "running") entry.refusal = null;
+      // a serve stopped on request starts again on request, which is no restart
+      else if (entry.child === null) entry.unrequestedExit = false;
       apply(entry, { kind: "wanted", wanted });
     },
 
@@ -326,23 +389,22 @@ export function createServeSupervisor(
       refuseWhenClosing();
       const entry = entryOf(id);
       entry.refusal = null;
+      // an operator bringing a stopped or failed serve back is no restart
+      if (entry.child === null) entry.unrequestedExit = false;
       apply(entry, { kind: "resume" });
     },
 
     lookup(id) {
       const entry = entries.get(serveIdKey(id));
-      if (entry === undefined) return undefined;
-      const { serve, child } = entry;
-      return {
-        id: serve.id,
-        wanted: serve.wanted,
-        observed: serve.observed,
-        port: serve.observed === "ready" ? child?.port ?? null : null,
-        authMode: child?.authMode ?? null,
-        refusal: entry.refusal,
-        crashCount: serve.crashCount,
-        lastExit: entry.lastExit,
-      };
+      return entry === undefined ? undefined : statusOf(entry);
+    },
+
+    whenStopped(id) {
+      const entry = entryOf(id);
+      if (entry.child === null) return Promise.resolve();
+      const { promise, resolve } = Promise.withResolvers<void>();
+      entry.stoppedWaiters.push(resolve);
+      return promise;
     },
 
     reload() {

@@ -20,12 +20,37 @@
 import { join } from "@std/path";
 import { parseWorkspaceName } from "../../domain/workspace/workspace_name.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import { hostedWorkspaceFileOf } from "../../infrastructure/persistence/hosted_workspace_file_repository.ts";
 
 const logger = getSwampLogger(["serve", "host", "workspaces"]);
 
 export const REPO_MARKER_FILE = ".swamp.yaml";
 export const DEFAULT_RESCAN_MS = 5_000;
 const DEFAULT_DEBOUNCE_MS = 250;
+
+// hidden, so a scan passes over a folder while it is being removed
+const DELETING_FOLDER_PATTERN =
+  /^\.([a-z0-9][a-z0-9-]{0,62})\.deleting-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+export function deletingFolderName(name: string): string {
+  return `.${parseWorkspaceName(name)}.deleting-${crypto.randomUUID()}`;
+}
+
+/** the workspace a hidden removal folder belonged to, or null for any other entry */
+export function deletingFolderOwner(entry: string): string | null {
+  const owner = DELETING_FOLDER_PATTERN.exec(entry)?.[1];
+  if (owner === undefined) return null;
+  // the name rule decides, so a removal never drifts from it
+  try {
+    return parseWorkspaceName(owner);
+  } catch {
+    return null;
+  }
+}
+
+export function isDeletingFolderName(entry: string): boolean {
+  return deletingFolderOwner(entry) !== null;
+}
 
 export interface SkippedEntry {
   readonly name: string;
@@ -36,29 +61,49 @@ export interface WorkspaceScan {
   /** sorted */
   readonly workspaces: readonly string[];
   readonly skipped: readonly SkippedEntry[];
+  /** the workspaces with a wanted file, with or without a folder; sorted */
+  readonly wantedFiles: readonly string[];
+  /** folders an interrupted removal left under their hidden name */
+  readonly leftovers: readonly string[];
+  /** performance.now() before the folder was listed */
+  readonly startedAt: number;
 }
 
 /** a missing folder holds no workspaces; hidden entries are passed over silently */
 export async function scanWorkspaces(dir: string): Promise<WorkspaceScan> {
+  const startedAt = performance.now();
   const workspaces: string[] = [];
   const skipped: SkippedEntry[] = [];
+  const wantedFiles: string[] = [];
+  const leftovers: string[] = [];
   let entries: Deno.DirEntry[];
   try {
     entries = await Array.fromAsync(Deno.readDir(dir));
   } catch (error) {
     if (error instanceof Deno.errors.NotFound) {
-      return { workspaces, skipped };
+      return { workspaces, skipped, wantedFiles, leftovers, startedAt };
     }
     throw error;
   }
   for (const entry of entries) {
-    if (entry.name.startsWith(".")) continue;
+    if (entry.name.startsWith(".")) {
+      // a removal renames whatever is there, a link or a file included
+      if (isDeletingFolderName(entry.name)) leftovers.push(entry.name);
+      continue;
+    }
+    const file = hostedWorkspaceFileOf(entry.name);
+    if (file !== null) {
+      if (file.kind === "wanted") wantedFiles.push(file.name);
+      continue;
+    }
     const reason = await skipReason(dir, entry.name);
     if (reason === null) workspaces.push(entry.name);
     else skipped.push({ name: entry.name, reason });
   }
   workspaces.sort();
-  return { workspaces, skipped };
+  wantedFiles.sort();
+  leftovers.sort();
+  return { workspaces, skipped, wantedFiles, leftovers, startedAt };
 }
 
 async function skipReason(dir: string, name: string): Promise<string | null> {
@@ -101,6 +146,8 @@ export interface WorkspaceWatcherOptions {
   /** the workspaces the caller already runs; changes are reported against it */
   readonly initial: readonly string[];
   readonly onChange: (change: WorkspaceChange) => void | Promise<void>;
+  /** every rescan, changed or not, before onChange */
+  readonly onRescan?: (scan: WorkspaceScan) => void | Promise<void>;
   readonly rescanMs?: number;
   readonly debounceMs?: number;
 }
@@ -152,6 +199,8 @@ export function watchWorkspaces(
     const scan = await scanWorkspaces(dir);
     if (stopped) return;
     skipLog.report(scan.skipped, rescanMs);
+    await options.onRescan?.(scan);
+    if (stopped) return;
     const current = new Set(scan.workspaces);
     const added = scan.workspaces.filter((name) => !known.has(name));
     const removed = [...known].filter((name) => !current.has(name)).sort();
