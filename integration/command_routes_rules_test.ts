@@ -46,6 +46,7 @@ import {
   ACCESS_ROUTES,
   ACCESS_TOKEN_ROUTES,
 } from "../src/cli/commands/access_routes.ts";
+import { SERVE_ROUTES } from "../src/cli/commands/serve_routes.ts";
 import {
   BEHAVIOR_GROUP_WORDS,
   METHOD_LEVEL_WORDS,
@@ -126,6 +127,11 @@ const GROUP_TABLES: readonly GroupTable[] = [
     path: ["access", "token"],
     file: "src/cli/commands/access_routes.ts",
     routes: ACCESS_TOKEN_ROUTES,
+  },
+  {
+    path: ["serve"],
+    file: "src/cli/commands/serve_routes.ts",
+    routes: SERVE_ROUTES,
   },
 ];
 
@@ -384,6 +390,28 @@ Deno.test("command routes: no command module is in the static import closure of 
       "graph on every invocation. Load it through its row in\n" +
       "src/cli/root_routes.ts, or move what startup needs out of\n" +
       "src/cli/commands/.",
+  );
+});
+
+Deno.test("command routes: a serve subcommand path never reaches serve.ts statically", async () => {
+  const serveModule = "src/cli/commands/serve.ts";
+  const entries = [
+    "src/cli/commands/serve_group.ts",
+    ...SERVE_ROUTES.map((route) => route.module),
+  ];
+  const reaching: string[] = [];
+  for (const entry of entries) {
+    if ((await staticImportClosure(entry)).has(serveModule)) {
+      reaching.push(entry);
+    }
+  }
+  assertPinnedSet(
+    reaching,
+    [],
+    "serve group modules whose static import closure reaches serve.ts",
+    "The serve group imports serve.ts only for bare swamp serve, so a\n" +
+      "subcommand loads without the server. Move what the subcommand needs\n" +
+      "from serve.ts into serve_options.ts or serve_startup_settings.ts.",
   );
 });
 

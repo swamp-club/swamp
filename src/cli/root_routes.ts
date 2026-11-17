@@ -275,9 +275,10 @@ export const ROOT_ROUTES: readonly RootRoute[] = [
       "Start a WebSocket API server for workflow and behavior execution.",
     aliases: [],
     hidden: false,
-    module: "src/cli/commands/serve.ts",
+    module: "src/cli/commands/serve_group.ts",
     needsFullTree: false,
-    load: async () => (await import("./commands/serve.ts")).serveCommand,
+    load: async (rest) =>
+      (await import("./commands/serve_group.ts")).createServeCommand(rest),
   },
   {
     name: "agent",

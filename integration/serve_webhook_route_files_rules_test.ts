@@ -86,6 +86,7 @@ Deno.test("webhook route files: only pinned modules import the loader or the rou
     [
       "src/cli/commands/serve.ts -> src/serve/webhook_reload.ts",
       "src/cli/commands/serve.ts -> src/serve/webhook_route_files.ts",
+      "src/cli/commands/serve_check_config.ts -> src/serve/webhook_route_files.ts",
       "src/serve/extension_reload.ts -> src/serve/webhook_reload.ts",
       "src/serve/webhook_reload.ts -> src/serve/webhook_route_files.ts",
     ],

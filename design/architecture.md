@@ -138,6 +138,8 @@ groups load only the subcommand argv names, through their own tables
 (`data_routes.ts`, `workflow_routes.ts`, `extension_routes.ts`,
 `vault_routes.ts`, `datastore_routes.ts`); a new subcommand of any of them gets
 a row there. `access` and `access token` do the same through `access_routes.ts`.
+`serve` does the same through `serve_routes.ts`; only bare `swamp serve`, its
+own flags and its own help load `serve.ts`, the server itself.
 `behavior`, `model` and `model method` do the same through `model_routes.ts`,
 which defines each shared subcommand once and lists it in each spelling's own
 order.

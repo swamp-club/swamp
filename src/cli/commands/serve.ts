@@ -93,15 +93,7 @@ import {
   type WorkflowRunId,
 } from "../../domain/workflows/workflow_id.ts";
 import { errorPaths, markErrorPaths, UserError } from "../../domain/errors.ts";
-import { normalizeOwnerAddress } from "../../domain/datastore_v3/datastore_owner.ts";
-import { SIGNAL_WAIT_MAX_TIMEOUT_SECONDS } from "../../domain/workflows/signal_wait.ts";
 import {
-  MAX_TIMER_DELAY_MS,
-  parseTimeout,
-  parseTimerDuration,
-} from "../duration_parser.ts";
-import {
-  buildServeAuthConfig,
   findIneffectiveRestrictions,
   type ServeAuthConfig,
 } from "../../domain/access/serve_auth_config.ts";
@@ -162,7 +154,6 @@ import {
   auditPolicyFrom,
   diffAuditConfig,
 } from "../../serve/serve_audit_reload.ts";
-
 import {
   emitServeConfigNotLanded,
   emitServeConfigReloaded,
@@ -172,19 +163,12 @@ import {
   type GrantReloadPrepared,
 } from "../../serve/serve_grant_reload.ts";
 import { summarizeServeReload } from "../../serve/serve_reload_summary.ts";
+import { readProcessStartTime } from "../../infrastructure/process/process_kill.ts";
 import {
-  readProcessCommand,
-  readProcessStartTime,
-} from "../../infrastructure/process/process_kill.ts";
-import {
-  probeServePid,
-  processExists,
-  readServePidSidecar,
   removePidFileIfOurs,
   writeServePidFiles,
 } from "../../serve/serve_pid_file.ts";
 import {
-  checkRouteFiles,
   checkWebhookRoutesDir,
   loadWebhookRouteFiles,
   shadowedRouteFileMessage,
@@ -195,7 +179,6 @@ import {
 import { emitWebhookRoutesApplied } from "../../serve/webhook_route_audit.ts";
 import { WebhookRoutesPoller } from "../../serve/webhook_routes_poller.ts";
 import { webhookSchemeKeepRefusal } from "../../serve/webhook_verifiers.ts";
-import { resolveWebhooksDir } from "../resolve_webhooks_dir.ts";
 import {
   cachedUnlessRejected,
   createTokenAdmissionChecker,
@@ -266,9 +249,7 @@ import {
   normalizeDashboardOrigin,
   resolveDashboardSessionForOrigin,
 } from "../../serve/dashboard_session_handler.ts";
-import {
-  ControlPlaneDashboardSessionStore,
-} from "../../serve/dashboard_session_store.ts";
+import { ControlPlaneDashboardSessionStore } from "../../serve/dashboard_session_store.ts";
 import {
   traceHttpRequests,
   withHttpServerSpan,
@@ -276,7 +257,6 @@ import {
 import {
   OAUTH_RESOLVED_ADMINS_KEY,
   resolveOAuthClientCredentials,
-  SECRET_WITHOUT_CLIENT_ID_MESSAGE,
 } from "../../serve/oauth_registration.ts";
 import { VaultService } from "../../domain/vaults/vault_service.ts";
 import {
@@ -366,11 +346,7 @@ import {
 } from "../../serve/bookkeeping_gc.ts";
 import { resolveAuditStoreRetentionDays } from "../../domain/audit/audit_service.ts";
 import { RetentionPolicy } from "../../domain/retention/retention_policy.ts";
-import {
-  DEFAULT_TOKEN_GC_GRACE_PERIOD_MS,
-  DEFAULT_TOKEN_GC_INTERVAL_MS,
-  ServerTokenGcService,
-} from "../../serve/server_token_gc_service.ts";
+import { ServerTokenGcService } from "../../serve/server_token_gc_service.ts";
 import {
   createServerTokenGcDeps,
   createServerTokenGcRepos,
@@ -390,40 +366,17 @@ import {
 } from "../../domain/remote/remote_dispatch.ts";
 import { setWorkerPoolReader } from "../../domain/remote/worker_pool.ts";
 import { createServeWorkerPoolReader } from "../../serve/worker_pool_reader.ts";
-import {
-  isDeniedEnvVar,
-  parseDispatchEnvAllow,
-} from "../../domain/remote/environment_snapshot.ts";
+import { isDeniedEnvVar } from "../../domain/remote/environment_snapshot.ts";
 import {
   enableServeOutput,
   getSwampLogger,
 } from "../../infrastructure/logging/logger.ts";
-import {
-  createServiceScheduler,
-  resolveServiceMode,
-} from "../../infrastructure/daemon/service_scheduler_factory.ts";
-import {
-  renderDaemonDisabled,
-  renderDaemonEnabled,
-  renderDaemonStatus,
-  toServiceMode,
-} from "../../presentation/output/serve_daemon_output.ts";
-import {
-  renderServeCheckConfig,
-  type TokenSecretsKeyCheck,
-  type WebhookRouteFileError,
-  type WebhookRouteWarning,
-} from "../../presentation/output/serve_check_config_output.ts";
-import type { TokenSecretsKeyRef } from "../../domain/vaults/token_secrets_key.ts";
-import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
 import { ensureSupportedDatastoreFormat } from "../../infrastructure/persistence/datastore_format_guard.ts";
 import {
   apiKeySourceName,
   CLUB_API_KEY_FILE_FLAG,
   resolveApiKey,
 } from "../../infrastructure/persistence/api_key_source.ts";
-import { selectCheckConfigToken } from "../serve_check_config_token.ts";
-import { groupCommandAction } from "../group_action.ts";
 import { consumeStream, withDefaults } from "../../libswamp/stream.ts";
 import {
   createModelDeleteDeps,
@@ -597,15 +550,6 @@ import {
   withExtensionMutation,
 } from "../../serve/extension_reload.ts";
 import { refreshLocalModelsForRun } from "../../serve/local_model_refresh.ts";
-import {
-  CA_CERT_DESCRIPTION,
-  CA_CERT_FLAG,
-  requestServerResponse,
-  resolveServerTokenFromOptions,
-  resolveServeUrl,
-  TOKEN_FILE_DESCRIPTION,
-} from "../remote_run.ts";
-import { validateServerRepoExclusivity } from "./access_helpers.ts";
 import { VERSION } from "../../infrastructure/runtime/build_info.ts";
 import {
   registerInstance,
@@ -624,14 +568,9 @@ import {
   ClubHeartbeatService,
   DEFAULT_CLUB_HEARTBEAT_INTERVAL_MS,
 } from "../../serve/club_heartbeat_service.ts";
-import {
-  SERVE_ACTION_PATH,
-  SERVE_REQUEST_PATH,
-  type ServeReloadResponse,
-} from "../../serve/protocol.ts";
+import { SERVE_ACTION_PATH, SERVE_REQUEST_PATH } from "../../serve/protocol.ts";
 import { handleHttpActionRequest } from "../../serve/http_action_route.ts";
 import { handleHttpRequest } from "../../serve/http_request_route.ts";
-import { createServeReloadRenderer } from "../../presentation/renderers/serve_reload.ts";
 import {
   type PolicyReloadMode,
   PolicySnapshotLoader,
@@ -646,8 +585,6 @@ import {
   type GrantFileError,
 } from "../../domain/access/grant_file.ts";
 import {
-  checkServeGrantFiles,
-  checkServeGrantFileUsernames,
   readServeGrantFiles,
   repoGrantFileName,
   serveGrantFileUsernames,
@@ -657,7 +594,6 @@ import {
   type ParsedGrantSource,
   resolveGrantFileUsernames,
   unresolvableUsernames,
-  type UsernameLookup,
   usernameSubjectsNeedOAuthMessage,
 } from "../../domain/access/grant_username_resolution.ts";
 import {
@@ -682,10 +618,7 @@ import { GRANT_MODEL_TYPE } from "../../domain/models/access/grant_model.ts";
 import { GROUP_MODEL_TYPE } from "../../domain/models/access/group_model.ts";
 import { cleanupEmptyParentDirs } from "../../infrastructure/persistence/directory_cleanup.ts";
 import { basename, join, resolve } from "@std/path";
-import type { RepoMarkerData } from "../../infrastructure/persistence/repo_marker_repository.ts";
-import {
-  RepoMarkerRepository,
-} from "../../infrastructure/persistence/repo_marker_repository.ts";
+import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import {
   DEFAULT_STALE_TTL_MS,
@@ -694,7 +627,6 @@ import {
 } from "../../infrastructure/persistence/run_tracker_store.ts";
 import {
   getSwampConfigDir,
-  getSwampDataDir,
   swampPath,
 } from "../../infrastructure/persistence/paths.ts";
 import { DefaultDatastorePathResolver } from "../../infrastructure/persistence/default_datastore_path_resolver.ts";
@@ -720,7 +652,6 @@ import { ConfigPoller } from "../../serve/config_poller.ts";
 import { computeFileContentHashIfExists } from "../../domain/extensions/extension_package_cache.ts";
 import { RuntimeDataPoller } from "../../serve/runtime_data_poller.ts";
 import { createSyncGate } from "../../serve/sync_gate.ts";
-
 import {
   DEFAULT_HEARTBEAT_INTERVAL_MS,
   InstanceHeartbeatService,
@@ -763,7 +694,6 @@ import {
   ContinuationSweepService,
   type ContinuationSweepStart,
   decideContinuationSweepStart,
-  DEFAULT_CONTINUATION_SWEEP_INTERVAL_MS,
   heldSignalSweeper,
   sweepContinuations,
 } from "../../serve/continuation_sweep_service.ts";
@@ -845,7 +775,6 @@ import {
 } from "../../serve/peer_auth.ts";
 import {
   advertiseAddressInCleartext,
-  normalizeAdvertiseAddress,
   serializeServeLeader,
   SERVE_LEADER_KEY,
   type ServeLeader,
@@ -854,7 +783,42 @@ import {
   coLocatedTokenKeyWarning,
   TOKEN_SECRETS_KEY_RECORD,
 } from "../../serve/token_key_exposure.ts";
-
+import {
+  ADDRESS_DESCRIPTION,
+  ADVERTISE_ADDRESS_DESCRIPTION,
+  CLUB_API_KEY_FILE_DESCRIPTION,
+  DISPATCH_ENV_ALLOW_HELP,
+  OAUTH_CLIENT_SECRET_FILE_DESCRIPTION,
+  SERVE_CA_CERT_DESCRIPTION,
+  SERVE_DESCRIPTION,
+} from "./serve_options.ts";
+import {
+  RECONCILIATION_JITTER_MS,
+  resolveServeStartupSettings,
+  type ServeStartupSettings,
+  webhookRouteExtensionDirs,
+} from "./serve_startup_settings.ts";
+import {
+  checkConfigCommand,
+  formatGrantFileErrorLines,
+} from "./serve_check_config.ts";
+import { reloadCommand } from "./serve_reload.ts";
+import { daemonCommand } from "./serve_daemon.ts";
+export { checkOAuthClientSecret } from "./serve_check_config.ts";
+export {
+  assertOffLoopbackSecurity,
+  buildServeDaemonEnv,
+  collectServeExtraArgs,
+  parseContinuationSweepInterval,
+  parseDatastorePollInterval,
+  parseMaxSignalWaitTimeout,
+  parseShutdownDrainTimeout,
+  parseShutdownListenerGrace,
+  parseTokenGcSettings,
+  parseWebhookRoutesPoll,
+  resolveServeStartupSettings,
+  validateServeDaemonArgs,
+} from "./serve_startup_settings.ts";
 const PENDING_INTERRUPTED_MAX = 10_000;
 
 /** what a reload's prepare phase settled before anything changed */
@@ -877,13 +841,6 @@ const SETTLED_RUN_PUSH_TIMEOUT_MS = 30_000;
 const V3_UPKEEP_STOP_BOUND_MS = 5_000;
 
 const RUN_RECORD_REFRESH_TIMEOUT_MS = 10_000;
-
-const DISPATCH_ENV_ALLOW_HELP =
-  "Comma-separated environment variable names; only these ship to workers with each " +
-  "dispatch (case-insensitive, never HOME, PATH, SWAMP_* or the other denylisted names). " +
-  "Unset ships serve's whole environment minus the denylist. To ship none, set " +
-  "'dispatch-env-allow: []' in serve.yaml or an empty SWAMP_DISPATCH_ENV_ALLOW " +
-  "(env: SWAMP_DISPATCH_ENV_ALLOW)";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -1602,10 +1559,6 @@ function nestedOf(
   };
 }
 
-const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
-
-const RECONCILIATION_JITTER_MS = 500;
-
 const HEALTH_SNAPSHOT_MAX_AGE_MS = 1_000;
 
 /**
@@ -1613,25 +1566,6 @@ const HEALTH_SNAPSHOT_MAX_AGE_MS = 1_000;
  * long a tag edit takes to change which entries a non-admin reader sees.
  */
 const HEALTH_RESOURCE_CACHE_TTL_MS = 5_000;
-
-export function assertOffLoopbackSecurity(
-  host: string,
-  tlsEnabled: boolean,
-  authMode: string,
-): void {
-  if (LOOPBACK_HOSTS.has(host)) return;
-
-  if (!tlsEnabled) {
-    throw new UserError(
-      "Off-loopback binding requires TLS — provide --cert-file and --key-file, or bind to 127.0.0.1",
-    );
-  }
-  if (authMode === "none") {
-    throw new UserError(
-      "Off-loopback binding requires authentication — set --auth-mode token or --auth-mode oauth, or bind to 127.0.0.1",
-    );
-  }
-}
 
 /**
  * Validates browser-facing API requests only for the deprecated no-auth mode.
@@ -1761,31 +1695,6 @@ function isTrustedDashboardOrigin(
   });
 }
 
-/**
- * pins both data and config dirs: pinning only SWAMP_HOME would move the config
- * dir and hide the login credentials, crash-looping token and oauth daemons
- */
-export function buildServeDaemonEnv(): Record<string, string> {
-  return {
-    SWAMP_HOME: resolve(getSwampDataDir()),
-    SWAMP_CONFIG_DIR: resolve(getSwampConfigDir()),
-  };
-}
-
-const ADDRESS_DESCRIPTION =
-  "The address clients reach this serve at, as they put it in serverAddress. " +
-  "Required to write a v3 datastore 'swamp datastore claim' gave to that address";
-
-const CLUB_API_KEY_FILE_DESCRIPTION =
-  "Path to a file containing the collective API key (oauth:manage scope) " +
-  "used for headless OAuth registration, username lookup, instance " +
-  "registration and heartbeat; overrides SWAMP_API_KEY_FILE and SWAMP_API_KEY";
-
-const OAUTH_CLIENT_SECRET_FILE_DESCRIPTION =
-  "Path to a file containing the secret of the OAuth client named by " +
-  "--oauth-client-id; used for this run only and never stored. Overrides " +
-  "SWAMP_OAUTH_CLIENT_SECRET_FILE and SWAMP_OAUTH_CLIENT_SECRET";
-
 // read on every repo, so an unreadable file is refused where no leader link uses it
 export async function loadServeCaCerts(
   path: string | undefined,
@@ -1808,304 +1717,6 @@ async function readServeCaCert(path: string): Promise<string> {
   }
 }
 
-const ADVERTISE_ADDRESS_DESCRIPTION =
-  "This node's own http(s) address, as the other serve nodes sharing its " +
-  "v3 datastore reach it. Followers forward writes to the leader at this " +
-  "address; without it a node bound to a wildcard or loopback host cannot " +
-  "be forwarded to";
-
-const SERVE_CA_CERT_DESCRIPTION =
-  "PEM file of CA certificates to trust, besides the system store, when " +
-  "this node forwards to its team's leader (a relative path resolves " +
-  "against the repository)";
-
-async function checkWebhookRouteFiles(
-  repoDir: string,
-  merged: MergedServeOptions,
-): Promise<{
-  directoryError?: string;
-  errors: WebhookRouteFileError[];
-  warnings: WebhookRouteWarning[];
-}> {
-  let marker: RepoMarkerData | null = null;
-  try {
-    marker = await new RepoMarkerRepository().read(RepoPath.create(repoDir));
-  } catch {
-    // no marker: serve falls back to the default webhook extensions dir too
-  }
-  const flags = merged.webhook ?? [];
-  const operator = flags.length > 0
-    ? flags.map((spec) => ({
-      route: spec.split(":")[0],
-      source: "flag" as const,
-    }))
-    : (merged.webhookConfigs ?? []).map((entry) => ({
-      route: entry.route,
-      source: "config" as const,
-    }));
-  const check = await checkRouteFiles(
-    resolveServePath(repoDir, merged.webhookRoutesDir),
-    webhookRouteExtensionDirs(repoDir, marker),
-    operator,
-  );
-  return {
-    ...(check.directoryError !== undefined
-      ? { directoryError: check.directoryError }
-      : {}),
-    errors: check.refused.map((refused) => ({
-      file: refused.file,
-      ...(refused.route !== undefined ? { route: refused.route } : {}),
-      message: refused.message,
-    })),
-    warnings: check.shadowed.map((shadow) => ({
-      route: shadow.route,
-      workflow: shadow.workflow,
-      reason: `shadowed by ${
-        shadow.by === "flag" ? "a --webhook flag" : "the serve config"
-      }`,
-      message: shadowedRouteFileMessage(shadow),
-    })),
-  };
-}
-
-/** where extension code lives; a webhook routes directory may sit in none */
-function webhookRouteExtensionDirs(
-  repoDir: string,
-  marker: RepoMarkerData | null,
-): string[] {
-  return [
-    resolve(repoDir, resolveWebhooksDir(marker)),
-    join(repoDir, "extensions"),
-    join(repoDir, ".swamp"),
-  ];
-}
-
-export function collectServeExtraArgs(options: AnyOptions): string[] {
-  const args: string[] = [];
-  if (options.config) {
-    args.push("--config", options.config as string);
-  }
-  if (options.schedule === false) {
-    args.push("--no-schedule");
-  }
-  if (options.grantsFile) {
-    args.push("--grants-file", options.grantsFile as string);
-  }
-  if (options.address) {
-    args.push("--address", options.address as string);
-  }
-  if (options.advertiseAddress) {
-    args.push("--advertise-address", options.advertiseAddress as string);
-  }
-  if (options.caCert) {
-    args.push("--ca-cert", options.caCert as string);
-  }
-  if (options.grantsDir) {
-    args.push("--grants-dir", options.grantsDir as string);
-  }
-  if (options.webhookRoutesDir) {
-    args.push("--webhook-routes-dir", options.webhookRoutesDir as string);
-  }
-  if (options.webhookRoutesPoll) {
-    args.push("--webhook-routes-poll", options.webhookRoutesPoll as string);
-  }
-  if (options.grantReload && options.grantReload !== "manual") {
-    args.push("--grant-reload", options.grantReload as string);
-  }
-  const webhooks = options.webhook as string[] | undefined;
-  if (webhooks) {
-    for (const spec of webhooks) {
-      args.push("--webhook", spec);
-    }
-  }
-  if (options.authMode && options.authMode !== "none") {
-    args.push("--auth-mode", options.authMode as string);
-  }
-  if (options.admins) {
-    args.push("--admins", options.admins as string);
-  }
-  if (options.allowedCollectives) {
-    args.push("--allowed-collectives", options.allowedCollectives as string);
-  }
-  if (options.allowedUsers) {
-    args.push("--allowed-users", options.allowedUsers as string);
-  }
-  if (options.oauthProvider) {
-    args.push("--oauth-provider", options.oauthProvider as string);
-  }
-  if (options.oauthClientId) {
-    args.push("--oauth-client-id", options.oauthClientId as string);
-  }
-  if (options.oauthClientName) {
-    args.push("--oauth-client-name", options.oauthClientName as string);
-  }
-  if (options.clubApiKeyFile) {
-    // The daemon runs from the repo directory, so a path relative to the
-    // shell that ran `daemon enable` must be made absolute here.
-    args.push(
-      CLUB_API_KEY_FILE_FLAG,
-      resolve(options.clubApiKeyFile as string),
-    );
-  }
-  if (options.oauthClientSecretFile) {
-    args.push(
-      OAUTH_CLIENT_SECRET_FILE_FLAG,
-      resolve(options.oauthClientSecretFile as string),
-    );
-  }
-  if (options.groupsField) {
-    args.push("--groups-field", options.groupsField as string);
-  }
-  if (options.restrictedModelTypes) {
-    args.push(
-      "--restricted-model-types",
-      options.restrictedModelTypes as string,
-    );
-  }
-  if (options.restrictedCommands) {
-    args.push(
-      "--restricted-commands",
-      options.restrictedCommands as string,
-    );
-  }
-  if (options.approveRequiresExplicitGrant) {
-    args.push("--approve-requires-explicit-grant");
-  }
-  if (options.signalRequiresExplicitGrant) {
-    args.push("--signal-requires-explicit-grant");
-  }
-  if (options.tagRequiresExplicitGrant) {
-    args.push("--tag-requires-explicit-grant");
-  }
-  if (options.keepOauthClientInVault) {
-    args.push("--keep-oauth-client-in-vault");
-  }
-  if (options.groupRefreshInterval) {
-    args.push(
-      "--group-refresh-interval",
-      options.groupRefreshInterval as string,
-    );
-  }
-  if (options.trustProxy) {
-    args.push("--trust-proxy");
-  }
-  if (options.wsIdleTimeout) {
-    args.push("--ws-idle-timeout", options.wsIdleTimeout as string);
-  }
-  if (options.queueTimeout) {
-    args.push("--queue-timeout", options.queueTimeout as string);
-  }
-  if (options.verifyOnEnroll) {
-    args.push("--verify-on-enroll");
-  }
-  if (options.trustedHosts) {
-    args.push("--trusted-hosts", options.trustedHosts as string);
-  }
-  if (options.dispatchEnvAllow) {
-    args.push("--dispatch-env-allow", options.dispatchEnvAllow as string);
-  }
-  if (options.heartbeatInterval) {
-    args.push("--heartbeat-interval", options.heartbeatInterval as string);
-  }
-  if (options.staleTtl) {
-    args.push("--stale-ttl", options.staleTtl as string);
-  }
-  if (options.reconciliationInterval) {
-    args.push(
-      "--reconciliation-interval",
-      options.reconciliationInterval as string,
-    );
-  }
-  if (options.hydrationTimeout) {
-    args.push("--hydration-timeout", options.hydrationTimeout as string);
-  }
-  if (options.shutdownDrainTimeout) {
-    args.push(
-      "--shutdown-drain-timeout",
-      options.shutdownDrainTimeout as string,
-    );
-  }
-  if (options.shutdownListenerGrace) {
-    args.push(
-      "--shutdown-listener-grace",
-      options.shutdownListenerGrace as string,
-    );
-  }
-  if (options.datastorePollInterval) {
-    args.push(
-      "--datastore-poll-interval",
-      options.datastorePollInterval as string,
-    );
-  }
-  if (options.continuationSweepInterval) {
-    args.push(
-      "--continuation-sweep-interval",
-      options.continuationSweepInterval as string,
-    );
-  }
-  if (options.maxSignalWaitTimeout) {
-    args.push(
-      "--max-signal-wait-timeout",
-      options.maxSignalWaitTimeout as string,
-    );
-  }
-  if (options.tokenGcInterval) {
-    args.push("--token-gc-interval", options.tokenGcInterval as string);
-  }
-  if (options.tokenGcGracePeriod) {
-    args.push(
-      "--token-gc-grace-period",
-      options.tokenGcGracePeriod as string,
-    );
-  }
-  if (options.remoteOnly) {
-    args.push("--remote-only");
-  }
-  if (options.reusePort) {
-    args.push("--reuse-port");
-  }
-  if (options.maxConcurrentRuns !== undefined) {
-    args.push(
-      "--max-concurrent-runs",
-      String(options.maxConcurrentRuns),
-    );
-  }
-  if (options.maxConcurrentScheduledRuns !== undefined) {
-    args.push(
-      "--max-concurrent-scheduled-runs",
-      String(options.maxConcurrentScheduledRuns),
-    );
-  }
-  if (options.maxConcurrentWebhookRuns !== undefined) {
-    args.push(
-      "--max-concurrent-webhook-runs",
-      String(options.maxConcurrentWebhookRuns),
-    );
-  }
-  if (options.maxRunsPerPrincipal !== undefined) {
-    args.push(
-      "--max-runs-per-principal",
-      String(options.maxRunsPerPrincipal),
-    );
-  }
-  if (options.maxRunDuration) {
-    args.push("--max-run-duration", options.maxRunDuration as string);
-  }
-  if (options.hotReload) {
-    args.push("--hot-reload");
-  }
-  if (options.enableInternalApi) {
-    args.push("--enable-internal-api");
-  }
-  if (options.dashboard) {
-    args.push("--dashboard");
-  }
-  if (options.autoResume) {
-    args.push("--auto-resume");
-  }
-  return args;
-}
-
 export async function readTlsFile(
   kind: "certificate" | "private key",
   path: string,
@@ -2124,42 +1735,6 @@ export async function readTlsFile(
       [path, ...errorPaths(cause)],
     );
   }
-}
-
-export function validateServeDaemonArgs(
-  options: AnyOptions,
-  repoDir: string,
-  unitEnv: Readonly<Record<string, string>>,
-): ServeStartupSettings {
-  const unitArgs = [
-    "--repo-dir",
-    repoDir,
-    "--port",
-    String(options.port),
-    "--host",
-    options.host as string,
-  ];
-  if (options.certFile) {
-    unitArgs.push("--cert-file", options.certFile as string);
-  }
-  if (options.keyFile) {
-    unitArgs.push("--key-file", options.keyFile as string);
-  }
-  for (const arg of collectServeExtraArgs(options)) {
-    unitArgs.push(arg);
-  }
-
-  const configFile = loadServeConfig(
-    options.config as string | undefined,
-    repoDir,
-  );
-  const merged = mergeServeOptions(
-    configFile,
-    options,
-    parseExplicitFlags(unitArgs),
-    (name) => unitEnv[name],
-  );
-  return resolveServeStartupSettings(merged);
 }
 
 /**
@@ -2183,22 +1758,6 @@ export function isUnreachableBindHost(host: string): boolean {
     /^(0+:){7}0*[01]$/.test(bare);
 }
 
-const DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS = 30_000;
-const DEFAULT_SHUTDOWN_LISTENER_GRACE_MS = 1_000;
-
-// with reuse-port the kernel stops handing this process connections only once
-// it stops listening, and no load balancer needs time to notice
-export function parseShutdownListenerGrace(
-  raw: string | undefined,
-  reusePort: boolean,
-): number {
-  if (raw === undefined) {
-    return reusePort ? 0 : DEFAULT_SHUTDOWN_LISTENER_GRACE_MS;
-  }
-  if (/^0+(ms|mo|[smhdwy])?$/i.test(raw.trim())) return 0;
-  return parseTimerDuration(raw, "--shutdown-listener-grace");
-}
-
 /** an operator who bounds the drain also bounds how long shutdown lingers */
 export function boundedListenerGraceMs(
   graceMs: number,
@@ -2215,64 +1774,6 @@ export function listenerGraceElapsed(
   const left = startedAt + graceMs - now();
   if (left <= 0) return Promise.resolve();
   return new Promise((resolve) => setTimeout(resolve, left));
-}
-
-export function parseShutdownDrainTimeout(raw: string | undefined): number {
-  if (raw === undefined) return DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS;
-  if (/^0+(ms|mo|[smhdwy])?$/i.test(raw.trim())) return 0;
-  return parseTimerDuration(raw, "--shutdown-drain-timeout");
-}
-
-export function parseDatastorePollInterval(
-  raw: string | undefined,
-): number | undefined {
-  if (raw === undefined) return undefined;
-  if (/^\d+ms$/i.test(raw.trim())) {
-    throw new UserError(
-      `--datastore-poll-interval must be in whole seconds or larger units (minimum 1s, e.g. 1s, 30s, 1m); got ${raw}`,
-    );
-  }
-  return parseTimerDuration(raw, "--datastore-poll-interval");
-}
-
-export function parseWebhookRoutesPoll(
-  raw: string | undefined,
-): number | undefined {
-  if (raw === undefined || raw.trim().toLowerCase() === "off") return undefined;
-  if (/^\d+ms$/i.test(raw.trim())) {
-    throw new UserError(
-      `--webhook-routes-poll must be off or whole seconds or larger units (minimum 1s, e.g. 10s, 30s, 1m); got ${raw}`,
-    );
-  }
-  return parseTimerDuration(raw, "--webhook-routes-poll");
-}
-
-const DEFAULT_GROUP_REFRESH_MS = 4 * 60 * 60 * 1000;
-
-export function parseContinuationSweepInterval(
-  raw: string | undefined,
-): number {
-  if (raw === undefined) return DEFAULT_CONTINUATION_SWEEP_INTERVAL_MS;
-  if (/^0+(s|m|h)?$/i.test(raw.trim())) return 0;
-  if (/^\d+ms$/i.test(raw.trim())) {
-    throw new UserError(
-      `--continuation-sweep-interval must be in whole seconds or larger units (minimum 1s, e.g. 1s, 30s, 1m), or 0 to disable; got ${raw}`,
-    );
-  }
-  return parseTimerDuration(raw, "--continuation-sweep-interval");
-}
-
-export function parseMaxSignalWaitTimeout(
-  raw: string | undefined,
-): number | undefined {
-  if (raw === undefined) return undefined;
-  const seconds = parseTimeout(raw, "--max-signal-wait-timeout") / 1000;
-  if (seconds > SIGNAL_WAIT_MAX_TIMEOUT_SECONDS) {
-    throw new UserError(
-      `--max-signal-wait-timeout (${raw}) is more than the one year (${SIGNAL_WAIT_MAX_TIMEOUT_SECONDS}s) any wait may ask for`,
-    );
-  }
-  return seconds;
 }
 
 /**
@@ -2297,1206 +1798,9 @@ export function teamModeManagedConfigWarning(
   return "Team mode needs managedConfig on this v3 datastore. Without it, behavior definitions stay in each checkout, and serve refuses a workflow run a member drives when its behaviors exist only in their checkout; runs serve starts itself (--server, triggers, schedules) are unaffected, so a serve no member writes through can ignore this. To keep definitions in the datastore, run `swamp datastore config migrate`";
 }
 
-export interface TokenGcSettings {
-  readonly intervalMs: number;
-  readonly gracePeriodMs: number;
-}
-
-export function parseTokenGcSettings(
-  interval: string | undefined,
-  gracePeriod: string | undefined,
-): TokenGcSettings {
-  return {
-    intervalMs: interval === undefined
-      ? DEFAULT_TOKEN_GC_INTERVAL_MS
-      : parseTokenGcDuration(interval, "--token-gc-interval", true),
-    gracePeriodMs: gracePeriod === undefined
-      ? DEFAULT_TOKEN_GC_GRACE_PERIOD_MS
-      : parseTokenGcDuration(gracePeriod, "--token-gc-grace-period", false),
-  };
-}
-
-function parseTokenGcDuration(
-  raw: string,
-  flagName: string,
-  drivesTimer: boolean,
-): number {
-  const trimmed = raw.trim();
-  if (/^0+(ms|mo|[smhdwy])?$/i.test(trimmed)) return 0;
-  if (/^\d+ms$/i.test(trimmed)) {
-    throw new UserError(
-      `${flagName} must be in whole seconds or larger units (e.g. 30s, 1h); got ${raw}`,
-    );
-  }
-  return drivesTimer
-    ? parseTimerDuration(raw, flagName)
-    : parseTimeout(raw, flagName);
-}
-
-export interface ServeStartupSettings {
-  authConfig: ServeAuthConfig;
-  /**
-   * address clients reach this serve at; serve writes a claimed v3 datastore
-   * only when it is the owner's
-   */
-  ownerAddress?: string;
-  /**
-   * this node's address as its team's other nodes reach it; the leader record
-   * names it so followers can forward
-   */
-  advertiseAddress?: string;
-  tlsEnabled: boolean;
-  wsIdleTimeoutSeconds?: number;
-  queueTimeoutMs?: number;
-  heartbeatIntervalMs?: number;
-  staleTtlMs?: number;
-  reconciliationIntervalMs?: number;
-  shutdownDrainTimeoutMs: number;
-  shutdownListenerGraceMs: number;
-  hydrationTimeoutMs: number;
-  datastorePollIntervalMs?: number;
-  webhookRoutesPollMs?: number;
-  continuationSweepIntervalMs: number;
-  maxSignalWaitTimeoutSeconds?: number;
-  tokenGcSettings: TokenGcSettings;
-  /** 0 when group refresh is off */
-  groupRefreshMs: number;
-  dispatchEnvAllow?: readonly string[];
-  maxConcurrentRuns?: number;
-  maxConcurrentScheduledRuns?: number;
-  maxConcurrentWebhookRuns?: number;
-  maxRunsPerPrincipal?: number;
-  maxRunDurationMs?: number;
-  grantReloadMode: "manual" | "auto";
-}
-
-export function resolveServeStartupSettings(
-  merged: MergedServeOptions,
-): ServeStartupSettings {
-  const { certFile, keyFile } = merged;
-  if ((certFile && !keyFile) || (!certFile && keyFile)) {
-    throw new UserError(
-      "Both --cert-file and --key-file must be provided together for TLS",
-    );
-  }
-  const tlsEnabled = Boolean(certFile && keyFile);
-  const ownerAddress = merged.address === undefined
-    ? undefined
-    : normalizeOwnerAddress(merged.address);
-  const advertiseAddress = merged.advertiseAddress === undefined
-    ? undefined
-    : normalizeAdvertiseAddress(merged.advertiseAddress);
-
-  const wsIdleTimeoutRaw = merged.wsIdleTimeout;
-  let wsIdleTimeoutSeconds: number | undefined;
-  if (wsIdleTimeoutRaw !== undefined) {
-    if (wsIdleTimeoutRaw === "0") {
-      wsIdleTimeoutSeconds = 0;
-    } else {
-      wsIdleTimeoutSeconds = Math.round(
-        parseTimeout(wsIdleTimeoutRaw) / 1000,
-      );
-    }
-  }
-
-  const queueTimeoutRaw = merged.queueTimeout;
-  let queueTimeoutMs: number | undefined;
-  if (queueTimeoutRaw !== undefined) {
-    const normalized = queueTimeoutRaw.trim().replace(/^0[smhdw].*$/i, "0");
-    queueTimeoutMs = normalized === "0"
-      ? 0
-      : parseTimeout(queueTimeoutRaw, "--queue-timeout");
-  }
-
-  const heartbeatIntervalMs = merged.heartbeatInterval !== undefined
-    ? parseTimerDuration(merged.heartbeatInterval, "--heartbeat-interval")
-    : undefined;
-
-  const staleTtlMs = merged.staleTtl !== undefined
-    ? parseTimeout(merged.staleTtl, "--stale-ttl")
-    : undefined;
-
-  const reconciliationIntervalMs = merged.reconciliationInterval !== undefined
-    ? parseTimerDuration(
-      merged.reconciliationInterval,
-      "--reconciliation-interval",
-      MAX_TIMER_DELAY_MS - RECONCILIATION_JITTER_MS,
-    )
-    : undefined;
-
-  const shutdownDrainTimeoutMs = parseShutdownDrainTimeout(
-    merged.shutdownDrainTimeout,
-  );
-  const shutdownListenerGraceMs = parseShutdownListenerGrace(
-    merged.shutdownListenerGrace,
-    merged.reusePort,
-  );
-
-  const hydrationTimeoutMs = merged.hydrationTimeout !== undefined
-    ? parseTimerDuration(merged.hydrationTimeout, "--hydration-timeout")
-    : 60_000;
-
-  const datastorePollIntervalMs = parseDatastorePollInterval(
-    merged.datastorePollInterval,
-  );
-
-  const webhookRoutesPollMs = parseWebhookRoutesPoll(merged.webhookRoutesPoll);
-
-  const continuationSweepIntervalMs = parseContinuationSweepInterval(
-    merged.continuationSweepInterval,
-  );
-
-  const maxSignalWaitTimeoutSeconds = parseMaxSignalWaitTimeout(
-    merged.maxSignalWaitTimeout,
-  );
-
-  const tokenGcSettings = parseTokenGcSettings(
-    merged.tokenGcInterval,
-    merged.tokenGcGracePeriod,
-  );
-
-  const dispatchEnvAllow = parseDispatchEnvAllow(merged.dispatchEnvAllow);
-
-  let groupRefreshMs = DEFAULT_GROUP_REFRESH_MS;
-  if (merged.groupRefreshInterval !== undefined) {
-    const normalized = merged.groupRefreshInterval.trim().replace(
-      /^0[smhdw].*$/i,
-      "0",
-    );
-    groupRefreshMs = normalized === "0" ? 0 : parseTimerDuration(
-      merged.groupRefreshInterval,
-      "--group-refresh-interval",
-    );
-  }
-
-  const maxConcurrentRuns = merged.maxConcurrentRuns;
-  if (
-    maxConcurrentRuns !== undefined &&
-    (!Number.isInteger(maxConcurrentRuns) || maxConcurrentRuns < 1)
-  ) {
-    throw new UserError(
-      `--max-concurrent-runs must be a positive integer, got ${maxConcurrentRuns}`,
-    );
-  }
-  const maxConcurrentScheduledRuns = merged.maxConcurrentScheduledRuns;
-  if (
-    maxConcurrentScheduledRuns !== undefined &&
-    (!Number.isInteger(maxConcurrentScheduledRuns) ||
-      maxConcurrentScheduledRuns < 1)
-  ) {
-    throw new UserError(
-      `--max-concurrent-scheduled-runs must be a positive integer, got ${maxConcurrentScheduledRuns}`,
-    );
-  }
-  const maxConcurrentWebhookRuns = merged.maxConcurrentWebhookRuns;
-  if (
-    maxConcurrentWebhookRuns !== undefined &&
-    (!Number.isInteger(maxConcurrentWebhookRuns) ||
-      maxConcurrentWebhookRuns < 1)
-  ) {
-    throw new UserError(
-      `--max-concurrent-webhook-runs must be a positive integer, got ${maxConcurrentWebhookRuns}`,
-    );
-  }
-  const maxRunsPerPrincipal = merged.maxRunsPerPrincipal;
-  if (
-    maxRunsPerPrincipal !== undefined &&
-    (!Number.isInteger(maxRunsPerPrincipal) || maxRunsPerPrincipal < 1)
-  ) {
-    throw new UserError(
-      `--max-runs-per-principal must be a positive integer, got ${maxRunsPerPrincipal}`,
-    );
-  }
-  const maxRunDurationMs = merged.maxRunDuration !== undefined
-    ? parseTimerDuration(String(merged.maxRunDuration), "--max-run-duration")
-    : undefined;
-
-  const authConfig = buildServeAuthConfig({
-    authMode: merged.authMode,
-    admins: merged.admins,
-    allowedCollectives: merged.allowedCollectives,
-    allowedUsers: merged.allowedUsers,
-    oauthProvider: merged.oauthProvider,
-    oauthClientId: merged.oauthClientId,
-    groupsField: merged.groupsField,
-    restrictedModelTypes: merged.restrictedModelTypes,
-    restrictedCommands: merged.restrictedCommands,
-    approveRequiresExplicitGrant: merged.approveRequiresExplicitGrant,
-    signalRequiresExplicitGrant: merged.signalRequiresExplicitGrant,
-    tagRequiresExplicitGrant: merged.tagRequiresExplicitGrant,
-  });
-
-  assertOffLoopbackSecurity(merged.host, tlsEnabled, authConfig.mode);
-
-  const grantReloadMode = merged.grantReload;
-  if (grantReloadMode !== "manual" && grantReloadMode !== "auto") {
-    throw new UserError(
-      `Invalid --grant-reload value "${grantReloadMode}": must be "manual" or "auto"`,
-    );
-  }
-
-  return {
-    authConfig,
-    tlsEnabled,
-    ...(ownerAddress !== undefined ? { ownerAddress } : {}),
-    ...(advertiseAddress !== undefined ? { advertiseAddress } : {}),
-    wsIdleTimeoutSeconds,
-    queueTimeoutMs,
-    heartbeatIntervalMs,
-    staleTtlMs,
-    reconciliationIntervalMs,
-    shutdownDrainTimeoutMs,
-    shutdownListenerGraceMs,
-    hydrationTimeoutMs,
-    datastorePollIntervalMs,
-    ...(webhookRoutesPollMs !== undefined ? { webhookRoutesPollMs } : {}),
-    continuationSweepIntervalMs,
-    maxSignalWaitTimeoutSeconds,
-    tokenGcSettings,
-    groupRefreshMs,
-    ...(dispatchEnvAllow !== undefined ? { dispatchEnvAllow } : {}),
-    maxConcurrentRuns,
-    maxConcurrentScheduledRuns,
-    maxConcurrentWebhookRuns,
-    maxRunsPerPrincipal,
-    maxRunDurationMs,
-    grantReloadMode,
-  };
-}
-
-const daemonEnableCommand = new Command()
-  .name("enable")
-  .description("Enable swamp serve as a system daemon (launchd/systemd)")
-  .option(
-    "--user",
-    "Install as a per-user service (systemd --user / launchd agent)",
-  )
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .option(
-    "--config <path:string>",
-    "Path to serve config file (default: .swamp/serve.yaml; a relative path resolves against the repository)",
-  )
-  .option("--port <port:number>", "Port for the daemon to listen on", {
-    default: 9090,
-  })
-  .option("--host <host:string>", "Host for the daemon to bind to", {
-    default: "127.0.0.1",
-  })
-  .option(
-    "--address <url:string>",
-    ADDRESS_DESCRIPTION,
-  )
-  .option("--advertise-address <url:string>", ADVERTISE_ADDRESS_DESCRIPTION)
-  .option("--ca-cert <path:string>", SERVE_CA_CERT_DESCRIPTION)
-  .option("--no-schedule", "Disable scheduled workflow execution")
-  .option(
-    "--cert-file <path:string>",
-    "Path to PEM-encoded TLS certificate (a relative path resolves against the repository)",
-  )
-  .option(
-    "--key-file <path:string>",
-    "Path to PEM-encoded TLS private key (a relative path resolves against the repository)",
-  )
-  .option(
-    "--grants-file <path:string>",
-    "Path to an external grants YAML file loaded at startup (a relative path resolves against the repository); its grants are stored with source file:grants-file",
-  )
-  .option(
-    "--grants-dir <path:string>",
-    "Path to an additional directory of grants YAML files, read alongside the repository grants/ directory (a relative path resolves against the repository); their grants are stored with source file:grants-dir/<filename>",
-  )
-  .option(
-    "--webhook-routes-dir <path:string>",
-    "Directory of webhook route files, one route per YAML file, loaded at startup and on 'swamp serve reload' (default: webhook-routes; a relative path resolves against the repository; env: SWAMP_WEBHOOK_ROUTES_DIR)",
-  )
-  .option(
-    "--webhook-routes-poll <duration:string>",
-    "Poll the webhook routes directory at this interval and apply changed route files without 'swamp serve reload'; a change goes live once two polls agree, one to two intervals after it lands (default: off; minimum: 1s; env: SWAMP_WEBHOOK_ROUTES_POLL)",
-  )
-  .option(
-    "--grant-reload <mode:string>",
-    "Policy snapshot reload mode: manual (default) or auto",
-    { default: "manual" },
-  )
-  .option(
-    "--webhook <spec:string>",
-    "Register a webhook endpoint: <route>:<workflow>:<secret>[:<scheme>[:<header>[:<prefix>]]]. " +
-      "scheme is one of github (default), jira, linear, stripe, slack, generic, " +
-      "or a webhook extension type (@collective/name). " +
-      "Secret may use @env=VAR to read from an environment variable, " +
-      "@file=/path to read from a file, or @vault=<vault>:<key> to read " +
-      "from a configured vault (avoids secrets in argv). " +
-      "Flag routes replace the serve config's webhooks list and stay fixed " +
-      "until serve restarts; list routes under webhooks in serve.yaml to " +
-      "change them with 'swamp serve reload'",
-    { collect: true },
-  )
-  .option(
-    "--auth-mode <mode:string>",
-    "Authentication mode: none (default, deprecated), token, or oauth",
-    { default: "none" },
-  )
-  .option(
-    "--admins <principals:string>",
-    "Comma-separated principal IDs for admin access",
-  )
-  .option(
-    "--allowed-collectives <list:string>",
-    "Comma-separated collective slugs for OAuth admission policy",
-  )
-  .option(
-    "--allowed-users <list:string>",
-    "Comma-separated swamp-club usernames or user:<sub> subjects for OAuth admission policy",
-  )
-  .option(
-    "--oauth-provider <url:string>",
-    "OAuth authorization server URL (default: https://swamp-club.com)",
-  )
-  .option(
-    "--oauth-client-id <id:string>",
-    "OAuth client ID (env: SWAMP_OAUTH_CLIENT_ID). When set, serve never " +
-      "registers and needs the client's secret from --oauth-client-secret-file " +
-      "or its stored copy; when omitted, a client is registered on first start " +
-      "(headless with a collective key holding oauth:manage).",
-  )
-  .option(
-    `${OAUTH_CLIENT_SECRET_FILE_FLAG} <path:string>`,
-    OAUTH_CLIENT_SECRET_FILE_DESCRIPTION,
-  )
-  .option(
-    `${CLUB_API_KEY_FILE_FLAG} <path:string>`,
-    CLUB_API_KEY_FILE_DESCRIPTION,
-  )
-  .option(
-    "--oauth-client-name <name:string>",
-    "OAuth client name used during registration (env: SWAMP_OAUTH_CLIENT_NAME). " +
-      "Defaults to swamp-serve-{repoName}-{hostname}.",
-  )
-  .option(
-    "--groups-field <field:string>",
-    "Userinfo field the collectives are read from (default: collectives)",
-  )
-  .option(
-    "--restricted-model-types <types:string>",
-    "Comma-separated behavior types whose behaviors only admins may create, run, edit or delete, along with their data and the workflow steps that run them (e.g. command/shell,@acme/deploy); a leading @ is ignored when matching, so @acme/deploy and acme/deploy are the same entry. Requires --auth-mode token or oauth",
-  )
-  .option(
-    "--restricted-commands <cmds:string>",
-    "Comma-separated server commands that require admin authority (e.g. datastore.namespace.list,extension.install); names match exactly. Requires --auth-mode token or oauth",
-  )
-  .option(
-    "--approve-requires-explicit-grant",
-    "Require a grant that names approve to decide a manual approval gate; " +
-      "a run grant alone no longer implies approve. Off by default. " +
-      "Requires --auth-mode token or oauth " +
-      "(env: SWAMP_APPROVE_REQUIRES_EXPLICIT_GRANT)",
-  )
-  .option(
-    "--signal-requires-explicit-grant",
-    "Require a grant that names signal to deliver a signal to a workflow's wait; " +
-      "a run grant alone no longer implies signal. Off by default. " +
-      "Requires --auth-mode token or oauth " +
-      "(env: SWAMP_SIGNAL_REQUIRES_EXPLICIT_GRANT)",
-  )
-  .option(
-    "--tag-requires-explicit-grant",
-    "Require a grant that names tag to change a behavior's or workflow's tags; " +
-      "a write grant alone no longer implies tag. Off by default. " +
-      "Requires --auth-mode token or oauth " +
-      "(env: SWAMP_TAG_REQUIRES_EXPLICIT_GRANT)",
-  )
-  .option(
-    "--keep-oauth-client-in-vault",
-    "Leave oauth-client-id and oauth-client-secret in the user vault when " +
-      "moving OAuth secrets into the datastore, so a vault seeded with them " +
-      "serves instances recreated with an empty datastore. Off by default: " +
-      "anything that can read that vault can read the client secret " +
-      "(env: SWAMP_KEEP_OAUTH_CLIENT_IN_VAULT)",
-  )
-  .option(
-    "--group-refresh-interval <duration:string>",
-    "How often to re-fetch IdP group memberships for active server tokens. " +
-      "Accepts seconds (14400), explicit units (4h, 30m), or 0 to disable. Default: 4h. " +
-      "Requires --auth-mode oauth (env: SWAMP_GROUP_REFRESH_INTERVAL).",
-  )
-  .option(
-    "--trust-proxy",
-    "Trust X-Forwarded-For for client IP in token auth rate limiting, and X-Forwarded-Prefix for the path prefix workers send their data plane under",
-  )
-  .option(
-    "--verify-on-enroll",
-    "Run a fleet probe on each enrolling worker before it becomes schedulable",
-  )
-  .option(
-    "--trusted-hosts <hosts:string>",
-    "Comma-separated hostnames or host:port authorities to trust for Host and browser Origin validation, including no-auth HTTP APIs behind reverse proxies; give a public address on a port other than 443 as host:port (env: SWAMP_TRUSTED_HOSTS)",
-  )
-  .option(
-    "--dispatch-env-allow <names:string>",
-    DISPATCH_ENV_ALLOW_HELP,
-  )
-  .option(
-    "--detach-runs",
-    "Deprecated — HA mode is now detected automatically based on your datastore configuration. " +
-      "This flag is accepted for backwards compatibility but has no effect.",
-  )
-  .option(
-    "--heartbeat-interval <duration:string>",
-    "Instance heartbeat interval (default: 30s, env: SWAMP_HEARTBEAT_INTERVAL)",
-  )
-  .option(
-    "--stale-ttl <duration:string>",
-    "Heartbeat stale TTL — instance considered dead after this (default: 90s, env: SWAMP_STALE_TTL)",
-  )
-  .option(
-    "--reconciliation-interval <duration:string>",
-    "Peer reconciliation scan interval (default: 60s, env: SWAMP_RECONCILIATION_INTERVAL)",
-  )
-  .option(
-    "--hydration-timeout <duration:string>",
-    "Startup cache hydration timeout (default: 60s, env: SWAMP_HYDRATION_TIMEOUT)",
-  )
-  .option(
-    "--shutdown-drain-timeout <duration:string>",
-    "How long shutdown waits for in-flight runs before aborting them (default: 30s, 0 aborts at once, env: SWAMP_SHUTDOWN_DRAIN_TIMEOUT)",
-  )
-  .option(
-    "--shutdown-listener-grace <duration:string>",
-    "How long serve keeps listening after /ready turns 503, so load balancers notice first; set it above the load balancer's health-check window, never more than --shutdown-drain-timeout (default: 1s, 0 with --reuse-port, env: SWAMP_SHUTDOWN_LISTENER_GRACE)",
-  )
-  .option(
-    "--datastore-poll-interval <duration:string>",
-    "Datastore poll interval (default: 30s, minimum: 1s, env: SWAMP_DATASTORE_POLL_INTERVAL)",
-  )
-  .option(
-    "--continuation-sweep-interval <duration:string>",
-    "Continuation sweep interval (default: 30s, 0 disables, env: SWAMP_CONTINUATION_SWEEP_INTERVAL)",
-  )
-  .option(
-    "--max-signal-wait-timeout <duration:string>",
-    "Longest timeout a wait_for_signal step may ask for (default: 1y, env: SWAMP_MAX_SIGNAL_WAIT_TIMEOUT)",
-  )
-  .option(
-    "--token-gc-interval <duration:string>",
-    "Server token GC interval (default: 1h, 0 disables, env: SWAMP_TOKEN_GC_INTERVAL)",
-  )
-  .option(
-    "--token-gc-grace-period <duration:string>",
-    "How long expired server tokens are kept before GC (default: 1h, 0 deletes at expiry, env: SWAMP_TOKEN_GC_GRACE_PERIOD)",
-  )
-  .option(
-    "--remote-only",
-    "Disable local (loopback) execution — all steps must declare placement " +
-      "(env: SWAMP_REMOTE_ONLY)",
-  )
-  .option(
-    "--reuse-port",
-    "Listen with SO_REUSEPORT, opening the port only once startup completes, so a new process can start beside the old one (Linux; env: SWAMP_REUSE_PORT)",
-  )
-  .option(
-    "--ws-idle-timeout <duration:string>",
-    "WebSocket idle timeout (env: SWAMP_WS_IDLE_TIMEOUT). Default: 30s",
-  )
-  .option(
-    "--queue-timeout <duration:string>",
-    "Queue timeout for placed steps (env: SWAMP_QUEUE_TIMEOUT). Default: 10m",
-  )
-  .option(
-    "--max-concurrent-runs <count:integer>",
-    "Maximum concurrent detached runs across all principals. Default: 100 " +
-      "(env: SWAMP_MAX_CONCURRENT_RUNS)",
-  )
-  .option(
-    "--max-concurrent-scheduled-runs <count:integer>",
-    "Maximum scheduled workflow runs in flight at once; a workflow never " +
-      "overlaps itself. Default: 1 (env: SWAMP_MAX_CONCURRENT_SCHEDULED_RUNS)",
-  )
-  .option(
-    "--max-concurrent-webhook-runs <count:integer>",
-    "Maximum webhook workflow runs in flight at once, across all routes; " +
-      "deliveries to the same route may overlap. Default: 1 " +
-      "(env: SWAMP_MAX_CONCURRENT_WEBHOOK_RUNS)",
-  )
-  .option(
-    "--max-runs-per-principal <count:integer>",
-    "Maximum concurrent detached runs per authenticated principal " +
-      "(env: SWAMP_MAX_RUNS_PER_PRINCIPAL)",
-  )
-  .option(
-    "--max-run-duration <duration:string>",
-    "Maximum wall-clock time a detached run may execute " +
-      "(env: SWAMP_MAX_RUN_DURATION)",
-  )
-  .option(
-    "--hot-reload",
-    "Enable SIGHUP-based hot-reload for pulled extension bundles. " +
-      "Writes a PID file to .swamp/serve.pid; use 'swamp serve reload' to trigger",
-  )
-  .option(
-    "--enable-internal-api",
-    "Enable the /internal/runs endpoint for full run history access " +
-      "(env: SWAMP_ENABLE_INTERNAL_API)",
-  )
-  .option(
-    "--dashboard",
-    "Enable the web dashboard at /dashboard " +
-      "(env: SWAMP_DASHBOARD)",
-  )
-  .option(
-    "--auto-resume",
-    "Resume a suspended run once every approval gate on it is decided and every wait for a signal is settled. " +
-      "Applies to workflows that declare no inputs; a workflow with inputs " +
-      "must set autoResume: true itself, and autoResume: false opts out " +
-      "(env: SWAMP_AUTO_RESUME)",
-  )
-  .example("Enable daemon", "swamp serve daemon enable")
-  .example(
-    "Enable with custom port",
-    "swamp serve daemon enable --port 8080",
-  )
-  .example(
-    "Enable with TLS and auth",
-    "swamp serve daemon enable --cert-file cert.pem --key-file key.pem --auth-mode token",
-  )
-  .example(
-    "Enable with config file",
-    "swamp serve daemon enable --config /etc/swamp/serve.yaml",
-  )
-  .action(async function (options: AnyOptions) {
-    const repoDir = resolveRepoDir(options.repoDir as string | undefined);
-    const env = buildServeDaemonEnv();
-    const { authConfig } = validateServeDaemonArgs(options, repoDir, env);
-    if (authConfig.mode === "oauth" || authConfig.mode === "token") {
-      requireAuthenticated("swamp serve is a team feature", "serve:*");
-      requireScope("serve:*");
-    }
-
-    const ctx = createContext(options as GlobalOptions, [
-      "serve",
-      "daemon",
-      "enable",
-    ]);
-    const mode = await resolveServiceMode({
-      user: options.user as boolean | undefined,
-    });
-    const scheduler = await createServiceScheduler({ mode });
-    const extraArgs = collectServeExtraArgs(options);
-
-    await scheduler.enable({
-      binaryPath: Deno.execPath(),
-      repoDir,
-      port: options.port as number,
-      host: options.host as string,
-      certFile: options.certFile as string | undefined,
-      keyFile: options.keyFile as string | undefined,
-      extraArgs: extraArgs.length > 0 ? extraArgs : undefined,
-      env,
-    });
-
-    renderDaemonEnabled(ctx.outputMode, toServiceMode(mode));
-  });
-
-const daemonDisableCommand = new Command()
-  .name("disable")
-  .description("Disable and remove the swamp serve daemon")
-  .option(
-    "--user",
-    "Target the per-user service (systemd --user / launchd agent)",
-  )
-  .example("Disable daemon", "swamp serve daemon disable")
-  .action(async function (options: AnyOptions) {
-    const ctx = createContext(options as GlobalOptions, [
-      "serve",
-      "daemon",
-      "disable",
-    ]);
-    const mode = await resolveServiceMode({
-      user: options.user as boolean | undefined,
-    });
-    const scheduler = await createServiceScheduler({ mode });
-
-    await scheduler.disable();
-
-    renderDaemonDisabled(ctx.outputMode, toServiceMode(mode));
-  });
-
-const daemonStatusCommand = new Command()
-  .name("status")
-  .description("Show the status of the swamp serve daemon")
-  .option(
-    "--user",
-    "Target the per-user service (systemd --user / launchd agent)",
-  )
-  .example("Check daemon status", "swamp serve daemon status")
-  .action(async function (options: AnyOptions) {
-    const ctx = createContext(options as GlobalOptions, [
-      "serve",
-      "daemon",
-      "status",
-    ]);
-    const mode = await resolveServiceMode({
-      user: options.user as boolean | undefined,
-    });
-    const scheduler = await createServiceScheduler({ mode });
-
-    const status = await scheduler.status();
-
-    renderDaemonStatus(status, ctx.outputMode, toServiceMode(mode));
-  });
-
-const reloadCommand = new Command()
-  .name("reload")
-  .description(
-    "Reload a running serve process: extensions, the trust list, and every serve.yaml setting that can change without a restart, reported setting by setting.\n\n" +
-      "With --server, sends a reload request to the running server over WebSocket (admin only). " +
-      "Without --server, reads .swamp/serve.pid and sends SIGHUP locally; a serve writes that file when it is not attached to a terminal (a daemon, container or service) or was started with --hot-reload.",
-  )
-  .example(
-    "Reload on a remote server",
-    "swamp serve reload --server wss://swamp.acme.internal:9090",
-  )
-  .example("Reload locally", "swamp serve reload")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .option(
-    "--server <url:string>",
-    "Reload extensions on a 'swamp serve' server instead of locally (env: SWAMP_SERVE_URL)",
-  )
-  .option(
-    "--token <token:string>",
-    "Server token; only applies with --server (falls back to stored credential or SWAMP_SERVER_TOKEN)",
-  )
-  .option(
-    "--token-file <path:string>",
-    TOKEN_FILE_DESCRIPTION,
-  )
-  .option(CA_CERT_FLAG, CA_CERT_DESCRIPTION)
-  .action(async function (options: AnyOptions) {
-    const server = resolveServeUrl(options.server as string | undefined);
-
-    validateServerRepoExclusivity(
-      server,
-      options.repoDir as string | undefined,
-    );
-
-    const ctx = createContext(options as GlobalOptions, ["serve", "reload"]);
-    const renderer = createServeReloadRenderer(ctx.outputMode);
-
-    if (server) {
-      const token = await resolveServerTokenFromOptions(
-        server,
-        options,
-      );
-
-      const response = await requestServerResponse<ServeReloadResponse>(
-        { server, ...(token ? { token } : {}) },
-        { type: "serve.reload" },
-      );
-
-      if (!response.success) {
-        renderer.render({
-          success: false,
-          reloadedCount: 0,
-          errors: response.errors,
-        });
-        throw new UserError("Extension reload failed on the server");
-      }
-
-      renderer.render(response);
-      // a CI step that edits serve.yaml and reloads must see the refusal
-      if (response.configRejected) {
-        throw new UserError(
-          "The server refused serve.yaml, so nothing in it was applied",
-        );
-      }
-      return;
-    }
-
-    const repoDir = resolveRepoDir(options.repoDir as string | undefined);
-    const pidPath = swampPath(repoDir, "serve.pid");
-
-    let pidStr: string;
-    try {
-      pidStr = await Deno.readTextFile(pidPath);
-    } catch {
-      throw markErrorPaths(
-        new UserError(
-          "No PID file found at " + pidPath + ". " +
-            "A serve running in a terminal reloads only over --server, or when started with --hot-reload.",
-        ),
-        [pidPath],
-      );
-    }
-
-    const pid = parseInt(pidStr.trim(), 10);
-    if (isNaN(pid)) {
-      throw markErrorPaths(
-        new UserError("Invalid PID in " + pidPath + ": " + pidStr.trim()),
-        [pidPath],
-      );
-    }
-
-    const verdict = await probeServePid(
-      pid,
-      await readServePidSidecar(pidPath),
-      {
-        processExists,
-        startTime: (p) => readProcessStartTime(p),
-        command: (p) => readProcessCommand(p),
-      },
-    );
-    if (verdict === "gone") {
-      throw markErrorPaths(
-        new UserError(
-          "Process " + pid + " is not running — stale PID file. " +
-            "Remove " + pidPath + ", or reload with --server.",
-        ),
-        [pidPath],
-      );
-    }
-    if (verdict === "reused") {
-      throw markErrorPaths(
-        new UserError(
-          "Process " + pid + " is not the serve that wrote " + pidPath +
-            ": it started at another time and is not a swamp serve — stale PID file. Remove it, or reload with --server.",
-        ),
-        [pidPath],
-      );
-    }
-    if (verdict === "unknown") {
-      logger
-        .warn`Could not confirm process ${pid} is the serve that wrote ${pidPath} (an older serve records no start time, ps cannot report it, or the clock was changed since serve started); sending SIGHUP anyway`;
-    }
-
-    try {
-      Deno.kill(pid, "SIGHUP");
-    } catch {
-      throw markErrorPaths(
-        new UserError(
-          "Process " + pid + " not found — stale PID file. " +
-            "Remove " + pidPath + ", or reload with --server.",
-        ),
-        [pidPath],
-      );
-    }
-
-    logger.info`Sent SIGHUP to serve process ${pid}`;
-    logger
-      .info`The serve log lists what the reload applied; reload with --server to see it here`;
-  });
-
-async function checkTokenSecretsKey(
-  ref: TokenSecretsKeyRef | undefined,
-  repoDir: string,
-): Promise<TokenSecretsKeyCheck | undefined> {
-  if (!ref) return undefined;
-  const { resolveTokenSecretsKey } = await import(
-    "../../domain/vaults/control_plane_vault_init.ts"
-  );
-  try {
-    await resolveTokenSecretsKey(
-      ref,
-      await VaultService.fromRepository(repoDir),
-    );
-    return { vault: ref.vault, key: ref.key, status: "ok" };
-  } catch (err) {
-    return {
-      vault: ref.vault,
-      key: ref.key,
-      status: "failed",
-      error: err instanceof Error ? err.message : String(err),
-    };
-  }
-}
-
-function formatGrantFileErrorLines(errors: readonly GrantFileError[]): string {
-  return errors.map((e) => {
-    const loc = e.entryIndex !== undefined
-      ? `${e.filename} entry ${e.entryIndex + 1}`
-      : e.filename;
-    return `  ${loc}: ${e.message}`;
-  }).join("\n");
-}
-
-// reads no store, so a client id whose secret only the store holds still passes
-export function checkOAuthClientSecret(
-  secretFileFlag: string | undefined,
-  clientId: string | undefined,
-): string | undefined {
-  let supplied: string | undefined;
-  try {
-    supplied = resolveOAuthClientSecret(secretFileFlag);
-  } catch (err) {
-    if (err instanceof UserError) return err.message;
-    throw err;
-  }
-  if (supplied !== undefined && !clientId) {
-    return SECRET_WITHOUT_CLIENT_ID_MESSAGE;
-  }
-  return undefined;
-}
-
-const checkConfigCommand = new Command()
-  .name("check-config")
-  .description(
-    "Check a serve config's auth settings and token secrets key without starting the server.\n\n" +
-      "Loads the auth settings the same way 'swamp serve' does (flags, env vars, then the " +
-      "config file), validates them, and in oauth mode looks up every admin and " +
-      "allowed-user name on the OAuth provider. Exits non-zero if a name is unknown " +
-      "or serve would refuse to start. Uses --club-api-key-file, SWAMP_API_KEY_FILE, " +
-      "SWAMP_API_KEY or your 'swamp auth login' " +
-      "credential, and only sends it to the provider that issued it (set SWAMP_CLUB_URL " +
-      "for a custom provider). With a token-secrets block, also reads the token " +
-      "secrets key from its vault and checks it is a usable 32-byte key, without " +
-      "printing it. It also reads the grant files serve reads (grants/, --grants-file " +
-      "and --grants-dir) and fails if serve would refuse them; grant type spellings " +
-      "that match no type as written are warnings, and stored grants are reported " +
-      "by serve at startup. A restricted-model-types entry without a leading " +
-      "'@' that is not a built-in type is a warning, since extension types are " +
-      "not loaded here: write an extension type with its '@'. Apart from a " +
-      "--grants-file or --grants-dir outside the repository, it reads only this " +
-      "repository's files and never contacts the " +
-      "datastore, so it cannot tell whether a control plane was already moved to a " +
-      "key (or to a different key), and vaults whose configs arrive through the " +
-      "datastore must be synced first; serve checks both at startup. Nothing is " +
-      "written to the vault. Nothing is written to the repository either, except " +
-      "that checking a token-secrets key loads vault extensions, which can create " +
-      "or refresh swamp's extension catalog (.swamp/_extension_catalog.db) and, " +
-      "when the vault's type is not installed, install its extension.",
-  )
-  .example("Check the repository's serve config", "swamp serve check-config")
-  .example(
-    "Check a config file before deploying it",
-    "swamp serve check-config --config deploy/serve.yaml",
-  )
-  .example(
-    "Check names passed as flags",
-    "swamp serve check-config --auth-mode oauth --admins alice,bob --allowed-collectives eng",
-  )
-  .option(
-    "--config <path:string>",
-    "Path to serve config file (default: .swamp/serve.yaml; a relative path resolves against the repository)",
-  )
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .option(
-    "--auth-mode <mode:string>",
-    "Authentication mode to check, as passed to 'swamp serve' (overrides the config file)",
-  )
-  .option(
-    "--admins <principals:string>",
-    "Comma-separated admin usernames, as passed to 'swamp serve' (overrides the config file)",
-  )
-  .option(
-    "--allowed-users <list:string>",
-    "Comma-separated allowed-user usernames, as passed to 'swamp serve' (overrides the config file)",
-  )
-  .option(
-    "--allowed-collectives <list:string>",
-    "Comma-separated collective slugs, as passed to 'swamp serve' (overrides the config file)",
-  )
-  .option(
-    "--oauth-provider <url:string>",
-    "OAuth provider URL, as passed to 'swamp serve' (overrides the config file)",
-  )
-  .option(
-    "--grants-file <path:string>",
-    "External grants YAML file to check, as passed to 'swamp serve' (overrides the config file; env: SWAMP_GRANTS_FILE)",
-  )
-  .option(
-    "--grants-dir <path:string>",
-    "Directory of grants YAML files to check, as passed to 'swamp serve' (overrides the config file; env: SWAMP_GRANTS_DIR)",
-  )
-  .option(
-    "--webhook-routes-dir <path:string>",
-    "Directory of webhook route files to check, as passed to 'swamp serve' (overrides the config file; env: SWAMP_WEBHOOK_ROUTES_DIR)",
-  )
-  .option(
-    `${CLUB_API_KEY_FILE_FLAG} <path:string>`,
-    "Path to a file containing the collective API key used to look up " +
-      "usernames; overrides SWAMP_API_KEY_FILE and SWAMP_API_KEY",
-  )
-  .option(
-    "--oauth-client-id <id:string>",
-    "OAuth client ID, as passed to 'swamp serve' (overrides the config file; env: SWAMP_OAUTH_CLIENT_ID)",
-  )
-  .option(
-    `${OAUTH_CLIENT_SECRET_FILE_FLAG} <path:string>`,
-    "OAuth client secret file to check, as passed to 'swamp serve' (overrides " +
-      "SWAMP_OAUTH_CLIENT_SECRET_FILE and SWAMP_OAUTH_CLIENT_SECRET)",
-  )
-  .action(async function (options: AnyOptions) {
-    const ctx = createContext(options as GlobalOptions, [
-      "serve",
-      "check-config",
-    ]);
-    const repoDir = resolveRepoDir(options.repoDir as string | undefined);
-    const configFile = loadServeConfig(
-      options.config as string | undefined,
-      repoDir,
-    );
-    const merged = mergeServeOptions(
-      configFile,
-      options,
-      parseExplicitFlags(Deno.args),
-    );
-
-    // judged without loading the model registry so this stays read-only and
-    // offline: a bare type is checked against built-in types only, serve checks
-    // all registered types at startup
-    const restrictionFindings = findIneffectiveRestrictions({
-      restrictedModelTypes: merged.restrictedModelTypes,
-      restrictedCommands: merged.restrictedCommands,
-      requestTypes: new Set(serverRequestPayloadFields().keys()),
-      isBuiltInModelType: (type) => modelRegistry.isBuiltIn(type),
-    });
-    const restrictionWarnings = restrictionFindings.filter((finding) =>
-      finding.reason !== "no-type"
-    );
-    // judged as serve startup judges them; stored grants live in the datastore,
-    // which this command never contacts
-    const checkedGrantFiles = await readServeGrantFiles(repoDir, {
-      grantsFile: merged.grantsFile,
-      grantsDir: merged.grantsDir,
-      validateCondition: validateGrantCondition,
-      readTypeLiterals: readConditionTypeLiterals,
-    });
-    const grantCheck = checkServeGrantFiles(checkedGrantFiles);
-    const checkedMode = merged.authMode ?? "none";
-    // username subjects are rejected outside OAuth mode and looked up in it, as
-    // startup does
-    const grantErrors = [...grantCheck.errors];
-    if (checkedMode !== "oauth") {
-      const issues = await checkServeGrantFileUsernames(
-        checkedGrantFiles,
-        unresolvableUsernames(usernameSubjectsNeedOAuthMessage(checkedMode)),
-      );
-      for (const issue of issues) grantErrors.push(issue);
-    }
-    let grantsLoad = grantErrors.length === 0;
-    const grantReport = {
-      grantFilesChecked: grantCheck.filesChecked,
-      grantErrors,
-      grantWarnings: grantCheck.warnings,
-    };
-    const routeFileCheck = await checkWebhookRouteFiles(repoDir, merged);
-    const webhookWarnings = routeFileCheck.warnings;
-    const routeFilesLoad = routeFileCheck.errors.length === 0 &&
-      routeFileCheck.directoryError === undefined;
-    const webhookReport = {
-      ...(webhookWarnings.length > 0 ? { webhookWarnings } : {}),
-      ...(routeFileCheck.errors.length > 0
-        ? { webhookRouteFileErrors: routeFileCheck.errors }
-        : {}),
-      ...(routeFileCheck.directoryError !== undefined
-        ? { webhookRoutesDirError: routeFileCheck.directoryError }
-        : {}),
-    };
-    const unnamedType = restrictionFindings.find((finding) =>
-      finding.reason === "no-type"
-    );
-    if (
-      unnamedType !== undefined &&
-      (checkedMode === "none" || checkedMode === "token" ||
-        checkedMode === "oauth")
-    ) {
-      renderServeCheckConfig({
-        passed: false,
-        authMode: checkedMode,
-        entries: [],
-        allowedCollectives: [],
-        wouldStart: false,
-        refusal: unnamedType.message,
-        restrictionWarnings,
-        ...grantReport,
-        ...webhookReport,
-      }, ctx.outputMode);
-      Deno.exitCode = 1;
-      return;
-    }
-
-    const authConfig = buildServeAuthConfig({
-      authMode: merged.authMode,
-      admins: merged.admins,
-      allowedCollectives: merged.allowedCollectives,
-      allowedUsers: merged.allowedUsers,
-      oauthProvider: merged.oauthProvider,
-      oauthClientId: merged.oauthClientId,
-      groupsField: merged.groupsField,
-      restrictedModelTypes: merged.restrictedModelTypes,
-      restrictedCommands: merged.restrictedCommands,
-      approveRequiresExplicitGrant: merged.approveRequiresExplicitGrant,
-      signalRequiresExplicitGrant: merged.signalRequiresExplicitGrant,
-      tagRequiresExplicitGrant: merged.tagRequiresExplicitGrant,
-    });
-
-    const tokenSecretsKey = await checkTokenSecretsKey(
-      parseTokenSecretsKeyConfig(
-        configFile,
-        options.config === undefined
-          ? SERVE_CONFIG_PATH
-          : resolveServePath(repoDir, options.config as string),
-      ),
-      repoDir,
-    );
-    const keyUsable = tokenSecretsKey?.status !== "failed";
-
-    if (authConfig.mode !== "oauth") {
-      const starts = keyUsable && grantsLoad;
-      renderServeCheckConfig({
-        passed: starts && routeFilesLoad,
-        authMode: authConfig.mode,
-        entries: [],
-        allowedCollectives: [],
-        wouldStart: starts,
-        restrictionWarnings,
-        ...grantReport,
-        ...webhookReport,
-        ...(tokenSecretsKey ? { tokenSecretsKey } : {}),
-      }, ctx.outputMode);
-      if (!starts || !routeFilesLoad) Deno.exitCode = 1;
-      return;
-    }
-
-    const providerUrl = authConfig.oauthProvider;
-    // AuthRepository.load() returns the collective API key (issued by
-    // SWAMP_CLUB_URL or the default server) when set, otherwise the stored
-    // login.
-    const creds = await new AuthRepository().load();
-    const token = selectCheckConfigToken(
-      providerUrl,
-      creds
-        ? {
-          serverUrl: creds.serverUrl,
-          apiKey: creds.apiKey,
-          source: apiKeySourceName() ?? "login",
-        }
-        : null,
-    );
-    const { resolveUsername } = await import("../../serve/oauth_client.ts");
-    const { checkAccessLists, findPersonalCollectives } = await import(
-      "../../serve/oauth_access_list_resolution.ts"
-    );
-    // Looked up afresh, as the admin lists are: this command cannot read the
-    // pins serve keeps, so a name serve recorded as missing may resolve here.
-    const usernameIssues = await checkServeGrantFileUsernames(
-      checkedGrantFiles,
-      {
-        resolve: async ({ names }) => {
-          const answers = new Map<string, UsernameLookup>();
-          for (const name of names) {
-            try {
-              const sub = await resolveUsername(
-                providerUrl,
-                name,
-                token,
-                AbortSignal.timeout(10_000),
-              );
-              answers.set(name, { status: "resolved", sub });
-            } catch (err) {
-              answers.set(name, {
-                status: "unresolved",
-                message: `${
-                  err instanceof Error ? err.message : String(err)
-                } (looked up with ${providerUrl}/api/auth/resolve-user)`,
-              });
-            }
-          }
-          return answers;
-        },
-      },
-    );
-    for (const issue of usernameIssues) grantErrors.push(issue);
-    grantsLoad = grantErrors.length === 0;
-    const check = await checkAccessLists(
-      authConfig,
-      (username) =>
-        resolveUsername(
-          providerUrl,
-          username,
-          token,
-          AbortSignal.timeout(10_000),
-        ),
-      providerUrl,
-    );
-    const personalCollectives = await findPersonalCollectives(
-      authConfig.allowedCollectives,
-      authConfig.allowedUsers,
-      (username) =>
-        resolveUsername(
-          providerUrl,
-          username,
-          token,
-          AbortSignal.timeout(10_000),
-        ),
-    );
-    const notFound = check.entries.filter((e) => e.status === "not-found");
-    const clientSecretRefusal = checkOAuthClientSecret(
-      options.oauthClientSecretFile as string | undefined,
-      authConfig.oauthClientId,
-    );
-    const wouldStart = check.wouldStart && clientSecretRefusal === undefined;
-    const passed = wouldStart && notFound.length === 0 && keyUsable &&
-      grantsLoad && routeFilesLoad;
-
-    renderServeCheckConfig({
-      passed,
-      authMode: authConfig.mode,
-      oauthProvider: providerUrl,
-      entries: check.entries,
-      allowedCollectives: authConfig.allowedCollectives,
-      wouldStart: wouldStart && keyUsable && grantsLoad,
-      ...(personalCollectives.length > 0
-        ? { personalCollectiveWarnings: personalCollectives }
-        : {}),
-      ...(check.refusal !== undefined
-        ? { refusal: check.refusal }
-        : clientSecretRefusal !== undefined
-        ? { refusal: clientSecretRefusal }
-        : {}),
-      restrictionWarnings,
-      ...grantReport,
-      ...webhookReport,
-      ...(tokenSecretsKey ? { tokenSecretsKey } : {}),
-    }, ctx.outputMode);
-
-    // The rendered result already says what failed; like `access can-i`,
-    // report failure through the exit code rather than a second error.
-    if (!passed) Deno.exitCode = 1;
-  });
-
-const daemonCommand = new Command()
-  .name("daemon")
-  .description("Manage swamp serve as a system daemon (EXPERIMENTAL)")
-  .action(groupCommandAction)
-  .command("enable", daemonEnableCommand)
-  .command("disable", daemonDisableCommand)
-  .command("status", daemonStatusCommand);
-
 export const serveCommand = new Command()
   .name("serve")
-  .description(
-    "Start a WebSocket API server for workflow and behavior execution.\n\n" +
-      "Service deployments: swamp loads all extensions — including " +
-      "already-pulled repo extensions — through an embedded runtime under the " +
-      "swamp data directory (SWAMP_HOME, or ~/.swamp). `swamp serve daemon " +
-      "enable` sets SWAMP_HOME and SWAMP_CONFIG_DIR in the generated service " +
-      "unit automatically. If you author a service unit manually, set " +
-      "SWAMP_HOME or HOME in the unit environment, e.g. " +
-      "`Environment=SWAMP_HOME=/opt/swamp`. Without it, scheduled workflow " +
-      'runs fail with "Unknown behavior type" for pulled extension types. ' +
-      "SWAMP_HOME also moves the config directory, where `swamp auth login` " +
-      "stores credentials, to $SWAMP_HOME/config; for --auth-mode token or " +
-      "oauth, also set SWAMP_CONFIG_DIR to the config directory holding " +
-      "those credentials (~/.config/swamp by default).",
-  )
+  .description(SERVE_DESCRIPTION)
   .example("Start server", "swamp serve")
   .example("Custom port", "swamp serve --port 8080")
   .example(
