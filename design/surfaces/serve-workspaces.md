@@ -236,15 +236,24 @@ serve settings given by environment variable see what they would under plain
 serve. `SWAMP_REPO_DIR` and `SWAMP_DATASTORE` are dropped, since they would
 point every workspace at one repo or datastore, and `SWAMP_HOME` and
 `SWAMP_CONFIG_DIR` are pinned (`src/serve/host/child_env.ts`).
-The settings that name one serve are held back, since an environment
-variable outranks each workspace's `serve.yaml`: the grants file and folder,
-the advertise address, the webhook routes folder and the OAuth client (id,
-name, secret and secret file). The host warns at startup for each one it holds
-back. `SWAMP_SERVE_CERT_FILE` and `SWAMP_SERVE_KEY_FILE` are set empty, which
+No serve setting is passed: an environment variable outranks each
+workspace's `serve.yaml`, so one would set grants, addresses and policy (the
+explicit-grant rules, the dispatch allow-list, run limits) for every workspace,
+unseen by its team. Every name in `SERVE_ENV_MAP`
+(`src/serve/serve_env_map.ts`) is held back, and the OAuth client secret with
+it, except `SWAMP_CA_CERT`, the operator's outbound trust. The host warns at
+startup for each one it holds back. `SWAMP_SERVE_CERT_FILE` and `SWAMP_SERVE_KEY_FILE` are set empty, which
 outranks a `tls:` block in the repo's `serve.yaml`: the host terminates TLS and
-polls `/ready` over plain loopback HTTP. Every workspace
-shares that environment, so two workspaces cannot yet hold different cloud
-credentials.
+polls `/ready` over plain loopback HTTP.
+
+The host is one trust domain, as plain serve is: whoever starts it is trusted
+by every workspace, as plain serve's operator is trusted by its repo. Every
+workspace's models see the host's whole environment, cloud credentials
+included, by the same rules as under plain serve: code inside the serve reads
+all of it, a method's external tool gets it without `SWAMP_*`, and a worker
+gets what the workspace's own `dispatch-env-allow` lets through. Two workspaces
+cannot hold different credentials. Only serve settings are held back, because
+they would override a team's `serve.yaml` where the team cannot see it.
 
 A serve with auth mode `none` relies on its loopback bind and its Host check to
 stay private. Behind the router that bind no longer hides it, so a host whose
@@ -571,8 +580,8 @@ and is designed separately.
 - **Tenants that do not trust each other.** Workspace processes run as one OS
   user, and extension code runs inside them. Code in one workspace can read and
   write another's folder, vault key, datastore files and wanted file, and read
-  the OAuth client secret the host passes. This design separates failures, not
-  hostile code. A child trusts the forwarding headers of anything that reaches
+  everything in the host's environment, cloud credentials included. This
+  design separates failures, not hostile code. A child trusts the forwarding headers of anything that reaches
   its loopback port, not only the router.
 - **One host.** A workspace's folder is on one machine, and its serve listens
   on that machine's loopback.

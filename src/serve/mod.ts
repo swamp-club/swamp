@@ -41,6 +41,7 @@ export {
   type WebhookEventHandler,
   WebhookService,
 } from "./webhook.ts";
+export { SERVE_ENV_MAP } from "./serve_env_map.ts";
 export {
   type EnvLookup,
   loadServeConfig,
@@ -48,7 +49,6 @@ export {
   mergeServeOptions,
   parseExplicitFlags,
   parseWebhookConfig,
-  SERVE_ENV_MAP,
   type ServeConfigFile,
   type WebhookConfigEntry,
 } from "./serve_config.ts";

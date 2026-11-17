@@ -46,7 +46,9 @@ export const serveHostCommand = new Command()
     "Run one serve per workspace behind a single address.\n\n" +
       "Runs in a host folder holding host.yaml (the listener, its TLS certificate, the public address and an optional root repo) " +
       "and workspaces/<name>/, one swamp repo per hosted workspace. Each workspace answers at <address>/w/<name>; the root answers at the address itself. " +
-      "Workspace folders added or removed while the host runs are picked up. The host has no repo of its own and authenticates no one: each workspace's serve does.",
+      "Workspace folders added or removed while the host runs are picked up. The host has no repo of its own and authenticates no one: each workspace's serve does.\n\n" +
+      "The host is one trust domain, as plain serve is: every workspace's models see the host's whole environment, cloud credentials included, so host only workspaces whose teams trust each other and the host's operator. " +
+      "Serve settings in the environment (SWAMP_GRANTS_FILE, SWAMP_APPROVE_REQUIRES_EXPLICIT_GRANT and the rest) are not passed on: each workspace's serve settings come from its own repo.",
   )
   .option(
     "--host-dir <dir:string>",
@@ -68,7 +70,7 @@ export const serveHostCommand = new Command()
     const hostEnv = Deno.env.toObject();
     for (const name of withheldServeSettings(hostEnv)) {
       ctx.logger.warn(
-        "{name} is set but not passed to any workspace's serve, since it names one serve's setting; each workspace sets its own in its repo, such as in .swamp/serve.yaml",
+        "{name} is set but not passed to any workspace's serve: each workspace's serve settings come from its own repo, such as its .swamp/serve.yaml",
         { name },
       );
     }

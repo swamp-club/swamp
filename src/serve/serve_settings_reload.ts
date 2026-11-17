@@ -20,9 +20,9 @@
 import {
   type MergedServeOptions,
   mergeServeOptions,
-  SERVE_ENV_MAP,
   type ServeConfigFile,
 } from "./serve_config.ts";
+import { SERVE_ENV_MAP } from "./serve_env_map.ts";
 
 export type SettingReloadClass =
   | "applied"

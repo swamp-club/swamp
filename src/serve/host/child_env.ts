@@ -19,20 +19,21 @@
 
 import { isAbsolute, resolve } from "@std/path";
 import { API_KEY_FILE_ENV } from "../../infrastructure/persistence/api_key_source.ts";
+import { SERVE_ENV_MAP } from "../serve_env_map.ts";
 
 // the host terminates TLS and checks readiness over plain http on loopback;
 // an empty value outranks a serve.yaml tls: block
 const CHILD_TLS_OFF_NAMES = ["SWAMP_SERVE_CERT_FILE", "SWAMP_SERVE_KEY_FILE"];
 
-// each names one serve's grants, address, webhook routes or OAuth client, and
-// would outrank every workspace's own serve.yaml
-const PER_SERVE_NAMES: readonly string[] = [
-  "SWAMP_GRANTS_FILE",
-  "SWAMP_GRANTS_DIR",
-  "SWAMP_SERVE_ADVERTISE_ADDRESS",
-  "SWAMP_WEBHOOK_ROUTES_DIR",
-  "SWAMP_OAUTH_CLIENT_ID",
-  "SWAMP_OAUTH_CLIENT_NAME",
+// the operator's outbound trust, which every serve needs to reach swamp-club
+const SHARED_SETTING_NAMES: ReadonlySet<string> = new Set(["SWAMP_CA_CERT"]);
+
+// an env value outranks serve.yaml, so one would set grants, addresses and
+// policy for every workspace, unseen by the teams whose serve.yaml it overrides
+const SERVE_SETTING_NAMES: readonly string[] = [
+  ...Object.values(SERVE_ENV_MAP).filter((name) =>
+    !SHARED_SETTING_NAMES.has(name) && !CHILD_TLS_OFF_NAMES.includes(name)
+  ),
   "SWAMP_OAUTH_CLIENT_SECRET",
   "SWAMP_OAUTH_CLIENT_SECRET_FILE",
 ];
@@ -46,7 +47,7 @@ const DROPPED_NAMES: ReadonlySet<string> = new Set([
   "SWAMP_HOME",
   "SWAMP_CONFIG_DIR",
   ...CHILD_TLS_OFF_NAMES,
-  ...PER_SERVE_NAMES,
+  ...SERVE_SETTING_NAMES,
 ]);
 
 export interface PinnedSwampDirs {
@@ -85,12 +86,12 @@ export function hostChildEnv(
   return env;
 }
 
-/** the per-serve settings the host holds back from every child, sorted */
+/** the serve settings set in the host's environment that no child is given, sorted */
 export function withheldServeSettings(
   hostEnv: Readonly<Record<string, string>>,
 ): string[] {
-  const perServe = new Set(PER_SERVE_NAMES);
+  const settings = new Set(SERVE_SETTING_NAMES);
   return Object.keys(hostEnv)
-    .filter((name) => perServe.has(name.toUpperCase()))
+    .filter((name) => settings.has(name.toUpperCase()))
     .sort();
 }

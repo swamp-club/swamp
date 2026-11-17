@@ -20,6 +20,7 @@
 import { assertEquals } from "@std/assert";
 import { resolve } from "@std/path";
 import { mergeServeOptions } from "../serve_config.ts";
+import { SERVE_ENV_MAP } from "../serve_env_map.ts";
 import { hostChildEnv, withheldServeSettings } from "./child_env.ts";
 
 const HOST_CWD = resolve("host-cwd");
@@ -40,7 +41,6 @@ Deno.test("hostChildEnv: a child inherits what plain serve would see from its op
     SWAMP_SIGNIN_TOKEN: "signin",
     SWAMP_NESTED_GATE_PASS: "1234.proof.sig",
     SWAMP_CLUB_URL: "https://club.staging.example",
-    SWAMP_DISPATCH_ENV_ALLOW: "AWS_*",
     SWAMP_CA_CERT: "/etc/ssl/ca.pem",
     SWAMP_NO_TELEMETRY: "1",
   };
@@ -115,25 +115,58 @@ Deno.test("hostChildEnv: a child serves plain http however the host or its serve
   assertEquals(merged.keyFile, "");
 });
 
-Deno.test("hostChildEnv: holds back the settings that name one serve, so each workspace's serve.yaml decides them", () => {
-  const perServe = {
-    SWAMP_GRANTS_FILE: "/etc/swamp/grants.yaml",
-    SWAMP_GRANTS_DIR: "/etc/swamp/grants.d",
-    SWAMP_SERVE_ADVERTISE_ADDRESS: "https://node-1.internal",
-    SWAMP_WEBHOOK_ROUTES_DIR: "/etc/swamp/hooks",
-    SWAMP_OAUTH_CLIENT_ID: "client-1",
-    SWAMP_OAUTH_CLIENT_NAME: "swamp",
+Deno.test("hostChildEnv: holds back every serve setting but the CA certificate, so each workspace's serve.yaml decides them", () => {
+  const settings = Object.fromEntries(
+    Object.values(SERVE_ENV_MAP).map((name) => [name, "host-value"]),
+  );
+  const hostEnv = {
+    PATH: "/usr/bin",
+    ...settings,
     SWAMP_OAUTH_CLIENT_SECRET: "secret",
     swamp_oauth_client_secret_file: "/run/secrets/oauth",
   };
-  const env = hostChildEnv({ PATH: "/usr/bin", ...perServe }, PINNED);
-  for (const name of Object.keys(perServe)) {
-    assertEquals(name in env, false, name);
-  }
+  const env = hostChildEnv(hostEnv, PINNED);
+  const passed = Object.keys(env).filter((name) =>
+    name.toUpperCase().startsWith("SWAMP_")
+  ).sort();
+  assertEquals(passed, [
+    "SWAMP_CA_CERT",
+    "SWAMP_CONFIG_DIR",
+    "SWAMP_HOME",
+    "SWAMP_SERVE_CERT_FILE",
+    "SWAMP_SERVE_KEY_FILE",
+  ]);
+  assertEquals(env.SWAMP_SERVE_CERT_FILE, "");
   assertEquals(env.PATH, "/usr/bin");
-  assertEquals(
-    withheldServeSettings({ PATH: "/usr/bin", ...perServe }),
-    Object.keys(perServe).sort(),
-  );
+
+  const withheld = withheldServeSettings(hostEnv);
+  for (
+    const name of [
+      "SWAMP_APPROVE_REQUIRES_EXPLICIT_GRANT",
+      "SWAMP_DISPATCH_ENV_ALLOW",
+      "SWAMP_ENABLE_INTERNAL_API",
+      "SWAMP_GRANTS_FILE",
+      "SWAMP_MAX_RUNS_PER_PRINCIPAL",
+      "SWAMP_OAUTH_CLIENT_SECRET",
+      "swamp_oauth_client_secret_file",
+    ]
+  ) {
+    assertEquals(withheld.includes(name), true, name);
+  }
+  assertEquals(withheld.includes("SWAMP_CA_CERT"), false);
+  assertEquals(withheld.includes("SWAMP_SERVE_CERT_FILE"), false);
   assertEquals(withheldServeSettings({ PATH: "/usr/bin" }), []);
+});
+
+Deno.test("hostChildEnv: a workspace's stricter serve.yaml policy holds against the host's environment", () => {
+  const env = hostChildEnv({
+    SWAMP_APPROVE_REQUIRES_EXPLICIT_GRANT: "false",
+  }, PINNED);
+  const merged = mergeServeOptions(
+    { auth: { "approve-requires-explicit-grant": true } },
+    {},
+    new Set<string>(),
+    (name) => env[name],
+  );
+  assertEquals(merged.approveRequiresExplicitGrant, true);
 });
