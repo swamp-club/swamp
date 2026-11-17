@@ -1837,7 +1837,8 @@ run starts and resumes get `draining` (`retryAfterSeconds: 5` on the error
 frame, 503 `shutting_down` with `Retry-After: 5` on the action route), and the
 scheduler stops. `/ready`, webhook intake and run admission switch together,
 before shutdown awaits anything, so no trigger is acknowledged after `/ready`
-reports `shutting_down`. Approve, reject and signal are still recorded; the
+reports `shutting_down`; on a team, webhook intake differs (see "Rolling a
+team" below). Approve, reject and signal are still recorded; the
 continuation sweep resumes their runs after the restart. The listener stays
 open until the in-flight runs have drained and `--shutdown-listener-grace`
 (default 1 s) has passed since SIGTERM, then closes; the stages after the drain
@@ -2050,15 +2051,93 @@ another host (another container sharing the checkout) is replayed at boot as
 before and left alone by the sweep. An owner whose pid an unrelated process has
 since taken counts as alive until that process exits; the sweep's control-plane
 calls are bounded, and shutdown waits for a pass in flight only within its
-deadline. Overlapping
-restarts are not supported on a v3 datastore until team mode, since both
-processes would need the writer lease.
+deadline. Two processes on one v3 datastore cannot overlap as one serve,
+since both would need the writer lease; on v3 a restart without downtime is a
+team rolled one node at a time.
+
+**Rolling a team.** On a v3 team the writer lease is still released only at
+the end of the leader's teardown, after the drain: parking runs, saving
+interrupted ones and the closing compaction and sync are fenced commits that
+need it. What shortens the handover is that the leader says it is going. In
+the same turn its admission starts draining it fires `LeaderSteppingDown`
+(`src/serve/leader_stepping_down.ts`), and its commit feed sends each follower
+that subscribed with the `leader-stepping-down` feature one frame with
+`steppingDown: true`. A follower that gets it, or whose feed the leader's end
+closes (which covers a leader without the feature), calls
+`ServeLeadership.leaderGoing()`: until a leader record names a higher fence,
+or for at most `AWAIT_NEW_LEADER_MS` (120 s), it tries the lease every second
+rather than every tick, so a follower leads about a second after the release.
+The frame is a hint; only the lease decides who commits.
+
+While the leader drains its successor does not exist yet, so the team
+answers each caller in a way it can retry or holds the request briefly:
+
+- A webhook delivery to a leader that hands its runs over
+  (`queuesForNextLeader`) is verified and answered 2xx naming the run, but not
+  started: it is written only to the control plane as `pending-runs/<id>`,
+  owned by the leader. The next leader replays it with the other queued runs
+  once that owner is gone. It is never written to the local run tracker,
+  which another host cannot read and which could replay it twice. A
+  delivery the control plane does not take within 5 s is refused with 503
+  marked `inFlight`, since the write may still land: a follower does not
+  send it on again, and only the sender's own retry can repeat it.
+- Runs a leader had queued but not started are already in the control
+  plane; on a handover drain it drops their local run-tracker copies once
+  the control plane holds them, so the node does not replay them again the
+  next time it leads.
+- A follower keeps forwarding webhook deliveries while it drains itself,
+  since it runs nothing, and at shutdown `LeaderLink.drain()` waits up to
+  5 s, within the shutdown deadline, for writes in flight to relay their
+  replies before closing, so a delivery the leader took is not cut off.
+- Between leaders, a follower holds a delivery no leader took: one it could
+  not send, or one the leader refused before acting (`serve_not_leader`
+  without `inFlight`, `not_ready` while it starts, `shutting_down`). It
+  tries again every 250 ms for up to 8 s, under the 10 s many senders allow
+  a delivery, at most 100 at once, and takes the delivery itself if it
+  becomes the leader meanwhile. A leader still starting or shutting down
+  has already run the route's hooks, so those are tried again only after
+  its `Retry-After`. One marked `inFlight` is never held, and a
+  follower that is itself shutting down stops holding. The hold comes before
+  verification, as forwarding does, so unverified deliveries can fill its
+  100 places, or its 64 MiB of held bodies, for 8 s while no leader is
+  reachable.
+- A run start a follower could not send to any leader is refused as
+  `serve_not_leader` without `inFlight`; `swamp … --server` and
+  `packages/client` retry it as they retry `draining`, within their 30 s
+  budget. One marked `inFlight` may have run and is never sent again. Once
+  the CLI has the run id, a follower losing its leader mid-run is a
+  dropped connection: it reattaches with `run.attach`, which never runs
+  anything twice.
+- On one host, a parked or queued run's owner whose pid is still exiting
+  counts as gone once its heartbeat is deleted or stopped, so the next leader
+  continues it without waiting for the process to exit.
+
+A run start is retried only within its client's budget, and the handover
+lasts the leader's whole drain plus its teardown. With a busy leader and the
+default 30 s drain timeout that can exceed 30 s; keep
+`--shutdown-drain-timeout` short on a team that rolls under load.
+
+Runbook for maintainers: restart followers first, one at a time, waiting for
+each node's `/ready` before the next; restart the leader last. After it, wait
+for `leader/current` to name a higher fence and for every node's `/ready`.
+Keep a `preStop` sleep longer than the load balancer's health-check interval
+times its failure threshold, so traffic leaves a node before SIGTERM. Rolling
+back is the same roll with the previous image. Two versions on one host
+judge each other's liveness by heartbeat, and a release before this one
+writes its heartbeat only after its boot replay, so keep a roll across
+versions to one serve per host. The roll that first installs this
+behaviour gets only part of it: a leader on an older release refuses
+webhook deliveries while it drains instead of queuing them, and its
+refusals carry no code a newer follower holds on, so senders see 503s
+during that roll as before; later rolls get the full handover.
 
 `swamp … --server` retries a refused connection, a 502, 503 or 504 at the
 upgrade, and a `draining` or `not_ready` refusal for up to 30 s before it has
 a run id; once it has one it reattaches for up to 120 s. A single instance
 restarting without either can take longer than 30 s, and a start then fails.
-`packages/client` retries the same refusals within its own 30 s budget. After a stop that pushed everything, peers see no heartbeat,
+`packages/client` retries the same refusals within its own 30 s budget, and
+both retry a start a follower could not forward (`serve_not_leader` without
+`inFlight`). After a stop that pushed everything, peers see no heartbeat,
 so nothing is reaped.
 Attached clients get the terminal frame. Nothing is resumed, but
 `swamp run history` shows the final status. If the shutdown handler does not

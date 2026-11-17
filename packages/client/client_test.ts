@@ -1150,6 +1150,62 @@ Deno.test("SwampClient - workflowRun starts again on a fresh connection after a 
   );
 });
 
+Deno.test("SwampClient - workflowRun starts again after a follower could not reach the leader", async () => {
+  const clock = fakeClock();
+  await withRestartingServer(
+    accept,
+    (req, n, socket) => {
+      socket.send(JSON.stringify(
+        n === 1
+          ? {
+            type: "error",
+            id: req.id,
+            error: {
+              code: "serve_not_leader",
+              message: "This serve node does not lead the datastore",
+              details: { leader: { instanceId: "old", fence: 1 } },
+            },
+          }
+          : completedRun(req.id),
+      ));
+    },
+    clock.options,
+    async (client, received) => {
+      const result = await client.workflowRun({ workflowIdOrName: "w" });
+      assertEquals(result.outcome, "completed");
+      assertEquals(received.length, 2);
+    },
+  );
+});
+
+Deno.test("SwampClient - a serve_not_leader refusal after the start reached the leader is never sent again", async () => {
+  const clock = fakeClock();
+  await withRestartingServer(
+    accept,
+    (req, _n, socket) => {
+      socket.send(JSON.stringify({
+        type: "error",
+        id: req.id,
+        error: {
+          code: "serve_not_leader",
+          message: "The leader stopped answering",
+          details: { inFlight: true },
+        },
+      }));
+    },
+    clock.options,
+    async (client, received) => {
+      const err = await assertRejects(
+        () => client.workflowRun({ workflowIdOrName: "w" }),
+        SwampClientError,
+      );
+      assertEquals(err.code, "serve_not_leader");
+      assertEquals(received.length, 1);
+      assertEquals(clock.sleeps, []);
+    },
+  );
+});
+
 Deno.test("SwampClient - a draining refusal from an older serve backs off without Retry-After", async () => {
   const clock = fakeClock();
   await withRestartingServer(

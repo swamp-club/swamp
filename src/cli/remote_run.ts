@@ -2140,10 +2140,16 @@ async function* streamServerRun(
         await sleep(wait, options.signal);
         continue;
       }
-      if (refusal !== undefined) {
+      // with the run id known, a follower losing its leader is a dropped
+      // connection: attaching again never runs anything twice
+      const leaderGone = state.runId !== undefined &&
+          err instanceof ServerResponseError
+        ? notLeaderRefusal(err)
+        : undefined;
+      if (refusal !== undefined || leaderGone !== undefined) {
         outcome = {
           kind: "disconnected",
-          retryAfterSeconds: refusal.retryAfterSeconds,
+          retryAfterSeconds: (refusal ?? leaderGone)?.retryAfterSeconds,
         };
       } else {
         if (err instanceof UserError && lastCloseDetail && !receivedEvents) {

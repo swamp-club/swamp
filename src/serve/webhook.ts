@@ -580,6 +580,8 @@ export interface WebhookServiceDeps {
   startupComplete?: () => boolean;
   /** true once serve's shutdown begins, before drain() runs; absent, only drain() refuses */
   shuttingDown?: () => boolean;
+  /** true on a leader handing its runs over, whose successor replays what it queues */
+  queuesForNextLeader?: () => boolean;
   /** stamped on each queued run, so a peer's boot leaves it to this process */
   pendingRunOwner?: PendingRunOwner;
   /**
@@ -643,6 +645,7 @@ import type { WebhookAdmissionSnapshot } from "../domain/remote/run_progress.ts"
 import { SERVE_NOT_LEADER_CODE } from "../domain/datastore_v3/serve_leader.ts";
 import type { LeaderLink } from "./leader_link.ts";
 import { TEAM_PEER_HEADER } from "./peer_auth.ts";
+import { withDeadline } from "../infrastructure/persistence/datastore_format_marker_reader.ts";
 import { NOT_READY_RETRY_AFTER_SECONDS } from "./serve_admission.ts";
 import type { PendingRunOwner } from "../infrastructure/persistence/run_tracker_store.ts";
 
@@ -655,7 +658,8 @@ interface QueuedWebhookRun {
   receiptId?: string;
   receiptTrace?: TraceCarrier;
   pendingRunId?: string;
-  putPromise?: Promise<void>;
+  /** true once the control plane holds it */
+  putPromise?: Promise<boolean>;
   workflowIdOrName: string;
   route: string;
   payload: WebhookPayload;
@@ -693,6 +697,12 @@ export type WebhookRunAuthorizer = (
 
 const MAX_WEBHOOK_BODY_BYTES = 10 * 1024 * 1024;
 const MAX_QUEUE_DEPTH = 100;
+const HANDOVER_QUEUE_PUT_TIMEOUT_MS = 5_000;
+// under the 10 s many senders give a delivery, so a held one never races its retry
+const LEADERLESS_HOLD_MS = 8_000;
+const LEADERLESS_RETRY_MS = 250;
+// held bodies are unverified, so what they may pin is bounded as well as their count
+const LEADERLESS_HELD_BYTES = 64 * 1024 * 1024;
 /** Names the run on every response that queues one. */
 export const RUN_ID_HEADER = "X-Swamp-Run-Id";
 /**
@@ -727,6 +737,26 @@ interface RunningWebhookRun {
   startedAt?: Date;
 }
 
+/** how long to wait before sending again a delivery no leader took, if none did */
+async function retryNoLeaderAfter(
+  response: Response,
+): Promise<number | undefined> {
+  if (response.status !== 503) return undefined;
+  try {
+    const reply = await response.clone().json();
+    if (reply?.inFlight === true) return undefined;
+    if (reply?.code === SERVE_NOT_LEADER_CODE) return LEADERLESS_RETRY_MS;
+    // the leader ran its hooks before refusing, so its own pace is kept
+    if (reply?.code === "not_ready" || reply?.code === "shutting_down") {
+      const seconds = Number(response.headers.get("retry-after"));
+      return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : 1000;
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * up to maxConcurrentRuns queued runs execute at once; runs of the same route
  * or workflow may overlap since per-model locks guard shared state
@@ -743,6 +773,10 @@ export class WebhookService {
   private readonly abortedAtStop = new Set<RunningWebhookRun>();
   private draining = false;
   private stopped = false;
+  // never decremented on success: it bounds what one exiting process queues
+  private queuedForNextLeader = 0;
+  private heldForLeader = 0;
+  private heldBytesForLeader = 0;
   private endpoints: WebhookEndpoint[];
 
   constructor(private readonly deps: WebhookServiceDeps) {
@@ -898,7 +932,10 @@ export class WebhookService {
       return null;
     }
 
-    if (this.shuttingDown()) {
+    if (
+      this.shuttingDown() && !this.forwardsToLeader() &&
+      !this.queuesForNextLeader()
+    ) {
       return this.shuttingDownResponse(endpoint, sourceIp);
     }
 
@@ -960,17 +997,8 @@ export class WebhookService {
     // a follower forwards the delivery to the leader as it came, within the
     // size limit, before verifying; the leader verifies with its own endpoint
     // config, and the reply names no leader
-    const link = this.deps.leaderLink;
-    if (
-      this.deps.acceptsRuns?.() === false && link !== undefined &&
-      link.address() !== undefined
-    ) {
-      return await link.forward(req, {
-        body,
-        ...(sourceIp !== undefined ? { clientIp: sourceIp } : {}),
-        nameLeader: false,
-      });
-    }
+    const forwarded = await this.forwardToLeader(req, body, sourceIp);
+    if (forwarded !== undefined) return forwarded;
 
     // Any verification failure (malformed value, stale timestamp, mismatch,
     // or a throwing extension verifier) returns a uniform 401 so the response
@@ -1039,7 +1067,19 @@ export class WebhookService {
     // Checked again: a drain can start during the awaits above, and a run
     // queued after it would be acknowledged and then aborted unreplayed.
     if (this.shuttingDown()) {
-      return this.shuttingDownResponse(endpoint, sourceIp);
+      if (!this.queuesForNextLeader()) {
+        return this.shuttingDownResponse(endpoint, sourceIp);
+      }
+      return await this.queueForNextLeader({
+        endpoint,
+        receiptId,
+        receipt,
+        payload: serializedPayload,
+        traceparent,
+        tracestate,
+        sourceIp,
+        httpResponse,
+      });
     }
 
     // after verification, so only a verified sender learns this node does not
@@ -1070,7 +1110,10 @@ export class WebhookService {
         sourceIp,
       });
       return Response.json(
-        { error: "Server is still starting, try again shortly" },
+        {
+          error: "Server is still starting, try again shortly",
+          code: "not_ready",
+        },
         {
           status: 503,
           headers: { "retry-after": String(NOT_READY_RETRY_AFTER_SECONDS) },
@@ -1093,7 +1136,7 @@ export class WebhookService {
     }
 
     let pendingRunId: string | undefined;
-    let putPromise: Promise<void> | undefined;
+    let putPromise: Promise<boolean> | undefined;
     if (this.deps.runTracker) {
       pendingRunId = receiptId;
       const pendingEntry = {
@@ -1115,7 +1158,7 @@ export class WebhookService {
         putPromise = this.deps.controlPlaneStore.put(
           `pending-runs/${pendingRunId}`,
           new TextEncoder().encode(JSON.stringify(pendingEntry)),
-        ).catch((err: unknown) => {
+        ).then(() => true, (err: unknown) => {
           logger.warn(
             "Control-plane dual-write failed for pending run {id}: {error}",
             {
@@ -1123,6 +1166,7 @@ export class WebhookService {
               error: err instanceof Error ? err.message : String(err),
             },
           );
+          return false;
         });
       }
     }
@@ -1184,6 +1228,150 @@ export class WebhookService {
     return this.draining || this.deps.shuttingDown?.() === true;
   }
 
+  /** undefined when this node handles it; one no leader was sent waits for the next */
+  private async forwardToLeader(
+    req: Request,
+    body: Uint8Array,
+    sourceIp: string | undefined,
+  ): Promise<Response | undefined> {
+    const link = this.deps.leaderLink;
+    if (link === undefined || this.deps.acceptsRuns?.() !== false) {
+      return undefined;
+    }
+    const holdUntil = this.now() + LEADERLESS_HOLD_MS;
+    let held = false;
+    try {
+      while (true) {
+        if (this.deps.acceptsRuns?.() !== false) return undefined;
+        let refused: Response | undefined;
+        let retryMs = LEADERLESS_RETRY_MS;
+        if (link.address() !== undefined) {
+          const response = await link.forward(req, {
+            body,
+            ...(sourceIp !== undefined ? { clientIp: sourceIp } : {}),
+            nameLeader: false,
+          });
+          const after = await retryNoLeaderAfter(response);
+          if (after === undefined) return response;
+          refused = response;
+          retryMs = after;
+        }
+        if (
+          this.now() + retryMs > holdUntil || req.signal.aborted ||
+          this.shuttingDown() ||
+          (!held && (this.heldForLeader >= MAX_QUEUE_DEPTH ||
+            this.heldBytesForLeader + body.byteLength > LEADERLESS_HELD_BYTES))
+        ) {
+          return refused;
+        }
+        await refused?.body?.cancel();
+        if (!held) {
+          held = true;
+          this.heldForLeader++;
+          this.heldBytesForLeader += body.byteLength;
+        }
+        await new Promise((resolve) => setTimeout(resolve, retryMs));
+      }
+    } finally {
+      if (held) {
+        this.heldForLeader--;
+        this.heldBytesForLeader -= body.byteLength;
+      }
+    }
+  }
+
+  // also while draining: a follower runs nothing itself
+  private forwardsToLeader(): boolean {
+    return this.deps.acceptsRuns?.() === false &&
+      this.deps.leaderLink?.address() !== undefined;
+  }
+
+  private queuesForNextLeader(): boolean {
+    return this.deps.queuesForNextLeader?.() === true &&
+      this.deps.controlPlaneStore !== undefined;
+  }
+
+  /** not the local run tracker: the next leader may be on another host, and a local copy could replay twice */
+  private async queueForNextLeader(delivery: {
+    endpoint: WebhookEndpoint;
+    receiptId: string;
+    receipt: ExecutionObservation;
+    payload: string;
+    traceparent?: string;
+    tracestate?: string;
+    sourceIp?: string;
+    httpResponse?: Response;
+  }): Promise<Response> {
+    const { endpoint, receiptId, sourceIp } = delivery;
+    if (this.queuedForNextLeader >= MAX_QUEUE_DEPTH) {
+      this.emit({
+        kind: "webhook_rejected",
+        route: endpoint.route,
+        workflowName: endpoint.workflowIdOrName,
+        reason: "Queue full",
+        sourceIp,
+      });
+      return Response.json(
+        { error: "Too many queued runs, try again later" },
+        {
+          status: 503,
+          headers: { "retry-after": String(SHUTDOWN_RETRY_AFTER_SECONDS) },
+        },
+      );
+    }
+    const store = this.deps.controlPlaneStore!;
+    const entry = {
+      id: receiptId,
+      receiptTrace: delivery.receipt.carrier,
+      source: "webhook" as const,
+      workflowIdOrName: endpoint.workflowIdOrName,
+      payload: delivery.payload,
+      route: endpoint.route,
+      traceparent: delivery.traceparent,
+      tracestate: delivery.tracestate,
+      createdAt: new Date(this.now()).toISOString(),
+      ...(this.deps.pendingRunOwner
+        ? { owner: this.deps.pendingRunOwner }
+        : {}),
+    };
+    this.queuedForNextLeader++;
+    try {
+      // a put that outlives the deadline can still land: at-least-once while the store is slow
+      await withDeadline(
+        () =>
+          store.put(
+            `pending-runs/${receiptId}`,
+            new TextEncoder().encode(JSON.stringify(entry)),
+          ),
+        HANDOVER_QUEUE_PUT_TIMEOUT_MS,
+      );
+    } catch (error) {
+      this.queuedForNextLeader--;
+      logger
+        .warn`Could not queue webhook delivery ${receiptId} for the next leader: ${error}`;
+      // the put may still land, so a follower must not send it on again
+      const refusal = this.shuttingDownResponse(endpoint, sourceIp);
+      return Response.json(
+        { ...(await refusal.json()), inFlight: true },
+        { status: refusal.status, headers: refusal.headers },
+      );
+    }
+    logger
+      .info`Queued webhook delivery ${receiptId} on ${endpoint.route} for the next leader`;
+    this.emit({
+      kind: "webhook_queued",
+      route: endpoint.route,
+      workflowName: endpoint.workflowIdOrName,
+      runId: receiptId,
+    });
+    const response = delivery.httpResponse ?? Response.json({
+      status: "queued",
+      workflow: endpoint.workflowIdOrName,
+    });
+    response.headers.set(RUN_ID_HEADER, receiptId);
+    return response;
+  }
+
   private shuttingDownResponse(
     endpoint: WebhookEndpoint,
     sourceIp?: string,
@@ -1196,7 +1384,10 @@ export class WebhookService {
       sourceIp,
     });
     return Response.json(
-      { error: "Server is shutting down, try again later" },
+      {
+        error: "Server is shutting down, try again later",
+        code: "shutting_down",
+      },
       {
         status: 503,
         headers: { "retry-after": String(SHUTDOWN_RETRY_AFTER_SECONDS) },
@@ -1257,7 +1448,18 @@ export class WebhookService {
     // replays, so it must land before shutdown moves on.
     const dropped = this.runQueue.splice(0);
     for (const entry of dropped) entry.queueObservation?.end("cancelled");
-    await Promise.allSettled(dropped.map((entry) => entry.putPromise));
+    const shared = await Promise.all(
+      dropped.map((entry) => entry.putPromise ?? Promise.resolve(false)),
+    );
+    // the next leader replays it from the control plane; a local copy left
+    // behind would be replayed again when this node next leads
+    if (this.queuesForNextLeader()) {
+      dropped.forEach((entry, i) => {
+        if (shared[i] && entry.pendingRunId !== undefined) {
+          this.deps.runTracker?.deletePendingRun(entry.pendingRunId);
+        }
+      });
+    }
     if (timeoutMs <= 0) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {

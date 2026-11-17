@@ -79,6 +79,44 @@ Deno.test("pendingOwnerLiveness: a peer on this host is judged by its process", 
   assertEquals(await gone(PEER), false);
 });
 
+Deno.test("pendingOwnerLiveness: a live process on this host whose heartbeat is gone or stopped has handed over", async () => {
+  const now = new Date();
+  const judge = (entries: Record<string, unknown>) =>
+    pendingOwnerLiveness({
+      instanceId: "self",
+      ...onHost("host-a", false),
+      controlPlaneStore: storeWith(entries),
+      readsHostHeartbeat: true,
+    });
+  assertEquals(await judge({ "heartbeats/peer": heartbeat(now) })(PEER), true);
+  assertEquals(
+    await judge({ "heartbeats/peer": heartbeat(now, now) })(PEER),
+    false,
+  );
+  assertEquals(await judge({})(PEER), false);
+});
+
+Deno.test("pendingOwnerLiveness: a live process on this host stays alive when its heartbeat cannot be read", async () => {
+  const alive = pendingOwnerLiveness({
+    instanceId: "self",
+    ...onHost("host-a", false),
+    controlPlaneStore: {
+      get: () => Promise.reject(new Error("store unavailable")),
+    } as unknown as ControlPlaneStore,
+    readsHostHeartbeat: true,
+  });
+  assertEquals(await alive(PEER), true);
+});
+
+Deno.test("pendingOwnerLiveness: without the heartbeat rule a live process on this host is alive, as the record sweep needs", async () => {
+  const alive = pendingOwnerLiveness({
+    instanceId: "self",
+    ...onHost("host-a", false),
+    controlPlaneStore: storeWith({}),
+  });
+  assertEquals(await alive(PEER), true);
+});
+
 Deno.test("pendingOwnerLiveness: a peer elsewhere is alive while its heartbeat is fresh", async () => {
   const now = new Date();
   const fresh = pendingOwnerLiveness({

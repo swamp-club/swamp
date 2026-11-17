@@ -278,6 +278,9 @@ export const LEASE_OPS_FEATURE = "lease-ops";
 /** without it in serve's replies, a member commits each start as the whole record */
 export const STEP_STARTS_FEATURE = "step-starts";
 
+/** a feed subscriber that names it is told when the leader starts shutting down */
+export const LEADER_STEPPING_DOWN_FEATURE = "leader-stepping-down";
+
 /** serve checks removals a command will commit, before it commits any */
 export const AUTHORIZE_ONLY_FEATURE = "authorize-only";
 

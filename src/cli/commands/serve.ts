@@ -314,6 +314,7 @@ import {
   parkerAsOwner,
   ServeHandover,
 } from "../../serve/serve_handover.ts";
+import { LeaderSteppingDown } from "../../serve/leader_stepping_down.ts";
 import { executeWorkflowWithLocks } from "../../serve/deps.ts";
 import { DaemonTelemetryFlushService } from "../../serve/telemetry_flush.ts";
 import { runDetached } from "../../infrastructure/tracing/mod.ts";
@@ -819,6 +820,10 @@ export {
   resolveServeStartupSettings,
   validateServeDaemonArgs,
 } from "./serve_startup_settings.ts";
+
+// a forward the leader took finishes relaying within this, never past the deadline
+const LEADER_LINK_DRAIN_MS = 5_000;
+
 const PENDING_INTERRUPTED_MAX = 10_000;
 
 /** what a reload's prepare phase settled before anything changed */
@@ -2565,6 +2570,7 @@ export const serveCommand = new Command()
     });
     const instanceId = crypto.randomUUID();
     const serveHandover = new ServeHandover(instanceId);
+    const leaderSteppingDown = new LeaderSteppingDown();
     const pendingRunOwner: PendingRunOwner = {
       instanceId,
       pid: Deno.pid,
@@ -4593,15 +4599,22 @@ export const serveCommand = new Command()
     const heartbeatStore = hasRemoteControlPlane
       ? controlPlaneStore
       : undefined;
-    const ownerLiveness = (unjudgedOwner: "alive" | "gone") =>
+    const ownerLiveness = (
+      unjudgedOwner: "alive" | "gone",
+      readsHostHeartbeat = false,
+    ) =>
       pendingOwnerLiveness({
         instanceId,
         unjudgedOwner,
+        readsHostHeartbeat,
         ...(heartbeatStore ? { controlPlaneStore: heartbeatStore } : {}),
         ...(staleTtlMs !== undefined ? { staleTtlMs } : {}),
       });
     const bootOwnerAlive = ownerLiveness("gone");
     const sweepOwnerAlive = ownerLiveness("alive");
+    // queued and parked runs only: serve beats before it queues or parks any
+    const bootRunOwnerAlive = ownerLiveness("gone", true);
+    const sweepRunOwnerAlive = ownerLiveness("alive", true);
     // the sweep can run while workers enroll: worker records go through the
     // gateway's write ordering, and one the gateway holds is never settled
     const workerWrites = {
@@ -4793,6 +4806,7 @@ export const serveCommand = new Command()
     const connectionCtx: import("../../serve/connection.ts").ConnectionContext =
       {
         handover: serveHandover,
+        steppingDown: leaderSteppingDown,
         tokenAdmission,
         integrationDirectory,
         delegationDirectory,
@@ -6113,6 +6127,9 @@ export const serveCommand = new Command()
       acceptsRuns: () => !isFollowing(),
       startupComplete: () => admission.phase !== "starting",
       shuttingDown: () => admission.phase === "draining",
+      // a team's next leader replays it from the control plane
+      queuesForNextLeader: () =>
+        serveLeadership?.role === "leader" && serveHandover.begun,
       pendingRunOwner,
       ...(leaderLink !== undefined ? { leaderLink } : {}),
       repoDir: resolvedRepoDir,
@@ -8299,6 +8316,8 @@ export const serveCommand = new Command()
       // in the same turn as shuttingDown, with no await before it: once /ready
       // answers shutting_down, no trigger may be acknowledged
       admission.beginDraining();
+      // the lease is released only at exit; followers start trying it now
+      if (serveLeadership?.role === "leader") leaderSteppingDown.begin();
       // runs park at their next step boundary within the drain; with no drain
       // the abort below settles them
       if (
@@ -8466,7 +8485,14 @@ export const serveCommand = new Command()
         const effects = serveCommitEffects;
         await stages.run("commit effects", () => effects.stop(), "awaited");
       }
-      leaderLink?.close();
+      if (leaderLink) {
+        const link = leaderLink;
+        await stages.run(
+          "leader link",
+          () => link.drain(shutdownDeadline.left(LEADER_LINK_DRAIN_MS)),
+          "awaited",
+        );
+      }
       if (heartbeatService) {
         const service = heartbeatService;
         await stages.run(
@@ -8715,7 +8741,7 @@ export const serveCommand = new Command()
         configuredWebhookRoutes: webhookTargets.routes,
         configuredCronWorkflows,
         keepCronRuns: scheduler.ranScheduler(),
-        ownerAlive: sweep ? sweepOwnerAlive : bootOwnerAlive,
+        ownerAlive: sweep ? sweepRunOwnerAlive : bootRunOwnerAlive,
         deferred,
         claimAs: pendingRunOwner,
         replayedRuns,
@@ -8806,8 +8832,8 @@ export const serveCommand = new Command()
               const owner = parkerAsOwner(parker);
               if (owner === undefined) return Promise.resolve(false);
               return cause === "boot" || cause === "lead"
-                ? bootOwnerAlive(owner)
-                : sweepOwnerAlive(owner);
+                ? bootRunOwnerAlive(owner)
+                : sweepRunOwnerAlive(owner);
             },
             onDeferredLater: (target) => {
               if (pendingInterrupted.size < PENDING_INTERRUPTED_MAX) {
@@ -8845,7 +8871,7 @@ export const serveCommand = new Command()
         for (const marker of await listParkedRuns(store)) {
           if (pendingInterrupted.has(marker.runId)) continue;
           const owner = parkerAsOwner(marker.parker);
-          if (owner !== undefined && await sweepOwnerAlive(owner)) continue;
+          if (owner !== undefined && await sweepRunOwnerAlive(owner)) continue;
           due.push({ workflowId: marker.workflowId, runId: marker.runId });
         }
         if (due.length === 0) return;
@@ -8878,15 +8904,8 @@ export const serveCommand = new Command()
       }
       pendingReplaySweep.start();
     };
-    if (!v3Follows) {
-      await replayPendingAtLead();
-      // before the catch-up, so a continued scheduled run holds off its slot
-      await continueInterruptedAtLead("boot");
-      // after the replay, so a replayed run queues ahead of a catch-up
-      scheduler.current()?.startCatchUp();
-    }
-    scheduler.markBootReplayed();
-
+    // before anything is queued: on this host a live pid without a heartbeat
+    // counts as gone
     if (hasRemoteControlPlane) {
       const scheme = tlsEnabled ? "https" : "http";
       const serveAddress = `${scheme}://${host}:${port}`;
@@ -8901,7 +8920,17 @@ export const serveCommand = new Command()
       );
       await heartbeatService.start();
       logger.info`Instance heartbeat started (id: ${instanceId})`;
+    }
+    if (!v3Follows) {
+      await replayPendingAtLead();
+      // before the catch-up, so a continued scheduled run holds off its slot
+      await continueInterruptedAtLead("boot");
+      // after the replay, so a replayed run queues ahead of a catch-up
+      scheduler.current()?.startCatchUp();
+    }
+    scheduler.markBootReplayed();
 
+    if (hasRemoteControlPlane) {
       reconciliationLoopRunning = true;
       let knownPeerIds: Set<string> | null = null;
       const runReconciliationTick = async () => {
@@ -9062,6 +9091,7 @@ export const serveCommand = new Command()
             markRefreshed();
             serveCommitEffects?.poke();
           },
+          onLeaderGoing: (after) => serveLeadership?.leaderGoing(after),
         })
         : undefined;
       if (followerFeed !== undefined) {

@@ -63,6 +63,12 @@ export interface PendingOwnerLivenessDeps {
   hostIdentity?: () => string;
   isGone?: (pid: number) => boolean;
   ownPid?: number;
+  /**
+   * on this host, also ask the heartbeat: for queued and parked runs, which a
+   * process owns only once its first heartbeat is written. Absent, a live pid
+   * is alive, as the record sweep needs for records written before then
+   */
+  readsHostHeartbeat?: boolean;
 }
 
 /**
@@ -78,11 +84,24 @@ export function pendingOwnerLiveness(
   const ownPid = deps.ownPid ?? Deno.pid;
   return async (owner) => {
     if (owner.instanceId === deps.instanceId) return true;
+    const store = deps.controlPlaneStore;
     if (owner.host !== undefined && owner.host === hostIdentity()) {
       // this pid is this process's, and the instance id says the owner was not
-      return owner.pid !== ownPid && !isGone(owner.pid);
+      if (owner.pid === ownPid || isGone(owner.pid)) return false;
+      if (!store || deps.readsHostHeartbeat !== true) return true;
+      // a live pid without a running heartbeat is exiting
+      try {
+        const data = await withDeadline(
+          () => store.get(`heartbeats/${owner.instanceId}`),
+          PENDING_REPLAY_STORE_TIMEOUT_MS,
+        );
+        if (!data) return false;
+        const record = InstanceHeartbeatService.parseRecord(data);
+        return record !== null && !InstanceHeartbeatService.isStopped(record);
+      } catch {
+        return true;
+      }
     }
-    const store = deps.controlPlaneStore;
     if (!store) return deps.unjudgedOwner === "alive";
     try {
       const data = await withDeadline(

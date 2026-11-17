@@ -79,6 +79,7 @@ function setup(now?: () => number) {
   const applied: number[][] = [];
   let gate: PromiseWithResolvers<void> | undefined;
   let fresh = 0;
+  let going = 0;
   const feed = new FollowerFeed({
     ...(now !== undefined ? { now } : {}),
     link,
@@ -89,10 +90,12 @@ function setup(now?: () => number) {
       await gate?.promise;
     },
     onFresh: () => fresh++,
+    onLeaderGoing: () => going++,
   });
   return {
     feed,
     sockets,
+    going: () => going,
     applied,
     fresh: () => fresh,
     hold: () => (gate = Promise.withResolvers<void>()),
@@ -169,7 +172,7 @@ Deno.test("FollowerFeed: its subscribe names lease ops and step starts, so the l
   assertEquals(subscribe.type, "commits.subscribe");
   assertEquals(subscribe.payload, {
     cursor: 0,
-    features: ["lease-ops", "step-starts"],
+    features: ["lease-ops", "step-starts", "leader-stepping-down"],
   });
   await t.feed.stop();
 });
@@ -413,4 +416,50 @@ Deno.test("followerUnreadyReason: a WAL past the bound reports the follower brok
     })!,
     "WAL",
   );
+});
+
+Deno.test("FollowerFeed: a leader that says it is stepping down is reported, and the frame still applies", async () => {
+  const t = setup();
+  t.feed.follow(leader("a", 1));
+  await waitFor(() => t.sockets.length === 1, "the socket");
+  t.sockets[0].open();
+  const stepping = frame([]);
+  t.sockets[0].deliver({
+    ...stepping,
+    payload: { ...stepping.payload, steppingDown: true },
+  });
+  await waitFor(() => t.fresh() === 1, "the frame applied");
+  assertEquals(t.going(), 1);
+  await t.feed.stop();
+});
+
+Deno.test("FollowerFeed: the leader closing the feed is reported; the follower stopping it, or failing it itself, is not", async () => {
+  const t = setup();
+  t.feed.follow(leader("a", 1));
+  await waitFor(() => t.sockets.length === 1, "the socket");
+  t.sockets[0].open();
+  t.sockets[0].close();
+  assertEquals(t.going(), 1);
+
+  t.feed.follow(leader("a", 1));
+  await waitFor(() => t.sockets.length === 2, "a second socket");
+  t.sockets[1].open();
+  t.sockets[1].deliver({ type: "commits.subscribe", id: "follower-feed" });
+  await waitFor(() => !t.feed.current(leader("a", 1)), "the feed failed");
+  assertEquals(t.going(), 1);
+
+  t.feed.follow(leader("a", 1));
+  await waitFor(() => t.sockets.length === 3, "a third socket");
+  t.sockets[2].open();
+  await t.feed.stop();
+  assertEquals(t.going(), 1);
+});
+
+Deno.test("FollowerFeed: a socket that never opened is a connect failure, not the leader going", async () => {
+  const t = setup();
+  t.feed.follow(leader("a", 1));
+  await waitFor(() => t.sockets.length === 1, "the socket");
+  t.sockets[0].close();
+  assertEquals(t.going(), 0);
+  await t.feed.stop();
 });

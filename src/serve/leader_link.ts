@@ -167,6 +167,8 @@ export class LeaderLink {
   readonly #options: LeaderLinkOptions;
   readonly #clients = new Map<string, Deno.HttpClient | undefined>();
   readonly #closed = new AbortController();
+  // writes until their reply is relayed; a GET may stream for as long as its caller reads
+  readonly #inFlight = new Set<Promise<void>>();
   #superseded = new AbortController();
   #frozen: { key: string; probeAt: number; probing: boolean } | undefined;
   #unanswered: { key: string; count: number; seq: number } | undefined;
@@ -210,6 +212,29 @@ export class LeaderLink {
    * when the leader is unknown or could not be reached; never retries.
    */
   async forward(req: Request, options: ForwardOptions = {}): Promise<Response> {
+    const relayed = Promise.withResolvers<void>();
+    if (req.method !== "GET" && req.method !== "HEAD") {
+      this.#inFlight.add(relayed.promise);
+    }
+    const settle = () => {
+      this.#inFlight.delete(relayed.promise);
+      relayed.resolve();
+    };
+    let streaming = false;
+    try {
+      const reply = await this.#forward(req, options, settle);
+      streaming = reply.streaming;
+      return reply.response;
+    } finally {
+      if (!streaming) settle();
+    }
+  }
+
+  async #forward(
+    req: Request,
+    options: ForwardOptions,
+    onRelayed: () => void,
+  ): Promise<{ response: Response; streaming: boolean }> {
     const leader = this.#options.leader();
     const address = leader?.address;
     const nameLeader = options.nameLeader ?? true;
@@ -217,7 +242,13 @@ export class LeaderLink {
       leader === undefined || address === undefined ||
       this.#closed.signal.aborted
     ) {
-      return notLeaderResponse(new ServeNotLeaderError(leader), nameLeader);
+      return {
+        response: notLeaderResponse(
+          new ServeNotLeaderError(leader),
+          nameLeader,
+        ),
+        streaming: false,
+      };
     }
     const key = leaderKey(leader, address);
     const url = new URL(req.url);
@@ -243,7 +274,13 @@ export class LeaderLink {
     const client = this.client(address);
     const admitted = this.#admit(key, responseMs, lockWaitMs);
     if (admitted === "refuse") {
-      return notLeaderResponse(new ServeNotLeaderError(leader), nameLeader);
+      return {
+        response: notLeaderResponse(
+          new ServeNotLeaderError(leader),
+          nameLeader,
+        ),
+        streaming: false,
+      };
     }
     const sentAtSeq = this.#timeoutSeq;
     const superseded = this.#superseded.signal;
@@ -291,26 +328,38 @@ export class LeaderLink {
         .info`Forwarding ${req.method} ${url.pathname} to the leader at ${address} failed${
         inFlight ? " after it was sent" : ""
       }: ${error}`;
-      return notLeaderResponse(
-        new ServeNotLeaderError(leader, false, inFlight),
-        nameLeader,
-      );
+      return {
+        response: notLeaderResponse(
+          new ServeNotLeaderError(leader, false, inFlight),
+          nameLeader,
+        ),
+        streaming: false,
+      };
     } finally {
       clearTimeout(responseTimer);
     }
     this.#answered(key);
     if (!upstream.body) {
-      return new Response(null, {
-        status: upstream.status,
-        statusText: upstream.statusText,
-        headers: upstream.headers,
-      });
+      return {
+        response: new Response(null, {
+          status: upstream.status,
+          statusText: upstream.statusText,
+          headers: upstream.headers,
+        }),
+        streaming: false,
+      };
     }
-    return new Response(endOnAbort(upstream.body, this.#closed.signal), {
-      status: upstream.status,
-      statusText: upstream.statusText,
-      headers: upstream.headers,
-    });
+    return {
+      response: new Response(
+        endOnAbort(upstream.body, this.#closed.signal, onRelayed),
+        {
+          status: upstream.status,
+          statusText: upstream.statusText,
+          headers: upstream.headers,
+        },
+      ),
+      streaming: true,
+    };
   }
 
   #now(): number {
@@ -472,6 +521,27 @@ export class LeaderLink {
       ...(client !== undefined ? { client } : {}),
     } as unknown as string[]);
     return { socket, leader };
+  }
+
+  /** forwards that start while it waits are waited for too */
+  async drain(waitMs: number): Promise<void> {
+    const deadline = this.#now() + waitMs;
+    while (this.#inFlight.size > 0 && !this.#closed.signal.aborted) {
+      const left = deadline - this.#now();
+      if (left <= 0) break;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          Promise.allSettled([...this.#inFlight]),
+          new Promise<void>((resolve) => {
+            timer = setTimeout(resolve, left);
+          }),
+        ]);
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    this.close();
   }
 
   close(): void {

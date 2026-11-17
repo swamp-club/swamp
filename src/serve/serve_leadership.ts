@@ -42,6 +42,11 @@ export const DEFAULT_LEADERSHIP_TICK_MS = 10_000;
  */
 const LEASE_EXPIRY_MARGIN_MS = 1_000;
 
+/** past it, a leader that never let go is ticked as before */
+export const AWAIT_NEW_LEADER_MS = 120_000;
+
+const AWAITING_LEASE_TRY_MS = 1_000;
+
 /**
  * How long a follower's copy may go without a refresh before it stops
  * answering reads: three ticks, so a revoked grant stops allowing reads on a
@@ -154,6 +159,9 @@ export class ServeLeadership {
   #leadCheck: Promise<void> | undefined;
   #unsubscribeLost: (() => void) | undefined;
   #stopped = false;
+  #awaitingUntil: number | undefined;
+  #awaitingPast: number | undefined;
+  #awaitingAfter: "frame" | "closed" | undefined;
 
   constructor(deps: ServeLeadershipDeps) {
     this.#deps = deps;
@@ -233,6 +241,39 @@ export class ServeLeadership {
     this.#schedule(await this.#nextDelay());
   }
 
+  /** a hint only: the lease, tried every second until a higher fence is named, decides */
+  leaderGoing(after: "frame" | "closed" = "frame"): void {
+    if (this.#stopped || this.#role !== "follower") return;
+    const fence = this.#leader?.fence;
+    if (this.#awaitingUntil === undefined || this.#awaitingPast !== fence) {
+      logger
+        .info`The leader is going away; this node tries the writer lease every ${AWAITING_LEASE_TRY_MS} ms until a new leader is named`;
+    }
+    this.#awaitingUntil = this.#now() + AWAIT_NEW_LEADER_MS;
+    this.#awaitingPast = fence;
+    // a frame outranks a close: the leader said so
+    if (this.#awaitingAfter !== "frame") this.#awaitingAfter = after;
+    if (this.#timer !== undefined) {
+      clearTimeout(this.#timer);
+      this.#timer = undefined;
+      this.#schedule(AWAITING_LEASE_TRY_MS);
+    }
+  }
+
+  get awaitingNewLeader(): boolean {
+    if (this.#awaitingUntil === undefined) return false;
+    const named = this.#leader?.fence;
+    return this.#role === "follower" && this.#now() < this.#awaitingUntil &&
+      (named === undefined || this.#awaitingPast === undefined ||
+        named <= this.#awaitingPast);
+  }
+
+  #endAwaiting(): void {
+    this.#awaitingUntil = undefined;
+    this.#awaitingPast = undefined;
+    this.#awaitingAfter = undefined;
+  }
+
   lostLeadHandled(): Promise<void> {
     return this.#lostLead ?? Promise.resolve();
   }
@@ -292,6 +333,8 @@ export class ServeLeadership {
   /** capped at the tick, which also detects a lost lead and drives refreshes */
   async #nextDelay(): Promise<number> {
     if (this.#stopped || this.#role === "leader") return this.#tickMs;
+    if (this.awaitingNewLeader) return AWAITING_LEASE_TRY_MS;
+    this.#endAwaiting();
     const expiresAt = await this.#deps.lease.expiresAt().catch(
       () => undefined,
     );
@@ -350,7 +393,23 @@ export class ServeLeadership {
       // names. A new leader, or a stopped feed, restores from the lineage first
       // so no commit an old leader never published stays in the copy.
       await this.#readLeader();
-      if (feed.current(this.#leader)) return;
+      // a wait begun with no leader known takes the first one named as the old
+      if (this.awaitingNewLeader && this.#awaitingPast === undefined) {
+        this.#awaitingPast = this.#leader?.fence;
+      }
+      if (feed.current(this.#leader)) {
+        // a dropped feed back on the same leader was a blip, not a handover
+        if (
+          this.#awaitingAfter === "closed" &&
+          this.#leader?.fence === this.#awaitingPast
+        ) this.#endAwaiting();
+        return;
+      }
+      // the fast cadence is for the lease; the copy is restored once a tick
+      if (
+        this.awaitingNewLeader && this.#refreshedAt !== undefined &&
+        this.#now() - this.#refreshedAt < this.#tickMs
+      ) return;
       // stopped before the restore so nothing the old socket delivers is queued
       // to apply after it
       await feed.stop();
