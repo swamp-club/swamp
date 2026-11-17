@@ -779,6 +779,7 @@ import {
   SERVE_LEADER_KEY,
   type ServeLeader,
 } from "../../domain/datastore_v3/serve_leader.ts";
+import { SERVE_WRITER_LEASE_TTL_MS } from "../../domain/datastore_v3/writer_lease.ts";
 import {
   coLocatedTokenKeyWarning,
   TOKEN_SECRETS_KEY_RECORD,
@@ -9103,6 +9104,7 @@ export const serveCommand = new Command()
               retakeLost: true,
               follow: true,
               ownerCheck: { as: "serve", address: ownerAddress },
+              ttlMs: SERVE_WRITER_LEASE_TTL_MS,
             }),
         },
         store: controlPlaneStore,

@@ -701,6 +701,8 @@ export async function holdV3Writer(
      * for a copy that has read serve's feed, so it can go offline at the lock
      */
     readonly catchUpAtLock?: boolean;
+    /** the first hold in the process decides; later ones join it */
+    readonly ttlMs?: number;
   } = {},
 ): Promise<"writer" | "follower"> {
   let role: "writer" | "follower";
@@ -958,6 +960,7 @@ async function takeV3WriterHold(
     readonly retakeLost?: boolean;
     readonly ownerCheck?: V3OwnerCheck;
     readonly follow?: boolean;
+    readonly ttlMs?: number;
   },
 ): Promise<"writer" | "follower"> {
   // before the lease and the recovery of an interrupted writer, which would
@@ -1004,6 +1007,7 @@ async function takeV3WriterHold(
         },
       },
       ...(options.retakeLost === true ? { retakeLost: true } : {}),
+      ...(options.ttlMs !== undefined ? { ttlMs: options.ttlMs } : {}),
     });
   } catch (error) {
     if (follows && error instanceof V3WriterBusyError) {

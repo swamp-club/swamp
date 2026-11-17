@@ -25,6 +25,8 @@ import {
   judgeWriterLease,
   parseWriterLeaseKey,
   releasedKey,
+  SERVE_WRITER_LEASE_TTL_MS,
+  UNKNOWN_HOLDER_LEASE_TTL_MS,
   WRITER_FENCED_CODE,
   WRITER_LEASE_CLOCK_SKEW_MS,
   WriterFencedError,
@@ -168,6 +170,57 @@ Deno.test("judgeWriterLease: an unreadable fence record is held only while its h
     ),
     { kind: "expired", reason: "unreadable" },
   );
+});
+
+Deno.test("judgeWriterLease: a record is judged on the TTL it carries, not the judge's", () => {
+  const lastRenewal = NOW - 60_000;
+  const recordWith = (ttlMs: number) => ({
+    fence: 3,
+    record: record({
+      ttlMs,
+      acquiredAt: new Date(NOW - 600_000).toISOString(),
+    }),
+    renewedAt: lastRenewal,
+    released: false,
+  });
+  const serveJudge = (now: number) =>
+    judgement({ now, ttlMs: SERVE_WRITER_LEASE_TTL_MS });
+  // A 30 s holder (a CLI writer, or a swamp from before the shorter TTL) is
+  // never taken over early by a 15 s serve.
+  const longHeld = lastRenewal + TTL + WRITER_LEASE_CLOCK_SKEW_MS;
+  assertEquals(
+    judgeWriterLease(recordWith(TTL), serveJudge(longHeld)).kind,
+    "held",
+  );
+  assertEquals(
+    judgeWriterLease(recordWith(TTL), serveJudge(longHeld + 1)),
+    { kind: "expired", reason: "ttl" },
+  );
+  // A 15 s serve holder is taken over 15 s sooner, by any judge.
+  const shortHeld = lastRenewal + SERVE_WRITER_LEASE_TTL_MS +
+    WRITER_LEASE_CLOCK_SKEW_MS;
+  for (const ttlMs of [SERVE_WRITER_LEASE_TTL_MS, TTL]) {
+    const at = (now: number) =>
+      judgeWriterLease(
+        recordWith(SERVE_WRITER_LEASE_TTL_MS),
+        judgement({ now, ttlMs }),
+      );
+    assertEquals(at(shortHeld).kind, "held");
+    assertEquals(at(shortHeld + 1), { kind: "expired", reason: "ttl" });
+  }
+});
+
+Deno.test("judgeWriterLease: an unreadable record is held for the longest TTL any holder records, whatever the judge's", () => {
+  const renewedAt = NOW - 60_000;
+  const at = (now: number) =>
+    judgeWriterLease(
+      { fence: 3, renewedAt, released: false },
+      judgement({ now, ttlMs: SERVE_WRITER_LEASE_TTL_MS }),
+    );
+  const heldUntil = renewedAt + UNKNOWN_HOLDER_LEASE_TTL_MS +
+    WRITER_LEASE_CLOCK_SKEW_MS;
+  assertEquals(at(heldUntil), { kind: "held", holderUnknown: true });
+  assertEquals(at(heldUntil + 1), { kind: "expired", reason: "unreadable" });
 });
 
 Deno.test("fenceKey: keys sort by fence and parse back", () => {

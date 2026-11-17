@@ -70,12 +70,15 @@ import {
   V3_LEGACY_WRITER_LOCK_KEY,
   V3WriterBusyError,
   v3WriterFence,
+  v3WriterLeaseExpiresAt,
   v3WriterLockHandle,
 } from "./v3_writer_lock.ts";
 import type { ProcessIdentity } from "../../domain/datastore_v3/process_liveness.ts";
 import {
+  SERVE_WRITER_LEASE_TTL_MS,
   V3_STORAGE_UNREACHABLE_CODE,
   V3StorageUnreachableError,
+  WRITER_LEASE_CLOCK_SKEW_MS,
   WriterFencedError,
 } from "../../domain/datastore_v3/writer_lease.ts";
 import type { DatastoreProvider } from "../../domain/datastore/datastore_provider.ts";
@@ -90,7 +93,7 @@ import {
   probeProcess,
   setLocalProcessForTesting,
 } from "./process_identity.ts";
-import { FileLock } from "../persistence/file_lock.ts";
+import { DEFAULT_LOCK_TTL_MS, FileLock } from "../persistence/file_lock.ts";
 import { withCapturedSpans } from "../tracing/span_test_helpers.ts";
 import { withMockedEnv } from "../persistence/path_test_helpers.ts";
 import { LOCK_TIMEOUT_ENV_VAR } from "../../domain/datastore/datastore_config.ts";
@@ -593,6 +596,36 @@ Deno.test("holdV3Writer: records the writer's checkout, and closeV3Datastores re
     assertEquals(holdsV3WriterLock(datastorePath), false);
     await assertRejects(() => Deno.stat(sidecar), Deno.errors.NotFound);
   });
+});
+
+Deno.test("holdV3Writer: a TTL asked for is the lease's, and a writer asking for none keeps the default", async () => {
+  for (const ttlMs of [SERVE_WRITER_LEASE_TTL_MS, undefined]) {
+    await withTempDir(async (dir) => {
+      const datastorePath = join(dir, "datastore");
+      await initializeV3Datastore(datastorePath, "test");
+      const config = { type: "filesystem" as const, path: datastorePath };
+      const repoDir = join(dir, "repo");
+      const before = Date.now();
+      await holdV3Writer(
+        config,
+        repoDir,
+        ttlMs === undefined ? {} : { ttlMs },
+      );
+      const after = Date.now();
+      try {
+        const lapse = (ttlMs ?? DEFAULT_LOCK_TTL_MS) +
+          WRITER_LEASE_CLOCK_SKEW_MS;
+        const expiresAt = await v3WriterLeaseExpiresAt(datastorePath);
+        assert(
+          expiresAt !== undefined && expiresAt >= before + lapse &&
+            expiresAt <= after + lapse,
+          `${expiresAt} within [${before + lapse}, ${after + lapse}]`,
+        );
+      } finally {
+        await closeV3Datastores();
+      }
+    });
+  }
 });
 
 Deno.test("closeV3Datastores: each teardown step between stopping the feeds and closing the stores has its own span (swamp-club#4679)", async () => {
