@@ -580,6 +580,8 @@ export interface WebhookServiceDeps {
   startupComplete?: () => boolean;
   /** true once serve's shutdown begins, before drain() runs; absent, only drain() refuses */
   shuttingDown?: () => boolean;
+  /** true on a leader handing its runs over, whose successor replays what it queues */
+  queuesForNextLeader?: () => boolean;
   /** stamped on each queued run, so a peer's boot leaves it to this process */
   pendingRunOwner?: PendingRunOwner;
   /**
@@ -643,6 +645,7 @@ import type { WebhookAdmissionSnapshot } from "../domain/remote/run_progress.ts"
 import { SERVE_NOT_LEADER_CODE } from "../domain/datastore_v3/serve_leader.ts";
 import type { LeaderLink } from "./leader_link.ts";
 import { TEAM_PEER_HEADER } from "./peer_auth.ts";
+import { withDeadline } from "../infrastructure/persistence/datastore_format_marker_reader.ts";
 import { NOT_READY_RETRY_AFTER_SECONDS } from "./serve_admission.ts";
 import type { PendingRunOwner } from "../infrastructure/persistence/run_tracker_store.ts";
 
@@ -693,6 +696,7 @@ export type WebhookRunAuthorizer = (
 
 const MAX_WEBHOOK_BODY_BYTES = 10 * 1024 * 1024;
 const MAX_QUEUE_DEPTH = 100;
+const HANDOVER_QUEUE_PUT_TIMEOUT_MS = 5_000;
 /** Names the run on every response that queues one. */
 export const RUN_ID_HEADER = "X-Swamp-Run-Id";
 /**
@@ -743,6 +747,7 @@ export class WebhookService {
   private readonly abortedAtStop = new Set<RunningWebhookRun>();
   private draining = false;
   private stopped = false;
+  private queuedForNextLeader = 0;
   private endpoints: WebhookEndpoint[];
 
   constructor(private readonly deps: WebhookServiceDeps) {
@@ -898,7 +903,10 @@ export class WebhookService {
       return null;
     }
 
-    if (this.shuttingDown()) {
+    if (
+      this.shuttingDown() && !this.forwardsToLeader() &&
+      !this.queuesForNextLeader()
+    ) {
       return this.shuttingDownResponse(endpoint, sourceIp);
     }
 
@@ -959,12 +967,10 @@ export class WebhookService {
 
     // a follower forwards the delivery to the leader as it came, within the
     // size limit, before verifying; the leader verifies with its own endpoint
-    // config, and the reply names no leader
+    // config, and the reply names no leader; a draining follower still forwards,
+    // since it runs nothing itself
     const link = this.deps.leaderLink;
-    if (
-      this.deps.acceptsRuns?.() === false && link !== undefined &&
-      link.address() !== undefined
-    ) {
+    if (link !== undefined && this.forwardsToLeader()) {
       return await link.forward(req, {
         body,
         ...(sourceIp !== undefined ? { clientIp: sourceIp } : {}),
@@ -1039,7 +1045,19 @@ export class WebhookService {
     // Checked again: a drain can start during the awaits above, and a run
     // queued after it would be acknowledged and then aborted unreplayed.
     if (this.shuttingDown()) {
-      return this.shuttingDownResponse(endpoint, sourceIp);
+      if (!this.queuesForNextLeader()) {
+        return this.shuttingDownResponse(endpoint, sourceIp);
+      }
+      return await this.queueForNextLeader({
+        endpoint,
+        receiptId,
+        receipt,
+        payload: serializedPayload,
+        traceparent,
+        tracestate,
+        sourceIp,
+        httpResponse,
+      });
     }
 
     // after verification, so only a verified sender learns this node does not
@@ -1182,6 +1200,89 @@ export class WebhookService {
 
   private shuttingDown(): boolean {
     return this.draining || this.deps.shuttingDown?.() === true;
+  }
+
+  private forwardsToLeader(): boolean {
+    return this.deps.acceptsRuns?.() === false &&
+      this.deps.leaderLink?.address() !== undefined;
+  }
+
+  private queuesForNextLeader(): boolean {
+    return this.deps.queuesForNextLeader?.() === true &&
+      this.deps.controlPlaneStore !== undefined;
+  }
+
+  /** not the local run tracker: the next leader may be on another host, and a local copy could replay twice */
+  private async queueForNextLeader(delivery: {
+    endpoint: WebhookEndpoint;
+    receiptId: string;
+    receipt: ExecutionObservation;
+    payload: string;
+    traceparent?: string;
+    tracestate?: string;
+    sourceIp?: string;
+    httpResponse?: Response;
+  }): Promise<Response> {
+    const { endpoint, receiptId, sourceIp } = delivery;
+    if (this.queuedForNextLeader >= MAX_QUEUE_DEPTH) {
+      this.emit({
+        kind: "webhook_rejected",
+        route: endpoint.route,
+        workflowName: endpoint.workflowIdOrName,
+        reason: "Queue full",
+        sourceIp,
+      });
+      return Response.json(
+        { error: "Too many queued runs, try again later" },
+        {
+          status: 503,
+          headers: { "retry-after": String(SHUTDOWN_RETRY_AFTER_SECONDS) },
+        },
+      );
+    }
+    const store = this.deps.controlPlaneStore!;
+    const entry = {
+      id: receiptId,
+      receiptTrace: delivery.receipt.carrier,
+      source: "webhook" as const,
+      workflowIdOrName: endpoint.workflowIdOrName,
+      payload: delivery.payload,
+      route: endpoint.route,
+      traceparent: delivery.traceparent,
+      tracestate: delivery.tracestate,
+      createdAt: new Date(this.now()).toISOString(),
+      ...(this.deps.pendingRunOwner
+        ? { owner: this.deps.pendingRunOwner }
+        : {}),
+    };
+    this.queuedForNextLeader++;
+    try {
+      await withDeadline(
+        () =>
+          store.put(
+            `pending-runs/${receiptId}`,
+            new TextEncoder().encode(JSON.stringify(entry)),
+          ),
+        HANDOVER_QUEUE_PUT_TIMEOUT_MS,
+      );
+    } catch (error) {
+      this.queuedForNextLeader--;
+      logger
+        .warn`Could not queue webhook delivery ${receiptId} for the next leader: ${error}`;
+      return this.shuttingDownResponse(endpoint, sourceIp);
+    }
+    this.emit({
+      kind: "webhook_queued",
+      route: endpoint.route,
+      workflowName: endpoint.workflowIdOrName,
+      runId: receiptId,
+    });
+    const response = delivery.httpResponse ?? Response.json({
+      status: "queued",
+      workflow: endpoint.workflowIdOrName,
+    });
+    response.headers.set(RUN_ID_HEADER, receiptId);
+    return response;
   }
 
   private shuttingDownResponse(

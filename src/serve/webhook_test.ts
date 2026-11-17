@@ -50,6 +50,7 @@ import {
   WebhookEnvironmentError,
   type WebhookEvent,
   WebhookService,
+  type WebhookServiceDeps,
 } from "./webhook.ts";
 import { SecretNotFoundError } from "../domain/vaults/secret_not_found_error.ts";
 import {
@@ -2875,5 +2876,148 @@ Deno.test("handleRequest: the shutdown gate accepts a delivery while admission i
   assertEquals(enqueued.length, 1);
   await waitFor(() => runs.length === 1, "run started");
   runs[0].release();
+  await service.stop();
+});
+
+function handoverService(
+  type: ExtensionWebhookScheme,
+  store: Partial<ControlPlaneStore>,
+  overrides: Partial<ConstructorParameters<typeof WebhookService>[0]> = {},
+): { service: WebhookService; localRuns: unknown[]; started: () => number } {
+  const localRuns: unknown[] = [];
+  let starts = 0;
+  const service = new WebhookService({
+    shuttingDown: () => true,
+    queuesForNextLeader: () => true,
+    pendingRunOwner: { instanceId: "leader-1", pid: 4242, host: "host-a" },
+    repoDir: "/tmp/fake",
+    syncGate: undefined,
+    repoContext: {} as unknown as RepositoryContext,
+    datastoreConfig: {} as unknown as DatastoreConfig,
+    endpoints: [{
+      route: "/hooks/ext",
+      workflowIdOrName: "wf",
+      secret: "s3cret",
+      verifier: { scheme: type, config: {} },
+    }],
+    runTracker: {
+      enqueuePendingRun: (entry: unknown) => localRuns.push(entry),
+      deletePendingRun: () => {},
+    } as unknown as RunTrackerStore,
+    controlPlaneStore: store as ControlPlaneStore,
+    executeWorkflow: (() => {
+      starts++;
+      return Promise.reject(new Error("must not start"));
+    }) as unknown as WebhookServiceDeps["executeWorkflow"],
+    ...overrides,
+  });
+  return { service, localRuns, started: () => starts };
+}
+
+Deno.test("handleRequest: a leader handing over queues a verified delivery during shutdown for the next leader and starts nothing", async () => {
+  const puts = new Map<string, string>();
+  const { service, localRuns, started } = handoverService(
+    registerExtension({}),
+    {
+      put: (key: string, data: Uint8Array) => {
+        puts.set(key, new TextDecoder().decode(data));
+        return Promise.resolve();
+      },
+    },
+  );
+
+  const res = await service.handleRequest(extensionRequest("s3cret"));
+
+  assertEquals(res?.status, 200);
+  const runId = res!.headers.get(RUN_ID_HEADER)!;
+  assertEquals(await res!.json(), { status: "queued", workflow: "wf" });
+  const entry = JSON.parse(puts.get(`pending-runs/${runId}`)!);
+  assertEquals(entry.id, runId);
+  assertEquals(entry.source, "webhook");
+  assertEquals(entry.workflowIdOrName, "wf");
+  assertEquals(entry.owner, {
+    instanceId: "leader-1",
+    pid: 4242,
+    host: "host-a",
+  });
+  assertEquals(JSON.parse(entry.payload).body, { update_id: 1 });
+  assertEquals(localRuns, []);
+  assertEquals(started(), 0);
+  assertEquals(service.queueStatus("/hooks/ext").queued, 0);
+  await service.stop();
+});
+
+Deno.test("handleRequest: a leader handing over still refuses an unverified delivery during shutdown", async () => {
+  const puts: string[] = [];
+  const { service } = handoverService(registerExtension({}), {
+    put: (key: string) => {
+      puts.push(key);
+      return Promise.resolve();
+    },
+  });
+
+  const res = await service.handleRequest(extensionRequest("wrong"));
+
+  assertEquals(res?.status, 401);
+  await res?.body?.cancel();
+  assertEquals(puts, []);
+  await service.stop();
+});
+
+Deno.test("handleRequest: a delivery the control plane cannot hold during a handover is refused as shutting down", async () => {
+  const { service } = handoverService(registerExtension({}), {
+    put: () => Promise.reject(new Error("bucket unavailable")),
+  });
+
+  const res = await service.handleRequest(extensionRequest("s3cret"));
+
+  assertEquals(res?.status, 503);
+  assertEquals(res?.headers.get("retry-after"), "5");
+  assertEquals(res?.headers.get(RUN_ID_HEADER), null);
+  await res?.body?.cancel();
+  await service.stop();
+});
+
+Deno.test("handleRequest: a node that is not handing over still refuses deliveries during shutdown", async () => {
+  const puts: string[] = [];
+  const { service } = handoverService(registerExtension({}), {
+    put: (key: string) => {
+      puts.push(key);
+      return Promise.resolve();
+    },
+  }, { queuesForNextLeader: () => false });
+
+  const res = await service.handleRequest(extensionRequest("s3cret"));
+
+  assertEquals(res?.status, 503);
+  await res?.body?.cancel();
+  assertEquals(puts, []);
+  await service.stop();
+});
+
+Deno.test("handleRequest: a draining follower still passes a delivery on to the leader", async () => {
+  const sent: { url: string; body: string; token: string | null }[] = [];
+  const type = registerExtension({});
+  const service = new WebhookService({
+    acceptsRuns: () => false,
+    shuttingDown: () => true,
+    leaderLink: recordingLink(sent),
+    repoDir: "/tmp/fake",
+    syncGate: undefined,
+    repoContext: {} as unknown as RepositoryContext,
+    datastoreConfig: {} as unknown as DatastoreConfig,
+    endpoints: [{
+      route: "/hooks/ext",
+      workflowIdOrName: "wf",
+      secret: "s3cret",
+      verifier: { scheme: type, config: {} },
+    }],
+  });
+
+  const res = await service.handleRequest(extensionRequest("s3cret"));
+
+  assertEquals(res?.status, 202);
+  await res?.body?.cancel();
+  assertEquals(sent.length, 1);
   await service.stop();
 });

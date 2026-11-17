@@ -314,6 +314,7 @@ import {
   parkerAsOwner,
   ServeHandover,
 } from "../../serve/serve_handover.ts";
+import { LeaderSteppingDown } from "../../serve/leader_stepping_down.ts";
 import { executeWorkflowWithLocks } from "../../serve/deps.ts";
 import { DaemonTelemetryFlushService } from "../../serve/telemetry_flush.ts";
 import { runDetached } from "../../infrastructure/tracing/mod.ts";
@@ -819,6 +820,10 @@ export {
   resolveServeStartupSettings,
   validateServeDaemonArgs,
 } from "./serve_startup_settings.ts";
+
+// a forward the leader took finishes relaying within this, never past the deadline
+const LEADER_LINK_DRAIN_MS = 5_000;
+
 const PENDING_INTERRUPTED_MAX = 10_000;
 
 /** what a reload's prepare phase settled before anything changed */
@@ -2565,6 +2570,7 @@ export const serveCommand = new Command()
     });
     const instanceId = crypto.randomUUID();
     const serveHandover = new ServeHandover(instanceId);
+    const leaderSteppingDown = new LeaderSteppingDown();
     const pendingRunOwner: PendingRunOwner = {
       instanceId,
       pid: Deno.pid,
@@ -4793,6 +4799,7 @@ export const serveCommand = new Command()
     const connectionCtx: import("../../serve/connection.ts").ConnectionContext =
       {
         handover: serveHandover,
+        steppingDown: leaderSteppingDown,
         tokenAdmission,
         integrationDirectory,
         delegationDirectory,
@@ -6113,6 +6120,9 @@ export const serveCommand = new Command()
       acceptsRuns: () => !isFollowing(),
       startupComplete: () => admission.phase !== "starting",
       shuttingDown: () => admission.phase === "draining",
+      // a team's next leader replays it from the control plane
+      queuesForNextLeader: () =>
+        serveLeadership?.role === "leader" && serveHandover.begun,
       pendingRunOwner,
       ...(leaderLink !== undefined ? { leaderLink } : {}),
       repoDir: resolvedRepoDir,
@@ -8299,6 +8309,8 @@ export const serveCommand = new Command()
       // in the same turn as shuttingDown, with no await before it: once /ready
       // answers shutting_down, no trigger may be acknowledged
       admission.beginDraining();
+      // the lease is released only at exit; followers start trying it now
+      if (serveLeadership?.role === "leader") leaderSteppingDown.begin();
       // runs park at their next step boundary within the drain; with no drain
       // the abort below settles them
       if (
@@ -8466,7 +8478,14 @@ export const serveCommand = new Command()
         const effects = serveCommitEffects;
         await stages.run("commit effects", () => effects.stop(), "awaited");
       }
-      leaderLink?.close();
+      if (leaderLink) {
+        const link = leaderLink;
+        await stages.run(
+          "leader link",
+          () => link.drain(shutdownDeadline.left(LEADER_LINK_DRAIN_MS)),
+          "awaited",
+        );
+      }
       if (heartbeatService) {
         const service = heartbeatService;
         await stages.run(
@@ -9062,6 +9081,7 @@ export const serveCommand = new Command()
             markRefreshed();
             serveCommitEffects?.poke();
           },
+          onLeaderGoing: () => serveLeadership?.leaderGoing(),
         })
         : undefined;
       if (followerFeed !== undefined) {

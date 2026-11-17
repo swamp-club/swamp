@@ -9163,7 +9163,14 @@ recovered, marked or replicated by a follower.
   (`refreshV3FollowerCopy`) and reads the leader record. A refresh still
   running when the holder's lease expires runs to its end, and the next tick
   tries the lease (swamp-club#4679, "Phase 4D2" in
-  `datastore-litestream.md`). A follower that wins takes the
+  `datastore-litestream.md`). A follower whose leader says it is stepping
+  down (a `steppingDown` frame on the commit feed, for a subscriber that
+  named the `leader-stepping-down` feature) or whose feed the leader's end
+  closes is awaiting a new leader (`leaderGoing()`): it tries the lease every
+  second until a leader record names a higher fence, for at most 120 s
+  (`AWAIT_NEW_LEADER_MS`), so it takes over about a second after a planned
+  release rather than up to a tick later. See "Rolling a team" in
+  `design/primitives/serve.md`. A follower that wins takes the
   writer's full hold path: restore the latest replicated state, raise the
   fence, check the claim, recover the outbox and start a lineage at its
   fence.
@@ -9503,7 +9510,10 @@ replaces the refusal:
 - Webhooks: the follower passes the delivery on as it came, raw body and
   headers, right after its size-limited read and before it verifies the
   signature or runs any extension hook. The leader verifies it with its own
-  endpoint config, so the team's nodes need the same webhook config.
+  endpoint config, so the team's nodes need the same webhook config. A
+  draining follower keeps forwarding, and a draining leader that hands its
+  runs over queues a verified delivery in the control plane for the next
+  leader rather than refusing it.
 - Workers: a worker's connection to a follower is relayed whole to the
   leader from its first RPC frame (its enrollment), so it joins the
   leader's pool. Its data-plane requests (`/data`, `/bundle`) are forwarded

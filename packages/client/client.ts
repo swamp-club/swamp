@@ -65,6 +65,15 @@ const BACKOFF_CAP_MS = 5_000;
 // serve refuses these before it starts the run, so a fresh start is safe
 const START_RETRY_CODES = new Set(["draining", "not_ready"]);
 
+// a follower that never reached the leader started nothing; one marked
+// inFlight may have, so it is never sent again
+function refusedBeforeStart(err: SwampClientError): boolean {
+  if (START_RETRY_CODES.has(err.code)) return true;
+  if (err.code !== "serve_not_leader") return false;
+  const details = err.details as { inFlight?: unknown } | undefined;
+  return details?.inFlight !== true;
+}
+
 // Deno reports a refused connection only as a tcp connect error; a 502-504
 // upgrade is a proxy or serve that is restarting
 const CONNECT_RETRY_PATTERN =
@@ -456,7 +465,7 @@ export class SwampClient {
       );
       this.settle(msg.id);
       if (
-        pending.refused && !pending.sawEvent && START_RETRY_CODES.has(err.code)
+        pending.refused && !pending.sawEvent && refusedBeforeStart(err)
       ) {
         if (err.code === "draining") this.retire(pending.socket);
         pending.refused(err);

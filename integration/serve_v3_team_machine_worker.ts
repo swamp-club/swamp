@@ -31,6 +31,7 @@ import {
   holdV3Writer,
   refreshV3FollowerCopy,
   v3ClaimCommitLog,
+  v3CommitFeedSource,
   v3DatastoreFor,
   v3ServeControlPlaneAt,
 } from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
@@ -41,6 +42,12 @@ import {
 } from "../src/infrastructure/datastore_v3/v3_writer_lock.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { ServeLeadership } from "../src/serve/serve_leadership.ts";
+import { FollowerFeed } from "../src/serve/follower_feed.ts";
+import { LeaderLink } from "../src/serve/leader_link.ts";
+import { LeaderSteppingDown } from "../src/serve/leader_stepping_down.ts";
+import { handleConnection } from "../src/serve/connection.ts";
+import { markPeerSocket } from "../src/serve/peer_auth.ts";
+import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
 import { DatastoreOwner } from "../src/domain/datastore_v3/datastore_owner.ts";
 import {
   DatastoreLockLeases,
@@ -61,7 +68,21 @@ export type TeamNodeRequest =
     readonly instanceId: string;
     readonly ownerAddress?: string;
   }
-  | { readonly kind: "start"; readonly ttlMs?: number; readonly tickMs: number }
+  | {
+    readonly kind: "start";
+    readonly ttlMs?: number;
+    readonly tickMs: number;
+    /**
+     * serves its commit feed to peers and follows the leader's, as serve wires
+     * a team; steppingDown false is a leader from before that feature
+     */
+    readonly feed?: { readonly steppingDown: boolean };
+  }
+  /** what serve's shutdown does first on a leader */
+  | { readonly kind: "stepDown" }
+  /** this node's view of the datastore once caught up */
+  | { readonly kind: "head" }
+  | { readonly kind: "cursors" }
   | { readonly kind: "claim"; readonly address: string }
   | { readonly kind: "owner" }
   | { readonly kind: "hold" }
@@ -100,6 +121,14 @@ export interface TeamNodeState {
   readonly leader?: string;
   readonly fence?: number;
   readonly events: readonly string[];
+  /** with a feed: */
+  readonly leaderFence?: number;
+  readonly awaitingNewLeader?: boolean;
+  /** each onLeaderGoing: "frame" while the feed socket is open, else "closed" */
+  readonly goings?: readonly string[];
+  readonly feedLive?: boolean;
+  readonly feedApplied?: number;
+  readonly takes?: number;
 }
 
 declare const self: Worker;
@@ -108,6 +137,14 @@ let init: Extract<TeamNodeRequest, { kind: "init" }> | undefined;
 let leadership: ServeLeadership | undefined;
 let shortLease: (() => Promise<void>) | undefined;
 let locks: DatastoreLockLeases | undefined;
+let http: Deno.HttpServer | undefined;
+let feed: FollowerFeed | undefined;
+let link: LeaderLink | undefined;
+let steppingDown: LeaderSteppingDown | undefined;
+const peerSockets = new Set<WebSocket>();
+const goings: string[] = [];
+let feedApplied = 0;
+let takes = 0;
 const nodeLocks = new Set<string>();
 
 function nodeLock(target: LockTarget) {
@@ -170,13 +207,81 @@ async function handle(request: TeamNodeRequest): Promise<unknown> {
         as: "serve" as const,
         address: init!.ownerAddress,
       };
-      const take = () =>
-        holdV3Writer(config(), init!.repoDir, {
+      const take = () => {
+        takes++;
+        return holdV3Writer(config(), init!.repoDir, {
           retakeLost: true,
           follow: true,
           ownerCheck,
         });
+      };
       const role = await take();
+      const repoDir = init!.repoDir;
+      let address = `http://${init!.hostname}:9090`;
+      if (request.feed !== undefined) {
+        // as serve wires a team: each node serves its feed to peers, and a
+        // follower follows the leader's
+        const stepping = new LeaderSteppingDown();
+        steppingDown = stepping;
+        // a peer socket carries only the commit feed, which reads no more
+        const served: Pick<
+          ConnectionContext,
+          "authConfig" | "commitFeed" | "steppingDown"
+        > = {
+          authConfig: {
+            mode: "none",
+            admins: [],
+            allowedCollectives: [],
+            allowedUsers: [],
+            oauthProvider: "",
+            groupsField: "",
+            restrictedModelTypes: [],
+            restrictedCommands: [],
+            approveRequiresExplicitGrant: false,
+            signalRequiresExplicitGrant: false,
+            tagRequiresExplicitGrant: false,
+          },
+          commitFeed: v3CommitFeedSource(repoDir, config()),
+          ...(request.feed.steppingDown ? { steppingDown: stepping } : {}),
+        };
+        const ctx = served as ConnectionContext;
+        http = Deno.serve(
+          { port: 0, hostname: "127.0.0.1", onListen: () => {} },
+          (req) => {
+            const { socket, response } = Deno.upgradeWebSocket(req);
+            markPeerSocket(socket);
+            peerSockets.add(socket);
+            socket.addEventListener("close", () => peerSockets.delete(socket));
+            handleConnection(socket, ctx, null);
+            return response;
+          },
+        );
+        address = `http://127.0.0.1:${(http.addr as Deno.NetAddr).port}`;
+        const leaderLink = new LeaderLink({
+          leader: () => leadership?.leader(),
+        });
+        link = leaderLink;
+        const followed = new FollowerFeed({
+          link: leaderLink,
+          peerToken: () => Promise.resolve("peer"),
+          copyCursor: () =>
+            v3DatastoreFor(repoDir, config()).commitStore.highWaterMark()
+              .cursor,
+          // the copy is the shared store: applying is catching up with it
+          apply: async (changes) => {
+            await v3DatastoreFor(repoDir, config()).catchUp();
+            for (const change of changes) {
+              feedApplied = Math.max(feedApplied, change.cursor);
+            }
+          },
+          onFresh: () => leadership?.markRefreshed(),
+          onLeaderGoing: () => {
+            goings.push(feed?.live === true ? "frame" : "closed");
+            leadership?.leaderGoing();
+          },
+        });
+        feed = followed;
+      }
       // As serve wires them: explicit leases kept in the shared control
       // plane under the writer fence, adopted on taking the lead.
       const leases = new DatastoreLockLeases({
@@ -190,7 +295,8 @@ async function handle(request: TeamNodeRequest): Promise<unknown> {
       if (role === "writer") await leases.adopt();
       const node = new ServeLeadership({
         instanceId: init!.instanceId,
-        address: `http://${init!.hostname}:9090`,
+        address,
+        ...(feed !== undefined ? { feed } : {}),
         lease: {
           holdsCurrent: () => holdsCurrentV3WriterLease(datastorePath),
           fence: () => v3WriterFence(datastorePath),
@@ -249,7 +355,32 @@ async function handle(request: TeamNodeRequest): Promise<unknown> {
           ? { fence: v3WriterFence(init!.datastorePath) }
           : {}),
         events: [...events],
+        ...(feed !== undefined
+          ? {
+            ...(leader !== undefined ? { leaderFence: leader.fence } : {}),
+            awaitingNewLeader: leadership!.awaitingNewLeader,
+            goings: [...goings],
+            feedLive: feed.live,
+            feedApplied,
+            takes,
+          }
+          : {}),
       } satisfies TeamNodeState;
+    }
+    case "stepDown":
+      // serve begins it only on a leader
+      if (leadership?.role === "leader") steppingDown?.begin();
+      return undefined;
+    case "head": {
+      const v3 = v3DatastoreFor(init!.repoDir, config());
+      await v3.catchUp();
+      return v3.commitStore.highWaterMark().cursor;
+    }
+    case "cursors": {
+      const v3 = v3DatastoreFor(init!.repoDir, config());
+      await v3.catchUp();
+      const changes = await v3.commitStore.changesSince(0, 100_000);
+      return changes.map((change) => change.cursor);
     }
     case "commit":
       try {
@@ -302,8 +433,12 @@ async function handle(request: TeamNodeRequest): Promise<unknown> {
     case "lease-records":
       return await v3ServeControlPlaneAt(config()).list("leases/");
     case "close":
+      // serve closes its peers' feed sockets as it stops listening
+      for (const socket of peerSockets) socket.close();
+      await http?.shutdown();
       await locks?.dispose();
       await leadership?.stop();
+      link?.close();
       await closeV3Datastores();
       await shortLease?.().catch(() => {});
       return undefined;

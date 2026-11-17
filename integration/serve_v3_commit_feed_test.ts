@@ -23,6 +23,7 @@ import { parsePrincipal } from "../src/domain/access/principal.ts";
 import { handleConnection } from "../src/serve/connection.ts";
 import { FollowerFeed } from "../src/serve/follower_feed.ts";
 import { LeaderLink } from "../src/serve/leader_link.ts";
+import { LeaderSteppingDown } from "../src/serve/leader_stepping_down.ts";
 import { markPeerSocket } from "../src/serve/peer_auth.ts";
 import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
 import {
@@ -81,7 +82,12 @@ interface Subscriber {
   readonly frames: {
     type: string;
     id: string;
-    payload?: { changes: unknown[]; cursor: number; head: number };
+    payload?: {
+      changes: unknown[];
+      cursor: number;
+      head: number;
+      steppingDown?: boolean;
+    };
     error?: { code: string };
   }[];
 }
@@ -476,6 +482,49 @@ Deno.test({
           assertEquals(subscriber.frames[0].error?.code, "invalid_request");
         } finally {
           subscriber.socket.close();
+        }
+      });
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "commit feed: a leader stepping down tells, once, each subscriber that named the feature, and no other",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(writer(), async (server) => {
+      const steppingDown = new LeaderSteppingDown();
+      (server.ctx as ConnectionContext).steppingDown = steppingDown;
+      await withFeedSocket(server, async (wsUrl) => {
+        const start = server.v3.commitStore.highWaterMark().cursor;
+        const told = (subscriber: Subscriber) =>
+          subscriber.frames.filter((frame) =>
+            frame.payload?.steppingDown === true
+          ).length;
+        const current = await subscribe(wsUrl, PEER_TOKEN, start, [
+          "leader-stepping-down",
+        ]);
+        const older = await subscribe(wsUrl, PEER_TOKEN, start);
+        try {
+          await waitFor(
+            () => current.frames.length > 0 && older.frames.length > 0,
+            "the first frames",
+          );
+          assertEquals(told(current), 0);
+          steppingDown.begin();
+          steppingDown.begin();
+          await waitFor(() => told(current) === 1, "the stepping-down frame");
+          await land(server);
+          const head = server.v3.commitStore.highWaterMark().cursor;
+          await waitFor(() => lastCursor(current) === head, "a later commit");
+          await waitFor(() => lastCursor(older) === head, "the older's commit");
+          assertEquals(told(current), 1);
+          assertEquals(told(older), 0);
+        } finally {
+          current.socket.close();
+          older.socket.close();
         }
       });
     });

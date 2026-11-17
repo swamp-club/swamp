@@ -42,6 +42,9 @@ export const DEFAULT_LEADERSHIP_TICK_MS = 10_000;
  */
 const LEASE_EXPIRY_MARGIN_MS = 1_000;
 
+/** past it, a leader that never let go is ticked as before */
+export const AWAIT_NEW_LEADER_MS = 120_000;
+
 /**
  * How long a follower's copy may go without a refresh before it stops
  * answering reads: three ticks, so a revoked grant stops allowing reads on a
@@ -154,6 +157,8 @@ export class ServeLeadership {
   #leadCheck: Promise<void> | undefined;
   #unsubscribeLost: (() => void) | undefined;
   #stopped = false;
+  #awaitingUntil: number | undefined;
+  #awaitingPast: number | undefined;
 
   constructor(deps: ServeLeadershipDeps) {
     this.#deps = deps;
@@ -233,6 +238,31 @@ export class ServeLeadership {
     this.#schedule(await this.#nextDelay());
   }
 
+  /** a hint only: the lease, tried every second until a higher fence is named, decides */
+  leaderGoing(): void {
+    if (this.#stopped || this.#role !== "follower") return;
+    const fence = this.#leader?.fence;
+    if (this.#awaitingUntil === undefined || this.#awaitingPast !== fence) {
+      logger
+        .info`The leader is going away; this node tries the writer lease every ${LEASE_EXPIRY_MARGIN_MS} ms until a new leader is named`;
+    }
+    this.#awaitingUntil = this.#now() + AWAIT_NEW_LEADER_MS;
+    this.#awaitingPast = fence;
+    if (this.#timer !== undefined) {
+      clearTimeout(this.#timer);
+      this.#timer = undefined;
+      this.#schedule(LEASE_EXPIRY_MARGIN_MS);
+    }
+  }
+
+  get awaitingNewLeader(): boolean {
+    if (this.#awaitingUntil === undefined) return false;
+    const named = this.#leader?.fence;
+    return this.#role === "follower" && this.#now() < this.#awaitingUntil &&
+      (named === undefined ||
+        (this.#awaitingPast !== undefined && named <= this.#awaitingPast));
+  }
+
   lostLeadHandled(): Promise<void> {
     return this.#lostLead ?? Promise.resolve();
   }
@@ -292,6 +322,9 @@ export class ServeLeadership {
   /** capped at the tick, which also detects a lost lead and drives refreshes */
   async #nextDelay(): Promise<number> {
     if (this.#stopped || this.#role === "leader") return this.#tickMs;
+    if (this.awaitingNewLeader) return LEASE_EXPIRY_MARGIN_MS;
+    this.#awaitingUntil = undefined;
+    this.#awaitingPast = undefined;
     const expiresAt = await this.#deps.lease.expiresAt().catch(
       () => undefined,
     );

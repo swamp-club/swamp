@@ -325,6 +325,8 @@ export interface CommitsSubscribeFrame {
   cursor: number;
   head: number;
   done: false;
+  /** sent once, to a subscriber that named leader-stepping-down */
+  steppingDown?: true;
 }
 
 export interface CommitsHeadResponse {

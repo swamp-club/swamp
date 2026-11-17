@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import {
+  LEADER_STEPPING_DOWN_FEATURE,
   LEASE_OPS_FEATURE,
   STEP_STARTS_FEATURE,
 } from "../infrastructure/datastore_v3/serve_datastore_client.ts";
@@ -112,6 +113,8 @@ export interface FollowerFeedOptions {
   copyCursor(): number;
   apply(changes: readonly FeedChange[]): Promise<void>;
   onFresh(): void;
+  /** the leader said it is stepping down, or its feed socket ended */
+  onLeaderGoing?(): void;
   readonly now?: () => number;
 }
 
@@ -294,14 +297,20 @@ export class FollowerFeed implements FollowerCopyFeed {
     const socket = opened.socket;
     this.#socket = socket;
     this.#applied = this.#options.copyCursor();
+    let connected = false;
     socket.onopen = () => {
+      connected = true;
       socket.send(JSON.stringify({
         type: "commits.subscribe",
         id: SUBSCRIBE_ID,
         // this copy applies the leader's lease ops
         payload: {
           cursor: this.#applied,
-          features: [LEASE_OPS_FEATURE, STEP_STARTS_FEATURE],
+          features: [
+            LEASE_OPS_FEATURE,
+            STEP_STARTS_FEATURE,
+            LEADER_STEPPING_DOWN_FEATURE,
+          ],
         },
       }));
     };
@@ -313,9 +322,13 @@ export class FollowerFeed implements FollowerCopyFeed {
     socket.onerror = () => {};
     socket.onclose = () => {
       if (generation !== this.#generation) return;
+      // #close() lets go of the socket first, and one never opened is a
+      // connect failure, not the leader going
+      const closedByLeader = connected && this.#socket === socket;
       this.#socket = undefined;
       this.#failed = true;
       this.#wakeAppliedWaiters();
+      if (closedByLeader) this.#options.onLeaderGoing?.();
     };
   }
 
@@ -323,7 +336,7 @@ export class FollowerFeed implements FollowerCopyFeed {
     let frame: {
       type?: unknown;
       id?: unknown;
-      payload?: { changes?: unknown; cursor?: unknown };
+      payload?: { changes?: unknown; cursor?: unknown; steppingDown?: unknown };
       error?: { code?: unknown; message?: unknown };
     };
     try {
@@ -347,6 +360,10 @@ export class FollowerFeed implements FollowerCopyFeed {
       return;
     }
     if (frame.type !== "commits.subscribe") return;
+    if (frame.payload?.steppingDown === true) {
+      logger.info`The leader is stepping down`;
+      this.#options.onLeaderGoing?.();
+    }
     const changes = frame.payload?.changes;
     const cursor = frame.payload?.cursor;
     if (!Array.isArray(changes) || typeof cursor !== "number") {

@@ -754,3 +754,57 @@ Deno.test("LeaderLink.forward: a new leader is forwarded to at once, whatever th
     forwarder.close();
   }
 });
+
+Deno.test("LeaderLink.drain: waits for a forward the leader is answering to finish relaying, then closes", async () => {
+  const answered = Promise.withResolvers<void>();
+  let fetches = 0;
+  const leaderLink = link(async () => {
+    fetches++;
+    await answered.promise;
+    return new Response("delivered", { status: 202 });
+  });
+  const forwarding = leaderLink.forward(
+    new Request("http://follower/hooks/x", { method: "POST", body: "{}" }),
+  );
+  await waitFor(() => fetches === 1, "the forward sent");
+  let drained = false;
+  const draining = leaderLink.drain(60_000).then(() => (drained = true));
+  assertEquals(drained, false);
+  answered.resolve();
+  const reply = await forwarding;
+  assertEquals(reply.status, 202);
+  assertEquals(drained, false);
+  assertEquals(await reply.text(), "delivered");
+  await draining;
+  const after = await leaderLink.forward(new Request("http://follower/x"));
+  assertEquals(after.status, 503);
+  await after.body?.cancel();
+  assertEquals(fetches, 1);
+});
+
+Deno.test("LeaderLink.drain: a forward that outlasts the wait is cut off and closing goes ahead", async () => {
+  const leaderLink = link((_input, init) =>
+    new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener(
+        "abort",
+        () => reject(new DOMException("closed", "AbortError")),
+        { once: true },
+      );
+    })
+  );
+  const forwarding = leaderLink.forward(
+    new Request("http://follower/hooks/x", { method: "POST", body: "{}" }),
+  );
+  await leaderLink.drain(10);
+  const reply = await forwarding;
+  assertEquals(reply.status, 503);
+  await reply.body?.cancel();
+});
+
+Deno.test("LeaderLink.drain: with nothing in flight closes at once", async () => {
+  const leaderLink = link(() => Promise.resolve(new Response("ok")));
+  await leaderLink.drain(60_000);
+  const after = await leaderLink.forward(new Request("http://follower/x"));
+  assertEquals(after.status, 503);
+  await after.body?.cancel();
+});

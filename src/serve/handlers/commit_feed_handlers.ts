@@ -27,6 +27,7 @@ import { CommitsCompactedError } from "../../domain/datastore_v3/commit_store.ts
 import { ServeNotLeaderError } from "../../domain/datastore_v3/serve_leader.ts";
 import type { Principal } from "../../domain/access/principal.ts";
 import {
+  LEADER_STEPPING_DOWN_FEATURE,
   LEASE_OPS_FEATURE,
   STEP_STARTS_FEATURE,
 } from "../../infrastructure/datastore_v3/serve_datastore_client.ts";
@@ -132,9 +133,16 @@ export async function handleCommitsSubscribe(
     leaseOps: payload.features?.includes(LEASE_OPS_FEATURE) === true,
     stepStarts: payload.features?.includes(STEP_STARTS_FEATURE) === true,
   };
+  const steppingDown = payload.features?.includes(
+      LEADER_STEPPING_DOWN_FEATURE,
+    ) === true
+    ? ctx.steppingDown
+    : undefined;
+  let toldSteppingDown = false;
   let cursor = payload.cursor;
   let wake: (() => void) | undefined;
   const off = feed.onMoved(() => wake?.());
+  const offSteppingDown = steppingDown?.onBegin(() => wake?.());
   try {
     let lastSent = 0;
     while (!signal.aborted && socket.readyState === WebSocket.OPEN) {
@@ -174,6 +182,22 @@ export async function handleCommitsSubscribe(
         return;
       }
       const head = feed.bound();
+      if (steppingDown?.down === true && !toldSteppingDown) {
+        send(socket, {
+          type: "commits.subscribe",
+          id: requestId,
+          payload: {
+            changes: [],
+            cursor,
+            head,
+            done: false,
+            steppingDown: true,
+          },
+        });
+        toldSteppingDown = true;
+        lastSent = Date.now();
+        continue;
+      }
       if (cursor < head) {
         let page;
         try {
@@ -240,6 +264,7 @@ export async function handleCommitsSubscribe(
     }
   } finally {
     off();
+    offSteppingDown?.();
     subscriptions.set(socket, (subscriptions.get(socket) ?? 1) - 1);
   }
 }
