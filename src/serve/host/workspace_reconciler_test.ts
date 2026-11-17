@@ -43,6 +43,7 @@ import {
 import {
   createWorkspaceReconciler,
   readWantedFiles,
+  ReasonMemo,
   type WorkspaceReconciler,
 } from "./workspace_reconciler.ts";
 
@@ -434,4 +435,62 @@ Deno.test("createWorkspaceReconciler: a scan listed before a removal finished do
     () => h.observed("edge-dns") === "ready",
     "a new workspace starts",
   );
+});
+
+Deno.test({
+  name:
+    "createWorkspaceReconciler: a removal that fails after the rename keeps the wanted and status files until the data is gone",
+  // root ignores folder permissions, so the removal would not fail
+  ignore: Deno.build.os === "windows" || Deno.uid() === 0,
+  fn: async () => {
+    await using h = await harness();
+    await makeRepo(h.dir, "delta");
+    await Deno.mkdir(join(h.dir, "delta", "locked"));
+    await Deno.writeTextFile(join(h.dir, "delta", "locked", "data"), "x");
+    await h.begin();
+    await waitFor(() => h.observed("delta") === "ready", "ready");
+    await Deno.chmod(join(h.dir, "delta", "locked"), 0o000);
+    const hidden = async () =>
+      (await entries(h.dir)).filter((e) => e.startsWith(".delta.deleting-"));
+    try {
+      await want(h.dir, "delta", "wanted: deleted\n");
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        await h.rescan();
+        await h.reconciler.drain();
+        assertEquals(
+          (await entries(h.dir)).filter((e) => !e.startsWith(".")),
+          ["delta.status.yaml", "delta.wanted.yaml"],
+          `attempt ${attempt} keeps both files while data is left`,
+        );
+        assertEquals((await hidden()).length, 1);
+        const status = await Deno.readTextFile(
+          join(h.dir, "delta.status.yaml"),
+        );
+        assert(status.includes("Removing the workspace failed"), status);
+        assert(status.includes("wanted: deleted"), status);
+      }
+    } finally {
+      for (const entry of await hidden()) {
+        await Deno.chmod(join(h.dir, entry, "locked"), 0o755);
+      }
+    }
+    await h.rescan();
+    await h.reconciler.drain();
+    await h.statusWriter.drain();
+    assertEquals(await entries(h.dir), []);
+    assertEquals(h.port.of("delta").length, 1, "never started again");
+  },
+});
+
+Deno.test("ReasonMemo: reports a key's reason once, again only when it changes or after a clear", () => {
+  const memo = new ReasonMemo();
+  assertEquals(memo.changed("a", "denied"), true);
+  assertEquals(memo.changed("a", "denied"), false);
+  assertEquals(memo.changed("a", "busy"), true);
+  assertEquals(memo.changed("b", "busy"), true);
+  memo.clear("a");
+  assertEquals(memo.changed("a", "busy"), true);
+  memo.retain(new Set(["a"]));
+  assertEquals(memo.changed("a", "busy"), false);
+  assertEquals(memo.changed("b", "busy"), true, "b was forgotten");
 });

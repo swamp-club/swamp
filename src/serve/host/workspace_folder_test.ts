@@ -22,6 +22,7 @@ import { join } from "@std/path";
 import { waitFor } from "@swamp-club/swamp-testing";
 import {
   deletingFolderName,
+  deletingFolderOwner,
   isDeletingFolderName,
   REPO_MARKER_FILE,
   scanWorkspaces,
@@ -92,6 +93,12 @@ Deno.test("scanWorkspaces: passes over wanted and status files, and finds wanted
     assertEquals(scan.leftovers, [leftover, leftoverFile].sort());
     assertEquals(scan.skipped.map((s) => s.name), ["Bad.wanted.yaml"]);
   });
+});
+
+Deno.test("deletingFolderOwner: names the workspace a hidden removal folder belonged to", () => {
+  assertEquals(deletingFolderOwner(deletingFolderName("edge-dns")), "edge-dns");
+  assertEquals(deletingFolderOwner("edge-dns"), null);
+  assertEquals(deletingFolderOwner(".edge-dns.deleting-x"), null);
 });
 
 Deno.test("isDeletingFolderName: matches only a hidden valid name with a uuid", () => {

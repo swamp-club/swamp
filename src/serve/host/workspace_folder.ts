@@ -36,8 +36,13 @@ export function deletingFolderName(name: string): string {
   return `.${parseWorkspaceName(name)}.deleting-${crypto.randomUUID()}`;
 }
 
+/** the workspace a hidden removal folder belonged to, or null for any other entry */
+export function deletingFolderOwner(entry: string): string | null {
+  return DELETING_FOLDER_PATTERN.exec(entry)?.[1] ?? null;
+}
+
 export function isDeletingFolderName(entry: string): boolean {
-  return DELETING_FOLDER_PATTERN.test(entry);
+  return deletingFolderOwner(entry) !== null;
 }
 
 export interface SkippedEntry {

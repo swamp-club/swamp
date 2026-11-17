@@ -25,11 +25,18 @@ import type {
   HostedWorkspaceRepository,
 } from "../../domain/serve/hosted_workspace.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
-import { removeHostedWorkspaceStatus } from "../../infrastructure/persistence/hosted_workspace_status_file.ts";
+import {
+  removeHostedWorkspaceStatus,
+  writeHostedWorkspaceStatus,
+} from "../../infrastructure/persistence/hosted_workspace_status_file.ts";
 import type { ServeChildSpec } from "./serve_process.ts";
 import type { StatusWriter } from "./status_writer.ts";
 import type { ServeSupervisor } from "./supervisor.ts";
-import { deletingFolderName, type WorkspaceScan } from "./workspace_folder.ts";
+import {
+  deletingFolderName,
+  deletingFolderOwner,
+  type WorkspaceScan,
+} from "./workspace_folder.ts";
 
 const logger = getSwampLogger(["serve", "host", "workspaces"]);
 
@@ -65,6 +72,28 @@ interface Known {
   ignoredLogged: boolean;
 }
 
+/** a retry every rescan logs once per reason, not once per attempt */
+export class ReasonMemo {
+  readonly #reasons = new Map<string, string>();
+
+  /** true the first time a key reports a reason, and again only when it changes */
+  changed(key: string, reason: string): boolean {
+    if (this.#reasons.get(key) === reason) return false;
+    this.#reasons.set(key, reason);
+    return true;
+  }
+
+  clear(key: string): void {
+    this.#reasons.delete(key);
+  }
+
+  retain(keys: ReadonlySet<string>): void {
+    for (const key of [...this.#reasons.keys()]) {
+      if (!keys.has(key)) this.#reasons.delete(key);
+    }
+  }
+}
+
 /** a wanted file is read only for a name the scan saw one for */
 export async function readWantedFiles(
   repository: HostedWorkspaceRepository,
@@ -88,6 +117,8 @@ export function createWorkspaceReconciler(
   const sweeping = new Set<string>();
   // a scan listed before a removal finished still shows its folder
   const removedAt = new Map<string, number>();
+  const removalFailures = new ReasonMemo();
+  const sweepFailures = new ReasonMemo();
 
   const track = (work: Promise<void>) => {
     const settled = work.finally(() => pending.delete(settled));
@@ -124,6 +155,7 @@ export function createWorkspaceReconciler(
       if (removedAt.has(name)) continue;
       step(name, folders.has(name), reads.get(name) ?? { kind: "absent" });
     }
+    sweepFailures.retain(new Set(scan.leftovers));
     for (const leftover of scan.leftovers) sweep(leftover);
   };
 
@@ -200,10 +232,12 @@ export function createWorkspaceReconciler(
     entry.removing = true;
     track(
       remove(name, entry).catch((error) => {
-        logger.error(
-          "Removing workspace {name} failed, and is tried again at the next rescan: {error}",
-          { name, error },
-        );
+        if (removalFailures.changed(name, messageOf(error))) {
+          logger.error(
+            "Removing workspace {name} failed, and is tried again at every rescan: {error}",
+            { name, error },
+          );
+        }
       }).finally(() => entry.removing = false),
     );
   };
@@ -216,6 +250,25 @@ export function createWorkspaceReconciler(
       await supervisor.whenStopped(id);
     }
     await statusWriter.forget(name);
+    try {
+      await removeData(name);
+    } catch (error) {
+      await reportRemovalFailure(name, error);
+      throw error;
+    }
+    await removeHostedWorkspaceStatus(workspacesDir, name);
+    await repository.remove(name);
+    statusWriter.setProblem(name, null);
+    removalFailures.clear(name);
+    // a cleanup still holding this entry stands down; the name starts afresh
+    entry.generation++;
+    known.delete(name);
+    removedAt.set(name, performance.now());
+    logger.info("Removed workspace {name}", { name });
+  };
+
+  // the files stay until no folder of the name is left, renamed by an earlier try or not
+  const removeData = async (name: string) => {
     const folder = join(workspacesDir, name);
     if (await exists(folder)) {
       // a rename never follows a link, so a linked folder loses only its link
@@ -223,19 +276,43 @@ export function createWorkspaceReconciler(
       sweeping.add(hidden);
       try {
         await Deno.rename(folder, join(workspacesDir, hidden));
-        await Deno.remove(join(workspacesDir, hidden), { recursive: true });
       } finally {
         sweeping.delete(hidden);
       }
     }
-    await removeHostedWorkspaceStatus(workspacesDir, name);
-    await repository.remove(name);
-    statusWriter.setProblem(name, null);
-    // a cleanup still holding this entry stands down; the name starts afresh
-    entry.generation++;
-    known.delete(name);
-    removedAt.set(name, performance.now());
-    logger.info("Removed workspace {name}", { name });
+    for await (const { name: entry } of Deno.readDir(workspacesDir)) {
+      if (deletingFolderOwner(entry) !== name) continue;
+      sweeping.add(entry);
+      try {
+        await Deno.remove(join(workspacesDir, entry), { recursive: true });
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) throw error;
+      } finally {
+        sweeping.delete(entry);
+      }
+    }
+  };
+
+  // the status writer has forgotten the name, so this write cannot race it
+  const reportRemovalFailure = async (name: string, error: unknown) => {
+    const status = supervisor.lookup(workspaceServe(name));
+    try {
+      await writeHostedWorkspaceStatus(workspacesDir, name, {
+        state: status?.observed ?? "stopped",
+        wanted: "deleted",
+        restarts: status?.restarts ?? 0,
+        reason:
+          `Removing the workspace failed, and is tried again at every rescan: ${
+            messageOf(error)
+          }`,
+        updatedAt: new Date().toISOString(),
+      });
+    } catch (writeError) {
+      logger.warn("Writing the status of workspace {name} failed: {error}", {
+        name,
+        error: writeError,
+      });
+    }
   };
 
   const clearStatusWhenStopped = (name: string, entry: Known) => {
@@ -262,13 +339,21 @@ export function createWorkspaceReconciler(
 
   const sweep = (leftover: string) => {
     if (sweeping.has(leftover)) return;
+    // a removal still pending for its workspace owns it, and reports through the status file
+    const owner = known.get(deletingFolderOwner(leftover) ?? "");
+    if (owner?.removing || owner?.record?.wanted === "deleted") return;
     sweeping.add(leftover);
     track(
-      Deno.remove(join(workspacesDir, leftover), { recursive: true }).catch(
+      Deno.remove(join(workspacesDir, leftover), { recursive: true }).then(
+        () => sweepFailures.clear(leftover),
         (error) => {
-          if (error instanceof Deno.errors.NotFound) return;
+          if (error instanceof Deno.errors.NotFound) {
+            sweepFailures.clear(leftover);
+            return;
+          }
+          if (!sweepFailures.changed(leftover, messageOf(error))) return;
           logger.warn(
-            "Removing {folder}, left by an interrupted removal, failed: {error}",
+            "Removing {folder}, left by an interrupted removal, failed, and is tried again at every rescan: {error}",
             { folder: leftover, error },
           );
         },
@@ -298,6 +383,10 @@ function sameRecord(
 ): boolean {
   if (a === null || b === null) return a === b;
   return a.equals(b);
+}
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 async function exists(path: string): Promise<boolean> {
