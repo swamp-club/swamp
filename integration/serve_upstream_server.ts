@@ -210,10 +210,7 @@ export function startUpstreamServeHost(
     ) => Promise<void>)
     | undefined;
 
-  /**
-   * A grant's id, from its spec: the same spec is the same grant record in
-   * every snapshot, as a reload of serve's access data keeps record ids.
-   */
+  // the same spec is the same grant record in every snapshot, as a reload keeps record ids
   function grantId(spec: GrantSpec): string {
     return `grant-${
       JSON.stringify([spec.user ?? "", spec.actions, spec.kind, spec.pattern])

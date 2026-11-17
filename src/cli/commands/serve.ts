@@ -852,10 +852,9 @@ const RUN_RECORD_REFRESH_TIMEOUT_MS = 10_000;
 type AnyOptions = any;
 
 /**
- * runs each request outside any ambient run store: Deno can leave a handler in
- * the async context of the last code that ran, so a request could inherit
- * another run's vault scope, locks or leases. It re-enters the ProcessRuntime serve
- * was built in, which Deno.serve never carries into a handler
+ * outside any ambient run store, whose vault scope, locks or leases Deno could
+ * leave a handler in; inside the ProcessRuntime serve was built in, which
+ * Deno.serve never carries into a handler
  */
 export function unscopedHttpHandler<A extends Deno.Addr>(
   handler: Deno.ServeHandler<A>,
