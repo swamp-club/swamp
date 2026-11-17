@@ -2440,6 +2440,7 @@ export const serveCommand = new Command()
       // serve writes a claimed datastore as its owner, when its address is the
       // owner's
       v3OwnerCheck: { as: "serve", address: ownerAddress },
+      v3LeaseTtlMs: SERVE_WRITER_LEASE_TTL_MS,
     });
     bootTrace.phase("repo_open");
     takeRetentionCandidate();

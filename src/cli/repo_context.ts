@@ -507,6 +507,8 @@ export interface RequireRepoOptions {
    * datastore claim and release pass claimer
    */
   v3OwnerCheck?: V3OwnerCheck;
+  /** on v3, the writer lease's TTL when this call takes the process's hold */
+  v3LeaseTtlMs?: number;
   /**
    * give up after this long instead of the lock timeout; the end-of-command
    * retention pass sets it so a busy repository skips the pass rather than
@@ -1312,6 +1314,9 @@ export function requireInitializedRepo(
         ...(options.v3OwnerCheck !== undefined
           ? { ownerCheck: options.v3OwnerCheck }
           : {}),
+        ...(options.v3LeaseTtlMs !== undefined
+          ? { ttlMs: options.v3LeaseTtlMs }
+          : {}),
       });
     }
 
@@ -1595,6 +1600,9 @@ export async function requireInitializedRepoUnlocked(
         ? { ownerCheck: options.v3OwnerCheck }
         : {}),
       ...(options.catchUpAtLock === true ? { catchUpAtLock: true } : {}),
+      ...(options.v3LeaseTtlMs !== undefined
+        ? { ttlMs: options.v3LeaseTtlMs }
+        : {}),
     });
     // the principal serve named at the hold's catch-up, or that the checkout
     // stored; a lock's catch-up names it again

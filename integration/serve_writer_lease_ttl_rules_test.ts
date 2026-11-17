@@ -12,6 +12,10 @@
 // Swamp is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertGreater } from "@std/assert";
 import { walk } from "@std/fs/walk";
@@ -19,9 +23,11 @@ import { join, relative } from "@std/path";
 import { callArguments, toPosixPath } from "./arch_fitness_helpers.ts";
 
 const ROOT = join(import.meta.dirname!, "..");
-const HOLD_CALL = /\bholdV3Writer\(/g;
-const SERVE_OWNER = /ownerCheck:\s*\{\s*as:\s*"serve"/;
-const SERVE_TTL = /\bttlMs:\s*SERVE_WRITER_LEASE_TTL_MS\b/;
+// serve's boot hold goes through requireInitializedRepo*, its leadership
+// retake through holdV3Writer; either may take the process's hold first
+const HOLD_CALL = /\b(holdV3Writer|requireInitializedRepo\w*)\(/g;
+const SERVE_OWNER = /[oO]wnerCheck:\s*\{\s*as:\s*"serve"/;
+const SERVE_TTL = /\b(ttlMs|v3LeaseTtlMs):\s*SERVE_WRITER_LEASE_TTL_MS\b/;
 
 async function serveHolds(): Promise<{ site: string; options: string }[]> {
   const holds: { site: string; options: string }[] = [];
@@ -31,12 +37,13 @@ async function serveHolds(): Promise<{ site: string; options: string }[]> {
       skip: [/_test\.tsx?$/],
     })
   ) {
-    const source = await Deno.readTextFile(entry.path);
+    // whole-line comments blanked, keeping line numbers: an apostrophe in one
+    // would open a string to callArguments and hide the arguments after it
+    const source = (await Deno.readTextFile(entry.path))
+      .replace(/^[ \t]*\/\/.*$/gm, "");
     for (const match of source.matchAll(HOLD_CALL)) {
-      const [, , options = ""] = callArguments(
-        source,
-        match.index! + match[0].length,
-      );
+      const options = callArguments(source, match.index! + match[0].length)
+        .join(",");
       if (!SERVE_OWNER.test(options)) continue;
       const line = source.slice(0, match.index).split("\n").length;
       holds.push({
@@ -61,7 +68,7 @@ Deno.test("serve writer lease: every hold serve takes as owner asks for serve's 
   assertEquals(
     missing,
     [],
-    "Serve's leadership hold must pass ttlMs: SERVE_WRITER_LEASE_TTL_MS, or " +
+    "Serve's writer holds must pass SERVE_WRITER_LEASE_TTL_MS (ttlMs or v3LeaseTtlMs), or " +
       "a dead leader is taken over on the 30 s default and the shorter " +
       `takeover is silently lost.\n\nViolations:\n${missing.join("\n")}`,
   );
