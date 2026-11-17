@@ -6701,8 +6701,6 @@ export class WorkflowExecutionService {
           partitionAuthoredAt(
             extractExpressions(step.guard),
             options.authoredExpressions,
-            // Guards are skipped by run-start evaluation but not by its
-            // substitution, so a guard can hold a spliced value.
             (options.stepProvenance ?? StepProvenanceOverlay.authored())
               .forStep(step).raw.subtree("guard"),
           ).length !== 1

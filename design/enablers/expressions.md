@@ -617,7 +617,8 @@ failing where the error is cheapest.
 Deferral is decided per path, but substitution is keyed on the raw expression
 text, and two fields can carry the same expression. So every path deferred at
 run start is recorded and skipped during substitution: task targets, guards,
-task inputs and assert messages that read step output, and `trigger.inputs`.
+task inputs and assert messages that read step output, and on the run path
+`trigger.inputs`.
 Otherwise the same text evaluated in another field lands in the deferred one. A
 plain step's value silently undoes a guarded step's deferred target, a guard
 becomes a boolean and fails workflow validation before any step runs, and a

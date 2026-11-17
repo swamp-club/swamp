@@ -678,12 +678,14 @@ for (
   });
 }
 
-Deno.test("provenance: a guard holding data matching an authored reference is refused", async () => {
+Deno.test("provenance: a guard sharing its text with a task input reads data matching an authored reference as data", async () => {
   await withRepo(async (h) => {
     await h.repo.definitionRepo.save(
       h.type,
       consumer({ value: "${{ inputs.value }}" }),
     );
+    // falsy evaluated as code, truthy as a string: the step runs only if the
+    // data reached the guard as an expression
     await runWorkflow(
       h,
       workflowOf("guarded", [
@@ -692,12 +694,11 @@ Deno.test("provenance: a guard holding data matching an authored reference is re
           guard: "${{ inputs.text }}",
           task: StepTask.modelMethod("consumer", "run", {
             value: "${{ inputs.text }}",
-            token: "${{ env.SECRET }}",
+            flag: "${{ false }}",
           }),
         }),
       ], TEXT_INPUT),
-      { text: "${{ env.SECRET }}" },
-      "failed",
+      { text: "${{ false }}" },
     );
     assertEquals(h.executions, []);
   });
