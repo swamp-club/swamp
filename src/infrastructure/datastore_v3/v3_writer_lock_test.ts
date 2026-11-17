@@ -424,7 +424,7 @@ Deno.test("acquireV3WriterLock: a hold taken with serve's TTL records it, and a 
       const other = await plantV3WriterLease(dir, { pid: Deno.pid });
       await assertRejects(() => checkV3WriterLease(dir), WriterFencedError);
       await other.release();
-      // a caller asking for no TTL joins and retakes the hold on its own TTL
+      // a caller asking for no TTL joins the hold and retakes it on serve's TTL
       before = Date.now();
       const joined = await acquireV3WriterLock(dir, { maxWaitMs: 0 });
       assertEquals(v3WriterFence(dir), other.fence + 1);

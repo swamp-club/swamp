@@ -185,8 +185,6 @@ Deno.test("judgeWriterLease: a record is judged on the TTL it carries, not the j
   });
   const serveJudge = (now: number) =>
     judgement({ now, ttlMs: SERVE_WRITER_LEASE_TTL_MS });
-  // A 30 s holder (a CLI writer, or a swamp from before the shorter TTL) is
-  // never taken over early by a 15 s serve.
   const longHeld = lastRenewal + TTL + WRITER_LEASE_CLOCK_SKEW_MS;
   assertEquals(
     judgeWriterLease(recordWith(TTL), serveJudge(longHeld)).kind,
@@ -196,7 +194,6 @@ Deno.test("judgeWriterLease: a record is judged on the TTL it carries, not the j
     judgeWriterLease(recordWith(TTL), serveJudge(longHeld + 1)),
     { kind: "expired", reason: "ttl" },
   );
-  // A 15 s serve holder is taken over 15 s sooner, by any judge.
   const shortHeld = lastRenewal + SERVE_WRITER_LEASE_TTL_MS +
     WRITER_LEASE_CLOCK_SKEW_MS;
   for (const ttlMs of [SERVE_WRITER_LEASE_TTL_MS, TTL]) {
