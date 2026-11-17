@@ -31,6 +31,7 @@ import { hostChildEnv } from "../../serve/host/child_env.ts";
 import { DENO_SERVE_PROCESS_PORT } from "../../serve/host/deno_serve_process.ts";
 import { HOST_CONFIG_FILE, HostConfig } from "../../serve/host/host_config.ts";
 import { type ServeHost, startServeHost } from "../../serve/host/serve_host.ts";
+import { reloadsOnHangup } from "../../serve/serve_settings_reload.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -96,9 +97,34 @@ export function listeningUrl(
 export interface StopSignals {
   /** the returned function unregisters the listener */
   onStop(listener: () => void): () => void;
+  /** the returned function unregisters the listener */
+  onReload(listener: () => void): () => void;
 }
 
-// SIGHUP is left alone, as serve leaves it for reload; a second Ctrl+C exits at once
+// SIGHUP reloads where it reloads plain serve; at a terminal it is a hangup
+function hangupReloads(): boolean {
+  return reloadsOnHangup({
+    os: Deno.build.os,
+    hotReload: false,
+    stdinIsTerminal: Deno.stdin.isTerminal(),
+  });
+}
+
+function addPosixListener(
+  signal: Deno.Signal,
+  listener: () => void,
+): () => void {
+  Deno.addSignalListener(signal, listener);
+  return () => {
+    try {
+      Deno.removeSignalListener(signal, listener);
+    } catch {
+      // already removed
+    }
+  };
+}
+
+// a second Ctrl+C exits at once
 export const PROCESS_STOP_SIGNALS: StopSignals = {
   onStop(listener) {
     const handle = registerShutdownHandler({
@@ -106,18 +132,19 @@ export const PROCESS_STOP_SIGNALS: StopSignals = {
       includePosixSignals: Deno.build.os === "windows",
       forceExitOnRepeat: true,
     });
+    const removers: Array<() => void> = [];
     if (Deno.build.os !== "windows") {
-      Deno.addSignalListener("SIGTERM", listener);
+      removers.push(addPosixListener("SIGTERM", listener));
+      if (!hangupReloads()) removers.push(addPosixListener("SIGHUP", listener));
     }
     return () => {
       handle.dispose();
-      if (Deno.build.os === "windows") return;
-      try {
-        Deno.removeSignalListener("SIGTERM", listener);
-      } catch {
-        // already removed
-      }
+      for (const remove of removers) remove();
     };
+  },
+  onReload(listener) {
+    if (!hangupReloads()) return () => {};
+    return addPosixListener("SIGHUP", listener);
   },
 };
 
@@ -126,19 +153,26 @@ export const PROCESS_STOP_SIGNALS: StopSignals = {
  * still ends a host whose children are slow to stop
  */
 export async function serveUntilStopped(
-  host: Pick<ServeHost, "shutdown" | "finished">,
+  host: Pick<ServeHost, "reload" | "shutdown" | "finished">,
   signals: StopSignals,
 ): Promise<void> {
   const { promise: stopRequested, resolve: requestStop } = Promise
     .withResolvers<void>();
+  let stopping = false;
+  // held through the drain, so a SIGHUP then is ignored rather than fatal
+  const unregisterReload = signals.onReload(() => {
+    if (!stopping) host.reload();
+  });
   const unregister = signals.onStop(() => requestStop());
   try {
     await Promise.race([stopRequested, host.finished]);
   } finally {
+    stopping = true;
     try {
       await host.shutdown();
     } finally {
       unregister();
+      unregisterReload();
     }
   }
 }

@@ -58,6 +58,7 @@ class StandIn implements ServeChild {
   readonly #server: Deno.HttpServer<Deno.NetAddr>;
   readonly #exited = Promise.withResolvers<ServeChildExit>();
   #stopping: Promise<void> | undefined;
+  reloads = 0;
 
   constructor(
     readonly spec: ServeChildSpec,
@@ -98,6 +99,10 @@ class StandIn implements ServeChild {
     })();
   }
 
+  reload(): void {
+    this.reloads++;
+  }
+
   kill(): void {
     this.terminate();
   }
@@ -125,6 +130,7 @@ class Crashing implements ServeChild {
   }
 
   terminate(): void {}
+  reload(): void {}
   kill(): void {}
   release(): Promise<void> {
     return Promise.resolve();
@@ -398,6 +404,36 @@ Deno.test("serve host: a host with no root answers 404 outside /w/", async () =>
   }
 });
 
+Deno.test("serve host: a reload reaches every ready serve and stops none", async () => {
+  await using folder = await hostFolder();
+  await makeRepo(join(folder.dir, "root-repo"));
+  await makeRepo(join(folder.dir, "workspaces", "edge-dns"));
+  const port = new StandInPort();
+  const host = await start(
+    folder.dir,
+    "address: https://serve.acme.internal\nlisten: {port: 0}\nroot: root-repo\n",
+    port,
+  );
+  try {
+    const base = `http://127.0.0.1:${host.port}`;
+    await waitFor(
+      () => answers(`${base}/w/edge-dns/`, "workspace:edge-dns"),
+      "edge-dns to answer",
+    );
+    await waitFor(
+      () => answers(`${base}/health`, "root"),
+      "the root to answer",
+    );
+
+    host.reload();
+    assertEquals(port.children.map((child) => child.reloads), [1, 1]);
+    assert(await answers(`${base}/w/edge-dns/`, "workspace:edge-dns"));
+    assertEquals(port.children.length, 2);
+  } finally {
+    await host.shutdown();
+  }
+});
+
 Deno.test("serve host: listens with TLS using the certificate host.yaml names", async () => {
   await using folder = await hostFolder();
   await Deno.writeTextFile(
@@ -538,7 +574,10 @@ Deno.test("serve host: shutdown stops every serve while the listener is still op
       () => answers(`${base}/w/cost-reports/`, "workspace:cost-reports"),
       "cost-reports to answer",
     );
-    await waitFor(() => answers(`${base}/`, "root"), "the root to answer");
+    await waitFor(
+      () => answers(`${base}/health`, "root"),
+      "the root to answer",
+    );
     await host.shutdown();
     await host.finished;
 

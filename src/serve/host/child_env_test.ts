@@ -19,6 +19,7 @@
 
 import { assertEquals } from "@std/assert";
 import { resolve } from "@std/path";
+import { mergeServeOptions } from "../serve_config.ts";
 import { hostChildEnv } from "./child_env.ts";
 
 const HOST_CWD = resolve("host-cwd");
@@ -48,6 +49,8 @@ Deno.test("hostChildEnv: a child inherits what plain serve would see from its op
     ...hostEnv,
     SWAMP_HOME: "/data/swamp",
     SWAMP_CONFIG_DIR: "/config/swamp",
+    SWAMP_SERVE_CERT_FILE: "",
+    SWAMP_SERVE_KEY_FILE: "",
   });
 });
 
@@ -64,6 +67,8 @@ Deno.test("hostChildEnv: drops what would point every workspace at one repo, dat
     PATH: "/usr/bin",
     SWAMP_HOME: "/data/swamp",
     SWAMP_CONFIG_DIR: "/config/swamp",
+    SWAMP_SERVE_CERT_FILE: "",
+    SWAMP_SERVE_KEY_FILE: "",
   });
 });
 
@@ -78,4 +83,23 @@ Deno.test("hostChildEnv: a relative API key file is resolved against the host's 
     hostChildEnv({ SWAMP_API_KEY_FILE: absolute }, PINNED).SWAMP_API_KEY_FILE,
     absolute,
   );
+});
+
+Deno.test("hostChildEnv: a child serves plain http however the host or its serve.yaml asks for TLS", () => {
+  const env = hostChildEnv({
+    SWAMP_SERVE_CERT_FILE: "/etc/ssl/host.crt",
+    swamp_serve_key_file: "/etc/ssl/host.key",
+  }, PINNED);
+  assertEquals(env.SWAMP_SERVE_CERT_FILE, "");
+  assertEquals(env.SWAMP_SERVE_KEY_FILE, "");
+  assertEquals("swamp_serve_key_file" in env, false);
+
+  const merged = mergeServeOptions(
+    { tls: { "cert-file": "certs/serve.crt", "key-file": "certs/serve.key" } },
+    {},
+    new Set<string>(),
+    (name) => env[name],
+  );
+  assertEquals(merged.certFile, "");
+  assertEquals(merged.keyFile, "");
 });

@@ -94,6 +94,8 @@ export interface ServeSupervisor {
   setWanted(id: ServeId, wanted: WantedServeState): void;
   resume(id: ServeId): void;
   lookup(id: ServeId): ServeStatus | undefined;
+  /** asks every ready child to reload; returns how many were asked */
+  reload(): number;
   /** stops every child through its drain path; changes no wanted state */
   shutdown(): Promise<void>;
 }
@@ -341,6 +343,19 @@ export function createServeSupervisor(
         crashCount: serve.crashCount,
         lastExit: entry.lastExit,
       };
+    },
+
+    reload() {
+      let asked = 0;
+      for (const { serve, child } of entries.values()) {
+        // a starting child may not handle SIGHUP yet, and would die of it
+        if (serve.observed !== "ready" || child === null || child.terminating) {
+          continue;
+        }
+        child.handle.reload();
+        asked++;
+      }
+      return asked;
     },
 
     shutdown() {

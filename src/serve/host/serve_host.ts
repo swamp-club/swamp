@@ -69,6 +69,8 @@ export interface ServeHost {
   readonly port: number;
   /** the workspaces found at startup, sorted */
   readonly workspaces: readonly string[];
+  /** asks every ready serve to reload its settings */
+  reload(): void;
   /** stops the watcher, drains every child, then closes the listener */
   shutdown(): Promise<void>;
   readonly finished: Promise<void>;
@@ -163,6 +165,10 @@ export async function startServeHost(
     hostname: bound.hostname,
     port: bound.port,
     workspaces: scan.workspaces,
+    reload() {
+      const asked = supervisor.reload();
+      logger.info("Asked {count} ready serves to reload", { count: asked });
+    },
     shutdown() {
       stopping ??= stopAll(running, supervisor, routerAbort, server);
       return stopping;

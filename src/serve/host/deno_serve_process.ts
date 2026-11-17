@@ -246,6 +246,10 @@ function childOf(process: Deno.ChildProcess, serve: string): ServeChild {
       }
       signalQuietly(process, "SIGTERM");
     },
+    reload() {
+      // Windows has no SIGHUP, and no reload without --server
+      if (Deno.build.os !== "windows") signalQuietly(process, "SIGHUP");
+    },
     kill() {
       signalQuietly(process, "SIGKILL");
     },
@@ -279,6 +283,7 @@ function unstartedChild(error: unknown): ServeChild {
     ready,
     exited: Promise.resolve({ code: null, stderrTail: [reason] }),
     terminate() {},
+    reload() {},
     kill() {},
     release: () => Promise.resolve(),
   };

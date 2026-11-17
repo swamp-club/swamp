@@ -58,6 +58,7 @@ class FakeChild implements ServeChild {
   readonly exited: Promise<ServeChildExit>;
   terminated = 0;
   killed = 0;
+  reloaded = 0;
   released = 0;
   /** a child that ignores terminate exits only when killed or told to */
   ignoresTerminate = false;
@@ -91,6 +92,10 @@ class FakeChild implements ServeChild {
   terminate(): void {
     this.terminated++;
     if (!this.ignoresTerminate) this.exit(0);
+  }
+
+  reload(): void {
+    this.reloaded++;
   }
 
   kill(): void {
@@ -539,6 +544,31 @@ Deno.test("createServeSupervisor: shutdown stops every child through its drain p
   assertEquals(port.children.length, spawned);
   assertEquals(clock.active(), []);
   for (const child of port.children) assertEquals(child.released, 1);
+});
+
+Deno.test("createServeSupervisor: reload asks only the ready children, never one starting or stopping", async () => {
+  const { port, supervisor } = harness();
+  const starting = workspaceServe("cost-reports");
+  const stopping = workspaceServe("billing");
+  supervisor.add(spec(ROOT_SERVE));
+  supervisor.add(spec(EDGE));
+  supervisor.add(spec(starting));
+  supervisor.add(spec(stopping));
+  const root = await startReady(port, supervisor, ROOT_SERVE, 41_000);
+  const edge = await startReady(port, supervisor, EDGE, 41_001);
+  port.last(starting).listen(41_002);
+  const leaving = await startReady(port, supervisor, stopping, 41_003);
+  leaving.ignoresTerminate = true;
+  supervisor.setWanted(stopping, "suspended");
+
+  assertEquals(supervisor.reload(), 2);
+  assertEquals(root.reloaded, 1);
+  assertEquals(edge.reloaded, 1);
+  assertEquals(port.last(starting).reloaded, 0);
+  assertEquals(leaving.reloaded, 0);
+  assertEquals(supervisor.lookup(EDGE)?.observed, "ready");
+  leaving.exit(0);
+  await supervisor.shutdown();
 });
 
 const REFUSE_NONE: ServeAdmission = (_spec, listened) =>

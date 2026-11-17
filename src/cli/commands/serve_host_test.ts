@@ -47,6 +47,7 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
 class FakeSignals implements StopSignals {
   readonly events: string[] = [];
   #listener: (() => void) | null = null;
+  #reloadListener: (() => void) | null = null;
 
   onStop(listener: () => void): () => void {
     this.#listener = listener;
@@ -55,6 +56,20 @@ class FakeSignals implements StopSignals {
       this.#listener = null;
       this.events.push("unregistered");
     };
+  }
+
+  onReload(listener: () => void): () => void {
+    this.#reloadListener = listener;
+    return () => {
+      this.#reloadListener = null;
+    };
+  }
+
+  /** true when a reload listener was still registered to hear it */
+  hangUp(): boolean {
+    if (this.#reloadListener === null) return false;
+    this.#reloadListener();
+    return true;
   }
 
   /** true when a listener was still registered to hear it */
@@ -71,9 +86,14 @@ class FakeHost {
   readonly #drained = Promise.withResolvers<void>();
   readonly finished = this.#finished.promise;
   shutdowns = 0;
+  reloads = 0;
 
   constructor(events: string[]) {
     this.events = events;
+  }
+
+  reload(): void {
+    this.reloads++;
   }
 
   shutdown(): Promise<void> {
@@ -160,4 +180,28 @@ Deno.test("serveUntilStopped: a host whose listener ends on its own is still shu
   await serving;
   assertEquals(host.shutdowns, 1);
   assertEquals(signals.events.at(-1), "unregistered");
+});
+
+Deno.test("serveUntilStopped: a reload signal reloads the host without stopping it, and is ignored once the drain starts", async () => {
+  const signals = new FakeSignals();
+  const host = new FakeHost(signals.events);
+  const serving = serveUntilStopped(host, signals);
+  assertEquals(signals.hangUp(), true);
+  assertEquals(host.reloads, 1);
+  assertEquals(host.shutdowns, 0);
+
+  assertEquals(signals.send(), true);
+  await waitFor(
+    () => signals.events.includes("shutdown started"),
+    "the drain to start",
+  );
+  assertEquals(
+    signals.hangUp(),
+    true,
+    "a reload signal during the drain still reaches a listener",
+  );
+  assertEquals(host.reloads, 1);
+  host.drain();
+  await serving;
+  assertEquals(signals.hangUp(), false);
 });

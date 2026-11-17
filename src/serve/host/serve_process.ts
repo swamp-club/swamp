@@ -48,6 +48,8 @@ export interface ServeChild {
   readonly exited: Promise<ServeChildExit>;
   /** asks the child to drain and exit */
   terminate(): void;
+  /** asks the child to reload its settings, as SIGHUP reloads plain serve */
+  reload(): void;
   kill(): void;
   /** closes stdin and waits for the child and every reader of its output */
   release(): Promise<void>;

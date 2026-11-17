@@ -20,12 +20,17 @@
 import { isAbsolute, resolve } from "@std/path";
 import { API_KEY_FILE_ENV } from "../../infrastructure/persistence/api_key_source.ts";
 
+// the host terminates TLS and checks readiness over plain http on loopback;
+// an empty value outranks a serve.yaml tls: block
+const CHILD_TLS_OFF_NAMES = ["SWAMP_SERVE_CERT_FILE", "SWAMP_SERVE_KEY_FILE"];
+
 // each would point every workspace at one repo, datastore or swamp home
 const DROPPED_NAMES: ReadonlySet<string> = new Set([
   "SWAMP_REPO_DIR",
   "SWAMP_DATASTORE",
   "SWAMP_HOME",
   "SWAMP_CONFIG_DIR",
+  ...CHILD_TLS_OFF_NAMES,
 ]);
 
 export interface PinnedSwampDirs {
@@ -56,5 +61,6 @@ export function hostChildEnv(
   }
   env.SWAMP_HOME = pinned.swampHome;
   env.SWAMP_CONFIG_DIR = pinned.configDir;
+  for (const name of CHILD_TLS_OFF_NAMES) env[name] = "";
   return env;
 }
