@@ -72,10 +72,7 @@ export type TeamNodeRequest =
     readonly kind: "start";
     readonly ttlMs?: number;
     readonly tickMs: number;
-    /**
-     * serves its commit feed to peers and follows the leader's, as serve wires
-     * a team; steppingDown false is a leader from before that feature
-     */
+    /** steppingDown false is a leader from before that feature */
     readonly feed?: { readonly steppingDown: boolean };
   }
   | { readonly kind: "stepDown" }

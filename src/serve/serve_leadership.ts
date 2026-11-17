@@ -391,6 +391,10 @@ export class ServeLeadership {
       // names. A new leader, or a stopped feed, restores from the lineage first
       // so no commit an old leader never published stays in the copy.
       await this.#readLeader();
+      // a wait begun with no leader known takes the first one named as the old
+      if (this.awaitingNewLeader && this.#awaitingPast === undefined) {
+        this.#awaitingPast = this.#leader?.fence;
+      }
       if (feed.current(this.#leader)) {
         // a dropped feed back on the same leader was a blip, not a handover
         if (
@@ -399,6 +403,11 @@ export class ServeLeadership {
         ) this.#endAwaiting();
         return;
       }
+      // the fast cadence is for the lease; the copy is restored once a tick
+      if (
+        this.awaitingNewLeader && this.#refreshedAt !== undefined &&
+        this.#now() - this.#refreshedAt < this.#tickMs
+      ) return;
       // stopped before the restore so nothing the old socket delivers is queued
       // to apply after it
       await feed.stop();

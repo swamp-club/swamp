@@ -1209,3 +1209,42 @@ Deno.test("ServeLeadership.leaderGoing: with no leader known, reading the old re
     await leadership.stop();
   }
 });
+
+Deno.test("ServeLeadership.leaderGoing: while waiting, the lease is tried each second but the copy is restored once a tick", async () => {
+  let now = Date.now();
+  const feed = new FakeFeed();
+  const { lease, store, events, leadership } = setup({ now: () => now, feed });
+  await withLeaderRecord(store, "old", 2);
+  await leadership.start("follower");
+  try {
+    leadership.leaderGoing("closed");
+    await leadership.tick();
+    await leadership.tick();
+    assertEquals(lease.takes, 2);
+    assertEquals(events.filter((e) => e === "refresh"), []);
+    now += 3_600_000;
+    leadership.leaderGoing("closed");
+    await leadership.tick();
+    assertEquals(events.filter((e) => e === "refresh"), ["refresh"]);
+  } finally {
+    await leadership.stop();
+  }
+});
+
+Deno.test("ServeLeadership.leaderGoing: a wait begun with no leader known ends once a successor above the first named is recorded", async () => {
+  const { lease, store, leadership } = setup({ feed: new FakeFeed() });
+  await leadership.start("follower");
+  try {
+    leadership.leaderGoing("frame");
+    await withLeaderRecord(store, "old", 2);
+    lease.current = 2;
+    await leadership.tick();
+    assertEquals(leadership.awaitingNewLeader, true);
+    await withLeaderRecord(store, "successor", 3);
+    lease.current = 3;
+    await leadership.tick();
+    assertEquals(leadership.awaitingNewLeader, false);
+  } finally {
+    await leadership.stop();
+  }
+});

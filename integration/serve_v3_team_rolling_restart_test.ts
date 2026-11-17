@@ -312,7 +312,6 @@ Deno.test({
       assertEquals(following.role, "follower");
       assertEquals(following.leader, next.instanceId);
       assertEquals(following.leaderFence, promoted.fence);
-      // back on its tick
       assertEquals(following.awaitingNewLeader, false);
       assertEquals(following.goings?.[0], "frame");
       assertEquals(following.events, []);
@@ -520,7 +519,7 @@ Deno.test({
       assertEquals(await replay(whileRunning), 0);
       assertEquals([...whileRunning], [runId]);
 
-      // the old process stopped its heartbeat on the way out; its pid lives on
+      // its pid lives on
       await heartbeat.stop({ leaveStoppedRecord: true });
       assertEquals(await replay(new Set()), 1);
       await waitFor(() => executed.length === 1, "the replayed run");

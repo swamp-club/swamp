@@ -968,8 +968,7 @@ export class WebhookService {
 
     // a follower forwards the delivery to the leader as it came, within the
     // size limit, before verifying; the leader verifies with its own endpoint
-    // config, and the reply names no leader; a draining follower still forwards,
-    // since it runs nothing itself
+    // config, and the reply names no leader
     const link = this.deps.leaderLink;
     if (link !== undefined && this.forwardsToLeader()) {
       return await link.forward(req, {
@@ -1203,6 +1202,7 @@ export class WebhookService {
     return this.draining || this.deps.shuttingDown?.() === true;
   }
 
+  // also while draining: a follower runs nothing itself
   private forwardsToLeader(): boolean {
     return this.deps.acceptsRuns?.() === false &&
       this.deps.leaderLink?.address() !== undefined;
