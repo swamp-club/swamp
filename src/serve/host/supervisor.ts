@@ -94,7 +94,7 @@ export interface ServeSupervisor {
   setWanted(id: ServeId, wanted: WantedServeState): void;
   resume(id: ServeId): void;
   lookup(id: ServeId): ServeStatus | undefined;
-  /** asks every ready child to reload; returns how many were asked */
+  /** returns how many ready children were asked */
   reload(): number;
   /** stops every child through its drain path; changes no wanted state */
   shutdown(): Promise<void>;

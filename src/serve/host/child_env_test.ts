@@ -71,7 +71,19 @@ Deno.test("hostChildEnv: drops what would point every workspace at one repo, dat
   });
 });
 
-Deno.test("hostChildEnv: a relative API key file is resolved against the host's folder, since a child runs in its repo", () => {
+Deno.test("hostChildEnv: a relative CA certificate, in any case, is resolved against the host's working directory", () => {
+  assertEquals(
+    hostChildEnv({ SWAMP_CA_CERT: "certs/ca.pem" }, PINNED).SWAMP_CA_CERT,
+    resolve(HOST_CWD, "certs/ca.pem"),
+  );
+  assertEquals(
+    hostChildEnv({ swamp_api_key_file: "secrets/key" }, PINNED)
+      .swamp_api_key_file,
+    resolve(HOST_CWD, "secrets/key"),
+  );
+});
+
+Deno.test("hostChildEnv: a relative API key file is resolved against the host's working directory, since a child runs in its repo", () => {
   assertEquals(
     hostChildEnv({ SWAMP_API_KEY_FILE: "secrets/key" }, PINNED)
       .SWAMP_API_KEY_FILE,

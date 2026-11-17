@@ -37,7 +37,9 @@ const PER_SERVE_NAMES: readonly string[] = [
   "SWAMP_OAUTH_CLIENT_SECRET_FILE",
 ];
 
-// each would point every workspace at one repo, datastore or swamp home
+const HOST_RELATIVE_PATH_NAMES = [API_KEY_FILE_ENV, "SWAMP_CA_CERT"];
+
+// the first four would point every workspace at one repo, datastore or swamp home
 const DROPPED_NAMES: ReadonlySet<string> = new Set([
   "SWAMP_REPO_DIR",
   "SWAMP_DATASTORE",
@@ -68,10 +70,14 @@ export function hostChildEnv(
     // Windows spells names in any case
     if (!DROPPED_NAMES.has(name.toUpperCase())) env[name] = value;
   }
-  // the host signed in with this file, relative to where it was started
-  const keyFile = env[API_KEY_FILE_ENV];
-  if (keyFile !== undefined && keyFile !== "" && !isAbsolute(keyFile)) {
-    env[API_KEY_FILE_ENV] = resolve(pinned.cwd, keyFile);
+  // the host read these relative to where it was started; a child runs in its repo
+  const hostRelative = new Set(HOST_RELATIVE_PATH_NAMES);
+  for (const [name, value] of Object.entries(env)) {
+    if (
+      hostRelative.has(name.toUpperCase()) && value !== "" && !isAbsolute(value)
+    ) {
+      env[name] = resolve(pinned.cwd, value);
+    }
   }
   env.SWAMP_HOME = pinned.swampHome;
   env.SWAMP_CONFIG_DIR = pinned.configDir;

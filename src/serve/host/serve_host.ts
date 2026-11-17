@@ -69,9 +69,7 @@ export interface ServeHost {
   readonly port: number;
   /** the workspaces found at startup, sorted */
   readonly workspaces: readonly string[];
-  /** asks every ready serve to reload its settings */
   reload(): void;
-  /** stops the watcher, drains every child, then closes the listener */
   shutdown(): Promise<void>;
   readonly finished: Promise<void>;
 }
@@ -177,6 +175,7 @@ export async function startServeHost(
   };
 }
 
+// the listener closes last, so a request during the drain is answered, not refused
 async function stopAll(
   watcher: WorkspaceWatcher | null,
   supervisor: ServeSupervisor,
