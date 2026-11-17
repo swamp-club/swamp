@@ -735,10 +735,6 @@ interface RunningWebhookRun {
   startedAt?: Date;
 }
 
-/**
- * up to maxConcurrentRuns queued runs execute at once; runs of the same route
- * or workflow may overlap since per-model locks guard shared state
- */
 async function sentToNoLeader(response: Response): Promise<boolean> {
   if (response.status !== 503) return false;
   try {
@@ -752,6 +748,10 @@ async function sentToNoLeader(response: Response): Promise<boolean> {
   }
 }
 
+/**
+ * up to maxConcurrentRuns queued runs execute at once; runs of the same route
+ * or workflow may overlap since per-model locks guard shared state
+ */
 export class WebhookService {
   private readonly runQueue: QueuedWebhookRun[] = [];
   private maxConcurrentRuns: number;
@@ -1245,6 +1245,7 @@ export class WebhookService {
         }
         if (
           this.now() >= holdUntil || req.signal.aborted ||
+          this.shuttingDown() ||
           (!held && this.heldForLeader >= MAX_QUEUE_DEPTH)
         ) {
           return refused;
@@ -1332,7 +1333,12 @@ export class WebhookService {
       this.queuedForNextLeader--;
       logger
         .warn`Could not queue webhook delivery ${receiptId} for the next leader: ${error}`;
-      return this.shuttingDownResponse(endpoint, sourceIp);
+      // the put may still land, so a follower must not send it on again
+      const refusal = this.shuttingDownResponse(endpoint, sourceIp);
+      return Response.json(
+        { ...(await refusal.json()), inFlight: true },
+        { status: refusal.status, headers: refusal.headers },
+      );
     }
     logger
       .info`Queued webhook delivery ${receiptId} on ${endpoint.route} for the next leader`;

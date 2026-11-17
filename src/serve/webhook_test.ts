@@ -2974,7 +2974,7 @@ Deno.test("handleRequest: a delivery the control plane cannot hold during a hand
   assertEquals(res?.status, 503);
   assertEquals(res?.headers.get("retry-after"), "5");
   assertEquals(res?.headers.get(RUN_ID_HEADER), null);
-  await res?.body?.cancel();
+  assertEquals((await res!.json()).inFlight, true);
   await service.stop();
 });
 
@@ -3082,16 +3082,17 @@ Deno.test("handleRequest: a follower never holds a delivery the leader may have 
 
 Deno.test("handleRequest: a node promoted while it holds a delivery takes it itself", async () => {
   let leads = false;
-  const { link, forwards } = scriptedLink([notLeader()], () => undefined);
+  // no leader is named while it holds; the node is promoted meanwhile
+  const { link, forwards } = scriptedLink([notLeader()], () => {
+    leads = true;
+    return undefined;
+  });
   const { service, pendingRuns } = extensionService(
     registerExtension({}),
     () => leads,
     link,
   );
-  const handling = service.handleRequest(extensionRequest("s3cret"));
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  leads = true;
-  const res = await handling;
+  const res = await service.handleRequest(extensionRequest("s3cret"));
   assertEquals(res?.status, 200);
   await res?.body?.cancel();
   assertEquals(forwards(), 0);

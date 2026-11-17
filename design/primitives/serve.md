@@ -2078,7 +2078,9 @@ answers each caller in a way it can retry or holds the request briefly:
   owned by the leader. The next leader replays it with the other queued runs
   once that owner is gone. It is never written to the local run tracker,
   which another host cannot read and which could replay it twice. A
-  delivery the control plane does not take within 5 s is refused with 503.
+  delivery the control plane does not take within 5 s is refused with 503
+  marked `inFlight`, since the write may still land: a follower does not
+  send it on again, and only the sender's own retry can repeat it.
 - Runs a leader had queued but not started are already in the control
   plane; on a handover drain it drops their local run-tracker copies once
   the control plane holds them, so the node does not replay them again the
@@ -2092,7 +2094,10 @@ answers each caller in a way it can retry or holds the request briefly:
   without `inFlight`, `not_ready` while it starts, `shutting_down`). It
   tries again every 250 ms for up to 8 s, under the 10 s many senders allow
   a delivery, at most 100 at once, and takes the delivery itself if it
-  becomes the leader meanwhile. One marked `inFlight` is never held.
+  becomes the leader meanwhile. One marked `inFlight` is never held, and a
+  follower that is itself shutting down stops holding. The hold comes before
+  verification, as forwarding does, so unverified deliveries can fill its
+  100 places for 8 s while no leader is reachable.
 - A run start a follower could not send to any leader is refused as
   `serve_not_leader` without `inFlight`; `swamp … --server` and
   `packages/client` retry it as they retry `draining`, within their 30 s

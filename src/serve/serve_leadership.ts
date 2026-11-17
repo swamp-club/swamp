@@ -45,6 +45,8 @@ const LEASE_EXPIRY_MARGIN_MS = 1_000;
 /** past it, a leader that never let go is ticked as before */
 export const AWAIT_NEW_LEADER_MS = 120_000;
 
+const AWAITING_LEASE_TRY_MS = 1_000;
+
 /**
  * How long a follower's copy may go without a refresh before it stops
  * answering reads: three ticks, so a revoked grant stops allowing reads on a
@@ -245,7 +247,7 @@ export class ServeLeadership {
     const fence = this.#leader?.fence;
     if (this.#awaitingUntil === undefined || this.#awaitingPast !== fence) {
       logger
-        .info`The leader is going away; this node tries the writer lease every ${LEASE_EXPIRY_MARGIN_MS} ms until a new leader is named`;
+        .info`The leader is going away; this node tries the writer lease every ${AWAITING_LEASE_TRY_MS} ms until a new leader is named`;
     }
     this.#awaitingUntil = this.#now() + AWAIT_NEW_LEADER_MS;
     this.#awaitingPast = fence;
@@ -254,7 +256,7 @@ export class ServeLeadership {
     if (this.#timer !== undefined) {
       clearTimeout(this.#timer);
       this.#timer = undefined;
-      this.#schedule(LEASE_EXPIRY_MARGIN_MS);
+      this.#schedule(AWAITING_LEASE_TRY_MS);
     }
   }
 
@@ -331,7 +333,7 @@ export class ServeLeadership {
   /** capped at the tick, which also detects a lost lead and drives refreshes */
   async #nextDelay(): Promise<number> {
     if (this.#stopped || this.#role === "leader") return this.#tickMs;
-    if (this.awaitingNewLeader) return LEASE_EXPIRY_MARGIN_MS;
+    if (this.awaitingNewLeader) return AWAITING_LEASE_TRY_MS;
     this.#endAwaiting();
     const expiresAt = await this.#deps.lease.expiresAt().catch(
       () => undefined,
