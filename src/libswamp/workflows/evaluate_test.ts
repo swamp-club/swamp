@@ -752,6 +752,88 @@ Deno.test("evaluate: guard expressions remain as strings (not resolved to boolea
   assertEquals(steps[1].guard, '${{ inputs.action != "stop" }}');
 });
 
+function sharedGuardWorkflow(forEach: boolean): Workflow {
+  const shared = "${{ !inputs.apply }}";
+  return Workflow.fromData({
+    id: "00000000-0000-4000-8000-000000000021",
+    name: "shared-guard",
+    inputs: {
+      type: "object",
+      properties: {
+        apply: { type: "boolean", default: false },
+        regions: { type: "array", default: ["a", "b"] },
+      },
+    },
+    jobs: [{
+      name: "main",
+      steps: [
+        {
+          name: "deploy",
+          guard: shared,
+          ...(forEach
+            ? { forEach: { item: "region", in: "${{ inputs.regions }}" } }
+            : {}),
+          task: { type: "assert", expr: "true", message: "deployed" },
+        },
+        {
+          name: "report",
+          task: {
+            type: "model_method",
+            modelIdOrName: "reporter",
+            methodName: "run",
+            inputs: { dryRun: shared },
+          },
+        },
+      ],
+    }],
+  });
+}
+
+for (const forEach of [true, false]) {
+  for (const apply of [false, true]) {
+    Deno.test(`evaluate: a guard keeps its text when the same expression is evaluated in a task input (forEach ${forEach}, apply ${apply})`, async () => {
+      const workflow = sharedGuardWorkflow(forEach);
+      const deps = makeDeps({
+        findWorkflowByName: () => Promise.resolve(workflow),
+        findWorkflowById: () => Promise.resolve(workflow),
+        passEvaluatorFor: passOver((expr: string, ctx?: unknown) => {
+          const inputs = (ctx as { inputs: Record<string, unknown> }).inputs;
+          if (expr === "!inputs.apply") return !inputs.apply;
+          if (expr === "inputs.regions") return inputs.regions;
+          return expr;
+        }),
+      });
+
+      const events = await collect<WorkflowEvaluateEvent>(
+        workflowEvaluate(createLibSwampContext(), deps, {
+          workflowIdOrName: "shared-guard",
+          inputs: { apply },
+        }),
+      );
+
+      const completed = events[events.length - 1] as Extract<
+        WorkflowEvaluateEvent,
+        { kind: "completed" }
+      >;
+      assertEquals(completed.kind, "completed");
+      const steps = (completed.data as WorkflowEvaluateItemData).jobs![0]
+        .steps;
+      const deploySteps = steps.slice(0, -1);
+      assertEquals(
+        deploySteps.map((step) => step.name),
+        forEach ? ["deploy-a", "deploy-b"] : ["deploy"],
+      );
+      for (const step of deploySteps) {
+        assertEquals(step.guard, "${{ !inputs.apply }}");
+      }
+      assertEquals(
+        (steps[steps.length - 1].task as { inputs: unknown }).inputs,
+        { dryRun: !apply },
+      );
+    });
+  }
+}
+
 async function evaluateSteps(workflow: Workflow) {
   const deps = makeDeps({
     findWorkflowByName: () => Promise.resolve(workflow),
@@ -813,6 +895,63 @@ Deno.test("evaluate: task targets defer by the same rule as a workflow run", asy
   assertEquals(targetOf(0), dataTarget);
   assertEquals(targetOf(1), "${{ inputs.name }}");
   assertEquals(targetOf(2), "inputs.name");
+});
+
+Deno.test("evaluate: text deferred to step time keeps its text when the same expression is evaluated in another field", async () => {
+  const shared = "${{ data.latest('w1', 'main').attributes.v }}";
+  const workflow = Workflow.fromData({
+    id: "00000000-0000-4000-8000-000000000032",
+    name: "shared-step-output",
+    description: shared,
+    inputs: {},
+    jobs: [{
+      name: "main",
+      steps: [
+        {
+          name: "w2",
+          task: {
+            type: "model_method",
+            modelType: "@acme/reader",
+            modelName: "reader",
+            methodName: "run",
+            inputs: { v: shared },
+            globalArgs: { v: shared },
+          },
+        },
+        {
+          name: "check",
+          task: { type: "assert", expr: "true", message: `got ${shared}` },
+        },
+      ],
+    }],
+  });
+  const deps = makeDeps({
+    findWorkflowByName: () => Promise.resolve(workflow),
+    findWorkflowById: () => Promise.resolve(workflow),
+    // stands in for the previous run's record, read at evaluate time
+    passEvaluatorFor: passOver(() => "stale"),
+  });
+
+  const events = await collect<WorkflowEvaluateEvent>(
+    workflowEvaluate(createLibSwampContext(), deps, {
+      workflowIdOrName: "shared-step-output",
+      inputs: {},
+    }),
+  );
+
+  const completed = events[events.length - 1] as Extract<
+    WorkflowEvaluateEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+  const steps = (completed.data as WorkflowEvaluateItemData).jobs![0].steps;
+  const task = steps[0].task as { inputs?: unknown; globalArgs?: unknown };
+  assertEquals(task.inputs, { v: shared });
+  assertEquals(task.globalArgs, { v: shared });
+  assertEquals(
+    (steps[1].task as { message?: unknown }).message,
+    `got ${shared}`,
+  );
 });
 
 Deno.test("evaluate: steps.* references stay raw", async () => {

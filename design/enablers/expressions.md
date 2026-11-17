@@ -615,10 +615,14 @@ Deferring it gains nothing for a step that will run, so a mistyped name keeps
 failing where the error is cheapest.
 
 Deferral is decided per path, but substitution is keyed on the raw expression
-text, and two steps can carry the same expression. So deferred paths are
-recorded and skipped during substitution. Otherwise a plain step's evaluated
-value would land in a guarded step's deferred target and silently undo the
-deferral.
+text, and two fields can carry the same expression. So every path deferred at
+run start is recorded and skipped during substitution: task targets, guards,
+task inputs and assert messages that read step output, and on the run path
+`trigger.inputs`.
+Otherwise the same text evaluated in another field lands in the deferred one. A
+plain step's value silently undoes a guarded step's deferred target, a guard
+becomes a boolean and fails workflow validation before any step runs, and a
+task input reading an earlier step's output gets the previous run's value.
 
 Deferred targets are resolved in `executeModelMethod` and `runWorkflowStep`,
 after the guard decides. `runStep` returns early on a guarded skip and reaches
