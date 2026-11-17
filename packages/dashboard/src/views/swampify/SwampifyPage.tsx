@@ -25,7 +25,10 @@ import type {
   ComparisonRecord,
   SwampifyState,
 } from "../../client/useSwampify.ts";
-import type { SwampifyRow } from "../../client/swampify.ts";
+import type {
+  SwampifyReadingProgress,
+  SwampifyRow,
+} from "../../client/swampify.ts";
 import { LoadError } from "../../components/LoadError.tsx";
 import type { SwampifyCandidateSet } from "../../lib/agent_sessions/swampify.ts";
 import {
@@ -51,6 +54,41 @@ function Paths({ paths }: { paths: readonly string[] }) {
     <span className="sw-has-tip" title={paths.join("\n")}>
       {pluralize(paths.length, "path")}
     </span>
+  );
+}
+
+const READING_STATUSES = new Set(["pending", "running", "suspended"]);
+
+/** How far the readers are through the shown set's candidates. */
+function ReadingNote({ reading }: { reading: SwampifyReadingProgress }) {
+  if (READING_STATUSES.has(reading.status)) {
+    return (
+      <div className="sw-card sw-note" role="status">
+        <strong>
+          Reading candidates{reading.total === null
+            ? "…"
+            : `: ${reading.completed} of ${reading.total}`}
+        </strong>
+      </div>
+    );
+  }
+  if (reading.status === "succeeded") {
+    return (
+      <div className="sw-card sw-note" role="status">
+        <strong>Reading finished</strong>
+        <span>Your agent's offer comes next.</span>
+      </div>
+    );
+  }
+  return (
+    <div className="sw-card sw-note" role="status">
+      <strong>Reading stopped</strong>
+      <span>
+        The reading run{" "}
+        {reading.status === "failed" ? "failed" : `was ${reading.status}`}. Your
+        agent can run it again.
+      </span>
+    </div>
   );
 }
 
@@ -249,6 +287,7 @@ export function SwampifyPage(props: SwampifyPageProps) {
             )}
             {state.set.loading && setReading === null && setRow !== undefined &&
               <div className="sw-card sw-note">Loading the assessment…</div>}
+            {state.reading && <ReadingNote reading={state.reading} />}
             {setReading?.kind === "skipped" && (
               <SkipNotice item="candidate set" skipped={setReading} />
             )}

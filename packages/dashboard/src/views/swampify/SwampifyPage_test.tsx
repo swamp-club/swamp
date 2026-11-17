@@ -83,6 +83,7 @@ function state(
     comparisons = new Map(),
     limited = false,
     setRow,
+    reading = null,
   }: {
     set?: SwampifyCandidateSet;
     setReading?: SwampifyState["set"]["value"];
@@ -91,6 +92,7 @@ function state(
     comparisons?: ReadonlyMap<string, SwampifyRow>;
     limited?: boolean;
     setRow?: Loadable<SwampifyRow | undefined>;
+    reading?: SwampifyState["reading"];
   } = {},
 ): SwampifyState {
   const hasOffer = offer !== undefined || offerReading !== undefined;
@@ -115,6 +117,8 @@ function state(
     ),
     comparisons: loadable(comparisons),
     comparisonsLimited: limited,
+    reading,
+    expectPick: noop,
   };
 }
 
@@ -227,6 +231,41 @@ Deno.test("SwampifyPage: a set with no offer shows its window, a note and ranked
   // median weighted tokens and the failure rate, as stored
   assertStringIncludes(html, ">44.4K<");
   assertStringIncludes(html, ">22%<");
+});
+
+Deno.test("SwampifyPage: while the readers run, how far they are through the candidates", () => {
+  const html = render(state({
+    reading: { status: "running", completed: 3, total: 8 },
+  }));
+  assertStringIncludes(html, "Reading candidates: 3 of 8");
+  assertStringIncludes(html, "Your agent hasn&#x27;t made its offer yet");
+  assertStringIncludes(
+    render(state({
+      reading: { status: "pending", completed: null, total: null },
+    })),
+    "Reading candidates…",
+  );
+});
+
+Deno.test("SwampifyPage: a finished or stopped reading run says so, and no run shows no note", () => {
+  assertStringIncludes(
+    render(state({
+      reading: { status: "succeeded", completed: 8, total: 8 },
+    })),
+    "Reading finished",
+  );
+  const stopped = render(state({
+    reading: { status: "failed", completed: 2, total: 8 },
+  }));
+  assertStringIncludes(stopped, "Reading stopped");
+  assertStringIncludes(stopped, "The reading run failed.");
+  assertStringIncludes(
+    render(state({
+      reading: { status: "cancelled", completed: 2, total: 8 },
+    })),
+    "The reading run was cancelled.",
+  );
+  assert(!render(state()).includes("Reading "));
 });
 
 const CARD_NAME = (name: string) => `<span class="sw-option-name">${name}<`;

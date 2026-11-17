@@ -58,7 +58,7 @@ export interface OfferView {
   readonly options: readonly OptionView[];
 }
 
-function sameInstant(a: string, b: string): boolean {
+export function sameInstant(a: string, b: string): boolean {
   const x = Date.parse(a);
   const y = Date.parse(b);
   return !Number.isNaN(x) && x === y;

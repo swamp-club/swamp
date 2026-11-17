@@ -38,19 +38,24 @@ import {
   parseCandidateSetReply,
   parseComparisonReply,
   parseOfferReply,
+  parseReadingProgress,
   parseSwampifyRows,
   refetchOnReturn,
   shownCandidateSet,
   shownOffer,
   swampifyPollMs,
+  swampifyReadingPayload,
+  type SwampifyReadingProgress,
   type SwampifyRow,
   swampifyRowKey,
+  swampifyStage,
 } from "./swampify.ts";
 import { tabDocument, useDocumentVisible } from "./run_activity.ts";
-import type {
-  SwampifyCandidateSetReading,
-  SwampifyComparisonReading,
-  SwampifyOfferReading,
+import {
+  SWAMPIFY_GENERATED_AT_TAG,
+  type SwampifyCandidateSetReading,
+  type SwampifyComparisonReading,
+  type SwampifyOfferReading,
 } from "../lib/agent_sessions/swampify.ts";
 
 /**
@@ -116,6 +121,7 @@ function useShownItem<R>(
 ): {
   readonly list: Loadable<SwampifyRow | undefined>;
   readonly body: Loadable<R | null>;
+  readonly answered: boolean;
 } {
   const listReq = useRequest("data.query", listPayload);
   const row = useMemo(
@@ -155,6 +161,7 @@ function useShownItem<R>(
   }, [key]);
   const reading = read !== null && read.key === key ? read.reading : null;
   return {
+    answered: listReq.data !== null || listReq.error !== null,
     list: {
       value: row,
       loading: listReq.loading,
@@ -177,6 +184,10 @@ export interface SwampifyState {
   readonly offer: Loadable<SwampifyOfferReading | null>;
   readonly comparisons: Loadable<ReadonlyMap<string, SwampifyRow>>;
   readonly comparisonsLimited: boolean;
+  /** The readers' run for the shown set, read only while it is being read. */
+  readonly reading: SwampifyReadingProgress | null;
+  /** Call once the page has handed a build to the agent. */
+  readonly expectPick: () => void;
 }
 
 /** The shown candidate set and offer, their bodies, and comparisons by option. */
@@ -193,16 +204,46 @@ export function useSwampify(): SwampifyState {
     [comparisonReq.data],
   );
   const byOption = useMemo(() => comparisonsByOption(parsed.rows), [parsed]);
-  // A build happens in the agent's session, so the page re-reads its lists
-  // when the tab comes back, and on a clock while a pick is being built.
+  // Held against the offer version shown at the hand-off, so any rewrite of
+  // the offer ends it.
+  const offerKey = offer.list.value ? swampifyRowKey(offer.list.value) : null;
+  const offerKeyRef = useRef(offerKey);
+  offerKeyRef.current = offerKey;
+  const [handedOffAt, setHandedOffAt] = useState<string | null>(null);
+  const expectPick = useCallback(() => setHandedOffAt(offerKeyRef.current), []);
+  const stage = swampifyStage({
+    answered: set.answered && offer.answered &&
+      (comparisonReq.data !== null || comparisonReq.error !== null),
+    setRow: set.list.value,
+    offerRow: offer.list.value,
+    offer: offer.body.value,
+    offerFailed: offer.body.error !== null,
+    comparisons: byOption,
+    handedOff: handedOffAt !== null && handedOffAt === offerKey,
+  });
+  const setGeneratedAt = set.list.value?.tags[SWAMPIFY_GENERATED_AT_TAG];
+  // Not while an offer body loads: that offer may be the one the readers made.
+  const readingRun = stage === "reading" &&
+    (offer.list.value === undefined || offer.body.value !== null);
+  const readingReq = useRequest(
+    "workflow.run.search",
+    setGeneratedAt ? swampifyReadingPayload(setGeneratedAt) : undefined,
+    { enabled: readingRun && setGeneratedAt !== undefined },
+  );
+  // The agent writes from its own process, so the page re-reads its lists
+  // when the tab comes back, and on a clock while the work is unfinished.
   // Bodies follow: a list row with a new version re-reads its body.
-  const lists = [set.list.refetch, offer.list.refetch, comparisonReq.refetch];
+  const lists = [
+    set.list.refetch,
+    offer.list.refetch,
+    comparisonReq.refetch,
+    ...(readingRun ? [readingReq.refetch] : []),
+  ];
   useListsOnReturn(lists);
-  const waitingForSet = !set.list.loading && !set.list.error &&
-    set.list.value === undefined;
-  useListsOnInterval(
-    lists,
-    swampifyPollMs(offer.body.value, useDocumentVisible(), waitingForSet),
+  useListsOnInterval(lists, swampifyPollMs(stage, useDocumentVisible()));
+  const reading = useMemo(
+    () => readingRun ? parseReadingProgress(readingReq.data) : null,
+    [readingRun, readingReq.data],
   );
   return {
     setRow: set.list,
@@ -216,6 +257,8 @@ export function useSwampify(): SwampifyState {
       refetch: comparisonReq.refetch,
     },
     comparisonsLimited: parsed.limited,
+    reading,
+    expectPick,
   };
 }
 

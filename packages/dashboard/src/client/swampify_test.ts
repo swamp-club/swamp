@@ -17,10 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import {
   SWAMPIFY_CANDIDATES_QUERY_PREDICATE,
   SWAMPIFY_COMPARISON_QUERY_PREDICATE,
+  SWAMPIFY_GENERATED_AT_TAG,
   SWAMPIFY_LIST_SELECT,
   SWAMPIFY_OFFER_QUERY_PREDICATE,
   swampifyCandidateSetTags,
@@ -32,6 +33,7 @@ import {
   fixtureComparison,
   fixtureOffer,
   OPTION_IDS,
+  SET_GENERATED_AT,
 } from "../views/swampify/swampify_fixtures.ts";
 import {
   candidateSetListPayload,
@@ -47,17 +49,20 @@ import {
   parseCandidateSetReply,
   parseComparisonReply,
   parseOfferReply,
+  parseReadingProgress,
   parseSwampifyRows,
   refetchOnReturn,
   shownCandidateSet,
   shownOffer,
-  SWAMPIFY_BUILD_POLL_MS,
   SWAMPIFY_COMPARISON_LIMIT,
   SWAMPIFY_ITEM_LIMIT,
-  SWAMPIFY_WAIT_POLL_MS,
+  SWAMPIFY_POLL_MS,
   swampifyPollMs,
+  swampifyReadingPayload,
   type SwampifyRow,
   swampifyRowKey,
+  swampifyStage,
+  type SwampifyStageInput,
 } from "./swampify.ts";
 
 function row(
@@ -273,19 +278,168 @@ Deno.test("refetchOnReturn: the Swampify page re-reads every list when the tab c
   stop();
 });
 
-Deno.test("swampifyPollMs: polls only while the tab is in view and the offer is picked or the first assessment is awaited", () => {
-  const reading = (kind: "offered" | "picked" | "built" | "declined") => ({
+const SET_ROW = row("swampify-candidates", "swampify", {
+  [SWAMPIFY_GENERATED_AT_TAG]: SET_GENERATED_AT,
+});
+const OFFER_ROW = row("swampify-offer", "swampify", {});
+const COMPARED = new Map([[
+  OPTION_IDS[0],
+  row(`swampify-comparison-${OPTION_IDS[0]}`, "swampify", {}),
+]]);
+
+function offerReading(
+  kind: "offered" | "picked" | "built" | "declined",
+  setGeneratedAt = SET_GENERATED_AT,
+) {
+  return {
     kind: "record" as const,
-    record: fixtureOffer(kind),
-  });
-  assertEquals(swampifyPollMs(reading("picked"), true), SWAMPIFY_BUILD_POLL_MS);
-  assertEquals(swampifyPollMs(reading("picked"), false), null);
-  assertEquals(swampifyPollMs(null, true, true), SWAMPIFY_WAIT_POLL_MS);
-  assertEquals(swampifyPollMs(null, false, true), null);
-  for (const kind of ["offered", "built", "declined"] as const) {
-    assertEquals(swampifyPollMs(reading(kind), true), null, kind);
+    record: {
+      ...fixtureOffer(kind),
+      candidateSet: { generatedAt: setGeneratedAt },
+    },
+  };
+}
+
+function stageInput(
+  over: Partial<SwampifyStageInput> = {},
+): SwampifyStageInput {
+  return {
+    answered: true,
+    setRow: SET_ROW,
+    offerRow: OFFER_ROW,
+    offer: offerReading("offered"),
+    comparisons: new Map(),
+    ...over,
+  };
+}
+
+Deno.test("swampifyStage: loading until every list has answered once", () => {
+  assertEquals(
+    swampifyStage(stageInput({ answered: false, setRow: undefined })),
+    "loading",
+  );
+});
+
+Deno.test("swampifyStage: waiting while no candidate set is listed", () => {
+  assertEquals(
+    swampifyStage(stageInput({ setRow: undefined, offerRow: undefined })),
+    "waiting",
+  );
+});
+
+Deno.test("swampifyStage: reading while the set has no offer, the offer body is still loading, or the offer is from an earlier set", () => {
+  assertEquals(
+    swampifyStage(stageInput({ offerRow: undefined, offer: null })),
+    "reading",
+  );
+  assertEquals(swampifyStage(stageInput({ offer: null })), "reading");
+  for (const kind of ["offered", "picked", "built", "declined"] as const) {
+    assertEquals(
+      swampifyStage(stageInput({
+        offer: offerReading(kind, "2026-11-01T09:00:00.000Z"),
+        comparisons: COMPARED,
+      })),
+      "reading",
+      kind,
+    );
   }
-  assertEquals(swampifyPollMs(null, true), null);
+});
+
+Deno.test("swampifyStage: building while the offer is picked, comparing while a build has no comparison", () => {
+  assertEquals(
+    swampifyStage(stageInput({ offer: offerReading("picked") })),
+    "building",
+  );
+  assertEquals(
+    swampifyStage(stageInput({ offer: offerReading("built") })),
+    "comparing",
+  );
+});
+
+Deno.test("swampifyStage: building after the page hands off a build, until the offer moves on", () => {
+  assertEquals(swampifyStage(stageInput({ handedOff: true })), "building");
+  assertEquals(swampifyStage(stageInput({ handedOff: false })), "settled");
+  assertEquals(
+    swampifyStage(stageInput({
+      handedOff: true,
+      offer: offerReading("offered", "2026-11-01T09:00:00.000Z"),
+    })),
+    "reading",
+  );
+});
+
+Deno.test("swampifyStage: settled once the offer for the shown set is offered, declined, compared or unreadable", () => {
+  assertEquals(swampifyStage(stageInput()), "settled");
+  assertEquals(
+    swampifyStage(stageInput({ offer: null, offerFailed: true })),
+    "settled",
+  );
+  assertEquals(
+    swampifyStage(stageInput({ offer: offerReading("declined") })),
+    "settled",
+  );
+  assertEquals(
+    swampifyStage(stageInput({
+      offer: offerReading("built"),
+      comparisons: COMPARED,
+    })),
+    "settled",
+  );
+  assertEquals(
+    swampifyStage(stageInput({
+      offer: { kind: "skipped", reason: "invalid", note: "not JSON" },
+    })),
+    "settled",
+  );
+});
+
+Deno.test("swampifyPollMs: every unfinished stage polls at one interval while the tab is in view, and nothing polls hidden or settled", () => {
+  for (
+    const stage of ["waiting", "reading", "building", "comparing"] as const
+  ) {
+    assertEquals(swampifyPollMs(stage, true), SWAMPIFY_POLL_MS, stage);
+    assertEquals(swampifyPollMs(stage, false), null, stage);
+  }
+  for (const stage of ["loading", "settled"] as const) {
+    assertEquals(swampifyPollMs(stage, true), null, stage);
+    assertEquals(swampifyPollMs(stage, false), null, stage);
+  }
+  assert(SWAMPIFY_POLL_MS <= 10_000);
+});
+
+Deno.test("swampifyReadingPayload: the newest understand run started since the set was assessed", () => {
+  assertEquals(swampifyReadingPayload(SET_GENERATED_AT), {
+    workflow: "@swamp/agent-sessions/swampify-understand",
+    since: SET_GENERATED_AT,
+    limit: 1,
+  });
+});
+
+Deno.test("parseReadingProgress: the first run's status and step counts", () => {
+  const reply = (run: unknown) => ({ data: { results: [run] } });
+  assertEquals(
+    parseReadingProgress(
+      reply({ status: "running", stepProgress: { completed: 3, total: 8 } }),
+    ),
+    { status: "running", completed: 3, total: 8 },
+  );
+  assertEquals(
+    parseReadingProgress(reply({ status: "pending" })),
+    { status: "pending", completed: null, total: null },
+  );
+  assertEquals(
+    parseReadingProgress(
+      reply({ status: "running", stepProgress: { completed: 9, total: 8 } }),
+    ),
+    { status: "running", completed: null, total: null },
+  );
+});
+
+Deno.test("parseReadingProgress: null for no run or a reply that does not parse", () => {
+  assertEquals(parseReadingProgress({ data: { results: [] } }), null);
+  assertEquals(parseReadingProgress({ data: { results: [{}] } }), null);
+  assertEquals(parseReadingProgress(null), null);
+  assertEquals(parseReadingProgress("nope"), null);
 });
 
 Deno.test("hasSwampifyBehavior: true only for an agent-sessions behavior", () => {

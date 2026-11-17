@@ -287,11 +287,19 @@ seconds while the tab is in view. Its requests are in
   prompt for your own agent when no terminal could open, or start's refusal.
   Under `swamp serve` the page is review-only: Copy brief and no launch. The page writes no Swampify data;
   the agent records the pick.
-- **Refreshes.** A build happens in the agent's session, so the page
-  re-reads its candidate-set, offer and comparison lists when the tab comes
-  back into view, and every 15 seconds while the tab is in view and the
-  shown offer is `picked`. A body is re-read when its row's version changes.
-  The sidebar's probes re-read on return too.
+- **Refreshes.** The agent writes from its own process and tells the page
+  nothing, so the page re-reads its candidate-set, offer and comparison
+  lists when the tab comes back into view, and every 5 seconds while the tab
+  is in view and the work is unfinished: no set yet, a set with no offer
+  made from it, a `picked` offer, a `built` offer whose option has no
+  comparison, or an offer the page has just handed to the agent with Launch
+  or Use my own agent, until that offer changes. It stops once the shown
+  set's offer is settled, and a hidden tab reads nothing. A body is re-read
+  when its row's version changes. The sidebar's probes re-read on return too.
+- **Reading progress.** While the shown set has no offer, the page reads the
+  newest run of `@swamp/agent-sessions/swampify-understand` started since
+  the set was assessed (`workflow.run.search`, one row) and shows how many
+  readings it has finished, or that it finished or stopped.
 - **Computes nothing.** It shows the ranges, counts, rates and break-even the
   writers stored, and only formats them; the thin flag comes from the summary
   tag.
