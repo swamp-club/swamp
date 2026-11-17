@@ -21,6 +21,8 @@ import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { waitFor } from "@swamp-club/swamp-testing";
 import {
+  deletingFolderName,
+  isDeletingFolderName,
   REPO_MARKER_FILE,
   scanWorkspaces,
   watchWorkspaces,
@@ -71,11 +73,66 @@ Deno.test("scanWorkspaces: lists repo folders with valid names and says why it s
   });
 });
 
+Deno.test("scanWorkspaces: passes over wanted and status files, and finds wanted files without a folder and leftover removals", async () => {
+  await withTempDir(async (dir) => {
+    await makeRepo(dir, "edge-dns");
+    await Deno.writeTextFile(join(dir, "edge-dns.wanted.yaml"), "");
+    await Deno.writeTextFile(join(dir, "edge-dns.status.yaml"), "");
+    await Deno.writeTextFile(join(dir, "gone.wanted.yaml"), "");
+    await Deno.writeTextFile(join(dir, "Bad.wanted.yaml"), "");
+    const leftover = deletingFolderName("old");
+    await Deno.mkdir(join(dir, leftover));
+    await Deno.writeTextFile(join(dir, ".old.deleting-not-a-uuid"), "");
+
+    const scan = await scanWorkspaces(dir);
+    assertEquals(scan.workspaces, ["edge-dns"]);
+    assertEquals(scan.wantedFiles, ["edge-dns", "gone"]);
+    assertEquals(scan.leftovers, [leftover]);
+    assertEquals(scan.skipped.map((s) => s.name), ["Bad.wanted.yaml"]);
+  });
+});
+
+Deno.test("isDeletingFolderName: matches only a hidden valid name with a uuid", () => {
+  assertEquals(isDeletingFolderName(deletingFolderName("edge-dns")), true);
+  assertEquals(isDeletingFolderName("edge-dns"), false);
+  assertEquals(isDeletingFolderName(".edge-dns.deleting-x"), false);
+  assertEquals(
+    isDeletingFolderName(`.Edge.deleting-${crypto.randomUUID()}`),
+    false,
+  );
+  assertEquals(
+    isDeletingFolderName(`.a/b.deleting-${crypto.randomUUID()}`),
+    false,
+  );
+});
+
+Deno.test("watchWorkspaces: onRescan sees every rescan, even with nothing changed", async () => {
+  await withTempDir(async (dir) => {
+    let rescans = 0;
+    const watcher = watchWorkspaces({
+      dir,
+      initial: [],
+      rescanMs: 20,
+      onChange: () => {},
+      onRescan: () => {
+        rescans++;
+      },
+    });
+    try {
+      await waitFor(() => rescans >= 2, "two rescans");
+    } finally {
+      await watcher.stop();
+    }
+  });
+});
+
 Deno.test("scanWorkspaces: a missing folder holds no workspaces", async () => {
   await withTempDir(async (dir) => {
     assertEquals(await scanWorkspaces(join(dir, "missing")), {
       workspaces: [],
       skipped: [],
+      wantedFiles: [],
+      leftovers: [],
     });
   });
 });

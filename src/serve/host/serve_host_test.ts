@@ -59,6 +59,7 @@ function status(
     authMode: null,
     refusal: null,
     crashCount: 0,
+    restarts: 0,
     lastExit: null,
     ...extra,
   };

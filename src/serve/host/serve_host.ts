@@ -26,9 +26,11 @@ import {
 } from "../../domain/serve/managed_serve.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { readCredentialFile } from "../../infrastructure/persistence/api_key_source.ts";
+import { HostedWorkspaceFileRepository } from "../../infrastructure/persistence/hosted_workspace_file_repository.ts";
 import { validateEndEntityCert } from "../../infrastructure/runtime/tls_cert_validation.ts";
 import type { HostConfig } from "./host_config.ts";
 import type { ServeChildSpec, ServeProcessPort } from "./serve_process.ts";
+import { createStatusWriter, type StatusWriter } from "./status_writer.ts";
 import {
   createServeSupervisor,
   type ServeAdmission,
@@ -44,6 +46,11 @@ import {
   type WorkspaceChange,
   type WorkspaceWatcher,
 } from "./workspace_folder.ts";
+import {
+  createWorkspaceReconciler,
+  readWantedFiles,
+  type WorkspaceReconciler,
+} from "./workspace_reconciler.ts";
 import {
   createWorkspaceRouter,
   type WorkspaceDirectory,
@@ -93,11 +100,17 @@ export async function startServeHost(
   const skipLog = new SkipLog();
   const scan = await scanWorkspaces(config.workspacesDir);
   skipLog.report(scan.skipped, rescanMs);
+  const repository = new HostedWorkspaceFileRepository(config.workspacesDir);
+  const reads = await readWantedFiles(repository, scan);
 
+  const statusWriter = createStatusWriter({
+    workspacesDir: config.workspacesDir,
+  });
   const supervisor = createServeSupervisor({
     ...options.supervisor,
     processPort,
     admit: noAuthAdmission(config),
+    onStatus: (status) => statusWriter.report(status),
   });
   const routerAbort = new AbortController();
   const router = createWorkspaceRouter({
@@ -137,26 +150,37 @@ export async function startServeHost(
     oauthClient: config.oauthClient,
   });
 
-  let watcher: WorkspaceWatcher | null = null;
+  const reconciler = createWorkspaceReconciler({
+    workspacesDir: config.workspacesDir,
+    supervisor,
+    specOf: (name) => specOf(workspaceServe(name)),
+    repository,
+    statusWriter,
+  });
+  const stack: HostStack = {
+    watcher: null,
+    supervisor,
+    reconciler,
+    statusWriter,
+    routerAbort,
+    server,
+  };
+  let started: readonly string[] = [];
   try {
     // no await between the bind and these adds, so no request sees a
     // scanned workspace before the supervisor knows it
     if (config.root !== null) supervisor.add(specOf(ROOT_SERVE));
-    for (const name of scan.workspaces) {
-      supervisor.add(specOf(workspaceServe(name)));
-    }
+    started = reconciler.begin(scan, reads);
     await Deno.mkdir(config.workspacesDir, { recursive: true });
-    watcher = watchWorkspaces({
+    stack.watcher = watchWorkspaces({
       dir: config.workspacesDir,
       initial: scan.workspaces,
       rescanMs,
-      onChange: (change) => {
-        applyChange(supervisor, specOf, change);
-        options.onWorkspaceChange?.(change);
-      },
+      onChange: (change) => options.onWorkspaceChange?.(change),
+      onRescan: (rescan) => reconciler.reconcile(rescan),
     }, skipLog);
   } catch (error) {
-    await stopAll(watcher, supervisor, routerAbort, server).catch(
+    await stopAll(stack).catch(
       (cleanup) => {
         logger.error("Stopping the host after a failed start failed: {error}", {
           error: cleanup,
@@ -166,51 +190,42 @@ export async function startServeHost(
     throw error;
   }
 
-  const running = watcher;
   let stopping: Promise<void> | undefined;
   return {
     hostname: bound.hostname,
     port: bound.port,
-    workspaces: scan.workspaces,
+    workspaces: started,
     reload() {
       const asked = supervisor.reload();
       logger.info("Asked {count} ready serves to reload", { count: asked });
     },
     shutdown() {
-      stopping ??= stopAll(running, supervisor, routerAbort, server);
+      stopping ??= stopAll(stack);
       return stopping;
     },
     finished: server.finished,
   };
 }
 
-// the listener closes last, so a request during the drain is answered, not refused
-async function stopAll(
-  watcher: WorkspaceWatcher | null,
-  supervisor: ServeSupervisor,
-  routerAbort: AbortController,
-  server: Deno.HttpServer<Deno.NetAddr>,
-): Promise<void> {
-  await watcher?.stop();
-  await supervisor.shutdown();
-  routerAbort.abort();
-  await server.shutdown();
+interface HostStack {
+  watcher: WorkspaceWatcher | null;
+  readonly supervisor: ServeSupervisor;
+  readonly reconciler: WorkspaceReconciler;
+  readonly statusWriter: StatusWriter;
+  readonly routerAbort: AbortController;
+  readonly server: Deno.HttpServer<Deno.NetAddr>;
 }
 
-function applyChange(
-  supervisor: ServeSupervisor,
-  specOf: (id: ServeId) => ServeChildSpec,
-  change: WorkspaceChange,
-): void {
-  for (const name of change.added) {
-    const id = workspaceServe(name);
-    // resume, not wanted running: a re-added folder also clears failed
-    if (supervisor.lookup(id) === undefined) supervisor.add(specOf(id));
-    else supervisor.resume(id);
-  }
-  for (const name of change.removed) {
-    supervisor.setWanted(workspaceServe(name), "deleted");
-  }
+// the listener closes last, so a request during the drain is answered, not
+// refused; the status writer drains after every serve has reported stopped
+async function stopAll(stack: HostStack): Promise<void> {
+  await stack.watcher?.stop();
+  stack.statusWriter.beginShutdown();
+  await stack.supervisor.shutdown();
+  await stack.reconciler.drain();
+  await stack.statusWriter.drain();
+  stack.routerAbort.abort();
+  await stack.server.shutdown();
 }
 
 export function noAuthAdmission(

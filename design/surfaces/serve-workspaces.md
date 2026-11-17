@@ -376,15 +376,52 @@ root's admins can make these requests. A grant such as
 The root and the supervisor never call each other. They share two small files
 per workspace, beside its folder:
 
-- **Wanted**, written by the root: `active`, `suspended` or `deleted`, with the
-  creator and the time. A folder without one is `active`.
-- **Status**, written by the supervisor: the observed state, the restart count
-  and the reason when it is not ready.
+- **Wanted**, `workspaces/<name>.wanted.yaml`, written by the root: `wanted`
+  (`active`, `suspended` or `deleted`), `creator` and `changedAt`. A folder
+  without one is `active`. Only `wanted` is required, so an operator can
+  suspend or resume a workspace by editing that one line while the host runs.
+- **Status**, `workspaces/<name>.status.yaml`, written by the host: `state`
+  (the observed state), `wanted`, `restarts` (spawns after an exit the host did
+  not ask for, over the host's lifetime), `reason` and `updatedAt`. The reason
+  is an unreadable wanted file, an admission refusal, or the last lines of the
+  serve's stderr in `backoff` or `failed`; it is null otherwise. A host that
+  shuts down writes `stopped`.
+
+Both are written atomically through a hidden temporary file, so a reader never
+sees half of one. `HostedWorkspace` (`src/domain/serve/hosted_workspace.ts`)
+is the aggregate, and its file store
+(`src/infrastructure/persistence/hosted_workspace_file_repository.ts`) is
+the only place the file word `active` meets the supervisor's `running`.
+
+The host reads the wanted files with each rescan of `workspaces/`
+(`src/serve/host/workspace_reconciler.ts`):
+
+- `suspended` stops the serve and keeps everything. A workspace already
+  suspended when the host starts is never started.
+- `active` starts it again. A changed `active` record is also what takes a
+  workspace out of `failed`; rereading the same record does nothing, so an
+  operator resuming by hand changes the file, and the services always write a
+  new `changedAt`.
+- A wanted file that cannot be read (bad YAML, an unknown field, over 4 KiB,
+  not a regular file) is reported in the host's log and the status file and
+  changes nothing: the workspace keeps the last state read whole, or `active`
+  when the host has read none.
+- A wanted file that is `active` or `suspended` with no folder beside it is left
+  alone until the folder appears.
+- A folder removed by hand stops its serve, as before, and its status file is
+  removed once the serve has stopped.
 
 `create` sets the repo up in a folder under a temporary name and renames it
 into place, so the supervisor never starts half a workspace. `delete` writes
-`deleted`. The supervisor stops the serve, then removes the folder and both
-files. A host that stopped halfway finishes at its next start.
+`deleted`. Once the host sees `deleted` it removes the workspace, and a later
+edit of the file does not stop it: it stops the serve and waits for it to
+exit, renames the folder to a hidden `.<name>.deleting-<uuid>` so no scan sees
+half a folder, removes that, removes the status file, and removes the wanted
+file last. Until the end the wanted file still says `deleted`, so a host that
+stopped halfway finishes at its next start, and the next scan removes a hidden
+folder left behind. A removal touches only names that pass
+`parseWorkspaceName`, and a rename never follows a link, so a workspace folder
+that is a link loses only the link.
 
 Setting up a repo runs as a child process in its folder. The root's process
 never loads another workspace's extensions.
@@ -468,9 +505,11 @@ that and a hosted workspace:
 
 | Concept           | Building block      | Notes                                                                                           |
 | ----------------- | ------------------- | ----------------------------------------------------------------------------------------------- |
-| `HostedWorkspace` | Aggregate root      | Name, creator, wanted state; the wanted file is its store                                       |
+| `HostedWorkspace` | Aggregate root      | Name, creator, wanted state; deleted is never left; the wanted file is its store                |
 | `ManagedServe`    | Entity              | Wanted state, observed state, crash count, backoff; property-tested over random event sequences |
 | Workspace router  | Host transport      | Prefix match, forward, 503 and 404; in `src/serve/host/`                                        |
+| Reconciler        | Host service        | Joins the folder scan, the wanted files and the supervisor; runs removals                       |
+| Status writer     | Host service        | Writes each workspace's status file, one write in flight; a projection, not a repository        |
 | Provisioner       | Application service | Sets a repo up under a temporary name as a child process and renames it into place              |
 | `workspace`       | Resource kind       | In `resource_selector.ts`; `read`, `write`, `admin`                                             |
 | Sign-in code      | Value object        | Workspace name, principal, expiry; single use; kept by the root                                 |
