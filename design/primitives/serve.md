@@ -2099,7 +2099,8 @@ answers each caller in a way it can retry or holds the request briefly:
   its `Retry-After`. One marked `inFlight` is never held, and a
   follower that is itself shutting down stops holding. The hold comes before
   verification, as forwarding does, so unverified deliveries can fill its
-  100 places for 8 s while no leader is reachable.
+  100 places, or its 64 MiB of held bodies, for 8 s while no leader is
+  reachable.
 - A run start a follower could not send to any leader is refused as
   `serve_not_leader` without `inFlight`; `swamp … --server` and
   `packages/client` retry it as they retry `draining`, within their 30 s

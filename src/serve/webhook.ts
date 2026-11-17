@@ -701,6 +701,8 @@ const HANDOVER_QUEUE_PUT_TIMEOUT_MS = 5_000;
 // under the 10 s many senders give a delivery, so a held one never races its retry
 const LEADERLESS_HOLD_MS = 8_000;
 const LEADERLESS_RETRY_MS = 250;
+// held bodies are unverified, so what they may pin is bounded as well as their count
+const LEADERLESS_HELD_BYTES = 64 * 1024 * 1024;
 /** Names the run on every response that queues one. */
 export const RUN_ID_HEADER = "X-Swamp-Run-Id";
 /**
@@ -774,6 +776,7 @@ export class WebhookService {
   // never decremented on success: it bounds what one exiting process queues
   private queuedForNextLeader = 0;
   private heldForLeader = 0;
+  private heldBytesForLeader = 0;
   private endpoints: WebhookEndpoint[];
 
   constructor(private readonly deps: WebhookServiceDeps) {
@@ -1256,7 +1259,8 @@ export class WebhookService {
         if (
           this.now() + retryMs > holdUntil || req.signal.aborted ||
           this.shuttingDown() ||
-          (!held && this.heldForLeader >= MAX_QUEUE_DEPTH)
+          (!held && (this.heldForLeader >= MAX_QUEUE_DEPTH ||
+            this.heldBytesForLeader + body.byteLength > LEADERLESS_HELD_BYTES))
         ) {
           return refused;
         }
@@ -1264,11 +1268,15 @@ export class WebhookService {
         if (!held) {
           held = true;
           this.heldForLeader++;
+          this.heldBytesForLeader += body.byteLength;
         }
         await new Promise((resolve) => setTimeout(resolve, retryMs));
       }
     } finally {
-      if (held) this.heldForLeader--;
+      if (held) {
+        this.heldForLeader--;
+        this.heldBytesForLeader -= body.byteLength;
+      }
     }
   }
 

@@ -509,6 +509,7 @@ Deno.test({
             instanceId: newOwner.instanceId,
             controlPlaneStore: store,
             unjudgedOwner: "gone",
+            readsHostHeartbeat: true,
           }),
           deferred,
           claimAs: newOwner,

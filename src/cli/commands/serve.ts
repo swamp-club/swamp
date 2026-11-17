@@ -4599,15 +4599,22 @@ export const serveCommand = new Command()
     const heartbeatStore = hasRemoteControlPlane
       ? controlPlaneStore
       : undefined;
-    const ownerLiveness = (unjudgedOwner: "alive" | "gone") =>
+    const ownerLiveness = (
+      unjudgedOwner: "alive" | "gone",
+      readsHostHeartbeat = false,
+    ) =>
       pendingOwnerLiveness({
         instanceId,
         unjudgedOwner,
+        readsHostHeartbeat,
         ...(heartbeatStore ? { controlPlaneStore: heartbeatStore } : {}),
         ...(staleTtlMs !== undefined ? { staleTtlMs } : {}),
       });
     const bootOwnerAlive = ownerLiveness("gone");
     const sweepOwnerAlive = ownerLiveness("alive");
+    // queued and parked runs only: serve beats before it queues or parks any
+    const bootRunOwnerAlive = ownerLiveness("gone", true);
+    const sweepRunOwnerAlive = ownerLiveness("alive", true);
     // the sweep can run while workers enroll: worker records go through the
     // gateway's write ordering, and one the gateway holds is never settled
     const workerWrites = {
@@ -8734,7 +8741,7 @@ export const serveCommand = new Command()
         configuredWebhookRoutes: webhookTargets.routes,
         configuredCronWorkflows,
         keepCronRuns: scheduler.ranScheduler(),
-        ownerAlive: sweep ? sweepOwnerAlive : bootOwnerAlive,
+        ownerAlive: sweep ? sweepRunOwnerAlive : bootRunOwnerAlive,
         deferred,
         claimAs: pendingRunOwner,
         replayedRuns,
@@ -8825,8 +8832,8 @@ export const serveCommand = new Command()
               const owner = parkerAsOwner(parker);
               if (owner === undefined) return Promise.resolve(false);
               return cause === "boot" || cause === "lead"
-                ? bootOwnerAlive(owner)
-                : sweepOwnerAlive(owner);
+                ? bootRunOwnerAlive(owner)
+                : sweepRunOwnerAlive(owner);
             },
             onDeferredLater: (target) => {
               if (pendingInterrupted.size < PENDING_INTERRUPTED_MAX) {
@@ -8864,7 +8871,7 @@ export const serveCommand = new Command()
         for (const marker of await listParkedRuns(store)) {
           if (pendingInterrupted.has(marker.runId)) continue;
           const owner = parkerAsOwner(marker.parker);
-          if (owner !== undefined && await sweepOwnerAlive(owner)) continue;
+          if (owner !== undefined && await sweepRunOwnerAlive(owner)) continue;
           due.push({ workflowId: marker.workflowId, runId: marker.runId });
         }
         if (due.length === 0) return;

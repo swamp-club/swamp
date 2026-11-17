@@ -63,6 +63,12 @@ export interface PendingOwnerLivenessDeps {
   hostIdentity?: () => string;
   isGone?: (pid: number) => boolean;
   ownPid?: number;
+  /**
+   * on this host, also ask the heartbeat: for queued and parked runs, which a
+   * process owns only once its first heartbeat is written. Absent, a live pid
+   * is alive, as the record sweep needs for records written before then
+   */
+  readsHostHeartbeat?: boolean;
 }
 
 /**
@@ -82,8 +88,8 @@ export function pendingOwnerLiveness(
     if (owner.host !== undefined && owner.host === hostIdentity()) {
       // this pid is this process's, and the instance id says the owner was not
       if (owner.pid === ownPid || isGone(owner.pid)) return false;
-      if (!store) return true;
-      // a live pid without a running heartbeat is exiting; serve beats before it queues
+      if (!store || deps.readsHostHeartbeat !== true) return true;
+      // a live pid without a running heartbeat is exiting
       try {
         const data = await withDeadline(
           () => store.get(`heartbeats/${owner.instanceId}`),
