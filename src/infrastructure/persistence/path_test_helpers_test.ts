@@ -103,7 +103,7 @@ Deno.test("withMockedEnv: keys not overridden pass through to the real environme
   });
 });
 
-Deno.test("withMockedEnv: restores every reader after fn throws", () => {
+Deno.test("withMockedEnv: once fn throws, every reader answers from the real env", () => {
   const name = uniqueEnvName();
   assertThrows(
     () =>
@@ -118,7 +118,7 @@ Deno.test("withMockedEnv: restores every reader after fn throws", () => {
   assertEquals(Object.hasOwn(Deno.env.toObject(), name), false);
 });
 
-Deno.test("withMockedEnv: restores every reader after an async fn rejects", async () => {
+Deno.test("withMockedEnv: once an async fn rejects, every reader answers from the real env", async () => {
   const name = uniqueEnvName();
   await assertRejects(
     () =>

@@ -5922,11 +5922,14 @@ process's own, so nothing changes there. A test plays a second process in the
 same isolate by running it in another runtime (`integration/process_host.ts`):
 its holds contend with the test's instead of joining them. The current runtime
 is found through `AsyncLocalStorage`, so whatever a runtime starts carries it,
-timers included. `runOutsideAmbientContext`, which drops a run's stores, keeps the runtime (a store registered with `keepAcrossAmbientReset`). Three entry points carry no async context and re-enter their runtime themselves: serve's HTTP handler (`unscopedHttpHandler`, with the stores it was built in), a hold's
+timers included. `runOutsideAmbientContext`, which drops a run's stores, keeps
+the runtime (a store registered with `keepAcrossAmbientReset`). Three entry
+points carry no async context and re-enter their runtime themselves: serve's
+HTTP handler (`unscopedHttpHandler`, with the stores it was built in), a hold's
 renewal timer (each hold keeps its runtime's state), and a signal listener
-(`registerShutdownHandler`, for every handler it registers). Workers remain only where a
-thread must block (`Atomics.wait` to freeze a node, SQLite's busy wait) or a
-module graph must load afresh (the command routes test).
+(`registerShutdownHandler`, for every handler it registers). Workers remain only
+where a thread must block (`Atomics.wait` to freeze a node, SQLite's busy wait)
+or a module graph must load afresh (the command routes test).
 
 **Wiring.** One module outside the v3 directories opens a v3 datastore for a
 repository context: `v3_repo_context.ts`. It opens one handle per checkout and

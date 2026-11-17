@@ -58,7 +58,7 @@ import {
   type ServeWorkerRequest,
   startUpstreamServeHost,
 } from "./serve_upstream_server.ts";
-import { ProcessRuntime } from "../src/infrastructure/runtime/process_runtime.ts";
+import { startProcessHost } from "./process_host.ts";
 import { UNSET_ENV } from "./usecase_sync_fixtures.ts";
 import type { WorkflowReportBarrier } from "./workflow_report_barrier.ts";
 
@@ -227,14 +227,12 @@ async function startServe(options: ServeOptions): Promise<Serve> {
     else if (message.kind === "ran-method") ranMethod = message;
     else logReply = message.entries;
   };
-  // serve's holds, handles and lock gate stay out of the clients' commands
-  const runtime = new ProcessRuntime(`serve-${crypto.randomUUID()}`);
-  const send = runtime.run(() => startUpstreamServeHost(onMessage));
-  const worker = {
-    postMessage: (request: ServeWorkerRequest) =>
-      runtime.run(() => send(request)),
-    terminate: () => {},
-  };
+  // serve's holds, handles, lock gate and env stay out of the clients' commands
+  const worker = startProcessHost<ServeWorkerRequest, ServeWorkerMessage>(
+    "serve",
+    startUpstreamServeHost,
+    onMessage,
+  );
   try {
     worker.postMessage(
       {

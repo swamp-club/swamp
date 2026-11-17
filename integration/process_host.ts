@@ -17,7 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { ProcessRuntime } from "../src/infrastructure/runtime/process_runtime.ts";
+
+const cleanContext = AsyncLocalStorage.snapshot();
 
 /** sets up an actor and answers what it is sent through `post`; `stopped` aborts on terminate */
 export type ProcessHost<Request, Message> = (
@@ -33,8 +36,8 @@ export interface ProcessHostHandle<Request> {
 
 /**
  * plays another swamp process in this isolate: the host and everything it
- * awaits see their own writer holds and handles, never the test's; a host
- * reads its own env only inside withMockedEnv
+ * awaits see their own writer holds, handles and env, never the test's; the
+ * test's onMessage runs in the test's own context
  */
 export function startProcessHost<Request, Message>(
   name: string,
@@ -43,14 +46,19 @@ export function startProcessHost<Request, Message>(
 ): ProcessHostHandle<Request> {
   const runtime = new ProcessRuntime(`${name}-${crypto.randomUUID()}`);
   const stop = new AbortController();
+  const inTest = AsyncLocalStorage.snapshot();
+  // the host starts from a clean context, so nothing of the test's reaches it
+  const inHost = <T>(fn: () => T): T => cleanContext(() => runtime.run(fn));
   // a reply is delivered after the send returns, as a Worker's would be
   const post = (message: Message) =>
-    queueMicrotask(() => {
-      if (!stop.signal.aborted) onMessage(message);
-    });
-  const send = runtime.run(() => host(post, stop.signal));
+    queueMicrotask(() =>
+      inTest(() => {
+        if (!stop.signal.aborted) onMessage(message);
+      })
+    );
+  const send = inHost(() => host(post, stop.signal));
   return {
-    postMessage: (request) => runtime.run(() => send(request)),
+    postMessage: (request) => inHost(() => send(request)),
     terminate: () => stop.abort(),
   };
 }
