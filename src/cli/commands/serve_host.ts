@@ -67,6 +67,7 @@ export const serveHostCommand = new Command()
       childEnv: hostChildEnv(Deno.env.toObject(), {
         swampHome: resolve(getSwampDataDir()),
         configDir: resolve(getSwampConfigDir()),
+        cwd: Deno.cwd(),
       }),
       onWorkspaceChange: (change) => renderer.workspacesChanged(change),
     });

@@ -244,8 +244,9 @@ caller. A child reports its auth mode as `authMode` on its `--json` listening
 line. A refused child is stopped as a requested stop, never restarted, and
 answers 503 with state `refused` until the host restarts or its folder is
 removed and added again. Its environment is an allowlist
-(`src/serve/host/child_env.ts`), so no `SWAMP_SERVE_*` setting of the host
-reaches it.
+(`src/serve/host/child_env.ts`): it carries the host's sign-in (API key, sign-in
+token, nested gate pass) and swamp-club address, and no `SWAMP_SERVE_*` or
+`SWAMP_DATASTORE` setting of the host.
 
 `--exit-on-stdin-close` is a new hidden flag: serve starts its drain when stdin
 reaches end of file, as the dashboard child already does. The host keeps each
