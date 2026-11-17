@@ -533,7 +533,10 @@ status in no bucket counts in `runs` only.
 
 ## Identity and access
 
-Serve has three auth modes (`src/domain/access/serve_auth_config.ts`):
+Serve has three auth modes (`src/domain/access/serve_auth_config.ts`). The
+mode in force is reported as `authMode` on the `--json` listening line
+(`src/serve/listening_line.ts`), which a serve host reads to refuse a child in
+`none` ([serve workspaces](../surfaces/serve-workspaces.md)):
 
 - `none`: no principal; every request is anonymous. Deprecated and loopback
   only. `--restricted-*` options are ignored with a warning. Its `/api/v1/`

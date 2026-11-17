@@ -47,4 +47,12 @@ export const SERVE_ROUTES: readonly CommandRoute[] = [
     needsFullTree: false,
     load: async () => (await import("./serve_daemon.ts")).daemonCommand,
   },
+  {
+    name: "host",
+    aliases: [],
+    hidden: false,
+    module: "src/cli/commands/serve_host.ts",
+    needsFullTree: false,
+    load: async () => (await import("./serve_host.ts")).serveHostCommand,
+  },
 ];

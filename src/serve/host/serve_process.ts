@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { ServeId } from "../../domain/serve/managed_serve.ts";
+import type { ListenedServe } from "../listening_line.ts";
 
 export interface ServeChildSpec {
   readonly id: ServeId;
@@ -40,7 +41,7 @@ export interface ServeChildExit {
 
 export interface ServeChild {
   /** rejects when the child exits before its listening line */
-  readonly listening: Promise<number>;
+  readonly listening: Promise<ListenedServe>;
   /** rejects when the child exits or is released before /ready answers 200 */
   readonly ready: Promise<void>;
   /** never rejects */

@@ -19,6 +19,7 @@
 
 import { serveIdKey } from "../../domain/serve/managed_serve.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import { type ListenedServe, parseListeningLine } from "../listening_line.ts";
 import { swampInvocation } from "../swamp_invocation.ts";
 import {
   type ServeChild,
@@ -84,28 +85,15 @@ function withoutCr(line: string): string {
 }
 
 /** null when the stream ends before a listening line */
-export async function readListeningPort(
+export async function readListening(
   lines: ReadableStreamDefaultReader<string>,
-): Promise<number | null> {
+): Promise<ListenedServe | null> {
   while (true) {
     const { value, done } = await lines.read();
     if (done) return null;
-    const port = listeningPort(value);
-    if (port !== null) return port;
+    const listened = parseListeningLine(value);
+    if (listened !== null) return listened;
   }
-}
-
-function listeningPort(line: string): number | null {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(line);
-  } catch {
-    return null;
-  }
-  if (typeof parsed !== "object" || parsed === null) return null;
-  const { status, port } = parsed as { status?: unknown; port?: unknown };
-  if (status !== "listening" || typeof port !== "number") return null;
-  return Number.isInteger(port) && port > 0 && port < 65_536 ? port : null;
 }
 
 /** true once /ready answers 200; false when the signal aborts first */
@@ -213,9 +201,9 @@ function childOf(process: Deno.ChildProcess, serve: string): ServeChild {
 
   const stdoutLines = linesOf(process.stdout);
   const listening = (async () => {
-    const port = await readListeningPort(stdoutLines);
-    if (port === null) throw new Error("serve exited before listening");
-    return port;
+    const listened = await readListening(stdoutLines);
+    if (listened === null) throw new Error("serve exited before listening");
+    return listened;
   })();
   // drained after the listening line so the child never blocks on a full pipe
   const stdoutDrained = (async () => {
@@ -228,7 +216,7 @@ function childOf(process: Deno.ChildProcess, serve: string): ServeChild {
   })();
 
   const ready = (async () => {
-    const port = await listening;
+    const { port } = await listening;
     if (!await pollReady(port, polling.signal)) {
       throw new Error("serve stopped before it was ready");
     }

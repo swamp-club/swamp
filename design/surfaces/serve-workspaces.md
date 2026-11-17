@@ -6,8 +6,11 @@ last-verified: 2026-11-13 @ 8c9a21d85
 
 # Serve workspaces
 
-**Status:** Plan. Nothing here is built. It describes how one address hosts
-several serves, which promoting a local workspace to a server assumes.
+**Status:** Partly built. Addresses with a path and the host (steps 1 to 7 of
+the [execution plan](#execution-plan)) are built: `swamp serve host` runs a
+serve per workspace folder made by hand. Lifecycle, sign-in and the dashboard
+are not. It describes how one address hosts several serves, which promoting a
+local workspace to a server assumes.
 
 ## Outcome
 
@@ -232,7 +235,15 @@ explicitly.
 A serve with auth mode `none` relies on its loopback bind and its Host check to
 stay private. Behind the router that bind no longer hides it, so a host whose
 listener is off loopback refuses to start or route to a child in auth mode
-`none`.
+`none`. A host on loopback with `trust-proxy: true` refuses it too, since the
+proxy in front is usually public, unless `host.yaml` sets
+`allow-unauthenticated-behind-proxy: true` for a proxy that authenticates every
+caller. A child reports its auth mode as `authMode` on its `--json` listening
+line. A refused child is stopped as a requested stop, never restarted, and
+answers 503 with state `refused` until the host restarts or its folder is
+removed and added again. Its environment is an allowlist
+(`src/serve/host/child_env.ts`), so no `SWAMP_SERVE_*` setting of the host
+reaches it.
 
 `--exit-on-stdin-close` is a new hidden flag: serve starts its drain when stdin
 reaches end of file, as the dashboard child already does. The host keeps each
@@ -246,8 +257,28 @@ serve becomes a root by naming its repo there and keeping its settings in its
 `serve.yaml`. Its address does not change.
 
 **The folder is the list.** Every repo folder in `workspaces/` whose name is a
-workspace name is a workspace. The supervisor watches the folder. An operator
-can make a workspace by hand, and the lifecycle below does the same thing.
+workspace name and that holds a `.swamp.yaml` is a workspace. The host watches
+the folder without recursing, so the children's own writes never wake it, and
+rescans it every 5 seconds, which finds a marker written after its folder. An
+operator can make a workspace by hand, and the lifecycle below does the same
+thing. A removed folder's workspace is stopped and answers 404.
+
+**`host.yaml`** (`src/serve/host/host_config.ts`) refuses unknown keys and names
+the field that is wrong:
+
+| Key                                  | Default                       | Meaning                                                                                  |
+| ------------------------------------ | ----------------------------- | ---------------------------------------------------------------------------------------- |
+| `address`                            | required                      | The public address; may carry a path when a proxy serves the host under one             |
+| `listen.host`                        | `127.0.0.1`                   | Off loopback needs TLS, as for serve                                                     |
+| `listen.port`                        | `443` with TLS, `8080` without |                                                                                          |
+| `listen.cert-file`, `listen.key-file` | none                          | Given together; relative to the host folder                                              |
+| `root`                               | none                          | The root workspace's repo; relative to the host folder, never inside `workspaces/`       |
+| `trust-proxy`                        | `false`                       | The host is behind a proxy, whose forwarding headers it passes on                        |
+| `allow-unauthenticated-behind-proxy` | `false`                       | Admits a child in auth mode `none` behind a proxy; only with `trust-proxy` on loopback   |
+
+The host binds its listener before it starts any child, so a listener that
+cannot bind starts nothing. SIGTERM and SIGINT stop the watcher, drain every
+child, then close the listener.
 
 ## A hosted workspace
 

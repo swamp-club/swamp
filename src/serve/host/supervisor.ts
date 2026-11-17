@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { AuthMode } from "../../domain/access/serve_auth_config.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
   DEFAULT_MANAGED_SERVE_POLICY,
@@ -32,6 +33,7 @@ import {
   type WantedServeState,
 } from "../../domain/serve/managed_serve.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import type { ListenedServe } from "../listening_line.ts";
 import type {
   ServeChild,
   ServeChildExit,
@@ -58,8 +60,15 @@ const SYSTEM_CLOCK: SupervisorClock = {
   },
 };
 
+/** null admits the child; a reason stops it and holds it until wanted running */
+export type ServeAdmission = (
+  spec: ServeChildSpec,
+  listened: ListenedServe,
+) => string | null;
+
 export interface ServeSupervisorOptions {
   readonly processPort: ServeProcessPort;
+  readonly admit?: ServeAdmission;
   readonly clock?: SupervisorClock;
   readonly policy?: ManagedServePolicy;
   readonly readyTimeoutMs?: number;
@@ -72,6 +81,10 @@ export interface ServeStatus {
   readonly observed: ObservedServeState;
   /** set only while the serve is ready */
   readonly port: number | null;
+  /** what the live child reported on its listening line */
+  readonly authMode: AuthMode | null;
+  /** why admission stopped the serve; cleared when it is wanted running */
+  readonly refusal: string | null;
   readonly crashCount: number;
   readonly lastExit: ServeChildExit | null;
 }
@@ -88,6 +101,7 @@ export interface ServeSupervisor {
 interface LiveChild {
   readonly handle: ServeChild;
   port: number | null;
+  authMode: AuthMode | null;
   terminating: boolean;
   /** a stop the caller asked for; any other exit is logged as a crash */
   requested: boolean;
@@ -98,6 +112,7 @@ interface Entry {
   serve: ManagedServe;
   child: LiveChild | null;
   lastExit: ServeChildExit | null;
+  refusal: string | null;
   cancelRetry: (() => void) | null;
   /** the ready deadline, then the kill escalation, of the live child */
   cancelStopTimer: (() => void) | null;
@@ -106,7 +121,7 @@ interface Entry {
 export function createServeSupervisor(
   options: ServeSupervisorOptions,
 ): ServeSupervisor {
-  const { processPort } = options;
+  const { processPort, admit } = options;
   const clock = options.clock ?? SYSTEM_CLOCK;
   const policy = parseManagedServePolicy(
     options.policy ?? DEFAULT_MANAGED_SERVE_POLICY,
@@ -185,6 +200,7 @@ export function createServeSupervisor(
     const child: LiveChild = {
       handle,
       port: null,
+      authMode: null,
       terminating: false,
       requested: false,
     };
@@ -200,8 +216,18 @@ export function createServeSupervisor(
       terminate(entry, false);
     }, readyTimeoutMs);
 
-    track(handle.listening.then((port) => {
-      if (entry.child === child) child.port = port;
+    track(handle.listening.then((listened) => {
+      if (entry.child !== child) return;
+      child.port = listened.port;
+      child.authMode = listened.authMode;
+      const refusal = admission(entry.spec, listened);
+      if (refusal === null || child.terminating) return;
+      entry.refusal = refusal;
+      logger.warn("Serve {serve} was refused: {reason}", {
+        serve: serveIdKey(entry.spec.id),
+        reason: refusal,
+      });
+      apply(entry, { kind: "wanted", wanted: "suspended" });
     }, () => {}));
     track(handle.ready.then(() => {
       if (entry.child !== child || child.terminating) return;
@@ -210,6 +236,19 @@ export function createServeSupervisor(
       apply(entry, { kind: "ready" });
     }, () => {}));
     track(handle.exited.then((exit) => onExited(entry, child, exit)));
+  };
+
+  // a check that throws refuses: a child is never admitted by an error
+  const admission = (
+    spec: ServeChildSpec,
+    listened: ListenedServe,
+  ): string | null => {
+    if (admit === undefined) return null;
+    try {
+      return admit(spec, listened);
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
   };
 
   const onExited = (entry: Entry, child: LiveChild, exit: ServeChildExit) => {
@@ -266,6 +305,7 @@ export function createServeSupervisor(
         serve: ManagedServe.create(spec.id, policy),
         child: null,
         lastExit: null,
+        refusal: null,
         cancelRetry: null,
         cancelStopTimer: null,
       };
@@ -275,12 +315,16 @@ export function createServeSupervisor(
 
     setWanted(id, wanted) {
       refuseWhenClosing();
-      apply(entryOf(id), { kind: "wanted", wanted });
+      const entry = entryOf(id);
+      if (wanted === "running") entry.refusal = null;
+      apply(entry, { kind: "wanted", wanted });
     },
 
     resume(id) {
       refuseWhenClosing();
-      apply(entryOf(id), { kind: "resume" });
+      const entry = entryOf(id);
+      entry.refusal = null;
+      apply(entry, { kind: "resume" });
     },
 
     lookup(id) {
@@ -292,6 +336,8 @@ export function createServeSupervisor(
         wanted: serve.wanted,
         observed: serve.observed,
         port: serve.observed === "ready" ? child?.port ?? null : null,
+        authMode: child?.authMode ?? null,
+        refusal: entry.refusal,
         crashCount: serve.crashCount,
         lastExit: entry.lastExit,
       };

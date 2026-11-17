@@ -27,6 +27,8 @@ import {
   type ServeId,
   workspaceServe,
 } from "../../domain/serve/managed_serve.ts";
+import type { AuthMode } from "../../domain/access/serve_auth_config.ts";
+import type { ListenedServe } from "../listening_line.ts";
 import type {
   ServeChild,
   ServeChildExit,
@@ -35,6 +37,7 @@ import type {
 } from "./serve_process.ts";
 import {
   createServeSupervisor,
+  type ServeAdmission,
   type ServeSupervisor,
   type SupervisorClock,
 } from "./supervisor.ts";
@@ -50,7 +53,7 @@ const READY_TIMEOUT_MS = 7_000;
 const STOP_GRACE_MS = 5_000;
 
 class FakeChild implements ServeChild {
-  readonly listening: Promise<number>;
+  readonly listening: Promise<ListenedServe>;
   readonly ready: Promise<void>;
   readonly exited: Promise<ServeChildExit>;
   terminated = 0;
@@ -58,7 +61,7 @@ class FakeChild implements ServeChild {
   released = 0;
   /** a child that ignores terminate exits only when killed or told to */
   ignoresTerminate = false;
-  readonly #listening = Promise.withResolvers<number>();
+  readonly #listening = Promise.withResolvers<ListenedServe>();
   readonly #ready = Promise.withResolvers<void>();
   readonly #exited = Promise.withResolvers<ServeChildExit>();
 
@@ -70,8 +73,8 @@ class FakeChild implements ServeChild {
     this.ready.catch(() => {});
   }
 
-  listen(port: number): void {
-    this.#listening.resolve(port);
+  listen(port: number, authMode: AuthMode = "token"): void {
+    this.#listening.resolve({ port, authMode });
   }
 
   becomeReady(): void {
@@ -192,7 +195,7 @@ function spec(
   };
 }
 
-function harness(): {
+function harness(admit?: ServeAdmission): {
   port: FakePort;
   clock: FakeClock;
   supervisor: ServeSupervisor;
@@ -201,6 +204,7 @@ function harness(): {
   const clock = new FakeClock();
   const supervisor = createServeSupervisor({
     processPort: port,
+    admit,
     clock,
     policy: POLICY,
     readyTimeoutMs: READY_TIMEOUT_MS,
@@ -535,4 +539,85 @@ Deno.test("createServeSupervisor: shutdown stops every child through its drain p
   assertEquals(port.children.length, spawned);
   assertEquals(clock.active(), []);
   for (const child of port.children) assertEquals(child.released, 1);
+});
+
+const REFUSE_NONE: ServeAdmission = (_spec, listened) =>
+  listened.authMode === "none" ? "auth mode none is not allowed here" : null;
+
+Deno.test("createServeSupervisor: an admitted child reports its auth mode and no refusal", async () => {
+  const { port, supervisor } = harness(REFUSE_NONE);
+  supervisor.add(spec(EDGE));
+  await startReady(port, supervisor, EDGE, 41_001);
+  const status = supervisor.lookup(EDGE);
+  assertEquals(status?.authMode, "token");
+  assertEquals(status?.refusal, null);
+  await supervisor.shutdown();
+});
+
+Deno.test("createServeSupervisor: a refused child is stopped as asked, holds stopped and never becomes ready", async () => {
+  const { port, clock, supervisor } = harness(REFUSE_NONE);
+  supervisor.add(spec(EDGE));
+  const child = port.last(EDGE);
+  child.listen(41_001, "none");
+  await waitFor(
+    () => supervisor.lookup(EDGE)?.observed === "stopped",
+    "the refused serve to stop",
+  );
+  child.becomeReady();
+  const status = supervisor.lookup(EDGE);
+  assertEquals(child.terminated, 1);
+  assertEquals(status?.wanted, "suspended");
+  assertEquals(status?.observed, "stopped");
+  assertEquals(status?.port, null);
+  assertEquals(status?.crashCount, 0);
+  assertEquals(status?.refusal, "auth mode none is not allowed here");
+  assertEquals(port.of(EDGE).length, 1, "no restart");
+  assertEquals(clock.active().length, 0, "no retry or kill timer left");
+  await supervisor.shutdown();
+});
+
+Deno.test("createServeSupervisor: wanted running clears a refusal and starts the serve again", async () => {
+  const { port, supervisor } = harness(REFUSE_NONE);
+  supervisor.add(spec(EDGE));
+  port.last(EDGE).listen(41_001, "none");
+  await waitFor(
+    () => supervisor.lookup(EDGE)?.observed === "stopped",
+    "the refused serve to stop",
+  );
+  supervisor.setWanted(EDGE, "running");
+  assertEquals(supervisor.lookup(EDGE)?.refusal, null);
+  assertEquals(port.of(EDGE).length, 2);
+  await startReady(port, supervisor, EDGE, 41_002);
+  assertEquals(supervisor.lookup(EDGE)?.port, 41_002);
+  await supervisor.shutdown();
+});
+
+Deno.test("createServeSupervisor: an admission check that throws refuses the child", async () => {
+  const { port, supervisor } = harness(() => {
+    throw new Error("cannot decide");
+  });
+  supervisor.add(spec(EDGE));
+  port.last(EDGE).listen(41_001);
+  await waitFor(
+    () => supervisor.lookup(EDGE)?.observed === "stopped",
+    "the refused serve to stop",
+  );
+  assertEquals(supervisor.lookup(EDGE)?.refusal, "cannot decide");
+  await supervisor.shutdown();
+});
+
+Deno.test("createServeSupervisor: a deleted serve wanted running again starts a new child", async () => {
+  const { port, supervisor } = harness();
+  supervisor.add(spec(EDGE));
+  await startReady(port, supervisor, EDGE, 41_001);
+  supervisor.setWanted(EDGE, "deleted");
+  await waitFor(
+    () => supervisor.lookup(EDGE)?.observed === "stopped",
+    "the deleted serve to stop",
+  );
+  supervisor.setWanted(EDGE, "running");
+  assertEquals(port.of(EDGE).length, 2);
+  await startReady(port, supervisor, EDGE, 41_002);
+  assertEquals(supervisor.lookup(EDGE)?.wanted, "running");
+  await supervisor.shutdown();
 });
