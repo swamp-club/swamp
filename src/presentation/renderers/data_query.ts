@@ -148,9 +148,14 @@ function renderListTable(
     return "No matching data found.";
   }
 
-  const maxCols = maxOf(projected.rows.map((r) => r.length)) ?? 0;
+  // a failed projection arrives as null, and the shape is classified from the
+  // first non-null value only, so a row need not be an array
+  const cells = projected.rows.map((row: unknown) =>
+    Array.isArray(row) ? row : row === null || row === undefined ? [] : [row]
+  );
+  const maxCols = maxOf(cells.map((r) => r.length)) ?? 0;
   const headers = Array.from({ length: maxCols }, (_, i) => String(i + 1));
-  const rows = projected.rows.map((row) => row.map((cell) => formatCell(cell)));
+  const rows = cells.map((row) => row.map((cell) => formatCell(cell)));
 
   return markdownTable(headers, rows);
 }

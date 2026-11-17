@@ -214,6 +214,58 @@ Deno.test("renderQueryResultsMarkdown: renders more list rows than fit in a spre
   assertEquals(lines.length, count + 2);
 });
 
+function listWithFailedProjections(): DataQueryData {
+  return {
+    predicate: "true",
+    select: "attributes.items",
+    results: [],
+    // a failed projection is null and a mistyped one a scalar at runtime
+    projected: {
+      shape: "list",
+      rows: [["a", "b"], null, ["c"], "solo"] as unknown as unknown[][],
+    },
+    total: 4,
+    limited: false,
+  };
+}
+
+Deno.test("renderQueryResultsMarkdown: a failed list projection renders as an empty row", () => {
+  const lines = renderQueryResultsMarkdown(listWithFailedProjections())
+    .split("\n");
+  assertEquals(lines, [
+    "| 1 | 2 |",
+    "| --- | --- |",
+    "| a | b |",
+    "|  |",
+    "| c |",
+    "| solo |",
+  ]);
+});
+
+Deno.test("renderQueryResultsTerminal: a failed list projection keeps every row", () => {
+  const output = stripAnsiCode(
+    renderQueryResultsTerminal(listWithFailedProjections()),
+  );
+  const bodyRows = output.split("\n").filter((l) => l.startsWith("│"));
+  assertEquals(bodyRows, [
+    "│ 1    │ 2 │",
+    "│ a    │ b │",
+    "│      │   │",
+    "│ c    │   │",
+    "│ solo │   │",
+  ]);
+});
+
+Deno.test("renderJson: a failed list projection stays null", () => {
+  const output = captureJsonOutput(() => {
+    createDataQueryRenderer("json").handlers().completed({
+      kind: "completed",
+      data: listWithFailedProjections(),
+    });
+  });
+  assertEquals(output.results, [["a", "b"], null, ["c"], "solo"]);
+});
+
 function renderSingle(data: DataQueryData): unknown {
   const handlers = createDataQueryRenderer("json", false, { single: true })
     .handlers();
