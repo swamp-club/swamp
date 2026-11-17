@@ -454,6 +454,7 @@ Deno.test({
       (await entries(h.dir)).filter((e) => e.startsWith(".delta.deleting-"));
     try {
       await want(h.dir, "delta", "wanted: deleted\n");
+      const statuses: string[] = [];
       for (let attempt = 1; attempt <= 3; attempt++) {
         await h.rescan();
         await h.reconciler.drain();
@@ -468,7 +469,14 @@ Deno.test({
         );
         assert(status.includes("Removing the workspace failed"), status);
         assert(status.includes("wanted: deleted"), status);
+        statuses.push(status);
       }
+      // a write would wake the folder watcher and retry at once, forever
+      assertEquals(
+        new Set(statuses).size,
+        1,
+        "a retry failing the same way writes nothing",
+      );
     } finally {
       for (const entry of await hidden()) {
         await Deno.chmod(join(h.dir, entry, "locked"), 0o755);

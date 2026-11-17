@@ -241,12 +241,11 @@ export function createWorkspaceReconciler(
     entry.removing = true;
     track(
       remove(name, entry).catch((error) => {
-        if (removalFailures.changed(name, messageOf(error))) {
-          logger.error(
-            "Removing workspace {name} failed, and is tried again at every rescan: {error}",
-            { name, error },
-          );
-        }
+        if (!removalFailures.changed(name, messageOf(error))) return;
+        logger.error(
+          "Removing workspace {name} failed, and is tried again at every rescan: {error}",
+          { name, error },
+        );
       }).finally(() => entry.removing = false),
     );
   };
@@ -262,8 +261,14 @@ export function createWorkspaceReconciler(
     try {
       await removeData(name);
     } catch (error) {
+      // a status write wakes the folder watcher, so one per reason, not per try
+      if (!removalFailures.changed(name, messageOf(error))) return;
+      logger.error(
+        "Removing workspace {name} failed, and is tried again at every rescan: {error}",
+        { name, error },
+      );
       await reportRemovalFailure(name, error);
-      throw error;
+      return;
     }
     await removeHostedWorkspaceStatus(workspacesDir, name);
     await repository.remove(name);

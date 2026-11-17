@@ -63,6 +63,9 @@ export class HostedWorkspace {
   }
 
   static create(name: string, creator: string, at: Date): HostedWorkspace {
+    if (creator.length === 0) {
+      throw new UserError("A hosted workspace needs a creator.");
+    }
     return new HostedWorkspace({
       name: parseWorkspaceName(name),
       creator,

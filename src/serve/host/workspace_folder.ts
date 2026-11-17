@@ -38,7 +38,14 @@ export function deletingFolderName(name: string): string {
 
 /** the workspace a hidden removal folder belonged to, or null for any other entry */
 export function deletingFolderOwner(entry: string): string | null {
-  return DELETING_FOLDER_PATTERN.exec(entry)?.[1] ?? null;
+  const owner = DELETING_FOLDER_PATTERN.exec(entry)?.[1];
+  if (owner === undefined) return null;
+  // the name rule decides, so a removal never drifts from it
+  try {
+    return parseWorkspaceName(owner);
+  } catch {
+    return null;
+  }
 }
 
 export function isDeletingFolderName(entry: string): boolean {
