@@ -78,9 +78,7 @@ export type TeamNodeRequest =
      */
     readonly feed?: { readonly steppingDown: boolean };
   }
-  /** what serve's shutdown does first on a leader */
   | { readonly kind: "stepDown" }
-  /** this node's view of the datastore once caught up */
   | { readonly kind: "head" }
   | { readonly kind: "cursors" }
   | { readonly kind: "claim"; readonly address: string }
@@ -121,10 +119,8 @@ export interface TeamNodeState {
   readonly leader?: string;
   readonly fence?: number;
   readonly events: readonly string[];
-  /** with a feed: */
   readonly leaderFence?: number;
   readonly awaitingNewLeader?: boolean;
-  /** each onLeaderGoing: "frame" while the feed socket is open, else "closed" */
   readonly goings?: readonly string[];
   readonly feedLive?: boolean;
   readonly feedApplied?: number;
@@ -219,8 +215,6 @@ async function handle(request: TeamNodeRequest): Promise<unknown> {
       const repoDir = init!.repoDir;
       let address = `http://${init!.hostname}:9090`;
       if (request.feed !== undefined) {
-        // as serve wires a team: each node serves its feed to peers, and a
-        // follower follows the leader's
         const stepping = new LeaderSteppingDown();
         steppingDown = stepping;
         // a peer socket carries only the commit feed, which reads no more
@@ -275,9 +269,9 @@ async function handle(request: TeamNodeRequest): Promise<unknown> {
             }
           },
           onFresh: () => leadership?.markRefreshed(),
-          onLeaderGoing: () => {
-            goings.push(feed?.live === true ? "frame" : "closed");
-            leadership?.leaderGoing();
+          onLeaderGoing: (after) => {
+            goings.push(after);
+            leadership?.leaderGoing(after);
           },
         });
         feed = followed;
@@ -433,7 +427,7 @@ async function handle(request: TeamNodeRequest): Promise<unknown> {
     case "lease-records":
       return await v3ServeControlPlaneAt(config()).list("leases/");
     case "close":
-      // serve closes its peers' feed sockets as it stops listening
+      // a follower takes this close as the leader's end of its feed
       for (const socket of peerSockets) socket.close();
       await http?.shutdown();
       await locks?.dispose();

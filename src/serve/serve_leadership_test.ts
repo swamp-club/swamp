@@ -1175,3 +1175,37 @@ Deno.test("ServeLeadership.leaderGoing: a leader ignores it", async () => {
     await leadership.stop();
   }
 });
+
+Deno.test("ServeLeadership.leaderGoing: a dropped feed back on the same leader was a blip and ends the wait; a stepping-down frame does not", async () => {
+  for (
+    const [after, waiting] of [["closed", false], ["frame", true]] as const
+  ) {
+    const feed = new FakeFeed();
+    const { store, leadership } = setup({ feed });
+    await withLeaderRecord(store, "old", 2);
+    await leadership.start("follower");
+    try {
+      leadership.leaderGoing(after);
+      feed.current_ = true;
+      await leadership.tick();
+      assertEquals(leadership.awaitingNewLeader, waiting);
+    } finally {
+      await leadership.stop();
+    }
+  }
+});
+
+Deno.test("ServeLeadership.leaderGoing: with no leader known, reading the old record does not end the wait", async () => {
+  const { lease, store, leadership } = setup();
+  await leadership.start("follower");
+  try {
+    leadership.leaderGoing("closed");
+    await withLeaderRecord(store, "old", 2);
+    lease.current = 2;
+    await leadership.tick();
+    assertEquals(leadership.leader()?.instanceId, "old");
+    assertEquals(leadership.awaitingNewLeader, true);
+  } finally {
+    await leadership.stop();
+  }
+});

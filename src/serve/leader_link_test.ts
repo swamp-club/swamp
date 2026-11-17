@@ -808,3 +808,14 @@ Deno.test("LeaderLink.drain: with nothing in flight closes at once", async () =>
   assertEquals(after.status, 503);
   await after.body?.cancel();
 });
+
+Deno.test("LeaderLink.drain: a GET still streaming its reply does not hold the close", async () => {
+  const leaderLink = link(() =>
+    Promise.resolve(new Response(new ReadableStream<Uint8Array>()))
+  );
+  const reply = await leaderLink.forward(
+    new Request("http://follower/api/v1/events"),
+  );
+  await leaderLink.drain(60_000);
+  await reply.body?.cancel();
+});

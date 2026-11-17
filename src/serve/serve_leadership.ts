@@ -159,6 +159,7 @@ export class ServeLeadership {
   #stopped = false;
   #awaitingUntil: number | undefined;
   #awaitingPast: number | undefined;
+  #awaitingAfter: "frame" | "closed" | undefined;
 
   constructor(deps: ServeLeadershipDeps) {
     this.#deps = deps;
@@ -239,7 +240,7 @@ export class ServeLeadership {
   }
 
   /** a hint only: the lease, tried every second until a higher fence is named, decides */
-  leaderGoing(): void {
+  leaderGoing(after: "frame" | "closed" = "frame"): void {
     if (this.#stopped || this.#role !== "follower") return;
     const fence = this.#leader?.fence;
     if (this.#awaitingUntil === undefined || this.#awaitingPast !== fence) {
@@ -248,6 +249,8 @@ export class ServeLeadership {
     }
     this.#awaitingUntil = this.#now() + AWAIT_NEW_LEADER_MS;
     this.#awaitingPast = fence;
+    // a frame outranks a close: the leader said so
+    if (this.#awaitingAfter !== "frame") this.#awaitingAfter = after;
     if (this.#timer !== undefined) {
       clearTimeout(this.#timer);
       this.#timer = undefined;
@@ -259,8 +262,14 @@ export class ServeLeadership {
     if (this.#awaitingUntil === undefined) return false;
     const named = this.#leader?.fence;
     return this.#role === "follower" && this.#now() < this.#awaitingUntil &&
-      (named === undefined ||
-        (this.#awaitingPast !== undefined && named <= this.#awaitingPast));
+      (named === undefined || this.#awaitingPast === undefined ||
+        named <= this.#awaitingPast);
+  }
+
+  #endAwaiting(): void {
+    this.#awaitingUntil = undefined;
+    this.#awaitingPast = undefined;
+    this.#awaitingAfter = undefined;
   }
 
   lostLeadHandled(): Promise<void> {
@@ -323,8 +332,7 @@ export class ServeLeadership {
   async #nextDelay(): Promise<number> {
     if (this.#stopped || this.#role === "leader") return this.#tickMs;
     if (this.awaitingNewLeader) return LEASE_EXPIRY_MARGIN_MS;
-    this.#awaitingUntil = undefined;
-    this.#awaitingPast = undefined;
+    this.#endAwaiting();
     const expiresAt = await this.#deps.lease.expiresAt().catch(
       () => undefined,
     );
@@ -383,7 +391,14 @@ export class ServeLeadership {
       // names. A new leader, or a stopped feed, restores from the lineage first
       // so no commit an old leader never published stays in the copy.
       await this.#readLeader();
-      if (feed.current(this.#leader)) return;
+      if (feed.current(this.#leader)) {
+        // a dropped feed back on the same leader was a blip, not a handover
+        if (
+          this.#awaitingAfter === "closed" &&
+          this.#leader?.fence === this.#awaitingPast
+        ) this.#endAwaiting();
+        return;
+      }
       // stopped before the restore so nothing the old socket delivers is queued
       // to apply after it
       await feed.stop();

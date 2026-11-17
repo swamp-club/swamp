@@ -113,8 +113,8 @@ export interface FollowerFeedOptions {
   copyCursor(): number;
   apply(changes: readonly FeedChange[]): Promise<void>;
   onFresh(): void;
-  /** the leader said it is stepping down, or its feed socket ended */
-  onLeaderGoing?(): void;
+  /** the leader said it is stepping down, or its end of the feed closed */
+  onLeaderGoing?(after: "frame" | "closed"): void;
   readonly now?: () => number;
 }
 
@@ -328,7 +328,7 @@ export class FollowerFeed implements FollowerCopyFeed {
       this.#socket = undefined;
       this.#failed = true;
       this.#wakeAppliedWaiters();
-      if (closedByLeader) this.#options.onLeaderGoing?.();
+      if (closedByLeader) this.#options.onLeaderGoing?.("closed");
     };
   }
 
@@ -362,7 +362,7 @@ export class FollowerFeed implements FollowerCopyFeed {
     if (frame.type !== "commits.subscribe") return;
     if (frame.payload?.steppingDown === true) {
       logger.info`The leader is stepping down`;
-      this.#options.onLeaderGoing?.();
+      this.#options.onLeaderGoing?.("frame");
     }
     const changes = frame.payload?.changes;
     const cursor = frame.payload?.cursor;

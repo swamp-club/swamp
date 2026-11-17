@@ -8897,15 +8897,8 @@ export const serveCommand = new Command()
       }
       pendingReplaySweep.start();
     };
-    if (!v3Follows) {
-      await replayPendingAtLead();
-      // before the catch-up, so a continued scheduled run holds off its slot
-      await continueInterruptedAtLead("boot");
-      // after the replay, so a replayed run queues ahead of a catch-up
-      scheduler.current()?.startCatchUp();
-    }
-    scheduler.markBootReplayed();
-
+    // before anything is queued: on this host a live pid without a heartbeat
+    // counts as gone
     if (hasRemoteControlPlane) {
       const scheme = tlsEnabled ? "https" : "http";
       const serveAddress = `${scheme}://${host}:${port}`;
@@ -8920,7 +8913,17 @@ export const serveCommand = new Command()
       );
       await heartbeatService.start();
       logger.info`Instance heartbeat started (id: ${instanceId})`;
+    }
+    if (!v3Follows) {
+      await replayPendingAtLead();
+      // before the catch-up, so a continued scheduled run holds off its slot
+      await continueInterruptedAtLead("boot");
+      // after the replay, so a replayed run queues ahead of a catch-up
+      scheduler.current()?.startCatchUp();
+    }
+    scheduler.markBootReplayed();
 
+    if (hasRemoteControlPlane) {
       reconciliationLoopRunning = true;
       let knownPeerIds: Set<string> | null = null;
       const runReconciliationTick = async () => {
@@ -9081,7 +9084,7 @@ export const serveCommand = new Command()
             markRefreshed();
             serveCommitEffects?.poke();
           },
-          onLeaderGoing: () => serveLeadership?.leaderGoing(),
+          onLeaderGoing: (after) => serveLeadership?.leaderGoing(after),
         })
         : undefined;
       if (followerFeed !== undefined) {

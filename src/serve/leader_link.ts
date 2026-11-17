@@ -167,8 +167,7 @@ export class LeaderLink {
   readonly #options: LeaderLinkOptions;
   readonly #clients = new Map<string, Deno.HttpClient | undefined>();
   readonly #closed = new AbortController();
-  // each forward until its reply has been relayed, so a stopping follower
-  // does not cut off one the leader already took
+  // writes until their reply is relayed; a GET may stream for as long as its caller reads
   readonly #inFlight = new Set<Promise<void>>();
   #superseded = new AbortController();
   #frozen: { key: string; probeAt: number; probing: boolean } | undefined;
@@ -214,7 +213,9 @@ export class LeaderLink {
    */
   async forward(req: Request, options: ForwardOptions = {}): Promise<Response> {
     const relayed = Promise.withResolvers<void>();
-    this.#inFlight.add(relayed.promise);
+    if (req.method !== "GET" && req.method !== "HEAD") {
+      this.#inFlight.add(relayed.promise);
+    }
     const settle = () => {
       this.#inFlight.delete(relayed.promise);
       relayed.resolve();

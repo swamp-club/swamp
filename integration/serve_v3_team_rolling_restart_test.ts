@@ -75,7 +75,6 @@ interface Team {
     name: string,
     options?: { readonly steppingDown?: boolean },
   ): Promise<Node>;
-  /** the nodes not yet closed */
   live(): readonly Node[];
 }
 
@@ -190,7 +189,6 @@ async function leaders(team: Team): Promise<Node[]> {
   return leading;
 }
 
-/** every follower's feed is open on the leader, so a frame can reach it */
 async function followingLive(team: Team, leader: Node): Promise<void> {
   const fence = (await leader.state()).fence!;
   for (const node of team.live()) {
@@ -207,7 +205,6 @@ async function followingLive(team: Team, leader: Node): Promise<void> {
   }
 }
 
-/** one node leads at a fence above `above`, and every other names it */
 async function handedOver(team: Team, above: number): Promise<Node> {
   let next: Node | undefined;
   await waitFor(
@@ -233,7 +230,6 @@ async function handedOver(team: Team, above: number): Promise<Node> {
   return next!;
 }
 
-/** what serve's shutdown does on a leader: tell the followers, then stop */
 async function stepDown(
   team: Team,
   leader: Node,
@@ -257,7 +253,6 @@ async function stepDown(
   await leader.close();
 }
 
-/** commits made through the leader, at every node and in the feed of each follower */
 async function assertCommitsEverywhere(
   team: Team,
   leader: Node,
@@ -317,11 +312,10 @@ Deno.test({
       assertEquals(following.role, "follower");
       assertEquals(following.leader, next.instanceId);
       assertEquals(following.leaderFence, promoted.fence);
-      // the higher fence ended its wait: it is back on its tick
+      // back on its tick
       assertEquals(following.awaitingNewLeader, false);
       assertEquals(following.goings?.[0], "frame");
       assertEquals(following.events, []);
-      // it follows the new leader's feed
       await followingLive(team, next);
     });
   },

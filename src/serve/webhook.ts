@@ -747,6 +747,7 @@ export class WebhookService {
   private readonly abortedAtStop = new Set<RunningWebhookRun>();
   private draining = false;
   private stopped = false;
+  // never decremented on success: it bounds what one exiting process queues
   private queuedForNextLeader = 0;
   private endpoints: WebhookEndpoint[];
 
@@ -1257,6 +1258,7 @@ export class WebhookService {
     };
     this.queuedForNextLeader++;
     try {
+      // a put that outlives the deadline can still land: at-least-once while the store is slow
       await withDeadline(
         () =>
           store.put(
@@ -1271,6 +1273,8 @@ export class WebhookService {
         .warn`Could not queue webhook delivery ${receiptId} for the next leader: ${error}`;
       return this.shuttingDownResponse(endpoint, sourceIp);
     }
+    logger
+      .info`Queued webhook delivery ${receiptId} on ${endpoint.route} for the next leader`;
     this.emit({
       kind: "webhook_queued",
       route: endpoint.route,

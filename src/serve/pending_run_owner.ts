@@ -83,8 +83,7 @@ export function pendingOwnerLiveness(
       // this pid is this process's, and the instance id says the owner was not
       if (owner.pid === ownPid || isGone(owner.pid)) return false;
       if (!store) return true;
-      // a live pid whose heartbeat is gone or stopped is a process still
-      // exiting, which owns runs only once its first heartbeat is written
+      // a live pid without a running heartbeat is exiting; serve beats before it queues
       try {
         const data = await withDeadline(
           () => store.get(`heartbeats/${owner.instanceId}`),

@@ -467,7 +467,10 @@ export class SwampClient {
       if (
         pending.refused && !pending.sawEvent && refusedBeforeStart(err)
       ) {
-        if (err.code === "draining") this.retire(pending.socket);
+        // a fresh connection may reach a node that can start it
+        if (err.code === "draining" || err.code === "serve_not_leader") {
+          this.retire(pending.socket);
+        }
         pending.refused(err);
       } else {
         pending.reject(err);
