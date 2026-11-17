@@ -263,7 +263,10 @@ import {
   isQuietFromArgs,
   postCommandNoticesAllowed,
 } from "./context.ts";
-import { isValueOnlyStdoutCommand } from "./stdout_contract.ts";
+import {
+  isJsonLogLineCommand,
+  isValueOnlyStdoutCommand,
+} from "./stdout_contract.ts";
 import {
   buildKnownSensitiveValues,
   resolveTelemetryInvocation,
@@ -2646,6 +2649,7 @@ async function runInvocation(
         // commands whose stdout carries a value keep log output off it
         // entirely, or -v corrupts whatever the caller pipes
         stderrOnly: isValueOnlyStdoutCommand(commandInfo),
+        jsonLogLines: isJsonLogLineCommand(commandInfo),
       });
 
       for (const warning of deferredWarnings) {

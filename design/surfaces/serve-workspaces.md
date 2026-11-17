@@ -292,6 +292,14 @@ reload (stdin is not a terminal) the host sends SIGHUP to every ready child,
 skipping any still starting, which may not handle it yet; at a terminal it is a
 hangup and drains like SIGTERM.
 
+With `--json`, stdout is one JSON object per line: `listening`, `workspaces`
+and `stopped` by `status`, and every log record, the children's stderr
+included, as `status: "log"` with its level, category and message
+(`JSON_LOG_LINE_COMMANDS` in `src/cli/stdout_contract.ts`). Other commands drop
+records below fatal in JSON mode. A 503 names only the state, since it goes to
+anyone who can reach the address; the reason, such as an admission refusal or
+a child's exit, is in that log.
+
 ## A hosted workspace
 
 A hosted workspace is a repo folder, `<host folder>/workspaces/<name>/`. It

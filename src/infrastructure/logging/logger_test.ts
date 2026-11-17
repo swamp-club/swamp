@@ -690,3 +690,51 @@ Deno.test("initializeLogging: under --log the stdout console sinks mask an activ
     }
   }
 });
+
+Deno.test("initializeLogging: json mode with jsonLogLines writes records to stdout as JSON lines", async () => {
+  const capture = captureStreams();
+  try {
+    await initializeLogging({
+      jsonMode: true,
+      jsonLogLines: true,
+      _reset: true,
+      _logsConfig: { exporterKind: "none" },
+    });
+
+    getSwampLogger(["serve", "host", "supervisor"])
+      .warn("Serve {serve} was refused: {reason}", {
+        serve: "workspace:edge",
+        reason: "auth mode none",
+      });
+    getSwampLogger(["serve", "host"]).debug`below the level`;
+
+    assertEquals(capture.stderr, []);
+    assertEquals(capture.stdout.length, 1);
+    const line = JSON.parse(capture.stdout[0]);
+    assertEquals(line.status, "log");
+    assertEquals(line.level, "warning");
+    assertEquals(line.category, "serve.host.supervisor");
+    assertEquals(
+      line.message,
+      'Serve "workspace:edge" was refused: "auth mode none"',
+    );
+  } finally {
+    capture.restore();
+  }
+});
+
+Deno.test("initializeLogging: json mode without jsonLogLines still drops records below fatal", async () => {
+  const capture = captureStreams();
+  try {
+    await initializeLogging({
+      jsonMode: true,
+      _reset: true,
+      _logsConfig: { exporterKind: "none" },
+    });
+    getSwampLogger(["serve", "host"]).warn`dropped-warning`;
+    assertEquals(capture.stdout, []);
+    assertEquals(capture.stderr, []);
+  } finally {
+    capture.restore();
+  }
+});
