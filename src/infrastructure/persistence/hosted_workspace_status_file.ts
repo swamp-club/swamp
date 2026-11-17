@@ -31,7 +31,7 @@ export interface HostedWorkspaceStatus {
   readonly state: ObservedServeState;
   readonly wanted: HostedWorkspaceWanted;
   readonly restarts: number;
-  /** null when the workspace is ready, or stopped because it was asked to */
+  /** a wanted-file problem, an admission refusal, or the last exit in backoff or failed; else null */
   readonly reason: string | null;
   readonly updatedAt: string;
 }

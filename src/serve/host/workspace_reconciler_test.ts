@@ -381,7 +381,8 @@ Deno.test({
 Deno.test({
   name:
     "createWorkspaceReconciler: a removal that failed is tried again at the next rescan, even after the file is edited back",
-  ignore: Deno.build.os === "windows",
+  // root ignores folder permissions, so the removal would not fail
+  ignore: Deno.build.os === "windows" || Deno.uid() === 0,
   fn: async () => {
     await using h = await harness();
     await makeRepo(h.dir, "edge-dns");

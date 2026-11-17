@@ -47,7 +47,7 @@ export interface WorkspaceReconcilerOptions {
 }
 
 export interface WorkspaceReconciler {
-  /** at startup, after the bind: adds without awaiting, then starts removals */
+  /** at startup, after the bind: nothing here awaits, so every add lands before a request */
   begin(scan: WorkspaceScan, reads: WantedReads): readonly string[];
   reconcile(scan: WorkspaceScan): Promise<void>;
   /** waits for every removal, including one waiting for its serve to stop */
@@ -60,7 +60,7 @@ interface Known {
   record: HostedWorkspace | null;
   problem: string | null;
   removing: boolean;
-  /** bumped whenever the workspace is added again, so stale cleanup stands down */
+  /** bumped when the workspace is added again or removed, so stale cleanup stands down */
   generation: number;
   ignoredLogged: boolean;
 }

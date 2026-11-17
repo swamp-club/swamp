@@ -90,8 +90,7 @@ export class HostedWorkspaceFileRepository
       if (error instanceof Deno.errors.NotFound) return { kind: "absent" };
       return unreadable(messageOf(error));
     }
-    // refuses a link or a pipe found here; one swapped in before the open is
-    // workspace code acting as the host's user, outside what the host defends
+    // a link or pipe swapped in after this is workspace code acting as the host's user, outside what the host defends
     if (!info.isFile) return unreadable("it is not a regular file");
     let text: string;
     try {
@@ -149,7 +148,7 @@ export async function removeIfPresent(path: string): Promise<void> {
   }
 }
 
-/** null when the file holds more than `cap` bytes */
+/** null when the file holds more than `cap` bytes; "not a file" when the opened handle is not a regular file */
 async function readCapped(
   path: string,
   cap: number,
