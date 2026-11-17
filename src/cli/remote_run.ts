@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { processRuntimeSlot } from "../infrastructure/runtime/process_runtime.ts";
 import type { Command } from "@cliffy/command";
 import { getLogger } from "@logtape/logtape";
 import { errorPaths, markErrorPaths, UserError } from "../domain/errors.ts";
@@ -66,28 +67,34 @@ import {
 
 const logger = getLogger(["swamp", "cli", "remote-run"]);
 
-let _cachedMarkerServerAddress: string | undefined;
+const remoteRunState = processRuntimeSlot<{
+  cachedMarkerServerAddress: string | undefined;
+  /**
+   * off for a command that runs locally with serve as its v3 datastore's
+   * upstream: only an explicit --server then runs it remotely
+   */
+  implicitServeRouting: boolean;
+  remoteIndicatorSilent: boolean;
+}>(() => ({
+  cachedMarkerServerAddress: undefined,
+  implicitServeRouting: true,
+  remoteIndicatorSilent: false,
+}));
 
 export function setMarkerServerAddress(value: string | undefined): void {
-  _cachedMarkerServerAddress = value;
+  remoteRunState().cachedMarkerServerAddress = value;
 }
 
 export function resetMarkerServerAddress(): void {
-  _cachedMarkerServerAddress = undefined;
+  remoteRunState().cachedMarkerServerAddress = undefined;
 }
 
-/**
- * off for a command that runs locally with serve as its v3 datastore's
- * upstream: only an explicit --server then runs it remotely
- */
-let _implicitServeRouting = true;
-
 export function setImplicitServeRouting(on: boolean): void {
-  _implicitServeRouting = on;
+  remoteRunState().implicitServeRouting = on;
 }
 
 export function resetImplicitServeRouting(): void {
-  _implicitServeRouting = true;
+  remoteRunState().implicitServeRouting = true;
 }
 
 /**
@@ -100,13 +107,15 @@ export function resolveServeUrl(
   markerValue?: string,
 ): string | undefined {
   if (flagValue !== undefined) return flagValue;
-  return _implicitServeRouting ? implicitServeUrl(markerValue) : undefined;
+  return remoteRunState().implicitServeRouting
+    ? implicitServeUrl(markerValue)
+    : undefined;
 }
 
 export function implicitServeUrl(markerValue?: string): string | undefined {
   return Deno.env.get("SWAMP_SERVE_URL") ??
     Deno.env.get("SWAMP_SERVER_URL") ?? markerValue ??
-    _cachedMarkerServerAddress;
+    remoteRunState().cachedMarkerServerAddress;
 }
 
 /**
@@ -155,8 +164,6 @@ function serverWithoutCredentials(server: string): string | undefined {
   return `${url.protocol}//${url.host}${path}`;
 }
 
-let _remoteIndicatorSilent = false;
-
 /**
  * a JSON error goes to stderr too, so a command routed to serve by the marker
  * or env stays one JSON document; an explicit --server keeps its indicator
@@ -165,15 +172,15 @@ export function setRemoteIndicatorMode(
   mode: OutputMode,
   explicitServer: boolean,
 ): void {
-  _remoteIndicatorSilent = mode === "json" && !explicitServer;
+  remoteRunState().remoteIndicatorSilent = mode === "json" && !explicitServer;
 }
 
 export function resetRemoteIndicatorMode(): void {
-  _remoteIndicatorSilent = false;
+  remoteRunState().remoteIndicatorSilent = false;
 }
 
 export function writeRemoteIndicator(serverUrl: string): void {
-  if (_remoteIndicatorSilent) return;
+  if (remoteRunState().remoteIndicatorSilent) return;
   console.error(
     gutterLine(
       "Remote",
@@ -1685,18 +1692,25 @@ export function createTlsHttpClient(
   }
 }
 
-let wsHttpClient: Deno.HttpClient | undefined;
+const httpClientState = processRuntimeSlot<{
+  wsHttpClient: Deno.HttpClient | undefined;
+  resolvedEnvCaCerts: string[] | undefined;
+  cachedCaCertClient: Deno.HttpClient | undefined;
+}>(() => ({
+  wsHttpClient: undefined,
+  resolvedEnvCaCerts: undefined,
+  cachedCaCertClient: undefined,
+}));
 
 /**
  * created on first use: creating it at module load crashed offline commands on
  * machines whose platform certificate store cannot be read
  */
 export function getDefaultHttpClient(): Deno.HttpClient {
-  if (!wsHttpClient) wsHttpClient = createTlsHttpClient();
-  return wsHttpClient;
+  const state = httpClientState();
+  state.wsHttpClient ??= createTlsHttpClient();
+  return state.wsHttpClient;
 }
-
-let resolvedEnvCaCerts: string[] | undefined;
 
 /** an empty value from either source counts as unset */
 export function resolveCaCertPath(
@@ -1716,19 +1730,22 @@ export function resolveCaCertPath(
 }
 
 export function getEnvCaCerts(): string[] | undefined {
-  if (resolvedEnvCaCerts !== undefined) {
-    return resolvedEnvCaCerts.length > 0 ? resolvedEnvCaCerts : undefined;
+  const state = httpClientState();
+  if (state.resolvedEnvCaCerts !== undefined) {
+    return state.resolvedEnvCaCerts.length > 0
+      ? state.resolvedEnvCaCerts
+      : undefined;
   }
   const certPath = resolveCaCertPath(
     Deno.args,
     Deno.env.get("SWAMP_CA_CERT"),
   );
   if (!certPath) {
-    resolvedEnvCaCerts = [];
+    state.resolvedEnvCaCerts = [];
     return undefined;
   }
   try {
-    resolvedEnvCaCerts = [Deno.readTextFileSync(certPath)];
+    state.resolvedEnvCaCerts = [Deno.readTextFileSync(certPath)];
   } catch (e: unknown) {
     const detail = e instanceof Error ? e.message : String(e);
     throw markErrorPaths(
@@ -1738,7 +1755,7 @@ export function getEnvCaCerts(): string[] | undefined {
       [certPath, ...errorPaths(e)],
     );
   }
-  return resolvedEnvCaCerts;
+  return state.resolvedEnvCaCerts;
 }
 
 /**
@@ -1746,10 +1763,8 @@ export function getEnvCaCerts(): string[] | undefined {
  * CA reads it on every repeat
  */
 export function resetEnvCaCertsForTesting(): void {
-  resolvedEnvCaCerts = undefined;
+  httpClientState().resolvedEnvCaCerts = undefined;
 }
-
-let cachedCaCertClient: Deno.HttpClient | undefined;
 
 function createSocket(
   url: string,
@@ -1759,12 +1774,11 @@ function createSocket(
   const effectiveCaCerts = caCerts ?? getEnvCaCerts();
   let client: Deno.HttpClient;
   if (effectiveCaCerts?.length) {
-    if (!cachedCaCertClient) {
-      cachedCaCertClient = createTlsHttpClient({
-        caCerts: effectiveCaCerts,
-      });
-    }
-    client = cachedCaCertClient;
+    const state = httpClientState();
+    state.cachedCaCertClient ??= createTlsHttpClient({
+      caCerts: effectiveCaCerts,
+    });
+    client = state.cachedCaCertClient;
   } else {
     client = getDefaultHttpClient();
   }

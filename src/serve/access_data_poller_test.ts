@@ -506,14 +506,33 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
+// built under a dot-named name the change source skips, then renamed in, so a
+// poll between the steps never sees a half-written version as a change of its own
 async function writeGrantVersion(
   grantDir: string,
   modelId: string,
   n: number,
 ): Promise<void> {
-  const versionDir = join(grantDir, modelId, "grant-main", String(n));
+  const levels = [modelId, "grant-main", String(n)];
+  let parent = grantDir;
+  let missing = 0;
+  for (; missing < levels.length; missing++) {
+    const next = join(parent, levels[missing]);
+    try {
+      await Deno.stat(next);
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) break;
+      throw error;
+    }
+    parent = next;
+  }
+  if (missing === levels.length) throw new Error(`version ${n} already exists`);
+  await Deno.mkdir(parent, { recursive: true });
+  const staged = join(parent, `.staged-${crypto.randomUUID()}`);
+  const versionDir = join(staged, ...levels.slice(missing + 1));
   await Deno.mkdir(versionDir, { recursive: true });
   await Deno.writeTextFile(join(versionDir, "raw"), `version ${n}`);
+  await Deno.rename(staged, join(parent, levels[missing]));
 }
 
 Deno.test("AccessDataPoller: a change source's peer change reloads policy and invalidates the catalog", async () => {

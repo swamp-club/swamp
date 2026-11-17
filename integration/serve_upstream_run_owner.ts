@@ -17,13 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// a Worker has its own module state, so the test's process does not join its hold
+// a run owner holding its checkout's writer, as another command does; run in
+// its own ProcessRuntime, the test's commands contend with it instead of
+// joining its hold
 
 import "../src/domain/models/models.ts";
 import { requireInitializedRepoUnlocked } from "../src/cli/repo_context.ts";
-import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { endCommand, withClientEnv } from "./serve_upstream_fixtures.ts";
-import { LOADED } from "./graph_worker.ts";
+import type { ProcessHost } from "./process_host.ts";
 
 export type RunOwnerRequest =
   | {
@@ -34,46 +35,38 @@ export type RunOwnerRequest =
   }
   | { readonly kind: "stop" };
 
-declare const self: Worker;
-
-const logging = initializeLogging({});
-let stop: (() => void) | undefined;
-
-async function hold(
-  request: Extract<RunOwnerRequest, { kind: "hold" }>,
-): Promise<void> {
-  await logging;
-  await withClientEnv(
-    { configDir: request.configDir },
-    request.env,
-    ["workflow", "run"],
-    async () => {
-      try {
-        await requireInitializedRepoUnlocked({
-          repoDir: request.repoDir,
-          outputMode: "json",
-        });
-        const stopped = new Promise<void>((resolve) => stop = resolve);
-        self.postMessage("held");
-        await stopped;
-      } finally {
-        await endCommand();
-      }
-    },
-  );
-  self.postMessage("stopped");
-}
-
-self.onmessage = (event: MessageEvent<RunOwnerRequest>) => {
-  if (event.data.kind === "stop") {
-    stop?.();
-    return;
-  }
-  hold(event.data).catch((error) =>
-    self.postMessage(
-      `failed: ${error instanceof Error ? error.message : String(error)}`,
-    )
-  );
+export const runOwnerHost: ProcessHost<RunOwnerRequest, string> = (post) => {
+  let stop: (() => void) | undefined;
+  const hold = async (
+    request: Extract<RunOwnerRequest, { kind: "hold" }>,
+  ): Promise<void> => {
+    await withClientEnv(
+      { configDir: request.configDir },
+      request.env,
+      ["workflow", "run"],
+      async () => {
+        try {
+          await requireInitializedRepoUnlocked({
+            repoDir: request.repoDir,
+            outputMode: "json",
+          });
+          const stopped = new Promise<void>((resolve) => stop = resolve);
+          post("held");
+          await stopped;
+        } finally {
+          await endCommand();
+        }
+      },
+    );
+    post("stopped");
+  };
+  return (request) => {
+    if (request.kind === "stop") {
+      stop?.();
+      return;
+    }
+    hold(request).catch((error) =>
+      post(`failed: ${error instanceof Error ? error.message : String(error)}`)
+    );
+  };
 };
-
-self.postMessage(LOADED);

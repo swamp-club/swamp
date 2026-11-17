@@ -55,7 +55,12 @@ async function withFollower(
   leader: ServeLeader,
   fn: (url: string) => Promise<void>,
 ): Promise<void> {
-  const leaderLink = new LeaderLink({ leader: () => leader });
+  // the test holds the commit at the leader through a whole compaction, which a
+  // loaded host can stretch past serve's forward deadline
+  const leaderLink = new LeaderLink({
+    leader: () => leader,
+    commitResponseBaseMs: SERVE_COMPACTION_TIMEOUT_MS,
+  });
   const ctx = {
     ...server.ctx,
     followerGate: {

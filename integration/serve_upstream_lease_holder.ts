@@ -17,36 +17,32 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * holds a v3 writer lease from a Worker, as another command of the same
- * checkout does while it writes; the Worker has its own module state, so the
- * test's process does not join its hold
- */
+// holds a v3 writer lease as another command of the same checkout does while it
+// writes; run in its own ProcessRuntime, the test's commands contend with it
+// instead of joining its hold
 
 import { acquireV3WriterLock } from "../src/infrastructure/datastore_v3/v3_writer_lock.ts";
-import { LOADED } from "./graph_worker.ts";
+import type { ProcessHost } from "./process_host.ts";
 
-declare const self: Worker;
+export type LeaseHolderRequest = { kind: "hold"; root: string } | "release";
 
-let release: (() => Promise<void>) | undefined;
-
-self.onmessage = async (
-  event: MessageEvent<{ kind: "hold"; root: string } | "release">,
+export const leaseHolderHost: ProcessHost<LeaseHolderRequest, string> = (
+  post,
 ) => {
-  try {
-    if (event.data === "release") {
+  let release: (() => Promise<void>) | undefined;
+  const handle = async (request: LeaseHolderRequest) => {
+    if (request === "release") {
       await release?.();
       release = undefined;
-      self.postMessage("released");
+      post("released");
     } else {
-      release = await acquireV3WriterLock(event.data.root);
-      self.postMessage("held");
+      release = await acquireV3WriterLock(request.root);
+      post("held");
     }
-  } catch (error) {
-    self.postMessage(
-      `failed: ${error instanceof Error ? error.message : error}`,
+  };
+  return (request) => {
+    handle(request).catch((error) =>
+      post(`failed: ${error instanceof Error ? error.message : error}`)
     );
-  }
+  };
 };
-
-self.postMessage(LOADED);

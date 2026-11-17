@@ -45,12 +45,13 @@ import {
   withScratch,
   writeCommand,
 } from "./serve_upstream_fixtures.ts";
-import type { GrantSpec } from "./serve_upstream_server_worker.ts";
-import type {
-  MethodRunWorkerMessage,
-  MethodRunWorkerRequest,
-} from "./serve_upstream_method_run_worker.ts";
-import { startLoadedWorker } from "./graph_worker.ts";
+import type { GrantSpec } from "./serve_upstream_server.ts";
+import {
+  methodRunHost,
+  type MethodRunWorkerMessage,
+  type MethodRunWorkerRequest,
+} from "./serve_upstream_method_run.ts";
+import { startProcessHost } from "./process_host.ts";
 
 await initializeLogging({});
 
@@ -67,13 +68,17 @@ const ALICE_ALL: readonly GrantSpec[] = [
 
 const TARGET = "read-target";
 
-/** this thread's members write; serve's thread knows only its read method */
+/** one definition for the isolate: members run `write` and `peek`, serve runs `refresh` */
 function registerMethods(type: ModelType): void {
   modelRegistry.invalidateType(type);
   modelRegistry.register({
     type,
     version: "2026.01.01.1",
-    globalArguments: z.object({}),
+    // no run here passes global arguments, so the defaults stand
+    globalArguments: z.object({
+      bytes: z.number().int().default(16),
+      slow: z.boolean().default(false),
+    }),
     resources: {
       out: {
         description: "One data version per run",
@@ -94,6 +99,28 @@ function registerMethods(type: ModelType): void {
           await holdWrite?.();
           return { dataHandles: [handle] };
         },
+      },
+      peek: {
+        description: "Reads nothing and writes no data",
+        kind: "read",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({}),
+      },
+      noop: {
+        description: "does nothing",
+        kind: "read",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({}),
+      },
+      refresh: {
+        description: "a read that writes the resource it read",
+        kind: "read",
+        arguments: z.object({}),
+        execute: async (_args, context) => ({
+          dataHandles: [
+            await context.writeResource!("out", "out", { body: "r" }),
+          ],
+        }),
       },
     },
   });
@@ -143,42 +170,26 @@ function memberRun(
   let done: Extract<MethodRunWorkerMessage, { kind: "done" }> | undefined;
   let failed: string | undefined;
   const result = (async () => {
-    let worker: Worker | undefined;
-    try {
-      worker = await startLoadedWorker<MethodRunWorkerMessage>(
-        new URL("./serve_upstream_method_run_worker.ts", import.meta.url),
-        {
-          loadTimeoutMs: 40_000,
-          attempts: 3,
-          onMessage: (message) => {
-            if (message.kind === "done") done = message;
-            else if (message.kind === "failed") failed = message.error;
-          },
-          onError: (event) => {
-            event.preventDefault();
-            failed = event.message;
-          },
-        },
-      );
-      worker.postMessage(
-        {
-          kind: "run",
-          configDir: scratch.configDir,
-          repoDir: client.repoDir,
-          env: serveEnv(serve, "alice-token"),
-          modelType: serve.modelType.normalized,
-          model: TARGET,
-          method,
-        } satisfies MethodRunWorkerRequest,
-      );
-      await waitFor(
-        () => done !== undefined || failed !== undefined,
-        "the member's method run",
-        { timeoutMs: 240_000, intervalMs: 50 },
-      );
-    } finally {
-      worker?.terminate();
-    }
+    const member = startProcessHost("member", methodRunHost, (message) => {
+      if (message.kind === "done") done = message;
+      else if (message.kind === "failed") failed = message.error;
+    });
+    member.postMessage(
+      {
+        kind: "run",
+        configDir: scratch.configDir,
+        repoDir: client.repoDir,
+        env: serveEnv(serve, "alice-token"),
+        modelType: serve.modelType.normalized,
+        model: TARGET,
+        method,
+      } satisfies MethodRunWorkerRequest,
+    );
+    await waitFor(
+      () => done !== undefined || failed !== undefined,
+      "the member's method run",
+      { timeoutMs: 240_000, intervalMs: 50 },
+    );
     if (done === undefined) throw new Error(`member failed: ${failed}`);
     return {
       ...(done.error === undefined ? {} : { error: done.error }),

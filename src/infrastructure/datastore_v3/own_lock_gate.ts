@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { processRuntimeSlot } from "../runtime/process_runtime.ts";
+
 /**
  * serve's own runs wait on this gate until a lease on the key is adopted, so
  * they never run on a behavior someone holds; serve sets it, a CLI process
@@ -28,15 +30,15 @@ export type OwnLockGate = (
   maxWaitMs: number,
 ) => Promise<void>;
 
-let gate: OwnLockGate | undefined;
+const gateState = processRuntimeSlot<{ gate?: OwnLockGate }>(() => ({}));
 
 export function setOwnLockGate(next: OwnLockGate | undefined): void {
-  gate = next;
+  gateState().gate = next;
 }
 
 export async function passOwnLockGate(
   lockKey: string,
   maxWaitMs: number,
 ): Promise<void> {
-  await gate?.(lockKey, maxWaitMs);
+  await gateState().gate?.(lockKey, maxWaitMs);
 }

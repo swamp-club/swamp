@@ -167,12 +167,26 @@ Deno.test("flaky test detection: every test command skips type checking", async 
     join(ROOT, ".github", "workflows", "flaky-tests.yml"),
   );
   const commands = source.split("\n").filter((line) =>
-    line.includes("deno task test")
+    line.includes("deno task test") && !line.includes("deno task test-deps")
   );
   assertEquals(commands.length, 2);
   for (const command of commands) {
     assertStringIncludes(command, "deno task test --no-check");
   }
+});
+
+Deno.test("flaky test detection: the Litestream sidecar tests run, with the pinned binary", async () => {
+  const source = await Deno.readTextFile(
+    join(ROOT, ".github", "workflows", "flaky-tests.yml"),
+  );
+  const fetched = source.indexOf("new LitestreamBinaryProvider(");
+  const exported = source.indexOf(
+    'echo "SWAMP_LITESTREAM_PATH=$LITESTREAM_PATH" >> "$GITHUB_ENV"',
+  );
+  const tested = source.indexOf("deno task test --no-check");
+  assertEquals(fetched >= 0, true, "the job fetches the pinned binary");
+  assertEquals(exported > fetched, true, "and exports its path");
+  assertEquals(tested > exported, true, "before the tests run");
 });
 
 Deno.test("review prompts: the expected set is present", async () => {

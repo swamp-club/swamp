@@ -28,7 +28,7 @@ import { OBSERVED_BASE_STAGING_PREFIX } from "../src/infrastructure/datastore_v3
 import { ServeUpstreamDivergedError } from "../src/infrastructure/datastore_v3/serve_upstream_errors.ts";
 import { swampPath } from "../src/infrastructure/persistence/paths.ts";
 import { datastoreRecords } from "./usecase_v3_fixtures.ts";
-import type { GrantSpec } from "./serve_upstream_server_worker.ts";
+import type { GrantSpec } from "./serve_upstream_server.ts";
 import {
   type Client,
   dataOf,

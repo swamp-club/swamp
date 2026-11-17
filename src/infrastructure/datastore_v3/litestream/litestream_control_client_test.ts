@@ -178,6 +178,34 @@ Deno.test({
 
 Deno.test({
   name:
+    "unixLitestreamControl.sync: a sidecar that closes without answering is a definite failure, as a missing socket is",
+  ignore: !UNIX,
+  async fn() {
+    await withTempDir(async (dir) => {
+      const socket = join(dir, "ls.sock");
+      const listener = Deno.listen({ transport: "unix", path: socket });
+      const serving = (async () => {
+        const conn = await listener.accept();
+        await conn.read(new Uint8Array(4096)).catch(() => null);
+        conn.close();
+      })();
+      try {
+        const error = await assertRejects(
+          () => unixLitestreamControl.sync(socket, "/db", 5_000),
+          LitestreamControlError,
+          "the control response has no headers",
+        );
+        assertEquals(error.timedOut, false);
+      } finally {
+        listener.close();
+        await serving.catch(() => {});
+      }
+    });
+  },
+});
+
+Deno.test({
+  name:
     "unixLitestreamControl.info: a symlink in place of the socket is refused",
   ignore: !UNIX,
   async fn() {

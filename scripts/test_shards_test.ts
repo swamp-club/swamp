@@ -28,6 +28,7 @@ import {
   isTestFile,
   parseCliArgs,
   parseResultLine,
+  parseTestDepsTask,
   parseTestTask,
   OWN_PROCESS_FILES,
   partition,
@@ -203,6 +204,23 @@ Deno.test("parseTestTask: a test task that is not deno test is refused", () => {
     "does not run deno test",
   );
   assertThrows(() => parseTestTask({ tasks: {} }), Error, "no test task");
+});
+
+Deno.test("parseTestDepsTask: the install runs with exactly the test-deps task's flags", async () => {
+  const denoJson = JSON.parse(await Deno.readTextFile(join(ROOT, "deno.json")));
+  const args = parseTestDepsTask(denoJson);
+  assertEquals(args[0], "install");
+  assertEquals(args.includes("--frozen"), true);
+  assertEquals(`deno ${args.join(" ")}`, denoJson.tasks["test-deps"]);
+});
+
+Deno.test("parseTestDepsTask: a test-deps task that is not deno install is refused", () => {
+  assertThrows(
+    () => parseTestDepsTask({ tasks: { "test-deps": "npm ci" } }),
+    Error,
+    "does not run deno install",
+  );
+  assertThrows(() => parseTestDepsTask({ tasks: {} }), Error, "no test-deps task");
 });
 
 Deno.test("parseResultLine: reads passed, failed and ignored, with or without colour", () => {

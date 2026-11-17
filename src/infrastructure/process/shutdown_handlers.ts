@@ -28,6 +28,10 @@ import {
   type InFlightDataWrites,
 } from "../../domain/data/in_flight_data_writes.ts";
 import { getSwampLogger } from "../logging/logger.ts";
+import {
+  currentProcessRuntime,
+  processRuntimeSlot,
+} from "../runtime/process_runtime.ts";
 
 export interface ShutdownHandlerOptions {
   /**
@@ -63,15 +67,17 @@ export interface ShutdownHandlerOptions {
   stopsCatchUps?: boolean;
 }
 
-let commandStop = new AbortController();
+const commandStop = processRuntimeSlot(() => ({
+  controller: new AbortController(),
+}));
 
 /** aborted once, never reset in a process: a command that was told to stop stays stopped */
 export function commandStopSignal(): AbortSignal {
-  return commandStop.signal;
+  return commandStop().controller.signal;
 }
 
 export function resetCommandStopForTesting(): void {
-  commandStop = new AbortController();
+  commandStop().controller = new AbortController();
 }
 
 export interface ShutdownHandlerHandle {
@@ -139,14 +145,18 @@ export function registerShutdownHandler(
       finish().then(() => exit(130), () => exit(130));
     }
     : handler;
-  const wrappedHandler = stopsCatchUps
+  // a signal listener runs in no async context: it acts for the runtime that registered it
+  const runtime = currentProcessRuntime();
+  const stop = commandStop(runtime);
+  const inRuntime = stopsCatchUps
     ? () => {
-      commandStop.abort(
+      stop.controller.abort(
         new DOMException("The command was told to stop", "AbortError"),
       );
       return signalled();
     }
     : signalled;
+  const wrappedHandler = () => runtime.run(inRuntime);
 
   Deno.addSignalListener("SIGINT", wrappedHandler);
   registered.push("SIGINT");

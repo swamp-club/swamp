@@ -20,7 +20,6 @@
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import { DatabaseSync } from "node:sqlite";
-import { waitFor } from "@swamp-club/swamp-testing";
 import type { Commit } from "../src/domain/datastore_v3/commit.ts";
 import {
   modelCommit,
@@ -29,11 +28,6 @@ import {
   versionOp,
 } from "../src/domain/datastore_v3/v3_test_helpers.ts";
 import { SqliteCommitStore } from "../src/infrastructure/datastore_v3/sqlite_commit_store.ts";
-import type {
-  CrashWorkerMessage,
-  CrashWorkerRequest,
-} from "./sqlite_commit_store_crash_worker.ts";
-import { startLoadedWorker } from "./graph_worker.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const tempDir = await Deno.makeTempDir({ prefix: "swamp-commit-crash-" });
@@ -58,8 +52,6 @@ async function save(seq: number): Promise<Commit> {
 
 function rows(path: string) {
   const db = new DatabaseSync(path);
-  // A terminated worker's lock is released asynchronously.
-  db.exec("PRAGMA busy_timeout=5000");
   try {
     return {
       commits: db.prepare("SELECT seq, txn_id FROM commits ORDER BY seq")
@@ -71,7 +63,7 @@ function rows(path: string) {
   }
 }
 
-Deno.test("SqliteCommitStore crash: a failure after the commit row leaves no partial row", async () => {
+Deno.test("SqliteCommitStore rollback: a failure after the commit row leaves no partial row", async () => {
   await withTempDir(async (dir) => {
     const path = join(dir, "commits.db");
     const store = SqliteCommitStore.open(path);
@@ -114,41 +106,34 @@ Deno.test("SqliteCommitStore crash: a failure after the commit row leaves no par
   });
 });
 
-Deno.test("SqliteCommitStore crash: a writer killed before COMMIT leaves no row", async () => {
+// A real kill is not modelled here: SQLite's recovery of a hot journal or WAL
+// after a process dies needs a separate process, which this suite never starts.
+Deno.test("SqliteCommitStore rollback: a writer's rows are unseen until COMMIT and gone once it ends without one", async () => {
   await withTempDir(async (dir) => {
     const path = join(dir, "commits.db");
     await SqliteCommitStore.open(path).close();
-
     const commit = await save(1);
-    let written = false;
-    const worker = await startLoadedWorker<CrashWorkerMessage>(
-      new URL("./sqlite_commit_store_crash_worker.ts", import.meta.url),
-      {
-        loadTimeoutMs: 20_000,
-        attempts: 3,
-        onMessage: (message) => {
-          if (message === "written") written = true;
-        },
-      },
-    );
+    const writer = new DatabaseSync(path);
     try {
-      worker.postMessage(
-        {
-          dbPath: path,
-          namespace: "",
-          partition: modelPartition().toString(),
-          seq: 1,
-          txnId: commit.txnId,
-          fence: 1,
-          at: commit.at,
-          body: JSON.stringify(commit.toJSON()),
-        } satisfies CrashWorkerRequest,
+      writer.exec("BEGIN IMMEDIATE");
+      writer.prepare(
+        "INSERT INTO commits (namespace, partition, seq, txn_id, fence, at, body) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      ).run(
+        "",
+        modelPartition().toString(),
+        1,
+        commit.txnId,
+        1,
+        commit.at,
+        JSON.stringify(commit.toJSON()),
       );
-      await waitFor(() => written, "the worker to write its rows");
+      writer.prepare(
+        "INSERT INTO partition_heads (namespace, partition, seq, highest_fence) VALUES (?, ?, ?, ?)",
+      ).run("", modelPartition().toString(), 1, 1);
+      assertEquals(rows(path), { commits: [], heads: [] });
     } finally {
-      worker.terminate();
+      writer.close();
     }
-
     assertEquals(rows(path), { commits: [], heads: [] });
     const store = SqliteCommitStore.open(path);
     try {

@@ -89,11 +89,15 @@ uses it. Test files that run in one process contend on process-wide locks, so
 smaller processes finish sooner and use less CPU. It runs one shard per 8 cores,
 up to 4, and gives each shard its own temp directory. A run fails when any shard
 fails or leaves temp entries behind. With one shard, and on Windows, it runs
-plain `deno test` over what the config includes.
+plain `deno test` over what the config includes. Before any shard starts it runs
+the `test-deps` task, and stops if that fails: the `test` task reads npm
+packages from a local `node_modules` (`--node-modules-dir=manual`), because a
+Worker that resolves npm through Deno's process-wide npm resolver can hang
+there, and every later one with it.
 
 A file in `OWN_PROCESS_FILES` always runs in a `deno test` process of its own,
-beside the shards: its Workers' module loads can wedge a process shared with
-other Worker-heavy test files. The single-shard run leaves it out with
+beside the shards, so a stalled Worker load in it cannot fail other files'
+tests. The single-shard run leaves it out with
 `--ignore`, which repeats every configured exclude, because Deno's `--ignore`
 replaces the config's `test.exclude`.
 
@@ -108,7 +112,8 @@ deno task test-shards --no-check --shards 2  # extra flags go to deno test
 deno task test-shards --record-weights       # rewrite the weights from this run
 ```
 
-To run one file, use `deno run test <file>`.
+To run one file, use `deno run test <file>`, after `deno run test-deps` once
+and again whenever `deno.lock` changes.
 
 # License Compliance
 

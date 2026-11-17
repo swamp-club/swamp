@@ -34,6 +34,9 @@ jobs:
       - name: Run deno check
         run: deno task check
 
+      - name: Install test dependencies
+        run: deno task test-deps
+
       - name: Run deno test
         run: deno task test
 

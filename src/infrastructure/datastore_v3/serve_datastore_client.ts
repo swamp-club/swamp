@@ -23,6 +23,7 @@
  * ServeUnreachableError, saying whether the request may have reached serve
  */
 
+import { processRuntimeSlot } from "../runtime/process_runtime.ts";
 import type {
   ServeInitiatorMode,
   ServeUpstreamTarget,
@@ -121,16 +122,36 @@ export function serveResponseDeadlineMs(
   );
 }
 
-/** when serve began refusing reads, per serve, so a rebuild waits it out once */
-const refusalStreaks = new Map<string, number>();
+const serveClientState = processRuntimeSlot<{
+  /** when serve began refusing reads, per serve, so a rebuild waits it out once */
+  readonly refusalStreaks: Map<string, number>;
+  /**
+   * once a write found serve unreachable, the rest of the command fails at once
+   * instead of waiting out a request timeout per call; requests in flight end too
+   */
+  readonly unreachableLatches: Map<string, AbortController>;
+  /** what serve last said of run initiators, per serve and token, process-wide */
+  readonly heardInitiators: Map<string, ServeInitiatorMode>;
+  /** the features serve last named, per serve and token, process-wide */
+  readonly heardFeatures: Map<string, readonly string[]>;
+}>(() => ({
+  refusalStreaks: new Map(),
+  unreachableLatches: new Map(),
+  heardInitiators: new Map(),
+  heardFeatures: new Map(),
+}));
 
-let readRefusalBudgetForTesting: number | undefined;
+const refusalBudgetState = processRuntimeSlot<{
+  readRefusalBudgetForTesting: number | undefined;
+}>(() => ({
+  readRefusalBudgetForTesting: undefined,
+}));
 
 /** undefined restores the default */
 export function setServeReadRefusalBudgetForTesting(
   ms: number | undefined,
 ): void {
-  readRefusalBudgetForTesting = ms;
+  refusalBudgetState().readRefusalBudgetForTesting = ms;
 }
 
 const FIRST_REFUSAL_RETRY_MS = 250;
@@ -166,17 +187,15 @@ function followableLeader(
   return leader.origin;
 }
 
-/**
- * once a write found serve unreachable, the rest of the command fails at once
- * instead of waiting out a request timeout per call; requests in flight end too
- */
-const unreachableLatches = new Map<string, AbortController>();
-
-function unreachableLatchOf(baseUrl: string): AbortSignal {
-  let latch = unreachableLatches.get(baseUrl);
+function unreachableLatchOf(
+  baseUrl: string,
+  state = serveClientState(),
+): AbortSignal {
+  const latches = state.unreachableLatches;
+  let latch = latches.get(baseUrl);
   if (latch === undefined) {
     latch = new AbortController();
-    unreachableLatches.set(baseUrl, latch);
+    latches.set(baseUrl, latch);
   }
   return latch.signal;
 }
@@ -184,14 +203,15 @@ function unreachableLatchOf(baseUrl: string): AbortSignal {
 /** set by a write's failure or an unrenewed lease; a read never sets it */
 export function latchServeUnreachable(baseUrl: string, cause: unknown): void {
   unreachableLatchOf(baseUrl);
-  const latch = unreachableLatches.get(baseUrl)!;
+  const latch = serveClientState().unreachableLatches.get(baseUrl)!;
   if (!latch.signal.aborted) latch.abort(cause);
 }
 
 /** the command's end: the next command asks serve afresh */
 export function clearServeUnreachableLatches(): void {
-  unreachableLatches.clear();
-  refusalStreaks.clear();
+  const state = serveClientState();
+  state.unreachableLatches.clear();
+  state.refusalStreaks.clear();
 }
 
 export const DEFAULT_MAX_ATTEMPTS = 3;
@@ -262,15 +282,10 @@ export interface ServePartitionBase {
  */
 export const SERVE_DATASTORE_FEATURES_HEADER = "x-swamp-datastore-features";
 
-/** what serve last said of run initiators, per serve and token, process-wide */
-const heardInitiators = new Map<string, ServeInitiatorMode>();
-
-/** the features serve last named, per serve and token, process-wide */
-const heardFeatures = new Map<string, readonly string[]>();
-
 export function resetHeardServeRepliesForTesting(): void {
-  heardInitiators.clear();
-  heardFeatures.clear();
+  const state = serveClientState();
+  state.heardInitiators.clear();
+  state.heardFeatures.clear();
 }
 
 export const LEASE_OPS_FEATURE = "lease-ops";
@@ -544,6 +559,8 @@ function ridesRefusals(spec: RequestSpec): boolean {
 }
 
 export class ServeDatastoreClient {
+  // its runtime's, taken at construction: a renewal timer calls in with no context
+  readonly #shared = serveClientState();
   readonly baseUrl: string;
   readonly namespace: string;
   readonly #token: string | undefined;
@@ -598,7 +615,8 @@ export class ServeDatastoreClient {
     this.#commitResponseBaseMs = options.commitResponseBaseMs ??
       SERVE_COMMIT_RESPONSE_BASE_MS;
     this.#readRefusalBudgetMs = options.readRefusalBudgetMs ??
-      readRefusalBudgetForTesting ?? SERVE_READ_REFUSAL_BUDGET_MS;
+      refusalBudgetState().readRefusalBudgetForTesting ??
+      SERVE_READ_REFUSAL_BUDGET_MS;
     this.#now = options.now ?? (() => performance.now());
     this.#delay = options.delay ?? abortableDelay;
   }
@@ -1502,7 +1520,8 @@ export class ServeDatastoreClient {
    * another of this process's for the same serve and token (a lock's own)
    */
   initiatorMode(): ServeInitiatorMode | undefined {
-    return this.#initiatorMode ?? heardInitiators.get(this.#heardKey());
+    return this.#initiatorMode ??
+      this.#shared.heardInitiators.get(this.#heardKey());
   }
 
   #heardKey(): string {
@@ -1517,7 +1536,9 @@ export class ServeDatastoreClient {
   /** a client that read no reply yet goes by what another of the process's heard */
   #heardFeature(feature: string): boolean {
     return !this.#heardReply &&
-      (heardFeatures.get(this.#heardKey())?.includes(feature) ?? false);
+      (this.#shared.heardFeatures.get(this.#heardKey())?.includes(
+        feature,
+      ) ?? false);
   }
 
   /** a reply's catch-up that does not parse is read again, never trusted */
@@ -1612,7 +1633,7 @@ export class ServeDatastoreClient {
       signal.throwIfAborted();
       const url = this.#url(spec, origin);
       const following = origin !== this.baseUrl;
-      const latch = unreachableLatchOf(this.baseUrl);
+      const latch = unreachableLatchOf(this.baseUrl, this.#shared);
       if (latch.aborted) {
         throw this.#latched("never", latch.reason, spec);
       }
@@ -1759,13 +1780,16 @@ export class ServeDatastoreClient {
           this.#takesBaseDifference = features.includes(
             BASE_DIFFERENCE_FEATURE,
           );
-          heardFeatures.set(this.#heardKey(), features);
+          this.#shared.heardFeatures.set(this.#heardKey(), features);
           this.#heardReply = true;
           this.#initiatorMode = initiatorModeOf(
             features,
             response.headers.get(SERVE_DATASTORE_PRINCIPAL_HEADER),
           );
-          heardInitiators.set(this.#heardKey(), this.#initiatorMode);
+          this.#shared.heardInitiators.set(
+            this.#heardKey(),
+            this.#initiatorMode,
+          );
         }
         const access = response.headers.get(SERVE_DATASTORE_ACCESS_HEADER);
         if (this.#accessCheck !== undefined && access !== null) {
@@ -1786,11 +1810,13 @@ export class ServeDatastoreClient {
           }
         }
         // a write's refusal is the outbox's to handle and leaves the streak
-        if (response.status !== 503) refusalStreaks.delete(this.baseUrl);
+        if (response.status !== 503) {
+          this.#shared.refusalStreaks.delete(this.baseUrl);
+        }
         if (refusal !== undefined) {
           await response.body?.cancel();
-          if (!refusalStreaks.has(this.baseUrl)) {
-            refusalStreaks.set(this.baseUrl, this.#now());
+          if (!this.#shared.refusalStreaks.has(this.baseUrl)) {
+            this.#shared.refusalStreaks.set(this.baseUrl, this.#now());
           }
           refusedAt ??= this.#now();
           const left = Math.min(
@@ -1881,7 +1907,7 @@ export class ServeDatastoreClient {
   }
 
   #refusalBudgetLeft(): number {
-    const started = refusalStreaks.get(this.baseUrl);
+    const started = this.#shared.refusalStreaks.get(this.baseUrl);
     if (started === undefined) return this.#readRefusalBudgetMs;
     return this.#readRefusalBudgetMs - (this.#now() - started);
   }

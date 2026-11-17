@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { processRuntimeSlot } from "../infrastructure/runtime/process_runtime.ts";
 import { nameLockHolder } from "./auth_context.ts";
 import { CommitLeaseLostError } from "../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { serveUpstreamAt } from "../infrastructure/datastore_v3/serve_upstream_registry.ts";
@@ -228,18 +229,22 @@ function labeledPrefix(label: string): string {
   return dim(`${padded} │`);
 }
 
-let lockProgressQuiet = false;
+const lockProgressState = processRuntimeSlot<{
+  lockProgressQuiet: boolean;
+  // json mode has no console log output and a failing command's stderr must stay
+  // one JSON document, so progress is written in log mode only
+  lockProgressJson: boolean;
+}>(() => ({
+  lockProgressQuiet: false,
+  lockProgressJson: false,
+}));
 
 export function setLockProgressQuiet(quiet: boolean): void {
-  lockProgressQuiet = quiet;
+  lockProgressState().lockProgressQuiet = quiet;
 }
 
-// json mode has no console log output and a failing command's stderr must stay
-// one JSON document, so progress is written in log mode only
-let lockProgressJson = false;
-
 export function setLockProgressOutputMode(mode: OutputMode): void {
-  lockProgressJson = mode === "json";
+  lockProgressState().lockProgressJson = mode === "json";
 }
 
 const writeStderrLine = (line: string): void => console.error(line);
@@ -269,7 +274,8 @@ export function createLockProgressWriter(
   writeStderr: (line: string) => void = writeStderrLine,
 ): LockProgressWriter {
   return (message: string) => {
-    if (lockProgressQuiet || lockProgressJson) return;
+    const progress = lockProgressState();
+    if (progress.lockProgressQuiet || progress.lockProgressJson) return;
     writeStderr(`${labeledPrefix(label)} ${message}`);
   };
 }
@@ -566,14 +572,14 @@ export async function ensureManagedConfigBase(
     );
     const configBase = resolver.resolvePath("config");
     registerManagedConfig(repoDir, true, configBase, true);
-    lastResolutionFailure.delete(resolve(repoDir));
+    resolutionState().lastResolutionFailure.delete(resolve(repoDir));
     return true;
   } catch (error) {
     if (error instanceof UserError && error.code === "lock_timeout") {
       throw error;
     }
     const message = error instanceof Error ? error.message : String(error);
-    lastResolutionFailure.set(resolve(repoDir), message);
+    resolutionState().lastResolutionFailure.set(resolve(repoDir), message);
     const logger = getSwampLogger(["cli", "managed-config"]);
     logger
       .debug`Failed to resolve datastore for managedConfig base: ${message}`;
@@ -582,7 +588,11 @@ export async function ensureManagedConfigBase(
   }
 }
 
-const lastResolutionFailure = new Map<string, string>();
+const resolutionState = processRuntimeSlot<{
+  readonly lastResolutionFailure: Map<string, string>;
+}>(() => ({
+  lastResolutionFailure: new Map(),
+}));
 
 /**
  * without a registered base the in-repo .swamp/config fallback is used and
@@ -662,7 +672,9 @@ export function assertManagedConfigWritable(
   const extensionType = RENAMED_DATASTORE_TYPES[type] ?? type;
   throw new ManagedConfigUnresolvedError(
     type,
-    describeResolutionFailure(lastResolutionFailure.get(resolve(repoDir))),
+    describeResolutionFailure(
+      resolutionState().lastResolutionFailure.get(resolve(repoDir)),
+    ),
     extensionCandidateNames(extensionType)[0],
   );
 }

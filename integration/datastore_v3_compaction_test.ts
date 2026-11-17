@@ -21,7 +21,6 @@ import { assert, assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import { walk } from "@std/fs";
 import { DatabaseSync } from "node:sqlite";
-import { waitFor } from "@swamp-club/swamp-testing";
 import { ChunkCollector } from "../src/domain/datastore_v3/chunk_collector.ts";
 import { ChunkStore } from "../src/domain/datastore_v3/chunk_store.ts";
 import type { BlobRef } from "../src/domain/datastore_v3/blob_ref.ts";
@@ -56,11 +55,6 @@ import {
   type V3Env,
   withV3Env,
 } from "./datastore_v3_read_model_helpers.ts";
-import type {
-  CompactionCrashMessage,
-  CompactionCrashRequest,
-} from "./datastore_v3_compaction_crash_worker.ts";
-import { startLoadedWorker } from "./graph_worker.ts";
 
 const PARTITION = modelPartition();
 const signal = () => AbortSignal.timeout(30_000);
@@ -145,8 +139,6 @@ async function observe(
 
 function dump(path: string): Record<string, unknown[]> {
   const db = new DatabaseSync(path);
-  // A terminated writer's lock is released asynchronously.
-  db.exec("PRAGMA busy_timeout=5000");
   try {
     const tables = (db.prepare(
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
@@ -560,7 +552,7 @@ Deno.test("compaction: a batch that fails before committing leaves commits.db as
   });
 });
 
-Deno.test("compaction: a writer stopped inside a batch's transaction leaves commits.db as it was", async () => {
+Deno.test("compaction: while a batch's transaction is open, another connection reads commits.db as it was", async () => {
   await withV3Env(async (env) => {
     await appendAll(env, [
       [await savePut("a", 1), versionOp("a", 1)],
@@ -569,32 +561,19 @@ Deno.test("compaction: a writer stopped inside a batch's transaction leaves comm
     ]);
     const path = join(env.dir, "commits.db");
     const before = dump(path);
-    let folded = false;
-    const worker = await startLoadedWorker<CompactionCrashMessage>(
-      new URL("./datastore_v3_compaction_crash_worker.ts", import.meta.url),
-      {
-        loadTimeoutMs: 20_000,
-        attempts: 3,
-        onMessage: (message) => {
-          if (message === "folded") folded = true;
-        },
-      },
+    let during: Record<string, unknown[]> | undefined;
+    await assertRejects(
+      () =>
+        env.store.compactHistory(3, {
+          beforeCommit: () => {
+            during = dump(path);
+            throw new Error("stopped before commit");
+          },
+        }),
+      Error,
+      "stopped before commit",
     );
-    try {
-      worker.postMessage(
-        { dbPath: path, through: 3 } satisfies CompactionCrashRequest,
-      );
-      await waitFor(() => folded, "the worker to fold its batch", {
-        timeoutMs: 60_000,
-      });
-    } finally {
-      worker.terminate();
-    }
-    assertEquals(dump(path), before);
-    // A store opened afresh reads the old history. (Writing would wait on
-    // the stopped worker's lock: in one process its connection is never
-    // closed, unlike a real crash. The rollback test above covers the
-    // compaction landing afterwards.)
+    assertEquals(during, before);
     const reopened = SqliteCommitStore.open(path);
     try {
       assertEquals(

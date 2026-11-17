@@ -65,12 +65,10 @@ import { swampPath } from "../src/infrastructure/persistence/paths.ts";
 import { requireInitializedRepoUnlocked } from "../src/cli/repo_context.ts";
 import type { RowRepos } from "./usecase_sync_fixtures.ts";
 import { withV3RowRepos } from "./usecase_v3_fixtures.ts";
-import type {
-  OutboxCrashMessage,
-  OutboxCrashPause,
-  OutboxCrashRequest,
-} from "./datastore_v3_outbox_crash_worker.ts";
-import { startLoadedWorker } from "./graph_worker.ts";
+import {
+  type OutboxCrashPause,
+  runStoppedWriter,
+} from "./datastore_v3_outbox_writer.ts";
 
 await initializeLogging({});
 
@@ -116,58 +114,26 @@ async function killWriter(
     "auto-definitions",
     `${id}.yaml`,
   );
-  let killed = false;
-  let failed: string | undefined;
-  let done = false;
-  const worker: Worker = await startLoadedWorker<OutboxCrashMessage>(
-    new URL("./datastore_v3_outbox_crash_worker.ts", import.meta.url),
+  const { stoppedAt } = await runStoppedWriter(
     {
-      loadTimeoutMs: 20_000,
-      attempts: 3,
-      onMessage: async (message) => {
-        if ("failed" in message) failed = message.failed;
-        else if ("done" in message) done = true;
-        else if (message.paused === options.killAt) {
-          worker.terminate();
-          killed = true;
-        } else {
-          await options.onPause?.(message.paused);
-          worker.postMessage("resume");
-        }
-      },
-      // A worker that throws outside its own catch fails the wait at once
-      // rather than at its deadline.
-      onError: (event) => {
-        event.preventDefault();
-        failed = event.message;
-      },
+      datastorePath,
+      checkoutFile,
+      commitsDb,
+      outboxPath: v3OutboxPath(commitsDb),
+      fence: lease.fence,
+      writerPid: GONE_PID,
+      id,
+      bytes: options.bytes ?? 64,
+      pauses: options.pauses,
     },
+    options.killAt,
+    async (point) => await options.onPause?.(point),
   );
-  try {
-    worker.postMessage(
-      {
-        datastorePath,
-        checkoutFile,
-        commitsDb,
-        outboxPath: v3OutboxPath(commitsDb),
-        fence: lease.fence,
-        writerPid: GONE_PID,
-        id,
-        bytes: options.bytes ?? 64,
-        pauses: options.pauses,
-      } satisfies OutboxCrashRequest,
-    );
-    // a loaded host can stretch the commit past the default timeout
-    await waitFor(
-      () => killed || failed !== undefined || done,
-      "the writer to reach its kill point",
-      { timeoutMs: 60_000 },
-    );
-  } finally {
-    worker.terminate();
-  }
-  assertEquals(failed, undefined, "the writer failed");
-  assert(killed, "the writer committed without being killed");
+  assertEquals(
+    stoppedAt,
+    options.killAt,
+    "the writer committed without stopping",
+  );
   return { id, fence: lease.fence, checkoutFile };
 }
 

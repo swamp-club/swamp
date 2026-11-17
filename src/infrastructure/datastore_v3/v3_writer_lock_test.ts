@@ -54,6 +54,7 @@ import {
   v3WriterLeaseExpiresAt,
   v3WriterLockHandle,
 } from "./v3_writer_lock.ts";
+import { ProcessRuntime } from "../runtime/process_runtime.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-v3-writer-lock-" });
@@ -176,6 +177,48 @@ Deno.test("acquireV3WriterLock: a fence commits.db refuses releases the lease an
       assertEquals(v3WriterFence(dir), 2);
     } finally {
       await release();
+    }
+  });
+});
+
+Deno.test("acquireV3WriterLock: a hold in another runtime is contended for, never joined", async () => {
+  await withTempDir(async (dir) => {
+    const other = new ProcessRuntime(`other-${crypto.randomUUID()}`);
+    const takenInOther: number[] = [];
+    const stopListening = other.run(() =>
+      onV3LeaseTaken((_path, fence) => {
+        takenInOther.push(fence);
+      })
+    );
+    const release = await acquireV3WriterLock(dir);
+    try {
+      assertEquals(takenInOther, [], "a take is told only to its own runtime");
+      await other.run(async () => {
+        assertEquals(holdsV3WriterLock(dir), false);
+        assertEquals(v3WriterFence(dir), undefined);
+        await assertRejects(
+          () => acquireV3WriterLock(dir, { maxWaitMs: 100 }),
+          V3WriterBusyError,
+        );
+        assertEquals(await tryAcquireV3WriterLock(dir), undefined);
+      });
+      assert(
+        holdsV3WriterLock(dir),
+        "the refused runtime left this hold alone",
+      );
+    } finally {
+      await release();
+    }
+    const releaseOther = await other.run(() =>
+      acquireV3WriterLock(dir, { maxWaitMs: 1000 })
+    );
+    try {
+      assertEquals(other.run(() => v3WriterFence(dir)), 2);
+      assertEquals(holdsV3WriterLock(dir), false);
+      assertEquals(takenInOther, [2]);
+    } finally {
+      await releaseOther();
+      stopListening();
     }
   });
 });

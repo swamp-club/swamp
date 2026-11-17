@@ -101,6 +101,10 @@ During development, use these commands for quick feedback:
 4. `deno run test` - Tests (or `deno run test src/path/to_test.ts` for a single
    file)
 
+Tests read npm packages from a local `node_modules`, never through Deno's npm
+resolver, where a test Worker can hang for good. Run `deno run test-deps` before
+the first test run and again after `deno.lock` changes.
+
 Before opening a PR, run the verification workflows instead of these commands
 individually. They run on the host, each in a fresh `git worktree` at the
 verified commit: `verify-build` (lint, fmt, type check, test, deps audit,
@@ -167,10 +171,20 @@ generators, tests in `src/libswamp/`) may import names `mod.ts` does not list.
   server on `port: 0`.
 - Supply env values to any test — unit or integration — with `withMockedEnv`
   from `src/infrastructure/persistence/path_test_helpers.ts`. It answers
-  `Deno.env.get`, `has` and `toObject` for the current test file only; map a
-  variable to `undefined` to read it as unset. Child processes never see it, so
-  pass them an explicit `env`. `integration/test_env_mutation_rules_test.ts`
-  fails on any `Deno.env.set` / `Deno.env.delete` in a test file.
+  `Deno.env.get`, `has` and `toObject` for `fn` and everything it awaits, so
+  another actor in the isolate reads its own env; map a variable to `undefined`
+  to read it as unset. Child processes never see it, so pass them an explicit
+  `env`. `integration/test_env_mutation_rules_test.ts` fails on any
+  `Deno.env.set` / `Deno.env.delete` in a test file.
+- A test that plays a second swamp process (a serve beside its clients, two
+  commands of one checkout) runs it with `startProcessHost` from
+  `integration/process_host.ts`, in a `ProcessRuntime` of its own. Start a
+  Worker only when a thread must block (`Atomics.wait`, SQLite's busy wait) or a
+  module graph must load afresh. State a process keeps for itself in `src/`
+  (holds, handles, registrations, flags, test knobs) belongs in a
+  `processRuntimeSlot`, not a module variable; constants and caches keyed by
+  content may stay module-level. See **Process runtime** in
+  `design/enablers/datastores.md`.
 - A test that points `SWAMP_HOME` at a fresh directory and runs a real extension
   bundle calls `linkSharedSwampDenoCache(home)` from
   `integration/test_helpers.ts` first. The bundler's `DENO_DIR` lives under

@@ -36,9 +36,9 @@ function isLoaded(data: unknown): boolean {
     (data as { kind?: unknown }).kind === LOADED.kind;
 }
 
-// Deno's process-wide npm resolution queue can lose a cross-thread wakeup;
-// the stuck load holds it until its Worker is terminated, so a load that
-// misses its bound is retried on a fresh Worker rather than waited out.
+// A load that misses its bound is retried on a fresh Worker rather than waited out.
+// Deno's npm resolver can lose a cross-thread wakeup and never release, which
+// is why the test task reads npm from node_modules (--node-modules-dir=manual).
 export async function startLoadedWorker<T>(
   url: string | URL,
   options: LoadedWorkerOptions<T>,

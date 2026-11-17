@@ -35,12 +35,13 @@ import {
   withScratch,
   writeCommand,
 } from "./serve_upstream_fixtures.ts";
-import type { GrantSpec } from "./serve_upstream_server_worker.ts";
-import type {
-  WorkflowRunWorkerMessage,
-  WorkflowRunWorkerRequest,
-} from "./serve_upstream_workflow_run_worker.ts";
-import { startLoadedWorker } from "./graph_worker.ts";
+import type { GrantSpec } from "./serve_upstream_server.ts";
+import {
+  workflowRunHost,
+  type WorkflowRunWorkerMessage,
+  type WorkflowRunWorkerRequest,
+} from "./serve_upstream_workflow_run.ts";
+import { startProcessHost } from "./process_host.ts";
 import {
   BARRIER_REPORT,
   type WorkflowReportBarrier,
@@ -101,49 +102,31 @@ function runWorkflows(
   let done: Extract<WorkflowRunWorkerMessage, { kind: "done" }> | undefined;
   let failed: string | undefined;
   return (async () => {
-    let worker: Worker | undefined;
-    try {
-      worker = await startLoadedWorker<WorkflowRunWorkerMessage>(
-        new URL("./serve_upstream_workflow_run_worker.ts", import.meta.url),
-        {
-          loadTimeoutMs: 40_000,
-          attempts: 3,
-          onMessage: (message) => {
-            if (message.kind === "done") done = message;
-            else if (message.kind === "failed") failed = message.error;
-          },
-          onError: (event) => {
-            event.preventDefault();
-            failed = event.message;
-          },
+    const member = startProcessHost(token, workflowRunHost, (message) => {
+      if (message.kind === "done") done = message;
+      else if (message.kind === "failed") failed = message.error;
+    });
+    member.postMessage(
+      {
+        kind: "run",
+        configDir: scratch.configDir,
+        repoDir: client.repoDir,
+        env: {
+          ...serveEnv(serve, token),
+          SWAMP_SERVE_TIMEOUT_MS: "120000",
         },
-      );
-      worker.postMessage(
-        {
-          kind: "run",
-          configDir: scratch.configDir,
-          repoDir: client.repoDir,
-          env: {
-            ...serveEnv(serve, token),
-            SWAMP_SERVE_TIMEOUT_MS: "120000",
-          },
-          modelType: serve.modelType.normalized,
-          workflowName: options.workflowName ?? WORKFLOW_NAME,
-          principal,
-          count: options.count ?? RUNS_PER_MEMBER,
-          ...(options.barrier === undefined
-            ? {}
-            : { barrier: options.barrier }),
-        } satisfies WorkflowRunWorkerRequest,
-      );
-      await waitFor(
-        () => done !== undefined || failed !== undefined,
-        `${token}'s workflow runs`,
-        { timeoutMs: 240_000, intervalMs: 50 },
-      );
-    } finally {
-      worker?.terminate();
-    }
+        modelType: serve.modelType.normalized,
+        workflowName: options.workflowName ?? WORKFLOW_NAME,
+        principal,
+        count: options.count ?? RUNS_PER_MEMBER,
+        ...(options.barrier === undefined ? {} : { barrier: options.barrier }),
+      } satisfies WorkflowRunWorkerRequest,
+    );
+    await waitFor(
+      () => done !== undefined || failed !== undefined,
+      `${token}'s workflow runs`,
+      { timeoutMs: 240_000, intervalMs: 50 },
+    );
     if (done === undefined) throw new Error(`${token} failed: ${failed}`);
     return done;
   })();

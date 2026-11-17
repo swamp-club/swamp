@@ -19,7 +19,6 @@
 
 import "../src/domain/models/models.ts";
 import { Command } from "@cliffy/command";
-import { z } from "zod";
 import {
   createModelMethodRunCommand,
   MODEL_METHOD_RUN_SYNTAX,
@@ -29,12 +28,11 @@ import {
   resetImplicitServeRouting,
   setImplicitServeRouting,
 } from "../src/cli/remote_run.ts";
-import { modelRegistry } from "../src/domain/models/model.ts";
-import { ModelType } from "../src/domain/models/model_type.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { endCommand, withClientEnv } from "./serve_upstream_fixtures.ts";
+import type { ProcessHost } from "./process_host.ts";
 
-/** a second member's `model method run`, in its own thread as in its own process */
+/** a second member's `model method run`, in its own ProcessRuntime as in its own process */
 export type MethodRunWorkerRequest = {
   readonly kind: "run";
   readonly configDir: string;
@@ -46,7 +44,6 @@ export type MethodRunWorkerRequest = {
 };
 
 export type MethodRunWorkerMessage =
-  | { readonly kind: "loaded" }
   | {
     readonly kind: "done";
     readonly error?: string;
@@ -54,31 +51,15 @@ export type MethodRunWorkerMessage =
   }
   | { readonly kind: "failed"; readonly error: string };
 
-declare const self: Worker;
-
-const logging = initializeLogging({});
-
-async function run(request: MethodRunWorkerRequest): Promise<void> {
-  await logging;
-  const type = ModelType.create(request.modelType);
-  modelRegistry.invalidateType(type);
-  modelRegistry.register({
-    type,
-    version: "2026.01.01.1",
-    globalArguments: z.object({
-      bytes: z.number().int().default(16),
-      slow: z.boolean().default(false),
-    }),
-    methods: {
-      peek: {
-        description: "Reads nothing and writes no data",
-        kind: "read",
-        arguments: z.object({}),
-        execute: () => Promise.resolve({}),
-      },
-    },
-  });
+// the behavior type is the test's to register: one definition serves the
+// isolate, and this run uses its `peek`
+async function run(
+  request: MethodRunWorkerRequest,
+  post: (message: MethodRunWorkerMessage) => void,
+): Promise<void> {
+  await initializeLogging({});
   let error: string | undefined;
+  // a process global: sound only while no other command in the isolate fails
   Deno.exitCode = 0;
   try {
     await withClientEnv(
@@ -109,26 +90,23 @@ async function run(request: MethodRunWorkerRequest): Promise<void> {
   } catch (thrown) {
     error = thrown instanceof Error ? thrown.message : String(thrown);
   }
-  self.postMessage(
-    {
-      kind: "done",
-      ...(error === undefined ? {} : { error }),
-      exitCode: Deno.exitCode,
-    } satisfies MethodRunWorkerMessage,
-  );
+  post({
+    kind: "done",
+    ...(error === undefined ? {} : { error }),
+    exitCode: Deno.exitCode,
+  });
 }
 
-self.onmessage = (event: MessageEvent<MethodRunWorkerRequest>) => {
-  run(event.data).catch((error) =>
-    self.postMessage(
-      {
-        kind: "failed",
-        error: error instanceof Error
-          ? error.stack ?? error.message
-          : String(error),
-      } satisfies MethodRunWorkerMessage,
-    )
+export const methodRunHost: ProcessHost<
+  MethodRunWorkerRequest,
+  MethodRunWorkerMessage
+> = (post) => (request) => {
+  run(request, post).catch((error) =>
+    post({
+      kind: "failed",
+      error: error instanceof Error
+        ? error.stack ?? error.message
+        : String(error),
+    })
   );
 };
-
-self.postMessage({ kind: "loaded" } satisfies MethodRunWorkerMessage);

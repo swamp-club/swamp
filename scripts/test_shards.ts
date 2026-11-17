@@ -24,7 +24,8 @@ export const WEIGHTS_FILE = "scripts/test_shard_weights.json";
 export const DEFAULT_WEIGHT_SECONDS = 0.05;
 export const RECORD_THRESHOLD_SECONDS = 3;
 const MAX_SHARDS = 4;
-// each listed file's Workers' module loads can wedge a deno test process shared with other Worker-heavy files
+// each listed file starts dozens of Workers; its own process keeps a stalled
+// load from failing other files' tests
 export const OWN_PROCESS_FILES: readonly string[] = [
   "integration/command_routes_rules_test.ts",
 ];
@@ -188,6 +189,28 @@ export function parseTestTask(denoJson: unknown): TestTask {
     throw new Error(`The test task does not run deno test: ${task}`);
   }
   return { env, flags: words.slice(2) };
+}
+
+export function parseTestDepsTask(denoJson: unknown): string[] {
+  const task = (denoJson as { tasks?: Record<string, unknown> })?.tasks?.["test-deps"];
+  if (typeof task !== "string") throw new Error("deno.json has no test-deps task");
+  const words = task.trim().split(/\s+/);
+  if (words[0] !== "deno" || words[1] !== "install") {
+    throw new Error(`The test-deps task does not run deno install: ${task}`);
+  }
+  return words.slice(1);
+}
+
+// the test task reads npm packages from node_modules, so they are installed before any shard starts
+async function installTestDeps(root: string, args: readonly string[]): Promise<number> {
+  const { code } = await new Deno.Command("deno", {
+    args: [...args],
+    cwd: root,
+    stdin: "null",
+    stdout: "inherit",
+    stderr: "inherit",
+  }).spawn().status;
+  return code;
 }
 
 export function stripAnsi(line: string): string {
@@ -472,6 +495,12 @@ async function main(args: string[]): Promise<number> {
     config.exclude,
   );
   if (groups.length === 0) throw new Error("test-shards found no test files");
+
+  const installCode = await installTestDeps(root, parseTestDepsTask(denoJson));
+  if (installCode !== 0) {
+    console.error(`test-shards: deno task test-deps failed (exit ${installCode}); no shard was started`);
+    return installCode;
+  }
 
   const tmpBase = Deno.env.get("TMPDIR") ?? Deno.env.get("TMP") ??
     Deno.env.get("TEMP") ?? "/tmp";

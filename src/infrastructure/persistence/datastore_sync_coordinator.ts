@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { processRuntimeSlot } from "../runtime/process_runtime.ts";
 import { withRunPhase } from "../../domain/remote/run_progress.ts";
 import {
   type DatastoreSyncService,
@@ -76,17 +77,24 @@ export const GLOBAL_LOCK_KEY = "__global__";
 
 const PROGRESS_LOG_INTERVAL_MS = 30_000;
 
-const entries: Map<string, SyncEntry> = new Map();
-let shutdownHandle: ShutdownHandlerHandle | null = null;
+const syncState = processRuntimeSlot<{
+  readonly entries: Map<string, SyncEntry>;
+  shutdownHandle: ShutdownHandlerHandle | null;
+  suppressCount: number;
+}>(() => ({
+  entries: new Map(),
+  shutdownHandle: null,
+  suppressCount: 0,
+}));
 
 /**
  * SIGINT only: this fast path runs on Ctrl-C and exits 130 after a 5s
  * force-exit deadline; SIGTERM and SIGHUP are handled by command-level shutdown
  */
 function installSignalHandler(): void {
-  if (shutdownHandle) return;
+  if (syncState().shutdownHandle) return;
 
-  shutdownHandle = registerShutdownHandler({
+  syncState().shutdownHandle = registerShutdownHandler({
     handler: releaseLocksOnInterrupt,
     includePosixSignals: false,
   });
@@ -97,7 +105,7 @@ function installSignalHandler(): void {
  * lease is not left held until its TTL; bounded by waitMs
  */
 export async function releaseRegisteredLocks(waitMs = 2_000): Promise<void> {
-  const releases = [...entries.values()]
+  const releases = [...syncState().entries.values()]
     .filter((e) => e.lock)
     .map((e) => e.lock!.release().catch(() => {}));
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -117,39 +125,40 @@ export async function releaseRegisteredLocks(waitMs = 2_000): Promise<void> {
  * an in-flight method's lock to a waiter
  */
 export function releaseLocksOnInterrupt(): void {
-  if (suppressCount > 0) return;
+  const state = syncState();
+  if (state.suppressCount > 0) return;
   const forceExit = setTimeout(() => Deno.exit(130), 5_000);
-  const releases = [...entries.values()]
+  const releases = [...state.entries.values()]
     .filter((e) => e.lock)
     .map((e) => e.lock!.release().catch(() => {}));
   Promise.all(releases).finally(() => {
     clearTimeout(forceExit);
-    if (suppressCount === 0) {
+    if (state.suppressCount === 0) {
       Deno.exit(130);
     }
   });
 }
 
 function maybeRemoveSignalHandler(): void {
-  if (entries.size > 0 || !shutdownHandle) return;
-  shutdownHandle.dispose();
-  shutdownHandle = null;
+  const state = syncState();
+  if (state.entries.size > 0 || !state.shutdownHandle) return;
+  state.shutdownHandle.dispose();
+  state.shutdownHandle = null;
 }
-
-let suppressCount = 0;
 
 /**
  * reference-counted: the first dispose does not re-enable exit while another
  * caller still suppresses it
  */
 export function suppressSyncExitOnSignal(): { dispose(): void } {
-  suppressCount++;
+  const state = syncState();
+  state.suppressCount++;
   let disposed = false;
   return {
     dispose() {
       if (!disposed) {
         disposed = true;
-        suppressCount--;
+        state.suppressCount--;
       }
     },
   };
@@ -261,7 +270,7 @@ export async function registerDatastoreSyncNamed(
   const label = options.label ?? "datastore";
   const syncTimeoutMs = options.syncTimeoutMs ?? DEFAULT_SYNC_TIMEOUT_MS;
   const entry: SyncEntry = { service, lock, label, syncTimeoutMs, namespace };
-  entries.set(key, entry);
+  syncState().entries.set(key, entry);
 
   // unwind on failure: the outer error handler flushes without try/catch, so an
   // orphaned entry would push to the same hung service and shadow the original
@@ -269,7 +278,7 @@ export async function registerDatastoreSyncNamed(
   let lockAcquired = false;
 
   const unwindOnFailure = async () => {
-    entries.delete(key);
+    syncState().entries.delete(key);
     if (lockAcquired && lock) {
       try {
         await lock.release();
@@ -366,7 +375,7 @@ export async function registerDatastoreSyncNamed(
  * error is rethrown afterwards, preferring SyncTimeoutError
  */
 export async function flushDatastoreSync(): Promise<void> {
-  const keys = [...entries.keys()];
+  const keys = [...syncState().entries.keys()];
   const errors: unknown[] = [];
   for (const key of keys) {
     try {
@@ -388,10 +397,10 @@ export async function flushDatastoreSync(): Promise<void> {
  * the remote, so the command needs a non-zero exit
  */
 export async function flushDatastoreSyncNamed(key: string): Promise<void> {
-  const entry = entries.get(key);
+  const entry = syncState().entries.get(key);
   if (!entry) return;
 
-  entries.delete(key);
+  syncState().entries.delete(key);
 
   if (entry.service) {
     const syncSpan = getTracer().startSpan("swamp.datastore.sync", {
@@ -486,5 +495,5 @@ export function warnDroppedPushFailure(error: unknown): void {
 }
 
 export function getRegisteredLockKeys(): string[] {
-  return [...entries.keys()];
+  return [...syncState().entries.keys()];
 }

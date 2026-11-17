@@ -38,6 +38,7 @@ import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
 
 import type { YamlWorkflowRunRepository } from "./yaml_workflow_run_repository.ts";
 import type { RepositoryContext } from "./repository_factory.ts";
+import { processRuntimeSlot } from "../runtime/process_runtime.ts";
 
 const logger = getSwampLogger(["workflow", "checkpoint"]);
 
@@ -47,23 +48,24 @@ const logger = getSwampLogger(["workflow", "checkpoint"]);
  */
 export const RUN_CHECKPOINT_INTERVAL_MS = 2_000;
 
-let checkpointIntervalMs = RUN_CHECKPOINT_INTERVAL_MS;
+const pacing = processRuntimeSlot(() => ({
+  intervalMs: RUN_CHECKPOINT_INTERVAL_MS,
+  armedTrailing: new Set<() => void>(),
+}));
 
 /** read when a checkpointer is constructed; an explicit `intervalMs` wins */
 export function setRunCheckpointIntervalForTesting(
   ms: number | undefined,
 ): void {
-  checkpointIntervalMs = ms ?? RUN_CHECKPOINT_INTERVAL_MS;
+  pacing().intervalMs = ms ?? RUN_CHECKPOINT_INTERVAL_MS;
 }
-
-const armedTrailing = new Set<() => void>();
 
 /**
  * starts every armed trailing checkpoint now, in the context its save armed it
  * in, without waiting out a flush that landed meanwhile
  */
 export function firePacedCheckpointsForTesting(): void {
-  for (const fire of [...armedTrailing]) fire();
+  for (const fire of [...pacing().armedTrailing]) fire();
 }
 
 /**
@@ -100,6 +102,8 @@ export class WorkflowRunCheckpointer implements RunCheckpointer {
   #next: Promise<void> | undefined;
   #refused = false;
   readonly #intervalMs: number;
+  /** its runtime's, taken at construction: a timer disarms it with no context */
+  readonly #armedTrailing: Set<() => void>;
   readonly #now: () => number;
   #lastStarted = Number.NEGATIVE_INFINITY;
   #trailingTimer: ReturnType<typeof setTimeout> | undefined;
@@ -113,7 +117,9 @@ export class WorkflowRunCheckpointer implements RunCheckpointer {
     options: { intervalMs?: number; now?: () => number } = {},
   ) {
     this.#repoContext = repoContext;
-    this.#intervalMs = options.intervalMs ?? checkpointIntervalMs;
+    const paced = pacing();
+    this.#intervalMs = options.intervalMs ?? paced.intervalMs;
+    this.#armedTrailing = paced.armedTrailing;
     this.#now = options.now ?? Date.now;
   }
 
@@ -187,7 +193,7 @@ export class WorkflowRunCheckpointer implements RunCheckpointer {
       this.#trailing = inSaveContext(() => this.#schedule());
     };
     this.#fireTrailing = fire;
-    armedTrailing.add(fire);
+    this.#armedTrailing.add(fire);
     this.#trailingTimer = setTimeout(() => {
       this.#disarm();
       const flushed = lastOpenUnitCheckpointAt(this.#repoContext);
@@ -308,7 +314,7 @@ export class WorkflowRunCheckpointer implements RunCheckpointer {
     if (this.#trailingTimer !== undefined) clearTimeout(this.#trailingTimer);
     this.#trailingTimer = undefined;
     if (this.#fireTrailing !== undefined) {
-      armedTrailing.delete(this.#fireTrailing);
+      this.#armedTrailing.delete(this.#fireTrailing);
     }
     this.#fireTrailing = undefined;
   }

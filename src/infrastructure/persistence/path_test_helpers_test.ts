@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { runOutsideAmbientContext } from "../runtime/ambient_context.ts";
 import {
   assertEquals,
   AssertionError,
@@ -102,7 +103,7 @@ Deno.test("withMockedEnv: keys not overridden pass through to the real environme
   });
 });
 
-Deno.test("withMockedEnv: restores every reader after fn throws", () => {
+Deno.test("withMockedEnv: once fn throws, every reader answers from the real env", () => {
   const name = uniqueEnvName();
   assertThrows(
     () =>
@@ -117,7 +118,7 @@ Deno.test("withMockedEnv: restores every reader after fn throws", () => {
   assertEquals(Object.hasOwn(Deno.env.toObject(), name), false);
 });
 
-Deno.test("withMockedEnv: restores every reader after an async fn rejects", async () => {
+Deno.test("withMockedEnv: once an async fn rejects, every reader answers from the real env", async () => {
   const name = uniqueEnvName();
   await assertRejects(
     () =>
@@ -132,4 +133,41 @@ Deno.test("withMockedEnv: restores every reader after an async fn rejects", asyn
   assertEquals(Deno.env.get(name), undefined);
   assertEquals(Deno.env.has(name), false);
   assertEquals(Object.hasOwn(Deno.env.toObject(), name), false);
+});
+
+Deno.test("withMockedEnv: a nested call layers over the enclosing one", () => {
+  const outer = uniqueEnvName();
+  const inner = uniqueEnvName();
+  withMockedEnv({ [outer]: "outer", [inner]: "outer" }, () => {
+    withMockedEnv({ [inner]: "inner" }, () => {
+      assertEquals(Deno.env.get(outer), "outer");
+      assertEquals(Deno.env.get(inner), "inner");
+    });
+    assertEquals(Deno.env.get(inner), "outer");
+  });
+});
+
+Deno.test("withMockedEnv: code running alongside, outside fn, reads the real env", async () => {
+  const name = uniqueEnvName();
+  const mockedReading = Promise.withResolvers<void>();
+  const outsideRead = Promise.withResolvers<void>();
+  const mocked = withMockedEnv({ [name]: "mocked" }, async () => {
+    mockedReading.resolve();
+    await outsideRead.promise;
+    return Deno.env.get(name);
+  });
+  await mockedReading.promise;
+  assertEquals(Deno.env.get(name), undefined);
+  assertEquals(Deno.env.has(name), false);
+  outsideRead.resolve();
+  assertEquals(await mocked, "mocked");
+});
+
+Deno.test("withMockedEnv: an ambient reset inside fn still reads the overrides", () => {
+  const name = uniqueEnvName();
+  const seen = withMockedEnv(
+    { [name]: "mocked" },
+    () => runOutsideAmbientContext(() => Deno.env.get(name)),
+  );
+  assertEquals(seen, "mocked");
 });

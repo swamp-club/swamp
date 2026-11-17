@@ -27,11 +27,17 @@ import {
 import { ReadModelState } from "../src/infrastructure/datastore_v3/read_model_state.ts";
 import type { V3Datastore } from "../src/infrastructure/datastore_v3/v3_datastore.ts";
 import { acquireV3WriterLock } from "../src/infrastructure/datastore_v3/v3_writer_lock.ts";
-import type {
-  StartRaceMessage,
-  StartRaceRequest,
-} from "./datastore_v3_reader_start_race_worker.ts";
+import {
+  type AlignMessage,
+  type AlignRequest,
+  readerAlignerHost,
+} from "./datastore_v3_reader_aligner.ts";
 import { startLoadedWorker } from "./graph_worker.ts";
+import { startProcessHost } from "./process_host.ts";
+import type {
+  WriteLockHolderMessage,
+  WriteLockHolderRequest,
+} from "./sqlite_write_lock_holder_worker.ts";
 
 const SERVE: CheckoutView = {
   kind: "serve",
@@ -54,25 +60,11 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-async function startOther(request: StartRaceRequest) {
-  const messages: StartRaceMessage[] = [];
-  const worker = await startLoadedWorker<StartRaceMessage>(
-    new URL("./datastore_v3_reader_start_race_worker.ts", import.meta.url),
-    {
-      loadTimeoutMs: 20_000,
-      attempts: 3,
-      onMessage: (message) => {
-        messages.push(message);
-      },
-      onError: (event) => {
-        event.preventDefault();
-        messages.push({ failed: event.message });
-      },
-    },
-  );
-  worker.postMessage(request);
-  const seen = (
-    test: (m: StartRaceMessage) => boolean,
+type OtherMessage = AlignMessage | WriteLockHolderMessage;
+
+function watch(messages: OtherMessage[]) {
+  return (
+    test: (m: OtherMessage) => boolean,
     description: string,
     timeoutMs = 120_000,
   ) =>
@@ -87,7 +79,39 @@ async function startOther(request: StartRaceRequest) {
       }
       return messages.find(test)!;
     });
-  return { worker, seen };
+}
+
+/** another process's read-only command, in a ProcessRuntime of its own */
+function startReader(request: AlignRequest) {
+  const messages: OtherMessage[] = [];
+  const reader = startProcessHost(
+    "reader",
+    readerAlignerHost,
+    (message) => void messages.push(message),
+  );
+  reader.postMessage(request);
+  return { worker: reader, seen: watch(messages) };
+}
+
+/** another process's connection, in a thread: the test's open blocks in SQLite */
+async function startHolder(dbPath: string, holdMs: number) {
+  const messages: OtherMessage[] = [];
+  const worker = await startLoadedWorker<OtherMessage>(
+    new URL("./sqlite_write_lock_holder_worker.ts", import.meta.url),
+    {
+      loadTimeoutMs: 20_000,
+      attempts: 3,
+      onMessage: (message) => void messages.push(message),
+      onError: (event) => {
+        event.preventDefault();
+        messages.push({ failed: event.message });
+      },
+    },
+  );
+  worker.postMessage(
+    { kind: "hold", dbPath, holdMs } satisfies WriteLockHolderRequest,
+  );
+  return { worker, seen: watch(messages) };
 }
 
 Deno.test("alignCheckoutView: a reader waiting for the lease reads once the writer holding it for its whole command has aligned the view", async () => {
@@ -99,8 +123,7 @@ Deno.test("alignCheckoutView: a reader waiting for the lease reads once the writ
     const releaseLease = await acquireV3WriterLock(datastorePath, {
       maxWaitMs: 0,
     });
-    const reader = await startOther({
-      kind: "align",
+    const reader = startReader({
       repoDir,
       datastorePath,
       view: SERVE,
@@ -138,13 +161,13 @@ Deno.test("alignCheckoutView: a reader waiting for the lease reads once the writ
 Deno.test("ReadModelState.open: a new database another process is switching or migrating is opened once its write lock goes", async () => {
   await withTempDir(async (dir) => {
     const dbPath = join(dir, "read_model.db");
-    const holder = await startOther({ kind: "hold", dbPath, holdMs: 300 });
+    const holder = await startHolder(dbPath, 300);
     try {
       await holder.seen(
         (m) => "locked" in m,
         "the other connection's write lock",
       );
-      holder.worker.postMessage("release");
+      holder.worker.postMessage("release" satisfies WriteLockHolderRequest);
       const state = ReadModelState.open(dbPath);
       try {
         assertEquals(state.cursor(), 0);

@@ -38,6 +38,19 @@ jobs:
         with:
           deno-version-file: .tool-versions
 
+      - name: Install test dependencies
+        run: deno task test-deps
+
+      # The Litestream sidecar tests run only with the pinned binary, which
+      # verify-build fetches the same way; without it they are skipped.
+      - name: Fetch the pinned Litestream binary
+        shell: bash
+        run: |
+          set -e
+          LITESTREAM_PATH="$(deno eval "import { LitestreamBinaryProvider } from './src/infrastructure/datastore_v3/litestream/litestream_binary_provider.ts'; console.log((await new LitestreamBinaryProvider({ dataDir: Deno.args[0] }).resolve()).path);" "$RUNNER_TEMP/litestream")"
+          test -x "$LITESTREAM_PATH"
+          echo "SWAMP_LITESTREAM_PATH=$LITESTREAM_PATH" >> "$GITHUB_ENV"
+
       - name: Run tests with --repeats 3
         shell: bash
         env:

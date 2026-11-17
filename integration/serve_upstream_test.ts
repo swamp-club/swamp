@@ -52,7 +52,7 @@ import type { RepositoryContext } from "../src/infrastructure/persistence/reposi
 import { swampPath } from "../src/infrastructure/persistence/paths.ts";
 import { datastoreRecords } from "./usecase_v3_fixtures.ts";
 import { captureLogs } from "./remote_secrets_baseline_harness.ts";
-import type { GrantSpec } from "./serve_upstream_server_worker.ts";
+import type { GrantSpec } from "./serve_upstream_server.ts";
 import {
   type Client,
   dataOf,

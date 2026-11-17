@@ -24,7 +24,6 @@
  */
 
 import { join } from "@std/path";
-import { z } from "zod";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { VERSION } from "../src/infrastructure/runtime/build_info.ts";
 import {
@@ -34,7 +33,6 @@ import {
 import { Data } from "../src/domain/data/data.ts";
 import { datastoreTypeRegistry } from "../src/domain/datastore/datastore_type_registry.ts";
 import type { DatastoreProvider } from "../src/domain/datastore/datastore_provider.ts";
-import { modelRegistry } from "../src/domain/models/model.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import { RepoPath } from "../src/domain/repo/repo_path.ts";
 import { RepoService } from "../src/domain/repo/repo_service.ts";
@@ -53,15 +51,16 @@ import { runInRootUnitOfWork } from "../src/infrastructure/persistence/repo_unit
 import { closeV3Datastores } from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
 import { flushDatastoreSync } from "../src/infrastructure/persistence/datastore_sync_coordinator.ts";
 import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpers.ts";
-import type {
-  GrantSpec,
-  ServeLogEntry,
-  ServeWorkerMessage,
-  ServeWorkerRequest,
-} from "./serve_upstream_server_worker.ts";
+import {
+  type GrantSpec,
+  type ServeLogEntry,
+  type ServeWorkerMessage,
+  type ServeWorkerRequest,
+  startUpstreamServeHost,
+} from "./serve_upstream_server.ts";
+import { startProcessHost } from "./process_host.ts";
 import { UNSET_ENV } from "./usecase_sync_fixtures.ts";
 import type { WorkflowReportBarrier } from "./workflow_report_barrier.ts";
-import { startLoadedWorker } from "./graph_worker.ts";
 
 /**
  * A team member's grants: read, write and run every behavior, read and
@@ -214,8 +213,7 @@ async function startServe(options: ServeOptions): Promise<Serve> {
     | { statuses: readonly string[]; errors: readonly string[] }
     | undefined;
   const onMessage = (message: ServeWorkerMessage) => {
-    if (message.kind === "loaded") return;
-    else if (message.kind === "ready") ready = message;
+    if (message.kind === "ready") ready = message;
     else if (message.kind === "failed") failed = message.error;
     else if (message.kind === "stopped") stopped = true;
     else if (message.kind === "wrote") wroteReply = message;
@@ -229,19 +227,11 @@ async function startServe(options: ServeOptions): Promise<Serve> {
     else if (message.kind === "ran-method") ranMethod = message;
     else logReply = message.entries;
   };
-  // The worker loads its module graph first, which a loaded host can
-  // stretch well past the default wait.
-  const worker = await startLoadedWorker<ServeWorkerMessage>(
-    new URL("./serve_upstream_server_worker.ts", import.meta.url),
-    {
-      loadTimeoutMs: 40_000,
-      attempts: 3,
-      onMessage,
-      onError: (event) => {
-        event.preventDefault();
-        failed = event.message;
-      },
-    },
+  // serve's holds, handles, lock gate and env stay out of the clients' commands
+  const worker = startProcessHost<ServeWorkerRequest, ServeWorkerMessage>(
+    "serve",
+    startUpstreamServeHost,
+    onMessage,
   );
   try {
     worker.postMessage(
@@ -274,20 +264,8 @@ async function startServe(options: ServeOptions): Promise<Serve> {
     worker.terminate();
     throw new Error(`serve failed to start: ${failed}`);
   }
-  // The client's repositories resolve the behavior type in this thread.
+  // serve registered its behavior type in this isolate; the clients use it too
   const modelType = ModelType.create(ready.modelType);
-  modelRegistry.register({
-    type: modelType,
-    version: "2026.01.01.1",
-    methods: {
-      noop: {
-        description: "does nothing",
-        kind: "read",
-        arguments: z.object({}),
-        execute: () => Promise.resolve({}),
-      },
-    },
-  });
   const started = ready;
   let terminated = false;
   return {
@@ -439,7 +417,6 @@ async function startServe(options: ServeOptions): Promise<Serve> {
         );
       } finally {
         worker.terminate();
-        modelRegistry.invalidateType(modelType);
       }
       if (failed !== undefined) throw new Error(`serve failed: ${failed}`);
     },

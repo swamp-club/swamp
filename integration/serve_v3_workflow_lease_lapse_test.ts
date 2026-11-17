@@ -64,7 +64,7 @@ import {
   withScratch,
   writeCommand,
 } from "./serve_upstream_fixtures.ts";
-import type { GrantSpec } from "./serve_upstream_server_worker.ts";
+import type { GrantSpec } from "./serve_upstream_server.ts";
 
 await initializeLogging({});
 

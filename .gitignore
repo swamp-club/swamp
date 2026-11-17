@@ -34,6 +34,7 @@ resources/deno/
 /scripts/dist
 /eval-results/
 /.bin/
+/node_modules/
 
 # Dashboard build artifacts
 packages/dashboard/node_modules/

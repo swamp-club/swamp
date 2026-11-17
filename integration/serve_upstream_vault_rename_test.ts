@@ -36,7 +36,7 @@ import {
   withClientEnv,
   withScratch,
 } from "./serve_upstream_fixtures.ts";
-import type { GrantSpec } from "./serve_upstream_server_worker.ts";
+import type { GrantSpec } from "./serve_upstream_server.ts";
 import { runCli, runCliRejecting, withStdin } from "./usecase_sync_fixtures.ts";
 
 await initializeLogging({});
