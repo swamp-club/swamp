@@ -229,8 +229,14 @@ by that repo's own `serve.yaml`. The host adds `--host 127.0.0.1`, `--port 0`,
 `--address` with the child's public address, `--trusted-hosts` with the host's
 public name, `--trust-proxy` and `--exit-on-stdin-close`. The child reports the
 port it got on its `--json` listening line. A workspace is also given the
-root's address, which [Sign-in](#sign-in) uses. The child's environment is set
-explicitly.
+root's address, which [Sign-in](#sign-in) uses. The child inherits the host's
+environment, as plain serve inherits its operator's, so models, workers and
+serve settings given by environment variable see what they would under plain
+serve. `SWAMP_REPO_DIR` and `SWAMP_DATASTORE` are dropped, since they would
+point every workspace at one repo or datastore, and `SWAMP_HOME` and
+`SWAMP_CONFIG_DIR` are pinned (`src/serve/host/child_env.ts`). Every workspace
+shares that environment, so two workspaces cannot yet hold different cloud
+credentials.
 
 A serve with auth mode `none` relies on its loopback bind and its Host check to
 stay private. Behind the router that bind no longer hides it, so a host whose
@@ -243,10 +249,7 @@ something must forward it to a loopback listener. `host.yaml` can set
 caller. A child reports its auth mode as `authMode` on its `--json` listening
 line. A refused child is stopped as a requested stop, never restarted, and
 answers 503 with state `refused` until the host restarts or its folder is
-removed and added again. Its environment is an allowlist
-(`src/serve/host/child_env.ts`): it carries the host's sign-in (API key, sign-in
-token, nested gate pass) and swamp-club address, and no `SWAMP_SERVE_*` or
-`SWAMP_DATASTORE` setting of the host.
+removed and added again.
 
 `--exit-on-stdin-close` is a new hidden flag: serve starts its drain when stdin
 reaches end of file, as the dashboard child already does. The host keeps each
