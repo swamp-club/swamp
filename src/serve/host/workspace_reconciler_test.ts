@@ -494,3 +494,45 @@ Deno.test("ReasonMemo: reports a key's reason once, again only when it changes o
   assertEquals(memo.changed("a", "busy"), false);
   assertEquals(memo.changed("b", "busy"), true, "b was forgotten");
 });
+
+Deno.test("createWorkspaceReconciler: a wanted file listed by the scan but gone by the read leaves the workspace as it is", async () => {
+  await using h = await harness();
+  await makeRepo(h.dir, "parked");
+  await want(h.dir, "parked", "wanted: suspended\n");
+  await h.begin();
+  assertEquals(h.supervisor.lookup(id("parked"))?.wanted, "suspended");
+
+  const listed = await scanWorkspaces(h.dir);
+  await Deno.remove(join(h.dir, "parked.wanted.yaml"));
+  await h.reconciler.reconcile(listed);
+  assertEquals(h.port.of("parked").length, 0, "not resumed mid-save");
+
+  await want(h.dir, "parked", "wanted: suspended\n");
+  await h.rescan();
+  assertEquals(h.port.of("parked").length, 0);
+
+  await Deno.remove(join(h.dir, "parked.wanted.yaml"));
+  await h.rescan();
+  await waitFor(
+    () => h.observed("parked") === "ready",
+    "a file gone from the listing too means active",
+  );
+});
+
+Deno.test("createWorkspaceReconciler: begin names only the workspaces it handed to the supervisor", async () => {
+  await using h = await harness();
+  await makeRepo(h.dir, "edge-dns");
+  await want(h.dir, "edge-dns", "wanted: active\n");
+  const listed = await scanWorkspaces(h.dir);
+  const reads = await readWantedFiles(h.repository, listed);
+  await Deno.remove(join(h.dir, "edge-dns.wanted.yaml"));
+  const vanished = await readWantedFiles(h.repository, listed);
+  assertEquals(reads.get("edge-dns")?.kind, "found");
+  assertEquals(vanished.get("edge-dns")?.kind, "vanished");
+  assertEquals(h.reconciler.begin(listed, vanished), []);
+  await h.rescan();
+  await waitFor(
+    () => h.observed("edge-dns") === "ready",
+    "started next rescan",
+  );
+});

@@ -968,13 +968,21 @@ Deno.test("serve host: a host shut down while a removal waits on the stopping se
     await release.promise;
   };
   const host = await start(folder.dir, NO_ROOT, port);
-  const url = `http://127.0.0.1:${host.port}/w/edge-dns/`;
-  await waitFor(() => answers(url, "workspace:edge-dns"), "edge-dns to answer");
-  await want(folder.dir, "edge-dns", "wanted: deleted\n");
-  await stopping.promise;
-  const shutdown = host.shutdown();
-  release.resolve();
-  await shutdown;
+  try {
+    const url = `http://127.0.0.1:${host.port}/w/edge-dns/`;
+    await waitFor(
+      () => answers(url, "workspace:edge-dns"),
+      "edge-dns to answer",
+    );
+    await want(folder.dir, "edge-dns", "wanted: deleted\n");
+    await stopping.promise;
+    const shutdown = host.shutdown();
+    release.resolve();
+    await shutdown;
+  } finally {
+    release.resolve();
+    await host.shutdown();
+  }
   assert(
     !(await workspacesEntries(folder.dir)).includes("edge-dns"),
     "the folder is not left under its real name",

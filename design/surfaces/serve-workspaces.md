@@ -403,9 +403,11 @@ The host reads the wanted files with each rescan of `workspaces/`
   operator resuming by hand changes the file, and the services always write a
   new `changedAt`.
 - A wanted file that cannot be read (bad YAML, an unknown field, over 4 KiB,
-  not a regular file) is reported in the host's log and the status file and
-  changes nothing: the workspace keeps the last state read whole, or `active`
-  when the host has read none.
+  not a regular file) is reported in the host's log, and in the status file
+  once the workspace has a serve, and changes nothing: the workspace keeps the
+  last state read whole, or `active` when the host has read none. A wanted file
+  the scan listed but that is gone when it is read, as while an editor saves by
+  removing and recreating it, also changes nothing; the next scan decides.
 - A wanted file that is `active` or `suspended` with no folder beside it is left
   alone until the folder appears.
 - A folder removed by hand stops its serve, as before, and its status file is

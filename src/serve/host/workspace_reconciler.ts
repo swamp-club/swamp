@@ -40,7 +40,8 @@ import {
 
 const logger = getSwampLogger(["serve", "host", "workspaces"]);
 
-export type WantedReads = ReadonlyMap<string, HostedWorkspaceRead>;
+export type WantedRead = HostedWorkspaceRead | { readonly kind: "vanished" };
+export type WantedReads = ReadonlyMap<string, WantedRead>;
 
 export interface WorkspaceReconcilerOptions {
   readonly workspacesDir: string;
@@ -94,14 +95,18 @@ export class ReasonMemo {
   }
 }
 
-/** a wanted file is read only for a name the scan saw one for */
+/**
+ * a wanted file is read only for a name the scan saw one for; one gone by the
+ * read, as while an editor saves by removing and recreating it, is "vanished"
+ */
 export async function readWantedFiles(
   repository: HostedWorkspaceRepository,
   scan: WorkspaceScan,
-): Promise<Map<string, HostedWorkspaceRead>> {
-  const reads = new Map<string, HostedWorkspaceRead>();
+): Promise<Map<string, WantedRead>> {
+  const reads = new Map<string, WantedRead>();
   for (const name of scan.wantedFiles) {
-    reads.set(name, await repository.findByName(name));
+    const read = await repository.findByName(name);
+    reads.set(name, read.kind === "absent" ? { kind: "vanished" } : read);
   }
   return reads;
 }
@@ -115,6 +120,7 @@ export function createWorkspaceReconciler(
   const pending = new Set<Promise<void>>();
   // hidden folders a removal of ours is working on, so the sweep leaves them
   const sweeping = new Set<string>();
+  const sweeps = new Map<string, Promise<void>>();
   // a scan listed before a removal finished still shows its folder
   const removedAt = new Map<string, number>();
   const removalFailures = new ReasonMemo();
@@ -153,7 +159,10 @@ export function createWorkspaceReconciler(
     }
     for (const name of [...names].sort()) {
       if (removedAt.has(name)) continue;
-      step(name, folders.has(name), reads.get(name) ?? { kind: "absent" });
+      const read = reads.get(name) ?? { kind: "absent" };
+      // the next scan, listed after the save, decides
+      if (read.kind === "vanished") continue;
+      step(name, folders.has(name), read);
     }
     sweepFailures.retain(new Set(scan.leftovers));
     for (const leftover of scan.leftovers) sweep(leftover);
@@ -282,6 +291,8 @@ export function createWorkspaceReconciler(
     }
     for await (const { name: entry } of Deno.readDir(workspacesDir)) {
       if (deletingFolderOwner(entry) !== name) continue;
+      // a sweep that began before this removal may still be on it
+      await sweeps.get(entry);
       sweeping.add(entry);
       try {
         await Deno.remove(join(workspacesDir, entry), { recursive: true });
@@ -343,8 +354,8 @@ export function createWorkspaceReconciler(
     const owner = known.get(deletingFolderOwner(leftover) ?? "");
     if (owner?.removing || owner?.record?.wanted === "deleted") return;
     sweeping.add(leftover);
-    track(
-      Deno.remove(join(workspacesDir, leftover), { recursive: true }).then(
+    const work = Deno.remove(join(workspacesDir, leftover), { recursive: true })
+      .then(
         () => sweepFailures.clear(leftover),
         (error) => {
           if (error instanceof Deno.errors.NotFound) {
@@ -357,14 +368,21 @@ export function createWorkspaceReconciler(
             { folder: leftover, error },
           );
         },
-      ).finally(() => sweeping.delete(leftover)),
-    );
+      ).finally(() => {
+        sweeping.delete(leftover);
+        sweeps.delete(leftover);
+      });
+    sweeps.set(leftover, work);
+    track(work);
   };
 
   return {
     begin(scan, reads) {
       apply(scan, reads);
-      return scan.workspaces.filter((name) => !knownOf(name).removing);
+      return scan.workspaces.filter((name) =>
+        known.get(name)?.removing !== true &&
+        supervisor.lookup(workspaceServe(name)) !== undefined
+      );
     },
 
     async reconcile(scan) {
