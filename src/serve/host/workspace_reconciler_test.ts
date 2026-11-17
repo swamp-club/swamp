@@ -394,6 +394,8 @@ Deno.test({
     await waitFor(() => h.observed("edge-dns") === "ready", "ready");
 
     await want(h.dir, "edge-dns", "wanted: deleted\n");
+    // a write in flight when the folder turns read-only would leave its temp file
+    await h.statusWriter.drain();
     // a folder that cannot be renamed out of makes the removal fail
     await Deno.chmod(h.dir, 0o555);
     try {
