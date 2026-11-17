@@ -498,6 +498,13 @@ const NOT_A_SINK: Record<string, Record<string, string>> = {
       CONFIG_WRITE,
     "src/infrastructure/persistence/repo_marker_repository.ts: RepoMarkerRepository":
       CONFIG_WRITE,
+    "src/infrastructure/persistence/hosted_workspace_file_repository.ts: HostedWorkspaceFileRepository":
+      CONFIG_WRITE,
+    "src/infrastructure/persistence/hosted_workspace_status_file.ts: writeHostedWorkspaceStatus":
+      "Writes a hosted workspace's observed state, restart count and a " +
+      "reason: a wanted-file or admission message, or the last lines of the " +
+      "child serve's own stderr, which the host already logs; no expression " +
+      "is evaluated into it.",
     "src/infrastructure/persistence/server_credential_repository.ts: FileServerCredentialRepository":
       CONFIG_WRITE,
     "src/infrastructure/persistence/shared_datastore_write_tracker.ts: SharedDatastoreWriteTracker":

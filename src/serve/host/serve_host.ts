@@ -217,12 +217,12 @@ interface HostStack {
 }
 
 // the listener closes last, so a request during the drain is answered, not
-// refused; the status writer drains after every serve has reported stopped
+// refused; status files are marked stopped once no serve can report again
 async function stopAll(stack: HostStack): Promise<void> {
   await stack.watcher?.stop();
-  stack.statusWriter.beginShutdown();
   await stack.supervisor.shutdown();
   await stack.reconciler.drain();
+  stack.statusWriter.markShutDown();
   await stack.statusWriter.drain();
   stack.routerAbort.abort();
   await stack.server.shutdown();

@@ -377,3 +377,33 @@ Deno.test({
     }
   },
 });
+
+Deno.test({
+  name:
+    "createWorkspaceReconciler: a removal that failed is tried again at the next rescan, even after the file is edited back",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await using h = await harness();
+    await makeRepo(h.dir, "edge-dns");
+    await h.begin();
+    await waitFor(() => h.observed("edge-dns") === "ready", "ready");
+
+    await want(h.dir, "edge-dns", "wanted: deleted\n");
+    // a folder that cannot be renamed out of makes the removal fail
+    await Deno.chmod(h.dir, 0o555);
+    try {
+      await h.rescan();
+      await h.reconciler.drain();
+    } finally {
+      await Deno.chmod(h.dir, 0o755);
+    }
+    assert(await exists(join(h.dir, "edge-dns")), "the removal failed");
+
+    await want(h.dir, "edge-dns", "wanted: active\n");
+    await h.rescan();
+    await h.reconciler.drain();
+    await h.statusWriter.drain();
+    assertEquals(await entries(h.dir), []);
+    assertEquals(h.port.of("edge-dns").length, 1, "never started again");
+  },
+});

@@ -21,13 +21,13 @@ import { UserError } from "../errors.ts";
 import type { WantedServeState } from "./managed_serve.ts";
 import { parseWorkspaceName } from "../workspace/workspace_name.ts";
 
-export type HostedWorkspaceWanted = "active" | "suspended" | "deleted";
-
-export const HOSTED_WORKSPACE_WANTED: readonly HostedWorkspaceWanted[] = [
+export const HOSTED_WORKSPACE_WANTED = [
   "active",
   "suspended",
   "deleted",
-];
+] as const;
+
+export type HostedWorkspaceWanted = typeof HOSTED_WORKSPACE_WANTED[number];
 
 export interface HostedWorkspaceRecord {
   readonly name: string;

@@ -807,6 +807,34 @@ Deno.test("serve host: a failed workspace names its reason and restarts, and res
   }
 });
 
+Deno.test("serve host: a shutdown marks a failed workspace's status file stopped", async () => {
+  await using folder = await hostFolder();
+  await makeRepo(join(folder.dir, "workspaces", "edge-dns"));
+  const port = new StandInPort();
+  port.crashing.add("edge-dns");
+  const host = await start(folder.dir, NO_ROOT, port, {
+    policy: {
+      restartDelayMs: 1,
+      initialBackoffMs: 1,
+      maxBackoffMs: 1,
+      crashWindowMs: 600_000,
+      maxCrashesInWindow: 2,
+    },
+  });
+  try {
+    await waitFor(
+      async () =>
+        (await readStatus(folder.dir, "edge-dns"))?.state === "failed",
+      "the status file to say failed",
+    );
+  } finally {
+    await host.shutdown();
+  }
+  const status = await readStatus(folder.dir, "edge-dns");
+  assertEquals(status?.state, "stopped");
+  assertEquals(status?.reason, null);
+});
+
 Deno.test("serve host: at startup a suspended workspace and a wanted file without a folder start nothing", async () => {
   await using folder = await hostFolder();
   await makeRepo(join(folder.dir, "workspaces", "parked"));

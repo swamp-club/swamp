@@ -72,9 +72,8 @@ export async function scanWorkspaces(dir: string): Promise<WorkspaceScan> {
   }
   for (const entry of entries) {
     if (entry.name.startsWith(".")) {
-      if (entry.isDirectory && isDeletingFolderName(entry.name)) {
-        leftovers.push(entry.name);
-      }
+      // a removal renames whatever is there, a link or a file included
+      if (isDeletingFolderName(entry.name)) leftovers.push(entry.name);
       continue;
     }
     const file = hostedWorkspaceFileOf(entry.name);

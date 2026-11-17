@@ -213,25 +213,59 @@ Deno.test("createStatusWriter: forget waits for the write in flight and drops ev
   assertEquals(writes.written.at(-1)?.status.state, "starting");
 });
 
-Deno.test("createStatusWriter: after beginShutdown a serve the shutdown stopped is written as stopped", async () => {
-  const written: HostedWorkspaceStatus[] = [];
+Deno.test("createStatusWriter: markShutDown rewrites every file as stopped, a failed serve included", async () => {
+  const written: { name: string; status: HostedWorkspaceStatus }[] = [];
   const writer = createStatusWriter({
     workspacesDir: "/unused",
-    write: (_name, status) => {
-      written.push(status);
+    write: (name, status) => {
+      written.push({ name, status });
       return Promise.resolve();
     },
   });
   writer.report(status({ observed: "ready", restarts: 1 }));
+  writer.report(status({
+    id: workspaceServe("broken"),
+    observed: "failed",
+    lastExit: { code: 1, stderrTail: ["boom"] },
+  }));
+  writer.report(status({ id: workspaceServe("gone"), observed: "stopped" }));
   await writer.drain();
-  writer.beginShutdown();
+  await writer.forget("gone");
+  written.length = 0;
+
+  writer.markShutDown();
   writer.report(status({
     observed: "backoff",
     restarts: 1,
     lastExit: { code: 0, stderrTail: [] },
   }));
   await writer.drain();
-  assertEquals(written.at(-1)?.state, "stopped");
-  assertEquals(written.at(-1)?.reason, null);
-  assertEquals(written.at(-1)?.restarts, 1);
+  const last = new Map(written.map((w) => [w.name, w.status]));
+  assertEquals([...last.keys()].sort(), ["broken", "edge-dns"]);
+  assertEquals(last.get("edge-dns")?.state, "stopped");
+  assertEquals(last.get("edge-dns")?.reason, null);
+  assertEquals(last.get("edge-dns")?.restarts, 1);
+  assertEquals(last.get("broken")?.state, "stopped");
+});
+
+Deno.test("createStatusWriter: a status reported at any moment around the end of a write is written", async () => {
+  for (let delay = 0; delay < 12; delay++) {
+    const written: string[] = [];
+    const writer = createStatusWriter({
+      workspacesDir: "/unused",
+      write: (_name, s) => {
+        written.push(s.state);
+        return Promise.resolve();
+      },
+    });
+    writer.report(status({ observed: "backoff" }));
+    for (let tick = 0; tick < delay; tick++) await Promise.resolve();
+    writer.report(status({ observed: "failed" }));
+    await writer.drain();
+    assertEquals(
+      written.at(-1),
+      "failed",
+      `reported after ${delay} microtasks`,
+    );
+  }
 });

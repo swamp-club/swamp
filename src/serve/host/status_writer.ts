@@ -46,8 +46,8 @@ export interface StatusWriter {
   /** waits for the write in flight, then writes nothing more until track */
   forget(name: string): Promise<void>;
   track(name: string): void;
-  /** the supervisor reads a child stopped by shutdown as a crash; the file says stopped */
-  beginShutdown(): void;
+  /** after the supervisor's shutdown: every file says stopped, whatever the serve last reported */
+  markShutDown(): void;
   /** waits for every write, including those queued while it waits */
   drain(): Promise<void>;
 }
@@ -114,7 +114,11 @@ export function createStatusWriter(options: StatusWriterOptions): StatusWriter {
           );
         }
       }
-    })().finally(() => slot.writing = null);
+    })().finally(() => {
+      slot.writing = null;
+      // a status reported after the loop's last check but before this ran
+      if (slot.dirty) schedule(name, slot);
+    });
   };
 
   return {
@@ -145,8 +149,9 @@ export function createStatusWriter(options: StatusWriterOptions): StatusWriter {
       slot.latest = null;
     },
 
-    beginShutdown() {
+    markShutDown() {
       shuttingDown = true;
+      for (const [name, slot] of slots) schedule(name, slot);
     },
 
     async drain() {

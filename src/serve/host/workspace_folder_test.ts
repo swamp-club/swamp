@@ -82,12 +82,14 @@ Deno.test("scanWorkspaces: passes over wanted and status files, and finds wanted
     await Deno.writeTextFile(join(dir, "Bad.wanted.yaml"), "");
     const leftover = deletingFolderName("old");
     await Deno.mkdir(join(dir, leftover));
+    const leftoverFile = deletingFolderName("was-a-link");
+    await Deno.writeTextFile(join(dir, leftoverFile), "");
     await Deno.writeTextFile(join(dir, ".old.deleting-not-a-uuid"), "");
 
     const scan = await scanWorkspaces(dir);
     assertEquals(scan.workspaces, ["edge-dns"]);
     assertEquals(scan.wantedFiles, ["edge-dns", "gone"]);
-    assertEquals(scan.leftovers, [leftover]);
+    assertEquals(scan.leftovers, [leftover, leftoverFile].sort());
     assertEquals(scan.skipped.map((s) => s.name), ["Bad.wanted.yaml"]);
   });
 });

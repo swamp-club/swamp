@@ -123,8 +123,9 @@ export function createWorkspaceReconciler(
 
   const step = (name: string, folder: boolean, read: HostedWorkspaceRead) => {
     const entry = knownOf(name);
-    if (entry.removing) {
-      // deleted is never left: an edit after removal began is not obeyed
+    // deleted is never left: an edit after removal began is not obeyed, and a
+    // removal that failed is tried again whatever the file now says
+    if (entry.removing || entry.record?.wanted === "deleted") {
       if (
         read.kind === "found" && read.workspace.wanted !== "deleted" &&
         !entry.ignoredLogged
@@ -135,6 +136,7 @@ export function createWorkspaceReconciler(
           { name },
         );
       }
+      if (!entry.removing) startRemoval(name, entry);
       return;
     }
 
@@ -190,7 +192,6 @@ export function createWorkspaceReconciler(
 
   const startRemoval = (name: string, entry: Known) => {
     entry.removing = true;
-    entry.ignoredLogged = false;
     track(
       remove(name, entry).catch((error) => {
         logger.error(
@@ -223,10 +224,10 @@ export function createWorkspaceReconciler(
     }
     await removeHostedWorkspaceStatus(workspacesDir, name);
     await repository.remove(name);
-    entry.record = null;
-    entry.folder = false;
-    entry.problem = null;
     statusWriter.setProblem(name, null);
+    // a cleanup still holding this entry stands down; the name starts afresh
+    entry.generation++;
+    known.delete(name);
     logger.info("Removed workspace {name}", { name });
   };
 

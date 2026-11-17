@@ -21,6 +21,7 @@ import { join } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { z } from "zod";
 import {
+  HOSTED_WORKSPACE_WANTED,
   HostedWorkspace,
   type HostedWorkspaceRead,
   type HostedWorkspaceRepository,
@@ -34,7 +35,7 @@ export const STATUS_FILE_SUFFIX = ".status.yaml";
 export const MAX_WANTED_FILE_BYTES = 4096;
 
 const WantedFileSchema = z.object({
-  wanted: z.enum(["active", "suspended", "deleted"]),
+  wanted: z.enum(HOSTED_WORKSPACE_WANTED),
   creator: z.string().min(1).nullable().optional(),
   // YAML reads an unquoted timestamp an operator types as a date
   changedAt: z.union([z.string().min(1), z.date()]).transform((value) =>
@@ -89,11 +90,13 @@ export class HostedWorkspaceFileRepository
       if (error instanceof Deno.errors.NotFound) return { kind: "absent" };
       return unreadable(messageOf(error));
     }
-    // a link or a pipe is never followed or opened
+    // refuses a link or a pipe found here; one swapped in before the open is
+    // workspace code acting as the host's user, outside what the host defends
     if (!info.isFile) return unreadable("it is not a regular file");
     let text: string;
     try {
       const read = await readCapped(path, MAX_WANTED_FILE_BYTES);
+      if (read === "not a file") return unreadable("it is not a regular file");
       if (read === null) {
         return unreadable(`it is larger than ${MAX_WANTED_FILE_BYTES} bytes`);
       }
@@ -147,8 +150,12 @@ export async function removeIfPresent(path: string): Promise<void> {
 }
 
 /** null when the file holds more than `cap` bytes */
-async function readCapped(path: string, cap: number): Promise<string | null> {
+async function readCapped(
+  path: string,
+  cap: number,
+): Promise<string | null | "not a file"> {
   using file = await Deno.open(path, { read: true });
+  if (!(await file.stat()).isFile) return "not a file";
   const buffer = new Uint8Array(cap + 1);
   let filled = 0;
   while (filled < buffer.length) {
