@@ -27,6 +27,8 @@ export interface CommandRoute {
   /** repo-relative path of the file `load` imports */
   readonly module: string;
   readonly needsFullTree: boolean;
+  /** a group's hidden subcommand words, which a completion walk refuses with a listing only the full tree holds */
+  readonly hiddenSubcommands?: readonly string[];
   /** `rest` is the argv after the command word, for routes that load part of a group */
   load(rest: readonly string[]): Promise<AnyCommand>;
 }
@@ -195,7 +197,8 @@ function selectCompletionCallback(
   const target = findRoute(routes, name);
   if (
     !target || target.hidden ||
-    (target.needsFullTree && target !== completions)
+    (target.needsFullTree && target !== completions) ||
+    (after[2] !== undefined && target.hiddenSubcommands?.includes(after[2]))
   ) {
     return { kind: "all" };
   }

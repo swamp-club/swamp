@@ -283,6 +283,21 @@ Deno.test("collectClusterInstances: standalone fallback derives https from TLS o
   assertEquals(instances[0].address, "https://0.0.0.0:443");
 });
 
+Deno.test("collectClusterInstances: standalone fallback reads empty TLS paths as http", async () => {
+  const instances = await collectClusterInstances({
+    controlPlaneStore: makeStore([]),
+    instanceId: "local-id",
+    serveOptions: {
+      port: 41_000,
+      host: "127.0.0.1",
+      certFile: "",
+      keyFile: "",
+    } as MergedServeOptions,
+    signal: new AbortController().signal,
+  });
+  assertEquals(instances[0].address, "http://127.0.0.1:41000");
+});
+
 Deno.test("collectClusterInstances: multiple instances with mixed status", async () => {
   const now = new Date();
   const healthy = makeHeartbeat("inst-1", now.toISOString(), "http://a:9090");
@@ -445,6 +460,18 @@ Deno.test("redactServeOptions: omits TLS key file", () => {
   assertEquals(tls.enabled, true);
   assertEquals(tls.certFile, "/path/to/cert.pem");
   assertEquals(Object.hasOwn(tls, "keyFile"), false);
+});
+
+Deno.test("redactServeOptions: an empty certificate path reports TLS off, as serve reads it", () => {
+  const redacted = redactServeOptions(
+    {
+      port: 8080,
+      host: "127.0.0.1",
+      certFile: "",
+      keyFile: "",
+    } as unknown as MergedServeOptions,
+  );
+  assertEquals(redacted.tls, { enabled: false, certFile: null });
 });
 
 Deno.test("redactServeOptions: handles no webhooks", () => {

@@ -21,7 +21,11 @@ import { assertEquals } from "@std/assert";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import "../src/domain/models/models.ts";
 import type { AnyCommand } from "../src/cli/cli_schema.ts";
-import { VALUE_ONLY_STDOUT_COMMANDS } from "../src/cli/stdout_contract.ts";
+import {
+  JSON_LOG_LINE_COMMANDS,
+  VALUE_ONLY_STDOUT_COMMANDS,
+} from "../src/cli/stdout_contract.ts";
+import { SERVE_ROUTES } from "../src/cli/commands/serve_routes.ts";
 import { inviteCommand } from "../src/cli/commands/invite.ts";
 import { firstRuleCommand } from "../src/cli/commands/invite_link.ts";
 import { createVaultCommand } from "../src/cli/commands/vault.ts";
@@ -89,6 +93,23 @@ Deno.test("every value-on-stdout registry entry names a registered command", () 
     unresolved,
     [],
     `stdout_contract.ts lists commands that do not exist:\n  ${
+      unresolved.join("\n  ")
+    }`,
+  );
+});
+
+Deno.test("every JSON-log-line registry entry names a serve subcommand", () => {
+  const routed = new Set(SERVE_ROUTES.map((route) => route.name));
+  const unresolved = JSON_LOG_LINE_COMMANDS
+    .filter(([command, subcommand]) =>
+      command !== "serve" || subcommand === undefined || !routed.has(subcommand)
+    )
+    .map((path) => path.join(" "));
+  // a stale entry leaves that command's diagnostics dropped in --json mode
+  assertEquals(
+    unresolved,
+    [],
+    `stdout_contract.ts lists JSON-log-line commands that are not serve subcommands:\n  ${
       unresolved.join("\n  ")
     }`,
   );

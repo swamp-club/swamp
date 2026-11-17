@@ -3320,8 +3320,8 @@ export async function collectClusterInstances(
   if (instances.length === 0 && opts.instanceId) {
     let address: string | null = null;
     if (opts.serveOptions) {
-      const scheme = opts.serveOptions.certFile !== undefined &&
-          opts.serveOptions.keyFile !== undefined
+      // an empty path turns TLS off, as serve reads it
+      const scheme = opts.serveOptions.certFile && opts.serveOptions.keyFile
         ? "https"
         : "http";
       address =
@@ -3397,8 +3397,8 @@ export function redactServeOptions(
     port: opts.port,
     host: opts.host,
     tls: {
-      enabled: opts.certFile !== undefined && opts.keyFile !== undefined,
-      certFile: opts.certFile ?? null,
+      enabled: Boolean(opts.certFile && opts.keyFile),
+      certFile: opts.certFile || null,
     },
     authMode: opts.authMode,
     scheduling: {

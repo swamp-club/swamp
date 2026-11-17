@@ -43,6 +43,22 @@ export function textFormatter(): TextFormatter {
   return getTextFormatter({ timestamp: TIMESTAMP_FORMAT });
 }
 
+const messageOnly = getTextFormatter({
+  timestamp: "none",
+  format: ({ message }) => message,
+});
+
+/** a record as one line of a JSON-mode event stream, values rendered as in log mode */
+export function jsonLogLine(record: LogRecord): string {
+  return JSON.stringify({
+    status: "log",
+    level: record.level,
+    category: record.category.join("."),
+    message: messageOnly(record).replace(/\n$/, ""),
+    timestamp: new Date(record.timestamp).toISOString(),
+  });
+}
+
 /**
  * takes a width getter so logger.ts owns the mutable width state and this
  * module stays a leaf

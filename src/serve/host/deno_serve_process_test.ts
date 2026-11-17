@@ -24,7 +24,7 @@ import {
   exitCode,
   linesOf,
   pollReady,
-  readListeningPort,
+  readListening,
   StderrTail,
 } from "./deno_serve_process.ts";
 import { serveChildArgs } from "./serve_process.ts";
@@ -34,31 +34,37 @@ function bytes(...chunks: string[]): ReadableStream<Uint8Array> {
   return ReadableStream.from(chunks.map((c) => encoder.encode(c)));
 }
 
-Deno.test("readListeningPort: returns the port from the listening line and leaves the rest unread", async () => {
+Deno.test("readListening: returns the port and auth mode from the listening line and leaves the rest unread", async () => {
   const lines = linesOf(bytes(
     "not json\n",
     '{"status":"starting"}\n',
-    '{"status":"listening","host":"127.0.0.1","port":41001}\n',
+    '{"status":"listening","host":"127.0.0.1","port":41001,"authMode":"oauth"}\n',
     "after\n",
   ));
-  assertEquals(await readListeningPort(lines), 41_001);
+  assertEquals(await readListening(lines), {
+    port: 41_001,
+    authMode: "oauth",
+  });
   assertEquals((await lines.read()).value, "after");
 });
 
-Deno.test("readListeningPort: reads a line split across chunks", async () => {
-  const lines = linesOf(bytes('{"status":"list', 'ening","po', 'rt":7}\n'));
-  assertEquals(await readListeningPort(lines), 7);
+Deno.test("readListening: reads a line split across chunks", async () => {
+  const lines = linesOf(
+    bytes('{"status":"list', 'ening","po', 'rt":7,"authMode":"none"}\n'),
+  );
+  assertEquals(await readListening(lines), { port: 7, authMode: "none" });
 });
 
-Deno.test("readListeningPort: ignores a port that is not a valid TCP port", async () => {
+Deno.test("readListening: ignores a line with an invalid port or no auth mode", async () => {
   const lines = linesOf(bytes(
-    '{"status":"listening","port":"41001"}\n',
-    '{"status":"listening","port":0}\n',
-    '{"status":"listening","port":70000}\n',
-    '{"status":"listening","port":1.5}\n',
+    '{"status":"listening","port":"41001","authMode":"token"}\n',
+    '{"status":"listening","port":0,"authMode":"token"}\n',
+    '{"status":"listening","port":70000,"authMode":"token"}\n',
+    '{"status":"listening","port":1.5,"authMode":"token"}\n',
+    '{"status":"listening","port":41001}\n',
     "null\n",
   ));
-  assertEquals(await readListeningPort(lines), null);
+  assertEquals(await readListening(lines), null);
 });
 
 Deno.test("linesOf: cuts a long line, drops its rest and reads on", async () => {
@@ -70,8 +76,8 @@ Deno.test("linesOf: cuts a long line, drops its rest and reads on", async () => 
   assertEquals(read, ["abcd", "next", "last"]);
 });
 
-Deno.test("readListeningPort: null when the stream ends before listening", async () => {
-  assertEquals(await readListeningPort(linesOf(bytes("booting\n"))), null);
+Deno.test("readListening: null when the stream ends before listening", async () => {
+  assertEquals(await readListening(linesOf(bytes("booting\n"))), null);
 });
 
 Deno.test("pollReady: retries until /ready answers 200", async () => {

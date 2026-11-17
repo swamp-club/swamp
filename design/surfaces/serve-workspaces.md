@@ -1,13 +1,16 @@
 ---
 audience: operator, maintainer
 enables: [serve]
-last-verified: 2026-11-13 @ 8c9a21d85
+last-verified: 2026-11-17 @ 93be0a897
 ---
 
 # Serve workspaces
 
-**Status:** Plan. Nothing here is built. It describes how one address hosts
-several serves, which promoting a local workspace to a server assumes.
+**Status:** Partly built. Addresses with a path and the host (steps 1 to 7 of
+the [execution plan](#execution-plan)) are built: `swamp serve host` runs a
+serve per workspace folder made by hand. Lifecycle, sign-in and the dashboard
+are not. It describes how one address hosts several serves, which promoting a
+local workspace to a server assumes.
 
 ## Outcome
 
@@ -127,7 +130,8 @@ reverse proxy. The dashboard is the exception; see [Dashboard](#dashboard).
 
 ## The host
 
-`swamp serve host` runs in a **host folder**:
+`swamp serve host` runs in a **host folder**. It is a hidden command for now:
+it runs, but serve's help and `swamp help serve` do not list it.
 
 ```
 <host folder>/
@@ -226,13 +230,42 @@ by that repo's own `serve.yaml`. The host adds `--host 127.0.0.1`, `--port 0`,
 `--address` with the child's public address, `--trusted-hosts` with the host's
 public name, `--trust-proxy` and `--exit-on-stdin-close`. The child reports the
 port it got on its `--json` listening line. A workspace is also given the
-root's address, which [Sign-in](#sign-in) uses. The child's environment is set
-explicitly.
+root's address, which [Sign-in](#sign-in) uses. The child inherits the host's
+environment, as plain serve inherits its operator's, so models and workers see
+what they would under plain serve. `SWAMP_REPO_DIR` and `SWAMP_DATASTORE` are dropped, since they would
+point every workspace at one repo or datastore, and `SWAMP_HOME` and
+`SWAMP_CONFIG_DIR` are pinned (`src/serve/host/child_env.ts`).
+No serve setting is passed: an environment variable outranks each
+workspace's `serve.yaml`, so one would set grants, addresses and policy (the
+explicit-grant rules, the dispatch allow-list, run limits) for every workspace,
+unseen by its team. Every name in `SERVE_ENV_MAP`
+(`src/serve/serve_env_map.ts`) is held back, and the OAuth client secret with
+it, except `SWAMP_CA_CERT`, the operator's outbound trust. The host warns at
+startup for each one it holds back. `SWAMP_SERVE_CERT_FILE` and `SWAMP_SERVE_KEY_FILE` are set empty, which
+outranks a `tls:` block in the repo's `serve.yaml`: the host terminates TLS and
+polls `/ready` over plain loopback HTTP.
+
+The host is one trust domain, as plain serve is: whoever starts it is trusted
+by every workspace, as plain serve's operator is trusted by its repo. Every
+workspace's models see the host's whole environment, cloud credentials
+included, by the same rules as under plain serve: code inside the serve reads
+all of it, a method's external tool gets it without `SWAMP_*`, and a worker
+gets what the workspace's own `dispatch-env-allow` lets through. Two workspaces
+cannot hold different credentials. Only serve settings are held back, because
+they would override a team's `serve.yaml` where the team cannot see it.
 
 A serve with auth mode `none` relies on its loopback bind and its Host check to
 stay private. Behind the router that bind no longer hides it, so a host whose
 listener is off loopback refuses to start or route to a child in auth mode
-`none`.
+`none`. A host on loopback behind a proxy refuses it too, since the proxy in
+front is usually public: one with `trust-proxy: true`, or one whose `address`
+is not a loopback name, since each child trusts that name in its Host check and
+something must forward it to a loopback listener. `host.yaml` can set
+`allow-unauthenticated-behind-proxy: true` for a proxy that authenticates every
+caller. A child reports its auth mode as `authMode` on its `--json` listening
+line. A refused child is stopped as a requested stop, never restarted, and
+answers 503 with state `refused` until the host restarts or its folder is
+removed and added again.
 
 `--exit-on-stdin-close` is a new hidden flag: serve starts its drain when stdin
 reaches end of file, as the dashboard child already does. The host keeps each
@@ -246,8 +279,39 @@ serve becomes a root by naming its repo there and keeping its settings in its
 `serve.yaml`. Its address does not change.
 
 **The folder is the list.** Every repo folder in `workspaces/` whose name is a
-workspace name is a workspace. The supervisor watches the folder. An operator
-can make a workspace by hand, and the lifecycle below does the same thing.
+workspace name and that holds a `.swamp.yaml` is a workspace. The host watches
+the folder without recursing, so the children's own writes never wake it, and
+rescans it every 5 seconds, which finds a marker written after its folder. An
+operator can make a workspace by hand, and the lifecycle below does the same
+thing. A removed folder's workspace is stopped and answers 404.
+
+**`host.yaml`** (`src/serve/host/host_config.ts`) refuses unknown keys and names
+the field that is wrong:
+
+| Key                                  | Default                       | Meaning                                                                                  |
+| ------------------------------------ | ----------------------------- | ---------------------------------------------------------------------------------------- |
+| `address`                            | required                      | The public address; may carry a path when a proxy serves the host under one             |
+| `listen.host`                        | `127.0.0.1`                   | Off loopback needs TLS, as for serve                                                     |
+| `listen.port`                        | `443` with TLS, `8080` without |                                                                                          |
+| `listen.cert-file`, `listen.key-file` | none                          | Given together; relative to the host folder                                              |
+| `root`                               | none                          | The root workspace's repo; relative to the host folder, never inside `workspaces/` nor containing it; a folder without `.swamp.yaml` is refused at startup |
+| `trust-proxy`                        | `false`                       | The host is behind a proxy, whose forwarding headers it passes on                        |
+| `allow-unauthenticated-behind-proxy` | `false`                       | Admits a child in auth mode `none` behind a proxy; only on a loopback listener with `trust-proxy` or a public `address` |
+
+The host binds its listener before it starts any child, so a listener that
+cannot bind starts nothing. SIGTERM and SIGINT stop the watcher, drain every
+child, then close the listener. SIGHUP follows plain serve: where serve would
+reload (stdin is not a terminal) the host sends SIGHUP to every ready child,
+skipping any still starting, which may not handle it yet; at a terminal it is a
+hangup and drains like SIGTERM.
+
+With `--json`, stdout is one JSON object per line: `listening`, `workspaces`
+and `stopped` by `status`, and every log record, the children's stderr
+included, as `status: "log"` with its level, category and message
+(`JSON_LOG_LINE_COMMANDS` in `src/cli/stdout_contract.ts`). Other commands drop
+records below fatal in JSON mode. A 503 names only the state, since it goes to
+anyone who can reach the address; the reason, such as an admission refusal or
+a child's exit, is in that log.
 
 ## A hosted workspace
 
@@ -515,8 +579,8 @@ and is designed separately.
 - **Tenants that do not trust each other.** Workspace processes run as one OS
   user, and extension code runs inside them. Code in one workspace can read and
   write another's folder, vault key, datastore files and wanted file, and read
-  the OAuth client secret the host passes. This design separates failures, not
-  hostile code. A child trusts the forwarding headers of anything that reaches
+  everything in the host's environment, cloud credentials included. This
+  design separates failures, not hostile code. A child trusts the forwarding headers of anything that reaches
   its loopback port, not only the router.
 - **One host.** A workspace's folder is on one machine, and its serve listens
   on that machine's loopback.

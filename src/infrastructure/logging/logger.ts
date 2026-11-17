@@ -28,6 +28,7 @@ import {
 } from "@logtape/logtape";
 import {
   interactiveFormatter,
+  jsonLogLine,
   serveTextFormatter,
   textFormatter,
 } from "./log_format.ts";
@@ -51,6 +52,11 @@ export interface LoggingOptions {
    * pretty sink too
    */
   stderrOnly?: boolean;
+  /**
+   * in JSON mode, records go to stdout as JSON lines instead of being dropped,
+   * for a long-running command whose stdout is an event stream
+   */
+  jsonLogLines?: boolean;
   _reset?: boolean;
   /** Test-only: bypass Deno.env for OTel logs config to avoid env var races under --parallel. */
   _logsConfig?: InitLogsConfig;
@@ -252,7 +258,16 @@ export async function initializeLogging(
     otelSinks.push("otel");
   }
 
-  if (options.jsonMode) {
+  if (options.jsonMode && options.jsonLogLines) {
+    sinks["jsonLines"] = createRedactingSink((record) =>
+      writeOutput(jsonLogLine(record))
+    );
+    loggers.push({
+      category: [],
+      lowestLevel: logLevel,
+      sinks: ["jsonLines", ...otelSinks],
+    });
+  } else if (options.jsonMode) {
     // in JSON mode renderError is the single fatal emitter, so the root has no
     // console sinks; with the otel sink on, lower the threshold and attach only
     // it so logs export while stdout stays clean

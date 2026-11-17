@@ -34,6 +34,14 @@ export const VALUE_ONLY_STDOUT_COMMANDS: readonly (readonly string[])[] = [
   ["worker", "exec-dispatch"],
 ] as const;
 
+/**
+ * long-running commands whose --json stdout is an event stream, where log
+ * records are written into it as JSON lines rather than dropped
+ */
+export const JSON_LOG_LINE_COMMANDS: readonly (readonly string[])[] = [
+  ["serve", "host"],
+] as const;
+
 export interface InvokedCommand {
   command: string;
   subcommand?: string;
@@ -45,6 +53,12 @@ export interface InvokedCommand {
  */
 export function isValueOnlyStdoutCommand(info: InvokedCommand): boolean {
   return VALUE_ONLY_STDOUT_COMMANDS.some(([command, subcommand]) =>
+    command === info.command && subcommand === info.subcommand
+  );
+}
+
+export function isJsonLogLineCommand(info: InvokedCommand): boolean {
+  return JSON_LOG_LINE_COMMANDS.some(([command, subcommand]) =>
     command === info.command && subcommand === info.subcommand
   );
 }

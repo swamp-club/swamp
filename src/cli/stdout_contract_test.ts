@@ -18,7 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { isValueOnlyStdoutCommand } from "./stdout_contract.ts";
+import {
+  isJsonLogLineCommand,
+  isValueOnlyStdoutCommand,
+} from "./stdout_contract.ts";
 import { extractCommandInfo } from "./telemetry_integration.ts";
 
 Deno.test("isValueOnlyStdoutCommand: only the listed commands claim stdout", () => {
@@ -104,6 +107,38 @@ Deno.test("isValueOnlyStdoutCommand: holds across the argv forms callers actuall
       isValueOnlyStdoutCommand(extractCommandInfo(args)),
       false,
       `expected prose stdout: ${JSON.stringify(args)}`,
+    );
+  }
+});
+
+Deno.test("isJsonLogLineCommand: serve host writes its log into its JSON stream, plain serve does not", () => {
+  for (
+    const argv of [
+      ["serve", "host"],
+      ["serve", "host", "--json"],
+      ["--json", "serve", "host"],
+      ["serve", "host", "--host-dir", "/srv/host", "--json"],
+      ["--log-level=debug", "serve", "host", "--json"],
+    ]
+  ) {
+    assertEquals(
+      isJsonLogLineCommand(extractCommandInfo(argv)),
+      true,
+      argv.join(" "),
+    );
+  }
+  for (
+    const argv of [
+      ["serve"],
+      ["serve", "--json"],
+      ["serve", "reload"],
+      ["model", "list", "--json"],
+    ]
+  ) {
+    assertEquals(
+      isJsonLogLineCommand(extractCommandInfo(argv)),
+      false,
+      argv.join(" "),
     );
   }
 });

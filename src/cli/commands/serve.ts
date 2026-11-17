@@ -142,10 +142,10 @@ import {
 import {
   type AppliedSettingKey,
   overlayAppliedSettings,
-  reloadsOnHangup,
   settingName,
   timedServiceReloadReasons,
 } from "../../serve/serve_settings_reload.ts";
+import { reloadsOnHangup } from "../../serve/reload_on_hangup.ts";
 import {
   createServeSettingsReloader,
   type ReloadFollowUp,
@@ -488,6 +488,7 @@ import {
 import { ShutdownDeadline } from "../../serve/shutdown_deadline.ts";
 import { ShutdownStages } from "../../serve/shutdown_stages.ts";
 import { stdinShutdownTrigger } from "../../serve/stdin_close_trigger.ts";
+import { formatListeningLine } from "../../serve/listening_line.ts";
 import { ServeRunWriteFence } from "../../serve/run_write_fence.ts";
 import {
   clearCommittedAtBoot,
@@ -7115,14 +7116,14 @@ export const serveCommand = new Command()
       key,
       onListen({ hostname, port: listenPort }) {
         if (isJson) {
-          console.log(JSON.stringify({
-            status: "listening",
+          console.log(formatListeningLine({
             host: hostname,
             port: listenPort,
             url: `${wsScheme}://${hostname}:${listenPort}`,
             schedulingEnabled: enableSchedule,
             detachRuns: true,
             mode: deploymentMode.mode,
+            authMode: authConfig.mode,
           }));
         } else {
           logger.info("WebSocket API server listening on {url}", {

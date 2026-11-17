@@ -20,9 +20,9 @@
 import {
   type MergedServeOptions,
   mergeServeOptions,
-  SERVE_ENV_MAP,
   type ServeConfigFile,
 } from "./serve_config.ts";
+import { SERVE_ENV_MAP } from "./serve_env_map.ts";
 
 export type SettingReloadClass =
   | "applied"
@@ -427,20 +427,6 @@ function overriddenBy(
 
 function sameValue(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
-}
-
-/**
- * SIGHUP reloads on a serve nobody is attached to (a daemon, a container,
- * systemd's ExecReload) or one started with --hot-reload; a foreground serve
- * on a terminal keeps it as shutdown, so closing the terminal still stops it.
- */
-export function reloadsOnHangup(options: {
-  readonly os: string;
-  readonly hotReload: boolean;
-  readonly stdinIsTerminal: boolean;
-}): boolean {
-  if (options.os === "windows") return false;
-  return options.hotReload || !options.stdinIsTerminal;
 }
 
 /**
