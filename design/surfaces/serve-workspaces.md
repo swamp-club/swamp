@@ -389,9 +389,9 @@ per workspace, beside its folder:
 
 Both are written atomically through a hidden temporary file, so a reader never
 sees half of one. `HostedWorkspace` (`src/domain/serve/hosted_workspace.ts`)
-is the aggregate, and its file store
-(`src/infrastructure/persistence/hosted_workspace_file_repository.ts`) is
-the only place the file word `active` meets the supervisor's `running`.
+is the aggregate, and the only place the file word `active` meets the
+supervisor's `running`; its file store is
+`src/infrastructure/persistence/hosted_workspace_file_repository.ts`.
 
 The host reads the wanted files with each rescan of `workspaces/`
 (`src/serve/host/workspace_reconciler.ts`):

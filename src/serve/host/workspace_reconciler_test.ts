@@ -407,3 +407,30 @@ Deno.test({
     assertEquals(h.port.of("edge-dns").length, 1, "never started again");
   },
 });
+
+Deno.test("createWorkspaceReconciler: a scan listed before a removal finished does not start the workspace again", async () => {
+  await using h = await harness();
+  await makeRepo(h.dir, "edge-dns");
+  await h.begin();
+  await waitFor(() => h.observed("edge-dns") === "ready", "ready");
+  await want(h.dir, "edge-dns", "wanted: deleted\n");
+  const stale = await scanWorkspaces(h.dir);
+
+  await h.rescan();
+  await h.reconciler.drain();
+  assertEquals(await entries(h.dir), []);
+
+  await h.reconciler.reconcile(stale);
+  await h.reconciler.drain();
+  await h.statusWriter.drain();
+  assertEquals(h.port.of("edge-dns").length, 1, "not started again");
+  assertEquals(h.supervisor.lookup(id("edge-dns"))?.wanted, "deleted");
+  assertEquals(await entries(h.dir), [], "no status file comes back");
+
+  await makeRepo(h.dir, "edge-dns");
+  await h.rescan();
+  await waitFor(
+    () => h.observed("edge-dns") === "ready",
+    "a new workspace starts",
+  );
+});

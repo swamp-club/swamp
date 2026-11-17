@@ -53,10 +53,13 @@ export interface WorkspaceScan {
   readonly wantedFiles: readonly string[];
   /** folders an interrupted removal left under their hidden name */
   readonly leftovers: readonly string[];
+  /** performance.now() before the folder was listed */
+  readonly startedAt: number;
 }
 
 /** a missing folder holds no workspaces; hidden entries are passed over silently */
 export async function scanWorkspaces(dir: string): Promise<WorkspaceScan> {
+  const startedAt = performance.now();
   const workspaces: string[] = [];
   const skipped: SkippedEntry[] = [];
   const wantedFiles: string[] = [];
@@ -66,7 +69,7 @@ export async function scanWorkspaces(dir: string): Promise<WorkspaceScan> {
     entries = await Array.fromAsync(Deno.readDir(dir));
   } catch (error) {
     if (error instanceof Deno.errors.NotFound) {
-      return { workspaces, skipped, wantedFiles, leftovers };
+      return { workspaces, skipped, wantedFiles, leftovers, startedAt };
     }
     throw error;
   }
@@ -88,7 +91,7 @@ export async function scanWorkspaces(dir: string): Promise<WorkspaceScan> {
   workspaces.sort();
   wantedFiles.sort();
   leftovers.sort();
-  return { workspaces, skipped, wantedFiles, leftovers };
+  return { workspaces, skipped, wantedFiles, leftovers, startedAt };
 }
 
 async function skipReason(dir: string, name: string): Promise<string | null> {

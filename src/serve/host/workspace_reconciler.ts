@@ -86,6 +86,8 @@ export function createWorkspaceReconciler(
   const pending = new Set<Promise<void>>();
   // hidden folders a removal of ours is working on, so the sweep leaves them
   const sweeping = new Set<string>();
+  // a scan listed before a removal finished still shows its folder
+  const removedAt = new Map<string, number>();
 
   const track = (work: Promise<void>) => {
     const settled = work.finally(() => pending.delete(settled));
@@ -115,7 +117,11 @@ export function createWorkspaceReconciler(
       ...scan.wantedFiles,
       ...known.keys(),
     ]);
+    for (const [name, at] of removedAt) {
+      if (at < scan.startedAt) removedAt.delete(name);
+    }
     for (const name of [...names].sort()) {
+      if (removedAt.has(name)) continue;
       step(name, folders.has(name), reads.get(name) ?? { kind: "absent" });
     }
     for (const leftover of scan.leftovers) sweep(leftover);
@@ -228,6 +234,7 @@ export function createWorkspaceReconciler(
     // a cleanup still holding this entry stands down; the name starts afresh
     entry.generation++;
     known.delete(name);
+    removedAt.set(name, performance.now());
     logger.info("Removed workspace {name}", { name });
   };
 

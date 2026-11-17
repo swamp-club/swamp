@@ -130,7 +130,10 @@ Deno.test("watchWorkspaces: onRescan sees every rescan, even with nothing change
 
 Deno.test("scanWorkspaces: a missing folder holds no workspaces", async () => {
   await withTempDir(async (dir) => {
-    assertEquals(await scanWorkspaces(join(dir, "missing")), {
+    const { startedAt: _, ...scan } = await scanWorkspaces(
+      join(dir, "missing"),
+    );
+    assertEquals(scan, {
       workspaces: [],
       skipped: [],
       wantedFiles: [],
