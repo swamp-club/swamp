@@ -235,7 +235,11 @@ serve settings given by environment variable see what they would under plain
 serve. `SWAMP_REPO_DIR` and `SWAMP_DATASTORE` are dropped, since they would
 point every workspace at one repo or datastore, and `SWAMP_HOME` and
 `SWAMP_CONFIG_DIR` are pinned (`src/serve/host/child_env.ts`).
-`SWAMP_SERVE_CERT_FILE` and `SWAMP_SERVE_KEY_FILE` are set empty, which
+The settings that name one serve are held back, since an environment
+variable outranks each workspace's `serve.yaml`: the grants file and folder,
+the advertise address, the webhook routes folder and the OAuth client (id,
+name, secret and secret file). The host warns at startup for each one it holds
+back. `SWAMP_SERVE_CERT_FILE` and `SWAMP_SERVE_KEY_FILE` are set empty, which
 outranks a `tls:` block in the repo's `serve.yaml`: the host terminates TLS and
 polls `/ready` over plain loopback HTTP. Every workspace
 shares that environment, so two workspaces cannot yet hold different cloud

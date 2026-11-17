@@ -20,7 +20,7 @@
 import { assertEquals } from "@std/assert";
 import { resolve } from "@std/path";
 import { mergeServeOptions } from "../serve_config.ts";
-import { hostChildEnv } from "./child_env.ts";
+import { hostChildEnv, withheldServeSettings } from "./child_env.ts";
 
 const HOST_CWD = resolve("host-cwd");
 const PINNED = {
@@ -40,7 +40,6 @@ Deno.test("hostChildEnv: a child inherits what plain serve would see from its op
     SWAMP_SIGNIN_TOKEN: "signin",
     SWAMP_NESTED_GATE_PASS: "1234.proof.sig",
     SWAMP_CLUB_URL: "https://club.staging.example",
-    SWAMP_OAUTH_CLIENT_SECRET_FILE: "/run/secrets/oauth",
     SWAMP_DISPATCH_ENV_ALLOW: "AWS_*",
     SWAMP_CA_CERT: "/etc/ssl/ca.pem",
     SWAMP_NO_TELEMETRY: "1",
@@ -102,4 +101,27 @@ Deno.test("hostChildEnv: a child serves plain http however the host or its serve
   );
   assertEquals(merged.certFile, "");
   assertEquals(merged.keyFile, "");
+});
+
+Deno.test("hostChildEnv: holds back the settings that name one serve, so each workspace's serve.yaml decides them", () => {
+  const perServe = {
+    SWAMP_GRANTS_FILE: "/etc/swamp/grants.yaml",
+    SWAMP_GRANTS_DIR: "/etc/swamp/grants.d",
+    SWAMP_SERVE_ADVERTISE_ADDRESS: "https://node-1.internal",
+    SWAMP_WEBHOOK_ROUTES_DIR: "/etc/swamp/hooks",
+    SWAMP_OAUTH_CLIENT_ID: "client-1",
+    SWAMP_OAUTH_CLIENT_NAME: "swamp",
+    SWAMP_OAUTH_CLIENT_SECRET: "secret",
+    swamp_oauth_client_secret_file: "/run/secrets/oauth",
+  };
+  const env = hostChildEnv({ PATH: "/usr/bin", ...perServe }, PINNED);
+  for (const name of Object.keys(perServe)) {
+    assertEquals(name in env, false, name);
+  }
+  assertEquals(env.PATH, "/usr/bin");
+  assertEquals(
+    withheldServeSettings({ PATH: "/usr/bin", ...perServe }),
+    Object.keys(perServe).sort(),
+  );
+  assertEquals(withheldServeSettings({ PATH: "/usr/bin" }), []);
 });

@@ -27,7 +27,10 @@ import {
 } from "../../infrastructure/persistence/paths.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 import { createServeHostRenderer } from "../../presentation/renderers/serve_host.ts";
-import { hostChildEnv } from "../../serve/host/child_env.ts";
+import {
+  hostChildEnv,
+  withheldServeSettings,
+} from "../../serve/host/child_env.ts";
 import { DENO_SERVE_PROCESS_PORT } from "../../serve/host/deno_serve_process.ts";
 import { HOST_CONFIG_FILE, HostConfig } from "../../serve/host/host_config.ts";
 import { type ServeHost, startServeHost } from "../../serve/host/serve_host.ts";
@@ -61,11 +64,18 @@ export const serveHostCommand = new Command()
     const renderer = createServeHostRenderer(ctx.outputMode);
     const hostDir = resolve((options.hostDir as string | undefined) ?? ".");
     const config = HostConfig.parse(await readHostYaml(hostDir), hostDir);
+    const hostEnv = Deno.env.toObject();
+    for (const name of withheldServeSettings(hostEnv)) {
+      ctx.logger.warn(
+        "{name} is set but not passed to any workspace's serve, since it names one serve's setting; each workspace sets its own in its repo, such as in .swamp/serve.yaml",
+        { name },
+      );
+    }
 
     const host = await startServeHost({
       config,
       processPort: DENO_SERVE_PROCESS_PORT,
-      childEnv: hostChildEnv(Deno.env.toObject(), {
+      childEnv: hostChildEnv(hostEnv, {
         swampHome: resolve(getSwampDataDir()),
         configDir: resolve(getSwampConfigDir()),
         cwd: Deno.cwd(),
