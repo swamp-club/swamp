@@ -632,6 +632,7 @@ export interface WebhookServiceDeps {
    */
   trustedCollectives?: () => readonly string[];
   now?: () => number;
+  delay?: (ms: number) => Promise<void>;
 }
 
 export interface WebhookQueueStatus {
@@ -765,6 +766,7 @@ export class WebhookService {
   private readonly runQueue: QueuedWebhookRun[] = [];
   private maxConcurrentRuns: number;
   private readonly now: () => number;
+  private readonly delay: (ms: number) => Promise<void>;
   private readonly inFlight = new Map<Promise<void>, QueuedWebhookRun>();
   private readonly lastQueueDelayMs = new Map<string, number>();
   private eventHandler: WebhookEventHandler | null = null;
@@ -783,6 +785,8 @@ export class WebhookService {
     this.endpoints = [...deps.endpoints];
     this.maxConcurrentRuns = Math.max(1, deps.maxConcurrentRuns ?? 1);
     this.now = deps.now ?? Date.now;
+    this.delay = deps.delay ??
+      ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   }
 
   /** a lowered limit lets running runs finish; admitQueued starts the rest */
@@ -1257,7 +1261,8 @@ export class WebhookService {
           retryMs = after;
         }
         if (
-          this.now() + retryMs > holdUntil || req.signal.aborted ||
+          // a try never starts at the deadline, only before it
+          this.now() + retryMs >= holdUntil || req.signal.aborted ||
           this.shuttingDown() ||
           (!held && (this.heldForLeader >= MAX_QUEUE_DEPTH ||
             this.heldBytesForLeader + body.byteLength > LEADERLESS_HELD_BYTES))
@@ -1270,7 +1275,7 @@ export class WebhookService {
           this.heldForLeader++;
           this.heldBytesForLeader += body.byteLength;
         }
-        await new Promise((resolve) => setTimeout(resolve, retryMs));
+        await this.delay(retryMs);
       }
     } finally {
       if (held) {

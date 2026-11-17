@@ -807,12 +807,14 @@ function extensionService(
   trustedCollectives?: () => readonly string[],
   startupComplete?: () => boolean,
   pendingRunOwner?: PendingRunOwner,
+  clock?: Pick<WebhookServiceDeps, "now" | "delay">,
 ): {
   service: WebhookService;
   pendingRuns: unknown[];
 } {
   const pendingRuns: unknown[] = [];
   const service = new WebhookService({
+    ...clock,
     ...(acceptsRuns !== undefined ? { acceptsRuns } : {}),
     ...(startupComplete !== undefined ? { startupComplete } : {}),
     ...(pendingRunOwner !== undefined ? { pendingRunOwner } : {}),
@@ -3170,26 +3172,71 @@ Deno.test("WebhookService.drain: a leader handing over drops the local copy of a
   assertEquals(localDeletes, [ids[1]]);
 });
 
+function fakeClock(): {
+  clock: Pick<WebhookServiceDeps, "now" | "delay">;
+  delays: number[];
+} {
+  let now = 1_000;
+  const delays: number[] = [];
+  return {
+    clock: {
+      now: () => now,
+      delay: (ms) => {
+        delays.push(ms);
+        now += ms;
+        return Promise.resolve();
+      },
+    },
+    delays,
+  };
+}
+
+const startingLeader = (retryAfterSeconds: number) => () =>
+  Response.json(
+    {
+      error: "Server is still starting, try again shortly",
+      code: "not_ready",
+    },
+    { status: 503, headers: { "retry-after": String(retryAfterSeconds) } },
+  );
+
 Deno.test("handleRequest: a held delivery is sent to a starting leader no faster than its Retry-After", async () => {
-  const { link, forwards } = scriptedLink([
-    () =>
-      Response.json(
-        {
-          error: "Server is still starting, try again shortly",
-          code: "not_ready",
-        },
-        { status: 503, headers: { "retry-after": "4" } },
-      ),
-  ]);
+  const { link, forwards } = scriptedLink([startingLeader(4)]);
+  const { clock, delays } = fakeClock();
   const { service } = extensionService(
     registerExtension({}),
     () => false,
     link,
+    undefined,
+    undefined,
+    undefined,
+    clock,
   );
   const res = await service.handleRequest(extensionRequest("s3cret"));
   assertEquals(res?.status, 503);
   await res?.body?.cancel();
-  // tried at once and after 4 s; a third try would land past the 8 s hold
+  // tried at once and after 4 s; a third try would start at the 8 s deadline
   assertEquals(forwards(), 2);
+  assertEquals(delays, [4_000]);
+  await service.stop();
+});
+
+Deno.test("handleRequest: a held delivery is retried while its Retry-After lands before the hold ends", async () => {
+  const { link, forwards } = scriptedLink([startingLeader(3)]);
+  const { clock, delays } = fakeClock();
+  const { service } = extensionService(
+    registerExtension({}),
+    () => false,
+    link,
+    undefined,
+    undefined,
+    undefined,
+    clock,
+  );
+  const res = await service.handleRequest(extensionRequest("s3cret"));
+  assertEquals(res?.status, 503);
+  await res?.body?.cancel();
+  assertEquals(forwards(), 3);
+  assertEquals(delays, [3_000, 3_000]);
   await service.stop();
 });
