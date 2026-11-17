@@ -31,7 +31,7 @@ import { hostChildEnv } from "../../serve/host/child_env.ts";
 import { DENO_SERVE_PROCESS_PORT } from "../../serve/host/deno_serve_process.ts";
 import { HOST_CONFIG_FILE, HostConfig } from "../../serve/host/host_config.ts";
 import { type ServeHost, startServeHost } from "../../serve/host/serve_host.ts";
-import { reloadsOnHangup } from "../../serve/serve_settings_reload.ts";
+import { reloadsOnHangup } from "../../serve/reload_on_hangup.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;

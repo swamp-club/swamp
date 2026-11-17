@@ -23,7 +23,6 @@ import {
   continuationSweepReloadReason,
   diffServeSettings,
   overlayAppliedSettings,
-  reloadsOnHangup,
   SETTING_CATALOGUE,
   timedServiceReloadReasons,
 } from "./serve_settings_reload.ts";
@@ -183,31 +182,6 @@ Deno.test("SETTING_CATALOGUE: every restart setting says why", () => {
       assertEquals(typeof entry.reason, "string", key);
     }
   }
-});
-
-Deno.test("reloadsOnHangup: a terminal serve without --hot-reload shuts down on SIGHUP", () => {
-  assertEquals(
-    reloadsOnHangup({ os: "linux", hotReload: false, stdinIsTerminal: true }),
-    false,
-  );
-});
-
-Deno.test("reloadsOnHangup: a daemon, a container or a --hot-reload serve reloads on SIGHUP", () => {
-  assertEquals(
-    reloadsOnHangup({ os: "linux", hotReload: false, stdinIsTerminal: false }),
-    true,
-  );
-  assertEquals(
-    reloadsOnHangup({ os: "darwin", hotReload: true, stdinIsTerminal: true }),
-    true,
-  );
-});
-
-Deno.test("reloadsOnHangup: never on Windows, which has no SIGHUP", () => {
-  assertEquals(
-    reloadsOnHangup({ os: "windows", hotReload: true, stdinIsTerminal: false }),
-    false,
-  );
 });
 
 Deno.test("overlayAppliedSettings: takes only the keys the reload applied from the reloaded file", () => {

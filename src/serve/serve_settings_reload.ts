@@ -430,20 +430,6 @@ function sameValue(a: unknown, b: unknown): boolean {
 }
 
 /**
- * SIGHUP reloads on a serve nobody is attached to (a daemon, a container,
- * systemd's ExecReload) or one started with --hot-reload; a foreground serve
- * on a terminal keeps it as shutdown, so closing the terminal still stops it.
- */
-export function reloadsOnHangup(options: {
-  readonly os: string;
-  readonly hotReload: boolean;
-  readonly stdinIsTerminal: boolean;
-}): boolean {
-  if (options.os === "windows") return false;
-  return options.hotReload || !options.stdinIsTerminal;
-}
-
-/**
  * The options in force after a reload: the current ones with only the keys
  * the reload applied taken from the reloaded file, so a change this process
  * has not adopted never shows in the config or health views.

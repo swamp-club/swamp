@@ -139,10 +139,10 @@ import {
 import {
   type AppliedSettingKey,
   overlayAppliedSettings,
-  reloadsOnHangup,
   settingName,
   timedServiceReloadReasons,
 } from "../../serve/serve_settings_reload.ts";
+import { reloadsOnHangup } from "../../serve/reload_on_hangup.ts";
 import {
   createServeSettingsReloader,
   type ReloadFollowUp,
