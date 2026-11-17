@@ -9513,7 +9513,9 @@ replaces the refusal:
   endpoint config, so the team's nodes need the same webhook config. A
   draining follower keeps forwarding, and a draining leader that hands its
   runs over queues a verified delivery in the control plane for the next
-  leader rather than refusing it.
+  leader rather than refusing it. Between leaders the follower holds a
+  delivery no leader took for up to 8 s (see "Rolling a team" in
+  `design/primitives/serve.md`).
 - Workers: a worker's connection to a follower is relayed whole to the
   leader from its first RPC frame (its enrollment), so it joins the
   leader's pool. Its data-plane requests (`/data`, `/bundle`) are forwarded

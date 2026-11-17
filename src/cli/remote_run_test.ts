@@ -4970,3 +4970,45 @@ Deno.test({
     }
   },
 });
+
+Deno.test("remote run: once the run has started, a follower losing its leader reattaches to the run rather than failing", async () => {
+  const startedThenLeaderGone = (request: { id: string }) => [
+    {
+      type: "event",
+      id: request.id,
+      event: { kind: "started", runId: "run-f", workflowName: "wf", seq: 1 },
+    },
+    {
+      type: "error",
+      id: request.id,
+      error: {
+        code: "serve_not_leader",
+        message: "The leader changed or stopped answering before it replied.",
+        details: { inFlight: true },
+      },
+    },
+  ];
+  const attachedToEnd = (request: { id: string }) => [
+    {
+      type: "event",
+      id: request.id,
+      event: { kind: "completed", runId: "run-f", workflowName: "wf", seq: 2 },
+    },
+    { type: "done", id: request.id },
+  ];
+  const sockets = runSockets([startedThenLeaderGone, attachedToEnd]);
+  const clock = fakeRetryClock();
+  const kinds = await drainRun(runWorkflowOverServer({
+    server: "ws://swamp.test",
+    headers: {},
+    payload: { workflowIdOrName: "wf" },
+    createSocket: sockets.createSocket,
+    ...clock.options,
+  }));
+  assertEquals(kinds, ["started", "completed"]);
+  assertEquals(sockets.sent.map((r) => r.type), ["workflow.run", "run.attach"]);
+  const attach = sockets.sent[1] as unknown as {
+    payload: { runId: string; afterSeq: number };
+  };
+  assertEquals([attach.payload.runId, attach.payload.afterSeq], ["run-f", 1]);
+});

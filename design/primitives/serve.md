@@ -2069,8 +2069,8 @@ or for at most `AWAIT_NEW_LEADER_MS` (120 s), it tries the lease every second
 rather than every tick, so a follower leads about a second after the release.
 The frame is a hint; only the lease decides who commits.
 
-While the leader drains, its successor does not exist yet, so the team holds
-nothing back for callers but answers each the way it can retry:
+While the leader drains its successor does not exist yet, so the team
+answers each caller in a way it can retry or holds the request briefly:
 
 - A webhook delivery to a leader that hands its runs over
   (`queuesForNextLeader`) is verified and answered 2xx naming the run, but not
@@ -2079,14 +2079,27 @@ nothing back for callers but answers each the way it can retry:
   once that owner is gone. It is never written to the local run tracker,
   which another host cannot read and which could replay it twice. A
   delivery the control plane does not take within 5 s is refused with 503.
+- Runs a leader had queued but not started are already in the control
+  plane; on a handover drain it drops their local run-tracker copies once
+  the control plane holds them, so the node does not replay them again the
+  next time it leads.
 - A follower keeps forwarding webhook deliveries while it drains itself,
   since it runs nothing, and at shutdown `LeaderLink.drain()` waits up to
-  5 s, within the shutdown deadline, for forwards in flight to relay their
+  5 s, within the shutdown deadline, for writes in flight to relay their
   replies before closing, so a delivery the leader took is not cut off.
+- Between leaders, a follower holds a delivery no leader took: one it could
+  not send, or one the leader refused before acting (`serve_not_leader`
+  without `inFlight`, `not_ready` while it starts, `shutting_down`). It
+  tries again every 250 ms for up to 8 s, under the 10 s many senders allow
+  a delivery, at most 100 at once, and takes the delivery itself if it
+  becomes the leader meanwhile. One marked `inFlight` is never held.
 - A run start a follower could not send to any leader is refused as
   `serve_not_leader` without `inFlight`; `swamp … --server` and
   `packages/client` retry it as they retry `draining`, within their 30 s
-  budget. One marked `inFlight` may have run and is never sent again.
+  budget. One marked `inFlight` may have run and is never sent again. Once
+  the CLI has the run id, a follower losing its leader mid-run is a
+  dropped connection: it reattaches with `run.attach`, which never runs
+  anything twice.
 - On one host, a parked or queued run's owner whose pid is still exiting
   counts as gone once its heartbeat is deleted or stopped, so the next leader
   continues it without waiting for the process to exit.
