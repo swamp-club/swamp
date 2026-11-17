@@ -59,8 +59,7 @@ export interface PinnedSwampDirs {
 
 /**
  * a child inherits the host's environment as plain serve inherits its
- * operator's, so models, workers and env-set serve settings see what they
- * would see under plain serve
+ * operator's, but for the names dropped above
  */
 export function hostChildEnv(
   hostEnv: Readonly<Record<string, string>>,

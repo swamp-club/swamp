@@ -231,9 +231,8 @@ by that repo's own `serve.yaml`. The host adds `--host 127.0.0.1`, `--port 0`,
 public name, `--trust-proxy` and `--exit-on-stdin-close`. The child reports the
 port it got on its `--json` listening line. A workspace is also given the
 root's address, which [Sign-in](#sign-in) uses. The child inherits the host's
-environment, as plain serve inherits its operator's, so models, workers and
-serve settings given by environment variable see what they would under plain
-serve. `SWAMP_REPO_DIR` and `SWAMP_DATASTORE` are dropped, since they would
+environment, as plain serve inherits its operator's, so models and workers see
+what they would under plain serve. `SWAMP_REPO_DIR` and `SWAMP_DATASTORE` are dropped, since they would
 point every workspace at one repo or datastore, and `SWAMP_HOME` and
 `SWAMP_CONFIG_DIR` are pinned (`src/serve/host/child_env.ts`).
 No serve setting is passed: an environment variable outranks each
