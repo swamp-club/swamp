@@ -735,16 +735,23 @@ interface RunningWebhookRun {
   startedAt?: Date;
 }
 
-async function sentToNoLeader(response: Response): Promise<boolean> {
-  if (response.status !== 503) return false;
+/** how long to wait before sending again a delivery no leader took, if none did */
+async function retryNoLeaderAfter(
+  response: Response,
+): Promise<number | undefined> {
+  if (response.status !== 503) return undefined;
   try {
     const reply = await response.clone().json();
-    if (reply?.inFlight === true) return false;
-    // each is refused before anything is taken
-    return reply?.code === SERVE_NOT_LEADER_CODE ||
-      reply?.code === "not_ready" || reply?.code === "shutting_down";
+    if (reply?.inFlight === true) return undefined;
+    if (reply?.code === SERVE_NOT_LEADER_CODE) return LEADERLESS_RETRY_MS;
+    // the leader ran its hooks before refusing, so its own pace is kept
+    if (reply?.code === "not_ready" || reply?.code === "shutting_down") {
+      const seconds = Number(response.headers.get("retry-after"));
+      return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : 1000;
+    }
+    return undefined;
   } catch {
-    return false;
+    return undefined;
   }
 }
 
@@ -1234,17 +1241,20 @@ export class WebhookService {
       while (true) {
         if (this.deps.acceptsRuns?.() !== false) return undefined;
         let refused: Response | undefined;
+        let retryMs = LEADERLESS_RETRY_MS;
         if (link.address() !== undefined) {
           const response = await link.forward(req, {
             body,
             ...(sourceIp !== undefined ? { clientIp: sourceIp } : {}),
             nameLeader: false,
           });
-          if (!await sentToNoLeader(response)) return response;
+          const after = await retryNoLeaderAfter(response);
+          if (after === undefined) return response;
           refused = response;
+          retryMs = after;
         }
         if (
-          this.now() >= holdUntil || req.signal.aborted ||
+          this.now() + retryMs > holdUntil || req.signal.aborted ||
           this.shuttingDown() ||
           (!held && this.heldForLeader >= MAX_QUEUE_DEPTH)
         ) {
@@ -1255,9 +1265,7 @@ export class WebhookService {
           held = true;
           this.heldForLeader++;
         }
-        await new Promise((resolve) =>
-          setTimeout(resolve, LEADERLESS_RETRY_MS)
-        );
+        await new Promise((resolve) => setTimeout(resolve, retryMs));
       }
     } finally {
       if (held) this.heldForLeader--;

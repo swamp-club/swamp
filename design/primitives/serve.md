@@ -2094,7 +2094,9 @@ answers each caller in a way it can retry or holds the request briefly:
   without `inFlight`, `not_ready` while it starts, `shutting_down`). It
   tries again every 250 ms for up to 8 s, under the 10 s many senders allow
   a delivery, at most 100 at once, and takes the delivery itself if it
-  becomes the leader meanwhile. One marked `inFlight` is never held, and a
+  becomes the leader meanwhile. A leader still starting or shutting down
+  has already run the route's hooks, so those are tried again only after
+  its `Retry-After`. One marked `inFlight` is never held, and a
   follower that is itself shutting down stops holding. The hold comes before
   verification, as forwarding does, so unverified deliveries can fill its
   100 places for 8 s while no leader is reachable.
@@ -2119,7 +2121,10 @@ each node's `/ready` before the next; restart the leader last. After it, wait
 for `leader/current` to name a higher fence and for every node's `/ready`.
 Keep a `preStop` sleep longer than the load balancer's health-check interval
 times its failure threshold, so traffic leaves a node before SIGTERM. Rolling
-back is the same roll with the previous image.
+back is the same roll with the previous image. Two versions on one host
+judge each other's liveness by heartbeat, and a release before this one
+writes its heartbeat only after its boot replay, so keep a roll across
+versions to one serve per host.
 
 `swamp … --server` retries a refused connection, a 502, 503 or 504 at the
 upgrade, and a `draining` or `not_ready` refusal for up to 30 s before it has

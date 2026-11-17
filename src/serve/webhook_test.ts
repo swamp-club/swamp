@@ -3169,3 +3169,27 @@ Deno.test("WebhookService.drain: a leader handing over drops the local copy of a
   await service.stop();
   assertEquals(localDeletes, [ids[1]]);
 });
+
+Deno.test("handleRequest: a held delivery is sent to a starting leader no faster than its Retry-After", async () => {
+  const { link, forwards } = scriptedLink([
+    () =>
+      Response.json(
+        {
+          error: "Server is still starting, try again shortly",
+          code: "not_ready",
+        },
+        { status: 503, headers: { "retry-after": "4" } },
+      ),
+  ]);
+  const { service } = extensionService(
+    registerExtension({}),
+    () => false,
+    link,
+  );
+  const res = await service.handleRequest(extensionRequest("s3cret"));
+  assertEquals(res?.status, 503);
+  await res?.body?.cancel();
+  // tried at once and after 4 s; a third try would land past the 8 s hold
+  assertEquals(forwards(), 2);
+  await service.stop();
+});
