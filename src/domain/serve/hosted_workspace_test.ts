@@ -49,6 +49,16 @@ Deno.test("HostedWorkspace.create: records the creator and the time", () => {
 
 Deno.test("HostedWorkspace.create: refuses an empty creator, which the wanted file could not hold", () => {
   assertThrows(() => HostedWorkspace.create("edge-dns", "", T1), UserError);
+  assertThrows(
+    () =>
+      HostedWorkspace.fromRecord({
+        name: "edge-dns",
+        creator: "",
+        wanted: "active",
+        changedAt: null,
+      }),
+    UserError,
+  );
 });
 
 Deno.test("HostedWorkspace.fromRecord: refuses an invalid name or wanted state", () => {

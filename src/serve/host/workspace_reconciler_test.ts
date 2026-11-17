@@ -581,3 +581,41 @@ Deno.test("createWorkspaceReconciler: a rename that keeps failing reuses one hid
   await h.statusWriter.drain();
   assertEquals(await entries(h.dir), []);
 });
+
+Deno.test({
+  name:
+    "createWorkspaceReconciler: a folder that reappears during a stuck removal is renamed apart and everything goes once it can",
+  // root ignores folder permissions, so the removal would not fail
+  ignore: Deno.build.os === "windows" || Deno.uid() === 0,
+  fn: async () => {
+    await using h = await harness();
+    await makeRepo(h.dir, "delta");
+    await Deno.mkdir(join(h.dir, "delta", "locked"));
+    await Deno.writeTextFile(join(h.dir, "delta", "locked", "data"), "x");
+    await h.begin();
+    await waitFor(() => h.observed("delta") === "ready", "ready");
+    await Deno.chmod(join(h.dir, "delta", "locked"), 0o000);
+    const hidden = async () =>
+      (await entries(h.dir)).filter((e) => e.startsWith(".delta.deleting-"));
+    try {
+      await want(h.dir, "delta", "wanted: deleted\n");
+      await h.rescan();
+      await h.reconciler.drain();
+      assertEquals((await hidden()).length, 1);
+
+      await makeRepo(h.dir, "delta");
+      await h.rescan();
+      await h.reconciler.drain();
+      assertEquals((await hidden()).length, 1, "the new folder was removed");
+      assert(!(await exists(join(h.dir, "delta"))));
+    } finally {
+      for (const entry of await hidden()) {
+        await Deno.chmod(join(h.dir, entry, "locked"), 0o755).catch(() => {});
+      }
+    }
+    await h.rescan();
+    await h.reconciler.drain();
+    await h.statusWriter.drain();
+    assertEquals(await entries(h.dir), []);
+  },
+});

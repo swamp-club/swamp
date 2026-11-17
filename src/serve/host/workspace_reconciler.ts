@@ -311,6 +311,8 @@ export function createWorkspaceReconciler(
       sweeping.add(hidden);
       try {
         await rename(folder, join(workspacesDir, hidden));
+        // kept only while the rename itself fails; a later folder gets its own
+        removing.hiddenName = null;
       } catch (error) {
         throw new RemovalStepError("rename", error);
       } finally {
@@ -323,6 +325,8 @@ export function createWorkspaceReconciler(
     } catch (error) {
       throw new RemovalStepError("list", error);
     }
+    // every folder gets its try, so one that cannot go never shields another
+    let failure: RemovalStepError | null = null;
     for (const { name: entry } of entries) {
       if (deletingFolderOwner(entry) !== name) continue;
       // a sweep that began before this removal may still be on it
@@ -332,12 +336,13 @@ export function createWorkspaceReconciler(
         await Deno.remove(join(workspacesDir, entry), { recursive: true });
       } catch (error) {
         if (!(error instanceof Deno.errors.NotFound)) {
-          throw new RemovalStepError("remove", error);
+          failure ??= new RemovalStepError("remove", error);
         }
       } finally {
         sweeping.delete(entry);
       }
     }
+    if (failure !== null) throw failure;
   };
 
   // the status writer has forgotten the name, so this write cannot race it

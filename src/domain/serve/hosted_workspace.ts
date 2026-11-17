@@ -75,6 +75,9 @@ export class HostedWorkspace {
   }
 
   static fromRecord(record: HostedWorkspaceRecord): HostedWorkspace {
+    if (record.creator === "") {
+      throw new UserError("A hosted workspace's creator cannot be empty.");
+    }
     if (!HOSTED_WORKSPACE_WANTED.includes(record.wanted)) {
       throw new UserError(
         `Invalid wanted state "${record.wanted}". Use active, suspended or deleted.`,
