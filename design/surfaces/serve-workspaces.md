@@ -339,11 +339,17 @@ secret. A flag outranks `serve.yaml`, so the host's client replaces a root's
 own, and delegation links the root made under its old client are no longer
 found: people sync holds each as `club_unknown`.
 
-A supplied client skips registration, but serve still looks up each plain
-username in `admins` or `allowed-users` its cache lacks, and without a
-collective key that lookup is a device grant. A workspace starts unattended
-when its lists hold no username to look up (`user:<sub>` entries), or a
-collective key is in its environment.
+A supplied client skips registration, but serve still looks up each entry in
+`admins` or `allowed-users` its cache lacks, and without a collective key that
+lookup is a device grant. A `user:` prefix is no way around it: in `oauth` mode
+serve strips it and looks the rest up as a username (`usernameOf`), so a
+subject is not found and, with a collective key, startup refuses because no
+configured admin exists. `oauth` mode needs at least one admin, so a new
+workspace's first start always looks names up. It does so unattended only with
+a collective key in the host's environment (`SWAMP_API_KEY` or
+`SWAMP_API_KEY_FILE`, which reach every child); otherwise a person completes one
+device grant. The names it resolves are kept in the workspace's vault
+(`oauth-resolved-admins`), so later starts look up only names added since.
 
 Names follow `parseWorkspaceName`. A name is the workspace's address, and its
 tokens, owner claim and checkouts' copies are keyed by that address, so a
@@ -539,12 +545,15 @@ After 7 an operator who sets each workspace up has a multi-workspace host.
    editing its wanted file. After 7.
 9. **The host passes an OAuth client to its children.** `host.yaml` names the
    client and its secret file. Done when a workspace in `oauth` mode starts
-   with no stored client and no collective key. After 7.
+   with no stored client of its own and registers none. After 7.
 10. **Workspace services.** The provisioner and the application services for
     create, list, get, suspend, resume and delete, working on the host folder.
-    Create sets up under a temporary name and renames into place, writing the
-    workspace's admins and admission lists as subjects so it starts without a
-    username lookup. The services
+    Create sets up under a temporary name and renames into place. Without a
+    collective key in the host's environment, a new workspace's first start
+    needs a device grant for its names, so create either seeds the workspace's
+    `oauth-resolved-admins` from names the root already resolved, or serve gains
+    an entry form that is already resolved; choosing between them is this
+    item's work. The services
     are exported from `mod.ts`, and an integration test runs them on a temp
     folder (`src/libswamp/hosted_workspace/`). After 8.
 11. **Workspace requests on the root.** The host gives the root the
