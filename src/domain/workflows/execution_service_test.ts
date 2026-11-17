@@ -6711,6 +6711,69 @@ Deno.test("guard: step with truthy guard expression is skipped", async () => {
   });
 });
 
+for (const apply of [false, true]) {
+  Deno.test(`guard: a guard whose expression is also evaluated in a task input decides its step (apply ${apply})`, async () => {
+    await withTempDir(async (tempDir) => {
+      const workflowRepo = new InMemoryWorkflowRepository();
+      const runRepo = new InMemoryWorkflowRunRepository();
+      const executor = new MockStepExecutor();
+      const inputsByStep = new Map<string, unknown>();
+      const execute = executor.execute.bind(executor);
+      executor.execute = (step, ctx) => {
+        inputsByStep.set(
+          step.name,
+          (step.task.data as { inputs?: unknown }).inputs,
+        );
+        return execute(step, ctx);
+      };
+
+      const shared = "${{ !inputs.apply }}";
+      const workflow = Workflow.create({
+        name: "shared-guard-wf",
+        inputs: {
+          type: "object",
+          properties: { apply: { type: "boolean", default: false } },
+        },
+        jobs: [
+          Job.create({
+            name: "job1",
+            steps: [
+              Step.create({
+                name: "deploy",
+                task: StepTask.model("test-model", "run"),
+                guard: shared,
+              }),
+              Step.create({
+                name: "report",
+                task: StepTask.model("test-model", "run", { dryRun: shared }),
+              }),
+            ],
+          }),
+        ],
+      });
+      await workflowRepo.save(workflow);
+
+      const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+      const service = new WorkflowExecutionService(
+        workflowRepo,
+        runRepo,
+        tempDir,
+        executor,
+        undefined,
+        catalogStore,
+      );
+
+      const run = await service.execute(workflow.name, { inputs: { apply } });
+      assertEquals(run.status, "succeeded");
+      assertEquals(
+        executor.executedSteps.toSorted(),
+        apply ? ["job1/deploy", "job1/report"] : ["job1/report"],
+      );
+      assertEquals(inputsByStep.get("report"), { dryRun: !apply });
+    });
+  });
+}
+
 Deno.test("guard: a guarded skip persists its reason and expression on the run", async () => {
   await withTempDir(async (tempDir) => {
     const workflowRepo = new InMemoryWorkflowRepository();

@@ -375,11 +375,10 @@ async function evaluateWorkflowInternal(
     }
   }
 
-  // Task targets deferred to step time, by the same rule as the run path.
-  // Recorded by path so substitution below cannot write an identical
-  // expression's value, evaluated elsewhere, into a deferred target.
+  // Deferred by path as on the run path, and recorded so substitution below
+  // cannot write the same text's value, evaluated elsewhere, into it.
   const isDeferredTaskTarget = createTaskTargetDeferral(workflow);
-  const deferredTargetPaths = new Set<string>();
+  const deferredPaths = new Set<string>();
 
   const evaluatedValues = new Map<string, unknown>();
   const origins = new Map<string, SpliceOrigin>();
@@ -397,6 +396,7 @@ async function evaluateWorkflowInternal(
       continue;
     }
     if (isGuardPath(expr.path)) {
+      deferredPaths.add(expr.path);
       continue;
     }
     // Skip task.inputs/globalArgs/message expressions that depend on step outputs (resource, file, execution, data, file.contents).
@@ -406,10 +406,11 @@ async function evaluateWorkflowInternal(
         isAssertMessagePath(expr.path)) &&
       hasStepOutputDependency(expr.celExpression)
     ) {
+      deferredPaths.add(expr.path);
       continue;
     }
     if (isDeferredTaskTarget(expr)) {
-      deferredTargetPaths.add(expr.path);
+      deferredPaths.add(expr.path);
       continue;
     }
 
@@ -432,7 +433,7 @@ async function evaluateWorkflowInternal(
     evaluatedValues,
     ProvenanceMap.authored(),
     (raw) => origins.get(raw) ?? { map: ProvenanceMap.data() },
-    (path) => isAssertExprPath(path) || deferredTargetPaths.has(path),
+    (path) => isAssertExprPath(path) || deferredPaths.has(path),
   );
   const evaluatedData = evaluated.data;
   let expandedProvenance = evaluated.provenance;

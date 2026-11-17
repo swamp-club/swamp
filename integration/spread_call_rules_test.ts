@@ -272,7 +272,6 @@ const PINNED: ReadonlyArray<
       "results.push(...await this.validateWorkflowTaskInputs(job.name, step.name, taskData.workflowIdOrName…",
       "results.push(...this.validateAffinityPlacement(workflow))",
       "results.push(...this.validateAssertExprNotInterpolated(workflow))",
-      "results.push(...this.validateGuardExpressionTypes(workflow))",
       "results.push(...this.validateNoStepCycles(workflow))",
       "results.push(...this.validateQueueTimeoutPlacement(workflow))",
       "results.push(...this.validateStepDependencyRefs(workflow))",

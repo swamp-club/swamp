@@ -274,8 +274,6 @@ export class DefaultWorkflowValidationService
 
     results.push(...this.validateAffinityPlacement(workflow));
 
-    results.push(...this.validateGuardExpressionTypes(workflow));
-
     for (const result of this.validateForEachSameJobDataReads(workflow)) {
       results.push(result);
     }
@@ -1421,44 +1419,6 @@ export class DefaultWorkflowValidationService
           );
         } else {
           results.push(WorkflowValidationResult.pass(checkName));
-        }
-      }
-    }
-
-    return results;
-  }
-
-  private validateGuardExpressionTypes(
-    workflow: Workflow,
-  ): WorkflowValidationResult[] {
-    const results: WorkflowValidationResult[] = [];
-    const inputProperties = workflow.inputs?.properties;
-
-    for (const job of workflow.jobs) {
-      for (const step of job.steps) {
-        if (!step.guard) continue;
-
-        const inputName = extractWholeFieldInputRef(step.guard);
-        if (!inputName) continue;
-
-        if (!inputProperties) continue;
-        const inputDef = inputProperties[inputName];
-        if (!inputDef?.type) continue;
-
-        if (inputDef.type !== "string") {
-          const inputRef = /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(inputName)
-            ? `inputs.${inputName}`
-            : `inputs["${inputName}"]`;
-          results.push(
-            WorkflowValidationResult.fail(
-              `Guard type in job '${job.name}' step '${step.name}'`,
-              `guard received a ${inputDef.type} via \${{ ${inputRef} }}; ` +
-                `the guard field requires a string (CEL expression). ` +
-                `Whole-field \${{ }} substitutions preserve the input's native type, ` +
-                `so a ${inputDef.type} would replace the string at runtime. ` +
-                `Use a CEL expression that evaluates the condition instead`,
-            ),
-          );
         }
       }
     }

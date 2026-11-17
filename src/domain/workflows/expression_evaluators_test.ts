@@ -1189,6 +1189,131 @@ Deno.test("target deferral: a guard on one step does not defer another step's ta
   assertEquals(targetOf(steps[1]), "picked");
 });
 
+Deno.test("WorkflowExpressionEvaluator: a guard keeps its text when the same expression is evaluated in a task input", async () => {
+  const shared = "${{ !inputs.apply }}";
+  const workflow = Workflow.create({
+    name: "shared-guard",
+    inputs: {
+      type: "object",
+      properties: { apply: { type: "boolean", default: false } },
+    },
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "guarded",
+            guard: shared,
+            task: StepTask.model("deployer", "run", { flag: shared }),
+          }),
+          Step.create({
+            name: "report",
+            task: StepTask.model("reporter", "run", { dryRun: shared }),
+          }),
+        ],
+      }),
+    ],
+  });
+  const authored = collectWorkflowAuthoredExpressions(workflow);
+  const context = emptyContext();
+  context.inputs = { apply: false };
+
+  const { workflow: evaluated } = await new WorkflowExpressionEvaluator(
+    new CelEvaluator(),
+  ).evaluate(workflow, context, authored);
+
+  const steps = evaluated.toData().jobs[0].steps;
+  const inputsOf = (index: number) =>
+    (steps[index].task as { inputs?: unknown }).inputs;
+  assertEquals(steps[0].guard, shared);
+  assertEquals(inputsOf(0), { flag: true });
+  assertEquals(inputsOf(1), { dryRun: true });
+});
+
+Deno.test("WorkflowExpressionEvaluator: a key named guard outside a step's guard field resolves at run start", async () => {
+  const pool = "${{ inputs.pool }}";
+  const workflow = Workflow.create({
+    name: "guard-keys",
+    labels: { guard: pool },
+    inputs: {
+      type: "object",
+      properties: { pool: { type: "string", default: "gpu" } },
+    },
+    jobs: [
+      Job.create({
+        name: "job1",
+        labels: { guard: pool },
+        steps: [
+          Step.create({
+            name: "s",
+            labels: { guard: pool },
+            task: StepTask.model("m", "run", { guard: pool }),
+          }),
+        ],
+      }),
+    ],
+  });
+  const authored = collectWorkflowAuthoredExpressions(workflow);
+  const context = emptyContext();
+  context.inputs = { pool: "gpu" };
+
+  const { workflow: evaluated } = await new WorkflowExpressionEvaluator(
+    new CelEvaluator(),
+  ).evaluate(workflow, context, authored);
+
+  const data = evaluated.toData();
+  assertEquals(data.labels, { guard: "gpu" });
+  assertEquals(data.jobs[0].labels, { guard: "gpu" });
+  assertEquals(data.jobs[0].steps[0].labels, { guard: "gpu" });
+  assertEquals(
+    (data.jobs[0].steps[0].task as { inputs?: unknown }).inputs,
+    { guard: "gpu" },
+  );
+});
+
+Deno.test("WorkflowExpressionEvaluator: text deferred to step time keeps its text when the same expression is evaluated in another field", async () => {
+  const shared = "${{ data.latest('w1', 'main').attributes.v }}";
+  const workflow = Workflow.create({
+    name: "shared-step-output",
+    description: shared,
+    trigger: { schedule: "0 0 * * *", inputs: { v: shared } },
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "w2",
+            task: StepTask.model("reader", "run", { v: shared }),
+          }),
+          Step.create({
+            name: "check",
+            task: StepTask.assert("true", `got ${shared}`),
+          }),
+        ],
+      }),
+    ],
+  });
+  const authored = collectWorkflowAuthoredExpressions(workflow);
+  // stands in for the previous run's record, read when the run starts
+  const stale: CelExpressionEvaluator = {
+    evaluate: () => "stale",
+    evaluateAsync: () => Promise.resolve("stale"),
+  };
+
+  const { workflow: evaluated } = await new WorkflowExpressionEvaluator(stale)
+    .evaluate(workflow, emptyContext(), authored);
+
+  const data = evaluated.toData();
+  const steps = data.jobs[0].steps;
+  assertEquals(data.description, "stale");
+  assertEquals((steps[0].task as { inputs?: unknown }).inputs, { v: shared });
+  assertEquals(
+    (steps[1].task as { message?: unknown }).message,
+    `got ${shared}`,
+  );
+  assertEquals(data.trigger?.inputs, { v: shared });
+});
+
 Deno.test("target deferral: the direct-execution form defers its modelName too", async () => {
   // modelName is the riskier half: it names a definition to auto-create, so the
   // direct-execution form defers it too

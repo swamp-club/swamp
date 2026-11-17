@@ -405,9 +405,9 @@ export class WorkflowExpressionEvaluator {
     const isDeferredTaskTarget = createTaskTargetDeferral(workflow);
 
     // deferral is decided per path but substitution is keyed on raw text and
-    // rewrites every occurrence, so a plain step's value would overwrite a
-    // guarded step's deferred target; skip deferred paths by path
-    const deferredTargetPaths = new Set<string>();
+    // rewrites every occurrence, so the same text evaluated in another field
+    // would overwrite a deferred one; every path deferred below is skipped
+    const deferredPaths = new Set<string>();
 
     const evaluatedValues = new Map<string, unknown>();
     const origins = new Map<string, SpliceOrigin>();
@@ -443,12 +443,14 @@ export class WorkflowExpressionEvaluator {
       // workflow-body evaluation — leave them raw so a `webhook.*` reference
       // doesn't evaluate against a context that lacks the payload.
       if (isTriggerInputsPath(expr.path)) {
+        deferredPaths.add(expr.path);
         continue;
       }
       // Guard expressions are evaluated at step execution time — they check
       // runtime state (data outputs, forEach variables) to decide idempotent
       // skips.
       if (isGuardPath(expr.path)) {
+        deferredPaths.add(expr.path);
         continue;
       }
       // task.inputs and assert task.message that depend on step outputs
@@ -458,10 +460,11 @@ export class WorkflowExpressionEvaluator {
         (isTaskInputsPath(expr.path) || isAssertMessagePath(expr.path)) &&
         hasStepOutputDependency(expr.celExpression)
       ) {
+        deferredPaths.add(expr.path);
         continue;
       }
       if (isDeferredTaskTarget(expr)) {
-        deferredTargetPaths.add(expr.path);
+        deferredPaths.add(expr.path);
         continue;
       }
 
@@ -503,7 +506,9 @@ export class WorkflowExpressionEvaluator {
     // the rules above deferred it to step time.
     const foreignTaskArguments: ForeignTaskArgument[] = [];
     for (const expr of expressions) {
-      if (evaluatedValues.has(expr.raw)) continue;
+      if (evaluatedValues.has(expr.raw) && !deferredPaths.has(expr.path)) {
+        continue;
+      }
       const foreign = foreignTaskText(workflow, expr);
       if (!foreign || !NESTED_TASK_ARGUMENT.test(foreign.path)) continue;
       // Deferred text reading an unlisted root fails when its step runs.
@@ -516,7 +521,7 @@ export class WorkflowExpressionEvaluator {
     }
 
     const skipPath = (path: string) =>
-      isAssertExprPath(path) || deferredTargetPaths.has(path);
+      isAssertExprPath(path) || deferredPaths.has(path);
     const originOf = (raw: string) =>
       origins.get(raw) ?? { map: ProvenanceMap.data() };
     const sensitiveValues = sensitiveValuesOf(context);

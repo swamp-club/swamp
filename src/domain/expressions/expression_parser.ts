@@ -597,7 +597,7 @@ export function isTriggerInputsPath(path: string): boolean {
  * workflow-body evaluation must leave them raw
  */
 export function isGuardPath(path: string): boolean {
-  return path.endsWith(".guard");
+  return /^jobs\[\d+\]\.steps\[\d+\]\.guard$/.test(path);
 }
 
 /**

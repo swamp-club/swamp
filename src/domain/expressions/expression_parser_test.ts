@@ -28,6 +28,7 @@ import {
   extractWholeFieldInputRef,
   isAssertExprPath,
   isAssertMessagePath,
+  isGuardPath,
   isTaskGlobalArgsPath,
   isTaskInputsPath,
   isTaskTargetPath,
@@ -488,6 +489,15 @@ Deno.test("isTriggerInputsPath returns false for trigger.schedule", () => {
 
 Deno.test("isTriggerInputsPath returns false for the top-level inputs schema", () => {
   assertEquals(isTriggerInputsPath("inputs.identifier"), false);
+});
+
+Deno.test("isGuardPath returns true only for a step's own guard field", () => {
+  assertEquals(isGuardPath("jobs[0].steps[2].guard"), true);
+  assertEquals(isGuardPath("jobs[0].steps[2].task.inputs.guard"), false);
+  assertEquals(isGuardPath("jobs[0].steps[2].task.globalArgs.guard"), false);
+  assertEquals(isGuardPath("jobs[0].steps[2].labels.guard"), false);
+  assertEquals(isGuardPath("jobs[0].labels.guard"), false);
+  assertEquals(isGuardPath("labels.guard"), false);
 });
 
 Deno.test("extractInputReferences finds dot notation references", () => {
