@@ -123,7 +123,8 @@ async function harness(
 ): Promise<Harness> {
   const dir = await Deno.makeTempDir();
   const port = new Port();
-  const statusWriter = createStatusWriter({ workspacesDir: dir });
+  // a short retry, since one test makes status writes fail on purpose
+  const statusWriter = createStatusWriter({ workspacesDir: dir, retryMs: 10 });
   const supervisor = createServeSupervisor({
     processPort: port,
     onStatus: (status) => statusWriter.report(status),

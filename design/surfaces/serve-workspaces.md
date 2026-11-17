@@ -385,7 +385,8 @@ per workspace, beside its folder:
   not ask for, over the host's lifetime), `reason` and `updatedAt`. The reason
   is an unreadable wanted file, an admission refusal, or the last lines of the
   serve's stderr in `backoff` or `failed`; it is null otherwise. A host that
-  shuts down writes `stopped`.
+  shuts down writes `stopped`. A status write that fails is tried again every
+  5 s, since a serve held in `failed` reports nothing more.
 
 Both are written atomically through a hidden temporary file, so a reader never
 sees half of one. `HostedWorkspace` (`src/domain/serve/hosted_workspace.ts`)

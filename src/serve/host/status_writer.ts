@@ -32,10 +32,13 @@ export type StatusFileWrite = (
   status: HostedWorkspaceStatus,
 ) => Promise<void>;
 
+export const DEFAULT_STATUS_RETRY_MS = 5_000;
+
 export interface StatusWriterOptions {
   readonly workspacesDir: string;
   readonly now?: () => Date;
   readonly write?: StatusFileWrite;
+  readonly retryMs?: number;
 }
 
 export interface StatusWriter {
@@ -58,6 +61,10 @@ interface Slot {
   forgotten: boolean;
   dirty: boolean;
   writing: Promise<void> | null;
+  /** the reason the last write failed, logged once */
+  failure: string | null;
+  /** ends a retry wait early, for forget and shutdown */
+  wake: (() => void) | null;
 }
 
 export function createStatusWriter(options: StatusWriterOptions): StatusWriter {
@@ -66,6 +73,7 @@ export function createStatusWriter(options: StatusWriterOptions): StatusWriter {
     ((name, status) =>
       writeHostedWorkspaceStatus(options.workspacesDir, name, status));
   const slots = new Map<string, Slot>();
+  const retryMs = options.retryMs ?? DEFAULT_STATUS_RETRY_MS;
   let shuttingDown = false;
 
   const slotOf = (name: string): Slot => {
@@ -77,10 +85,24 @@ export function createStatusWriter(options: StatusWriterOptions): StatusWriter {
         forgotten: false,
         dirty: false,
         writing: null,
+        failure: null,
+        wake: null,
       };
       slots.set(name, slot);
     }
     return slot;
+  };
+
+  const waitOrWake = (slot: Slot): Promise<void> => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    const timer = setTimeout(() => wake(), retryMs);
+    const wake = () => {
+      clearTimeout(timer);
+      slot.wake = null;
+      resolve();
+    };
+    slot.wake = wake;
+    return promise;
   };
 
   const contentOf = (
@@ -104,14 +126,21 @@ export function createStatusWriter(options: StatusWriterOptions): StatusWriter {
         slot.dirty = false;
         try {
           await write(name, contentOf(slot, slot.latest));
+          slot.failure = null;
         } catch (error) {
-          logger.warn(
-            "Writing the status of workspace {name} failed: {error}",
-            {
-              name,
-              error,
-            },
-          );
+          const reason = error instanceof Error ? error.message : String(error);
+          if (reason !== slot.failure) {
+            slot.failure = reason;
+            logger.warn(
+              "Writing the status of workspace {name} failed, and is tried again every {seconds} s: {error}",
+              { name, seconds: retryMs / 1000, error },
+            );
+          }
+          // no event follows a stable state such as failed, so the file is retried on a timer,
+          // not on the folder watch its own write would wake; shutdown never waits on it
+          if (shuttingDown) break;
+          slot.dirty = true;
+          await waitOrWake(slot);
         }
       }
     })().finally(() => {
@@ -140,6 +169,7 @@ export function createStatusWriter(options: StatusWriterOptions): StatusWriter {
       const slot = slotOf(name);
       slot.forgotten = true;
       slot.dirty = false;
+      slot.wake?.();
       await slot.writing;
     },
 
@@ -151,7 +181,10 @@ export function createStatusWriter(options: StatusWriterOptions): StatusWriter {
 
     markShutDown() {
       shuttingDown = true;
-      for (const [name, slot] of slots) schedule(name, slot);
+      for (const [name, slot] of slots) {
+        slot.wake?.();
+        schedule(name, slot);
+      }
     },
 
     async drain() {

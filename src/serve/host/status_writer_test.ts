@@ -170,20 +170,50 @@ Deno.test("createStatusWriter: the reason is the wanted file problem, then the r
   ]);
 });
 
-Deno.test("createStatusWriter: a failed write is logged and the next status is written", async () => {
-  const writes = new GatedWrites();
+Deno.test("createStatusWriter: a failed write is tried again with no new status, so a failed serve is not left reading ready", async () => {
+  let failures = 2;
+  const written: string[] = [];
   const writer = createStatusWriter({
     workspacesDir: "/unused",
-    write: writes.write,
+    retryMs: 1,
+    write: (_name, s) => {
+      if (failures-- > 0) return Promise.reject(new Error("disk full"));
+      written.push(s.state);
+      return Promise.resolve();
+    },
   });
-  writes.failNext = true;
-  writer.report(status({ observed: "starting" }));
-  writes.release();
+  writer.report(status({ observed: "failed" }));
   await writer.drain();
+  assertEquals(written, ["failed"]);
+});
+
+Deno.test("createStatusWriter: forget ends a retry wait at once", async () => {
+  const writer = createStatusWriter({
+    workspacesDir: "/unused",
+    retryMs: 3_600_000,
+    write: () => Promise.reject(new Error("disk full")),
+  });
   writer.report(status({ observed: "ready" }));
-  writes.release();
+  await Promise.resolve();
+  await writer.forget("edge-dns");
   await writer.drain();
-  assertEquals(writes.written.map((w) => w.status.state), ["ready"]);
+});
+
+Deno.test("createStatusWriter: after markShutDown a failed write is not tried again, so shutdown ends", async () => {
+  let attempts = 0;
+  const writer = createStatusWriter({
+    workspacesDir: "/unused",
+    retryMs: 3_600_000,
+    write: () => {
+      attempts++;
+      return Promise.reject(new Error("disk full"));
+    },
+  });
+  writer.report(status({ observed: "ready" }));
+  await Promise.resolve();
+  writer.markShutDown();
+  await writer.drain();
+  assertEquals(attempts, 2, "the first try, then one stopped status");
 });
 
 Deno.test("createStatusWriter: forget waits for the write in flight and drops every later status until track", async () => {

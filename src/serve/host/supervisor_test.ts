@@ -758,3 +758,18 @@ Deno.test("createServeSupervisor: whenStopped settles once the child exits, at o
   await supervisor.shutdown();
   await onShutdown;
 });
+
+Deno.test("createServeSupervisor: a resume the operator asks for after a crash is no restart", async () => {
+  const { port, supervisor } = harness();
+  supervisor.add(spec(EDGE));
+  port.last(EDGE).exit(1);
+  await waitFor(
+    () => supervisor.lookup(EDGE)?.observed === "backoff",
+    "the serve to back off",
+  );
+  supervisor.setWanted(EDGE, "suspended");
+  supervisor.setWanted(EDGE, "running");
+  assertEquals(port.of(EDGE).length, 2);
+  assertEquals(supervisor.lookup(EDGE)?.restarts, 0);
+  await supervisor.shutdown();
+});

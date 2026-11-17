@@ -380,6 +380,8 @@ export function createServeSupervisor(
       refuseWhenClosing();
       const entry = entryOf(id);
       if (wanted === "running") entry.refusal = null;
+      // a serve stopped on request starts again on request, which is no restart
+      else if (entry.child === null) entry.unrequestedExit = false;
       apply(entry, { kind: "wanted", wanted });
     },
 
