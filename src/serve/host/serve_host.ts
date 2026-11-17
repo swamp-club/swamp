@@ -25,6 +25,7 @@ import {
   workspaceServe,
 } from "../../domain/serve/managed_serve.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import { readCredentialFile } from "../../infrastructure/persistence/api_key_source.ts";
 import { validateEndEntityCert } from "../../infrastructure/runtime/tls_cert_validation.ts";
 import type { HostConfig } from "./host_config.ts";
 import type { ServeChildSpec, ServeProcessPort } from "./serve_process.ts";
@@ -82,6 +83,13 @@ export async function startServeHost(
 
   const tls = await readTls(config);
   if (config.root !== null) await requireRootRepo(config.root);
+  if (config.oauthClient !== null) {
+    // read only to refuse what each child would refuse; the value is dropped
+    readCredentialFile(
+      config.oauthClient.secretFile,
+      "host.yaml oauth-client.secret-file",
+    );
+  }
   const skipLog = new SkipLog();
   const scan = await scanWorkspaces(config.workspacesDir);
   skipLog.report(scan.skipped, rescanMs);
@@ -126,6 +134,7 @@ export async function startServeHost(
     address: id.kind === "root" ? config.address : config.childAddress(id.name),
     trustedHost: config.trustedHost,
     env: childEnv,
+    oauthClient: config.oauthClient,
   });
 
   let watcher: WorkspaceWatcher | null = null;

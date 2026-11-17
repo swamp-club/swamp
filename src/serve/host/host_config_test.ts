@@ -45,6 +45,7 @@ Deno.test("HostConfig.parse: a minimal file listens on loopback over http", () =
   assertEquals(config.offLoopback, false);
   assertEquals(config.root, null);
   assertEquals(config.trustProxy, false);
+  assertEquals(config.oauthClient, null);
   assertPathEquals(config.workspacesDir, join(HOST_DIR, "workspaces"));
 });
 
@@ -99,6 +100,15 @@ Deno.test("HostConfig.parse: names the field that is wrong", () => {
     ["address: https://a/?x=1\n", "query or fragment"],
     ["address: http://a\nlisten:\n  cert-file: c.pem\n", "given together"],
     ["address: [\n", "not valid YAML"],
+    ["address: http://a\noauth-client:\n  id: c\n", "oauth-client.secret-file"],
+    [
+      "address: http://a\noauth-client:\n  secret-file: s\n",
+      "oauth-client.id",
+    ],
+    [
+      "address: http://a\noauth-client:\n  id: c\n  secret-file: s\n  secret: x\n",
+      "oauth-client",
+    ],
   ];
   for (const [yaml, expected] of cases) {
     const message = refusal(yaml);
@@ -227,5 +237,45 @@ Deno.test("HostConfig.noAuthRefusal: a loopback host whose address is a public n
       "address: https://serve.acme.internal\nallow-unauthenticated-behind-proxy: true\n",
     ).noAuthRefusal(),
     null,
+  );
+});
+
+Deno.test("HostConfig.parse: an OAuth client keeps its id and resolves the secret file against the host folder", () => {
+  const config = parse(
+    "address: http://a\noauth-client:\n  id: client-123\n  secret-file: secrets/oauth\n",
+  );
+  assertEquals(config.oauthClient?.id, "client-123");
+  assertPathEquals(
+    config.oauthClient!.secretFile,
+    join(HOST_DIR, "secrets", "oauth"),
+  );
+  const absolute = parse(
+    "address: http://a\noauth-client:\n  id: c\n  secret-file: /run/secrets/oauth\n",
+  );
+  assertPathEquals(
+    absolute.oauthClient!.secretFile,
+    resolve("/run/secrets/oauth"),
+  );
+});
+
+Deno.test("HostConfig.parse: refuses an OAuth client secret file inside workspaces/ or the root repo", () => {
+  const cases: Array<[string, string]> = [
+    ["workspaces/edge-dns/secret", "inside workspaces/"],
+    ["./workspaces/secret", "inside workspaces/"],
+    ["root-repo/secret", "inside the root repo"],
+    ["root-repo/.swamp/secret", "inside the root repo"],
+  ];
+  for (const [secretFile, expected] of cases) {
+    const message = refusal(
+      `address: http://a\nroot: root-repo\noauth-client:\n  id: c\n  secret-file: ${secretFile}\n`,
+    );
+    assertStringIncludes(message, "oauth-client.secret-file", secretFile);
+    assertStringIncludes(message, expected, secretFile);
+  }
+  assertEquals(
+    parse(
+      "address: http://a\nroot: root-repo\noauth-client:\n  id: c\n  secret-file: root-repo-secret\n",
+    ).oauthClient !== null,
+    true,
   );
 });

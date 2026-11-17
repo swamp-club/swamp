@@ -47,6 +47,8 @@ export const serveHostCommand = new Command()
       "Runs in a host folder holding host.yaml (the listener, its TLS certificate, the public address and an optional root repo) " +
       "and workspaces/<name>/, one swamp repo per hosted workspace. Each workspace answers at <address>/w/<name>; the root answers at the address itself. " +
       "Workspace folders added or removed while the host runs are picked up. The host has no repo of its own and authenticates no one: each workspace's serve does.\n\n" +
+      "host.yaml can name one OAuth client (oauth-client: id and secret-file, a path outside every repo the host runs). The root and every workspace are started with it through --oauth-client-id and --oauth-client-secret-file, so a workspace in oauth mode needs no client of its own. " +
+      "It replaces a root's own client, so links the root made under that client are no longer found.\n\n" +
       "The host is one trust domain, as plain serve is: every workspace's models see the host's whole environment, cloud credentials included, so host only workspaces whose teams trust each other and the host's operator. " +
       "Serve settings in the environment (SWAMP_GRANTS_FILE, SWAMP_APPROVE_REQUIRES_EXPLICIT_GRANT and the rest) are not passed on: each workspace's serve settings come from its own repo.",
   )
