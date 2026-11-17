@@ -2125,7 +2125,11 @@ times its failure threshold, so traffic leaves a node before SIGTERM. Rolling
 back is the same roll with the previous image. Two versions on one host
 judge each other's liveness by heartbeat, and a release before this one
 writes its heartbeat only after its boot replay, so keep a roll across
-versions to one serve per host.
+versions to one serve per host. The roll that first installs this
+behaviour gets only part of it: a leader on an older release refuses
+webhook deliveries while it drains instead of queuing them, and its
+refusals carry no code a newer follower holds on, so senders see 503s
+during that roll as before; later rolls get the full handover.
 
 `swamp … --server` retries a refused connection, a 502, 503 or 504 at the
 upgrade, and a `draining` or `not_ready` refusal for up to 30 s before it has
