@@ -36,8 +36,9 @@ import {
   ServeUpstreamState,
 } from "../src/infrastructure/datastore_v3/serve_upstream_state.ts";
 import { datastoreRecords } from "./usecase_v3_fixtures.ts";
-import { startLoadedWorker } from "./graph_worker.ts";
-import type { GrantSpec } from "./serve_upstream_server_worker.ts";
+import { startProcessHost } from "./process_host.ts";
+import { leaseHolderHost } from "./serve_upstream_lease_holder.ts";
+import type { GrantSpec } from "./serve_upstream_server.ts";
 import {
   type Client,
   dataOf,
@@ -395,13 +396,10 @@ Deno.test({
 
 async function holdLease(root: string): Promise<{ release(): Promise<void> }> {
   const messages: string[] = [];
-  const worker = await startLoadedWorker<string>(
-    new URL("./serve_upstream_lease_holder_worker.ts", import.meta.url),
-    {
-      loadTimeoutMs: 20_000,
-      attempts: 3,
-      onMessage: (message) => void messages.push(message),
-    },
+  const worker = startProcessHost(
+    "lease-holder",
+    leaseHolderHost,
+    (message) => void messages.push(message),
   );
   const reply = async (expected: string) => {
     await waitFor(

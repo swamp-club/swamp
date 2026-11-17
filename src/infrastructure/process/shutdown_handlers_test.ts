@@ -17,8 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStrictEquals } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
+import {
+  currentProcessRuntime,
+  ProcessRuntime,
+} from "../runtime/process_runtime.ts";
 import {
   commandStopSignal,
   registerShutdownHandler,
@@ -165,6 +169,28 @@ Deno.test("registerShutdownHandler: listens for stop requests on Windows, and st
   handle.dispose();
   handle.dispose();
   assertEquals(stopRequests.stopped(), 1);
+});
+
+Deno.test("registerShutdownHandler: a signal runs the handler in the process runtime that registered it", () => {
+  const stopRequests = fakeStopRequests();
+  const other = new ProcessRuntime(`other-${crypto.randomUUID()}`);
+  let ranIn: ProcessRuntime | undefined;
+  const handle = other.run(() =>
+    registerShutdownHandler({
+      handler: () => {
+        ranIn = currentProcessRuntime();
+      },
+    }, {
+      os: "windows",
+      listenForStopRequests: stopRequests.listenForStopRequests,
+    })
+  );
+  try {
+    stopRequests.handlers[0]();
+    assertStrictEquals(ranIn, other);
+  } finally {
+    handle.dispose();
+  }
 });
 
 Deno.test("registerShutdownHandler: a stop request is a first signal for forceExitOnRepeat", () => {

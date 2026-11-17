@@ -190,6 +190,7 @@ import {
   serveOfflineAt,
 } from "./serve_offline.ts";
 import { type ServeFeedWatch, watchServeFeed } from "./serve_feed_client.ts";
+import { processRuntimeSlot } from "../runtime/process_runtime.ts";
 
 const logger = getSwampLogger(["datastore", "v3"]);
 
@@ -222,30 +223,142 @@ export function v3ServeControlPlaneAt(
   return v3NamespacedStore(v3ControlPlaneAt(location.path), location.namespace);
 }
 
-const opened = new Map<string, V3Datastore>();
+/** this process runtime's handles, holds and serve registrations */
+interface RepoContextState {
+  readonly opened: Map<string, V3Datastore>;
+  /** synced once each at teardown, then released; empty unless replication is on */
+  readonly replications: Map<string, ReplicationHandle[]>;
+  /**
+   * Datastores whose sidecar serve released and could not get back: their
+   * commits since then are unconfirmed, so the closing sync must not pass
+   * silently.
+   */
+  readonly owedReplications: Set<string>;
+  /**
+   * a closing sync that fails after the command's own commits were confirmed
+   * covers only later commits (the retention pass's), which never fail the
+   * command
+   */
+  commandConfirmed: boolean;
+  /** whether the command committed anything is whether a mark moved */
+  readonly commandStartMarks: Map<
+    string,
+    { readonly path: string; readonly mark: number }
+  >;
+  lineageListening: boolean;
+  /** while replicating, a handle opens only on one of these */
+  readonly currentCopies: Set<string>;
+  /** restored copies, so their writers restart a lineage */
+  readonly restoredCopies: Set<string>;
+  /**
+   * kept across teardowns, so a later lease in the process still finds its copy's
+   * lineage
+   */
+  readonly copiesByDatastore: Map<
+    string,
+    (V3Copy & { readonly key: string })[]
+  >;
+  readonly releases: (() => Promise<void>)[];
+  /** the first hold's recovery and marker write, which later holds wait for */
+  readonly markedCheckouts: Map<string, Promise<void>>;
+  /** Teardown keeps the writer markers: work may still be uncommitted. */
+  keepMarkers: boolean;
+  /**
+   * dropped work was not recovered, so the next command recovers it; the close
+   * resets this
+   */
+  readonly keptMarkers: Set<string>;
+  /**
+   * set once the sidecar is written; a hold at the same fence for the same
+   * checkout does not write it again
+   */
+  readonly recordedCheckouts: Map<
+    string,
+    { readonly repoDir: string; readonly fence: number }
+  >;
+  retakeListening: boolean;
+  /**
+   * a retake or move of the lease changes the fence and the next commit checks
+   * again, so a claim written while serve's lease had lapsed stops serve writing
+   */
+  readonly serveHolds: Map<
+    string,
+    { readonly address: string | undefined; verifiedFence?: number }
+  >;
+  /**
+   * while serve does not hold the current writer lease it follows, and each
+   * commit is refused with the leader this names
+   */
+  readonly serveTeams: Map<string, () => ServeLeader | undefined>;
+  /**
+   * copies a serve follower opened, by handle key: no sidecar of this process
+   * replicates them until acquireV3Replication starts one
+   */
+  readonly serveFollowerCopies: Set<string>;
+  /**
+   * handles whose writer hold left serve's catch-up to the command's lock; their
+   * feed watch waits for it, so it neither adds requests nor applies commits
+   * alongside the lock's page
+   */
+  readonly deferredCatchUps: Map<V3Datastore, PromiseWithResolvers<void>>;
+  /** a writer recovers once per fence it takes */
+  readonly outboxRecoveredAt: Map<string, number>;
+  readonly publishing: Map<string, Promise<unknown>>;
+  // a lineage head is one bucket object per lineage and writer fence
+  readonly headPacers: Map<
+    string,
+    { readonly head: string; readonly pacer: HeadPublishPacer }
+  >;
+  /** the collections still running; each logs its own failure */
+  readonly lineageCollections: Set<Promise<void>>;
+  readonly groupCommits: Map<string, ReplicationGroupCommit>;
+  /**
+   * not reset when serve's lineage restarts: a restarted lineage's first head is
+   * published by the retake's first sync or the next commit, and until then the
+   * previous lineage holds the same commits
+   */
+  readonly publishedMarks: Map<string, number>;
+  readonly publishListeners: Map<string, Set<() => void>>;
+  readonly deferredCollections: Set<string>;
+  /** stopped all at once by closeV3Datastores */
+  readonly feedWatches: ServeFeedWatch[];
+  teardownTiming: { probeGraceMs: number; releaseBoundMs: number };
+}
 
-/** synced once each at teardown, then released; empty unless replication is on */
-const replications = new Map<string, ReplicationHandle[]>();
-
-/**
- * Datastores whose sidecar serve released and could not get back: their
- * commits since then are unconfirmed, so the closing sync must not pass
- * silently.
- */
-const owedReplications = new Set<string>();
-
-/**
- * a closing sync that fails after the command's own commits were confirmed
- * covers only later commits (the retention pass's), which never fail the
- * command
- */
-let commandConfirmed = false;
-
-/** whether the command committed anything is whether a mark moved */
-const commandStartMarks = new Map<
-  string,
-  { readonly path: string; readonly mark: number }
->();
+const repoState = processRuntimeSlot<RepoContextState>(() => ({
+  opened: new Map(),
+  replications: new Map(),
+  owedReplications: new Set(),
+  commandConfirmed: false,
+  commandStartMarks: new Map(),
+  lineageListening: false,
+  currentCopies: new Set(),
+  restoredCopies: new Set(),
+  copiesByDatastore: new Map(),
+  releases: [],
+  markedCheckouts: new Map(),
+  keepMarkers: false,
+  keptMarkers: new Set(),
+  recordedCheckouts: new Map(),
+  retakeListening: false,
+  serveHolds: new Map(),
+  serveTeams: new Map(),
+  serveFollowerCopies: new Set(),
+  deferredCatchUps: new Map(),
+  outboxRecoveredAt: new Map(),
+  publishing: new Map(),
+  headPacers: new Map(),
+  lineageCollections: new Set(),
+  groupCommits: new Map(),
+  publishedMarks: new Map(),
+  publishListeners: new Map(),
+  deferredCollections: new Set(),
+  feedWatches: [],
+  teardownTiming: {
+    probeGraceMs: STORAGE_PROBE_GRACE_MS,
+    releaseBoundMs: UNREACHABLE_RELEASE_BOUND_MS,
+  },
+}));
 
 export type V3CommandCommits =
   | { readonly committed: true }
@@ -257,16 +370,16 @@ export type V3CommandCommits =
  * committed. Read before closeV3Datastores
  */
 export function v3CommandCommits(): V3CommandCommits {
-  if (commandStartMarks.size === 0) return { committed: true };
-  const handles = [...opened.values()];
-  for (const [datastore, { mark }] of commandStartMarks) {
+  if (repoState().commandStartMarks.size === 0) return { committed: true };
+  const handles = [...repoState().opened.values()];
+  for (const [datastore, { mark }] of repoState().commandStartMarks) {
     const handle = handles.find((h) => resolve(h.datastorePath) === datastore);
     if (handle === undefined) return { committed: true };
     if (handle.commitStore.highWaterMark().cursor > mark) {
       return { committed: true };
     }
   }
-  const [{ path }] = commandStartMarks.values();
+  const [{ path }] = repoState().commandStartMarks.values();
   return { committed: false, datastorePath: path };
 }
 
@@ -295,49 +408,7 @@ export function reportedV3Failure(
     : new V3StorageUnreachableError(commits.datastorePath, cause);
 }
 
-let lineageListening = false;
-
-/** while replicating, a handle opens only on one of these */
-const currentCopies = new Set<string>();
-
-/** restored copies, so their writers restart a lineage */
-const restoredCopies = new Set<string>();
-
-/**
- * kept across teardowns, so a later lease in the process still finds its copy's
- * lineage
- */
-const copiesByDatastore = new Map<
-  string,
-  (V3Copy & { readonly key: string })[]
->();
-
 const caughtUpWriters = new WeakSet<V3Datastore>();
-const releases: (() => Promise<void>)[] = [];
-
-/** the first hold's recovery and marker write, which later holds wait for */
-const markedCheckouts = new Map<string, Promise<void>>();
-
-/** Teardown keeps the writer markers: work may still be uncommitted. */
-let keepMarkers = false;
-
-/**
- * dropped work was not recovered, so the next command recovers it; the close
- * resets this
- */
-const keptMarkers = new Set<string>();
-
-/**
- * set once the sidecar is written; a hold at the same fence for the same
- * checkout does not write it again
- */
-const recordedCheckouts = new Map<
-  string,
-  { readonly repoDir: string; readonly fence: number }
->();
-
-let retakeListening = false;
-
 /**
  * a direct writer is refused, datastore claim and release change the claim, and
  * serve writes as the owner only when its address is the owner's
@@ -347,35 +418,16 @@ export type V3OwnerCheck =
   | { readonly as: "claimer" }
   | { readonly as: "serve"; readonly address: string | undefined };
 
-/**
- * a retake or move of the lease changes the fence and the next commit checks
- * again, so a claim written while serve's lease had lapsed stops serve writing
- */
-const serveHolds = new Map<
-  string,
-  { readonly address: string | undefined; verifiedFence?: number }
->();
-
-/**
- * while serve does not hold the current writer lease it follows, and each
- * commit is refused with the leader this names
- */
-const serveTeams = new Map<string, () => ServeLeader | undefined>();
-
-/**
- * copies a serve follower opened, by handle key: no sidecar of this process
- * replicates them until acquireV3Replication starts one
- */
-const serveFollowerCopies = new Set<string>();
-
 export function enableV3ServeTeamMode(
   datastorePath: string,
   leader: () => ServeLeader | undefined,
 ): () => void {
   const key = resolve(datastorePath);
-  serveTeams.set(key, leader);
+  repoState().serveTeams.set(key, leader);
   return () => {
-    if (serveTeams.get(key) === leader) serveTeams.delete(key);
+    if (repoState().serveTeams.get(key) === leader) {
+      repoState().serveTeams.delete(key);
+    }
   };
 }
 
@@ -384,7 +436,7 @@ export function enableV3ServeTeamMode(
  * lease was taken over is refused as fenced by the writer's own check
  */
 export function refuseV3FollowerWrite(datastorePath: string): void {
-  const leader = serveTeams.get(resolve(datastorePath));
+  const leader = repoState().serveTeams.get(resolve(datastorePath));
   // a process that held the lease is the writer's check: a lost one is refused
   // as fenced, which says the request may already have done work, never that
   // nothing was changed
@@ -404,7 +456,7 @@ export async function refreshV3FollowerCopy(
   if (holdsCurrentV3WriterLease(config.path)) return;
   const key = handleKey(repoDir, config);
   if (v3ReplicatesAt(config.path)) {
-    currentCopies.delete(key);
+    repoState().currentCopies.delete(key);
     // A retake by a lost hold's renewal meanwhile makes the copy the
     // writer's: the refresh then leaves it to the retake's own restore.
     await ensureV3CopyCurrent(repoDir, config, "read", {
@@ -413,7 +465,7 @@ export async function refreshV3FollowerCopy(
     });
   }
   signal?.throwIfAborted();
-  await opened.get(key)?.catchUp();
+  await repoState().opened.get(key)?.catchUp();
 }
 
 /**
@@ -421,7 +473,7 @@ export async function refreshV3FollowerCopy(
  * so the next command recovers the checkout
  */
 export function keepV3WriterMarkers(): void {
-  keepMarkers = true;
+  repoState().keepMarkers = true;
 }
 
 function handleKey(repoDir: string, config: V3DatastoreConfig): string {
@@ -433,25 +485,27 @@ export function v3DatastoreFor(
   repoDir: string,
   config: V3DatastoreConfig,
 ): V3Datastore {
-  if (!lineageListening) {
+  if (!repoState().lineageListening) {
     // a fence taken outside a writer's hold (read-only recovery, serve's
     // retake) continues the copy's lineage when it may; a writer prepares its
     // own once its copy is current
-    lineageListening = true;
+    repoState().lineageListening = true;
     onV3LeaseTaken(async (path, fence) => {
       // Safe before the copy is current: a lineage continues only while
       // no other writer started one since.
-      for (const copy of copiesByDatastore.get(resolve(path)) ?? []) {
+      for (
+        const copy of repoState().copiesByDatastore.get(resolve(path)) ?? []
+      ) {
         await recordV3LeaseFence(copy, fence);
       }
       // serve's retake of a lost hold recovers what a writer between its two
       // holds left; a first hold recovers in recoverAndMark and a read-only
       // hold never recovers
       if (v3ReplicatesAt(path) || !holdsV3WriterLock(path)) return;
-      for (const [key, handle] of opened) {
+      for (const [key, handle] of repoState().opened) {
         if (
           resolve(handle.datastorePath) === resolve(path) &&
-          markedCheckouts.has(key)
+          repoState().markedCheckouts.has(key)
         ) {
           await recoverV3Outbox(handle, fence);
         }
@@ -459,9 +513,9 @@ export function v3DatastoreFor(
     });
   }
   const key = handleKey(repoDir, config);
-  let handle = opened.get(key);
+  let handle = repoState().opened.get(key);
   if (handle === undefined) {
-    if (v3ReplicatesAt(config.path) && !currentCopies.has(key)) {
+    if (v3ReplicatesAt(config.path) && !repoState().currentCopies.has(key)) {
       throw markErrorPaths(
         new Error(
           `Internal error: the copy of the v3 datastore at ${config.path} ` +
@@ -479,18 +533,22 @@ export function v3DatastoreFor(
         ? { directories: config.directories }
         : {}),
       ...(config.exclude !== undefined ? { exclude: config.exclude } : {}),
-      ...(serveFollowerCopies.has(key) ? { serveFollower: true } : {}),
+      ...(repoState().serveFollowerCopies.has(key)
+        ? { serveFollower: true }
+        : {}),
       writerFence: () => v3WriterFence(config.path),
       replicatedMark: () =>
         v3ReplicatesAt(config.path)
-          ? publishedMarks.get(resolve(config.path)) ?? -1
+          ? repoState().publishedMarks.get(resolve(config.path)) ?? -1
           : undefined,
       assertWriterCurrent: () => {
         refuseV3FollowerWrite(config.path);
         assertV3WriterCurrent(config.path);
         // while replicating, nothing commits onto a copy that is not current:
         // after serve's retake, until its restore lands
-        if (v3ReplicatesAt(config.path) && !currentCopies.has(key)) {
+        if (
+          v3ReplicatesAt(config.path) && !repoState().currentCopies.has(key)
+        ) {
           throw new WriterFencedError(
             v3WriterFence(config.path),
             undefined,
@@ -505,7 +563,8 @@ export function v3DatastoreFor(
         assertV3WriterCurrent(config.path);
         if (
           v3ReplicatesAt(config.path) &&
-          (!currentCopies.has(key) || !holdsV3WriterLock(config.path))
+          (!repoState().currentCopies.has(key) ||
+            !holdsV3WriterLock(config.path))
         ) {
           throw markErrorPaths(
             new Error(
@@ -522,11 +581,11 @@ export function v3DatastoreFor(
       assertCollectable: async () => {
         await assertV3ChunksCollectable(copyOf(repoDir, config));
         if (v3ReplicatesAt(config.path)) {
-          await assertSweepReplicated(config.path, opened.get(key));
+          await assertSweepReplicated(config.path, repoState().opened.get(key));
         }
       },
     });
-    opened.set(key, handle);
+    repoState().opened.set(key, handle);
   }
   return handle;
 }
@@ -542,7 +601,7 @@ async function assertSweepReplicated(
 ): Promise<void> {
   const datastore = resolve(datastorePath);
   const until = "after the next sync that confirms this copy's commits";
-  const use = replications.get(datastore)?.[0];
+  const use = repoState().replications.get(datastore)?.[0];
   if (handle === undefined || use === undefined) {
     throw new V3ChunkCollectionDeferredError(
       datastorePath,
@@ -592,10 +651,10 @@ export async function ensureV3CopyCurrent(
 ): Promise<V3CopyRefresh & { readonly stale?: true }> {
   const key = handleKey(repoDir, config);
   if (!v3ReplicatesAt(config.path)) {
-    currentCopies.add(key);
+    repoState().currentCopies.add(key);
     return {};
   }
-  if (mode === "read" && currentCopies.has(key)) return {};
+  if (mode === "read" && repoState().currentCopies.has(key)) return {};
   // named, since a first clone spends most of its time here
   return await withSpan(
     "swamp.datastore.v3.copy.ensure",
@@ -619,7 +678,7 @@ async function ensureV3CopyCurrentNow(
 ): Promise<V3CopyRefresh & { readonly stale?: true }> {
   await Deno.mkdir(resolve(repoDir), { recursive: true });
   const copy = copyOf(repoDir, config);
-  const handle = opened.get(key);
+  const handle = repoState().opened.get(key);
   const refresh = await makeV3CopyCurrent(copy, {
     mode,
     ...(handle !== undefined ? { openStore: handle.commitStore } : {}),
@@ -627,16 +686,16 @@ async function ensureV3CopyCurrentNow(
     ...(options.signal !== undefined ? { signal: options.signal } : {}),
   });
   const datastore = resolve(config.path);
-  const copies = copiesByDatastore.get(datastore) ?? [];
+  const copies = repoState().copiesByDatastore.get(datastore) ?? [];
   if (!copies.some((known) => known.key === key)) {
-    copiesByDatastore.set(datastore, [...copies, { ...copy, key }]);
+    repoState().copiesByDatastore.set(datastore, [...copies, { ...copy, key }]);
   }
-  if (refresh.restored !== undefined) restoredCopies.add(key);
+  if (refresh.restored !== undefined) repoState().restoredCopies.add(key);
   // A stale restore is not marked current, but its read model is still
   // rebuilt below: the copy state already names what it restored, so a
   // later refresh may find the copy current and restore nothing.
   const stale = options.stillCurrent?.() === false;
-  if (!stale) currentCopies.add(key);
+  if (!stale) repoState().currentCopies.add(key);
   if (refresh.restored !== undefined) {
     if (refresh.restored.readModelMoved) {
       // rebuild from the restored commits and remove files no commit owns,
@@ -729,28 +788,21 @@ export async function holdV3Writer(
   return role;
 }
 
-/**
- * handles whose writer hold left serve's catch-up to the command's lock; their
- * feed watch waits for it, so it neither adds requests nor applies commits
- * alongside the lock's page
- */
-const deferredCatchUps = new Map<V3Datastore, PromiseWithResolvers<void>>();
-
 function deferTo(handle: V3Datastore): void {
-  if (!deferredCatchUps.has(handle)) {
-    deferredCatchUps.set(handle, Promise.withResolvers<void>());
+  if (!repoState().deferredCatchUps.has(handle)) {
+    repoState().deferredCatchUps.set(handle, Promise.withResolvers<void>());
   }
 }
 
 function endDeferral(handle: V3Datastore): void {
-  deferredCatchUps.get(handle)?.resolve();
-  deferredCatchUps.delete(handle);
+  repoState().deferredCatchUps.get(handle)?.resolve();
+  repoState().deferredCatchUps.delete(handle);
 }
 
 /** a lock that gave up: the feed watches it held back read on */
 export function endDeferralsAt(datastorePath: string): void {
   const path = resolve(datastorePath);
-  for (const [handle] of [...deferredCatchUps]) {
+  for (const [handle] of [...repoState().deferredCatchUps]) {
     if (resolve(handle.datastorePath) === path) endDeferral(handle);
   }
 }
@@ -758,7 +810,7 @@ export function endDeferralsAt(datastorePath: string): void {
 /** whether a writer hold at `datastorePath` left its catch-up to a lock */
 export function catchUpDeferredTo(datastorePath: string): boolean {
   const path = resolve(datastorePath);
-  return [...deferredCatchUps.keys()].some((handle) =>
+  return [...repoState().deferredCatchUps.keys()].some((handle) =>
     resolve(handle.datastorePath) === path
   );
 }
@@ -769,7 +821,7 @@ export function catchUpDeferredTo(datastorePath: string): boolean {
  */
 export async function catchUpDeferredAt(datastorePath: string): Promise<void> {
   const path = resolve(datastorePath);
-  for (const [handle] of [...deferredCatchUps]) {
+  for (const [handle] of [...repoState().deferredCatchUps]) {
     if (resolve(handle.datastorePath) !== path) continue;
     try {
       await handle.catchUpForWrite?.(undefined, { mayGoOffline: true });
@@ -790,7 +842,7 @@ export function goServeOfflineAt(
 ): boolean {
   const path = resolve(datastorePath);
   let offline = false;
-  for (const [handle] of [...deferredCatchUps]) {
+  for (const [handle] of [...repoState().deferredCatchUps]) {
     if (resolve(handle.datastorePath) !== path) continue;
     if (handle.goOfflineOnUnreachable?.(error) === true) {
       offline = true;
@@ -810,7 +862,7 @@ export async function catchUpBeforeLockAt(
   options?: CatchUpOptions,
 ): Promise<void> {
   const path = resolve(datastorePath);
-  for (const handle of [...opened.values()]) {
+  for (const handle of [...repoState().opened.values()]) {
     if (resolve(handle.datastorePath) !== path) continue;
     if (handle.catchUpForWrite === undefined) {
       await handle.catchUp(undefined, options);
@@ -832,7 +884,7 @@ export function goServeOfflineAtLock(
 ): boolean {
   const path = resolve(datastorePath);
   let offline = false;
-  for (const handle of [...opened.values()]) {
+  for (const handle of [...repoState().opened.values()]) {
     if (resolve(handle.datastorePath) !== path) continue;
     if (handle.goOfflineOnUnreachable?.(error) === true) offline = true;
     endDeferral(handle);
@@ -852,16 +904,16 @@ const caughtUpFromServe = new WeakSet<V3Datastore>();
  * closes
  */
 export function watchV3ServeFeeds(): void {
-  for (const handle of [...opened.values()]) {
+  for (const handle of [...repoState().opened.values()]) {
     const binding = serveUpstreamAt(handle.datastorePath);
     if (binding === undefined) continue;
-    feedWatches.push(watchServeFeed({
+    repoState().feedWatches.push(watchServeFeed({
       target: binding.target,
       catchUp: (signal) => handle.catchUp(signal),
       // a writer hold that left its catch-up to the lock holds the feed's
       // until the lock's has applied
       ready: async (signal) => {
-        const deferred = deferredCatchUps.get(handle);
+        const deferred = repoState().deferredCatchUps.get(handle);
         if (deferred === undefined) return;
         signal.throwIfAborted();
         await Promise.race([
@@ -886,8 +938,6 @@ export function watchV3ServeFeeds(): void {
   }
 }
 
-const feedWatches: ServeFeedWatch[] = [];
-
 /**
  * where the one copy read through serve at `datastorePath` stands, which a
  * lock asks serve to answer with what the copy lacks
@@ -896,7 +946,7 @@ export function serveCatchUpRequestAt(
   datastorePath: string,
 ): CatchUpRequest | undefined {
   const path = resolve(datastorePath);
-  const handles = [...opened.values()].filter((handle) =>
+  const handles = [...repoState().opened.values()].filter((handle) =>
     resolve(handle.datastorePath) === path
   );
   return handles.length === 1 ? handles[0].serveCatchUpRequest?.() : undefined;
@@ -915,7 +965,7 @@ export async function catchUpV3HandlesAt(
   maxCommits?: number,
 ): Promise<void> {
   const path = resolve(datastorePath);
-  const handles = [...opened.values()].filter((handle) =>
+  const handles = [...repoState().opened.values()].filter((handle) =>
     resolve(handle.datastorePath) === path
   );
   for (const handle of handles) {
@@ -994,11 +1044,13 @@ async function takeV3WriterHold(
       // current and the first fence is raised then; a retake raises it here
       fenceStore: {
         writerFence: () =>
-          !v3ReplicatesAt(config.path) || currentCopies.has(key)
+          !v3ReplicatesAt(config.path) || repoState().currentCopies.has(key)
             ? v3DatastoreFor(repoDir, config).commitStore.writerFence()
             : undefined,
         raiseWriterFence: async (fence: number) => {
-          if (!v3ReplicatesAt(config.path) || currentCopies.has(key)) {
+          if (
+            !v3ReplicatesAt(config.path) || repoState().currentCopies.has(key)
+          ) {
             await v3DatastoreFor(repoDir, config).raiseWriterFence(fence);
           }
         },
@@ -1046,9 +1098,9 @@ async function takeV3WriterHold(
       const datastore = resolve(config.path);
       if (
         ownerCheckOf(config, options.ownerCheck).as !== "serve" &&
-        !commandStartMarks.has(datastore)
+        !repoState().commandStartMarks.has(datastore)
       ) {
-        commandStartMarks.set(datastore, {
+        repoState().commandStartMarks.set(datastore, {
           path: config.path,
           mark: handle.commitStore.highWaterMark().cursor,
         });
@@ -1070,7 +1122,7 @@ async function takeV3WriterHold(
     }
   }
   const checkout = handleKey(repoDir, config);
-  let marking = markedCheckouts.get(checkout);
+  let marking = repoState().markedCheckouts.get(checkout);
   const marks = marking === undefined;
   if (marking === undefined) {
     // a writer that ended without tearing down left files no commit names:
@@ -1080,7 +1132,7 @@ async function takeV3WriterHold(
     // Handled here, awaited below: a recovery that fails while the sidecar
     // write is still pending must not reject unhandled.
     marking.catch(() => {});
-    markedCheckouts.set(checkout, marking);
+    repoState().markedCheckouts.set(checkout, marking);
   }
   try {
     await recordWriterCheckout(config.path, repoDir);
@@ -1090,9 +1142,9 @@ async function takeV3WriterHold(
     const fence = v3WriterFence(config.path);
     if (fence !== undefined && v3ReplicatesAt(config.path)) {
       await prepareV3WriterLineage(copyOf(repoDir, config), fence, {
-        restored: restoredCopies.has(key),
+        restored: repoState().restoredCopies.has(key),
       });
-      restoredCopies.delete(key);
+      repoState().restoredCopies.delete(key);
     }
     const replication = fence === undefined
       ? undefined
@@ -1103,8 +1155,8 @@ async function takeV3WriterHold(
       );
     if (replication !== undefined) {
       const datastore = resolve(config.path);
-      replications.set(datastore, [
-        ...(replications.get(datastore) ?? []),
+      repoState().replications.set(datastore, [
+        ...(repoState().replications.get(datastore) ?? []),
         replication,
       ]);
     }
@@ -1113,19 +1165,19 @@ async function takeV3WriterHold(
       if (await marking.then(() => true, () => false)) {
         // The marker landed and another hold in this process may already
         // rely on it: it goes at teardown, not now.
-        releases.push(async () => {
+        repoState().releases.push(async () => {
           if (!keepsMarker(repoDir)) {
             await removeOwnWriterMarker(repoDir).catch(() => {});
           }
         });
       } else {
-        markedCheckouts.delete(checkout);
+        repoState().markedCheckouts.delete(checkout);
       }
     }
     await releaseAfterFailure(release, error);
     throw error;
   }
-  releases.push(async () => {
+  repoState().releases.push(async () => {
     // The marker goes once every unit has ended, before the lock does. A
     // marker that cannot be removed costs one needless recovery, never the
     // lock.
@@ -1153,7 +1205,7 @@ async function followV3Datastore(
   repoDir: string,
   ownerCheck: V3OwnerCheck | undefined,
 ): Promise<void> {
-  serveFollowerCopies.add(handleKey(repoDir, config));
+  repoState().serveFollowerCopies.add(handleKey(repoDir, config));
   await ensureV3CopyCurrent(repoDir, config, "read");
   const handle = v3DatastoreFor(repoDir, config);
   const refusal = claimRefusal(
@@ -1166,7 +1218,9 @@ async function followV3Datastore(
   // serve's leadership names the leader: a partition that never saw a fence
   // would take an unfenced commit.
   const key = resolve(config.path);
-  if (!serveTeams.has(key)) serveTeams.set(key, () => undefined);
+  if (!repoState().serveTeams.has(key)) {
+    repoState().serveTeams.set(key, () => undefined);
+  }
 }
 
 /**
@@ -1188,7 +1242,7 @@ function refuseUnlessOwner(
   );
   if (refusal !== undefined) throw withStrandedOutbox(refusal, config, repoDir);
   if (check.as === "serve") {
-    serveHolds.set(datastore, {
+    repoState().serveHolds.set(datastore, {
       address: check.address,
       verifiedFence: v3WriterFence(config.path),
     });
@@ -1199,7 +1253,7 @@ function ownerCheckOf(
   config: V3DatastoreConfig,
   ownerCheck: V3OwnerCheck | undefined,
 ): V3OwnerCheck {
-  const serve = serveHolds.get(resolve(config.path));
+  const serve = repoState().serveHolds.get(resolve(config.path));
   return ownerCheck ??
     (serve !== undefined
       ? { as: "serve", address: serve.address }
@@ -1212,11 +1266,11 @@ function ownerCheckOf(
  * serve
  */
 function assertServeStillOwner(datastorePath: string, key: string): void {
-  const serve = serveHolds.get(resolve(datastorePath));
+  const serve = repoState().serveHolds.get(resolve(datastorePath));
   if (serve === undefined) return;
   const fence = v3WriterFence(datastorePath);
   if (fence === undefined || fence === serve.verifiedFence) return;
-  const handle = opened.get(key);
+  const handle = repoState().opened.get(key);
   if (handle === undefined) return;
   const refusal = claimRefusal(handle.commitStore.owner(), {
     as: "serve",
@@ -1299,7 +1353,7 @@ async function recordWriterCheckout(
   if (fence === undefined) return;
   const datastore = resolve(datastorePath);
   const canonical = await canonicalPath(repoDir);
-  const recorded = recordedCheckouts.get(datastore);
+  const recorded = repoState().recordedCheckouts.get(datastore);
   if (recorded?.fence === fence && recorded.repoDir === canonical) return;
   const sidecar = writerCheckoutPath(datastorePath);
   // a bucket datastore's local root has no _control/ of its own until this
@@ -1316,13 +1370,13 @@ async function recordWriterCheckout(
       fence,
     }),
   );
-  recordedCheckouts.set(datastore, { repoDir: canonical, fence });
-  if (!retakeListening) {
-    retakeListening = true;
+  repoState().recordedCheckouts.set(datastore, { repoDir: canonical, fence });
+  if (!repoState().retakeListening) {
+    repoState().retakeListening = true;
     // serve's retake writes the checkout under its new fence, so readers there
     // stay out
     onV3HoldRetaken(async (path, retaken) => {
-      const previous = recordedCheckouts.get(resolve(path));
+      const previous = repoState().recordedCheckouts.get(resolve(path));
       if (previous === undefined || previous.fence === retaken) return;
       await recordWriterCheckout(path, previous.repoDir);
     });
@@ -1381,9 +1435,6 @@ async function recoverAndMark(
   }
 }
 
-/** a writer recovers once per fence it takes */
-const outboxRecoveredAt = new Map<string, number>();
-
 /**
  * checkouts sharing the datastore's commits.db share its outbox, so recover
  * once per fence per store
@@ -1393,7 +1444,7 @@ async function recoverV3Outbox(
   fence: number,
 ): Promise<void> {
   const store = resolve(handle.commitsDbPath);
-  if (outboxRecoveredAt.get(store) === fence) return;
+  if (repoState().outboxRecoveredAt.get(store) === fence) return;
   // a serve-mode checkout lands its entries through serve, never only in its
   // copy of serve's log
   const upstream = handle.serveUpstreamStore;
@@ -1432,7 +1483,7 @@ async function recoverV3Outbox(
     }
     throw error;
   }
-  outboxRecoveredAt.set(store, fence);
+  repoState().outboxRecoveredAt.set(store, fence);
 }
 
 function errorMessage(error: unknown): string {
@@ -1488,9 +1539,9 @@ async function readWriterCheckout(
  */
 async function removeOwnWriterCheckout(datastorePath: string): Promise<void> {
   const datastore = resolve(datastorePath);
-  const mine = recordedCheckouts.get(datastore);
+  const mine = repoState().recordedCheckouts.get(datastore);
   if (mine === undefined) return;
-  recordedCheckouts.delete(datastore);
+  repoState().recordedCheckouts.delete(datastore);
   try {
     const recorded = await readWriterCheckout(datastorePath);
     if (
@@ -1548,7 +1599,7 @@ function isOwnWriterCheckout(
   recorded: WriterCheckoutRecord,
   local: LocalProcess,
 ): boolean {
-  const mine = recordedCheckouts.get(resolve(datastorePath));
+  const mine = repoState().recordedCheckouts.get(resolve(datastorePath));
   return mine !== undefined && recorded.fence === mine.fence &&
     isThisProcess(recorded, local);
 }
@@ -1657,7 +1708,7 @@ export async function v3RepositoryFactoryConfig(
     !writer && v3ReplicatesAt(config.path) &&
     await anotherProcessWritesCheckout(repoDir, config.path) !== undefined
   ) {
-    currentCopies.add(handleKey(repoDir, config));
+    repoState().currentCopies.add(handleKey(repoDir, config));
   } else if (!writer) {
     try {
       await ensureV3CopyCurrent(repoDir, config, "read");
@@ -1735,7 +1786,7 @@ export async function v3RepositoryFactoryConfig(
     commitLog: (markDirty, runRepo) =>
       handle.engineFor(markDirty, runRepo, {
         readOnly: options.readOnly === true,
-        heldByServe: () => serveHolds.has(resolve(config.path)),
+        heldByServe: () => repoState().serveHolds.has(resolve(config.path)),
       }),
     catalogStore: handle.catalogStore,
     // a read of a record the read model could not materialise fails loudly
@@ -1772,7 +1823,8 @@ async function refuseUnsafeV3Checkout(
 }
 
 function keepsMarker(repoDir: string): boolean {
-  return keepMarkers || keptMarkers.has(resolve(repoDir));
+  return repoState().keepMarkers ||
+    repoState().keptMarkers.has(resolve(repoDir));
 }
 
 /**
@@ -1792,7 +1844,8 @@ function writesCurrentCopy(key: string, handle: V3Datastore): boolean {
   if (stored !== undefined && (fence === undefined || stored > fence)) {
     return false;
   }
-  return !v3ReplicatesAt(handle.datastorePath) || currentCopies.has(key);
+  return !v3ReplicatesAt(handle.datastorePath) ||
+    repoState().currentCopies.has(key);
 }
 
 /**
@@ -1817,15 +1870,10 @@ export const UNREACHABLE_RELEASE_BOUND_MS = 1_000;
  */
 export const SHUTDOWN_RELEASE_BOUND_MS = 5_000;
 
-let teardownTiming = {
-  probeGraceMs: STORAGE_PROBE_GRACE_MS,
-  releaseBoundMs: UNREACHABLE_RELEASE_BOUND_MS,
-};
-
 export function setV3TeardownTimingForTesting(
   timing: { probeGraceMs: number; releaseBoundMs: number } | undefined,
 ): void {
-  teardownTiming = timing ?? {
+  repoState().teardownTiming = timing ?? {
     probeGraceMs: STORAGE_PROBE_GRACE_MS,
     releaseBoundMs: UNREACHABLE_RELEASE_BOUND_MS,
   };
@@ -1873,7 +1921,7 @@ function watchStorageDuringSync(
         );
       },
     );
-  }, teardownTiming.probeGraceMs);
+  }, repoState().teardownTiming.probeGraceMs);
   return {
     signal: controller.signal,
     stop: () => {
@@ -1988,7 +2036,7 @@ async function recoverDroppedWork(
 ): Promise<void> {
   const checkout = key.split("\0")[0];
   const keep = (why: string): void => {
-    keptMarkers.add(checkout);
+    repoState().keptMarkers.add(checkout);
     handle.forgetDroppedWork();
     logger
       .info`Work a command dropped stays in ${checkout} until the next command recovers it: ${why}`;
@@ -1997,7 +2045,7 @@ async function recoverDroppedWork(
     keep("this process no longer holds the v3 writer lease");
     return;
   }
-  if (keepMarkers) {
+  if (repoState().keepMarkers) {
     // Serve's drain left runs that may still be writing between units.
     keep("runs may still be writing");
     return;
@@ -2034,7 +2082,7 @@ async function recoverDroppedWork(
 export async function followServeCompactionAtCommandEnd(
   budgetMs: number = FOLLOW_COMPACTION_BUDGET_MS,
 ): Promise<void> {
-  await followEachWithin(opened.values(), budgetMs, {
+  await followEachWithin(repoState().opened.values(), budgetMs, {
     followsServe: (path) => serveUpstreamAt(path) !== undefined,
     offline: (path) => serveOfflineAt(path) !== undefined,
     onError: (path, error) =>
@@ -2054,27 +2102,30 @@ export async function closeV3Datastores(
   await withSpan(
     "swamp.datastore.v3.close.feed_stop",
     {},
-    () => Promise.all(feedWatches.splice(0).map((watch) => watch.stop())),
+    () =>
+      Promise.all(
+        repoState().feedWatches.splice(0).map((watch) => watch.stop()),
+      ),
   );
   closeServeLockClients();
   let unreachable = options.storageUnreachable === true;
   // Serve's shutdown deadline, kept for the release once the sync's turn
   // has cleared it.
   const shutdownDeadline = v3ClosingDeadline();
-  const pending = releases.splice(0);
-  const marked = new Set(markedCheckouts.keys());
-  markedCheckouts.clear();
-  commandStartMarks.clear();
-  serveHolds.clear();
-  serveTeams.clear();
-  serveFollowerCopies.clear();
+  const pending = repoState().releases.splice(0);
+  const marked = new Set(repoState().markedCheckouts.keys());
+  repoState().markedCheckouts.clear();
+  repoState().commandStartMarks.clear();
+  repoState().serveHolds.clear();
+  repoState().serveTeams.clear();
+  repoState().serveFollowerCopies.clear();
   // offline mode lasts the command; json mode says what it queued now, after
   // its result
   reportQueuedOffline();
   resetServeOffline();
-  const entries = [...opened.entries()];
+  const entries = [...repoState().opened.entries()];
   const handles = entries.map(([, handle]) => handle);
-  opened.clear();
+  repoState().opened.clear();
   // whether each checkout that dropped work may recover it now, judged while
   // the lease and copy state are here
   const dropped = entries.flatMap(([key, handle]) =>
@@ -2092,7 +2143,8 @@ export async function closeV3Datastores(
       if (serveUpstreamAt(handle.datastorePath) !== undefined) continue;
       // a sidecar already gone (signalled with this process) replicates nothing
       // more, so no commit is made that no replica could hold
-      const use = replications.get(resolve(handle.datastorePath))?.[0];
+      const use = repoState().replications.get(resolve(handle.datastorePath))
+        ?.[0];
       if (use !== undefined && !await use.probe()) {
         logger
           .debug`Not compacting the v3 datastore at ${handle.datastorePath} at close: its Litestream sidecar is gone`;
@@ -2104,11 +2156,13 @@ export async function closeV3Datastores(
   // one sync per datastore confirms every commit this process made,
   // compaction's included; before the stores close, since it makes Litestream
   // open commits.db and the WAL must survive for the next sidecar start
-  const heldEntries = [...replications.entries()];
+  const heldEntries = [...repoState().replications.entries()];
   const held = heldEntries.map(([, uses]) => uses);
-  const owed = [...owedReplications].filter((key) => !replications.has(key));
-  replications.clear();
-  owedReplications.clear();
+  const owed = [...repoState().owedReplications].filter((key) =>
+    !repoState().replications.has(key)
+  );
+  repoState().replications.clear();
+  repoState().owedReplications.clear();
   const deadlineMs = unreachable
     ? UNREACHABLE_SYNC_DEADLINE_MS
     : v3SyncDeadlineMs();
@@ -2193,8 +2247,8 @@ export async function closeV3Datastores(
   // once the command's own commits were confirmed, a closing sync that fails
   // covers only what was committed since: kept in commits.db, it replicates
   // with the next write and does not fail the command
-  const confirmedEarlier = commandConfirmed;
-  commandConfirmed = false;
+  const confirmedEarlier = repoState().commandConfirmed;
+  repoState().commandConfirmed = false;
   const closing = synced.map((result) => {
     if (
       confirmedEarlier && result.status === "rejected" &&
@@ -2206,8 +2260,8 @@ export async function closeV3Datastores(
     }
     return result;
   });
-  currentCopies.clear();
-  restoredCopies.clear();
+  repoState().currentCopies.clear();
+  repoState().restoredCopies.clear();
   // Close before releasing, so no other writer starts while this process
   // still has the commit log open.
   const closed = await withSpan(
@@ -2226,7 +2280,7 @@ export async function closeV3Datastores(
       Promise.allSettled(
         pending.map((release) =>
           unreachable
-            ? boundedRelease(release, teardownTiming.releaseBoundMs)
+            ? boundedRelease(release, repoState().teardownTiming.releaseBoundMs)
             : shutdownDeadline !== undefined
             ? boundedRelease(
               release,
@@ -2236,8 +2290,8 @@ export async function closeV3Datastores(
         ),
       ),
   );
-  keepMarkers = false;
-  keptMarkers.clear();
+  repoState().keepMarkers = false;
+  repoState().keptMarkers.clear();
   clearServeUnreachableLatches();
   // A replication failure comes first: it is what the command reports.
   const failed = [...closing, ...closed, ...unheld, ...released].find((
@@ -2263,7 +2317,7 @@ async function syncAndPublish(
 ): Promise<number | undefined> {
   // One at a time per datastore: serve's probe and a drain can both sync,
   // and a head taken earlier must never be published over a later one.
-  const ahead = publishing.get(datastore);
+  const ahead = repoState().publishing.get(datastore);
   const previous = ahead ?? Promise.resolve();
   const startedAt = Date.now();
   const run = (async () => {
@@ -2295,11 +2349,13 @@ async function syncAndPublish(
   })();
   // The next sync waits for this one and for the one it gave up on.
   const turn = Promise.allSettled([previous, run]);
-  publishing.set(datastore, turn);
+  repoState().publishing.set(datastore, turn);
   try {
     return await run;
   } finally {
-    if (publishing.get(datastore) === turn) publishing.delete(datastore);
+    if (repoState().publishing.get(datastore) === turn) {
+      repoState().publishing.delete(datastore);
+    }
   }
 }
 
@@ -2325,14 +2381,6 @@ async function settlesWithin(
  */
 const MIN_QUEUED_SYNC_MS = 500;
 
-const publishing = new Map<string, Promise<unknown>>();
-
-// a lineage head is one bucket object per lineage and writer fence
-const headPacers = new Map<
-  string,
-  { readonly head: string; readonly pacer: HeadPublishPacer }
->();
-
 const HEAD_OBJECT = /\/head-\d+\.json$/;
 
 function headPacerFor(
@@ -2342,10 +2390,10 @@ function headPacerFor(
 ): HeadPublishPacer | undefined {
   if (v3BucketBindingAt(datastore) === undefined) return undefined;
   const head = `${lineageFence}/${writerFence}`;
-  const known = headPacers.get(datastore);
+  const known = repoState().headPacers.get(datastore);
   if (known?.head === head) return known.pacer;
   const pacer = new HeadPublishPacer();
-  headPacers.set(datastore, { head, pacer });
+  repoState().headPacers.set(datastore, { head, pacer });
   return pacer;
 }
 
@@ -2385,9 +2433,9 @@ async function confirmClosedFromReplica(
   if (
     handle !== undefined &&
     handle.commitStore.highWaterMark().cursor <=
-      (publishedMarks.get(datastore) ?? -1)
+      (repoState().publishedMarks.get(datastore) ?? -1)
   ) {
-    return publishedMarks.get(datastore);
+    return repoState().publishedMarks.get(datastore);
   }
   try {
     return await syncAndPublishNow(
@@ -2417,7 +2465,7 @@ async function syncAndPublishNow(
   const handle = handles.find((h) => resolve(h.datastorePath) === datastore);
   const copy = handle === undefined
     ? undefined
-    : (copiesByDatastore.get(datastore) ?? []).find((known) =>
+    : (repoState().copiesByDatastore.get(datastore) ?? []).find((known) =>
       known.commitsDb === handle.commitsDbPath
     );
   const writerFence = handle === undefined
@@ -2473,16 +2521,18 @@ async function syncAndPublishNow(
       await use.sync(left, confirmOptions);
     }
   });
-  publishedMarks.set(
+  repoState().publishedMarks.set(
     datastore,
-    Math.max(publishedMarks.get(datastore) ?? 0, mark.cursor),
+    Math.max(repoState().publishedMarks.get(datastore) ?? 0, mark.cursor),
   );
   for (const opened of handles) {
     if (resolve(opened.datastorePath) === datastore) {
       opened.releaseReplicated();
     }
   }
-  for (const listener of [...(publishListeners.get(datastore) ?? [])]) {
+  for (
+    const listener of [...(repoState().publishListeners.get(datastore) ?? [])]
+  ) {
     try {
       listener();
     } catch {
@@ -2505,26 +2555,25 @@ async function syncAndPublishNow(
     ).catch((error) => {
       logger
         .warn`Removing the replaced replication lineages of the v3 datastore at ${datastore} failed; the next writer's first sync tries again: ${error}`;
-    }).finally(() => lineageCollections.delete(collection));
-    lineageCollections.add(collection);
+    }).finally(() => repoState().lineageCollections.delete(collection));
+    repoState().lineageCollections.add(collection);
   }
   return mark.cursor;
 }
 
-/** the collections still running; each logs its own failure */
-const lineageCollections = new Set<Promise<void>>();
-
 export function trackV3LineageCollectionForTesting(
   collection: Promise<void>,
 ): void {
-  lineageCollections.add(collection);
-  void collection.finally(() => lineageCollections.delete(collection));
+  repoState().lineageCollections.add(collection);
+  void collection.finally(() =>
+    repoState().lineageCollections.delete(collection)
+  );
 }
 
 async function boundedLineageCollections(
   boundMs: number | undefined,
 ): Promise<void> {
-  const running = Promise.all([...lineageCollections]);
+  const running = Promise.all([...repoState().lineageCollections]);
   if (boundMs === undefined) {
     await running;
     return;
@@ -2548,22 +2597,20 @@ async function boundedLineageCollections(
  * already covering the commits is not synced again
  */
 export async function confirmV3CommandReplicated(): Promise<void> {
-  const handles = [...opened.values()];
-  for (const [datastore, uses] of [...replications.entries()]) {
+  const handles = [...repoState().opened.values()];
+  for (const [datastore, uses] of [...repoState().replications.entries()]) {
     const handle = handles.find((h) => resolve(h.datastorePath) === datastore);
     if (
       handle !== undefined &&
       handle.commitStore.highWaterMark().cursor <=
-        (publishedMarks.get(datastore) ?? -1)
+        (repoState().publishedMarks.get(datastore) ?? -1)
     ) {
       continue;
     }
     await syncAndPublish(datastore, uses[0], handles, v3SyncDeadlineMs());
   }
-  commandConfirmed = true;
+  repoState().commandConfirmed = true;
 }
-
-const groupCommits = new Map<string, ReplicationGroupCommit>();
 
 /**
  * concurrent requests share syncs; one whose commits a published head already
@@ -2575,7 +2622,7 @@ export async function confirmV3Replicated(
 ): Promise<void> {
   if (!v3ReplicatesAt(datastorePath)) return;
   const datastore = resolve(datastorePath);
-  const handle = [...opened.values()].find((h) =>
+  const handle = [...repoState().opened.values()].find((h) =>
     resolve(h.datastorePath) === datastore
   );
   if (handle === undefined) {
@@ -2585,13 +2632,13 @@ export async function confirmV3Replicated(
   }
   // Read after the request's commits landed: a later mark only covers more.
   const mark = handle.commitStore.highWaterMark().cursor;
-  if (mark <= (publishedMarks.get(datastore) ?? -1)) return;
-  let group = groupCommits.get(datastore);
+  if (mark <= (repoState().publishedMarks.get(datastore) ?? -1)) return;
+  let group = repoState().groupCommits.get(datastore);
   if (group === undefined) {
     group = new ReplicationGroupCommit((covering) =>
       syncForRequests(datastore, covering)
     );
-    groupCommits.set(datastore, group);
+    repoState().groupCommits.set(datastore, group);
   }
   await group.confirm(mark);
 }
@@ -2602,7 +2649,7 @@ export async function confirmV3Replicated(
  */
 export function v3CommitMark(datastorePath: string): number {
   const datastore = resolve(datastorePath);
-  const handle = [...opened.values()].find((h) =>
+  const handle = [...repoState().opened.values()].find((h) =>
     resolve(h.datastorePath) === datastore
   );
   return handle?.commitStore.highWaterMark().cursor ?? -1;
@@ -2643,7 +2690,7 @@ export function v3ClaimCommitLog(
     assertV3WriterCurrent(config.path);
     if (
       v3ReplicatesAt(config.path) &&
-      !currentCopies.has(handleKey(repoDir, config))
+      !repoState().currentCopies.has(handleKey(repoDir, config))
     ) {
       throw new WriterFencedError(held, undefined, "copy-restoring");
     }
@@ -2656,9 +2703,9 @@ export function v3ClaimCommitLog(
   };
   const changed = async (): Promise<void> => {
     const datastore = resolve(config.path);
-    const start = commandStartMarks.get(datastore);
+    const start = repoState().commandStartMarks.get(datastore);
     if (start !== undefined) {
-      commandStartMarks.set(datastore, { ...start, mark: -1 });
+      repoState().commandStartMarks.set(datastore, { ...start, mark: -1 });
     }
     await confirm();
   };
@@ -2682,7 +2729,7 @@ async function syncForRequests(
   datastore: string,
   covering: number,
 ): Promise<number | undefined> {
-  const use = replications.get(datastore)?.[0];
+  const use = repoState().replications.get(datastore)?.[0];
   if (use === undefined) {
     // Released for a replacement, never got back, or closed: nothing can
     // confirm the commits until a sidecar is held again.
@@ -2694,7 +2741,7 @@ async function syncForRequests(
   // the head before the bucket refuses its rewrites, which a provider's own
   // retries otherwise hide.
   if (covering > 1) {
-    const handle = [...opened.values()].find((h) =>
+    const handle = [...repoState().opened.values()].find((h) =>
       resolve(h.datastorePath) === datastore
     );
     const writerFence = handle === undefined
@@ -2709,19 +2756,10 @@ async function syncForRequests(
   return await syncAndPublish(
     datastore,
     use,
-    [...opened.values()],
+    [...repoState().opened.values()],
     v3RequestSyncDeadlineMs(),
   );
 }
-
-/**
- * not reset when serve's lineage restarts: a restarted lineage's first head is
- * published by the retake's first sync or the next commit, and until then the
- * previous lineage holds the same commits
- */
-const publishedMarks = new Map<string, number>();
-
-const publishListeners = new Map<string, Set<() => void>>();
 
 export interface V3CommitFeedSource {
   readonly datastore: V3Datastore;
@@ -2750,20 +2788,20 @@ export function v3CommitFeedSource(
       ) {
         return head;
       }
-      return Math.min(head, publishedMarks.get(key) ?? 0);
+      return Math.min(head, repoState().publishedMarks.get(key) ?? 0);
     },
     onMoved(listener) {
       const offHead = datastore.commitStore.onHeadMoved(listener);
-      let listeners = publishListeners.get(key);
+      let listeners = repoState().publishListeners.get(key);
       if (listeners === undefined) {
         listeners = new Set();
-        publishListeners.set(key, listeners);
+        repoState().publishListeners.set(key, listeners);
       }
       const published = () => listener(false);
       listeners.add(published);
       return () => {
         offHead();
-        publishListeners.get(key)?.delete(published);
+        repoState().publishListeners.get(key)?.delete(published);
       };
     },
   };
@@ -2829,14 +2867,14 @@ export function startV3ReplicationUpkeep(
     // too: teardown is closing the stores it would touch
     const stale = () => retakes !== startedAt || stopping.signal.aborted;
     replacing = (async () => {
-      const uses = replications.get(key) ?? [];
-      replications.delete(key);
+      const uses = repoState().replications.get(key) ?? [];
+      repoState().replications.delete(key);
       // This process's own shared hold goes first: a replacement waits for
       // the use lock exclusively.
       await Promise.allSettled(uses.map((use) => use.release()));
       // Owed until a sidecar is held again, even while serve has no lease:
       // a shutdown before then must not pass serve's commits as replicated.
-      owedReplications.add(key);
+      repoState().owedReplications.add(key);
       const held = v3WriterFence(datastorePath);
       if (held === undefined || stopped || stale()) return;
       // A retake's listeners run before its lease is recorded, when the
@@ -2861,9 +2899,9 @@ export function startV3ReplicationUpkeep(
       await recoverV3Outbox(handle, fence);
       if (stale()) return;
       await prepareV3WriterLineage(copyOf(repoDir, config), fence, {
-        restored: restoredCopies.has(copyKey),
+        restored: repoState().restoredCopies.has(copyKey),
       });
-      restoredCopies.delete(copyKey);
+      repoState().restoredCopies.delete(copyKey);
       if (stale()) return;
       const next = await acquireV3Replication(
         handle.commitsDbPath,
@@ -2879,8 +2917,11 @@ export function startV3ReplicationUpkeep(
       if (next !== undefined) {
         // Merged: a writer hold taken meanwhile keeps its own entry, which
         // the closing teardown releases.
-        replications.set(key, [...(replications.get(key) ?? []), next]);
-        owedReplications.delete(key);
+        repoState().replications.set(key, [
+          ...(repoState().replications.get(key) ?? []),
+          next,
+        ]);
+        repoState().owedReplications.delete(key);
         lineageMoves.replacementSucceeded();
       }
     })().catch((error) => {
@@ -2890,7 +2931,7 @@ export function startV3ReplicationUpkeep(
         error instanceof V3ReplicationError &&
         error.cause instanceof V3LineageOutrankedError
       ) {
-        currentCopies.delete(copyKey);
+        repoState().currentCopies.delete(copyKey);
       }
       // a broken lineage the move did not get away from is left at the next
       // probe by retrying the replacement at the fence the move took, never by
@@ -2913,17 +2954,17 @@ export function startV3ReplicationUpkeep(
     if (resolve(path) !== key) return;
     retakes++;
     announced = Math.max(announced, fence);
-    currentCopies.delete(copyKey);
+    repoState().currentCopies.delete(copyKey);
     replace();
   });
   const timer = setInterval(() => {
     if (stopped || probing !== undefined || replacing !== undefined) return;
     probing = (async () => {
-      const current = replications.get(key)?.[0];
+      const current = repoState().replications.get(key)?.[0];
       // A copy left not current (a replacement that failed after a retake)
       // is replaced as a dead sidecar is.
       if (
-        current === undefined || !currentCopies.has(copyKey) ||
+        current === undefined || !repoState().currentCopies.has(copyKey) ||
         !await current.probe()
       ) {
         replace();
@@ -2958,10 +2999,11 @@ export function startV3ReplicationUpkeep(
       // serve's commits replicate passively; a head is published whenever the
       // last commit moved, so a takeover after serve dies keeps every commit up
       // to the last probe
-      const handle = opened.get(copyKey);
+      const handle = repoState().opened.get(copyKey);
       if (
         handle === undefined ||
-        handle.commitStore.highWaterMark().cursor === publishedMarks.get(key)
+        handle.commitStore.highWaterMark().cursor ===
+          repoState().publishedMarks.get(key)
       ) {
         return;
       }
@@ -3076,8 +3118,6 @@ const SERVE_CHUNK_GC_TIMEOUT_MS = 10 * 60 * 1000;
  */
 export const SERVE_CHUNK_VERIFY_BYTES = 64 * 1024 * 1024;
 
-const deferredCollections = new Set<string>();
-
 /** logs rather than throws a failure: the next sweep retries */
 export async function collectChunksQuietly(
   handle: V3Datastore,
@@ -3112,11 +3152,11 @@ export async function collectChunksQuietly(
       // said once per datastore at info, so a collection that never runs can be
       // found
       const datastore = resolve(handle.datastorePath);
-      if (deferredCollections.has(datastore)) {
+      if (repoState().deferredCollections.has(datastore)) {
         logger
           .debug`Collecting chunks of the v3 datastore at ${handle.datastorePath} still waits: ${error.message}`;
       } else {
-        deferredCollections.add(datastore);
+        repoState().deferredCollections.add(datastore);
         logger
           .info`Collecting chunks of the v3 datastore at ${handle.datastorePath} waits: ${error.message}`;
       }

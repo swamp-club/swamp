@@ -47,6 +47,7 @@ import {
 import { stopAutoCheckpointAt } from "../sqlite_commit_store.ts";
 import { withSpan } from "../../tracing/tracer.ts";
 import { SERVE_REQUEST_SYNC_DEADLINE_MS } from "../serve_request_deadlines.ts";
+import { processRuntimeSlot } from "../../runtime/process_runtime.ts";
 
 export type { ReplicationHandle } from "./litestream_replicator.ts";
 
@@ -56,31 +57,36 @@ export const MAX_SYNC_DEADLINE_MS = 24 * 60 * 60 * 1000;
 
 export { SERVE_REQUEST_SYNC_DEADLINE_MS } from "../serve_request_deadlines.ts";
 
-let replicator: LitestreamReplicator | undefined;
-let testDeps: Partial<ReplicatorDeps> | undefined;
 export interface V3ClosingDeadline {
   remaining(capMs?: number): number;
 }
 
-let syncDeadlineMs: number | undefined;
-let requestSyncDeadlineMs: number | undefined;
-let closingDeadline: V3ClosingDeadline | undefined;
-let sidecarOwner: SupervisorOwner | undefined;
+interface ReplicationState {
+  replicator?: LitestreamReplicator;
+  testDeps?: Partial<ReplicatorDeps>;
+  syncDeadlineMs?: number;
+  requestSyncDeadlineMs?: number;
+  closingDeadline?: V3ClosingDeadline;
+  sidecarOwner?: SupervisorOwner;
+}
+
+const replication = processRuntimeSlot<ReplicationState>(() => ({}));
 
 export function v3SyncDeadlineMs(): number {
-  if (closingDeadline !== undefined) {
+  const state = replication();
+  if (state.closingDeadline !== undefined) {
     // capped below what setTimeout can hold, past which it fires at once
-    return Math.min(closingDeadline.remaining(), MAX_SYNC_DEADLINE_MS);
+    return Math.min(state.closingDeadline.remaining(), MAX_SYNC_DEADLINE_MS);
   }
-  return syncDeadlineMs ?? DEFAULT_SYNC_DEADLINE_MS;
+  return state.syncDeadlineMs ?? DEFAULT_SYNC_DEADLINE_MS;
 }
 
 export function v3ClosingDeadline(): V3ClosingDeadline | undefined {
-  return closingDeadline;
+  return replication().closingDeadline;
 }
 
 export function v3RequestSyncDeadlineMs(): number {
-  return requestSyncDeadlineMs ?? SERVE_REQUEST_SYNC_DEADLINE_MS;
+  return replication().requestSyncDeadlineMs ?? SERVE_REQUEST_SYNC_DEADLINE_MS;
 }
 
 /**
@@ -90,7 +96,7 @@ export function v3RequestSyncDeadlineMs(): number {
 export function setV3ClosingDeadline(
   deadline: V3ClosingDeadline | undefined,
 ): void {
-  closingDeadline = deadline;
+  replication().closingDeadline = deadline;
 }
 
 /**
@@ -103,7 +109,7 @@ export async function ownV3SidecarsFromThisProcess(): Promise<void> {
 }
 
 export function setV3SidecarOwner(owner: SupervisorOwner | undefined): void {
-  sidecarOwner = owner;
+  replication().sidecarOwner = owner;
 }
 
 export function setV3ReplicationForTesting(
@@ -113,12 +119,13 @@ export function setV3ReplicationForTesting(
     readonly requestSyncDeadlineMs?: number;
   } = {},
 ): void {
-  testDeps = deps;
-  replicator = undefined;
-  syncDeadlineMs = options.syncDeadlineMs;
-  requestSyncDeadlineMs = options.requestSyncDeadlineMs;
-  closingDeadline = undefined;
-  sidecarOwner = undefined;
+  const state = replication();
+  state.testDeps = deps;
+  state.replicator = undefined;
+  state.syncDeadlineMs = options.syncDeadlineMs;
+  state.requestSyncDeadlineMs = options.requestSyncDeadlineMs;
+  state.closingDeadline = undefined;
+  state.sidecarOwner = undefined;
 }
 
 export function v3Replicator(): LitestreamReplicator {
@@ -130,7 +137,7 @@ export function v3Replicator(): LitestreamReplicator {
  * always agree
  */
 export function v3PrivateRoot(): string {
-  return testDeps?.privateRoot ?? defaultPrivateRoot();
+  return replication().testDeps?.privateRoot ?? defaultPrivateRoot();
 }
 
 /**
@@ -139,9 +146,8 @@ export function v3PrivateRoot(): string {
  */
 export function resolveV3LitestreamBinary(): Promise<string> {
   return withSpan("swamp.datastore.v3.litestream.binary", {}, async (span) => {
-    if (testDeps?.resolveBinary !== undefined) {
-      return await testDeps.resolveBinary();
-    }
+    const resolveBinary = replication().testDeps?.resolveBinary;
+    if (resolveBinary !== undefined) return await resolveBinary();
     const resolved = await defaultLitestreamBinaryProvider().resolve();
     span.setAttribute("swamp.datastore.v3.binary_source", resolved.source);
     return resolved.path;
@@ -149,7 +155,8 @@ export function resolveV3LitestreamBinary(): Promise<string> {
 }
 
 function theReplicator(): LitestreamReplicator {
-  replicator ??= new LitestreamReplicator({
+  const state = replication();
+  state.replicator ??= new LitestreamReplicator({
     processes: hostLitestreamProcesses,
     control: unixLitestreamControl,
     async resolveBinary() {
@@ -159,9 +166,9 @@ function theReplicator(): LitestreamReplicator {
     timings: DEFAULT_REPLICATOR_TIMINGS,
     now: () => Date.now(),
     sleep: (ms) => new Promise((done) => setTimeout(done, ms)),
-    ...testDeps,
+    ...state.testDeps,
   });
-  return replicator;
+  return state.replicator;
 }
 
 export async function acquireV3Replication(
@@ -171,6 +178,7 @@ export async function acquireV3Replication(
 ): Promise<ReplicationHandle | undefined> {
   const replica = v3ReplicaFor(datastorePath);
   if (replica === undefined) return undefined;
+  const sidecarOwner = replication().sidecarOwner;
   // before any sidecar starts on the file, whichever path starts it
   stopAutoCheckpointAt(commitsDb);
   return await theReplicator().acquire({

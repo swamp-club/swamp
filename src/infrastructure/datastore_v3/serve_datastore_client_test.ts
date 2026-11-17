@@ -79,6 +79,7 @@ import {
   serveRequestTimeoutMs,
   serveResponseDeadlineMs,
 } from "./serve_datastore_client.ts";
+import { ProcessRuntime } from "../runtime/process_runtime.ts";
 import {
   ServeAuthFailedError,
   ServeLeaseLapsedLatch,
@@ -1435,6 +1436,26 @@ Deno.test("ServeDatastoreClient: once a write latched serve unreachable, a reque
   const fresh = clientWith(() => Response.json({ changes: [], head: 0 }));
   await fresh.client.changes(0, signal()).catch(() => {});
   assertEquals(fresh.requests.length, 1, "a new command asks serve again");
+});
+
+Deno.test("ServeDatastoreClient: a latch set in the runtime that built the client stops its requests, whichever runtime sends them", async () => {
+  const other = new ProcessRuntime(`other-${crypto.randomUUID()}`);
+  const { client, requests } = other.run(() =>
+    clientWith(() => Response.json({ changes: [], head: 0 }))
+  );
+  try {
+    other.run(() =>
+      latchServeUnreachable(client.baseUrl, new Error("a commit timed out"))
+    );
+    const refused = await assertRejects(
+      () => client.changes(0, signal()),
+      ServeUnreachableError,
+    );
+    assertEquals(refused.sent, "never");
+    assertEquals(requests.length, 0, "nothing was sent");
+  } finally {
+    other.run(() => clearServeUnreachableLatches());
+  }
 });
 
 Deno.test("ServeDatastoreClient: a lease that lapsed unrenewed ends a request in flight as the lapse, naming the request and its size, and the next as never sent", async () => {

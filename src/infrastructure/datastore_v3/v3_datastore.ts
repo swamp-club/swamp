@@ -22,6 +22,7 @@ import {
   type FollowCompactionReport,
   ServeCompactionFollower,
 } from "./serve_compaction_follow.ts";
+import { processRuntimeSlot } from "../runtime/process_runtime.ts";
 import { DatabaseSync } from "node:sqlite";
 import { ensureDirSync } from "@std/fs";
 import { createHash } from "node:crypto";
@@ -743,28 +744,34 @@ interface CheckoutUnits {
   readonly sent: Set<string>;
 }
 
-const checkoutUnits = new Map<string, CheckoutUnits>();
+const datastoreProcessState = processRuntimeSlot<{
+  readonly checkoutUnits: Map<string, CheckoutUnits>;
+  /**
+   * a sweep runs only under the writer lease, so a writer that may overlap one is
+   * in the same process
+   */
+  readonly sweepBatches: Map<string, Promise<void>>;
+  /**
+   * warned once per command that serve was unreachable and a read used the
+   * checkout's copy as it was
+   */
+  staleReadWarned: boolean;
+  faultsForTesting: V3DatastoreFaults | undefined;
+}>(() => ({
+  checkoutUnits: new Map(),
+  sweepBatches: new Map(),
+  staleReadWarned: false,
+  faultsForTesting: undefined,
+}));
 
 const MAX_FORWARDED_REMEMBERED = 4096;
 
-/**
- * a sweep runs only under the writer lease, so a writer that may overlap one is
- * in the same process
- */
-const sweepBatches = new Map<string, Promise<void>>();
-
 function sweepBatchAt(path: string): Promise<void> {
-  return sweepBatches.get(path) ?? Promise.resolve();
+  return datastoreProcessState().sweepBatches.get(path) ?? Promise.resolve();
 }
 
-/**
- * warned once per command that serve was unreachable and a read used the
- * checkout's copy as it was
- */
-let staleReadWarned = false;
-
 export function resetStaleReadWarningForTesting(): void {
-  staleReadWarned = false;
+  datastoreProcessState().staleReadWarned = false;
 }
 
 export interface V3DatastoreFaults {
@@ -772,12 +779,10 @@ export interface V3DatastoreFaults {
   readonly wrapSink?: (sink: OutboxCommitSink) => OutboxCommitSink;
 }
 
-let faultsForTesting: V3DatastoreFaults | undefined;
-
 export function setV3DatastoreFaultsForTesting(
   faults: V3DatastoreFaults | undefined,
 ): void {
-  faultsForTesting = faults;
+  datastoreProcessState().faultsForTesting = faults;
 }
 
 export const DROPPED_WORK_RECOVERY_RUNNING_CODE =
@@ -796,7 +801,7 @@ export class DroppedWorkRecoveryRunningError extends UserError {
 }
 
 function checkoutUnitsFor(stateDir: string): CheckoutUnits {
-  let units = checkoutUnits.get(stateDir);
+  let units = datastoreProcessState().checkoutUnits.get(stateDir);
   if (units === undefined) {
     units = {
       open: 0,
@@ -804,7 +809,7 @@ function checkoutUnitsFor(stateDir: string): CheckoutUnits {
       droppedDirs: new Map(),
       sent: new Set(),
     };
-    checkoutUnits.set(stateDir, units);
+    datastoreProcessState().checkoutUnits.set(stateDir, units);
   }
   return units;
 }
@@ -898,7 +903,9 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
       orderedBefore: v3ChunksOrderedBefore(datastorePath, commitsDbPath),
     });
   const baseStorage: DatastoreStorage = bucket?.storage ?? fsStorage!;
-  const storage = faultsForTesting?.wrapStorage?.(baseStorage) ?? baseStorage;
+  const storage =
+    datastoreProcessState().faultsForTesting?.wrapStorage?.(baseStorage) ??
+      baseStorage;
   const chunkStore = new ChunkStore(storage);
   const stateDir = readModelStateDir(repoDir);
   ensureDirSync(stateDir);
@@ -1190,7 +1197,8 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
         ? { assertWriterCurrent: options.assertWriterCurrent }
         : {}),
     });
-  const faultedSink = faultsForTesting?.wrapSink?.(baseSink) ?? baseSink;
+  const faultedSink =
+    datastoreProcessState().faultsForTesting?.wrapSink?.(baseSink) ?? baseSink;
   // noted before it is sent: serve's feed can bring the commit to a catch-up
   // before its reply does. One that never lands never comes back in the feed
   const forwarded = new Set<string>();
@@ -1300,8 +1308,8 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
           throw new ServeNeverReadError(error.serveUrl, error.cause);
         }
         // Said once per command: a command catches up many times.
-        if (!staleReadWarned) {
-          staleReadWarned = true;
+        if (!datastoreProcessState().staleReadWarned) {
+          datastoreProcessState().staleReadWarned = true;
           const reason = error.cause instanceof Error
             ? error.cause.message
             : String(error.cause);
@@ -1900,12 +1908,15 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
           async batch(run) {
             const done = run();
             const settled = done.then(() => {}, () => {});
-            sweepBatches.set(outbox.path, settled);
+            datastoreProcessState().sweepBatches.set(outbox.path, settled);
             try {
               return await done;
             } finally {
-              if (sweepBatches.get(outbox.path) === settled) {
-                sweepBatches.delete(outbox.path);
+              if (
+                datastoreProcessState().sweepBatches.get(outbox.path) ===
+                  settled
+              ) {
+                datastoreProcessState().sweepBatches.delete(outbox.path);
               }
             }
           },

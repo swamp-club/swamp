@@ -52,6 +52,7 @@ import {
 import { isProcessGone } from "../runtime/process.ts";
 import { localProcess } from "./process_identity.ts";
 import { getSwampLogger } from "../logging/logger.ts";
+import { processRuntimeSlot } from "../runtime/process_runtime.ts";
 
 const logger = getSwampLogger(["datastore", "v3"]);
 
@@ -87,7 +88,23 @@ export interface V3WriterFenceStore {
   raiseWriterFence(fence: number): Promise<void>;
 }
 
+interface WriterLockState {
+  readonly held: Map<string, Held>;
+  readonly holdRetakenListeners: Set<V3HoldRetakenListener>;
+  readonly leaseLostListeners: Set<V3LeaseLostListener>;
+  readonly leaseTakenListeners: Set<V3LeaseTakenListener>;
+}
+
+const writerLockState = processRuntimeSlot<WriterLockState>(() => ({
+  held: new Map(),
+  holdRetakenListeners: new Set(),
+  leaseLostListeners: new Set(),
+  leaseTakenListeners: new Set(),
+}));
+
 interface Held {
+  /** the runtime it was taken in, so its timer and retakes never use another's */
+  readonly state: WriterLockState;
   hold?: WriterLeaseHold;
   refs: number;
   acquiring?: Promise<void>;
@@ -109,8 +126,6 @@ interface Held {
    */
   retakeLost: boolean;
 }
-
-const held = new Map<string, Held>();
 
 export interface AcquireV3WriterLockOptions {
   readonly maxWaitMs?: number;
@@ -135,10 +150,12 @@ export async function acquireV3WriterLock(
 ): Promise<() => Promise<void>> {
   const key = resolve(datastorePath);
   const maxWaitMs = options.maxWaitMs ?? 60_000;
-  let entry = held.get(key);
+  const state = writerLockState();
+  let entry = state.held.get(key);
   const joining = entry !== undefined;
   if (entry === undefined) {
     const created: Held = {
+      state,
       refs: 0,
       retakeLost: options.retakeLost === true,
       take: {
@@ -151,11 +168,11 @@ export async function acquireV3WriterLock(
     created.acquiring = retakeLease(created, datastorePath, maxWaitMs).then(
       () => startRenewal(created, datastorePath),
       (error) => {
-        held.delete(key);
+        state.held.delete(key);
         throw error;
       },
     );
-    held.set(key, created);
+    state.held.set(key, created);
     entry = created;
   }
   entry.refs++;
@@ -212,7 +229,7 @@ async function assertJoinable(entry: Held): Promise<void> {
 }
 
 async function endHold(key: string, entry: Held): Promise<void> {
-  if (held.get(key) === entry) held.delete(key);
+  if (entry.state.held.get(key) === entry) entry.state.held.delete(key);
   if (entry.renewal !== undefined) clearInterval(entry.renewal);
   await entry.renewing;
   await entry.hold?.release();
@@ -241,7 +258,7 @@ async function retakeLease(
   const lost = entry.hold;
   // from before the store was asked: the lease runs from its write, not the reply
   const asked = performance.now();
-  const hold = await takeLease(datastorePath, {
+  const hold = await takeLease(entry.state, datastorePath, {
     maxWaitMs,
     ttlMs: retake.ttlMs,
     ...(retake.fenceStore !== undefined
@@ -255,7 +272,7 @@ async function retakeLease(
       .info`This process took the writer lease of the v3 datastore at ${datastorePath} again, at fence ${hold.fence}`;
     // A lost hold writes no released marker; this removes its heartbeat.
     await lost.release().catch(() => {});
-    await notifyHoldRetaken(datastorePath, hold.fence);
+    await notifyHoldRetaken(entry.state, datastorePath, hold.fence);
   }
 }
 
@@ -267,7 +284,7 @@ async function retakeLease(
 export function advanceV3WriterLease(
   datastorePath: string,
 ): Promise<number | undefined> {
-  const entry = held.get(resolve(datastorePath));
+  const entry = writerLockState().held.get(resolve(datastorePath));
   if (entry === undefined || entry.take === undefined) {
     return Promise.resolve(undefined);
   }
@@ -312,8 +329,8 @@ async function advanceHold(
   if (advanced === undefined) return undefined;
   logger
     .info`This process moved its writer lease of the v3 datastore at ${datastorePath} to fence ${advanced}`;
-  await notifyLeaseTaken(datastorePath, advanced);
-  await notifyHoldRetaken(datastorePath, advanced);
+  await notifyLeaseTaken(entry.state, datastorePath, advanced);
+  await notifyHoldRetaken(entry.state, datastorePath, advanced);
   return advanced;
 }
 
@@ -322,24 +339,24 @@ export type V3HoldRetakenListener = (
   fence: number,
 ) => Promise<void> | void;
 
-const holdRetakenListeners = new Set<V3HoldRetakenListener>();
-
 /**
  * unlike onV3LeaseTaken, never for a first take or a read-only recovery's; a
  * listener that throws is logged and the lease is kept
  */
 export function onV3HoldRetaken(listener: V3HoldRetakenListener): () => void {
-  holdRetakenListeners.add(listener);
+  const listeners = writerLockState().holdRetakenListeners;
+  listeners.add(listener);
   return () => {
-    holdRetakenListeners.delete(listener);
+    listeners.delete(listener);
   };
 }
 
 async function notifyHoldRetaken(
+  state: WriterLockState,
   datastorePath: string,
   fence: number,
 ): Promise<void> {
-  for (const listener of [...holdRetakenListeners]) {
+  for (const listener of [...state.holdRetakenListeners]) {
     try {
       await listener(datastorePath, fence);
     } catch (error) {
@@ -362,11 +379,12 @@ export async function tryAcquireV3WriterLock(
   } = {},
 ): Promise<(() => Promise<void>) | undefined> {
   const key = resolve(datastorePath);
-  if (held.has(key)) return undefined;
+  const state = writerLockState();
+  if (state.held.has(key)) return undefined;
   const ttlMs = options.ttlMs ?? DEFAULT_LOCK_TTL_MS;
   let hold: WriterLeaseHold;
   try {
-    hold = await takeLease(datastorePath, {
+    hold = await takeLease(state, datastorePath, {
       maxWaitMs: 0,
       ttlMs,
       ...(options.fenceStore !== undefined
@@ -380,7 +398,7 @@ export async function tryAcquireV3WriterLock(
   // Renewed like any hold: a recovery that outlasts the TTL must not let
   // another writer take over while it still removes files. It is not taken
   // again once lost: the recovery just stops.
-  const entry: Held = { hold, refs: 1, retakeLost: false };
+  const entry: Held = { state, hold, refs: 1, retakeLost: false };
   startRenewal(entry, datastorePath, ttlMs);
   let released = false;
   return async () => {
@@ -397,19 +415,19 @@ export async function tryAcquireV3WriterLock(
  * current
  */
 export function holdsCurrentV3WriterLease(datastorePath: string): boolean {
-  const entry = held.get(resolve(datastorePath));
+  const entry = writerLockState().held.get(resolve(datastorePath));
   return entry !== undefined && entry.refs > 0 && entry.hold !== undefined &&
     entry.hold.lost === undefined;
 }
 
 export function holdsV3WriterLock(datastorePath: string): boolean {
-  const entry = held.get(resolve(datastorePath));
+  const entry = writerLockState().held.get(resolve(datastorePath));
   return entry !== undefined && entry.refs > 0;
 }
 
 /** every commit names it, and Litestream replicates under it */
 export function v3WriterFence(datastorePath: string): number | undefined {
-  const entry = held.get(resolve(datastorePath));
+  const entry = writerLockState().held.get(resolve(datastorePath));
   return entry !== undefined && entry.refs > 0 ? entry.hold?.fence : undefined;
 }
 
@@ -418,7 +436,7 @@ export function v3WriterFence(datastorePath: string): number | undefined {
  * once
  */
 export function assertV3WriterCurrent(datastorePath: string): void {
-  const lost = held.get(resolve(datastorePath))?.hold?.lost;
+  const lost = writerLockState().held.get(resolve(datastorePath))?.hold?.lost;
   if (lost !== undefined) throw lost;
 }
 
@@ -427,12 +445,12 @@ export function assertV3WriterCurrent(datastorePath: string): void {
  * this process holds no lease
  */
 export async function checkV3WriterLease(datastorePath: string): Promise<void> {
-  await held.get(resolve(datastorePath))?.hold?.assertCurrent();
+  await writerLockState().held.get(resolve(datastorePath))?.hold
+    ?.assertCurrent();
 }
 
 export type V3LeaseLostListener = (datastorePath: string) => void;
 
-const leaseLostListeners = new Set<V3LeaseLostListener>();
 const lostNotified = new WeakSet<WriterLeaseHold>();
 
 /**
@@ -440,16 +458,21 @@ const lostNotified = new WeakSet<WriterLeaseHold>();
  * the path is resolved
  */
 export function onV3LeaseLost(listener: V3LeaseLostListener): () => void {
-  leaseLostListeners.add(listener);
+  const listeners = writerLockState().leaseLostListeners;
+  listeners.add(listener);
   return () => {
-    leaseLostListeners.delete(listener);
+    listeners.delete(listener);
   };
 }
 
-function notifyLeaseLost(datastorePath: string, hold: WriterLeaseHold): void {
+function notifyLeaseLost(
+  state: WriterLockState,
+  datastorePath: string,
+  hold: WriterLeaseHold,
+): void {
   if (lostNotified.has(hold)) return;
   lostNotified.add(hold);
-  for (const listener of [...leaseLostListeners]) {
+  for (const listener of [...state.leaseLostListeners]) {
     try {
       listener(resolve(datastorePath));
     } catch (error) {
@@ -555,6 +578,7 @@ export function v3WriterLockHandle(datastorePath: string): V3WriterLockHandle {
 }
 
 async function takeLease(
+  state: WriterLockState,
   datastorePath: string,
   options: {
     readonly maxWaitMs: number;
@@ -593,7 +617,7 @@ async function takeLease(
     throw error;
   }
   // Outside the release-on-error scope: a listener never costs the lease.
-  await notifyLeaseTaken(datastorePath, hold.fence);
+  await notifyLeaseTaken(state, datastorePath, hold.fence);
   return hold;
 }
 
@@ -602,25 +626,25 @@ export type V3LeaseTakenListener = (
   fence: number,
 ) => Promise<void> | void;
 
-const leaseTakenListeners = new Set<V3LeaseTakenListener>();
-
 /**
  * covers the first acquire, serve's retake of a lost lease and a read-only
  * recovery hold; listeners run after the fence is raised, and one that throws
  * is logged and the lease is kept
  */
 export function onV3LeaseTaken(listener: V3LeaseTakenListener): () => void {
-  leaseTakenListeners.add(listener);
+  const listeners = writerLockState().leaseTakenListeners;
+  listeners.add(listener);
   return () => {
-    leaseTakenListeners.delete(listener);
+    listeners.delete(listener);
   };
 }
 
 async function notifyLeaseTaken(
+  state: WriterLockState,
   datastorePath: string,
   fence: number,
 ): Promise<void> {
-  for (const listener of [...leaseTakenListeners]) {
+  for (const listener of [...state.leaseTakenListeners]) {
     try {
       await listener(datastorePath, fence);
     } catch (error) {
@@ -674,7 +698,7 @@ function startRenewal(
       if (
         entry.hold === hold && hold.lost !== undefined &&
         entry.retaking === undefined
-      ) notifyLeaseLost(datastorePath, hold);
+      ) notifyLeaseLost(entry.state, datastorePath, hold);
     });
   };
   entry.renewal = setInterval(
@@ -688,7 +712,7 @@ function startRenewal(
  * process stopped past that is not, and a renewal is asked for at once
  */
 export function v3WriterLeaseConfirmed(datastorePath: string): boolean {
-  const entry = held.get(resolve(datastorePath));
+  const entry = writerLockState().held.get(resolve(datastorePath));
   if (
     entry === undefined || entry.refs <= 0 || entry.hold === undefined ||
     entry.hold.lost !== undefined

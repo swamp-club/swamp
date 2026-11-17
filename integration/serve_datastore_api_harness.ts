@@ -66,6 +66,7 @@ import { FileSystemControlPlaneStore } from "../src/infrastructure/persistence/f
 import { swampPath } from "../src/infrastructure/persistence/paths.ts";
 import { createServeCtx, grant } from "./serve_request_harness.ts";
 import { withV3RowRepos } from "./usecase_v3_fixtures.ts";
+import { currentProcessRuntime } from "../src/infrastructure/runtime/process_runtime.ts";
 
 export const TOKENS: Record<string, string> = {
   "alice-token": "user:caller",
@@ -203,9 +204,10 @@ export async function withServer(
         },
       });
     };
+    const runtime = currentProcessRuntime();
     const http = Deno.serve(
       { port: 0, hostname: "127.0.0.1", onListen: () => {} },
-      handle,
+      (req) => runtime.run(() => handle(req)),
     );
     try {
       Object.assign(server, {

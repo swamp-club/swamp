@@ -123,6 +123,7 @@ import {
   serviceRunVaultScope,
 } from "../../serve/run_vault_access_policy.ts";
 import { runOutsideAmbientContext } from "../../infrastructure/runtime/ambient_context.ts";
+import { currentProcessRuntime } from "../../infrastructure/runtime/process_runtime.ts";
 import {
   auditScheduledEvent,
   auditWebhookEvent,
@@ -853,12 +854,15 @@ type AnyOptions = any;
 /**
  * runs each request outside any ambient run store: Deno can leave a handler in
  * the async context of the last code that ran, so a request could inherit
- * another run's vault scope, locks or leases
+ * another run's vault scope, locks or leases. It re-enters the ProcessRuntime serve
+ * was built in, which Deno.serve never carries into a handler
  */
 export function unscopedHttpHandler<A extends Deno.Addr>(
   handler: Deno.ServeHandler<A>,
 ): Deno.ServeHandler<A> {
-  return (req, info) => runOutsideAmbientContext(() => handler(req, info));
+  const runtime = currentProcessRuntime();
+  return (req, info) =>
+    runOutsideAmbientContext(() => runtime.run(() => handler(req, info)));
 }
 
 const logger = getSwampLogger(["serve"]);

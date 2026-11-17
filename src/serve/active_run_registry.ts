@@ -82,7 +82,7 @@ export interface ActiveRunRegistryOptions {
   maxConcurrent?: number;
   maxPerPrincipal?: number;
   maxRunDurationMs?: number;
-  /** a workflow run's cancel is recorded before its abort */
+  /** a workflow run's cancel is recorded beside its abort, best effort */
   cancelIntents?: CancelIntentRecorder;
 }
 

@@ -902,7 +902,15 @@ Deno.test({
           pid: other.pid,
           process: { ...here, startTime: "not-its-start-time" },
         });
-        await writeCommand(env, 1);
+        // the owner-gone kill skips the final sync and may cut off this closing one
+        await writeCommand(env, 1).catch((error) => {
+          if (
+            !(error instanceof V3ReplicationError) ||
+            !error.message.includes("the Litestream sidecar failed")
+          ) {
+            throw error;
+          }
+        });
         // the sidecar may already have judged its owner gone and removed this
         const litestreamPid = (await presenceOf(env))?.litestreamPid;
         const supervisors = env.launchedSupervisors();

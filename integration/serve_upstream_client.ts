@@ -17,47 +17,53 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+// a serve-mode checkout in its own ProcessRuntime, so two write one datastore
+// through serve at once as two machines would, each with its own process state
+
 import "../src/domain/models/models.ts";
 import { z } from "zod";
-import { requireInitializedRepoUnlocked } from "../src/cli/repo_context.ts";
+import {
+  acquireModelLocks,
+  requireInitializedRepoUnlocked,
+} from "../src/cli/repo_context.ts";
+import { runCommandInRootUnit } from "../src/cli/command_root_unit.ts";
 import { modelRegistry } from "../src/domain/models/model.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
-import { executeWorkflowWithLocks } from "../src/serve/deps.ts";
-import type { WorkflowRunEvent } from "../src/libswamp/workflows/run.ts";
-import { endCommand, withClientEnv } from "./serve_upstream_fixtures.ts";
 import {
-  registerBarrierReport,
-  type WorkflowReportBarrier,
-} from "./workflow_report_barrier.ts";
+  dataOf,
+  endCommand,
+  json,
+  withClientEnv,
+} from "./serve_upstream_fixtures.ts";
+import type { ProcessHost } from "./process_host.ts";
 
-export type WorkflowRunWorkerRequest = {
+export type ClientWorkerRequest = {
   readonly kind: "run";
   readonly configDir: string;
   readonly repoDir: string;
   readonly env: Record<string, string | undefined>;
   readonly modelType: string;
-  readonly workflowName: string;
-  readonly principal: string;
+  readonly modelId: string;
+  readonly dataName: string;
+  readonly dataId: string;
   readonly count: number;
-  readonly barrier?: WorkflowReportBarrier;
+  readonly label: string;
 };
 
-export type WorkflowRunWorkerMessage =
-  | { readonly kind: "loaded" }
+export type ClientWorkerMessage =
   | {
     readonly kind: "done";
-    readonly statuses: readonly string[];
+    readonly versions: readonly number[];
     readonly errors: readonly string[];
   }
   | { readonly kind: "failed"; readonly error: string };
 
-declare const self: Worker;
-
-const logging = initializeLogging({});
-
-async function run(request: WorkflowRunWorkerRequest): Promise<void> {
-  await logging;
+async function run(
+  request: ClientWorkerRequest,
+  post: (message: ClientWorkerMessage) => void,
+): Promise<void> {
+  await initializeLogging({});
   const type = ModelType.create(request.modelType);
   if (!modelRegistry.has(type)) {
     modelRegistry.register({
@@ -73,69 +79,61 @@ async function run(request: WorkflowRunWorkerRequest): Promise<void> {
       },
     });
   }
-  if (request.barrier !== undefined) {
-    const { dir, label, labels, waitMs } = request.barrier;
-    registerBarrierReport(dir, label, labels, waitMs);
-  }
-  const statuses: string[] = [];
+  const versions: number[] = [];
   const errors: string[] = [];
   for (let i = 0; i < request.count; i++) {
     try {
-      await withClientEnv(
+      const version = await withClientEnv(
         { configDir: request.configDir },
         request.env,
-        ["workflow", "run"],
+        ["model", "method"],
         async () => {
           try {
             const ctx = await requireInitializedRepoUnlocked({
               repoDir: request.repoDir,
               outputMode: "json",
             });
-            const events: WorkflowRunEvent[] = [];
-            await executeWorkflowWithLocks(
-              request.repoDir,
-              ctx.repoContext,
+            const locks = await acquireModelLocks(
               ctx.datastoreConfig,
-              {
-                workflowIdOrName: request.workflowName,
-                initiatedBy: request.principal,
-              },
-              new AbortController().signal,
-              (event) => events.push(event),
+              [{ modelType: type.normalized, modelId: request.modelId }],
+              request.repoDir,
               ctx.syncService,
-              undefined,
-              { syncGate: undefined },
+              ctx.repoContext.catalogStore,
+              () => {},
+              { repoContext: ctx.repoContext },
             );
-            for (const event of events) {
-              if (event.kind === "completed") statuses.push(event.run.status);
-              if (event.kind === "error") errors.push(event.error.message);
-              if (event.kind === "report_failed") errors.push(event.error);
-            }
+            return await runCommandInRootUnit(
+              ctx.repoContext,
+              { push: undefined, release: locks.release },
+              async () =>
+                (await ctx.repoContext.unifiedDataRepo.save(
+                  type,
+                  request.modelId,
+                  dataOf(request.dataName, request.dataId),
+                  json({ by: request.label, i }),
+                )).version,
+            );
           } finally {
             await endCommand();
           }
         },
       );
+      versions.push(version);
     } catch (error) {
       errors.push(error instanceof Error ? error.message : String(error));
     }
   }
-  self.postMessage(
-    { kind: "done", statuses, errors } satisfies WorkflowRunWorkerMessage,
-  );
+  post({ kind: "done", versions, errors });
 }
 
-self.onmessage = (event: MessageEvent<WorkflowRunWorkerRequest>) => {
-  run(event.data).catch((error) =>
-    self.postMessage(
-      {
+export const clientHost: ProcessHost<ClientWorkerRequest, ClientWorkerMessage> =
+  (post) => (request) => {
+    run(request, post).catch((error) =>
+      post({
         kind: "failed",
         error: error instanceof Error
           ? error.stack ?? error.message
           : String(error),
-      } satisfies WorkflowRunWorkerMessage,
-    )
-  );
-};
-
-self.postMessage({ kind: "loaded" } satisfies WorkflowRunWorkerMessage);
+      })
+    );
+  };

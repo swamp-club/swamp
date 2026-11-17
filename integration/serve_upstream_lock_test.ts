@@ -43,11 +43,13 @@ import {
   withClientEnv,
   withScratch,
 } from "./serve_upstream_fixtures.ts";
-import type {
-  ClientWorkerMessage,
-  ClientWorkerRequest,
-} from "./serve_upstream_client_worker.ts";
-import { startLoadedWorker } from "./graph_worker.ts";
+import {
+  clientHost,
+  type ClientWorkerMessage,
+  type ClientWorkerRequest,
+} from "./serve_upstream_client.ts";
+import { startProcessHost } from "./process_host.ts";
+import { leaseHolderHost } from "./serve_upstream_lease_holder.ts";
 
 await initializeLogging({});
 
@@ -81,63 +83,42 @@ function startClient(
   label: string,
   count: number,
 ): { started: Promise<void>; finished: Promise<Written> } {
-  let worker: Worker | undefined;
   let done: Extract<ClientWorkerMessage, { kind: "done" }> | undefined;
   let failed: string | undefined;
-  const started = (async () => {
-    worker = await startLoadedWorker<ClientWorkerMessage>(
-      new URL("./serve_upstream_client_worker.ts", import.meta.url),
-      {
-        loadTimeoutMs: 40_000,
-        attempts: 3,
-        onMessage: (message) => {
-          if (message.kind === "done") done = message;
-          else if (message.kind === "failed") failed = message.error;
-        },
-        onError: (event) => {
-          event.preventDefault();
-          failed = event.message;
-        },
+  const host = startProcessHost(`client-${label}`, clientHost, (message) => {
+    if (message.kind === "done") done = message;
+    else if (message.kind === "failed") failed = message.error;
+  });
+  host.postMessage(
+    {
+      kind: "run",
+      configDir: scratch.configDir,
+      repoDir: client.repoDir,
+      // a request contending with serve's runs can outlast the default timeout under load
+      env: {
+        ...serveEnv(serve, "alice-token"),
+        SWAMP_SERVE_TIMEOUT_MS: "120000",
       },
-    );
-    worker.postMessage(
-      {
-        kind: "run",
-        configDir: scratch.configDir,
-        repoDir: client.repoDir,
-        // under load one request contending with serve's runs outlasts 30s
-        env: {
-          ...serveEnv(serve, "alice-token"),
-          SWAMP_SERVE_TIMEOUT_MS: "120000",
-        },
-        modelType: serve.modelType.normalized,
-        modelId: serve.models.web,
-        dataName: "out",
-        dataId: DATA_ID,
-        count,
-        label,
-      } satisfies ClientWorkerRequest,
-    );
-  })();
+      modelType: serve.modelType.normalized,
+      modelId: serve.models.web,
+      dataName: "out",
+      dataId: DATA_ID,
+      count,
+      label,
+    } satisfies ClientWorkerRequest,
+  );
   const finished = (async () => {
-    try {
-      await started;
-      await waitFor(
-        () => done !== undefined || failed !== undefined,
-        `client ${label}'s commands`,
-        { timeoutMs: 180_000, intervalMs: 50 },
-      );
-    } finally {
-      worker?.terminate();
-    }
+    await waitFor(
+      () => done !== undefined || failed !== undefined,
+      `client ${label}'s commands`,
+      { timeoutMs: 180_000, intervalMs: 50 },
+    );
     if (done === undefined) {
       throw new Error(`client ${label} failed: ${failed}`);
     }
     return done;
   })();
-  // Awaited by `finished`'s caller; a load failure rejects both.
-  started.catch(() => {});
-  return { started, finished };
+  return { started: Promise.resolve(), finished };
 }
 
 async function landedVersions(serve: Serve): Promise<number[]> {
@@ -317,13 +298,10 @@ Deno.test({
 /** another command of the checkout writing: a Worker holds its writer lease */
 async function holdWriter(root: string): Promise<{ release(): Promise<void> }> {
   const messages: string[] = [];
-  const worker = await startLoadedWorker<string>(
-    new URL("./serve_upstream_lease_holder_worker.ts", import.meta.url),
-    {
-      loadTimeoutMs: 20_000,
-      attempts: 3,
-      onMessage: (message) => void messages.push(message),
-    },
+  const worker = startProcessHost(
+    "lease-holder",
+    leaseHolderHost,
+    (message) => void messages.push(message),
   );
   const reply = async (expected: string) => {
     await waitFor(

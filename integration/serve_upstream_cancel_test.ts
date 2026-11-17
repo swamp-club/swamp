@@ -63,9 +63,12 @@ import {
   withScratch,
   writeCommand,
 } from "./serve_upstream_fixtures.ts";
-import type { GrantSpec } from "./serve_upstream_server_worker.ts";
-import type { RunOwnerRequest } from "./serve_upstream_run_owner_worker.ts";
-import { startLoadedWorker } from "./graph_worker.ts";
+import type { GrantSpec } from "./serve_upstream_server.ts";
+import { startProcessHost } from "./process_host.ts";
+import {
+  runOwnerHost,
+  type RunOwnerRequest,
+} from "./serve_upstream_run_owner.ts";
 
 await initializeLogging({});
 
@@ -159,13 +162,10 @@ async function holdWriter(
   env: Record<string, string | undefined>,
 ): Promise<{ stop(): Promise<void> }> {
   const messages: string[] = [];
-  const worker = await startLoadedWorker<string>(
-    new URL("./serve_upstream_run_owner_worker.ts", import.meta.url),
-    {
-      loadTimeoutMs: 20_000,
-      attempts: 3,
-      onMessage: (message) => void messages.push(message),
-    },
+  const worker = startProcessHost(
+    "run-owner",
+    runOwnerHost,
+    (message) => void messages.push(message),
   );
   const reply = async (expected: string) => {
     await waitFor(

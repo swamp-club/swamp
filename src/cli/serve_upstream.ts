@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { processRuntimeSlot } from "../infrastructure/runtime/process_runtime.ts";
 import type { ServerCredentialRepository } from "../domain/auth/server_credential.ts";
 import { resolveExtraHeaders } from "../domain/auth/extra_headers.ts";
 import type { DatastoreEngine } from "../domain/datastore/datastore_format.ts";
@@ -30,18 +31,22 @@ import {
   warnWithheldTokenFile,
 } from "./remote_run.ts";
 
-let currentCommandPath: readonly string[] = [];
+const commandPathState = processRuntimeSlot<{
+  currentCommandPath: readonly string[];
+}>(() => ({
+  currentCommandPath: [],
+}));
 
 export function setServeUpstreamCommandPath(path: readonly string[]): void {
-  currentCommandPath = [...path];
+  commandPathState().currentCommandPath = [...path];
 }
 
 export function serveUpstreamCommandPath(): readonly string[] {
-  return currentCommandPath;
+  return commandPathState().currentCommandPath;
 }
 
 export function resetServeUpstreamCommandPath(): void {
-  currentCommandPath = [];
+  commandPathState().currentCommandPath = [];
 }
 
 export interface ServeUpstreamDecision {

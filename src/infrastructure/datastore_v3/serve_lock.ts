@@ -23,6 +23,7 @@
  * fires once and the work is cancelled; unfenced only logs
  */
 
+import { processRuntimeSlot } from "../runtime/process_runtime.ts";
 import { UserError } from "../../domain/errors.ts";
 import { LEASE_LAPSED_CODE } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { ServeNotLeaderError } from "../../domain/datastore_v3/serve_leader.ts";
@@ -79,10 +80,12 @@ export const SERVE_LOCK_REQUEST_WAIT_MS = 10_000;
  * the lock is released while the copy catches up
  */
 export const LOCK_CATCH_UP_MAX_COMMITS = 128;
-let lockCatchUpMaxCommits = LOCK_CATCH_UP_MAX_COMMITS;
+const lockCatchUp = processRuntimeSlot(() => ({
+  maxCommits: LOCK_CATCH_UP_MAX_COMMITS,
+}));
 
 export function setLockCatchUpMaxCommitsForTesting(max?: number): void {
-  lockCatchUpMaxCommits = max ?? LOCK_CATCH_UP_MAX_COMMITS;
+  lockCatchUp().maxCommits = max ?? LOCK_CATCH_UP_MAX_COMMITS;
 }
 /** bounded rounds before the rest is caught up under the lock, with a warning */
 export const LOCK_CATCH_UP_ROUNDS = 3;
@@ -246,7 +249,7 @@ export class ServeLock implements DistributedLock {
     const outside = this.#options.catchUpOutside;
     for (let round = 1;; round++) {
       const maxCommits = outside !== undefined && round <= LOCK_CATCH_UP_ROUNDS
-        ? lockCatchUpMaxCommits
+        ? lockCatchUp().maxCommits
         : undefined;
       this.#settleFailed = false;
       try {
@@ -873,14 +876,15 @@ export class ServeLock implements DistributedLock {
       return;
     }
     const asked = this.#monotonic();
+    const deadline = AbortSignal.timeout(this.#renewDeadlineMs(client));
     try {
-      const renewed = await client.renewLock(
-        lease.leaseId,
-        this.#holdTtlMs(),
-        AbortSignal.any([
-          hold.signal,
-          AbortSignal.timeout(this.#renewDeadlineMs(client)),
-        ]),
+      const renewed = await settledBy(
+        client.renewLock(
+          lease.leaseId,
+          this.#holdTtlMs(),
+          AbortSignal.any([hold.signal, deadline]),
+        ),
+        deadline,
       );
       if (this.#lease !== lease || this.#lost) return;
       if (renewed === undefined) {
@@ -990,7 +994,11 @@ export type ServeLockFactoryOptions = Omit<ServeLockOptions, "client">;
  * one client per serve and caller for all of a process's locks, off the upload
  * pool; it opens another connection when one is busy, so no renewal waits
  */
-const lockClients = new Map<string, ServeLockClient & { close(): void }>();
+const lockClientState = processRuntimeSlot<{
+  readonly lockClients: Map<string, ServeLockClient & { close(): void }>;
+}>(() => ({
+  lockClients: new Map(),
+}));
 
 function lockClientFor(
   binding: NonNullable<ReturnType<typeof serveUpstreamAt>>,
@@ -1002,12 +1010,12 @@ function lockClientFor(
     binding.target.extraHeaders ?? {},
     binding.target.caCerts ?? [],
   ]);
-  let client = lockClients.get(key);
+  let client = lockClientState().lockClients.get(key);
   if (client === undefined) {
     client = serveDatastoreClientFor(binding.target, binding.namespace, {
       ownConnection: true,
     });
-    lockClients.set(key, client);
+    lockClientState().lockClients.set(key, client);
   }
   const shared = client;
   // no close: a hold that ends leaves the connection for the next lock
@@ -1022,8 +1030,8 @@ function lockClientFor(
 
 /** once the process's holds have ended */
 export function closeServeLockClients(): void {
-  for (const client of lockClients.values()) client.close();
-  lockClients.clear();
+  for (const client of lockClientState().lockClients.values()) client.close();
+  lockClientState().lockClients.clear();
 }
 
 export function createServeLock(
@@ -1040,6 +1048,25 @@ export function createServeLock(
       binding.target.serverUrl,
       binding.target.token,
     ),
+  });
+}
+
+// a client that misses the abort still frees the heartbeat at the deadline
+function settledBy<T>(request: Promise<T>, deadline: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const onDeadline = () => reject(deadline.reason);
+    if (deadline.aborted) onDeadline();
+    else deadline.addEventListener("abort", onDeadline, { once: true });
+    request.then(
+      (value) => {
+        deadline.removeEventListener("abort", onDeadline);
+        resolve(value);
+      },
+      (error) => {
+        deadline.removeEventListener("abort", onDeadline);
+        reject(error);
+      },
+    );
   });
 }
 

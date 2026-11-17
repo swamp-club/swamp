@@ -50,7 +50,13 @@ async function withFollower(
   fn: (url: string, link: LeaderLink) => Promise<void>,
   linkOptions: Partial<LeaderLinkOptions> = {},
 ): Promise<void> {
-  const leaderLink = new LeaderLink({ ...linkOptions, leader });
+  // descriptors, not a spread, so a getter option is read at each forward
+  const leaderLink = new LeaderLink(
+    Object.defineProperties(
+      { leader },
+      Object.getOwnPropertyDescriptors(linkOptions),
+    ) as LeaderLinkOptions,
+  );
   const ctx = {
     ...server.ctx,
     followerGate: {
@@ -276,6 +282,7 @@ Deno.test({
           held.push(conn);
         }
       })();
+      let commitResponseBaseMs: number | undefined = 200;
       let current: ServeLeader = {
         ...leaderAt(server),
         instanceId: "frozen-1",
@@ -304,9 +311,17 @@ Deno.test({
           await waitFor(() => accepted === 2, "both lost forwards accepted");
 
           current = leaderAt(server);
+          // a live leader gets serve's own deadline, not the one that catches a frozen one
+          commitResponseBaseMs = undefined;
           const landed = await send();
           assertEquals(landed.status, 200, JSON.stringify(landed.json));
-        }, { commitResponseBaseMs: 200 });
+        }, {
+          get commitResponseBaseMs() {
+            return commitResponseBaseMs;
+          },
+          // the clock stands still, so a stalled host never opens the probe window
+          now: () => 0,
+        });
       } finally {
         listener.close();
         for (const conn of held) conn.close();

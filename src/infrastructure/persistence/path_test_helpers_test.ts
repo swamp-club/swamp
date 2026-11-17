@@ -133,3 +133,31 @@ Deno.test("withMockedEnv: restores every reader after an async fn rejects", asyn
   assertEquals(Deno.env.has(name), false);
   assertEquals(Object.hasOwn(Deno.env.toObject(), name), false);
 });
+
+Deno.test("withMockedEnv: a nested call layers over the enclosing one", () => {
+  const outer = uniqueEnvName();
+  const inner = uniqueEnvName();
+  withMockedEnv({ [outer]: "outer", [inner]: "outer" }, () => {
+    withMockedEnv({ [inner]: "inner" }, () => {
+      assertEquals(Deno.env.get(outer), "outer");
+      assertEquals(Deno.env.get(inner), "inner");
+    });
+    assertEquals(Deno.env.get(inner), "outer");
+  });
+});
+
+Deno.test("withMockedEnv: code running alongside, outside fn, reads the real env", async () => {
+  const name = uniqueEnvName();
+  const mockedReading = Promise.withResolvers<void>();
+  const outsideRead = Promise.withResolvers<void>();
+  const mocked = withMockedEnv({ [name]: "mocked" }, async () => {
+    mockedReading.resolve();
+    await outsideRead.promise;
+    return Deno.env.get(name);
+  });
+  await mockedReading.promise;
+  assertEquals(Deno.env.get(name), undefined);
+  assertEquals(Deno.env.has(name), false);
+  outsideRead.resolve();
+  assertEquals(await mocked, "mocked");
+});

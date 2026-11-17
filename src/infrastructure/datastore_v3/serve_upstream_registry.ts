@@ -22,6 +22,7 @@
  * can all ask it without an import cycle
  */
 
+import { processRuntimeSlot } from "../runtime/process_runtime.ts";
 import { resolve } from "@std/path";
 import type {
   ServeInitiatorMode,
@@ -36,46 +37,50 @@ export interface ServeUpstreamBinding {
   readonly client: () => ServeDatastoreClient;
 }
 
-const bindings = new Map<string, ServeUpstreamBinding>();
-
-// what this process last learned from serve, or what the checkout stored
-const initiators = new Map<string, ServeInitiatorMode>();
+const upstreamState = processRuntimeSlot<{
+  readonly bindings: Map<string, ServeUpstreamBinding>;
+  // what this process last learned from serve, or what the checkout stored
+  readonly initiators: Map<string, ServeInitiatorMode>;
+}>(() => ({
+  bindings: new Map(),
+  initiators: new Map(),
+}));
 
 export function noteServeInitiator(
   datastorePath: string,
   mode: ServeInitiatorMode,
 ): void {
-  initiators.set(resolve(datastorePath), mode);
+  upstreamState().initiators.set(resolve(datastorePath), mode);
 }
 
 /** undefined: not heard from serve since this swamp was upgraded */
 export function serveInitiatorAt(
   datastorePath: string,
 ): ServeInitiatorMode | undefined {
-  return initiators.get(resolve(datastorePath));
+  return upstreamState().initiators.get(resolve(datastorePath));
 }
 
 export function registerServeUpstream(
   binding: ServeUpstreamBinding,
 ): ServeUpstreamBinding {
   const root = resolve(binding.root);
-  const known = bindings.get(root);
+  const known = upstreamState().bindings.get(root);
   if (known !== undefined) return known;
-  bindings.set(root, binding);
+  upstreamState().bindings.set(root, binding);
   return binding;
 }
 
 export function serveUpstreamAt(
   datastorePath: string,
 ): ServeUpstreamBinding | undefined {
-  return bindings.get(resolve(datastorePath));
+  return upstreamState().bindings.get(resolve(datastorePath));
 }
 
 export function hasServeUpstream(): boolean {
-  return bindings.size > 0;
+  return upstreamState().bindings.size > 0;
 }
 
 export function resetServeUpstreamBindingsForTesting(): void {
-  bindings.clear();
-  initiators.clear();
+  upstreamState().bindings.clear();
+  upstreamState().initiators.clear();
 }

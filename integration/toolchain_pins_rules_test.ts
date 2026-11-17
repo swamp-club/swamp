@@ -54,7 +54,11 @@ async function readPinnedVersion(): Promise<string> {
   return match[1];
 }
 
-type WorkflowStep = { uses?: unknown; with?: Record<string, unknown> };
+type WorkflowStep = {
+  uses?: unknown;
+  run?: unknown;
+  with?: Record<string, unknown>;
+};
 type WorkflowJob = { steps?: WorkflowStep[] };
 type Workflow = { jobs?: Record<string, WorkflowJob> };
 
@@ -285,4 +289,48 @@ Deno.test("the Go toolchain is pinned once and the eval tool needs no modules", 
     "no setup-go step found; the rule would pass vacuously",
   );
   assertEquals(offenders, [], offenders.join("\n"));
+});
+
+// a Worker that resolves npm through Deno's process-wide resolver can hang there for good
+Deno.test("the test task reads npm from a node_modules every test run installs first", async () => {
+  const denoJson = JSON.parse(await Deno.readTextFile(join(ROOT, "deno.json")));
+  const testTask = String(denoJson.tasks?.test ?? "").split(/\s+/);
+  assertEquals(
+    testTask.includes("--node-modules-dir=manual"),
+    true,
+    "the deno.json test task must pass --node-modules-dir=manual, so test " +
+      "Workers read npm packages from node_modules and never queue on " +
+      "Deno's npm resolver",
+  );
+  assertEquals(
+    denoJson.tasks?.["test-deps"],
+    "deno install --frozen --node-modules-dir=auto",
+    "the test-deps task installs the node_modules the test task reads, " +
+      "exactly as deno.lock pins them",
+  );
+
+  const runsTestTask = /\bdeno (?:task|run) test(?![-\w])/;
+  const installs = /\bdeno (?:task|run) test-deps\b/;
+  const offenders: string[] = [];
+  const testRuns: string[] = [];
+  for (const [name, workflow] of await readWorkflows()) {
+    for (const [jobName, job] of Object.entries(workflow.jobs ?? {})) {
+      let installed = false;
+      for (const step of job.steps ?? []) {
+        const run = typeof step.run === "string" ? step.run : "";
+        if (installs.test(run)) installed = true;
+        if (!runsTestTask.test(run)) continue;
+        testRuns.push(name);
+        if (!installed) {
+          offenders.push(
+            `.github/workflows/${name} job ${jobName} runs the test task ` +
+              `before any step runs deno task test-deps`,
+          );
+        }
+      }
+    }
+  }
+  assertEquals(offenders, [], offenders.join("\n"));
+  // a renamed workflow or reworded step would otherwise leave nothing to check
+  assertEquals(testRuns.sort(), ["flaky-tests.yml", "windows-compat.yml"]);
 });

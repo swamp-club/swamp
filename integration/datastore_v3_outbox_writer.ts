@@ -17,9 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// stands in for a v3 writer killed mid-commit: commits an auto-definition
-// through the same unit, sink and outbox a v3 handle uses, stopping at each
-// pause the test names
+// each pause falls between finished transactions, so a writer stopped there with
+// its files closed leaves the disk as a killed process would
 
 import { dirname } from "@std/path";
 import { SOLO_NAMESPACE } from "../src/domain/data/namespace.ts";
@@ -36,7 +35,6 @@ import { createOutboxCommitSink } from "../src/infrastructure/datastore_v3/outbo
 import { SqliteCommitOutbox } from "../src/infrastructure/datastore_v3/sqlite_commit_outbox.ts";
 import { SqliteCommitStore } from "../src/infrastructure/datastore_v3/sqlite_commit_store.ts";
 import { FileSystemStorage } from "../src/infrastructure/persistence/fs_datastore_storage.ts";
-import { LOADED } from "./graph_worker.ts";
 
 export type OutboxCrashPause =
   | "before-prepare"
@@ -55,30 +53,46 @@ export interface OutboxCrashRequest {
   readonly pauses: readonly OutboxCrashPause[];
 }
 
-export type OutboxCrashMessage =
-  | { readonly paused: OutboxCrashPause }
-  | { readonly done: true }
-  | { readonly failed: string };
+export interface StoppedWriter {
+  /** where the writer stopped; undefined when it committed without stopping */
+  readonly stoppedAt: OutboxCrashPause | undefined;
+}
 
-declare const self: Worker;
-
-self.postMessage(LOADED);
-
-let resume: (() => void) | undefined;
-
-self.onmessage = (event: MessageEvent<OutboxCrashRequest | "resume">) => {
-  if (event.data === "resume") {
-    resume?.();
-    return;
+/**
+ * runs the writer, calling onPause at each named pause it passes; at `stopAt`
+ * it never goes on, and its store and outbox are closed as the OS closes a
+ * dead process's files
+ */
+export async function runStoppedWriter(
+  request: OutboxCrashRequest,
+  stopAt: OutboxCrashPause,
+  onPause: (point: OutboxCrashPause) => Promise<void>,
+): Promise<StoppedWriter> {
+  const stopped = Promise.withResolvers<OutboxCrashPause>();
+  const pauses = [...request.pauses];
+  const pauseAt = async (point: OutboxCrashPause): Promise<void> => {
+    if (pauses[0] !== point) return;
+    pauses.shift();
+    if (point === stopAt) {
+      stopped.resolve(point);
+      await new Promise<never>(() => {});
+    }
+    await onPause(point);
+  };
+  const store = SqliteCommitStore.open(request.commitsDb);
+  const outbox = new SqliteCommitOutbox(request.outboxPath);
+  const committed = run(request, store, outbox, pauseAt);
+  try {
+    const outcome = await Promise.race([
+      stopped.promise,
+      committed.then(() => undefined),
+    ]);
+    return { stoppedAt: outcome };
+  } finally {
+    await store.close();
+    await outbox.close();
   }
-  run(event.data).then(
-    () => self.postMessage({ done: true } satisfies OutboxCrashMessage),
-    (error) =>
-      self.postMessage(
-        { failed: String(error) } satisfies OutboxCrashMessage,
-      ),
-  );
-};
+}
 
 export function outboxCrashContent(bytes: number): Uint8Array {
   const content = new Uint8Array(bytes);
@@ -86,17 +100,12 @@ export function outboxCrashContent(bytes: number): Uint8Array {
   return content;
 }
 
-async function run(request: OutboxCrashRequest): Promise<void> {
-  const pauses = [...request.pauses];
-  const pauseAt = async (point: OutboxCrashPause): Promise<void> => {
-    if (pauses[0] !== point) return;
-    pauses.shift();
-    const resumed = new Promise<void>((resolve) => resume = resolve);
-    self.postMessage({ paused: point } satisfies OutboxCrashMessage);
-    await resumed;
-  };
-  const store = SqliteCommitStore.open(request.commitsDb);
-  const outbox = new SqliteCommitOutbox(request.outboxPath);
+async function run(
+  request: OutboxCrashRequest,
+  store: SqliteCommitStore,
+  outbox: SqliteCommitOutbox,
+  pauseAt: (point: OutboxCrashPause) => Promise<void>,
+): Promise<void> {
   const chunkStore = new ChunkStore(
     new FileSystemStorage(request.datastorePath),
   );

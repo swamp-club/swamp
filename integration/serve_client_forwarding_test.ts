@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { Ceiling } from "../src/domain/access/ceiling.ts";
 import type {
   IntegrationLookup,
@@ -132,36 +133,40 @@ function serveNode(
   onUpgrade: (socket: WebSocket, req: Request) => void = () => {},
 ) {
   const authenticate = authenticator(client);
+  // a node is a process: it reads the env it was started with, which
+  // Deno.serve does not carry into a handler
+  const startedIn = AsyncLocalStorage.snapshot();
   return Deno.serve(
     { port: 0, hostname: "127.0.0.1", onListen: () => {} },
-    async (req) => {
-      const route = matchSignalRoute(new URL(req.url).pathname);
-      if (route) {
-        return await handleSignalHttpRequest(
-          req,
-          route,
-          "127.0.0.1",
-          {
-            ctx,
-            authenticate,
-          } as Parameters<typeof handleSignalHttpRequest>[3],
-        );
-      }
-      const extracted = extractWebSocketToken(req)!;
-      const result = await authenticate(extracted.token);
-      assert(result.ok, "the token authenticates");
-      const { socket, response } = Deno.upgradeWebSocket(
-        req,
-        extracted.transport === "subprotocol"
-          ? { protocol: `bearer.${extracted.token}` }
-          : {},
-      );
-      onUpgrade(socket, req);
-      bindAuthenticatedConnection(socket, result);
-      handleConnection(socket, ctx, parsePrincipal(result.principalId));
-      return response;
-    },
+    (req) => startedIn(() => handle(req)),
   );
+  async function handle(req: Request): Promise<Response> {
+    const route = matchSignalRoute(new URL(req.url).pathname);
+    if (route) {
+      return await handleSignalHttpRequest(
+        req,
+        route,
+        "127.0.0.1",
+        {
+          ctx,
+          authenticate,
+        } as Parameters<typeof handleSignalHttpRequest>[3],
+      );
+    }
+    const extracted = extractWebSocketToken(req)!;
+    const result = await authenticate(extracted.token);
+    assert(result.ok, "the token authenticates");
+    const { socket, response } = Deno.upgradeWebSocket(
+      req,
+      extracted.transport === "subprotocol"
+        ? { protocol: `bearer.${extracted.token}` }
+        : {},
+    );
+    onUpgrade(socket, req);
+    bindAuthenticatedConnection(socket, result);
+    handleConnection(socket, ctx, parsePrincipal(result.principalId));
+    return response;
+  }
 }
 
 interface Cluster {

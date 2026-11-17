@@ -84,6 +84,8 @@ class FakeServe implements ServeLockClient {
   renewal: "renew" | "expired" | Error = "renew";
   /** renewals left that never answer until their signal aborts */
   hangingRenewals = 0;
+  /** a hanging renewal that never sees its abort, as a stuck connection might */
+  renewalsIgnoreAbort = false;
   releaseError: Error | undefined;
   closed = 0;
   fence: number | undefined;
@@ -130,6 +132,7 @@ class FakeServe implements ServeLockClient {
     this.renewDeadlines.push(options.responseBaseMs);
     if (this.hangingRenewals > 0) {
       this.hangingRenewals--;
+      if (this.renewalsIgnoreAbort) return new Promise(() => {});
       return new Promise((_, reject) => {
         signal?.addEventListener("abort", () => reject(signal.reason), {
           once: true,
@@ -841,9 +844,10 @@ Deno.test("ServeLock: a renewal that never answers is abandoned at its deadline,
   serve.fence = 2;
   serve.hangingRenewals = 1;
   const lost: Error[] = [];
+  // long enough that a loaded host's late timers never lapse the lease meanwhile
   const subject = lock(serve, {
     root: ROOT,
-    ttlMs: 300,
+    ttlMs: 6_000,
     onLost: (error) => lost.push(error),
   });
   await subject.acquire();
@@ -851,7 +855,33 @@ Deno.test("ServeLock: a renewal that never answers is abandoned at its deadline,
     await waitFor(
       () => serve.calls.filter((call) => call.startsWith("renew")).length >= 3,
       "renewals after the stalled one",
-      { timeoutMs: 5_000 },
+      { timeoutMs: 60_000 },
+    );
+    assertEquals(lost, []);
+  } finally {
+    await subject.release();
+  }
+});
+
+Deno.test("ServeLock: a renewal whose client never sees the abort is still given up at its deadline, and the lease holds", async () => {
+  resetServeLeasesForTesting();
+  const serve = new FakeServe();
+  serve.fence = 2;
+  serve.hangingRenewals = 1;
+  serve.renewalsIgnoreAbort = true;
+  const lost: Error[] = [];
+  // long enough that a loaded host's late timers never lapse the lease meanwhile
+  const subject = lock(serve, {
+    root: ROOT,
+    ttlMs: 6_000,
+    onLost: (error) => lost.push(error),
+  });
+  await subject.acquire();
+  try {
+    await waitFor(
+      () => serve.calls.filter((call) => call.startsWith("renew")).length >= 3,
+      "renewals after the one its client never ended",
+      { timeoutMs: 60_000 },
     );
     assertEquals(lost, []);
   } finally {

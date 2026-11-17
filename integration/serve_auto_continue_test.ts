@@ -1251,8 +1251,13 @@ Deno.test({
       const hung = new AbortController();
       registry.register(fakeActiveRun(runId, hung));
       assert(registry.cancel(runId, "cancelled by user"));
-      await recorder.settled();
       assert(hung.signal.aborted);
+      // settled() also returns at the write deadline, before a slow write lands
+      const store = serve.ctx.repoContext.continuationClaims!.store;
+      await waitFor(
+        async () => (await store.findCancel(runId)) !== undefined,
+        "the cancel recorded",
+      );
 
       for (const cause of ["boot", "lead", "reconciliation"] as const) {
         const result = await continueInterruptedRuns(serve.ctx, cause);
@@ -1273,7 +1278,7 @@ Deno.test({
 Deno.test({
   ...TEST,
   name:
-    "auto-continue: a run aborted for its maximum duration records the cancel before the abort",
+    "auto-continue: a run aborted for its maximum duration records the cancel with its reason",
   fn: () =>
     withRepo(async (repoDir) => {
       const serve = await serveOver(repoDir, serveHolder("a"));
@@ -1286,9 +1291,13 @@ Deno.test({
       const timedOut = new AbortController();
       registry.register(fakeActiveRun(runId, timedOut));
       await waitFor(() => timedOut.signal.aborted, "the run aborted");
-      await recorder.settled();
-      const intent = await serve.ctx.repoContext.continuationClaims!.store
-        .findCancel(runId);
+      // settled() also returns at the write deadline, before a slow write lands
+      const store = serve.ctx.repoContext.continuationClaims!.store;
+      await waitFor(
+        async () => (await store.findCancel(runId)) !== undefined,
+        "the cancel recorded",
+      );
+      const intent = await store.findCancel(runId);
       assertEquals(intent?.reason, "max run duration exceeded");
       registry.deregister(runId);
     }),
