@@ -122,6 +122,7 @@ Deno.test("workflowApprove: reports allGatesDecided when the last gate is approv
   assertEquals(last?.kind, "completed");
   if (last?.kind === "completed") {
     assertEquals(last.data.allGatesDecided, true);
+    assertEquals(last.data.pendingGates, undefined);
     assertEquals(last.data.runId, run.id);
     assertEquals(last.data.workflowName, "gated");
   }
@@ -136,6 +137,11 @@ Deno.test("workflowApprove: reports allGatesDecided false while a sibling gate s
   assertEquals(first?.kind, "completed");
   if (first?.kind === "completed") {
     assertEquals(first.data.allGatesDecided, false);
+    assertEquals(first.data.pendingGates, {
+      approvals: [{ jobName: "main", stepName: "gate-b" }],
+      signalWaits: [],
+      nestedRuns: [],
+    });
   }
 
   const second = await approve(deps, "gate-b");
@@ -304,6 +310,14 @@ Deno.test("workflowApprove: allGatesDecided waits for the nested run to finish, 
     pending?.kind === "completed" && pending.data.allGatesDecided,
     false,
   );
+  assertEquals(
+    pending?.kind === "completed" && pending.data.pendingGates,
+    {
+      approvals: [],
+      signalWaits: [],
+      nestedRuns: [{ jobName: "main", stepName: "call-child" }],
+    },
+  );
   const settled = await approve(gateBesideNestedWait("succeeded").deps, "gate");
   assertEquals(
     settled?.kind === "completed" && settled.data.allGatesDecided,
@@ -328,6 +342,9 @@ Deno.test("workflowApprove: an unreadable linked run after the decision is saved
   assertEquals(last?.kind, "completed");
   if (last?.kind === "completed") {
     assertEquals(last.data.allGatesDecided, false);
+    assertEquals(last.data.pendingGates?.nestedRuns, [
+      { jobName: "main", stepName: "call-child" },
+    ]);
     assertEquals(last.data.awaitingParent, undefined);
   }
 });
@@ -625,6 +642,9 @@ Deno.test("workflowApprove: reports allGatesDecided false while a step still wai
     assertEquals(last?.kind, "completed");
     if (last?.kind === "completed") {
       assertEquals(last.data.allGatesDecided, false);
+      assertEquals(last.data.pendingGates?.signalWaits, [
+        { jobName: "main", stepName: "deploy" },
+      ]);
     }
   }
 });

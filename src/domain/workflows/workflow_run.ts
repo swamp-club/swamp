@@ -2602,6 +2602,18 @@ export class WorkflowRun implements TriggerEvaluationContext {
     return undefined;
   }
 
+  findWaitingApprovalSteps(): { jobName: string; stepName: string }[] {
+    const result: { jobName: string; stepName: string }[] = [];
+    for (const job of this._jobs) {
+      for (const step of job.steps) {
+        if (step.status === "waiting_approval" && !step.isNestedWait) {
+          result.push({ jobName: job.jobName, stepName: step.stepName });
+        }
+      }
+    }
+    return result;
+  }
+
   findSignalWaits(): SignalWaitRef[] {
     const result: SignalWaitRef[] = [];
     for (const job of this._jobs) {

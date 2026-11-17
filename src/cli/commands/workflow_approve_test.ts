@@ -20,7 +20,13 @@
 import { assertEquals } from "@std/assert";
 import type { WorkflowApproveData } from "../../libswamp/workflows/approve.ts";
 import { captureStdout, hintTestContext } from "./command_hint_test_helpers.ts";
-import { renderApproveResult, serveIsResuming } from "./workflow_approve.ts";
+import {
+  describePendingGates,
+  remoteResumeDecision,
+  renderApproveResult,
+  serveIsResuming,
+  workflowApproveCommand,
+} from "./workflow_approve.ts";
 
 Deno.test("serveIsResuming: true only when serve reports it resumed the run", () => {
   assertEquals(serveIsResuming({ autoResumed: true }), true);
@@ -203,4 +209,92 @@ Deno.test("renderApproveResult: a partly approved run its owner resumes gets the
   const parsed = JSON.parse(json.join("\n"));
   assertEquals(parsed.ownerResumes, true);
   assertEquals(parsed.allGatesDecided, false);
+});
+
+Deno.test("workflowApproveCommand: has a --resume option", () => {
+  const option = workflowApproveCommand.getOption("resume");
+  assertEquals(option?.name, "resume");
+});
+
+Deno.test("remoteResumeDecision: never resumes a run serve or its owner resumes", () => {
+  assertEquals(
+    remoteResumeDecision({ allGatesDecided: true, autoResumed: true }),
+    "serve_resuming",
+  );
+  assertEquals(
+    remoteResumeDecision({ allGatesDecided: true, ownerResumes: true }),
+    "owner_resumes",
+  );
+  assertEquals(remoteResumeDecision({ allGatesDecided: false }), "pending");
+  assertEquals(
+    remoteResumeDecision({ allGatesDecided: true, autoResumed: false }),
+    "resume",
+  );
+  assertEquals(remoteResumeDecision({ allGatesDecided: true }), "resume");
+});
+
+Deno.test("describePendingGates: names each gate by kind, qualifying a step name used in two jobs", () => {
+  assertEquals(
+    describePendingGates(approval({
+      allGatesDecided: false,
+      pendingGates: {
+        approvals: [
+          { jobName: "a", stepName: "gate" },
+          { jobName: "b", stepName: "gate" },
+        ],
+        signalWaits: [{ jobName: "a", stepName: "deploy" }],
+        nestedRuns: [{ jobName: "a", stepName: "call-child" }],
+      },
+    })),
+    "a/gate (approval), b/gate (approval), deploy (signal), call-child (nested run)",
+  );
+  assertEquals(
+    describePendingGates(approval({ allGatesDecided: false })),
+    "other gates are still pending",
+  );
+});
+
+Deno.test("renderApproveResult: --resume on a run it resumes prints no resume or parent command", () => {
+  const lines = captureStdout(() =>
+    renderApproveResult(
+      hintTestContext(),
+      approval({
+        awaitingParent: {
+          resumeCommand: "swamp workflow resume parent --run parent-run",
+        },
+      } as Partial<WorkflowApproveData>),
+      undefined,
+      { resuming: true },
+    )
+  );
+  assertEquals(lines, []);
+});
+
+Deno.test("renderApproveResult: --resume on a run with gates left keeps the resume command", () => {
+  const lines = captureStdout(() =>
+    renderApproveResult(
+      hintTestContext(),
+      approval({ allGatesDecided: false }),
+      undefined,
+      { resuming: false },
+    )
+  );
+  assertEquals(lines, [
+    `After approval: swamp workflow resume wipe-drive --run ${RUN_ID}`,
+  ]);
+});
+
+Deno.test("renderApproveResult: --resume in JSON mode adds resuming to the approval", () => {
+  const data = approval();
+  for (const resuming of [true, false]) {
+    const lines = captureStdout(() =>
+      renderApproveResult(
+        hintTestContext({ outputMode: "json" }),
+        data,
+        undefined,
+        { resuming },
+      )
+    );
+    assertEquals(lines.map((l) => JSON.parse(l)), [{ ...data, resuming }]);
+  }
 });

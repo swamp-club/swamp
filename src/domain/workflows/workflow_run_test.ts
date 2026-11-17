@@ -786,6 +786,21 @@ Deno.test("WorkflowRun: findWaitingApprovalStep returns undefined when none wait
   assertEquals(run.findWaitingApprovalStep(), undefined);
 });
 
+Deno.test("WorkflowRun: findWaitingApprovalSteps lists every waiting gate across jobs", () => {
+  const run = WorkflowRun.create(createTestWorkflow());
+  run.start();
+  assertEquals(run.findWaitingApprovalSteps(), []);
+  for (const [job, step] of [["job1", "step1"], ["job2", "step3"]]) {
+    const stepRun = run.getJob(job)!.getStep(step)!;
+    stepRun.start();
+    stepRun.waitForApproval();
+  }
+  assertEquals(run.findWaitingApprovalSteps(), [
+    { jobName: "job1", stepName: "step1" },
+    { jobName: "job2", stepName: "step3" },
+  ]);
+});
+
 Deno.test("WorkflowRun: a fresh run has empty inputs and resumeInputs", () => {
   const run = WorkflowRun.create(createTestWorkflow());
   assertEquals(run.inputs, {});
@@ -3288,6 +3303,9 @@ Deno.test("WorkflowRun: a nested wait is not an approval gate and keeps the run 
     stepName: "gate",
   });
   assertEquals(run.findNestedWaits().map((w) => w.stepName), ["call-child"]);
+  assertEquals(run.findWaitingApprovalSteps(), [
+    { jobName: "b-gate", stepName: "gate" },
+  ]);
   run.getJob("b-gate")!.getStep("gate")!.succeed();
   assertEquals(run.findWaitingApprovalStep(), undefined);
   assertEquals(run.isAwaitingResume(), false);
