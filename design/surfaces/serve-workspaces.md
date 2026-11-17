@@ -297,6 +297,7 @@ the field that is wrong:
 | `root`                               | none                          | The root workspace's repo; relative to the host folder, never inside `workspaces/` nor containing it; a folder without `.swamp.yaml` is refused at startup |
 | `trust-proxy`                        | `false`                       | The host is behind a proxy, whose forwarding headers it passes on                        |
 | `allow-unauthenticated-behind-proxy` | `false`                       | Admits a child in auth mode `none` behind a proxy; only on a loopback listener with `trust-proxy` or a public `address` |
+| `oauth-client.id`, `oauth-client.secret-file` | none                 | Given together; every child is started with them. The file is relative to the host folder, never inside `workspaces/` nor the root, and a missing, unreadable or empty one is refused at startup |
 
 The host binds its listener before it starts any child, so a listener that
 cannot bind starts nothing. SIGTERM and SIGINT stop the watcher, drain every
@@ -331,9 +332,24 @@ has:
 
 In `oauth` mode a serve without a client registers one on first start, which
 needs a collective key or a person. `host.yaml` can name one OAuth client and
-its secret file. The host passes it to each child with the existing
-`--oauth-client-id` and `--oauth-client-secret-file` flags, so a new workspace
-starts unattended.
+its secret file. The host passes it to each child, root included, with the
+existing `--oauth-client-id` and `--oauth-client-secret-file` flags
+(`src/serve/host/serve_process.ts`). The path reaches a child, never the
+secret. A flag outranks `serve.yaml`, so the host's client replaces a root's
+own, and delegation links the root made under its old client are no longer
+found: people sync holds each as `club_unknown`.
+
+A supplied client skips registration, but serve still looks up each entry in
+`admins` or `allowed-users` its cache lacks, and without a collective key that
+lookup is a device grant. A `user:` prefix is no way around it: in `oauth` mode
+serve strips it and looks the rest up as a username (`usernameOf`), so a
+subject is not found and, with a collective key, startup refuses because no
+configured admin exists. `oauth` mode needs at least one admin, so a new
+workspace's first start always looks names up. It does so unattended only with
+a collective key in the host's environment (`SWAMP_API_KEY` or
+`SWAMP_API_KEY_FILE`, which reach every child); otherwise a person completes one
+device grant. The names it resolves are kept in the workspace's vault
+(`oauth-resolved-admins`), so later starts look up only names added since.
 
 Names follow `parseWorkspaceName`. A name is the workspace's address, and its
 tokens, owner claim and checkouts' copies are keyed by that address, so a
@@ -529,10 +545,15 @@ After 7 an operator who sets each workspace up has a multi-workspace host.
    editing its wanted file. After 7.
 9. **The host passes an OAuth client to its children.** `host.yaml` names the
    client and its secret file. Done when a workspace in `oauth` mode starts
-   with no stored client and no collective key. After 7.
+   with no stored client of its own and registers none. After 7.
 10. **Workspace services.** The provisioner and the application services for
     create, list, get, suspend, resume and delete, working on the host folder.
-    Create sets up under a temporary name and renames into place. The services
+    Create sets up under a temporary name and renames into place. Without a
+    collective key in the host's environment, a new workspace's first start
+    needs a device grant for its names, so create either seeds the workspace's
+    `oauth-resolved-admins` from names the root already resolved, or serve gains
+    an entry form that is already resolved; choosing between them is this
+    item's work. The services
     are exported from `mod.ts`, and an integration test runs them on a temp
     folder (`src/libswamp/hosted_workspace/`). After 8.
 11. **Workspace requests on the root.** The host gives the root the
@@ -587,6 +608,9 @@ and is designed separately.
 - **Lifecycle and sign-in need the root.** While the root is down no workspace
   can be created, suspended or deleted through the API, and no sign-in code is
   issued. Running workspaces and tokens already minted are not affected.
+- **One OAuth client for every workspace.** Disabling the client named in
+  `host.yaml`, or replacing its secret, which ends every link held under it,
+  reaches every workspace at once.
 - **A workspace token outlives changes on the root.** Revoking a root token, or
   a change to the person's collectives, reaches a workspace only when its
   token expires. A workspace's admins can revoke the token there.
@@ -608,6 +632,9 @@ and is designed separately.
 
 ## Open questions
 
-- **What swamp-club sees.** Each workspace is a serve: it sends its own
-  heartbeat and registers its own instance. Is one OAuth client used from many
-  workspace addresses acceptable there, and should a host appear as one serve?
+- **What swamp-club sees.** One client used from many workspaces is accepted:
+  swamp-club keeps an instance row per client and process, and binds no
+  address to a client. With a collective key each workspace registers a row
+  under the same client name and hostname, and a link consent page shows that
+  same name and hostname for every workspace. Should a registration carry its
+  workspace's address, and should a host appear as one serve?

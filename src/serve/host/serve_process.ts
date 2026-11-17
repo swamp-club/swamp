@@ -19,6 +19,8 @@
 
 import type { ServeId } from "../../domain/serve/managed_serve.ts";
 import type { ListenedServe } from "../listening_line.ts";
+import { OAUTH_CLIENT_SECRET_FILE_FLAG } from "../oauth_client_secret_source.ts";
+import type { HostOAuthClient } from "./host_config.ts";
 
 export interface ServeChildSpec {
   readonly id: ServeId;
@@ -31,6 +33,8 @@ export interface ServeChildSpec {
   readonly env: Readonly<Record<string, string>>;
   /** overrides the supervisor's stop grace for a repo with a longer drain */
   readonly stopGraceMs?: number;
+  /** passed as --oauth-client-id and --oauth-client-secret-file */
+  readonly oauthClient?: HostOAuthClient | null;
 }
 
 /** `code` is null when the child died by a signal or could not be spawned. */
@@ -61,6 +65,14 @@ export interface ServeProcessPort {
 }
 
 export function serveChildArgs(spec: ServeChildSpec): string[] {
+  const client = spec.oauthClient
+    ? [
+      "--oauth-client-id",
+      spec.oauthClient.id,
+      OAUTH_CLIENT_SECRET_FILE_FLAG,
+      spec.oauthClient.secretFile,
+    ]
+    : [];
   return [
     "serve",
     "--json",
@@ -76,5 +88,6 @@ export function serveChildArgs(spec: ServeChildSpec): string[] {
     "--exit-on-stdin-close",
     "--repo-dir",
     spec.repoDir,
+    ...client,
   ];
 }

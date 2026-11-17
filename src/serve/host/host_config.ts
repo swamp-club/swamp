@@ -44,6 +44,10 @@ const HostYamlSchema = z.object({
   root: z.string().min(1).optional(),
   "trust-proxy": z.boolean().optional(),
   "allow-unauthenticated-behind-proxy": z.boolean().optional(),
+  "oauth-client": z.object({
+    id: z.string().min(1),
+    "secret-file": z.string().min(1),
+  }).strict().optional(),
 }).strict();
 
 export interface HostListen {
@@ -51,6 +55,12 @@ export interface HostListen {
   readonly port: number;
   readonly certFile: string | null;
   readonly keyFile: string | null;
+}
+
+/** the client every child is started with; the host holds the path, never the secret */
+export interface HostOAuthClient {
+  readonly id: string;
+  readonly secretFile: string;
 }
 
 export class HostConfig {
@@ -61,6 +71,7 @@ export class HostConfig {
     readonly root: string | null,
     readonly trustProxy: boolean,
     readonly allowUnauthenticatedBehindProxy: boolean,
+    readonly oauthClient: HostOAuthClient | null,
   ) {}
 
   static parse(text: string, hostDir: string): HostConfig {
@@ -139,6 +150,8 @@ export class HostConfig {
       );
     }
 
+    const oauthClient = parseOAuthClient(yaml["oauth-client"], dir, root);
+
     return new HostConfig(
       dir,
       listen,
@@ -146,6 +159,7 @@ export class HostConfig {
       root,
       trustProxy,
       allowBehindProxy,
+      oauthClient,
     );
   }
 
@@ -190,6 +204,31 @@ export class HostConfig {
     }
     return null;
   }
+}
+
+// a file in a repo can be copied or committed by that repo's own git, sync or team
+function parseOAuthClient(
+  raw: { id: string; "secret-file": string } | undefined,
+  dir: string,
+  root: string | null,
+): HostOAuthClient | null {
+  if (raw === undefined) return null;
+  const given = raw["secret-file"];
+  const secretFile = resolve(dir, given);
+  const holder = isWithin(join(dir, WORKSPACES_DIR), secretFile)
+    ? `${WORKSPACES_DIR}/`
+    : root !== null && isWithin(root, secretFile)
+    ? "the root repo"
+    : null;
+  if (holder !== null) {
+    throw markErrorPaths(
+      invalid(
+        `oauth-client.secret-file ${given} is inside ${holder}; keep the secret outside every repo the host runs`,
+      ),
+      [given],
+    );
+  }
+  return { id: raw.id, secretFile };
 }
 
 function parseAddress(raw: string): string {

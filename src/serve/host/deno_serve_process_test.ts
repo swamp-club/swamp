@@ -153,3 +153,31 @@ Deno.test("serveChildArgs: the flags the host adds to every child", () => {
     ],
   );
 });
+
+Deno.test("serveChildArgs: an OAuth client adds its id and the path of its secret file", () => {
+  const args = serveChildArgs({
+    id: workspaceServe("edge-dns"),
+    repoDir: "/host/workspaces/edge-dns",
+    address: "https://serve.example/w/edge-dns",
+    trustedHost: "serve.example",
+    env: {},
+    oauthClient: { id: "client-123", secretFile: "/run/secrets/oauth" },
+  });
+  assertEquals(args.slice(-4), [
+    "--oauth-client-id",
+    "client-123",
+    "--oauth-client-secret-file",
+    "/run/secrets/oauth",
+  ]);
+  assertEquals(
+    serveChildArgs({
+      id: workspaceServe("edge-dns"),
+      repoDir: "/host/workspaces/edge-dns",
+      address: "https://serve.example/w/edge-dns",
+      trustedHost: "serve.example",
+      env: {},
+      oauthClient: null,
+    }).includes("--oauth-client-id"),
+    false,
+  );
+});

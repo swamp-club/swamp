@@ -279,6 +279,7 @@ Deno.test("serve host: a root and two workspaces made by hand answer at their ow
     assertEquals(edge.trustedHost, "serve.acme.internal");
     assertEquals(edge.repoDir, join(folder.dir, "workspaces", "edge-dns"));
     assertEquals(edge.env, { PATH: "/usr/bin" });
+    assertEquals(edge.oauthClient, null);
     assertEquals(
       port.of("root")[0].spec.address,
       "https://serve.acme.internal",
@@ -550,6 +551,89 @@ Deno.test("serve host: a root that is not a swamp repo refuses to start and star
   );
   assert(error.message.includes("is not a swamp repo"), error.message);
   assertEquals(port.children.length, 0);
+});
+
+Deno.test("serve host: the root, every workspace and one added later are started with the OAuth client host.yaml names", async () => {
+  await using folder = await hostFolder();
+  await makeRepo(join(folder.dir, "root-repo"));
+  await makeRepo(join(folder.dir, "workspaces", "edge-dns"));
+  await makeRepo(join(folder.dir, "workspaces", "cost-reports"));
+  await Deno.mkdir(join(folder.dir, "secrets"));
+  await Deno.writeTextFile(
+    join(folder.dir, "secrets", "oauth-client"),
+    "client-secret\n",
+  );
+  const port = new StandInPort();
+  const host = await start(
+    folder.dir,
+    [
+      "address: https://serve.acme.internal",
+      "listen: {port: 0}",
+      "root: root-repo",
+      "oauth-client:",
+      "  id: client-123",
+      "  secret-file: secrets/oauth-client",
+    ].join("\n"),
+    port,
+  );
+  try {
+    await makeRepo(join(folder.dir, "workspaces", "billing"));
+    await waitFor(
+      () => port.of("workspace:billing").length > 0,
+      "the added workspace to be started",
+    );
+    const expected = {
+      id: "client-123",
+      secretFile: join(folder.dir, "secrets", "oauth-client"),
+    };
+    for (
+      const serve of [
+        "root",
+        "workspace:edge-dns",
+        "workspace:cost-reports",
+        "workspace:billing",
+      ]
+    ) {
+      assertEquals(port.of(serve)[0].spec.oauthClient, expected, serve);
+    }
+  } finally {
+    await host.shutdown();
+  }
+});
+
+Deno.test("serve host: a missing or empty OAuth client secret file refuses to start, naming the field and the path, and starts no serve", async () => {
+  for (const write of [false, true]) {
+    await using folder = await hostFolder();
+    await makeRepo(join(folder.dir, "workspaces", "edge-dns"));
+    const secretFile = join(folder.dir, "oauth-client-secret");
+    if (write) await Deno.writeTextFile(secretFile, "  \n");
+    const port = new StandInPort();
+    const error = await assertRejects(
+      () =>
+        start(
+          folder.dir,
+          [
+            "address: http://127.0.0.1",
+            "listen: {port: 0}",
+            "oauth-client:",
+            "  id: client-123",
+            "  secret-file: oauth-client-secret",
+          ].join("\n"),
+          port,
+        ),
+      UserError,
+    );
+    assert(
+      error.message.includes("host.yaml oauth-client.secret-file"),
+      error.message,
+    );
+    assert(error.message.includes(secretFile), error.message);
+    assert(
+      error.message.includes(write ? "is empty" : "not found"),
+      error.message,
+    );
+    assertEquals(port.children.length, 0);
+  }
 });
 
 Deno.test("serve host: shutdown stops every serve while the listener is still open, then closes it", async () => {
