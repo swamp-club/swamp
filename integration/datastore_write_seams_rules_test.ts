@@ -394,7 +394,7 @@ const PINNED_REPO_CONSTRUCTIONS: readonly string[] = [
   "src/cli/commands/workflow_cancel.ts: workflowCancelCommand: YamlEvaluatedWorkflowRepository",
   "src/cli/commands/workflow_approve.ts: workflowApproveCommand: YamlEvaluatedWorkflowRepository",
   "src/cli/commands/workflow_reject.ts: workflowRejectCommand: YamlEvaluatedWorkflowRepository",
-  "src/cli/commands/workflow_resume.ts: workflowResumeCommand: YamlEvaluatedWorkflowRepository",
+  "src/cli/commands/workflow_resume.ts: resumeRunLocally: YamlEvaluatedWorkflowRepository",
   "src/cli/commands/workflow_run.ts: workflowRunCommand: YamlEvaluatedWorkflowRepository",
   "src/cli/completion_types.ts: ModelNameType: YamlDefinitionRepository",
   "src/cli/completion_types.ts: WorkflowNameType: YamlWorkflowRepository",
@@ -528,7 +528,7 @@ const PINNED_UNHOOKED_WRITERS: readonly string[] = [
   "src/cli/commands/workflow_cancel.ts: workflowCancelCommand: YamlEvaluatedWorkflowRepository",
   "src/cli/commands/workflow_approve.ts: workflowApproveCommand: YamlEvaluatedWorkflowRepository",
   "src/cli/commands/workflow_reject.ts: workflowRejectCommand: YamlEvaluatedWorkflowRepository",
-  "src/cli/commands/workflow_resume.ts: workflowResumeCommand: YamlEvaluatedWorkflowRepository",
+  "src/cli/commands/workflow_resume.ts: resumeRunLocally: YamlEvaluatedWorkflowRepository",
   "src/cli/commands/workflow_run.ts: workflowRunCommand: YamlEvaluatedWorkflowRepository",
   "src/cli/completion_types.ts: ModelNameType: YamlDefinitionRepository",
   "src/cli/completion_types.ts: WorkflowNameType: YamlWorkflowRepository",
@@ -763,7 +763,7 @@ const PINNED_CLI_ROOT_UNIT_COMMANDS: readonly string[] = [
   "src/cli/commands/workflow_delete.ts: workflowDeleteCommand",
   "src/cli/commands/workflow_edit.ts: workflowEditCommand",
   "src/cli/commands/workflow_evaluate.ts: workflowEvaluateCommand (x2)",
-  "src/cli/commands/workflow_resume.ts: workflowResumeCommand",
+  "src/cli/commands/workflow_resume.ts: resumeRunLocally",
   "src/cli/commands/workflow_run.ts: workflowRunCommand",
   // commands that push nothing, in a root with no push, so their saves stage
   // into it rather than through signalChange's hook fallback

@@ -20,6 +20,7 @@
 import { ServeLeaseLapsedError } from "../../infrastructure/datastore_v3/serve_lock.ts";
 import { Command } from "@cliffy/command";
 import {
+  type CommandContext,
   createContext,
   type GlobalOptions,
   resolveRepoDir,
@@ -115,6 +116,469 @@ import {
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
+
+export interface WorkflowResumeRequest {
+  workflowIdOrName: string;
+  runId?: string;
+  fromStep?: string;
+  fromJob?: string;
+  inputs: Record<string, unknown>;
+  timeout?: string;
+  traceparent?: string;
+  tracestate?: string;
+}
+
+/** resolves true when the run finished, not suspended again or cut off */
+export async function resumeRunOverServer(
+  cliCtx: CommandContext,
+  connection: { server: string; token?: string; serverOption?: string },
+  request: WorkflowResumeRequest,
+): Promise<boolean> {
+  const abort = new AbortController();
+  const timeoutMs = request.timeout
+    ? parseTimerDuration(request.timeout)
+    : undefined;
+  const shutdown = registerShutdownHandler({
+    handler: () => abort.abort(),
+    forceExitOnRepeat: true,
+    stopsCatchUps: true,
+  });
+
+  const renderer = createWorkflowRunRenderer(cliCtx.outputMode, {
+    workflowName: request.workflowIdOrName,
+    quiet: cliCtx.verbosity === "quiet",
+    verbose: cliCtx.verbosity === "verbose",
+    commandTarget: formatCommandTarget({
+      server: connection.serverOption,
+    }),
+  });
+  const disarmTimeout = timeoutMs !== undefined
+    ? abortOnTimeout(abort, timeoutMs)
+    : undefined;
+  const handlers = renderer.handlers();
+  let finished = false;
+  try {
+    // an older server ignores fromJob and resets the --from step in every
+    // job that has it, so --job is sent only to one that says it honours
+    // it; the probe runs inside the try so --timeout bounds it
+    if (request.fromJob !== undefined) {
+      const version = await requestServerResponse<
+        { version: string; capabilities?: string[] }
+      >(
+        {
+          server: connection.server,
+          token: connection.token,
+          signal: abort.signal,
+        },
+        { type: "server.version" },
+      );
+      if (
+        !version.capabilities?.includes(SERVE_CAPABILITY_RESUME_FROM_JOB)
+      ) {
+        throw new UserError(
+          `The server (swamp ${version.version}) does not support --job, so it would resume the --from step in every job that has it. Upgrade swamp serve, or run without --server.`,
+        );
+      }
+    }
+    await consumeStream(
+      resumeWorkflowOverServer({
+        server: connection.server,
+        token: connection.token,
+        signal: abort.signal,
+        payload: {
+          workflowIdOrName: request.workflowIdOrName,
+          runId: request.runId,
+          from: request.fromStep,
+          fromJob: request.fromJob,
+          inputs: Object.keys(request.inputs).length > 0
+            ? request.inputs
+            : undefined,
+          traceparent: resolveTraceparent(
+            request.traceparent,
+          ),
+          tracestate: resolveTracestate(
+            request.tracestate,
+          ),
+        },
+      }) as AsyncIterable<WorkflowRunEvent>,
+      {
+        ...handlers,
+        completed: (e) => {
+          finished = true;
+          handlers.completed(e);
+        },
+      },
+    );
+  } finally {
+    disarmTimeout?.();
+    shutdown.dispose();
+  }
+  if (renderer.workflowFailed()) {
+    Deno.exitCode = 1;
+  }
+  return finished;
+}
+
+export async function resumeRunLocally(
+  cliCtx: CommandContext,
+  unlocked: Awaited<ReturnType<typeof requireInitializedRepoUnlocked>>,
+  request: WorkflowResumeRequest & { repoDirOption?: string },
+): Promise<void> {
+  // use the datastore-aware repositories from the RepositoryContext:
+  // constructing YamlWorkflowRunRepository(repoDir) would bind to repo-local
+  // .swamp/workflow-runs and miss runs in a configured datastore
+  const repoDir = unlocked.repoDir;
+  // A run's evaluated snapshot, read from the datastore-resolved path
+  // ExecutionService writes it to, settles a run this command cancels.
+  const evaluatedWorkflowRepo = new YamlEvaluatedWorkflowRepository(
+    repoDir,
+    unlocked.datastoreResolver.resolvePath(SWAMP_SUBDIRS.workflowsEvaluated),
+  );
+  const repoContext = unlocked.repoContext;
+  const workflowRepo = repoContext.workflowRepo;
+  const runRepo = repoContext.workflowRunRepo;
+
+  const fromStep = request.fromStep;
+  const fromJob = request.fromJob;
+  const signalWaits = signalWaitsOf(unlocked.repoContext);
+  const tracker = RunTrackerStore.fromSwampDir(swampPath(repoDir));
+  const liveness = localOwnerLiveness();
+  const { run, workflow, workflowName } = await resolveResumableRun(
+    workflowRepo,
+    runRepo,
+    request.workflowIdOrName,
+    request.runId,
+    {
+      fromStep,
+      fromJob,
+      ownerIsDead: (candidate) => runHasDeadOwner(candidate, tracker, liveness),
+      signalWaits,
+    },
+  ).finally(() => tracker.close());
+
+  if (run.status === "suspended") {
+    const waiting = run.findWaitingApprovalStep();
+    if (waiting) {
+      throw new UserError(
+        `Step "${waiting.stepName}" is still awaiting approval. ` +
+          `Run "swamp workflow approve ${workflowName} ${waiting.stepName}" first.`,
+      );
+    }
+    // Asked of the wait's outcome, not the run record: a signal settles
+    // a wait without writing the run. The resume asks again under the
+    // run's claim.
+    if (signalWaits.supported) {
+      const openWait = await findUnsettledWait(
+        signalWaits.store,
+        run,
+        new Date(),
+      );
+      if (openWait) throw new UserError(openSignalWaitMessage(openWait));
+    }
+  }
+
+  const stepLeaseLost = new AbortController();
+  const syncGate = createSyncGate();
+  const stepLockHook = workflowStepLockHook(
+    repoDir,
+    repoContext,
+    unlocked.datastoreConfig,
+    unlocked.syncService,
+    syncGate,
+    (reason) => stepLeaseLost.abort(reason),
+  );
+  // a lapse of the report lock's lease fails the reports, never the run
+  const reportLockHook = workflowStepLockHook(
+    repoDir,
+    repoContext,
+    unlocked.datastoreConfig,
+    unlocked.syncService,
+    syncGate,
+  );
+
+  await Promise.all([
+    modelRegistry.ensureLoaded(),
+    vaultTypeRegistry.ensureLoaded(),
+    reportRegistry.ensureLoaded(),
+  ]);
+
+  // Report supplied keys only. The execution service checks their values
+  // under the run's claim; a changed existing value will be refused.
+  const resumeKeys = Object.keys(request.inputs);
+  if (resumeKeys.length > 0) {
+    cliCtx.logger.info`Resume input(s) supplied: ${resumeKeys.join(", ")}`;
+  }
+
+  const directResolver = createDirectTypeResolver(repoDir, repoContext);
+
+  const ephemeral = createEphemeralStore(
+    repoContext.unifiedDataRepo.namespace,
+    { isResume: true },
+  );
+
+  const runTracker = RunTrackerStore.fromSwampDir(swampPath(repoDir));
+  const service = new WorkflowExecutionService(
+    workflowRepo,
+    runRepo,
+    repoDir,
+    undefined,
+    unlocked.datastoreResolver.resolvePath(SWAMP_SUBDIRS.data),
+    repoContext.catalogStore,
+    directResolver,
+    repoContext.markDirty,
+    repoContext.unifiedDataRepo.namespace,
+    stepLockHook,
+    runTracker,
+    ephemeral.repo,
+    ephemeral.catalog,
+    resolvePulledExtensionsRoot(repoDir),
+    repoContext.hydrateFile,
+    unlocked.vaultsDir,
+    unlocked.datastoreResolver,
+    repoContext.autoGc,
+    repoContext.unifiedDataRepo.fetchForeignContent,
+    repoContext.unreadableContent,
+    unlocked.marker?.defaultVault,
+    repoContext.unifiedDataRepo.writeSync,
+  );
+
+  service.runClaims = createWorkflowRunClaims(unlocked.datastoreConfig);
+  service.continuationClaims = repoContext.continuationClaims;
+  if (repoContext.commitLog !== undefined) {
+    service.reportLock = reportLockHook;
+  }
+  service.signalWaits = signalWaits;
+  service.ownerLiveness = liveness;
+  const runCheckpointer = new WorkflowRunCheckpointer(repoContext);
+  service.runCheckpointer = runCheckpointer;
+
+  const abort = new AbortController();
+  cancelOnLeaseLost(stepLeaseLost.signal, abort);
+  const timeoutMs = request.timeout
+    ? parseTimerDuration(request.timeout)
+    : undefined;
+
+  const renderer = createWorkflowRunRenderer(cliCtx.outputMode, {
+    workflowName,
+    quiet: cliCtx.verbosity === "quiet",
+    verbose: cliCtx.verbosity === "verbose",
+    commandTarget: formatCommandTarget({
+      repoDir: request.repoDirOption,
+    }),
+  });
+
+  const traceparent = resolveTraceparent(
+    request.traceparent,
+  );
+  const tracestate = resolveTracestate(
+    request.tracestate,
+  );
+
+  const resumeGenerator = async function* (): AsyncGenerator<
+    WorkflowRunEvent
+  > {
+    yield* withGeneratorTraceContext(
+      traceparent,
+      tracestate,
+      (async function* () {
+        for await (
+          const { event, stepOutputs } of deferCompletedForOutputs(
+            service.resume(workflowName, run.id, {
+              signal: abort.signal,
+              swampSha: GIT_SHA,
+              inputs: request.inputs,
+              fromStep,
+              fromJob,
+            }),
+            showsDataAttributes(
+                cliCtx.outputMode,
+                cliCtx.verbosity === "quiet",
+              )
+              ? (completed) =>
+                resolveCompletedRunOutputs(
+                  completed,
+                  repoContext.unifiedDataRepo,
+                  runRepo,
+                  abort.signal,
+                )
+              : undefined,
+          )
+        ) {
+          yield mapWorkflowExecutionEvent(
+            event,
+            runRepo,
+            undefined,
+            stepOutputs,
+          );
+        }
+      })(),
+    );
+  };
+
+  // resume() saves the run as running before it yields `started`, so
+  // `started` means this process owns the run. Before it, another resume
+  // may own the run, and the fallback below must not cancel it.
+  let started = false;
+  const baseHandlers = renderer.handlers();
+  const handlers = holdFromOutcome({
+    ...baseHandlers,
+    started: (e: WorkflowRunEvent & { kind: "started" }) => {
+      started = true;
+      baseHandlers.started(e);
+    },
+  });
+
+  // keep the process alive on Ctrl-C so resume() can record the cancel:
+  // otherwise the sync coordinator's SIGINT handler exits 130 and strands the
+  // run at running; both are process-global
+  const exitSuppress = suppressSyncExitOnSignal();
+  const shutdownHandle = registerShutdownHandler({
+    handler: () => abort.abort(),
+    forceExitOnRepeat: true,
+    stopsCatchUps: true,
+    dataWrites: processDataWrites,
+    beforeForceExit: releaseRegisteredLocks,
+  });
+  const disarmTimeout = timeoutMs !== undefined
+    ? abortOnTimeout(abort, timeoutMs)
+    : undefined;
+  const syncService = unlocked.syncService;
+  const namespace = isCustomDatastoreConfig(unlocked.datastoreConfig)
+    ? unlocked.datastoreConfig.namespace
+    : undefined;
+  let finished: boolean;
+  try {
+    finished = await runCommandInRootUnit(
+      repoContext,
+      {
+        push: syncService
+          ? async () => {
+            await pushNamespace(
+              syncService,
+              namespace,
+              pushBoundOf(unlocked.datastoreConfig),
+            );
+          }
+          : undefined,
+        output: cliCtx.outputMode === "log" ? "live-until-outcome" : "held",
+        onCleanupError: (pushErr) => {
+          cliCtx.logger
+            .warn`Post-resume push failed; terminal status may be delayed: ${
+            pushErr instanceof Error ? pushErr.message : String(pushErr)
+          }`;
+        },
+      },
+      async () => {
+        try {
+          try {
+            await consumeStream(resumeGenerator(), handlers);
+          } catch (error) {
+            // An error before `started` is a real failure to resume, not the
+            // abort unwinding, so it is reported.
+            if (!abort.signal.aborted || !started) {
+              // A UserError is already user-facing: resume()'s refusals name the
+              // next command to run, and any code it carries must reach the JSON
+              // output and exit code intact. Wrapping it would lose both, so it
+              // passes through unchanged.
+              if (error instanceof UserError) {
+                throw error;
+              }
+              cliCtx.logger.debug`Workflow resume failed: ${error}`;
+              const message = error instanceof Error
+                ? error.message
+                : String(error);
+              throw new UserError(
+                `Workflow resume failed: ${message}`,
+                "workflow_resume_failed",
+              );
+            }
+          }
+          if (abort.signal.aborted) {
+            // resume() saves the cancelled status itself. This covers an unwind
+            // that ended before it could, and runs before the push below.
+            if (started) {
+              try {
+                const cancelled = await cancelStrandedRun(
+                  runRepo,
+                  runTracker,
+                  workflow,
+                  run.id,
+                  "aborted",
+                  (runId) => evaluatedWorkflowRepo.findByRunId(runId),
+                );
+                if (cancelled) {
+                  cliCtx.logger
+                    .warn`Run ${run.id} was still marked running after it was interrupted; marked it cancelled`;
+                }
+              } catch (cancelErr) {
+                const cancelCommand =
+                  `swamp workflow cancel ${workflowName} --run ${run.id}`;
+                cliCtx.logger
+                  .warn`Could not mark run ${run.id} as cancelled: ${
+                  cancelErr instanceof Error
+                    ? cancelErr.message
+                    : String(cancelErr)
+                }. Cancel it with ${cancelCommand}`;
+              }
+            }
+            Deno.exitCode = 1;
+            return false;
+          }
+          return true;
+        } finally {
+          // Disarm the timeout before the root pushes, so it cannot fire mid-push.
+          disarmTimeout?.();
+        }
+      },
+    );
+  } catch (error) {
+    await runCheckpointer.restoreUncommittedRuns(() => runTracker, error);
+    // a dropped final save leaves index entries no commit backs
+    if (error instanceof RunPartlyCommittedError) {
+      await removeStaleRunIndexes(repoDir);
+      await removeStaleOutputSummaries(repoDir);
+    }
+    // the run's steps ran before its commit failed; a run cut while a step
+    // ran needs that step acknowledged to be recovered
+    const worded = withRunUnknownSteps(
+      error,
+      (runId) => runCheckpointer.committedUnknownSteps(runId),
+    );
+    throw worded instanceof CommitUnreachableError ||
+        worded instanceof RunPartlyCommittedError
+      ? worded.afterStepsRan()
+      : worded;
+  } finally {
+    await runCheckpointer.close();
+    shutdownHandle.dispose();
+    exitSuppress.dispose();
+    ephemeral.dispose();
+  }
+  // a run the lapse stopped exits as the lapse, once its root committed;
+  // one that finished first keeps its own exit
+  const lapsed = stepLeaseLost.signal.reason;
+  if (lapsed instanceof ServeLeaseLapsedError && Deno.exitCode === 1) {
+    throw lapsed;
+  }
+  if (!finished) return;
+
+  // a nested run that finished leaves its parent waiting: name the next
+  // command. Best effort: the resume is already saved
+  if (run.parentRun !== undefined) {
+    const finished = await runRepo.findById(workflow.id, run.id)
+      .catch(() => null);
+    const parent = finished && finished.status !== "suspended"
+      ? await awaitingParentOf({ runRepo, workflowRepo }, finished)
+        .catch(() => undefined)
+      : undefined;
+    if (parent) renderAwaitingParent(cliCtx, parent);
+  }
+
+  if (renderer.workflowFailed()) {
+    Deno.exitCode = 1;
+    return;
+  }
+}
 
 export const workflowResumeCommand = withRemoteOptions(
   new Command()
@@ -234,76 +698,20 @@ export const workflowResumeCommand = withRemoteOptions(
         ? deepMerge(stdinInputs, cliInputs)
         : cliInputs;
 
-      const abort = new AbortController();
-      const timeoutMs = options.timeout
-        ? parseTimerDuration(options.timeout as string)
-        : undefined;
-      const shutdown = registerShutdownHandler({
-        handler: () => abort.abort(),
-        forceExitOnRepeat: true,
-        stopsCatchUps: true,
-      });
-
-      const renderer = createWorkflowRunRenderer(cliCtx.outputMode, {
-        workflowName: workflowIdOrName,
-        quiet: cliCtx.verbosity === "quiet",
-        verbose: cliCtx.verbosity === "verbose",
-        commandTarget: formatCommandTarget({
-          server: options.server as string | undefined,
-        }),
-      });
-      const disarmTimeout = timeoutMs !== undefined
-        ? abortOnTimeout(abort, timeoutMs)
-        : undefined;
-      try {
-        // an older server ignores fromJob and resets the --from step in every
-        // job that has it, so --job is sent only to one that says it honours
-        // it; the probe runs inside the try so --timeout bounds it
-        if (options.job !== undefined) {
-          const version = await requestServerResponse<
-            { version: string; capabilities?: string[] }
-          >(
-            { server, token, signal: abort.signal },
-            { type: "server.version" },
-          );
-          if (
-            !version.capabilities?.includes(SERVE_CAPABILITY_RESUME_FROM_JOB)
-          ) {
-            throw new UserError(
-              `The server (swamp ${version.version}) does not support --job, so it would resume the --from step in every job that has it. Upgrade swamp serve, or run without --server.`,
-            );
-          }
-        }
-        await consumeStream(
-          resumeWorkflowOverServer({
-            server,
-            token,
-            signal: abort.signal,
-            payload: {
-              workflowIdOrName,
-              runId: options.run as string | undefined,
-              from: options.from as string | undefined,
-              fromJob: options.job as string | undefined,
-              inputs: Object.keys(resumeInputs).length > 0
-                ? resumeInputs
-                : undefined,
-              traceparent: resolveTraceparent(
-                options.traceparent as string | undefined,
-              ),
-              tracestate: resolveTracestate(
-                options.tracestate as string | undefined,
-              ),
-            },
-          }) as AsyncIterable<WorkflowRunEvent>,
-          renderer.handlers(),
-        );
-      } finally {
-        disarmTimeout?.();
-        shutdown.dispose();
-      }
-      if (renderer.workflowFailed()) {
-        Deno.exitCode = 1;
-      }
+      await resumeRunOverServer(
+        cliCtx,
+        { server, token, serverOption: options.server as string | undefined },
+        {
+          workflowIdOrName,
+          runId: options.run as string | undefined,
+          fromStep: options.from as string | undefined,
+          fromJob: options.job as string | undefined,
+          inputs: resumeInputs,
+          timeout: options.timeout as string | undefined,
+          traceparent: options.traceparent as string | undefined,
+          tracestate: options.tracestate as string | undefined,
+        },
+      );
       return;
     }
 
@@ -342,360 +750,16 @@ export const workflowResumeCommand = withRemoteOptions(
       ? deepMerge(stdinInputs, cliInputs)
       : cliInputs;
 
-    // use the datastore-aware repositories from the RepositoryContext:
-    // constructing YamlWorkflowRunRepository(repoDir) would bind to repo-local
-    // .swamp/workflow-runs and miss runs in a configured datastore
-    const repoDir = unlocked.repoDir;
-    // A run's evaluated snapshot, read from the datastore-resolved path
-    // ExecutionService writes it to, settles a run this command cancels.
-    const evaluatedWorkflowRepo = new YamlEvaluatedWorkflowRepository(
-      repoDir,
-      unlocked.datastoreResolver.resolvePath(SWAMP_SUBDIRS.workflowsEvaluated),
-    );
-    const repoContext = unlocked.repoContext;
-    const workflowRepo = repoContext.workflowRepo;
-    const runRepo = repoContext.workflowRunRepo;
-
-    const fromStep = options.from as string | undefined;
-    const fromJob = options.job as string | undefined;
-    const signalWaits = signalWaitsOf(unlocked.repoContext);
-    const tracker = RunTrackerStore.fromSwampDir(swampPath(repoDir));
-    const liveness = localOwnerLiveness();
-    const { run, workflow, workflowName } = await resolveResumableRun(
-      workflowRepo,
-      runRepo,
+    await resumeRunLocally(cliCtx, unlocked, {
       workflowIdOrName,
-      options.run,
-      {
-        fromStep,
-        fromJob,
-        ownerIsDead: (candidate) =>
-          runHasDeadOwner(candidate, tracker, liveness),
-        signalWaits,
-      },
-    ).finally(() => tracker.close());
-
-    if (run.status === "suspended") {
-      const waiting = run.findWaitingApprovalStep();
-      if (waiting) {
-        throw new UserError(
-          `Step "${waiting.stepName}" is still awaiting approval. ` +
-            `Run "swamp workflow approve ${workflowName} ${waiting.stepName}" first.`,
-        );
-      }
-      // Asked of the wait's outcome, not the run record: a signal settles
-      // a wait without writing the run. The resume asks again under the
-      // run's claim.
-      if (signalWaits.supported) {
-        const openWait = await findUnsettledWait(
-          signalWaits.store,
-          run,
-          new Date(),
-        );
-        if (openWait) throw new UserError(openSignalWaitMessage(openWait));
-      }
-    }
-
-    const stepLeaseLost = new AbortController();
-    const syncGate = createSyncGate();
-    const stepLockHook = workflowStepLockHook(
-      repoDir,
-      repoContext,
-      unlocked.datastoreConfig,
-      unlocked.syncService,
-      syncGate,
-      (reason) => stepLeaseLost.abort(reason),
-    );
-    // a lapse of the report lock's lease fails the reports, never the run
-    const reportLockHook = workflowStepLockHook(
-      repoDir,
-      repoContext,
-      unlocked.datastoreConfig,
-      unlocked.syncService,
-      syncGate,
-    );
-
-    await Promise.all([
-      modelRegistry.ensureLoaded(),
-      vaultTypeRegistry.ensureLoaded(),
-      reportRegistry.ensureLoaded(),
-    ]);
-
-    // Report supplied keys only. The execution service checks their values
-    // under the run's claim; a changed existing value will be refused.
-    const resumeKeys = Object.keys(resumeInputs);
-    if (resumeKeys.length > 0) {
-      cliCtx.logger.info`Resume input(s) supplied: ${resumeKeys.join(", ")}`;
-    }
-
-    const directResolver = createDirectTypeResolver(repoDir, repoContext);
-
-    const ephemeral = createEphemeralStore(
-      repoContext.unifiedDataRepo.namespace,
-      { isResume: true },
-    );
-
-    const runTracker = RunTrackerStore.fromSwampDir(swampPath(repoDir));
-    const service = new WorkflowExecutionService(
-      workflowRepo,
-      runRepo,
-      repoDir,
-      undefined,
-      unlocked.datastoreResolver.resolvePath(SWAMP_SUBDIRS.data),
-      repoContext.catalogStore,
-      directResolver,
-      repoContext.markDirty,
-      repoContext.unifiedDataRepo.namespace,
-      stepLockHook,
-      runTracker,
-      ephemeral.repo,
-      ephemeral.catalog,
-      resolvePulledExtensionsRoot(repoDir),
-      repoContext.hydrateFile,
-      unlocked.vaultsDir,
-      unlocked.datastoreResolver,
-      repoContext.autoGc,
-      repoContext.unifiedDataRepo.fetchForeignContent,
-      repoContext.unreadableContent,
-      unlocked.marker?.defaultVault,
-      repoContext.unifiedDataRepo.writeSync,
-    );
-
-    service.runClaims = createWorkflowRunClaims(unlocked.datastoreConfig);
-    service.continuationClaims = repoContext.continuationClaims;
-    if (repoContext.commitLog !== undefined) {
-      service.reportLock = reportLockHook;
-    }
-    service.signalWaits = signalWaits;
-    service.ownerLiveness = liveness;
-    const runCheckpointer = new WorkflowRunCheckpointer(repoContext);
-    service.runCheckpointer = runCheckpointer;
-
-    const abort = new AbortController();
-    cancelOnLeaseLost(stepLeaseLost.signal, abort);
-    const timeoutMs = options.timeout
-      ? parseTimerDuration(options.timeout as string)
-      : undefined;
-
-    const renderer = createWorkflowRunRenderer(cliCtx.outputMode, {
-      workflowName,
-      quiet: cliCtx.verbosity === "quiet",
-      verbose: cliCtx.verbosity === "verbose",
-      commandTarget: formatCommandTarget({
-        repoDir: options.repoDir as string | undefined,
-      }),
+      runId: options.run as string | undefined,
+      fromStep: options.from as string | undefined,
+      fromJob: options.job as string | undefined,
+      inputs: resumeInputs,
+      timeout: options.timeout as string | undefined,
+      traceparent: options.traceparent as string | undefined,
+      tracestate: options.tracestate as string | undefined,
+      repoDirOption: options.repoDir as string | undefined,
     });
-
-    const traceparent = resolveTraceparent(
-      options.traceparent as string | undefined,
-    );
-    const tracestate = resolveTracestate(
-      options.tracestate as string | undefined,
-    );
-
-    const resumeGenerator = async function* (): AsyncGenerator<
-      WorkflowRunEvent
-    > {
-      yield* withGeneratorTraceContext(
-        traceparent,
-        tracestate,
-        (async function* () {
-          for await (
-            const { event, stepOutputs } of deferCompletedForOutputs(
-              service.resume(workflowName, run.id, {
-                signal: abort.signal,
-                swampSha: GIT_SHA,
-                inputs: resumeInputs,
-                fromStep,
-                fromJob,
-              }),
-              showsDataAttributes(
-                  cliCtx.outputMode,
-                  cliCtx.verbosity === "quiet",
-                )
-                ? (completed) =>
-                  resolveCompletedRunOutputs(
-                    completed,
-                    repoContext.unifiedDataRepo,
-                    runRepo,
-                    abort.signal,
-                  )
-                : undefined,
-            )
-          ) {
-            yield mapWorkflowExecutionEvent(
-              event,
-              runRepo,
-              undefined,
-              stepOutputs,
-            );
-          }
-        })(),
-      );
-    };
-
-    // resume() saves the run as running before it yields `started`, so
-    // `started` means this process owns the run. Before it, another resume
-    // may own the run, and the fallback below must not cancel it.
-    let started = false;
-    const baseHandlers = renderer.handlers();
-    const handlers = holdFromOutcome({
-      ...baseHandlers,
-      started: (e: WorkflowRunEvent & { kind: "started" }) => {
-        started = true;
-        baseHandlers.started(e);
-      },
-    });
-
-    // keep the process alive on Ctrl-C so resume() can record the cancel:
-    // otherwise the sync coordinator's SIGINT handler exits 130 and strands the
-    // run at running; both are process-global
-    const exitSuppress = suppressSyncExitOnSignal();
-    const shutdownHandle = registerShutdownHandler({
-      handler: () => abort.abort(),
-      forceExitOnRepeat: true,
-      stopsCatchUps: true,
-      dataWrites: processDataWrites,
-      beforeForceExit: releaseRegisteredLocks,
-    });
-    const disarmTimeout = timeoutMs !== undefined
-      ? abortOnTimeout(abort, timeoutMs)
-      : undefined;
-    const syncService = unlocked.syncService;
-    const namespace = isCustomDatastoreConfig(unlocked.datastoreConfig)
-      ? unlocked.datastoreConfig.namespace
-      : undefined;
-    let finished: boolean;
-    try {
-      finished = await runCommandInRootUnit(
-        repoContext,
-        {
-          push: syncService
-            ? async () => {
-              await pushNamespace(
-                syncService,
-                namespace,
-                pushBoundOf(unlocked.datastoreConfig),
-              );
-            }
-            : undefined,
-          output: cliCtx.outputMode === "log" ? "live-until-outcome" : "held",
-          onCleanupError: (pushErr) => {
-            cliCtx.logger
-              .warn`Post-resume push failed; terminal status may be delayed: ${
-              pushErr instanceof Error ? pushErr.message : String(pushErr)
-            }`;
-          },
-        },
-        async () => {
-          try {
-            try {
-              await consumeStream(resumeGenerator(), handlers);
-            } catch (error) {
-              // An error before `started` is a real failure to resume, not the
-              // abort unwinding, so it is reported.
-              if (!abort.signal.aborted || !started) {
-                // A UserError is already user-facing: resume()'s refusals name the
-                // next command to run, and any code it carries must reach the JSON
-                // output and exit code intact. Wrapping it would lose both, so it
-                // passes through unchanged.
-                if (error instanceof UserError) {
-                  throw error;
-                }
-                cliCtx.logger.debug`Workflow resume failed: ${error}`;
-                const message = error instanceof Error
-                  ? error.message
-                  : String(error);
-                throw new UserError(
-                  `Workflow resume failed: ${message}`,
-                  "workflow_resume_failed",
-                );
-              }
-            }
-            if (abort.signal.aborted) {
-              // resume() saves the cancelled status itself. This covers an unwind
-              // that ended before it could, and runs before the push below.
-              if (started) {
-                try {
-                  const cancelled = await cancelStrandedRun(
-                    runRepo,
-                    runTracker,
-                    workflow,
-                    run.id,
-                    "aborted",
-                    (runId) => evaluatedWorkflowRepo.findByRunId(runId),
-                  );
-                  if (cancelled) {
-                    cliCtx.logger
-                      .warn`Run ${run.id} was still marked running after it was interrupted; marked it cancelled`;
-                  }
-                } catch (cancelErr) {
-                  const cancelCommand =
-                    `swamp workflow cancel ${workflowName} --run ${run.id}`;
-                  cliCtx.logger
-                    .warn`Could not mark run ${run.id} as cancelled: ${
-                    cancelErr instanceof Error
-                      ? cancelErr.message
-                      : String(cancelErr)
-                  }. Cancel it with ${cancelCommand}`;
-                }
-              }
-              Deno.exitCode = 1;
-              return false;
-            }
-            return true;
-          } finally {
-            // Disarm the timeout before the root pushes, so it cannot fire mid-push.
-            disarmTimeout?.();
-          }
-        },
-      );
-    } catch (error) {
-      await runCheckpointer.restoreUncommittedRuns(() => runTracker, error);
-      // a dropped final save leaves index entries no commit backs
-      if (error instanceof RunPartlyCommittedError) {
-        await removeStaleRunIndexes(repoDir);
-        await removeStaleOutputSummaries(repoDir);
-      }
-      // the run's steps ran before its commit failed; a run cut while a step
-      // ran needs that step acknowledged to be recovered
-      const worded = withRunUnknownSteps(
-        error,
-        (runId) => runCheckpointer.committedUnknownSteps(runId),
-      );
-      throw worded instanceof CommitUnreachableError ||
-          worded instanceof RunPartlyCommittedError
-        ? worded.afterStepsRan()
-        : worded;
-    } finally {
-      await runCheckpointer.close();
-      shutdownHandle.dispose();
-      exitSuppress.dispose();
-      ephemeral.dispose();
-    }
-    // a run the lapse stopped exits as the lapse, once its root committed;
-    // one that finished first keeps its own exit
-    const lapsed = stepLeaseLost.signal.reason;
-    if (lapsed instanceof ServeLeaseLapsedError && Deno.exitCode === 1) {
-      throw lapsed;
-    }
-    if (!finished) return;
-
-    // a nested run that finished leaves its parent waiting: name the next
-    // command. Best effort: the resume is already saved
-    if (run.parentRun !== undefined) {
-      const finished = await runRepo.findById(workflow.id, run.id)
-        .catch(() => null);
-      const parent = finished && finished.status !== "suspended"
-        ? await awaitingParentOf({ runRepo, workflowRepo }, finished)
-          .catch(() => undefined)
-        : undefined;
-      if (parent) renderAwaitingParent(cliCtx, parent);
-    }
-
-    if (renderer.workflowFailed()) {
-      Deno.exitCode = 1;
-      return;
-    }
   },
 );

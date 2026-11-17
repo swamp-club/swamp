@@ -986,11 +986,19 @@ The workflow suspends to disk. Approve, reject, or resume from CLI (use
 
 ```
 swamp workflow approve <workflow-name> <step-name> --run <run-id>
+swamp workflow approve <workflow-name> <step-name> --run <run-id> --resume   # approve and resume in one step
 swamp workflow reject  <workflow-name> <step-name> --run <run-id> --reason "Not ready"
 swamp workflow resume  <workflow-name> --run <run-id>
 swamp workflow resume  <workflow-name> --run <run-id> --input authKeyName=deploy-auth-key-42  # a vault key name, never a secret
 swamp workflow approvals  # list pending approvals and expired gates with run IDs
 ```
+
+`--resume` resumes the run only when the approval leaves no gate, signal wait or
+nested run pending; otherwise it approves, exits 0 and lists them under
+`pendingGates`. When it resumes, `--json` prints the approval (with
+`resuming: true`) and then the resume's documents, and the exit code is the
+resume's. It takes no resume inputs: use `workflow resume --input` for those.
+Under `--server` it never resumes a run serve already resumed.
 
 For a decision prepared earlier, such as by a script, pass the gate's
 `suspendedAt` from `swamp workflow approvals --json` as `--suspended-at`. It is

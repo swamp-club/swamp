@@ -233,6 +233,23 @@ steps:
    [structure check](#resume-from-failed-step---from) for suspended runs).
    Approve and reject are not checked, so a gate can still be decided.
 
+**Approve with `--resume`.** `swamp workflow approve --resume` runs steps 2
+and 3 in one invocation. The approval is decided and saved in its own root
+unit, as without the flag; then, only if it left `allGatesDecided`, the
+command resumes the run through the same code as `workflow resume`
+(`resumeRunLocally` and `resumeRunOverServer` in
+`src/cli/commands/workflow_resume.ts`), with no inputs, and exits with the
+resume's exit code. The two take separate run claims, so a resume that
+another process started first is refused as any second resume is, after the
+approval was reported. When gates remain, the approval carries
+`pendingGates` (approvals, signal waits and nested runs, each by job and
+step) and the command exits 0 without resuming. With `--json` the approval
+document gains `resuming`, followed by the documents `workflow resume`
+prints. Through serve, the CLI sends a `workflow.resume` only when the reply
+carries neither `autoResumed` nor `ownerResumes`; serve authorizes that
+request against `run`, so an `approve`-only caller gets the approval saved
+and the resume refused.
+
 **Auto-resume.** Approve and resume are separate so that resume can take
 inputs. Most gated workflows need none, so serve can continue the run itself.
 When a `workflow.approve` decides the run's last gate (`allGatesDecided` on
@@ -272,7 +289,8 @@ has to be cancelled, or, when serve started it, the change reverted.
 
 The resume that follows an approval at once needs the approval to go through
 serve (the dashboard, or `swamp workflow approve --server`). A local
-`swamp workflow approve` on the same repository launches nothing itself; the
+`swamp workflow approve` on the same repository launches nothing itself,
+unless given `--resume`, which resumes in the CLI process; otherwise the
 continuation sweep finds the run on its next pass. That holds on a
 filesystem datastore. On a synced one an approval changes the run record,
 which serve does not pull after boot, so a local approval is seen only by the

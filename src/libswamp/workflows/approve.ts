@@ -71,6 +71,16 @@ export interface WorkflowApproveData {
    */
   ownerResumes?: boolean;
   awaitingParent?: AwaitingParentData;
+  /** what keeps the run from resuming; set only when allGatesDecided is false */
+  pendingGates?: PendingGates;
+}
+
+type GateRef = { jobName: string; stepName: string };
+
+interface PendingGates {
+  approvals: GateRef[];
+  signalWaits: GateRef[];
+  nestedRuns: GateRef[];
 }
 
 export type WorkflowApproveEvent =
@@ -215,6 +225,28 @@ async function approveClaimedRun(
   return { run, workflowName, decidedBy };
 }
 
+function gateRef(ref: GateRef): GateRef {
+  return { jobName: ref.jobName, stepName: ref.stepName };
+}
+
+// whether a nested wait's child finished is derived from the child, never
+// stored; the decision is already saved, so an unreadable linked run counts
+// every nested wait as pending rather than turning it into an error
+async function pendingGatesOf(
+  deps: WorkflowApproveDeps,
+  run: WorkflowRun,
+): Promise<PendingGates> {
+  const nestedRuns = await new NestedRunLink(deps).pendingWaits(run).then(
+    (pending) => pending.map(({ wait }) => gateRef(wait)),
+    () => run.findNestedWaits().map(gateRef),
+  );
+  return {
+    approvals: run.findWaitingApprovalSteps(),
+    signalWaits: run.findSignalWaits().map(gateRef),
+    nestedRuns,
+  };
+}
+
 export async function* workflowApprove(
   ctx: LibSwampContext,
   deps: WorkflowApproveDeps,
@@ -276,13 +308,11 @@ export async function* workflowApprove(
           return;
         }
         const { run, workflowName, decidedBy } = outcome;
-        // whether a nested wait's child finished is derived from the child,
-        // never stored; the decision is already saved, so an unreadable linked
-        // run must not turn it into an error
+        const pendingGates = await pendingGatesOf(deps, run);
         const allGatesDecided = run.status === "suspended" &&
-          run.findWaitingApprovalStep() === undefined &&
-          run.findSignalWaits().length === 0 &&
-          await new NestedRunLink(deps).childrenSettled(run).catch(() => false);
+          pendingGates.approvals.length === 0 &&
+          pendingGates.signalWaits.length === 0 &&
+          pendingGates.nestedRuns.length === 0;
         const awaitingParent = await awaitingParentOf(deps, run).catch(() =>
           undefined
         );
@@ -298,6 +328,7 @@ export async function* workflowApprove(
             ...(input.client !== undefined ? { client: input.client } : {}),
             reason: input.reason ?? null,
             allGatesDecided,
+            ...(allGatesDecided ? {} : { pendingGates }),
             ...(awaitingParent ? { awaitingParent } : {}),
           },
         };
