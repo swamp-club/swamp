@@ -53,7 +53,7 @@ export interface HostListen {
   readonly keyFile: string | null;
 }
 
-/** host.yaml, parsed once; every path in it is resolved against the host folder */
+/** every path in host.yaml is resolved against the host folder */
 export class HostConfig {
   private constructor(
     readonly hostDir: string,

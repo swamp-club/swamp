@@ -150,7 +150,7 @@ Deno.test("watchWorkspaces: stop waits for a rescan in flight and reports nothin
   });
 });
 
-Deno.test("watchWorkspaces: a change handler that throws is logged and the watch goes on", async () => {
+Deno.test("watchWorkspaces: a change whose handler throws is logged and reported again", async () => {
   await withTempDir(async (dir) => {
     const seen: string[] = [];
     const watcher = watchWorkspaces({
@@ -158,16 +158,23 @@ Deno.test("watchWorkspaces: a change handler that throws is logged and the watch
       initial: [],
       onChange: (change) => {
         seen.push(...change.added);
-        throw new Error("handler failed");
+        if (seen.filter((n) => n === "first").length < 2) {
+          throw new Error("handler failed");
+        }
       },
       rescanMs: 10,
       debounceMs: 5,
     });
     try {
       await makeRepo(dir, "first");
-      await waitFor(() => seen.includes("first"), "the first change");
+      await waitFor(
+        () => seen.filter((n) => n === "first").length >= 2,
+        "the failed change to be reported again",
+      );
       await makeRepo(dir, "second");
-      await waitFor(() => seen.includes("second"), "the second change");
+      await waitFor(() => seen.includes("second"), "the next change");
+      const firstReports = seen.filter((n) => n === "first").length;
+      assertEquals(firstReports, 2, "reported again only until it succeeds");
     } finally {
       await watcher.stop();
     }

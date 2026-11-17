@@ -26,6 +26,7 @@ import { serveIdKey } from "../src/domain/serve/managed_serve.ts";
 import { HostConfig } from "../src/serve/host/host_config.ts";
 import {
   type ServeHost,
+  type ServeHostOptions,
   startServeHost,
 } from "../src/serve/host/serve_host.ts";
 import type {
@@ -112,8 +113,29 @@ class StandIn implements ServeChild {
   }
 }
 
+/** a serve that exits with code 1 before it listens */
+class Crashing implements ServeChild {
+  readonly listening = Promise.reject(new Error("crashed"));
+  readonly ready = Promise.reject(new Error("crashed"));
+  readonly exited = Promise.resolve({ code: 1, stderrTail: ["crashed"] });
+
+  constructor(readonly spec: ServeChildSpec) {
+    this.listening.catch(() => {});
+    this.ready.catch(() => {});
+  }
+
+  terminate(): void {}
+  kill(): void {}
+  release(): Promise<void> {
+    return Promise.resolve();
+  }
+}
+
 class StandInPort implements ServeProcessPort {
   readonly children: StandIn[] = [];
+  /** workspaces whose serve crashes at once */
+  readonly crashing = new Set<string>();
+  crashes = 0;
   readonly events: string[] = [];
   /** the host's own address, probed while each child stops */
   hostUrl: string | null = null;
@@ -124,6 +146,10 @@ class StandInPort implements ServeProcessPort {
 
   spawn(spec: ServeChildSpec): ServeChild {
     const name = spec.id.kind === "root" ? "root" : spec.id.name;
+    if (this.crashing.has(name)) {
+      this.crashes++;
+      return new Crashing(spec);
+    }
     const child = new StandIn(
       spec,
       this.authModes[name] ?? "token",
@@ -179,6 +205,7 @@ async function start(
   dir: string,
   yaml: string,
   port: StandInPort,
+  supervisor?: ServeHostOptions["supervisor"],
 ): Promise<ServeHost> {
   await Deno.writeTextFile(join(dir, "host.yaml"), yaml);
   const host = await startServeHost({
@@ -186,6 +213,7 @@ async function start(
     processPort: port,
     childEnv: { PATH: "/usr/bin" },
     rescanMs: RESCAN_MS,
+    supervisor,
   });
   return host;
 }
@@ -300,6 +328,53 @@ Deno.test("serve host: a workspace folder added while the host runs answers, and
       "the re-added workspace to answer",
     );
     assertEquals(port.of("workspace:edge-dns").length, 2);
+  } finally {
+    await host.shutdown();
+  }
+});
+
+Deno.test("serve host: a workspace that failed starts again when its folder is removed and added", async () => {
+  await using folder = await hostFolder();
+  await makeRepo(join(folder.dir, "workspaces", "edge-dns"));
+  const port = new StandInPort();
+  port.crashing.add("edge-dns");
+  const host = await start(
+    folder.dir,
+    "address: http://127.0.0.1\nlisten: {port: 0}\n",
+    port,
+    {
+      policy: {
+        restartDelayMs: 1,
+        initialBackoffMs: 1,
+        maxBackoffMs: 1,
+        crashWindowMs: 600_000,
+        maxCrashesInWindow: 2,
+      },
+    },
+  );
+  try {
+    const base = `http://127.0.0.1:${host.port}`;
+    await waitFor(async () => {
+      const { status, body } = await get(`${base}/w/edge-dns/`);
+      return status === 503 && body.state === "failed";
+    }, "the crashing workspace to fail");
+    const crashes = port.crashes;
+
+    await Deno.remove(join(folder.dir, "workspaces", "edge-dns"), {
+      recursive: true,
+    });
+    await waitFor(
+      async () => (await get(`${base}/w/edge-dns/`)).status === 404,
+      "the removed workspace to answer 404",
+    );
+    assertEquals(port.crashes, crashes, "a removed workspace is not restarted");
+
+    port.crashing.delete("edge-dns");
+    await makeRepo(join(folder.dir, "workspaces", "edge-dns"));
+    await waitFor(
+      () => answers(`${base}/w/edge-dns/`, "workspace:edge-dns"),
+      "the re-added workspace to answer",
+    );
   } finally {
     await host.shutdown();
   }

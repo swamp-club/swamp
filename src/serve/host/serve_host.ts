@@ -82,7 +82,6 @@ export async function startServeHost(
 
   const tls = await readTls(config);
   if (config.root !== null) await requireRootRepo(config.root);
-  await Deno.mkdir(config.workspacesDir, { recursive: true });
   const skipLog = new SkipLog();
   const scan = await scanWorkspaces(config.workspacesDir);
   skipLog.report(scan.skipped, rescanMs);
@@ -114,7 +113,7 @@ export async function startServeHost(
     await supervisor.shutdown();
     const reason = error instanceof Error ? error.message : String(error);
     throw new UserError(
-      `The host cannot listen on ${config.listen.host}:${config.listen.port}: ${reason}`,
+      `The host cannot listen on ${config.listen.host}:${config.listen.port}: ${reason}. Set listen.host or listen.port in host.yaml.`,
     );
   }
   const bound = server.addr;
@@ -137,6 +136,7 @@ export async function startServeHost(
     for (const name of scan.workspaces) {
       supervisor.add(specOf(workspaceServe(name)));
     }
+    await Deno.mkdir(config.workspacesDir, { recursive: true });
     watcher = watchWorkspaces({
       dir: config.workspacesDir,
       initial: scan.workspaces,
@@ -190,8 +190,9 @@ function applyChange(
 ): void {
   for (const name of change.added) {
     const id = workspaceServe(name);
+    // resume, not wanted running: a re-added folder also clears failed
     if (supervisor.lookup(id) === undefined) supervisor.add(specOf(id));
-    else supervisor.setWanted(id, "running");
+    else supervisor.resume(id);
   }
   for (const name of change.removed) {
     supervisor.setWanted(workspaceServe(name), "deleted");

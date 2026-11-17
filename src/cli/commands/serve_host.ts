@@ -84,7 +84,7 @@ export const serveHostCommand = new Command()
   });
 
 export interface StopSignals {
-  /** calls listener on each stop request; the returned function unregisters it */
+  /** the returned function unregisters the listener */
   onStop(listener: () => void): () => void;
 }
 
@@ -141,7 +141,7 @@ export async function readHostYaml(hostDir: string): Promise<string> {
     if (error instanceof Deno.errors.NotFound) {
       throw markErrorPaths(
         new UserError(
-          `No ${HOST_CONFIG_FILE} in ${hostDir}. Run swamp serve host in a host folder, or pass --host-dir.`,
+          `No ${HOST_CONFIG_FILE} in ${hostDir}. Run swamp serve host in a host folder, or pass --host-dir. A ${HOST_CONFIG_FILE} needs at least the public address, such as address: https://serve.example.com`,
         ),
         [hostDir],
       );

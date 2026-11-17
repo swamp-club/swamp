@@ -56,8 +56,8 @@ export interface PinnedSwampDirs {
 }
 
 /**
- * a child gets only what it needs to run and reach the network; any other
- * SWAMP_* setting the host was started with, such as SWAMP_SERVE_AUTH_MODE,
+ * a child gets only what it needs to run and reach the network; a SWAMP_SERVE_*
+ * setting the host was started with, or SWAMP_REPO_DIR or SWAMP_TRUSTED_HOSTS,
  * would override what the host decides for its children, so none passes through
  */
 export function hostChildEnv(

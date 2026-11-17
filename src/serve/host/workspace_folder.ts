@@ -155,9 +155,10 @@ export function watchWorkspaces(
     const current = new Set(scan.workspaces);
     const added = scan.workspaces.filter((name) => !known.has(name));
     const removed = [...known].filter((name) => !current.has(name)).sort();
-    known = current;
     if (added.length === 0 && removed.length === 0) return;
     await onChange({ added, removed });
+    // only after onChange succeeds, so a change that failed is reported again
+    known = current;
   };
 
   // rescans never overlap: a request during one runs once more after it
