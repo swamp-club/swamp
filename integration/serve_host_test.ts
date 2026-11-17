@@ -37,6 +37,7 @@ import type {
   ServeProcessPort,
 } from "../src/serve/host/serve_process.ts";
 import type { ListenedServe } from "../src/serve/listening_line.ts";
+import type { WorkspaceChange } from "../src/serve/host/workspace_folder.ts";
 import {
   TEST_CA_PEM,
   TEST_LOCALHOST_CERT_PEM,
@@ -216,6 +217,7 @@ async function start(
   yaml: string,
   port: StandInPort,
   supervisor?: ServeHostOptions["supervisor"],
+  onWorkspaceChange?: ServeHostOptions["onWorkspaceChange"],
 ): Promise<ServeHost> {
   await Deno.writeTextFile(join(dir, "host.yaml"), yaml);
   const host = await startServeHost({
@@ -224,6 +226,7 @@ async function start(
     childEnv: { PATH: "/usr/bin" },
     rescanMs: RESCAN_MS,
     supervisor,
+    onWorkspaceChange,
   });
   return host;
 }
@@ -917,14 +920,31 @@ Deno.test("serve host: a delete interrupted before or during the removal finishe
   );
   await want(folder.dir, "gone", "wanted: deleted\n");
   const port = new StandInPort();
-  const host = await start(folder.dir, NO_ROOT, port);
+  const changes: WorkspaceChange[] = [];
+  const host = await start(
+    folder.dir,
+    NO_ROOT,
+    port,
+    undefined,
+    (change) => changes.push(change),
+  );
   try {
     assertEquals(host.workspaces, []);
     await waitFor(
       async () => (await workspacesEntries(folder.dir)).length === 0,
       "everything the interrupted deletes left to be removed",
     );
-    assertEquals(port.children.length, 0);
+    await makeRepo(join(folder.dir, "workspaces", "later"));
+    await waitFor(
+      () => changes.some((c) => c.added.includes("later")),
+      "a later folder to be reported",
+    );
+    assertEquals(
+      changes.flatMap((c) => c.removed),
+      [],
+      "a workspace never announced is never reported removed",
+    );
+    assertEquals(port.of("workspace:edge-dns").length, 0);
     assertEquals(
       (await get(`http://127.0.0.1:${host.port}/w/edge-dns/`)).status,
       404,

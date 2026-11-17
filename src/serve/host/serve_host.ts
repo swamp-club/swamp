@@ -174,7 +174,8 @@ export async function startServeHost(
     await Deno.mkdir(config.workspacesDir, { recursive: true });
     stack.watcher = watchWorkspaces({
       dir: config.workspacesDir,
-      initial: scan.workspaces,
+      // changes are reported against what the host announced it started
+      initial: started,
       rescanMs,
       onChange: (change) => options.onWorkspaceChange?.(change),
       onRescan: (rescan) => reconciler.reconcile(rescan),
