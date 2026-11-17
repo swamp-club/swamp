@@ -52,6 +52,7 @@ export interface WorkspaceReconcilerOptions {
   readonly specOf: (name: string) => ServeChildSpec;
   readonly repository: HostedWorkspaceRepository;
   readonly statusWriter: Pick<StatusWriter, "setProblem" | "forget" | "track">;
+  readonly rename?: (from: string, to: string) => Promise<void>;
 }
 
 export interface WorkspaceReconciler {
@@ -71,6 +72,21 @@ interface Known {
   /** bumped when the workspace is added again or removed, so stale cleanup stands down */
   generation: number;
   ignoredLogged: boolean;
+  /** one hidden name per removal, so a retry neither scatters folders nor changes its error */
+  hiddenName: string | null;
+}
+
+type RemovalStep = "rename" | "list" | "remove";
+
+class RemovalStepError extends Error {
+  constructor(readonly step: RemovalStep, override readonly cause: unknown) {
+    super(messageOf(cause), { cause });
+  }
+
+  /** stable across retries, unlike a message that may name a path */
+  get key(): string {
+    return `${this.step}:${errorClassOf(this.cause)}`;
+  }
 }
 
 /** a retry every rescan logs once per reason, not once per attempt */
@@ -116,6 +132,7 @@ export function createWorkspaceReconciler(
 ): WorkspaceReconciler {
   const { workspacesDir, supervisor, specOf, repository, statusWriter } =
     options;
+  const rename = options.rename ?? Deno.rename;
   const known = new Map<string, Known>();
   const pending = new Set<Promise<void>>();
   // hidden folders a removal of ours is working on, so the sweep leaves them
@@ -141,6 +158,7 @@ export function createWorkspaceReconciler(
         removing: false,
         generation: 0,
         ignoredLogged: false,
+        hiddenName: null,
       };
       known.set(name, entry);
     }
@@ -241,7 +259,9 @@ export function createWorkspaceReconciler(
     entry.removing = true;
     track(
       remove(name, entry).catch((error) => {
-        if (!removalFailures.changed(name, messageOf(error))) return;
+        if (!removalFailures.changed(name, `before:${errorClassOf(error)}`)) {
+          return;
+        }
         logger.error(
           "Removing workspace {name} failed, and is tried again at every rescan: {error}",
           { name, error },
@@ -259,15 +279,16 @@ export function createWorkspaceReconciler(
     }
     await statusWriter.forget(name);
     try {
-      await removeData(name);
+      await removeData(name, entry);
     } catch (error) {
+      if (!(error instanceof RemovalStepError)) throw error;
       // a status write wakes the folder watcher, so one per reason, not per try
-      if (!removalFailures.changed(name, messageOf(error))) return;
+      if (!removalFailures.changed(name, error.key)) return;
       logger.error(
         "Removing workspace {name} failed, and is tried again at every rescan: {error}",
-        { name, error },
+        { name, error: error.cause },
       );
-      await reportRemovalFailure(name, error);
+      await reportRemovalFailure(name, error.cause);
       return;
     }
     await removeHostedWorkspaceStatus(workspacesDir, name);
@@ -282,19 +303,27 @@ export function createWorkspaceReconciler(
   };
 
   // the files stay until no folder of the name is left, renamed by an earlier try or not
-  const removeData = async (name: string) => {
+  const removeData = async (name: string, removing: Known) => {
     const folder = join(workspacesDir, name);
     if (await exists(folder)) {
       // a rename never follows a link, so a linked folder loses only its link
-      const hidden = deletingFolderName(name);
+      const hidden = removing.hiddenName ??= deletingFolderName(name);
       sweeping.add(hidden);
       try {
-        await Deno.rename(folder, join(workspacesDir, hidden));
+        await rename(folder, join(workspacesDir, hidden));
+      } catch (error) {
+        throw new RemovalStepError("rename", error);
       } finally {
         sweeping.delete(hidden);
       }
     }
-    for await (const { name: entry } of Deno.readDir(workspacesDir)) {
+    let entries: Deno.DirEntry[];
+    try {
+      entries = await Array.fromAsync(Deno.readDir(workspacesDir));
+    } catch (error) {
+      throw new RemovalStepError("list", error);
+    }
+    for (const { name: entry } of entries) {
       if (deletingFolderOwner(entry) !== name) continue;
       // a sweep that began before this removal may still be on it
       await sweeps.get(entry);
@@ -302,7 +331,9 @@ export function createWorkspaceReconciler(
       try {
         await Deno.remove(join(workspacesDir, entry), { recursive: true });
       } catch (error) {
-        if (!(error instanceof Deno.errors.NotFound)) throw error;
+        if (!(error instanceof Deno.errors.NotFound)) {
+          throw new RemovalStepError("remove", error);
+        }
       } finally {
         sweeping.delete(entry);
       }
@@ -410,6 +441,10 @@ function sameRecord(
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function errorClassOf(error: unknown): string {
+  return error instanceof Error ? error.name : typeof error;
 }
 
 async function exists(path: string): Promise<boolean> {

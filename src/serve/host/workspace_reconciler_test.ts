@@ -118,7 +118,9 @@ interface Harness extends AsyncDisposable {
   observed(name: string): string | undefined;
 }
 
-async function harness(): Promise<Harness> {
+async function harness(
+  rename?: (from: string, to: string) => Promise<void>,
+): Promise<Harness> {
   const dir = await Deno.makeTempDir();
   const port = new Port();
   const statusWriter = createStatusWriter({ workspacesDir: dir });
@@ -146,6 +148,7 @@ async function harness(): Promise<Harness> {
     }),
     repository,
     statusWriter,
+    rename,
   });
   return {
     dir,
@@ -543,4 +546,38 @@ Deno.test("createWorkspaceReconciler: begin names only the workspaces it handed 
     () => h.observed("edge-dns") === "ready",
     "started next rescan",
   );
+});
+
+Deno.test("createWorkspaceReconciler: a rename that keeps failing reuses one hidden name and writes its status once", async () => {
+  const targets: string[] = [];
+  let busy = true;
+  await using h = await harness(async (from, to) => {
+    targets.push(to);
+    // Deno names both paths in a rename error, as a busy mount point does
+    if (busy) throw new Deno.errors.Busy(`rename '${from}' -> '${to}'`);
+    await Deno.rename(from, to);
+  });
+  await makeRepo(h.dir, "edge-dns");
+  await h.begin();
+  await waitFor(() => h.observed("edge-dns") === "ready", "ready");
+  await want(h.dir, "edge-dns", "wanted: deleted\n");
+
+  const statuses: string[] = [];
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    await h.rescan();
+    await h.reconciler.drain();
+    statuses.push(
+      await Deno.readTextFile(join(h.dir, "edge-dns.status.yaml")),
+    );
+  }
+  assertEquals(new Set(targets).size, 1, "one hidden name for every try");
+  assertEquals(new Set(statuses).size, 1, "the status is written once");
+  assert(statuses[0].includes("Removing the workspace failed"), statuses[0]);
+  assert(await exists(join(h.dir, "edge-dns", REPO_MARKER_FILE)));
+
+  busy = false;
+  await h.rescan();
+  await h.reconciler.drain();
+  await h.statusWriter.drain();
+  assertEquals(await entries(h.dir), []);
 });
