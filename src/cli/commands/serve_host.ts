@@ -41,6 +41,7 @@ type AnyOptions = any;
 
 export const serveHostCommand = new Command()
   .name("host")
+  .hidden()
   .description(
     "Run one serve per workspace behind a single address.\n\n" +
       "Runs in a host folder holding host.yaml (the listener, its TLS certificate, the public address and an optional root repo) " +

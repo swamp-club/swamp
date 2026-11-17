@@ -130,7 +130,8 @@ reverse proxy. The dashboard is the exception; see [Dashboard](#dashboard).
 
 ## The host
 
-`swamp serve host` runs in a **host folder**:
+`swamp serve host` runs in a **host folder**. It is a hidden command for now:
+it runs, but serve's help and `swamp help serve` do not list it.
 
 ```
 <host folder>/

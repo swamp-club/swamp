@@ -767,3 +767,29 @@ Deno.test("command routes: a completion callback's routes in a fresh module grap
     }
   }
 });
+
+Deno.test("command routes: a root row names exactly its group's hidden subcommands", () => {
+  const mismatched: string[] = [];
+  for (
+    const { path, routes } of GROUP_TABLES.filter((t) => t.path.length === 1)
+  ) {
+    const row = ROOT_ROUTES.find((r) => r.name === path[0]);
+    const hidden = routes.filter((r) => r.hidden).map((r) => r.name);
+    const listed = [...(row?.hiddenSubcommands ?? [])];
+    if (JSON.stringify(hidden) !== JSON.stringify(listed)) {
+      mismatched.push(
+        `${path[0]}: the group hides [${hidden.join(", ")}], the row lists [${
+          listed.join(", ")
+        }]`,
+      );
+    }
+  }
+  // a missing entry sends a completion callback to the group alone, whose
+  // refusal of the hidden subcommand lists none of its siblings
+  assertEquals(
+    mismatched,
+    [],
+    "set hiddenSubcommands on the group's row in src/cli/root_routes.ts:\n  " +
+      mismatched.join("\n  "),
+  );
+});

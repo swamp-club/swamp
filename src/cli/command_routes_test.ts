@@ -43,6 +43,9 @@ function route(
     hidden: options.hidden ?? false,
     module: options.module ?? `src/cli/commands/${name}.ts`,
     needsFullTree: options.needsFullTree ?? false,
+    ...(options.hiddenSubcommands !== undefined
+      ? { hiddenSubcommands: options.hiddenSubcommands }
+      : {}),
     load,
   };
 }
@@ -231,6 +234,29 @@ Deno.test("selectRoute: root globals may precede completions and complete in a c
     selected(["completions", "--log-level", "debug", "complete", "x", "data"]),
     "data,completions",
   );
+});
+
+Deno.test("selectRoute: the full tree for a callback naming a group's hidden subcommand, the group alone otherwise", () => {
+  const routes = [
+    route("completions", { needsFullTree: true }),
+    route("serve", { hiddenSubcommands: ["host"] }),
+  ];
+  assertEquals(
+    selectRoute(routes, ["completions", "complete", "x", "serve", "host"]),
+    { kind: "all" },
+  );
+  const visible = selectRoute(routes, [
+    "completions",
+    "complete",
+    "x",
+    "serve",
+    "reload",
+  ]);
+  assertEquals(
+    visible.kind === "routes" ? visible.routes.map((r) => r.name) : visible,
+    ["completions", "serve"],
+  );
+  assertEquals(selectRoute(routes, ["serve", "host"]).kind, "routes");
 });
 
 Deno.test("selectRoute: the full tree for a callback naming an unknown, hidden or help command", () => {
