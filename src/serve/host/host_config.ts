@@ -20,7 +20,7 @@
 import { isAbsolute, join, relative, resolve, SEPARATOR } from "@std/path";
 import { parse as parseYaml } from "@std/yaml";
 import { z } from "zod";
-import { UserError } from "../../domain/errors.ts";
+import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import type { ListenerProtocol } from "./forwarding_headers.ts";
 
 export const HOST_CONFIG_FILE = "host.yaml";
@@ -111,8 +111,11 @@ export class HostConfig {
     if (yaml.root !== undefined) {
       root = resolve(dir, yaml.root);
       if (isWithin(join(dir, WORKSPACES_DIR), root)) {
-        throw invalid(
-          `root ${yaml.root} is inside ${WORKSPACES_DIR}/, where every repo is a workspace`,
+        throw markErrorPaths(
+          invalid(
+            `root ${yaml.root} is inside ${WORKSPACES_DIR}/, where every repo is a workspace`,
+          ),
+          [yaml.root],
         );
       }
     }

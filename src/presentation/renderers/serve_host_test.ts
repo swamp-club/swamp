@@ -73,15 +73,18 @@ async function captureLog(
   return messages;
 }
 
-Deno.test("serveHostRenderer json: prints one listening line naming the address and port", () => {
+Deno.test("serveHostRenderer json: prints a line for listening, each workspace change and the stop", () => {
   const renderer = createServeHostRenderer("json");
   const output = captureStdout(() => {
     renderer.listening(LISTENING);
-    renderer.workspacesChanged({ added: ["x"], removed: [] });
+    renderer.workspacesChanged({ added: ["x"], removed: ["y"] });
     renderer.stopped();
   });
-  assertEquals(output.length, 1);
-  assertEquals(JSON.parse(output[0]), { status: "listening", ...LISTENING });
+  assertEquals(output.map((line) => JSON.parse(line)), [
+    { status: "listening", ...LISTENING },
+    { status: "workspaces", added: ["x"], removed: ["y"] },
+    { status: "stopped" },
+  ]);
 });
 
 Deno.test("serveHostRenderer log: reports listening, each workspace change and the stop", async () => {

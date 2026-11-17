@@ -416,6 +416,24 @@ Deno.test("serve host: a listener that cannot bind starts no serve", async () =>
   assertEquals(port.children.length, 0);
 });
 
+Deno.test("serve host: a root that is not a swamp repo refuses to start and starts no serve", async () => {
+  await using folder = await hostFolder();
+  await Deno.mkdir(join(folder.dir, "root-repo"));
+  await makeRepo(join(folder.dir, "workspaces", "edge-dns"));
+  const port = new StandInPort();
+  const error = await assertRejects(
+    () =>
+      start(
+        folder.dir,
+        "address: http://127.0.0.1\nlisten: {port: 0}\nroot: root-repo\n",
+        port,
+      ),
+    UserError,
+  );
+  assert(error.message.includes("is not a swamp repo"), error.message);
+  assertEquals(port.children.length, 0);
+});
+
 Deno.test("serve host: shutdown stops every serve while the listener is still open, then closes it", async () => {
   await using folder = await hostFolder();
   await makeRepo(join(folder.dir, "root-repo"));

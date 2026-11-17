@@ -84,9 +84,13 @@ class JsonServeHostRenderer implements ServeHostRenderer {
     writeOutput(JSON.stringify({ status: "listening", ...event }));
   }
 
-  workspacesChanged(): void {}
+  workspacesChanged(change: ServeHostChange): void {
+    writeOutput(JSON.stringify({ status: "workspaces", ...change }));
+  }
 
-  stopped(): void {}
+  stopped(): void {
+    writeOutput(JSON.stringify({ status: "stopped" }));
+  }
 }
 
 export function createServeHostRenderer(mode: OutputMode): ServeHostRenderer {

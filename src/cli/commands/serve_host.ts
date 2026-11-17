@@ -20,7 +20,7 @@
 import { Command } from "@cliffy/command";
 import { join, resolve } from "@std/path";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { UserError } from "../../domain/errors.ts";
+import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import {
   getSwampConfigDir,
   getSwampDataDir,
@@ -30,7 +30,7 @@ import { createServeHostRenderer } from "../../presentation/renderers/serve_host
 import { hostChildEnv } from "../../serve/host/child_env.ts";
 import { DENO_SERVE_PROCESS_PORT } from "../../serve/host/deno_serve_process.ts";
 import { HOST_CONFIG_FILE, HostConfig } from "../../serve/host/host_config.ts";
-import { startServeHost } from "../../serve/host/serve_host.ts";
+import { type ServeHost, startServeHost } from "../../serve/host/serve_host.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -71,53 +71,85 @@ export const serveHostCommand = new Command()
       onWorkspaceChange: (change) => renderer.workspacesChanged(change),
     });
 
-    const { promise: stopRequested, resolve: requestStop } = Promise
-      .withResolvers<void>();
-    // SIGHUP is left alone, as serve leaves it for reload; a second Ctrl+C exits at once
-    const handle = registerShutdownHandler({
-      handler: () => requestStop(),
-      includePosixSignals: Deno.build.os === "windows",
-      forceExitOnRepeat: true,
+    renderer.listening({
+      host: host.hostname,
+      port: host.port,
+      url: `${config.protocol}://${host.hostname}:${host.port}`,
+      address: config.address,
+      root: config.root !== null,
+      workspaces: host.workspaces.length,
     });
-    const onSigterm = () => requestStop();
-    if (Deno.build.os !== "windows") {
-      Deno.addSignalListener("SIGTERM", onSigterm);
-    }
-    try {
-      renderer.listening({
-        host: host.hostname,
-        port: host.port,
-        url: `${config.protocol}://${host.hostname}:${host.port}`,
-        address: config.address,
-        root: config.root !== null,
-        workspaces: host.workspaces.length,
-      });
-      await Promise.race([stopRequested, host.finished]);
-    } finally {
-      handle.dispose();
-      if (Deno.build.os !== "windows") {
-        try {
-          Deno.removeSignalListener("SIGTERM", onSigterm);
-        } catch {
-          // already removed
-        }
-      }
-      await host.shutdown();
-    }
+    await serveUntilStopped(host, PROCESS_STOP_SIGNALS);
     renderer.stopped();
   });
 
-async function readHostYaml(hostDir: string): Promise<string> {
+export interface StopSignals {
+  /** calls listener on each stop request; the returned function unregisters it */
+  onStop(listener: () => void): () => void;
+}
+
+// SIGHUP is left alone, as serve leaves it for reload; a second Ctrl+C exits at once
+export const PROCESS_STOP_SIGNALS: StopSignals = {
+  onStop(listener) {
+    const handle = registerShutdownHandler({
+      handler: listener,
+      includePosixSignals: Deno.build.os === "windows",
+      forceExitOnRepeat: true,
+    });
+    if (Deno.build.os !== "windows") {
+      Deno.addSignalListener("SIGTERM", listener);
+    }
+    return () => {
+      handle.dispose();
+      if (Deno.build.os === "windows") return;
+      try {
+        Deno.removeSignalListener("SIGTERM", listener);
+      } catch {
+        // already removed
+      }
+    };
+  },
+};
+
+/**
+ * the stop signals stay registered through the drain, so a second Ctrl+C
+ * still ends a host whose children are slow to stop
+ */
+export async function serveUntilStopped(
+  host: Pick<ServeHost, "shutdown" | "finished">,
+  signals: StopSignals,
+): Promise<void> {
+  const { promise: stopRequested, resolve: requestStop } = Promise
+    .withResolvers<void>();
+  const unregister = signals.onStop(() => requestStop());
+  try {
+    await Promise.race([stopRequested, host.finished]);
+  } finally {
+    try {
+      await host.shutdown();
+    } finally {
+      unregister();
+    }
+  }
+}
+
+export async function readHostYaml(hostDir: string): Promise<string> {
   const path = join(hostDir, HOST_CONFIG_FILE);
   try {
     return await Deno.readTextFile(path);
   } catch (error) {
     if (error instanceof Deno.errors.NotFound) {
-      throw new UserError(
-        `No ${HOST_CONFIG_FILE} in ${hostDir}. Run swamp serve host in a host folder, or pass --host-dir.`,
+      throw markErrorPaths(
+        new UserError(
+          `No ${HOST_CONFIG_FILE} in ${hostDir}. Run swamp serve host in a host folder, or pass --host-dir.`,
+        ),
+        [hostDir],
       );
     }
     const reason = error instanceof Error ? error.message : String(error);
-    throw new UserError(`Cannot read ${path}: ${reason}`);
+    throw markErrorPaths(
+      new UserError(`Cannot read ${path}: ${reason}`),
+      [path],
+    );
   }
 }

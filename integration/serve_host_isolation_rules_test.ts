@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals } from "@std/assert";
+import { assert } from "@std/assert";
 import { join } from "@std/path";
 import {
   assertPinnedSet,
@@ -76,9 +76,10 @@ Deno.test("serve host isolation: the rule sees every registry and catches a modu
   const entries = await hostEntries();
   assert(entries.includes("src/serve/host/supervisor.ts"));
   assert(entries.includes("src/serve/host/serve_host.ts"));
-  assertEquals(
-    (await registryReaches("src/cli/commands/serve.ts")).length > 0,
-    true,
-    "serve.ts imports the registries, so the check must report it",
+  assert(
+    (await registryReaches("src/cli/commands/serve.ts")).includes(
+      "src/cli/commands/serve.ts -> src/domain/vaults/vault_type_registry.ts",
+    ),
+    "serve.ts imports the vault type registry, so the check must report it",
   );
 });

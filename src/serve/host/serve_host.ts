@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { join } from "@std/path";
-import { UserError } from "../../domain/errors.ts";
+import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import {
   ROOT_SERVE,
   type ServeId,
@@ -36,6 +36,7 @@ import {
 } from "./supervisor.ts";
 import {
   DEFAULT_RESCAN_MS,
+  REPO_MARKER_FILE,
   scanWorkspaces,
   SkipLog,
   watchWorkspaces,
@@ -80,6 +81,7 @@ export async function startServeHost(
   const rescanMs = options.rescanMs ?? DEFAULT_RESCAN_MS;
 
   const tls = await readTls(config);
+  if (config.root !== null) await requireRootRepo(config.root);
   await Deno.mkdir(config.workspacesDir, { recursive: true });
   const skipLog = new SkipLog();
   const scan = await scanWorkspaces(config.workspacesDir);
@@ -239,11 +241,29 @@ async function readTls(
   return { cert, key };
 }
 
+// a mistyped root would otherwise crash-loop until it is held as failed
+async function requireRootRepo(root: string): Promise<void> {
+  try {
+    if ((await Deno.stat(join(root, REPO_MARKER_FILE))).isFile) return;
+  } catch {
+    // reported below
+  }
+  throw markErrorPaths(
+    new UserError(
+      `The root ${root} named in host.yaml is not a swamp repo: it has no ${REPO_MARKER_FILE}.`,
+    ),
+    [root],
+  );
+}
+
 async function readListenFile(field: string, path: string): Promise<string> {
   try {
     return await Deno.readTextFile(path);
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    throw new UserError(`Cannot read ${field} ${path}: ${reason}`);
+    throw markErrorPaths(
+      new UserError(`Cannot read ${field} ${path}: ${reason}`),
+      [path],
+    );
   }
 }
