@@ -130,6 +130,24 @@ Deno.test("HostConfig.parse: refuses a root inside workspaces/", () => {
   );
 });
 
+Deno.test("HostConfig.parse: refuses a root that contains workspaces/", () => {
+  for (const root of [".", "./", "..", "../..", resolve(HOST_DIR, "..")]) {
+    assertStringIncludes(
+      refusal(`address: http://a\nroot: ${root}\n`),
+      "contains workspaces/",
+      root,
+    );
+  }
+  assertEquals(
+    parse("address: http://a\nroot: root-repo\n").root !== null,
+    true,
+  );
+  assertEquals(
+    parse("address: http://a\nroot: ../sibling-repo\n").root !== null,
+    true,
+  );
+});
+
 Deno.test("HostConfig.parse: allow-unauthenticated-behind-proxy needs a loopback host behind a proxy", () => {
   for (
     const address of [

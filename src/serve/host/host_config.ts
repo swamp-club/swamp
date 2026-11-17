@@ -117,6 +117,14 @@ export class HostConfig {
           [yaml.root],
         );
       }
+      if (isWithin(root, join(dir, WORKSPACES_DIR))) {
+        throw markErrorPaths(
+          invalid(
+            `root ${yaml.root} contains ${WORKSPACES_DIR}/, so its repo would hold every workspace's repo; name a folder beside ${WORKSPACES_DIR}/`,
+          ),
+          [yaml.root],
+        );
+      }
     }
 
     const trustProxy = yaml["trust-proxy"] ?? false;

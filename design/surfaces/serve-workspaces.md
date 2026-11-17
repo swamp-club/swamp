@@ -286,7 +286,7 @@ the field that is wrong:
 | `listen.host`                        | `127.0.0.1`                   | Off loopback needs TLS, as for serve                                                     |
 | `listen.port`                        | `443` with TLS, `8080` without |                                                                                          |
 | `listen.cert-file`, `listen.key-file` | none                          | Given together; relative to the host folder                                              |
-| `root`                               | none                          | The root workspace's repo; relative to the host folder, never inside `workspaces/`; a folder without `.swamp.yaml` is refused at startup |
+| `root`                               | none                          | The root workspace's repo; relative to the host folder, never inside `workspaces/` nor containing it; a folder without `.swamp.yaml` is refused at startup |
 | `trust-proxy`                        | `false`                       | The host is behind a proxy, whose forwarding headers it passes on                        |
 | `allow-unauthenticated-behind-proxy` | `false`                       | Admits a child in auth mode `none` behind a proxy; only on a loopback listener with `trust-proxy` or a public `address` |
 
