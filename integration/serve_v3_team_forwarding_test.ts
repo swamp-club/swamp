@@ -442,3 +442,58 @@ Deno.test({
     });
   },
 });
+
+async function chunkUpload(
+  server: Server,
+  baseUrl: string,
+  content: Uint8Array<ArrayBuffer>,
+): Promise<Response> {
+  const sha = await sha256Hex(content);
+  const partition = partitionOf({
+    kind: "model",
+    type: server.modelType,
+    id: server.model.id,
+  }).toString();
+  return await fetch(
+    `${baseUrl}/chunks/${sha}?partition=${encodeURIComponent(partition)}`,
+    {
+      method: "PUT",
+      headers: { authorization: "Bearer alice-token" },
+      body: content,
+    },
+  );
+}
+
+async function storedAtLeader(server: Server, sha: string): Promise<boolean> {
+  const held = await server.v3.storage.has(
+    "_default",
+    [sha],
+    new AbortController().signal,
+  );
+  return held.has(sha);
+}
+
+Deno.test({
+  name:
+    "team forwarding: a chunk uploaded to the follower is stored by the leader, sent on with its length",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(writer(), async (server) => {
+      const leader = leaderAt(server);
+      await withFollower(server, () => leader, async (followerUrl) => {
+        const content = new TextEncoder().encode(
+          `chunk ${crypto.randomUUID()}`,
+        );
+        const sha = await sha256Hex(content);
+        // LeaderLink drops content-length, so the leader's 411 stays away only
+        // while fetch carries the length of the body serve received
+        const upload = await chunkUpload(server, followerUrl, content);
+        const body = await upload.json();
+        assertEquals(upload.status, 201, JSON.stringify(body));
+        assertEquals(body, { sha256: sha, size: content.byteLength });
+        assert(await storedAtLeader(server, sha));
+      });
+    });
+  },
+});
