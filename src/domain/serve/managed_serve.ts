@@ -125,6 +125,8 @@ interface ManagedServeState {
   readonly wanted: WantedServeState;
   readonly observed: ObservedServeState;
   readonly crashTimes: readonly number[];
+  /** exit 75 before ready, in a row since the child was last ready */
+  readonly refusals: number;
   readonly backoffMs: number;
   readonly retryAt: number | undefined;
   readonly stopRequested: boolean;
@@ -148,6 +150,7 @@ export class ManagedServe {
       wanted: "running",
       observed: "stopped",
       crashTimes: [],
+      refusals: 0,
       backoffMs: 0,
       retryAt: undefined,
       stopRequested: false,
@@ -230,13 +233,14 @@ export class ManagedServe {
     return this.#with({
       wanted: "running",
       crashTimes: [],
+      refusals: 0,
       backoffMs: 0,
     }).#spawn();
   }
 
   #onReady(): ManagedServeStep {
     if (this.observed !== "starting") return this.#wait();
-    return this.#with({ observed: "ready" }).#wait();
+    return this.#with({ observed: "ready", refusals: 0 }).#wait();
   }
 
   #onExited(code: number | null, now: number): ManagedServeStep {
@@ -250,11 +254,22 @@ export class ManagedServe {
       return stopped.wanted === "running" ? stopped.#spawn() : stopped.#wait();
     }
     const { policy } = this;
-    if (code === SAFE_RESTART_EXIT_CODE) {
+    if (code === SAFE_RESTART_EXIT_CODE && this.observed === "ready") {
       return this.#with({
         observed: "backoff",
         backoffMs: policy.restartDelayMs,
         retryAt: now + policy.restartDelayMs,
+      }).#wait();
+    }
+    // before ready, 75 is a temporary refusal: back off, but never give up
+    if (code === SAFE_RESTART_EXIT_CODE) {
+      const refusals = this.#state.refusals + 1;
+      const backoffMs = this.#backoff(refusals);
+      return this.#with({
+        observed: "backoff",
+        refusals,
+        backoffMs,
+        retryAt: now + backoffMs,
       }).#wait();
     }
     // a crash dated after now is kept, so a clock stepping back cannot let
@@ -270,10 +285,7 @@ export class ManagedServe {
         retryAt: undefined,
       }).#wait();
     }
-    const backoffMs = Math.min(
-      policy.initialBackoffMs * 2 ** (crashTimes.length - 1),
-      policy.maxBackoffMs,
-    );
+    const backoffMs = this.#backoff(crashTimes.length);
     return this.#with({
       observed: "backoff",
       crashTimes,
@@ -292,6 +304,11 @@ export class ManagedServe {
       return this.#spawn();
     }
     return this.#wait();
+  }
+
+  #backoff(attempt: number): number {
+    const { initialBackoffMs, maxBackoffMs } = this.policy;
+    return Math.min(initialBackoffMs * 2 ** (attempt - 1), maxBackoffMs);
   }
 
   #spawn(): ManagedServeStep {

@@ -1,0 +1,149 @@
+// Swamp, an Automation Framework
+// Copyright (C) 2026 Elder Swamp Club, Inc.
+//
+// This file is part of Swamp.
+//
+// Swamp is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License version 3
+// as published by the Free Software Foundation, with the Swamp
+// Extension and Definition Exception (found in the "COPYING-EXCEPTION"
+// file).
+//
+// Swamp is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
+
+import { assertEquals } from "@std/assert";
+import { withMockedFetch } from "@swamp-club/swamp-testing";
+import { workspaceServe } from "../../domain/serve/managed_serve.ts";
+import {
+  exitCode,
+  linesOf,
+  pollReady,
+  readListeningPort,
+  StderrTail,
+} from "./deno_serve_process.ts";
+import { serveChildArgs } from "./serve_process.ts";
+
+function bytes(...chunks: string[]): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  return ReadableStream.from(chunks.map((c) => encoder.encode(c)));
+}
+
+Deno.test("readListeningPort: returns the port from the listening line and leaves the rest unread", async () => {
+  const lines = linesOf(bytes(
+    "not json\n",
+    '{"status":"starting"}\n',
+    '{"status":"listening","host":"127.0.0.1","port":41001}\n',
+    "after\n",
+  ));
+  assertEquals(await readListeningPort(lines), 41_001);
+  assertEquals((await lines.read()).value, "after");
+});
+
+Deno.test("readListeningPort: reads a line split across chunks", async () => {
+  const lines = linesOf(bytes('{"status":"list', 'ening","po', 'rt":7}\n'));
+  assertEquals(await readListeningPort(lines), 7);
+});
+
+Deno.test("readListeningPort: ignores a port that is not a valid TCP port", async () => {
+  const lines = linesOf(bytes(
+    '{"status":"listening","port":"41001"}\n',
+    '{"status":"listening","port":0}\n',
+    '{"status":"listening","port":70000}\n',
+    '{"status":"listening","port":1.5}\n',
+    "null\n",
+  ));
+  assertEquals(await readListeningPort(lines), null);
+});
+
+Deno.test("linesOf: cuts a long line, drops its rest and reads on", async () => {
+  const lines = linesOf(bytes("abcdef", "ghij\r\nnext\r\n", "last"), 4);
+  const read: string[] = [];
+  for (let r = await lines.read(); !r.done; r = await lines.read()) {
+    read.push(r.value);
+  }
+  assertEquals(read, ["abcd", "next", "last"]);
+});
+
+Deno.test("readListeningPort: null when the stream ends before listening", async () => {
+  assertEquals(await readListeningPort(linesOf(bytes("booting\n"))), null);
+});
+
+Deno.test("pollReady: retries until /ready answers 200", async () => {
+  let attempt = 0;
+  const { result, calls } = await withMockedFetch(() => {
+    attempt++;
+    if (attempt === 1) throw new TypeError("connection refused");
+    if (attempt === 2) return new Response("not ready", { status: 503 });
+    return new Response("ok", { status: 200 });
+  }, () => pollReady(41_001, new AbortController().signal, 1));
+  assertEquals(result, true);
+  assertEquals(calls.map((c) => c.url), [
+    "http://127.0.0.1:41001/ready",
+    "http://127.0.0.1:41001/ready",
+    "http://127.0.0.1:41001/ready",
+  ]);
+});
+
+Deno.test("pollReady: false when aborted before /ready answers 200", async () => {
+  const controller = new AbortController();
+  const { result, calls } = await withMockedFetch(() => {
+    controller.abort();
+    return new Response("not ready", { status: 503 });
+  }, () => pollReady(41_001, controller.signal, 60_000));
+  assertEquals(result, false);
+  assertEquals(calls.length, 1);
+});
+
+Deno.test("pollReady: false at once for an aborted signal", async () => {
+  const { result, calls } = await withMockedFetch(
+    [],
+    () => pollReady(41_001, AbortSignal.abort(), 1),
+  );
+  assertEquals(result, false);
+  assertEquals(calls.length, 0);
+});
+
+Deno.test("StderrTail: keeps only the last lines", () => {
+  const tail = new StderrTail(2);
+  for (const line of ["a", "b", "c"]) tail.push(line);
+  assertEquals(tail.lines(), ["b", "c"]);
+});
+
+Deno.test("exitCode: a signal death has no exit code", () => {
+  assertEquals(exitCode({ code: 143, signal: "SIGTERM" }), null);
+  assertEquals(exitCode({ code: 75, signal: null }), 75);
+});
+
+Deno.test("serveChildArgs: the flags the host adds to every child", () => {
+  assertEquals(
+    serveChildArgs({
+      id: workspaceServe("edge-dns"),
+      repoDir: "/host/workspaces/edge-dns",
+      address: "https://serve.example/w/edge-dns",
+      trustedHost: "serve.example",
+      env: {},
+    }),
+    [
+      "serve",
+      "--json",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "0",
+      "--address",
+      "https://serve.example/w/edge-dns",
+      "--trusted-hosts",
+      "serve.example",
+      "--trust-proxy",
+      "--exit-on-stdin-close",
+      "--repo-dir",
+      "/host/workspaces/edge-dns",
+    ],
+  );
+});

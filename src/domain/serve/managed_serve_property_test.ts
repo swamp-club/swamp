@@ -122,7 +122,11 @@ function checkBounds(
     assert(next.backoffMs <= policy.maxBackoffMs, "backoff passed its cap");
     assert(next.crashCount <= policy.maxCrashesInWindow);
     if (event.kind === "exited" && event.code === 75) {
-      assert(next.crashCount <= serve.crashCount, "exit 75 raised crashCount");
+      assert(
+        next.crashCount <= serve.crashCount,
+        "exit 75 raised crashCount",
+      );
+      assert(next.observed !== "failed" || serve.observed === "failed");
     }
     if (serve.observed === "failed" && next.observed !== "failed") {
       assertEquals(event.kind, "resume", "left failed without a resume");
