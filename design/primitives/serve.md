@@ -2307,7 +2307,11 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   heartbeat, worker gateway, pollers and telemetry and remove the PID file. In `--json` mode each phase is emitted as a
   `{ status: "stopping" | "aborting" | "interrupted" | "stopped" }` line, and a
   stage cut off at the shutdown deadline as
-  `{ status: "shutdown_stage_timed_out", stage, waitedMs }`.
+  `{ status: "shutdown_stage_timed_out", stage, waitedMs }`. Serve writes
+  every `--json` line to stdout through `unguardedConsole`
+  (`src/cli/commands/serve_json_line.ts`), so a method running in the process,
+  whose console guard sends captured lines to stderr, never moves one off
+  stdout.
 - **Telemetry flush.** The CLI flushes telemetry at process exit, which a daemon
   never reaches. `DaemonTelemetryFlushService` flushes every 60 s, at most 20
   batches per tick. It isolates a batch after 5 consecutive failures and

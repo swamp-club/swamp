@@ -828,6 +828,7 @@ import {
 } from "./serve_check_config.ts";
 import { reloadCommand } from "./serve_reload.ts";
 import { daemonCommand } from "./serve_daemon.ts";
+import { writeServeJsonLine } from "./serve_json_line.ts";
 export { checkOAuthClientSecret } from "./serve_check_config.ts";
 export {
   assertOffLoopbackSecurity,
@@ -5662,7 +5663,7 @@ export const serveCommand = new Command()
       // Audit before the output branch so --json mode audits too.
       auditScheduledEvent(connectionCtx, event);
       if (isJson) {
-        console.log(JSON.stringify(event));
+        writeServeJsonLine(JSON.stringify(event));
       } else {
         switch (event.kind) {
           case "schedule_registered":
@@ -6258,7 +6259,7 @@ export const serveCommand = new Command()
       // Audit before the output branch so --json mode audits too.
       auditWebhookEvent(connectionCtx, event, webhookRejections);
       if (isJson) {
-        console.log(JSON.stringify(event));
+        writeServeJsonLine(JSON.stringify(event));
       } else {
         switch (event.kind) {
           case "webhook_received":
@@ -6304,7 +6305,7 @@ export const serveCommand = new Command()
 
     for (const ep of webhookService.listEndpoints()) {
       if (isJson) {
-        console.log(JSON.stringify({
+        writeServeJsonLine(JSON.stringify({
           kind: "webhook_registered",
           route: ep.route,
           workflow: ep.workflowIdOrName,
@@ -6326,7 +6327,7 @@ export const serveCommand = new Command()
     }
     if (initialWebhookRoutes.directoryError !== undefined) {
       if (isJson) {
-        console.log(JSON.stringify({
+        writeServeJsonLine(JSON.stringify({
           kind: "webhook_routes_dir_refused",
           message: initialWebhookRoutes.directoryError,
         }));
@@ -6338,7 +6339,7 @@ export const serveCommand = new Command()
     }
     for (const refused of initialWebhookRoutes.refused) {
       if (isJson) {
-        console.log(JSON.stringify({
+        writeServeJsonLine(JSON.stringify({
           kind: "webhook_route_file_refused",
           file: refused.file,
           ...(refused.route !== undefined ? { route: refused.route } : {}),
@@ -6350,7 +6351,7 @@ export const serveCommand = new Command()
     }
     for (const shadow of initialWebhookRoutes.shadowed) {
       if (isJson) {
-        console.log(JSON.stringify({
+        writeServeJsonLine(JSON.stringify({
           kind: "webhook_route_shadowed",
           file: shadow.file,
           route: shadow.route,
@@ -6404,7 +6405,7 @@ export const serveCommand = new Command()
     ): void => {
       poller.start();
       if (isJson) {
-        console.log(JSON.stringify({
+        writeServeJsonLine(JSON.stringify({
           kind: "webhook_routes_poll_started",
           directory: webhookRoutesDir,
           intervalMs,
@@ -7205,7 +7206,7 @@ export const serveCommand = new Command()
       key,
       onListen({ hostname, port: listenPort }) {
         if (isJson) {
-          console.log(formatListeningLine({
+          writeServeJsonLine(formatListeningLine({
             host: hostname,
             port: listenPort,
             url: `${wsScheme}://${hostname}:${listenPort}`,
@@ -8488,7 +8489,7 @@ export const serveCommand = new Command()
       runIndexWarmup.stop();
       eventLoopLag.stop();
       if (isJson) {
-        console.log(JSON.stringify({ status: "stopping" }));
+        writeServeJsonLine(JSON.stringify({ status: "stopping" }));
       }
       if (shutdownDrainTimeoutMs > 0) {
         logger.info`Shutting down, draining in-flight runs for up to ${
@@ -8508,7 +8509,7 @@ export const serveCommand = new Command()
       const stages = new ShutdownStages(shutdownDeadline, {
         onTimedOut: (stage, waitedMs) => {
           if (isJson) {
-            console.log(JSON.stringify({
+            writeServeJsonLine(JSON.stringify({
               status: "shutdown_stage_timed_out",
               stage,
               waitedMs,
@@ -8532,7 +8533,9 @@ export const serveCommand = new Command()
           ),
         onAborting: (undrained) => {
           if (isJson) {
-            console.log(JSON.stringify({ status: "aborting", undrained }));
+            writeServeJsonLine(
+              JSON.stringify({ status: "aborting", undrained }),
+            );
           }
         },
       });
@@ -8567,13 +8570,17 @@ export const serveCommand = new Command()
           pushTimeoutMs: shutdownDeadline.remaining(SHUTDOWN_PUSH_TIMEOUT_MS),
           onInterrupted: (runId) => {
             if (isJson) {
-              console.log(JSON.stringify({ status: "interrupted", runId }));
+              writeServeJsonLine(
+                JSON.stringify({ status: "interrupted", runId }),
+              );
             }
             logger.info`Interrupted workflow run ${runId} (server shutdown)`;
           },
           onCancelled: (runId) => {
             if (isJson) {
-              console.log(JSON.stringify({ status: "cancelled", runId }));
+              writeServeJsonLine(
+                JSON.stringify({ status: "cancelled", runId }),
+              );
             }
             logger
               .info`Saved cancelled workflow run ${runId}: shutdown cut off its cleanup`;
@@ -8582,7 +8589,7 @@ export const serveCommand = new Command()
         unpushedRunIds = interruptResult.unpushed ?? [];
       }, "awaited");
       if (isJson && unpushedRunIds.length > 0) {
-        console.log(JSON.stringify({
+        writeServeJsonLine(JSON.stringify({
           status: "interrupt_push_failed",
           runIds: unpushedRunIds,
         }));
@@ -8787,7 +8794,7 @@ export const serveCommand = new Command()
       ac.abort();
       if (pidPath) await removePidFileIfOurs(pidPath, Deno.pid);
       if (isJson) {
-        console.log(JSON.stringify({ status: "stopped" }));
+        writeServeJsonLine(JSON.stringify({ status: "stopped" }));
       }
     };
     // every trigger shares one run, which the action waits for before closing
