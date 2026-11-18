@@ -17,9 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertStringIncludes } from "@std/assert";
+import { assert, assertStringIncludes } from "@std/assert";
 import { assertFalse } from "@std/assert/false";
 import { buildWorkerService } from "./systemd_worker_scheduler.ts";
+import { systemdUnitHasWorkerCacheDir } from "./daemon_restart_commands.ts";
 import type { WorkerDaemonConfig } from "../../domain/worker/worker_daemon_config.ts";
 
 const baseConfig: WorkerDaemonConfig = {
@@ -173,4 +174,25 @@ Deno.test("buildWorkerService: writes newlines in an env value as escapes on one
     'Environment="SWAMP_SERVE_EXTRA_HEADERS=Tunnel-Token: abc\\nX-Env: prod\\r\\nX-Last: 1"\n',
   );
   assertFalse(unit.split("\n").some((line) => line.startsWith("X-Env")));
+});
+
+Deno.test("systemdUnitHasWorkerCacheDir: true for a unit enable writes with a cache dir", () => {
+  const unit = buildWorkerService({
+    ...baseConfig,
+    cacheDir: "/var/lib/swamp-worker",
+    env: { SWAMP_WORKER_CACHE_DIR: "/var/lib/swamp-worker" },
+  });
+  assert(systemdUnitHasWorkerCacheDir(unit));
+});
+
+Deno.test("systemdUnitHasWorkerCacheDir: false for a pre-release unit, even when a value mentions the name", () => {
+  assertFalse(systemdUnitHasWorkerCacheDir(buildWorkerService(baseConfig)));
+  const unit = buildWorkerService({
+    ...baseConfig,
+    env: {
+      SWAMP_ORCHESTRATOR_URL: "ws://127.0.0.1:9191",
+      SWAMP_WORKER_LABELS: "note=SWAMP_WORKER_CACHE_DIR=/x",
+    },
+  });
+  assertFalse(systemdUnitHasWorkerCacheDir(unit));
 });

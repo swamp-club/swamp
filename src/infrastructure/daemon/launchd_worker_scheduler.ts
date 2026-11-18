@@ -28,7 +28,11 @@ import type { LaunchdMode } from "../update/launchd_scheduler.ts";
 import { escapeXml } from "../update/launchd_scheduler.ts";
 import { atomicWriteTextFile } from "../persistence/atomic_write.ts";
 import { homeDirectory } from "../persistence/paths.ts";
-import { launchdKickstartArgs } from "./daemon_restart_commands.ts";
+import {
+  launchdKickstartArgs,
+  plistHasWorkerCacheDir,
+  WORKER_DAEMON_NEEDS_REENABLE,
+} from "./daemon_restart_commands.ts";
 
 const LABEL = "club.swamp.worker";
 
@@ -223,6 +227,13 @@ export class LaunchdWorkerScheduler implements WorkerDaemonScheduler {
     if (!status.enabled) return "not_installed";
     // A loaded job with no pid exited on purpose; kickstart would start it.
     if (status.pid === undefined) return "not_running";
+    if (
+      !plistHasWorkerCacheDir(
+        await Deno.readTextFile(plistPathForMode(this.mode)),
+      )
+    ) {
+      throw new Error(WORKER_DAEMON_NEEDS_REENABLE);
+    }
 
     const domain = await this.launchctlDomain();
     const cmd = new Deno.Command("launchctl", {

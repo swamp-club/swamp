@@ -21,3 +21,15 @@
 export function launchdKickstartArgs(domain: string, label: string): string[] {
   return ["kickstart", "-k", `${domain}/${label}`];
 }
+
+// Every unit and plist enable writes sets it; its absence means an older install.
+export function systemdUnitHasWorkerCacheDir(unit: string): boolean {
+  return /^Environment="SWAMP_WORKER_CACHE_DIR=/m.test(unit);
+}
+
+export function plistHasWorkerCacheDir(plist: string): boolean {
+  return /<key>SWAMP_WORKER_CACHE_DIR<\/key>/.test(plist);
+}
+
+export const WORKER_DAEMON_NEEDS_REENABLE =
+  "enabled without a stable cache dir, so a restart would come back as a new machine that its token refuses; left running. Re-run `swamp worker daemon enable` with a new worker token to restart it on updates";

@@ -31,6 +31,10 @@ import {
   systemdUnitDir,
 } from "../update/systemd_scheduler.ts";
 import { atomicWriteTextFile } from "../persistence/atomic_write.ts";
+import {
+  systemdUnitHasWorkerCacheDir,
+  WORKER_DAEMON_NEEDS_REENABLE,
+} from "./daemon_restart_commands.ts";
 
 const UNIT_NAME = "swamp-worker";
 
@@ -227,6 +231,13 @@ export class SystemdWorkerScheduler implements WorkerDaemonScheduler {
       `${UNIT_NAME}.service`,
     );
     if (isActive.stdout !== "active") return "not_running";
+    if (
+      !systemdUnitHasWorkerCacheDir(
+        await Deno.readTextFile(servicePath(this.mode)),
+      )
+    ) {
+      throw new Error(WORKER_DAEMON_NEEDS_REENABLE);
+    }
 
     // --no-block: the updater does not wait out the unit's drain on stop.
     const result = await systemctl(
