@@ -672,7 +672,7 @@ Deno.test("renderWorkerTokenRotate: log mode reports each worker and shows the t
   assertStringIncludes(output, "shown once");
 });
 
-Deno.test("renderWorkerTokenRotate: a local rotation says no worker was sent the token", () => {
+Deno.test("renderWorkerTokenRotate: a local rotation says a running orchestrator sends the token", () => {
   const output = stripAnsiCode(
     captureLogs(() =>
       renderWorkerTokenRotate({
@@ -688,7 +688,11 @@ Deno.test("renderWorkerTokenRotate: a local rotation says no worker was sent the
   assertStringIncludes(output, "No connected worker was sent the new token");
   assertStringIncludes(
     output,
-    "Workers keep the old token until 2026-06-10T00:00:00.000Z",
+    "A running orchestrator sends it to them at its next token check",
+  );
+  assertStringIncludes(
+    output,
+    "With no orchestrator running, workers keep the old token until 2026-06-10T00:00:00.000Z",
   );
   assertEquals(output.includes("run with --server"), false);
   assertEquals(output.includes("not connected"), false);

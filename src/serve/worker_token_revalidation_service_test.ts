@@ -65,6 +65,7 @@ function tokens(
 function createService(options: {
   bound: { tokenName: string; tokenCreatedAt: string }[];
   readTokens: WorkerTokenRevalidationDeps["readTokens"];
+  deliverRotation?: WorkerTokenRevalidationDeps["deliverRotation"];
 }): { service: WorkerTokenRevalidationService; calls: RevokeCall[] } {
   const calls: RevokeCall[] = [];
   const service = new WorkerTokenRevalidationService({
@@ -75,6 +76,9 @@ function createService(options: {
       calls.push({ name, cause, mint });
       return Promise.resolve([`${name}@${mint}`]);
     },
+    ...(options.deliverRotation
+      ? { deliverRotation: options.deliverRotation }
+      : {}),
   });
   return { service, calls };
 }
@@ -248,4 +252,106 @@ Deno.test("WorkerTokenRevalidationService: a tick runs with no active span when 
     assert(seen.length >= 2);
     for (const span of seen) assertEquals(span, undefined);
   });
+});
+
+const OLDEST_MINT = "2025-12-01T00:00:00.000Z";
+const ROTATED_MINT = "2026-01-01T00:05:00.000Z";
+
+function rotatedRecord(
+  overrides: Partial<EnrollmentToken> = {},
+): EnrollmentToken {
+  return tokenRecord({
+    createdAt: ROTATED_MINT,
+    secretKey: "worker-rotated-token-ci-runner-3-1767225900000",
+    predecessor: {
+      createdAt: MINT,
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      secretKey: "worker-token-ci-runner-3",
+    },
+    ...overrides,
+  });
+}
+
+Deno.test("WorkerTokenRevalidationService: delivers a rotation before judging, then judges the re-stamped mints", async () => {
+  const bound = [
+    { tokenName: "ci-runner-3", tokenCreatedAt: MINT },
+    { tokenName: "ci-runner-3", tokenCreatedAt: OLDEST_MINT },
+  ];
+  const record = rotatedRecord();
+  const events: string[] = [];
+  const delivered: [string, EnrollmentToken][] = [];
+  const { service, calls } = createService({
+    bound,
+    readTokens: () => Promise.resolve(tokens(record)),
+    deliverRotation: (name, token) => {
+      events.push("deliver");
+      delivered.push([name, token]);
+      bound[0] = { tokenName: name, tokenCreatedAt: ROTATED_MINT };
+      return Promise.resolve();
+    },
+  });
+
+  assertEquals(await service.runOnce(), [`ci-runner-3@${OLDEST_MINT}`]);
+  assertEquals(delivered, [["ci-runner-3", record]]);
+  assertEquals(events, ["deliver"]);
+  assertEquals(calls, [{
+    name: "ci-runner-3",
+    cause: "retired",
+    mint: OLDEST_MINT,
+  }]);
+});
+
+Deno.test("WorkerTokenRevalidationService: delivers nothing unless a bound mint is a live predecessor", async () => {
+  const cases: [string, string, EnrollmentToken][] = [
+    ["no worker on the predecessor", ROTATED_MINT, rotatedRecord()],
+    ["no rotation", MINT, tokenRecord({})],
+    ["a revoked token", MINT, rotatedRecord({ state: "revoked" })],
+    [
+      "a lapsed predecessor",
+      MINT,
+      rotatedRecord({
+        predecessor: {
+          createdAt: MINT,
+          expiresAt: "2026-01-02T00:00:00.000Z",
+          secretKey: "worker-token-ci-runner-3",
+        },
+      }),
+    ],
+    [
+      "an expired successor",
+      MINT,
+      rotatedRecord({ expiresAt: "2026-01-02T00:00:00.000Z" }),
+    ],
+  ];
+  for (const [label, mint, record] of cases) {
+    let deliveries = 0;
+    const { service } = createService({
+      bound: [{ tokenName: "ci-runner-3", tokenCreatedAt: mint }],
+      readTokens: () => Promise.resolve(tokens(record)),
+      deliverRotation: () => {
+        deliveries++;
+        return Promise.resolve();
+      },
+    });
+    await service.runOnce();
+    assertEquals(deliveries, 0, label);
+  }
+});
+
+Deno.test("WorkerTokenRevalidationService: a delivery that throws still lets the pass cut off retired workers", async () => {
+  const { service, calls } = createService({
+    bound: [
+      { tokenName: "ci-runner-3", tokenCreatedAt: MINT },
+      { tokenName: "ci-runner-3", tokenCreatedAt: OLDEST_MINT },
+    ],
+    readTokens: () => Promise.resolve(tokens(rotatedRecord())),
+    deliverRotation: () => Promise.reject(new Error("vault offline")),
+  });
+
+  assertEquals(await service.runOnce(), [`ci-runner-3@${OLDEST_MINT}`]);
+  assertEquals(calls, [{
+    name: "ci-runner-3",
+    cause: "retired",
+    mint: OLDEST_MINT,
+  }]);
 });

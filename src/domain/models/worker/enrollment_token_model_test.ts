@@ -25,6 +25,7 @@ import {
 } from "@std/assert";
 import {
   type Binding,
+  deliverablePredecessor,
   ENROLLMENT_TOKEN_MODEL_TYPE,
   enrollmentMintFor,
   type EnrollmentToken,
@@ -1092,4 +1093,41 @@ Deno.test("rotatedTokenSecretKey: carries no dot and never collides with a token
   assertEquals(key, "worker-rotated-token-web-01-1767225600000");
   assertEquals(key.includes("."), false);
   assertEquals(key.startsWith(tokenSecretKey("")), false);
+});
+
+Deno.test("deliverablePredecessor: only a live rotation of a live token has a mint to deliver to", () => {
+  const now = Date.parse("2026-01-01T00:30:00.000Z");
+  const predecessor = {
+    createdAt: "2025-12-31T23:00:00.000Z",
+    expiresAt: "2026-01-01T00:45:00.000Z",
+    secretKey: tokenSecretKey("ci-runner-3"),
+  };
+  assertEquals(
+    deliverablePredecessor(tokenRecord({ predecessor }), now),
+    predecessor,
+  );
+  assertEquals(deliverablePredecessor(tokenRecord({}), now), undefined);
+  assertEquals(
+    deliverablePredecessor(
+      tokenRecord({
+        predecessor: { ...predecessor, expiresAt: "2026-01-01T00:15:00.000Z" },
+      }),
+      now,
+    ),
+    undefined,
+  );
+  for (const state of ["revoked", "expired"] as const) {
+    assertEquals(
+      deliverablePredecessor(tokenRecord({ predecessor, state }), now),
+      undefined,
+      state,
+    );
+  }
+  assertEquals(
+    deliverablePredecessor(
+      tokenRecord({ predecessor, expiresAt: "2026-01-01T00:20:00.000Z" }),
+      now,
+    ),
+    undefined,
+  );
 });

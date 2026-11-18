@@ -20,12 +20,14 @@
 /**
  * cuts off workers whose token lost its authority wherever that happened (CLI
  * without --server, HA peer, here); the serve revoke handler is immediate, this
- * covers revokes that never reach this gateway
+ * covers revokes that never reach this gateway, and delivers rotations that
+ * never did before judging them
  */
 
 import { runDetached } from "../infrastructure/tracing/mod.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import {
+  deliverablePredecessor,
   type EnrollmentBindingCutoffCause,
   type EnrollmentToken,
   enrollmentTokenBindingVerdict,
@@ -59,6 +61,11 @@ export interface WorkerTokenRevalidationDeps {
     cause: EnrollmentBindingCutoffCause,
     options: { mint: string },
   ): Promise<string[]>;
+  /**
+   * hands the current secret to workers still on the token's predecessor
+   * mint, after a rotation made outside the gateway
+   */
+  deliverRotation?(name: string, token: EnrollmentToken): Promise<void>;
 }
 
 export class WorkerTokenRevalidationService {
@@ -149,9 +156,12 @@ export class WorkerTokenRevalidationService {
     }
 
     const removed: string[] = [];
-    for (const [name, mints] of mintsByName) {
+    for (const [name, boundMints] of mintsByName) {
       if (this.#disposed) break;
       const token = tokens.get(name) ?? null;
+      const mints = token === null
+        ? boundMints
+        : await this.#deliverBeforeVerdict(name, token, boundMints);
       if (token === null) {
         const missing = (this.#missingPasses.get(name) ?? 0) + 1;
         this.#missingPasses.set(name, missing);
@@ -176,5 +186,34 @@ export class WorkerTokenRevalidationService {
       if (token === null) this.#missingPasses.delete(name);
     }
     return removed;
+  }
+
+  /** a worker that took the successor is judged on it, not on the mint it held */
+  async #deliverBeforeVerdict(
+    name: string,
+    token: EnrollmentToken,
+    mints: string[],
+  ): Promise<string[]> {
+    const deliver = this.#deps.deliverRotation;
+    const predecessor = deliverablePredecessor(token);
+    if (
+      deliver === undefined || predecessor === undefined ||
+      !mints.some((mint) =>
+        Date.parse(mint) === Date.parse(predecessor.createdAt)
+      )
+    ) {
+      return mints;
+    }
+    try {
+      await deliver(name, token);
+    } catch (err) {
+      logger.warn(
+        "Could not deliver the rotated enrollment token {name}: {error}",
+        { name, error: err instanceof Error ? err.message : String(err) },
+      );
+    }
+    return this.#deps.listBoundTokens()
+      .filter((bound) => bound.tokenName === name)
+      .map((bound) => bound.tokenCreatedAt);
   }
 }

@@ -669,6 +669,8 @@ cut off in three ways:
   This covers revokes from the CLI without
   `--server` and on HA peers, whose record arrives through the runtime data
   poller, so a peer cuts workers off within the poll interval plus 30 s.
+  Before the verdicts, the pass delivers a rotation made outside the gateway
+  to the workers on its predecessor (see "Rotating a token").
 - **On expiry.** The per-worker expiry timer, armed from `expiresAt` at
   enrollment, records `expired` and removes the worker the same way. The
   timer names the mint it was armed for, so a timer on a rotation's
@@ -724,8 +726,24 @@ the predecessor until it lapses; the command reports them and prints the new
 credential once for them. A worker still on a mint older than the predecessor
 held a secret this rotation retired: the command says it will be disconnected,
 and counts unconnected machines in the same position apart from those that can
-still enroll on the predecessor. A rotation without `--server` reaches no
-worker. If the rotation's reply is lost, rotating again would retire the
+still enroll on the predecessor.
+
+A rotation made outside this gateway (a workflow step or schedule running the
+`rotate` method in serve, the CLI without `--server`, an HA peer) is delivered
+by `WorkerTokenRevalidationService` at its next pass, before it applies any
+verdict: when the record has a live predecessor and a bound mint equals it, the
+pass calls `WorkerGateway.deliverCurrentMint`, which reads the record on the
+tail and runs the same delivery and re-stamp phases for exactly the members on
+the predecessor mint, then the verdicts judge the re-stamped mints. Only the
+predecessor qualifies (`deliverablePredecessor`): it comes from rotating a
+live, unrevoked mint, while an older mint may be one a revoke and re-mint
+replaced, so a worker on it is cut off rather than handed the new secret. Two
+out-of-band rotations inside one pass therefore retire the workers on the
+original mint. The gateway skips a member while a delivery to it is in flight,
+remembers a refusal of a mint (no capability, an RPC refusal) so later passes
+spend no transition on it, and retries a timeout on the next pass. The outcome
+goes to serve's log; only `--server` returns it to the caller. If the
+rotation's reply is lost, rotating again would retire the
 original secret, so `swamp worker token reveal` reads the current credential
 back, locally or through `--server`; the rotate command names it when its reply
 does not arrive, and serve's own failure to read the new secret names it too.

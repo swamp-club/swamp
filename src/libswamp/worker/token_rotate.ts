@@ -37,7 +37,7 @@ export interface WorkerTokenRotateData {
   expiresAt: string;
   /** until then the old credential still enrolls, for hosts not yet rotated */
   predecessorExpiresAt: string | null;
-  /** false for a local rotation, which reaches no connected worker */
+  /** false for a local rotation: a running orchestrator delivers it later */
   delivered: boolean;
   rotated: { worker: string; persisted: boolean }[];
   notRotated: { worker: string; reason: string }[];

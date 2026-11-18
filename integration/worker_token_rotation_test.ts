@@ -62,6 +62,16 @@ import {
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import { SERVER_TOKEN_MODEL_TYPE } from "../src/domain/models/access/server_token_model.ts";
+import {
+  createWorkerTokenRevokeDeps,
+  workerTokenRevoke,
+} from "../src/libswamp/worker/token_revoke.ts";
+import { workflowRun } from "../src/libswamp/workflows/run.ts";
+import { createWorkflowRunDeps } from "../src/serve/deps.ts";
+import { Job } from "../src/domain/workflows/job.ts";
+import { Step } from "../src/domain/workflows/step.ts";
+import { StepTask } from "../src/domain/workflows/step_task.ts";
+import { Workflow } from "../src/domain/workflows/workflow.ts";
 
 await initializeLogging({});
 
@@ -131,6 +141,9 @@ async function withFixture(
     readTokens: () => gateway.readTokenRecords(),
     revokeToken: (name, cause, options) =>
       gateway.revokeToken(name, cause, options),
+    deliverRotation: async (name, token) => {
+      await gateway.deliverCurrentMint(name, token);
+    },
   });
   const ctx = {
     repoDir,
@@ -387,24 +400,136 @@ Deno.test("worker token rotate leaves an unrotated fleet member on the old token
   });
 });
 
-Deno.test("worker token rotate from the local CLI keeps connected workers on the old token", async () => {
+async function rotateLocally(
+  f: Fixture,
+  name: string,
+  durationMs?: number,
+): Promise<WorkerTokenRotateData> {
+  const libCtx = createLibSwampContext();
+  const events = await collect(
+    workerTokenRotate(
+      libCtx,
+      await createWorkerTokenRotateDeps(libCtx, f.repoDir, f.repoContext),
+      durationMs === undefined ? { name } : { name, durationMs },
+    ),
+  );
+  const completed = events.find((e) => e.kind === "completed");
+  if (completed?.kind !== "completed") {
+    throw new Error(`local rotation failed: ${JSON.stringify(events)}`);
+  }
+  return completed.data;
+}
+
+Deno.test("worker token rotate from the local CLI reaches connected workers at the next token check", async () => {
   await withFixture(async (f) => {
     const original = await mintToken(f, "w-local");
-    await enroll(connectWorker(f.gateway), original);
+    const credential: WorkerCredential = { token: original };
+    await enroll(connectWorker(f.gateway, { credential }), original);
+    const [before] = f.gateway.boundTokens();
 
-    const libCtx = createLibSwampContext();
-    const events = await collect(
-      workerTokenRotate(
-        libCtx,
-        await createWorkerTokenRotateDeps(libCtx, f.repoDir, f.repoContext),
-        { name: "w-local" },
-      ),
-    );
-    const completed = events.find((e) => e.kind === "completed");
-    assertEquals(completed?.kind, "completed", JSON.stringify(events));
+    const rotated = await rotateLocally(f, "w-local");
+    assertEquals(rotated.delivered, false);
+    assertEquals(credential.token, original);
 
     assertEquals(await f.revalidation.runOnce(), []);
+    assertEquals(credential.token, rotated.token);
+    const [after] = f.gateway.boundTokens();
+    assertEquals(after.tokenCreatedAt > before.tokenCreatedAt, true);
     assertEquals(f.gateway.worker("w-local")?.connected, true);
+  });
+});
+
+Deno.test("a workflow step that rotates the token on serve reaches the worker, which outlives the old token", async () => {
+  await withFixture(async (f) => {
+    const durationMs = 3_000;
+    const original = await mintToken(f, "w-flow", { durationMs });
+    const originalExpiresAt = Date.now() + durationMs;
+    const credential: WorkerCredential = { token: original };
+    await enroll(connectWorker(f.gateway, { credential }), original);
+    await f.repoContext.workflowRepo.save(Workflow.create({
+      name: "rotate-flow",
+      jobs: [Job.create({
+        name: "main",
+        steps: [Step.create({
+          name: "rotate",
+          task: StepTask.model("w-flow", "rotate", {
+            durationMs: 60 * 60_000,
+          }),
+        })],
+      })],
+    }));
+
+    const deps = await createWorkflowRunDeps(f.repoDir, f.repoContext, {
+      type: "filesystem",
+      path: swampPath(f.repoDir),
+    });
+    const events = await collect(
+      workflowRun(createLibSwampContext(), deps, {
+        workflowIdOrName: "rotate-flow",
+      }),
+    );
+    const completed = events.find((e) => e.kind === "completed");
+    assertEquals(
+      completed?.kind === "completed" ? completed.run.status : undefined,
+      "succeeded",
+      JSON.stringify(events.filter((e) => e.kind === "error")),
+    );
+    assertEquals(credential.token, original);
+
+    assertEquals(await f.revalidation.runOnce(), []);
+    assertEquals(credential.token === original, false);
+
+    await waitFor(
+      () => Date.now() > originalExpiresAt + 500,
+      "the original token's deadline to pass",
+      { timeoutMs: durationMs + 5_000 },
+    );
+    assertEquals(f.gateway.worker("w-flow")?.connected, true);
+    assertEquals(await f.revalidation.runOnce(), []);
+  });
+});
+
+Deno.test("a local revoke, re-mint and rotate before a token check never reaches the worker on the revoked mint", async () => {
+  await withFixture(async (f) => {
+    const original = await mintToken(f, "w-remint");
+    const credential: WorkerCredential = { token: original };
+    await enroll(connectWorker(f.gateway, { credential }), original);
+
+    const libCtx = createLibSwampContext();
+    const revoked = await collect(
+      workerTokenRevoke(
+        libCtx,
+        await createWorkerTokenRevokeDeps(libCtx, f.repoDir, f.repoContext),
+        { name: "w-remint" },
+      ),
+    );
+    assertEquals(revoked.some((event) => event.kind === "error"), false);
+    await mintToken(f, "w-remint");
+    await rotateLocally(f, "w-remint");
+
+    assertEquals(await f.revalidation.runOnce(), ["w-remint"]);
+    assertEquals(credential.token, original);
+    assertEquals(f.gateway.worker("w-remint"), null);
+  });
+});
+
+Deno.test("a worker that cannot take a rotated token is not sent one and is cut off when the old token lapses", async () => {
+  await withFixture(async (f) => {
+    const original = await mintToken(f, "w-old", { durationMs: 3_000 });
+    await enroll(connectWorker(f.gateway), original, { canRotate: false });
+
+    await rotateLocally(f, "w-old", 60 * 60_000);
+
+    assertEquals(await f.revalidation.runOnce(), []);
+    assertEquals(await f.revalidation.runOnce(), []);
+    const [bound] = f.gateway.boundTokens();
+    const record = (await f.gateway.readTokenRecords()).get("w-old");
+    assertEquals(bound.tokenCreatedAt, record?.predecessor?.createdAt);
+
+    await waitFor(
+      () => f.gateway.worker("w-old") === null,
+      "the worker removed when the old token lapses",
+    );
   });
 });
 

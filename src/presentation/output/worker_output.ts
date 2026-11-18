@@ -237,7 +237,7 @@ export function renderWorkerTokenRotate(
     // never suggest rotating again: a second rotation retires the old token
     lines.push(
       yellow(
-        `No connected worker was sent the new token (a rotation without --server reaches no worker). Workers keep the old token until ${oldUntil}; restart them with the new token before then.`,
+        `No connected worker was sent the new token by this command. A running orchestrator sends it to them at its next token check, about every 30 seconds; rotating again before then retires the old token they hold. With no orchestrator running, workers keep the old token until ${oldUntil}; restart them with the new token before then.`,
       ),
     );
   }

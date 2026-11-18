@@ -6039,14 +6039,17 @@ export const serveCommand = new Command()
       }
     });
 
-    // Enrollment tokens revoked from the CLI or on a peer never reach this
-    // gateway's revoke path; re-check them so their workers are cut off.
+    // Enrollment tokens revoked or rotated from the CLI, a workflow step or a
+    // peer never reach this gateway; re-check them to deliver or cut off.
     const workerTokenRevalidationService = new WorkerTokenRevalidationService({
       intervalMs: DEFAULT_WORKER_TOKEN_REVALIDATION_MS,
       listBoundTokens: () => workerGateway.boundTokens(),
       readTokens: () => workerGateway.readTokenRecords(),
       revokeToken: (name, cause, options) =>
         workerGateway.revokeToken(name, cause, options),
+      deliverRotation: async (name, token) => {
+        await workerGateway.deliverCurrentMint(name, token);
+      },
     });
     workerTokenRevalidationService.start();
 

@@ -64,11 +64,13 @@ export const workerTokenRotateCommand = withRemoteOptions(
 
 The token keeps its name, so its workers keep theirs. With --server the
 new token is sent to every connected worker over its own connection;
-a worker started with "swamp worker connect --token-file" writes it back
-to that file. The old
+otherwise a running orchestrator sends it at its next token check, about
+every 30 seconds. A worker started with "swamp worker connect --token-file"
+writes it back to that file. The old
 token stays valid until its original expiry (or the new token's, if
 sooner), so machines that were not connected can still enroll with it.
-Rotating again retires the old token at once. The new token is printed
+Rotating again retires the old token at once, including for workers a
+running orchestrator has not yet sent the new token. The new token is printed
 once; if that output is lost, read it back with "swamp worker token reveal".`,
     )
     .example(

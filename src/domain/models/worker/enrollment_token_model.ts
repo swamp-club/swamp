@@ -157,6 +157,24 @@ function livePredecessor(
   return Date.parse(predecessor.expiresAt) > nowMs ? predecessor : undefined;
 }
 
+/**
+ * the only mint whose holders may be handed the current secret: a predecessor
+ * comes from rotating a live, unrevoked mint, whereas any older mint may be one
+ * a revoke and re-mint replaced
+ */
+export function deliverablePredecessor(
+  token: EnrollmentToken,
+  nowMs: number = Date.now(),
+): TokenPredecessor | undefined {
+  if (
+    token.state === "revoked" || token.state === "expired" ||
+    isExpired(token, nowMs)
+  ) {
+    return undefined;
+  }
+  return livePredecessor(token, nowMs);
+}
+
 export interface EnrollmentMint {
   readonly createdAt: string;
   readonly expiresAt: string;
