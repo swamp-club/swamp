@@ -26,8 +26,15 @@ export interface ServiceStatus {
   readonly logPath?: string;
 }
 
+export type ServiceRestartOutcome =
+  | "restarted"
+  | "not_running"
+  | "not_installed";
+
 export interface ServiceScheduler {
   enable(config: ServiceConfig): Promise<void>;
   disable(): Promise<void>;
   status(): Promise<ServiceStatus>;
+  /** Restarts only a running daemon; a stopped one stays stopped. */
+  restart(): Promise<ServiceRestartOutcome>;
 }

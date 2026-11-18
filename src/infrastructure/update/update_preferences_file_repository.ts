@@ -76,6 +76,7 @@ export class UpdatePreferencesFileRepository
         lastStaleWarning: typeof data.lastStaleWarning === "string"
           ? data.lastStaleWarning
           : undefined,
+        restartDaemons: data.restartDaemons === true ? true : undefined,
       };
     } catch {
       return { ...DEFAULT_UPDATE_PREFERENCES };

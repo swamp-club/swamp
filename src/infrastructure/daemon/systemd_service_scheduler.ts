@@ -20,6 +20,7 @@
 import { join } from "@std/path";
 import type { ServiceConfig } from "../../domain/serve/service_config.ts";
 import type {
+  ServiceRestartOutcome,
   ServiceScheduler,
   ServiceStatus,
 } from "../../domain/serve/service_scheduler.ts";
@@ -209,5 +210,31 @@ export class SystemdServiceScheduler implements ServiceScheduler {
       pid,
       logPath: logHint,
     };
+  }
+
+  async restart(): Promise<ServiceRestartOutcome> {
+    try {
+      await Deno.stat(servicePath(this.mode));
+    } catch {
+      return "not_installed";
+    }
+    const isActive = await systemctl(
+      this.mode,
+      "is-active",
+      `${UNIT_NAME}.service`,
+    );
+    if (isActive.stdout !== "active") return "not_running";
+
+    // --no-block: the updater does not wait out the unit's drain on stop.
+    const result = await systemctl(
+      this.mode,
+      "--no-block",
+      "try-restart",
+      `${UNIT_NAME}.service`,
+    );
+    if (!result.success) {
+      throw new Error(`systemctl try-restart ${UNIT_NAME}.service failed`);
+    }
+    return "restarted";
   }
 }

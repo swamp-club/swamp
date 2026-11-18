@@ -28,6 +28,8 @@ import {
   captureExtraHeaders,
   collectWorkerEnv,
   collectWorkerExtraArgs,
+  defaultDaemonCacheDir,
+  resolveDaemonCacheDir,
   validateCaCertFile,
   validateCacheDir,
   validateWorkerDaemonOptions,
@@ -37,6 +39,10 @@ import {
 import { workerConnectCommand } from "./worker_connect.ts";
 import { getSwampConfigDir } from "../../infrastructure/persistence/paths.ts";
 import { UserError } from "../../domain/errors.ts";
+import {
+  assertPathEquals,
+  withMockedEnv,
+} from "../../infrastructure/persistence/path_test_helpers.ts";
 
 Deno.test("collectWorkerExtraArgs: includes data-plane-url when provided", () => {
   const args = collectWorkerExtraArgs({
@@ -401,4 +407,97 @@ Deno.test("worker daemon enable: covers every environment variable worker connec
     ...CONNECT_ENV_WITHOUT_FLAG,
   ];
   assertEquals(read.filter((name) => !covered.includes(name)), []);
+});
+
+Deno.test("resolveDaemonCacheDir: a per-user daemon without --cache-dir gets a stable dir in the swamp data dir", async () => {
+  const home = await Deno.makeTempDir();
+  try {
+    await withMockedEnv({ SWAMP_HOME: home }, async () => {
+      const first = await resolveDaemonCacheDir(undefined, "agent");
+      assertPathEquals(first, join(home, "worker-daemon-cache"));
+      assertEquals((await Deno.stat(first)).isDirectory, true);
+      assertEquals(await resolveDaemonCacheDir(undefined, "agent"), first);
+    });
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(home, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(home, { recursive: true });
+    }
+  }
+});
+
+Deno.test("resolveDaemonCacheDir: an explicit --cache-dir is validated, not created", async () => {
+  const err = await assertRejects(
+    () => resolveDaemonCacheDir("/tmp/swamp-nonexistent-dir-abc123", "daemon"),
+    UserError,
+  );
+  assertStringIncludes(err.message, "--cache-dir does not exist");
+});
+
+Deno.test("defaultDaemonCacheDir: a system daemon uses a system path, never the invoking user's home", async () => {
+  await withMockedEnv({ SWAMP_HOME: "/Users/someone/.swamp" }, () => {
+    assertPathEquals(
+      defaultDaemonCacheDir("daemon", "linux"),
+      join("/var", "lib", "swamp-worker"),
+    );
+    assertPathEquals(
+      defaultDaemonCacheDir("daemon", "darwin"),
+      join("/Library", "Application Support", "swamp-worker"),
+    );
+    assertPathEquals(
+      defaultDaemonCacheDir("agent", "darwin"),
+      join("/Users/someone/.swamp", "worker-daemon-cache"),
+    );
+    return Promise.resolve();
+  });
+});
+
+Deno.test({
+  name:
+    "resolveDaemonCacheDir: a system default the user cannot create says to use sudo or --user",
+  ignore: Deno.build.os === "windows" || Deno.uid() === 0,
+  fn: async () => {
+    const parent = await Deno.makeTempDir();
+    try {
+      await Deno.chmod(parent, 0o500);
+      const err = await assertRejects(
+        () =>
+          resolveDaemonCacheDir(
+            undefined,
+            "daemon",
+            join(parent, "swamp-worker"),
+          ),
+        UserError,
+      );
+      assertStringIncludes(err.message, "Permission denied creating");
+      assertStringIncludes(err.message, "Run with sudo");
+      assertStringIncludes(err.message, "--user");
+    } finally {
+      await Deno.chmod(parent, 0o700);
+      await Deno.remove(parent, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "resolveDaemonCacheDir: a per-user default the user cannot create names the folder to check",
+  ignore: Deno.build.os === "windows" || Deno.uid() === 0,
+  fn: async () => {
+    const parent = await Deno.makeTempDir();
+    try {
+      await Deno.chmod(parent, 0o500);
+      await withMockedEnv({ SWAMP_HOME: join(parent, "swamp") }, async () => {
+        const err = await assertRejects(
+          () => resolveDaemonCacheDir(undefined, "agent"),
+          UserError,
+        );
+        assertStringIncludes(err.message, "Check permissions on");
+      });
+    } finally {
+      await Deno.chmod(parent, 0o700);
+      await Deno.remove(parent, { recursive: true });
+    }
+  },
 });

@@ -81,6 +81,7 @@ export const SWAMP_OWNED_DIR_NAMES: readonly string[] = [
     "log",
     "workspaces",
     "litestream",
+    "worker-daemon-cache",
   ]),
 ];
 

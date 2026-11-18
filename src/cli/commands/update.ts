@@ -43,6 +43,13 @@ import {
 } from "../../infrastructure/update/launchd_scheduler.ts";
 import { cronLogPath } from "../../infrastructure/update/cron_scheduler.ts";
 import {
+  type DaemonRestartOutcome,
+  type DaemonRestartTarget,
+  restartDaemonsAfterUpdate,
+} from "../../infrastructure/update/daemon_restart.ts";
+import { createWorkerDaemonScheduler } from "../../infrastructure/daemon/worker_daemon_scheduler_factory.ts";
+import { createServiceScheduler } from "../../infrastructure/daemon/service_scheduler_factory.ts";
+import {
   createScheduler,
   isRunningAsRoot,
   resolveLaunchdMode,
@@ -333,6 +340,58 @@ export async function updateWithin(
   }
 }
 
+/**
+ * The daemons live in the autoupdate scheduler's own scope; one enabled in
+ * the other scope (serve --user beside a root-owned binary) is not reached.
+ */
+export function daemonRestartTargets(
+  mode: LaunchdMode,
+  factories: {
+    worker: (
+      mode: LaunchdMode,
+    ) => Promise<{ restart(): Promise<DaemonRestartOutcome> }>;
+    serve: (
+      mode: LaunchdMode,
+    ) => Promise<{ restart(): Promise<DaemonRestartOutcome> }>;
+  } = {
+    worker: (mode) => createWorkerDaemonScheduler({ mode }),
+    serve: (mode) => createServiceScheduler({ mode }),
+  },
+): DaemonRestartTarget[] {
+  return [
+    { name: "worker", scheduler: () => orNotInstalled(factories.worker(mode)) },
+    { name: "serve", scheduler: () => orNotInstalled(factories.serve(mode)) },
+  ];
+}
+
+const NOT_INSTALLED = {
+  restart: () => Promise.resolve("not_installed" as const),
+};
+
+/** The factories refuse a platform with no daemon support with a UserError. */
+async function orNotInstalled<T>(
+  scheduler: Promise<T>,
+): Promise<T | typeof NOT_INSTALLED> {
+  try {
+    return await scheduler;
+  } catch (error) {
+    if (error instanceof UserError) return NOT_INSTALLED;
+    throw error;
+  }
+}
+
+async function daemonRestartScope(): Promise<
+  { mode: LaunchdMode } | { error: string } | null
+> {
+  try {
+    const prefs = await new UpdatePreferencesFileRepository().read();
+    if (!prefs.restartDaemons) return null;
+    return { mode: await resolveLaunchdMode() };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 async function runBackgroundUpdate(
   ctx: { logger: ReturnType<typeof getSwampLogger> },
 ): Promise<void> {
@@ -346,6 +405,10 @@ async function runBackgroundUpdate(
     versionAfter: null,
     outcome: "up_to_date",
   };
+
+  // Before the swap: afterwards Deno.execPath() names the replaced file, and
+  // resolveLaunchdMode would fall back to the per-user scope.
+  const restartScope = await daemonRestartScope();
 
   try {
     const result = await updateWithin(
@@ -372,6 +435,16 @@ async function runBackgroundUpdate(
         .warn`Background skill sync failed: ${
         err instanceof Error ? err.message : String(err)
       }`;
+    }
+
+    if (restartScope && "error" in restartScope) {
+      entry.daemonRestartError = restartScope.error;
+    } else if (restartScope) {
+      const result = await restartDaemonsAfterUpdate(
+        daemonRestartTargets(restartScope.mode),
+      );
+      entry.daemonsRestarted = result.restarted;
+      if (result.error) entry.daemonRestartError = result.error;
     }
   }
 
@@ -408,12 +481,32 @@ function promptCadence(defaultCadence: UpdateCadence): UpdateCadence {
   }
 }
 
+/** --cadence is accepted only by interactive setup, where it replaces the prompt. */
+export function setupAutoCadence(
+  setupAuto: string | boolean | undefined,
+  cadence: string | undefined,
+): UpdateCadence | undefined {
+  if (cadence === undefined) return undefined;
+  if (setupAuto !== true) {
+    throw new UserError(
+      "--cadence is only used with `swamp update --setup-auto` (with no action).",
+    );
+  }
+  if (!isValidCadence(cadence)) {
+    throw new UserError(
+      `Invalid cadence: ${cadence}. Must be "hourly", "daily", or "weekly".`,
+    );
+  }
+  return cadence;
+}
+
 async function runSetupAuto(
   ctx: { logger: ReturnType<typeof getSwampLogger>; outputMode: string },
+  givenCadence: UpdateCadence | undefined,
 ): Promise<void> {
-  if (!isStdinTty()) {
+  if (givenCadence === undefined && !isStdinTty()) {
     throw new UserError(
-      "Cannot set up autoupdate in a non-interactive environment. Use `swamp config set` instead.",
+      "Cannot set up autoupdate in a non-interactive environment. Pass --cadence <hourly|daily|weekly> to set it up without a prompt.",
     );
   }
 
@@ -471,7 +564,7 @@ async function runSetupAuto(
   const prefsRepo = new UpdatePreferencesFileRepository();
   const prefs = await prefsRepo.read();
 
-  const cadence = promptCadence(prefs.cadence);
+  const cadence = givenCadence ?? promptCadence(prefs.cadence);
 
   const scheduler = await createScheduler({ launchdMode });
   await scheduler.install(binaryPath, cadence);
@@ -566,6 +659,7 @@ async function runSetupAutoStatus(
       {
         enabled: prefs.enabled,
         cadence: prefs.cadence,
+        restartDaemons: prefs.restartDaemons === true,
         schedulerInstalled: scheduleStatus.installed,
         schedulerType: schedulerTypeId(launchdMode),
         lastUpdate: lastEntry,
@@ -585,6 +679,11 @@ async function runSetupAutoStatus(
 
   writeOutput("Autoupdate: enabled");
   writeOutput(`Cadence: ${prefs.cadence}`);
+  writeOutput(
+    `Restart daemons after update: ${
+      prefs.restartDaemons ? "enabled" : "disabled"
+    }`,
+  );
 
   const typeLabel = schedulerTypeDisplayLabel(launchdMode);
   if (typeLabel) {
@@ -603,6 +702,18 @@ async function runSetupAutoStatus(
     if (last.versionAfter) {
       writeOutput(`Last update: ${last.versionBefore} → ${last.versionAfter}`);
     }
+    if (last.daemonsRestarted) {
+      writeOutput(
+        `Daemons restarted: ${
+          last.daemonsRestarted.length > 0
+            ? last.daemonsRestarted.join(", ")
+            : "none running"
+        }`,
+      );
+    }
+    if (last.daemonRestartError) {
+      writeOutput(`Daemon restart failed: ${last.daemonRestartError}`);
+    }
   } else {
     writeOutput("No autoupdate history yet");
   }
@@ -616,6 +727,10 @@ export const updateCommand = new Command()
     "--setup-auto [action:string]",
     "Configure autoupdate interactively; use 'status' to check, 'disable' to turn off",
   )
+  .option(
+    "--cadence <cadence:string>",
+    "With --setup-auto, set the check cadence (hourly, daily, weekly) without prompting",
+  )
   .action(async function (options: AnyOptions) {
     const ctx = createContext(options as GlobalOptions, ["update"]);
     ctx.logger.debug("Executing update command");
@@ -623,6 +738,11 @@ export const updateCommand = new Command()
     if (options.background) {
       await runBackgroundUpdate(ctx);
       return;
+    }
+
+    // Refuses --cadence without --setup-auto before it reaches a real update.
+    if (options.setupAuto === undefined) {
+      setupAutoCadence(undefined, options.cadence);
     }
 
     if (options.setupAuto !== undefined) {
@@ -638,12 +758,14 @@ export const updateCommand = new Command()
         );
       }
 
+      const cadence = setupAutoCadence(options.setupAuto, options.cadence);
+
       if (options.setupAuto === "status") {
         await runSetupAutoStatus(ctx);
       } else if (options.setupAuto === "disable") {
         await runDisableAuto(ctx);
       } else {
-        await runSetupAuto(ctx);
+        await runSetupAuto(ctx, cadence);
       }
       return;
     }

@@ -47,6 +47,11 @@ const CONFIG_KEYS: Record<string, { description: string; values?: string[] }> =
       description: "How often to check for updates",
       values: ["hourly", "daily", "weekly"],
     },
+    "update.restart-daemons": {
+      description:
+        "After a background update, restart running worker and serve daemons (serve drops open clients and hands off a team-mode lease)",
+      values: ["enabled", "disabled"],
+    },
     "telemetry.collection": {
       description:
         "Enable or disable usage telemetry for every run, in any repository",
@@ -102,6 +107,9 @@ const configGetCommand = new Command()
         break;
       case "update.cadence":
         value = prefs.cadence;
+        break;
+      case "update.restart-daemons":
+        value = prefs.restartDaemons ? "enabled" : "disabled";
         break;
       case "telemetry.collection": {
         const telemetry = await new TelemetryPreferencesFileRepository().read();
@@ -242,6 +250,24 @@ const configSetCommand = new Command()
         }
         break;
       }
+      case "update.restart-daemons": {
+        const enabling = value === "enabled";
+        await prefsRepo.write({
+          ...prefs,
+          restartDaemons: enabling ? true : undefined,
+        });
+
+        if (ctx.outputMode === "json") {
+          console.log(JSON.stringify({ key, value }));
+        } else {
+          ctx.logger.info(
+            enabling
+              ? "Running worker and serve daemons will restart after each background update"
+              : "Daemons will not be restarted after a background update",
+          );
+        }
+        break;
+      }
       default:
         throw new UserError(`Unhandled config key: ${key}`);
     }
@@ -259,6 +285,7 @@ const configListCommand = new Command()
     const values: Record<string, string> = {
       "update.auto": prefs.enabled ? "enabled" : "disabled",
       "update.cadence": prefs.cadence,
+      "update.restart-daemons": prefs.restartDaemons ? "enabled" : "disabled",
       "telemetry.collection": telemetry.disabled ? "disabled" : "enabled",
       "workspaces.dir":
         (await new WorkspacePreferencesFileRepository().read()).dir ??

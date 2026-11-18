@@ -34,6 +34,7 @@ export interface UpdatePreferences {
   lastSchedulerRefreshAttempt?: string;
   schedulerLeftUnloaded?: boolean;
   lastStaleWarning?: string;
+  restartDaemons?: boolean;
 }
 
 export const DEFAULT_UPDATE_PREFERENCES: UpdatePreferences = {

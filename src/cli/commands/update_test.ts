@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import type { UpdateChecker } from "../../domain/update/update_service.ts";
 import { UpdateService } from "../../domain/update/update_service.ts";
 import { Platform } from "../../domain/update/platform.ts";
@@ -29,10 +29,14 @@ import type {
   UpdateCheckEvent,
 } from "../../libswamp/update/check.ts";
 import {
+  daemonRestartTargets,
   globalSkillSyncLine,
   globalSkillSyncNote,
+  setupAutoCadence,
   updateWithin,
 } from "./update.ts";
+import { UserError } from "../../domain/errors.ts";
+import type { LaunchdMode } from "../../infrastructure/update/launchd_scheduler.ts";
 import { createUpdateCheckRenderer } from "../../presentation/renderers/update_check.ts";
 
 await initializeLogging({});
@@ -284,4 +288,71 @@ Deno.test("globalSkillSyncNote: is null without SWAMP_HOME or without a synced d
   assertEquals(globalSkillSyncNote(2, false), null);
   assertEquals(globalSkillSyncNote(0, true), null);
   assertEquals(globalSkillSyncNote(0, false), null);
+});
+
+Deno.test("setupAutoCadence: no --cadence leaves interactive setup to prompt", () => {
+  assertEquals(setupAutoCadence(true, undefined), undefined);
+  assertEquals(setupAutoCadence(undefined, undefined), undefined);
+});
+
+Deno.test("setupAutoCadence: --setup-auto with a valid --cadence skips the prompt", () => {
+  assertEquals(setupAutoCadence(true, "hourly"), "hourly");
+  assertEquals(setupAutoCadence(true, "weekly"), "weekly");
+});
+
+Deno.test("setupAutoCadence: --cadence without interactive setup is refused", () => {
+  for (const setupAuto of [undefined, "status", "disable"]) {
+    assertThrows(
+      () => setupAutoCadence(setupAuto, "daily"),
+      UserError,
+      "only used with `swamp update --setup-auto`",
+    );
+  }
+});
+
+Deno.test("setupAutoCadence: an unknown cadence is refused", () => {
+  assertThrows(
+    () => setupAutoCadence(true, "monthly"),
+    UserError,
+    "Invalid cadence: monthly",
+  );
+});
+
+Deno.test("daemonRestartTargets: asks for the worker and serve schedulers of the updater's mode", async () => {
+  const asked: string[] = [];
+  for (const mode of ["agent", "daemon"] as LaunchdMode[]) {
+    const targets = daemonRestartTargets(mode, {
+      worker: (m) => {
+        asked.push(`worker:${m}`);
+        return Promise.resolve({ restart: () => Promise.resolve("restarted") });
+      },
+      serve: (m) => {
+        asked.push(`serve:${m}`);
+        return Promise.resolve({
+          restart: () => Promise.resolve("not_running"),
+        });
+      },
+    });
+    assertEquals(targets.map((t) => t.name), ["worker", "serve"]);
+    assertEquals(await (await targets[0].scheduler()).restart(), "restarted");
+    assertEquals(await (await targets[1].scheduler()).restart(), "not_running");
+  }
+  assertEquals(asked, [
+    "worker:agent",
+    "serve:agent",
+    "worker:daemon",
+    "serve:daemon",
+  ]);
+});
+
+Deno.test("daemonRestartTargets: a platform without daemon support reads as not installed, not as an error", async () => {
+  const [worker, serve] = daemonRestartTargets("agent", {
+    worker: () =>
+      Promise.reject(
+        new UserError("swamp worker daemon currently requires systemd"),
+      ),
+    serve: () => Promise.reject(new Error("systemctl crashed")),
+  });
+  assertEquals(await (await worker.scheduler()).restart(), "not_installed");
+  await assertRejects(() => serve.scheduler(), Error, "systemctl crashed");
 });

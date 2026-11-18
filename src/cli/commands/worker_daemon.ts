@@ -18,12 +18,13 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { isAbsolute, resolve } from "@std/path";
+import { isAbsolute, join, resolve } from "@std/path";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { groupCommandAction } from "../group_action.ts";
-import { UserError } from "../../domain/errors.ts";
+import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import { readTokenFile } from "../remote_run.ts";
 import { resolveServiceMode } from "../../infrastructure/daemon/service_scheduler_factory.ts";
+import type { LaunchdMode } from "../../infrastructure/update/launchd_scheduler.ts";
 import { createWorkerDaemonScheduler } from "../../infrastructure/daemon/worker_daemon_scheduler_factory.ts";
 import {
   renderWorkerDaemonDisabled,
@@ -31,7 +32,10 @@ import {
   renderWorkerDaemonStatus,
 } from "../../presentation/output/worker_daemon_output.ts";
 import { toServiceMode } from "../../presentation/output/serve_daemon_output.ts";
-import { getSwampConfigDir } from "../../infrastructure/persistence/paths.ts";
+import {
+  getSwampConfigDir,
+  getSwampDataDir,
+} from "../../infrastructure/persistence/paths.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { parseTimerDuration } from "../duration_parser.ts";
 import { parseExtraHeaders } from "../../domain/auth/extra_headers.ts";
@@ -57,6 +61,49 @@ export function collectWorkerExtraArgs(options: AnyOptions): string[] {
     args.push("--no-reconnect");
   }
   return args;
+}
+
+/** A system daemon stays out of the invoking user's home, which sudo keeps on macOS. */
+export function defaultDaemonCacheDir(
+  mode: LaunchdMode,
+  os: typeof Deno.build.os = Deno.build.os,
+): string {
+  if (mode === "agent") return join(getSwampDataDir(), "worker-daemon-cache");
+  return os === "darwin"
+    ? join("/Library", "Application Support", "swamp-worker")
+    : join("/var", "lib", "swamp-worker");
+}
+
+/**
+ * The machine id lives in the cache dir, so a daemon on a fresh temp dir would
+ * re-enroll as a new machine on every restart.
+ */
+export async function resolveDaemonCacheDir(
+  rawPath: string | undefined,
+  mode: LaunchdMode,
+  defaultDir: string = defaultDaemonCacheDir(mode),
+): Promise<string> {
+  if (rawPath) return await validateCacheDir(rawPath);
+  const dir = defaultDir;
+  try {
+    await Deno.mkdir(dir, { recursive: true, mode: 0o700 });
+  } catch (err: unknown) {
+    if (err instanceof Deno.errors.PermissionDenied) {
+      const hint = mode === "agent"
+        ? `  Check permissions on ${dir} and its parent directories`
+        : `  Option 1: Run with sudo for a system-wide service\n` +
+          `  Option 2: Use --user to install as a per-user service\n` +
+          `  Option 3: Pass --cache-dir with a directory you can write`;
+      throw markErrorPaths(
+        new UserError(
+          `Permission denied creating the worker daemon cache dir ${dir}.\n\n${hint}`,
+        ),
+        [dir],
+      );
+    }
+    throw err;
+  }
+  return dir;
 }
 
 export async function validateCacheDir(
@@ -276,7 +323,7 @@ export const workerDaemonEnableCommand = new Command()
   )
   .option(
     "--cache-dir <dir:string>",
-    "Bundle/asset cache directory; also stores the machine id",
+    "Bundle/asset cache directory; also stores the machine id (default: /var/lib/swamp-worker or /Library/Application Support/swamp-worker for a system service, worker-daemon-cache in the swamp data dir with --user)",
   )
   .option(
     "--data-plane-url <url:string>",
@@ -377,10 +424,13 @@ export const workerDaemonEnableCommand = new Command()
       await readTokenFile(serverTokenFile, "--server-token-file");
     }
 
-    let cacheDir: string | undefined;
-    if (options.cacheDir) {
-      cacheDir = await validateCacheDir(options.cacheDir as string);
-    }
+    const mode = await resolveServiceMode({
+      user: options.user as boolean | undefined,
+    });
+    const cacheDir = await resolveDaemonCacheDir(
+      options.cacheDir as string | undefined,
+      mode,
+    );
 
     let caCert: string | undefined;
     if (options.caCert) {
@@ -398,9 +448,6 @@ export const workerDaemonEnableCommand = new Command()
       caCert,
       extraHeaders: extraHeaders?.raw,
     };
-    const mode = await resolveServiceMode({
-      user: options.user as boolean | undefined,
-    });
     const scheduler = await createWorkerDaemonScheduler({ mode });
     const extraArgs = collectWorkerExtraArgs(options);
     const env = {

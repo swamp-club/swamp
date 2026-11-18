@@ -19,6 +19,7 @@
 
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
+import { Command } from "@cliffy/command";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { TelemetryPreferencesFileRepository } from "../../infrastructure/persistence/telemetry_preferences_file_repository.ts";
 import { WorkspacePreferencesFileRepository } from "../../infrastructure/persistence/workspace_preferences_file_repository.ts";
@@ -168,6 +169,54 @@ Deno.test("config set workspaces.dir: rejects a folder that doesn't exist, writi
       configCommand.parse(["set", "workspaces.dir", join(dir, "nope")])
     );
     assertStringIncludes((error as Error).message, "There's no folder at");
+    assertEquals(await Array.fromAsync(Deno.readDir(dir)), []);
+  });
+});
+
+async function configJson(args: string[]): Promise<unknown> {
+  const printed: string[] = [];
+  const originalLog = console.log;
+  console.log = (...data: unknown[]) => printed.push(data.join(" "));
+  try {
+    await new Command()
+      .globalOption("--json", "JSON output")
+      .command("config", configCommand)
+      .parse(["config", ...args, "--json"]);
+  } finally {
+    console.log = originalLog;
+  }
+  return JSON.parse(printed.join("\n"));
+}
+
+Deno.test("config get update.restart-daemons: disabled by default, enabled when the preference is set", async () => {
+  await withTempConfigDir(async (dir) => {
+    assertEquals(await configJson(["get", "update.restart-daemons"]), {
+      key: "update.restart-daemons",
+      value: "disabled",
+    });
+
+    await Deno.writeTextFile(
+      join(dir, "update.yaml"),
+      "enabled: true\ncadence: daily\nrestartDaemons: true\n",
+    );
+    assertEquals(await configJson(["get", "update.restart-daemons"]), {
+      key: "update.restart-daemons",
+      value: "enabled",
+    });
+    const listed = await configJson(["list"]) as Record<string, string>;
+    assertEquals(listed["update.restart-daemons"], "enabled");
+  });
+});
+
+Deno.test("config set update.restart-daemons: rejects values other than enabled|disabled", async () => {
+  await withTempConfigDir(async (dir) => {
+    const error = await assertRejects(() =>
+      configCommand.parse(["set", "update.restart-daemons", "yes"])
+    );
+    assertStringIncludes(
+      (error as Error).message,
+      "Invalid value for update.restart-daemons",
+    );
     assertEquals(await Array.fromAsync(Deno.readDir(dir)), []);
   });
 });

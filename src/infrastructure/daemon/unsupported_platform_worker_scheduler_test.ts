@@ -47,3 +47,8 @@ Deno.test("UnsupportedPlatformWorkerScheduler: disable rejects with a UserError"
     "swamp worker daemon is not yet supported on windows",
   );
 });
+
+Deno.test("UnsupportedPlatformWorkerScheduler: restart reports no daemon installed", async () => {
+  const scheduler = new UnsupportedPlatformWorkerScheduler("windows");
+  assertEquals(await scheduler.restart(), "not_installed");
+});

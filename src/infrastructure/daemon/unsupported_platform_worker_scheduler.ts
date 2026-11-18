@@ -19,6 +19,7 @@
 
 import type { WorkerDaemonConfig } from "../../domain/worker/worker_daemon_config.ts";
 import type {
+  WorkerDaemonRestartOutcome,
   WorkerDaemonScheduler,
   WorkerDaemonStatus,
 } from "../../domain/worker/worker_daemon_scheduler.ts";
@@ -46,5 +47,9 @@ export class UnsupportedPlatformWorkerScheduler
       running: false,
       unsupportedReason: this.reason,
     });
+  }
+
+  restart(): Promise<WorkerDaemonRestartOutcome> {
+    return Promise.resolve("not_installed");
   }
 }

@@ -107,8 +107,11 @@ something a primitive depends on, move it to `enablers/` and give it an
   worker enrollment, worker deletion, run-detail output resolution, output
   retention and access-data polling.
 - **Self-update**: version check, integrity check, and OS-scheduled autoupdate
-  (launchd / systemd / cron). `src/domain/update/`,
-  `src/infrastructure/update/`.
+  (launchd / systemd / cron), set up interactively or with
+  `--setup-auto --cadence`. With `update.restart-daemons` enabled, a
+  background update that installs a new version restarts the running worker
+  and serve daemons in the scheduler's own scope, each draining on SIGTERM.
+  `src/domain/update/`, `src/infrastructure/update/`.
 - **Issues**: `swamp issue` files redacted bug reports to the swamp-club Lab and
   to GitHub via `gh`. `src/domain/issues/`, `src/libswamp/issues/`,
   `src/infrastructure/github/` (the `gh` call).

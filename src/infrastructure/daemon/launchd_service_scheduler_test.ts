@@ -40,6 +40,14 @@ Deno.test("buildServePlist: includes RunAtLoad", () => {
   assertStringIncludes(plist, "<key>RunAtLoad</key>");
 });
 
+Deno.test("buildServePlist: gives a stopping serve the same 90 s as systemd's default stop timeout", () => {
+  const plist = buildServePlist(baseConfig);
+  assertStringIncludes(
+    plist,
+    "<key>ExitTimeOut</key>\n  <integer>90</integer>",
+  );
+});
+
 Deno.test("buildServePlist: includes ThrottleInterval", () => {
   const plist = buildServePlist(baseConfig);
   assertStringIncludes(plist, "<key>ThrottleInterval</key>");
