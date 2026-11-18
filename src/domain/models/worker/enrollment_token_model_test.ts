@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import {
+  assert,
   assertEquals,
   assertNotEquals,
   assertRejects,
@@ -25,6 +26,7 @@ import {
 } from "@std/assert";
 import {
   type Binding,
+  deliverablePredecessor,
   ENROLLMENT_TOKEN_MODEL_TYPE,
   enrollmentMintFor,
   type EnrollmentToken,
@@ -33,11 +35,15 @@ import {
   EnrollmentTokenSchema,
   type MaxEnrollments,
   rotatedTokenSecretKey,
+  rotationCarryOverCapMs,
   tokenSecretKey,
   WORKER_ROTATED_TOKEN_SECRET_KEY_PREFIX,
 } from "./enrollment_token_model.ts";
 import { timingSafeEqual } from "../../crypto/timing_safe_equal.ts";
-import { createInMemoryWorkerContext } from "./worker_test_helpers.ts";
+import {
+  advanceTokenClock,
+  createInMemoryWorkerContext,
+} from "./worker_test_helpers.ts";
 import { resolveStaleness } from "../../definitions/definition_staleness.ts";
 
 const mintArgs = {
@@ -606,14 +612,43 @@ Deno.test("enrollmentTokenModel: rotate keeps the name and bindings and writes a
   assertEquals(JSON.stringify(token).includes(successor), false);
 });
 
-Deno.test("enrollmentTokenModel: rotate defaults to the current mint's lifetime", async () => {
+Deno.test("enrollmentTokenModel: rotate without a duration carries over the old secret's remaining time, up to the cap", async () => {
   const harness = await mintToken();
   const { token } = await rotateToken(harness);
   assertEquals(
     Date.parse(token.expiresAt as string) -
       Date.parse(token.createdAt as string),
-    mintArgs.durationMs,
+    mintArgs.durationMs + rotationCarryOverCapMs(mintArgs.durationMs),
   );
+  assertEquals(token.lifetimeMs, mintArgs.durationMs);
+});
+
+Deno.test("enrollmentTokenModel: rotate without a duration carries over all of a short remaining time", async () => {
+  const harness = await mintToken();
+  advanceTokenClock(harness.store, mintArgs.durationMs - 10_000);
+  const before = EnrollmentTokenSchema.parse(harness.store.get("token-main"));
+  const { token } = await rotateToken(harness);
+  assertEquals(
+    Date.parse(token.expiresAt as string),
+    Date.parse(before.expiresAt) + mintArgs.durationMs,
+  );
+});
+
+Deno.test("rotationCarryOverCapMs: a tenth of the lifetime, at least 40 s, never more than the lifetime", () => {
+  assertEquals(rotationCarryOverCapMs(7 * 24 * 3_600_000), 7 * 24 * 360_000);
+  assertEquals(rotationCarryOverCapMs(60_000), 40_000);
+  assertEquals(rotationCarryOverCapMs(10_000), 10_000);
+});
+
+Deno.test("enrollmentTokenModel: rotate with a duration counts it from now and keeps it as the lifetime", async () => {
+  const harness = await mintToken();
+  const { token } = await rotateToken(harness, { durationMs: 5 * 60_000 });
+  assertEquals(
+    Date.parse(token.expiresAt as string) -
+      Date.parse(token.createdAt as string),
+    5 * 60_000,
+  );
+  assertEquals(token.lifetimeMs, 5 * 60_000);
 });
 
 Deno.test("enrollmentTokenModel: a shorter rotation clamps the predecessor's deadline", async () => {
@@ -1092,4 +1127,95 @@ Deno.test("rotatedTokenSecretKey: carries no dot and never collides with a token
   assertEquals(key, "worker-rotated-token-web-01-1767225600000");
   assertEquals(key.includes("."), false);
   assertEquals(key.startsWith(tokenSecretKey("")), false);
+});
+
+Deno.test("deliverablePredecessor: only a live rotation of a live token has a mint to deliver to", () => {
+  const now = Date.parse("2026-01-01T00:30:00.000Z");
+  const predecessor = {
+    createdAt: "2025-12-31T23:00:00.000Z",
+    expiresAt: "2026-01-01T00:45:00.000Z",
+    secretKey: tokenSecretKey("ci-runner-3"),
+  };
+  assertEquals(
+    deliverablePredecessor(tokenRecord({ predecessor }), now),
+    predecessor,
+  );
+  assertEquals(deliverablePredecessor(tokenRecord({}), now), undefined);
+  assertEquals(
+    deliverablePredecessor(
+      tokenRecord({
+        predecessor: { ...predecessor, expiresAt: "2026-01-01T00:15:00.000Z" },
+      }),
+      now,
+    ),
+    undefined,
+  );
+  for (const state of ["revoked", "expired"] as const) {
+    assertEquals(
+      deliverablePredecessor(tokenRecord({ predecessor, state }), now),
+      undefined,
+      state,
+    );
+  }
+  assertEquals(
+    deliverablePredecessor(
+      tokenRecord({ predecessor, expiresAt: "2026-01-01T00:20:00.000Z" }),
+      now,
+    ),
+    undefined,
+  );
+});
+
+Deno.test("enrollmentTokenModel: repeated default rotations keep the lifetime the token was minted with", async () => {
+  const harness = await mintToken();
+  for (let i = 0; i < 5; i++) {
+    advanceTokenClock(harness.store, 50_000);
+    const { token } = await rotateToken(harness);
+    assertEquals(token.lifetimeMs, mintArgs.durationMs);
+    assert(
+      Date.parse(token.expiresAt as string) -
+          Date.parse(token.createdAt as string) <=
+        mintArgs.durationMs + rotationCarryOverCapMs(mintArgs.durationMs),
+    );
+  }
+});
+
+Deno.test("enrollmentTokenModel: a record minted before lifetimeMs rotates by its own span", async () => {
+  const harness = await mintToken();
+  const { lifetimeMs: _dropped, ...legacy } = EnrollmentTokenSchema.parse(
+    harness.store.get("token-main"),
+  );
+  harness.store.set("token-main", legacy);
+  const { token } = await rotateToken(harness);
+  const span = Date.parse(legacy.expiresAt) - Date.parse(legacy.createdAt);
+  assertEquals(
+    Date.parse(token.expiresAt as string) -
+      Date.parse(token.createdAt as string),
+    span + rotationCarryOverCapMs(span),
+  );
+  assertEquals(token.lifetimeMs, span);
+});
+
+Deno.test("enrollmentTokenModel: a rotation close to the old deadline warns, one with time to spare does not", async () => {
+  for (
+    const [label, advanceMs, warns] of [
+      ["10s left", mintArgs.durationMs - 10_000, true],
+      ["50s left", mintArgs.durationMs - 50_000, false],
+    ] as const
+  ) {
+    const harness = await mintToken();
+    const warnings: string[] = [];
+    const logger = Object.create(harness.context.logger);
+    logger.warn = (message: string) => warnings.push(message);
+    harness.context.logger = logger;
+    advanceTokenClock(harness.store, advanceMs);
+
+    await rotateToken(harness);
+
+    assertEquals(
+      warnings.some((w) => w.includes("before its old secret expires")),
+      warns,
+      label,
+    );
+  }
 });

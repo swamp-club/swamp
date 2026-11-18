@@ -89,6 +89,8 @@ export const EnrollmentTokenSchema = z.object({
   maxEnrollments: MaxEnrollmentsSchema.default(1),
   bindings: z.array(BindingSchema).default([]),
   predecessor: PredecessorSchema.optional(),
+  /** a default rotation extends by this, since expiresAt minus createdAt grows with each early run */
+  lifetimeMs: z.number().int().positive().optional(),
   /** @deprecated Legacy field — kept so Zod parses old records. */
   boundMachineId: z.string().optional(),
   enrolledAt: z.string().datetime().optional(),
@@ -155,6 +157,24 @@ function livePredecessor(
   const predecessor = token.predecessor;
   if (predecessor === undefined) return undefined;
   return Date.parse(predecessor.expiresAt) > nowMs ? predecessor : undefined;
+}
+
+/**
+ * the only mint whose holders may be handed the current secret: a predecessor
+ * comes from rotating a live, unrevoked mint, whereas any older mint may be one
+ * a revoke and re-mint replaced
+ */
+export function deliverablePredecessor(
+  token: EnrollmentToken,
+  nowMs: number = Date.now(),
+): TokenPredecessor | undefined {
+  if (
+    token.state === "revoked" || token.state === "expired" ||
+    isExpired(token, nowMs)
+  ) {
+    return undefined;
+  }
+  return livePredecessor(token, nowMs);
 }
 
 export interface EnrollmentMint {
@@ -294,6 +314,7 @@ async function mint(
     state: "unused" as const,
     createdAt: new Date(now).toISOString(),
     expiresAt: new Date(now + args.durationMs).toISOString(),
+    lifetimeMs: args.durationMs,
     vaultName: args.vaultName,
     secretKey,
     maxEnrollments: args.maxEnrollments,
@@ -499,9 +520,20 @@ async function rebind(
 
 const EmptyArgsSchema = z.object({});
 
+// serve's 30 s token check plus its 10 s delivery timeout
+export const ROTATION_HEADROOM_MS = 40_000;
+
+/** enough of the old secret's remaining time to absorb a late run, too little to compound */
+export function rotationCarryOverCapMs(lifetimeMs: number): number {
+  return Math.min(
+    lifetimeMs,
+    Math.max(ROTATION_HEADROOM_MS, Math.floor(lifetimeMs / 10)),
+  );
+}
+
 const RotateArgsSchema = z.object({
   durationMs: z.number().int().positive().optional().describe(
-    "Successor lifetime in milliseconds; defaults to the current mint's",
+    "Successor lifetime in milliseconds from now; omitted, the token's lifetime plus the old secret's remaining time, up to a tenth of the lifetime (at least 40 s)",
   ),
 });
 
@@ -535,9 +567,15 @@ async function rotate(
   // the cut-off verdict orders mints by createdAt, so the successor must be
   // strictly newer even when two rotations land in one millisecond
   const createdAtMs = Math.max(now, previousCreatedAtMs + 1);
-  const durationMs = args.durationMs ??
+  const lifetimeMs = args.durationMs ?? token.lifetimeMs ??
     Date.parse(token.expiresAt) - previousCreatedAtMs;
-  const expiresAtMs = createdAtMs + durationMs;
+  const remainingMs = Date.parse(token.expiresAt) - now;
+  // the carried-over margin keeps a schedule one lifetime apart from drifting
+  // into an expired token; its cap keeps early rotations from compounding
+  const expiresAtMs = args.durationMs !== undefined
+    ? createdAtMs + args.durationMs
+    : createdAtMs + lifetimeMs +
+      Math.min(Math.max(0, remainingMs), rotationCarryOverCapMs(lifetimeMs));
 
   const secretKey = rotatedTokenSecretKey(name, createdAtMs);
   await context.vaultService.put(
@@ -551,6 +589,7 @@ async function rotate(
     ...token,
     createdAt: new Date(createdAtMs).toISOString(),
     expiresAt: new Date(expiresAtMs).toISOString(),
+    lifetimeMs,
     secretKey,
     bindings: token.bindings.map((b) => ({
       ...b,
@@ -573,6 +612,12 @@ async function rotate(
   }
   if (dropped !== undefined && dropped.secretKey !== secretKey) {
     await deleteSecretBestEffort(context, token.vaultName, dropped.secretKey);
+  }
+  if (remainingMs < ROTATION_HEADROOM_MS) {
+    context.logger.warn(
+      "Enrollment token {name} was rotated {seconds}s before its old secret expires; a worker that has not received the new token by then is cut off",
+      { name, seconds: Math.max(0, Math.round(remainingMs / 1000)) },
+    );
   }
   return { dataHandles: [handle] };
 }

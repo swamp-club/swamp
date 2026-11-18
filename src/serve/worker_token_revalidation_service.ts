@@ -19,13 +19,14 @@
 
 /**
  * cuts off workers whose token lost its authority wherever that happened (CLI
- * without --server, HA peer, here); the serve revoke handler is immediate, this
- * covers revokes that never reach this gateway
+ * without --server, HA peer, here), after delivering any rotation made outside
+ * the gateway; the serve revoke handler is immediate, this covers the rest
  */
 
 import { runDetached } from "../infrastructure/tracing/mod.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import {
+  deliverablePredecessor,
   type EnrollmentBindingCutoffCause,
   type EnrollmentToken,
   enrollmentTokenBindingVerdict,
@@ -59,12 +60,16 @@ export interface WorkerTokenRevalidationDeps {
     cause: EnrollmentBindingCutoffCause,
     options: { mint: string },
   ): Promise<string[]>;
+  deliverRotation?(name: string, token: EnrollmentToken): Promise<void>;
 }
 
 export class WorkerTokenRevalidationService {
   readonly #deps: WorkerTokenRevalidationDeps;
   readonly #missingPasses = new Map<string, number>();
   #timer: ReturnType<typeof setTimeout> | null = null;
+  #wake: (() => void) | null = null;
+  #ticking = false;
+  #nudged = false;
   #pending: Promise<void> = Promise.resolve();
   #disposed = false;
 
@@ -87,7 +92,22 @@ export class WorkerTokenRevalidationService {
       clearTimeout(this.#timer);
       this.#timer = null;
     }
+    this.#wake?.();
     await this.#pending;
+  }
+
+  /** runs a pass now, or right after the one in progress; a no-op before start */
+  nudge(): void {
+    if (this.#disposed) return;
+    if (this.#ticking) {
+      this.#nudged = true;
+      return;
+    }
+    if (this.#timer !== null) {
+      clearTimeout(this.#timer);
+      this.#timer = null;
+    }
+    this.#wake?.();
   }
 
   async runOnce(): Promise<string[]> {
@@ -96,16 +116,23 @@ export class WorkerTokenRevalidationService {
 
   #scheduleNext(): void {
     if (this.#disposed) return;
+    const wake = Promise.withResolvers<void>();
+    this.#wake = wake.resolve;
     this.#timer = runDetached(() =>
-      setTimeout(() => {
-        this.#pending = this.#tick();
-      }, this.#deps.intervalMs)
+      setTimeout(wake.resolve, this.#deps.intervalMs)
     );
     Deno.unrefTimer(this.#timer);
+    // continued from the loop's own context, so a nudge from inside a workflow
+    // step never runs the pass, or its writes, in that step's unit of work
+    this.#pending = runDetached(() => wake.promise.then(() => this.#tick()));
   }
 
   async #tick(): Promise<void> {
+    this.#timer = null;
+    this.#wake = null;
     if (this.#disposed) return;
+    this.#ticking = true;
+    this.#nudged = false;
     try {
       await this.#revalidate();
     } catch (err) {
@@ -113,18 +140,25 @@ export class WorkerTokenRevalidationService {
         err instanceof Error ? err.message : String(err)
       }`;
     } finally {
+      this.#ticking = false;
       this.#scheduleNext();
+      if (this.#nudged) this.nudge();
     }
   }
 
-  async #revalidate(): Promise<string[]> {
-    if (this.#disposed) return [];
+  #boundMintsByName(): Map<string, string[]> {
     const mintsByName = new Map<string, string[]>();
     for (const bound of this.#deps.listBoundTokens()) {
       const mints = mintsByName.get(bound.tokenName) ?? [];
       mints.push(bound.tokenCreatedAt);
       mintsByName.set(bound.tokenName, mints);
     }
+    return mintsByName;
+  }
+
+  async #revalidate(): Promise<string[]> {
+    if (this.#disposed) return [];
+    const mintsByName = this.#boundMintsByName();
 
     if (mintsByName.size === 0) {
       this.#missingPasses.clear();
@@ -146,6 +180,16 @@ export class WorkerTokenRevalidationService {
 
     for (const name of this.#missingPasses.keys()) {
       if (!mintsByName.has(name)) this.#missingPasses.delete(name);
+    }
+
+    const delivered = await this.#deliverRotations(mintsByName, tokens);
+    if (delivered.length > 0) {
+      // only delivered names are re-read: another name's fresh mint judged
+      // against this pass's older record could cut off a just-enrolled worker
+      const refreshed = this.#boundMintsByName();
+      for (const name of delivered) {
+        mintsByName.set(name, refreshed.get(name) ?? []);
+      }
     }
 
     const removed: string[] = [];
@@ -176,5 +220,38 @@ export class WorkerTokenRevalidationService {
       if (token === null) this.#missingPasses.delete(name);
     }
     return removed;
+  }
+
+  /** concurrent, so one silent worker delays every verdict by one timeout at most */
+  async #deliverRotations(
+    mintsByName: ReadonlyMap<string, string[]>,
+    tokens: ReadonlyMap<string, EnrollmentToken>,
+  ): Promise<string[]> {
+    const deliver = this.#deps.deliverRotation;
+    if (deliver === undefined) return [];
+    const due: [string, EnrollmentToken][] = [];
+    for (const [name, mints] of mintsByName) {
+      const token = tokens.get(name);
+      const predecessor = token && deliverablePredecessor(token);
+      if (
+        token !== undefined && predecessor !== undefined &&
+        mints.some((mint) =>
+          Date.parse(mint) === Date.parse(predecessor.createdAt)
+        )
+      ) {
+        due.push([name, token]);
+      }
+    }
+    await Promise.all(due.map(async ([name, token]) => {
+      try {
+        await deliver(name, token);
+      } catch (err) {
+        logger.warn(
+          "Could not deliver the rotated enrollment token {name}: {error}",
+          { name, error: err instanceof Error ? err.message : String(err) },
+        );
+      }
+    }));
+    return due.map(([name]) => name);
   }
 }

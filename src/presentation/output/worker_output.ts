@@ -31,6 +31,7 @@ import type { WorkerQueueListData } from "../../libswamp/worker/queue_list.ts";
 import type { WorkerTokenCreateData } from "../../libswamp/worker/token_create.ts";
 import type { WorkerTokenRevokeData } from "../../libswamp/worker/token_revoke.ts";
 import type { WorkerTokenRotateData } from "../../libswamp/worker/token_rotate.ts";
+import { ROTATION_HEADROOM_MS } from "../../domain/models/worker/enrollment_token_model.ts";
 import type { WorkerTokenRevealData } from "../../libswamp/worker/token_reveal.ts";
 import type { WorkerStatusEvent } from "../../worker/connect.ts";
 import type { WorkerVerifyData } from "../../serve/protocol.ts";
@@ -218,6 +219,7 @@ export function renderWorkerTokenRevoke(
 export function renderWorkerTokenRotate(
   data: WorkerTokenRotateData,
   mode: OutputMode,
+  nowMs: number = Date.now(),
 ): void {
   if (mode === "json") {
     console.log(JSON.stringify(data, null, 2));
@@ -233,11 +235,21 @@ export function renderWorkerTokenRotate(
       `${bold(cyan("Old token valid until:"))} ${data.predecessorExpiresAt}`,
     );
   }
-  if (!data.delivered) {
+  if (
+    !data.delivered &&
+    Date.parse(oldUntil) - nowMs < ROTATION_HEADROOM_MS
+  ) {
     // never suggest rotating again: a second rotation retires the old token
     lines.push(
       yellow(
-        `No connected worker was sent the new token (a rotation without --server reaches no worker). Workers keep the old token until ${oldUntil}; restart them with the new token before then.`,
+        `No connected worker was sent the new token by this command, and the old token expires at ${oldUntil}, likely before a running orchestrator's next token check can deliver it. Restart connected workers with the new token now. Next time, rotate with --server, which delivers at once.`,
+      ),
+    );
+  } else if (!data.delivered) {
+    // never suggest rotating again: a second rotation retires the old token
+    lines.push(
+      yellow(
+        `No connected worker was sent the new token by this command. A running orchestrator sends it to them at its next token check, about every 30 seconds; rotating again before then retires the old token they hold. With no orchestrator running, workers keep the old token until ${oldUntil}; restart them with the new token before then.`,
       ),
     );
   }

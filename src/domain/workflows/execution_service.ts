@@ -294,6 +294,8 @@ import {
   wordedUserError,
 } from "../behavior_wording.ts";
 import type { MethodExecutionEvent } from "../models/method_events.ts";
+import type { EventBus } from "../events/event_bus.ts";
+import { createModelDataWritten } from "../events/types.ts";
 import {
   executionErrorFrom,
   ModelOutput,
@@ -1016,6 +1018,7 @@ export interface StepExecutionContext {
   defaultVaultName?: string;
   autoGc?: boolean;
   runTracker?: RunTrackerRepository;
+  eventBus?: EventBus;
   ephemeralRepo?: UnifiedDataRepository;
   ephemeralCatalog?: CatalogStore;
   workflowRepo?: WorkflowRepository;
@@ -2461,6 +2464,9 @@ export class DefaultStepExecutor implements StepExecutor {
     // through failedRemoteWrites, which leave out ephemeral data
     const unpublishedRemoteHandles = new Set<string>();
     let stepFailed = false;
+    let stepSucceeded = false;
+    // the method's own writes, not the reports every step adds
+    let methodWrites: { name: string; version: number }[] = [];
     // Undefined when a hook took locks without naming them.
     let heldLockIds: readonly string[] | LentLocks | undefined = [];
     if (this.stepLockHook) {
@@ -2657,7 +2663,7 @@ export class DefaultStepExecutor implements StepExecutor {
         if (heartbeatInterval) clearInterval(heartbeatInterval);
         if (runTracker) runTracker.complete(output.id, "completed");
 
-        return await this.handleMethodSuccess({
+        const succeeded = await this.handleMethodSuccess({
           task: narrowedTask,
           ctx,
           outputRepo,
@@ -2675,6 +2681,12 @@ export class DefaultStepExecutor implements StepExecutor {
           output,
           savedArtifacts,
         });
+        stepSucceeded = true;
+        methodWrites = (result.dataHandles ?? []).map(({ name, version }) => ({
+          name,
+          version,
+        }));
+        return succeeded;
       } catch (error) {
         if (heartbeatInterval) clearInterval(heartbeatInterval);
         // As for a standalone method run (`libswamp/models/run.ts`): a method
@@ -2742,6 +2754,26 @@ export class DefaultStepExecutor implements StepExecutor {
           ...failedRemoteWrites,
         ];
         await flushStepLock(flushLock, written, stepFailed, runLogger);
+      }
+      if (
+        stepSucceeded && ctx.eventBus !== undefined && methodWrites.length > 0
+      ) {
+        try {
+          await ctx.eventBus.publish(createModelDataWritten(
+            modelType.normalized,
+            evaluatedDefinition.id,
+            evaluatedDefinition.name,
+            methodWrites,
+          ));
+        } catch (error) {
+          runLogger.warn(
+            "A listener for the data written by step {step} failed: {error}",
+            {
+              step: ctx.stepName,
+              error: error instanceof Error ? error.message : String(error),
+            },
+          );
+        }
       }
     }
   }
@@ -3412,6 +3444,9 @@ export class WorkflowExecutionService {
    * serve shutdown marks an aborted run interrupted; defaults to never closing
    */
   runWriteFence: RunWriteFence = OPEN_RUN_WRITE_FENCE;
+
+  /** absent outside serve, which reacts to a step writing a control-plane record */
+  eventBus?: EventBus;
 
   /** step events queue behind the run loop's saves; one landed save holds them all */
   readonly #runSaveHorizon = new RunSaveHorizon();
@@ -7408,6 +7443,7 @@ export class WorkflowExecutionService {
           repoDir: this.repoDir,
           pulledExtensionsRoot: this.pulledExtensionsRoot,
           signal: options.signal ?? new AbortController().signal,
+          ...(this.eventBus !== undefined ? { eventBus: this.eventBus } : {}),
           expressionContext: stepExprContext,
           workflowRun: run,
           step,
@@ -8254,6 +8290,7 @@ export class WorkflowExecutionService {
     childService.runWriteFence = this.runWriteFence;
     childService.reportLock = this.reportLock;
     childService.stoppedRuns = this.stoppedRuns;
+    childService.eventBus = this.eventBus;
 
     let childRun: WorkflowRun | undefined;
     // the child's suspended event is the parent step's outcome, as its

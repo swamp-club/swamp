@@ -55,6 +55,8 @@ import {
 import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
 import { WorkerGateway } from "../src/serve/worker_gateway.ts";
 import { WorkerTokenRevalidationService } from "../src/serve/worker_token_revalidation_service.ts";
+import { subscribeTokenWriteNudges } from "../src/serve/token_write_nudges.ts";
+import { rotationCarryOverCapMs } from "../src/domain/models/worker/enrollment_token_model.ts";
 import {
   registerTokenRotationHandler,
   type WorkerCredential,
@@ -62,6 +64,16 @@ import {
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import { SERVER_TOKEN_MODEL_TYPE } from "../src/domain/models/access/server_token_model.ts";
+import {
+  createWorkerTokenRevokeDeps,
+  workerTokenRevoke,
+} from "../src/libswamp/worker/token_revoke.ts";
+import { workflowRun } from "../src/libswamp/workflows/run.ts";
+import { createWorkflowRunDeps } from "../src/serve/deps.ts";
+import { Job } from "../src/domain/workflows/job.ts";
+import { Step } from "../src/domain/workflows/step.ts";
+import { StepTask } from "../src/domain/workflows/step_task.ts";
+import { Workflow } from "../src/domain/workflows/workflow.ts";
 
 await initializeLogging({});
 
@@ -87,7 +99,7 @@ interface Fixture {
 
 async function withFixture(
   fn: (f: Fixture) => Promise<void>,
-  options: { graceWindowMs?: number } = {},
+  options: { graceWindowMs?: number; nudges?: boolean } = {},
 ): Promise<void> {
   const repoDir = await Deno.makeTempDir({
     prefix: "swamp-worker-token-rotate-",
@@ -131,6 +143,9 @@ async function withFixture(
     readTokens: () => gateway.readTokenRecords(),
     revokeToken: (name, cause, options) =>
       gateway.revokeToken(name, cause, options),
+    deliverRotation: async (name, token) => {
+      await gateway.deliverCurrentMint(name, token);
+    },
   });
   const ctx = {
     repoDir,
@@ -140,9 +155,19 @@ async function withFixture(
     authConfig: { mode: "none" },
     workerGateway: gateway,
   } as unknown as ConnectionContext;
+  // as serve wires it; off by default so a test's own runOnce is the only pass
+  let unsubscribeNudges = () => {};
+  if (options.nudges) {
+    revalidation.start();
+    unsubscribeNudges = subscribeTokenWriteNudges(
+      repoContext.eventBus,
+      revalidation,
+    );
+  }
   try {
     await fn({ repoDir, repoContext, gateway, revalidation, ctx });
   } finally {
+    unsubscribeNudges();
     await revalidation.dispose();
     await gateway.settled();
     gateway.dispose();
@@ -387,24 +412,166 @@ Deno.test("worker token rotate leaves an unrotated fleet member on the old token
   });
 });
 
-Deno.test("worker token rotate from the local CLI keeps connected workers on the old token", async () => {
+async function rotateLocally(
+  f: Fixture,
+  name: string,
+  durationMs?: number,
+): Promise<WorkerTokenRotateData> {
+  const libCtx = createLibSwampContext();
+  const events = await collect(
+    workerTokenRotate(
+      libCtx,
+      await createWorkerTokenRotateDeps(libCtx, f.repoDir, f.repoContext),
+      durationMs === undefined ? { name } : { name, durationMs },
+    ),
+  );
+  const completed = events.find((e) => e.kind === "completed");
+  if (completed?.kind !== "completed") {
+    throw new Error(`local rotation failed: ${JSON.stringify(events)}`);
+  }
+  return completed.data;
+}
+
+Deno.test("worker token rotate from the local CLI reaches connected workers at the next token check", async () => {
   await withFixture(async (f) => {
     const original = await mintToken(f, "w-local");
-    await enroll(connectWorker(f.gateway), original);
+    const credential: WorkerCredential = { token: original };
+    await enroll(connectWorker(f.gateway, { credential }), original);
+    const [before] = f.gateway.boundTokens();
 
-    const libCtx = createLibSwampContext();
-    const events = await collect(
-      workerTokenRotate(
-        libCtx,
-        await createWorkerTokenRotateDeps(libCtx, f.repoDir, f.repoContext),
-        { name: "w-local" },
-      ),
-    );
-    const completed = events.find((e) => e.kind === "completed");
-    assertEquals(completed?.kind, "completed", JSON.stringify(events));
+    const rotated = await rotateLocally(f, "w-local");
+    assertEquals(rotated.delivered, false);
+    assertEquals(credential.token, original);
 
     assertEquals(await f.revalidation.runOnce(), []);
+    assertEquals(credential.token, rotated.token);
+    const [after] = f.gateway.boundTokens();
+    assertEquals(after.tokenCreatedAt > before.tokenCreatedAt, true);
     assertEquals(f.gateway.worker("w-local")?.connected, true);
+  });
+});
+
+async function runRotateWorkflow(
+  f: Fixture,
+  tokenName: string,
+  inputs: Record<string, unknown> = {},
+): Promise<void> {
+  const name = `rotate-${tokenName}`;
+  if (await f.repoContext.workflowRepo.findByName(name) === null) {
+    await f.repoContext.workflowRepo.save(Workflow.create({
+      name,
+      jobs: [Job.create({
+        name: "main",
+        steps: [Step.create({
+          name: "rotate",
+          task: StepTask.model(tokenName, "rotate", inputs),
+        })],
+      })],
+    }));
+  }
+  const deps = await createWorkflowRunDeps(f.repoDir, f.repoContext, {
+    type: "filesystem",
+    path: swampPath(f.repoDir),
+  });
+  const events = await collect(
+    workflowRun(createLibSwampContext(), deps, { workflowIdOrName: name }),
+  );
+  const completed = events.find((e) => e.kind === "completed");
+  assertEquals(
+    completed?.kind === "completed" ? completed.run.status : undefined,
+    "succeeded",
+    JSON.stringify(events.filter((e) => e.kind === "error")),
+  );
+}
+
+Deno.test("a workflow step that rotates the token on serve reaches the worker without waiting for the next token check", async () => {
+  await withFixture(async (f) => {
+    const original = await mintToken(f, "w-flow");
+    const credential: WorkerCredential = { token: original };
+    await enroll(connectWorker(f.gateway, { credential }), original);
+
+    await runRotateWorkflow(f, "w-flow", { durationMs: 60 * 60_000 });
+
+    await waitFor(
+      () => credential.token !== original,
+      "the nudged pass to deliver the successor",
+    );
+    const record = (await f.gateway.readTokenRecords()).get("w-flow");
+    await waitFor(
+      () => f.gateway.boundTokens()[0]?.tokenCreatedAt === record!.createdAt,
+      "the worker re-stamped on the successor",
+    );
+    assertEquals(f.gateway.worker("w-flow")?.connected, true);
+  }, { nudges: true });
+});
+
+Deno.test("scheduled default rotations keep the token's lifetime, cap the carried-over time, and keep the worker on the newest token", async () => {
+  await withFixture(async (f) => {
+    const lifetimeMs = 60 * 60_000;
+    const original = await mintToken(f, "w-sched", { durationMs: lifetimeMs });
+    const credential: WorkerCredential = { token: original };
+    await enroll(connectWorker(f.gateway, { credential }), original);
+
+    for (let run = 0; run < 3; run++) {
+      const held = credential.token;
+      await runRotateWorkflow(f, "w-sched");
+      await waitFor(
+        () => credential.token !== held,
+        `run ${run} delivered`,
+      );
+      const record = (await f.gateway.readTokenRecords()).get("w-sched")!;
+      assertEquals(record.lifetimeMs, lifetimeMs);
+      assertEquals(
+        Date.parse(record.expiresAt) - Date.parse(record.createdAt),
+        lifetimeMs + rotationCarryOverCapMs(lifetimeMs),
+      );
+    }
+    assertEquals(f.gateway.worker("w-sched")?.connected, true);
+    assertEquals(await f.revalidation.runOnce(), []);
+  }, { nudges: true });
+});
+
+Deno.test("a local revoke, re-mint and rotate before a token check never reaches the worker on the revoked mint", async () => {
+  await withFixture(async (f) => {
+    const original = await mintToken(f, "w-remint");
+    const credential: WorkerCredential = { token: original };
+    await enroll(connectWorker(f.gateway, { credential }), original);
+
+    const libCtx = createLibSwampContext();
+    const revoked = await collect(
+      workerTokenRevoke(
+        libCtx,
+        await createWorkerTokenRevokeDeps(libCtx, f.repoDir, f.repoContext),
+        { name: "w-remint" },
+      ),
+    );
+    assertEquals(revoked.some((event) => event.kind === "error"), false);
+    await mintToken(f, "w-remint");
+    await rotateLocally(f, "w-remint");
+
+    assertEquals(await f.revalidation.runOnce(), ["w-remint"]);
+    assertEquals(credential.token, original);
+    assertEquals(f.gateway.worker("w-remint"), null);
+  });
+});
+
+Deno.test("a worker that cannot take a rotated token is not sent one and is cut off when the old token lapses", async () => {
+  await withFixture(async (f) => {
+    const original = await mintToken(f, "w-old", { durationMs: 6_000 });
+    await enroll(connectWorker(f.gateway), original, { canRotate: false });
+
+    await rotateLocally(f, "w-old", 60 * 60_000);
+
+    assertEquals(await f.revalidation.runOnce(), []);
+    assertEquals(await f.revalidation.runOnce(), []);
+    const [bound] = f.gateway.boundTokens();
+    const record = (await f.gateway.readTokenRecords()).get("w-old");
+    assertEquals(bound.tokenCreatedAt, record?.predecessor?.createdAt);
+
+    await waitFor(
+      () => f.gateway.worker("w-old") === null,
+      "the worker removed when the old token lapses",
+    );
   });
 });
 

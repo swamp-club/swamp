@@ -284,6 +284,7 @@ export async function createWorkflowRunDeps(
       if (options?.runWriteFence !== undefined) {
         service.runWriteFence = options.runWriteFence;
       }
+      service.eventBus = repoContext.eventBus;
       return service;
     },
     catalogStore: repoContext.catalogStore,

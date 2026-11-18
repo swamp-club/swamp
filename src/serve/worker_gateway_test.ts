@@ -3678,3 +3678,207 @@ Deno.test("orderTokenMethodRun: a run that throws after writing still commits in
   await next;
   assertEquals(order, ["write", "commit", "next turn"]);
 });
+
+const SECOND_MINT = "2026-03-01T00:00:00.000Z";
+
+function rotatedFrom(
+  previous: EnrollmentToken,
+  createdAt: string,
+): EnrollmentToken {
+  return {
+    ...previous,
+    createdAt,
+    secretKey: `worker-rotated-token-ci-runner-3-${Date.parse(createdAt)}`,
+    predecessor: {
+      createdAt: previous.createdAt,
+      expiresAt: previous.expiresAt,
+      secretKey: previous.secretKey,
+    },
+  };
+}
+
+/** a worker enrolled on BASE_MINT whose token is then rotated past the gateway */
+function outOfBandHarness(overrides?: Partial<WorkerGatewayOptions>) {
+  const state = { record: mintRecord("ci-runner-3", BASE_MINT) };
+  let definitionLookups = 0;
+  const h = createHarness({
+    readTokenRecord: () => Promise.resolve(state.record),
+    readTokenSecret: (_vault, secretKey) =>
+      Promise.resolve(`secret-for-${secretKey}`),
+    findTokenDefinitionId: (name) => {
+      definitionLookups++;
+      return Promise.resolve(`def-${name}`);
+    },
+    ...overrides,
+  });
+  return {
+    ...h,
+    state,
+    definitionLookups: () => definitionLookups,
+    deliver: () => h.gateway.deliverCurrentMint("ci-runner-3", state.record),
+  };
+}
+
+Deno.test("WorkerGateway: deliverCurrentMint hands a predecessor-mint worker the successor and re-stamps it", async () => {
+  const h = outOfBandHarness();
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  const delivered: unknown[] = [];
+  workerChannel.register(WorkerMethod.rotateToken, (params) => {
+    delivered.push(params);
+    return Promise.resolve({ persisted: true });
+  });
+  await enroll(workerChannel, rotatableParams);
+  h.state.record = rotatedFrom(h.state.record, ROTATED_MINT);
+
+  const report = await h.deliver();
+
+  const token = `ci-runner-3.secret-for-${h.state.record.secretKey}`;
+  assertEquals(report?.rotated, [{ worker: "ci-runner-3", persisted: true }]);
+  assertEquals(delivered, [{
+    token,
+    expiresAtMs: Date.parse(h.state.record.expiresAt),
+    mintMs: Date.parse(ROTATED_MINT),
+  }]);
+  assertEquals(h.gateway.boundTokens(), [{
+    tokenName: "ci-runner-3",
+    tokenCreatedAt: ROTATED_MINT,
+  }]);
+  const rebinds = h.transitions.filter((t) => t.methodName === "rebind");
+  assertEquals(rebinds.map((t) => t.inputs), [{
+    machineIds: ["machine-1"],
+    mint: ROTATED_MINT,
+  }]);
+  assertEquals(h.transitions.some((t) => t.methodName === "rotate"), false);
+});
+
+Deno.test("WorkerGateway: deliverCurrentMint never hands the secret to a worker on a mint other than the predecessor", async () => {
+  const cases: [string, (base: EnrollmentToken) => EnrollmentToken][] = [
+    [
+      "rotated twice",
+      (base) => rotatedFrom(rotatedFrom(base, ROTATED_MINT), SECOND_MINT),
+    ],
+    [
+      "revoked, re-minted and rotated",
+      (base) => rotatedFrom(mintRecord(base.name, ROTATED_MINT), SECOND_MINT),
+    ],
+    ["revoked and re-minted", (base) => mintRecord(base.name, ROTATED_MINT)],
+    [
+      "revoked after the rotation",
+      (base) => ({ ...rotatedFrom(base, ROTATED_MINT), state: "revoked" }),
+    ],
+    [
+      "rotated with a lapsed predecessor",
+      (base) => {
+        const rotated = rotatedFrom(base, ROTATED_MINT);
+        return {
+          ...rotated,
+          predecessor: {
+            ...rotated.predecessor!,
+            expiresAt: "2026-01-02T00:00:00.000Z",
+          },
+        };
+      },
+    ],
+    ["not rotated", (base) => base],
+  ];
+  for (const [label, change] of cases) {
+    const h = outOfBandHarness();
+    const { workerChannel } = connectWorkerSocket(h.gateway);
+    let calls = 0;
+    workerChannel.register(WorkerMethod.rotateToken, () => {
+      calls++;
+      return Promise.resolve({ persisted: true });
+    });
+    await enroll(workerChannel, rotatableParams);
+    const lookupsAfterEnroll = h.definitionLookups();
+    h.state.record = change(h.state.record);
+
+    assertEquals(await h.deliver(), null, label);
+    assertEquals(calls, 0, label);
+    assertEquals(h.definitionLookups(), lookupsAfterEnroll, label);
+    assertEquals(h.gateway.boundTokens()[0].tokenCreatedAt, BASE_MINT, label);
+  }
+});
+
+Deno.test("WorkerGateway: deliverCurrentMint does nothing without a secret reader", async () => {
+  const h = outOfBandHarness({ readTokenSecret: undefined });
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel, rotatableParams);
+  h.state.record = rotatedFrom(h.state.record, ROTATED_MINT);
+
+  assertEquals(await h.deliver(), null);
+  assertEquals(h.gateway.boundTokens()[0].tokenCreatedAt, BASE_MINT);
+});
+
+Deno.test("WorkerGateway: deliverCurrentMint offers a refused mint once, then skips the worker without a transition", async () => {
+  const h = outOfBandHarness();
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel);
+  h.state.record = rotatedFrom(h.state.record, ROTATED_MINT);
+
+  const first = await h.deliver();
+  assertEquals(first?.notRotated, [{
+    worker: "ci-runner-3",
+    reason: "its swamp version cannot take a rotated token",
+  }]);
+  const lookups = h.definitionLookups();
+
+  assertEquals(await h.deliver(), null);
+  assertEquals(h.definitionLookups(), lookups);
+  assertEquals(h.gateway.boundTokens()[0].tokenCreatedAt, BASE_MINT);
+});
+
+Deno.test("WorkerGateway: deliverCurrentMint retries a worker that did not acknowledge", async () => {
+  const h = outOfBandHarness({ rotationDeliveryTimeoutMs: 50 });
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  let calls = 0;
+  workerChannel.register(WorkerMethod.rotateToken, async () => {
+    calls++;
+    if (calls === 1) await new Promise(() => {});
+    return { persisted: true };
+  });
+  await enroll(workerChannel, rotatableParams);
+  h.state.record = rotatedFrom(h.state.record, ROTATED_MINT);
+
+  const first = await h.deliver();
+  assertEquals(first?.notRotated, [{
+    worker: "ci-runner-3",
+    reason: "no acknowledgement",
+  }]);
+  const second = await h.deliver();
+
+  assertEquals(second?.rotated, [{ worker: "ci-runner-3", persisted: true }]);
+  assertEquals(h.gateway.boundTokens()[0].tokenCreatedAt, ROTATED_MINT);
+});
+
+Deno.test("WorkerGateway: deliverCurrentMint skips a worker a --server rotation is still delivering to", async () => {
+  const h = rotationHarness();
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  const reached = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let calls = 0;
+  workerChannel.register(WorkerMethod.rotateToken, async () => {
+    calls++;
+    reached.resolve();
+    await release.promise;
+    return { persisted: true };
+  });
+  await enroll(workerChannel, rotatableParams);
+
+  const rotating = h.rotate();
+  await reached.promise;
+  const observed = rotatedFrom(
+    mintRecord("ci-runner-3", BASE_MINT),
+    ROTATED_MINT,
+  );
+  const background = await h.gateway.deliverCurrentMint(
+    "ci-runner-3",
+    observed,
+  );
+  release.resolve();
+  const report = await rotating;
+
+  assertEquals(background, null);
+  assertEquals(calls, 1);
+  assertEquals(report.rotated, [{ worker: "ci-runner-3", persisted: true }]);
+});

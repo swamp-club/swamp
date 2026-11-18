@@ -242,6 +242,7 @@ import {
   DEFAULT_WORKER_TOKEN_REVALIDATION_MS,
   WorkerTokenRevalidationService,
 } from "../../serve/worker_token_revalidation_service.ts";
+import { subscribeTokenWriteNudges } from "../../serve/token_write_nudges.ts";
 import {
   createDeviceAuthDeps,
   handleDeviceAuth,
@@ -6039,16 +6040,23 @@ export const serveCommand = new Command()
       }
     });
 
-    // Enrollment tokens revoked from the CLI or on a peer never reach this
-    // gateway's revoke path; re-check them so their workers are cut off.
+    // Enrollment tokens revoked or rotated from the CLI, a workflow step or a
+    // peer never reach this gateway; re-check them to deliver or cut off.
     const workerTokenRevalidationService = new WorkerTokenRevalidationService({
       intervalMs: DEFAULT_WORKER_TOKEN_REVALIDATION_MS,
       listBoundTokens: () => workerGateway.boundTokens(),
       readTokens: () => workerGateway.readTokenRecords(),
       revokeToken: (name, cause, options) =>
         workerGateway.revokeToken(name, cause, options),
+      deliverRotation: async (name, token) => {
+        await workerGateway.deliverCurrentMint(name, token);
+      },
     });
     workerTokenRevalidationService.start();
+    const unsubscribeTokenWriteNudges = subscribeTokenWriteNudges(
+      repoContext.eventBus,
+      workerTokenRevalidationService,
+    );
 
     let clubHeartbeatService: ClubHeartbeatService | null = null;
     if (clubRegistration !== undefined && clubApiKey) {
@@ -8525,7 +8533,10 @@ export const serveCommand = new Command()
       // Stop revalidation before the gateway it cuts workers off from.
       await stages.run(
         "worker token revalidation",
-        () => workerTokenRevalidationService.dispose(),
+        () => {
+          unsubscribeTokenWriteNudges();
+          return workerTokenRevalidationService.dispose();
+        },
       );
       workerGateway.dispose();
       if (collectiveRefreshService) {

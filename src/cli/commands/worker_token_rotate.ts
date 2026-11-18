@@ -64,11 +64,16 @@ export const workerTokenRotateCommand = withRemoteOptions(
 
 The token keeps its name, so its workers keep theirs. With --server the
 new token is sent to every connected worker over its own connection;
-a worker started with "swamp worker connect --token-file" writes it back
-to that file. The old
+otherwise a running orchestrator sends it at its next token check, about
+every 30 seconds. A worker started with "swamp worker connect --token-file"
+writes it back to that file. The old
 token stays valid until its original expiry (or the new token's, if
 sooner), so machines that were not connected can still enroll with it.
-Rotating again retires the old token at once. The new token is printed
+Without --duration the new token gets the token's lifetime plus the old
+token's remaining time, up to a tenth of the lifetime (at least 40
+seconds), so rotating on a schedule as long as that lifetime never lets
+it lapse. Rotating again retires the old token at once, including for workers a
+running orchestrator has not yet sent the new token. The new token is printed
 once; if that output is lost, read it back with "swamp worker token reveal".`,
     )
     .example(
@@ -86,7 +91,7 @@ once; if that output is lost, read it back with "swamp worker token reveal".`,
     )
     .option(
       "--duration <duration:string>",
-      "Lifetime of the new token (e.g. 24h, 7d); defaults to the current token's lifetime",
+      "Lifetime of the new token from now (e.g. 24h, 7d); defaults to the token's lifetime plus the old token's remaining time, up to a tenth of the lifetime",
     ),
 ).action(async function (options: AnyOptions, name: string) {
   const cliCtx = createContext(options as GlobalOptions, [

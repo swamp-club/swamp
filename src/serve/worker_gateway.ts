@@ -60,6 +60,7 @@ import {
 } from "../domain/models/worker/worker_model.ts";
 import type { OrchestratorOwner } from "../domain/models/worker/orchestrator_owner.ts";
 import {
+  deliverablePredecessor,
   ENROLLMENT_TOKEN_MODEL_TYPE,
   type EnrollmentBindingCutoffCause,
   enrollmentMintFor,
@@ -140,7 +141,7 @@ const CUTOFF_REASONS: Record<EnrollmentBindingCutoffCause, string> = {
 /** setTimeout overflows past 2^31-1 ms; longer waits are chained. */
 const MAX_TIMEOUT_MS = 2 ** 31 - 1;
 
-const DEFAULT_ROTATION_DELIVERY_TIMEOUT_MS = 10_000;
+export const DEFAULT_ROTATION_DELIVERY_TIMEOUT_MS = 10_000;
 
 const ROTATION_REFUSALS: Record<string, string> = {
   invalid_token: "refused a malformed token",
@@ -242,6 +243,15 @@ interface WorkerEntry {
   expiryTimer?: ReturnType<typeof setTimeout>;
   /** the deadline expiryTimer is armed for */
   expiresAtMs?: number;
+}
+
+interface RotationTarget {
+  name: string;
+  instanceUuid: string;
+  tokenCreatedAt: string;
+  machineId: string | undefined;
+  canRotate: boolean;
+  channel: RpcChannel | null;
 }
 
 export type ModelMethodRunner = (input: {
@@ -371,6 +381,10 @@ export class WorkerGateway {
   /** Serializes every token/worker/lease transition (sole-writer rule). */
   readonly #transitions = new TransitionTail("gateway");
   readonly #runningTransition = new AsyncLocalStorage<{ settled: boolean }>();
+  /** counted: a --server rotation and a pass can both be delivering to one worker */
+  readonly #deliveriesInFlight = new Map<string, number>();
+  /** instanceUuid to the mint it refused, so a pass never offers it again */
+  readonly #rotationRefusals = new Map<string, string>();
 
   constructor(options: WorkerGatewayOptions) {
     this.#options = options;
@@ -640,18 +654,9 @@ export class WorkerGateway {
             `Enrollment token '${tokenName}' could not be read after rotation`,
           );
         }
-        const targets = [...this.#workers.values()]
-          .filter((entry) => entry.tokenName === tokenName)
-          .map((entry) => ({
-            name: entry.name,
-            instanceUuid: entry.instanceUuid,
-            tokenCreatedAt: entry.tokenCreatedAt,
-            machineId: entry.machineId,
-            canRotate: entry.capabilities.includes(
-              WorkerCapability.tokenRotate,
-            ),
-            channel: entry.channel,
-          }));
+        const targets = this.#rotationTargets(
+          (entry) => entry.tokenName === tokenName,
+        );
         return { definitionId, record, targets };
       },
     );
@@ -670,7 +675,150 @@ export class WorkerGateway {
         `Enrollment token '${tokenName}' was rotated, but its new secret could not be read; read it with: swamp worker token reveal ${tokenName}`,
       );
     }
-    const token = `${tokenName}.${secret}`;
+    return await this.#deliverRotation(
+      tokenName,
+      definitionId,
+      record,
+      targets,
+      `${tokenName}.${secret}`,
+    );
+  }
+
+  /** observed is the caller's read, so a token with nobody to reach costs no transition */
+  async deliverCurrentMint(
+    tokenName: string,
+    observed: EnrollmentToken,
+  ): Promise<TokenRotationReport | null> {
+    const readTokenSecret = this.#options.readTokenSecret;
+    if (readTokenSecret === undefined) return null;
+    if (this.#undeliveredHolders(tokenName, observed).length === 0) {
+      return null;
+    }
+    const prepared = await this.#recordTransition(
+      "deliver_rotation",
+      async () => {
+        const definitionId = await this.#findTokenDefinitionId(tokenName);
+        if (definitionId === null) return null;
+        const record = await this.#readTokenRecord(tokenName);
+        if (record === null) return null;
+        const holders = new Set(this.#undeliveredHolders(tokenName, record));
+        if (holders.size === 0) return null;
+        const targets = this.#rotationTargets((entry) => holders.has(entry));
+        // claimed on the tail, so a concurrent pass skips them while this one
+        // reads the secret
+        this.#markDelivering(targets);
+        return { definitionId, record, targets };
+      },
+    );
+    if (prepared === null) return null;
+    const { definitionId, record, targets } = prepared;
+
+    let report: TokenRotationReport;
+    try {
+      let secret: string;
+      try {
+        secret = await readTokenSecret(record.vaultName, record.secretKey);
+      } catch (error) {
+        logger.warn(
+          "Could not read the current secret of {token} to deliver it: {error}",
+          {
+            token: tokenName,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        );
+        return null;
+      }
+      report = await this.#deliverRotation(
+        tokenName,
+        definitionId,
+        record,
+        targets,
+        `${tokenName}.${secret}`,
+      );
+    } finally {
+      this.#unmarkDelivering(targets);
+    }
+    for (const worker of report.rotated) {
+      logger.info(
+        "Delivered the rotated enrollment token {token} to {worker}",
+        {
+          token: tokenName,
+          worker: worker.worker,
+        },
+      );
+    }
+    for (const worker of report.notRotated) {
+      const properties = {
+        token: tokenName,
+        worker: worker.worker,
+        reason: worker.reason,
+      };
+      const message =
+        "Could not deliver the rotated enrollment token {token} to {worker}: {reason}";
+      // a member in its grace window is retried every pass until it returns
+      if (worker.reason === "disconnected") logger.debug(message, properties);
+      else logger.warn(message, properties);
+    }
+    return report;
+  }
+
+  /** members on the predecessor mint that no delivery is reaching or has given up on */
+  #undeliveredHolders(
+    tokenName: string,
+    record: EnrollmentToken,
+  ): WorkerEntry[] {
+    const predecessor = deliverablePredecessor(record);
+    if (predecessor === undefined) return [];
+    const predecessorMs = Date.parse(predecessor.createdAt);
+    return [...this.#workers.values()].filter((entry) =>
+      entry.tokenName === tokenName &&
+      Date.parse(entry.tokenCreatedAt) === predecessorMs &&
+      !this.#deliveriesInFlight.has(entry.instanceUuid) &&
+      this.#rotationRefusals.get(entry.instanceUuid) !== record.createdAt
+    );
+  }
+
+  #markDelivering(targets: readonly RotationTarget[]): void {
+    for (const { instanceUuid } of targets) {
+      this.#deliveriesInFlight.set(
+        instanceUuid,
+        (this.#deliveriesInFlight.get(instanceUuid) ?? 0) + 1,
+      );
+    }
+  }
+
+  #unmarkDelivering(targets: readonly RotationTarget[]): void {
+    for (const { instanceUuid } of targets) {
+      const remaining = (this.#deliveriesInFlight.get(instanceUuid) ?? 1) - 1;
+      if (remaining > 0) this.#deliveriesInFlight.set(instanceUuid, remaining);
+      else this.#deliveriesInFlight.delete(instanceUuid);
+    }
+  }
+
+  #rotationTargets(include: (entry: WorkerEntry) => boolean): RotationTarget[] {
+    return [...this.#workers.values()].filter(include).map((entry) => ({
+      name: entry.name,
+      instanceUuid: entry.instanceUuid,
+      tokenCreatedAt: entry.tokenCreatedAt,
+      machineId: entry.machineId,
+      canRotate: entry.capabilities.includes(WorkerCapability.tokenRotate),
+      channel: entry.channel,
+    }));
+  }
+
+  async #deliverRotation(
+    tokenName: string,
+    definitionId: string,
+    record: EnrollmentToken,
+    targets: RotationTarget[],
+    token: string,
+  ): Promise<TokenRotationReport> {
+    const present = new Set(
+      [...this.#workers.values()].map((entry) => entry.instanceUuid),
+    );
+    for (const uuid of this.#rotationRefusals.keys()) {
+      if (!present.has(uuid)) this.#rotationRefusals.delete(uuid);
+    }
     const expiresAtMs = Date.parse(record.expiresAt);
     const timeoutMs = this.#options.rotationDeliveryTimeoutMs ??
       DEFAULT_ROTATION_DELIVERY_TIMEOUT_MS;
@@ -689,12 +837,14 @@ export class WorkerGateway {
         return;
       }
       if (!target.canRotate) {
+        this.#rotationRefusals.set(target.instanceUuid, record.createdAt);
         notRotated.push({
           worker: target.name,
           reason: "its swamp version cannot take a rotated token",
         });
         return;
       }
+      this.#markDelivering([target]);
       try {
         const result = await channel.call<RotateTokenResult>(
           WorkerMethod.rotateToken,
@@ -708,6 +858,9 @@ export class WorkerGateway {
           persisted: result?.persisted === true,
         });
       } catch (error) {
+        if (error instanceof RpcError) {
+          this.#rotationRefusals.set(target.instanceUuid, record.createdAt);
+        }
         notRotated.push({
           worker: target.name,
           reason: error instanceof RpcError
@@ -716,6 +869,8 @@ export class WorkerGateway {
             ? "disconnected"
             : "no acknowledgement",
         });
+      } finally {
+        this.#unmarkDelivering([target]);
       }
     }));
 
