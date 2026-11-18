@@ -467,3 +467,17 @@ Deno.test("action types: every listed type is detached, a read or a decision", (
     Object.keys(HTTP_ACTION_FAILURE_TABLES.GATE_FAILURES).includes("decided"),
   );
 });
+
+Deno.test("actionFailure: a not-leader refusal in flight is outcome unknown, and one before acting stays retryable", () => {
+  for (const type of ["workflow.run", "workflow.signal", "workflow.approve"]) {
+    const lost = failure(type, "serve_not_leader", { inFlight: true });
+    assertEquals([lost.status, lost.body.code], [503, "outcome_unknown"]);
+    const refused = failure(type, "serve_not_leader");
+    assertEquals([refused.status, refused.body.code], [
+      503,
+      "serve_not_leader",
+    ]);
+    const notTrue = failure(type, "serve_not_leader", { inFlight: "true" });
+    assertEquals(notTrue.body.code, "serve_not_leader");
+  }
+});

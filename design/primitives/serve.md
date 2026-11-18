@@ -2107,7 +2107,13 @@ answers each caller in a way it can retry or holds the request briefly:
 - A run start a follower could not send to any leader is refused as
   `serve_not_leader` without `inFlight`; `swamp … --server` and
   `packages/client` retry it as they retry `draining`, within their 30 s
-  budget. One marked `inFlight` may have run and is never sent again. Once
+  budget. One marked `inFlight` may have run and is never sent again. A
+  leader marks a not-leader refusal `inFlight` too when it comes after the
+  request's handler started (`replicationErrorForClient` with `afterStart`,
+  from `confirmRequest` and a run's terminal), with a message that it lost
+  the lead while handling the request; an HTTP action answers it as
+  `outcome_unknown`. Lease loss on a leader surfaces as `writer_fenced` today,
+  so this guards a path nothing takes yet. Once
   the CLI has the run id, a follower losing its leader mid-run is a
   dropped connection: it reattaches with `run.attach`, which never runs
   anything twice.

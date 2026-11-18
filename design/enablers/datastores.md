@@ -9560,7 +9560,8 @@ replaces the refusal:
 address, connect, DNS or TLS failure) gets today's refusal. One that failed
 after the request was sent gets the same code with `inFlight: true` and a
 message that it may already have run; the CLI's `--json` error carries
-`inFlight: true` too. The follower never retries either.
+`inFlight: true` too, and the CLI exits 1 for it rather than 75, so a script
+that retries on 75 never sends it again. The follower never retries either.
 The leader's own session closes (4003 revoked, 4002 expired) close the
 client's connection the same way.
 
