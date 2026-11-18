@@ -30,6 +30,7 @@ import {
   type HttpClientOptions,
   type HttpReply,
   HttpTransport,
+  outcomeUnknown,
   refusedBeforeActing,
   refuseInBrowser,
 } from "./http_transport.ts";
@@ -233,7 +234,8 @@ export class SwampIntegrationClient {
       { refreshToken },
       options,
       (r) =>
-        (r.status === 0 && this.#serveKeepsToken) || r.code === "not_saved" ||
+        (outcomeUnknown(r) && this.#serveKeepsToken) ||
+        r.code === "not_saved" ||
         refusedBeforeActing(r),
     );
     const body = reply.body;
@@ -281,7 +283,7 @@ export class SwampIntegrationClient {
       "end",
       { token },
       options,
-      (r) => r.status === 0 || refusedBeforeActing(r),
+      (r) => outcomeUnknown(r) || refusedBeforeActing(r),
     );
     if (reply.status === 200) return;
     if (reply.status === 401 && reply.code === "invalid_grant") {

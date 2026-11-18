@@ -141,8 +141,8 @@ const advertiseAddressMessage =
   "path, query, credentials or wildcard host";
 
 /**
- * when a forwarded request may already have run, the refusal is inFlight: the
- * follower never retries it and the caller checks first
+ * inFlight when the request may already have run (forwarded, or handled here
+ * before the lead was lost): nobody retries it and the caller checks first
  */
 export class ServeNotLeaderError extends UserError {
   declare readonly code: typeof SERVE_NOT_LEADER_CODE;
@@ -151,9 +151,13 @@ export class ServeNotLeaderError extends UserError {
     readonly leader: ServeLeader | undefined,
     readonly reads = false,
     readonly inFlight = false,
+    lostLeadWhileHandling = false,
   ) {
     super(
-      inFlight
+      lostLeadWhileHandling
+        ? "This swamp serve node lost the lead while handling the request. " +
+          "The request may already have run: check its outcome before retrying."
+        : inFlight
         ? "This swamp serve node forwarded the request to the leader, which " +
           "changed or stopped answering before it replied. The request may " +
           "already have run: check its outcome before retrying."
@@ -171,6 +175,13 @@ export class ServeNotLeaderError extends UserError {
       SERVE_NOT_LEADER_CODE,
     );
     this.name = "ServeNotLeaderError";
+  }
+
+  /** raised after a request's handler started, so its outcome is unknown */
+  static afterStart(error: ServeNotLeaderError): ServeNotLeaderError {
+    return error.inFlight
+      ? error
+      : new ServeNotLeaderError(error.leader, error.reads, true, true);
   }
 }
 

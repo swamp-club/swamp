@@ -109,6 +109,27 @@ Deno.test("SwampIntegrationClient.redeemLink: a lost reply is not sent again, si
   assertEquals(sent.length, 1);
 });
 
+Deno.test("SwampIntegrationClient: a forward marked inFlight is not redeemed twice, and ending a link is sent again", async () => {
+  const inFlight = {
+    status: 503,
+    body: { code: "serve_not_leader", message: "m", inFlight: true },
+    headers: { "retry-after": "0" },
+  };
+  const redeem = scriptedFetch([inFlight, { status: 200, body: {} }]);
+  const error = await assertRejects(
+    () =>
+      client(redeem.fetch).redeemLink({ pendingId: "p", redeemSecret: "s" }),
+    SwampHttpError,
+  );
+  assertEquals(error.code, "outcome_unknown");
+  assertEquals(error.retryAfterSeconds, undefined);
+  assertEquals(redeem.sent.length, 1);
+
+  const end = scriptedFetch([inFlight, { status: 200, body: {} }]);
+  await client(end.fetch).endLink("t");
+  assertEquals(end.sent.length, 2);
+});
+
 Deno.test("SwampIntegrationClient.refresh: a new access token; an older serve's rotated refresh token is passed on", async () => {
   const { fetch } = scriptedFetch([
     {

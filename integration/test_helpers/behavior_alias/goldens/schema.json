@@ -482,6 +482,13 @@
                     "type": "number",
                     "minimum": 0
                   },
+                  "placement": {
+                    "type": "string",
+                    "enum": [
+                      "inherit",
+                      "own"
+                    ]
+                  },
                   "guard": {
                     "type": "string"
                   },
@@ -1314,6 +1321,13 @@
             "queueTimeout": {
               "type": "number",
               "minimum": 0
+            },
+            "placement": {
+              "type": "string",
+              "enum": [
+                "inherit",
+                "own"
+              ]
             },
             "guard": {
               "type": "string"
@@ -2181,6 +2195,13 @@
       "queueTimeout": {
         "type": "number",
         "minimum": 0
+      },
+      "placement": {
+        "type": "string",
+        "enum": [
+          "inherit",
+          "own"
+        ]
       },
       "guard": {
         "type": "string"

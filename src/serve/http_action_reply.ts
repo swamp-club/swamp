@@ -393,6 +393,11 @@ function typedFailure(
         : undefined;
     case "workflow_signal_refused":
       return signalRefusal(error, requestId);
+    // lost after the action started: never the retryable not-leader reply
+    case REPLICATION_REFUSALS.notLeader:
+      return detail(error.details, "inFlight") === true
+        ? failed(UNCONFIRMED, requestId)
+        : undefined;
     case "input_validation_failed":
     case "invalid_request":
       return {

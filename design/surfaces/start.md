@@ -163,25 +163,28 @@ can (`--continue`, `resume --last`); one that wasn't opens a fresh session.
 
 ## Start from your past sessions
 
-This entry point is experimental and off unless `swamp start` runs with
-`SWAMP_EXPERIMENTAL_SWAMPIFY=1` in its environment (`swampify` on
-`StartDeps`, read in `src/cli/commands/start.ts`). Nothing in help, the page
-or the manual names the variable; testers are told directly. While it is off,
-the status carries no `swampify` field, the card never shows, and
-`startCheckSwampifyKickoff` refuses a kick-off with `swampify_off` before any
-other check, so a hand-made request fails too. The Swampify page and its
-build launch through the hub are not gated.
-
-When the switch is on and either transcript signal is on, the workspace
+This entry point is a preview, on for everyone. Its Preview chip is
+`components/PreviewChip.tsx`, the same one the Agent sessions and Swampify
+pages show by their headings: the word "Preview", with a tooltip saying what
+it shows may change. When either transcript signal is on, the workspace
 screen opens with a one-line card above the workspace list and the create
-form: the Swampify icon (shared with the dashboard sidebar through
-`components/nav_icons.tsx`),
+form, with the chip on its top border at the start: the Swampify icon (shared
+with the dashboard sidebar through `components/nav_icons.tsx`),
 "Find tasks to automate from your agent session history." and a
 **Swampify!** button. The button opens the panel in place of the workspace
 list, as a step of its own: the browser's Back, its **← Your workspaces**
-button and Cancel close it. It says what will be read (transcript text on this
-machine, prompts and replies included), what the workspace stores (counts,
-token costs and up to five short redacted excerpts per chore) and that where
+button and Cancel close it.
+
+While the panel is open, the screen's top changes (`PastSessionsHero`): the
+chip on the left and **← Your workspaces** on the right share the first line,
+then the heading "Automate what your agent keeps repeating" and the lead
+"Start from your past sessions. Transform recurring chores into dependable
+Swamp workflows." The back button belongs to the panel, which keeps its state,
+and is portalled into the top line. The panel has no heading of its own; its
+form is labelled "Start from your past sessions". It says what will be read
+(transcript text on this machine, prompts and replies included), what the
+workspace stores (counts, token costs and up to five short redacted excerpts
+per chore) and that where
 the data goes is the user's choice. Then one row each, label beside control,
 for the window (7, 30, 90, 180 or 365 days, or all history; default 30, with
 a note under 180, 365 and all history that a longer window takes longer to

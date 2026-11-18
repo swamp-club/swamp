@@ -43,6 +43,10 @@ import { DataArtifactRefSchema } from "../models/model_output.ts";
 import type { DataArtifactRef } from "../models/model_output.ts";
 import { AssertSeveritySchema } from "./step_task.ts";
 import {
+  type InheritedPlacement,
+  InheritedPlacementSchema,
+} from "./placement.ts";
+import {
   type FanOutGateKind,
   fanOutGateName,
   fanOutGateRecordOf,
@@ -423,6 +427,7 @@ export const WorkflowRunSchema = z.object({
     definitionFingerprint: z.string().optional(),
   }).optional(),
   parentRun: z.unknown().optional(),
+  inheritedPlacement: InheritedPlacementSchema.optional(),
   // a resume is held to this principal, never to the resumer
   triggeringPrincipal: TriggeringPrincipalSchema.optional(),
   // a resume is held to this list and the workflow's current one, so an edit
@@ -1513,6 +1518,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
   private _continuableSince: Date | undefined;
   private _autoContinuation: AutoContinuationData | undefined;
   private _startKey: RunStartKeyData | undefined;
+  private _inheritedPlacement: InheritedPlacement | undefined;
   private _initiatedByUsername: string | undefined;
 
   private constructor(
@@ -1755,6 +1761,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
       run._autoContinuation = structuredClone(validated.autoContinuation);
     }
     run._startKey = validated.startKey;
+    run._inheritedPlacement = validated.inheritedPlacement;
     run._initiatedByUsername = validated.initiatedByUsername;
     run._displayMaskedInputPaths = validated.displayMaskedInputPaths ?? [];
     if (validated.inputsProvenance) {
@@ -1853,6 +1860,14 @@ export class WorkflowRun implements TriggerEvaluationContext {
 
   get parentRun(): RunLink<ParentRunRef> | undefined {
     return this._parentRun;
+  }
+
+  get inheritedPlacement(): InheritedPlacement | undefined {
+    return this._inheritedPlacement;
+  }
+
+  recordInheritedPlacement(placement: InheritedPlacement): void {
+    this._inheritedPlacement = structuredClone(placement);
   }
 
   recordParentRun(ref: ParentRunRef): void {
@@ -2830,6 +2845,9 @@ export class WorkflowRun implements TriggerEvaluationContext {
     }
     if (this._parentRun !== undefined) {
       data.parentRun = persistedLink(this._parentRun);
+    }
+    if (this._inheritedPlacement !== undefined) {
+      data.inheritedPlacement = structuredClone(this._inheritedPlacement);
     }
 
     return data;

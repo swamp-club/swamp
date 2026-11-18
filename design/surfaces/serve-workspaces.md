@@ -1,7 +1,7 @@
 ---
 audience: operator, maintainer
 enables: [serve]
-last-verified: 2026-11-17 @ 93be0a897
+last-verified: 2026-11-17 @ 9a2f51486
 ---
 
 # Serve workspaces
@@ -27,7 +27,9 @@ https://serve.acme.internal/w/cost-reports
 
 A hosted workspace is not an entry in the local workspace registry that
 [workspace](./workspace.md) describes. That registry lists repos on a person's
-machine. A hosted workspace lives on a host.
+machine. A hosted workspace lives on a host. A host will also recognize the
+workspaces in that registry and serve one when asked.
+[The host](#the-host) describes that plan.
 
 ## The idea
 
@@ -285,6 +287,75 @@ rescans it every 5 seconds, which finds a marker written after its folder. An
 operator can make a workspace by hand, and the lifecycle below does the same
 thing. A removed folder's workspace is stopped and answers 404.
 
+**Default off.** The host never starts a serve for a workspace on its own. It
+starts one only when the workspace's wanted file says `active`, which a resume
+writes. Finding a folder in `workspaces/`, reading a registry entry and
+creating a workspace all leave the workspace listed and stopped. The choice is
+kept in the wanted file, so a workspace someone resumed comes back after a host
+restart. The root is the one exception: naming it in `host.yaml` is the
+operator turning it on. This is item 20 of the
+[execution plan](#execution-plan). Until it is built, a folder is started when
+its wanted file is missing, or cannot be read and the host has read none, as
+[Lifecycle](#lifecycle) describes.
+
+**Registered workspaces.** The host also reads the workspace registry of the
+user it runs as, the list `swamp workspace import` and `swamp workspace create`
+add to ([workspace](./workspace.md)). The host recognizes every workspace in
+it: the workspace is listed, it has a status file, and it has no serve.
+Registering a repo never starts one. This is item 19 of the
+[execution plan](#execution-plan) and is not built.
+
+A registered workspace is served where it is, at `/w/<name>` under its registry
+name, once someone resumes it. That is `workspace.resume` on the root, or an
+operator writing its wanted file as `active`. A suspend stops it again. The
+repo keeps the datastore, vaults and `serve.yaml` it already has. Nothing
+copies the root's auth mode or admission lists into it, and the host admits it
+by the same rule as any child. Clients, workers and checkouts that used another
+address for the repo keep using it. Their owners point them at the new one.
+
+The host reads the registry with each rescan and never writes it. A registry
+file that does not exist yet is an empty registry to the host. The host does
+not adopt the repos a first read by a workspace command would, and it
+recognizes them once such a command has written the file. A registered
+workspace's wanted and status files are in `workspaces/` under its registry
+name, like any other workspace's. The status file says the workspace is
+registered, which is how the root knows one without reading the registry. The
+root learns of a new one up to one rescan late.
+
+The registry keeps names and folders unique, but it does not store every folder
+by its real path, so the host resolves each one before it compares. The host
+adds four rules:
+
+- A name belongs to whichever the host took on first, the folder in
+  `workspaces/` or the registered workspace, and the status file records which.
+  The other is passed over, with a line in the host's log. A folder never
+  inherits a registered workspace's wanted file. With no status file, the
+  folder has the name.
+- A wanted file with no status file and no folder beside it is a create that
+  has not finished. The host takes on no registered workspace under that name
+  while the file is there, so the new folder gets the name. An operator
+  therefore resumes a registered workspace by hand only once the host lists
+  it, and removes a wanted file that a failed create left behind.
+- A registered folder that is the root's repo, or one of the host's own
+  workspace folders, is passed over, so no repo has two serves from one host.
+- A registered workspace the host took on is stopped when it leaves the
+  registry, and its wanted and status files are removed. A later import under
+  the same name starts nothing.
+
+`workspace.delete` refuses a registered workspace, since no workspace command
+deletes a registered folder. `swamp workspace remove` takes it off the host.
+`workspace.create` refuses a registered name. `workspace.list` and
+`workspace.get` say which workspaces are registered.
+
+Registering is an act of the host's user on the host's machine. No request
+registers a repo, since that would let a remote caller name a folder for the
+host to run code from. Only the root's admins may suspend or resume a
+registered workspace. A grant on `workspace:<pattern>` does not reach one, even
+when its name matches: the grant was given for workspaces its holders create,
+and a registered repo is the host user's own. A root admin can start a serve
+for any workspace that user has registered. The registry's trust mark is about
+agents and does not gate serving.
+
 **`host.yaml`** (`src/serve/host/host_config.ts`) refuses unknown keys and names
 the field that is wrong:
 
@@ -383,8 +454,11 @@ them and its audit log records each one. The host gives the root the
 | `workspace.delete`  | Stops its serve and removes its folder                                                         | `admin` on `workspace:<name>` |
 
 `workspace` is a new resource kind in grants. With no grant naming it, only the
-root's admins can make these requests. A grant such as
-`allow write workspace:data-*` to a group lets that group create its own.
+root's admins can make these requests. A grant of `write` and `admin` on
+`workspace:data-*` to a group lets that group create, start and remove its own.
+With `write` alone it creates a workspace that an admin then starts. No grant
+reaches the suspend or resume of a registered workspace, as
+[The host](#the-host) describes.
 
 The root and the supervisor never call each other. They share two small files
 per workspace, beside its folder:
@@ -430,9 +504,9 @@ The host reads the wanted files with each rescan of `workspaces/`
   removed once the serve has stopped.
 
 `create` sets the repo up in a hidden `.<name>.creating-<uuid>` folder, writes
-the wanted file, then renames the folder into place, so no scan lists a
-workspace before it is whole and one created `suspended` is never started. A
-failed create removes the folder and the wanted file it wrote. One per-name
+the wanted file as `suspended`, then renames the folder into place, so no scan
+lists a workspace before it is whole, and a new workspace is listed and has no
+serve until a resume. A failed create removes the folder and the wanted file it wrote. One per-name
 lock serialises create, suspend, resume and delete, and create removes a
 `.creating-` folder an earlier create left. A create stopped between the
 wanted file and the rename leaves the name taken until a `delete`, which the
@@ -467,6 +541,7 @@ are gone, an operator on the host suspends it, edits the admins in its
 
 CLI: `swamp serve workspace create|list|get|suspend|resume|rm`, each with log
 and json output, each a request to the root at the host's address.
+`create` makes a workspace without starting it, and `resume` starts it.
 
 ## Sign-in
 
@@ -559,8 +634,8 @@ from importing the model, vault and datastore registries.
 ## Execution plan
 
 Each item is one lab issue and one PR. Each leaves `main` working and can ship
-on its own. The four groups are the phases, in order. Journeys that spawn the
-binary belong in `swamp-uat` and are not listed.
+on its own. The first four groups are the phases, in order. Journeys that
+spawn the binary belong in `swamp-uat` and are not listed.
 
 ### Addresses with a path
 
@@ -621,7 +696,9 @@ After 7 an operator who sets each workspace up has a multi-workspace host.
    with no stored client of its own and registers none. After 7.
 10. **Workspace services.** The provisioner and the application services for
     create, list, get, suspend, resume and delete, working on the host folder.
-    Create sets up under a temporary name and renames into place. Without a
+    Create sets up under a temporary name and renames into place. Create writes
+    the wanted file as `suspended` before the rename, so a new workspace has no
+    serve until a resume. Without a
     collective key in the host's environment, a new workspace's first start
     needs a device grant for its names, so create seeds the workspace's
     `oauth-resolved-admins` from names the root already resolved (see A hosted
@@ -634,12 +711,14 @@ After 7 an operator who sets each workspace up has a multi-workspace host.
     and audit. A serve without the folder refuses them, and a token-mode root
     refuses `create`. After 10.
 12. **`swamp serve workspace` commands.** `create`, `list`, `get`, `suspend`,
-    `resume` and `rm`, each with log and json output. After 11.
+    `resume` and `rm`, each with log and json output. `create` says that the
+    new workspace is stopped and names the command that starts it. After 11.
 13. **A `workspace` kind in grants.** `workspace` joins the resource kinds and
     the lifecycle requests check it: `write` to create, `read` to get, `admin`
-    to suspend, resume and delete. Root admins pass as before. The access
-    suites cover the new kind (`src/domain/access/resource_selector.ts`). After
-    11.
+    to suspend, resume and delete. Root admins pass as before. Once item 19 is
+    built, no grant reaches the suspend or resume of a registered workspace.
+    The access suites cover the new kind
+    (`src/domain/access/resource_selector.ts`). After 11.
 14. **The sign-in exchange on serve.** The root issues and redeems sign-in
     codes. A workspace offers `/auth/exchange`, says so in `/auth/info` and
     mints a token from a redeemed code. The host passes each workspace the
@@ -663,9 +742,36 @@ After 7 an operator who sets each workspace up has a multi-workspace host.
 18. **The switcher lists the host's workspaces.** Under a host it reads
     `workspace.list` from the root. After 11 and 17.
 
+### Default off and the registry
+
+19. **Registered workspaces.** The host reads the workspace registry with each
+    rescan and writes a status file for every workspace in it, without starting
+    a serve. A registry file that does not exist is an empty registry. A resume
+    starts a serve in the registered folder. The host passes over a name or a
+    folder it already serves, and a name whose wanted file belongs to a create
+    that has not finished. It stops a workspace that leaves the registry and
+    removes its files. The workspace services report which workspaces are
+    registered, refuse to delete one and refuse to create over one. Only the
+    root's admins may suspend or resume one. Done when a repo registered with
+    `swamp workspace import` is listed as stopped while the host runs, a resume
+    serves it at `/w/<name>`, `swamp workspace remove` stops it, an import
+    under a name served before starts nothing, and an import made while a
+    create under the same name is unfinished leaves the name with the new
+    folder. After 10.
+20. **Default off.** The host starts a serve only for a workspace whose wanted
+    file says `active`. A folder in `workspaces/` with no wanted file is listed
+    and not started, and a wanted file that cannot be read starts nothing. A
+    running workspace is stopped by `suspended` or `deleted`, never by a wanted
+    file that cannot be read, or that is absent for one scan, as while an
+    editor saves it. The root still starts with the host. Done when a folder
+    added by hand has no serve until its wanted file says `active`, a resumed
+    workspace comes back after a host restart, and replacing a running
+    workspace's wanted file does not stop it. After 8.
+
 Issues 16 and 17 need only the first two groups, so the dashboard can proceed
-beside the lifecycle. Promoting a local workspace builds on issues 13 and 15
-and is designed separately.
+beside the lifecycle. Issue 19 needs only issue 10, and issue 20 only issue 8.
+Promoting a local workspace builds on issues 13 and 15 and is designed
+separately.
 
 ## Limits
 
@@ -683,6 +789,11 @@ and is designed separately.
 - **One OAuth client for every workspace.** Disabling the client named in
   `host.yaml`, or replacing its secret, which ends every link held under it,
   reaches every workspace at once.
+- **A registered repo that another serve already runs.** While a `swamp serve`
+  started outside the host holds the repo's datastore writer, the host's serve
+  for it exits 75 at startup. The host retries without end, since that exit
+  never leads to `failed`, and the status file shows `backoff` with the reason.
+  Stop the other serve, or suspend the workspace.
 - **A workspace token outlives changes on the root.** Revoking a root token, or
   a change to the person's collectives, reaches a workspace only when its
   token expires. A workspace's admins can revoke the token there.

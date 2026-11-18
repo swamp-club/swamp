@@ -1,23 +1,10 @@
 /* Agent sessions page (views/AgentSessions.tsx, views/agent_sessions/). */
 /* Colours come from the theme tokens only, so both themes follow. */
 
-.as-preview-chip {
-  font-size: 0.7rem;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  padding: 2px 8px;
-  border-radius: 10px;
-  color: var(--info);
-  background: var(--info-bg);
-  border: 1px solid var(--info);
-  vertical-align: middle;
-  margin-left: 10px;
-}
-
 .as-title {
   display: flex;
   align-items: center;
+  gap: 10px;
 }
 
 .as-notice {

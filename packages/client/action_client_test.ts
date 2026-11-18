@@ -120,6 +120,25 @@ Deno.test("SwampActionClient.approve: an unknown outcome is answered, never sent
   assertEquals(sent.length + lost.sent.length, 2);
 });
 
+Deno.test("SwampActionClient: a forward marked inFlight is answered as unknown; only a call safe to repeat is sent again", async () => {
+  const inFlight: Answer = {
+    status: 503,
+    body: { code: "serve_not_leader", message: "m", inFlight: true },
+    headers: { "retry-after": "0" },
+  };
+  const once = actions([inFlight, started(false)]);
+  assertEquals((await once.client.approve(DECISION)).kind, "outcome_unknown");
+  assertEquals(once.sent.length, 1);
+
+  const keyed = actions([inFlight, started(true)]);
+  const out = await keyed.client.run({
+    workflowIdOrName: "deploy",
+    idempotencyKey: "k",
+  });
+  assertEquals(out.kind, "replayed");
+  assertEquals(keyed.sent.length, 2);
+});
+
 Deno.test("SwampActionClient.approve: decided, and each gate refusal by name", async () => {
   const decided = {
     runId: RUN_ID,

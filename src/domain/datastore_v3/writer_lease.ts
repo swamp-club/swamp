@@ -41,6 +41,18 @@ export const WRITER_LEASE_PREFIX = "writer/";
  */
 export const WRITER_LEASE_CLOCK_SKEW_MS = 10_000;
 
+/**
+ * serve's leadership hold, so a dead leader is taken over sooner; other holds
+ * keep the longer default, and each record is judged on the TTL it carries
+ */
+export const SERVE_WRITER_LEASE_TTL_MS = 15_000;
+
+/**
+ * a holder whose record cannot be read may have recorded the longest TTL any
+ * swamp uses, so it is judged on at least that
+ */
+export const UNKNOWN_HOLDER_LEASE_TTL_MS = 30_000;
+
 export const WRITER_FENCED_CODE = "datastore_v3_writer_fenced";
 
 /**
@@ -165,7 +177,8 @@ export function judgeWriterLease(
   const record = records.record;
   if (record === undefined) {
     return records.renewedAt !== undefined &&
-        judgement.now - records.renewedAt <= judgement.ttlMs + skew
+        judgement.now - records.renewedAt <=
+          Math.max(judgement.ttlMs, UNKNOWN_HOLDER_LEASE_TTL_MS) + skew
       ? { kind: "held", holderUnknown: true }
       : { kind: "expired", reason: "unreadable" };
   }

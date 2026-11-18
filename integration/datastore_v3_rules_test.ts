@@ -317,6 +317,7 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   // writer lease, which it reads through the lock; the leader record, the
   // follower's refusal and its code are the serve_leader domain's.
   "src/cli/commands/serve.ts -> src/domain/datastore_v3/serve_leader.ts",
+  "src/cli/commands/serve.ts -> src/domain/datastore_v3/writer_lease.ts",
   "src/cli/commands/serve_startup_settings.ts -> src/domain/datastore_v3/serve_leader.ts",
   "src/cli/commands/serve.ts -> src/infrastructure/datastore_v3/v3_writer_lock.ts",
   "src/presentation/output/error_output.ts -> src/domain/datastore_v3/serve_leader.ts",

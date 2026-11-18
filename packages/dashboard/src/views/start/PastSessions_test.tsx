@@ -21,8 +21,15 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { renderToStaticMarkup } from "react-dom/server";
 import { NAV_ICONS } from "../../components/nav_icons.tsx";
+import { PreviewChip } from "../../components/PreviewChip.tsx";
 import type { StartClient } from "./client.ts";
-import { PAST_SESSIONS_CARD_TEXT, PastSessionsPanel } from "./PastSessions.tsx";
+import {
+  PAST_SESSIONS_CARD_TEXT,
+  PAST_SESSIONS_HEADING,
+  PAST_SESSIONS_LEAD,
+  PastSessionsHero,
+  PastSessionsPanel,
+} from "./PastSessions.tsx";
 import { WorkspaceSections } from "./parts.tsx";
 import type { StartStatus } from "./types.ts";
 
@@ -46,7 +53,7 @@ const STATUS: StartStatus = {
 // Static rendering runs no effects, so the client is never called.
 const CLIENT = {} as unknown as StartClient;
 
-function render(open = false): string {
+function render(open = false, backSlot?: HTMLElement | null): string {
   return renderToStaticMarkup(
     <PastSessionsPanel
       status={STATUS}
@@ -56,6 +63,7 @@ function render(open = false): string {
       disabled={false}
       open={open}
       onOpenChange={() => {}}
+      backSlot={backSlot}
     />,
   );
 }
@@ -70,12 +78,39 @@ Deno.test("PastSessionsPanel: collapsed, it is one line with the Swampify icon a
   assertEquals(html.includes("What it reads"), false);
 });
 
+Deno.test("PastSessionsPanel: collapsed, the card opens with a Preview chip; the open panel leaves it to the page heading", () => {
+  assertStringIncludes(
+    render(),
+    `<div class="start-past-card">${
+      renderToStaticMarkup(<PreviewChip className="start-past-card-chip" />)
+    }`,
+  );
+  assertEquals(render(true).includes("preview-chip"), false);
+});
+
+Deno.test("PastSessionsHero: a top line with the Preview chip and the back button's slot, then the heading and lead", () => {
+  const html = renderToStaticMarkup(
+    <PastSessionsHero backSlotRef={() => {}} />,
+  );
+  assertStringIncludes(
+    html,
+    `<div class="start-hero-top">${
+      renderToStaticMarkup(<PreviewChip />)
+    }<div class="start-hero-actions"></div></div><h2 tabindex="-1">${PAST_SESSIONS_HEADING}</h2><p class="start-lead">${PAST_SESSIONS_LEAD}</p>`,
+  );
+});
+
+Deno.test("PastSessionsPanel: open, the back button stays out of the panel while the page's slot is not there yet", () => {
+  assertStringIncludes(render(true), ">← Your workspaces</button>");
+  assertEquals(render(true, null).includes("Your workspaces"), false);
+});
+
 Deno.test("PastSessionsPanel: open, it shows the disclosure, window, scope, agent and workspace name", () => {
   const html = render(true);
   assertEquals(html.includes('class="start-past-card"'), false);
   for (
     const part of [
-      "Start from your past sessions",
+      'aria-label="Start from your past sessions"',
       "What it reads:",
       "What the workspace stores:",
       "Where it goes:",

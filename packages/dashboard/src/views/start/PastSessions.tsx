@@ -18,7 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { NavIcon } from "../../components/nav_icons.tsx";
+import { PreviewChip } from "../../components/PreviewChip.tsx";
 import { AgentBadge } from "./AgentBadge.tsx";
 import {
   isLongPastSessionsWindow,
@@ -42,6 +44,11 @@ import {
   useLaunch,
 } from "./parts.tsx";
 import type { HarnessList, StartStatus } from "./types.ts";
+
+/** The workspace screen's heading and lead while the panel is open. */
+export const PAST_SESSIONS_HEADING = "Automate what your agent keeps repeating";
+export const PAST_SESSIONS_LEAD =
+  "Start from your past sessions. Transform recurring chores into dependable Swamp workflows.";
 
 /** The collapsed card's one line. */
 export const PAST_SESSIONS_CARD_TEXT =
@@ -76,6 +83,22 @@ const PAST_SESSIONS_HARNESS_NAMES: Record<PastSessionsHarness, string> = {
   codex: "Codex",
 };
 
+/** The workspace screen's top while the panel is open; the panel's back button lands in the slot. */
+export function PastSessionsHero(
+  { backSlotRef }: { backSlotRef: (slot: HTMLDivElement | null) => void },
+) {
+  return (
+    <div className="start-hero">
+      <div className="start-hero-top">
+        <PreviewChip />
+        <div className="start-hero-actions" ref={backSlotRef} />
+      </div>
+      <h2 tabIndex={-1}>{PAST_SESSIONS_HEADING}</h2>
+      <p className="start-lead">{PAST_SESSIONS_LEAD}</p>
+    </div>
+  );
+}
+
 /**
  * "Start from your past sessions": says what will be read and stored, then
  * creates a workspace and saves a Swampify kick-off task in it. The page
@@ -83,7 +106,16 @@ const PAST_SESSIONS_HARNESS_NAMES: Record<PastSessionsHarness, string> = {
  * the task text.
  */
 export function PastSessionsPanel(
-  { status, client, onStatus, taken, disabled, open, onOpenChange }:
+  {
+    status,
+    client,
+    onStatus,
+    taken,
+    disabled,
+    open,
+    onOpenChange,
+    backSlot,
+  }:
     & ScreenProps
     & {
       taken: readonly string[];
@@ -91,6 +123,8 @@ export function PastSessionsPanel(
       /** Held by the workspace screen, so the browser's Back can close it. */
       open: boolean;
       onOpenChange: (open: boolean) => void;
+      /** Where the page puts the back button; inline when absent, hidden while null. */
+      backSlot?: HTMLElement | null;
     },
 ) {
   const offered = pastSessionsHarnesses(status.signals);
@@ -122,11 +156,19 @@ export function PastSessionsPanel(
   const backRef = useRef<HTMLButtonElement>(null);
   const cardRef = useRef<HTMLButtonElement>(null);
   const wasOpen = useRef(open);
+  // The back button can mount a render after the panel, once its slot exists.
+  const focusBack = useRef(false);
   useEffect(() => {
     if (wasOpen.current === open) return;
     wasOpen.current = open;
-    (open ? backRef : cardRef).current?.focus();
+    if (open) focusBack.current = true;
+    else cardRef.current?.focus();
   }, [open]);
+  useEffect(() => {
+    if (!focusBack.current || !backRef.current) return;
+    focusBack.current = false;
+    backRef.current.focus();
+  });
   useEffect(() => {
     if (!open) return;
     let active = true;
@@ -163,6 +205,7 @@ export function PastSessionsPanel(
   if (!open) {
     return (
       <div className="start-past-card">
+        <PreviewChip className="start-past-card-chip" />
         <NavIcon name="swampify" className="start-past-card-icon" />
         <p className="start-past-card-text">{PAST_SESSIONS_CARD_TEXT}</p>
         <button
@@ -216,26 +259,27 @@ export function PastSessionsPanel(
     if (await save(true)) await owner.handOff();
   };
 
+  const backButton = (
+    <button
+      ref={backRef}
+      type="button"
+      className="start-secondary start-small"
+      onClick={() => saved !== null ? onStatus(saved) : onOpenChange(false)}
+      disabled={busy}
+    >
+      ← Your workspaces
+    </button>
+  );
+
   return (
     <form
       className="start-form-panel start-past-sessions"
       onSubmit={(e) => void submit(e)}
-      aria-labelledby="start-past-sessions-title"
+      aria-label="Start from your past sessions"
     >
-      <p className="start-past-back">
-        <button
-          ref={backRef}
-          type="button"
-          className="start-secondary start-small"
-          onClick={() => saved !== null ? onStatus(saved) : onOpenChange(false)}
-          disabled={busy}
-        >
-          ← Your workspaces
-        </button>
-      </p>
-      <h3 id="start-past-sessions-title" className="start-form-title">
-        Start from your past sessions
-      </h3>
+      {backSlot === undefined
+        ? <p className="start-past-back">{backButton}</p>
+        : backSlot !== null && createPortal(backButton, backSlot)}
       <p className="start-panel-intro">
         Have an agent examine your Claude Code and Codex history for chores
         worth automating.

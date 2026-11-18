@@ -3517,6 +3517,40 @@ child calls is not followed. A child that suspends suspends its parent (see
 "Gates inside a nested workflow"). Serve authorizes only the parent's `run`
 (see "Workflow execution context" in `design/enablers/access-control.md`).
 
+**Placement of a nested run (swamp-club#4766).** A child runs where the step
+that calls it would run, so a workflow does the same thing on a local swamp, on
+serve and on serve with workers. The calling step's effective placement
+(workflow, job and step fields merged, plus anything its own run inherited) is
+resolved in the caller's expression context, so `forEach` items and the
+caller's inputs work, and is handed to the child with the caller's affinity
+key, when it has one (`callerPlacement` in `execution_service.ts`). The child
+records it as `inheritedPlacement` on its run record, so a child resumed or
+retried on its own is placed as it first was, and its grandchildren inherit
+the same way. The run output names the step it came from.
+
+- The caller decides per call: `target`, `labels` and `platform` on a
+  `workflow` step place that child. `placement: own` on the step hands nothing
+  down, which runs an unplaced child on the orchestrator as before. `placement`
+  is refused on any other step, and `own` is refused beside `target`, `labels`
+  or `platform` on the same step.
+- A child that sets `target`, `labels` or `platform` at any level (workflow,
+  job or step, `labels: {}` included) is placed only by its own fields for
+  that step, and drops the inherited pin. Merging field by field would let an
+  inherited `target` outrank the labels the child chose. `labels: {}` is how a
+  child keeps itself on the orchestrator under a placed caller. A child's job
+  with `affinity: false` also drops the inherited pin.
+- The inherited pin belongs to the caller: the child never releases it, and
+  it ends with the caller's job or run. A child resumed after the pin is gone
+  binds a new group, as any unbound affinity group does.
+- A child that moves to a worker has its vault secrets loaded and the
+  environment snapshot shipped to that worker with each dispatch, like any
+  placed step. Placement itself never carries a secret: a vault expression in
+  a call step's placement is refused at the call site.
+- An older swamp that rewrites a child's run record drops
+  `inheritedPlacement`, and a later resume of that child runs it unplaced.
+- A fan-out job in a child plans from the child's own selector, never from
+  inherited labels; a `workflow` step inside a fan-out job stays refused.
+
 When a step calls a method that is not a read or list kind (`get`, `read`,
 `describe`, `show`, `list`, `search`, `find`, or a declared `kind: "read"` or
 `"list"`), the behavior's pre-flight checks run first, unless the step is placed

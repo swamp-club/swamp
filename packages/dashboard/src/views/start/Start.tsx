@@ -54,6 +54,7 @@ import {
   WorkspaceSections,
 } from "./parts.tsx";
 import {
+  PastSessionsHero,
   PastSessionsPanel,
   reopenPastSessions,
   takePastSessionsReopen,
@@ -1373,6 +1374,9 @@ function WorkspaceScreen({ status, client, onStatus }: ScreenProps) {
         serverNameProblem === null);
   // An open past-sessions panel is a step of its own: Back closes it.
   const [pastOpen, setPastOpen] = useState(takePastSessionsReopen);
+  const [pastBackSlot, setPastBackSlot] = useState<HTMLDivElement | null>(
+    null,
+  );
   const closePast = useCallback(() => setPastOpen(false), []);
   useNavReport(
     false,
@@ -1672,7 +1676,9 @@ function WorkspaceScreen({ status, client, onStatus }: ScreenProps) {
   return (
     <div className="login-card start-card">
       <StatusChips status={status} client={client} onStatus={onStatus} />
-      {list === null || firstRun
+      {pastOpen
+        ? <PastSessionsHero backSlotRef={setPastBackSlot} />
+        : list === null || firstRun
         ? (
           <div className="start-hero">
             <div className="start-eyebrow">Welcome to Swamp</div>
@@ -1703,6 +1709,7 @@ function WorkspaceScreen({ status, client, onStatus }: ScreenProps) {
             disabled={busy}
             open={pastOpen}
             onOpenChange={setPastOpen}
+            backSlot={pastBackSlot}
           />
         )}
         workspaces={!pastOpen && list !== null && (

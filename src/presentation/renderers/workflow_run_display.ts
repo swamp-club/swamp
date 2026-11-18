@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { green, red, yellow } from "@std/fmt/colors";
+import { dim, green, red, yellow } from "@std/fmt/colors";
 import type { OutputMode } from "../output/output.ts";
 import { prettyJson } from "../output/json_stream.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
@@ -204,6 +204,29 @@ function renderLogWorkflowRun(data: WorkflowRunView): void {
           continuation.interruptReason ?? "an interruption",
         )
       } at ${formatTimestamp(continuation.continuedAt)}${steps}`,
+    );
+  }
+
+  const inherited = data.inheritedPlacement;
+  if (inherited !== undefined) {
+    const where = [
+      inherited.target !== undefined ? `target ${inherited.target}` : "",
+      inherited.labels !== undefined && Object.keys(inherited.labels).length > 0
+        ? `labels ${
+          Object.entries(inherited.labels).map(([k, v]) => `${k}=${v}`).join(
+            ",",
+          )
+        }`
+        : "",
+      inherited.platform !== undefined ? `platform ${inherited.platform}` : "",
+    ].filter((part) => part !== "").join(", ");
+    const { workflowName, jobName, stepName } = inherited.source;
+    writeOutput(
+      dim(
+        escapeControlCharacters(
+          `Placement inherited from ${workflowName} / ${jobName} / ${stepName} by steps that place nothing themselves: ${where}`,
+        ),
+      ),
     );
   }
 

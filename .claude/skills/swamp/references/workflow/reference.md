@@ -661,6 +661,10 @@ level with child-wins inheritance: workflow defaults apply to all steps, job
 overrides workflow, step overrides job. An explicit empty value (e.g.,
 `labels: {}`) clears inherited placement, causing the step to run locally.
 
+A nested workflow inherits the calling step's placement and affinity pin unless
+the step sets `placement: own` or the child places itself; see
+[references/nested-workflows.md](references/nested-workflows.md#placement-on-workers).
+
 ```yaml
 name: deploy-pipeline
 labels:

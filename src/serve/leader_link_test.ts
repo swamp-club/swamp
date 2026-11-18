@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { waitFor } from "@swamp-club/swamp-testing";
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import type { ServeLeader } from "../domain/datastore_v3/serve_leader.ts";
 import {
   forwardedHeaders,
@@ -818,4 +818,23 @@ Deno.test("LeaderLink.drain: a GET still streaming its reply does not hold the c
   );
   await leaderLink.drain(60_000);
   await reply.body?.cancel();
+});
+
+Deno.test("notLeaderResponse: an unnamed refusal in flight says the request may have run, never to try again", async () => {
+  const lost = await notLeaderResponse(
+    new ServeNotLeaderError(LEADER, false, true),
+    false,
+  ).json();
+  assertEquals(lost.inFlight, true);
+  assertEquals(lost.leader, undefined);
+  assertStringIncludes(lost.message, "may already have run");
+  assert(!String(lost.message).includes("try again"));
+  assert(!String(lost.message).includes("instance-a"));
+  const refused = await notLeaderResponse(
+    new ServeNotLeaderError(LEADER),
+    false,
+  )
+    .json();
+  assertEquals(refused.inFlight, undefined);
+  assertStringIncludes(refused.message, "try again");
 });

@@ -31,6 +31,7 @@ import { FileSystemControlPlaneStore } from "../persistence/fs_control_plane_sto
 import {
   fenceKey,
   releasedKey,
+  SERVE_WRITER_LEASE_TTL_MS,
   WRITER_LEASE_CLOCK_SKEW_MS,
   WriterFencedError,
 } from "../../domain/datastore_v3/writer_lease.ts";
@@ -442,6 +443,39 @@ Deno.test("acquireV3WriterLock: once the process's hold is lost, the next acquir
       await lifetime();
     }
     assertEquals(await v3WriterLockHandle(dir).inspect(), null);
+  });
+});
+
+Deno.test("acquireV3WriterLock: a hold taken with serve's TTL records it, and a retake after a loss keeps it", async () => {
+  await withTempDir(async (dir) => {
+    const lapse = SERVE_WRITER_LEASE_TTL_MS + WRITER_LEASE_CLOCK_SKEW_MS;
+    const lapsesWithin = async (before: number, after: number) => {
+      const expiresAt = await v3WriterLeaseExpiresAt(dir);
+      assert(
+        expiresAt !== undefined && expiresAt >= before + lapse &&
+          expiresAt <= after + lapse,
+        `${expiresAt} within [${before + lapse}, ${after + lapse}]`,
+      );
+    };
+    let before = Date.now();
+    const lifetime = await acquireV3WriterLock(dir, {
+      retakeLost: true,
+      ttlMs: SERVE_WRITER_LEASE_TTL_MS,
+    });
+    try {
+      await lapsesWithin(before, Date.now());
+      const other = await plantV3WriterLease(dir, { pid: Deno.pid });
+      await assertRejects(() => checkV3WriterLease(dir), WriterFencedError);
+      await other.release();
+      // a caller asking for no TTL joins the hold and retakes it on serve's TTL
+      before = Date.now();
+      const joined = await acquireV3WriterLock(dir, { maxWaitMs: 0 });
+      assertEquals(v3WriterFence(dir), other.fence + 1);
+      await lapsesWithin(before, Date.now());
+      await joined();
+    } finally {
+      await lifetime();
+    }
   });
 });
 

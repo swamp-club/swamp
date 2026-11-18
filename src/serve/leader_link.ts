@@ -108,6 +108,9 @@ export function notLeaderResponse(
       code: refusal.code,
       message: nameLeader
         ? refusal.message
+        : refusal.inFlight
+        ? "This serve node lost the leader after forwarding the request, which " +
+          "may already have run; check its outcome before retrying"
         : "This serve node does not lead the datastore; try again",
       ...(nameLeader && refusal.leader !== undefined
         ? { leader: refusal.leader }

@@ -82,7 +82,6 @@ interface Fakes {
   prompts: string[];
   briefs: Array<{ briefFile: string; content: string }>;
   signals: StartSignals;
-  swampify: boolean;
   onPath: Record<string, string>;
   failure: Pick<LaunchOutcome, "tried" | "reason">;
 }
@@ -109,7 +108,6 @@ function makeFakes(dataDir: string): Fakes {
       claudeTranscripts: false,
       codexSessions: false,
     },
-    swampify: false,
     onPath: { claude: "/usr/local/bin/claude" },
     failure: {},
   };
@@ -120,9 +118,6 @@ function makeFakes(dataDir: string): Fakes {
     os: "darwin",
     checkSignedIn: () => Promise.resolve(f.signedIn),
     apiKeyFromEnv: () => false,
-    get swampify() {
-      return f.swampify;
-    },
     repo: {
       isRepo: async (path) => {
         try {
@@ -977,7 +972,6 @@ Deno.test("startStartServer: Back from a hand-off returns to the agent step, and
 
 Deno.test("startStartServer: a kick-off's launch steps say they were reached from the kick-off", async () => {
   await withStartServer(async ({ handle, fakes }) => {
-    fakes.swampify = true;
     fakes.signals = { ...fakes.signals, claudeTranscripts: true };
     const client = await Client.open(handle.port);
     try {
@@ -2007,7 +2001,6 @@ Deno.test("startStartServer: serves a trusted Host on any port and in any case, 
 
 Deno.test("startStartServer: a swampify kick-off creates the workspace, saves the task and launches on a brief that links to the Swampify page", async () => {
   await withStartServer(async ({ handle, fakes, dataDir }) => {
-    fakes.swampify = true;
     fakes.signals = { ...fakes.signals, claudeTranscripts: true };
     const client = await Client.open(handle.port);
     try {
@@ -2075,30 +2068,8 @@ Deno.test("startStartServer: a swampify kick-off creates the workspace, saves th
   });
 });
 
-Deno.test("startStartServer: with Swampify off, the status omits it and a kick-off is refused without creating a workspace", async () => {
-  await withStartServer(async ({ handle, fakes, dataDir, opened }) => {
-    fakes.signals = { ...fakes.signals, claudeTranscripts: true };
-    const client = await Client.open(handle.port);
-    try {
-      assert(!("swampify" in await client.request("start.status")));
-      const refused = await client.requestError("start.swampify.kickoff", {
-        name: "swampify",
-        windowDays: 30,
-        harness: "claude",
-      });
-      assertEquals(refused.code, "swampify_off");
-      assertEquals(opened, []);
-      assertEquals(fakes.briefs, []);
-      await assertRejects(() => Deno.stat(workspaceDir(dataDir, "swampify")));
-    } finally {
-      await client.close();
-    }
-  });
-});
-
 Deno.test("startStartServer: an all-history kick-off for your own agent saves the brief with the pinned window line and opens nothing", async () => {
   await withStartServer(async ({ handle, fakes, dataDir }) => {
-    fakes.swampify = true;
     fakes.signals = { ...fakes.signals, claudeTranscripts: true };
     const client = await Client.open(handle.port);
     try {
@@ -2142,30 +2113,8 @@ Deno.test("startStartServer: an all-history kick-off for your own agent saves th
   });
 });
 
-Deno.test("startStartServer: with Swampify off, a kick-off for your own agent is refused too", async () => {
-  await withStartServer(async ({ handle, fakes, dataDir, opened }) => {
-    fakes.signals = { ...fakes.signals, claudeTranscripts: true };
-    const client = await Client.open(handle.port);
-    try {
-      const refused = await client.requestError("start.swampify.kickoff", {
-        name: "swampify",
-        windowDays: "all",
-        harness: "claude",
-        ownAgent: true,
-      });
-      assertEquals(refused.code, "swampify_off");
-      assertEquals(opened, []);
-      assertEquals(fakes.briefs, []);
-      await assertRejects(() => Deno.stat(workspaceDir(dataDir, "swampify")));
-    } finally {
-      await client.close();
-    }
-  });
-});
-
 Deno.test("startStartServer: a kick-off window other than 1 to 365 days or all is refused", async () => {
   await withStartServer(async ({ handle, fakes, opened }) => {
-    fakes.swampify = true;
     fakes.signals = { ...fakes.signals, claudeTranscripts: true };
     const client = await Client.open(handle.port);
     try {
@@ -2184,21 +2133,8 @@ Deno.test("startStartServer: a kick-off window other than 1 to 365 days or all i
   });
 });
 
-Deno.test("startStartServer: with Swampify on, the status says so", async () => {
-  await withStartServer(async ({ handle, fakes }) => {
-    fakes.swampify = true;
-    const client = await Client.open(handle.port);
-    try {
-      assertEquals((await client.request("start.status")).swampify, true);
-    } finally {
-      await client.close();
-    }
-  });
-});
-
 Deno.test("startStartServer: a refused swampify kick-off creates no workspace", async () => {
   await withStartServer(async ({ handle, fakes, dataDir, opened }) => {
-    fakes.swampify = true;
     fakes.signals = { ...fakes.signals, claudeTranscripts: true };
     const client = await Client.open(handle.port);
     try {

@@ -19,7 +19,12 @@
 
 import { assertEquals } from "@std/assert";
 import {
+  declaresPlacement,
+  inheritedAffinityKey,
+  type InheritedPlacement,
+  inheritPlacement,
   mergePlacementFields,
+  NestedPlacementModeSchema,
   resolveAffinityKey,
   resolvePlacement,
 } from "./placement.ts";
@@ -162,4 +167,122 @@ Deno.test("resolveAffinityKey: resolves every workflow and job combination", () 
       `workflow ${workflowAffinity}, job ${jobAffinity}`,
     );
   }
+});
+
+const SOURCE = { workflowName: "caddy", jobName: "install", stepName: "sudo" };
+
+function inherited(
+  fields: InheritedPlacement["fields"],
+  affinityKey?: string,
+): InheritedPlacement {
+  return { fields, affinityKey, source: SOURCE };
+}
+
+Deno.test("inheritPlacement: a child with no placement takes the caller's", () => {
+  assertEquals(
+    inheritPlacement(inherited({ target: "w-a" }), [undefined, {}, {}]),
+    { target: "w-a" },
+  );
+});
+
+Deno.test("inheritPlacement: a child that places itself at any level drops everything inherited", () => {
+  const from = inherited({ target: "w-a", queueTimeout: 5 });
+  assertEquals(
+    inheritPlacement(from, [{ labels: { fleet: "db" } }]),
+    undefined,
+  );
+  assertEquals(
+    inheritPlacement(from, [undefined, { platform: "linux" }]),
+    undefined,
+  );
+  assertEquals(
+    inheritPlacement(from, [undefined, undefined, { target: "w-b" }]),
+    undefined,
+  );
+});
+
+Deno.test("inheritPlacement: an explicit labels {} in the child keeps it local", () => {
+  const from = inherited({ target: "w-a" });
+  const base = inheritPlacement(from, [{ labels: {} }]);
+  assertEquals(base, undefined);
+  assertEquals(
+    resolvePlacement(mergePlacementFields(base, { labels: {} })),
+    undefined,
+  );
+});
+
+Deno.test("inheritPlacement: a child's queueTimeout alone keeps the inherited placement", () => {
+  const from = inherited({ target: "w-a", queueTimeout: 5 });
+  assertEquals(
+    mergePlacementFields(inheritPlacement(from, [{ queueTimeout: 9 }]), {
+      queueTimeout: 9,
+    }),
+    { target: "w-a", labels: undefined, platform: undefined, queueTimeout: 9 },
+  );
+});
+
+Deno.test("inheritPlacement: with nothing inherited there is no base", () => {
+  assertEquals(inheritPlacement(undefined, []), undefined);
+});
+
+Deno.test("inheritedAffinityKey: the caller's pin holds for a child that places nothing", () => {
+  assertEquals(
+    inheritedAffinityKey(
+      inherited({ labels: { fleet: "web" } }, "run-1"),
+      [undefined, {}, { queueTimeout: 3 }],
+      undefined,
+    ),
+    "run-1",
+  );
+});
+
+Deno.test("inheritedAffinityKey: a child declaring placement at any level drops the pin", () => {
+  const from = inherited({ labels: { fleet: "web" } }, "run-1");
+  assertEquals(
+    inheritedAffinityKey(from, [{ target: "w-b" }], undefined),
+    undefined,
+  );
+  assertEquals(
+    inheritedAffinityKey(
+      from,
+      [undefined, { labels: { fleet: "db" } }],
+      undefined,
+    ),
+    undefined,
+  );
+  assertEquals(
+    inheritedAffinityKey(
+      from,
+      [undefined, undefined, { platform: "linux" }],
+      undefined,
+    ),
+    undefined,
+  );
+});
+
+Deno.test("inheritedAffinityKey: a child job with affinity false drops the pin", () => {
+  assertEquals(
+    inheritedAffinityKey(inherited({ target: "w-a" }, "run-1"), [], false),
+    undefined,
+  );
+});
+
+Deno.test("inheritedAffinityKey: no inherited pin yields none", () => {
+  assertEquals(inheritedAffinityKey(undefined, [], undefined), undefined);
+  assertEquals(
+    inheritedAffinityKey(inherited({ target: "w-a" }), [], true),
+    undefined,
+  );
+});
+
+Deno.test("declaresPlacement: queueTimeout alone is not a placement", () => {
+  assertEquals(declaresPlacement(undefined), false);
+  assertEquals(declaresPlacement({ queueTimeout: 10 }), false);
+  assertEquals(declaresPlacement({ labels: {} }), true);
+});
+
+Deno.test("NestedPlacementModeSchema: accepts inherit and own only", () => {
+  assertEquals(NestedPlacementModeSchema.safeParse("inherit").success, true);
+  assertEquals(NestedPlacementModeSchema.safeParse("own").success, true);
+  assertEquals(NestedPlacementModeSchema.safeParse("local").success, false);
 });

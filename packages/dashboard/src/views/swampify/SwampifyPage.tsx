@@ -30,6 +30,7 @@ import type {
   SwampifyRow,
 } from "../../client/swampify.ts";
 import { LoadError } from "../../components/LoadError.tsx";
+import { PreviewChip } from "../../components/PreviewChip.tsx";
 import type { SwampifyCandidateSet } from "../../lib/agent_sessions/swampify.ts";
 import {
   formatShortDay,
@@ -204,12 +205,7 @@ export function SwampifyPage(props: SwampifyPageProps) {
         <div>
           <h1 className="sw-title">
             Swampify
-            <span
-              className="sw-preview-chip"
-              title="A preview: what it shows may change"
-            >
-              Preview
-            </span>
+            <PreviewChip />
           </h1>
           <p className="sw-subtitle">
             Turn prompts and tool calls into Swamp powered automation
