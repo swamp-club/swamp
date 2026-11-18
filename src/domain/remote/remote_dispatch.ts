@@ -107,10 +107,9 @@ export interface RemoteStepRequest {
    */
   legacyDelivery?: () => Promise<LegacyStepDelivery>;
   /**
-   * places data text in arguments for the chosen worker's shell by platform;
-   * called per attempt since a re-dispatch may pick another platform; throws to
-   * refuse; required so data never runs as authored text; an argument it does
-   * not change comes back by reference, which is how serve finds its changes
+   * places data text in arguments for the chosen worker's shell, per attempt
+   * since a re-dispatch may change platform; throws to refuse; required so data
+   * never runs as authored text; an unchanged argument comes back by reference
    */
   placeArguments: (
     args: {

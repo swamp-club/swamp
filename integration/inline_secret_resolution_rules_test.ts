@@ -149,7 +149,7 @@ const PINNED: readonly { site: string; row: string }[] = [
   },
   {
     "site":
-      "src/domain/models/method_execution_service.ts: DefaultMethodExecutionService.#legacyDelivery -> secretBag.resolveDeep (x3)",
+      "src/domain/models/method_execution_service.ts: DefaultMethodExecutionService.#legacyDelivery -> secretBag.resolveDeep (x4)",
     "row": "delivery",
   },
   {
