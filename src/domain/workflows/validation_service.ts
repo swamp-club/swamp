@@ -18,11 +18,18 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { Job } from "./job.ts";
+import type { Step } from "./step.ts";
+import { ModelType } from "../models/model_type.ts";
 import type { Workflow } from "./workflow.ts";
 import { workflowDeclaresInputs, WorkflowSchema } from "./workflow.ts";
 import { WorkflowSchemaError } from "./workflow_schema_error.ts";
 import type { WorkflowRepository } from "./repositories.ts";
-import { mergePlacementFields, resolvePlacement } from "./placement.ts";
+import {
+  mergePlacementFields,
+  type PlacementFields,
+  resolvePlacement,
+} from "./placement.ts";
+import { isEnrollmentTokenType } from "../models/worker/enrollment_token_write_ordering.ts";
 import { describePlacement } from "../remote/scheduler.ts";
 import { createWorkflowId } from "./workflow_id.ts";
 import { schemaExpressions } from "./signal_wait.ts";
@@ -124,6 +131,8 @@ export type MethodResolution =
      * refuses when it runs
      */
     reservedTagRefusal?: string;
+    /** the step's behavior type, normalized; absent from older resolvers */
+    modelType?: string;
   }
   | { status: "model_not_found" }
   | { status: "method_not_found"; modelType: string }
@@ -156,6 +165,32 @@ export interface WorkflowValidationService {
  */
 const PROSE_DESCRIPTION_PATH =
   /^(?:jobs\[\d+\](?:\.steps\[\d+\])?\.)?description$/;
+
+/**
+ * where each of a step's effective placement fields comes from; empty when the
+ * step runs on the orchestrator, by the rule resolvePlacement applies
+ */
+function placementOrigins(
+  workflow: Workflow,
+  job: Job,
+  step: Step,
+): string[] {
+  const levels: ReadonlyArray<readonly [string, PlacementFields | undefined]> =
+    [
+      ["the step", step.placementFields],
+      [`job '${job.name}'`, job.placementFields],
+      ["the workflow", workflow.placementFields],
+    ];
+  const origins: string[] = [];
+  for (const field of ["target", "labels", "platform"] as const) {
+    const level = levels.find(([, fields]) => fields?.[field] !== undefined);
+    if (level === undefined) continue;
+    const value = level[1]?.[field];
+    if (typeof value === "object" && Object.keys(value).length === 0) continue;
+    origins.push(`${field} set on ${level[0]}`);
+  }
+  return origins;
+}
 
 /** guards and assert exprs written without ${{ }} are CEL all the same */
 function bareStepExpressions(
@@ -1157,6 +1192,7 @@ export class DefaultWorkflowValidationService
                   ? undefined
                   : taskData.globalArgs,
                 workflow.inputs?.properties,
+                placementOrigins(workflow, job, step),
               ),
             );
           }
@@ -1185,6 +1221,7 @@ export class DefaultWorkflowValidationService
     modelType?: string,
     globalArgs?: Record<string, unknown>,
     inputProperties?: Record<string, { default?: unknown }>,
+    stepPlacement: readonly string[] = [],
   ): Promise<WorkflowValidationResult[]> {
     const checkName =
       `Step inputs for '${stepName}' in job '${jobName}' (${modelIdOrName}.${methodName})`;
@@ -1279,7 +1316,27 @@ export class DefaultWorkflowValidationService
             ),
           ]
           : [];
-        const definitionProblems = [...literalGlobals, ...reservedTags];
+        const placement = resolution.modelType !== undefined &&
+            stepPlacement.length > 0 &&
+            isEnrollmentTokenType(ModelType.create(resolution.modelType))
+          ? [
+            WorkflowValidationResult.fail(
+              `Placement for '${stepName}' in job '${jobName}' (${modelIdOrName}.${methodName})`,
+              atDefault +
+                `Only the orchestrator writes enrollment tokens, so this ` +
+                `step cannot run with remote placement (${
+                  stepPlacement.join("; ")
+                }). A step can clear inherited labels with labels: {}, ` +
+                `but not an inherited target or platform: move the step to ` +
+                `a job and workflow that set neither`,
+            ),
+          ]
+          : [];
+        const definitionProblems = [
+          ...literalGlobals,
+          ...reservedTags,
+          ...placement,
+        ];
         const provided = new Set<string>([
           ...Object.keys(inputs ?? {}),
           ...Object.keys(globalArgs ?? {}),

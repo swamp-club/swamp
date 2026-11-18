@@ -3933,3 +3933,83 @@ Deno.test("validate: forEach.in reading data written by an earlier job does not 
   ));
   assertEquals(warnings, []);
 });
+
+function tokenStepWorkflow(placement: {
+  workflow?: { target?: string; labels?: Record<string, string> };
+  job?: { platform?: string; labels?: Record<string, string> };
+  step?: { labels?: Record<string, string> };
+}): Workflow {
+  return Workflow.create({
+    name: "rotate-fleet",
+    ...placement.workflow,
+    jobs: [
+      Job.create({
+        name: "main",
+        ...placement.job,
+        steps: [
+          Step.create({
+            name: "rotate",
+            task: StepTask.model("fleet", "rotate"),
+            ...placement.step,
+          }),
+        ],
+      }),
+    ],
+  });
+}
+
+const tokenResolver = () =>
+  mockResolver({
+    "fleet.rotate": {
+      status: "resolved",
+      requiredArgs: [],
+      modelType: "swamp/enrollment-token",
+    },
+  });
+
+Deno.test("validateStepInputs: refuses an enrollment token step with inherited placement and names where each field comes from", async () => {
+  const svc = new DefaultWorkflowValidationService(tokenResolver());
+  const results = await svc.validate(
+    tokenStepWorkflow({
+      workflow: { target: "w1" },
+      job: { platform: "linux" },
+    }),
+  );
+  const placement = results.find((r) => r.name.startsWith("Placement for"));
+  assertEquals(placement?.passed, false);
+  assertStringIncludes(placement?.error ?? "", "target set on the workflow");
+  assertStringIncludes(placement?.error ?? "", "platform set on job 'main'");
+});
+
+Deno.test("validateStepInputs: an enrollment token step whose inherited labels are cleared on the step passes", async () => {
+  const svc = new DefaultWorkflowValidationService(tokenResolver());
+  const results = await svc.validate(
+    tokenStepWorkflow({
+      job: { labels: { pool: "gke" } },
+      step: { labels: {} },
+    }),
+  );
+  assertEquals(
+    results.find((r) => r.name.startsWith("Placement for")),
+    undefined,
+  );
+});
+
+Deno.test("validateStepInputs: another type's step keeps its inherited placement", async () => {
+  const svc = new DefaultWorkflowValidationService(
+    mockResolver({
+      "fleet.rotate": {
+        status: "resolved",
+        requiredArgs: [],
+        modelType: "command/shell",
+      },
+    }),
+  );
+  const results = await svc.validate(
+    tokenStepWorkflow({ workflow: { target: "w1" } }),
+  );
+  assertEquals(
+    results.find((r) => r.name.startsWith("Placement for")),
+    undefined,
+  );
+});

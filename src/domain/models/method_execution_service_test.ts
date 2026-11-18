@@ -46,6 +46,8 @@ import {
   withRemoteOutputs,
 } from "../remote/remote_dispatch.ts";
 import { fromResourceHandle } from "../data/data_record_mapper.ts";
+import { ENROLLMENT_TOKEN_MODEL_TYPE } from "./worker/enrollment_token_model.ts";
+import { setEnrollmentTokenWriteOrdering } from "./worker/enrollment_token_write_ordering.ts";
 import { createExtensionCelEnvironment } from "../../infrastructure/cel/cel_evaluator.ts";
 import {
   dataSplicePlacer,
@@ -8113,6 +8115,87 @@ Deno.test("executeWorkflow - a placed step a planned restart withdrew records it
       StepWithdrawnError,
     );
     assertEquals(saved[saved.length - 1].output.status, "cancelled");
+  } finally {
+    setRemoteStepDispatcher(null);
+  }
+});
+
+Deno.test("execute: a method run on an enrollment token goes through the token write ordering", async () => {
+  let turns = 0;
+  setEnrollmentTokenWriteOrdering((fn) => {
+    turns++;
+    return fn();
+  });
+  try {
+    const { context } = createTestContext({
+      modelType: ENROLLMENT_TOKEN_MODEL_TYPE,
+    });
+    const result = await new DefaultMethodExecutionService().execute(
+      Definition.create({
+        name: "fleet",
+        globalArguments: { message: "rotate" },
+        methods: { write: { arguments: { message: "rotate" } } },
+      }),
+      testEchoModel.methods.write,
+      context,
+    );
+    assertEquals(result.dataHandles?.length, 1);
+    assertEquals(turns, 1);
+  } finally {
+    setEnrollmentTokenWriteOrdering(null);
+  }
+});
+
+Deno.test("execute: a method run on another type skips the token write ordering", async () => {
+  let turns = 0;
+  setEnrollmentTokenWriteOrdering((fn) => {
+    turns++;
+    return fn();
+  });
+  try {
+    const { context } = createTestContext();
+    await new DefaultMethodExecutionService().execute(
+      Definition.create({
+        name: "echo",
+        globalArguments: { message: "hi" },
+        methods: { write: { arguments: { message: "hi" } } },
+      }),
+      testEchoModel.methods.write,
+      context,
+    );
+    assertEquals(turns, 0);
+  } finally {
+    setEnrollmentTokenWriteOrdering(null);
+  }
+});
+
+Deno.test("executeWorkflow: refuses remote placement of an enrollment token method before any dispatch", async () => {
+  let dispatched = 0;
+  setRemoteStepDispatcher({
+    executeRemote: () => {
+      dispatched++;
+      return Promise.reject(new Error("dispatched"));
+    },
+    releaseAffinity: () => {},
+  });
+  try {
+    const model = createCheckModel({});
+    const { context } = createTestContext({
+      modelType: ENROLLMENT_TOKEN_MODEL_TYPE,
+      placement: { labels: { tier: "remote" } },
+    });
+    await assertRejects(
+      () =>
+        new DefaultMethodExecutionService().executeWorkflow(
+          Definition.create({ name: "fleet", globalArguments: {} }),
+          model,
+          "create",
+          context,
+        ),
+      UserError,
+      "only the orchestrator writes enrollment tokens",
+    );
+    assertEquals(dispatched, 0);
   } finally {
     setRemoteStepDispatcher(null);
   }

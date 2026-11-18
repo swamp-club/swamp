@@ -579,7 +579,16 @@ conditional save that rejects unless `latest` matches an expected version.)
 dispatch service and the gateway each keep one, and each transition runs in a
 `swamp.serve.transition` span recording its queue wait and the transitions
 ahead of it on its chain. The gateway runs its token and worker transitions
-on one chain. The dispatch service orders transitions per record instead
+on one chain. Any other enrollment-token method run in the serve process (a
+behavior method run, a workflow step, a nested invocation) joins that chain
+too: serve registers the gateway as the enrollment-token write ordering
+(`src/domain/models/worker/enrollment_token_write_ordering.ts`), which the
+method execution service runs every token method body through. The run commits
+its open unit of work before its turn ends (`WorkerGateway.orderTokenMethodRun`):
+a latest write carries no version check, so a commit left to the end of a
+longer run would replace a later turn's. A token method with remote placement is
+refused, by `workflow validate` and when the step runs, since the orchestrator
+cannot order a write a worker makes. The dispatch service orders transitions per record instead
 (swamp-club#4038): each step lease and each pending dispatch is its own data
 item, so the record is the consistency boundary. A lease's acquire,
 `mark_writes` and end run in order, but no lease waits on another lease's

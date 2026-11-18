@@ -47,6 +47,10 @@ import { markErrorPaths, UserError } from "../errors.ts";
 import type { DataArtifactRef } from "./model_output.ts";
 import { executionErrorFrom, ModelOutput } from "./model_output.ts";
 import { refuseSecretDestinations } from "./secret_destinations.ts";
+import {
+  isEnrollmentTokenType,
+  orderEnrollmentTokenWrite,
+} from "./worker/enrollment_token_write_ordering.ts";
 import { DataOutputValidationService } from "./data_output_validation_service.ts";
 import { DefinitionUpgradeService } from "./definition_upgrade_service.ts";
 import { resolveStaleness } from "../definitions/definition_staleness.ts";
@@ -970,11 +974,34 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
     return this.#execute(definition, method, context);
   }
 
+  #execute(
+    definition: Definition,
+    method: MethodDefinition,
+    context: MethodContext,
+    onArgumentsValidated?: () => Promise<void>,
+    unread?: UnreadReferenceLookup,
+  ): Promise<MethodResult> {
+    // deadlock-free only while nothing on the token writer's tail takes a model
+    // lock or the run sync gate, which a workflow step holds as it waits here
+    return orderEnrollmentTokenWrite(
+      context.modelType,
+      () =>
+        this.#executeMethod(
+          definition,
+          method,
+          context,
+          onArgumentsValidated,
+          unread,
+        ),
+      context.signal,
+    );
+  }
+
   /**
    * this is the run's one parse of the arguments, whose result the method
    * receives
    */
-  async #execute(
+  async #executeMethod(
     definition: Definition,
     method: MethodDefinition,
     context: MethodContext,
@@ -2093,6 +2120,17 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
           `Method '${methodName}' declares rollbackOnFailure but has remote ` +
             `placement — deferred-latest writes are not yet supported for ` +
             `remote execution. Remove rollbackOnFailure or run locally.`,
+        );
+      }
+
+      if (isRemotePlacement && isEnrollmentTokenType(context.modelType)) {
+        throw new UserError(
+          `Method '${methodName}' of an enrollment token cannot run with ` +
+            `remote placement: only the orchestrator writes enrollment ` +
+            `tokens. Placement set on a workflow or job applies to each of ` +
+            `its steps, so run this step in a job and workflow without ` +
+            `target, platform or labels; workflow validate names where it ` +
+            `comes from.`,
         );
       }
 
