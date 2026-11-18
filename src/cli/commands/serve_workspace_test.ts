@@ -155,7 +155,7 @@ Deno.test("runServeWorkspaceCreate: an invalid name is refused before any reques
   assertEquals(sent, []);
 });
 
-Deno.test("runServeWorkspaceCreate: a token-mode root's refusal reaches the caller as its message", async () => {
+Deno.test("runServeWorkspaceCreate: an older token-mode root's refusal reaches the caller as its message", async () => {
   const message = "A root in token mode cannot create a workspace yet.";
   const { deps } = fake(
     new ServerResponseError({ code: "token_mode_create_refused", message }),

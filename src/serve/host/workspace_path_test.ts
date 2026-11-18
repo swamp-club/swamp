@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { matchWorkspacePath } from "./workspace_path.ts";
+import { matchWorkspacePath, workspaceNameUnder } from "./workspace_path.ts";
 
 Deno.test("matchWorkspacePath: a workspace path loses its prefix", () => {
   assertEquals(matchWorkspacePath("/w/edge-dns/api/v1/request"), {
@@ -78,4 +78,33 @@ Deno.test("matchWorkspacePath: dot segments are resolved by URL parsing before m
     name: "b",
     path: "/x",
   });
+});
+
+Deno.test("workspaceNameUnder: the name a child's address adds under the root's, or null", () => {
+  assertEquals(
+    workspaceNameUnder(
+      "https://host.example",
+      "https://host.example/w/edge-dns",
+    ),
+    "edge-dns",
+  );
+  assertEquals(
+    workspaceNameUnder(
+      "https://host.example/swamp",
+      "https://host.example/swamp/w/edge-dns",
+    ),
+    "edge-dns",
+  );
+  for (
+    const address of [
+      "https://host.example",
+      "https://host.example/w/",
+      "https://host.example/w/Edge",
+      "https://host.example/w/edge-dns/more",
+      "https://host.example.evil/w/edge-dns",
+      "https://other.example/w/edge-dns",
+    ]
+  ) {
+    assertEquals(workspaceNameUnder("https://host.example", address), null);
+  }
 });

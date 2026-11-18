@@ -297,6 +297,12 @@ Deno.test("serve host: a root and two workspaces made by hand answer at their ow
     assertEquals(edge.env, { PATH: "/usr/bin" });
     assertEquals(edge.oauthClient, null);
     assertEquals(edge.hostWorkspaces, undefined);
+    assertEquals(edge.rootAddress, "https://serve.acme.internal");
+    assertEquals(
+      port.of("workspace:cost-reports")[0].spec.rootAddress,
+      "https://serve.acme.internal",
+    );
+    assertEquals(port.of("root")[0].spec.rootAddress, undefined);
     assertEquals(
       port.of("root")[0].spec.address,
       "https://serve.acme.internal",
@@ -334,6 +340,8 @@ Deno.test("serve host: a workspace folder added while the host runs answers, and
       () => answers(`${base}/w/late/`, "workspace:late"),
       "the added workspace to answer",
     );
+    // a host with no root has nowhere for a workspace to sign in through
+    assertEquals(port.of("workspace:late")[0].spec.rootAddress, undefined);
 
     await waitFor(
       () => answers(`${base}/w/edge-dns/`, "workspace:edge-dns"),

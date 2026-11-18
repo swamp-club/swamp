@@ -479,7 +479,7 @@ function toHttpResponse(response: WebhookResponse): Response {
 }
 
 export async function readBodyWithLimit(
-  req: Request,
+  req: Pick<Request, "body">,
   maxBytes: number,
 ): Promise<Uint8Array | null> {
   const reader = req.body?.getReader();

@@ -189,12 +189,12 @@ Deno.test("serveCommand has a hidden --exit-on-stdin-close option that serve dae
   );
 });
 
-Deno.test("serveCommand has hidden host-root options that serve daemon enable does not", async () => {
+Deno.test("serveCommand has hidden host-child options that serve daemon enable does not", async () => {
   const { serveCommand } = await import("./serve.ts");
   const daemonEnable = serveCommand.getCommand("daemon")!.getCommand(
     "enable",
   )!;
-  for (const name of ["host-workspaces-dir", "host-address"]) {
+  for (const name of ["host-workspaces-dir", "host-address", "root-address"]) {
     const opt = serveCommand.getOptions(true).find((o) => o.name === name);
     assertEquals(opt?.hidden, true, name);
     assertEquals(

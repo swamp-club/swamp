@@ -321,6 +321,8 @@ export type ServerTokenAuthResult =
     delegation?: string;
     /** a delegated access token's expiry: a session it opened closes then */
     sessionExpiresAt?: string;
+    /** the server token record's expiry; absent on a delegated token */
+    tokenExpiresAt?: string;
   }
   | { ok: false; error: string; reason: TokenAuthRejectionReason };
 
@@ -499,6 +501,7 @@ export async function authenticateServerToken(
       groups: token.groups,
       tokenName: split.name,
       tokenCreatedAt: token.createdAt,
+      tokenExpiresAt: token.expiresAt,
       ...(token.oauthIdentity ? { oauthIdentity: token.oauthIdentity } : {}),
       ...(token.client !== undefined ? { client: token.client } : {}),
     };
@@ -580,6 +583,7 @@ export async function authenticateDashboardSession(
       groups: token.groups,
       tokenName: binding.tokenName,
       tokenCreatedAt: token.createdAt,
+      tokenExpiresAt: token.expiresAt,
       ...(token.oauthIdentity ? { oauthIdentity: token.oauthIdentity } : {}),
       ...(token.client !== undefined ? { client: token.client } : {}),
     };

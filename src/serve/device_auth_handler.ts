@@ -480,6 +480,8 @@ async function mintServerTokenImpl(
   namespace?: string,
   username?: string,
   client: string = DIRECT_CLI_CLIENT,
+  options: { readonly expiresAtMs?: number; readonly oauthIdentity?: boolean } =
+    {},
 ): Promise<string> {
   const tokenName = `oauth-${crypto.randomUUID().slice(0, 8)}`;
   const secretKey = serverTokenSecretKey(tokenName);
@@ -541,17 +543,20 @@ async function mintServerTokenImpl(
         state: "active" as const,
         principalId,
         principalEmail,
-        // only this OAuth login sets it, so audit events name a user by what
-        // the provider said, not an operator-typed email
-        oauthIdentity: {
-          email: principalEmail,
-          ...(username !== undefined ? { username } : {}),
-        },
+        // set only from what an OAuth provider said, at login or through the
+        // root's, never from an operator-typed email
+        ...(options.oauthIdentity === false ? {} : {
+          oauthIdentity: {
+            email: principalEmail,
+            ...(username !== undefined ? { username } : {}),
+          },
+        }),
         client,
         collectives,
         groups,
         createdAt: new Date(now).toISOString(),
-        expiresAt: new Date(now + DEFAULT_DURATION_MS).toISOString(),
+        expiresAt: new Date(options.expiresAtMs ?? now + DEFAULT_DURATION_MS)
+          .toISOString(),
         vaultName,
         secretKey,
         secretFingerprint: await serverTokenSecretFingerprint(plaintext),
@@ -621,6 +626,62 @@ async function mintServerTokenImpl(
   });
 
   return `${tokenName}.${plaintext}`;
+}
+
+export interface ExchangeMintInput {
+  readonly principalId: string;
+  readonly email: string | null;
+  readonly username: string | null;
+  readonly collectives: readonly string[];
+  readonly groups: readonly string[];
+  /** the root token's expiry, which the minted token never outlives */
+  readonly notAfter: string;
+  /** an OAuth workspace records the login identity, so its admission lists keep applying */
+  readonly oauthIdentity: boolean;
+}
+
+export interface ExchangeMinted {
+  readonly token: string;
+  readonly expiresAt: string;
+}
+
+export function createExchangeTokenMinter(
+  repoDir: string,
+  repoContext: RepositoryContext,
+  defaultVault?: string,
+  syncService?: DatastoreSyncService,
+  namespace?: string,
+  syncGate?: SyncGate,
+  confirmReplicated?: () => Promise<void>,
+  now: () => number = Date.now,
+): (input: ExchangeMintInput) => Promise<ExchangeMinted> {
+  return async (input) => {
+    const expiresAtMs = Math.min(
+      now() + DEFAULT_DURATION_MS,
+      Date.parse(input.notAfter),
+    );
+    if (input.oauthIdentity && !input.email) {
+      throw new Error("An OAuth login identity needs an email");
+    }
+    // mint and push are one unit a poller pull must not interleave with
+    const token = await withSyncGate(syncGate, () =>
+      mintServerTokenImpl(
+        input.principalId,
+        input.email ?? "",
+        [...input.collectives],
+        [...input.groups],
+        repoDir,
+        repoContext,
+        defaultVault,
+        syncService,
+        namespace,
+        input.username ?? undefined,
+        DIRECT_CLI_CLIENT,
+        { expiresAtMs, oauthIdentity: input.oauthIdentity },
+      ));
+    await confirmReplicated?.();
+    return { token, expiresAt: new Date(expiresAtMs).toISOString() };
+  };
 }
 
 export function oauthPrincipalId(sub: string): string {

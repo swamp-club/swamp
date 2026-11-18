@@ -157,6 +157,9 @@ export async function startServeHost(
           address: config.address,
         },
       }
+      // the root answers at the host's address
+      : config.root !== null
+      ? { rootAddress: config.address }
       : {}),
   });
 

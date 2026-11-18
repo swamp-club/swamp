@@ -242,6 +242,7 @@ import {
   handleWorkspaceCreate,
   handleWorkspaceGet,
   handleWorkspaceList,
+  handleWorkspaceSignIn,
 } from "./handlers/workspace_handlers.ts";
 import {
   authorizeOrReject,
@@ -1173,6 +1174,12 @@ const WorkspaceDeleteRequestSchema = z.object({
   payload: WorkspaceNamePayloadSchema,
 });
 
+const WorkspaceSignInRequestSchema = z.object({
+  type: z.literal("workspace.sign-in"),
+  id: z.string().min(1).max(256),
+  payload: WorkspaceNamePayloadSchema,
+});
+
 const DatastoreStatusRequestSchema = z.object({
   type: z.literal("datastore.status"),
   id: z.string().min(1).max(256),
@@ -1754,6 +1761,7 @@ const ServerRequestSchema = z.discriminatedUnion("type", [
   WorkspaceSuspendRequestSchema,
   WorkspaceResumeRequestSchema,
   WorkspaceDeleteRequestSchema,
+  WorkspaceSignInRequestSchema,
   DatastoreStatusRequestSchema,
   DatastoreSetupExtensionRequestSchema,
   DatastoreClaimRequestSchema,
@@ -3805,6 +3813,18 @@ export function handleMessage(
           principal,
         ),
         auditOpts("admin", "workspace", request.payload.name),
+      );
+      break;
+    case "workspace.sign-in":
+      task = audited(
+        handleWorkspaceSignIn(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          principal,
+        ),
+        auditOpts("auth", "workspace", request.payload.name),
       );
       break;
     case "datastore.status":

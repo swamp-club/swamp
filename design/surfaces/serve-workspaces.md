@@ -236,8 +236,9 @@ port it got on its `--json` listening line. The root alone is also given
 the `workspaces/` folder and the host's address, as the hidden
 `--host-workspaces-dir` and `--host-address`, which make it the serve that
 takes the [lifecycle requests](#lifecycle). A workspace is also given the
-root's address, which [Sign-in](#sign-in) uses. The child inherits the host's
-environment, as plain serve inherits its operator's, so models and workers see
+root's address, as the hidden `--root-address`, which [Sign-in](#sign-in) uses;
+a host with no root gives none. The child inherits the host's environment, as
+plain serve inherits its operator's, so models and workers see
 what they would under plain serve. `SWAMP_REPO_DIR` and `SWAMP_DATASTORE` are dropped, since they would
 point every workspace at one repo or datastore, and `SWAMP_HOME` and
 `SWAMP_CONFIG_DIR` are pinned (`src/serve/host/child_env.ts`).
@@ -450,13 +451,14 @@ The root workspace takes the lifecycle requests. Its grants decide who may make
 them and its audit log records each one. The host gives the root the
 `workspaces/` folder, and a serve without it refuses these requests.
 
-| Request             | Does                                                                                           | Needs on the root             |
-| ------------------- | ---------------------------------------------------------------------------------------------- | ----------------------------- |
-| `workspace.create`  | Makes the folder, sets up the repo, writes its `serve.yaml` with the caller as its first admin | `write` on `workspace:<name>` |
-| `workspace.list`    | Names, addresses and states                                                                    | any authenticated principal   |
-| `workspace.get`     | One workspace: state, restarts, and why it is not ready, described by state                    | `read` on `workspace:<name>`  |
-| `workspace.suspend` | Stops its serve and keeps everything; `resume` starts it again                                 | `admin` on `workspace:<name>` |
-| `workspace.delete`  | Stops its serve and removes its folder                                                         | `admin` on `workspace:<name>` |
+| Request             | Does                                                                                           | Needs on the root                |
+| ------------------- | ---------------------------------------------------------------------------------------------- | -------------------------------- |
+| `workspace.create`  | Makes the folder, sets up the repo, writes its `serve.yaml` with the caller as its first admin | `write` on `workspace:<name>`    |
+| `workspace.list`    | Names, addresses and states                                                                    | any authenticated principal      |
+| `workspace.get`     | One workspace: state, restarts, and why it is not ready, described by state                    | `read` on `workspace:<name>`     |
+| `workspace.suspend` | Stops its serve and keeps everything; `resume` starts it again                                 | `admin` on `workspace:<name>`    |
+| `workspace.delete`  | Stops its serve and removes its folder                                                         | `admin` on `workspace:<name>`    |
+| `workspace.sign-in` | A single-use code the named workspace redeems for a token of its own (see [Sign-in](#sign-in)) | any person signed in to the root |
 
 `workspace` is a resource kind in grants, with a pattern that is a workspace
 name, a prefix of one ending in `*`, or `*`. With no grant naming it, only the
@@ -473,9 +475,9 @@ suspends, resumes or deletes one, as a ceiling never carries `write` or `admin`.
 swamp-club refuses a workspace entry in a consented ceiling until
 swamp-club#4879 lands, so until then no delegation carries one.
 `swamp access can-i` answers for the kind as the requests do, except that it
-lists grants and so shows nothing for a root admin's fallback. A token-mode root refuses `create` until the
-[sign-in exchange](#sign-in) exists: the creator would have no way to get a
-token inside the new workspace. Each request, allowed or refused, is in the
+lists grants and so shows nothing for a root admin's fallback. A token-mode
+root creates as an `oauth` one does, and its creator reaches the new workspace
+through the [sign-in exchange](#sign-in). Each request, allowed or refused, is in the
 root's audit log with the caller and the workspace name
 (`src/serve/handlers/workspace_handlers.ts`). A follower root answers them
 itself, since only the node holding the folder can. A grant of `write` and `admin` on
@@ -562,7 +564,8 @@ file-system error the services did not expect returns `host_error` and goes to
 the host's log.
 
 The root's admins hold the lifecycle, not the contents. They are not principals
-inside a workspace unless its own admins add them. When a workspace's admins
+inside a workspace unless its own admins add them, except in `token` mode (see
+[Sign-in](#sign-in)). When a workspace's admins
 are gone, an operator on the host suspends it, edits the admins in its
 `serve.yaml` and resumes it.
 
@@ -584,13 +587,13 @@ A person signs in once, to the root. Each workspace still mints and checks its
 own tokens, so every access record stays in the workspace.
 
 1. The client asks the root for a sign-in code for one workspace
-   (`workspace.sign-in`). The root gives any authenticated principal a
+   (`workspace.sign-in`). The root gives any person signed in to it a
    single-use code that names the workspace and expires within a minute.
 2. The client gives the code to the workspace (`POST /auth/exchange`).
 3. The workspace redeems the code at the root and sends its own name with it.
    The root refuses a code that names another workspace. Otherwise it answers
-   once with who the code was issued to: the principal, the username and the
-   collectives.
+   once with who the code was issued to: the principal, the username, the
+   collectives and the root token's expiry.
 4. The workspace applies its own admission lists and mints its own server
    token for that principal.
 
@@ -611,6 +614,56 @@ A workspace token lives no longer than the root token it came from, and its
 collectives are the ones the root knew at the exchange. The exchange is the
 same in `token` mode, so the creator of a workspace reaches it with the token
 they already hold.
+
+**Who gets a code.** Only a person: a worker's root credential must not reach
+into every workspace. A caller acting through an integration or a delegation is
+refused one too, since the workspace token would not carry that caller's
+ceiling. A root in `none` mode issues none; its workspaces need no sign-in. The
+root does not look the name up, so the request tells no one which workspaces
+exist; a code for a name with no workspace is never redeemed. Each request is
+in the root's audit log with the caller and the workspace name, and the code is
+in neither the audit log nor a log line.
+
+**Where the root keeps codes.** In memory, in the root process the host
+started, keyed by the code's hash. That process is the only node holding the
+`workspaces/` folder, so it alone answers `workspace.sign-in`, and the root's
+public address routes there through the host's router. Redeem
+(`POST /auth/sign-in-code/redeem`) is answered on the node that received it,
+never forwarded to a leader. A code is gone after its first redeem, refused or
+not, or after a minute; a restart of the root drops the codes outstanding. Each
+person holds at most 20 unused codes.
+
+**How a workspace reaches the root.** Through the host's router at the root's
+public address, the `--root-address` the host gave it. The workspace sends the
+code and its own name, never a token. Its own name is what its `--address` adds
+to the root's (`<root address>/w/<name>`). The host's loopback listener was the
+other way, but fails under TLS, whose certificate names the public host.
+
+**What redeem answers.** The principal, the username, the login email, the
+collectives and groups, and the root token's expiry. Every refusal answers 404
+with `sign_in_code_refused`; a workspace takes any other 404 for a root it
+cannot reach, so a proxy's 404 never reads as a refused code. Redeem has no
+rate limit: every workspace reaches it from the host's own address, and a
+256-bit code cannot be guessed. The root audits a redeem and the refusal of a
+code it issued, never a made-up code, so anonymous callers cannot fill its
+audit log. A workspace in `oauth` mode refuses a principal with no login email,
+applies its own admission lists, and records the login identity on the token it
+mints, so its lists keep applying to that token. The exchange route is rate
+limited per address as `/auth/device` is, and a refused code counts against
+that address. A root token revoked in the minute between issue and redeem still
+yields a workspace token, as any change on the root reaches a workspace only
+when the workspace token expires.
+
+**`token` mode trusts whoever mints root tokens.** A `token`-mode identity is a
+name an operator chose, so a workspace cannot tell a person's own root token
+from one minted for them. A root admin can mint a root token for any principal,
+or reveal an existing one, and so can act as that principal at the root; through
+the exchange the same holds in every `token`-mode workspace, its admins
+included. This was accepted over tracking who minted or revealed each token,
+which would still leave a root admin able to run steps on the host, where
+[Limits](#limits) already put every workspace in reach. An `oauth` workspace is
+not exposed: a token minted by hand carries no login email, and it refuses
+such a grant.
 
 ## Dashboard
 
@@ -743,8 +796,7 @@ After 7 an operator who sets each workspace up has a multi-workspace host.
 11. **Workspace requests on the root.** The host gives the root the
     `workspaces/` folder, and serve handles `workspace.*`: protocol types,
     request schemas, the follower lists, authorization for the root's admins
-    and audit. A serve without the folder refuses them, and a token-mode root
-    refuses `create`. After 10.
+    and audit. A serve without the folder refuses them. After 10.
 12. **`swamp serve workspace` commands.** `create`, `list`, `get`, `suspend`,
     `resume` and `rm`, each with log and json output. `create` says that the
     new workspace is stopped and names the command that starts it. After 11.
@@ -831,6 +883,14 @@ separately.
   for it exits 75 at startup. The host retries without end, since that exit
   never leads to `failed`, and the status file shows `backoff` with the reason.
   Stop the other serve, or suspend the workspace.
+- **A workspace reaches the root at its public address.** Redeeming a sign-in
+  code needs the host to reach its own public name. Split DNS, hairpin NAT or a
+  proxy the host cannot reach from inside breaks the exchange; the workspace
+  answers 502 and logs the address it could not reach.
+- **In `token` mode a root admin reaches every workspace.** Anyone who can
+  mint or reveal a root token can sign in to a `token`-mode workspace as any
+  principal (see [Sign-in](#sign-in)). Use `oauth` mode for a host whose root
+  admins should not be principals inside its workspaces.
 - **A workspace token outlives changes on the root.** Revoking a root token, or
   a change to the person's collectives, reaches a workspace only when its
   token expires. A workspace's admins can revoke the token there.

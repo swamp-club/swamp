@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import { withMockedFetch } from "@swamp-club/swamp-testing";
 import {
   ROOT_SERVE,
@@ -183,6 +183,26 @@ Deno.test("serveChildArgs: only a spec with the host's workspaces folder is give
   const plain = serveChildArgs(spec);
   assertEquals(plain.includes("--host-workspaces-dir"), false);
   assertEquals(plain.includes("--host-address"), false);
+});
+
+Deno.test("serveChildArgs: a spec with the root's address is given it, and one without is not", () => {
+  const spec = {
+    id: workspaceServe("edge-dns"),
+    repoDir: "/host/workspaces/edge-dns",
+    address: "https://serve.example/w/edge-dns",
+    trustedHost: "serve.example",
+    env: {},
+  };
+  const args = serveChildArgs({
+    ...spec,
+    rootAddress: "https://serve.example",
+    oauthClient: { id: "client-123", secretFile: "/run/secrets/oauth" },
+  });
+  const at = args.indexOf("--root-address");
+  assert(at > 0);
+  assertEquals(args[at + 1], "https://serve.example");
+  assertEquals(args.slice(-4)[0], "--oauth-client-id");
+  assertEquals(serveChildArgs(spec).includes("--root-address"), false);
 });
 
 Deno.test("serveChildArgs: an OAuth client adds its id and the path of its secret file", () => {

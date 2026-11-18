@@ -26,6 +26,7 @@ import {
   createConditionEvaluator,
   type PolicySnapshotLoader,
 } from "../../domain/access/policy_snapshot_loader.ts";
+import type { SignInCodeStore } from "../../domain/access/sign_in_code.ts";
 import type { ServeAuthConfig } from "../../domain/access/serve_auth_config.ts";
 import { HostedWorkspaceFileRepository } from "../../infrastructure/persistence/hosted_workspace_file_repository.ts";
 import type {
@@ -33,13 +34,18 @@ import type {
   HostedWorkspaceRootAccess,
 } from "../../libswamp/hosted_workspace/deps.ts";
 import { hostRootWorkspaces } from "../host_root_workspaces.ts";
-import type { ConnectionContext } from "./shared.ts";
+import {
+  type ConnectionContext,
+  setConnectionTokenExpiresAt,
+} from "./shared.ts";
 import {
   handleWorkspaceChange,
   handleWorkspaceCreate,
   handleWorkspaceGet,
   handleWorkspaceList,
+  handleWorkspaceSignIn,
   NOT_A_HOST_ROOT_CODE,
+  TOO_MANY_SIGN_IN_CODES_CODE,
 } from "./workspace_handlers.ts";
 
 const NONE_ACCESS: HostedWorkspaceRootAccess = {
@@ -89,6 +95,7 @@ function authConfig(mode: ServeAuthConfig["mode"]): ServeAuthConfig {
 
 interface Folder extends AsyncDisposable {
   readonly dir: string;
+  readonly signInCodes: SignInCodeStore;
   readonly specs: HostedWorkspaceProvisionSpec[];
   ctx(mode?: ServeAuthConfig["mode"]): ConnectionContext;
 }
@@ -117,6 +124,7 @@ async function folder(): Promise<Folder> {
   return {
     dir,
     specs,
+    signInCodes: host.signInCodes,
     ctx: (mode = "none") =>
       ({
         repoContext: { markDirty: () => {} },
@@ -279,4 +287,35 @@ Deno.test("handleWorkspaceGet: each request needs its own action on workspace:<n
       `${need}: ${admitted.sent[0]}`,
     );
   }
+});
+
+Deno.test("handleWorkspaceSignIn: a caller past their cap of unused codes is told so, and nothing more is issued", async () => {
+  await using f = await folder();
+  await handleWorkspaceCreate(
+    createMockSocket(),
+    f.ctx(),
+    "r0",
+    { name: "edge-dns" },
+    null,
+  );
+  const alice = { kind: "user", id: "alice" } as const;
+  const sent: Frame[] = [];
+  for (let i = 0; i < 21; i++) {
+    const socket = createMockSocket();
+    setConnectionTokenExpiresAt(socket, "2099-01-01T00:00:00.000Z");
+    await handleWorkspaceSignIn(
+      socket,
+      f.ctx("token"),
+      `r${i + 1}`,
+      { name: "edge-dns" },
+      alice,
+    );
+    sent.push(...frames(socket));
+  }
+  assertEquals(
+    sent.filter((frame) => frame.type === "workspace.sign-in").length,
+    20,
+  );
+  assertEquals(sent.at(-1)?.error?.code, TOO_MANY_SIGN_IN_CODES_CODE);
+  assertEquals(f.signInCodes.size, 20);
 });

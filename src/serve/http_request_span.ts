@@ -26,7 +26,12 @@ import {
   datastoreRouteTemplate,
   matchDatastoreRoute,
 } from "./datastore_routes.ts";
-import { SERVE_ACTION_PATH, SERVE_REQUEST_PATH } from "./protocol.ts";
+import {
+  AUTH_EXCHANGE_PATH,
+  SERVE_ACTION_PATH,
+  SERVE_REQUEST_PATH,
+  SIGN_IN_CODE_REDEEM_PATH,
+} from "./protocol.ts";
 
 // Routes `swamp serve` answers at a fixed path; serve_http_route_span_rules_test
 // fails when the handler in src/cli/commands/serve.ts answers one missing here.
@@ -40,6 +45,8 @@ const EXACT_ROUTES: ReadonlySet<string> = new Set([
   "/auth/dashboard/device",
   "/auth/dashboard/device/token",
   "/auth/dashboard/session",
+  AUTH_EXCHANGE_PATH,
+  SIGN_IN_CODE_REDEEM_PATH,
   "/api/v1/health",
   "/api/v1/health/stream",
   "/api/v1/cluster/instances",

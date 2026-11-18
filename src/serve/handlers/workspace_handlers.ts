@@ -19,10 +19,12 @@
 
 import type { Action } from "../../domain/access/action.ts";
 import { workspaceAccessResource } from "../../domain/access/access_resources.ts";
+import { isIntegrationClient } from "../../domain/access/client.ts";
 import {
   type Principal,
   principalToString,
 } from "../../domain/access/principal.ts";
+import { parseWorkspaceName } from "../../domain/workspace/workspace_name.ts";
 import { hostedWorkspaceCreate } from "../../libswamp/hosted_workspace/create.ts";
 import { hostedWorkspaceDelete } from "../../libswamp/hosted_workspace/delete.ts";
 import type { HostedWorkspaceCaller } from "../../libswamp/hosted_workspace/deps.ts";
@@ -37,6 +39,7 @@ import {
   accessCallerOf,
   authorizeOrReject,
   type ConnectionContext,
+  getConnectionTokenExpiresAt,
   handlerLibSwampContext,
   sanitizeErrorForClient,
   send,
@@ -45,7 +48,14 @@ import {
 } from "./shared.ts";
 
 export const NOT_A_HOST_ROOT_CODE = "not_a_host_root";
-export const TOKEN_MODE_CREATE_REFUSED_CODE = "token_mode_create_refused";
+export const SIGN_IN_NOT_OFFERED_CODE = "sign_in_not_offered";
+export const SIGN_IN_REFUSED_FOR_INTEGRATION_CODE =
+  "sign_in_refused_for_integration";
+export const SIGN_IN_REFUSED_FOR_PRINCIPAL_CODE =
+  "sign_in_refused_for_principal";
+export const SIGN_IN_REFUSED_FOR_CREDENTIAL_CODE =
+  "sign_in_refused_for_credential";
+export const TOO_MANY_SIGN_IN_CODES_CODE = "too_many_sign_in_codes";
 
 type ServiceEvent<D> =
   | { kind: "completed"; data: D }
@@ -136,15 +146,6 @@ export async function handleWorkspaceCreate(
     name: payload.name,
   });
   if (root === undefined) return;
-  if (ctx.authConfig.mode === "token") {
-    sendError(
-      socket,
-      requestId,
-      TOKEN_MODE_CREATE_REFUSED_CODE,
-      "A root in token mode cannot create a workspace yet: its creator would have no way to get a token inside it until signing in to a workspace through the root exists.",
-    );
-    return;
-  }
   const data = await outcome(
     socket,
     requestId,
@@ -256,4 +257,108 @@ export async function handleWorkspaceChange(
   );
   if (data === undefined) return;
   send(socket, { type, id: requestId, payload: { data: { ...data } } });
+}
+
+// the workspace applies its own admission lists when it redeems the code
+export async function handleWorkspaceSignIn(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: WorkspaceNamePayload,
+  principal: Principal | null,
+): Promise<void> {
+  const root = ctx.hostedWorkspaces;
+  if (root === undefined) {
+    sendError(
+      socket,
+      requestId,
+      NOT_A_HOST_ROOT_CODE,
+      "This serve issues no sign-in codes: only the root of a swamp serve host does.",
+    );
+    return;
+  }
+  if (ctx.authConfig.mode === "none" || principal === null) {
+    sendError(
+      socket,
+      requestId,
+      SIGN_IN_NOT_OFFERED_CODE,
+      "This host's workspaces need no sign-in: its root runs with no authentication.",
+    );
+    return;
+  }
+  const caller = accessCallerOf(socket, principal);
+  // a workspace token would not carry the caller's ceiling
+  if (isIntegrationClient(caller.client) || caller.delegation !== undefined) {
+    sendError(
+      socket,
+      requestId,
+      SIGN_IN_REFUSED_FOR_INTEGRATION_CODE,
+      "A caller acting through an integration or a delegation cannot sign in to a workspace.",
+    );
+    return;
+  }
+  // a worker's root credential must not reach into every workspace
+  if (principal.kind !== "user") {
+    sendError(
+      socket,
+      requestId,
+      SIGN_IN_REFUSED_FOR_PRINCIPAL_CODE,
+      "Only a person signs in to a workspace through the root.",
+    );
+    return;
+  }
+  const tokenExpiresAt = getConnectionTokenExpiresAt(socket);
+  if (tokenExpiresAt === undefined) {
+    sendError(
+      socket,
+      requestId,
+      SIGN_IN_REFUSED_FOR_CREDENTIAL_CODE,
+      "Sign in to the root with a server token, then ask again.",
+    );
+    return;
+  }
+  // never looked up, so a caller cannot probe which workspaces exist
+  let workspace: string;
+  try {
+    workspace = parseWorkspaceName(payload.name);
+  } catch (error) {
+    sendError(
+      socket,
+      requestId,
+      "user_error",
+      error instanceof Error ? error.message : String(error),
+    );
+    return;
+  }
+  const issued = await root.signInCodes.issue(workspace, {
+    principal: principalToString(principal),
+    username: callerOf(principal, ctx).username ??
+      caller.loginIdentity?.username ?? null,
+    email: caller.loginIdentity?.email ?? null,
+    collectives: caller.collectives,
+    groups: caller.groups,
+    expiresAt: tokenExpiresAt,
+  });
+  if (!issued.ok) {
+    sendError(
+      socket,
+      requestId,
+      TOO_MANY_SIGN_IN_CODES_CODE,
+      issued.reason === "principal_limit"
+        ? "You hold too many unused sign-in codes. Wait a minute, then ask again."
+        : "The root holds too many unused sign-in codes. Wait a minute, then ask again.",
+    );
+    return;
+  }
+  send(socket, {
+    type: "workspace.sign-in",
+    id: requestId,
+    payload: {
+      data: {
+        name: workspace,
+        code: issued.code,
+        expiresAt: issued.expiresAt,
+      },
+    },
+  });
 }

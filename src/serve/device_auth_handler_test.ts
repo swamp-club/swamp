@@ -17,10 +17,16 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import {
+  createExchangeTokenMinter,
   type DeviceAuthDeps,
   handleDeviceAuth,
   MAX_AUTH_BODY_BYTES,
@@ -1113,4 +1119,25 @@ Deno.test("handleDeviceAuth: an allowed-users-only denial has no personal collec
   const denied = logs.find((l) => l.startsWith("Admission denied"));
   assert(denied !== undefined);
   assert(!denied.includes("personal collectives"));
+});
+
+Deno.test("createExchangeTokenMinter: refuses an OAuth identity with no email before it writes anything", async () => {
+  const mint = createExchangeTokenMinter(
+    "/nonexistent",
+    {} as RepositoryContext,
+  );
+  await assertRejects(
+    () =>
+      mint({
+        principalId: "user:sub-alice",
+        email: null,
+        username: "alice",
+        collectives: [],
+        groups: [],
+        notAfter: "2099-01-01T00:00:00.000Z",
+        oauthIdentity: true,
+      }),
+    Error,
+    "needs an email",
+  );
 });

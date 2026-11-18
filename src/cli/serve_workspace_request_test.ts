@@ -21,10 +21,7 @@ import { assert, assertEquals, assertRejects } from "@std/assert";
 import { UserError } from "../domain/errors.ts";
 import { withMockedEnv } from "../infrastructure/persistence/path_test_helpers.ts";
 import { validateServerRequest } from "../serve/connection.ts";
-import {
-  NOT_A_HOST_ROOT_CODE,
-  TOKEN_MODE_CREATE_REFUSED_CODE,
-} from "../serve/handlers/workspace_handlers.ts";
+import { NOT_A_HOST_ROOT_CODE } from "../serve/handlers/workspace_handlers.ts";
 import {
   resetMarkerServerAddress,
   ServerResponseError,
@@ -218,16 +215,16 @@ Deno.test("sendWorkspaceRequest: a serve that predates workspace requests is rep
   assertEquals(error.code, "unsupported_by_server");
 });
 
-Deno.test("sendWorkspaceRequest: a token-mode root's refusal of create reads as the root's message", async () => {
+Deno.test("sendWorkspaceRequest: an older token-mode root's refusal of create reads as the root's message", async () => {
   const message =
     "A root in token mode cannot create a workspace yet: its creator would have no way to get a token inside it until signing in to a workspace through the root exists.";
   const error = await refusedWith(
-    TOKEN_MODE_CREATE_REFUSED_CODE,
+    "token_mode_create_refused",
     message,
     namedWorkspaceRequest("workspace.create", "edge"),
   );
   assertEquals(error.message, message);
-  assertEquals(error.code, TOKEN_MODE_CREATE_REFUSED_CODE);
+  assertEquals(error.code, "token_mode_create_refused");
 });
 
 Deno.test("sendWorkspaceRequest: the server address in a message drops credentials", async () => {
