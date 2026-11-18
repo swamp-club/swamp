@@ -355,3 +355,41 @@ Deno.test("WorkerTokenRevalidationService: a delivery that throws still lets the
     mint: OLDEST_MINT,
   }]);
 });
+
+Deno.test("WorkerTokenRevalidationService: delivers every token's rotation together, before any verdict", async () => {
+  const other = "gpu-runner";
+  const bound = [
+    { tokenName: "ci-runner-3", tokenCreatedAt: MINT },
+    { tokenName: other, tokenCreatedAt: MINT },
+    { tokenName: "revoked-runner", tokenCreatedAt: MINT },
+  ];
+  const started = new Set<string>();
+  const bothStarted = Promise.withResolvers<void>();
+  const events: string[] = [];
+  const { service, calls } = createService({
+    bound,
+    readTokens: () =>
+      Promise.resolve(tokens(
+        rotatedRecord(),
+        rotatedRecord({ name: other }),
+        tokenRecord({ name: "revoked-runner", state: "revoked" }),
+      )),
+    deliverRotation: async (name) => {
+      started.add(name);
+      if (started.size === 2) bothStarted.resolve();
+      await bothStarted.promise;
+      events.push(`deliver ${name}`);
+    },
+  });
+
+  assertEquals(await service.runOnce(), [`revoked-runner@${MINT}`]);
+  assertEquals(
+    events.sort(),
+    [`deliver ${other}`, "deliver ci-runner-3"].sort(),
+  );
+  assertEquals(calls, [{
+    name: "revoked-runner",
+    cause: "revoked",
+    mint: MINT,
+  }]);
+});

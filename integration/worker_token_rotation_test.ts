@@ -439,11 +439,9 @@ Deno.test("worker token rotate from the local CLI reaches connected workers at t
   });
 });
 
-Deno.test("a workflow step that rotates the token on serve reaches the worker, which outlives the old token", async () => {
+Deno.test("a workflow step that rotates the token on serve reaches the worker at the next token check", async () => {
   await withFixture(async (f) => {
-    const durationMs = 3_000;
-    const original = await mintToken(f, "w-flow", { durationMs });
-    const originalExpiresAt = Date.now() + durationMs;
+    const original = await mintToken(f, "w-flow");
     const credential: WorkerCredential = { token: original };
     await enroll(connectWorker(f.gateway, { credential }), original);
     await f.repoContext.workflowRepo.save(Workflow.create({
@@ -479,11 +477,11 @@ Deno.test("a workflow step that rotates the token on serve reaches the worker, w
     assertEquals(await f.revalidation.runOnce(), []);
     assertEquals(credential.token === original, false);
 
-    await waitFor(
-      () => Date.now() > originalExpiresAt + 500,
-      "the original token's deadline to pass",
-      { timeoutMs: durationMs + 5_000 },
-    );
+    const record = (await f.gateway.readTokenRecords()).get("w-flow");
+    assertEquals(f.gateway.boundTokens(), [{
+      tokenName: "w-flow",
+      tokenCreatedAt: record!.createdAt,
+    }]);
     assertEquals(f.gateway.worker("w-flow")?.connected, true);
     assertEquals(await f.revalidation.runOnce(), []);
   });

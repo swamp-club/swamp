@@ -381,7 +381,7 @@ export class WorkerGateway {
   /** Serializes every token/worker/lease transition (sole-writer rule). */
   readonly #transitions = new TransitionTail("gateway");
   readonly #runningTransition = new AsyncLocalStorage<{ settled: boolean }>();
-  /** open rotation deliveries per worker instanceUuid */
+  /** counted: a --server rotation and a pass can both be delivering to one worker */
   readonly #deliveriesInFlight = new Map<string, number>();
   /** instanceUuid to the mint it refused, so a pass never offers it again */
   readonly #rotationRefusals = new Map<string, string>();
@@ -684,12 +684,7 @@ export class WorkerGateway {
     );
   }
 
-  /**
-   * hands the current secret to pool members on the predecessor mint after a
-   * rotation that never came through this gateway (a workflow step, the local
-   * CLI, an HA peer); observed is the caller's read, so a token with nobody to
-   * reach costs no transition
-   */
+  /** observed is the caller's read, so a token with nobody to reach costs no transition */
   async deliverCurrentMint(
     tokenName: string,
     observed: EnrollmentToken,
