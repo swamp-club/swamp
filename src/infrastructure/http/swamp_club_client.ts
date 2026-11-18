@@ -402,16 +402,20 @@ export class SwampClubClient {
     return { id: data.id, key: data.key };
   }
 
-  // retries transient failures like registry reads: push and quality decide on its answer
+  // retries transient failures like registry reads: push and quality decide on its answer;
+  // retry: false asks once, for startup paths that must not hold up every command
   async whoami(
     apiKey: string,
     signal?: AbortSignal,
+    options: { retry?: boolean } = {},
   ): Promise<WhoamiResponse> {
-    const { response: res, outcome } = await this.fetchRetrying(
-      "/api/whoami",
-      { method: "GET", headers: { "x-api-key": apiKey } },
-      signal,
-    );
+    const init = { method: "GET", headers: { "x-api-key": apiKey } };
+    const { response: res, outcome } = options.retry === false
+      ? {
+        response: await this.fetch("/api/whoami", init, signal),
+        outcome: undefined,
+      }
+      : await this.fetchRetrying("/api/whoami", init, signal);
 
     if (!res.ok) {
       await res.body?.cancel();
@@ -1596,7 +1600,6 @@ export class SwampClubClient {
       }
       return { response, outcome };
     } catch (error) {
-      if (error instanceof UserError) throw error;
       if (!(error instanceof TransientRequestError)) throw error;
       const after = retriedSuffix(error.outcome);
       switch (error.kind) {

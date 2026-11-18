@@ -493,9 +493,11 @@ own cancellation or deadline.
 swamp-club's `whoami` retries the same way, with the same ceiling and budget, as
 `swamp-club: GET /api/whoami …`: push's and quality's registry checks, login,
 `swamp auth whoami` and quest decide on its answer, so one 503 or timeout must
-not fail them. A 401 is an answer and is not retried. The auth gate's identity
-check (`verifyIdentity`) asks once, so every command stays fast when swamp-club
-is unreachable, and swamp-club's other requests keep a single attempt.
+not fail them. A 401 is an answer and is not retried. What runs ahead of every
+command asks once, so commands stay fast when swamp-club is unreachable: the
+auth gate's identity check (`verifyIdentity`) and startup scope resolution
+(`whoami` with `retry: false`). swamp-club's other requests keep a single
+attempt.
 
 Before each wait one warning names the service, request, reason, wait and count,
 for example
