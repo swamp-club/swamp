@@ -224,7 +224,7 @@ function renderLogWorkflowRun(data: WorkflowRunView): void {
     writeOutput(
       dim(
         escapeControlCharacters(
-          `Placement inherited from ${workflowName} / ${jobName} / ${stepName}: ${where}`,
+          `Placement inherited from ${workflowName} / ${jobName} / ${stepName} by steps that place nothing themselves: ${where}`,
         ),
       ),
     );

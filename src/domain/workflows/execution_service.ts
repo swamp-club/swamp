@@ -24,6 +24,7 @@ import { escapeControlCharacters } from "../control_characters.ts";
 import {
   inheritedAffinityKey,
   type InheritedPlacement,
+  InheritedPlacementSchema,
   inheritPlacement,
   mergePlacementFields,
   type PlacementFields,
@@ -3282,7 +3283,6 @@ export interface FanOutLaneContext {
 }
 
 interface StepOptions {
-  /** the calling step's placement, when this is a nested run that inherits it */
   inheritedPlacement?: InheritedPlacement;
   /** a fan-out lane's step: pinned to the worker, reading only its lane's steps */
   lane?: FanOutLaneContext & {
@@ -7390,11 +7390,15 @@ export class WorkflowExecutionService {
         WorkflowExecutionEvent,
         unknown
       >((push) => {
-        const inheritedFields = inheritPlacement(options.inheritedPlacement, [
+        const placementLevels = [
           workflow.placementFields,
           job.placementFields,
           step.placementFields,
-        ]);
+        ];
+        const inheritedFields = inheritPlacement(
+          options.inheritedPlacement,
+          placementLevels,
+        );
         const ctx: StepExecutionContext = {
           workflowId: workflow.id,
           workflowRunId: run.id,
@@ -7457,11 +7461,7 @@ export class WorkflowExecutionService {
           ),
           affinityKey: options.lane ? undefined : inheritedAffinityKey(
             options.inheritedPlacement,
-            [
-              workflow.placementFields,
-              job.placementFields,
-              step.placementFields,
-            ],
+            placementLevels,
             job.affinity,
           ) ?? resolveAffinityKey(
             workflow.affinity,
@@ -7899,11 +7899,15 @@ export class WorkflowExecutionService {
     options: StepOptions,
   ): Promise<InheritedPlacement | undefined> {
     if (step.placementMode === "own") return undefined;
-    const inheritedFields = inheritPlacement(options.inheritedPlacement, [
+    const placementLevels = [
       workflow.placementFields,
       job.placementFields,
       step.placementFields,
-    ]);
+    ];
+    const inheritedFields = inheritPlacement(
+      options.inheritedPlacement,
+      placementLevels,
+    );
     const fields = mergePlacementFields(
       mergePlacementFields(
         mergePlacementFields(inheritedFields, workflow.placementFields),
@@ -7946,7 +7950,9 @@ export class WorkflowExecutionService {
         location: stepName,
       },
     );
-    return {
+    // the child's run record must stay readable, so a value that resolved to
+    // anything but a string fails the call step here
+    const parsed = InheritedPlacementSchema.safeParse({
       fields: {
         target: resolved.target,
         labels: resolved.labels,
@@ -7955,12 +7961,21 @@ export class WorkflowExecutionService {
       },
       affinityKey: inheritedAffinityKey(
         options.inheritedPlacement,
-        [workflow.placementFields, job.placementFields, step.placementFields],
+        placementLevels,
         job.affinity,
       ) ??
         resolveAffinityKey(workflow.affinity, job.affinity, run.id, job.name),
       source: { workflowName: workflow.name, jobName: job.name, stepName },
-    };
+    });
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      throw new UserError(
+        `${stepName}.placement.${
+          issue.path.slice(1).join(".")
+        } must resolve to a string to place a nested workflow: ${issue.message}`,
+      );
+    }
+    return parsed.data;
   }
 
   private async *runWorkflowStep(

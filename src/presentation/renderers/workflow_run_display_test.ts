@@ -506,7 +506,7 @@ Deno.test("renderWorkflowRunDisplay: a nested run names the step whose placement
   );
   assertStringIncludes(
     output,
-    "Placement inherited from caddy / install / sudo: target w-a, labels fleet=web",
+    "Placement inherited from caddy / install / sudo by steps that place nothing themselves: target w-a, labels fleet=web",
   );
 });
 

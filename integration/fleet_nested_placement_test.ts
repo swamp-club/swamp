@@ -522,6 +522,46 @@ Deno.test({
 
 Deno.test({
   name:
+    "nested placement: a call step whose placement resolves to a non-string fails before the child starts",
+  ...SANITIZE,
+  fn: async () => {
+    await using fleet = await Fleet.start();
+    await fleet.addWorker("w-a", { labels: { rack: "1" } });
+    await fleet.saveDefinition("deploy");
+    const child = await saveChild(fleet);
+    await fleet.saveWorkflow({
+      name: "parent",
+      inputs: {},
+      jobs: [{
+        name: "install",
+        steps: [{
+          name: "sudo-${{ self.n }}",
+          forEach: { item: "n", in: "${{ [1] }}" },
+          labels: { rack: "${{ self.n }}" },
+          task: CALL_CHILD,
+        }],
+      }],
+    });
+
+    const run = await fleet.runWorkflow("parent");
+
+    assertEquals(run.status, "failed");
+    const step = run.jobs[0].steps[0];
+    assert(step.error, "the call step names why it failed");
+    assertStringIncludes(
+      step.error,
+      "sudo-1.placement.labels.rack must resolve to a string",
+    );
+    assertEquals(
+      await fleet.repoContext.workflowRunRepo.findAllByWorkflowId(child.id),
+      [],
+    );
+    assertEquals(fleet.dispatchCounts(), { "w-a": 0 });
+  },
+});
+
+Deno.test({
+  name:
     "nested placement: an unplaced caller with an unplaced child dispatches nothing",
   ...SANITIZE,
   fn: async () => {

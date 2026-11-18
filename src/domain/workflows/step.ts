@@ -88,7 +88,7 @@ function refineNestedPlacementMode(
   if (data.placement === "own" && declaresPlacement(data)) {
     ctx.addIssue({
       code: "custom",
-      message: `Step "${data.name}": placement own runs the child by its ` +
+      message: `Step "${data.name}": placement: own runs the child by its ` +
         `own placement, so it cannot be combined with target, labels or ` +
         `platform on the same step.`,
       path: ["placement"],

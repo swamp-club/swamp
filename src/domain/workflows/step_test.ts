@@ -657,7 +657,7 @@ Deno.test("StepSchema: placement own is refused beside target, labels or platfor
     assertEquals(result.success, false);
     assertStringIncludes(
       result.error!.issues[0].message,
-      `Step "call": placement own runs the child by its own placement`,
+      `Step "call": placement: own runs the child by its own placement`,
     );
   }
 });

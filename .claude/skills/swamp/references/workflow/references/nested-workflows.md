@@ -401,8 +401,10 @@ jobs:
 - `target`, `labels` or `platform` on the calling step place that child.
 - `placement: own` hands nothing down; it is refused beside `target`, `labels`
   or `platform`, and on any step that is not a workflow call.
-- A child that sets `target`, `labels` or `platform` at any level is placed only
-  by itself and drops the pin; `labels: {}` keeps it on the orchestrator.
+- Decided per child step: a step whose workflow, job or own fields set `target`,
+  `labels` or `platform` is placed only by them and drops the pin, so one job of
+  a child can inherit while another places itself. `labels: {}` at the child's
+  workflow level keeps every step on the orchestrator.
 - A child moved to a worker gets its vault secrets on that worker, as any placed
   step does.
 - `swamp workflow run` output names the step a child inherited its placement
