@@ -351,6 +351,19 @@ a collective key in the host's environment (`SWAMP_API_KEY` or
 device grant. The names it resolves are kept in the workspace's vault
 (`oauth-resolved-admins`), so later starts look up only names added since.
 
+`create` spares the creator that grant: it seeds the new workspace's
+`oauth-resolved-admins` from names the root already holds. The creator's
+username is the workspace's one admin and maps to the subject the root
+authenticated; each copied allowed-user takes the root's record, resolved or
+skipped, so a name skipped on the root stays skipped. With the host's OAuth
+client, a first start then makes no lookup. An allowed-user the root never
+resolved is still looked up. Seeding was chosen over an entry form that is
+already resolved: that form would change the access-list grammar serve,
+`check-config` and reload all parse, give an operator a hand-written way past
+the pinned lookup, and still leave the root's allowed-users to look up. A
+caller the root knows only by subject cannot create an `oauth` workspace,
+since serve skips an admin that is not a plain username.
+
 Names follow `parseWorkspaceName`. A name is the workspace's address, and its
 tokens, owner claim and checkouts' copies are keyed by that address, so a
 workspace is never renamed.
@@ -416,8 +429,14 @@ The host reads the wanted files with each rescan of `workspaces/`
 - A folder removed by hand stops its serve, as before, and its status file is
   removed once the serve has stopped.
 
-`create` sets the repo up in a folder under a temporary name and renames it
-into place, so the supervisor never starts half a workspace. `delete` writes
+`create` sets the repo up in a hidden `.<name>.creating-<uuid>` folder, writes
+the wanted file, then renames the folder into place, so no scan lists a
+workspace before it is whole and one created `suspended` is never started. A
+failed create removes the folder and the wanted file it wrote. One per-name
+lock serialises create, suspend, resume and delete, and create removes a
+`.creating-` folder an earlier create left. A create stopped between the
+wanted file and the rename leaves the name taken until a `delete`, which the
+host completes for a wanted file with no folder. `delete` writes
 `deleted`. Once the host sees `deleted` it removes the workspace, and a later
 edit of the file does not stop it: it stops the serve and waits for it to
 exit, renames the folder to a hidden `.<name>.deleting-<uuid>` so no scan sees
@@ -428,8 +447,11 @@ folder left behind. A removal touches only names that pass
 `parseWorkspaceName`, and a rename never follows a link, so a workspace folder
 that is a link loses only the link.
 
-Setting up a repo runs as a child process in its folder. The root's process
-never loads another workspace's extensions.
+Setting up a repo runs as a child process in its folder, the hidden
+`swamp serve provision-workspace`, which reads its access settings as JSON on
+stdin, initialises the repo, writes `serve.yaml` and seeds the name cache. The
+root's process never loads another workspace's extensions, and never registers
+another workspace's `_token-secrets` vault, which is process-wide.
 
 The root's admins hold the lifecycle, not the contents. They are not principals
 inside a workspace unless its own admins add them. When a workspace's admins
@@ -594,10 +616,9 @@ After 7 an operator who sets each workspace up has a multi-workspace host.
     create, list, get, suspend, resume and delete, working on the host folder.
     Create sets up under a temporary name and renames into place. Without a
     collective key in the host's environment, a new workspace's first start
-    needs a device grant for its names, so create either seeds the workspace's
-    `oauth-resolved-admins` from names the root already resolved, or serve gains
-    an entry form that is already resolved; choosing between them is this
-    item's work. The services
+    needs a device grant for its names, so create seeds the workspace's
+    `oauth-resolved-admins` from names the root already resolved (see A hosted
+    workspace for why not an entry form that is already resolved). The services
     are exported from `mod.ts`, and an integration test runs them on a temp
     folder (`src/libswamp/hosted_workspace/`). After 8.
 11. **Workspace requests on the root.** The host gives the root the

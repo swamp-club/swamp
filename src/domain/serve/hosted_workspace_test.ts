@@ -28,6 +28,7 @@ import {
 
 const T1 = new Date("2026-11-17T10:00:00.000Z");
 const T2 = new Date("2026-11-17T11:00:00.000Z");
+const T3 = new Date("2026-11-17T12:00:00.000Z");
 
 Deno.test("HostedWorkspace.active: a folder without a wanted file is active with no creator or time", () => {
   assertEquals(HostedWorkspace.active("edge-dns").toRecord(), {
@@ -85,13 +86,15 @@ Deno.test("HostedWorkspace.fromRecord: refuses an invalid name or wanted state",
   );
 });
 
-Deno.test("HostedWorkspace.suspend: records the time and keeps the creator; suspending again changes nothing", () => {
+Deno.test("HostedWorkspace.suspend: records the time and keeps the creator; suspending again records the new time", () => {
   const created = HostedWorkspace.create("edge-dns", "alice", T1);
   const suspended = created.suspend(T2);
   assertEquals(suspended.wanted, "suspended");
   assertEquals(suspended.creator, "alice");
   assertEquals(suspended.changedAt, T2.toISOString());
-  assert(suspended.suspend(new Date()).equals(suspended));
+  const again = suspended.suspend(T3);
+  assertEquals(again.wanted, "suspended");
+  assertEquals(again.changedAt, T3.toISOString());
   assertEquals(created.wanted, "active", "the original is unchanged");
 });
 
@@ -100,6 +103,14 @@ Deno.test("HostedWorkspace.resume: makes a suspended workspace active", () => {
     .resume(T2);
   assertEquals(resumed.wanted, "active");
   assertEquals(resumed.changedAt, T2.toISOString());
+});
+
+Deno.test("HostedWorkspace.resume: an active workspace gets a new record, which takes it out of failed", () => {
+  const active = HostedWorkspace.create("edge-dns", "alice", T1);
+  const resumed = active.resume(T2);
+  assertEquals(resumed.wanted, "active");
+  assertEquals(resumed.changedAt, T2.toISOString());
+  assert(!resumed.equals(active));
 });
 
 Deno.test("HostedWorkspace.markDeleted: deleted is never left", () => {

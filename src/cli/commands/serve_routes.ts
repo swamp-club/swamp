@@ -55,4 +55,14 @@ export const SERVE_ROUTES: readonly CommandRoute[] = [
     needsFullTree: false,
     load: async () => (await import("./serve_host.ts")).serveHostCommand,
   },
+  {
+    name: "provision-workspace",
+    aliases: [],
+    hidden: true,
+    module: "src/cli/commands/serve_provision_workspace.ts",
+    needsFullTree: false,
+    load: async () =>
+      (await import("./serve_provision_workspace.ts"))
+        .serveProvisionWorkspaceCommand,
+  },
 ];

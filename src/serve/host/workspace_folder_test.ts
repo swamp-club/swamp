@@ -20,15 +20,8 @@
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { waitFor } from "@swamp-club/swamp-testing";
-import {
-  deletingFolderName,
-  deletingFolderOwner,
-  isDeletingFolderName,
-  REPO_MARKER_FILE,
-  scanWorkspaces,
-  watchWorkspaces,
-  type WorkspaceChange,
-} from "./workspace_folder.ts";
+import { REPO_MARKER_FILE } from "../../infrastructure/persistence/hosted_workspace_folder_scan.ts";
+import { watchWorkspaces, type WorkspaceChange } from "./workspace_folder.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const tempDir = await Deno.makeTempDir();
@@ -48,73 +41,6 @@ async function makeRepo(dir: string, name: string): Promise<void> {
   await Deno.writeTextFile(join(dir, name, REPO_MARKER_FILE), "");
 }
 
-Deno.test("scanWorkspaces: lists repo folders with valid names and says why it skips the rest", async () => {
-  await withTempDir(async (dir) => {
-    await makeRepo(dir, "edge-dns");
-    await makeRepo(dir, "cost-reports");
-    await makeRepo(dir, "Bad_Name");
-    await Deno.mkdir(join(dir, "not-a-repo"));
-    await Deno.writeTextFile(join(dir, "a-file"), "");
-    await makeRepo(dir, ".hidden");
-
-    const scan = await scanWorkspaces(dir);
-    assertEquals(scan.workspaces, ["cost-reports", "edge-dns"]);
-    const reasons = new Map(scan.skipped.map((s) => [s.name, s.reason]));
-    assertEquals([...reasons.keys()].sort(), [
-      "Bad_Name",
-      "a-file",
-      "not-a-repo",
-    ]);
-    assertEquals(reasons.get("a-file"), "it is not a folder");
-    assertEquals(reasons.get("not-a-repo")?.includes(REPO_MARKER_FILE), true);
-    assertEquals(
-      reasons.get("Bad_Name")?.includes("Invalid workspace name"),
-      true,
-    );
-  });
-});
-
-Deno.test("scanWorkspaces: passes over wanted and status files, and finds wanted files without a folder and leftover removals", async () => {
-  await withTempDir(async (dir) => {
-    await makeRepo(dir, "edge-dns");
-    await Deno.writeTextFile(join(dir, "edge-dns.wanted.yaml"), "");
-    await Deno.writeTextFile(join(dir, "edge-dns.status.yaml"), "");
-    await Deno.writeTextFile(join(dir, "gone.wanted.yaml"), "");
-    await Deno.writeTextFile(join(dir, "Bad.wanted.yaml"), "");
-    const leftover = deletingFolderName("old");
-    await Deno.mkdir(join(dir, leftover));
-    const leftoverFile = deletingFolderName("was-a-link");
-    await Deno.writeTextFile(join(dir, leftoverFile), "");
-    await Deno.writeTextFile(join(dir, ".old.deleting-not-a-uuid"), "");
-
-    const scan = await scanWorkspaces(dir);
-    assertEquals(scan.workspaces, ["edge-dns"]);
-    assertEquals(scan.wantedFiles, ["edge-dns", "gone"]);
-    assertEquals(scan.leftovers, [leftover, leftoverFile].sort());
-    assertEquals(scan.skipped.map((s) => s.name), ["Bad.wanted.yaml"]);
-  });
-});
-
-Deno.test("deletingFolderOwner: names the workspace a hidden removal folder belonged to", () => {
-  assertEquals(deletingFolderOwner(deletingFolderName("edge-dns")), "edge-dns");
-  assertEquals(deletingFolderOwner("edge-dns"), null);
-  assertEquals(deletingFolderOwner(".edge-dns.deleting-x"), null);
-});
-
-Deno.test("isDeletingFolderName: matches only a hidden valid name with a uuid", () => {
-  assertEquals(isDeletingFolderName(deletingFolderName("edge-dns")), true);
-  assertEquals(isDeletingFolderName("edge-dns"), false);
-  assertEquals(isDeletingFolderName(".edge-dns.deleting-x"), false);
-  assertEquals(
-    isDeletingFolderName(`.Edge.deleting-${crypto.randomUUID()}`),
-    false,
-  );
-  assertEquals(
-    isDeletingFolderName(`.a/b.deleting-${crypto.randomUUID()}`),
-    false,
-  );
-});
-
 Deno.test("watchWorkspaces: onRescan sees every rescan, even with nothing changed", async () => {
   await withTempDir(async (dir) => {
     let rescans = 0;
@@ -132,20 +58,6 @@ Deno.test("watchWorkspaces: onRescan sees every rescan, even with nothing change
     } finally {
       await watcher.stop();
     }
-  });
-});
-
-Deno.test("scanWorkspaces: a missing folder holds no workspaces", async () => {
-  await withTempDir(async (dir) => {
-    const { startedAt: _, ...scan } = await scanWorkspaces(
-      join(dir, "missing"),
-    );
-    assertEquals(scan, {
-      workspaces: [],
-      skipped: [],
-      wantedFiles: [],
-      leftovers: [],
-    });
   });
 });
 
