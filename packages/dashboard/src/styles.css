@@ -1598,6 +1598,23 @@ a.run-pip:focus-visible {
   border-radius: 4px;
 }
 
+/* components/PreviewChip.tsx */
+.preview-chip {
+  flex-shrink: 0;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  line-height: normal;
+  text-transform: uppercase;
+  white-space: nowrap;
+  padding: 2px 8px;
+  border-radius: 10px;
+  color: var(--info);
+  background: var(--info-bg);
+  border: 1px solid var(--info);
+  vertical-align: middle;
+}
+
 /* Approval rows */
 .approval-row {
   display: grid;
@@ -4850,7 +4867,9 @@ a.cron-badge:hover {
 
 /* swamp start: "Start from your past sessions", first on the workspace screen */
 .start-past-card {
+  position: relative;
   display: flex;
+  margin-top: 16px;
   align-items: center;
   gap: 12px;
   margin-bottom: 20px;
@@ -4858,6 +4877,22 @@ a.cron-badge:hover {
   border: 1px solid var(--sw-accent-soft);
   border-radius: 10px;
   background: var(--accent-subtle);
+}
+
+/* Sits on the card's top border, at its start */
+.start-past-card .start-past-card-chip {
+  position: absolute;
+  top: 0;
+  left: 14px;
+  transform: translateY(-50%);
+}
+
+.start-hero-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
 }
 
 .start-past-card-icon {

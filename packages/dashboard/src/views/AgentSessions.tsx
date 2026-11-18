@@ -38,6 +38,7 @@ import { useSessionList } from "../client/useAgentSessions.ts";
 import { useQueryState } from "../client/useQueryState.ts";
 import { LoadError } from "../components/LoadError.tsx";
 import { Pager } from "../components/Pager.tsx";
+import { PreviewChip } from "../components/PreviewChip.tsx";
 import { listTotals } from "../lib/agent_session_view.ts";
 import { pluralize } from "../lib/format.ts";
 import {
@@ -172,12 +173,7 @@ export function AgentSessions() {
       <div className="page-header">
         <h1 className="as-title">
           Agent sessions
-          <span
-            className="as-preview-chip"
-            title="A preview: what it shows may change"
-          >
-            Preview
-          </span>
+          <PreviewChip />
         </h1>
         <div className="header-right">
           {repoOptions.length > 1 || repo !== undefined

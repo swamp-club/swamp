@@ -27,18 +27,6 @@
   font-size: 0.9rem;
 }
 
-.sw-preview-chip {
-  font-size: 0.7rem;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  padding: 2px 8px;
-  border-radius: 10px;
-  color: var(--info);
-  background: var(--info-bg);
-  border: 1px solid var(--info);
-}
-
 .sw-muted {
   color: var(--text-2);
 }
