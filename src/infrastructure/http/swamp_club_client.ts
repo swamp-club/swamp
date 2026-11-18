@@ -35,6 +35,15 @@ import {
   readRateLimit,
   type Sleep,
 } from "./rate_limit.ts";
+import {
+  causeMessage,
+  describeRequestTarget,
+  fetchWithTransientRetry,
+  REGISTRY_ATTEMPT_TIMEOUT_MS,
+  retriedSuffix,
+  type RetryOutcome,
+  TransientRequestError,
+} from "./transient_retry.ts";
 import type { GenesisPass } from "../../domain/quest/genesis_pass.ts";
 import {
   type AccountNoticesResult,
@@ -392,11 +401,12 @@ export class SwampClubClient {
     return { id: data.id, key: data.key };
   }
 
+  // retries transient failures like registry reads: push and quality decide on its answer
   async whoami(
     apiKey: string,
     signal?: AbortSignal,
   ): Promise<WhoamiResponse> {
-    const res = await this.fetch(
+    const { response: res, outcome } = await this.fetchRetrying(
       "/api/whoami",
       { method: "GET", headers: { "x-api-key": apiKey } },
       signal,
@@ -408,7 +418,7 @@ export class SwampClubClient {
         return { authenticated: false };
       }
       throw new UserError(
-        `Whoami request failed (HTTP ${res.status})`,
+        `Whoami request failed (HTTP ${res.status})${retriedSuffix(outcome)}`,
       );
     }
 
@@ -1554,6 +1564,58 @@ export class SwampClubClient {
       throw new UserError(
         `Could not read the answer from ${this.serverUrl}: ${message}`,
       );
+    }
+  }
+
+  // an idempotent read through fetchWithTransientRetry, failing with the messages fetch() uses
+  private async fetchRetrying(
+    path: string,
+    init: RequestInit,
+    callerSignal?: AbortSignal,
+  ): Promise<{ response: Response; outcome: RetryOutcome }> {
+    const url = `${this.serverUrl}${path}`;
+    const headers = mergeIdentityHeaders(this.identity, init.headers);
+    const doFetch = this.options.fetch ?? globalThis.fetch;
+    try {
+      const { response, outcome } = await fetchWithTransientRetry(
+        (signal) => doFetch(url, { ...init, headers, signal }),
+        {
+          method: init.method,
+          target: describeRequestTarget(url),
+          service: "swamp-club",
+          signal: callerSignal,
+          sleep: this.options.sleep,
+        },
+      );
+      if (response.status === 429) {
+        throw rateLimitError({
+          ...(await readRateLimit(response)),
+          credentialed: hasCredential(headers),
+        });
+      }
+      return { response, outcome };
+    } catch (error) {
+      if (error instanceof UserError) throw error;
+      if (!(error instanceof TransientRequestError)) throw error;
+      const after = retriedSuffix(error.outcome);
+      switch (error.kind) {
+        case "aborted":
+          throw error.cause;
+        case "timeout":
+        case "deadline": {
+          const seconds = Math.round(REGISTRY_ATTEMPT_TIMEOUT_MS / 1000);
+          throw new UserError(
+            `Request to ${url} timed out after ${seconds}s${after}.`,
+            "timeout",
+          );
+        }
+        case "connection":
+          throw new UserError(
+            `Could not connect to ${this.serverUrl}${after}: ${
+              causeMessage(error.cause)
+            }`,
+          );
+      }
     }
   }
 
