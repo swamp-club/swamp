@@ -100,3 +100,17 @@ export class ShutdownStages {
     }
   }
 }
+
+/**
+ * a synchronous shutdown step outside the stages: a failure is logged and the
+ * steps after it still run; never awaited, so it adds no unbounded wait
+ */
+export function runShutdownStep(stage: string, work: () => void): void {
+  try {
+    work();
+  } catch (error) {
+    logger.error`Shutdown: ${stage} failed: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+  }
+}

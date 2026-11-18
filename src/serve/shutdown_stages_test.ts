@@ -20,7 +20,7 @@
 import { assertEquals } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { ShutdownDeadline } from "./shutdown_deadline.ts";
-import { ShutdownStages } from "./shutdown_stages.ts";
+import { runShutdownStep, ShutdownStages } from "./shutdown_stages.ts";
 import { WorkerGcService } from "./worker_gc_service.ts";
 import { ConfigPoller } from "./config_poller.ts";
 
@@ -151,4 +151,23 @@ Deno.test("ShutdownStages.run: a config poll stuck mid-pull no longer holds shut
   assertEquals(outcome, "timed_out");
   hash.resolve(null);
   await poller.stop();
+});
+
+Deno.test("runShutdownStep: a step that throws is contained, and the next step still runs", () => {
+  const ran: string[] = [];
+  runShutdownStep("stopping line", () => {
+    throw new Error("BrokenPipe");
+  });
+  runShutdownStep("worker gateway", () => {
+    ran.push("worker gateway");
+  });
+  assertEquals(ran, ["worker gateway"]);
+});
+
+Deno.test("runShutdownStep: a step that succeeds runs once, in the calling turn", () => {
+  let runs = 0;
+  runShutdownStep("event loop lag", () => {
+    runs++;
+  });
+  assertEquals(runs, 1);
 });
