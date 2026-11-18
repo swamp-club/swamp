@@ -34,6 +34,7 @@ import {
   modelRegistry,
 } from "../src/domain/models/model.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
+import { SHELL_MODEL_TYPE } from "../src/domain/models/command/shell/shell_model.ts";
 import { setRemoteStepDispatcher } from "../src/domain/remote/remote_dispatch.ts";
 import {
   ARGUMENTS_VALIDATED_EVENT,
@@ -437,6 +438,180 @@ Deno.test({
         );
       } finally {
         modelRegistry.invalidateType(type);
+        await o.shutdown();
+      }
+    });
+  },
+});
+
+interface ShellCase {
+  name: string;
+  where: "global" | "method";
+  data?: string;
+}
+
+async function runShellStep(
+  o: BaselineOrchestrator,
+  tier: string,
+  secretKey: string,
+  shellCase: ShellCase,
+): Promise<string> {
+  const bag = new VaultSecretBag(new SecretBagRegistry());
+  const path = shellCase.where === "global"
+    ? "globalArguments.run"
+    : "methods.execute.arguments.run";
+  const sentinel = bag.addSecret(
+    { vaultName: BASELINE_VAULT, key: secretKey },
+    path,
+  );
+  const head = 'm="';
+  let run = `${head}${sentinel}"; printf %s "$m" | sha256sum`;
+  const ranges: [number, number][] = [[
+    head.length,
+    head.length + sentinel.length,
+  ]];
+  if (shellCase.data !== undefined) {
+    run += "; echo ";
+    ranges.push([run.length, run.length + shellCase.data.length]);
+    run += shellCase.data;
+  }
+  const definition = Definition.create({
+    name: `fleet-shell-${tier}-${crypto.randomUUID()}`,
+    globalArguments: shellCase.where === "global" ? { run } : {},
+    methods: {
+      execute: { arguments: shellCase.where === "method" ? { run } : {} },
+    },
+  });
+  const vault = await VaultService.fromRepository(o.repoDir);
+  const context: MethodContext = {
+    signal: new AbortController().signal,
+    repoDir: o.repoDir,
+    modelType: SHELL_MODEL_TYPE,
+    modelId: definition.id,
+    globalArgs: {},
+    definition: {
+      id: definition.id,
+      name: definition.name,
+      version: definition.version,
+      tags: definition.tags,
+    },
+    methodName: "execute",
+    logger: getLogger(["test", "mixed-fleet"]),
+    dataRepository: o.repoContext.unifiedDataRepo,
+    definitionRepository: o.repoContext.definitionRepo,
+    extensionFile: () => {
+      throw new Error("extensionFile is not used by a remote step");
+    },
+    createCelEnvironment: createExtensionCelEnvironment,
+    placement: { labels: { tier } },
+    vaultSecrets: bag,
+  };
+  setRemoteStepDispatcher(o.dispatchService);
+  try {
+    const result = await new DefaultMethodExecutionService().executeWorkflow(
+      definition,
+      modelRegistry.get(SHELL_MODEL_TYPE)!,
+      "execute",
+      context,
+      {
+        argumentProvenance: ProvenanceMap.authored().withRanges(path, ranges),
+        secretLoader: new SecretLoader(() => Promise.resolve(vault)),
+      },
+    );
+    const handle = result.dataHandles?.find((h) => h.specName === "result");
+    assert(handle, "the shell step wrote its result");
+    const content = await o.repoContext.unifiedDataRepo.getContent(
+      SHELL_MODEL_TYPE,
+      definition.id,
+      handle.name,
+    );
+    return String(JSON.parse(new TextDecoder().decode(content!)).stdout);
+  } finally {
+    setRemoteStepDispatcher(null);
+  }
+}
+
+async function sha256Hex(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(text),
+  );
+  return Array.from(
+    new Uint8Array(digest),
+    (b) => b.toString(16).padStart(2, "0"),
+  )
+    .join("");
+}
+
+Deno.test({
+  name:
+    "remote secrets mixed fleet: a shell step whose run splices a vault secret, alone or beside a data input, runs on a version 5 and a version 6 worker alike, and the version 5 frame carries the placement (swamp-club#4887)",
+  ignore: Deno.build.os === "windows",
+  ...SANITIZE,
+  fn: async () => {
+    await withTempDir(async (dir) => {
+      const o = await startBaselineOrchestrator(dir);
+      try {
+        const secret = canary("fleet-shell-secret");
+        const secretKey = `fleet-shell-${crypto.randomUUID()}`;
+        await o.putSecret(secretKey, secret);
+        const expectedHash = `${await sha256Hex(secret)}  -`;
+
+        const v5Frames: Record<string, unknown>[] = [];
+        const v6Frames: Record<string, unknown>[] = [];
+        const v5 = await connectInMemoryWorker(
+          o,
+          "fleet-shell-v5",
+          { tier: "v5" },
+          LEGACY_PLAINTEXT_PROTOCOL_VERSION,
+        );
+        const v6 = await connectInMemoryWorker(
+          o,
+          "fleet-shell-v6",
+          { tier: "v6" },
+          REMOTE_PROTOCOL_VERSION,
+        );
+        runDispatches(o, v5, join(dir, "cache-v5"), v5Frames);
+        runDispatches(o, v6, join(dir, "cache-v6"), v6Frames);
+
+        const cases: ShellCase[] = [
+          { name: "vault splice", where: "method" },
+          { name: "vault and data", where: "method", data: "a;b" },
+          { name: "global run", where: "global", data: "c;d" },
+        ];
+        for (const shellCase of cases) {
+          for (const tier of ["v5", "v6"]) {
+            const stdout = await runShellStep(o, tier, secretKey, shellCase);
+            const expected = shellCase.data === undefined
+              ? expectedHash
+              : `${expectedHash}\n${shellCase.data}`;
+            assertEquals(
+              stdout.trimEnd(),
+              expected,
+              `${shellCase.name} on ${tier}`,
+            );
+          }
+          const frame = v5Frames.at(-1)!;
+          const execution = frame.execution as {
+            globalArgs: Record<string, unknown>;
+            methodArgs: Record<string, unknown>;
+          };
+          const runs = [
+            execution.globalArgs.run,
+            execution.methodArgs.run,
+            (frame.unresolvedMethodArgs as Record<string, unknown>)?.run,
+          ].filter((run): run is string => typeof run === "string");
+          assert(runs.length > 0, shellCase.name);
+          for (const run of runs) {
+            if (shellCase.data !== undefined) {
+              assertEquals(run.includes(shellCase.data), false, run);
+              assert(run.includes("__SWAMP_IN_"), run);
+            }
+          }
+        }
+        assertEquals(v5Frames.length, cases.length);
+        assertEquals(v6Frames.length, cases.length);
+      } finally {
         await o.shutdown();
       }
     });

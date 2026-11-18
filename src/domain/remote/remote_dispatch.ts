@@ -50,6 +50,8 @@ export interface LegacyStepDelivery {
   secretValues?: string[];
   unresolvedMethodArgs?: Record<string, unknown>;
   secretBag?: SecretBagEntry[];
+  /** replaces the step's sentinels in `value` with the values this frame loaded */
+  resolveSecrets: (value: unknown) => unknown;
 }
 
 export interface RemoteStepRequest {
@@ -105,9 +107,9 @@ export interface RemoteStepRequest {
    */
   legacyDelivery?: () => Promise<LegacyStepDelivery>;
   /**
-   * places data text in arguments for the chosen worker's shell by platform;
-   * called per attempt since a re-dispatch may pick another platform; throws to
-   * refuse; required so data never runs as authored text
+   * places data text in arguments for the chosen worker's shell, per attempt
+   * since a re-dispatch may change platform; throws to refuse; required so data
+   * never runs as authored text; an unchanged argument comes back by reference
    */
   placeArguments: (
     args: {
