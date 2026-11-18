@@ -215,9 +215,13 @@ export function renderWorkerTokenRevoke(
   writeOutput(lines.join("\n"));
 }
 
+// serve's 30 s token check plus its 10 s delivery timeout
+const LOCAL_ROTATION_HEADROOM_MS = 40_000;
+
 export function renderWorkerTokenRotate(
   data: WorkerTokenRotateData,
   mode: OutputMode,
+  nowMs: number = Date.now(),
 ): void {
   if (mode === "json") {
     console.log(JSON.stringify(data, null, 2));
@@ -233,7 +237,17 @@ export function renderWorkerTokenRotate(
       `${bold(cyan("Old token valid until:"))} ${data.predecessorExpiresAt}`,
     );
   }
-  if (!data.delivered) {
+  if (
+    !data.delivered &&
+    Date.parse(oldUntil) - nowMs < LOCAL_ROTATION_HEADROOM_MS
+  ) {
+    // never suggest rotating again: a second rotation retires the old token
+    lines.push(
+      yellow(
+        `No connected worker was sent the new token by this command, and the old token expires at ${oldUntil}, likely before a running orchestrator's next token check can deliver it. Restart connected workers with the new token now. Next time, rotate with --server, which delivers at once.`,
+      ),
+    );
+  } else if (!data.delivered) {
     // never suggest rotating again: a second rotation retires the old token
     lines.push(
       yellow(

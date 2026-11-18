@@ -672,17 +672,23 @@ Deno.test("renderWorkerTokenRotate: log mode reports each worker and shows the t
   assertStringIncludes(output, "shown once");
 });
 
+const localRotateData: WorkerTokenRotateData = {
+  ...rotateData,
+  delivered: false,
+  rotated: [],
+  notRotated: [],
+  unconnectedBindings: null,
+  retiredBindings: null,
+};
+
 Deno.test("renderWorkerTokenRotate: a local rotation says a running orchestrator sends the token", () => {
   const output = stripAnsiCode(
     captureLogs(() =>
-      renderWorkerTokenRotate({
-        ...rotateData,
-        delivered: false,
-        rotated: [],
-        notRotated: [],
-        unconnectedBindings: null,
-        retiredBindings: null,
-      }, "log")
+      renderWorkerTokenRotate(
+        localRotateData,
+        "log",
+        Date.parse("2026-06-01T00:00:00.000Z"),
+      )
     ),
   );
   assertStringIncludes(output, "No connected worker was sent the new token");
@@ -696,6 +702,31 @@ Deno.test("renderWorkerTokenRotate: a local rotation says a running orchestrator
   );
   assertEquals(output.includes("run with --server"), false);
   assertEquals(output.includes("not connected"), false);
+});
+
+Deno.test("renderWorkerTokenRotate: a local rotation close to the old token's expiry warns that delivery may come too late", () => {
+  const nowMs = Date.parse("2026-06-10T00:00:00.000Z") - 9_000;
+  const output = stripAnsiCode(
+    captureLogs(() => renderWorkerTokenRotate(localRotateData, "log", nowMs)),
+  );
+  assertStringIncludes(
+    output,
+    "the old token expires at 2026-06-10T00:00:00.000Z, likely before a running orchestrator's next token check can deliver it",
+  );
+  assertStringIncludes(
+    output,
+    "Restart connected workers with the new token now",
+  );
+  assertStringIncludes(output, "Next time, rotate with --server");
+  assertEquals(output.includes("about every 30 seconds"), false);
+});
+
+Deno.test("renderWorkerTokenRotate: a rotation through --server never warns about the old token's expiry", () => {
+  const nowMs = Date.parse("2026-06-10T00:00:00.000Z") - 9_000;
+  const output = stripAnsiCode(
+    captureLogs(() => renderWorkerTokenRotate(rotateData, "log", nowMs)),
+  );
+  assertEquals(output.includes("next token check"), false);
 });
 
 Deno.test("renderWorkerTokenRotate: json mode emits the structured record", () => {

@@ -739,7 +739,9 @@ predecessor qualifies (`deliverablePredecessor`): it comes from rotating a
 live, unrevoked mint, while an older mint may be one a revoke and re-mint
 replaced, so a worker on it is cut off rather than handed the new secret. Two
 out-of-band rotations inside one pass therefore retire the workers on the
-original mint. The gateway skips a member while a delivery to it is in flight,
+original mint, and a rotation within one pass interval plus a delivery timeout
+(about 40 s) of the predecessor's deadline can arrive too late, which the local
+rotate output warns about. The gateway skips a member while a delivery to it is in flight,
 remembers a refusal of a mint (no capability, an RPC refusal) so later passes
 spend no transition on it, and retries a timeout on the next pass. The outcome
 goes to serve's log; only `--server` returns it to the caller. If the
