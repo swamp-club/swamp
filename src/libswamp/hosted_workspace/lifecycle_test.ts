@@ -17,13 +17,21 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertNotEquals, assertRejects } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertNotEquals,
+  assertRejects,
+} from "@std/assert";
 import { join } from "@std/path";
 import { parse as parseYaml } from "@std/yaml";
 import { UserError } from "../../domain/errors.ts";
 import { assertErrors, collect } from "../testing.ts";
 import { createHostedWorkspaceDeps } from "./deps.ts";
-import { hostedWorkspaceCreate } from "./create.ts";
+import {
+  hostedWorkspaceCreate,
+  type HostedWorkspaceCreateEvent,
+} from "./create.ts";
 import {
   hostedWorkspaceDelete,
   type HostedWorkspaceDeleteEvent,
@@ -150,5 +158,44 @@ Deno.test("createHostedWorkspaceDeps: a change that cannot get the lock says the
   } finally {
     held.resolve();
     await holding;
+  }
+});
+
+Deno.test("hostedWorkspaceSuspend/Create: a file-system error becomes an error event that names no host path", async () => {
+  await using host = await hostFolder();
+  const denied = () =>
+    Promise.reject(
+      new Deno.errors.PermissionDenied(
+        `Permission denied (os error 13): open '${host.dir}/edge-dns.wanted.yaml'`,
+      ),
+    );
+  const deps = host.deps({
+    repository: {
+      findByName: denied,
+      save: denied,
+      remove: denied,
+    },
+  });
+  for (
+    const error of [
+      await assertErrors<HostedWorkspaceSuspendEvent>(
+        hostedWorkspaceSuspend(ctx, deps, { name: "edge-dns" }),
+        "host_error",
+      ),
+      await assertErrors<HostedWorkspaceCreateEvent>(
+        hostedWorkspaceCreate(ctx, deps, {
+          name: "edge-dns",
+          caller: ALICE,
+          access: OAUTH_ACCESS,
+        }),
+        "host_error",
+      ),
+    ]
+  ) {
+    assertEquals(
+      error.message,
+      "The host could not complete the request. The host's log has the details.",
+    );
+    assert(error.cause instanceof Deno.errors.PermissionDenied);
   }
 });

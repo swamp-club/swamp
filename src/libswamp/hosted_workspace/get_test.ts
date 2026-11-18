@@ -18,6 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import type { HostedWorkspaceWanted } from "../../domain/serve/hosted_workspace.ts";
+import type { ObservedServeState } from "../../domain/serve/managed_serve.ts";
 import { writeHostedWorkspaceStatus } from "../../infrastructure/persistence/hosted_workspace_status_file.ts";
 import { assertCompletes, assertErrors, collect } from "../testing.ts";
 import { hostedWorkspaceCreate } from "./create.ts";
@@ -29,7 +31,7 @@ import {
   OAUTH_ACCESS,
 } from "./hosted_workspace_test_helpers.ts";
 
-Deno.test("hostedWorkspaceGet: reports the state, restarts and the host's reason", async () => {
+Deno.test("hostedWorkspaceGet: reports the state and restarts, and describes the host's reason without repeating it", async () => {
   await using host = await hostFolder();
   const deps = host.deps();
   await collect(hostedWorkspaceCreate(ctx, deps, {
@@ -37,27 +39,65 @@ Deno.test("hostedWorkspaceGet: reports the state, restarts and the host's reason
     caller: ALICE,
     access: OAUTH_ACCESS,
   }));
-  await writeHostedWorkspaceStatus(host.dir, "edge-dns", {
-    state: "failed",
-    wanted: "active",
-    restarts: 5,
-    reason: "exited with code 1",
-    updatedAt: "2026-11-17T10:00:00.000Z",
-  });
-  await assertCompletes<HostedWorkspaceGetEvent>(
-    hostedWorkspaceGet(ctx, deps, { name: "edge-dns" }),
+  const raw = "error: cannot open /srv/host/workspaces/edge-dns/secret.yaml";
+  const cases: Array<{
+    state: ObservedServeState;
+    wanted: HostedWorkspaceWanted;
+    reason: string | null;
+    shown: string | null;
+  }> = [
     {
-      kind: "completed",
-      data: {
-        name: "edge-dns",
-        address: "https://host.example/w/edge-dns",
-        wanted: "active",
-        state: "failed",
-        restarts: 5,
-        reason: "exited with code 1",
-      },
+      state: "failed",
+      wanted: "active",
+      reason: raw,
+      shown:
+        "Its serve kept exiting, so the host stopped restarting it. Resume it to try again; the host's status file for it has the details.",
     },
-  );
+    {
+      state: "backoff",
+      wanted: "active",
+      reason: raw,
+      shown: "Its serve exited, and the host starts it again shortly.",
+    },
+    {
+      state: "stopped",
+      wanted: "deleted",
+      reason: raw,
+      shown:
+        "Removing it failed, and the host tries again at every rescan. The host's status file for it has the details.",
+    },
+    {
+      state: "starting",
+      wanted: "active",
+      reason: raw,
+      shown:
+        "The host reported a problem with it. The host's status file for it has the details.",
+    },
+    { state: "ready", wanted: "active", reason: null, shown: null },
+  ];
+  for (const { state, wanted, reason, shown } of cases) {
+    await writeHostedWorkspaceStatus(host.dir, "edge-dns", {
+      state,
+      wanted,
+      restarts: 5,
+      reason,
+      updatedAt: "2026-11-17T10:00:00.000Z",
+    });
+    await assertCompletes<HostedWorkspaceGetEvent>(
+      hostedWorkspaceGet(ctx, deps, { name: "edge-dns" }),
+      {
+        kind: "completed",
+        data: {
+          name: "edge-dns",
+          address: "https://host.example/w/edge-dns",
+          wanted: "active",
+          state,
+          restarts: 5,
+          reason: shown,
+        },
+      },
+    );
+  }
 });
 
 Deno.test("hostedWorkspaceGet: a name with neither a folder nor a wanted file is not found", async () => {

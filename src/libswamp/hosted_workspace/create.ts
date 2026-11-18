@@ -94,7 +94,7 @@ export async function* hostedWorkspaceCreate(
           },
         };
       } catch (error) {
-        yield hostedWorkspaceErrorEvent(error);
+        yield hostedWorkspaceErrorEvent(ctx, error);
       }
     })(),
   );

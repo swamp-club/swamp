@@ -63,7 +63,7 @@ export async function* hostedWorkspaceSuspend(
           },
         };
       } catch (error) {
-        yield hostedWorkspaceErrorEvent(error);
+        yield hostedWorkspaceErrorEvent(ctx, error);
       }
     })(),
   );

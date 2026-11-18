@@ -31,7 +31,10 @@ import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
 import { FileLock } from "../../infrastructure/persistence/file_lock.ts";
 import { HostedWorkspaceFileRepository } from "../../infrastructure/persistence/hosted_workspace_file_repository.ts";
 import { scanWorkspaces } from "../../infrastructure/persistence/hosted_workspace_folder_scan.ts";
-import { readHostedWorkspaceStatus } from "../../infrastructure/persistence/hosted_workspace_status_file.ts";
+import {
+  type HostedWorkspaceStatus,
+  readHostedWorkspaceStatus,
+} from "../../infrastructure/persistence/hosted_workspace_status_file.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 
@@ -132,8 +135,9 @@ export function createHostedWorkspaceDeps(options: {
   };
 }
 
-/** a UserError's message is shown to remote callers, so it names no host path */
+/** messages reach remote callers, so they name no host path; any other error goes to the host's log */
 export function hostedWorkspaceErrorEvent(
+  ctx: LibSwampContext,
   error: unknown,
 ): { kind: "error"; error: SwampError } {
   if (error instanceof UserError) {
@@ -146,7 +150,16 @@ export function hostedWorkspaceErrorEvent(
       },
     };
   }
-  throw error;
+  ctx.logger.error`A hosted workspace request failed: ${error}`;
+  return {
+    kind: "error",
+    error: {
+      code: "host_error",
+      message:
+        "The host could not complete the request. The host's log has the details.",
+      cause: error instanceof Error ? error : new Error(String(error)),
+    },
+  };
 }
 
 export function hostedWorkspaceNotFound(name: string): UserError {
@@ -161,7 +174,7 @@ export interface HostedWorkspaceSummary {
   /** what the host last observed; null before the host has written a status */
   readonly state: ObservedServeState | null;
   readonly restarts: number | null;
-  /** the host's reason when the workspace is not ready, or a file that cannot be read */
+  /** fixed text per state; the host's own reason stays in its status file */
   readonly reason: string | null;
 }
 
@@ -174,12 +187,13 @@ export async function summarizeHostedWorkspace(
     readHostedWorkspaceStatus(deps.workspacesDir, name),
   ]);
   const found = status.kind === "found" ? status.status : null;
-  // the host's reason is shown as written; the readers' own reasons name host paths, so they are replaced
   const reason = wanted.kind === "unreadable"
     ? "Its wanted file cannot be read, so the host leaves it as it is."
     : status.kind === "unreadable"
     ? "Its status file cannot be read."
-    : found?.reason ?? null;
+    : found === null
+    ? null
+    : reasonShown(found);
   return {
     name,
     address: deps.addressOf(name),
@@ -192,6 +206,22 @@ export async function summarizeHostedWorkspace(
     restarts: found?.restarts ?? null,
     reason,
   };
+}
+
+// the host's reason can hold host paths and the serve's own stderr, which a
+// lifecycle caller may not read, so only the state it came with is described
+function reasonShown(status: HostedWorkspaceStatus): string | null {
+  if (status.reason === null) return null;
+  if (status.wanted === "deleted") {
+    return "Removing it failed, and the host tries again at every rescan. The host's status file for it has the details.";
+  }
+  if (status.state === "failed") {
+    return "Its serve kept exiting, so the host stopped restarting it. Resume it to try again; the host's status file for it has the details.";
+  }
+  if (status.state === "backoff") {
+    return "Its serve exited, and the host starts it again shortly.";
+  }
+  return "The host reported a problem with it. The host's status file for it has the details.";
 }
 
 /** a folder the host would run, or a wanted file with or without one */

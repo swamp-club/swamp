@@ -38,7 +38,7 @@ export type HostedWorkspaceListEvent =
 
 /** a workspace created suspended is listed before its folder appears */
 export async function* hostedWorkspaceList(
-  _ctx: LibSwampContext,
+  ctx: LibSwampContext,
   deps: HostedWorkspaceDeps,
 ): AsyncIterable<HostedWorkspaceListEvent> {
   yield* withGeneratorSpan(
@@ -52,7 +52,7 @@ export async function* hostedWorkspaceList(
         );
         yield { kind: "completed" as const, data: { workspaces } };
       } catch (error) {
-        yield hostedWorkspaceErrorEvent(error);
+        yield hostedWorkspaceErrorEvent(ctx, error);
       }
     })(),
   );

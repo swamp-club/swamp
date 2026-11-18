@@ -37,7 +37,7 @@ export type HostedWorkspaceGetEvent =
   | { kind: "error"; error: SwampError };
 
 export async function* hostedWorkspaceGet(
-  _ctx: LibSwampContext,
+  ctx: LibSwampContext,
   deps: HostedWorkspaceDeps,
   input: { name: string },
 ): AsyncIterable<HostedWorkspaceGetEvent> {
@@ -54,7 +54,7 @@ export async function* hostedWorkspaceGet(
           data: await summarizeHostedWorkspace(deps, name),
         };
       } catch (error) {
-        yield hostedWorkspaceErrorEvent(error);
+        yield hostedWorkspaceErrorEvent(ctx, error);
       }
     })(),
   );

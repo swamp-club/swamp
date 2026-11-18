@@ -63,7 +63,7 @@ export async function* hostedWorkspaceDelete(
           },
         };
       } catch (error) {
-        yield hostedWorkspaceErrorEvent(error);
+        yield hostedWorkspaceErrorEvent(ctx, error);
       }
     })(),
   );

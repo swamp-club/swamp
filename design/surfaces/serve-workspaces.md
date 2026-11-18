@@ -378,7 +378,7 @@ them and its audit log records each one. The host gives the root the
 | ------------------- | ---------------------------------------------------------------------------------------------- | ----------------------------- |
 | `workspace.create`  | Makes the folder, sets up the repo, writes its `serve.yaml` with the caller as its first admin | `write` on `workspace:<name>` |
 | `workspace.list`    | Names, addresses and states                                                                    | any authenticated principal   |
-| `workspace.get`     | One workspace: state, restarts, the supervisor's reason when it is not ready                   | `read` on `workspace:<name>`  |
+| `workspace.get`     | One workspace: state, restarts, and why it is not ready, described by state                    | `read` on `workspace:<name>`  |
 | `workspace.suspend` | Stops its serve and keeps everything; `resume` starts it again                                 | `admin` on `workspace:<name>` |
 | `workspace.delete`  | Stops its serve and removes its folder                                                         | `admin` on `workspace:<name>` |
 
@@ -452,6 +452,13 @@ Setting up a repo runs as a child process in its folder, the hidden
 stdin, initialises the repo, writes `serve.yaml` and seeds the name cache. The
 root's process never loads another workspace's extensions, and never registers
 another workspace's `_token-secrets` vault, which is process-wide.
+
+What the services return reaches remote callers, so it names no host path.
+`get` and `list` describe the host's reason by state (backing off, failed, a
+removal being retried, another problem) and never repeat it: it can hold host
+paths and the serve's own stderr. The reason itself stays in the status file. A
+file-system error the services did not expect returns `host_error` and goes to
+the host's log.
 
 The root's admins hold the lifecycle, not the contents. They are not principals
 inside a workspace unless its own admins add them. When a workspace's admins
