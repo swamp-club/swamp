@@ -39,8 +39,6 @@ export interface HostedWorkspaceCreateInput {
   readonly name: string;
   readonly caller: HostedWorkspaceCaller;
   readonly access: HostedWorkspaceRootAccess;
-  /** listed at once, but no serve starts until a resume */
-  readonly suspended?: boolean;
 }
 
 export interface HostedWorkspaceCreateData {
@@ -75,12 +73,12 @@ export async function* hostedWorkspaceCreate(
         const name = parseWorkspaceName(input.name);
         const spec = provisionSpecOf(input);
         const at = deps.now();
-        const created = HostedWorkspace.create(
+        // listed at once, but no serve starts until a resume
+        const workspace = HostedWorkspace.create(
           name,
           input.caller.principal,
           at,
-        );
-        const workspace = input.suspended ? created.suspend(at) : created;
+        ).suspend(at);
         await deps.withLock(
           name,
           () => createUnderLock(ctx, deps, workspace, spec),

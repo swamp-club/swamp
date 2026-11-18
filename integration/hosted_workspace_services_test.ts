@@ -197,7 +197,7 @@ function observing(
   };
 }
 
-Deno.test("hosted workspace services: no scan lists a workspace before it is whole, and the host starts it once renamed", async () => {
+Deno.test("hosted workspace services: no scan lists a workspace before it is whole, and the host starts it only once resumed", async () => {
   await using h = await host();
   const seen: Parameters<typeof observing>[2] = [];
   await collect(
@@ -216,36 +216,17 @@ Deno.test("hosted workspace services: no scan lists a workspace before it is who
   assertEquals(seen[0].listed, []);
   assertEquals(seen[1].listed, []);
   assertEquals(seen[2].wanted, ["edge-dns"]);
+  assertEquals(seen[2].listed, ["edge-dns"]);
   assertEquals(h.port.spawned, [], "nothing starts while the folder is hidden");
-
-  await h.rescan();
-  assertEquals(h.port.spawned, ["edge-dns"]);
-  const auth = loadServeConfig(undefined, join(h.dir, "edge-dns"))?.auth;
-  assertEquals(auth?.admins, ["alice"]);
-  assertEquals(auth?.["allowed-users"], ["bob"]);
-});
-
-Deno.test("hosted workspace services: a workspace created suspended has its wanted file before its folder and is never started", async () => {
-  await using h = await host();
-  const seen: Parameters<typeof observing>[2] = [];
-  await collect(
-    hostedWorkspaceCreate(ctx, h.deps(observing(h, "edge-dns", seen)), {
-      name: "edge-dns",
-      caller: ALICE,
-      access: ACCESS,
-      suspended: true,
-    }),
-  );
-  const beforeFolder = seen.find((s) => s.step === "after the wanted file")!;
-  assertEquals(beforeFolder.wanted, ["edge-dns"]);
-  assertEquals(beforeFolder.folders, []);
-  assertEquals(beforeFolder.listed, ["edge-dns"]);
 
   await h.rescan();
   await h.rescan();
   assertEquals((await scanWorkspaces(h.dir)).workspaces, ["edge-dns"]);
-  assertEquals(h.port.spawned, []);
+  assertEquals(h.port.spawned, [], "a new workspace has no serve");
   assertEquals(h.wanted("edge-dns"), "suspended");
+  const auth = loadServeConfig(undefined, join(h.dir, "edge-dns"))?.auth;
+  assertEquals(auth?.admins, ["alice"]);
+  assertEquals(auth?.["allowed-users"], ["bob"]);
 
   await collect(hostedWorkspaceResume(ctx, h.deps(), { name: "edge-dns" }));
   await h.rescan();
@@ -322,6 +303,7 @@ Deno.test("hosted workspace services: suspend, resume, get and delete drive the 
     caller: ALICE,
     access: ACCESS,
   }));
+  await collect(hostedWorkspaceResume(ctx, deps, { name: "edge-dns" }));
   await h.rescan();
   assertEquals(h.wanted("edge-dns"), "running");
 

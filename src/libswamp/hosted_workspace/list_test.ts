@@ -81,7 +81,7 @@ Deno.test("hostedWorkspaceList: lists folders and wanted files with their addres
           {
             name: "edge-dns",
             address: "https://host.example/w/edge-dns",
-            wanted: "active",
+            wanted: "suspended",
             state: "ready",
             restarts: 1,
             reason: null,

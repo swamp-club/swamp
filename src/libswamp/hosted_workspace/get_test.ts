@@ -90,7 +90,7 @@ Deno.test("hostedWorkspaceGet: reports the state and restarts, and describes the
         data: {
           name: "edge-dns",
           address: "https://host.example/w/edge-dns",
-          wanted: "active",
+          wanted: "suspended",
           state,
           restarts: 5,
           reason: shown,

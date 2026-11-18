@@ -57,7 +57,7 @@ Deno.test("hostedWorkspaceCreate: sets the repo up, records the creator and rena
       data: {
         name: "edge-dns",
         address: "https://host.example/w/edge-dns",
-        wanted: "active",
+        wanted: "suspended",
       },
     },
   );
@@ -67,27 +67,9 @@ Deno.test("hostedWorkspaceCreate: sets the repo up, records the creator and rena
   const wanted = parseYaml(
     await Deno.readTextFile(join(host.dir, "edge-dns.wanted.yaml")),
   ) as Record<string, unknown>;
-  assertEquals(wanted.wanted, "active");
+  assertEquals(wanted.wanted, "suspended");
   assertEquals(wanted.creator, "user:sub-alice");
   assertEquals(typeof wanted.changedAt, "string");
-});
-
-Deno.test("hostedWorkspaceCreate: a suspended create writes suspended", async () => {
-  await using host = await hostFolder();
-  const events = hostedWorkspaceCreate(ctx, host.deps(), {
-    name: "edge-dns",
-    caller: ALICE,
-    access: OAUTH_ACCESS,
-    suspended: true,
-  });
-  await assertCompletes<HostedWorkspaceCreateEvent>(events, {
-    kind: "completed",
-    data: {
-      name: "edge-dns",
-      address: "https://host.example/w/edge-dns",
-      wanted: "suspended",
-    },
-  });
 });
 
 Deno.test("hostedWorkspaceCreate: token mode names the caller's principal; none mode names no admin", async () => {
@@ -114,7 +96,7 @@ Deno.test("hostedWorkspaceCreate: token mode names the caller's principal; none 
       data: {
         name: "edge-dns",
         address: "https://host.example/w/edge-dns",
-        wanted: "active",
+        wanted: "suspended",
       },
     });
     assertEquals(spec?.admin, admin);
@@ -263,7 +245,7 @@ Deno.test("hostedWorkspaceCreate: removes a set-up folder an earlier create left
       data: {
         name: "edge-dns",
         address: "https://host.example/w/edge-dns",
-        wanted: "active",
+        wanted: "suspended",
       },
     },
   );
