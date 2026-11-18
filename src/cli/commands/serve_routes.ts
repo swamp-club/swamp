@@ -65,4 +65,71 @@ export const SERVE_ROUTES: readonly CommandRoute[] = [
       (await import("./serve_provision_workspace.ts"))
         .serveProvisionWorkspaceCommand,
   },
+  {
+    name: "workspace",
+    aliases: [],
+    hidden: true,
+    module: "src/cli/commands/serve_workspace.ts",
+    needsFullTree: false,
+    load: async (rest) =>
+      (await import("./serve_workspace.ts")).createServeWorkspaceCommand(rest),
+  },
+];
+
+export const SERVE_WORKSPACE_ROUTES: readonly CommandRoute[] = [
+  {
+    name: "create",
+    aliases: [],
+    hidden: false,
+    module: "src/cli/commands/serve_workspace_create.ts",
+    needsFullTree: false,
+    load: async () =>
+      (await import("./serve_workspace_create.ts")).serveWorkspaceCreateCommand,
+  },
+  {
+    name: "list",
+    aliases: [],
+    hidden: false,
+    module: "src/cli/commands/serve_workspace_list.ts",
+    needsFullTree: false,
+    load: async () =>
+      (await import("./serve_workspace_list.ts")).serveWorkspaceListCommand,
+  },
+  {
+    name: "get",
+    aliases: [],
+    hidden: false,
+    module: "src/cli/commands/serve_workspace_get.ts",
+    needsFullTree: false,
+    load: async () =>
+      (await import("./serve_workspace_get.ts")).serveWorkspaceGetCommand,
+  },
+  {
+    name: "suspend",
+    aliases: [],
+    hidden: false,
+    module: "src/cli/commands/serve_workspace_suspend.ts",
+    needsFullTree: false,
+    load: async () =>
+      (await import("./serve_workspace_suspend.ts"))
+        .serveWorkspaceSuspendCommand,
+  },
+  {
+    name: "resume",
+    aliases: [],
+    hidden: false,
+    module: "src/cli/commands/serve_workspace_resume.ts",
+    needsFullTree: false,
+    load: async () =>
+      (await import("./serve_workspace_resume.ts")).serveWorkspaceResumeCommand,
+  },
+  {
+    name: "rm",
+    aliases: [],
+    hidden: false,
+    module: "src/cli/commands/serve_workspace_rm.ts",
+    needsFullTree: false,
+    load: async () =>
+      (await import("./serve_workspace_rm.ts")).serveWorkspaceRmCommand,
+  },
 ];

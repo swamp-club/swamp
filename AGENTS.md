@@ -140,8 +140,8 @@ a pre-PR gate — the verification workflows cover all of them.
 - Uses Cliffy for the command line; top-level commands load lazily through
   `src/cli/root_routes.ts`, never by a static import from startup code, and
   `data`, `workflow`, `behavior`, `model`, `model method`, `extension`, `vault`,
-  `datastore`, `access`, `access token` and `serve` subcommands through their
-  group's `*_routes.ts` table
+  `datastore`, `access`, `access token`, `serve` and `serve workspace`
+  subcommands through their group's `*_routes.ts` table
 - Uses Ink for interactive terminal UIs (search, TUI dashboard)
 - Uses LogTape for logging and non-interactive output (`"log"` mode)
 - Uses JSON for structured output (`"json"` mode via `--json`)

@@ -556,8 +556,16 @@ are gone, an operator on the host suspends it, edits the admins in its
 `serve.yaml` and resumes it.
 
 CLI: `swamp serve workspace create|list|get|suspend|resume|rm`, each with log
-and json output, each a request to the root at the host's address.
-`create` makes a workspace without starting it, and `resume` starts it.
+and json output, each a request to the root at the host's address
+(`src/cli/serve_workspace_request.ts`). The group is hidden while
+`swamp serve host` is. `create` makes a workspace without starting it, and
+`resume` starts it. `rm` sends `workspace.delete` and asks first in log mode
+unless given `--yes`. The client checks a name with `parseWorkspaceName` before
+sending it, since serve refuses a malformed name as `invalid_request`, which the
+client reads as a serve that predates workspace requests. The root's own
+messages for `not_found`, `already_exists`, `busy` and the other service codes
+reach the caller as written; `unauthorized`, `not_a_host_root` and
+`invalid_request` are explained in terms of the address given.
 
 ## Sign-in
 

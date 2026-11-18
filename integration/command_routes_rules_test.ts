@@ -46,7 +46,10 @@ import {
   ACCESS_ROUTES,
   ACCESS_TOKEN_ROUTES,
 } from "../src/cli/commands/access_routes.ts";
-import { SERVE_ROUTES } from "../src/cli/commands/serve_routes.ts";
+import {
+  SERVE_ROUTES,
+  SERVE_WORKSPACE_ROUTES,
+} from "../src/cli/commands/serve_routes.ts";
 import {
   BEHAVIOR_GROUP_WORDS,
   METHOD_LEVEL_WORDS,
@@ -132,6 +135,11 @@ const GROUP_TABLES: readonly GroupTable[] = [
     path: ["serve"],
     file: "src/cli/commands/serve_routes.ts",
     routes: SERVE_ROUTES,
+  },
+  {
+    path: ["serve", "workspace"],
+    file: "src/cli/commands/serve_routes.ts",
+    routes: SERVE_WORKSPACE_ROUTES,
   },
 ];
 
