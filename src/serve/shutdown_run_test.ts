@@ -72,23 +72,43 @@ Deno.test("ShutdownRun.start: a shutdown that throws before its first await stil
   assertEquals(failures.length, 1);
 });
 
-Deno.test("ShutdownRun.settled: resolves after a failed run", async () => {
+Deno.test("ShutdownRun.start: shutdown begins before start returns", () => {
+  let began = false;
+  const shutdown = new ShutdownRun(() => {
+    began = true;
+    return Promise.resolve();
+  }, () => {});
+
+  const run = shutdown.start();
+
+  assertEquals(began, true);
+  return run;
+});
+
+Deno.test("ShutdownRun.finished: rejects with a failed run's error", async () => {
   const shutdown = new ShutdownRun(
     () => Promise.reject(new Error("failed")),
     () => {},
   );
 
-  shutdown.start().catch(() => {});
-  await shutdown.settled();
+  await assertRejects(() => shutdown.start(), Error, "failed");
+  await assertRejects(() => shutdown.finished(), Error, "failed");
 });
 
-Deno.test("ShutdownRun.settled: resolves at once when no run started", async () => {
+Deno.test("ShutdownRun.finished: resolves after a run that succeeded", async () => {
+  const shutdown = new ShutdownRun(() => Promise.resolve(), () => {});
+
+  await shutdown.start();
+  await shutdown.finished();
+});
+
+Deno.test("ShutdownRun.finished: resolves at once when no run started", async () => {
   let runs = 0;
   const shutdown = new ShutdownRun(() => {
     runs++;
     return Promise.resolve();
   }, () => {});
 
-  await shutdown.settled();
+  await shutdown.finished();
   assertEquals(runs, 0);
 });

@@ -8799,11 +8799,12 @@ export const serveCommand = new Command()
       }
     };
     // every trigger shares one run, which the action waits for before closing
-    // the catalog the shutdown stages still use; a run that fails partway still
+    // the catalog the shutdown stages still use; a run that fails partway may
+    // leave runs writing, so the next command recovers the checkout, and still
     // closes the listener, so serve exits instead of waiting on it for good
     const shutdownRun = new ShutdownRun(shutdown, () => {
+      keepV3WriterMarkers();
       listenerAc.abort();
-      if (!Deno.exitCode) Deno.exitCode = 1;
     });
     const startShutdown = () => shutdownRun.start();
     registerShutdownHandler({
@@ -9914,8 +9915,9 @@ export const serveCommand = new Command()
     eventLoopLag.start();
 
     await server?.finished;
-    // shutdown logs its own failure
-    await shutdownRun.settled();
+    // a failed shutdown fails the command, so the CLI skips its success
+    // teardown's compaction and marker removal
+    await shutdownRun.finished();
 
     repoContext.catalogStore.close();
   })

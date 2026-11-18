@@ -35,15 +35,17 @@ export class ShutdownRun {
   }
 
   start(): Promise<void> {
-    this.#run ??= Promise.resolve().then(this.#shutdown).catch((error) => {
-      this.#onFailed(error);
-      throw error;
-    });
+    // shutdown's first steps run in the trigger's own turn, as a direct call would
+    this.#run ??= new Promise<void>((resolve) => resolve(this.#shutdown()))
+      .catch((error) => {
+        this.#onFailed(error);
+        throw error;
+      });
     return this.#run;
   }
 
-  /** resolves once a started run settles either way, at once if none started */
-  async settled(): Promise<void> {
-    await this.#run?.catch(() => {});
+  /** rejects with a started run's failure; resolves if it succeeded or never started */
+  async finished(): Promise<void> {
+    await this.#run;
   }
 }

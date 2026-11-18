@@ -2314,9 +2314,11 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   stdout. When the host holding serve's pipes dies, a line the guard can no
   longer write to stderr is dropped (it stays in the method's logs) rather
   than failing the method. Every trigger shares one shutdown run
-  (`ShutdownRun`, `src/serve/shutdown_run.ts`); if that run fails partway,
-  serve still closes the listener and exits 1, possibly with runs in flight,
-  rather than waiting on the listener for good.
+  (`ShutdownRun`, `src/serve/shutdown_run.ts`). If that run fails partway,
+  serve keeps the v3 writer markers, closes the listener and fails the
+  command, so it exits non-zero, possibly with runs in flight, skipping the
+  success teardown's compaction and marker removal; the next command
+  recovers the checkout.
 - **Telemetry flush.** The CLI flushes telemetry at process exit, which a daemon
   never reaches. `DaemonTelemetryFlushService` flushes every 60 s, at most 20
   batches per tick. It isolates a batch after 5 consecutive failures and
