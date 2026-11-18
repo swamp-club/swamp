@@ -153,6 +153,33 @@ Deno.test("refusedBeforeActing: rate limits, busy and timed 503s, but never an u
   assert(!refusedBeforeActing(r(409, "already_decided")));
 });
 
+Deno.test("refusedBeforeActing: a not-leader reply marked inFlight may have run, so it is an unknown outcome", () => {
+  const notLeader = (inFlight?: boolean) => ({
+    status: 503,
+    code: "serve_not_leader",
+    body: {
+      code: "serve_not_leader",
+      message: "This serve node does not lead the datastore; try again",
+      ...(inFlight !== undefined ? { inFlight } : {}),
+    },
+    retryAfterSeconds: 5,
+    receivedAtMs: 0,
+  });
+  assert(!refusedBeforeActing(notLeader(true)));
+  assert(outcomeUnknown(notLeader(true)));
+  const error = errorFrom(notLeader(true), "action", "workflow.approve");
+  assertEquals(error.code, "outcome_unknown");
+  assertEquals(error.retryAfterSeconds, undefined);
+  assertEquals(error.actionType, "workflow.approve");
+  assert(!error.message.includes("try again"));
+  for (const sent of [notLeader(), notLeader(false)]) {
+    assert(refusedBeforeActing(sent));
+    assert(!outcomeUnknown(sent));
+    assertEquals(errorFrom(sent, "action").code, "serve_not_leader");
+    assertEquals(errorFrom(sent, "action").retryAfterSeconds, 5);
+  }
+});
+
 Deno.test("refuseInBrowser: refuses where a document exists", () => {
   assertThrows(
     () => refuseInBrowser("SwampActionClient", { document: {} }),
@@ -226,6 +253,21 @@ Deno.test("HttpTransport.post: an unknown network failure is not retried by refu
   const reply = await new HttpTransport(SERVE, 1000, { fetch, ...FAST })
     .post("/x", "t", {}, { route: "x", retry: refusedBeforeActing });
   assertEquals([reply.code, sent.length], ["network_error", 1]);
+  assert(outcomeUnknown(reply));
+});
+
+Deno.test("HttpTransport.post: a not-leader reply marked inFlight is not sent again by refusedBeforeActing", async () => {
+  const { fetch, sent } = scriptedFetch([
+    {
+      status: 503,
+      body: { code: "serve_not_leader", inFlight: true },
+      headers: { "retry-after": "0" },
+    },
+    { status: 200, body: { ok: true } },
+  ]);
+  const reply = await new HttpTransport(SERVE, 1000, { fetch, ...FAST })
+    .post("/x", "t", {}, { route: "x", retry: refusedBeforeActing });
+  assertEquals([reply.code, sent.length], ["serve_not_leader", 1]);
   assert(outcomeUnknown(reply));
 });
 
