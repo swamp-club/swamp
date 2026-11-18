@@ -240,10 +240,13 @@ Deno.test("handleWorkspaceList: a direct client lists every workspace, and an in
       ["edge-dns"],
     ],
     ["integration:ops", (s) => setConnectionClient(s, "integration:ops"), []],
-    // pins the delegation clause alone; a production delegation also carries an integration client
+    // a delegation holds a caller to its ceiling even when its client is direct
     [
-      "a delegation with no client",
-      (s) => setConnectionDelegation(s, "delegation-1"),
+      "direct:cli under a delegation",
+      (s) => {
+        setConnectionClient(s, "direct:cli");
+        setConnectionDelegation(s, "delegation-1");
+      },
       [],
     ],
     ["a malformed client", (s) => setConnectionClient(s, "not-a-client"), []],
