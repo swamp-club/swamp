@@ -37,8 +37,6 @@ import {
 } from "./update.ts";
 import { UserError } from "../../domain/errors.ts";
 import type { LaunchdMode } from "../../infrastructure/update/launchd_scheduler.ts";
-import type { WorkerDaemonScheduler } from "../../domain/worker/worker_daemon_scheduler.ts";
-import type { ServiceScheduler } from "../../domain/serve/service_scheduler.ts";
 import { createUpdateCheckRenderer } from "../../presentation/renderers/update_check.ts";
 
 await initializeLogging({});
@@ -322,22 +320,22 @@ Deno.test("setupAutoCadence: an unknown cadence is refused", () => {
 
 Deno.test("daemonRestartTargets: asks for the worker and serve schedulers of the updater's mode", async () => {
   const asked: string[] = [];
-  const worker = {} as WorkerDaemonScheduler;
-  const serve = {} as ServiceScheduler;
   for (const mode of ["agent", "daemon"] as LaunchdMode[]) {
     const targets = daemonRestartTargets(mode, {
-      worker: (options) => {
-        asked.push(`worker:${options?.mode}`);
-        return Promise.resolve(worker);
+      worker: (m) => {
+        asked.push(`worker:${m}`);
+        return Promise.resolve({ restart: () => Promise.resolve("restarted") });
       },
-      serve: (options) => {
-        asked.push(`serve:${options?.mode}`);
-        return Promise.resolve(serve);
+      serve: (m) => {
+        asked.push(`serve:${m}`);
+        return Promise.resolve({
+          restart: () => Promise.resolve("not_running"),
+        });
       },
     });
     assertEquals(targets.map((t) => t.name), ["worker", "serve"]);
-    assertEquals(await targets[0].scheduler(), worker);
-    assertEquals(await targets[1].scheduler(), serve);
+    assertEquals(await (await targets[0].scheduler()).restart(), "restarted");
+    assertEquals(await (await targets[1].scheduler()).restart(), "not_running");
   }
   assertEquals(asked, [
     "worker:agent",
@@ -345,4 +343,16 @@ Deno.test("daemonRestartTargets: asks for the worker and serve schedulers of the
     "worker:daemon",
     "serve:daemon",
   ]);
+});
+
+Deno.test("daemonRestartTargets: a platform without daemon support reads as not installed, not as an error", async () => {
+  const [worker, serve] = daemonRestartTargets("agent", {
+    worker: () =>
+      Promise.reject(
+        new UserError("swamp worker daemon currently requires systemd"),
+      ),
+    serve: () => Promise.reject(new Error("systemctl crashed")),
+  });
+  assertEquals(await (await worker.scheduler()).restart(), "not_installed");
+  await assertRejects(() => serve.scheduler(), Error, "systemctl crashed");
 });

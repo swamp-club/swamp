@@ -43,6 +43,7 @@ import {
 } from "../../infrastructure/update/launchd_scheduler.ts";
 import { cronLogPath } from "../../infrastructure/update/cron_scheduler.ts";
 import {
+  type DaemonRestartOutcome,
   type DaemonRestartTarget,
   restartDaemonsAfterUpdate,
 } from "../../infrastructure/update/daemon_restart.ts";
@@ -346,14 +347,37 @@ export async function updateWithin(
 export function daemonRestartTargets(
   mode: LaunchdMode,
   factories: {
-    worker: typeof createWorkerDaemonScheduler;
-    serve: typeof createServiceScheduler;
-  } = { worker: createWorkerDaemonScheduler, serve: createServiceScheduler },
+    worker: (
+      mode: LaunchdMode,
+    ) => Promise<{ restart(): Promise<DaemonRestartOutcome> }>;
+    serve: (
+      mode: LaunchdMode,
+    ) => Promise<{ restart(): Promise<DaemonRestartOutcome> }>;
+  } = {
+    worker: (mode) => createWorkerDaemonScheduler({ mode }),
+    serve: (mode) => createServiceScheduler({ mode }),
+  },
 ): DaemonRestartTarget[] {
   return [
-    { name: "worker", scheduler: () => factories.worker({ mode }) },
-    { name: "serve", scheduler: () => factories.serve({ mode }) },
+    { name: "worker", scheduler: () => orNotInstalled(factories.worker(mode)) },
+    { name: "serve", scheduler: () => orNotInstalled(factories.serve(mode)) },
   ];
+}
+
+const NOT_INSTALLED = {
+  restart: () => Promise.resolve("not_installed" as const),
+};
+
+/** The factories refuse a platform with no daemon support with a UserError. */
+async function orNotInstalled<T>(
+  scheduler: Promise<T>,
+): Promise<T | typeof NOT_INSTALLED> {
+  try {
+    return await scheduler;
+  } catch (error) {
+    if (error instanceof UserError) return NOT_INSTALLED;
+    throw error;
+  }
 }
 
 async function daemonRestartScope(): Promise<
@@ -716,7 +740,10 @@ export const updateCommand = new Command()
       return;
     }
 
-    const cadence = setupAutoCadence(options.setupAuto, options.cadence);
+    // Refuses --cadence without --setup-auto before it reaches a real update.
+    if (options.setupAuto === undefined) {
+      setupAutoCadence(undefined, options.cadence);
+    }
 
     if (options.setupAuto !== undefined) {
       const validActions = ["status", "disable"];
@@ -730,6 +757,8 @@ export const updateCommand = new Command()
           } (or omit value for interactive setup)`,
         );
       }
+
+      const cadence = setupAutoCadence(options.setupAuto, options.cadence);
 
       if (options.setupAuto === "status") {
         await runSetupAutoStatus(ctx);

@@ -121,7 +121,9 @@ ${args.join("\n")}
   <key>KeepAlive</key>
   <true/>
   <key>ThrottleInterval</key>
-  <integer>10</integer>${userNameEntry}${envBlock}
+  <integer>10</integer>
+  <key>ExitTimeOut</key>
+  <integer>90</integer>${userNameEntry}${envBlock}
   <key>StandardOutPath</key>
   <string>${stdoutLog}</string>
   <key>StandardErrorPath</key>
