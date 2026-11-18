@@ -28026,7 +28026,7 @@ Deno.test("run(): a model-method step that wrote data publishes ModelDataWritten
   );
   await initializeLogging({});
   const modelType = ModelType.create(
-    `@test-4861/writes-${crypto.randomUUID().slice(0, 8)}`,
+    `@test-step-writes/writes-${crypto.randomUUID().slice(0, 8)}`,
   );
   modelRegistry.register({
     type: modelType,

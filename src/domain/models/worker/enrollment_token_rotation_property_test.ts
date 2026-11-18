@@ -23,10 +23,23 @@ import {
   ENROLLMENT_TOKEN_MODEL_TYPE,
   enrollmentTokenModel,
   EnrollmentTokenSchema,
+  rotationCarryOverCapMs,
 } from "./enrollment_token_model.ts";
 import { createInMemoryWorkerContext } from "./worker_test_helpers.ts";
 
 const LIFETIME_MS = 60_000;
+
+async function mint() {
+  const harness = createInMemoryWorkerContext(
+    ENROLLMENT_TOKEN_MODEL_TYPE,
+    "ci-runner-3",
+  );
+  await enrollmentTokenModel.methods.mint.execute(
+    { durationMs: LIFETIME_MS, vaultName: "local", maxEnrollments: 1 },
+    harness.context,
+  );
+  return harness;
+}
 
 /** moves the stored token back in time, as if that much time had passed */
 function advance(
@@ -51,7 +64,8 @@ function advance(
   });
 }
 
-Deno.test("enrollmentTokenModel.rotate: a schedule one lifetime apart never lets the token lapse, however its runs jitter", async () => {
+Deno.test("enrollmentTokenModel.rotate: a schedule one lifetime apart never lets the token lapse while runs are late by less than the carried-over margin", async () => {
+  const capMs = rotationCarryOverCapMs(LIFETIME_MS);
   await fc.assert(
     fc.asyncProperty(
       fc.integer({ min: 5_000, max: LIFETIME_MS - 1_000 }),
@@ -60,24 +74,18 @@ Deno.test("enrollmentTokenModel.rotate: a schedule one lifetime apart never lets
         maxLength: 12,
       }),
       async (leadMs, jitterFractions) => {
-        const harness = createInMemoryWorkerContext(
-          ENROLLMENT_TOKEN_MODEL_TYPE,
-          "ci-runner-3",
-        );
-        await enrollmentTokenModel.methods.mint.execute(
-          { durationMs: LIFETIME_MS, vaultName: "local", maxEnrollments: 1 },
-          harness.context,
-        );
-        // each run is late by up to 90% of the first run's lead; the ticks
-        // themselves are one lifetime apart
-        const jitters = jitterFractions.map((f) => Math.floor(f * leadMs));
+        const harness = await mint();
+        const marginMs = Math.min(leadMs, capMs);
+        const jitters = jitterFractions.map((f) => Math.floor(f * marginMs));
         let previousJitter = 0;
         for (const [k, jitter] of jitters.entries()) {
-          const step = k === 0
-            ? LIFETIME_MS - leadMs + jitter
-            : LIFETIME_MS + jitter - previousJitter;
+          advance(
+            harness.store,
+            k === 0
+              ? LIFETIME_MS - leadMs + jitter
+              : LIFETIME_MS + jitter - previousJitter,
+          );
           previousJitter = jitter;
-          advance(harness.store, step);
           const before = EnrollmentTokenSchema.parse(
             harness.store.get("token-main"),
           );
@@ -85,19 +93,43 @@ Deno.test("enrollmentTokenModel.rotate: a schedule one lifetime apart never lets
             Date.parse(before.expiresAt) > Date.now(),
             `run ${k} found the token expired`,
           );
-
           await enrollmentTokenModel.methods.rotate.execute(
             {},
             harness.context,
           );
-
           const after = EnrollmentTokenSchema.parse(
             harness.store.get("token-main"),
           );
           assertEquals(after.lifetimeMs, LIFETIME_MS);
-          assertEquals(
-            Date.parse(after.expiresAt) - Date.parse(before.expiresAt),
-            LIFETIME_MS,
+        }
+      },
+    ),
+    { numRuns: 50 },
+  );
+});
+
+Deno.test("enrollmentTokenModel.rotate: however often it runs, a default rotation never leaves more than the lifetime plus the cap", async () => {
+  const capMs = rotationCarryOverCapMs(LIFETIME_MS);
+  await fc.assert(
+    fc.asyncProperty(
+      fc.array(fc.integer({ min: 0, max: LIFETIME_MS - 1 }), {
+        minLength: 1,
+        maxLength: 20,
+      }),
+      async (intervals) => {
+        const harness = await mint();
+        for (const interval of intervals) {
+          advance(harness.store, interval);
+          await enrollmentTokenModel.methods.rotate.execute(
+            {},
+            harness.context,
+          );
+          const after = EnrollmentTokenSchema.parse(
+            harness.store.get("token-main"),
+          );
+          assert(
+            Date.parse(after.expiresAt) - Date.parse(after.createdAt) <=
+              LIFETIME_MS + capMs,
           );
         }
       },

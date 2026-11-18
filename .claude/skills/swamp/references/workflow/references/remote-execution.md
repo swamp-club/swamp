@@ -37,22 +37,23 @@ command lists workers it could not rotate. A rotation run by a workflow step or
 schedule on serve reaches connected workers as soon as the step finishes; one
 made without `--server` from another process waits for serve's next token check
 (about 30 seconds), so use `--server` when the old token expires within about 40
-seconds. Without `durationMs` (or `--duration`) the new deadline is the old one
-plus the token's lifetime, so a schedule as long as the lifetime never lets the
-token lapse; an explicit duration counts from the rotation. Only `--server`
-reports the workers a rotation missed. Rotating again retires the old secret at
-once, even for workers not yet reached, so if the new token is lost, read it
-back with `swamp worker token reveal <name>` instead. Pass a stable
-`--cache-dir` to keep the machine identity across restarts — the default temp
-cache directory yields a fresh identity (and thus needs a fresh token) per
-process. A token's secret is never released to a dispatched step, whatever vault
-holds it (`reserved_secret`), so deliver a token to its host outside workflows.
-Manage tokens with `swamp worker token list`,
-`swamp worker token rotate <name>`, `swamp worker token reveal <name>` and
-`swamp worker token revoke <name>`; inspect the pool with `swamp worker list`,
-or visually in the dashboard's Workers view (`/dashboard/workers` on a serve
-started with `--dashboard`): workers grouped by label, per-slot lease state, and
-a selector box that shows where a step's placement would land.
+seconds. Without `durationMs` (or `--duration`) the new token gets the token's
+lifetime plus the old token's remaining time, up to a tenth of the lifetime (at
+least 40 seconds), so a schedule as long as the lifetime never lets the token
+lapse; an explicit duration counts from the rotation. Only `--server` reports
+the workers a rotation missed. Rotating again retires the old secret at once,
+even for workers not yet reached, so if the new token is lost, read it back with
+`swamp worker token reveal <name>` instead. Pass a stable `--cache-dir` to keep
+the machine identity across restarts — the default temp cache directory yields a
+fresh identity (and thus needs a fresh token) per process. A token's secret is
+never released to a dispatched step, whatever vault holds it
+(`reserved_secret`), so deliver a token to its host outside workflows. Manage
+tokens with `swamp worker token list`, `swamp worker token rotate <name>`,
+`swamp worker token reveal <name>` and `swamp worker token revoke <name>`;
+inspect the pool with `swamp worker list`, or visually in the dashboard's
+Workers view (`/dashboard/workers` on a serve started with `--dashboard`):
+workers grouped by label, per-slot lease state, and a selector box that shows
+where a step's placement would land.
 
 ## Placing steps on workers
 

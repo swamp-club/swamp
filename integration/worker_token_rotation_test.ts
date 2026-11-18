@@ -56,6 +56,7 @@ import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
 import { WorkerGateway } from "../src/serve/worker_gateway.ts";
 import { WorkerTokenRevalidationService } from "../src/serve/worker_token_revalidation_service.ts";
 import { subscribeTokenWriteNudges } from "../src/serve/token_write_nudges.ts";
+import { rotationCarryOverCapMs } from "../src/domain/models/worker/enrollment_token_model.ts";
 import {
   registerTokenRotationHandler,
   type WorkerCredential,
@@ -504,13 +505,12 @@ Deno.test("a workflow step that rotates the token on serve reaches the worker wi
   }, { nudges: true });
 });
 
-Deno.test("scheduled default rotations extend the token by its lifetime each time and keep the worker on the newest token", async () => {
+Deno.test("scheduled default rotations keep the token's lifetime, cap the carried-over time, and keep the worker on the newest token", async () => {
   await withFixture(async (f) => {
     const lifetimeMs = 60 * 60_000;
     const original = await mintToken(f, "w-sched", { durationMs: lifetimeMs });
     const credential: WorkerCredential = { token: original };
     await enroll(connectWorker(f.gateway, { credential }), original);
-    let previous = (await f.gateway.readTokenRecords()).get("w-sched")!;
 
     for (let run = 0; run < 3; run++) {
       const held = credential.token;
@@ -520,12 +520,11 @@ Deno.test("scheduled default rotations extend the token by its lifetime each tim
         `run ${run} delivered`,
       );
       const record = (await f.gateway.readTokenRecords()).get("w-sched")!;
-      assertEquals(
-        Date.parse(record.expiresAt) - Date.parse(previous.expiresAt),
-        lifetimeMs,
-      );
       assertEquals(record.lifetimeMs, lifetimeMs);
-      previous = record;
+      assertEquals(
+        Date.parse(record.expiresAt) - Date.parse(record.createdAt),
+        lifetimeMs + rotationCarryOverCapMs(lifetimeMs),
+      );
     }
     assertEquals(f.gateway.worker("w-sched")?.connected, true);
     assertEquals(await f.revalidation.runOnce(), []);

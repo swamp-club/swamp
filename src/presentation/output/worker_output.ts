@@ -31,6 +31,7 @@ import type { WorkerQueueListData } from "../../libswamp/worker/queue_list.ts";
 import type { WorkerTokenCreateData } from "../../libswamp/worker/token_create.ts";
 import type { WorkerTokenRevokeData } from "../../libswamp/worker/token_revoke.ts";
 import type { WorkerTokenRotateData } from "../../libswamp/worker/token_rotate.ts";
+import { ROTATION_HEADROOM_MS } from "../../domain/models/worker/enrollment_token_model.ts";
 import type { WorkerTokenRevealData } from "../../libswamp/worker/token_reveal.ts";
 import type { WorkerStatusEvent } from "../../worker/connect.ts";
 import type { WorkerVerifyData } from "../../serve/protocol.ts";
@@ -215,9 +216,6 @@ export function renderWorkerTokenRevoke(
   writeOutput(lines.join("\n"));
 }
 
-// serve's 30 s token check plus its 10 s delivery timeout
-const LOCAL_ROTATION_HEADROOM_MS = 40_000;
-
 export function renderWorkerTokenRotate(
   data: WorkerTokenRotateData,
   mode: OutputMode,
@@ -239,7 +237,7 @@ export function renderWorkerTokenRotate(
   }
   if (
     !data.delivered &&
-    Date.parse(oldUntil) - nowMs < LOCAL_ROTATION_HEADROOM_MS
+    Date.parse(oldUntil) - nowMs < ROTATION_HEADROOM_MS
   ) {
     // never suggest rotating again: a second rotation retires the old token
     lines.push(

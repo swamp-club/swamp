@@ -521,11 +521,22 @@ async function rebind(
 const EmptyArgsSchema = z.object({});
 
 // serve's 30 s token check plus its 10 s delivery timeout
-const ROTATION_HEADROOM_MS = 40_000;
+export const ROTATION_HEADROOM_MS = 40_000;
+
+/**
+ * how much of the old secret's remaining time a default rotation carries over:
+ * enough to absorb a late scheduled run, never enough to compound
+ */
+export function rotationCarryOverCapMs(lifetimeMs: number): number {
+  return Math.min(
+    lifetimeMs,
+    Math.max(ROTATION_HEADROOM_MS, Math.floor(lifetimeMs / 10)),
+  );
+}
 
 const RotateArgsSchema = z.object({
   durationMs: z.number().int().positive().optional().describe(
-    "Successor lifetime in milliseconds from now; omitted, the current deadline is extended by the token's lifetime",
+    "Successor lifetime in milliseconds from now; omitted, the token's lifetime plus the old secret's remaining time, up to a tenth of the lifetime (at least 40 s)",
   ),
 });
 
@@ -561,15 +572,16 @@ async function rotate(
   const createdAtMs = Math.max(now, previousCreatedAtMs + 1);
   const lifetimeMs = args.durationMs ?? token.lifetimeMs ??
     Date.parse(token.expiresAt) - previousCreatedAtMs;
-  // anchored to the old deadline, so a schedule one lifetime apart never drifts
-  // into an expired token
+  const remainingMs = Date.parse(token.expiresAt) - now;
+  // the carried-over margin keeps a schedule one lifetime apart from drifting
+  // into an expired token; its cap keeps early rotations from compounding
   const expiresAtMs = args.durationMs !== undefined
     ? createdAtMs + args.durationMs
-    : Date.parse(token.expiresAt) + lifetimeMs;
-  const remainingMs = Date.parse(token.expiresAt) - now;
+    : createdAtMs + lifetimeMs +
+      Math.min(Math.max(0, remainingMs), rotationCarryOverCapMs(lifetimeMs));
   if (remainingMs < ROTATION_HEADROOM_MS) {
     context.logger.warn(
-      "Enrollment token {name} was rotated {seconds}s before its old secret expires; workers serve cannot reach in time are cut off. Rotate at most half its lifetime apart",
+      "Enrollment token {name} was rotated {seconds}s before its old secret expires; a worker that has not received the new token by then is cut off",
       { name, seconds: Math.max(0, Math.round(remainingMs / 1000)) },
     );
   }

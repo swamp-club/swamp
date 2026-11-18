@@ -691,12 +691,6 @@ export class WorkerGateway {
   ): Promise<TokenRotationReport | null> {
     const readTokenSecret = this.#options.readTokenSecret;
     if (readTokenSecret === undefined) return null;
-    const present = new Set(
-      [...this.#workers.values()].map((entry) => entry.instanceUuid),
-    );
-    for (const uuid of this.#rotationRefusals.keys()) {
-      if (!present.has(uuid)) this.#rotationRefusals.delete(uuid);
-    }
     if (this.#undeliveredHolders(tokenName, observed).length === 0) {
       return null;
     }
@@ -710,32 +704,40 @@ export class WorkerGateway {
         const holders = new Set(this.#undeliveredHolders(tokenName, record));
         if (holders.size === 0) return null;
         const targets = this.#rotationTargets((entry) => holders.has(entry));
+        // claimed on the tail, so a --server rotation cannot pick them up
+        // while this pass reads the secret
+        this.#markDelivering(targets);
         return { definitionId, record, targets };
       },
     );
     if (prepared === null) return null;
     const { definitionId, record, targets } = prepared;
 
-    let secret: string;
+    let report: TokenRotationReport;
     try {
-      secret = await readTokenSecret(record.vaultName, record.secretKey);
-    } catch (error) {
-      logger.warn(
-        "Could not read the current secret of {token} to deliver it: {error}",
-        {
-          token: tokenName,
-          error: error instanceof Error ? error.message : String(error),
-        },
+      let secret: string;
+      try {
+        secret = await readTokenSecret(record.vaultName, record.secretKey);
+      } catch (error) {
+        logger.warn(
+          "Could not read the current secret of {token} to deliver it: {error}",
+          {
+            token: tokenName,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        );
+        return null;
+      }
+      report = await this.#deliverRotation(
+        tokenName,
+        definitionId,
+        record,
+        targets,
+        `${tokenName}.${secret}`,
       );
-      return null;
+    } finally {
+      this.#unmarkDelivering(targets);
     }
-    const report = await this.#deliverRotation(
-      tokenName,
-      definitionId,
-      record,
-      targets,
-      `${tokenName}.${secret}`,
-    );
     for (const worker of report.rotated) {
       logger.info(
         "Delivered the rotated enrollment token {token} to {worker}",
@@ -776,6 +778,23 @@ export class WorkerGateway {
     );
   }
 
+  #markDelivering(targets: readonly RotationTarget[]): void {
+    for (const { instanceUuid } of targets) {
+      this.#deliveriesInFlight.set(
+        instanceUuid,
+        (this.#deliveriesInFlight.get(instanceUuid) ?? 0) + 1,
+      );
+    }
+  }
+
+  #unmarkDelivering(targets: readonly RotationTarget[]): void {
+    for (const { instanceUuid } of targets) {
+      const remaining = (this.#deliveriesInFlight.get(instanceUuid) ?? 1) - 1;
+      if (remaining > 0) this.#deliveriesInFlight.set(instanceUuid, remaining);
+      else this.#deliveriesInFlight.delete(instanceUuid);
+    }
+  }
+
   #rotationTargets(include: (entry: WorkerEntry) => boolean): RotationTarget[] {
     return [...this.#workers.values()].filter(include).map((entry) => ({
       name: entry.name,
@@ -794,6 +813,12 @@ export class WorkerGateway {
     targets: RotationTarget[],
     token: string,
   ): Promise<TokenRotationReport> {
+    const present = new Set(
+      [...this.#workers.values()].map((entry) => entry.instanceUuid),
+    );
+    for (const uuid of this.#rotationRefusals.keys()) {
+      if (!present.has(uuid)) this.#rotationRefusals.delete(uuid);
+    }
     const expiresAtMs = Date.parse(record.expiresAt);
     const timeoutMs = this.#options.rotationDeliveryTimeoutMs ??
       DEFAULT_ROTATION_DELIVERY_TIMEOUT_MS;
@@ -819,8 +844,7 @@ export class WorkerGateway {
         });
         return;
       }
-      const inFlight = this.#deliveriesInFlight.get(target.instanceUuid) ?? 0;
-      this.#deliveriesInFlight.set(target.instanceUuid, inFlight + 1);
+      this.#markDelivering([target]);
       try {
         const result = await channel.call<RotateTokenResult>(
           WorkerMethod.rotateToken,
@@ -846,13 +870,7 @@ export class WorkerGateway {
             : "no acknowledgement",
         });
       } finally {
-        const remaining =
-          (this.#deliveriesInFlight.get(target.instanceUuid) ?? 1) - 1;
-        if (remaining > 0) {
-          this.#deliveriesInFlight.set(target.instanceUuid, remaining);
-        } else {
-          this.#deliveriesInFlight.delete(target.instanceUuid);
-        }
+        this.#unmarkDelivering([target]);
       }
     }));
 

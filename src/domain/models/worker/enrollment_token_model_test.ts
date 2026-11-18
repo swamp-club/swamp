@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import {
+  assert,
   assertEquals,
   assertNotEquals,
   assertRejects,
@@ -34,6 +35,7 @@ import {
   EnrollmentTokenSchema,
   type MaxEnrollments,
   rotatedTokenSecretKey,
+  rotationCarryOverCapMs,
   tokenSecretKey,
   WORKER_ROTATED_TOKEN_SECRET_KEY_PREFIX,
 } from "./enrollment_token_model.ts";
@@ -607,15 +609,32 @@ Deno.test("enrollmentTokenModel: rotate keeps the name and bindings and writes a
   assertEquals(JSON.stringify(token).includes(successor), false);
 });
 
-Deno.test("enrollmentTokenModel: rotate without a duration extends the old deadline by the token's lifetime", async () => {
+Deno.test("enrollmentTokenModel: rotate without a duration carries over the old secret's remaining time, up to the cap", async () => {
   const harness = await mintToken();
+  const { token } = await rotateToken(harness);
+  assertEquals(
+    Date.parse(token.expiresAt as string) -
+      Date.parse(token.createdAt as string),
+    mintArgs.durationMs + rotationCarryOverCapMs(mintArgs.durationMs),
+  );
+  assertEquals(token.lifetimeMs, mintArgs.durationMs);
+});
+
+Deno.test("enrollmentTokenModel: rotate without a duration carries over all of a short remaining time", async () => {
+  const harness = await mintToken();
+  advanceTokenClock(harness, mintArgs.durationMs - 10_000);
   const before = EnrollmentTokenSchema.parse(harness.store.get("token-main"));
   const { token } = await rotateToken(harness);
   assertEquals(
     Date.parse(token.expiresAt as string),
     Date.parse(before.expiresAt) + mintArgs.durationMs,
   );
-  assertEquals(token.lifetimeMs, mintArgs.durationMs);
+});
+
+Deno.test("rotationCarryOverCapMs: a tenth of the lifetime, at least 40 s, never more than the lifetime", () => {
+  assertEquals(rotationCarryOverCapMs(7 * 24 * 3_600_000), 7 * 24 * 360_000);
+  assertEquals(rotationCarryOverCapMs(60_000), 40_000);
+  assertEquals(rotationCarryOverCapMs(10_000), 10_000);
 });
 
 Deno.test("enrollmentTokenModel: rotate with a duration counts it from now and keeps it as the lifetime", async () => {
@@ -1170,13 +1189,13 @@ function advanceTokenClock(
 Deno.test("enrollmentTokenModel: repeated default rotations keep the lifetime the token was minted with", async () => {
   const harness = await mintToken();
   for (let i = 0; i < 5; i++) {
-    const before = EnrollmentTokenSchema.parse(harness.store.get("token-main"));
     advanceTokenClock(harness, 50_000);
     const { token } = await rotateToken(harness);
     assertEquals(token.lifetimeMs, mintArgs.durationMs);
-    assertEquals(
-      Date.parse(token.expiresAt as string),
-      Date.parse(before.expiresAt) - 50_000 + mintArgs.durationMs,
+    assert(
+      Date.parse(token.expiresAt as string) -
+          Date.parse(token.createdAt as string) <=
+        mintArgs.durationMs + rotationCarryOverCapMs(mintArgs.durationMs),
     );
   }
 });
@@ -1190,8 +1209,9 @@ Deno.test("enrollmentTokenModel: a record minted before lifetimeMs rotates by it
   const { token } = await rotateToken(harness);
   const span = Date.parse(legacy.expiresAt) - Date.parse(legacy.createdAt);
   assertEquals(
-    Date.parse(token.expiresAt as string),
-    Date.parse(legacy.expiresAt) + span,
+    Date.parse(token.expiresAt as string) -
+      Date.parse(token.createdAt as string),
+    span + rotationCarryOverCapMs(span),
   );
   assertEquals(token.lifetimeMs, span);
 });
