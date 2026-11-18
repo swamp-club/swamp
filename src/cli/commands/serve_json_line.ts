@@ -25,5 +25,10 @@ import { runFileSink } from "../../infrastructure/logging/run_file_sink.ts";
  * line to stderr and into that method's logs, so it goes to stdout unguarded
  */
 export function writeServeJsonLine(line: string): void {
-  unguardedConsole.log(runFileSink.redactActive(line));
+  try {
+    unguardedConsole.log(runFileSink.redactActive(line));
+  } catch (error) {
+    // a host that stopped reading must not stop serve's shutdown partway
+    if (!(error instanceof Deno.errors.BrokenPipe)) throw error;
+  }
 }

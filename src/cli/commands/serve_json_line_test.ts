@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertThrows } from "@std/assert";
 import {
   setConsoleGuardStderrWriter,
   withConsoleGuard,
@@ -100,5 +100,34 @@ Deno.test("writeServeJsonLine: masks an active run's secrets", async () => {
     console.log = originalLog;
     setConsoleGuardStderrWriter(undefined);
     runFileSink.unregisterRedactor(handle);
+  }
+});
+
+Deno.test("writeServeJsonLine: a stdout with no reader drops the line instead of throwing", () => {
+  const originalLog = console.log;
+  console.log = () => {
+    throw new Deno.errors.BrokenPipe("Broken pipe (os error 32)");
+  };
+
+  try {
+    writeServeJsonLine(JSON.stringify({ status: "stopping" }));
+  } finally {
+    console.log = originalLog;
+  }
+});
+
+Deno.test("writeServeJsonLine: a write failing for another reason still throws", () => {
+  const originalLog = console.log;
+  console.log = () => {
+    throw new Deno.errors.PermissionDenied("denied");
+  };
+
+  try {
+    assertThrows(
+      () => writeServeJsonLine(JSON.stringify({ status: "stopping" })),
+      Deno.errors.PermissionDenied,
+    );
+  } finally {
+    console.log = originalLog;
   }
 });

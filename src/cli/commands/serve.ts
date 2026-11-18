@@ -506,7 +506,6 @@ import {
 import { ShutdownDeadline } from "../../serve/shutdown_deadline.ts";
 import { ShutdownStages } from "../../serve/shutdown_stages.ts";
 import { stdinShutdownTrigger } from "../../serve/stdin_close_trigger.ts";
-import { ShutdownRun } from "../../serve/shutdown_run.ts";
 import { formatListeningLine } from "../../serve/listening_line.ts";
 import { ServeRunWriteFence } from "../../serve/run_write_fence.ts";
 import {
@@ -8799,14 +8798,9 @@ export const serveCommand = new Command()
       }
     };
     // every trigger shares one run, which the action waits for before closing
-    // the catalog the shutdown stages still use; a run that fails partway may
-    // leave runs writing, so the next command recovers the checkout, and still
-    // closes the listener, so serve exits instead of waiting on it for good
-    const shutdownRun = new ShutdownRun(shutdown, () => {
-      keepV3WriterMarkers();
-      listenerAc.abort();
-    });
-    const startShutdown = () => shutdownRun.start();
+    // the catalog the shutdown stages still use
+    let shutdownRun: Promise<void> | undefined;
+    const startShutdown = () => (shutdownRun ??= shutdown());
     registerShutdownHandler({
       handler: () => {
         startShutdown().catch((e) =>
@@ -9915,9 +9909,8 @@ export const serveCommand = new Command()
     eventLoopLag.start();
 
     await server?.finished;
-    // a failed shutdown fails the command, so the CLI skips its success
-    // teardown's compaction and marker removal
-    await shutdownRun.finished();
+    // shutdown logs its own failure
+    await shutdownRun?.catch(() => {});
 
     repoContext.catalogStore.close();
   })

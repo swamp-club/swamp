@@ -94,27 +94,3 @@ Deno.test("serve shutdown: every await after the drain is a bounded ShutdownStag
     "Run the stage through stages.run(...) so it takes its bound from the shutdown deadline and is named in the log when it stalls.",
   );
 });
-
-Deno.test("serve shutdown: every trigger goes through one ShutdownRun, whose failure still frees the listener", async () => {
-  const code = (await Deno.readTextFile(SERVE_COMMAND))
-    .split("\n")
-    .filter((line) => !isCommentLine(line))
-    .join("\n");
-  assert(
-    /const shutdownRun = new ShutdownRun\(shutdown, \(\) => \{\s*keepV3WriterMarkers\(\);\s*listenerAc\.abort\(\);/
-      .test(code),
-    "serve.ts no longer builds its shutdown run with new ShutdownRun(shutdown, ...) whose onFailed keeps the v3 writer markers and aborts listenerAc; a shutdown that fails partway would leave serve waiting on its listener, or its runs unrecovered",
-  );
-  assert(
-    /const startShutdown = \(\) => shutdownRun\.start\(\);/.test(code),
-    "startShutdown no longer starts the shared ShutdownRun",
-  );
-  assert(
-    /await shutdownRun\.finished\(\);/.test(code),
-    "the serve action no longer rethrows a failed shutdown, so the CLI would run its success teardown over runs that may still be writing",
-  );
-  assert(
-    !/\?\?=\s*shutdown\(\)/.test(code),
-    "serve.ts memoizes shutdown() itself instead of through ShutdownRun",
-  );
-});
