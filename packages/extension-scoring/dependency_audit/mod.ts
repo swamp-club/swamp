@@ -141,4 +141,5 @@ export {
   specifierKey,
   specifierText,
   writtenSpecifiers,
+  writtenSpecifiersFromSites,
 } from "./specifiers.ts";

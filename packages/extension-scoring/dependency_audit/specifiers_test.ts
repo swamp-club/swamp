@@ -22,7 +22,9 @@ import {
   isAuditedCodeFile,
   parseSpecifier,
   writtenSpecifiers,
+  writtenSpecifiersFromSites,
 } from "./specifiers.ts";
+import { importedSpecifiersAt } from "../source/imports.ts";
 
 const names = (source: string) =>
   (writtenSpecifiers(source, "models/a.ts") ?? []).map((s) =>
@@ -105,4 +107,23 @@ Deno.test("writtenSpecifiers: null for a module that does not parse", () => {
     ),
     null,
   );
+});
+
+Deno.test("writtenSpecifiersFromSites: reads the sites a scan found, null when it found none", () => {
+  const source = [
+    'import a from "npm:a@1.0.0";',
+    'import "./local.ts";',
+    'const b = await import("jsr:@s/b@2");',
+    'import again from "npm:a@1.0.0";',
+  ].join("\n");
+  const sites = importedSpecifiersAt(source, { path: "models/a.ts" });
+  assertEquals(
+    writtenSpecifiersFromSites(sites, "models/a.ts"),
+    writtenSpecifiers(source, "models/a.ts"),
+  );
+  assertEquals(
+    writtenSpecifiersFromSites(sites, "models/a.ts")?.map((s) => s.name),
+    ["a", "@s/b"],
+  );
+  assertEquals(writtenSpecifiersFromSites(null, "models/a.ts"), null);
 });

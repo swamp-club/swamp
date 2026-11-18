@@ -49,6 +49,7 @@ export {
 export {
   type ArchiveFile,
   markdownImports,
+  markdownImportsFromSites,
   nonDocumentationPaths,
   type SecretDocsTarget,
   secretDocsTargets,

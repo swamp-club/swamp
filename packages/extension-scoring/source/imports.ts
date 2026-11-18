@@ -26,6 +26,7 @@
  * @module
  */
 
+import { statementsWithNestedImports } from "./import_scan.ts";
 import {
   parseExtensionModule,
   type ParseModuleOptions,
@@ -67,17 +68,59 @@ export function importedSpecifiersIn(
   program: SyntaxNode,
 ): ImportedSpecifierAt[] {
   const found: ImportedSpecifierAt[] = [];
-  const add = (node: unknown) => {
-    if (
-      isNode(node) && node.type === "StringLiteral" &&
-      typeof node.value === "string" && typeof node.start === "number" &&
-      typeof node.end === "number"
-    ) {
-      found.push({ specifier: node.value, start: node.start, end: node.end });
+  collectSpecifiers([program], found);
+  return found.sort((a, b) => a.start - b.start);
+}
+
+// The top-level declarations that carry a source, read without walking below.
+const DECLARATIONS_WITH_SOURCE = new Set([
+  "ImportDeclaration",
+  "ExportNamedDeclaration",
+  "ExportAllDeclaration",
+]);
+
+/**
+ * {@link importedSpecifiersIn}, walking below the top only the statements
+ * {@link statementsWithNestedImports} picks.
+ */
+function importedSpecifiersInSource(
+  program: SyntaxNode,
+  source: string,
+): ImportedSpecifierAt[] {
+  const body = program.body;
+  if (!Array.isArray(body) || !body.every(isNode)) {
+    return importedSpecifiersIn(program);
+  }
+  const deep = statementsWithNestedImports(body, source);
+  const found: ImportedSpecifierAt[] = [];
+  const roots: SyntaxNode[] = [];
+  body.forEach((statement, index) => {
+    if (deep.has(index)) roots.push(statement);
+    else if (DECLARATIONS_WITH_SOURCE.has(statement.type)) {
+      addSpecifier(found, statement.source);
     }
-  };
+  });
+  collectSpecifiers(roots, found);
+  return found.sort((a, b) => a.start - b.start);
+}
+
+function addSpecifier(found: ImportedSpecifierAt[], node: unknown): void {
+  if (
+    isNode(node) && node.type === "StringLiteral" &&
+    typeof node.value === "string" && typeof node.start === "number" &&
+    typeof node.end === "number"
+  ) {
+    found.push({ specifier: node.value, start: node.start, end: node.end });
+  }
+}
+
+function collectSpecifiers(
+  roots: readonly SyntaxNode[],
+  found: ImportedSpecifierAt[],
+): void {
+  const add = (node: unknown) => addSpecifier(found, node);
   // Explicit stack: extension source can nest deeply.
-  const stack: SyntaxNode[] = [program];
+  const stack: SyntaxNode[] = [...roots];
   while (stack.length > 0) {
     const node = stack.pop()!;
     switch (node.type) {
@@ -114,7 +157,6 @@ export function importedSpecifiersIn(
       }
     }
   }
-  return found.sort((a, b) => a.start - b.start);
 }
 
 /**
@@ -127,7 +169,7 @@ export function importedSpecifiersAt(
   options: Pick<ParseModuleOptions, "path"> = {},
 ): ImportedSpecifierAt[] | null {
   const parsed = parseExtensionModule(source, options);
-  return parsed.ok ? importedSpecifiersIn(parsed.program) : null;
+  return parsed.ok ? importedSpecifiersInSource(parsed.program, source) : null;
 }
 
 /**

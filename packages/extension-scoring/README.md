@@ -58,6 +58,14 @@ import vectors from "jsr:@swamp-club/extension-scoring/vectors/rubric.json" with
 };
 ```
 
+## Import scan
+
+`importedSpecifiersAt` (from `./source`) parses a module once and returns its
+import sites. A caller that needs both a module's Markdown imports and its
+dependencies passes the same sites to `markdownImportsFromSites` and
+`writtenSpecifiersFromSites`. `markdownImports` and `writtenSpecifiers` each
+parse the module again.
+
 ## Dependency audit record
 
 Push writes `dependency-audit.json` beside `manifest.yaml`. Since

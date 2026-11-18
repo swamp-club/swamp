@@ -22,7 +22,10 @@
  * the same way by push and by the registry's scorecard.
  */
 
-import { importedSpecifiersAt } from "../source/imports.ts";
+import {
+  type ImportedSpecifierAt,
+  importedSpecifiersAt,
+} from "../source/imports.ts";
 import type { ShippedVersion } from "./resolution.ts";
 
 /** A package registry the audit checks. */
@@ -139,7 +142,20 @@ export function writtenSpecifiers(
   source: string,
   sourceFile: string,
 ): DependencySpecifier[] | null {
-  const sites = importedSpecifiersAt(source, { path: sourceFile });
+  return writtenSpecifiersFromSites(
+    importedSpecifiersAt(source, { path: sourceFile }),
+    sourceFile,
+  );
+}
+
+/**
+ * {@link writtenSpecifiers} from the sites `importedSpecifiersAt` found in
+ * `sourceFile`; null when it found none because the module does not parse.
+ */
+export function writtenSpecifiersFromSites(
+  sites: readonly ImportedSpecifierAt[] | null,
+  sourceFile: string,
+): DependencySpecifier[] | null {
   if (sites === null) return null;
   const seen = new Set<string>();
   const results: DependencySpecifier[] = [];
