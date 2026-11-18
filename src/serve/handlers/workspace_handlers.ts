@@ -179,7 +179,7 @@ export async function handleWorkspaceList(
   if (data === undefined) return;
   const caller = accessCallerOf(socket, principal);
   // a caller under a ceiling sees only the workspaces it could get
-  const ceilinged = caller.client !== undefined ||
+  const ceilinged = isIntegrationClient(caller.client) ||
     caller.delegation !== undefined;
   const workspaces = ceilinged
     ? data.workspaces.filter((summary) =>

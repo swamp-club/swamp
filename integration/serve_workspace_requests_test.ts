@@ -307,6 +307,28 @@ Deno.test("serve workspace requests: a caller who is not a root admin may list a
   });
 });
 
+Deno.test("serve workspace requests: a caller who is not a root admin, signed in through the CLI, lists every workspace and is refused everything else", async () => {
+  await withRoot(async (root) => {
+    const ctx = root.ctx();
+    await sendRequest(ctx, request("workspace.create", "edge-dns"), ALICE);
+    const cli = { client: "direct:cli" };
+    const listed = reply(
+      await sendRequest(ctx, request("workspace.list"), BOB, cli),
+      "workspace.list",
+    ) as { workspaces: { name: string }[] };
+    assertEquals(listed.workspaces.map((w) => w.name), ["edge-dns"]);
+    for (const type of ["workspace.create", ...CHANGES]) {
+      const frames = await sendRequest(
+        ctx,
+        request(type, "edge-dns"),
+        BOB,
+        cli,
+      );
+      assertEquals(errorFrame(frames)?.error?.code, "unauthorized", type);
+    }
+  });
+});
+
 Deno.test("serve workspace requests: a caller acting through an integration whose ceiling names no workspace lists none", async () => {
   await withRoot(async (root) => {
     const ctx = root.ctx();

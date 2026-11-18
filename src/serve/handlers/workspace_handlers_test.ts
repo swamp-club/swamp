@@ -36,6 +36,8 @@ import type {
 import { hostRootWorkspaces } from "../host_root_workspaces.ts";
 import {
   type ConnectionContext,
+  setConnectionClient,
+  setConnectionDelegation,
   setConnectionTokenExpiresAt,
 } from "./shared.ts";
 import {
@@ -212,6 +214,49 @@ Deno.test("handleWorkspaceGet: authorization is decided before whether this serv
   const listing = createMockSocket();
   await handleWorkspaceList(listing, ctx, "r", { kind: "user", id: "alice" });
   assertEquals(frames(listing)[0].error?.code, NOT_A_HOST_ROOT_CODE);
+});
+
+Deno.test("handleWorkspaceList: a direct client lists every workspace, and an integration, a delegation or a malformed client only what its ceiling can get", async () => {
+  await using f = await folder();
+  await handleWorkspaceCreate(
+    createMockSocket(),
+    f.ctx(),
+    "r0",
+    { name: "edge-dns" },
+    null,
+  );
+  const bob = { kind: "user", id: "bob" } as const;
+  // token mode with no policy loaded refuses every decision, so a ceilinged caller sees none
+  const cases: [string, (socket: WebSocket) => void, string[]][] = [
+    ["direct:cli", (s) => setConnectionClient(s, "direct:cli"), ["edge-dns"]],
+    [
+      "direct:dashboard",
+      (s) => setConnectionClient(s, "direct:dashboard"),
+      ["edge-dns"],
+    ],
+    [
+      "direct:token",
+      (s) => setConnectionClient(s, "direct:token"),
+      ["edge-dns"],
+    ],
+    ["integration:ops", (s) => setConnectionClient(s, "integration:ops"), []],
+    // pins the delegation clause alone; a production delegation also carries an integration client
+    [
+      "a delegation with no client",
+      (s) => setConnectionDelegation(s, "delegation-1"),
+      [],
+    ],
+    ["a malformed client", (s) => setConnectionClient(s, "not-a-client"), []],
+  ];
+  for (const [label, bind, names] of cases) {
+    const socket = createMockSocket();
+    bind(socket);
+    await handleWorkspaceList(socket, f.ctx("token"), "r", bob);
+    const listed = frames(socket)[0].payload?.data.workspaces as
+      | { name: string }[]
+      | undefined;
+    assertEquals(listed?.map((w) => w.name), names, label);
+  }
 });
 
 function grantedCtx(
