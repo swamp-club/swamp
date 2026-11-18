@@ -326,6 +326,20 @@ Deno.test("signInToWorkspace: one attempt per address per process", async () => 
   });
 });
 
+Deno.test("signInToWorkspace: a token that cannot be saved still serves the command", async () => {
+  await inOwnRuntime(async () => {
+    const { deps } = fakeDeps();
+    const unsaved: WorkspaceSignInDeps = {
+      ...deps,
+      credentials: {
+        get: deps.credentials.get,
+        save: () => Promise.reject(new Deno.errors.PermissionDenied("ro")),
+      },
+    };
+    assertEquals(await signInToWorkspace(WORKSPACE, unsaved), "ws.secret");
+  });
+});
+
 Deno.test("signInToWorkspace: a malformed exchange reply stores nothing", async () => {
   await inOwnRuntime(async () => {
     const { deps, recorded } = fakeDeps({

@@ -219,17 +219,23 @@ async function attemptSignIn(
   const principal = isRecord(body.principal) ? body.principal : {};
   const email = stringOr(principal.email);
   const username = stringOr(principal.username);
-  await deps.credentials.save({
-    serverUrl: address,
-    tokenName: email ?? username ?? "",
-    token: body.token,
-    principalId: stringOr(principal.id) ?? "",
-    ...(username ?? email ? { displayName: username ?? email } : {}),
-    obtainedAt: new Date(obtainedAt).toISOString(),
-    expiresAt: new Date(
-      localExpiry(obtainedAt, body.expiresAt, exchanged.date),
-    ).toISOString(),
-  });
+  try {
+    await deps.credentials.save({
+      serverUrl: address,
+      tokenName: email ?? username ?? "",
+      token: body.token,
+      principalId: stringOr(principal.id) ?? "",
+      ...(username ?? email ? { displayName: username ?? email } : {}),
+      obtainedAt: new Date(obtainedAt).toISOString(),
+      expiresAt: new Date(
+        localExpiry(obtainedAt, body.expiresAt, exchanged.date),
+      ).toISOString(),
+    });
+  } catch (error) {
+    // the token still serves this command; only the next one signs in again
+    logger
+      .warn`Could not save the token for ${address}, so the next command signs in to it again: ${error}`;
+  }
   return body.token;
 }
 
