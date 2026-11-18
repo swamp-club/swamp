@@ -205,6 +205,10 @@ export interface ServeCtxOptions {
   restrictedModelTypes?: string[];
   /** serve's `tag-requires-explicit-grant`: a `write` grant does not imply `tag` */
   tagRequiresExplicitGrant?: boolean;
+  /** with grants, the mode they are decided in; token unless a test says otherwise */
+  authMode?: "token" | "oauth";
+  resolvedUserNames?: ConnectionContext["resolvedUserNames"];
+  hostedWorkspaces?: ConnectionContext["hostedWorkspaces"];
 }
 
 export function createServeCtx(
@@ -213,7 +217,7 @@ export function createServeCtx(
   options: ServeCtxOptions = {},
 ): ConnectionContext {
   const authConfig: ServeAuthConfig = {
-    mode: grants ? "token" : "none",
+    mode: grants ? options.authMode ?? "token" : "none",
     admins: [],
     allowedCollectives: [],
     allowedUsers: [],
@@ -243,6 +247,12 @@ export function createServeCtx(
       ? { managedDefinitionsDir: options.managedDefinitionsDir }
       : {}),
     ...(options.vaultsDir ? { vaultsDir: options.vaultsDir } : {}),
+    ...(options.resolvedUserNames
+      ? { resolvedUserNames: options.resolvedUserNames }
+      : {}),
+    ...(options.hostedWorkspaces
+      ? { hostedWorkspaces: options.hostedWorkspaces }
+      : {}),
     ...(grants
       ? {
         policySnapshotLoader: {

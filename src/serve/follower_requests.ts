@@ -143,6 +143,13 @@ export const FOLLOWER_READ_REQUESTS: ReadonlySet<string> = new Set([
   "datastore.namespace.list",
   "cluster.instances",
   "serve.config",
+  // the node holding the host folder answers these; a leader without it can only refuse
+  "workspace.create",
+  "workspace.list",
+  "workspace.get",
+  "workspace.suspend",
+  "workspace.resume",
+  "workspace.delete",
 ]);
 
 /**

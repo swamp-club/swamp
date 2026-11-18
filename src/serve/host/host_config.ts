@@ -22,6 +22,7 @@ import { parse as parseYaml } from "@std/yaml";
 import { z } from "zod";
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import type { ListenerProtocol } from "./forwarding_headers.ts";
+import { hostedWorkspaceAddress } from "./workspace_path.ts";
 
 export const HOST_CONFIG_FILE = "host.yaml";
 export const WORKSPACES_DIR = "workspaces";
@@ -181,7 +182,7 @@ export class HostConfig {
   }
 
   childAddress(name: string): string {
-    return `${this.address}/w/${name}`;
+    return hostedWorkspaceAddress(this.address, name);
   }
 
   /** why a child in auth mode none may not run behind this host, or null */

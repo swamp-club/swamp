@@ -691,6 +691,11 @@ export interface WorkerPrunePayload {
   dryRun?: boolean;
 }
 
+/** names one hosted workspace on a host's root */
+export interface WorkspaceNamePayload {
+  name: string;
+}
+
 export type DatastoreStatusPayload = Record<string, never>;
 
 export type ExtensionListPayload = Record<string, never>;
@@ -1118,6 +1123,12 @@ export type ServerRequest =
   }
   | { type: "worker.verify"; id: string; payload?: WorkerVerifyPayload }
   | { type: "worker.prune"; id: string; payload?: WorkerPrunePayload }
+  | { type: "workspace.create"; id: string; payload: WorkspaceNamePayload }
+  | { type: "workspace.list"; id: string }
+  | { type: "workspace.get"; id: string; payload: WorkspaceNamePayload }
+  | { type: "workspace.suspend"; id: string; payload: WorkspaceNamePayload }
+  | { type: "workspace.resume"; id: string; payload: WorkspaceNamePayload }
+  | { type: "workspace.delete"; id: string; payload: WorkspaceNamePayload }
   | { type: "datastore.status"; id: string; payload?: DatastoreStatusPayload }
   | {
     type: "datastore.setup.extension";
@@ -1898,6 +1909,42 @@ export interface WorkerPruneResponse {
   data: Record<string, unknown>;
 }
 
+export type HostedWorkspaceWantedState = "active" | "suspended" | "deleted";
+
+export interface HostedWorkspaceSummaryData {
+  name: string;
+  address: string;
+  /** null when the wanted file cannot be read */
+  wanted: HostedWorkspaceWantedState | null;
+  /** null before the host has written a status */
+  state: "stopped" | "starting" | "ready" | "backoff" | "failed" | null;
+  restarts: number | null;
+  /** fixed text per state; never the host's own reason */
+  reason: string | null;
+}
+
+export interface HostedWorkspaceChangeData {
+  name: string;
+  wanted: HostedWorkspaceWantedState;
+  changedAt: string | null;
+}
+
+export interface WorkspaceCreateResponse {
+  data: { name: string; address: string; wanted: HostedWorkspaceWantedState };
+}
+
+export interface WorkspaceListResponse {
+  data: { workspaces: HostedWorkspaceSummaryData[] };
+}
+
+export interface WorkspaceGetResponse {
+  data: HostedWorkspaceSummaryData;
+}
+
+export interface WorkspaceChangeResponse {
+  data: HostedWorkspaceChangeData;
+}
+
 export interface WorkerProbeResult {
   name: string;
   status: "pass" | "fail" | "error";
@@ -2412,6 +2459,12 @@ export type ServerMessage =
   }
   | { type: "worker.verify"; id: string; payload: WorkerVerifyResponse }
   | { type: "worker.prune"; id: string; payload: WorkerPruneResponse }
+  | { type: "workspace.create"; id: string; payload: WorkspaceCreateResponse }
+  | { type: "workspace.list"; id: string; payload: WorkspaceListResponse }
+  | { type: "workspace.get"; id: string; payload: WorkspaceGetResponse }
+  | { type: "workspace.suspend"; id: string; payload: WorkspaceChangeResponse }
+  | { type: "workspace.resume"; id: string; payload: WorkspaceChangeResponse }
+  | { type: "workspace.delete"; id: string; payload: WorkspaceChangeResponse }
   | { type: "datastore.status"; id: string; payload: DatastoreStatusResponse }
   | {
     type: "datastore.setup.extension";

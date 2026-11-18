@@ -26,6 +26,13 @@ export type WorkspacePathMatch =
 
 const WORKSPACE_PREFIX = "/w";
 
+export function hostedWorkspaceAddress(
+  hostAddress: string,
+  name: string,
+): string {
+  return `${hostAddress}${WORKSPACE_PREFIX}/${name}`;
+}
+
 /**
  * where a request path goes: the `/w/` prefix belongs to the host, so a path
  * under it never reaches the root, even when it names no valid workspace

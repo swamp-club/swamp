@@ -35,7 +35,18 @@ export interface ServeChildSpec {
   readonly stopGraceMs?: number;
   /** passed as --oauth-client-id and --oauth-client-secret-file */
   readonly oauthClient?: HostOAuthClient | null;
+  /** the root's alone: passed as --host-workspaces-dir and --host-address */
+  readonly hostWorkspaces?: HostWorkspacesHandle;
 }
+
+/** what makes a serve a host's root, able to answer workspace requests */
+export interface HostWorkspacesHandle {
+  readonly dir: string;
+  readonly address: string;
+}
+
+export const HOST_WORKSPACES_DIR_FLAG = "--host-workspaces-dir";
+export const HOST_ADDRESS_FLAG = "--host-address";
 
 /** `code` is null when the child died by a signal or could not be spawned. */
 export interface ServeChildExit {
@@ -73,6 +84,14 @@ export function serveChildArgs(spec: ServeChildSpec): string[] {
       spec.oauthClient.secretFile,
     ]
     : [];
+  const workspaces = spec.hostWorkspaces
+    ? [
+      HOST_WORKSPACES_DIR_FLAG,
+      spec.hostWorkspaces.dir,
+      HOST_ADDRESS_FLAG,
+      spec.hostWorkspaces.address,
+    ]
+    : [];
   return [
     "serve",
     "--json",
@@ -89,5 +108,6 @@ export function serveChildArgs(spec: ServeChildSpec): string[] {
     "--repo-dir",
     spec.repoDir,
     ...client,
+    ...workspaces,
   ];
 }

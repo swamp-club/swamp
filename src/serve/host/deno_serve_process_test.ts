@@ -19,7 +19,10 @@
 
 import { assertEquals } from "@std/assert";
 import { withMockedFetch } from "@swamp-club/swamp-testing";
-import { workspaceServe } from "../../domain/serve/managed_serve.ts";
+import {
+  ROOT_SERVE,
+  workspaceServe,
+} from "../../domain/serve/managed_serve.ts";
 import {
   exitCode,
   linesOf,
@@ -152,6 +155,34 @@ Deno.test("serveChildArgs: the flags the host adds to every child", () => {
       "/host/workspaces/edge-dns",
     ],
   );
+});
+
+Deno.test("serveChildArgs: only a spec with the host's workspaces folder is given it and the host's address", () => {
+  const spec = {
+    id: ROOT_SERVE,
+    repoDir: "/host/root",
+    address: "https://serve.example",
+    trustedHost: "serve.example",
+    env: {},
+  };
+  assertEquals(
+    serveChildArgs({
+      ...spec,
+      hostWorkspaces: {
+        dir: "/host/workspaces",
+        address: "https://serve.example",
+      },
+    }).slice(-4),
+    [
+      "--host-workspaces-dir",
+      "/host/workspaces",
+      "--host-address",
+      "https://serve.example",
+    ],
+  );
+  const plain = serveChildArgs(spec);
+  assertEquals(plain.includes("--host-workspaces-dir"), false);
+  assertEquals(plain.includes("--host-address"), false);
 });
 
 Deno.test("serveChildArgs: an OAuth client adds its id and the path of its secret file", () => {

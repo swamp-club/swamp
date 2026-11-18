@@ -238,6 +238,12 @@ import {
   handleWorkerVerify,
 } from "./handlers/admin_handlers.ts";
 import {
+  handleWorkspaceChange,
+  handleWorkspaceCreate,
+  handleWorkspaceGet,
+  handleWorkspaceList,
+} from "./handlers/workspace_handlers.ts";
+import {
   authorizeOrReject,
   cancelActor,
   cancelReasonFor,
@@ -1127,6 +1133,46 @@ const WorkerPruneRequestSchema = z.object({
   }).optional(),
 });
 
+// the services check the name's form; the bound keeps a refused name short in the audit log
+const WorkspaceNamePayloadSchema = z.object({
+  name: z.string().min(1).max(63),
+});
+
+const WorkspaceCreateRequestSchema = z.object({
+  type: z.literal("workspace.create"),
+  id: z.string().min(1).max(256),
+  payload: WorkspaceNamePayloadSchema,
+});
+
+const WorkspaceListRequestSchema = z.object({
+  type: z.literal("workspace.list"),
+  id: z.string().min(1).max(256),
+});
+
+const WorkspaceGetRequestSchema = z.object({
+  type: z.literal("workspace.get"),
+  id: z.string().min(1).max(256),
+  payload: WorkspaceNamePayloadSchema,
+});
+
+const WorkspaceSuspendRequestSchema = z.object({
+  type: z.literal("workspace.suspend"),
+  id: z.string().min(1).max(256),
+  payload: WorkspaceNamePayloadSchema,
+});
+
+const WorkspaceResumeRequestSchema = z.object({
+  type: z.literal("workspace.resume"),
+  id: z.string().min(1).max(256),
+  payload: WorkspaceNamePayloadSchema,
+});
+
+const WorkspaceDeleteRequestSchema = z.object({
+  type: z.literal("workspace.delete"),
+  id: z.string().min(1).max(256),
+  payload: WorkspaceNamePayloadSchema,
+});
+
 const DatastoreStatusRequestSchema = z.object({
   type: z.literal("datastore.status"),
   id: z.string().min(1).max(256),
@@ -1702,6 +1748,12 @@ const ServerRequestSchema = z.discriminatedUnion("type", [
   WorkerLeaseListRequestSchema,
   WorkerVerifyRequestSchema,
   WorkerPruneRequestSchema,
+  WorkspaceCreateRequestSchema,
+  WorkspaceListRequestSchema,
+  WorkspaceGetRequestSchema,
+  WorkspaceSuspendRequestSchema,
+  WorkspaceResumeRequestSchema,
+  WorkspaceDeleteRequestSchema,
   DatastoreStatusRequestSchema,
   DatastoreSetupExtensionRequestSchema,
   DatastoreClaimRequestSchema,
@@ -3708,6 +3760,51 @@ export function handleMessage(
             ))
         ),
         auditOpts("admin", "worker", "*"),
+      );
+      break;
+    case "workspace.create":
+      task = audited(
+        handleWorkspaceCreate(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          principal,
+        ),
+        auditOpts("admin", "workspace", request.payload.name),
+      );
+      break;
+    case "workspace.list":
+      task = audited(
+        handleWorkspaceList(socket, ctx, request.id, principal),
+        auditOpts("admin", "workspace", "*"),
+      );
+      break;
+    case "workspace.get":
+      task = audited(
+        handleWorkspaceGet(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          principal,
+        ),
+        auditOpts("admin", "workspace", request.payload.name),
+      );
+      break;
+    case "workspace.suspend":
+    case "workspace.resume":
+    case "workspace.delete":
+      task = audited(
+        handleWorkspaceChange(
+          request.type,
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          principal,
+        ),
+        auditOpts("admin", "workspace", request.payload.name),
       );
       break;
     case "datastore.status":
