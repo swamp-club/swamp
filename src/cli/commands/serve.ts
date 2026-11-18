@@ -530,6 +530,11 @@ import {
 import type { PendingRunOwner } from "../../infrastructure/persistence/run_tracker_store.ts";
 import type { OrchestratorOwner } from "../../domain/models/worker/orchestrator_owner.ts";
 import { RunMetricsTracker } from "../../serve/run_metrics_tracker.ts";
+import {
+  recordScheduledRunOutcome,
+  recordWebhookRunOutcome,
+  type TriggerRunMetricsDeps,
+} from "../../serve/trigger_run_metrics.ts";
 import { ComponentHealthChecker } from "../../serve/component_health_checker.ts";
 import { HealthCollector } from "../../serve/health_collector.ts";
 import { createRetentionHealthProvider } from "../../serve/retention_health.ts";
@@ -5659,9 +5664,16 @@ export const serveCommand = new Command()
           }
           : undefined,
       });
+    // the scheduler emits events during turnOn, so the tracker must exist first
+    const runMetricsTracker = new RunMetricsTracker();
+    const triggerRunMetrics: TriggerRunMetricsDeps = {
+      metrics: runMetricsTracker,
+      startedAt: (runId) => runTracker.findById(runId)?.startedAt,
+    };
     const onScheduledEvent = (event: ScheduledExecutionEvent): void => {
-      // Audit before the output branch so --json mode audits too.
+      // Audit and record metrics before the output branch so --json mode does too.
       auditScheduledEvent(connectionCtx, event);
+      recordScheduledRunOutcome(triggerRunMetrics, event);
       if (isJson) {
         writeServeJsonLine(JSON.stringify(event));
       } else {
@@ -5709,18 +5721,12 @@ export const serveCommand = new Command()
               );
             }
             break;
-          case "schedule_completed": {
+          case "schedule_completed":
             logger.info(
               "Scheduled workflow {name} completed (run: {runId})",
               { name: event.workflowName, runId: event.runId },
             );
-            const schedRun = runTracker.findById(event.runId);
-            const schedDuration = schedRun
-              ? Date.now() - schedRun.startedAt.getTime()
-              : 0;
-            runMetricsTracker.record("completed", schedDuration);
             break;
-          }
           case "schedule_suspended":
             logger.info(
               "Scheduled workflow {name} suspended awaiting approval (run: {runId})",
@@ -5732,7 +5738,6 @@ export const serveCommand = new Command()
               "Scheduled workflow {name} failed: {error}",
               { name: event.workflowName, error: event.error },
             );
-            runMetricsTracker.record("failed", 0);
             break;
         }
       }
@@ -6256,8 +6261,9 @@ export const serveCommand = new Command()
     const webhookRejections = new WebhookRejectionCoalescer();
     connectionCtx.webhookRuns = webhookService;
     webhookService.setEventHandler((event) => {
-      // Audit before the output branch so --json mode audits too.
+      // Audit and record metrics before the output branch so --json mode does too.
       auditWebhookEvent(connectionCtx, event, webhookRejections);
+      recordWebhookRunOutcome(triggerRunMetrics, event);
       if (isJson) {
         writeServeJsonLine(JSON.stringify(event));
       } else {
@@ -6280,24 +6286,17 @@ export const serveCommand = new Command()
               { workflow: event.workflowName, runId: event.runId },
             );
             break;
-          case "webhook_completed": {
+          case "webhook_completed":
             logger.info(
               "Webhook workflow {workflow} completed (run: {runId})",
               { workflow: event.workflowName, runId: event.runId },
             );
-            const whRun = runTracker.findById(event.runId);
-            const whDuration = whRun
-              ? Date.now() - whRun.startedAt.getTime()
-              : 0;
-            runMetricsTracker.record("completed", whDuration);
             break;
-          }
           case "webhook_failed":
             logger.error(
               "Webhook workflow {workflow} failed: {error}",
               { workflow: event.workflowName, error: event.error },
             );
-            runMetricsTracker.record("failed", 0);
             break;
         }
       }
@@ -6447,8 +6446,6 @@ export const serveCommand = new Command()
         ? { catchUp: serveFollowerFeed.describeCatchUp() }
         : {}),
     }));
-
-    const runMetricsTracker = new RunMetricsTracker();
 
     const componentHealthChecker = new ComponentHealthChecker({
       checkDatastore: async (_signal) => {
