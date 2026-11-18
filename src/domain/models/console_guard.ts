@@ -185,7 +185,13 @@ export async function withConsoleGuard<T>(
         // every active redactor applies before the line reaches stderr,
         // whichever writer is installed; the captured copy stays raw and its
         // consumers redact it themselves
-        writeStderr(runFileSink.redactActive(line));
+        try {
+          writeStderr(runFileSink.redactActive(line));
+        } catch (error) {
+          // the line is in the logs already; a host that stopped reading
+          // stderr must not fail the method that printed
+          if (!(error instanceof Deno.errors.BrokenPipe)) throw error;
+        }
       };
     }
   }

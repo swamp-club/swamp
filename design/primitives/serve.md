@@ -2313,7 +2313,10 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   every `--json` line to stdout through `unguardedConsole`
   (`src/cli/commands/serve_json_line.ts`), so a method running in the process,
   whose console guard sends captured lines to stderr, never moves one off
-  stdout.
+  stdout. When the host holding serve's pipes dies, a line the guard can no
+  longer write to stderr is dropped (it stays in the method's logs) rather
+  than failing the method, and a `--json` line with no reader on stdout is
+  dropped too, so shutdown always carries on to the drain and exit.
 - **Telemetry flush.** The CLI flushes telemetry at process exit, which a daemon
   never reaches. `DaemonTelemetryFlushService` flushes every 60 s, at most 20
   batches per tick. It isolates a batch after 5 consecutive failures and
