@@ -17,10 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertNotEquals } from "@std/assert";
+import { assertEquals, assertNotEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import { parse as parseYaml } from "@std/yaml";
+import { UserError } from "../../domain/errors.ts";
 import { assertErrors, collect } from "../testing.ts";
+import { createHostedWorkspaceDeps } from "./deps.ts";
 import { hostedWorkspaceCreate } from "./create.ts";
 import {
   hostedWorkspaceDelete,
@@ -123,4 +125,30 @@ Deno.test("hostedWorkspaceResume: refuses a workspace being deleted, an unknown 
     await Deno.readTextFile(join(host.dir, "broken.wanted.yaml")),
     "{",
   );
+});
+
+Deno.test("createHostedWorkspaceDeps: a change that cannot get the lock says the workspace is busy and names no host path", async () => {
+  await using host = await hostFolder();
+  const deps = createHostedWorkspaceDeps({
+    workspacesDir: host.dir,
+    provisioner: { provision: () => Promise.resolve() },
+    addressOf: (name) => name,
+    lockWaitMs: 50,
+  });
+  const held = Promise.withResolvers<void>();
+  const holding = deps.withLock("edge-dns", () => held.promise);
+  try {
+    const error = await assertRejects(
+      () => deps.withLock("edge-dns", () => Promise.resolve()),
+      UserError,
+    );
+    assertEquals(error.code, "busy");
+    assertEquals(
+      error.message,
+      "Workspace edge-dns is busy with another change. Retry in a moment.",
+    );
+  } finally {
+    held.resolve();
+    await holding;
+  }
 });

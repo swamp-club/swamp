@@ -27,6 +27,7 @@ import {
 } from "../../domain/serve/hosted_workspace.ts";
 import type { ObservedServeState } from "../../domain/serve/managed_serve.ts";
 import { parseWorkspaceName } from "../../domain/workspace/workspace_name.ts";
+import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
 import { FileLock } from "../../infrastructure/persistence/file_lock.ts";
 import { HostedWorkspaceFileRepository } from "../../infrastructure/persistence/hosted_workspace_file_repository.ts";
 import { scanWorkspaces } from "../../infrastructure/persistence/hosted_workspace_folder_scan.ts";
@@ -81,14 +82,21 @@ export interface HostedWorkspaceDeps {
 }
 
 export const DEFAULT_PROVISION_TIMEOUT_MS = 120_000;
+const LOCK_WAIT_MARGIN_MS = 30_000;
 
 export function createHostedWorkspaceDeps(options: {
   workspacesDir: string;
   provisioner: HostedWorkspaceProvisioner;
   addressOf: (name: string) => string;
   provisionTimeoutMs?: number;
+  lockWaitMs?: number;
 }): HostedWorkspaceDeps {
   const { workspacesDir } = options;
+  const provisionTimeoutMs = options.provisionTimeoutMs ??
+    DEFAULT_PROVISION_TIMEOUT_MS;
+  // a change waits out a create's whole set-up rather than failing beside it
+  const lockWaitMs = options.lockWaitMs ??
+    provisionTimeoutMs + LOCK_WAIT_MARGIN_MS;
   return {
     workspacesDir,
     repository: new HostedWorkspaceFileRepository(workspacesDir),
@@ -100,16 +108,27 @@ export function createHostedWorkspaceDeps(options: {
       // hidden, so neither the host's scan nor list sees the lock or its claims
       const lock = new FileLock(workspacesDir, {
         lockKey: `.${parseWorkspaceName(name)}.lock`,
+        maxWaitMs: lockWaitMs,
       });
-      await lock.acquire();
+      try {
+        await lock.acquire();
+      } catch (error) {
+        // the timeout's own message names the lock's host path and holder
+        if (error instanceof LockTimeoutError) {
+          throw new UserError(
+            `Workspace ${name} is busy with another change. Retry in a moment.`,
+            "busy",
+          );
+        }
+        throw error;
+      }
       try {
         return await fn();
       } finally {
         await lock.release();
       }
     },
-    provisionTimeoutMs: options.provisionTimeoutMs ??
-      DEFAULT_PROVISION_TIMEOUT_MS,
+    provisionTimeoutMs,
   };
 }
 
@@ -155,7 +174,7 @@ export async function summarizeHostedWorkspace(
     readHostedWorkspaceStatus(deps.workspacesDir, name),
   ]);
   const found = status.kind === "found" ? status.status : null;
-  // the readers' reasons can name host paths, which callers never see
+  // the host's reason is shown as written; the readers' own reasons name host paths, so they are replaced
   const reason = wanted.kind === "unreadable"
     ? "Its wanted file cannot be read, so the host leaves it as it is."
     : status.kind === "unreadable"

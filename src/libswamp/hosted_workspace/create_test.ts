@@ -142,14 +142,16 @@ Deno.test("hostedWorkspaceCreate: refuses an invalid name, and an oauth caller w
       "username_unknown",
     );
   }
-  await assertErrors<HostedWorkspaceCreateEvent>(
-    hostedWorkspaceCreate(ctx, host.deps(), {
-      name: "edge-dns",
-      caller: { principal: "collective:ops", username: "ops" },
-      access: OAUTH_ACCESS,
-    }),
-    "not_a_user",
-  );
+  for (const username of ["ops", null]) {
+    await assertErrors<HostedWorkspaceCreateEvent>(
+      hostedWorkspaceCreate(ctx, host.deps(), {
+        name: "edge-dns",
+        caller: { principal: "collective:ops", username },
+        access: OAUTH_ACCESS,
+      }),
+      "not_a_user",
+    );
+  }
   assertEquals(await entries(host.dir), []);
 });
 

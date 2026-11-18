@@ -33,15 +33,19 @@ Deno.test("PROVISION_CHILD_ARGS: runs the hidden command in json mode", () => {
 
 Deno.test("provisionFailureMessage: says how the child ended and carries its stderr", () => {
   assertEquals(
-    provisionFailureMessage(1, false, []),
+    provisionFailureMessage(1, null, []),
     "The provisioner exited with code 1.",
   );
   assertStringIncludes(
-    provisionFailureMessage(null, true, ["boom"]),
+    provisionFailureMessage(null, "timed out", ["boom"]),
     "timed out and was killed:\nboom",
   );
   assertStringIncludes(
-    provisionFailureMessage(null, false, []),
+    provisionFailureMessage(null, "cancelled", []),
+    "cancelled and was killed",
+  );
+  assertStringIncludes(
+    provisionFailureMessage(null, null, []),
     "killed by a signal or could not start",
   );
 });

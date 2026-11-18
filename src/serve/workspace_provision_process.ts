@@ -38,11 +38,11 @@ export function provisionSpecBytes(
 
 export function provisionFailureMessage(
   code: number | null,
-  timedOut: boolean,
+  stopped: "timed out" | "cancelled" | null,
   stderrTail: readonly string[],
 ): string {
-  const how = timedOut
-    ? "timed out and was killed"
+  const how = stopped !== null
+    ? `${stopped} and was killed`
     : code === null
     ? "was killed by a signal or could not start"
     : `exited with code ${code}`;
@@ -113,7 +113,7 @@ export function childHostedWorkspaceProvisioner(
           throw new Error(
             provisionFailureMessage(
               exitCode(status),
-              signal.aborted,
+              stoppedBy(signal),
               tail.lines(),
             ),
           );
@@ -123,4 +123,12 @@ export function childHostedWorkspaceProvisioner(
       }
     },
   };
+}
+
+function stoppedBy(signal: AbortSignal): "timed out" | "cancelled" | null {
+  if (!signal.aborted) return null;
+  const reason: unknown = signal.reason;
+  return reason instanceof DOMException && reason.name === "TimeoutError"
+    ? "timed out"
+    : "cancelled";
 }

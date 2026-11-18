@@ -61,10 +61,7 @@ export function creatingFolderName(name: string): string {
   return `.${parseWorkspaceName(name)}.creating-${crypto.randomUUID()}`;
 }
 
-/**
- * sets the repo up under a hidden name, writes the wanted file, then renames
- * it into place, so no scan lists the workspace before it is whole
- */
+/** the repo is renamed into place last, so no scan lists the workspace before it is whole */
 export async function* hostedWorkspaceCreate(
   ctx: LibSwampContext,
   deps: HostedWorkspaceDeps,
@@ -113,18 +110,18 @@ function provisionSpecOf(
   if (access.mode === "token") {
     return { access, admin: caller.principal, adminSubject: null };
   }
+  if (!caller.principal.startsWith("user:")) {
+    throw new UserError(
+      "Only a user can create an oauth workspace.",
+      "not_a_user",
+    );
+  }
   const { username } = caller;
   // serve skips an oauth admin that is not a plain username, and a workspace with no admin never starts
   if (username === null || username === "" || username.includes(":")) {
     throw new UserError(
       "An oauth workspace's first admin is its creator's username, and yours is not known here. Log in to the host's root again, then retry.",
       "username_unknown",
-    );
-  }
-  if (!caller.principal.startsWith("user:")) {
-    throw new UserError(
-      "Only a user can create an oauth workspace.",
-      "not_a_user",
     );
   }
   return {
