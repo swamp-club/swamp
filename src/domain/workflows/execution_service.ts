@@ -8290,6 +8290,7 @@ export class WorkflowExecutionService {
     childService.runWriteFence = this.runWriteFence;
     childService.reportLock = this.reportLock;
     childService.stoppedRuns = this.stoppedRuns;
+    childService.eventBus = this.eventBus;
 
     let childRun: WorkflowRun | undefined;
     // the child's suspended event is the parent step's outcome, as its

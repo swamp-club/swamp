@@ -557,7 +557,7 @@ Deno.test("a local revoke, re-mint and rotate before a token check never reaches
 
 Deno.test("a worker that cannot take a rotated token is not sent one and is cut off when the old token lapses", async () => {
   await withFixture(async (f) => {
-    const original = await mintToken(f, "w-old", { durationMs: 3_000 });
+    const original = await mintToken(f, "w-old", { durationMs: 6_000 });
     await enroll(connectWorker(f.gateway), original, { canRotate: false });
 
     await rotateLocally(f, "w-old", 60 * 60_000);

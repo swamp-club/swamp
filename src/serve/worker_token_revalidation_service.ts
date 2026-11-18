@@ -158,7 +158,7 @@ export class WorkerTokenRevalidationService {
 
   async #revalidate(): Promise<string[]> {
     if (this.#disposed) return [];
-    let mintsByName = this.#boundMintsByName();
+    const mintsByName = this.#boundMintsByName();
 
     if (mintsByName.size === 0) {
       this.#missingPasses.clear();
@@ -182,11 +182,13 @@ export class WorkerTokenRevalidationService {
       if (!mintsByName.has(name)) this.#missingPasses.delete(name);
     }
 
-    if (await this.#deliverRotations(mintsByName, tokens)) {
-      const judged = new Set(mintsByName.keys());
-      mintsByName = this.#boundMintsByName();
-      for (const name of mintsByName.keys()) {
-        if (!judged.has(name)) mintsByName.delete(name);
+    const delivered = await this.#deliverRotations(mintsByName, tokens);
+    if (delivered.length > 0) {
+      // only delivered names are re-read: another name's fresh mint judged
+      // against this pass's older record could cut off a just-enrolled worker
+      const refreshed = this.#boundMintsByName();
+      for (const name of delivered) {
+        mintsByName.set(name, refreshed.get(name) ?? []);
       }
     }
 
@@ -224,9 +226,9 @@ export class WorkerTokenRevalidationService {
   async #deliverRotations(
     mintsByName: ReadonlyMap<string, string[]>,
     tokens: ReadonlyMap<string, EnrollmentToken>,
-  ): Promise<boolean> {
+  ): Promise<string[]> {
     const deliver = this.#deps.deliverRotation;
-    if (deliver === undefined) return false;
+    if (deliver === undefined) return [];
     const due: [string, EnrollmentToken][] = [];
     for (const [name, mints] of mintsByName) {
       const token = tokens.get(name);
@@ -250,6 +252,6 @@ export class WorkerTokenRevalidationService {
         );
       }
     }));
-    return due.length > 0;
+    return due.map(([name]) => name);
   }
 }

@@ -523,10 +523,7 @@ const EmptyArgsSchema = z.object({});
 // serve's 30 s token check plus its 10 s delivery timeout
 export const ROTATION_HEADROOM_MS = 40_000;
 
-/**
- * how much of the old secret's remaining time a default rotation carries over:
- * enough to absorb a late scheduled run, never enough to compound
- */
+/** enough of the old secret's remaining time to absorb a late run, too little to compound */
 export function rotationCarryOverCapMs(lifetimeMs: number): number {
   return Math.min(
     lifetimeMs,
@@ -579,12 +576,6 @@ async function rotate(
     ? createdAtMs + args.durationMs
     : createdAtMs + lifetimeMs +
       Math.min(Math.max(0, remainingMs), rotationCarryOverCapMs(lifetimeMs));
-  if (remainingMs < ROTATION_HEADROOM_MS) {
-    context.logger.warn(
-      "Enrollment token {name} was rotated {seconds}s before its old secret expires; a worker that has not received the new token by then is cut off",
-      { name, seconds: Math.max(0, Math.round(remainingMs / 1000)) },
-    );
-  }
 
   const secretKey = rotatedTokenSecretKey(name, createdAtMs);
   await context.vaultService.put(
@@ -621,6 +612,12 @@ async function rotate(
   }
   if (dropped !== undefined && dropped.secretKey !== secretKey) {
     await deleteSecretBestEffort(context, token.vaultName, dropped.secretKey);
+  }
+  if (remainingMs < ROTATION_HEADROOM_MS) {
+    context.logger.warn(
+      "Enrollment token {name} was rotated {seconds}s before its old secret expires; a worker that has not received the new token by then is cut off",
+      { name, seconds: Math.max(0, Math.round(remainingMs / 1000)) },
+    );
   }
   return { dataHandles: [handle] };
 }

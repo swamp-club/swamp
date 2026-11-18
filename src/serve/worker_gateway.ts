@@ -141,7 +141,7 @@ const CUTOFF_REASONS: Record<EnrollmentBindingCutoffCause, string> = {
 /** setTimeout overflows past 2^31-1 ms; longer waits are chained. */
 const MAX_TIMEOUT_MS = 2 ** 31 - 1;
 
-const DEFAULT_ROTATION_DELIVERY_TIMEOUT_MS = 10_000;
+export const DEFAULT_ROTATION_DELIVERY_TIMEOUT_MS = 10_000;
 
 const ROTATION_REFUSALS: Record<string, string> = {
   invalid_token: "refused a malformed token",
@@ -704,8 +704,8 @@ export class WorkerGateway {
         const holders = new Set(this.#undeliveredHolders(tokenName, record));
         if (holders.size === 0) return null;
         const targets = this.#rotationTargets((entry) => holders.has(entry));
-        // claimed on the tail, so a --server rotation cannot pick them up
-        // while this pass reads the secret
+        // claimed on the tail, so a concurrent pass skips them while this one
+        // reads the secret
         this.#markDelivering(targets);
         return { definitionId, record, targets };
       },

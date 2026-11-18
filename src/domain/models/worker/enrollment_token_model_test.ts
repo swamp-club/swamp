@@ -40,7 +40,10 @@ import {
   WORKER_ROTATED_TOKEN_SECRET_KEY_PREFIX,
 } from "./enrollment_token_model.ts";
 import { timingSafeEqual } from "../../crypto/timing_safe_equal.ts";
-import { createInMemoryWorkerContext } from "./worker_test_helpers.ts";
+import {
+  advanceTokenClock,
+  createInMemoryWorkerContext,
+} from "./worker_test_helpers.ts";
 import { resolveStaleness } from "../../definitions/definition_staleness.ts";
 
 const mintArgs = {
@@ -622,7 +625,7 @@ Deno.test("enrollmentTokenModel: rotate without a duration carries over the old 
 
 Deno.test("enrollmentTokenModel: rotate without a duration carries over all of a short remaining time", async () => {
   const harness = await mintToken();
-  advanceTokenClock(harness, mintArgs.durationMs - 10_000);
+  advanceTokenClock(harness.store, mintArgs.durationMs - 10_000);
   const before = EnrollmentTokenSchema.parse(harness.store.get("token-main"));
   const { token } = await rotateToken(harness);
   assertEquals(
@@ -1163,33 +1166,10 @@ Deno.test("deliverablePredecessor: only a live rotation of a live token has a mi
   );
 });
 
-/** moves the stored token back in time, as if that much time had passed */
-function advanceTokenClock(
-  harness: Awaited<ReturnType<typeof mintToken>>,
-  ms: number,
-): void {
-  const token = EnrollmentTokenSchema.parse(harness.store.get("token-main"));
-  const shift = (iso: string) => new Date(Date.parse(iso) - ms).toISOString();
-  harness.store.set("token-main", {
-    ...token,
-    createdAt: shift(token.createdAt),
-    expiresAt: shift(token.expiresAt),
-    ...(token.predecessor
-      ? {
-        predecessor: {
-          ...token.predecessor,
-          createdAt: shift(token.predecessor.createdAt),
-          expiresAt: shift(token.predecessor.expiresAt),
-        },
-      }
-      : {}),
-  });
-}
-
 Deno.test("enrollmentTokenModel: repeated default rotations keep the lifetime the token was minted with", async () => {
   const harness = await mintToken();
   for (let i = 0; i < 5; i++) {
-    advanceTokenClock(harness, 50_000);
+    advanceTokenClock(harness.store, 50_000);
     const { token } = await rotateToken(harness);
     assertEquals(token.lifetimeMs, mintArgs.durationMs);
     assert(
@@ -1228,7 +1208,7 @@ Deno.test("enrollmentTokenModel: a rotation close to the old deadline warns, one
     const logger = Object.create(harness.context.logger);
     logger.warn = (message: string) => warnings.push(message);
     harness.context.logger = logger;
-    advanceTokenClock(harness, advanceMs);
+    advanceTokenClock(harness.store, advanceMs);
 
     await rotateToken(harness);
 

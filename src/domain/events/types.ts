@@ -41,10 +41,7 @@ export interface ModelUpdated extends DomainEvent {
   readonly dataVersions?: readonly DataVersionRef[];
 }
 
-/**
- * a workflow step's writes, once flushed; separate from ModelUpdated, whose
- * subscribers count those versions as serve's own direct writes
- */
+/** a workflow step's flushed writes; ModelUpdated subscribers would count them as serve's own */
 export interface ModelDataWritten extends DomainEvent {
   readonly type: "ModelDataWritten";
   readonly modelType: string;

@@ -22,6 +22,7 @@ import type { DataHandle, MethodContext } from "../model.ts";
 import type { ModelType } from "../model_type.ts";
 import { generateDataId } from "../../data/data_id.ts";
 import { SecretNotFoundError } from "../../vaults/secret_not_found_error.ts";
+import { EnrollmentTokenSchema } from "./enrollment_token_model.ts";
 
 export interface InMemoryWorkerContext {
   context: MethodContext;
@@ -102,4 +103,27 @@ export function createInMemoryWorkerContext(
   } as unknown as MethodContext;
 
   return { context, store, versions, vault };
+}
+
+/** moves a stored enrollment token back in time, as if that much time had passed */
+export function advanceTokenClock(
+  store: Map<string, Record<string, unknown>>,
+  ms: number,
+): void {
+  const token = EnrollmentTokenSchema.parse(store.get("token-main"));
+  const shift = (iso: string) => new Date(Date.parse(iso) - ms).toISOString();
+  store.set("token-main", {
+    ...token,
+    createdAt: shift(token.createdAt),
+    expiresAt: shift(token.expiresAt),
+    ...(token.predecessor
+      ? {
+        predecessor: {
+          ...token.predecessor,
+          createdAt: shift(token.predecessor.createdAt),
+          expiresAt: shift(token.predecessor.expiresAt),
+        },
+      }
+      : {}),
+  });
 }

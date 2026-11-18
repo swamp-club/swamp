@@ -26,9 +26,12 @@ import type {
   EnrollmentToken,
 } from "../domain/models/worker/enrollment_token_model.ts";
 import {
+  DEFAULT_WORKER_TOKEN_REVALIDATION_MS,
   type WorkerTokenRevalidationDeps,
   WorkerTokenRevalidationService,
 } from "./worker_token_revalidation_service.ts";
+import { DEFAULT_ROTATION_DELIVERY_TIMEOUT_MS } from "./worker_gateway.ts";
+import { ROTATION_HEADROOM_MS } from "../domain/models/worker/enrollment_token_model.ts";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import { withSpan } from "../infrastructure/tracing/mod.ts";
 import { withCapturedSpans } from "../infrastructure/tracing/span_test_helpers.ts";
@@ -463,4 +466,42 @@ Deno.test("WorkerTokenRevalidationService: a nudged pass never runs in the nudgi
     await service.dispose();
   }
   assertEquals(seen, [undefined]);
+});
+
+Deno.test("WorkerTokenRevalidationService: a delivery re-reads only the delivered token's mints, so another token's fresh enrollment is never judged against an older record", async () => {
+  const freshMint = "2026-01-02T00:00:00.000Z";
+  const bound = [
+    { tokenName: "revoked-runner", tokenCreatedAt: MINT },
+    { tokenName: "ci-runner-3", tokenCreatedAt: MINT },
+  ];
+  const { service, calls } = createService({
+    bound,
+    readTokens: () =>
+      Promise.resolve(tokens(
+        tokenRecord({ name: "revoked-runner", state: "revoked" }),
+        rotatedRecord(),
+      )),
+    deliverRotation: (name) => {
+      // a re-mint and enrollment land on the other token mid-delivery
+      bound[0] = { tokenName: "revoked-runner", tokenCreatedAt: freshMint };
+      bound[1] = { tokenName: name, tokenCreatedAt: ROTATED_MINT };
+      return Promise.resolve();
+    },
+  });
+
+  await service.runOnce();
+
+  assertEquals(calls, [{
+    name: "revoked-runner",
+    cause: "revoked",
+    mint: MINT,
+  }]);
+});
+
+Deno.test("ROTATION_HEADROOM_MS: covers serve's token check interval plus its delivery timeout", () => {
+  assert(
+    ROTATION_HEADROOM_MS >=
+      DEFAULT_WORKER_TOKEN_REVALIDATION_MS +
+        DEFAULT_ROTATION_DELIVERY_TIMEOUT_MS,
+  );
 });

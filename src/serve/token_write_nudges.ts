@@ -21,10 +21,7 @@ import type { EventBus } from "../domain/events/event_bus.ts";
 import type { ModelDataWritten, ModelUpdated } from "../domain/events/types.ts";
 import { ENROLLMENT_TOKEN_MODEL_TYPE } from "../domain/models/worker/enrollment_token_model.ts";
 
-/**
- * a token record this serve wrote (a workflow step, a method run) is checked at
- * once rather than at the next pass, so a rotation reaches workers in time
- */
+/** a token this serve wrote is checked at once, not at the next pass */
 export function subscribeTokenWriteNudges(
   eventBus: EventBus,
   revalidation: { nudge(): void },

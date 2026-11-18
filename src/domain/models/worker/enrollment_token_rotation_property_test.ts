@@ -25,7 +25,10 @@ import {
   EnrollmentTokenSchema,
   rotationCarryOverCapMs,
 } from "./enrollment_token_model.ts";
-import { createInMemoryWorkerContext } from "./worker_test_helpers.ts";
+import {
+  advanceTokenClock,
+  createInMemoryWorkerContext,
+} from "./worker_test_helpers.ts";
 
 const LIFETIME_MS = 60_000;
 
@@ -39,29 +42,6 @@ async function mint() {
     harness.context,
   );
   return harness;
-}
-
-/** moves the stored token back in time, as if that much time had passed */
-function advance(
-  store: Map<string, Record<string, unknown>>,
-  ms: number,
-): void {
-  const token = EnrollmentTokenSchema.parse(store.get("token-main"));
-  const shift = (iso: string) => new Date(Date.parse(iso) - ms).toISOString();
-  store.set("token-main", {
-    ...token,
-    createdAt: shift(token.createdAt),
-    expiresAt: shift(token.expiresAt),
-    ...(token.predecessor
-      ? {
-        predecessor: {
-          ...token.predecessor,
-          createdAt: shift(token.predecessor.createdAt),
-          expiresAt: shift(token.predecessor.expiresAt),
-        },
-      }
-      : {}),
-  });
 }
 
 Deno.test("enrollmentTokenModel.rotate: a schedule one lifetime apart never lets the token lapse while runs are late by less than the carried-over margin", async () => {
@@ -79,7 +59,7 @@ Deno.test("enrollmentTokenModel.rotate: a schedule one lifetime apart never lets
         const jitters = jitterFractions.map((f) => Math.floor(f * marginMs));
         let previousJitter = 0;
         for (const [k, jitter] of jitters.entries()) {
-          advance(
+          advanceTokenClock(
             harness.store,
             k === 0
               ? LIFETIME_MS - leadMs + jitter
@@ -119,7 +99,7 @@ Deno.test("enrollmentTokenModel.rotate: however often it runs, a default rotatio
       async (intervals) => {
         const harness = await mint();
         for (const interval of intervals) {
-          advance(harness.store, interval);
+          advanceTokenClock(harness.store, interval);
           await enrollmentTokenModel.methods.rotate.execute(
             {},
             harness.context,

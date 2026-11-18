@@ -28128,3 +28128,91 @@ Deno.test("run(): a model-method step that wrote data publishes ModelDataWritten
     }
   });
 });
+
+Deno.test("run(): a model-method step inside a child workflow publishes ModelDataWritten on the parent's event bus", async () => {
+  const { z } = await import("zod");
+  const { modelRegistry } = await import("../models/model.ts");
+  const { initializeLogging } = await import(
+    "../../infrastructure/logging/logger.ts"
+  );
+  await initializeLogging({});
+  const modelType = ModelType.create(
+    `@test-step-writes/nested-${crypto.randomUUID().slice(0, 8)}`,
+  );
+  modelRegistry.register({
+    type: modelType,
+    version: "2026.01.01.1",
+    globalArguments: z.object({}),
+    resources: {
+      state: {
+        description: "state the child step writes",
+        schema: z.object({ value: z.string() }),
+        lifetime: "infinite",
+        garbageCollection: 5,
+      },
+    },
+    methods: {
+      write: {
+        description: "writes state",
+        arguments: z.object({}),
+        execute: async (_args, context) => ({
+          dataHandles: [
+            await context.writeResource!("state", "state", { value: "v" }),
+          ],
+        }),
+      },
+    },
+  });
+
+  await withTempDir(async (tempDir) => {
+    await new YamlDefinitionRepository(tempDir).save(
+      modelType,
+      Definition.create({ name: "writer", type: modelType.normalized }),
+    );
+    const workflowRepo = new InMemoryWorkflowRepository();
+    await workflowRepo.save(Workflow.create({
+      name: "child-writes",
+      jobs: [Job.create({
+        name: "job1",
+        steps: [Step.create({
+          name: "write",
+          task: StepTask.model("writer", "write"),
+        })],
+      })],
+    }));
+    const parent = Workflow.create({
+      name: "parent-calls-child",
+      jobs: [Job.create({
+        name: "job1",
+        steps: [Step.create({
+          name: "call-child",
+          task: StepTask.workflow("child-writes", {}),
+        })],
+      })],
+    });
+    await workflowRepo.save(parent);
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    try {
+      const service = new WorkflowExecutionService(
+        workflowRepo,
+        new InMemoryWorkflowRunRepository(),
+        tempDir,
+        new DefaultStepExecutor(),
+        undefined,
+        catalogStore,
+      );
+      const eventBus = new EventBus();
+      const published: string[] = [];
+      eventBus.subscribe<ModelDataWritten>("ModelDataWritten", (event) => {
+        published.push(event.modelType);
+      });
+      service.eventBus = eventBus;
+
+      await runToCompletion(service, parent.name);
+
+      assertEquals(published, [modelType.normalized]);
+    } finally {
+      catalogStore.close();
+    }
+  });
+});
