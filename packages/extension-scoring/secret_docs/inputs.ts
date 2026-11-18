@@ -24,7 +24,10 @@
  */
 
 import { isAuditedCodeFile } from "../dependency_audit/specifiers.ts";
-import { importedSpecifiers } from "../source/imports.ts";
+import {
+  type ImportedSpecifierAt,
+  importedSpecifiersAt,
+} from "../source/imports.ts";
 import type { SecretDocsForm } from "./detector.ts";
 import {
   MAX_SECRET_DOCS_FILE_BYTES,
@@ -81,8 +84,19 @@ function resolveRelative(importer: string, specifier: string): string | null {
  * against its archive path.
  */
 export function markdownImports(path: string, source: string): string[] {
+  return markdownImportsFromSites(path, importedSpecifiersAt(source, { path }));
+}
+
+/**
+ * {@link markdownImports} from the sites `importedSpecifiersAt` found in the
+ * module at `path`; none for a module that does not parse (null).
+ */
+export function markdownImportsFromSites(
+  path: string,
+  sites: readonly ImportedSpecifierAt[] | null,
+): string[] {
   const out: string[] = [];
-  for (const specifier of importedSpecifiers(source, { path })) {
+  for (const { specifier } of sites ?? []) {
     if (!specifier.startsWith("./") && !specifier.startsWith("../")) continue;
     if (!specifier.toLowerCase().endsWith(".md")) continue;
     const resolved = resolveRelative(path, specifier);

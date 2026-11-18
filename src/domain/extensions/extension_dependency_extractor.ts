@@ -21,9 +21,9 @@ import {
   type DependencySpecifier,
   parseSpecifier,
   specifierKey,
-  writtenSpecifiers,
+  writtenSpecifiersFromSites,
 } from "@swamp-club/extension-scoring/dependency-audit";
-import { importedSpecifiers } from "@swamp-club/extension-scoring/source";
+import { importedSpecifiersAt } from "@swamp-club/extension-scoring/source";
 import type { BareImportResolver } from "./bare_import_resolution.ts";
 import { isBareSpecifier } from "./dependency_resolution/specifier.ts";
 
@@ -35,14 +35,15 @@ export function extractSpecifiersFromSource(
 ): DependencySpecifier[] {
   // Push refuses a module that does not parse before it audits (the
   // source-syntax gate), so one reaching here has none to report.
-  const results = writtenSpecifiers(source, sourceFile) ?? [];
+  const sites = importedSpecifiersAt(source, { path: sourceFile });
+  const results = writtenSpecifiersFromSites(sites, sourceFile) ?? [];
   const seen = new Set(results.map(specifierKey));
 
   if (!resolver) return results;
 
   // Bare names are read as the bare-specifiers rule reads them, from the
   // module's syntax tree, so generated code is never audited.
-  for (const bare of importedSpecifiers(source, { path: sourceFile })) {
+  for (const { specifier: bare } of sites ?? []) {
     if (!bare || !isBareSpecifier(bare)) continue;
     const target = resolver.resolve(sourceFile, bare);
     if (!target) continue;

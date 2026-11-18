@@ -18,7 +18,14 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { importedSpecifiers, importedSpecifiersAt } from "./imports.ts";
+import { statementsWithNestedImports } from "./import_scan.ts";
+import {
+  importedSpecifiers,
+  importedSpecifiersAt,
+  importedSpecifiersIn,
+  parseExtensionModule,
+  type SyntaxNode,
+} from "./imports.ts";
 
 Deno.test("importedSpecifiers: every import form, in source order", () => {
   const source = [
@@ -125,4 +132,39 @@ Deno.test("importedSpecifiers: source and deferred phase imports are read", () =
     "npm:lazy@1",
     "npm:vuln@1.0.0",
   ]);
+});
+
+// Shaped like the generated AWS models: a few imports, then large schemas.
+function generatedModel(index: number): string {
+  const lines = [
+    'import { z } from "npm:zod@4.1.0";',
+    `import doc from "./docs/model${index}.md" with { type: "text" };`,
+  ];
+  for (let s = 0; s < 20; s++) {
+    lines.push(`export const Schema${s} = z.object({`);
+    for (let f = 0; f < 50; f++) {
+      lines.push(
+        `  field${f}: z.string().optional().describe("Field ${f} of resource ${s}; exports nothing."),`,
+      );
+    }
+    lines.push("});");
+  }
+  lines.push("export const model = { doc, schemas: [Schema0] };");
+  return lines.join("\n");
+}
+
+Deno.test("importedSpecifiersAt: generated models are read at the top only", () => {
+  for (let i = 0; i < 40; i++) {
+    const source = generatedModel(i);
+    const parsed = parseExtensionModule(source, { path: "models/m.ts" });
+    if (!parsed.ok) throw new Error(parsed.reason);
+    const body = parsed.program.body as SyntaxNode[];
+    assertEquals(statementsWithNestedImports(body, source).size, 0);
+    const sites = importedSpecifiersAt(source, { path: "models/m.ts" });
+    assertEquals(sites, importedSpecifiersIn(parsed.program));
+    assertEquals(sites?.map((s) => s.specifier), [
+      "npm:zod@4.1.0",
+      `./docs/model${i}.md`,
+    ]);
+  }
 });

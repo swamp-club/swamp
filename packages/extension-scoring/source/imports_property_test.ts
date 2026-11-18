@@ -19,7 +19,11 @@
 
 import { assertEquals } from "@std/assert";
 import fc from "fast-check";
-import { importedSpecifiersAt } from "./imports.ts";
+import {
+  importedSpecifiersAt,
+  importedSpecifiersIn,
+  parseExtensionModule,
+} from "./imports.ts";
 
 // Statements that hold import-looking text, quotes and backticks but no
 // import: each must leave the imports around it read as written.
@@ -72,6 +76,56 @@ Deno.test("importedSpecifiersAt: reads exactly the imports among noise", () => {
             site.specifier,
           );
         }
+      },
+    ),
+    { numRuns: 2_000 },
+  );
+});
+
+// Statements that can hold a site anywhere: at the top, nested below a
+// declaration, or behind keyword text the pruning must not trust.
+const statement = fc.oneof(
+  noise.map((text) => () => text),
+  fc.constantFrom(
+    () => 'import("./top.ts");',
+    (i: number) => `export const f${i} = () => import("./f.ts");`,
+    (i: number) =>
+      `export const d${i} = async () => (await import("./d.ts")).d;`,
+    () => 'declare module "m" { export * from "./inner.ts"; }',
+    (i: number) => `function g${i}() { import nested from "./n.ts"; }`,
+    (i: number) => `type T${i} = typeof import("./t.ts");`,
+    (i: number) => `function h${i}(x: typeof import("./p.ts")) {}`,
+    (i: number) => `import e${i} = require("./e.ts");`,
+    (i: number) => `export const s${i} = "import x from ./not.ts";`,
+    (i: number) =>
+      `var __export${i} = 1; module.exports = { importKeyPair: 1 };`,
+    (i: number) => `export const o${i} = { import: () => import("./o.ts") };`,
+    () => "a.import(1);",
+    (i: number) => `@dec(import("./dec.ts")) export class C${i} {}`,
+    (i: number) => `@dec(import("./cls.ts")) class K${i} {}`,
+    (i: number) => `import a${i} from "npm:a@1";`,
+    () => 'export * from "./star.ts";',
+  ),
+);
+
+Deno.test("importedSpecifiersAt: the pruned walk finds what the full walk finds", () => {
+  fc.assert(
+    fc.property(
+      fc.array(statement, { maxLength: 12 }),
+      fc.boolean(),
+      fc.boolean(),
+      (parts, sameLine, withDefault) => {
+        const lines = parts.map((write, i) => write(i));
+        if (withDefault) {
+          lines.push('export default async () => (await import("./x.ts")).x;');
+        }
+        const source = lines.join(sameLine ? " " : "\n") + "\n";
+        const parsed = parseExtensionModule(source, { path: "m.ts" });
+        if (!parsed.ok) throw new Error(parsed.reason);
+        assertEquals(
+          importedSpecifiersAt(source, { path: "m.ts" }),
+          importedSpecifiersIn(parsed.program),
+        );
       },
     ),
     { numRuns: 2_000 },
