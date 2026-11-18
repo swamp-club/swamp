@@ -307,6 +307,8 @@ const NOT_A_SINK: Record<string, Record<string, string>> = {
     "src/serve/host/deno_serve_process.ts: DENO_SERVE_PROCESS_PORT":
       CLI_REINVOCATION,
     "src/serve/local/workspace_hub.ts: spawnDashboardChild": CLI_REINVOCATION,
+    "src/serve/workspace_provision_process.ts: childHostedWorkspaceProvisioner":
+      CLI_REINVOCATION,
     "src/cli/context.ts: getGitRootSync": TOOLING,
     "src/domain/extensions/dependency_resolution/deno_info.ts: runDenoInfo":
       TOOLING,

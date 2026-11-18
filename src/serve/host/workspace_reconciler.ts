@@ -36,7 +36,7 @@ import {
   deletingFolderName,
   deletingFolderOwner,
   type WorkspaceScan,
-} from "./workspace_folder.ts";
+} from "../../infrastructure/persistence/hosted_workspace_folder_scan.ts";
 
 const logger = getSwampLogger(["serve", "host", "workspaces"]);
 

@@ -149,7 +149,7 @@ export async function removeIfPresent(path: string): Promise<void> {
 }
 
 /** null when the file holds more than `cap` bytes; "not a file" when the opened handle is not a regular file */
-async function readCapped(
+export async function readCapped(
   path: string,
   cap: number,
 ): Promise<string | null | "not a file"> {
@@ -168,6 +168,6 @@ async function readCapped(
   );
 }
 
-function messageOf(error: unknown): string {
+export function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }

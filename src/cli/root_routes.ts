@@ -277,7 +277,7 @@ export const ROOT_ROUTES: readonly RootRoute[] = [
     hidden: false,
     module: "src/cli/commands/serve_group.ts",
     needsFullTree: false,
-    hiddenSubcommands: ["host"],
+    hiddenSubcommands: ["host", "provision-workspace"],
     load: async (rest) =>
       (await import("./commands/serve_group.ts")).createServeCommand(rest),
   },

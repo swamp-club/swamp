@@ -2183,6 +2183,47 @@ export {
   type StartWorkspaceSummary,
 } from "./start/start.ts";
 export {
+  hostedWorkspaceCreate,
+  type HostedWorkspaceCreateData,
+  type HostedWorkspaceCreateEvent,
+  type HostedWorkspaceCreateInput,
+} from "./hosted_workspace/create.ts";
+export {
+  createHostedWorkspaceDeps,
+  DEFAULT_PROVISION_TIMEOUT_MS,
+  type HostedWorkspaceCaller,
+  type HostedWorkspaceDeps,
+  type HostedWorkspaceProvisioner,
+  type HostedWorkspaceProvisionSpec,
+  type HostedWorkspaceRootAccess,
+  type HostedWorkspaceSummary,
+} from "./hosted_workspace/deps.ts";
+export {
+  hostedWorkspaceDelete,
+  type HostedWorkspaceDeleteData,
+  type HostedWorkspaceDeleteEvent,
+} from "./hosted_workspace/delete.ts";
+export {
+  hostedWorkspaceGet,
+  type HostedWorkspaceGetData,
+  type HostedWorkspaceGetEvent,
+} from "./hosted_workspace/get.ts";
+export {
+  hostedWorkspaceList,
+  type HostedWorkspaceListData,
+  type HostedWorkspaceListEvent,
+} from "./hosted_workspace/list.ts";
+export {
+  hostedWorkspaceResume,
+  type HostedWorkspaceResumeData,
+  type HostedWorkspaceResumeEvent,
+} from "./hosted_workspace/resume.ts";
+export {
+  hostedWorkspaceSuspend,
+  type HostedWorkspaceSuspendData,
+  type HostedWorkspaceSuspendEvent,
+} from "./hosted_workspace/suspend.ts";
+export {
   workspaceCreate,
   type WorkspaceCreateData,
   type WorkspaceCreateEvent,

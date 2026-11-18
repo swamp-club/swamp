@@ -1,0 +1,201 @@
+// Swamp, an Automation Framework
+// Copyright (C) 2026 Elder Swamp Club, Inc.
+//
+// This file is part of Swamp.
+//
+// Swamp is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License version 3
+// as published by the Free Software Foundation, with the Swamp
+// Extension and Definition Exception (found in the "COPYING-EXCEPTION"
+// file).
+//
+// Swamp is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
+
+import {
+  assert,
+  assertEquals,
+  assertNotEquals,
+  assertRejects,
+} from "@std/assert";
+import { join } from "@std/path";
+import { parse as parseYaml } from "@std/yaml";
+import { UserError } from "../../domain/errors.ts";
+import { assertErrors, collect } from "../testing.ts";
+import { createHostedWorkspaceDeps } from "./deps.ts";
+import {
+  hostedWorkspaceCreate,
+  type HostedWorkspaceCreateEvent,
+} from "./create.ts";
+import {
+  hostedWorkspaceDelete,
+  type HostedWorkspaceDeleteEvent,
+} from "./delete.ts";
+import {
+  ALICE,
+  ctx,
+  hostFolder,
+  OAUTH_ACCESS,
+} from "./hosted_workspace_test_helpers.ts";
+import {
+  hostedWorkspaceResume,
+  type HostedWorkspaceResumeEvent,
+} from "./resume.ts";
+import {
+  hostedWorkspaceSuspend,
+  type HostedWorkspaceSuspendEvent,
+} from "./suspend.ts";
+
+async function wantedFile(
+  dir: string,
+  name: string,
+): Promise<Record<string, unknown>> {
+  return parseYaml(
+    await Deno.readTextFile(join(dir, `${name}.wanted.yaml`)),
+  ) as Record<string, unknown>;
+}
+
+Deno.test("hostedWorkspaceSuspend/Resume/Delete: each writes the wanted file with a new changedAt and keeps the creator", async () => {
+  await using host = await hostFolder();
+  const deps = host.deps();
+  await collect(hostedWorkspaceCreate(ctx, deps, {
+    name: "edge-dns",
+    caller: ALICE,
+    access: OAUTH_ACCESS,
+  }));
+  const seen: unknown[] = [(await wantedFile(host.dir, "edge-dns")).changedAt];
+  for (
+    const [run, wanted] of [
+      [
+        () => hostedWorkspaceSuspend(ctx, deps, { name: "edge-dns" }),
+        "suspended",
+      ],
+      [() => hostedWorkspaceResume(ctx, deps, { name: "edge-dns" }), "active"],
+      // resuming what is active is how a failed workspace starts again
+      [() => hostedWorkspaceResume(ctx, deps, { name: "edge-dns" }), "active"],
+      [() => hostedWorkspaceDelete(ctx, deps, { name: "edge-dns" }), "deleted"],
+    ] as const
+  ) {
+    const events = await collect<
+      | HostedWorkspaceSuspendEvent
+      | HostedWorkspaceResumeEvent
+      | HostedWorkspaceDeleteEvent
+    >(run());
+    const last = events[events.length - 1];
+    assertEquals(last.kind, "completed");
+    const file = await wantedFile(host.dir, "edge-dns");
+    assertEquals(file.wanted, wanted);
+    assertEquals(file.creator, "user:sub-alice");
+    assertEquals(seen.includes(file.changedAt), false);
+    seen.push(file.changedAt);
+  }
+});
+
+Deno.test("hostedWorkspaceSuspend: a folder made by hand gets a wanted file with no creator", async () => {
+  await using host = await hostFolder();
+  await Deno.mkdir(join(host.dir, "by-hand"));
+  await Deno.writeTextFile(join(host.dir, "by-hand", ".swamp.yaml"), "");
+  await collect(hostedWorkspaceSuspend(ctx, host.deps(), { name: "by-hand" }));
+  const file = await wantedFile(host.dir, "by-hand");
+  assertEquals(file.wanted, "suspended");
+  assertEquals(file.creator, null);
+  assertNotEquals(file.changedAt, null);
+});
+
+Deno.test("hostedWorkspaceResume: refuses a workspace being deleted, an unknown name and an unreadable wanted file", async () => {
+  await using host = await hostFolder();
+  const deps = host.deps();
+  await Deno.writeTextFile(
+    join(host.dir, "going.wanted.yaml"),
+    "wanted: deleted\n",
+  );
+  const deleting = await assertErrors<HostedWorkspaceResumeEvent>(
+    hostedWorkspaceResume(ctx, deps, { name: "going" }),
+    "user_error",
+  );
+  assertEquals(deleting.message.includes("being deleted"), true);
+  await assertErrors<HostedWorkspaceResumeEvent>(
+    hostedWorkspaceResume(ctx, deps, { name: "missing" }),
+    "not_found",
+  );
+  await Deno.writeTextFile(join(host.dir, "broken.wanted.yaml"), "{");
+  const unreadable = await assertErrors<HostedWorkspaceSuspendEvent>(
+    hostedWorkspaceSuspend(ctx, deps, { name: "broken" }),
+    "wanted_unreadable",
+  );
+  assertEquals(unreadable.message.includes(host.dir), false);
+  assertEquals(
+    await Deno.readTextFile(join(host.dir, "broken.wanted.yaml")),
+    "{",
+  );
+});
+
+Deno.test("createHostedWorkspaceDeps: a change that cannot get the lock says the workspace is busy and names no host path", async () => {
+  await using host = await hostFolder();
+  const deps = createHostedWorkspaceDeps({
+    workspacesDir: host.dir,
+    provisioner: { provision: () => Promise.resolve() },
+    addressOf: (name) => name,
+    lockWaitMs: 50,
+  });
+  const held = Promise.withResolvers<void>();
+  const holding = deps.withLock("edge-dns", () => held.promise);
+  try {
+    const error = await assertRejects(
+      () => deps.withLock("edge-dns", () => Promise.resolve()),
+      UserError,
+    );
+    assertEquals(error.code, "busy");
+    assertEquals(
+      error.message,
+      "Workspace edge-dns is busy with another change. Retry in a moment.",
+    );
+  } finally {
+    held.resolve();
+    await holding;
+  }
+});
+
+Deno.test("hostedWorkspaceSuspend/Create: a file-system error becomes an error event that names no host path", async () => {
+  await using host = await hostFolder();
+  const denied = () =>
+    Promise.reject(
+      new Deno.errors.PermissionDenied(
+        `Permission denied (os error 13): open '${host.dir}/edge-dns.wanted.yaml'`,
+      ),
+    );
+  const deps = host.deps({
+    repository: {
+      findByName: denied,
+      save: denied,
+      remove: denied,
+    },
+  });
+  for (
+    const error of [
+      await assertErrors<HostedWorkspaceSuspendEvent>(
+        hostedWorkspaceSuspend(ctx, deps, { name: "edge-dns" }),
+        "host_error",
+      ),
+      await assertErrors<HostedWorkspaceCreateEvent>(
+        hostedWorkspaceCreate(ctx, deps, {
+          name: "edge-dns",
+          caller: ALICE,
+          access: OAUTH_ACCESS,
+        }),
+        "host_error",
+      ),
+    ]
+  ) {
+    assertEquals(
+      error.message,
+      "The host could not complete the request. The host's log has the details.",
+    );
+    assert(error.cause instanceof Deno.errors.PermissionDenied);
+  }
+});

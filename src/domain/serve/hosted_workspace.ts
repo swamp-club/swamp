@@ -145,7 +145,7 @@ export class HostedWorkspace {
         }.`,
       );
     }
-    if (this.wanted === wanted) return this;
+    // a new changedAt even for the same state: a changed active record is what takes a workspace out of failed
     return new HostedWorkspace({
       ...this.record,
       wanted,

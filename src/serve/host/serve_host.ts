@@ -38,9 +38,11 @@ import {
   type ServeSupervisorOptions,
 } from "./supervisor.ts";
 import {
-  DEFAULT_RESCAN_MS,
   REPO_MARKER_FILE,
   scanWorkspaces,
+} from "../../infrastructure/persistence/hosted_workspace_folder_scan.ts";
+import {
+  DEFAULT_RESCAN_MS,
   SkipLog,
   watchWorkspaces,
   type WorkspaceChange,

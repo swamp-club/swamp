@@ -39,7 +39,7 @@ import {
   deletingFolderName,
   REPO_MARKER_FILE,
   scanWorkspaces,
-} from "./workspace_folder.ts";
+} from "../../infrastructure/persistence/hosted_workspace_folder_scan.ts";
 import {
   createWorkspaceReconciler,
   readWantedFiles,

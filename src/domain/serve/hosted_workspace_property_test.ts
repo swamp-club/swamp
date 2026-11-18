@@ -74,7 +74,7 @@ Deno.test("HostedWorkspace: deleted is never left, and a refused command changes
   );
 });
 
-Deno.test("HostedWorkspace: a command to the state it already has keeps the record unchanged", () => {
+Deno.test("HostedWorkspace: a command to the state it already has keeps the state and creator, and only deleted keeps its time", () => {
   fc.assert(
     fc.property(
       fc.array(fc.tuple(arbCommand, arbDate), { maxLength: 20 }),
@@ -92,7 +92,10 @@ Deno.test("HostedWorkspace: a command to the state it already has keeps the reco
         };
         const again = apply(workspace, same[workspace.wanted], at);
         assert(again !== "refused");
-        assert(again.equals(workspace));
+        assertEquals(again.wanted, workspace.wanted);
+        assertEquals(again.creator, workspace.creator);
+        if (workspace.wanted === "deleted") assert(again.equals(workspace));
+        else assertEquals(again.changedAt, at.toISOString());
       },
     ),
   );
