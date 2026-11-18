@@ -125,6 +125,7 @@ export const CONDITION_FIELDS: Readonly<
     field("key", "string", "request"),
     CLIENT_FIELD,
   ],
+  workspace: [field("name", "string"), CLIENT_FIELD],
 };
 
 export function conditionFieldZeroValue(type: ConditionFieldType): unknown {

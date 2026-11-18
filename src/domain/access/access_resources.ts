@@ -192,6 +192,10 @@ export function vaultKindResource(
   };
 }
 
+export function workspaceAccessResource(name: string): AccessResource {
+  return { kind: "workspace", name, fields: { name } };
+}
+
 export function tagsChanged(
   before: Readonly<Record<string, string>> | undefined,
   after: Readonly<Record<string, string>> | undefined,

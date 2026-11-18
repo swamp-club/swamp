@@ -149,7 +149,11 @@ Deno.test("access integration register: refuses a bad ceiling or id before anyth
     const [args, text] of [
       [["--ceiling", "run"], "<actions>=<selector>"],
       [["--ceiling", "write=workflow:*"], "not allowed"],
-      [["--ceiling", "run=model:*"], "only workflow resources"],
+      [["--ceiling", "run=model:*"], "only workflow and workspace resources"],
+      [
+        ["--ceiling", "run=workspace:*"],
+        "a workspace entry can allow only read",
+      ],
     ] as const
   ) {
     await refusal(["register", "app", "--name", "A", ...args], text);

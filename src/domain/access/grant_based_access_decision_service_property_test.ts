@@ -609,18 +609,24 @@ const integrationLookup = (
 ): IntegrationLookup => ({ standingOf: () => standing });
 
 const arbCeiling = fc.array(
-  fc.record({
-    actions: fc.array(
-      fc.constantFrom(...CEILING_ACTIONS),
-      { minLength: 1 },
-    ),
-    resource: fc.constantFrom(
-      "workflow:*",
-      "workflow:w",
-      "workflow:w*",
-      "workflow:x",
-    ),
-  }),
+  fc.oneof(
+    fc.record({
+      actions: fc.array(
+        fc.constantFrom(...CEILING_ACTIONS),
+        { minLength: 1 },
+      ),
+      resource: fc.constantFrom(
+        "workflow:*",
+        "workflow:w",
+        "workflow:w*",
+        "workflow:x",
+      ),
+    }),
+    fc.record({
+      actions: fc.constant(["read"]),
+      resource: fc.constantFrom("workspace:*", "workspace:w*", "workspace:x"),
+    }),
+  ),
   { maxLength: 4 },
 ).map((ceiling) => Ceiling.parse({ version: 1, ceiling }));
 
@@ -633,6 +639,7 @@ const arbPolicyGrants = fc.array(
       "workflow" as const,
       "access" as const,
       "model" as const,
+      "workspace" as const,
     ),
   }),
   { maxLength: 6 },
@@ -674,7 +681,12 @@ Deno.test("effective access: across random policies rights are grants, then the 
     arbCeiling,
     arbCeiling,
     fc.constantFrom(...ACTIONS),
-    fc.constantFrom("workflow" as const, "model" as const, "access" as const),
+    fc.constantFrom(
+      "workflow" as const,
+      "model" as const,
+      "access" as const,
+      "workspace" as const,
+    ),
     fc.constantFrom("w", "wz", "x", "*"),
     (grants, ceiling, consented, action, kind, name) => {
       const service = new GrantBasedAccessDecisionService(
@@ -697,13 +709,14 @@ Deno.test("effective access: across random policies rights are grants, then the 
       );
       if (through?.effect === "allow") {
         assertEquals(direct?.effect, "allow");
-        assertEquals(kind, "workflow");
-        assert(ceiling.allows(action, name));
-        assert(consented.allows(action, name));
+        assert(
+          kind === "workflow" || (kind === "workspace" && action === "read"),
+        );
+        assert(ceiling.allows(action, resource));
+        assert(consented.allows(action, resource));
       }
       if (
-        ceiling.allows(action, name) && consented.allows(action, name) &&
-        kind === "workflow"
+        ceiling.allows(action, resource) && consented.allows(action, resource)
       ) {
         assertEquals(through, direct);
       }

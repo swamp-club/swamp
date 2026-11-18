@@ -27,10 +27,18 @@ const selector = fc.oneof(
   name.map((n) => `workflow:${n}`),
   name.map((n) => `workflow:${n}*`),
 );
-const entry = fc.record({
-  actions: fc.array(fc.constantFrom(...CEILING_ACTIONS), { minLength: 1 }),
-  resource: selector,
-});
+const workspaceSelector = fc.oneof(
+  fc.constant("workspace:*"),
+  name.map((n) => `workspace:${n}`),
+  name.map((n) => `workspace:${n}*`),
+);
+const entry = fc.oneof(
+  fc.record({
+    actions: fc.array(fc.constantFrom(...CEILING_ACTIONS), { minLength: 1 }),
+    resource: selector,
+  }),
+  fc.record({ actions: fc.constant(["read"]), resource: workspaceSelector }),
+);
 const document = fc.record({
   version: fc.constant(1),
   ceiling: fc.array(entry, { maxLength: 6 }),
@@ -56,7 +64,35 @@ Deno.test("Ceiling: isWithin is reflexive and everything allowed inside is allow
     assert(inner.isWithin(inner));
     if (!inner.isWithin(outer)) return;
     for (const action of CEILING_ACTIONS) {
-      if (inner.allows(action, wf)) assert(outer.allows(action, wf));
+      for (const kind of ["workflow", "workspace"] as const) {
+        const resource = { kind, name: wf };
+        if (inner.allows(action, resource)) {
+          assert(outer.allows(action, resource));
+        }
+      }
+    }
+  }));
+});
+
+Deno.test("Ceiling: a workflow entry never allows a workspace of the same name, nor the reverse", () => {
+  fc.assert(fc.property(document, name, (doc, n) => {
+    const c = Ceiling.parse(doc);
+    for (const action of CEILING_ACTIONS) {
+      if (c.allows(action, { kind: "workspace", name: n })) {
+        assert(
+          doc.ceiling.some((e) =>
+            e.resource.startsWith("workspace:") && e.actions.includes(action)
+          ),
+        );
+        assertEquals(action, "read");
+      }
+      if (c.allows(action, { kind: "workflow", name: n })) {
+        assert(
+          doc.ceiling.some((e) =>
+            e.resource.startsWith("workflow:") && e.actions.includes(action)
+          ),
+        );
+      }
     }
   }));
 });

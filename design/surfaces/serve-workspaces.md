@@ -458,11 +458,22 @@ them and its audit log records each one. The host gives the root the
 | `workspace.suspend` | Stops its serve and keeps everything; `resume` starts it again                                 | `admin` on `workspace:<name>` |
 | `workspace.delete`  | Stops its serve and removes its folder                                                         | `admin` on `workspace:<name>` |
 
-`workspace` is a new resource kind in grants. With no grant naming it, only the
-root's admins can make these requests. Until that kind exists, the root's
-admins (`admin` on `access:*`) make every request but `list`, and a caller
-acting through an integration or a delegation is refused `list` too, since its
-ceiling cannot name a workspace. A token-mode root refuses `create` until the
+`workspace` is a resource kind in grants, with a pattern that is a workspace
+name, a prefix of one ending in `*`, or `*`. With no grant naming it, only the
+root's admins (`admin` on `access:*`) make these requests, since a request no
+grant decides falls back to that check. A deny on `workspace:<pattern>` refuses,
+the root's admins included, as a deny on any kind does. A grant naming
+`workspace` on a serve that is not a host's root is accepted and never checked,
+since that serve refuses every `workspace.*` request.
+
+A caller acting through an integration or a delegation is held to its ceiling,
+which can name a workspace for `read` only: it may get a workspace its ceiling
+and grants reach, and its `list` names only those, but it never creates,
+suspends, resumes or deletes one, as a ceiling never carries `write` or `admin`.
+swamp-club refuses a workspace entry in a consented ceiling until
+swamp-club#4879 lands, so until then no delegation carries one.
+`swamp access can-i` answers for the kind as the requests do, except that it
+lists grants and so shows nothing for a root admin's fallback. A token-mode root refuses `create` until the
 [sign-in exchange](#sign-in) exists: the creator would have no way to get a
 token inside the new workspace. Each request, allowed or refused, is in the
 root's audit log with the caller and the workspace name
@@ -739,7 +750,9 @@ After 7 an operator who sets each workspace up has a multi-workspace host.
     new workspace is stopped and names the command that starts it. After 11.
 13. **A `workspace` kind in grants.** `workspace` joins the resource kinds and
     the lifecycle requests check it: `write` to create, `read` to get, `admin`
-    to suspend, resume and delete. Root admins pass as before. Once item 19 is
+    to suspend, resume and delete. Root admins pass as before. A ceiling can
+    name a workspace for `read`, and a ceilinged caller's `list` names only
+    what it could get. Once item 19 is
     built, no grant reaches the suspend or resume of a registered workspace.
     The access suites cover the new kind
     (`src/domain/access/resource_selector.ts`). After 11.

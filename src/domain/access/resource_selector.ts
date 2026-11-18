@@ -22,6 +22,7 @@ import { normalizeModelTypeName } from "../models/control_plane_types.ts";
 import { ModelType } from "../models/model_type.ts";
 import { canonicalResourceKind } from "../terminology/behavior_aliases.ts";
 import { wordedError, wordedText } from "../behavior_wording.ts";
+import { isWorkspaceName } from "../workspace/workspace_name.ts";
 
 export const ResourceKindSchema = z.enum([
   "workflow",
@@ -29,6 +30,7 @@ export const ResourceKindSchema = z.enum([
   "data",
   "access",
   "vault",
+  "workspace",
 ]);
 
 export type ResourceKind = z.infer<typeof ResourceKindSchema>;
@@ -62,7 +64,7 @@ export function parseResourceSelector(value: string): ResourceSelector {
   const parsed = ResourceKindSchema.safeParse(kind);
   if (!parsed.success) {
     const worded = wordedText((w) =>
-      `Invalid resource kind "${kind}": expected "workflow", "${w.noun}", "data", "access", or "vault"`
+      `Invalid resource kind "${kind}": expected "workflow", "${w.noun}", "data", "access", "vault", or "workspace"`
     );
     throw wordedError(worded);
   }
@@ -70,6 +72,15 @@ export function parseResourceSelector(value: string): ResourceSelector {
   if (starIndex !== -1 && starIndex !== pattern.length - 1) {
     throw new Error(
       `Invalid resource selector "${value}": wildcard * is only supported at the end of a pattern`,
+    );
+  }
+  // a prefix too, so no pattern names what no workspace could be called
+  if (
+    parsed.data === "workspace" && pattern !== "*" &&
+    !isWorkspaceName(pattern.replace(/\*$/, ""))
+  ) {
+    throw new Error(
+      `Invalid resource selector "${value}": a workspace pattern is a workspace name (lowercase letters, digits and dashes, starting with a letter or digit, at most 63 characters), a prefix of one ending in *, or *`,
     );
   }
   return { kind: parsed.data, pattern };

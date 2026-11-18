@@ -1323,6 +1323,36 @@ grants:
   assertEquals(result.warnings[1].message.includes("'write'"), true);
 });
 
+Deno.test("parseGrantFile: a workspace grant loads, with a condition on its name, and a pattern no workspace could have is refused", () => {
+  const content = `
+grants:
+  - subject: group:data
+    effect: allow
+    actions: [write, admin]
+    resource: "workspace:data-*"
+    condition: 'name != "data-locked"'
+  - subject: group:data
+    effect: allow
+    actions: [read]
+    resource: "workspace:Data_X"
+`;
+  const result = parseGrantFile(
+    "workspaces.yaml",
+    content,
+    validateGrantCondition,
+  );
+  assertEquals(result.entries.length, 1);
+  assertEquals(result.entries[0].resource, {
+    kind: "workspace",
+    pattern: "data-*",
+  });
+  assertEquals(result.errors.length, 1);
+  assertStringIncludes(
+    result.errors[0].message,
+    "a workspace pattern is a workspace name",
+  );
+});
+
 Deno.test("parseGrantFile: refuses a run or client condition whose types cannot evaluate, and keeps an older one with a warning", () => {
   const parse = (actions: string, condition: string) =>
     parseGrantFile(

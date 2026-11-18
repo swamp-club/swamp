@@ -111,6 +111,7 @@ export function createConditionEvaluator(): ConditionEvaluator {
     "data",
     "access",
     "vault",
+    "workspace",
   ];
   for (const kind of kinds) {
     environments.set(kind, buildCelEnvironment(kind));

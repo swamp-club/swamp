@@ -21,7 +21,12 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import "../src/domain/models/models.ts";
 import { provisionHostedWorkspace } from "../src/cli/hosted_workspace_provision.ts";
+import { Ceiling } from "../src/domain/access/ceiling.ts";
+import type { DelegationLookup } from "../src/domain/access/delegation_directory.ts";
+import type { IntegrationLookup } from "../src/domain/access/integration_directory.ts";
 import type { Principal } from "../src/domain/access/principal.ts";
+import type { Grant } from "../src/domain/models/access/grant_model.ts";
+import type { DelegationRecord } from "../src/domain/models/access/delegation_model.ts";
 import { workspaceServe } from "../src/domain/serve/managed_serve.ts";
 import type { AuditEvent } from "../src/domain/serve_audit/audit_event.ts";
 import { HostedWorkspaceFileRepository } from "../src/infrastructure/persistence/hosted_workspace_file_repository.ts";
@@ -106,8 +111,8 @@ interface Root {
   readonly repo: ServeRepo;
   readonly workspacesDir: string;
   readonly port: CountingPort;
-  /** a root context over the host folder, deciding the given grants */
-  ctx(options?: ServeCtxOptions): ConnectionContext;
+  /** a root context over the host folder, deciding Alice's root admin and the given grants */
+  ctx(options?: ServeCtxOptions, grants?: Grant[]): ConnectionContext;
   /** one host rescan, as the folder watcher runs it */
   rescan(): Promise<void>;
 }
@@ -155,10 +160,10 @@ async function withRoot(fn: (root: Root) => Promise<void>): Promise<void> {
         repo,
         workspacesDir,
         port,
-        ctx: (options = {}) =>
+        ctx: (options = {}, grants = []) =>
           createServeCtx(
             repo,
-            [ROOT_ADMIN_GRANT(ALICE.id), ROOT_ADMIN_GRANT("alice")],
+            [ROOT_ADMIN_GRANT(ALICE.id), ROOT_ADMIN_GRANT("alice"), ...grants],
             {
               authMode: "oauth",
               resolvedUserNames: { [ALICE.id]: "alice", [BOB.id]: "bob" },
@@ -288,15 +293,17 @@ Deno.test("serve workspace requests: a caller who is not a root admin may list a
   });
 });
 
-Deno.test("serve workspace requests: a caller acting through an integration is refused list", async () => {
+Deno.test("serve workspace requests: a caller acting through an integration whose ceiling names no workspace lists none", async () => {
   await withRoot(async (root) => {
-    const frames = await sendRequest(
-      root.ctx(),
-      request("workspace.list"),
-      ALICE,
-      { client: "integration:dash" },
-    );
-    assertEquals(errorFrame(frames)?.error?.code, "unauthorized");
+    const ctx = root.ctx();
+    await sendRequest(ctx, request("workspace.create", "edge-dns"), ALICE);
+    const listed = reply(
+      await sendRequest(ctx, request("workspace.list"), ALICE, {
+        client: "integration:dash",
+      }),
+      "workspace.list",
+    ) as { workspaces: unknown[] };
+    assertEquals(listed.workspaces, []);
   });
 });
 
@@ -389,6 +396,13 @@ Deno.test("serve workspace requests: each request, allowed or refused, is audite
         outcome: "success",
       },
       {
+        action: "admin",
+        resourceKind: "workspace",
+        resourceName: "edge-dns",
+        principalId: BOB.id,
+        outcome: "denied",
+      },
+      {
         action: "workspace.delete",
         resourceKind: "workspace",
         resourceName: "edge-dns",
@@ -403,11 +417,286 @@ Deno.test("serve workspace requests: each request, allowed or refused, is audite
         outcome: "failure",
       },
     ]);
-    assert(
-      audit.some((event) =>
-        event.outcome === "denied" && event.principalId === BOB.id
-      ),
-      "the refused delete's denial is audited",
+  });
+});
+
+const workspaceGrant = (
+  subject: Principal,
+  actions: Grant["actions"],
+  pattern: string,
+  effect: Grant["effect"] = "allow",
+): Grant =>
+  grant({
+    subject: { kind: "user", name: subject.id },
+    effect,
+    actions,
+    resource: { kind: "workspace", pattern },
+  });
+
+/** whether the request got past authorization, whatever the services then said */
+async function admittedTo(
+  ctx: ConnectionContext,
+  type: string,
+  name: string,
+  principal: Principal,
+  client?: string,
+): Promise<boolean> {
+  const frames = await sendRequest(ctx, request(type, name), principal, {
+    client,
+  });
+  return errorFrame(frames)?.error?.code !== "unauthorized";
+}
+
+async function seed(root: Root, ...names: string[]): Promise<void> {
+  const ctx = root.ctx();
+  for (const name of names) {
+    reply(
+      await sendRequest(ctx, request("workspace.create", name), ALICE),
+      "workspace.create",
+    );
+  }
+}
+
+Deno.test("serve workspace requests: write and admin on workspace:data-* create, resume, suspend and delete data-x, and nothing on ops-x", async () => {
+  await withRoot(async (root) => {
+    await seed(root, "ops-x");
+    const ctx = root.ctx({}, [
+      workspaceGrant(BOB, ["write", "admin"], "data-*"),
+    ]);
+    for (
+      const type of [
+        "workspace.create",
+        "workspace.resume",
+        "workspace.suspend",
+        "workspace.delete",
+      ]
+    ) {
+      const frames = await sendRequest(ctx, request(type, "data-x"), BOB);
+      assertEquals(errorFrame(frames), undefined, type);
+      assertEquals(
+        await admittedTo(ctx, type, "ops-x", BOB),
+        false,
+        `${type} ops-x`,
+      );
+    }
+  });
+});
+
+Deno.test("serve workspace requests: write alone creates data-x and is refused its resume", async () => {
+  await withRoot(async (root) => {
+    const ctx = root.ctx({}, [workspaceGrant(BOB, ["write"], "data-*")]);
+    reply(
+      await sendRequest(ctx, request("workspace.create", "data-x"), BOB),
+      "workspace.create",
+    );
+    assertEquals(
+      await admittedTo(ctx, "workspace.resume", "data-x", BOB),
+      false,
+    );
+  });
+});
+
+Deno.test("serve workspace requests: read on workspace:data-x gets it and is refused its suspend", async () => {
+  await withRoot(async (root) => {
+    await seed(root, "data-x");
+    const ctx = root.ctx({}, [workspaceGrant(BOB, ["read"], "data-x")]);
+    const got = reply(
+      await sendRequest(ctx, request("workspace.get", "data-x"), BOB),
+      "workspace.get",
+    );
+    assertEquals(got.name, "data-x");
+    assertEquals(
+      await admittedTo(ctx, "workspace.suspend", "data-x", BOB),
+      false,
+    );
+  });
+});
+
+Deno.test("serve workspace requests: a deny on workspace:data-x refuses a principal an allow would admit, and a root admin too", async () => {
+  await withRoot(async (root) => {
+    await seed(root, "data-x", "data-y");
+    const ctx = root.ctx({}, [
+      workspaceGrant(BOB, ["read", "admin"], "data-*"),
+      workspaceGrant(BOB, ["admin"], "data-x", "deny"),
+      workspaceGrant(ALICE, ["admin"], "data-x", "deny"),
+    ]);
+    assertEquals(
+      await admittedTo(ctx, "workspace.suspend", "data-y", BOB),
+      true,
+    );
+    assertEquals(
+      await admittedTo(ctx, "workspace.suspend", "data-x", BOB),
+      false,
+    );
+    assertEquals(await admittedTo(ctx, "workspace.get", "data-x", BOB), true);
+    assertEquals(
+      await admittedTo(ctx, "workspace.suspend", "data-x", ALICE),
+      false,
+    );
+  });
+});
+
+const WORKSPACE_CEILING = Ceiling.parse({
+  version: 1,
+  ceiling: [{ actions: ["read"], resource: "workspace:data-*" }],
+});
+const WORKSPACE_INTEGRATION: IntegrationLookup = {
+  standingOf: () => ({ kind: "active", ceiling: WORKSPACE_CEILING }),
+};
+const CONSENTED_TO_WORKSPACES: DelegationLookup = {
+  standingOf: () => ({ kind: "standing", ceiling: WORKSPACE_CEILING }),
+  recordOf: (id) => ({ integrationId: id }) as DelegationRecord,
+};
+
+Deno.test("serve workspace requests: a delegated caller whose ceiling names workspace:data-* gets and lists data-x, and nothing on ops-x", async () => {
+  await withRoot(async (root) => {
+    await seed(root, "data-x", "ops-x");
+    const ctx = root.ctx(
+      {
+        integrations: WORKSPACE_INTEGRATION,
+        delegations: CONSENTED_TO_WORKSPACES,
+      },
+      [workspaceGrant(BOB, ["read", "write", "admin"], "*")],
+    );
+    const app = "integration:app";
+    assertEquals(
+      await admittedTo(ctx, "workspace.get", "data-x", BOB, app),
+      true,
+    );
+    assertEquals(
+      await admittedTo(ctx, "workspace.get", "ops-x", BOB, app),
+      false,
+    );
+    const listed = reply(
+      await sendRequest(ctx, request("workspace.list"), BOB, { client: app }),
+      "workspace.list",
+    ) as { workspaces: { name: string }[] };
+    assertEquals(listed.workspaces.map((w) => w.name), ["data-x"]);
+    for (
+      const type of ["workspace.create", "workspace.resume", "workspace.delete"]
+    ) {
+      assertEquals(
+        await admittedTo(ctx, type, "data-y", BOB, app),
+        false,
+        `${type} is above the ceiling`,
+      );
+    }
+  });
+});
+
+Deno.test("serve workspace requests: each refusal of a workspace grant is in the audit log, naming the workspace", async () => {
+  await withRoot(async (root) => {
+    await seed(root, "data-x");
+    const ctx = root.ctx({}, [workspaceGrant(BOB, ["read"], "data-*")]);
+    const audit = recordAudit(ctx);
+    await sendRequest(ctx, request("workspace.suspend", "data-x"), BOB);
+    await sendRequest(ctx, request("workspace.create", "ops-x"), BOB);
+    const denials = audit
+      .filter((event) => event.outcome === "denied")
+      .map(({ action, resourceKind, resourceName, principalId }) => ({
+        action,
+        resourceKind,
+        resourceName,
+        principalId,
+      }));
+    assertEquals(denials, [
+      {
+        action: "admin",
+        resourceKind: "workspace",
+        resourceName: "data-x",
+        principalId: BOB.id,
+      },
+      {
+        action: "write",
+        resourceKind: "workspace",
+        resourceName: "ops-x",
+        principalId: BOB.id,
+      },
+    ]);
+  });
+});
+
+Deno.test("serve workspace requests: a workspace grant on a serve that is not a host's root is accepted, and the request still refused", async () => {
+  await withRoot(async (root) => {
+    const ctx = root.ctx({ hostedWorkspaces: undefined }, [
+      workspaceGrant(BOB, ["read"], "data-*"),
+    ]);
+    const frames = await sendRequest(
+      ctx,
+      request("workspace.get", "data-x"),
+      BOB,
+    );
+    assertEquals(errorFrame(frames)?.error?.code, NOT_A_HOST_ROOT_CODE);
+  });
+});
+
+/** can-i's verdict: a matching deny refuses, else a matching allow admits */
+async function canI(
+  ctx: ConnectionContext,
+  principal: Principal,
+  action: string,
+  name: string,
+  client?: string,
+): Promise<boolean> {
+  const frames = await sendRequest(
+    ctx,
+    {
+      type: "access.can-i",
+      id: crypto.randomUUID(),
+      payload: { action, resource: `workspace:${name}` },
+    },
+    principal,
+    { client },
+  );
+  const payload = frames.find((f) => f.type === "access.can-i")
+    ?.payload as { decisions: { effect: string }[] } | undefined;
+  assert(payload, JSON.stringify(frames));
+  return payload.decisions.length > 0 &&
+    payload.decisions.every((d) => d.effect === "allow");
+}
+
+Deno.test("serve workspace requests: access can-i answers as the requests do for workspace grants, and lists no grant for a root admin's fallback", async () => {
+  await withRoot(async (root) => {
+    await seed(root, "data-x", "data-y", "ops-x");
+    const grants = [
+      workspaceGrant(BOB, ["read", "admin"], "data-*"),
+      workspaceGrant(BOB, ["admin"], "data-y", "deny"),
+    ];
+    const ctx = root.ctx({}, grants);
+    const cases = [
+      ["read", "workspace.get", "data-x"],
+      ["read", "workspace.get", "ops-x"],
+      ["admin", "workspace.suspend", "data-x"],
+      ["admin", "workspace.suspend", "data-y"],
+      ["admin", "workspace.suspend", "ops-x"],
+      ["write", "workspace.create", "data-z"],
+    ] as const;
+    for (const [action, type, name] of cases) {
+      assertEquals(
+        await canI(ctx, BOB, action, name),
+        await admittedTo(ctx, type, name, BOB),
+        `${action} ${name}`,
+      );
+    }
+    const delegated = root.ctx(
+      {
+        integrations: WORKSPACE_INTEGRATION,
+        delegations: CONSENTED_TO_WORKSPACES,
+      },
+      grants,
+    );
+    const app = "integration:app";
+    for (const [action, type, name] of cases) {
+      assertEquals(
+        await canI(delegated, BOB, action, name, app),
+        await admittedTo(delegated, type, name, BOB, app),
+        `${action} ${name} through the integration`,
+      );
+    }
+    assertEquals(await canI(ctx, ALICE, "admin", "ops-x"), false);
+    assertEquals(
+      await admittedTo(ctx, "workspace.suspend", "ops-x", ALICE),
+      true,
     );
   });
 });

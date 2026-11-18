@@ -422,14 +422,13 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
     if (standing.kind === "revoked") {
       return refuse(INTEGRATION_REVOKED_GRANT_ID);
     }
-    if (
-      resource.kind !== "workflow" ||
-      !standing.ceiling.allows(action, resource.name)
-    ) return refuse(INTEGRATION_CEILING_GRANT_ID);
+    if (!standing.ceiling.allows(action, resource)) {
+      return refuse(INTEGRATION_CEILING_GRANT_ID);
+    }
     const consented = this.#consentedCeiling(principal, integration.id);
     if ("refusal" in consented) return refuse(consented.refusal);
     return consented.ceiling === undefined ||
-        consented.ceiling.allows(action, resource.name)
+        consented.ceiling.allows(action, resource)
       ? null
       : refuse(DELEGATION_CEILING_GRANT_ID);
   }
@@ -445,7 +444,7 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
     if (integration.kind === "malformed") return false;
     const standing = this.#integrations?.standingOf(integration.id);
     if (
-      standing?.kind !== "active" || grant.resource.kind !== "workflow" ||
+      standing?.kind !== "active" ||
       !standing.ceiling.overlaps(action, grant.resource)
     ) return false;
     const consented = this.#consentedCeiling(principal, integration.id);
@@ -760,10 +759,10 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
     if (integration.kind === "integration") {
       const standing = this.#integrations?.standingOf(integration.id);
       if (
-        standing?.kind !== "active" || kind !== "workflow" ||
-        !standing.ceiling.allowsSomewhere(action) ||
+        standing?.kind !== "active" ||
+        !standing.ceiling.allowsSomewhere(action, kind) ||
         (consented.ceiling !== undefined &&
-          !consented.ceiling.allowsSomewhere(action))
+          !consented.ceiling.allowsSomewhere(action, kind))
       ) return false;
     }
     const snapshot = this.#snapshot;
