@@ -452,3 +452,40 @@ Deno.test("defaultDaemonCacheDir: a system daemon uses a system path, never the 
     return Promise.resolve();
   });
 });
+
+Deno.test({
+  name:
+    "resolveDaemonCacheDir: a system default the user cannot create says to use sudo or --user",
+  ignore: Deno.build.os === "windows" || Deno.uid() === 0,
+  fn: async () => {
+    const err = await assertRejects(
+      () => resolveDaemonCacheDir(undefined, "daemon"),
+      UserError,
+    );
+    assertStringIncludes(err.message, "Permission denied creating");
+    assertStringIncludes(err.message, "Run with sudo");
+    assertStringIncludes(err.message, "--user");
+  },
+});
+
+Deno.test({
+  name:
+    "resolveDaemonCacheDir: a per-user default the user cannot create names the folder to check",
+  ignore: Deno.build.os === "windows" || Deno.uid() === 0,
+  fn: async () => {
+    const parent = await Deno.makeTempDir();
+    try {
+      await Deno.chmod(parent, 0o500);
+      await withMockedEnv({ SWAMP_HOME: join(parent, "swamp") }, async () => {
+        const err = await assertRejects(
+          () => resolveDaemonCacheDir(undefined, "agent"),
+          UserError,
+        );
+        assertStringIncludes(err.message, "Check permissions on");
+      });
+    } finally {
+      await Deno.chmod(parent, 0o700);
+      await Deno.remove(parent, { recursive: true });
+    }
+  },
+});

@@ -21,7 +21,7 @@ import { Command } from "@cliffy/command";
 import { isAbsolute, join, resolve } from "@std/path";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { groupCommandAction } from "../group_action.ts";
-import { UserError } from "../../domain/errors.ts";
+import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import { readTokenFile } from "../remote_run.ts";
 import { resolveServiceMode } from "../../infrastructure/daemon/service_scheduler_factory.ts";
 import type { LaunchdMode } from "../../infrastructure/update/launchd_scheduler.ts";
@@ -84,7 +84,24 @@ export async function resolveDaemonCacheDir(
 ): Promise<string> {
   if (rawPath) return await validateCacheDir(rawPath);
   const dir = defaultDaemonCacheDir(mode);
-  await Deno.mkdir(dir, { recursive: true, mode: 0o700 });
+  try {
+    await Deno.mkdir(dir, { recursive: true, mode: 0o700 });
+  } catch (err: unknown) {
+    if (err instanceof Deno.errors.PermissionDenied) {
+      const hint = mode === "agent"
+        ? `  Check permissions on ${dir} and its parent directories`
+        : `  Option 1: Run with sudo for a system-wide service\n` +
+          `  Option 2: Use --user to install as a per-user service\n` +
+          `  Option 3: Pass --cache-dir with a directory you can write`;
+      throw markErrorPaths(
+        new UserError(
+          `Permission denied creating the worker daemon cache dir ${dir}.\n\n${hint}`,
+        ),
+        [dir],
+      );
+    }
+    throw err;
+  }
   return dir;
 }
 
