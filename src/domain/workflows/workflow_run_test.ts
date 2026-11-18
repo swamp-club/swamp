@@ -3493,6 +3493,28 @@ Deno.test("WorkflowRun.parentRun: round-trips, and a malformed link is kept as w
   assertEquals(broken.toData().parentRun, raw);
 });
 
+Deno.test("WorkflowRun.inheritedPlacement: round-trips, and a record written before it reads as none", () => {
+  const run = WorkflowRun.create(createTestWorkflow());
+  assertEquals(run.toData().inheritedPlacement, undefined);
+  const inherited = {
+    fields: { target: "w-a", labels: { fleet: "web" }, queueTimeout: 30 },
+    affinityKey: "44444444-4444-4444-8444-444444444444",
+    source: { workflowName: "caddy", jobName: "install", stepName: "sudo" },
+  };
+  run.recordInheritedPlacement(inherited);
+  inherited.fields.labels.fleet = "changed";
+
+  const restored = WorkflowRun.fromData(run.toData());
+  assertEquals(restored.inheritedPlacement, {
+    ...inherited,
+    fields: { ...inherited.fields, labels: { fleet: "web" } },
+  });
+
+  const older = run.toData();
+  delete older.inheritedPlacement;
+  assertEquals(WorkflowRun.fromData(older).inheritedPlacement, undefined);
+});
+
 const WAIT_NOW = new Date("2026-01-01T00:00:00.000Z");
 const VERDICT_SCHEMA = {
   type: "object" as const,

@@ -169,7 +169,7 @@ const PINNED: readonly { site: string; row: string }[] = [
   },
   {
     "site":
-      "src/domain/workflows/execution_service.ts: DefaultStepExecutor.executeModelMethod -> expressionEvaluator.resolveAllExpressionsInData",
+      "src/domain/workflows/execution_service.ts: resolvePlacementExpressions -> options.expressionEvaluator.resolveAllExpressionsInData",
     "row": "routing",
   },
   {

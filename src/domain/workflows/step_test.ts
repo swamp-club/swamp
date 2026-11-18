@@ -607,3 +607,76 @@ Deno.test("Step.fromData: keeps a data output override's vaultName through toDat
   assertEquals(restored.dataOutputOverrides[0].vaultName, "vault-a");
   assertEquals(restored.dataOutputOverrides[0].vary, ["env"]);
 });
+
+const CHILD_TASK = { type: "workflow" as const, workflowIdOrName: "child" };
+
+Deno.test("Step placementMode: a workflow step round-trips inherit and own", () => {
+  for (const mode of ["inherit", "own"] as const) {
+    const step = Step.fromData({
+      name: "call",
+      task: CHILD_TASK,
+      placement: mode,
+    });
+    assertEquals(step.placementMode, mode);
+    assertEquals(step.toData().placement, mode);
+  }
+});
+
+Deno.test("Step placementMode: unset when the step does not say", () => {
+  const step = Step.fromData({ name: "call", task: CHILD_TASK });
+  assertEquals(step.placementMode, undefined);
+});
+
+Deno.test("StepSchema: placement is refused on a step whose task is not a workflow", () => {
+  const result = StepSchema.safeParse({
+    name: "deploy",
+    task: { type: "model_method", modelIdOrName: "web", methodName: "run" },
+    placement: "inherit",
+  });
+  assertEquals(result.success, false);
+  assertStringIncludes(
+    result.error!.issues[0].message,
+    `Step "deploy": placement applies only to a step whose task is a workflow`,
+  );
+});
+
+Deno.test("StepSchema: placement own is refused beside target, labels or platform", () => {
+  for (
+    const field of [
+      { target: "w-a" },
+      { labels: { fleet: "web" } },
+      { platform: "linux" },
+    ]
+  ) {
+    const result = StepSchema.safeParse({
+      name: "call",
+      task: CHILD_TASK,
+      placement: "own",
+      ...field,
+    });
+    assertEquals(result.success, false);
+    assertStringIncludes(
+      result.error!.issues[0].message,
+      `Step "call": placement: own runs the child by its own placement`,
+    );
+  }
+});
+
+Deno.test("StepSchema: placement inherit may sit beside target on a workflow step", () => {
+  const result = StepSchema.safeParse({
+    name: "call",
+    task: CHILD_TASK,
+    placement: "inherit",
+    target: "w-a",
+  });
+  assertEquals(result.success, true);
+});
+
+Deno.test("StepSchema: an unknown placement mode is refused", () => {
+  const result = StepSchema.safeParse({
+    name: "call",
+    task: CHILD_TASK,
+    placement: "local",
+  });
+  assertEquals(result.success, false);
+});

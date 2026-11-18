@@ -967,6 +967,22 @@ export function toRunData(
         },
       }
       : {}),
+    ...(run.inheritedPlacement !== undefined
+      ? {
+        inheritedPlacement: {
+          ...(run.inheritedPlacement.fields.target !== undefined
+            ? { target: run.inheritedPlacement.fields.target }
+            : {}),
+          ...(run.inheritedPlacement.fields.labels !== undefined
+            ? { labels: { ...run.inheritedPlacement.fields.labels } }
+            : {}),
+          ...(run.inheritedPlacement.fields.platform !== undefined
+            ? { platform: run.inheritedPlacement.fields.platform }
+            : {}),
+          source: { ...run.inheritedPlacement.source },
+        },
+      }
+      : {}),
   };
 }
 

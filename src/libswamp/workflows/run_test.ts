@@ -19,7 +19,12 @@
 
 import type { StepStart } from "../../domain/workflows/step_start.ts";
 import { ServeUnreachableError } from "../../infrastructure/datastore_v3/serve_upstream_errors.ts";
-import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import {
   deferCompletedForOutputs,
   extractStepArtifacts,
@@ -3048,4 +3053,22 @@ Deno.test("workflowExecutionFailed: a serve outage in the cause reports its data
     workflowExecutionFailed(new Error("boom")).code,
     "workflow_execution_failed",
   );
+});
+
+Deno.test("toRunData: shows an inherited placement without its pin or queue timeout", () => {
+  const run = WorkflowRun.create(createTestWorkflow());
+  assertEquals(toRunData(run, "/p", false).inheritedPlacement, undefined);
+  const labels = { fleet: "web" };
+  run.recordInheritedPlacement({
+    fields: { labels, queueTimeout: 30 },
+    affinityKey: "44444444-4444-4444-8444-444444444444",
+    source: { workflowName: "caddy", jobName: "install", stepName: "sudo" },
+  });
+
+  const view = toRunData(run, "/p", false).inheritedPlacement;
+  assertEquals(view, {
+    labels: { fleet: "web" },
+    source: { workflowName: "caddy", jobName: "install", stepName: "sudo" },
+  });
+  assert(view?.labels !== labels);
 });

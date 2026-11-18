@@ -181,6 +181,12 @@ export interface WorkflowRunView {
     runId: string;
     stepName: string;
   };
+  inheritedPlacement?: {
+    target?: string;
+    labels?: Record<string, string>;
+    platform?: string;
+    source: { workflowName: string; jobName: string; stepName: string };
+  };
   nestedWaits?: {
     workflowId: string;
     workflowName: string;

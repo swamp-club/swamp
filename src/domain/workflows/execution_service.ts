@@ -22,8 +22,14 @@ import type { Job } from "./job.ts";
 import { Step } from "./step.ts";
 import { escapeControlCharacters } from "../control_characters.ts";
 import {
+  inheritedAffinityKey,
+  type InheritedPlacement,
+  InheritedPlacementSchema,
+  inheritPlacement,
   mergePlacementFields,
+  type PlacementFields,
   resolveAffinityKey,
+  type ResolvedPlacement,
   resolvePlacement,
 } from "./placement.ts";
 import { StepTask } from "./step_task.ts";
@@ -575,6 +581,7 @@ function placementProvenance(
   step: Step,
   workflowMap: ProvenanceMap,
   stepMap: ProvenanceMap,
+  inherited?: PlacementFields,
 ): ProvenanceMap {
   const jobIndex = workflow.jobs.indexOf(job);
   const jobMap = jobIndex >= 0
@@ -582,6 +589,16 @@ function placementProvenance(
     : ProvenanceMap.authored();
   let map = ProvenanceMap.authored();
   for (const field of ["target", "labels", "platform"] as const) {
+    // resolved where it was called, so never evaluated again here
+    if (
+      step.placementFields[field] === undefined &&
+      job.placementFields[field] === undefined &&
+      workflow.placementFields[field] === undefined &&
+      inherited?.[field] !== undefined
+    ) {
+      map = map.graft(field, ProvenanceMap.data());
+      continue;
+    }
     const level = step.placementFields[field] !== undefined
       ? stepMap
       : job.placementFields[field] !== undefined
@@ -590,6 +607,51 @@ function placementProvenance(
     map = map.graft(field, level.subtree(field));
   }
   return map;
+}
+
+/**
+ * expressions the step pass can see resolve first, then the rest; a secret in
+ * placement is refused either way, since placement leaves the run as routing
+ */
+async function resolvePlacementExpressions(
+  placement: ResolvedPlacement,
+  provenance: ProvenanceMap,
+  options: {
+    evaluate?: (expr: string, context: Record<string, unknown>) => unknown;
+    expressionContext: ExpressionContext | undefined;
+    authoredExpressions: AuthoredExpressions;
+    expressionEvaluator: ExpressionEvaluationService;
+    secretRedactor: SecretRedactor | undefined;
+    secretBag: VaultSecretBag;
+    location: string;
+  },
+): Promise<{ placement: ResolvedPlacement; provenance: ProvenanceMap }> {
+  let resolved = placement;
+  let map = provenance;
+  if (options.expressionContext && options.evaluate) {
+    const tracked = resolveAvailableExpressionsTracked(
+      resolved,
+      map,
+      options.expressionContext,
+      options.evaluate,
+      options.authoredExpressions,
+    );
+    resolved = tracked.data as ResolvedPlacement;
+    map = tracked.provenance;
+  }
+  resolved = await options.expressionEvaluator.resolveAllExpressionsInData(
+    resolved,
+    options.expressionContext ?? { model: {}, env: {} },
+    options.secretRedactor,
+    options.authoredExpressions,
+    map,
+    {
+      secretBag: options.secretBag,
+      destination: "placement",
+      location: `${options.location}.placement`,
+    },
+  ) as ResolvedPlacement;
+  return { placement: resolved, provenance: map };
 }
 
 function recordProvenance(
@@ -1770,32 +1832,21 @@ export class DefaultStepExecutor implements StepExecutor {
       taskProvenance = resolvedTask.provenance
         .graft("inputs", taskArgs.rawProvenance.subtree("inputs"))
         .graft("globalArgs", taskArgs.rawProvenance.subtree("globalArgs"));
-      if (resolvedPlacement) {
-        const tracked = resolveAvailableExpressionsTracked(
-          resolvedPlacement,
-          placementMap,
-          ctx.expressionContext,
-          evaluate,
-          ctx.authoredExpressions,
-        );
-        resolvedPlacement = tracked.data as typeof resolvedPlacement;
-        placementMap = tracked.provenance;
-      }
     }
 
     if (resolvedPlacement) {
-      resolvedPlacement = await expressionEvaluator.resolveAllExpressionsInData(
-        resolvedPlacement,
-        ctx.expressionContext ?? { model: {}, env: {} },
-        ctx.secretRedactor,
-        ctx.authoredExpressions,
-        placementMap,
-        {
+      ({ placement: resolvedPlacement, provenance: placementMap } =
+        await resolvePlacementExpressions(resolvedPlacement, placementMap, {
+          evaluate: stepPass
+            ? (expr, context) => stepPass.evaluate(expr, context)
+            : undefined,
+          expressionContext: ctx.expressionContext,
+          authoredExpressions: ctx.authoredExpressions,
+          expressionEvaluator,
+          secretRedactor: ctx.secretRedactor,
           secretBag: stepSecretBag,
-          destination: "placement",
-          location: `${ctx.stepName}.placement`,
-        },
-      ) as typeof resolvedPlacement;
+          location: ctx.stepName,
+        }));
     }
 
     if (resolvedPlacement && ctx.affinityKey) {
@@ -3232,6 +3283,7 @@ export interface FanOutLaneContext {
 }
 
 interface StepOptions {
+  inheritedPlacement?: InheritedPlacement;
   /** a fan-out lane's step: pinned to the worker, reading only its lane's steps */
   lane?: FanOutLaneContext & {
     readonly stepOf: (authored: string) => string;
@@ -3529,6 +3581,7 @@ export class WorkflowExecutionService {
       ancestorWorkflowIds?: Set<string>;
       parentRunId?: string;
       parentRun?: ParentRunRef;
+      inheritedPlacement?: InheritedPlacement;
       /**
        * The parent run's redactor and sensitive-value record, passed to a
        * nested run so values the parent resolved stay recorded and masked.
@@ -3924,6 +3977,9 @@ export class WorkflowExecutionService {
         if (options?.parentRun) {
           run.recordParentRun(options.parentRun);
         }
+        if (options?.inheritedPlacement) {
+          run.recordInheritedPlacement(options.inheritedPlacement);
+        }
         if (runInputs) {
           run.captureInputs(runInputs);
           run.captureInputsProvenance(
@@ -4048,6 +4104,7 @@ export class WorkflowExecutionService {
       }
 
       const stepOpts: StepOptions = {
+        inheritedPlacement: options?.inheritedPlacement,
         authoredExpressions,
         authoredWorkflow,
         lastEvaluated: options?.lastEvaluated,
@@ -5012,6 +5069,7 @@ export class WorkflowExecutionService {
         ? existingRun.parentRun.ref
         : undefined;
       const stepOpts: StepOptions = {
+        inheritedPlacement: existingRun.inheritedPlacement,
         authoredExpressions,
         authoredWorkflow: workflow,
         workflowNestingDepth: parentLink?.nestingDepth,
@@ -7332,6 +7390,15 @@ export class WorkflowExecutionService {
         WorkflowExecutionEvent,
         unknown
       >((push) => {
+        const placementLevels = [
+          workflow.placementFields,
+          job.placementFields,
+          step.placementFields,
+        ];
+        const inheritedFields = inheritPlacement(
+          options.inheritedPlacement,
+          placementLevels,
+        );
         const ctx: StepExecutionContext = {
           workflowId: workflow.id,
           workflowRunId: run.id,
@@ -7378,7 +7445,10 @@ export class WorkflowExecutionService {
           workflowRepo: this.workflowRepo,
           workflowRunRepo: this.runRepo,
           workflowGateService: this.workflowGateService,
-          workflowPlacement: workflow.placementFields,
+          workflowPlacement: mergePlacementFields(
+            inheritedFields,
+            workflow.placementFields,
+          ),
           jobPlacement: job.placementFields,
           placementProvenance: placementProvenance(
             workflow,
@@ -7387,8 +7457,13 @@ export class WorkflowExecutionService {
             options.workflowProvenance ?? ProvenanceMap.authored(),
             (options.stepProvenance ?? StepProvenanceOverlay.authored())
               .forStep(step).raw,
+            inheritedFields,
           ),
-          affinityKey: options.lane ? undefined : resolveAffinityKey(
+          affinityKey: options.lane ? undefined : inheritedAffinityKey(
+            options.inheritedPlacement,
+            placementLevels,
+            job.affinity,
+          ) ?? resolveAffinityKey(
             workflow.affinity,
             job.affinity,
             run.id,
@@ -7810,6 +7885,98 @@ export class WorkflowExecutionService {
     return undefined;
   }
 
+  /**
+   * where the calling step would run, resolved in the caller's context, so a
+   * child runs there unless the step says own or the child places itself
+   */
+  private async callerPlacement(
+    workflow: Workflow,
+    run: WorkflowRun,
+    job: Job,
+    step: Step,
+    stepName: string,
+    expressionContext: ExpressionContext | undefined,
+    options: StepOptions,
+  ): Promise<InheritedPlacement | undefined> {
+    if (step.placementMode === "own") return undefined;
+    const placementLevels = [
+      workflow.placementFields,
+      job.placementFields,
+      step.placementFields,
+    ];
+    const inheritedFields = inheritPlacement(
+      options.inheritedPlacement,
+      placementLevels,
+    );
+    const fields = mergePlacementFields(
+      mergePlacementFields(
+        mergePlacementFields(inheritedFields, workflow.placementFields),
+        job.placementFields,
+      ),
+      step.placementFields,
+    );
+    const placement = resolvePlacement(fields);
+    if (!placement) return undefined;
+    const secretBag = new VaultSecretBag(options.sensitiveValues.sentinels);
+    const pass = expressionContext
+      ? await this.expressionEvaluator.passEvaluatorFor(
+        options.sensitiveValues,
+        { secretBag, location: stepName },
+      )
+      : undefined;
+    if (expressionContext && pass) {
+      await pass.prepare([placement], expressionContext);
+    }
+    const { placement: resolved } = await resolvePlacementExpressions(
+      placement,
+      placementProvenance(
+        workflow,
+        job,
+        step,
+        options.workflowProvenance ?? ProvenanceMap.authored(),
+        (options.stepProvenance ?? StepProvenanceOverlay.authored())
+          .forStep(step).raw,
+        inheritedFields,
+      ),
+      {
+        evaluate: pass
+          ? (expr, context) => pass.evaluate(expr, context)
+          : undefined,
+        expressionContext,
+        authoredExpressions: options.authoredExpressions,
+        expressionEvaluator: this.expressionEvaluator,
+        secretRedactor: options.secretRedactor,
+        secretBag,
+        location: stepName,
+      },
+    );
+    // the child's run record must stay readable, so a value that resolved to
+    // anything but a string fails the call step here
+    const parsed = InheritedPlacementSchema.safeParse({
+      fields: {
+        target: resolved.target,
+        labels: resolved.labels,
+        platform: resolved.platform,
+        queueTimeout: fields?.queueTimeout,
+      },
+      affinityKey: inheritedAffinityKey(
+        options.inheritedPlacement,
+        placementLevels,
+        job.affinity,
+      ) ??
+        resolveAffinityKey(workflow.affinity, job.affinity, run.id, job.name),
+      source: { workflowName: workflow.name, jobName: job.name, stepName },
+    });
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      const field = issue.path.slice(1).join(".");
+      throw new UserError(
+        `${stepName}.placement.${field} must resolve to a string to place a nested workflow: ${issue.message}`,
+      );
+    }
+    return parsed.data;
+  }
+
   private async *runWorkflowStep(
     workflow: Workflow,
     run: WorkflowRun,
@@ -7918,6 +8085,18 @@ export class WorkflowExecutionService {
         )
       ) as string,
     };
+
+    const inheritedPlacement = await inStepReport(() =>
+      this.callerPlacement(
+        workflow,
+        run,
+        job,
+        step,
+        stepName,
+        expressionContext,
+        options,
+      )
+    );
 
     const depth = options.workflowNestingDepth ?? 0;
     if (depth >= MAX_WORKFLOW_NESTING_DEPTH) {
@@ -8088,6 +8267,7 @@ export class WorkflowExecutionService {
       workflowNestingDepth: depth + 1,
       ancestorWorkflowIds: childAncestors,
       parentRunId: run.id,
+      inheritedPlacement,
       parentRun: {
         workflowId: workflow.id,
         workflowName: workflow.name,
