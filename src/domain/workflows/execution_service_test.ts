@@ -28018,6 +28018,225 @@ Deno.test("handover: a step withdrawn before a worker took it goes back to pendi
   });
 });
 
+class CancelAndHandoverExecutor extends CountingStepExecutor {
+  readonly handover = new AbortController();
+  readonly cancel = new AbortController();
+
+  constructor(
+    private readonly cancelAt: string,
+    private readonly handoverAt: string,
+  ) {
+    super();
+  }
+
+  override async execute(
+    step: Step,
+    ctx: StepExecutionContext,
+  ): Promise<unknown> {
+    const key = `${ctx.jobName}/${ctx.stepName}`;
+    const result = await super.execute(step, ctx);
+    if (key === this.handoverAt) this.handover.abort();
+    if (key === this.cancelAt && !this.cancel.signal.aborted) {
+      this.cancel.abort(new Error("cancelled by user"));
+      throw new DOMException("The operation was aborted.", "AbortError");
+    }
+    return result;
+  }
+}
+
+function cancelledCleanupWorkflow(name: string): Workflow {
+  return Workflow.create({
+    name,
+    jobs: [
+      Job.create({
+        name: "A",
+        steps: [
+          modelStep("work"),
+          modelStep("cleanup", onStep("work", TriggerCondition.always())),
+        ],
+      }),
+      Job.create({
+        name: "B",
+        dependsOn: [{ job: "A", condition: TriggerCondition.failed() }],
+        steps: [modelStep("mark")],
+      }),
+    ],
+  });
+}
+
+Deno.test("handover: a handover during a cancelled run's cleanup still starts its failed-gated cleanup job, and the run ends cancelled", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = cancelledCleanupWorkflow("handover-cancel-job-wf");
+    const executor = new CancelAndHandoverExecutor("A/work", "A/cleanup");
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    const { run, kinds } = await runToEnd(
+      service.run(workflow.name, {
+        instanceId: "old",
+        signal: executor.cancel.signal,
+        handover: handoverFor(executor.handover.signal),
+      }),
+    );
+
+    assertEquals(kinds.includes("parked"), false);
+    assertEquals(run.status, "cancelled");
+    assertEquals(run.isParked, false);
+    assertEquals(executor.count("A/cleanup"), 1);
+    assertEquals(executor.count("B/mark"), 1);
+    assertEquals(run.getJob("B")!.status, "succeeded");
+  });
+});
+
+Deno.test("handover: a handover before the user cancel still starts the cancelled run's failed-gated cleanup job", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = cancelledCleanupWorkflow("handover-then-cancel-wf");
+    const executor = new CancelAndHandoverExecutor("A/work", "A/work");
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    const { run, kinds } = await runToEnd(
+      service.run(workflow.name, {
+        instanceId: "old",
+        signal: executor.cancel.signal,
+        handover: handoverFor(executor.handover.signal),
+      }),
+    );
+
+    assertEquals(kinds.includes("parked"), false);
+    assertEquals(run.status, "cancelled");
+    assertEquals(executor.count("A/cleanup"), 1);
+    assertEquals(executor.count("B/mark"), 1);
+    assertEquals(run.getJob("B")!.status, "succeeded");
+  });
+});
+
+Deno.test("handover: a handover during a cancelled run's cleanup step still starts the cleanup step after it", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "handover-cancel-step-wf",
+      jobs: [
+        Job.create({
+          name: "A",
+          steps: [
+            modelStep("work"),
+            modelStep("c1", onStep("work", TriggerCondition.always())),
+            modelStep("c2", onStep("c1", TriggerCondition.always())),
+          ],
+        }),
+      ],
+    });
+    const executor = new CancelAndHandoverExecutor("A/work", "A/c1");
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    const { run, kinds } = await runToEnd(
+      service.run(workflow.name, {
+        instanceId: "old",
+        signal: executor.cancel.signal,
+        handover: handoverFor(executor.handover.signal),
+      }),
+    );
+
+    assertEquals(kinds.includes("parked"), false);
+    assertEquals(run.status, "cancelled");
+    assertEquals(executor.count("A/c2"), 1);
+    assertEquals(run.getJob("A")!.getStep("c2")!.status, "succeeded");
+  });
+});
+
+Deno.test("handover: a handover during a cancelled fan-out lane's cleanup step still starts the lane's cleanup step after it", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = withFanOutJob(
+      Workflow.create({
+        name: "handover-cancel-fan-step-wf",
+        jobs: [
+          Job.create({
+            name: "deploy",
+            concurrency: 1,
+            steps: [
+              modelStep("work"),
+              modelStep("c1", onStep("work", TriggerCondition.always())),
+              modelStep("c2", onStep("c1", TriggerCondition.always())),
+            ],
+          }),
+        ],
+      }),
+      "deploy",
+    );
+    const executor = new CancelAndHandoverExecutor(
+      "deploy/work[w-a]",
+      "deploy/c1[w-a]",
+    );
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const pool = [poolWorker("w-a"), poolWorker("w-b")];
+
+    const { run, kinds } = await withPoolReader(pool, () =>
+      runToEnd(
+        service.run(workflow.name, {
+          instanceId: "old",
+          signal: executor.cancel.signal,
+          handover: handoverFor(executor.handover.signal),
+        }),
+      ));
+
+    assertEquals(kinds.includes("parked"), false);
+    assertEquals(run.status, "cancelled");
+    assertEquals(executor.count("deploy/c1[w-a]"), 1);
+    assertEquals(executor.count("deploy/c2[w-a]"), 1);
+  });
+});
+
+Deno.test("handover: a handover during a cancelled run's cleanup still runs every lane of a failed-gated fan-out cleanup job", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = withFanOutJob(
+      cancelledCleanupWorkflow("handover-cancel-fan-job-wf"),
+      "B",
+    );
+    const executor = new CancelAndHandoverExecutor("A/work", "A/cleanup");
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const pool = [poolWorker("w-a"), poolWorker("w-b"), poolWorker("w-c")];
+
+    const { run, kinds } = await withPoolReader(pool, () =>
+      runToEnd(
+        service.run(workflow.name, {
+          instanceId: "old",
+          signal: executor.cancel.signal,
+          handover: handoverFor(executor.handover.signal),
+        }),
+      ));
+
+    assertEquals(kinds.includes("parked"), false);
+    assertEquals(run.status, "cancelled");
+    for (const worker of ["w-a", "w-b", "w-c"]) {
+      assertEquals(executor.count(`B/mark[${worker}]`), 1, worker);
+    }
+    assertEquals(run.getJob("B")!.status, "succeeded");
+  });
+});
+
 Deno.test("run(): a model-method step that wrote data publishes ModelDataWritten once its writes are flushed, and a failed or empty one does not", async () => {
   const { z } = await import("zod");
   const { modelRegistry } = await import("../models/model.ts");

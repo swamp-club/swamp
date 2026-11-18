@@ -1883,7 +1883,9 @@ aborted, webhook, cron and API runs at once, and all share 5 s more
 (`SHUTDOWN_ABORT_GRACE_MS`): the webhook and scheduler services' `stop()` wait
 no longer than that, and a run still going after it is reported anyway and
 keeps the v3 writer markers. A run a user cancelled before the shutdown, from
-any of the three sources, is still running its cleanup: while one is in flight
+any of the three sources, is still running its cleanup, which the handover does
+not hold: its cleanup steps and jobs start as on a cancel with no shutdown, since
+a cancelled run is never parked. While one is in flight
 its source waits longer (`stopGraceFor`): up to the cleanup grace (30 s), but
 never more than what is left of the shutdown deadline once the drain ends, less
 the 5 s abort grace and the 5 s interrupted-run push (`cleanupGraceWithin`), so
