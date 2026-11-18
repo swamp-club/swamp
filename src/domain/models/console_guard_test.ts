@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import {
   setConsoleGuardStderrWriter,
   unguardedConsole,
@@ -655,5 +655,50 @@ Deno.test("withConsoleGuard: in JSON mode console.table, trace and failing asser
   } finally {
     setConsoleGuardStderrWriter(undefined);
     runFileSink.unregisterRedactor(handle);
+  }
+});
+
+Deno.test("withConsoleGuard: a stderr with no reader drops the line and the method still returns", async () => {
+  setConsoleGuardStderrWriter(() => {
+    throw new Deno.errors.BrokenPipe("Broken pipe (os error 32)");
+  });
+  const logs: string[] = [];
+
+  try {
+    const result = await withConsoleGuard(
+      () => {
+        console.log("after the host went away");
+        return "done";
+      },
+      logs,
+      { jsonMode: true },
+    );
+
+    assertEquals(result, "done");
+    assertEquals(logs, ["after the host went away"]);
+  } finally {
+    setConsoleGuardStderrWriter(undefined);
+  }
+});
+
+Deno.test("withConsoleGuard: a stderr write failing for another reason still throws", async () => {
+  setConsoleGuardStderrWriter(() => {
+    throw new Deno.errors.PermissionDenied("denied");
+  });
+
+  try {
+    await assertRejects(
+      () =>
+        withConsoleGuard(
+          () => {
+            console.log("line");
+          },
+          [],
+          { jsonMode: true },
+        ),
+      Deno.errors.PermissionDenied,
+    );
+  } finally {
+    setConsoleGuardStderrWriter(undefined);
   }
 });

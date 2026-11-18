@@ -506,6 +506,7 @@ import {
 import { ShutdownDeadline } from "../../serve/shutdown_deadline.ts";
 import { ShutdownStages } from "../../serve/shutdown_stages.ts";
 import { stdinShutdownTrigger } from "../../serve/stdin_close_trigger.ts";
+import { ShutdownRun } from "../../serve/shutdown_run.ts";
 import { formatListeningLine } from "../../serve/listening_line.ts";
 import { ServeRunWriteFence } from "../../serve/run_write_fence.ts";
 import {
@@ -8798,9 +8799,13 @@ export const serveCommand = new Command()
       }
     };
     // every trigger shares one run, which the action waits for before closing
-    // the catalog the shutdown stages still use
-    let shutdownRun: Promise<void> | undefined;
-    const startShutdown = () => (shutdownRun ??= shutdown());
+    // the catalog the shutdown stages still use; a run that fails partway still
+    // closes the listener, so serve exits instead of waiting on it for good
+    const shutdownRun = new ShutdownRun(shutdown, () => {
+      listenerAc.abort();
+      if (!Deno.exitCode) Deno.exitCode = 1;
+    });
+    const startShutdown = () => shutdownRun.start();
     registerShutdownHandler({
       handler: () => {
         startShutdown().catch((e) =>
@@ -9910,7 +9915,7 @@ export const serveCommand = new Command()
 
     await server?.finished;
     // shutdown logs its own failure
-    await shutdownRun?.catch(() => {});
+    await shutdownRun.settled();
 
     repoContext.catalogStore.close();
   })
