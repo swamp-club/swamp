@@ -458,13 +458,25 @@ Deno.test({
     "resolveDaemonCacheDir: a system default the user cannot create says to use sudo or --user",
   ignore: Deno.build.os === "windows" || Deno.uid() === 0,
   fn: async () => {
-    const err = await assertRejects(
-      () => resolveDaemonCacheDir(undefined, "daemon"),
-      UserError,
-    );
-    assertStringIncludes(err.message, "Permission denied creating");
-    assertStringIncludes(err.message, "Run with sudo");
-    assertStringIncludes(err.message, "--user");
+    const parent = await Deno.makeTempDir();
+    try {
+      await Deno.chmod(parent, 0o500);
+      const err = await assertRejects(
+        () =>
+          resolveDaemonCacheDir(
+            undefined,
+            "daemon",
+            join(parent, "swamp-worker"),
+          ),
+        UserError,
+      );
+      assertStringIncludes(err.message, "Permission denied creating");
+      assertStringIncludes(err.message, "Run with sudo");
+      assertStringIncludes(err.message, "--user");
+    } finally {
+      await Deno.chmod(parent, 0o700);
+      await Deno.remove(parent, { recursive: true });
+    }
   },
 });
 

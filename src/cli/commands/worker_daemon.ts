@@ -81,9 +81,10 @@ export function defaultDaemonCacheDir(
 export async function resolveDaemonCacheDir(
   rawPath: string | undefined,
   mode: LaunchdMode,
+  defaultDir: string = defaultDaemonCacheDir(mode),
 ): Promise<string> {
   if (rawPath) return await validateCacheDir(rawPath);
-  const dir = defaultDaemonCacheDir(mode);
+  const dir = defaultDir;
   try {
     await Deno.mkdir(dir, { recursive: true, mode: 0o700 });
   } catch (err: unknown) {
