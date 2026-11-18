@@ -20,6 +20,7 @@
 import { dirname, join } from "@std/path";
 import type { WorkerDaemonConfig } from "../../domain/worker/worker_daemon_config.ts";
 import type {
+  WorkerDaemonRestartOutcome,
   WorkerDaemonScheduler,
   WorkerDaemonStatus,
 } from "../../domain/worker/worker_daemon_scheduler.ts";
@@ -27,6 +28,7 @@ import type { LaunchdMode } from "../update/launchd_scheduler.ts";
 import { escapeXml } from "../update/launchd_scheduler.ts";
 import { atomicWriteTextFile } from "../persistence/atomic_write.ts";
 import { homeDirectory } from "../persistence/paths.ts";
+import { launchdKickstartArgs } from "./daemon_restart_commands.ts";
 
 const LABEL = "club.swamp.worker";
 
@@ -112,7 +114,9 @@ ${args.join("\n")}
     <false/>
   </dict>
   <key>ThrottleInterval</key>
-  <integer>10</integer>${workingDirBlock}${userNameEntry}${envBlock}
+  <integer>10</integer>
+  <key>ExitTimeOut</key>
+  <integer>300</integer>${workingDirBlock}${userNameEntry}${envBlock}
   <key>StandardOutPath</key>
   <string>${stdoutLog}</string>
   <key>StandardErrorPath</key>
@@ -212,6 +216,27 @@ export class LaunchdWorkerScheduler implements WorkerDaemonScheduler {
       pid,
       logPath: workerLogDir(this.mode),
     };
+  }
+
+  async restart(): Promise<WorkerDaemonRestartOutcome> {
+    const status = await this.status();
+    if (!status.enabled) return "not_installed";
+    // A loaded job with no pid exited on purpose; kickstart would start it.
+    if (status.pid === undefined) return "not_running";
+
+    const domain = await this.launchctlDomain();
+    const cmd = new Deno.Command("launchctl", {
+      args: launchdKickstartArgs(domain, LABEL),
+      stdout: "null",
+      stderr: "null",
+    });
+    const result = await cmd.output();
+    if (!result.success) {
+      throw new Error(
+        `launchctl kickstart ${LABEL} failed with exit code ${result.code}`,
+      );
+    }
+    return "restarted";
   }
 
   private async launchctlDomain(): Promise<string> {

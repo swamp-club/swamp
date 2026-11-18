@@ -25,6 +25,8 @@ export interface AutoupdateLogEntry {
   versionAfter: string | null;
   outcome: AutoupdateOutcome;
   error?: string;
+  daemonsRestarted?: string[];
+  daemonRestartError?: string;
 }
 
 export interface AutoupdateLogRepository {

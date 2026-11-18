@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import type { UpdateChecker } from "../../domain/update/update_service.ts";
 import { UpdateService } from "../../domain/update/update_service.ts";
 import { Platform } from "../../domain/update/platform.ts";
@@ -29,10 +29,16 @@ import type {
   UpdateCheckEvent,
 } from "../../libswamp/update/check.ts";
 import {
+  daemonRestartTargets,
   globalSkillSyncLine,
   globalSkillSyncNote,
+  setupAutoCadence,
   updateWithin,
 } from "./update.ts";
+import { UserError } from "../../domain/errors.ts";
+import type { LaunchdMode } from "../../infrastructure/update/launchd_scheduler.ts";
+import type { WorkerDaemonScheduler } from "../../domain/worker/worker_daemon_scheduler.ts";
+import type { ServiceScheduler } from "../../domain/serve/service_scheduler.ts";
 import { createUpdateCheckRenderer } from "../../presentation/renderers/update_check.ts";
 
 await initializeLogging({});
@@ -284,4 +290,59 @@ Deno.test("globalSkillSyncNote: is null without SWAMP_HOME or without a synced d
   assertEquals(globalSkillSyncNote(2, false), null);
   assertEquals(globalSkillSyncNote(0, true), null);
   assertEquals(globalSkillSyncNote(0, false), null);
+});
+
+Deno.test("setupAutoCadence: no --cadence leaves interactive setup to prompt", () => {
+  assertEquals(setupAutoCadence(true, undefined), undefined);
+  assertEquals(setupAutoCadence(undefined, undefined), undefined);
+});
+
+Deno.test("setupAutoCadence: --setup-auto with a valid --cadence skips the prompt", () => {
+  assertEquals(setupAutoCadence(true, "hourly"), "hourly");
+  assertEquals(setupAutoCadence(true, "weekly"), "weekly");
+});
+
+Deno.test("setupAutoCadence: --cadence without interactive setup is refused", () => {
+  for (const setupAuto of [undefined, "status", "disable"]) {
+    assertThrows(
+      () => setupAutoCadence(setupAuto, "daily"),
+      UserError,
+      "only used with `swamp update --setup-auto`",
+    );
+  }
+});
+
+Deno.test("setupAutoCadence: an unknown cadence is refused", () => {
+  assertThrows(
+    () => setupAutoCadence(true, "monthly"),
+    UserError,
+    "Invalid cadence: monthly",
+  );
+});
+
+Deno.test("daemonRestartTargets: asks for the worker and serve schedulers of the updater's mode", async () => {
+  const asked: string[] = [];
+  const worker = {} as WorkerDaemonScheduler;
+  const serve = {} as ServiceScheduler;
+  for (const mode of ["agent", "daemon"] as LaunchdMode[]) {
+    const targets = daemonRestartTargets(mode, {
+      worker: (options) => {
+        asked.push(`worker:${options?.mode}`);
+        return Promise.resolve(worker);
+      },
+      serve: (options) => {
+        asked.push(`serve:${options?.mode}`);
+        return Promise.resolve(serve);
+      },
+    });
+    assertEquals(targets.map((t) => t.name), ["worker", "serve"]);
+    assertEquals(await targets[0].scheduler(), worker);
+    assertEquals(await targets[1].scheduler(), serve);
+  }
+  assertEquals(asked, [
+    "worker:agent",
+    "serve:agent",
+    "worker:daemon",
+    "serve:daemon",
+  ]);
 });

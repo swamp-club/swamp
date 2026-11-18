@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { isAbsolute, resolve } from "@std/path";
+import { isAbsolute, join, resolve } from "@std/path";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { groupCommandAction } from "../group_action.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -31,7 +31,10 @@ import {
   renderWorkerDaemonStatus,
 } from "../../presentation/output/worker_daemon_output.ts";
 import { toServiceMode } from "../../presentation/output/serve_daemon_output.ts";
-import { getSwampConfigDir } from "../../infrastructure/persistence/paths.ts";
+import {
+  getSwampConfigDir,
+  getSwampDataDir,
+} from "../../infrastructure/persistence/paths.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { parseTimerDuration } from "../duration_parser.ts";
 import { parseExtraHeaders } from "../../domain/auth/extra_headers.ts";
@@ -57,6 +60,19 @@ export function collectWorkerExtraArgs(options: AnyOptions): string[] {
     args.push("--no-reconnect");
   }
   return args;
+}
+
+/**
+ * The machine id lives in the cache dir, so a daemon on a fresh temp dir would
+ * re-enroll as a new machine on every restart.
+ */
+export async function resolveDaemonCacheDir(
+  rawPath: string | undefined,
+): Promise<string> {
+  if (rawPath) return await validateCacheDir(rawPath);
+  const dir = join(getSwampDataDir(), "worker-daemon-cache");
+  await Deno.mkdir(dir, { recursive: true, mode: 0o700 });
+  return dir;
 }
 
 export async function validateCacheDir(
@@ -276,7 +292,7 @@ export const workerDaemonEnableCommand = new Command()
   )
   .option(
     "--cache-dir <dir:string>",
-    "Bundle/asset cache directory; also stores the machine id",
+    "Bundle/asset cache directory; also stores the machine id (default: worker-daemon-cache in the swamp data dir)",
   )
   .option(
     "--data-plane-url <url:string>",
@@ -377,10 +393,9 @@ export const workerDaemonEnableCommand = new Command()
       await readTokenFile(serverTokenFile, "--server-token-file");
     }
 
-    let cacheDir: string | undefined;
-    if (options.cacheDir) {
-      cacheDir = await validateCacheDir(options.cacheDir as string);
-    }
+    const cacheDir = await resolveDaemonCacheDir(
+      options.cacheDir as string | undefined,
+    );
 
     let caCert: string | undefined;
     if (options.caCert) {

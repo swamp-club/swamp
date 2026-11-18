@@ -27,8 +27,15 @@ export interface WorkerDaemonStatus {
   readonly unsupportedReason?: string;
 }
 
+export type WorkerDaemonRestartOutcome =
+  | "restarted"
+  | "not_running"
+  | "not_installed";
+
 export interface WorkerDaemonScheduler {
   enable(config: WorkerDaemonConfig): Promise<void>;
   disable(): Promise<void>;
   status(): Promise<WorkerDaemonStatus>;
+  /** Restarts only a running daemon; a stopped one stays stopped. */
+  restart(): Promise<WorkerDaemonRestartOutcome>;
 }

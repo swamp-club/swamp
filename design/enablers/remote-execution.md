@@ -735,7 +735,9 @@ enrollment of the same machine). The token binds to the `machineId`, kept in a
 `machine-id` file in the worker's cache directory. With a stable `--cache-dir`,
 a worker keeps its original token across restarts and reboots while the token
 lives. The default fresh temp cache directory gives a new machine identity per
-process. When the lifetime ends, the token is dead for everyone: the
+process. `worker daemon enable` without `--cache-dir` therefore points the
+daemon at `worker-daemon-cache` in the swamp data dir, so a restart, a reboot
+or an autoupdate restart returns as the same machine. When the lifetime ends, the token is dead for everyone: the
 orchestrator disconnects the worker and rejects re-enrollment. A replacement
 machine needs a new token; a worker meant to outlive its token is rotated
 before it lapses. Trust is bound

@@ -63,6 +63,14 @@ Deno.test("buildWorkerPlist: includes ThrottleInterval", () => {
   assertStringIncludes(plist, "<integer>10</integer>");
 });
 
+Deno.test("buildWorkerPlist: gives a draining worker the same 300 s stop timeout as systemd", () => {
+  const plist = buildWorkerPlist(baseConfig);
+  assertStringIncludes(
+    plist,
+    "<key>ExitTimeOut</key>\n  <integer>300</integer>",
+  );
+});
+
 Deno.test("buildWorkerPlist: includes environment variables when provided", () => {
   const config: WorkerDaemonConfig = {
     ...baseConfig,

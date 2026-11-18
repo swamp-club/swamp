@@ -20,6 +20,7 @@
 import { dirname, join } from "@std/path";
 import type { ServiceConfig } from "../../domain/serve/service_config.ts";
 import type {
+  ServiceRestartOutcome,
   ServiceScheduler,
   ServiceStatus,
 } from "../../domain/serve/service_scheduler.ts";
@@ -27,6 +28,7 @@ import type { LaunchdMode } from "../update/launchd_scheduler.ts";
 import { escapeXml } from "../update/launchd_scheduler.ts";
 import { atomicWriteTextFile } from "../persistence/atomic_write.ts";
 import { homeDirectory } from "../persistence/paths.ts";
+import { launchdKickstartArgs } from "./daemon_restart_commands.ts";
 
 const LABEL = "club.swamp.serve";
 
@@ -219,6 +221,27 @@ export class LaunchdServiceScheduler implements ServiceScheduler {
       pid,
       logPath: serveLogDir(this.mode),
     };
+  }
+
+  async restart(): Promise<ServiceRestartOutcome> {
+    const status = await this.status();
+    if (!status.enabled) return "not_installed";
+    // A loaded job with no pid exited on purpose; kickstart would start it.
+    if (status.pid === undefined) return "not_running";
+
+    const domain = await this.launchctlDomain();
+    const cmd = new Deno.Command("launchctl", {
+      args: launchdKickstartArgs(domain, LABEL),
+      stdout: "null",
+      stderr: "null",
+    });
+    const result = await cmd.output();
+    if (!result.success) {
+      throw new Error(
+        `launchctl kickstart ${LABEL} failed with exit code ${result.code}`,
+      );
+    }
+    return "restarted";
   }
 
   private async launchctlDomain(): Promise<string> {

@@ -28,6 +28,7 @@ import {
   captureExtraHeaders,
   collectWorkerEnv,
   collectWorkerExtraArgs,
+  resolveDaemonCacheDir,
   validateCaCertFile,
   validateCacheDir,
   validateWorkerDaemonOptions,
@@ -37,6 +38,10 @@ import {
 import { workerConnectCommand } from "./worker_connect.ts";
 import { getSwampConfigDir } from "../../infrastructure/persistence/paths.ts";
 import { UserError } from "../../domain/errors.ts";
+import {
+  assertPathEquals,
+  withMockedEnv,
+} from "../../infrastructure/persistence/path_test_helpers.ts";
 
 Deno.test("collectWorkerExtraArgs: includes data-plane-url when provided", () => {
   const args = collectWorkerExtraArgs({
@@ -401,4 +406,30 @@ Deno.test("worker daemon enable: covers every environment variable worker connec
     ...CONNECT_ENV_WITHOUT_FLAG,
   ];
   assertEquals(read.filter((name) => !covered.includes(name)), []);
+});
+
+Deno.test("resolveDaemonCacheDir: without --cache-dir, creates a stable dir in the swamp data dir", async () => {
+  const home = await Deno.makeTempDir();
+  try {
+    await withMockedEnv({ SWAMP_HOME: home }, async () => {
+      const first = await resolveDaemonCacheDir(undefined);
+      assertPathEquals(first, join(home, "worker-daemon-cache"));
+      assertEquals((await Deno.stat(first)).isDirectory, true);
+      assertEquals(await resolveDaemonCacheDir(undefined), first);
+    });
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(home, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(home, { recursive: true });
+    }
+  }
+});
+
+Deno.test("resolveDaemonCacheDir: an explicit --cache-dir is validated, not created", async () => {
+  const err = await assertRejects(
+    () => resolveDaemonCacheDir("/tmp/swamp-nonexistent-dir-abc123"),
+    UserError,
+  );
+  assertStringIncludes(err.message, "--cache-dir does not exist");
 });

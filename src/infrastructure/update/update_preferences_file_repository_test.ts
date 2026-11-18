@@ -179,3 +179,22 @@ Deno.test("UpdatePreferencesFileRepository: creates parent directories", async (
     assertEquals(prefs.enabled, true);
   });
 });
+
+Deno.test("UpdatePreferencesFileRepository: round-trips restartDaemons and reads it as unset otherwise", async () => {
+  await withTempDir(async (dir) => {
+    const filePath = join(dir, "update.yaml");
+    const repo = new UpdatePreferencesFileRepository(filePath);
+
+    await repo.write({ enabled: true, cadence: "daily", restartDaemons: true });
+    assertEquals((await repo.read()).restartDaemons, true);
+
+    await Deno.writeTextFile(
+      filePath,
+      "enabled: true\nrestartDaemons: yes-please\n",
+    );
+    assertEquals((await repo.read()).restartDaemons, undefined);
+
+    await Deno.writeTextFile(filePath, "enabled: true\n");
+    assertEquals((await repo.read()).restartDaemons, undefined);
+  });
+});
