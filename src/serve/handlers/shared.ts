@@ -57,7 +57,10 @@ import {
   V3_WRITER_BUSY_CODE,
   WRITER_FENCED_CODE,
 } from "../../domain/datastore_v3/writer_lease.ts";
-import { SERVE_NOT_LEADER_CODE } from "../../domain/datastore_v3/serve_leader.ts";
+import {
+  SERVE_NOT_LEADER_CODE,
+  ServeNotLeaderError,
+} from "../../domain/datastore_v3/serve_leader.ts";
 import {
   COMMIT_PARTLY_COMMITTED_CODE,
   COMMIT_UNREACHABLE_CODE,
@@ -2559,11 +2562,13 @@ export async function confirmRequest(
     held.delete(requestId);
   }
   if (failure !== undefined && !errored()) {
-    const { code, message } = replicationErrorForClient(
+    // the follower gate refused before the handler, so this came after it started
+    const { code, message, details } = replicationErrorForClient(
       failure.error,
       "internal_error",
+      { afterStart: true },
     );
-    sendError(socket, requestId, code, message);
+    sendError(socket, requestId, code, message, details);
     // After the error went out: from here on the request's replies drop.
     markAnsweredByError(socket, requestId);
   } else {
@@ -2582,13 +2587,13 @@ export async function confirmRequest(
 export async function confirmRunReplicated(
   ctx: Pick<ConnectionContext, "confirmReplicated">,
   errorCode: string,
-): Promise<{ readonly code: string; readonly message: string } | undefined> {
+): Promise<ClientReplicationError | undefined> {
   if (ctx.confirmReplicated === undefined) return undefined;
   try {
     await ctx.confirmReplicated();
     return undefined;
   } catch (error) {
-    return replicationErrorForClient(error, errorCode);
+    return replicationErrorForClient(error, errorCode, { afterStart: true });
   }
 }
 
@@ -2628,10 +2633,29 @@ export function withCommittedUnknownSteps(
   );
 }
 
+export interface ClientReplicationError {
+  readonly code: string;
+  readonly message: string;
+  readonly details?: { readonly inFlight: true };
+}
+
+/**
+ * afterStart: the request's handler had started, so a not-leader refusal may
+ * follow work already done and is sent as in flight, never retried blind
+ */
 export function replicationErrorForClient(
   error: unknown,
   fallbackCode: string,
-): { readonly code: string; readonly message: string } {
+  options: { readonly afterStart?: boolean } = {},
+): ClientReplicationError {
+  if (options.afterStart === true && error instanceof ServeNotLeaderError) {
+    const lost = ServeNotLeaderError.afterStart(error);
+    return {
+      code: lost.code,
+      message: sanitizeErrorForClient(lost),
+      details: { inFlight: true },
+    };
+  }
   const conflict = configEditConflictOf(error);
   if (conflict !== undefined) {
     return {

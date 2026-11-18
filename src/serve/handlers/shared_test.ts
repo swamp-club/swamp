@@ -37,6 +37,7 @@ import { V3ReplicationError } from "../../domain/datastore_v3/litestream_replica
 import { PartitionsRefusedError } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { partitionOf } from "../../domain/datastore_v3/partition_key.ts";
 import { WriterFencedError } from "../../domain/datastore_v3/writer_lease.ts";
+import { ServeNotLeaderError } from "../../domain/datastore_v3/serve_leader.ts";
 import { gunzipSync } from "node:zlib";
 import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { ModelType } from "../../domain/models/model_type.ts";
@@ -3040,4 +3041,79 @@ Deno.test("decideSubjectAccess: refuses a delegation whose person is no longer a
     await decideSubjectAccess(ctx, subject, "approve", deployWorkflow),
     false,
   );
+});
+
+type ErrorFrame = {
+  type: string;
+  error: { code: string; message: string; details?: { inFlight?: boolean } };
+};
+
+Deno.test("confirmRequest: a not-leader refusal from the confirmation after the handler ran is sent in flight", async () => {
+  const { socket, sent } = messageSocket();
+  await confirmRequest(
+    {
+      confirmReplicated: () =>
+        Promise.reject(new ServeNotLeaderError(undefined)),
+    },
+    socket,
+    "r1",
+    () => {
+      send(socket, { type: "done", id: "r1" });
+      return Promise.resolve();
+    },
+  );
+  const [reply] = sent as unknown as ErrorFrame[];
+  assertEquals(reply.type, "error");
+  assertEquals(reply.error.code, "serve_not_leader");
+  assertEquals(reply.error.details?.inFlight, true);
+  assertStringIncludes(reply.error.message, "lost the lead while handling");
+});
+
+Deno.test("confirmRequest: a not-leader refusal a started handler throws is sent in flight", async () => {
+  const { socket, sent } = messageSocket();
+  await assertRejects(() =>
+    confirmRequest(
+      { confirmReplicated: () => Promise.resolve() },
+      socket,
+      "r1",
+      () => Promise.reject(new ServeNotLeaderError(undefined)),
+    )
+  );
+  const [reply] = sent as unknown as ErrorFrame[];
+  assertEquals(reply.error.code, "serve_not_leader");
+  assertEquals(reply.error.details?.inFlight, true);
+});
+
+Deno.test("replicationErrorForClient: only afterStart marks a not-leader refusal in flight, and other errors are untouched", () => {
+  const notLeader = new ServeNotLeaderError(undefined);
+  assertEquals(
+    replicationErrorForClient(notLeader, "internal_error").details,
+    undefined,
+  );
+  const marked = replicationErrorForClient(notLeader, "internal_error", {
+    afterStart: true,
+  });
+  assertEquals([marked.code, marked.details], [
+    "serve_not_leader",
+    { inFlight: true },
+  ]);
+  const replication = replicationErrorForClient(
+    new V3ReplicationError("the sidecar timed out"),
+    "internal_error",
+    { afterStart: true },
+  );
+  assertEquals(replication.code, "datastore_v3_replication_unconfirmed");
+  assertEquals(replication.details, undefined);
+});
+
+Deno.test("confirmRunReplicated: a not-leader refusal at a run's terminal carries inFlight", async () => {
+  const unconfirmed = await confirmRunReplicated(
+    {
+      confirmReplicated: () =>
+        Promise.reject(new ServeNotLeaderError(undefined)),
+    },
+    "workflow_execution_failed",
+  );
+  assertEquals(unconfirmed?.code, "serve_not_leader");
+  assertEquals(unconfirmed?.details, { inFlight: true });
 });

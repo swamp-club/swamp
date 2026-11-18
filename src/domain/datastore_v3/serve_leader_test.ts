@@ -23,6 +23,7 @@ import {
   advertiseAddressInCleartext,
   normalizeAdvertiseAddress,
   parseServeLeader,
+  retryableServeRefusal,
   serializeServeLeader,
   SERVE_FOLLOWER_BEHIND_CODE,
   SERVE_NOT_LEADER_CODE,
@@ -166,4 +167,25 @@ Deno.test("advertiseAddressInCleartext: an IPv4-mapped loopback is loopback (swa
     advertiseAddressInCleartext("http://[::ffff:128.0.0.1]:9090"),
     true,
   );
+});
+
+Deno.test("ServeNotLeaderError.afterStart: a refusal raised after the handler started is in flight, and says the lead was lost here", () => {
+  const raised = ServeNotLeaderError.afterStart(
+    new ServeNotLeaderError(leader),
+  );
+  assertEquals(raised.inFlight, true);
+  assertEquals(raised.leader, leader);
+  assertEquals(raised.code, "serve_not_leader");
+  assertStringIncludes(
+    raised.message,
+    "lost the lead while handling the request",
+  );
+  assertEquals(raised.message.includes("forwarded"), false);
+  assertEquals(raised.message.includes("Nothing was changed"), false);
+  assertEquals(retryableServeRefusal(raised), undefined);
+});
+
+Deno.test("ServeNotLeaderError.afterStart: a follower's in-flight forward keeps its own wording", () => {
+  const forwarded = new ServeNotLeaderError(leader, false, true);
+  assertEquals(ServeNotLeaderError.afterStart(forwarded), forwarded);
 });

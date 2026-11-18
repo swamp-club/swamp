@@ -1771,3 +1771,25 @@ function renderedError(cause: Error): Error {
   error.cause = cause;
   return error;
 }
+
+Deno.test("exitCodeForError: a not-leader reply marked inFlight exits 1, since the forwarded request may have run", () => {
+  const reply = (details: unknown) =>
+    Object.assign(new UserError("refused", "serve_not_leader"), { details });
+  for (const landed of [false, true, undefined]) {
+    const context = { commandLanded: landed, commandMayHaveLanded: false };
+    assertEquals(exitCodeForError(reply({ inFlight: true }), context), 1);
+    // refused before it was taken: still safe to retry
+    assertEquals(
+      exitCodeForError(reply({ leader: undefined }), context),
+      landed === true ? 1 : 75,
+    );
+    assertEquals(
+      exitCodeForError(reply(undefined), context),
+      landed === true ? 1 : 75,
+    );
+    assertEquals(
+      exitCodeForError(reply({ inFlight: "true" }), context),
+      landed === true ? 1 : 75,
+    );
+  }
+});

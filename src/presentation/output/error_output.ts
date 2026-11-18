@@ -41,6 +41,7 @@ import { V3_REPLICATION_UNCONFIRMED_CODE } from "../../domain/datastore_v3/lites
 import {
   SERVE_FOLLOWER_BEHIND_CODE,
   SERVE_NOT_LEADER_CODE,
+  ServeNotLeaderError,
 } from "../../domain/datastore_v3/serve_leader.ts";
 import { V3_COPY_SETUP_RACED_CODE } from "../../domain/datastore_v3/copy_setup_raced_error.ts";
 import {
@@ -324,6 +325,14 @@ export function exitCodeForError(
   // refused, not sent to the storage
   if (code === V3_SERVE_UNREACHABLE_CODE) {
     return context.commandLanded === true ? 1 : 75;
+  }
+  // a reply saying the leader was lost after the request was sent: it may
+  // have run, so a retry is not safe; serve's own error goes through may-land
+  if (
+    code === SERVE_NOT_LEADER_CODE && !(error instanceof ServeNotLeaderError) &&
+    error instanceof Error && carriesInFlight(error)
+  ) {
+    return 1;
   }
   // a serve node that does not lead refused the write
   if (code === SERVE_NOT_LEADER_CODE) {
