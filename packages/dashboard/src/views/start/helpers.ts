@@ -1279,10 +1279,9 @@ export function pastSessionsHarnesses(
 
 /** Whether to offer "Start from your past sessions" at all. */
 export function showPastSessions(
-  status: Pick<StartStatus, "signals" | "swampify">,
+  status: Pick<StartStatus, "signals">,
 ): boolean {
-  return status.swampify === true &&
-    pastSessionsHarnesses(status.signals).length > 0;
+  return pastSessionsHarnesses(status.signals).length > 0;
 }
 
 /**

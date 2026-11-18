@@ -51,6 +51,7 @@ import {
   OPTION_IDS,
   thinCandidateSet,
 } from "./swampify_fixtures.ts";
+import { PreviewChip } from "../../components/PreviewChip.tsx";
 import { SwampifyPage } from "./SwampifyPage.tsx";
 import { type LaunchState, OptionReview } from "./SwampifyReview.tsx";
 import { builtOptions, BuiltPane } from "./SwampifyBuilt.tsx";
@@ -197,6 +198,17 @@ const handOff: SwampifyHandOff = () => Promise.resolve({ prompt: PROMPT });
 function read(reading: SwampifyComparisonReading): ComparisonRecord {
   return { state: "read", reading };
 }
+
+Deno.test("SwampifyPage: the heading carries the shared Preview chip", () => {
+  const html = render({
+    ...state({ setRow: loadable(undefined) }),
+    set: loadable(null),
+  });
+  assertStringIncludes(
+    html,
+    `Swampify${renderToStaticMarkup(<PreviewChip />)}</h1>`,
+  );
+});
 
 Deno.test("SwampifyPage: with no candidate set listed it says how to get one", () => {
   const html = render({
