@@ -39,6 +39,7 @@ import {
   causeMessage,
   describeRequestTarget,
   fetchWithTransientRetry,
+  formatElapsed,
   REGISTRY_ATTEMPT_TIMEOUT_MS,
   retriedSuffix,
   type RetryOutcome,
@@ -1601,14 +1602,22 @@ export class SwampClubClient {
       switch (error.kind) {
         case "aborted":
           throw error.cause;
-        case "timeout":
-        case "deadline": {
+        case "timeout": {
           const seconds = Math.round(REGISTRY_ATTEMPT_TIMEOUT_MS / 1000);
           throw new UserError(
-            `Request to ${url} timed out after ${seconds}s${after}.`,
+            after
+              ? `Request to ${url} timed out (${seconds}s per attempt)${after}.`
+              : `Request to ${url} timed out after ${seconds}s.`,
             "timeout",
           );
         }
+        case "deadline":
+          throw new UserError(
+            `Request to ${url} timed out after ${
+              formatElapsed(error.outcome.elapsedMs)
+            }.`,
+            "timeout",
+          );
         case "connection":
           throw new UserError(
             `Could not connect to ${this.serverUrl}${after}: ${

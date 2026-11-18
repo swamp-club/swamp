@@ -867,7 +867,9 @@ Deno.test("fetchIssue: commentCount is 0 when no comments array in response", as
 });
 
 Deno.test("fetch: connection-refused error has no timeout code", async () => {
-  const client = new SwampClubClient("http://localhost:1");
+  const client = new SwampClubClient("http://localhost:1", {}, {
+    sleep: noSleep,
+  });
   const err = await assertRejects(
     () => client.whoami("key"),
     UserError,
@@ -1952,9 +1954,28 @@ Deno.test("SwampClubClient - whoami timing out on every attempt says so, with th
   const error = await assertRejects(
     () => client.whoami("key"),
     UserError,
-    "Request to http://club.test/api/whoami timed out after 15s after",
+    "Request to http://club.test/api/whoami timed out (15s per attempt) after 6 attempts over",
   );
   assertEquals((error as UserError).code, "timeout");
+});
+
+Deno.test("SwampClubClient - whoami past the caller's deadline reports the time it took, not the attempt timeout", async () => {
+  const deadline = new AbortController();
+  const { fetch } = scriptedFetch([503]);
+  const client = new SwampClubClient("http://club.test", {}, {
+    sleep: () => {
+      deadline.abort(new DOMException("deadline", "TimeoutError"));
+      return Promise.reject(deadline.signal.reason);
+    },
+    fetch,
+  });
+  const error = await assertRejects(
+    () => client.whoami("key", deadline.signal),
+    UserError,
+    "Request to http://club.test/api/whoami timed out after ",
+  );
+  assertEquals((error as UserError).code, "timeout");
+  assertEquals(error.message.includes("15s"), false);
 });
 
 Deno.test("SwampClubClient - whoami stops retrying when the caller aborts", async () => {
