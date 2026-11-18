@@ -2310,7 +2310,8 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   `{ status: "shutdown_stage_timed_out", stage, waitedMs }`. A step that
   fails is logged and the steps after it still run. An error that escapes
   the sequence anyway keeps the v3 writer markers, emits
-  `{ status: "shutdown_failed", error }`, and exits 1 at once, leaving what
+  `{ status: "shutdown_failed", error }`, and exits at once (1, or a code
+  already set, such as 75 after a lost lead), leaving what
   a killed serve leaves for the next command to recover
   (`src/serve/serve_shutdown_run.ts`). Serve writes
   every `--json` line to stdout through `unguardedConsole`

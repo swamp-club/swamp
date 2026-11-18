@@ -160,6 +160,30 @@ Deno.test("runShutdownDrain: a zero timeout skips the registry wait and aborts a
   assertEquals(run.controller.signal.aborted, true);
 });
 
+Deno.test("runShutdownDrain: an aborting notice that throws still aborts the runs and stops the sources", async () => {
+  const log: string[] = [];
+  const run = fakeRun("r1");
+  const registry = new FakeRegistry(log, [run]);
+
+  const aborted = await runShutdownDrain({
+    webhookService: new FakeSource(log, "webhooks"),
+    scheduledExecution: new FakeSource(log, "schedules"),
+    activeRunRegistry: registry,
+    drainTimeoutMs: 0,
+    abortGraceMs: 5_000,
+    onAborting: () => {
+      throw new Error("BrokenPipe");
+    },
+  });
+
+  assertEquals(run.controller.signal.aborted, true);
+  assertEquals(aborted.map((r) => r.runId), ["r1"]);
+  assertEquals(log.filter((entry) => entry.endsWith(".stop")), [
+    "webhooks.stop",
+    "schedules.stop",
+  ]);
+});
+
 Deno.test("runShutdownDrain: a rejected drain still stops sources and aborts leftovers", async () => {
   const log: string[] = [];
   const run = fakeRun("r1");

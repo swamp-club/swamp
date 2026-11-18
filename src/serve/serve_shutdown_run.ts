@@ -45,7 +45,6 @@ export class ServeShutdownRun {
     return this.#run ??= this.#runOnce();
   }
 
-  /** the run once a trigger started it */
   get started(): Promise<void> | undefined {
     return this.#run;
   }

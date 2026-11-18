@@ -8856,7 +8856,8 @@ export const serveCommand = new Command()
           logger.error`Shutdown failed, exiting at once: ${message}`;
         });
       },
-      exit: Deno.exit,
+      // a code already set, such as lost lead's 75, keeps its restart meaning
+      exit: (code) => Deno.exit(Deno.exitCode || code),
     });
     const startShutdown = () => shutdownRun.start();
     registerShutdownHandler({

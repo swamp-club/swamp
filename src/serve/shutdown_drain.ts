@@ -170,7 +170,14 @@ export async function runShutdownDrain(
   );
   const remaining = registered.filter((run) => !run.controller.signal.aborted);
   if (remaining.length > 0) {
-    deps.onAborting?.(remaining.length);
+    // the abort below and the source stops must run whatever the report does
+    try {
+      deps.onAborting?.(remaining.length);
+    } catch (error) {
+      logger.error`Shutdown: aborting notice failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`;
+    }
     logger.info`Aborting ${remaining.length} undrained run(s)...`;
     for (const run of remaining) {
       run.controller.abort(new RunInterruption("server_shutdown"));
