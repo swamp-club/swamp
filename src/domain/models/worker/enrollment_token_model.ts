@@ -39,6 +39,10 @@ export const ENROLLMENT_TOKEN_MODEL_TYPE = ModelType.create(
   "swamp/enrollment-token",
 );
 
+export function isEnrollmentTokenType(modelType: ModelType): boolean {
+  return modelType.normalized === ENROLLMENT_TOKEN_MODEL_TYPE.normalized;
+}
+
 export const TokenStateSchema = z.enum([
   "unused",
   "enrolled",

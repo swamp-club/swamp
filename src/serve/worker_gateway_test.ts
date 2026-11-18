@@ -3553,3 +3553,128 @@ Deno.test("WorkerGateway: a worker that took both rotations is not counted as ho
   assertEquals(second.unconnectedBindings, 0);
   assertEquals(second.retiredBindings, 1);
 });
+
+Deno.test("serializeTokenWrite: a token write from inside a running transition runs without queueing behind it", async () => {
+  const { gateway } = createHarness();
+  const result = await gateway.serializeTokenWrite(() =>
+    gateway.serializeTokenWrite(() => Promise.resolve("inner ran"))
+  );
+  assertEquals(result, "inner ran");
+  await gateway.settled();
+});
+
+Deno.test("serializeTokenWrite: a write from outside waits for the transition in flight", async () => {
+  const { gateway } = createHarness();
+  const hold = Promise.withResolvers<void>();
+  let heldRunning = false;
+  let ranWhileHeld: boolean | undefined;
+  const held = gateway.serializeTokenWrite(async () => {
+    heldRunning = true;
+    await hold.promise;
+    heldRunning = false;
+  });
+  await waitFor(() => heldRunning, "the held transition to start");
+  const outside = gateway.serializeTokenWrite(() => {
+    ranWhileHeld = heldRunning;
+    return Promise.resolve();
+  });
+  hold.resolve();
+  await Promise.all([held, outside]);
+  assertEquals(ranWhileHeld, false);
+});
+
+Deno.test("serializeTokenWrite: work a transition started that outlives it queues instead of skipping the tail", async () => {
+  const { gateway } = createHarness();
+  const outlive = Promise.withResolvers<void>();
+  let calledBack = false;
+  let escaped: Promise<void> | undefined;
+  let ranWhileHeld: boolean | undefined;
+  let heldRunning = false;
+  await gateway.serializeTokenWrite(() => {
+    escaped = outlive.promise.then(() => {
+      const write = gateway.serializeTokenWrite(() => {
+        ranWhileHeld = heldRunning;
+        return Promise.resolve();
+      });
+      calledBack = true;
+      return write;
+    });
+    return Promise.resolve();
+  });
+  const hold = Promise.withResolvers<void>();
+  const held = gateway.serializeTokenWrite(async () => {
+    heldRunning = true;
+    await hold.promise;
+    heldRunning = false;
+  });
+  await waitFor(() => heldRunning, "the held transition to start");
+  outlive.resolve();
+  await waitFor(() => calledBack, "the outliving work to ask for a turn");
+  hold.resolve();
+  await Promise.all([held, escaped]);
+  assertEquals(ranWhileHeld, false);
+});
+
+function checkpointingRepoContext(
+  checkpointOpenUnit: () => Promise<string>,
+): RepositoryContext {
+  return { commitLog: { checkpointOpenUnit } } as unknown as RepositoryContext;
+}
+
+Deno.test("orderTokenMethodRun: commits the run's open unit before the next turn starts", async () => {
+  const order: string[] = [];
+  const { gateway } = createHarness({
+    repoContext: checkpointingRepoContext(() => {
+      order.push("commit");
+      return Promise.resolve("committed");
+    }),
+  });
+  const run = gateway.orderTokenMethodRun(() => {
+    order.push("write");
+    return Promise.resolve("rotated");
+  });
+  const next = gateway.serializeTokenWrite(() => {
+    order.push("next turn");
+    return Promise.resolve();
+  });
+  assertEquals(await run, "rotated");
+  await next;
+  assertEquals(order, ["write", "commit", "next turn"]);
+});
+
+Deno.test("orderTokenMethodRun: a commit that throws after the write still returns the run's result", async () => {
+  let writes = 0;
+  const { gateway } = createHarness({
+    repoContext: checkpointingRepoContext(() =>
+      Promise.reject(new Error("commit store unavailable"))
+    ),
+  });
+  const result = await gateway.orderTokenMethodRun(() => {
+    writes++;
+    return Promise.resolve("revoked");
+  });
+  assertEquals(result, "revoked");
+  assertEquals(writes, 1);
+  await gateway.settled();
+});
+
+Deno.test("orderTokenMethodRun: a run that throws after writing still commits inside its turn", async () => {
+  const order: string[] = [];
+  const { gateway } = createHarness({
+    repoContext: checkpointingRepoContext(() => {
+      order.push("commit");
+      return Promise.resolve("committed");
+    }),
+  });
+  const run = gateway.orderTokenMethodRun(() => {
+    order.push("write");
+    return Promise.reject(new Error("output validation failed"));
+  });
+  const next = gateway.serializeTokenWrite(() => {
+    order.push("next turn");
+    return Promise.resolve();
+  });
+  await assertRejects(() => run, Error, "output validation failed");
+  await next;
+  assertEquals(order, ["write", "commit", "next turn"]);
+});

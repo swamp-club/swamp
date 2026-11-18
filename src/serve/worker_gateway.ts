@@ -17,9 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { runGeneratorWithoutVaultAccess } from "../domain/vaults/run_vault_access.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
-import { repoUnitOfWorkFactory } from "../infrastructure/persistence/repo_unit_of_work.ts";
+import {
+  checkpointOpenUnitOfWork,
+  repoUnitOfWorkFactory,
+} from "../infrastructure/persistence/repo_unit_of_work.ts";
 import { createLibSwampContext } from "../libswamp/context.ts";
 import { createWorkerModelRunDeps } from "../libswamp/worker/run_deps.ts";
 import { ModelType } from "../domain/models/model_type.ts";
@@ -366,6 +370,7 @@ export class WorkerGateway {
   ) => Promise<EnrollmentToken | null>;
   /** Serializes every token/worker/lease transition (sole-writer rule). */
   readonly #transitions = new TransitionTail("gateway");
+  readonly #runningTransition = new AsyncLocalStorage<{ settled: boolean }>();
 
   constructor(options: WorkerGatewayOptions) {
     this.#options = options;
@@ -503,7 +508,46 @@ export class WorkerGateway {
    * rewrite the same record on this tail
    */
   serializeTokenWrite<T>(fn: () => Promise<T>): Promise<T> {
+    // called from a transition still running, fn already holds the tail and
+    // queueing would wait on itself; work that outlived its transition queues.
+    // Assumes a transition's own writes run one after another, never in parallel
+    const running = this.#runningTransition.getStore();
+    if (running !== undefined && !running.settled) return fn();
     return this.#recordTransition("token_write", fn);
+  }
+
+  /**
+   * a token method run's write commits inside its turn, even when the run then
+   * throws: committed at the end of its run instead, it would land after a
+   * later turn's commit and replace it, since a latest write has no version check
+   */
+  orderTokenMethodRun<T>(fn: () => Promise<T>): Promise<T> {
+    return this.serializeTokenWrite(async () => {
+      try {
+        return await fn();
+      } finally {
+        await this.#commitInTurn();
+      }
+    });
+  }
+
+  /** a write already happened, so a failed commit must not fail the run */
+  async #commitInTurn(): Promise<void> {
+    try {
+      const outcome = await checkpointOpenUnitOfWork(
+        this.#options.repoContext,
+      );
+      if (outcome === "refused") {
+        logger.warn(
+          "An enrollment token write was refused a commit in its turn; it commits or is discarded when its run ends",
+        );
+      }
+    } catch (error) {
+      logger.warn(
+        "Could not commit an enrollment token write in its turn; the run's end commit tries again: {error}",
+        { error: error instanceof Error ? error.message : String(error) },
+      );
+    }
   }
 
   worker(name: string): WorkerSnapshot | null {
@@ -1622,7 +1666,14 @@ export class WorkerGateway {
    * preserving the sole-writer invariant; operation labels its span
    */
   #recordTransition<T>(operation: string, fn: () => Promise<T>): Promise<T> {
-    return this.#transitions.run(operation, fn);
+    return this.#transitions.run(operation, async () => {
+      const running = { settled: false };
+      try {
+        return await this.#runningTransition.run(running, fn);
+      } finally {
+        running.settled = true;
+      }
+    });
   }
 
   /**

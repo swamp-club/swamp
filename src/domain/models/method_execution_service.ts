@@ -47,6 +47,8 @@ import { markErrorPaths, UserError } from "../errors.ts";
 import type { DataArtifactRef } from "./model_output.ts";
 import { executionErrorFrom, ModelOutput } from "./model_output.ts";
 import { refuseSecretDestinations } from "./secret_destinations.ts";
+import { orderEnrollmentTokenWrite } from "./worker/enrollment_token_write_ordering.ts";
+import { isEnrollmentTokenType } from "./worker/enrollment_token_model.ts";
 import { DataOutputValidationService } from "./data_output_validation_service.ts";
 import { DefinitionUpgradeService } from "./definition_upgrade_service.ts";
 import { resolveStaleness } from "../definitions/definition_staleness.ts";
@@ -970,11 +972,34 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
     return this.#execute(definition, method, context);
   }
 
+  #execute(
+    definition: Definition,
+    method: MethodDefinition,
+    context: MethodContext,
+    onArgumentsValidated?: () => Promise<void>,
+    unread?: UnreadReferenceLookup,
+  ): Promise<MethodResult> {
+    // deadlock-free only while nothing on the token writer's tail takes a model
+    // lock or the run sync gate, which a workflow step holds as it waits here
+    return orderEnrollmentTokenWrite(
+      context.modelType,
+      () =>
+        this.#executeMethod(
+          definition,
+          method,
+          context,
+          onArgumentsValidated,
+          unread,
+        ),
+      context.signal,
+    );
+  }
+
   /**
    * this is the run's one parse of the arguments, whose result the method
    * receives
    */
-  async #execute(
+  async #executeMethod(
     definition: Definition,
     method: MethodDefinition,
     context: MethodContext,
@@ -1742,6 +1767,18 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       // the shell policy belong to the host that runs the body.
       const isRemotePlacement = context.placement &&
         hasPlacement(context.placement);
+
+      // refused before the output record is saved, so none is left running
+      if (isRemotePlacement && isEnrollmentTokenType(context.modelType)) {
+        throw new UserError(
+          `Method '${methodName}' of an enrollment token cannot run with ` +
+            `remote placement: only the orchestrator writes enrollment ` +
+            `tokens. Remove the step's own placement and clear inherited ` +
+            `labels with labels: {}; an inherited target or platform means ` +
+            `moving the step to a job and workflow that set neither. ` +
+            `workflow validate names where each field comes from.`,
+        );
+      }
 
       // data text is placed for the shell of the host that runs the body: this
       // host's before the merge and checks read the arguments, or the chosen

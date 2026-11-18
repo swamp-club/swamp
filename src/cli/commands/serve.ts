@@ -369,6 +369,7 @@ import {
   setRemoteStepDispatcher,
 } from "../../domain/remote/remote_dispatch.ts";
 import { setWorkerPoolReader } from "../../domain/remote/worker_pool.ts";
+import { setEnrollmentTokenWriteOrdering } from "../../domain/models/worker/enrollment_token_write_ordering.ts";
 import { createServeWorkerPoolReader } from "../../serve/worker_pool_reader.ts";
 import { isDeniedEnvVar } from "../../domain/remote/environment_snapshot.ts";
 import {
@@ -2657,6 +2658,9 @@ export const serveCommand = new Command()
     });
     dispatchService.bindGateway(workerGateway);
     setRemoteStepDispatcher(dispatchService);
+    setEnrollmentTokenWriteOrdering((fn) =>
+      workerGateway.orderTokenMethodRun(fn)
+    );
     setWorkerPoolReader(createServeWorkerPoolReader({
       gateway: workerGateway,
       query: (predicate, options) =>
@@ -8634,6 +8638,7 @@ export const serveCommand = new Command()
       rejectionGuard.dispose();
       setWorkerPoolReader(null);
       setRemoteStepDispatcher(null);
+      setEnrollmentTokenWriteOrdering(null);
       setTokenRefusalNodeState(undefined);
       setRemoteOnlyMode(false);
       await stages.run("listener", () => listenerClosed, "awaited");

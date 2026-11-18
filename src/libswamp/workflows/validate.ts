@@ -214,6 +214,7 @@ function createModelMethodResolver(
           modelType,
           specs: outputSpecTags(modelDef),
         })?.text,
+        modelType: modelType.normalized,
       };
     },
   };
@@ -251,6 +252,7 @@ async function resolveByType(
       modelType: type,
       specs: outputSpecTags(modelDef),
     })?.text,
+    modelType: type.normalized,
   };
 }
 
