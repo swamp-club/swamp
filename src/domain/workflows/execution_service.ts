@@ -25,6 +25,7 @@ import {
   mergePlacementFields,
   resolveAffinityKey,
   resolvePlacement,
+  type ResolvedPlacement,
 } from "./placement.ts";
 import { StepTask } from "./step_task.ts";
 import type { AssertSeverity } from "./step_task.ts";
@@ -590,6 +591,51 @@ function placementProvenance(
     map = map.graft(field, level.subtree(field));
   }
   return map;
+}
+
+/**
+ * expressions the step pass can see resolve first, then the rest; a secret in
+ * placement is refused either way, since placement leaves the run as routing
+ */
+async function resolvePlacementExpressions(
+  placement: ResolvedPlacement,
+  provenance: ProvenanceMap,
+  options: {
+    evaluate?: (expr: string, context: Record<string, unknown>) => unknown;
+    expressionContext: ExpressionContext | undefined;
+    authoredExpressions: AuthoredExpressions;
+    expressionEvaluator: ExpressionEvaluationService;
+    secretRedactor: SecretRedactor | undefined;
+    secretBag: VaultSecretBag;
+    location: string;
+  },
+): Promise<{ placement: ResolvedPlacement; provenance: ProvenanceMap }> {
+  let resolved = placement;
+  let map = provenance;
+  if (options.expressionContext && options.evaluate) {
+    const tracked = resolveAvailableExpressionsTracked(
+      resolved,
+      map,
+      options.expressionContext,
+      options.evaluate,
+      options.authoredExpressions,
+    );
+    resolved = tracked.data as ResolvedPlacement;
+    map = tracked.provenance;
+  }
+  resolved = await options.expressionEvaluator.resolveAllExpressionsInData(
+    resolved,
+    options.expressionContext ?? { model: {}, env: {} },
+    options.secretRedactor,
+    options.authoredExpressions,
+    map,
+    {
+      secretBag: options.secretBag,
+      destination: "placement",
+      location: `${options.location}.placement`,
+    },
+  ) as ResolvedPlacement;
+  return { placement: resolved, provenance: map };
 }
 
 function recordProvenance(
@@ -1770,32 +1816,21 @@ export class DefaultStepExecutor implements StepExecutor {
       taskProvenance = resolvedTask.provenance
         .graft("inputs", taskArgs.rawProvenance.subtree("inputs"))
         .graft("globalArgs", taskArgs.rawProvenance.subtree("globalArgs"));
-      if (resolvedPlacement) {
-        const tracked = resolveAvailableExpressionsTracked(
-          resolvedPlacement,
-          placementMap,
-          ctx.expressionContext,
-          evaluate,
-          ctx.authoredExpressions,
-        );
-        resolvedPlacement = tracked.data as typeof resolvedPlacement;
-        placementMap = tracked.provenance;
-      }
     }
 
     if (resolvedPlacement) {
-      resolvedPlacement = await expressionEvaluator.resolveAllExpressionsInData(
-        resolvedPlacement,
-        ctx.expressionContext ?? { model: {}, env: {} },
-        ctx.secretRedactor,
-        ctx.authoredExpressions,
-        placementMap,
-        {
+      ({ placement: resolvedPlacement, provenance: placementMap } =
+        await resolvePlacementExpressions(resolvedPlacement, placementMap, {
+          evaluate: stepPass
+            ? (expr, context) => stepPass.evaluate(expr, context)
+            : undefined,
+          expressionContext: ctx.expressionContext,
+          authoredExpressions: ctx.authoredExpressions,
+          expressionEvaluator,
+          secretRedactor: ctx.secretRedactor,
           secretBag: stepSecretBag,
-          destination: "placement",
-          location: `${ctx.stepName}.placement`,
-        },
-      ) as typeof resolvedPlacement;
+          location: ctx.stepName,
+        }));
     }
 
     if (resolvedPlacement && ctx.affinityKey) {
