@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { assert, assertEquals } from "@std/assert";
 import { type Span, trace } from "@opentelemetry/api";
 import { waitFor } from "@swamp-club/swamp-testing";
@@ -392,4 +393,74 @@ Deno.test("WorkerTokenRevalidationService: delivers every token's rotation toget
     cause: "revoked",
     mint: MINT,
   }]);
+});
+
+Deno.test("WorkerTokenRevalidationService: a nudge runs a pass without waiting for the interval", async () => {
+  let passes = 0;
+  const service = new WorkerTokenRevalidationService({
+    intervalMs: 60_000,
+    listBoundTokens: () => {
+      passes++;
+      return [];
+    },
+    readTokens: () => Promise.resolve(tokens()),
+    revokeToken: () => Promise.resolve([]),
+  });
+  service.nudge();
+  assertEquals(passes, 0);
+  service.start();
+  try {
+    service.nudge();
+    await waitFor(() => passes === 1, "the nudged pass");
+  } finally {
+    await service.dispose();
+  }
+});
+
+Deno.test("WorkerTokenRevalidationService: nudges during a pass coalesce into one more pass", async () => {
+  let passes = 0;
+  const release = Promise.withResolvers<void>();
+  const { service } = createService({
+    bound: [{ tokenName: "ci-runner-3", tokenCreatedAt: MINT }],
+    readTokens: async () => {
+      passes++;
+      if (passes === 1) await release.promise;
+      return tokens(tokenRecord({}));
+    },
+  });
+  service.start();
+  try {
+    service.nudge();
+    await waitFor(() => passes === 1, "the first pass to start");
+    service.nudge();
+    service.nudge();
+    service.nudge();
+    release.resolve();
+    await waitFor(() => passes === 2, "one follow-up pass");
+  } finally {
+    await service.dispose();
+  }
+  assertEquals(passes, 2);
+});
+
+Deno.test("WorkerTokenRevalidationService: a nudged pass never runs in the nudging caller's async context", async () => {
+  const caller = new AsyncLocalStorage<string>();
+  const seen: (string | undefined)[] = [];
+  const service = new WorkerTokenRevalidationService({
+    intervalMs: 60_000,
+    listBoundTokens: () => {
+      seen.push(caller.getStore());
+      return [];
+    },
+    readTokens: () => Promise.resolve(tokens()),
+    revokeToken: () => Promise.resolve([]),
+  });
+  service.start();
+  try {
+    caller.run("workflow step", () => service.nudge());
+    await waitFor(() => seen.length === 1, "the nudged pass");
+  } finally {
+    await service.dispose();
+  }
+  assertEquals(seen, [undefined]);
 });

@@ -242,6 +242,7 @@ import {
   DEFAULT_WORKER_TOKEN_REVALIDATION_MS,
   WorkerTokenRevalidationService,
 } from "../../serve/worker_token_revalidation_service.ts";
+import { subscribeTokenWriteNudges } from "../../serve/token_write_nudges.ts";
 import {
   createDeviceAuthDeps,
   handleDeviceAuth,
@@ -6052,6 +6053,10 @@ export const serveCommand = new Command()
       },
     });
     workerTokenRevalidationService.start();
+    const unsubscribeTokenWriteNudges = subscribeTokenWriteNudges(
+      repoContext.eventBus,
+      workerTokenRevalidationService,
+    );
 
     let clubHeartbeatService: ClubHeartbeatService | null = null;
     if (clubRegistration !== undefined && clubApiKey) {
@@ -8528,7 +8533,10 @@ export const serveCommand = new Command()
       // Stop revalidation before the gateway it cuts workers off from.
       await stages.run(
         "worker token revalidation",
-        () => workerTokenRevalidationService.dispose(),
+        () => {
+          unsubscribeTokenWriteNudges();
+          return workerTokenRevalidationService.dispose();
+        },
       );
       workerGateway.dispose();
       if (collectiveRefreshService) {

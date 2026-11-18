@@ -89,6 +89,8 @@ export const EnrollmentTokenSchema = z.object({
   maxEnrollments: MaxEnrollmentsSchema.default(1),
   bindings: z.array(BindingSchema).default([]),
   predecessor: PredecessorSchema.optional(),
+  /** a default rotation extends by this, since expiresAt minus createdAt grows with each early run */
+  lifetimeMs: z.number().int().positive().optional(),
   /** @deprecated Legacy field — kept so Zod parses old records. */
   boundMachineId: z.string().optional(),
   enrolledAt: z.string().datetime().optional(),
@@ -312,6 +314,7 @@ async function mint(
     state: "unused" as const,
     createdAt: new Date(now).toISOString(),
     expiresAt: new Date(now + args.durationMs).toISOString(),
+    lifetimeMs: args.durationMs,
     vaultName: args.vaultName,
     secretKey,
     maxEnrollments: args.maxEnrollments,
@@ -517,9 +520,12 @@ async function rebind(
 
 const EmptyArgsSchema = z.object({});
 
+// serve's 30 s token check plus its 10 s delivery timeout
+const ROTATION_HEADROOM_MS = 40_000;
+
 const RotateArgsSchema = z.object({
   durationMs: z.number().int().positive().optional().describe(
-    "Successor lifetime in milliseconds; defaults to the current mint's",
+    "Successor lifetime in milliseconds from now; omitted, the current deadline is extended by the token's lifetime",
   ),
 });
 
@@ -553,9 +559,20 @@ async function rotate(
   // the cut-off verdict orders mints by createdAt, so the successor must be
   // strictly newer even when two rotations land in one millisecond
   const createdAtMs = Math.max(now, previousCreatedAtMs + 1);
-  const durationMs = args.durationMs ??
+  const lifetimeMs = args.durationMs ?? token.lifetimeMs ??
     Date.parse(token.expiresAt) - previousCreatedAtMs;
-  const expiresAtMs = createdAtMs + durationMs;
+  // anchored to the old deadline, so a schedule one lifetime apart never drifts
+  // into an expired token
+  const expiresAtMs = args.durationMs !== undefined
+    ? createdAtMs + args.durationMs
+    : Date.parse(token.expiresAt) + lifetimeMs;
+  const remainingMs = Date.parse(token.expiresAt) - now;
+  if (remainingMs < ROTATION_HEADROOM_MS) {
+    context.logger.warn(
+      "Enrollment token {name} was rotated {seconds}s before its old secret expires; workers serve cannot reach in time are cut off. Rotate at most half its lifetime apart",
+      { name, seconds: Math.max(0, Math.round(remainingMs / 1000)) },
+    );
+  }
 
   const secretKey = rotatedTokenSecretKey(name, createdAtMs);
   await context.vaultService.put(
@@ -569,6 +586,7 @@ async function rotate(
     ...token,
     createdAt: new Date(createdAtMs).toISOString(),
     expiresAt: new Date(expiresAtMs).toISOString(),
+    lifetimeMs,
     secretKey,
     bindings: token.bindings.map((b) => ({
       ...b,

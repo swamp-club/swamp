@@ -19,6 +19,7 @@
 
 import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
 import { EventBus } from "../events/event_bus.ts";
+import type { ModelDataWritten } from "../events/types.ts";
 import { modelWording } from "../behavior_wording.ts";
 import type { RunCheckpointer } from "./run_checkpointer.ts";
 import { StepStartUnrecordedError } from "./step_start.ts";
@@ -28014,5 +28015,116 @@ Deno.test("handover: a step withdrawn before a worker took it goes back to pendi
     assertEquals(done.status, "succeeded");
     assertEquals(executor.count("main/remote"), 1);
     assertEquals(executor.count("main/after"), 1);
+  });
+});
+
+Deno.test("run(): a model-method step that wrote data publishes ModelDataWritten once its writes are flushed, and a failed or empty one does not", async () => {
+  const { z } = await import("zod");
+  const { modelRegistry } = await import("../models/model.ts");
+  const { initializeLogging } = await import(
+    "../../infrastructure/logging/logger.ts"
+  );
+  await initializeLogging({});
+  const modelType = ModelType.create(
+    `@test-4861/writes-${crypto.randomUUID().slice(0, 8)}`,
+  );
+  modelRegistry.register({
+    type: modelType,
+    version: "2026.01.01.1",
+    globalArguments: z.object({}),
+    resources: {
+      state: {
+        description: "state the step writes",
+        schema: z.object({ value: z.string() }),
+        lifetime: "infinite",
+        garbageCollection: 5,
+      },
+    },
+    methods: {
+      write: {
+        description: "writes state",
+        arguments: z.object({}),
+        execute: async (_args, context) => ({
+          dataHandles: [
+            await context.writeResource!("state", "state", { value: "v" }),
+          ],
+        }),
+      },
+      noop: {
+        description: "writes nothing",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({}),
+      },
+      fail: {
+        description: "writes state, then fails",
+        arguments: z.object({}),
+        execute: async (_args, context) => {
+          await context.writeResource!("state", "state", { value: "partial" });
+          throw new Error("blew up");
+        },
+      },
+    },
+  });
+
+  await withTempDir(async (tempDir) => {
+    const definition = Definition.create({
+      name: "writer",
+      type: modelType.normalized,
+    });
+    await new YamlDefinitionRepository(tempDir).save(modelType, definition);
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    try {
+      for (
+        const [method, publishes] of [
+          ["write", true],
+          ["noop", false],
+          ["fail", false],
+        ] as const
+      ) {
+        const workflowRepo = new InMemoryWorkflowRepository();
+        const workflow = Workflow.create({
+          name: `publish-${method}`,
+          jobs: [Job.create({
+            name: "job1",
+            steps: [Step.create({
+              name: "s",
+              task: StepTask.model("writer", method),
+            })],
+          })],
+        });
+        await workflowRepo.save(workflow);
+        const service = new WorkflowExecutionService(
+          workflowRepo,
+          new InMemoryWorkflowRunRepository(),
+          tempDir,
+          new DefaultStepExecutor(),
+          undefined,
+          catalogStore,
+        );
+        const eventBus = new EventBus();
+        const published: { modelType: string; versions: unknown }[] = [];
+        eventBus.subscribe<ModelDataWritten>("ModelDataWritten", (event) => {
+          published.push({
+            modelType: event.modelType,
+            versions: event.dataVersions,
+          });
+        });
+        service.eventBus = eventBus;
+
+        await runToCompletion(service, workflow.name);
+
+        assertEquals(published.length, publishes ? 1 : 0, method);
+        if (publishes) {
+          assertEquals(published[0].modelType, modelType.normalized);
+          assert(
+            (published[0].versions as { name: string; version: number }[])
+              .some((v) => v.name === "state" && v.version === 1),
+            "the state write is listed",
+          );
+        }
+      }
+    } finally {
+      catalogStore.close();
+    }
   });
 });

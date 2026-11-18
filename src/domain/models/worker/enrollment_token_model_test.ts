@@ -607,14 +607,26 @@ Deno.test("enrollmentTokenModel: rotate keeps the name and bindings and writes a
   assertEquals(JSON.stringify(token).includes(successor), false);
 });
 
-Deno.test("enrollmentTokenModel: rotate defaults to the current mint's lifetime", async () => {
+Deno.test("enrollmentTokenModel: rotate without a duration extends the old deadline by the token's lifetime", async () => {
   const harness = await mintToken();
+  const before = EnrollmentTokenSchema.parse(harness.store.get("token-main"));
   const { token } = await rotateToken(harness);
+  assertEquals(
+    Date.parse(token.expiresAt as string),
+    Date.parse(before.expiresAt) + mintArgs.durationMs,
+  );
+  assertEquals(token.lifetimeMs, mintArgs.durationMs);
+});
+
+Deno.test("enrollmentTokenModel: rotate with a duration counts it from now and keeps it as the lifetime", async () => {
+  const harness = await mintToken();
+  const { token } = await rotateToken(harness, { durationMs: 5 * 60_000 });
   assertEquals(
     Date.parse(token.expiresAt as string) -
       Date.parse(token.createdAt as string),
-    mintArgs.durationMs,
+    5 * 60_000,
   );
+  assertEquals(token.lifetimeMs, 5 * 60_000);
 });
 
 Deno.test("enrollmentTokenModel: a shorter rotation clamps the predecessor's deadline", async () => {
@@ -1130,4 +1142,80 @@ Deno.test("deliverablePredecessor: only a live rotation of a live token has a mi
     ),
     undefined,
   );
+});
+
+/** moves the stored token back in time, as if that much time had passed */
+function advanceTokenClock(
+  harness: Awaited<ReturnType<typeof mintToken>>,
+  ms: number,
+): void {
+  const token = EnrollmentTokenSchema.parse(harness.store.get("token-main"));
+  const shift = (iso: string) => new Date(Date.parse(iso) - ms).toISOString();
+  harness.store.set("token-main", {
+    ...token,
+    createdAt: shift(token.createdAt),
+    expiresAt: shift(token.expiresAt),
+    ...(token.predecessor
+      ? {
+        predecessor: {
+          ...token.predecessor,
+          createdAt: shift(token.predecessor.createdAt),
+          expiresAt: shift(token.predecessor.expiresAt),
+        },
+      }
+      : {}),
+  });
+}
+
+Deno.test("enrollmentTokenModel: repeated default rotations keep the lifetime the token was minted with", async () => {
+  const harness = await mintToken();
+  for (let i = 0; i < 5; i++) {
+    const before = EnrollmentTokenSchema.parse(harness.store.get("token-main"));
+    advanceTokenClock(harness, 50_000);
+    const { token } = await rotateToken(harness);
+    assertEquals(token.lifetimeMs, mintArgs.durationMs);
+    assertEquals(
+      Date.parse(token.expiresAt as string),
+      Date.parse(before.expiresAt) - 50_000 + mintArgs.durationMs,
+    );
+  }
+});
+
+Deno.test("enrollmentTokenModel: a record minted before lifetimeMs rotates by its own span", async () => {
+  const harness = await mintToken();
+  const { lifetimeMs: _dropped, ...legacy } = EnrollmentTokenSchema.parse(
+    harness.store.get("token-main"),
+  );
+  harness.store.set("token-main", legacy);
+  const { token } = await rotateToken(harness);
+  const span = Date.parse(legacy.expiresAt) - Date.parse(legacy.createdAt);
+  assertEquals(
+    Date.parse(token.expiresAt as string),
+    Date.parse(legacy.expiresAt) + span,
+  );
+  assertEquals(token.lifetimeMs, span);
+});
+
+Deno.test("enrollmentTokenModel: a rotation close to the old deadline warns, one with time to spare does not", async () => {
+  for (
+    const [label, advanceMs, warns] of [
+      ["10s left", mintArgs.durationMs - 10_000, true],
+      ["50s left", mintArgs.durationMs - 50_000, false],
+    ] as const
+  ) {
+    const harness = await mintToken();
+    const warnings: string[] = [];
+    const logger = Object.create(harness.context.logger);
+    logger.warn = (message: string) => warnings.push(message);
+    harness.context.logger = logger;
+    advanceTokenClock(harness, advanceMs);
+
+    await rotateToken(harness);
+
+    assertEquals(
+      warnings.some((w) => w.includes("before its old secret expires")),
+      warns,
+      label,
+    );
+  }
 });

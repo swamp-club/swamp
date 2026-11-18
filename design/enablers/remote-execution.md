@@ -692,7 +692,13 @@ dot, which Azure Key Vault and GCP Secret Manager refuse) and the record points
 at it, so the live secret is never overwritten before the record moves; a
 failed record write leaves the old key and record as they were. The record
 keeps the old mint as `predecessor` (`createdAt`, `expiresAt` clamped to the
-successor's, `secretKey`). `redeem` accepts either secret until the
+successor's, `secretKey`). Without a duration the successor's deadline is the
+old deadline plus the token's `lifetimeMs` (set at mint, carried by every
+rotation; a record from before it falls back to its own `expiresAt` minus
+`createdAt`), so a schedule one lifetime apart keeps a fixed margin instead of
+drifting into an expired token; an explicit duration counts from the rotation,
+and `rotate` logs a warning when the old secret had under 40 s left. `redeem`
+accepts either secret until the
 predecessor's deadline and records in the machine's binding which mint it
 redeemed (`mint`), so the gateway binds a reconnect to that mint and arms its
 deadline; a rotation the machine saved over its own connection moves it too.
@@ -730,8 +736,12 @@ still enroll on the predecessor.
 
 A rotation made outside this gateway (a workflow step or schedule running the
 `rotate` method in serve, the CLI without `--server`, an HA peer) is delivered
-by `WorkerTokenRevalidationService` at its next pass, before it applies any
-verdict: when the record has a live predecessor and a bound mint equals it, the
+by `WorkerTokenRevalidationService` before it applies any verdict. A record
+this serve wrote itself starts that pass at once: a workflow step publishes
+`ModelDataWritten` after its writes flush, a method run publishes
+`ModelUpdated`, and `subscribeTokenWriteNudges` calls `nudge()` for an
+enrollment token, which wakes the service's own loop so the pass never runs in
+the step's unit of work. Anything else waits for the next pass: when the record has a live predecessor and a bound mint equals it, the
 pass calls `WorkerGateway.deliverCurrentMint`, which reads the record on the
 tail and runs the same delivery and re-stamp phases for exactly the members on
 the predecessor mint, then the verdicts judge the re-stamped mints. Only the
@@ -739,9 +749,9 @@ predecessor qualifies (`deliverablePredecessor`): it comes from rotating a
 live, unrevoked mint, while an older mint may be one a revoke and re-mint
 replaced, so a worker on it is cut off rather than handed the new secret. Two
 out-of-band rotations inside one pass therefore retire the workers on the
-original mint, and a rotation within one pass interval plus a delivery timeout
-(about 40 s) of the predecessor's deadline can arrive too late, which the local
-rotate output warns about. The gateway skips a member while a delivery to it is in flight,
+original mint, and a rotation another process makes within one pass interval
+plus a delivery timeout (about 40 s) of the predecessor's deadline can arrive
+too late, which the local rotate output warns about. The gateway skips a member while a delivery to it is in flight,
 remembers a refusal of a mint (no capability, an RPC refusal) so later passes
 spend no transition on it, and retries a timeout on the next pass. The outcome
 goes to serve's log; only `--server` returns it to the caller. If the

@@ -67,6 +67,9 @@ export class WorkerTokenRevalidationService {
   readonly #deps: WorkerTokenRevalidationDeps;
   readonly #missingPasses = new Map<string, number>();
   #timer: ReturnType<typeof setTimeout> | null = null;
+  #wake: (() => void) | null = null;
+  #ticking = false;
+  #nudged = false;
   #pending: Promise<void> = Promise.resolve();
   #disposed = false;
 
@@ -89,7 +92,22 @@ export class WorkerTokenRevalidationService {
       clearTimeout(this.#timer);
       this.#timer = null;
     }
+    this.#wake?.();
     await this.#pending;
+  }
+
+  /** runs a pass now, or right after the one in progress; a no-op before start */
+  nudge(): void {
+    if (this.#disposed) return;
+    if (this.#ticking) {
+      this.#nudged = true;
+      return;
+    }
+    if (this.#timer !== null) {
+      clearTimeout(this.#timer);
+      this.#timer = null;
+    }
+    this.#wake?.();
   }
 
   async runOnce(): Promise<string[]> {
@@ -98,16 +116,23 @@ export class WorkerTokenRevalidationService {
 
   #scheduleNext(): void {
     if (this.#disposed) return;
+    const wake = Promise.withResolvers<void>();
+    this.#wake = wake.resolve;
     this.#timer = runDetached(() =>
-      setTimeout(() => {
-        this.#pending = this.#tick();
-      }, this.#deps.intervalMs)
+      setTimeout(wake.resolve, this.#deps.intervalMs)
     );
     Deno.unrefTimer(this.#timer);
+    // continued from the loop's own context, so a nudge from inside a workflow
+    // step never runs the pass, or its writes, in that step's unit of work
+    this.#pending = runDetached(() => wake.promise.then(() => this.#tick()));
   }
 
   async #tick(): Promise<void> {
+    this.#timer = null;
+    this.#wake = null;
     if (this.#disposed) return;
+    this.#ticking = true;
+    this.#nudged = false;
     try {
       await this.#revalidate();
     } catch (err) {
@@ -115,7 +140,9 @@ export class WorkerTokenRevalidationService {
         err instanceof Error ? err.message : String(err)
       }`;
     } finally {
+      this.#ticking = false;
       this.#scheduleNext();
+      if (this.#nudged) this.nudge();
     }
   }
 

@@ -69,7 +69,9 @@ every 30 seconds. A worker started with "swamp worker connect --token-file"
 writes it back to that file. The old
 token stays valid until its original expiry (or the new token's, if
 sooner), so machines that were not connected can still enroll with it.
-Rotating again retires the old token at once, including for workers a
+Without --duration the new deadline is the old one plus the token's
+lifetime, so rotating on a schedule as long as that lifetime never lets
+it lapse. Rotating again retires the old token at once, including for workers a
 running orchestrator has not yet sent the new token. The new token is printed
 once; if that output is lost, read it back with "swamp worker token reveal".`,
     )
@@ -88,7 +90,7 @@ once; if that output is lost, read it back with "swamp worker token reveal".`,
     )
     .option(
       "--duration <duration:string>",
-      "Lifetime of the new token (e.g. 24h, 7d); defaults to the current token's lifetime",
+      "Lifetime of the new token from now (e.g. 24h, 7d); defaults to extending the current deadline by the token's lifetime",
     ),
 ).action(async function (options: AnyOptions, name: string) {
   const cliCtx = createContext(options as GlobalOptions, [

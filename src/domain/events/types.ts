@@ -41,6 +41,18 @@ export interface ModelUpdated extends DomainEvent {
   readonly dataVersions?: readonly DataVersionRef[];
 }
 
+/**
+ * a workflow step's writes, once flushed; separate from ModelUpdated, whose
+ * subscribers count those versions as serve's own direct writes
+ */
+export interface ModelDataWritten extends DomainEvent {
+  readonly type: "ModelDataWritten";
+  readonly modelType: string;
+  readonly modelInputId: string;
+  readonly modelName: string;
+  readonly dataVersions: readonly DataVersionRef[];
+}
+
 export interface DataVersionRef {
   readonly name: string;
   readonly version: number;
@@ -116,6 +128,7 @@ export interface WorkflowRunFailed extends DomainEvent {
 export type RepositoryEvent =
   | ModelCreated
   | ModelUpdated
+  | ModelDataWritten
   | ModelDeleted
   | DefinitionCreated
   | DefinitionUpdated
@@ -163,6 +176,22 @@ export function createModelUpdated(
     modelName,
     timestamp: new Date(),
     ...(dataVersions ? { dataVersions } : {}),
+  };
+}
+
+export function createModelDataWritten(
+  modelType: string,
+  modelInputId: string,
+  modelName: string,
+  dataVersions: readonly DataVersionRef[],
+): ModelDataWritten {
+  return {
+    type: "ModelDataWritten",
+    modelType,
+    modelInputId,
+    modelName,
+    timestamp: new Date(),
+    dataVersions,
   };
 }
 

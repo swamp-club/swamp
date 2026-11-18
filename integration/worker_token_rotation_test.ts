@@ -55,6 +55,7 @@ import {
 import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
 import { WorkerGateway } from "../src/serve/worker_gateway.ts";
 import { WorkerTokenRevalidationService } from "../src/serve/worker_token_revalidation_service.ts";
+import { subscribeTokenWriteNudges } from "../src/serve/token_write_nudges.ts";
 import {
   registerTokenRotationHandler,
   type WorkerCredential,
@@ -97,7 +98,7 @@ interface Fixture {
 
 async function withFixture(
   fn: (f: Fixture) => Promise<void>,
-  options: { graceWindowMs?: number } = {},
+  options: { graceWindowMs?: number; nudges?: boolean } = {},
 ): Promise<void> {
   const repoDir = await Deno.makeTempDir({
     prefix: "swamp-worker-token-rotate-",
@@ -153,9 +154,19 @@ async function withFixture(
     authConfig: { mode: "none" },
     workerGateway: gateway,
   } as unknown as ConnectionContext;
+  // as serve wires it; off by default so a test's own runOnce is the only pass
+  let unsubscribeNudges = () => {};
+  if (options.nudges) {
+    revalidation.start();
+    unsubscribeNudges = subscribeTokenWriteNudges(
+      repoContext.eventBus,
+      revalidation,
+    );
+  }
   try {
     await fn({ repoDir, repoContext, gateway, revalidation, ctx });
   } finally {
+    unsubscribeNudges();
     await revalidation.dispose();
     await gateway.settled();
     gateway.dispose();
@@ -439,52 +450,86 @@ Deno.test("worker token rotate from the local CLI reaches connected workers at t
   });
 });
 
-Deno.test("a workflow step that rotates the token on serve reaches the worker at the next token check", async () => {
-  await withFixture(async (f) => {
-    const original = await mintToken(f, "w-flow");
-    const credential: WorkerCredential = { token: original };
-    await enroll(connectWorker(f.gateway, { credential }), original);
+async function runRotateWorkflow(
+  f: Fixture,
+  tokenName: string,
+  inputs: Record<string, unknown> = {},
+): Promise<void> {
+  const name = `rotate-${tokenName}`;
+  if (await f.repoContext.workflowRepo.findByName(name) === null) {
     await f.repoContext.workflowRepo.save(Workflow.create({
-      name: "rotate-flow",
+      name,
       jobs: [Job.create({
         name: "main",
         steps: [Step.create({
           name: "rotate",
-          task: StepTask.model("w-flow", "rotate", {
-            durationMs: 60 * 60_000,
-          }),
+          task: StepTask.model(tokenName, "rotate", inputs),
         })],
       })],
     }));
-
-    const deps = await createWorkflowRunDeps(f.repoDir, f.repoContext, {
-      type: "filesystem",
-      path: swampPath(f.repoDir),
-    });
-    const events = await collect(
-      workflowRun(createLibSwampContext(), deps, {
-        workflowIdOrName: "rotate-flow",
-      }),
-    );
-    const completed = events.find((e) => e.kind === "completed");
-    assertEquals(
-      completed?.kind === "completed" ? completed.run.status : undefined,
-      "succeeded",
-      JSON.stringify(events.filter((e) => e.kind === "error")),
-    );
-    assertEquals(credential.token, original);
-
-    assertEquals(await f.revalidation.runOnce(), []);
-    assertEquals(credential.token === original, false);
-
-    const record = (await f.gateway.readTokenRecords()).get("w-flow");
-    assertEquals(f.gateway.boundTokens(), [{
-      tokenName: "w-flow",
-      tokenCreatedAt: record!.createdAt,
-    }]);
-    assertEquals(f.gateway.worker("w-flow")?.connected, true);
-    assertEquals(await f.revalidation.runOnce(), []);
+  }
+  const deps = await createWorkflowRunDeps(f.repoDir, f.repoContext, {
+    type: "filesystem",
+    path: swampPath(f.repoDir),
   });
+  const events = await collect(
+    workflowRun(createLibSwampContext(), deps, { workflowIdOrName: name }),
+  );
+  const completed = events.find((e) => e.kind === "completed");
+  assertEquals(
+    completed?.kind === "completed" ? completed.run.status : undefined,
+    "succeeded",
+    JSON.stringify(events.filter((e) => e.kind === "error")),
+  );
+}
+
+Deno.test("a workflow step that rotates the token on serve reaches the worker without waiting for the next token check", async () => {
+  await withFixture(async (f) => {
+    const original = await mintToken(f, "w-flow");
+    const credential: WorkerCredential = { token: original };
+    await enroll(connectWorker(f.gateway, { credential }), original);
+
+    await runRotateWorkflow(f, "w-flow", { durationMs: 60 * 60_000 });
+
+    await waitFor(
+      () => credential.token !== original,
+      "the nudged pass to deliver the successor",
+    );
+    const record = (await f.gateway.readTokenRecords()).get("w-flow");
+    await waitFor(
+      () => f.gateway.boundTokens()[0]?.tokenCreatedAt === record!.createdAt,
+      "the worker re-stamped on the successor",
+    );
+    assertEquals(f.gateway.worker("w-flow")?.connected, true);
+  }, { nudges: true });
+});
+
+Deno.test("scheduled default rotations extend the token by its lifetime each time and keep the worker on the newest token", async () => {
+  await withFixture(async (f) => {
+    const lifetimeMs = 60 * 60_000;
+    const original = await mintToken(f, "w-sched", { durationMs: lifetimeMs });
+    const credential: WorkerCredential = { token: original };
+    await enroll(connectWorker(f.gateway, { credential }), original);
+    let previous = (await f.gateway.readTokenRecords()).get("w-sched")!;
+
+    for (let run = 0; run < 3; run++) {
+      const held = credential.token;
+      await runRotateWorkflow(f, "w-sched");
+      await waitFor(
+        () => credential.token !== held,
+        `run ${run} delivered`,
+      );
+      const record = (await f.gateway.readTokenRecords()).get("w-sched")!;
+      assertEquals(
+        Date.parse(record.expiresAt) - Date.parse(previous.expiresAt),
+        lifetimeMs,
+      );
+      assertEquals(record.lifetimeMs, lifetimeMs);
+      previous = record;
+    }
+    assertEquals(f.gateway.worker("w-sched")?.connected, true);
+    assertEquals(await f.revalidation.runOnce(), []);
+  }, { nudges: true });
 });
 
 Deno.test("a local revoke, re-mint and rotate before a token check never reaches the worker on the revoked mint", async () => {
