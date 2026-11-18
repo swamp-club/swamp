@@ -147,7 +147,6 @@ export function causeMessage(cause: unknown): string {
   return redactUrls(cause instanceof Error ? cause.message : String(cause));
 }
 
-/** " after N attempts over T" when the request was retried, else "". */
 export function retriedSuffix(outcome: RetryOutcome | undefined): string {
   return outcome && outcome.attempts > 1
     ? ` after ${outcome.attempts} attempts over ${

@@ -1856,7 +1856,7 @@ Deno.test("SwampClubClient.verifyIdentity: a body cut off by the timeout is unre
   }
 });
 
-// answers in turn: a status, or "timeout" for an attempt that hits its own timeout
+// the last answer repeats once the script runs out
 function scriptedFetch(script: (number | "timeout")[]) {
   const calls: string[] = [];
   const fetch = (url: string | URL, _init?: RequestInit) => {
