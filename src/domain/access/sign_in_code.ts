@@ -97,7 +97,11 @@ export class SignInCodeStore {
     }
     let held = 0;
     for (const entry of this.#entries.values()) {
-      if (entry.grant.principal === grant.principal) held++;
+      if (
+        entry.grant.principal === grant.principal && entry.expiresAtMs > now
+      ) {
+        held++;
+      }
     }
     if (held >= this.#maxPerPrincipal) {
       return { ok: false, reason: "principal_limit" };

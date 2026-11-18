@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assert, assertEquals } from "@std/assert";
+import { join } from "@std/path";
 import "../src/domain/models/models.ts";
 import { provisionHostedWorkspace } from "../src/cli/hosted_workspace_provision.ts";
 import type { AdmissionLists } from "../src/domain/access/admission.ts";
@@ -179,7 +180,7 @@ async function withHost(fn: (host: Host) => Promise<void>): Promise<void> {
       });
       const hosted = (mode: "token" | "oauth") => {
         const base = hostRootWorkspaces(
-          { dir: `${hostDir}/workspaces`, address: HOST_ADDRESS },
+          { dir: join(hostDir, "workspaces"), address: HOST_ADDRESS },
           {},
           () => rootAccess(mode),
         )!;
@@ -520,5 +521,36 @@ Deno.test("serve workspace sign-in: a token-mode root creates a workspace, and i
     assert(auth.ok, JSON.stringify(auth));
     assertEquals(auth.principalId, "user:alice");
     assertEquals(auth.oauthIdentity, undefined);
+  });
+});
+
+Deno.test("serve workspace sign-in: token mode trusts whoever mints root tokens, and an oauth workspace refuses a token minted by hand", async () => {
+  await withHost(async (host) => {
+    const tokenRoot = host.rootCtx("token");
+    const bob: Principal = { kind: "user", id: "bob" };
+    await sendRequest(tokenRoot, request("workspace.create", "edge-dns"), bob);
+    // a root token a root admin minted for bob, not one bob holds
+    const mintedForBob: ServerToken = {
+      ...rootToken("user:bob", []),
+      principalEmail: "",
+      client: "direct:token",
+    };
+    delete (mintedForBob as { oauthIdentity?: unknown }).oauthIdentity;
+    const tokenCode = await signIn(tokenRoot, "edge-dns", bob, mintedForBob);
+    const tokenWorkspace = host.exchange("edge-dns", { mode: "token" });
+    assertEquals((await exchangeAt(tokenWorkspace, tokenCode)).status, 200);
+
+    const oauthRoot = host.rootCtx("oauth");
+    await sendRequest(oauthRoot, request("workspace.create", "billing"), ALICE);
+    const handMinted: ServerToken = {
+      ...rootToken("user:sub-alice", ["acme"]),
+      client: "direct:token",
+    };
+    delete (handMinted as { oauthIdentity?: unknown }).oauthIdentity;
+    const oauthCode = await signIn(oauthRoot, "billing", ALICE, handMinted);
+    const oauthWorkspace = host.exchange("billing", { mode: "oauth" });
+    const refused = await exchangeAt(oauthWorkspace, oauthCode);
+    assertEquals(refused.status, 403);
+    assertEquals((await refused.json()).error, "not_admitted");
   });
 });
