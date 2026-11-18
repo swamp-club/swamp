@@ -479,3 +479,51 @@ Deno.test("renderWorkflowRunDisplay: a parked run serve refused promises no cont
     "Not continued automatically (opted_out): The workflow sets autoContinue: false.",
   );
 });
+
+function childRun(
+  inheritedPlacement?: WorkflowRunView["inheritedPlacement"],
+): WorkflowRunView {
+  return {
+    id: "run-2",
+    workflowId: "wf-2",
+    workflowName: "child",
+    status: "succeeded",
+    jobs: [],
+    ...(inheritedPlacement ? { inheritedPlacement } : {}),
+  };
+}
+
+Deno.test("renderWorkflowRunDisplay: a nested run names the step whose placement it inherited", () => {
+  const output = captureOutput(() =>
+    renderWorkflowRunDisplay(
+      childRun({
+        target: "w-a",
+        labels: { fleet: "web" },
+        source: { workflowName: "caddy", jobName: "install", stepName: "sudo" },
+      }),
+      "log",
+    )
+  );
+  assertStringIncludes(
+    output,
+    "Placement inherited from caddy / install / sudo: target w-a, labels fleet=web",
+  );
+});
+
+Deno.test("renderWorkflowRunDisplay: a run that inherited nothing prints no placement line", () => {
+  const output = captureOutput(() =>
+    renderWorkflowRunDisplay(childRun(), "log")
+  );
+  assertEquals(output.includes("Placement inherited"), false);
+});
+
+Deno.test("renderWorkflowRunDisplay: json mode carries the inherited placement", () => {
+  const inherited = {
+    platform: "linux",
+    source: { workflowName: "caddy", jobName: "install", stepName: "sudo" },
+  };
+  const output = captureOutput(() =>
+    renderWorkflowRunDisplay(childRun(inherited), "json")
+  );
+  assertEquals(JSON.parse(output).inheritedPlacement, inherited);
+});

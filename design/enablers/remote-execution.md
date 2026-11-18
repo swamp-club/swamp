@@ -1690,6 +1690,11 @@ omitted field inherits from the parent. An explicit `labels: {}` clears the
 inherited labels; the step then runs locally only if no `target` or `platform`
 remains in effect (`src/serve/dispatch_service.ts`).
 
+Inheritance crosses into nested workflows: a child workflow's steps start from
+the placement and affinity key of the step that called it, unless that step
+says `placement: own` or the child places itself. The rules are in "Placement
+of a nested run" in `design/primitives/workflows.md`.
+
 **`forEach` is the fan-out construct.** It already expands one step template
 into N parallel instances (`ForEachExpansionService`), so `forEach` over a list
 plus a label selector is "fan out across the fleet". The existing step-level

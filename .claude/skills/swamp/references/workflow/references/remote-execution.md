@@ -57,6 +57,13 @@ Inheritance: workflow-level placement applies to all steps as a default,
 job-level overrides workflow, step-level overrides job. An explicit empty value
 (e.g., `labels: {}`) clears inherited placement for that field.
 
+Nested workflows inherit too: a child's steps run where the step that calls it
+would run, with its affinity pin. On the calling step, `target`, `labels` or
+`platform` place that child, and `placement: own` hands nothing down (the child
+uses only its own YAML; unplaced, it runs locally). A child that sets `target`,
+`labels` or `platform` anywhere, `labels: {}` included, is placed only by
+itself. See [nested-workflows.md](nested-workflows.md#placement-on-workers).
+
 ```yaml
 name: deploy-pipeline
 labels:

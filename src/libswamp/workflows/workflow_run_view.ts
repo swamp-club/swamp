@@ -181,6 +181,13 @@ export interface WorkflowRunView {
     runId: string;
     stepName: string;
   };
+  /** the calling step's placement this nested run inherited, and that step */
+  inheritedPlacement?: {
+    target?: string;
+    labels?: Record<string, string>;
+    platform?: string;
+    source: { workflowName: string; jobName: string; stepName: string };
+  };
   nestedWaits?: {
     workflowId: string;
     workflowName: string;

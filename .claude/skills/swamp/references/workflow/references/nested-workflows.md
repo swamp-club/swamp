@@ -376,3 +376,34 @@ swamp workflow resume  <parent> --run <parent-run-id>
 - **Cycle detection** - workflow A calling workflow B calling workflow A is
   rejected with a clear error
 - The child workflow run is tracked as a separate run in workflow history
+
+## Placement on workers
+
+A child runs where the step that calls it would run, so a workflow behaves the
+same on a local swamp, on serve, and on serve with workers.
+
+```yaml
+jobs:
+  - name: install
+    target: web-1 # caddy and the sudo child both run on web-1
+    steps:
+      - name: caddy
+        task: { type: model_method, modelIdOrName: caddy, methodName: install }
+      - name: setcap
+        task: { type: workflow, workflowIdOrName: sudo-setcap }
+      - name: audit
+        placement: own # the child uses only its own placement
+        task: { type: workflow, workflowIdOrName: audit-report }
+```
+
+- The calling step's merged placement and affinity pin pass to the child and its
+  grandchildren, and stay with a child resumed on its own.
+- `target`, `labels` or `platform` on the calling step place that child.
+- `placement: own` hands nothing down; it is refused beside `target`, `labels`
+  or `platform`, and on any step that is not a workflow call.
+- A child that sets `target`, `labels` or `platform` at any level is placed only
+  by itself and drops the pin; `labels: {}` keeps it on the orchestrator.
+- A child moved to a worker gets its vault secrets on that worker, as any placed
+  step does.
+- `swamp workflow run` output names the step a child inherited its placement
+  from.

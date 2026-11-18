@@ -22,10 +22,14 @@ import type { Job } from "./job.ts";
 import { Step } from "./step.ts";
 import { escapeControlCharacters } from "../control_characters.ts";
 import {
+  inheritedAffinityKey,
+  type InheritedPlacement,
+  inheritPlacement,
   mergePlacementFields,
+  type PlacementFields,
   resolveAffinityKey,
-  resolvePlacement,
   type ResolvedPlacement,
+  resolvePlacement,
 } from "./placement.ts";
 import { StepTask } from "./step_task.ts";
 import type { AssertSeverity } from "./step_task.ts";
@@ -576,6 +580,7 @@ function placementProvenance(
   step: Step,
   workflowMap: ProvenanceMap,
   stepMap: ProvenanceMap,
+  inherited?: PlacementFields,
 ): ProvenanceMap {
   const jobIndex = workflow.jobs.indexOf(job);
   const jobMap = jobIndex >= 0
@@ -583,6 +588,16 @@ function placementProvenance(
     : ProvenanceMap.authored();
   let map = ProvenanceMap.authored();
   for (const field of ["target", "labels", "platform"] as const) {
+    // resolved where it was called, so never evaluated again here
+    if (
+      step.placementFields[field] === undefined &&
+      job.placementFields[field] === undefined &&
+      workflow.placementFields[field] === undefined &&
+      inherited?.[field] !== undefined
+    ) {
+      map = map.graft(field, ProvenanceMap.data());
+      continue;
+    }
     const level = step.placementFields[field] !== undefined
       ? stepMap
       : job.placementFields[field] !== undefined
@@ -3267,6 +3282,8 @@ export interface FanOutLaneContext {
 }
 
 interface StepOptions {
+  /** the calling step's placement, when this is a nested run that inherits it */
+  inheritedPlacement?: InheritedPlacement;
   /** a fan-out lane's step: pinned to the worker, reading only its lane's steps */
   lane?: FanOutLaneContext & {
     readonly stepOf: (authored: string) => string;
@@ -3564,6 +3581,7 @@ export class WorkflowExecutionService {
       ancestorWorkflowIds?: Set<string>;
       parentRunId?: string;
       parentRun?: ParentRunRef;
+      inheritedPlacement?: InheritedPlacement;
       /**
        * The parent run's redactor and sensitive-value record, passed to a
        * nested run so values the parent resolved stay recorded and masked.
@@ -3959,6 +3977,9 @@ export class WorkflowExecutionService {
         if (options?.parentRun) {
           run.recordParentRun(options.parentRun);
         }
+        if (options?.inheritedPlacement) {
+          run.recordInheritedPlacement(options.inheritedPlacement);
+        }
         if (runInputs) {
           run.captureInputs(runInputs);
           run.captureInputsProvenance(
@@ -4083,6 +4104,7 @@ export class WorkflowExecutionService {
       }
 
       const stepOpts: StepOptions = {
+        inheritedPlacement: options?.inheritedPlacement,
         authoredExpressions,
         authoredWorkflow,
         lastEvaluated: options?.lastEvaluated,
@@ -5047,6 +5069,7 @@ export class WorkflowExecutionService {
         ? existingRun.parentRun.ref
         : undefined;
       const stepOpts: StepOptions = {
+        inheritedPlacement: existingRun.inheritedPlacement,
         authoredExpressions,
         authoredWorkflow: workflow,
         workflowNestingDepth: parentLink?.nestingDepth,
@@ -7367,6 +7390,11 @@ export class WorkflowExecutionService {
         WorkflowExecutionEvent,
         unknown
       >((push) => {
+        const inheritedFields = inheritPlacement(options.inheritedPlacement, [
+          workflow.placementFields,
+          job.placementFields,
+          step.placementFields,
+        ]);
         const ctx: StepExecutionContext = {
           workflowId: workflow.id,
           workflowRunId: run.id,
@@ -7413,7 +7441,10 @@ export class WorkflowExecutionService {
           workflowRepo: this.workflowRepo,
           workflowRunRepo: this.runRepo,
           workflowGateService: this.workflowGateService,
-          workflowPlacement: workflow.placementFields,
+          workflowPlacement: mergePlacementFields(
+            inheritedFields,
+            workflow.placementFields,
+          ),
           jobPlacement: job.placementFields,
           placementProvenance: placementProvenance(
             workflow,
@@ -7422,8 +7453,17 @@ export class WorkflowExecutionService {
             options.workflowProvenance ?? ProvenanceMap.authored(),
             (options.stepProvenance ?? StepProvenanceOverlay.authored())
               .forStep(step).raw,
+            inheritedFields,
           ),
-          affinityKey: options.lane ? undefined : resolveAffinityKey(
+          affinityKey: options.lane ? undefined : inheritedAffinityKey(
+            options.inheritedPlacement,
+            [
+              workflow.placementFields,
+              job.placementFields,
+              step.placementFields,
+            ],
+            job.affinity,
+          ) ?? resolveAffinityKey(
             workflow.affinity,
             job.affinity,
             run.id,
@@ -7845,6 +7885,84 @@ export class WorkflowExecutionService {
     return undefined;
   }
 
+  /**
+   * where the calling step would run, resolved in the caller's context, so a
+   * child runs there unless the step says own or the child places itself
+   */
+  private async callerPlacement(
+    workflow: Workflow,
+    run: WorkflowRun,
+    job: Job,
+    step: Step,
+    stepName: string,
+    expressionContext: ExpressionContext | undefined,
+    options: StepOptions,
+  ): Promise<InheritedPlacement | undefined> {
+    if (step.placementMode === "own") return undefined;
+    const inheritedFields = inheritPlacement(options.inheritedPlacement, [
+      workflow.placementFields,
+      job.placementFields,
+      step.placementFields,
+    ]);
+    const fields = mergePlacementFields(
+      mergePlacementFields(
+        mergePlacementFields(inheritedFields, workflow.placementFields),
+        job.placementFields,
+      ),
+      step.placementFields,
+    );
+    const placement = resolvePlacement(fields);
+    if (!placement) return undefined;
+    const secretBag = new VaultSecretBag(options.sensitiveValues.sentinels);
+    const pass = expressionContext
+      ? await this.expressionEvaluator.passEvaluatorFor(
+        options.sensitiveValues,
+        { secretBag, location: stepName },
+      )
+      : undefined;
+    if (expressionContext && pass) {
+      await pass.prepare([placement], expressionContext);
+    }
+    const { placement: resolved } = await resolvePlacementExpressions(
+      placement,
+      placementProvenance(
+        workflow,
+        job,
+        step,
+        options.workflowProvenance ?? ProvenanceMap.authored(),
+        (options.stepProvenance ?? StepProvenanceOverlay.authored())
+          .forStep(step).raw,
+        inheritedFields,
+      ),
+      {
+        evaluate: pass
+          ? (expr, context) => pass.evaluate(expr, context)
+          : undefined,
+        expressionContext,
+        authoredExpressions: options.authoredExpressions,
+        expressionEvaluator: this.expressionEvaluator,
+        secretRedactor: options.secretRedactor,
+        secretBag,
+        location: stepName,
+      },
+    );
+    return {
+      fields: {
+        target: resolved.target,
+        labels: resolved.labels,
+        platform: resolved.platform,
+        queueTimeout: fields?.queueTimeout,
+      },
+      affinityKey: inheritedAffinityKey(
+        options.inheritedPlacement,
+        [workflow.placementFields, job.placementFields, step.placementFields],
+        job.affinity,
+      ) ??
+        resolveAffinityKey(workflow.affinity, job.affinity, run.id, job.name),
+      source: { workflowName: workflow.name, jobName: job.name, stepName },
+    };
+  }
+
   private async *runWorkflowStep(
     workflow: Workflow,
     run: WorkflowRun,
@@ -7953,6 +8071,18 @@ export class WorkflowExecutionService {
         )
       ) as string,
     };
+
+    const inheritedPlacement = await inStepReport(() =>
+      this.callerPlacement(
+        workflow,
+        run,
+        job,
+        step,
+        stepName,
+        expressionContext,
+        options,
+      )
+    );
 
     const depth = options.workflowNestingDepth ?? 0;
     if (depth >= MAX_WORKFLOW_NESTING_DEPTH) {
@@ -8123,6 +8253,7 @@ export class WorkflowExecutionService {
       workflowNestingDepth: depth + 1,
       ancestorWorkflowIds: childAncestors,
       parentRunId: run.id,
+      inheritedPlacement,
       parentRun: {
         workflowId: workflow.id,
         workflowName: workflow.name,

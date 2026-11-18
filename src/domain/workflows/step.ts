@@ -30,6 +30,9 @@ import { addRemovedDriverFieldIssues } from "../removed_driver_fields.ts";
 import { rejectUnknownKeys } from "./unknown_keys.ts";
 import { nodeName } from "./node_name.ts";
 import {
+  declaresPlacement,
+  type NestedPlacementMode,
+  NestedPlacementModeSchema,
   type PlacementFields,
   PlacementFieldsSchema,
   type ResolvedPlacement,
@@ -63,9 +66,35 @@ export const StepObjectSchema = z.object({
   dataOutputOverrides: z.array(DataOutputOverrideSchema).optional(),
   allowFailure: z.boolean().default(false),
   ...PlacementFieldsSchema.shape,
+  placement: NestedPlacementModeSchema.optional(),
   guard: z.string().optional(),
   writes: z.boolean().optional(),
 });
+
+function refineNestedPlacementMode(
+  data: z.infer<typeof StepObjectSchema>,
+  ctx: z.RefinementCtx,
+): void {
+  if (data.placement === undefined) return;
+  if (data.task.type !== "workflow") {
+    ctx.addIssue({
+      code: "custom",
+      message: `Step "${data.name}": placement applies only to a step whose ` +
+        `task is a workflow.`,
+      path: ["placement"],
+    });
+    return;
+  }
+  if (data.placement === "own" && declaresPlacement(data)) {
+    ctx.addIssue({
+      code: "custom",
+      message: `Step "${data.name}": placement own runs the child by its ` +
+        `own placement, so it cannot be combined with target, labels or ` +
+        `platform on the same step.`,
+      path: ["placement"],
+    });
+  }
+}
 
 /**
  * one line, because schema errors escape control characters and a newline would
@@ -104,7 +133,10 @@ export const StepSchema = z.preprocess(
   addRemovedDriverFieldIssues,
   z.preprocess(
     rejectUnknownKeys("step", Object.keys(StepObjectSchema.shape)),
-    z.preprocess(rejectStringStepDependsOn, StepObjectSchema),
+    z.preprocess(
+      rejectStringStepDependsOn,
+      StepObjectSchema.superRefine(refineNestedPlacementMode),
+    ),
   ),
 );
 
@@ -136,6 +168,7 @@ export interface CreateStepProps {
   labels?: Record<string, string>;
   platform?: string;
   queueTimeout?: number;
+  placementMode?: NestedPlacementMode;
   guard?: string;
   writes?: boolean;
 }
@@ -157,6 +190,7 @@ export class Step {
     readonly queueTimeout: number | undefined,
     readonly guard: string | undefined,
     readonly writes: boolean | undefined,
+    readonly placementMode: NestedPlacementMode | undefined,
   ) {}
 
   static create(props: CreateStepProps): Step {
@@ -177,6 +211,7 @@ export class Step {
       labels: props.labels,
       platform: props.platform,
       queueTimeout: props.queueTimeout,
+      placement: props.placementMode,
       guard: props.guard,
       writes: props.writes,
     });
@@ -222,6 +257,7 @@ export class Step {
       validated.queueTimeout,
       validated.guard,
       validated.writes,
+      validated.placement,
     );
   }
 
@@ -270,6 +306,7 @@ export class Step {
       labels: this.labels,
       platform: this.platform,
       queueTimeout: this.queueTimeout,
+      placement: this.placementMode,
       guard: this.guard,
       writes: this.writes,
     };

@@ -94,3 +94,57 @@ export function resolveAffinityKey(
   if (jobAffinity) return `${runId}:${jobName}`;
   return undefined;
 }
+
+export const NestedPlacementModeSchema = z.enum(["inherit", "own"]);
+
+export type NestedPlacementMode = z.infer<typeof NestedPlacementModeSchema>;
+
+/** the calling step's placement, resolved where it was called */
+export const InheritedPlacementSchema = z.object({
+  fields: PlacementFieldsSchema,
+  affinityKey: z.string().min(1).optional(),
+  source: z.object({
+    workflowName: z.string().min(1),
+    jobName: z.string().min(1),
+    stepName: z.string().min(1),
+  }),
+});
+
+export type InheritedPlacement = z.infer<typeof InheritedPlacementSchema>;
+
+export function declaresPlacement(
+  fields: PlacementFields | undefined,
+): boolean {
+  return fields !== undefined &&
+    (fields.target !== undefined || fields.labels !== undefined ||
+      fields.platform !== undefined);
+}
+
+/**
+ * the caller's fields, unless the child places itself at any level: a child
+ * that places itself is placed only by itself, so an inherited target can
+ * never outrank the labels it chose
+ */
+export function inheritPlacement(
+  inherited: InheritedPlacement | undefined,
+  childLevels: ReadonlyArray<PlacementFields | undefined>,
+): PlacementFields | undefined {
+  if (inherited === undefined) return undefined;
+  if (childLevels.some(declaresPlacement)) return undefined;
+  return inherited.fields;
+}
+
+/**
+ * the caller's pin holds unless the child places itself at any level or its
+ * job opts out of affinity, so a child stays on the worker its caller is on
+ */
+export function inheritedAffinityKey(
+  inherited: InheritedPlacement | undefined,
+  childLevels: ReadonlyArray<PlacementFields | undefined>,
+  childJobAffinity: boolean | undefined,
+): string | undefined {
+  if (inherited?.affinityKey === undefined) return undefined;
+  if (childJobAffinity === false) return undefined;
+  if (childLevels.some(declaresPlacement)) return undefined;
+  return inherited.affinityKey;
+}
