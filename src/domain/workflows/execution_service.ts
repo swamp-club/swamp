@@ -5610,6 +5610,8 @@ export class WorkflowExecutionService {
         const cleanupOptions = {
           ...options,
           signal: cleanupSignal,
+          // a cancelled run never parks, so the handover holds no cleanup step
+          handover: undefined,
           cleanupStepLevel: true,
         };
         const levelOptions = cleanupMode ? cleanupOptions : options;
@@ -6492,6 +6494,8 @@ export class WorkflowExecutionService {
         cleanupOptions ??= {
           ...laneOptions,
           signal: cleanupGraceSignal(CLEANUP_GRACE_TIMEOUT_MS),
+          // a cancelled run never parks, so the handover holds no cleanup step
+          handover: undefined,
           cleanupStepLevel: true,
         };
         for await (
@@ -8719,6 +8723,9 @@ export class WorkflowExecutionService {
     const cleanupStepOpts: StepOptions = {
       ...stepOpts,
       signal: cleanupSignal,
+      // a cancelled run ends cancelled, never parked, so a shutdown's handover
+      // must not keep its cleanup from starting
+      handover: undefined,
       cleanupJobLevel: true,
     };
 
