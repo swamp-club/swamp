@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { SignInCodeStore } from "../domain/access/sign_in_code.ts";
 import { UserError } from "../domain/errors.ts";
 import {
   createHostedWorkspaceDeps,
@@ -35,6 +36,8 @@ export interface HostRootWorkspaces {
   readonly services: HostedWorkspaceDeps;
   /** read per request: a reload changes the lists and the name cache */
   readonly rootAccess: () => HostedWorkspaceRootAccess;
+  /** in this process alone: only the root the host started holds the folder, and its address routes here */
+  readonly signInCodes: SignInCodeStore;
 }
 
 // a hand-started root may carry these; they would point the provisioner at another repo
@@ -63,6 +66,7 @@ export function hostRootWorkspaces(
       addressOf: (name) => hostedWorkspaceAddress(address, name),
     }),
     rootAccess,
+    signInCodes: new SignInCodeStore(),
   };
 }
 

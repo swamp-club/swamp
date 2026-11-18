@@ -21,6 +21,7 @@ import { assert, assertEquals } from "@std/assert";
 import { fromFileUrl } from "@std/path";
 import { resolveHttpRoute } from "../src/serve/http_request_span.ts";
 import {
+  AUTH_EXCHANGE_PATH,
   SERVE_ACTION_PATH,
   SERVE_REQUEST_PATH,
 } from "../src/serve/protocol.ts";
@@ -33,6 +34,7 @@ const SERVE_COMMAND = fromFileUrl(
 const ROUTE_CONSTANTS: Readonly<Record<string, string>> = {
   SERVE_REQUEST_PATH,
   SERVE_ACTION_PATH,
+  AUTH_EXCHANGE_PATH,
 };
 
 const LITERAL_ROUTE = /===\s*"(\/[^"]*)"/g;

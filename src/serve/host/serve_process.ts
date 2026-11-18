@@ -37,6 +37,8 @@ export interface ServeChildSpec {
   readonly oauthClient?: HostOAuthClient | null;
   /** the root's alone: passed as --host-workspaces-dir and --host-address */
   readonly hostWorkspaces?: HostWorkspacesHandle;
+  /** a workspace's alone, when the host has a root: passed as --root-address */
+  readonly rootAddress?: string;
 }
 
 /** what makes a serve a host's root, able to answer workspace requests */
@@ -47,6 +49,7 @@ export interface HostWorkspacesHandle {
 
 export const HOST_WORKSPACES_DIR_FLAG = "--host-workspaces-dir";
 export const HOST_ADDRESS_FLAG = "--host-address";
+export const ROOT_ADDRESS_FLAG = "--root-address";
 
 /** `code` is null when the child died by a signal or could not be spawned. */
 export interface ServeChildExit {
@@ -92,6 +95,9 @@ export function serveChildArgs(spec: ServeChildSpec): string[] {
       spec.hostWorkspaces.address,
     ]
     : [];
+  const root = spec.rootAddress !== undefined
+    ? [ROOT_ADDRESS_FLAG, spec.rootAddress]
+    : [];
   return [
     "serve",
     "--json",
@@ -107,6 +113,7 @@ export function serveChildArgs(spec: ServeChildSpec): string[] {
     "--exit-on-stdin-close",
     "--repo-dir",
     spec.repoDir,
+    ...root,
     ...client,
     ...workspaces,
   ];

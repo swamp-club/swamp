@@ -36,7 +36,10 @@ import type { HostedWorkspaceRootAccess } from "../src/libswamp/hosted_workspace
 import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
 import {
   NOT_A_HOST_ROOT_CODE,
-  TOKEN_MODE_CREATE_REFUSED_CODE,
+  SIGN_IN_NOT_OFFERED_CODE,
+  SIGN_IN_REFUSED_FOR_CREDENTIAL_CODE,
+  SIGN_IN_REFUSED_FOR_INTEGRATION_CODE,
+  SIGN_IN_REFUSED_FOR_PRINCIPAL_CODE,
 } from "../src/serve/handlers/workspace_handlers.ts";
 import { hostRootWorkspaces } from "../src/serve/host_root_workspaces.ts";
 import type { ListenedServe } from "../src/serve/listening_line.ts";
@@ -115,6 +118,9 @@ interface Root {
   ctx(options?: ServeCtxOptions, grants?: Grant[]): ConnectionContext;
   /** one host rescan, as the folder watcher runs it */
   rescan(): Promise<void>;
+  /** a token-mode root over the same folder, as a root started in token mode serves */
+  tokenCtx(): ConnectionContext;
+  readonly hosted: NonNullable<ConnectionContext["hostedWorkspaces"]>;
 }
 
 async function withRoot(fn: (root: Root) => Promise<void>): Promise<void> {
@@ -173,6 +179,15 @@ async function withRoot(fn: (root: Root) => Promise<void>): Promise<void> {
           ),
         rescan: async () =>
           await reconciler.reconcile(await scanWorkspaces(workspacesDir)),
+        tokenCtx: () =>
+          createServeCtx(repo, [ROOT_ADMIN_GRANT("alice")], {
+            authMode: "token",
+            hostedWorkspaces: {
+              ...hostedWorkspaces,
+              rootAccess: () => ({ ...ROOT_ACCESS, mode: "token" }),
+            },
+          }),
+        hosted: hostedWorkspaces,
       });
     } finally {
       await supervisor.shutdown();
@@ -321,28 +336,23 @@ Deno.test("serve workspace requests: a serve that is not a host's root refuses e
   });
 });
 
-Deno.test("serve workspace requests: a token-mode root refuses create, naming why, and still suspends and resumes", async () => {
+Deno.test("serve workspace requests: a token-mode root creates a workspace whose admin is its creator, and suspends and resumes it", async () => {
   await withRoot(async (root) => {
-    await sendRequest(
-      root.ctx(),
-      request("workspace.create", "edge-dns"),
-      ALICE,
-    );
-    const tokenRoot = root.ctx({ authMode: "token" });
+    const tokenRoot = root.tokenCtx();
     const alice: Principal = { kind: "user", id: "alice" };
-    const refused = errorFrame(
+    const created = reply(
       await sendRequest(
         tokenRoot,
         request("workspace.create", "billing"),
         alice,
       ),
-    )?.error;
-    assertEquals(refused?.code, TOKEN_MODE_CREATE_REFUSED_CODE);
-    assertStringIncludes(refused?.message ?? "", "token mode");
-    assertEquals(
-      (await scanWorkspaces(root.workspacesDir)).wantedFiles,
-      ["edge-dns"],
+      "workspace.create",
     );
+    assertEquals(created.name, "billing");
+    const auth = loadServeConfig(undefined, join(root.workspacesDir, "billing"))
+      ?.auth;
+    assertEquals(auth?.mode, "token");
+    assertEquals(auth?.admins, ["user:alice"]);
     for (
       const [type, wanted] of [
         ["workspace.resume", "active"],
@@ -350,11 +360,152 @@ Deno.test("serve workspace requests: a token-mode root refuses create, naming wh
       ] as const
     ) {
       const changed = reply(
-        await sendRequest(tokenRoot, request(type, "edge-dns"), alice),
+        await sendRequest(tokenRoot, request(type, "billing"), alice),
         type,
       );
       assertEquals(changed.wanted, wanted, type);
     }
+  });
+});
+
+const ROOT_TOKEN_EXPIRES_AT = "2099-01-01T00:00:00.000Z";
+const ALICE_LOGIN = {
+  tokenExpiresAt: ROOT_TOKEN_EXPIRES_AT,
+  identity: { username: "alice", email: "alice@example.com" },
+  collectives: ["acme"],
+  groups: ["ops"],
+};
+
+Deno.test("serve workspace requests: any person signed in to the root gets a code the named workspace redeems once for who they are", async () => {
+  await withRoot(async (root) => {
+    const ctx = root.ctx();
+    await sendRequest(ctx, request("workspace.create", "edge-dns"), ALICE);
+    const issued = reply(
+      await sendRequest(ctx, request("workspace.sign-in", "edge-dns"), BOB, {
+        login: { ...ALICE_LOGIN, identity: { username: "bob" } },
+      }),
+      "workspace.sign-in",
+    ) as { name: string; code: string; expiresAt: string };
+    assertEquals(issued.name, "edge-dns");
+    assert(Date.parse(issued.expiresAt) - Date.now() <= 60_000);
+    assertEquals(
+      await root.hosted.signInCodes.redeem(issued.code, "edge-dns"),
+      {
+        principal: "user:sub-bob",
+        username: "bob",
+        email: null,
+        collectives: ["acme"],
+        groups: ["ops"],
+        expiresAt: ROOT_TOKEN_EXPIRES_AT,
+      },
+    );
+    assertEquals(
+      await root.hosted.signInCodes.redeem(issued.code, "edge-dns"),
+      null,
+    );
+  });
+});
+
+Deno.test("serve workspace requests: a code for an unknown workspace is refused, and an invalid name issues nothing", async () => {
+  await withRoot(async (root) => {
+    const ctx = root.ctx();
+    for (const name of ["edge-dns", "Edge-DNS"]) {
+      const frames = await sendRequest(
+        ctx,
+        request("workspace.sign-in", name),
+        ALICE,
+        { login: ALICE_LOGIN },
+      );
+      assert(errorFrame(frames)?.error?.code, name);
+    }
+    assertEquals(root.hosted.signInCodes.size, 0);
+  });
+});
+
+Deno.test("serve workspace requests: sign-in is refused to an integration, a worker, a socket with no token expiry, a none-mode root and a serve that is no root", async () => {
+  await withRoot(async (root) => {
+    const ctx = root.ctx();
+    await sendRequest(ctx, request("workspace.create", "edge-dns"), ALICE);
+    const cases: [string, Promise<Frame[]>][] = [
+      [
+        SIGN_IN_REFUSED_FOR_INTEGRATION_CODE,
+        sendRequest(ctx, request("workspace.sign-in", "edge-dns"), ALICE, {
+          client: "integration:dash",
+          login: ALICE_LOGIN,
+        }),
+      ],
+      [
+        SIGN_IN_REFUSED_FOR_PRINCIPAL_CODE,
+        sendRequest(
+          ctx,
+          request("workspace.sign-in", "edge-dns"),
+          { kind: "worker", id: "edge-1" },
+          { login: ALICE_LOGIN },
+        ),
+      ],
+      [
+        SIGN_IN_REFUSED_FOR_CREDENTIAL_CODE,
+        sendRequest(ctx, request("workspace.sign-in", "edge-dns"), ALICE),
+      ],
+      [
+        SIGN_IN_NOT_OFFERED_CODE,
+        sendRequest(
+          createServeCtx(root.repo, undefined, {
+            hostedWorkspaces: root.hosted,
+          }),
+          request("workspace.sign-in", "edge-dns"),
+          null,
+        ),
+      ],
+      [
+        NOT_A_HOST_ROOT_CODE,
+        sendRequest(
+          root.ctx({ hostedWorkspaces: undefined }),
+          request("workspace.sign-in", "edge-dns"),
+          ALICE,
+          { login: ALICE_LOGIN },
+        ),
+      ],
+    ];
+    for (const [code, frames] of cases) {
+      assertEquals(errorFrame(await frames)?.error?.code, code);
+    }
+    assertEquals(root.hosted.signInCodes.size, 0);
+  });
+});
+
+Deno.test("serve workspace requests: a direct CLI client signs in like any person", async () => {
+  await withRoot(async (root) => {
+    const ctx = root.ctx();
+    await sendRequest(ctx, request("workspace.create", "edge-dns"), ALICE);
+    const frames = await sendRequest(
+      ctx,
+      request("workspace.sign-in", "edge-dns"),
+      ALICE,
+      { client: "direct:cli", login: ALICE_LOGIN },
+    );
+    reply(frames, "workspace.sign-in");
+  });
+});
+
+Deno.test("serve workspace requests: a sign-in is audited with the caller and the workspace, and the code is in no audit record", async () => {
+  await withRoot(async (root) => {
+    const ctx = root.ctx();
+    await sendRequest(ctx, request("workspace.create", "edge-dns"), ALICE);
+    const audit = recordAudit(ctx);
+    const issued = reply(
+      await sendRequest(ctx, request("workspace.sign-in", "edge-dns"), ALICE, {
+        login: ALICE_LOGIN,
+      }),
+      "workspace.sign-in",
+    ) as { code: string };
+    const response = audit.find((event) =>
+      event.action === "workspace.sign-in" && event.stage === "response"
+    );
+    assertEquals(response?.principalId, ALICE.id);
+    assertEquals(response?.resourceName, "edge-dns");
+    assertEquals(response?.outcome, "success");
+    assert(!JSON.stringify(audit).includes(issued.code.split(".")[1]));
   });
 });
 

@@ -333,6 +333,7 @@ Deno.test("authenticateServerToken: reads and validates a token without a model 
     groups: ["developers"],
     tokenName: "test-token",
     tokenCreatedAt: "2026-01-01T00:00:00.000Z",
+    tokenExpiresAt: "2099-01-01T00:00:00.000Z",
   });
 });
 

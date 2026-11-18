@@ -118,3 +118,32 @@ Deno.test("follower requests: the action route forwards only after authenticatio
     "the forward must pass the bytes it read: the request body is consumed",
   );
 });
+
+Deno.test("follower requests: the sign-in exchange and the code redeem are answered on the node that got them, never forwarded", async () => {
+  const source = await Deno.readTextFile(
+    join(ROOT, "src", "cli", "commands", "serve.ts"),
+  );
+  const open = source.indexOf("if (authPath === AUTH_EXCHANGE_PATH) {");
+  assert(open > 0, "serve's exchange route was not found");
+  const close = source.indexOf('=== "/auth/info"', open);
+  assert(close > open, "serve's /auth/info route no longer follows them");
+  const block = source.slice(open, close);
+  assert(
+    block.includes("handleSignInCodeRedeem("),
+    "the code redeem route sits between the exchange and /auth/info",
+  );
+  for (const forward of ["followerHttpForward(", "leaderLink", ".forward("]) {
+    assert(
+      !block.includes(forward),
+      `the exchange and redeem routes must not forward (${forward}): ` +
+        "the codes live in the process that issued them",
+    );
+  }
+  for (
+    const file of ["auth_exchange_handler.ts", "sign_in_code_redeem_handler.ts"]
+  ) {
+    const handler = await Deno.readTextFile(join(ROOT, "src", "serve", file));
+    assert(!handler.includes("followerHttpForward"), file);
+    assert(!handler.includes("leader_link"), file);
+  }
+});

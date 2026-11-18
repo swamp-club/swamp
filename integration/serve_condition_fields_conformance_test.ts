@@ -202,6 +202,7 @@ const CATEGORIES: Record<string, Category> = {
   "workspace.suspend": "access",
   "workspace.resume": "access",
   "workspace.delete": "access",
+  "workspace.sign-in": "access",
 
   "vault.annotate": "vault",
   "vault.create": "vault",

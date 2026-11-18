@@ -33,6 +33,17 @@ export function hostedWorkspaceAddress(
   return `${hostAddress}${WORKSPACE_PREFIX}/${name}`;
 }
 
+/** the workspace a child's address names under the root's; null when it names none */
+export function workspaceNameUnder(
+  rootAddress: string,
+  address: string,
+): string | null {
+  const prefix = `${rootAddress}${WORKSPACE_PREFIX}/`;
+  if (!address.startsWith(prefix)) return null;
+  const name = address.slice(prefix.length);
+  return isWorkspaceName(name) ? name : null;
+}
+
 /**
  * where a request path goes: the `/w/` prefix belongs to the host, so a path
  * under it never reaches the root, even when it names no valid workspace

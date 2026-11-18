@@ -444,6 +444,13 @@ Deno.test("parseAuthInfo: accepts known modes only", () => {
   assertEquals(parseAuthInfo({ mode: "none", local: "yes" }), {
     mode: "none",
   });
+  assertEquals(parseAuthInfo({ mode: "oauth", exchange: true }), {
+    mode: "oauth",
+    exchange: true,
+  });
+  assertEquals(parseAuthInfo({ mode: "token", exchange: "yes" }), {
+    mode: "token",
+  });
   assertEquals(parseAuthInfo({ mode: "magic" }), null);
   assertEquals(parseAuthInfo(null), null);
   assertEquals(parseAuthInfo("none"), null);

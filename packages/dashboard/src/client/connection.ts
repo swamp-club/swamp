@@ -36,6 +36,8 @@ export interface AuthInfo {
    * from the CLI with no serve behind it. Serve never sends it.
    */
   local?: true;
+  /** a host's workspace that takes a sign-in code from its root at `/auth/exchange` */
+  exchange?: true;
 }
 
 /** Aborts a token probe or `/auth/info` request that has not answered. */
@@ -321,7 +323,7 @@ export function socketProtocols(
 /** Validates an `/auth/info` body. */
 export function parseAuthInfo(value: unknown): AuthInfo | null {
   if (typeof value !== "object" || value === null) return null;
-  const { mode, verificationBaseUri, local } = value as Record<
+  const { mode, verificationBaseUri, local, exchange } = value as Record<
     string,
     unknown
   >;
@@ -330,6 +332,7 @@ export function parseAuthInfo(value: unknown): AuthInfo | null {
     mode,
     ...(typeof verificationBaseUri === "string" ? { verificationBaseUri } : {}),
     ...(local === true ? { local } : {}),
+    ...(exchange === true ? { exchange } : {}),
   };
 }
 

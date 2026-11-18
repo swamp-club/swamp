@@ -60,6 +60,8 @@ const NO_CEILING_DECISION: Readonly<Record<string, string>> = {
     "aborts the caller's own request; cancelling a run is covered by the run case below",
   "workspace.list":
     "names only the workspaces the caller could get, each decided through the ceiling, so with none it decides nothing and shows nothing",
+  "workspace.sign-in":
+    "refuses an integration or delegation caller itself, and a code it issues carries no ceiling a workspace would honour",
 };
 
 function minimal(schema: unknown): unknown {

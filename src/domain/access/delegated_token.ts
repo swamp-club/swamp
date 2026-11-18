@@ -19,6 +19,7 @@
 
 import { timingSafeEqual } from "../crypto/timing_safe_equal.ts";
 import { generateOpaqueToken } from "../remote/session_credential.ts";
+import { SIGN_IN_CODE_PREFIX } from "./sign_in_code.ts";
 
 export const DELEGATED_ACCESS_PREFIX = "swda1";
 export const DELEGATED_REFRESH_PREFIX = "swdr1";
@@ -33,6 +34,7 @@ export const RESERVED_TOKEN_NAMES: readonly string[] = [
   DELEGATED_REFRESH_PREFIX,
   DELEGATION_REDEEM_PREFIX,
   "swi1",
+  SIGN_IN_CODE_PREFIX,
 ];
 
 export type DelegatedSecretKind = "access" | "refresh" | "redeem";

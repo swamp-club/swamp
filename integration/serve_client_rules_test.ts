@@ -47,12 +47,14 @@ function callBody(source: string, open: number): string {
   return source.slice(open);
 }
 
-// Each emits with no caller's credential behind it: login before a token
-// exists, system, scheduler, webhook, worker.
+// Each emits with no caller's credential behind it: login or a sign-in code
+// before a token exists, system, scheduler, webhook, worker.
 const NO_CALLER_CREDENTIAL = [
+  "src/serve/auth_exchange_handler.ts#1",
   "src/serve/device_auth_handler.ts#1",
   "src/serve/dispatch_secret_loads.ts#1",
   "src/serve/handlers/shared.ts#4",
+  "src/serve/sign_in_code_redeem_handler.ts#1",
   "src/serve/trigger_audit.ts#1",
   "src/serve/trigger_audit.ts#2",
 ];

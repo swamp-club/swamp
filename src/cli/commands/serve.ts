@@ -38,7 +38,16 @@ import { hostRootWorkspaces } from "../../serve/host_root_workspaces.ts";
 import {
   HOST_ADDRESS_FLAG,
   HOST_WORKSPACES_DIR_FLAG,
+  ROOT_ADDRESS_FLAG,
 } from "../../serve/host/serve_process.ts";
+import {
+  authInfoBody,
+  exchangeOffered,
+  exchangeTarget,
+  handleAuthExchange,
+} from "../../serve/auth_exchange_handler.ts";
+import { createSignInCodeRedeemClient } from "../../serve/sign_in_code_redeem_client.ts";
+import { AUTH_EXCHANGE_PATH } from "../../serve/protocol.ts";
 import { DelegationSyncService } from "../../serve/delegation_sync_service.ts";
 import {
   type DelegationRouteDeps,
@@ -250,8 +259,10 @@ import {
 import { subscribeTokenWriteNudges } from "../../serve/token_write_nudges.ts";
 import {
   createDeviceAuthDeps,
+  createExchangeTokenMinter,
   handleDeviceAuth,
 } from "../../serve/device_auth_handler.ts";
+import { handleSignInCodeRedeem } from "../../serve/sign_in_code_redeem_handler.ts";
 import {
   dashboardSessionLimited,
   handleDashboardSession,
@@ -2146,6 +2157,12 @@ export const serveCommand = new Command()
     "The host's public address, under which each workspace is reached",
     { hidden: true },
   )
+  // the host gives this to each workspace when it has a root: no serve.yaml key or env var
+  .option(
+    `${ROOT_ADDRESS_FLAG} <url:string>`,
+    "The host root's public address, where this workspace redeems sign-in codes",
+    { hidden: true },
+  )
   .option(
     "--enable-internal-api",
     "Enable the /internal/runs endpoint for full run history access " +
@@ -2267,6 +2284,11 @@ export const serveCommand = new Command()
       }),
     );
 
+    const signInExchange = exchangeTarget(
+      options.rootAddress as string | undefined,
+      options.address as string | undefined,
+    );
+
     const port = merged.port;
     const host = merged.host;
     const certFile = merged.certFile;
@@ -2331,6 +2353,22 @@ export const serveCommand = new Command()
       key = await readTlsFile("private key", keyFile);
     }
     const caCerts = await loadServeCaCerts(merged.caCert);
+    let redeemHttpClient: Deno.HttpClient | undefined;
+    const signInCodeRedeemer = signInExchange === undefined
+      ? undefined
+      : createSignInCodeRedeemClient({
+        ...signInExchange,
+        ...(caCerts !== undefined && caCerts.length > 0
+          ? {
+            fetch: (input, init) => {
+              redeemHttpClient ??= Deno.createHttpClient({
+                caCerts: [...caCerts],
+              });
+              return fetch(input, { ...init, client: redeemHttpClient });
+            },
+          }
+          : {}),
+      });
 
     if (cert) {
       for (const warning of validateEndEntityCert(cert)) {
@@ -8235,13 +8273,69 @@ export const serveCommand = new Command()
           if (deviceAuthResponse) return deviceAuthResponse;
         }
 
+        // the code alone reaches this route; the caller's root token never does
+        if (authPath === AUTH_EXCHANGE_PATH) {
+          const offered = signInCodeRedeemer !== undefined &&
+            exchangeOffered(signInExchange, authConfig.mode);
+          if (offered) {
+            const exchangeRateCheck = checkIpBurst(clientAddress());
+            if (!exchangeRateCheck.allowed) {
+              return new Response(
+                JSON.stringify({ error: "Too Many Requests" }),
+                {
+                  status: 429,
+                  headers: {
+                    "content-type": "application/json",
+                    "Retry-After": String(exchangeRateCheck.retryAfterSeconds),
+                  },
+                },
+              );
+            }
+          }
+          const exchangeResponse = await handleAuthExchange(
+            req,
+            offered
+              ? {
+                mode: authConfig.mode as "token" | "oauth",
+                admissionLists: () => authConfig,
+                redeemer: signInCodeRedeemer,
+                mint: createExchangeTokenMinter(
+                  resolvedRepoDir,
+                  repoContext,
+                  repoMarker?.defaultVault,
+                  syncService,
+                  serveNamespace,
+                  syncGate,
+                  connectionCtx.confirmReplicated,
+                ),
+                sourceIp: clientAddress(),
+                auditEmitter: connectionCtx.auditEmitter,
+                instanceId: connectionCtx.instanceId,
+                onUsernamesResolved: rememberUsernames,
+              }
+              : null,
+          );
+          if (exchangeResponse) return exchangeResponse;
+        }
+
+        // answered on this node, never forwarded: the codes it redeems live here
+        if (connectionCtx.hostedWorkspaces !== undefined) {
+          const redeemResponse = await handleSignInCodeRedeem(req, {
+            codes: connectionCtx.hostedWorkspaces.signInCodes,
+            sourceIp: clientAddress(),
+            auditEmitter: connectionCtx.auditEmitter,
+            instanceId: connectionCtx.instanceId,
+          });
+          if (redeemResponse) return redeemResponse;
+        }
+
         if (
           req.method === "GET" && new URL(req.url).pathname === "/auth/info"
         ) {
-          const authInfo: Record<string, string> = { mode: authConfig.mode };
-          if (authConfig.mode === "oauth") {
-            authInfo.verificationBaseUri = authConfig.oauthProvider;
-          }
+          const authInfo = authInfoBody(
+            authConfig,
+            exchangeOffered(signInExchange, authConfig.mode),
+          );
           return new Response(JSON.stringify(authInfo), {
             headers: { "content-type": "application/json" },
           });

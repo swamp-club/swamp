@@ -29,8 +29,12 @@ import type { DelegationLookup } from "../src/domain/access/delegation_directory
 import type { DelegationRecord } from "../src/domain/models/access/delegation_model.ts";
 import {
   setConnectionClient,
+  setConnectionCollectives,
   setConnectionDelegation,
+  setConnectionLoginIdentity,
+  setConnectionTokenExpiresAt,
 } from "../src/serve/handlers/shared.ts";
+import type { ActorIdentity } from "../src/domain/serve_audit/audit_event.ts";
 import { join } from "@std/path";
 import { z } from "zod";
 import { waitFor } from "@swamp-club/swamp-testing";
@@ -274,7 +278,17 @@ export async function sendRequest(
   ctx: ConnectionContext,
   request: ServeRequest,
   principal: Principal | null = CALLER,
-  options: { awaitRuns?: boolean; client?: string } = {},
+  options: {
+    awaitRuns?: boolean;
+    client?: string;
+    /** what a server token login binds to its socket */
+    login?: {
+      tokenExpiresAt?: string;
+      identity?: ActorIdentity;
+      collectives?: readonly string[];
+      groups?: readonly string[];
+    };
+  } = {},
 ): Promise<Frame[]> {
   const sent: string[] = [];
   const socket = {
@@ -290,6 +304,15 @@ export async function sendRequest(
     if (options.client.startsWith("integration:")) {
       setConnectionDelegation(socket, testDelegationOf(options.client));
     }
+  }
+  if (options.login !== undefined) {
+    setConnectionCollectives(
+      socket,
+      options.login.collectives ?? [],
+      options.login.groups ?? [],
+    );
+    setConnectionLoginIdentity(socket, options.login.identity);
+    setConnectionTokenExpiresAt(socket, options.login.tokenExpiresAt);
   }
   const active = new Map<string, AbortController>();
   handleMessage(

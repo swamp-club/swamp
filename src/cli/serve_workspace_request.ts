@@ -74,6 +74,7 @@ const ROOT_MESSAGE_CODES: ReadonlySet<string> = new Set([
   "username_unknown",
   "not_a_user",
   "host_error",
+  // a root from before the sign-in exchange still refuses create in token mode
   "token_mode_create_refused",
 ]);
 

@@ -157,6 +157,9 @@ export async function startServeHost(
           address: config.address,
         },
       }
+      // a workspace signs in through the root, which is reached at the host's address
+      : config.root !== null
+      ? { rootAddress: config.address }
       : {}),
   });
 

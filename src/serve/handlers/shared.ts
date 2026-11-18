@@ -549,6 +549,7 @@ const connectionSourceIp = new WeakMap<WebSocket, string>();
 const connectionLoginIdentity = new WeakMap<WebSocket, ActorIdentity>();
 const connectionClient = new WeakMap<WebSocket, string>();
 const connectionDelegation = new WeakMap<WebSocket, string>();
+const connectionTokenExpiresAt = new WeakMap<WebSocket, string>();
 const connectionCompression = new WeakMap<WebSocket, ConnectionCompression>();
 const principalSockets = new Map<string, Set<WebSocket>>();
 const connectionTokens = new WeakMap<WebSocket, TokenSessionBinding>();
@@ -1077,6 +1078,20 @@ export function getConnectionDelegation(
   return connectionDelegation.get(socket);
 }
 
+export function setConnectionTokenExpiresAt(
+  socket: WebSocket,
+  expiresAt: string | undefined,
+): void {
+  if (expiresAt !== undefined) connectionTokenExpiresAt.set(socket, expiresAt);
+}
+
+/** when the server token that opened the connection expires; unset for a delegated token or none mode */
+export function getConnectionTokenExpiresAt(
+  socket: WebSocket,
+): string | undefined {
+  return connectionTokenExpiresAt.get(socket);
+}
+
 /**
  * Binds what a credential proved to its connection. A follower forwards the
  * credential, so the leader binds the same values from its own read of it.
@@ -1093,6 +1108,7 @@ export function bindAuthenticatedConnection(
     readonly client?: string;
     readonly delegation?: string;
     readonly sessionExpiresAt?: string;
+    readonly tokenExpiresAt?: string;
   },
 ): void {
   setConnectionCollectives(
@@ -1109,6 +1125,7 @@ export function bindAuthenticatedConnection(
   setConnectionLoginIdentity(socket, auth.oauthIdentity);
   setConnectionClient(socket, auth.client);
   setConnectionDelegation(socket, auth.delegation);
+  setConnectionTokenExpiresAt(socket, auth.tokenExpiresAt);
   if (auth.sessionExpiresAt !== undefined) {
     closeAtExpiry(socket, auth.tokenName, auth.sessionExpiresAt);
   }

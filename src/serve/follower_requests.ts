@@ -78,6 +78,8 @@ export const HOST_FOLDER_REQUESTS: ReadonlySet<string> = new Set([
   "workspace.suspend",
   "workspace.resume",
   "workspace.delete",
+  // the codes it issues are held by this node, where the redeem route also lands
+  "workspace.sign-in",
 ]);
 
 export const FOLLOWER_READ_REQUESTS: ReadonlySet<string> = new Set([
