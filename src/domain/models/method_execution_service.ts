@@ -47,10 +47,8 @@ import { markErrorPaths, UserError } from "../errors.ts";
 import type { DataArtifactRef } from "./model_output.ts";
 import { executionErrorFrom, ModelOutput } from "./model_output.ts";
 import { refuseSecretDestinations } from "./secret_destinations.ts";
-import {
-  isEnrollmentTokenType,
-  orderEnrollmentTokenWrite,
-} from "./worker/enrollment_token_write_ordering.ts";
+import { orderEnrollmentTokenWrite } from "./worker/enrollment_token_write_ordering.ts";
+import { isEnrollmentTokenType } from "./worker/enrollment_token_model.ts";
 import { DataOutputValidationService } from "./data_output_validation_service.ts";
 import { DefinitionUpgradeService } from "./definition_upgrade_service.ts";
 import { resolveStaleness } from "../definitions/definition_staleness.ts";
@@ -1770,6 +1768,18 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       const isRemotePlacement = context.placement &&
         hasPlacement(context.placement);
 
+      // refused before anything is recorded, so no output is left running
+      if (isRemotePlacement && isEnrollmentTokenType(context.modelType)) {
+        throw new UserError(
+          `Method '${methodName}' of an enrollment token cannot run with ` +
+            `remote placement: only the serve process writes enrollment ` +
+            `tokens. Clear inherited labels on the step with labels: {}; ` +
+            `an inherited target or platform means moving the step to a ` +
+            `job and workflow that set neither. workflow validate names ` +
+            `where each field comes from.`,
+        );
+      }
+
       // data text is placed for the shell of the host that runs the body: this
       // host's before the merge and checks read the arguments, or the chosen
       // worker's on every dispatch attempt
@@ -2120,17 +2130,6 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
           `Method '${methodName}' declares rollbackOnFailure but has remote ` +
             `placement — deferred-latest writes are not yet supported for ` +
             `remote execution. Remove rollbackOnFailure or run locally.`,
-        );
-      }
-
-      if (isRemotePlacement && isEnrollmentTokenType(context.modelType)) {
-        throw new UserError(
-          `Method '${methodName}' of an enrollment token cannot run with ` +
-            `remote placement: only the orchestrator writes enrollment ` +
-            `tokens. Placement set on a workflow or job applies to each of ` +
-            `its steps, so run this step in a job and workflow without ` +
-            `target, platform or labels; workflow validate names where it ` +
-            `comes from.`,
         );
       }
 

@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { ModelType } from "../model_type.ts";
-import { ENROLLMENT_TOKEN_MODEL_TYPE } from "./enrollment_token_model.ts";
+import { isEnrollmentTokenType } from "./enrollment_token_model.ts";
 
 /** runs fn in order with every other write to enrollment-token records */
 export type EnrollmentTokenWriteOrdering = <T>(
@@ -32,10 +32,6 @@ export function setEnrollmentTokenWriteOrdering(
   ordering: EnrollmentTokenWriteOrdering | null,
 ): void {
   activeOrdering = ordering;
-}
-
-export function isEnrollmentTokenType(modelType: ModelType): boolean {
-  return modelType.normalized === ENROLLMENT_TOKEN_MODEL_TYPE.normalized;
 }
 
 /**

@@ -29,7 +29,7 @@ import {
   type PlacementFields,
   resolvePlacement,
 } from "./placement.ts";
-import { isEnrollmentTokenType } from "../models/worker/enrollment_token_write_ordering.ts";
+import { isEnrollmentTokenType } from "../models/worker/enrollment_token_model.ts";
 import { describePlacement } from "../remote/scheduler.ts";
 import { createWorkflowId } from "./workflow_id.ts";
 import { schemaExpressions } from "./signal_wait.ts";
@@ -131,7 +131,7 @@ export type MethodResolution =
      * refuses when it runs
      */
     reservedTagRefusal?: string;
-    /** the step's behavior type, normalized; absent from older resolvers */
+    /** the step's behavior type, normalized; absent when a resolver does not report it */
     modelType?: string;
   }
   | { status: "model_not_found" }

@@ -3657,3 +3657,24 @@ Deno.test("orderTokenMethodRun: a commit that throws after the write still retur
   assertEquals(writes, 1);
   await gateway.settled();
 });
+
+Deno.test("orderTokenMethodRun: a run that throws after writing still commits inside its turn", async () => {
+  const order: string[] = [];
+  const { gateway } = createHarness({
+    repoContext: checkpointingRepoContext(() => {
+      order.push("commit");
+      return Promise.resolve("committed");
+    }),
+  });
+  const run = gateway.orderTokenMethodRun(() => {
+    order.push("write");
+    return Promise.reject(new Error("output validation failed"));
+  });
+  const next = gateway.serializeTokenWrite(() => {
+    order.push("next turn");
+    return Promise.resolve();
+  });
+  await assertRejects(() => run, Error, "output validation failed");
+  await next;
+  assertEquals(order, ["write", "commit", "next turn"]);
+});

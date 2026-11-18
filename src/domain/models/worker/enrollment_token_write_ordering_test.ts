@@ -19,10 +19,12 @@
 
 import { assertEquals, assertRejects } from "@std/assert";
 import { ModelType } from "../model_type.ts";
-import { ENROLLMENT_TOKEN_MODEL_TYPE } from "./enrollment_token_model.ts";
+import {
+  ENROLLMENT_TOKEN_MODEL_TYPE,
+  isEnrollmentTokenType,
+} from "./enrollment_token_model.ts";
 import {
   type EnrollmentTokenWriteOrdering,
-  isEnrollmentTokenType,
   orderEnrollmentTokenWrite,
   setEnrollmentTokenWriteOrdering,
 } from "./enrollment_token_write_ordering.ts";

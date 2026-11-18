@@ -8169,7 +8169,7 @@ Deno.test("execute: a method run on another type skips the token write ordering"
   }
 });
 
-Deno.test("executeWorkflow: refuses remote placement of an enrollment token method before any dispatch", async () => {
+Deno.test("executeWorkflow: refuses remote placement of an enrollment token method before any dispatch or output record", async () => {
   let dispatched = 0;
   setRemoteStepDispatcher({
     executeRemote: () => {
@@ -8180,8 +8180,10 @@ Deno.test("executeWorkflow: refuses remote placement of an enrollment token meth
   });
   try {
     const model = createCheckModel({});
+    const { repo: outputRepo, saved } = createMockOutputRepo();
     const { context } = createTestContext({
       modelType: ENROLLMENT_TOKEN_MODEL_TYPE,
+      outputRepository: outputRepo,
       placement: { labels: { tier: "remote" } },
     });
     await assertRejects(
@@ -8193,9 +8195,10 @@ Deno.test("executeWorkflow: refuses remote placement of an enrollment token meth
           context,
         ),
       UserError,
-      "only the orchestrator writes enrollment tokens",
+      "only the serve process writes enrollment tokens",
     );
     assertEquals(dispatched, 0);
+    assertEquals(saved.length, 0, "a refused step leaves no output record");
   } finally {
     setRemoteStepDispatcher(null);
   }

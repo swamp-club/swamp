@@ -509,38 +509,45 @@ export class WorkerGateway {
    */
   serializeTokenWrite<T>(fn: () => Promise<T>): Promise<T> {
     // called from a transition still running, fn already holds the tail and
-    // queueing would wait on itself; work that outlived its transition queues
+    // queueing would wait on itself; work that outlived its transition queues.
+    // Assumes a transition's own writes run one after another, never in parallel
     const running = this.#runningTransition.getStore();
     if (running !== undefined && !running.settled) return fn();
     return this.#recordTransition("token_write", fn);
   }
 
   /**
-   * a token method run's write commits inside its turn: committed at the end of
-   * its run instead, it would land after a later turn's commit and replace it,
-   * since a latest write carries no version check
+   * a token method run's write commits inside its turn, even when the run then
+   * throws: committed at the end of its run instead, it would land after a
+   * later turn's commit and replace it, since a latest write has no version check
    */
   orderTokenMethodRun<T>(fn: () => Promise<T>): Promise<T> {
     return this.serializeTokenWrite(async () => {
-      const result = await fn();
-      // the write already happened, so a failed commit must not fail the run
       try {
-        const outcome = await checkpointOpenUnitOfWork(
-          this.#options.repoContext,
-        );
-        if (outcome === "refused") {
-          logger.warn(
-            "An enrollment token write was refused a commit in its turn; it commits or is discarded when its run ends",
-          );
-        }
-      } catch (error) {
+        return await fn();
+      } finally {
+        await this.#commitInTurn();
+      }
+    });
+  }
+
+  /** a write already happened, so a failed commit must not fail the run */
+  async #commitInTurn(): Promise<void> {
+    try {
+      const outcome = await checkpointOpenUnitOfWork(
+        this.#options.repoContext,
+      );
+      if (outcome === "refused") {
         logger.warn(
-          "Could not commit an enrollment token write in its turn; the run's end commit tries again: {error}",
-          { error: error instanceof Error ? error.message : String(error) },
+          "An enrollment token write was refused a commit in its turn; it commits or is discarded when its run ends",
         );
       }
-      return result;
-    });
+    } catch (error) {
+      logger.warn(
+        "Could not commit an enrollment token write in its turn; the run's end commit tries again: {error}",
+        { error: error instanceof Error ? error.message : String(error) },
+      );
+    }
   }
 
   worker(name: string): WorkerSnapshot | null {
