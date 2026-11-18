@@ -1326,9 +1326,10 @@ export class DefaultWorkflowValidationService
                 `Only the orchestrator writes enrollment tokens, so this ` +
                 `step cannot run with remote placement (${
                   stepPlacement.join("; ")
-                }). A step can clear inherited labels with labels: {}, ` +
-                `but not an inherited target or platform: move the step to ` +
-                `a job and workflow that set neither`,
+                }). Remove placement set on the step; a step can clear ` +
+                `inherited labels with labels: {}, but not an inherited ` +
+                `target or platform: move the step to a job and workflow ` +
+                `that set neither`,
             ),
           ]
           : [];

@@ -1768,15 +1768,15 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       const isRemotePlacement = context.placement &&
         hasPlacement(context.placement);
 
-      // refused before anything is recorded, so no output is left running
+      // refused before the output record is saved, so none is left running
       if (isRemotePlacement && isEnrollmentTokenType(context.modelType)) {
         throw new UserError(
           `Method '${methodName}' of an enrollment token cannot run with ` +
-            `remote placement: only the serve process writes enrollment ` +
-            `tokens. Clear inherited labels on the step with labels: {}; ` +
-            `an inherited target or platform means moving the step to a ` +
-            `job and workflow that set neither. workflow validate names ` +
-            `where each field comes from.`,
+            `remote placement: only the orchestrator writes enrollment ` +
+            `tokens. Remove the step's own placement and clear inherited ` +
+            `labels with labels: {}; an inherited target or platform means ` +
+            `moving the step to a job and workflow that set neither. ` +
+            `workflow validate names where each field comes from.`,
         );
       }
 

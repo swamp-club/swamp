@@ -8195,7 +8195,7 @@ Deno.test("executeWorkflow: refuses remote placement of an enrollment token meth
           context,
         ),
       UserError,
-      "only the serve process writes enrollment tokens",
+      "only the orchestrator writes enrollment tokens",
     );
     assertEquals(dispatched, 0);
     assertEquals(saved.length, 0, "a refused step leaves no output record");

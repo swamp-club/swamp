@@ -324,12 +324,14 @@ async function redeemAround(
   rotate: () => Promise<void>,
 ): Promise<EnrollmentToken> {
   const before = await readToken(f);
+  // minting already took turns, so only a rise past this counts as the rotate's
+  const baseline = f.turnsRequested();
   let rotateDone = false;
   const redeem = f.gateway.serializeTokenWrite(async () => {
     const read = await readToken(f);
     await waitFor(
       async () =>
-        f.turnsRequested() > 0 ||
+        f.turnsRequested() > baseline ||
         (await readToken(f)).createdAt !== read.createdAt,
       "the rotate to ask for a turn or to write",
     );
@@ -437,6 +439,7 @@ Deno.test("enrollment token write ordering: the gateway's own enroll, rotate and
   await withFixture(async (f) => {
     const ctx = connectionContext(f.dir, f.repoContext, f.gateway);
     const worker = connectWorker(f.gateway);
+    const baseline = f.turnsRequested();
     const enrolled = await worker.call<EnrollResult>(RemoteMethod.enroll, {
       token: f.plaintext,
       instanceUuid: "uuid-1",
@@ -479,7 +482,7 @@ Deno.test("enrollment token write ordering: the gateway's own enroll, rotate and
       revokeSocket.sent[0],
     );
     assertEquals((await readToken(f)).state, "revoked");
-    assert(f.turnsRequested() > 0);
+    assert(f.turnsRequested() > baseline);
     worker.close("test done");
   });
 });
