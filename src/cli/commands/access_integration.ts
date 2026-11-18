@@ -439,7 +439,7 @@ async function listFromRepo(
 const repoDirOption = "Repository directory (env: SWAMP_REPO_DIR)";
 
 const CEILING_DESCRIPTION =
-  "What it may do, as <actions>=<workflow selector>; actions are run, read, approve and signal. Repeat for several";
+  "What it may do, as <actions>=<selector>: run, read, approve and signal on a workflow selector, or read on a workspace selector. Repeat for several";
 
 const accessIntegrationRegisterCommand = withRemoteOptions(
   new Command()

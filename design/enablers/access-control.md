@@ -157,13 +157,18 @@ through. The audit event names the principal, the client and that grant.
 }
 ```
 
-- **Resources:** `workflow:` selectors only, with a wildcard only at the end.
-  Registering or changing a ceiling refuses any other kind, behaviors included, so
-  an integration token cannot run a behavior on any transport. A workflow never
-  names a method, so a ceiling has no `methods`.
-- **Actions:** only `run`, `read`, `approve` and `signal`. `write`, `tag` and `admin`
-  are refused: a `write` ceiling could create a schedule that outlives the
-  integration. Adding an action later is safe, and removing one is not.
+- **Resources:** `workflow:` and `workspace:` selectors only, with a wildcard only
+  at the end. Registering or changing a ceiling refuses any other kind, behaviors
+  included, so an integration token cannot run a behavior on any transport. A
+  workflow never names a method, so a ceiling has no `methods`. An entry reaches
+  only its own kind: `workflow:*` never covers a workspace.
+- **Actions:** only `run`, `read`, `approve` and `signal`, and a `workspace:` entry
+  only `read`. `write`, `tag` and `admin` are refused: a `write` ceiling could
+  create a schedule, or a workspace, that outlives the integration. Adding an
+  action later is safe, and removing one is not.
+- **swamp-club parses ceilings too.** It refuses a `workspace:` entry until
+  swamp-club#4879 lands, so until then an app that asks to link with one is
+  refused and no delegation carries it.
 - **Canonical form:** order and duplicates carry no meaning. Actions are sorted and
   deduped, entries with one resource merge, and entries sort by resource, serialized
   as RFC 8785 JSON. The **ceiling digest** is `sha256:` and the lowercase hex of
@@ -191,7 +196,7 @@ ceiling itself, so a ceiling allowing only `run` does not allow approving a gate
 
 **Admin rights are not available.** Rights a person has only because they are an
 admin never pass, since the admin check is decided on `access:*`, which no ceiling
-covers. Only their explicit grants on workflows count. A restricted command needs
+covers. Only their explicit grants on workflows and workspaces count. A restricted command needs
 that admin check, so `--restricted-commands` keeps a command from every integration
 token, even for an admin person.
 
@@ -211,7 +216,8 @@ does not name. To keep cancel away from integration tokens, list `workflow.cance
 in `--restricted-commands`.
 
 `read` does not reach a run's data: `data.*` needs a `data` read, which no ceiling
-allows.
+allows. On a workspace the ceiling names, `read` allows `workspace.get` and lets
+`workspace.list` name it; the list names nothing the caller could not get.
 
 ### Transports
 
@@ -310,7 +316,9 @@ grant changes. Each decision reads it live.
 
 ### Upgrade first
 
-Upgrade every instance before registering an integration.
+Upgrade every instance before registering an integration, or before giving one a
+ceiling that names a workspace: an older node cannot parse that ceiling and
+refuses every request from the integration.
 
 - **An older node ignores these records** when it loads its policy, so it still
   starts. It does not know the type is a control-plane record, though, so on that
@@ -907,6 +915,12 @@ A resource selector has the form `<kind>:<pattern>`:
 | `data`     | `data.get`, `data.query`                                                                                                                    |
 | `access`   | Grant and group management, and the records the control plane stores as behavior data (see [Control-plane records](#control-plane-records)) |
 | `vault`    | `vault.*` requests, and vault operations during serve runs (see [Vaults](#vaults))                                                          |
+| `workspace` | The `workspace.*` requests on a host's root (see [serve workspaces](../surfaces/serve-workspaces.md#lifecycle))                             |
+
+A `workspace` pattern is a workspace name, a prefix of one ending in `*`, or `*`;
+anything no workspace could be named is refused when the grant is written.
+Upgrade every node before writing a `workspace` grant: an older node refuses it as
+an unknown kind.
 
 Patterns support a trailing `*` wildcard:
 
@@ -1344,6 +1358,7 @@ resource kind:
 | `data`        | `name`, `ns`, `tags`, `owner`                                |
 | `access`      | `name`                                                       |
 | `vault`       | `name`, `key`                                                |
+| `workspace`   | `name`                                                       |
 
 Every kind can also use `client`, `principal.sub`, `principal.groups` and
 `principal.collectives`.
@@ -2323,7 +2338,9 @@ swamp access can-i --server wss://swamp.acme.internal:9090
 
 The command sends an `access.can-i` WebSocket request. The server resolves the
 caller's subjects and calls the decision service's `explain` method, which
-returns every matching grant (allow and deny), not only the first. It always
+returns every matching grant (allow and deny), not only the first. It lists
+grants, so a request a root admin makes only through the `access:*` fallback
+shows no matching grant. It always
 uses the caller's own session memberships; to test grants for other
 memberships, use `swamp access check` with `--groups` and `--collectives`.
 

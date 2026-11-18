@@ -29,6 +29,7 @@ import {
   typePatternMatchesIgnoringAt,
 } from "./resource_selector.ts";
 
+// workspace holds its patterns to the workspace-name grammar; see its own properties
 const KINDS: ResourceKind[] = ["workflow", "model", "data", "access", "vault"];
 
 const arbKind = fc.constantFrom(...KINDS);
@@ -116,7 +117,7 @@ Deno.test("parseResourceSelector: rejects unknown kinds", () => {
       }),
       arbStarFreePattern,
       (kind, pattern) => {
-        fc.pre(!(KINDS as string[]).includes(kind));
+        fc.pre(![...KINDS, "workspace"].includes(kind));
         assertThrows(
           () => parseResourceSelector(`${kind}:${pattern}`),
           Error,
@@ -276,5 +277,46 @@ Deno.test("typePatternMatchesIgnoringAt: covers every type the raw pattern match
         }
       },
     ),
+  );
+});
+
+const arbWorkspaceName = fc.tuple(
+  fc.constantFrom(..."abcxyz019".split("")),
+  fc.stringOf(fc.constantFrom(..."abcxyz019-".split("")), { maxLength: 62 }),
+).map(([first, rest]) => first + rest);
+
+Deno.test("parseResourceSelector: a workspace name or a prefix of one round-trips", () => {
+  fc.assert(
+    fc.property(arbWorkspaceName, fc.boolean(), (name, wildcard) => {
+      const raw = `workspace:${name}${wildcard ? "*" : ""}`;
+      const parsed = parseResourceSelector(raw);
+      assertEquals(parsed.kind, "workspace");
+      assertEquals(resourceSelectorToString(parsed), raw);
+    }),
+    { numRuns: 200 },
+  );
+});
+
+Deno.test("parseResourceSelector: a workspace pattern outside the name grammar is refused", () => {
+  fc.assert(
+    fc.property(
+      arbWorkspaceName,
+      fc.constantFrom(..."ABZ_@/.: ".split("")),
+      fc.nat({ max: 63 }),
+      fc.boolean(),
+      (name, bad, at, wildcard) => {
+        const index = Math.min(at, name.length);
+        const pattern = name.slice(0, index) + bad + name.slice(index);
+        assertThrows(
+          () =>
+            parseResourceSelector(
+              `workspace:${pattern}${wildcard ? "*" : ""}`,
+            ),
+          Error,
+          "a workspace pattern is a workspace name",
+        );
+      },
+    ),
+    { numRuns: 200 },
   );
 });

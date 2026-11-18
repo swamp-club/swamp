@@ -53,10 +53,18 @@ means denied.
 | Subjects   | `user:<id>`, `group:<name>`, `idp-group:<name>`, `collective:<slug>`, `service:scheduler`, `service:webhook` |
 | Effects    | `allow`, `deny` (deny wins)                                                                                  |
 | Actions    | `run`, `read`, `write`, `approve`, `signal`, `tag`, `admin`                                                  |
-| Resources  | `workflow:@acme/*`, `behavior:hello`, `data:*`, `vault:prod-*`, `access:*`                                   |
+| Resources  | `workflow:@acme/*`, `behavior:hello`, `data:*`, `vault:prod-*`, `workspace:data-*`, `access:*`               |
 | Conditions | CEL expressions via `--when 'tags.env == "staging"'`, including `client` and, for `approve`, `run`           |
 
 Admin on `access:*` implies all actions (superuser).
+
+On a host's root, `workspace:<name>` gates the hosted workspace requests:
+`write` to create, `read` to get, `admin` to suspend, resume and delete; `list`
+is open. Root admins need no workspace grant.
+
+```bash
+swamp access grant create --subject group:data --allow write,admin --on 'workspace:data-*'
+```
 
 `behavior:<pattern>` and `model:<pattern>` are the same selector; grants are
 stored as `model:`. Audit filters likewise accept `behavior.*` actions (e.g.
@@ -267,9 +275,11 @@ swamp access reload [--server wss://...]
 ## Integrations
 
 An integration is an app an admin registers. A person's rights through it are
-their grants intersected with its ceiling, which covers only `workflow:`
-resources and allows only `run`, `read`, `approve` and `signal`. Actions match
-literally, and `run` includes cancelling any run of that workflow.
+their grants intersected with its ceiling, which covers `workflow:` resources
+with `run`, `read`, `approve` and `signal`, and `workspace:` resources with
+`read` only. Actions match literally, and `run` includes cancelling any run of
+that workflow. swamp-club refuses consent to a `workspace:` entry until
+swamp-club#4879 lands.
 
 ```bash
 # Prints the credential once; only its hash is kept

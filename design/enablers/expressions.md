@@ -35,7 +35,8 @@ Swamp has three CEL surfaces:
 3. **Grant-condition**: `createGrantConditionEnvironment()` is a sealed
    environment for authorization grant conditions
    (`src/infrastructure/cel/grant_condition_environment.ts`). It declares
-   explicit variables per resource kind (workflow, model, data, access, vault),
+   explicit variables per resource kind (workflow, model, data, access, vault,
+   workspace),
    `client` and a `principal.*` namespace. It sets `unlistedVariablesAreDyn: false`, so
    references to undeclared fields fail at write-time validation. It has no
    I/O receivers (`data.*`, `file.*`, `vault.*`, `env.*`), no extension

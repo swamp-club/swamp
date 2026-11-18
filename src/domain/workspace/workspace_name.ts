@@ -23,8 +23,12 @@ export const DEFAULT_WORKSPACE_NAME = "first-workspace";
 
 const WORKSPACE_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
 
+export function isWorkspaceName(name: string): boolean {
+  return WORKSPACE_NAME_PATTERN.test(name);
+}
+
 export function parseWorkspaceName(name: string): string {
-  if (!WORKSPACE_NAME_PATTERN.test(name)) {
+  if (!isWorkspaceName(name)) {
     throw new UserError(
       `Invalid workspace name "${name}". Use lowercase letters, digits and dashes, starting with a letter or digit (at most 63 characters).`,
     );

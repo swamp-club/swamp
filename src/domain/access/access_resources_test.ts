@@ -29,6 +29,7 @@ import {
   withRunCondition,
   withRunPending,
   workflowAccessResource,
+  workspaceAccessResource,
 } from "./access_resources.ts";
 import { assertEquals } from "@std/assert";
 import { Definition } from "../definitions/definition.ts";
@@ -98,6 +99,14 @@ Deno.test("unresolvedAccessResource: says a missing resource has no tags", () =>
   });
   assertEquals(unresolvedAccessResource("access", "nope").fields, {
     name: "nope",
+  });
+});
+
+Deno.test("workspaceAccessResource: a workspace is decided on its name alone", () => {
+  assertEquals(workspaceAccessResource("data-x"), {
+    kind: "workspace",
+    name: "data-x",
+    fields: { name: "data-x" },
   });
 });
 

@@ -26,6 +26,7 @@ import {
   unresolvedAccessResource,
   vaultKindResource,
   workflowAccessResource,
+  workspaceAccessResource,
 } from "../../domain/access/access_resources.ts";
 import type { ResourceKind } from "../../domain/access/resource_selector.ts";
 import type { DefinitionRepository } from "../../domain/definitions/repositories.ts";
@@ -79,6 +80,7 @@ async function resolvedResource(
     }
     return vaultKindResource(name);
   }
+  if (kind === "workspace") return workspaceAccessResource(pattern);
   try {
     if (kind === "workflow") {
       const workflow = await findWorkflowByIdOrName(deps.workflowRepo, pattern);

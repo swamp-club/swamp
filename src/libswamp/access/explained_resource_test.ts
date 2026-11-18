@@ -160,6 +160,19 @@ Deno.test("explainedAccessResource: a vault is explained by the name it resolves
   });
 });
 
+Deno.test("explainedAccessResource: a workspace is explained by its name, with no definition lookup", async () => {
+  const resource = await explainedAccessResource(
+    depsWith({ failLookups: true }),
+    "workspace",
+    "data-x",
+  );
+  assertEquals(resource, {
+    kind: "workspace",
+    name: "data-x",
+    fields: { name: "data-x" },
+  });
+});
+
 Deno.test("explainedAccessResource: a failed lookup is explained by name alone and reported", async () => {
   const errors: unknown[] = [];
   const resource = await explainedAccessResource(

@@ -68,7 +68,7 @@ Deno.test("parseResourceSelector: rejects invalid kind", () => {
   assertThrows(
     () => parseResourceSelector("secret:my-secret"),
     Error,
-    'expected "workflow", "behavior", "data", "access", or "vault"',
+    'expected "workflow", "behavior", "data", "access", "vault", or "workspace"',
   );
 });
 
@@ -79,11 +79,11 @@ Deno.test("parseResourceSelector: an invalid kind names the behavior kind in bot
   );
   assertEquals(
     error.message,
-    'Invalid resource kind "secret": expected "workflow", "behavior", "data", "access", or "vault"',
+    'Invalid resource kind "secret": expected "workflow", "behavior", "data", "access", "vault", or "workspace"',
   );
   assertEquals(
     messageFor(error, "model"),
-    'Invalid resource kind "secret": expected "workflow", "model", "data", "access", or "vault"',
+    'Invalid resource kind "secret": expected "workflow", "model", "data", "access", "vault", or "workspace"',
   );
 });
 
@@ -92,6 +92,41 @@ Deno.test("parseResourceSelector: accepts the vault kind", () => {
     kind: "vault",
     pattern: "prod-*",
   });
+});
+
+Deno.test("parseResourceSelector: accepts a workspace name, a prefix of one, or *", () => {
+  for (const pattern of ["data-x", "data-*", "*", "0-*"]) {
+    assertEquals(parseResourceSelector(`workspace:${pattern}`), {
+      kind: "workspace",
+      pattern,
+    });
+  }
+});
+
+Deno.test("parseResourceSelector: refuses a workspace pattern no workspace could be named", () => {
+  for (
+    const pattern of [
+      "Data-x",
+      "-data",
+      "data_x",
+      "@data",
+      "data/x",
+      "-*",
+      "a".repeat(64),
+    ]
+  ) {
+    assertThrows(
+      () => parseResourceSelector(`workspace:${pattern}`),
+      Error,
+      "a workspace pattern is a workspace name",
+    );
+  }
+});
+
+Deno.test("resourceSelectorMatches: a workspace prefix matches the names it starts", () => {
+  const selector = parseResourceSelector("workspace:data-*");
+  assertEquals(resourceSelectorMatches(selector, "data-x"), true);
+  assertEquals(resourceSelectorMatches(selector, "ops-x"), false);
 });
 
 Deno.test("resourceSelectorMatches: vault pattern matches vault names", () => {

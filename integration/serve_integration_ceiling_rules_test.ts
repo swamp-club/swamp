@@ -58,6 +58,8 @@ const NO_CEILING_DECISION: Readonly<Record<string, string>> = {
     "drops the caller's own subscription, which a ceiling refused opening",
   "cancel":
     "aborts the caller's own request; cancelling a run is covered by the run case below",
+  "workspace.list":
+    "names only the workspaces the caller could get, each decided through the ceiling, so with none it decides nothing and shows nothing",
 };
 
 function minimal(schema: unknown): unknown {

@@ -69,7 +69,7 @@ Deno.test("Ceiling.parse: refuses write, tag and admin", () => {
   }
 });
 
-Deno.test("Ceiling.parse: refuses every resource kind but workflow, behavior included", () => {
+Deno.test("Ceiling.parse: refuses every resource kind but workflow and workspace, behavior included", () => {
   for (
     const resource of [
       "model:*",
@@ -82,7 +82,7 @@ Deno.test("Ceiling.parse: refuses every resource kind but workflow, behavior inc
     assertThrows(
       () => ceiling({ actions: ["read"], resource }),
       Error,
-      "only workflow resources",
+      "only workflow and workspace resources",
     );
   }
 });
@@ -130,18 +130,68 @@ Deno.test("Ceiling.parse: refuses bad selectors and unbounded input", () => {
 
 Deno.test("Ceiling.allows: an action is literal, so run does not allow approve or signal", () => {
   const c = ceiling({ actions: ["run"], resource: "workflow:@acme/*" });
-  assertEquals(c.allows("run", "@acme/deploy"), true);
-  assertEquals(c.allows("approve", "@acme/deploy"), false);
-  assertEquals(c.allows("signal", "@acme/deploy"), false);
-  assertEquals(c.allows("read", "@acme/deploy"), false);
-  assertEquals(c.allows("run", "@other/deploy"), false);
-  assertEquals(c.allows("write", "@acme/deploy"), false);
+  const deploy = { kind: "workflow", name: "@acme/deploy" } as const;
+  assertEquals(c.allows("run", deploy), true);
+  assertEquals(c.allows("approve", deploy), false);
+  assertEquals(c.allows("signal", deploy), false);
+  assertEquals(c.allows("read", deploy), false);
+  assertEquals(
+    c.allows("run", { kind: "workflow", name: "@other/deploy" }),
+    false,
+  );
+  assertEquals(c.allows("write", deploy), false);
+});
+
+Deno.test("Ceiling.parse: a workspace entry allows read and nothing else", () => {
+  const c = ceiling({ actions: ["read"], resource: "workspace:data-*" });
+  assertEquals(c.toDocument().ceiling, [{
+    actions: ["read"],
+    resource: "workspace:data-*",
+  }]);
+  for (const action of ["run", "approve", "signal"]) {
+    assertThrows(
+      () => ceiling({ actions: [action], resource: "workspace:data-*" }),
+      Error,
+      'is not allowed on "workspace:data-*"; a workspace entry can allow only read',
+    );
+  }
+  for (const action of ["write", "admin"]) {
+    assertThrows(
+      () => ceiling({ actions: [action], resource: "workspace:*" }),
+      Error,
+      "is not allowed",
+    );
+  }
+});
+
+Deno.test("Ceiling.allows: a workspace entry reaches only workspaces, and a workflow entry only workflows", () => {
+  const c = ceiling(
+    { actions: ["read"], resource: "workspace:data-*" },
+    { actions: ["read", "run"], resource: "workflow:*" },
+  );
+  assertEquals(c.allows("read", { kind: "workspace", name: "data-x" }), true);
+  assertEquals(c.allows("read", { kind: "workspace", name: "ops-x" }), false);
+  assertEquals(c.allows("run", { kind: "workspace", name: "data-x" }), false);
+  assertEquals(c.allows("read", { kind: "workflow", name: "data-x" }), true);
+  assertEquals(c.allowsSomewhere("read", "workspace"), true);
+  assertEquals(c.allowsSomewhere("run", "workspace"), false);
+  const workflowsOnly = ceiling({ actions: ["read"], resource: "workflow:*" });
+  assertEquals(
+    workflowsOnly.allows("read", { kind: "workspace", name: "data-x" }),
+    false,
+  );
+  assertEquals(
+    ceiling({ actions: ["read"], resource: "workspace:data-x" }).isWithin(
+      workflowsOnly,
+    ),
+    false,
+  );
 });
 
 Deno.test("Ceiling.allows: the empty ceiling allows nothing", () => {
   const c = Ceiling.empty();
-  assertEquals(c.allows("read", "anything"), false);
-  assertEquals(c.allowsSomewhere("read"), false);
+  assertEquals(c.allows("read", { kind: "workflow", name: "anything" }), false);
+  assertEquals(c.allowsSomewhere("read", "workflow"), false);
 });
 
 Deno.test("ceilingWithin: tells narrowing from widening", () => {

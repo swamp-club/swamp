@@ -24,6 +24,7 @@ import type {
   AccessResource,
 } from "./access_decision_service.ts";
 import { Ceiling } from "./ceiling.ts";
+import type { DelegationLookup } from "./delegation_directory.ts";
 import {
   DELEGATION_CEILING_GRANT_ID,
   DELEGATION_ENDED_GRANT_ID,
@@ -461,5 +462,60 @@ Deno.test("isConsentRefusal: only a consented-ceiling refusal that grants alone 
       readAllowed.decide(ALICE, "read", DEPLOY),
     ),
     false,
+  );
+});
+
+const workspace = (name: string): AccessResource => ({
+  kind: "workspace",
+  name,
+  fields: { name },
+});
+
+Deno.test("decide: a ceiling naming a workspace admits read within the person's grants, and never write or admin", () => {
+  const consentedWorkspaces: DelegationLookup = {
+    standingOf: () => ({
+      kind: "standing",
+      ceiling: ceiling(["read"], "workspace:data-*"),
+    }),
+    recordOf: () => ({ integrationId: "app" }) as DelegationRecord,
+  };
+  const s = service(
+    [ADMIN, grant(["read", "write", "admin"], "workspace", "*")],
+    active(ceiling(["read"], "workspace:data-*")),
+    { delegations: consentedWorkspaces },
+  );
+  assertEquals(s.decide(ALICE, "read", workspace("data-x"))?.effect, "allow");
+  for (
+    const [action, name] of [
+      ["read", "ops-x"],
+      ["write", "data-x"],
+      ["admin", "data-x"],
+    ] as const
+  ) {
+    const refused = s.decide(ALICE, action, workspace(name));
+    assertEquals(refused?.effect, "deny", `${action} ${name}`);
+    assertEquals(refused?.grantId, INTEGRATION_CEILING_GRANT_ID);
+  }
+  assertEquals(
+    s.decide(ALICE, "admin", ADMIN_RESOURCE)?.effect,
+    "deny",
+    "an admin person's admin is not reachable through the ceiling",
+  );
+});
+
+Deno.test("decide: a workflow ceiling, or a consent that names no workspace, admits no workspace", () => {
+  const grants = [grant(["read"], "workspace", "*")];
+  const workflows = service(grants, active(ceiling(["read"], "workflow:*")));
+  assertEquals(
+    workflows.decide(ALICE, "read", workspace("data-x"))?.grantId,
+    INTEGRATION_CEILING_GRANT_ID,
+  );
+  const unconsented = service(
+    grants,
+    active(ceiling(["read"], "workspace:*")),
+  );
+  assertEquals(
+    unconsented.decide(ALICE, "read", workspace("data-x"))?.grantId,
+    DELEGATION_CEILING_GRANT_ID,
   );
 });

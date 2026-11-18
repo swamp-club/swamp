@@ -19,6 +19,13 @@
 
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
+import type { Action } from "../../domain/access/action.ts";
+import { GrantBasedAccessDecisionService } from "../../domain/access/grant_based_access_decision_service.ts";
+import { PolicySnapshot } from "../../domain/access/policy_snapshot.ts";
+import {
+  createConditionEvaluator,
+  type PolicySnapshotLoader,
+} from "../../domain/access/policy_snapshot_loader.ts";
 import type { ServeAuthConfig } from "../../domain/access/serve_auth_config.ts";
 import { HostedWorkspaceFileRepository } from "../../infrastructure/persistence/hosted_workspace_file_repository.ts";
 import type {
@@ -197,4 +204,79 @@ Deno.test("handleWorkspaceGet: authorization is decided before whether this serv
   const listing = createMockSocket();
   await handleWorkspaceList(listing, ctx, "r", { kind: "user", id: "alice" });
   assertEquals(frames(listing)[0].error?.code, NOT_A_HOST_ROOT_CODE);
+});
+
+function grantedCtx(
+  base: ConnectionContext,
+  actions: Action[],
+): ConnectionContext {
+  return {
+    ...base,
+    policySnapshotLoader: {
+      decisionService: new GrantBasedAccessDecisionService(
+        new PolicySnapshot(
+          [{
+            id: crypto.randomUUID(),
+            subject: { kind: "user", name: "alice" },
+            effect: "allow",
+            actions,
+            resource: { kind: "workspace", pattern: "data-*" },
+            state: "active",
+            source: "method",
+            createdBy: { kind: "user", id: "admin" },
+            createdAt: "2026-01-01T00:00:00Z",
+          }],
+          [],
+          createConditionEvaluator(),
+        ),
+      ),
+    } as unknown as PolicySnapshotLoader,
+  };
+}
+
+Deno.test("handleWorkspaceGet: each request needs its own action on workspace:<name>, and nothing else stands in", async () => {
+  await using f = await folder();
+  const alice = { kind: "user" as const, id: "alice" };
+  const cases: {
+    need: Action;
+    run: (socket: WebSocket, ctx: ConnectionContext) => Promise<void>;
+  }[] = [
+    {
+      need: "write",
+      run: (socket, ctx) =>
+        handleWorkspaceCreate(socket, ctx, "r", { name: "data-x" }, alice),
+    },
+    {
+      need: "read",
+      run: (socket, ctx) =>
+        handleWorkspaceGet(socket, ctx, "r", { name: "data-y" }, alice),
+    },
+    {
+      need: "admin",
+      run: (socket, ctx) =>
+        handleWorkspaceChange(
+          "workspace.suspend",
+          socket,
+          ctx,
+          "r",
+          { name: "data-y" },
+          alice,
+        ),
+    },
+  ];
+  for (const { need, run } of cases) {
+    const others = (["read", "write", "admin"] as const).filter((a) =>
+      a !== need
+    );
+    const refused = createMockSocket();
+    await run(refused, grantedCtx(f.ctx("oauth"), [...others]));
+    assertEquals(frames(refused)[0].error?.code, "unauthorized", need);
+    const admitted = createMockSocket();
+    await run(admitted, grantedCtx(f.ctx("oauth"), [need]));
+    assertEquals(
+      frames(admitted)[0].error?.code === "unauthorized",
+      false,
+      `${need}: ${admitted.sent[0]}`,
+    );
+  }
 });

@@ -345,6 +345,51 @@ Deno.test("decideAll: a deny to a collective refuses the kind for its members", 
   );
 });
 
+Deno.test("decide: a workspace grant decides on the workspace name, and a deny wins", () => {
+  const workspace = (name: string): AccessResource => ({
+    kind: "workspace",
+    name,
+    fields: { name },
+  });
+  const allow = makeGrant({
+    actions: ["write", "admin"],
+    resource: { kind: "workspace", pattern: "data-*" },
+  });
+  const deny = makeGrant({
+    effect: "deny",
+    actions: ["admin"],
+    resource: { kind: "workspace", pattern: "data-locked" },
+  });
+  const conditional = makeGrant({
+    actions: ["read"],
+    resource: { kind: "workspace", pattern: "*" },
+    condition: 'name.startsWith("ops-")',
+  });
+  const service = new GrantBasedAccessDecisionService(
+    new PolicySnapshot([allow, deny, conditional], [], celEvaluator),
+  );
+  const adam = makePrincipal("adam");
+  assertEquals(
+    service.decide(adam, "admin", workspace("data-x"))?.effect,
+    "allow",
+  );
+  assertEquals(service.decide(adam, "admin", workspace("ops-x")), null);
+  assertEquals(
+    service.decide(adam, "admin", workspace("data-locked"))?.effect,
+    "deny",
+  );
+  assertEquals(
+    service.decide(adam, "read", workspace("ops-x"))?.effect,
+    "allow",
+  );
+  assertEquals(service.decide(adam, "read", workspace("data-x")), null);
+  assertEquals(
+    service.decide(adam, "admin", makeResource({ name: "data-x" })),
+    null,
+    "a workspace grant never reaches a workflow of the same name",
+  );
+});
+
 Deno.test("decide: evaluates CEL condition on grant", () => {
   const grant = makeGrant({
     subject: { kind: "user", name: "adam" },

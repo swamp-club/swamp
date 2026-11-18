@@ -21,6 +21,7 @@ import { z } from "zod";
 import { canonicalJson } from "../expressions/expression_references.ts";
 import {
   parseResourceSelector,
+  type ResourceKind,
   type ResourceSelector,
   resourceSelectorMatches,
 } from "./resource_selector.ts";
@@ -31,6 +32,15 @@ export const CEILING_FORMAT_VERSION = 1;
 export const CEILING_ACTIONS = ["approve", "read", "run", "signal"] as const;
 
 export type CeilingAction = typeof CEILING_ACTIONS[number];
+
+// a workspace entry allows read only: creating one would outlive the
+// integration, as a schedule would
+const ACTIONS_BY_KIND: Readonly<
+  Partial<Record<ResourceKind, readonly CeilingAction[]>>
+> = {
+  workflow: CEILING_ACTIONS,
+  workspace: ["read"],
+};
 
 export const MAX_CEILING_ENTRIES = 100;
 
@@ -76,9 +86,9 @@ function parseSelector(resource: string): ResourceSelector {
     throw new Error("Invalid ceiling: a selector is not well-formed Unicode");
   }
   const selector = parseResourceSelector(resource);
-  if (selector.kind !== "workflow") {
+  if (ACTIONS_BY_KIND[selector.kind] === undefined) {
     throw new Error(
-      `Invalid ceiling: "${resource}" names ${selector.kind} resources; a ceiling covers only workflow resources`,
+      `Invalid ceiling: "${resource}" names ${selector.kind} resources; a ceiling covers only workflow and workspace resources`,
     );
   }
   return selector;
@@ -88,6 +98,7 @@ function selectorCovers(
   outer: ResourceSelector,
   inner: ResourceSelector,
 ): boolean {
+  if (outer.kind !== inner.kind) return false;
   if (!outer.pattern.endsWith("*")) return outer.pattern === inner.pattern;
   return inner.pattern.startsWith(outer.pattern.slice(0, -1));
 }
@@ -133,6 +144,14 @@ export class Ceiling {
             }`,
           );
         }
+        const allowed = ACTIONS_BY_KIND[kind]!;
+        if (!allowed.includes(action)) {
+          throw new Error(
+            `Invalid ceiling: action "${action}" is not allowed on "${resource}"; a ${kind} entry can allow only ${
+              allowed.join(", ")
+            }`,
+          );
+        }
         actions.add(action);
       }
       merged.set(resource, actions);
@@ -168,24 +187,27 @@ export class Ceiling {
     return this.canonical() === other.canonical();
   }
 
-  /** the workflow name is the resolved one, as every grant decision sees it */
-  allows(action: Action, workflowName: string): boolean {
+  /** the name is the resolved one, as every grant decision sees it */
+  allows(
+    action: Action,
+    resource: { readonly kind: ResourceKind; readonly name: string },
+  ): boolean {
+    return this.#entries.some((entry) => {
+      const selector = this.#selectors.get(entry.resource)!;
+      return entry.actions.some((allowed) => allowed === action) &&
+        selector.kind === resource.kind &&
+        resourceSelectorMatches(selector, resource.name);
+    });
+  }
+
+  allowsSomewhere(action: Action, kind: ResourceKind): boolean {
     return this.#entries.some((entry) =>
       entry.actions.some((allowed) => allowed === action) &&
-      resourceSelectorMatches(
-        this.#selectors.get(entry.resource)!,
-        workflowName,
-      )
+      this.#selectors.get(entry.resource)!.kind === kind
     );
   }
 
-  allowsSomewhere(action: Action): boolean {
-    return this.#entries.some((entry) =>
-      entry.actions.some((allowed) => allowed === action)
-    );
-  }
-
-  /** whether any workflow a selector matches could be allowed this action */
+  /** whether any resource a selector matches could be allowed this action */
   overlaps(action: Action, selector: ResourceSelector): boolean {
     return this.#entries.some((entry) => {
       if (!entry.actions.some((allowed) => allowed === action)) return false;

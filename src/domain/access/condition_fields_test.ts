@@ -106,12 +106,23 @@ Deno.test("CONDITION_FIELDS: a vault is decided by its name, with the request's 
   );
 });
 
+Deno.test("CONDITION_FIELDS: a workspace is decided by its name and the client", () => {
+  assertEquals(
+    CONDITION_FIELDS.workspace.map((f) => [f.name, f.role, f.supplied]),
+    [
+      ["name", "resource", true],
+      ["client", "request", true],
+    ],
+  );
+});
+
 Deno.test("suppliedResourceFields: excludes request and unsupplied fields", () => {
   assertEquals(suppliedResourceFields("model"), ["name", "modelType", "tags"]);
   assertEquals(suppliedResourceFields("data"), ["name", "ns", "tags"]);
   assertEquals(suppliedResourceFields("workflow"), ["name", "tags"]);
   assertEquals(suppliedResourceFields("access"), ["name"]);
   assertEquals(suppliedResourceFields("vault"), ["name"]);
+  assertEquals(suppliedResourceFields("workspace"), ["name"]);
 });
 
 Deno.test("conditionFieldZeroValue: maps are empty, strings are empty", () => {

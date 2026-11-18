@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { Action } from "../../domain/access/action.ts";
+import { workspaceAccessResource } from "../../domain/access/access_resources.ts";
 import {
   type Principal,
   principalToString,
@@ -39,36 +41,37 @@ import {
   sanitizeErrorForClient,
   send,
   sendError,
+  wouldAuthorize,
 } from "./shared.ts";
 
 export const NOT_A_HOST_ROOT_CODE = "not_a_host_root";
 export const TOKEN_MODE_CREATE_REFUSED_CODE = "token_mode_create_refused";
-
-const ROOT_ADMIN = { kind: "access", name: "*", fields: {} } as const;
 
 type ServiceEvent<D> =
   | { kind: "completed"; data: D }
   | { kind: "error"; error: SwampError };
 
 /**
- * the root's admins make every request; list is open to any caller, but one
- * acting through an integration or a delegation is held to its ceiling, which
- * cannot name a workspace yet
+ * a request naming a workspace needs its action on workspace:<name>, which the
+ * root's admins pass with no workspace grant; list needs nothing
  */
 function admitted(
   socket: WebSocket,
   requestId: string,
   principal: Principal | null,
   ctx: ConnectionContext,
-  openToCallers: boolean,
+  need: { readonly action: Action; readonly name: string } | "list",
 ): HostRootWorkspaces | undefined {
-  const caller = accessCallerOf(socket, principal);
-  const ceilinged = caller.client !== undefined ||
-    caller.delegation !== undefined;
   if (
-    (!openToCallers || ceilinged) &&
-    !authorizeOrReject(socket, requestId, principal, "admin", ROOT_ADMIN, ctx)
-      .allowed
+    need !== "list" &&
+    !authorizeOrReject(
+      socket,
+      requestId,
+      principal,
+      need.action,
+      workspaceAccessResource(need.name),
+      ctx,
+    ).allowed
   ) return undefined;
   if (ctx.hostedWorkspaces === undefined) {
     sendError(
@@ -128,7 +131,10 @@ export async function handleWorkspaceCreate(
   payload: WorkspaceNamePayload,
   principal: Principal | null,
 ): Promise<void> {
-  const root = admitted(socket, requestId, principal, ctx, false);
+  const root = admitted(socket, requestId, principal, ctx, {
+    action: "write",
+    name: payload.name,
+  });
   if (root === undefined) return;
   if (ctx.authConfig.mode === "token") {
     sendError(
@@ -162,7 +168,7 @@ export async function handleWorkspaceList(
   requestId: string,
   principal: Principal | null,
 ): Promise<void> {
-  const root = admitted(socket, requestId, principal, ctx, true);
+  const root = admitted(socket, requestId, principal, ctx, "list");
   if (root === undefined) return;
   const data = await outcome(
     socket,
@@ -170,11 +176,26 @@ export async function handleWorkspaceList(
     hostedWorkspaceList(handlerLibSwampContext(ctx), root.services),
   );
   if (data === undefined) return;
+  const caller = accessCallerOf(socket, principal);
+  // a caller under a ceiling sees only the workspaces it could get
+  const ceilinged = caller.client !== undefined ||
+    caller.delegation !== undefined;
+  const workspaces = ceilinged
+    ? data.workspaces.filter((summary) =>
+      wouldAuthorize(
+        socket,
+        principal,
+        "read",
+        workspaceAccessResource(summary.name),
+        ctx,
+      )
+    )
+    : data.workspaces;
   send(socket, {
     type: "workspace.list",
     id: requestId,
     payload: {
-      data: { workspaces: data.workspaces.map((summary) => ({ ...summary })) },
+      data: { workspaces: workspaces.map((summary) => ({ ...summary })) },
     },
   });
 }
@@ -186,7 +207,10 @@ export async function handleWorkspaceGet(
   payload: WorkspaceNamePayload,
   principal: Principal | null,
 ): Promise<void> {
-  const root = admitted(socket, requestId, principal, ctx, false);
+  const root = admitted(socket, requestId, principal, ctx, {
+    action: "read",
+    name: payload.name,
+  });
   if (root === undefined) return;
   const data = await outcome(
     socket,
@@ -218,7 +242,10 @@ export async function handleWorkspaceChange(
   payload: WorkspaceNamePayload,
   principal: Principal | null,
 ): Promise<void> {
-  const root = admitted(socket, requestId, principal, ctx, false);
+  const root = admitted(socket, requestId, principal, ctx, {
+    action: "admin",
+    name: payload.name,
+  });
   if (root === undefined) return;
   const data = await outcome(
     socket,
