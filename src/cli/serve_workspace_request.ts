@@ -77,10 +77,7 @@ const ROOT_MESSAGE_CODES: ReadonlySet<string> = new Set([
   "token_mode_create_refused",
 ]);
 
-/**
- * checks the name first: serve refuses a malformed one as invalid_request,
- * which this client reads as a serve that does not know the request
- */
+// serve refuses a malformed name as invalid_request, read here as an older serve
 export function namedWorkspaceRequest(
   type: Exclude<WorkspaceRequestType, "workspace.list">,
   name: string,

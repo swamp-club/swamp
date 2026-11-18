@@ -51,7 +51,7 @@ export async function runServeWorkspaceRm(
   confirm: (message: string) => Promise<boolean> = promptConfirmation,
 ): Promise<void> {
   const request = namedWorkspaceRequest("workspace.delete", name);
-  // json mode never prompts, as model delete and data delete do not
+  // json mode never prompts
   if (mode === "log" && options.yes !== true && options.force !== true) {
     const confirmed = await confirm(
       `Remove workspace ${name}? The host stops its serve and deletes its folder, with its data and settings.`,

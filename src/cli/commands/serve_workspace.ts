@@ -24,7 +24,6 @@ import { groupCommandAction } from "../group_action.ts";
 import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
 import { SERVE_WORKSPACE_ROUTES } from "./serve_routes.ts";
 
-/** rest, the argv after the workspace word, narrows the group to one subcommand */
 export async function createServeWorkspaceCommand(
   rest: readonly string[] = [],
 ): Promise<AnyCommand> {

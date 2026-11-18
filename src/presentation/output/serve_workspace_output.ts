@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { bold, cyan, dim, green, red, yellow } from "@std/fmt/colors";
+import { maxOf } from "../../domain/array_extrema.ts";
 import { escapeControlCharacters } from "../../domain/control_characters.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type {
@@ -125,7 +126,7 @@ export function renderWorkspaceList(
     restartsText(summary),
   ]);
   const widths = headers.map((header, i) =>
-    Math.max(header.length, ...rows.map((row) => row[i].length))
+    Math.max(header.length, maxOf(rows.map((row) => row[i].length)) ?? 0)
   );
   const lines = [
     dim(headers.map((header, i) => header.padEnd(widths[i])).join("  ")),
