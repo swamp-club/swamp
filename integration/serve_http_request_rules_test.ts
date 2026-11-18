@@ -19,7 +19,10 @@
 
 import { assert, assertEquals } from "@std/assert";
 import { fromFileUrl } from "@std/path";
-import { FOLLOWER_READ_REQUESTS } from "../src/serve/follower_requests.ts";
+import {
+  FOLLOWER_READ_REQUESTS,
+  HOST_FOLDER_REQUESTS,
+} from "../src/serve/follower_requests.ts";
 import { HTTP_ACTION_RULES } from "../src/serve/http_action_request.ts";
 import {
   DETACHED_ACTION_TYPES,
@@ -82,6 +85,14 @@ Deno.test("serve HTTP route rules: every type the route answers is a read a fres
       FOLLOWER_READ_REQUESTS.has(type),
       `${type} is answered over HTTP but is not a follower read`,
     );
+  }
+});
+
+Deno.test("serve HTTP route rules: neither route answers a host folder request, which follower reads include", () => {
+  assert(HOST_FOLDER_REQUESTS.size > 0, "no host folder requests");
+  for (const type of HOST_FOLDER_REQUESTS) {
+    assert(!HTTP_REQUEST_TYPES.has(type), `${type} would take a cookie`);
+    assert(!HTTP_ACTION_TYPES.has(type), `${type} is not an action`);
   }
 });
 

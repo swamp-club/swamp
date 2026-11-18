@@ -196,6 +196,12 @@ const CATEGORIES: Record<string, Category> = {
   "worker.token.rotate": "access",
   "worker.token.reveal": "access",
   "worker.verify": "access",
+  "workspace.create": "access",
+  "workspace.list": "access",
+  "workspace.get": "access",
+  "workspace.suspend": "access",
+  "workspace.resume": "access",
+  "workspace.delete": "access",
 
   "vault.annotate": "vault",
   "vault.create": "vault",

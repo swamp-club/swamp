@@ -115,6 +115,7 @@ import type {
 import type { ResourceKind } from "../../domain/access/resource_selector.ts";
 import type { ScheduledExecutionService } from "../../libswamp/workflows/scheduled_execution.ts";
 import type { SwampError } from "../../libswamp/errors.ts";
+import type { HostRootWorkspaces } from "../host_root_workspaces.ts";
 import type { MergedServeOptions } from "../serve_config.ts";
 import type { HealthCollector } from "../health_collector.ts";
 import type { AuditEmitter } from "../../domain/serve_audit/audit_emitter.ts";
@@ -459,6 +460,8 @@ export interface ConnectionContext {
   trustedCollectivesUpdater?: (collectives: readonly string[]) => void;
   resolvedUserNames?: Record<string, string>;
   grantUsernameResolver?: GrantUsernameResolver;
+  /** set only on a host's root, which answers workspace requests */
+  hostedWorkspaces?: HostRootWorkspaces;
   serveOptions?: MergedServeOptions;
   healthCollector?: HealthCollector;
   vaultsDir?: string;

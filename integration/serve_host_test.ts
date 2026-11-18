@@ -296,10 +296,15 @@ Deno.test("serve host: a root and two workspaces made by hand answer at their ow
     assertEquals(edge.repoDir, join(folder.dir, "workspaces", "edge-dns"));
     assertEquals(edge.env, { PATH: "/usr/bin" });
     assertEquals(edge.oauthClient, null);
+    assertEquals(edge.hostWorkspaces, undefined);
     assertEquals(
       port.of("root")[0].spec.address,
       "https://serve.acme.internal",
     );
+    assertEquals(port.of("root")[0].spec.hostWorkspaces, {
+      dir: join(folder.dir, "workspaces"),
+      address: "https://serve.acme.internal",
+    });
   } finally {
     await host.shutdown();
   }

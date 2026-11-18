@@ -150,6 +150,14 @@ export async function startServeHost(
     trustedHost: config.trustedHost,
     env: childEnv,
     oauthClient: config.oauthClient,
+    ...(id.kind === "root"
+      ? {
+        hostWorkspaces: {
+          dir: config.workspacesDir,
+          address: config.address,
+        },
+      }
+      : {}),
   });
 
   const reconciler = createWorkspaceReconciler({

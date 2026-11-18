@@ -34,6 +34,11 @@ import {
 } from "../../serve/interrupted_run_continuation.ts";
 import { ServeLinkClient } from "../../serve/serve_link_client.ts";
 import { DelegationLinkService } from "../../serve/delegation_link_service.ts";
+import { hostRootWorkspaces } from "../../serve/host_root_workspaces.ts";
+import {
+  HOST_ADDRESS_FLAG,
+  HOST_WORKSPACES_DIR_FLAG,
+} from "../../serve/host/serve_process.ts";
 import { DelegationSyncService } from "../../serve/delegation_sync_service.ts";
 import {
   type DelegationRouteDeps,
@@ -2130,6 +2135,17 @@ export const serveCommand = new Command()
     "Drain and exit when stdin reaches end of file",
     { hidden: true },
   )
+  // the host gives these to its root alone: no serve.yaml key or env var
+  .option(
+    `${HOST_WORKSPACES_DIR_FLAG} <path:string>`,
+    "The host's workspaces folder, which makes this serve the host's root",
+    { hidden: true },
+  )
+  .option(
+    `${HOST_ADDRESS_FLAG} <url:string>`,
+    "The host's public address, under which each workspace is reached",
+    { hidden: true },
+  )
   .option(
     "--enable-internal-api",
     "Enable the /internal/runs endpoint for full run history access " +
@@ -2229,6 +2245,26 @@ export const serveCommand = new Command()
     const merged = resolveServeTlsPaths(
       repoDir,
       mergeServeOptions(configFile, options, explicitFlags),
+    );
+    const hostedWorkspaces = hostRootWorkspaces(
+      {
+        dir: options.hostWorkspacesDir as string | undefined,
+        address: options.hostAddress as string | undefined,
+      },
+      Deno.env.toObject(),
+      () => ({
+        mode: authConfig.mode,
+        oauthProvider: authConfig.mode === "oauth"
+          ? authConfig.oauthProvider
+          : null,
+        // oauth replaces authConfig.allowedUsers with resolved subjects; a new
+        // workspace starts from the list as configured
+        allowedUsers: authConfig.mode === "oauth"
+          ? [...allowedUsersConfigured]
+          : [...authConfig.allowedUsers],
+        allowedCollectives: [...authConfig.allowedCollectives],
+        nameCache: { ...oauthNameCache },
+      }),
     );
 
     const port = merged.port;
@@ -4869,6 +4905,7 @@ export const serveCommand = new Command()
         resolvedUserNames,
         grantUsernameResolver,
         serveOptions: merged,
+        ...(hostedWorkspaces !== undefined ? { hostedWorkspaces } : {}),
         vaultsDir,
         managedDefinitionsDir: repoMarker?.datastore?.managedConfig
           ? join(datastoreResolver.resolvePath("config"), "models")

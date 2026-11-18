@@ -67,6 +67,19 @@ export const FOLLOWER_FORWARDED_REQUESTS: ReadonlySet<string> = new Set([
   "access.delegation.end",
 ]);
 
+/**
+ * answered by the node holding the host folder, so a follower takes them as it
+ * does reads; four of them change the folder, so none is ever a cookie's to send
+ */
+export const HOST_FOLDER_REQUESTS: ReadonlySet<string> = new Set([
+  "workspace.create",
+  "workspace.list",
+  "workspace.get",
+  "workspace.suspend",
+  "workspace.resume",
+  "workspace.delete",
+]);
+
 export const FOLLOWER_READ_REQUESTS: ReadonlySet<string> = new Set([
   "server.version",
   "access.grant.list",
@@ -143,6 +156,7 @@ export const FOLLOWER_READ_REQUESTS: ReadonlySet<string> = new Set([
   "datastore.namespace.list",
   "cluster.instances",
   "serve.config",
+  ...HOST_FOLDER_REQUESTS,
 ]);
 
 /**

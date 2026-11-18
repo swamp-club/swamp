@@ -232,7 +232,10 @@ wait). Observed states are `stopped`, `starting`, `ready`, `backoff` and
 by that repo's own `serve.yaml`. The host adds `--host 127.0.0.1`, `--port 0`,
 `--address` with the child's public address, `--trusted-hosts` with the host's
 public name, `--trust-proxy` and `--exit-on-stdin-close`. The child reports the
-port it got on its `--json` listening line. A workspace is also given the
+port it got on its `--json` listening line. The root alone is also given
+the `workspaces/` folder and the host's address, as the hidden
+`--host-workspaces-dir` and `--host-address`, which make it the serve that
+takes the [lifecycle requests](#lifecycle). A workspace is also given the
 root's address, which [Sign-in](#sign-in) uses. The child inherits the host's
 environment, as plain serve inherits its operator's, so models and workers see
 what they would under plain serve. `SWAMP_REPO_DIR` and `SWAMP_DATASTORE` are dropped, since they would
@@ -456,7 +459,15 @@ them and its audit log records each one. The host gives the root the
 | `workspace.delete`  | Stops its serve and removes its folder                                                         | `admin` on `workspace:<name>` |
 
 `workspace` is a new resource kind in grants. With no grant naming it, only the
-root's admins can make these requests. A grant of `write` and `admin` on
+root's admins can make these requests. Until that kind exists, the root's
+admins (`admin` on `access:*`) make every request but `list`, and a caller
+acting through an integration or a delegation is refused `list` too, since its
+ceiling cannot name a workspace. A token-mode root refuses `create` until the
+[sign-in exchange](#sign-in) exists: the creator would have no way to get a
+token inside the new workspace. Each request, allowed or refused, is in the
+root's audit log with the caller and the workspace name
+(`src/serve/handlers/workspace_handlers.ts`). A follower root answers them
+itself, since only the node holding the folder can. A grant of `write` and `admin` on
 `workspace:data-*` to a group lets that group create, start and remove its own.
 With `write` alone it creates a workspace that an admin then starts. No grant
 reaches the suspend or resume of a registered workspace, as
