@@ -41,6 +41,7 @@ import {
   describeRequestTarget,
   fetchWithTransientRetry,
   formatElapsed,
+  retriedSuffix,
   type RetryOutcome,
   TransientRequestError,
 } from "./transient_retry.ts";
@@ -55,14 +56,6 @@ export const REGISTRY_FORBIDDEN_CODE = "forbidden";
 export const REGISTRY_TOKEN_SCOPE_CODE = "token_scope";
 export const DOWNLOAD_ATTEMPT_TIMEOUT_MS = 120_000;
 export const DOWNLOAD_BUDGET_MS = 300_000;
-
-function retriedSuffix(outcome: RetryOutcome | undefined): string {
-  return outcome && outcome.attempts > 1
-    ? ` after ${outcome.attempts} attempts over ${
-      formatElapsed(outcome.elapsedMs)
-    }`
-    : "";
-}
 
 export const REGISTRY_NOT_AUTHENTICATED_MESSAGE =
   "Not authenticated. Run 'swamp auth login' first.";

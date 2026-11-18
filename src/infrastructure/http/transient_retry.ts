@@ -147,6 +147,14 @@ export function causeMessage(cause: unknown): string {
   return redactUrls(cause instanceof Error ? cause.message : String(cause));
 }
 
+export function retriedSuffix(outcome: RetryOutcome | undefined): string {
+  return outcome && outcome.attempts > 1
+    ? ` after ${outcome.attempts} attempts over ${
+      formatElapsed(outcome.elapsedMs)
+    }`
+    : "";
+}
+
 export function formatElapsed(ms: number): string {
   if (ms < 1000) return `${Math.round(ms)}ms`;
   const seconds = Math.round(ms / 1000);

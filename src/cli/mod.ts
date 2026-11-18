@@ -2165,7 +2165,9 @@ async function gateWhoamiOr(
     return outcome.liveResponse;
   }
   const client = new SwampClubClient(serverUrl, await loadIdentity());
-  return await client.whoami(apiKey, AbortSignal.timeout(10_000));
+  return await client.whoami(apiKey, AbortSignal.timeout(10_000), {
+    retry: false,
+  });
 }
 
 /**

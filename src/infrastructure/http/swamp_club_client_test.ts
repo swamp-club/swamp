@@ -226,7 +226,9 @@ Deno.test("SwampClubClient - whoami returns unauthenticated on 401", async () =>
 });
 
 Deno.test("SwampClubClient - throws UserError on connection failure", async () => {
-  const client = new SwampClubClient("http://localhost:1");
+  const client = new SwampClubClient("http://localhost:1", {}, {
+    sleep: noSleep,
+  });
   await assertRejects(
     () => client.whoami("key"),
     UserError,
@@ -865,7 +867,9 @@ Deno.test("fetchIssue: commentCount is 0 when no comments array in response", as
 });
 
 Deno.test("fetch: connection-refused error has no timeout code", async () => {
-  const client = new SwampClubClient("http://localhost:1");
+  const client = new SwampClubClient("http://localhost:1", {}, {
+    sleep: noSleep,
+  });
   const err = await assertRejects(
     () => client.whoami("key"),
     UserError,
@@ -1849,6 +1853,171 @@ Deno.test("SwampClubClient.verifyIdentity: a body cut off by the timeout is unre
     const client = new SwampClubClient(`http://localhost:${mock.port}`);
     const result = await client.verifyIdentity("k", AbortSignal.timeout(200));
     assertEquals(result.outcome, { kind: "unreachable", reason: "timeout" });
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+// the last answer repeats once the script runs out
+function scriptedFetch(script: (number | "timeout")[]) {
+  const calls: string[] = [];
+  const fetch = (url: string | URL, _init?: RequestInit) => {
+    calls.push(String(url));
+    const next = script[Math.min(calls.length - 1, script.length - 1)];
+    if (next === "timeout") {
+      return Promise.reject(
+        new DOMException("The operation timed out.", "TimeoutError"),
+      );
+    }
+    return Promise.resolve(
+      next === 200
+        ? Response.json({ authenticated: true, username: "u" })
+        : new Response("busy", {
+          status: next,
+          headers: next === 429 ? { "retry-after": "1" } : {},
+        }),
+    );
+  };
+  return { calls, fetch };
+}
+
+for (const status of [502, 503, 504]) {
+  Deno.test(`SwampClubClient - whoami retries an HTTP ${status} and returns the answer`, async () => {
+    const { calls, fetch } = scriptedFetch([status, 200]);
+    const client = new SwampClubClient("http://club.test", {}, {
+      sleep: noSleep,
+      fetch,
+    });
+    const result = await client.whoami("key");
+    assertEquals(result.username, "u");
+    assertEquals(calls.length, 2);
+  });
+}
+
+Deno.test("SwampClubClient - whoami retries an attempt that timed out", async () => {
+  const { calls, fetch } = scriptedFetch(["timeout", 200]);
+  const client = new SwampClubClient("http://club.test", {}, {
+    sleep: noSleep,
+    fetch,
+  });
+  assertEquals((await client.whoami("key")).authenticated, true);
+  assertEquals(calls.length, 2);
+});
+
+Deno.test("SwampClubClient - whoami that stays unavailable fails with the status and its attempts", async () => {
+  const { calls, fetch } = scriptedFetch([503]);
+  const client = new SwampClubClient("http://club.test", {}, {
+    sleep: noSleep,
+    fetch,
+  });
+  const error = await assertRejects(
+    () => client.whoami("key"),
+    UserError,
+    "Whoami request failed (HTTP 503) after 6 attempts",
+  );
+  assertEquals(calls.length, 6);
+  assertStringIncludes(error.message, "attempts over");
+});
+
+Deno.test("SwampClubClient - whoami with retry: false asks once, as startup scope resolution needs", async () => {
+  const { calls, fetch } = scriptedFetch([503, 200]);
+  const client = new SwampClubClient("http://club.test", {}, {
+    sleep: noSleep,
+    fetch,
+  });
+  await assertRejects(
+    () => client.whoami("key", undefined, { retry: false }),
+    UserError,
+    "Whoami request failed (HTTP 503)",
+  );
+  assertEquals(calls.length, 1);
+});
+
+Deno.test("SwampClubClient - whoami does not retry a 401", async () => {
+  const { calls, fetch } = scriptedFetch([401]);
+  const client = new SwampClubClient("http://club.test", {}, {
+    sleep: noSleep,
+    fetch,
+  });
+  assertEquals(await client.whoami("bad"), { authenticated: false });
+  assertEquals(calls.length, 1);
+});
+
+Deno.test("SwampClubClient - whoami waits out a 429's Retry-After and retries", async () => {
+  const waits: number[] = [];
+  const { calls, fetch } = scriptedFetch([429, 200]);
+  const client = new SwampClubClient("http://club.test", {}, {
+    sleep: (ms) => {
+      waits.push(ms);
+      return Promise.resolve();
+    },
+    fetch,
+  });
+  assertEquals((await client.whoami("key")).username, "u");
+  assertEquals(calls.length, 2);
+  assertEquals(waits.length, 1);
+  assertEquals(waits[0] >= 1000, true);
+});
+
+Deno.test("SwampClubClient - whoami timing out on every attempt says so, with the timeout code", async () => {
+  const { fetch } = scriptedFetch(["timeout"]);
+  const client = new SwampClubClient("http://club.test", {}, {
+    sleep: noSleep,
+    fetch,
+  });
+  const error = await assertRejects(
+    () => client.whoami("key"),
+    UserError,
+    "Request to http://club.test/api/whoami timed out (15s per attempt) after 6 attempts over",
+  );
+  assertEquals((error as UserError).code, "timeout");
+});
+
+Deno.test("SwampClubClient - whoami past the caller's deadline reports the time it took, not the attempt timeout", async () => {
+  const deadline = new AbortController();
+  const { fetch } = scriptedFetch([503]);
+  const client = new SwampClubClient("http://club.test", {}, {
+    sleep: () => {
+      deadline.abort(new DOMException("deadline", "TimeoutError"));
+      return Promise.reject(deadline.signal.reason);
+    },
+    fetch,
+  });
+  const error = await assertRejects(
+    () => client.whoami("key", deadline.signal),
+    UserError,
+    "Request to http://club.test/api/whoami timed out after ",
+  );
+  assertEquals((error as UserError).code, "timeout");
+  assertEquals(error.message.includes("15s"), false);
+});
+
+Deno.test("SwampClubClient - whoami stops retrying when the caller aborts", async () => {
+  const controller = new AbortController();
+  const { calls, fetch } = scriptedFetch([503]);
+  const client = new SwampClubClient("http://club.test", {}, {
+    sleep: () => {
+      controller.abort(new DOMException("stop", "AbortError"));
+      return Promise.reject(controller.signal.reason);
+    },
+    fetch,
+  });
+  await assertRejects(() => client.whoami("key", controller.signal));
+  assertEquals(calls.length, 1);
+});
+
+Deno.test("SwampClubClient - verifyIdentity still asks once, so the auth gate stays fast", async () => {
+  let requests = 0;
+  const mock = startMockServer((_req) => {
+    requests++;
+    return new Response("busy", { status: 503 });
+  });
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`, {}, {
+      sleep: noSleep,
+    });
+    await client.verifyIdentity("key", AbortSignal.timeout(5000));
+    assertEquals(requests, 1);
   } finally {
     await mock.shutdown();
   }

@@ -490,6 +490,15 @@ and transient retries never multiply. Writes — push, upload, confirm, yank,
 deprecate, promote — are never retried, nor are other statuses or a caller's
 own cancellation or deadline.
 
+swamp-club's `whoami` retries the same way, with the same ceiling and budget, as
+`swamp-club: GET /api/whoami …`: push's and quality's registry checks, login,
+`swamp auth whoami` and quest decide on its answer, so one 503 or timeout must
+not fail them. A 401 is an answer and is not retried. What runs ahead of every
+command asks once, so commands stay fast when swamp-club is unreachable: the
+auth gate's identity check (`verifyIdentity`) and startup scope resolution
+(`whoami` with `retry: false`). swamp-club's other requests keep a single
+attempt.
+
 Before each wait one warning names the service, request, reason, wait and count,
 for example
 `swamp-club registry: GET /api/v1/extensions/… timed out after 15s · retrying in 2s (retry 2/5)`.
