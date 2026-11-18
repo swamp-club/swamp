@@ -37,10 +37,13 @@ export interface HostRootWorkspaces {
   readonly rootAccess: () => HostedWorkspaceRootAccess;
 }
 
-/**
- * undefined for a serve the host did not start as its root; `env` is the
- * root's own, which the host already built with hostChildEnv
- */
+// a hand-started root may carry these; they would point the provisioner at another repo
+const PROVISION_DROPPED_NAMES: ReadonlySet<string> = new Set([
+  "SWAMP_REPO_DIR",
+  "SWAMP_DATASTORE",
+]);
+
+/** undefined for a serve the host did not start as its root; `env` is the root's own */
 export function hostRootWorkspaces(
   flags: { readonly dir?: string; readonly address?: string },
   env: Readonly<Record<string, string>>,
@@ -56,9 +59,20 @@ export function hostRootWorkspaces(
   return {
     services: createHostedWorkspaceDeps({
       workspacesDir: dir,
-      provisioner: childHostedWorkspaceProvisioner(env),
+      provisioner: childHostedWorkspaceProvisioner(provisionEnv(env)),
       addressOf: (name) => hostedWorkspaceAddress(address, name),
     }),
     rootAccess,
   };
+}
+
+export function provisionEnv(
+  env: Readonly<Record<string, string>>,
+): Record<string, string> {
+  // Windows spells names in any case
+  return Object.fromEntries(
+    Object.entries(env).filter(([name]) =>
+      !PROVISION_DROPPED_NAMES.has(name.toUpperCase())
+    ),
+  );
 }

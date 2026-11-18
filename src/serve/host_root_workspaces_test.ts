@@ -19,7 +19,7 @@
 
 import { assertEquals, assertThrows } from "@std/assert";
 import { UserError } from "../domain/errors.ts";
-import { hostRootWorkspaces } from "./host_root_workspaces.ts";
+import { hostRootWorkspaces, provisionEnv } from "./host_root_workspaces.ts";
 
 const ACCESS = () => ({
   mode: "none" as const,
@@ -64,4 +64,16 @@ Deno.test("hostRootWorkspaces: one flag without the other refuses to start", () 
       "together",
     );
   }
+});
+
+Deno.test("provisionEnv: drops the repo and datastore names, in any case, and keeps the rest", () => {
+  assertEquals(
+    provisionEnv({
+      SWAMP_REPO_DIR: "/operator/repo",
+      swamp_datastore: "s3://bucket",
+      SWAMP_HOME: "/pinned/home",
+      PATH: "/usr/bin",
+    }),
+    { SWAMP_HOME: "/pinned/home", PATH: "/usr/bin" },
+  );
 });

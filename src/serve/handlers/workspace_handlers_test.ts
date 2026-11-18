@@ -147,7 +147,7 @@ Deno.test("handleWorkspaceCreate: in none mode the creator is anonymous and the 
   assertEquals(f.specs.map((s) => s.admin), [null]);
 });
 
-Deno.test("workspace handlers: the services' own codes reach the caller", async () => {
+Deno.test("handleWorkspaceGet: the services' own codes reach the caller, from get, change and create alike", async () => {
   await using f = await folder();
   const cases: [string, (socket: WebSocket) => Promise<void>, string][] = [
     [
@@ -181,7 +181,7 @@ Deno.test("workspace handlers: the services' own codes reach the caller", async 
   }
 });
 
-Deno.test("workspace handlers: authorization is decided before whether this serve is a host's root", async () => {
+Deno.test("handleWorkspaceGet: authorization is decided before whether this serve is a host's root, and list needs none", async () => {
   await using f = await folder();
   const ctx = { ...f.ctx("token"), hostedWorkspaces: undefined };
   const admin = createMockSocket();
