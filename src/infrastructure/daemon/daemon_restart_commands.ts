@@ -22,7 +22,7 @@ export function launchdKickstartArgs(domain: string, label: string): string[] {
   return ["kickstart", "-k", `${domain}/${label}`];
 }
 
-/** Set for the default and for any explicit --cache-dir since the first daemon release. */
+// Every unit and plist enable writes sets it; its absence means an older install.
 export function systemdUnitHasWorkerCacheDir(unit: string): boolean {
   return /^Environment="SWAMP_WORKER_CACHE_DIR=/m.test(unit);
 }
