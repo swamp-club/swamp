@@ -7969,10 +7969,9 @@ export class WorkflowExecutionService {
     });
     if (!parsed.success) {
       const issue = parsed.error.issues[0];
+      const field = issue.path.slice(1).join(".");
       throw new UserError(
-        `${stepName}.placement.${
-          issue.path.slice(1).join(".")
-        } must resolve to a string to place a nested workflow: ${issue.message}`,
+        `${stepName}.placement.${field} must resolve to a string to place a nested workflow: ${issue.message}`,
       );
     }
     return parsed.data;
