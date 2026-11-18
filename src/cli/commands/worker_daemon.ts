@@ -24,6 +24,7 @@ import { groupCommandAction } from "../group_action.ts";
 import { UserError } from "../../domain/errors.ts";
 import { readTokenFile } from "../remote_run.ts";
 import { resolveServiceMode } from "../../infrastructure/daemon/service_scheduler_factory.ts";
+import type { LaunchdMode } from "../../infrastructure/update/launchd_scheduler.ts";
 import { createWorkerDaemonScheduler } from "../../infrastructure/daemon/worker_daemon_scheduler_factory.ts";
 import {
   renderWorkerDaemonDisabled,
@@ -62,15 +63,27 @@ export function collectWorkerExtraArgs(options: AnyOptions): string[] {
   return args;
 }
 
+/** A system daemon stays out of the invoking user's home, which sudo keeps on macOS. */
+export function defaultDaemonCacheDir(
+  mode: LaunchdMode,
+  os: typeof Deno.build.os = Deno.build.os,
+): string {
+  if (mode === "agent") return join(getSwampDataDir(), "worker-daemon-cache");
+  return os === "darwin"
+    ? join("/Library", "Application Support", "swamp-worker")
+    : join("/var", "lib", "swamp-worker");
+}
+
 /**
  * The machine id lives in the cache dir, so a daemon on a fresh temp dir would
  * re-enroll as a new machine on every restart.
  */
 export async function resolveDaemonCacheDir(
   rawPath: string | undefined,
+  mode: LaunchdMode,
 ): Promise<string> {
   if (rawPath) return await validateCacheDir(rawPath);
-  const dir = join(getSwampDataDir(), "worker-daemon-cache");
+  const dir = defaultDaemonCacheDir(mode);
   await Deno.mkdir(dir, { recursive: true, mode: 0o700 });
   return dir;
 }
@@ -292,7 +305,7 @@ export const workerDaemonEnableCommand = new Command()
   )
   .option(
     "--cache-dir <dir:string>",
-    "Bundle/asset cache directory; also stores the machine id (default: worker-daemon-cache in the swamp data dir)",
+    "Bundle/asset cache directory; also stores the machine id (default: /var/lib/swamp-worker or /Library/Application Support/swamp-worker for a system service, worker-daemon-cache in the swamp data dir with --user)",
   )
   .option(
     "--data-plane-url <url:string>",
@@ -393,8 +406,12 @@ export const workerDaemonEnableCommand = new Command()
       await readTokenFile(serverTokenFile, "--server-token-file");
     }
 
+    const mode = await resolveServiceMode({
+      user: options.user as boolean | undefined,
+    });
     const cacheDir = await resolveDaemonCacheDir(
       options.cacheDir as string | undefined,
+      mode,
     );
 
     let caCert: string | undefined;
@@ -413,9 +430,6 @@ export const workerDaemonEnableCommand = new Command()
       caCert,
       extraHeaders: extraHeaders?.raw,
     };
-    const mode = await resolveServiceMode({
-      user: options.user as boolean | undefined,
-    });
     const scheduler = await createWorkerDaemonScheduler({ mode });
     const extraArgs = collectWorkerExtraArgs(options);
     const env = {

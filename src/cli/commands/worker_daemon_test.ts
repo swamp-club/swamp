@@ -28,6 +28,7 @@ import {
   captureExtraHeaders,
   collectWorkerEnv,
   collectWorkerExtraArgs,
+  defaultDaemonCacheDir,
   resolveDaemonCacheDir,
   validateCaCertFile,
   validateCacheDir,
@@ -408,14 +409,14 @@ Deno.test("worker daemon enable: covers every environment variable worker connec
   assertEquals(read.filter((name) => !covered.includes(name)), []);
 });
 
-Deno.test("resolveDaemonCacheDir: without --cache-dir, creates a stable dir in the swamp data dir", async () => {
+Deno.test("resolveDaemonCacheDir: a per-user daemon without --cache-dir gets a stable dir in the swamp data dir", async () => {
   const home = await Deno.makeTempDir();
   try {
     await withMockedEnv({ SWAMP_HOME: home }, async () => {
-      const first = await resolveDaemonCacheDir(undefined);
+      const first = await resolveDaemonCacheDir(undefined, "agent");
       assertPathEquals(first, join(home, "worker-daemon-cache"));
       assertEquals((await Deno.stat(first)).isDirectory, true);
-      assertEquals(await resolveDaemonCacheDir(undefined), first);
+      assertEquals(await resolveDaemonCacheDir(undefined, "agent"), first);
     });
   } finally {
     if (Deno.build.os === "windows") {
@@ -428,8 +429,26 @@ Deno.test("resolveDaemonCacheDir: without --cache-dir, creates a stable dir in t
 
 Deno.test("resolveDaemonCacheDir: an explicit --cache-dir is validated, not created", async () => {
   const err = await assertRejects(
-    () => resolveDaemonCacheDir("/tmp/swamp-nonexistent-dir-abc123"),
+    () => resolveDaemonCacheDir("/tmp/swamp-nonexistent-dir-abc123", "daemon"),
     UserError,
   );
   assertStringIncludes(err.message, "--cache-dir does not exist");
+});
+
+Deno.test("defaultDaemonCacheDir: a system daemon uses a system path, never the invoking user's home", async () => {
+  await withMockedEnv({ SWAMP_HOME: "/Users/someone/.swamp" }, () => {
+    assertPathEquals(
+      defaultDaemonCacheDir("daemon", "linux"),
+      join("/var", "lib", "swamp-worker"),
+    );
+    assertPathEquals(
+      defaultDaemonCacheDir("daemon", "darwin"),
+      join("/Library", "Application Support", "swamp-worker"),
+    );
+    assertPathEquals(
+      defaultDaemonCacheDir("agent", "darwin"),
+      join("/Users/someone/.swamp", "worker-daemon-cache"),
+    );
+    return Promise.resolve();
+  });
 });
