@@ -29,7 +29,8 @@ export function scrubSecrets(text: string): string {
  * client-side codes, beside the codes serve answers with: route_unavailable
  * (an older serve has no such route), action_unavailable,
  * connection_refused, network_error, timeout, unexpected_reply, link_ended,
- * link_suspended and not_admitted
+ * link_suspended, not_admitted, and outcome_unknown for a forward that
+ * reached the leader
  */
 export type SwampHttpErrorCode = string;
 

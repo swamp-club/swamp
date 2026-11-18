@@ -259,6 +259,24 @@ export function errorFrom(
   route: string,
   actionType?: string,
 ): SwampHttpError {
+  // its Retry-After, and a follower's unnamed-leader message, invite a resend
+  if (sentOnToLeader(reply)) {
+    const { inFlight: _, ...body } = reply.body;
+    return errorFrom(
+      {
+        status: reply.status,
+        body: {
+          ...body,
+          message: "Serve forwarded the request to the leader, which may " +
+            "already have acted on it; check its outcome before retrying",
+        },
+        code: "outcome_unknown",
+        receivedAtMs: reply.receivedAtMs,
+      },
+      route,
+      actionType,
+    );
+  }
   const message = reply.status === 0
     ? reply.code === "timeout"
       ? "The request to serve timed out"
@@ -294,6 +312,7 @@ export function errorFrom(
  * that name a time to retry
  */
 export function refusedBeforeActing(reply: HttpReply): boolean {
+  if (sentOnToLeader(reply)) return false;
   if (reply.code === "connection_refused") return true;
   if (reply.status === 429) return true;
   if (reply.status === 503 && reply.code === "not_ready") return true;
@@ -307,5 +326,10 @@ export function outcomeUnknown(reply: HttpReply): boolean {
   // a refused connection sent nothing
   if (reply.code === "connection_refused") return false;
   return reply.status === 0 || reply.code === "outcome_unknown" ||
-    reply.code === "still_working";
+    reply.code === "still_working" || sentOnToLeader(reply);
+}
+
+/** a follower's forward that failed after reaching the leader, which may have acted */
+function sentOnToLeader(reply: HttpReply): boolean {
+  return reply.body.inFlight === true;
 }
