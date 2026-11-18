@@ -27,9 +27,9 @@ https://serve.acme.internal/w/cost-reports
 
 A hosted workspace is not an entry in the local workspace registry that
 [workspace](./workspace.md) describes. That registry lists repos on a person's
-machine. A hosted workspace lives on a host. A host also recognizes the
-workspaces in that registry and serves one when asked, as
-[The host](#the-host) describes.
+machine. A hosted workspace lives on a host. A host will also recognize the
+workspaces in that registry and serve one when asked.
+[The host](#the-host) describes that plan.
 
 ## The idea
 
@@ -312,17 +312,26 @@ copies the root's auth mode or admission lists into it, and the host admits it
 by the same rule as any child. Clients, workers and checkouts that used another
 address for the repo are pointed at the new one.
 
-The host reads the registry with each rescan and never writes it. The status
-file is how the root knows a registered workspace, so the root does not read
-the registry. The registry already keeps names and folders unique and records a
-folder by its real path. The host adds three rules:
+The host reads the registry with each rescan and never writes it. A registered
+workspace's wanted and status files are in `workspaces/` under its registry
+name, like any other workspace's. The status file says the workspace is
+registered, which is how the root knows one without reading the registry. The
+root learns of a new one up to one rescan late.
 
-- A name taken by a folder in `workspaces/` stays with that folder. The
-  registered workspace is passed over, with a line in the host's log.
+The registry keeps names and folders unique, but it does not store every folder
+by its real path, so the host resolves each one before it compares. The host
+adds three rules:
+
+- A name belongs to whichever the host took on first, the folder in
+  `workspaces/` or the registered workspace, and the status file records which.
+  The other is passed over, with a line in the host's log. A folder never
+  inherits a registered workspace's wanted file. With no status file, the
+  folder has the name.
 - A registered folder that is the root's repo, or one of the host's own
   workspace folders, is passed over, so no repo has two serves from one host.
-- A workspace that leaves the registry is stopped, and its wanted and status
-  files are removed. A later import under the same name starts nothing.
+- A registered workspace the host took on is stopped when it leaves the
+  registry, and its wanted and status files are removed. A later import under
+  the same name starts nothing.
 
 `workspace.delete` refuses a registered workspace, since no workspace command
 deletes a registered folder. `swamp workspace remove` takes it off the host.
@@ -332,7 +341,8 @@ deletes a registered folder. `swamp workspace remove` takes it off the host.
 Registering is an act of the host's user on the host's machine. No request
 registers a repo, since that would let a remote caller name a folder for the
 host to run code from. Anyone who may resume a workspace on the root can start
-a serve for any workspace that user has registered.
+a serve for any workspace that user has registered. The registry's trust mark
+is about agents and does not gate serving.
 
 **`host.yaml`** (`src/serve/host/host_config.ts`) refuses unknown keys and names
 the field that is wrong:
