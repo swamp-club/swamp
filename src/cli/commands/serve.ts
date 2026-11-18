@@ -504,7 +504,11 @@ import {
   stopHeartbeatAtShutdown,
 } from "../../serve/shutdown_interrupt.ts";
 import { ShutdownDeadline } from "../../serve/shutdown_deadline.ts";
-import { ShutdownStages } from "../../serve/shutdown_stages.ts";
+import {
+  runShutdownStep,
+  ShutdownStages,
+} from "../../serve/shutdown_stages.ts";
+import { ServeShutdownRun } from "../../serve/serve_shutdown_run.ts";
 import { stdinShutdownTrigger } from "../../serve/stdin_close_trigger.ts";
 import { formatListeningLine } from "../../serve/listening_line.ts";
 import { ServeRunWriteFence } from "../../serve/run_write_fence.ts";
@@ -8472,32 +8476,39 @@ export const serveCommand = new Command()
       if (serveLeadership?.role === "leader") leaderSteppingDown.begin();
       // runs park at their next step boundary within the drain; with no drain
       // the abort below settles them
-      if (
-        handsOverRuns(shutdownDrainTimeoutMs, parkedRunsContinuable)
-      ) {
-        dispatchService.beginHandover();
-        serveHandover.begin();
-      }
+      runShutdownStep("run handover", () => {
+        if (
+          handsOverRuns(shutdownDrainTimeoutMs, parkedRunsContinuable)
+        ) {
+          dispatchService.beginHandover();
+          serveHandover.begin();
+        }
+      });
       // a stale file would point swamp serve reload at whatever process
       // reuses this pid
       if (pidPath) await removePidFileIfOurs(pidPath, Deno.pid);
       // its pass in flight is waited on below, within the shutdown deadline
-      pendingReplaySweep.halt();
+      runShutdownStep(
+        "pending replay sweep halt",
+        () => pendingReplaySweep.halt(),
+      );
       // stopped first so it lets go of its load in flight instead of competing
       // with the drain; waited on after the drain, which does not wait for that
       // load
-      runIndexWarmup.stop();
-      eventLoopLag.stop();
-      if (isJson) {
-        writeServeJsonLine(JSON.stringify({ status: "stopping" }));
-      }
-      if (shutdownDrainTimeoutMs > 0) {
-        logger.info`Shutting down, draining in-flight runs for up to ${
-          shutdownDrainTimeoutMs / 1000
-        }s...`;
-      } else {
-        logger.info`Shutting down, aborting in-flight runs immediately...`;
-      }
+      runShutdownStep("run index warm-up stop", () => runIndexWarmup.stop());
+      runShutdownStep("event loop lag", () => eventLoopLag.stop());
+      runShutdownStep("stopping line", () => {
+        if (isJson) {
+          writeServeJsonLine(JSON.stringify({ status: "stopping" }));
+        }
+        if (shutdownDrainTimeoutMs > 0) {
+          logger.info`Shutting down, draining in-flight runs for up to ${
+            shutdownDrainTimeoutMs / 1000
+          }s...`;
+        } else {
+          logger.info`Shutting down, aborting in-flight runs immediately...`;
+        }
+      });
       const drainStarted = Date.now();
       // every later stage takes its bound from this one deadline, so neither a
       // slow bucket nor a stalled background pass holds shutdown past the drain
@@ -8519,26 +8530,35 @@ export const serveCommand = new Command()
       });
       // before the drain, so a pass that claims a run cannot race it
       await stages.run("pending replay sweep", () => pendingReplaySweep.stop());
-      const remaining = await runShutdownDrain({
-        webhookService,
-        scheduledExecution: scheduler,
-        activeRunRegistry: activeRunRegistry ?? null,
-        drainTimeoutMs: shutdownDrainTimeoutMs,
-        abortGraceMs: SHUTDOWN_ABORT_GRACE_MS,
-        // the abort grace and the interrupted run push come after this wait
-        cleanupGraceMs: () =>
-          cleanupGraceWithin(
-            shutdownDeadline.left(),
-            SHUTDOWN_ABORT_GRACE_MS + SHUTDOWN_PUSH_TIMEOUT_MS,
-          ),
-        onAborting: (undrained) => {
-          if (isJson) {
-            writeServeJsonLine(
-              JSON.stringify({ status: "aborting", undrained }),
-            );
-          }
-        },
-      });
+      let remaining: Awaited<ReturnType<typeof runShutdownDrain>> = [];
+      try {
+        remaining = await runShutdownDrain({
+          webhookService,
+          scheduledExecution: scheduler,
+          activeRunRegistry: activeRunRegistry ?? null,
+          drainTimeoutMs: shutdownDrainTimeoutMs,
+          abortGraceMs: SHUTDOWN_ABORT_GRACE_MS,
+          // the abort grace and the interrupted run push come after this wait
+          cleanupGraceMs: () =>
+            cleanupGraceWithin(
+              shutdownDeadline.left(),
+              SHUTDOWN_ABORT_GRACE_MS + SHUTDOWN_PUSH_TIMEOUT_MS,
+            ),
+          onAborting: (undrained) => {
+            if (isJson) {
+              writeServeJsonLine(
+                JSON.stringify({ status: "aborting", undrained }),
+              );
+            }
+          },
+        });
+      } catch (error) {
+        // runs it did not settle may still be writing
+        keepV3WriterMarkers();
+        logger.error`Shutdown: drain failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`;
+      }
       // a run still going past the abort grace may still be writing, so on v3
       // the next command must recover what it leaves uncommitted
       if (
@@ -8588,12 +8608,14 @@ export const serveCommand = new Command()
         });
         unpushedRunIds = interruptResult.unpushed ?? [];
       }, "awaited");
-      if (isJson && unpushedRunIds.length > 0) {
-        writeServeJsonLine(JSON.stringify({
-          status: "interrupt_push_failed",
-          runIds: unpushedRunIds,
-        }));
-      }
+      runShutdownStep("interrupt_push_failed line", () => {
+        if (isJson && unpushedRunIds.length > 0) {
+          writeServeJsonLine(JSON.stringify({
+            status: "interrupt_push_failed",
+            runIds: unpushedRunIds,
+          }));
+        }
+      });
       await stages.run("run index warm-up", () => runIndexWarmup.finished());
       // The locks callers of the datastore API hold, once no request can
       // take another: released, and acquires still waiting given up.
@@ -8602,7 +8624,7 @@ export const serveCommand = new Command()
         () => datastoreApiLocks.dispose(),
         "floor",
       );
-      setOwnLockGate(undefined);
+      runShutdownStep("own lock gate", () => setOwnLockGate(undefined));
       if (workerGcService) {
         const service = workerGcService;
         await stages.run("worker GC", () => service.dispose());
@@ -8676,7 +8698,7 @@ export const serveCommand = new Command()
           return workerTokenRevalidationService.dispose();
         },
       );
-      workerGateway.dispose();
+      runShutdownStep("worker gateway", () => workerGateway.dispose());
       if (collectiveRefreshService) {
         const service = collectiveRefreshService;
         await stages.run("collective refresh", () => service.dispose());
@@ -8695,7 +8717,7 @@ export const serveCommand = new Command()
       );
       if (clubHeartbeatService) {
         const heartbeat = clubHeartbeatService;
-        heartbeat.stop();
+        runShutdownStep("swamp-club heartbeat stop", () => heartbeat.stop());
         await stages.run("swamp-club heartbeat", () => heartbeat.settled());
       }
       if (grantsDirectoryPoller) {
@@ -8758,7 +8780,10 @@ export const serveCommand = new Command()
             waitMs: shutdownDeadline.remaining(V3_UPKEEP_STOP_BOUND_MS),
           }), "awaited");
       }
-      setV3ClosingDeadline(shutdownDeadline);
+      runShutdownStep(
+        "v3 closing deadline",
+        () => setV3ClosingDeadline(shutdownDeadline),
+      );
       // final telemetry flush after runs drain so their entries are included;
       // before ac.abort(), which releases the CLI's own teardown flush: one cut
       // off at the deadline may overlap it and resend a batch
@@ -8784,23 +8809,56 @@ export const serveCommand = new Command()
           }
         }, "floor");
       }
-      rejectionGuard.dispose();
-      setWorkerPoolReader(null);
-      setRemoteStepDispatcher(null);
-      setEnrollmentTokenWriteOrdering(null);
-      setTokenRefusalNodeState(undefined);
-      setRemoteOnlyMode(false);
+      runShutdownStep(
+        "unhandled rejection guard",
+        () => rejectionGuard.dispose(),
+      );
+      runShutdownStep("process-wide serve state", () => {
+        setWorkerPoolReader(null);
+        setRemoteStepDispatcher(null);
+        setEnrollmentTokenWriteOrdering(null);
+        setTokenRefusalNodeState(undefined);
+        setRemoteOnlyMode(false);
+      });
       await stages.run("listener", () => listenerClosed, "awaited");
       ac.abort();
       if (pidPath) await removePidFileIfOurs(pidPath, Deno.pid);
-      if (isJson) {
-        writeServeJsonLine(JSON.stringify({ status: "stopped" }));
-      }
+      runShutdownStep("stopped line", () => {
+        if (isJson) {
+          writeServeJsonLine(JSON.stringify({ status: "stopped" }));
+        }
+      });
     };
+    // a listen failure that a failed shutdown's exit would otherwise drop
+    let listenFailure: unknown;
     // every trigger shares one run, which the action waits for before closing
     // the catalog the shutdown stages still use
-    let shutdownRun: Promise<void> | undefined;
-    const startShutdown = () => (shutdownRun ??= shutdown());
+    const shutdownRun = new ServeShutdownRun({
+      body: shutdown,
+      onEscaped: (error) => {
+        // runs and background passes shutdown never stopped may still write
+        keepV3WriterMarkers();
+        const messageOf = (cause: unknown) =>
+          cause instanceof Error ? cause.message : String(cause);
+        const message = messageOf(error);
+        // each report on its own, so a broken stdout never silences stderr
+        runShutdownStep("shutdown_failed line", () => {
+          if (isJson) {
+            writeServeJsonLine(
+              JSON.stringify({ status: "shutdown_failed", error: message }),
+            );
+          }
+        });
+        runShutdownStep("shutdown failure log", () => {
+          if (listenFailure !== undefined) {
+            logger.error`Serve could not listen: ${messageOf(listenFailure)}`;
+          }
+          logger.error`Shutdown failed, exiting at once: ${message}`;
+        });
+      },
+      exit: Deno.exit,
+    });
+    const startShutdown = () => shutdownRun.start();
     registerShutdownHandler({
       handler: () => {
         startShutdown().catch((e) =>
@@ -9893,6 +9951,7 @@ export const serveCommand = new Command()
       try {
         server ??= listen();
       } catch (error) {
+        listenFailure = error;
         await startShutdown();
         throw error;
       }
@@ -9909,8 +9968,8 @@ export const serveCommand = new Command()
     eventLoopLag.start();
 
     await server?.finished;
-    // shutdown logs its own failure
-    await shutdownRun?.catch(() => {});
+    // a failed shutdown exits the process, so it never returns here
+    await shutdownRun.started;
 
     repoContext.catalogStore.close();
   })

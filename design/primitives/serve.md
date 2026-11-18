@@ -2307,7 +2307,12 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   heartbeat, worker gateway, pollers and telemetry and remove the PID file. In `--json` mode each phase is emitted as a
   `{ status: "stopping" | "aborting" | "interrupted" | "stopped" }` line, and a
   stage cut off at the shutdown deadline as
-  `{ status: "shutdown_stage_timed_out", stage, waitedMs }`. Serve writes
+  `{ status: "shutdown_stage_timed_out", stage, waitedMs }`. A step that
+  fails is logged and the steps after it still run. An error that escapes
+  the sequence anyway keeps the v3 writer markers, emits
+  `{ status: "shutdown_failed", error }`, and exits 1 at once, leaving what
+  a killed serve leaves for the next command to recover
+  (`src/serve/serve_shutdown_run.ts`). Serve writes
   every `--json` line to stdout through `unguardedConsole`
   (`src/cli/commands/serve_json_line.ts`), so a method running in the process,
   whose console guard sends captured lines to stderr, never moves one off
