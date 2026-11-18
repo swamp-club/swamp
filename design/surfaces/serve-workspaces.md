@@ -1,16 +1,17 @@
 ---
 audience: operator, maintainer
 enables: [serve]
-last-verified: 2026-11-17 @ 9a2f51486
+last-verified: 2026-11-18 @ 253ee3d17
 ---
 
 # Serve workspaces
 
 **Status:** Partly built. Addresses with a path and the host (steps 1 to 7 of
-the [execution plan](#execution-plan)) are built: `swamp serve host` runs a
-serve per workspace folder made by hand. Lifecycle, sign-in and the dashboard
-are not. It describes how one address hosts several serves, which promoting a
-local workspace to a server assumes.
+the [execution plan](#execution-plan)) are built, as is default off (step 20):
+`swamp serve host` lists every workspace folder and runs a serve for each one
+whose wanted file says `active`. Lifecycle, sign-in and the dashboard are not.
+It describes how one address hosts several serves, which promoting a local
+workspace to a server assumes.
 
 ## Outcome
 
@@ -293,10 +294,11 @@ writes. Finding a folder in `workspaces/`, reading a registry entry and
 creating a workspace all leave the workspace listed and stopped. The choice is
 kept in the wanted file, so a workspace someone resumed comes back after a host
 restart. The root is the one exception: naming it in `host.yaml` is the
-operator turning it on. This is item 20 of the
-[execution plan](#execution-plan). Until it is built, a folder is started when
-its wanted file is missing, or cannot be read and the host has read none, as
-[Lifecycle](#lifecycle) describes.
+operator turning it on. The host logs one line for each workspace it lists and
+does not start, naming the wanted file to write. Under `--json` that line is a
+log record in the output stream. The `listening` and `workspaces` events carry
+a count and names, not each workspace's state; its status file and the 503 its
+address answers say whether it runs.
 
 **Registered workspaces.** The host also reads the workspace registry of the
 user it runs as, the list `swamp workspace import` and `swamp workspace create`
@@ -465,8 +467,9 @@ per workspace, beside its folder:
 
 - **Wanted**, `workspaces/<name>.wanted.yaml`, written by the root: `wanted`
   (`active`, `suspended` or `deleted`), `creator` and `changedAt`. A folder
-  without one is `active`. Only `wanted` is required, so an operator can
-  suspend or resume a workspace by editing that one line while the host runs.
+  without one is listed and not started, and its status file says
+  `wanted: suspended`. Only `wanted` is required, so an operator can suspend or
+  resume a workspace by editing that one line while the host runs.
 - **Status**, `workspaces/<name>.status.yaml`, written by the host: `state`
   (the observed state), `wanted`, `restarts` (spawns after an exit the host did
   not ask for, over the host's lifetime), `reason` and `updatedAt`. The reason
@@ -491,13 +494,15 @@ The host reads the wanted files with each rescan of `workspaces/`
   operator resuming by hand changes the file, and the services always write a
   new `changedAt`.
 - A wanted file that cannot be read (bad YAML, an unknown field, over 4 KiB,
-  not a regular file) is reported in the host's log, and in the status file
-  once the workspace has a serve, and changes nothing: the workspace keeps the
-  last state read whole, or `active` when the host has read none. A wanted file
-  the scan listed but that is gone when it is read, as while an editor saves by
-  removing and recreating it, also changes nothing; the next scan decides. A
-  scan that lists the folder in that gap reads no file, which means `active`,
-  until the next scan sees the file again.
+  not a regular file) is reported in the host's log and in the status file,
+  and changes nothing: the workspace keeps the last state read whole, and is
+  not started when the host has read none. A wanted file that is absent while
+  its folder is there follows the same rule, whether the scan listed it and it
+  was gone by the read, as while an editor saves by removing and recreating
+  it, or the scan saw none: a running workspace keeps running and a suspended
+  one stays stopped until a wanted file says otherwise. Once the folder is
+  gone too, the host forgets that state, so a folder added back by hand with
+  no wanted file is not started.
 - A wanted file that is `active` or `suspended` with no folder beside it is left
   alone until the folder appears.
 - A folder removed by hand stops its serve, as before, and its status file is

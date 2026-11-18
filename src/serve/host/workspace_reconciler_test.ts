@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { assert, assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { waitFor } from "@swamp-club/swamp-testing";
@@ -25,6 +26,7 @@ import {
   serveIdKey,
   workspaceServe,
 } from "../../domain/serve/managed_serve.ts";
+import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { HostedWorkspaceFileRepository } from "../../infrastructure/persistence/hosted_workspace_file_repository.ts";
 import type { ListenedServe } from "../listening_line.ts";
 import type {
@@ -206,11 +208,37 @@ async function exists(path: string): Promise<boolean> {
 
 const id = (name: string): ServeId => workspaceServe(name);
 
+async function notStartedLines(fn: () => Promise<void>): Promise<string[]> {
+  const records: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => records.push(record) },
+    loggers: [
+      {
+        category: ["serve", "host", "workspaces"],
+        lowestLevel: "info",
+        sinks: ["capture"],
+      },
+      { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+    ],
+    reset: true,
+  });
+  try {
+    await fn();
+  } finally {
+    await reset();
+    await initializeLogging({});
+  }
+  return records
+    .map((record) => record.message.map(String).join(""))
+    .filter((message) => message.includes("is listed and not started"));
+}
+
 Deno.test("createWorkspaceReconciler: at startup a suspended workspace is not started and a deleted one is removed", async () => {
   await using h = await harness();
   await makeRepo(h.dir, "running");
   await makeRepo(h.dir, "parked");
   await makeRepo(h.dir, "doomed");
+  await want(h.dir, "running", "wanted: active\n");
   await want(h.dir, "parked", "wanted: suspended\n");
   await want(h.dir, "doomed", "wanted: deleted\n");
   await Deno.writeTextFile(join(h.dir, "doomed.status.yaml"), "state: ready\n");
@@ -230,6 +258,7 @@ Deno.test("createWorkspaceReconciler: at startup a suspended workspace is not st
 Deno.test("createWorkspaceReconciler: editing the wanted file suspends and resumes a running workspace", async () => {
   await using h = await harness();
   await makeRepo(h.dir, "edge-dns");
+  await want(h.dir, "edge-dns", "wanted: active\n");
   await h.begin();
   await waitFor(() => h.observed("edge-dns") === "ready", "ready");
 
@@ -270,13 +299,19 @@ Deno.test("createWorkspaceReconciler: an unreadable wanted file leaves the works
   await using h = await harness();
   await makeRepo(h.dir, "edge-dns");
   await makeRepo(h.dir, "fresh");
+  await want(h.dir, "edge-dns", "wanted: active\n");
   await want(h.dir, "fresh", "wanted: [\n");
-  assertEquals(
-    await h.begin(),
-    ["edge-dns", "fresh"],
-    "unreadable at start counts as no file",
-  );
+  assertEquals(await h.begin(), ["edge-dns", "fresh"]);
   await waitFor(() => h.observed("edge-dns") === "ready", "ready");
+  assertEquals(
+    h.port.of("fresh").length,
+    0,
+    "unreadable with none read starts nothing",
+  );
+  await h.statusWriter.drain();
+  const fresh = await Deno.readTextFile(join(h.dir, "fresh.status.yaml"));
+  assert(fresh.includes("cannot be read"), fresh);
+  assert(fresh.includes("wanted: suspended"), fresh);
 
   await want(h.dir, "edge-dns", "wanted: suspend\n");
   await h.rescan();
@@ -307,6 +342,7 @@ Deno.test("createWorkspaceReconciler: an active wanted file without a folder is 
 Deno.test("createWorkspaceReconciler: a folder removed by hand stops its serve and leaves no status file", async () => {
   await using h = await harness();
   await makeRepo(h.dir, "edge-dns");
+  await want(h.dir, "edge-dns", "wanted: active\n");
   await h.begin();
   await waitFor(() => h.observed("edge-dns") === "ready", "ready");
   await h.statusWriter.drain();
@@ -317,7 +353,7 @@ Deno.test("createWorkspaceReconciler: a folder removed by hand stops its serve a
   await h.reconciler.drain();
   await h.statusWriter.drain();
   assertEquals(h.supervisor.lookup(id("edge-dns"))?.wanted, "deleted");
-  assertEquals(await entries(h.dir), []);
+  assertEquals(await entries(h.dir), ["edge-dns.wanted.yaml"]);
 
   await makeRepo(h.dir, "edge-dns");
   await h.rescan();
@@ -326,10 +362,32 @@ Deno.test("createWorkspaceReconciler: a folder removed by hand stops its serve a
   assert(await exists(join(h.dir, "edge-dns.status.yaml")));
 });
 
+Deno.test("createWorkspaceReconciler: a folder added back by hand after its folder and wanted file were removed is not started", async () => {
+  await using h = await harness();
+  await makeRepo(h.dir, "edge-dns");
+  await want(h.dir, "edge-dns", "wanted: active\n");
+  await h.begin();
+  await waitFor(() => h.observed("edge-dns") === "ready", "ready");
+
+  await Deno.remove(join(h.dir, "edge-dns"), { recursive: true });
+  await Deno.remove(join(h.dir, "edge-dns.wanted.yaml"));
+  await h.rescan();
+  await h.reconciler.drain();
+  assertEquals(h.supervisor.lookup(id("edge-dns"))?.wanted, "deleted");
+
+  await makeRepo(h.dir, "edge-dns");
+  await h.rescan();
+  await h.reconciler.drain();
+  await h.statusWriter.drain();
+  assertEquals(h.supervisor.lookup(id("edge-dns"))?.wanted, "suspended");
+  assertEquals(h.port.of("edge-dns").length, 1, "not started again");
+});
+
 Deno.test("createWorkspaceReconciler: a deleted workspace is stopped before its folder goes, an edit back is ignored, and nothing is left", async () => {
   await using h = await harness();
   await makeRepo(h.dir, "edge-dns");
   await Deno.writeTextFile(join(h.dir, "edge-dns", "data.txt"), "keep?");
+  await want(h.dir, "edge-dns", "wanted: active\n");
   h.port.ignoreTerminate = true;
   await h.begin();
   await waitFor(() => h.observed("edge-dns") === "ready", "ready");
@@ -391,6 +449,7 @@ Deno.test({
   fn: async () => {
     await using h = await harness();
     await makeRepo(h.dir, "edge-dns");
+    await want(h.dir, "edge-dns", "wanted: active\n");
     await h.begin();
     await waitFor(() => h.observed("edge-dns") === "ready", "ready");
 
@@ -419,6 +478,7 @@ Deno.test({
 Deno.test("createWorkspaceReconciler: a scan listed before a removal finished does not start the workspace again", async () => {
   await using h = await harness();
   await makeRepo(h.dir, "edge-dns");
+  await want(h.dir, "edge-dns", "wanted: active\n");
   await h.begin();
   await waitFor(() => h.observed("edge-dns") === "ready", "ready");
   await want(h.dir, "edge-dns", "wanted: deleted\n");
@@ -437,9 +497,13 @@ Deno.test("createWorkspaceReconciler: a scan listed before a removal finished do
 
   await makeRepo(h.dir, "edge-dns");
   await h.rescan();
+  await h.reconciler.drain();
+  assertEquals(h.port.of("edge-dns").length, 1, "a new folder is not started");
+  await want(h.dir, "edge-dns", "wanted: active\n");
+  await h.rescan();
   await waitFor(
     () => h.observed("edge-dns") === "ready",
-    "a new workspace starts",
+    "a new workspace starts once it is wanted active",
   );
 });
 
@@ -453,6 +517,7 @@ Deno.test({
     await makeRepo(h.dir, "delta");
     await Deno.mkdir(join(h.dir, "delta", "locked"));
     await Deno.writeTextFile(join(h.dir, "delta", "locked", "data"), "x");
+    await want(h.dir, "delta", "wanted: active\n");
     await h.begin();
     await waitFor(() => h.observed("delta") === "ready", "ready");
     await Deno.chmod(join(h.dir, "delta", "locked"), 0o000);
@@ -527,10 +592,9 @@ Deno.test("createWorkspaceReconciler: a wanted file listed by the scan but gone 
 
   await Deno.remove(join(h.dir, "parked.wanted.yaml"));
   await h.rescan();
-  await waitFor(
-    () => h.observed("parked") === "ready",
-    "a file gone from the listing too means active",
-  );
+  await h.rescan();
+  assertEquals(h.port.of("parked").length, 0, "a removed file keeps suspended");
+  assertEquals(h.supervisor.lookup(id("parked"))?.wanted, "suspended");
 });
 
 Deno.test("createWorkspaceReconciler: begin names only the workspaces it handed to the supervisor", async () => {
@@ -544,6 +608,7 @@ Deno.test("createWorkspaceReconciler: begin names only the workspaces it handed 
   assertEquals(reads.get("edge-dns")?.kind, "found");
   assertEquals(vanished.get("edge-dns")?.kind, "vanished");
   assertEquals(h.reconciler.begin(listed, vanished), []);
+  await want(h.dir, "edge-dns", "wanted: active\n");
   await h.rescan();
   await waitFor(
     () => h.observed("edge-dns") === "ready",
@@ -561,6 +626,7 @@ Deno.test("createWorkspaceReconciler: a rename that keeps failing reuses one hid
     await Deno.rename(from, to);
   });
   await makeRepo(h.dir, "edge-dns");
+  await want(h.dir, "edge-dns", "wanted: active\n");
   await h.begin();
   await waitFor(() => h.observed("edge-dns") === "ready", "ready");
   await want(h.dir, "edge-dns", "wanted: deleted\n");
@@ -595,6 +661,7 @@ Deno.test({
     await makeRepo(h.dir, "delta");
     await Deno.mkdir(join(h.dir, "delta", "locked"));
     await Deno.writeTextFile(join(h.dir, "delta", "locked", "data"), "x");
+    await want(h.dir, "delta", "wanted: active\n");
     await h.begin();
     await waitFor(() => h.observed("delta") === "ready", "ready");
     await Deno.chmod(join(h.dir, "delta", "locked"), 0o000);
@@ -621,4 +688,58 @@ Deno.test({
     await h.statusWriter.drain();
     assertEquals(await entries(h.dir), []);
   },
+});
+
+Deno.test("createWorkspaceReconciler: a folder made by hand is listed and stopped until its wanted file says active, and says how to start it once", async () => {
+  await using h = await harness();
+  await makeRepo(h.dir, "edge-dns");
+  let listed: readonly string[] = [];
+  const lines = await notStartedLines(async () => {
+    listed = await h.begin();
+    await h.rescan();
+    await h.rescan();
+  });
+  assertEquals(listed, ["edge-dns"]);
+  assertEquals(h.port.of("edge-dns").length, 0);
+  assertEquals(h.supervisor.lookup(id("edge-dns"))?.wanted, "suspended");
+  assertEquals(lines.length, 1, lines.join("\n"));
+  assert(lines[0].includes("edge-dns.wanted.yaml"), lines[0]);
+  await h.statusWriter.drain();
+  const status = await Deno.readTextFile(join(h.dir, "edge-dns.status.yaml"));
+  assert(status.includes("state: stopped"), status);
+  assert(status.includes("wanted: suspended"), status);
+
+  await want(h.dir, "edge-dns", "wanted: active\n");
+  await h.rescan();
+  await waitFor(() => h.observed("edge-dns") === "ready", "started");
+});
+
+Deno.test("createWorkspaceReconciler: at startup only a workspace whose wanted file says active is started", async () => {
+  await using h = await harness();
+  await makeRepo(h.dir, "resumed");
+  await makeRepo(h.dir, "never");
+  await want(h.dir, "resumed", "wanted: active\n");
+  assertEquals(await h.begin(), ["never", "resumed"]);
+  await waitFor(() => h.observed("resumed") === "ready", "resumed started");
+  assertEquals(h.port.of("never").length, 0);
+});
+
+Deno.test("createWorkspaceReconciler: a running workspace whose wanted file is replaced, or stays absent, keeps running", async () => {
+  await using h = await harness();
+  await makeRepo(h.dir, "edge-dns");
+  await want(h.dir, "edge-dns", "wanted: active\n");
+  await h.begin();
+  await waitFor(() => h.observed("edge-dns") === "ready", "ready");
+
+  // removed after the listing, then listed while gone, then back
+  const listed = await scanWorkspaces(h.dir);
+  await Deno.remove(join(h.dir, "edge-dns.wanted.yaml"));
+  await h.reconciler.reconcile(listed);
+  await h.rescan();
+  await h.rescan();
+  assertEquals(h.supervisor.lookup(id("edge-dns"))?.wanted, "running");
+  await want(h.dir, "edge-dns", "wanted: active\n");
+  await h.rescan();
+  assertEquals(h.observed("edge-dns"), "ready");
+  assertEquals(h.port.of("edge-dns").length, 1, "never stopped");
 });

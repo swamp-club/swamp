@@ -19,12 +19,14 @@
 
 import { join } from "@std/path";
 import { workspaceServe } from "../../domain/serve/managed_serve.ts";
-import type {
-  HostedWorkspace,
-  HostedWorkspaceRead,
-  HostedWorkspaceRepository,
+import {
+  type HostedWorkspace,
+  type HostedWorkspaceRead,
+  type HostedWorkspaceRepository,
+  serveWantedOfRecord,
 } from "../../domain/serve/hosted_workspace.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import { wantedFileName } from "../../infrastructure/persistence/hosted_workspace_file_repository.ts";
 import {
   removeHostedWorkspaceStatus,
   writeHostedWorkspaceStatus,
@@ -208,8 +210,10 @@ export function createWorkspaceReconciler(
     let record = entry.record;
     let problem: string | null = null;
     if (read.kind === "found") record = read.workspace;
-    else if (read.kind === "absent") record = null;
-    else problem = read.reason;
+    // a folder keeps its last record across an absent file, as while an editor saves
+    else if (read.kind === "absent") {
+      if (!folder) record = null;
+    } else problem = read.reason;
     if (problem !== entry.problem) {
       if (problem !== null) {
         logger.warn("{reason}; workspace {name} is left as it is", {
@@ -239,7 +243,7 @@ export function createWorkspaceReconciler(
       }
       return;
     }
-    const wanted = record?.toServeWanted() ?? "running";
+    const wanted = serveWantedOfRecord(record);
     if (status === undefined || !hadFolder || status.wanted === "deleted") {
       entry.generation++;
       statusWriter.track(name);
@@ -247,6 +251,13 @@ export function createWorkspaceReconciler(
       // resume, not wanted running: a re-added folder also clears failed
       else if (wanted === "running") supervisor.resume(id);
       else supervisor.setWanted(id, wanted);
+      // an unreadable file has already said why, naming the file
+      if (wanted !== "running" && problem === null) {
+        logger.info(
+          "Workspace {name} is listed and not started; write wanted: active to {path} to start it",
+          { name, path: join(workspacesDir, wantedFileName(name)) },
+        );
+      }
       return;
     }
     if (!changed) return;
