@@ -43,6 +43,13 @@ export function serveWantedOf(wanted: HostedWorkspaceWanted): WantedServeState {
   return wanted === "active" ? "running" : wanted;
 }
 
+/** default off: a workspace with no wanted file read whole is not started */
+export function serveWantedOfRecord(
+  record: HostedWorkspace | null,
+): WantedServeState {
+  return record?.toServeWanted() ?? "suspended";
+}
+
 export function hostedWantedOf(
   wanted: WantedServeState,
 ): HostedWorkspaceWanted {
@@ -52,7 +59,6 @@ export function hostedWantedOf(
 export class HostedWorkspace {
   private constructor(private readonly record: HostedWorkspaceRecord) {}
 
-  /** a folder without a wanted file */
   static active(name: string): HostedWorkspace {
     return new HostedWorkspace({
       name: parseWorkspaceName(name),

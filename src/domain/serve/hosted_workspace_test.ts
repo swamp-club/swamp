@@ -24,12 +24,13 @@ import {
   HostedWorkspace,
   type HostedWorkspaceWanted,
   serveWantedOf,
+  serveWantedOfRecord,
 } from "./hosted_workspace.ts";
 
 const T1 = new Date("2026-11-17T10:00:00.000Z");
 const T2 = new Date("2026-11-17T11:00:00.000Z");
 
-Deno.test("HostedWorkspace.active: a folder without a wanted file is active with no creator or time", () => {
+Deno.test("HostedWorkspace.active: is active with no creator or time", () => {
   assertEquals(HostedWorkspace.active("edge-dns").toRecord(), {
     name: "edge-dns",
     creator: null,
@@ -119,4 +120,12 @@ Deno.test("serveWantedOf: active is the supervisor's running, and hostedWantedOf
     HostedWorkspace.active("edge-dns").suspend(T1).toServeWanted(),
     "suspended",
   );
+});
+
+Deno.test("serveWantedOfRecord: no record is not started, and a record maps as its wanted state does", () => {
+  assertEquals(serveWantedOfRecord(null), "suspended");
+  const active = HostedWorkspace.active("edge-dns");
+  assertEquals(serveWantedOfRecord(active), "running");
+  assertEquals(serveWantedOfRecord(active.suspend(T1)), "suspended");
+  assertEquals(serveWantedOfRecord(active.markDeleted(T1)), "deleted");
 });

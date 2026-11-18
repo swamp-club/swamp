@@ -46,7 +46,7 @@ export const serveHostCommand = new Command()
     "Run one serve per workspace behind a single address.\n\n" +
       "Runs in a host folder holding host.yaml (the listener, its TLS certificate, the public address and an optional root repo) " +
       "and workspaces/<name>/, one swamp repo per hosted workspace. Each workspace answers at <address>/w/<name>; the root answers at the address itself. " +
-      "Workspace folders added or removed while the host runs are picked up. The host has no repo of its own and authenticates no one: each workspace's serve does.\n\n" +
+      "Workspace folders added or removed while the host runs are picked up. A workspace's serve starts only when workspaces/<name>.wanted.yaml says wanted: active; the root starts with the host. The host has no repo of its own and authenticates no one: each workspace's serve does.\n\n" +
       "host.yaml can name one OAuth client (oauth-client: id and secret-file, a path outside every repo the host runs). The root and every workspace are started with it through --oauth-client-id and --oauth-client-secret-file, so a workspace in oauth mode needs no client of its own. " +
       "It replaces a root's own client, so links the root made under that client are no longer found. " +
       "A workspace's first start still looks up its admins and allowed users; it does so unattended only with SWAMP_API_KEY or SWAMP_API_KEY_FILE in the host's environment, and otherwise needs one device grant.\n\n" +

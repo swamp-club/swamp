@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assert, assertEquals, assertRejects } from "@std/assert";
-import { join } from "@std/path";
+import { basename, dirname, join } from "@std/path";
 import { parse as parseYaml } from "@std/yaml";
 import { waitFor } from "@swamp-club/swamp-testing";
 import type { AuthMode } from "../src/domain/access/serve_auth_config.ts";
@@ -212,6 +212,15 @@ async function makeRepo(path: string): Promise<void> {
   await Deno.writeTextFile(join(path, ".swamp.yaml"), "");
 }
 
+/** a workspace turned on: its folder and an active wanted file beside it */
+async function makeWorkspace(path: string): Promise<void> {
+  await makeRepo(path);
+  await Deno.writeTextFile(
+    join(dirname(path), `${basename(path)}.wanted.yaml`),
+    "wanted: active\n",
+  );
+}
+
 async function start(
   dir: string,
   yaml: string,
@@ -247,8 +256,8 @@ async function answers(url: string, serve: string): Promise<boolean> {
 Deno.test("serve host: a root and two workspaces made by hand answer at their own addresses", async () => {
   await using folder = await hostFolder();
   await makeRepo(join(folder.dir, "root-repo"));
-  await makeRepo(join(folder.dir, "workspaces", "edge-dns"));
-  await makeRepo(join(folder.dir, "workspaces", "cost-reports"));
+  await makeWorkspace(join(folder.dir, "workspaces", "edge-dns"));
+  await makeWorkspace(join(folder.dir, "workspaces", "cost-reports"));
   const port = new StandInPort();
   const host = await start(
     folder.dir,
@@ -298,7 +307,7 @@ Deno.test("serve host: a root and two workspaces made by hand answer at their ow
 
 Deno.test("serve host: a workspace folder added while the host runs answers, and one removed answers 404", async () => {
   await using folder = await hostFolder();
-  await makeRepo(join(folder.dir, "workspaces", "edge-dns"));
+  await makeWorkspace(join(folder.dir, "workspaces", "edge-dns"));
   const port = new StandInPort();
   const host = await start(
     folder.dir,
@@ -309,6 +318,7 @@ Deno.test("serve host: a workspace folder added while the host runs answers, and
     const base = `http://127.0.0.1:${host.port}`;
 
     // the marker lands after the folder, as when an operator makes one by hand
+    await want(folder.dir, "late", "wanted: active\n");
     await Deno.mkdir(join(folder.dir, "workspaces", "late"));
     assertEquals((await get(`${base}/w/late/`)).status, 404);
     await Deno.writeTextFile(
@@ -349,7 +359,7 @@ Deno.test("serve host: a workspace folder added while the host runs answers, and
 
 Deno.test("serve host: a workspace that failed starts again when its folder is removed and added", async () => {
   await using folder = await hostFolder();
-  await makeRepo(join(folder.dir, "workspaces", "edge-dns"));
+  await makeWorkspace(join(folder.dir, "workspaces", "edge-dns"));
   const port = new StandInPort();
   port.crashing.add("edge-dns");
   const host = await start(
@@ -415,7 +425,7 @@ Deno.test("serve host: a host with no root answers 404 outside /w/", async () =>
 Deno.test("serve host: a reload reaches every ready serve and stops none", async () => {
   await using folder = await hostFolder();
   await makeRepo(join(folder.dir, "root-repo"));
-  await makeRepo(join(folder.dir, "workspaces", "edge-dns"));
+  await makeWorkspace(join(folder.dir, "workspaces", "edge-dns"));
   const port = new StandInPort();
   const host = await start(
     folder.dir,
@@ -449,7 +459,7 @@ Deno.test("serve host: listens with TLS using the certificate host.yaml names", 
     TEST_LOCALHOST_CERT_PEM,
   );
   await Deno.writeTextFile(join(folder.dir, "key.pem"), TEST_LOCALHOST_KEY_PEM);
-  await makeRepo(join(folder.dir, "workspaces", "edge-dns"));
+  await makeWorkspace(join(folder.dir, "workspaces", "edge-dns"));
   const port = new StandInPort();
   const host = await start(
     folder.dir,
@@ -486,8 +496,8 @@ Deno.test("serve host: behind a proxy, declared or not, a workspace in auth mode
   ];
   for (const { proxy, allow } of cases) {
     await using folder = await hostFolder();
-    await makeRepo(join(folder.dir, "workspaces", "open"));
-    await makeRepo(join(folder.dir, "workspaces", "guarded"));
+    await makeWorkspace(join(folder.dir, "workspaces", "open"));
+    await makeWorkspace(join(folder.dir, "workspaces", "guarded"));
     const port = new StandInPort({ open: "none", guarded: "token" });
     const yaml = [
       "address: https://serve.acme.internal",
@@ -526,7 +536,7 @@ Deno.test("serve host: behind a proxy, declared or not, a workspace in auth mode
 
 Deno.test("serve host: a listener that cannot bind starts no serve", async () => {
   await using folder = await hostFolder();
-  await makeRepo(join(folder.dir, "workspaces", "edge-dns"));
+  await makeWorkspace(join(folder.dir, "workspaces", "edge-dns"));
   using taken = Deno.listen({ hostname: "127.0.0.1", port: 0 });
   const port = new StandInPort();
   const error = await assertRejects(
@@ -545,7 +555,7 @@ Deno.test("serve host: a listener that cannot bind starts no serve", async () =>
 Deno.test("serve host: a root that is not a swamp repo refuses to start and starts no serve", async () => {
   await using folder = await hostFolder();
   await Deno.mkdir(join(folder.dir, "root-repo"));
-  await makeRepo(join(folder.dir, "workspaces", "edge-dns"));
+  await makeWorkspace(join(folder.dir, "workspaces", "edge-dns"));
   const port = new StandInPort();
   const error = await assertRejects(
     () =>
@@ -563,8 +573,8 @@ Deno.test("serve host: a root that is not a swamp repo refuses to start and star
 Deno.test("serve host: the root, every workspace and one added later are started with the OAuth client host.yaml names", async () => {
   await using folder = await hostFolder();
   await makeRepo(join(folder.dir, "root-repo"));
-  await makeRepo(join(folder.dir, "workspaces", "edge-dns"));
-  await makeRepo(join(folder.dir, "workspaces", "cost-reports"));
+  await makeWorkspace(join(folder.dir, "workspaces", "edge-dns"));
+  await makeWorkspace(join(folder.dir, "workspaces", "cost-reports"));
   await Deno.mkdir(join(folder.dir, "secrets"));
   await Deno.writeTextFile(
     join(folder.dir, "secrets", "oauth-client"),
@@ -584,7 +594,7 @@ Deno.test("serve host: the root, every workspace and one added later are started
     port,
   );
   try {
-    await makeRepo(join(folder.dir, "workspaces", "billing"));
+    await makeWorkspace(join(folder.dir, "workspaces", "billing"));
     await waitFor(
       () => port.of("workspace:billing").length > 0,
       "the added workspace to be started",
@@ -611,7 +621,7 @@ Deno.test("serve host: the root, every workspace and one added later are started
 Deno.test("serve host: a missing or empty OAuth client secret file refuses to start, naming the field and the path, and starts no serve", async () => {
   for (const write of [false, true]) {
     await using folder = await hostFolder();
-    await makeRepo(join(folder.dir, "workspaces", "edge-dns"));
+    await makeWorkspace(join(folder.dir, "workspaces", "edge-dns"));
     const secretFile = join(folder.dir, "oauth-client-secret");
     if (write) await Deno.writeTextFile(secretFile, "  \n");
     const port = new StandInPort();
@@ -646,8 +656,8 @@ Deno.test("serve host: a missing or empty OAuth client secret file refuses to st
 Deno.test("serve host: shutdown stops every serve while the listener is still open, then closes it", async () => {
   await using folder = await hostFolder();
   await makeRepo(join(folder.dir, "root-repo"));
-  await makeRepo(join(folder.dir, "workspaces", "edge-dns"));
-  await makeRepo(join(folder.dir, "workspaces", "cost-reports"));
+  await makeWorkspace(join(folder.dir, "workspaces", "edge-dns"));
+  await makeWorkspace(join(folder.dir, "workspaces", "cost-reports"));
   const port = new StandInPort();
   const host = await start(
     folder.dir,
@@ -721,7 +731,7 @@ const NO_ROOT = "address: http://127.0.0.1\nlisten: {port: 0}\n";
 
 Deno.test("serve host: editing a wanted file suspends and resumes a workspace, and its status file follows", async () => {
   await using folder = await hostFolder();
-  await makeRepo(join(folder.dir, "workspaces", "edge-dns"));
+  await makeWorkspace(join(folder.dir, "workspaces", "edge-dns"));
   const port = new StandInPort();
   const host = await start(folder.dir, NO_ROOT, port);
   try {
@@ -772,7 +782,7 @@ Deno.test("serve host: editing a wanted file suspends and resumes a workspace, a
 
 Deno.test("serve host: a failed workspace names its reason and restarts, and resumes when its wanted file is rewritten", async () => {
   await using folder = await hostFolder();
-  await makeRepo(join(folder.dir, "workspaces", "edge-dns"));
+  await makeWorkspace(join(folder.dir, "workspaces", "edge-dns"));
   const port = new StandInPort();
   port.crashing.add("edge-dns");
   const host = await start(folder.dir, NO_ROOT, port, {
@@ -812,7 +822,7 @@ Deno.test("serve host: a failed workspace names its reason and restarts, and res
 
 Deno.test("serve host: a shutdown marks a failed workspace's status file stopped", async () => {
   await using folder = await hostFolder();
-  await makeRepo(join(folder.dir, "workspaces", "edge-dns"));
+  await makeWorkspace(join(folder.dir, "workspaces", "edge-dns"));
   const port = new StandInPort();
   port.crashing.add("edge-dns");
   const host = await start(folder.dir, NO_ROOT, port, {
@@ -865,9 +875,80 @@ Deno.test("serve host: at startup a suspended workspace and a wanted file withou
   }
 });
 
+Deno.test("serve host: a folder made by hand with no wanted file is listed and stopped until its wanted file says active, while the root starts", async () => {
+  await using folder = await hostFolder();
+  await makeRepo(join(folder.dir, "root-repo"));
+  await makeRepo(join(folder.dir, "workspaces", "edge-dns"));
+  const port = new StandInPort();
+  const host = await start(
+    folder.dir,
+    "address: http://127.0.0.1\nlisten: {port: 0}\nroot: root-repo\n",
+    port,
+  );
+  try {
+    const base = `http://127.0.0.1:${host.port}`;
+    assertEquals(host.workspaces, ["edge-dns"]);
+    await waitFor(() => answers(`${base}/health`, "root"), "the root");
+    assert(await isState(`${base}/w/edge-dns/`, "stopped"));
+    await waitFor(async () => {
+      const status = await readStatus(folder.dir, "edge-dns");
+      return status?.state === "stopped" && status.wanted === "suspended";
+    }, "the status file to say stopped");
+    assertEquals(port.of("workspace:edge-dns").length, 0);
+    assert(
+      !(await workspacesEntries(folder.dir)).includes("edge-dns.wanted.yaml"),
+      "the host writes no wanted file",
+    );
+
+    await want(folder.dir, "edge-dns", "wanted: active\n");
+    await waitFor(
+      () => answers(`${base}/w/edge-dns/`, "workspace:edge-dns"),
+      "the workspace to start once wanted active",
+    );
+  } finally {
+    await host.shutdown();
+  }
+});
+
+Deno.test("serve host: after a restart a workspace resumed before it is served and one never resumed is not", async () => {
+  await using folder = await hostFolder();
+  await makeRepo(join(folder.dir, "workspaces", "resumed"));
+  await makeRepo(join(folder.dir, "workspaces", "never"));
+  const first = new StandInPort();
+  const host = await start(folder.dir, NO_ROOT, first);
+  try {
+    await want(folder.dir, "resumed", "wanted: active\n");
+    await waitFor(
+      () =>
+        answers(
+          `http://127.0.0.1:${host.port}/w/resumed/`,
+          "workspace:resumed",
+        ),
+      "the resumed workspace to answer",
+    );
+  } finally {
+    await host.shutdown();
+  }
+  await first.closeAll();
+
+  const second = new StandInPort();
+  const again = await start(folder.dir, NO_ROOT, second);
+  try {
+    const base = `http://127.0.0.1:${again.port}`;
+    await waitFor(
+      () => answers(`${base}/w/resumed/`, "workspace:resumed"),
+      "the resumed workspace to answer after the restart",
+    );
+    assert(await isState(`${base}/w/never/`, "stopped"));
+    assertEquals(second.of("workspace:never").length, 0);
+  } finally {
+    await again.shutdown();
+  }
+});
+
 Deno.test("serve host: a workspace marked deleted is stopped, then its folder and both files are removed", async () => {
   await using folder = await hostFolder();
-  await makeRepo(join(folder.dir, "workspaces", "edge-dns"));
+  await makeWorkspace(join(folder.dir, "workspaces", "edge-dns"));
   const port = new StandInPort();
   const folderAtStop: boolean[] = [];
   port.onStop = async () => {
@@ -956,7 +1037,7 @@ Deno.test("serve host: a delete interrupted before or during the removal finishe
 
 Deno.test("serve host: an unreadable wanted file leaves a running workspace running and names the reason", async () => {
   await using folder = await hostFolder();
-  await makeRepo(join(folder.dir, "workspaces", "edge-dns"));
+  await makeWorkspace(join(folder.dir, "workspaces", "edge-dns"));
   const port = new StandInPort();
   const host = await start(folder.dir, NO_ROOT, port);
   try {
@@ -979,7 +1060,7 @@ Deno.test("serve host: an unreadable wanted file leaves a running workspace runn
 
 Deno.test("serve host: a host shut down while a removal waits on the stopping serve leaves nothing under the workspace's name", async () => {
   await using folder = await hostFolder();
-  await makeRepo(join(folder.dir, "workspaces", "edge-dns"));
+  await makeWorkspace(join(folder.dir, "workspaces", "edge-dns"));
   const port = new StandInPort();
   const stopping = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
