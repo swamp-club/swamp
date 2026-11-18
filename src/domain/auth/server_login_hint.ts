@@ -46,6 +46,30 @@ export function resetWithheldTokenFiles(): void {
   withheldTokenFiles.clear();
 }
 
+export type WorkspaceSignInGap = "no-host-token" | "env-host-token";
+
+/**
+ * why this process could not sign in to a workspace through its host, though
+ * the workspace offers it; keyed by the workspace's normalized address
+ */
+const workspaceSignInGaps = new Map<
+  string,
+  { readonly hostAddress: string; readonly gap: WorkspaceSignInGap }
+>();
+
+export function recordWorkspaceSignInGap(
+  workspaceAddress: string,
+  hostAddress: string,
+  gap: WorkspaceSignInGap,
+): void {
+  const key = normalizedOrUndefined(workspaceAddress);
+  if (key !== undefined) workspaceSignInGaps.set(key, { hostAddress, gap });
+}
+
+export function resetWorkspaceSignInGaps(): void {
+  workspaceSignInGaps.clear();
+}
+
 /** names the normalized address only, never the file's path or contents */
 export function withheldTokenFileMessage(
   key: string,
@@ -69,6 +93,13 @@ export function serverLoginHint(serverUrl: string): string {
     return `Authentication failed — ${
       withheldTokenFileMessage(key, remedy)
     }, or run: ${login}`;
+  }
+  const signIn = key === undefined ? undefined : workspaceSignInGaps.get(key);
+  if (signIn !== undefined) {
+    const hostLogin = `swamp auth server-login --server ${signIn.hostAddress}`;
+    return signIn.gap === "env-host-token"
+      ? `Authentication failed — a host token from SWAMP_SERVER_TOKEN is not used to sign in to workspaces; run: ${hostLogin}`
+      : `Authentication failed — run: ${hostLogin} (one sign-in to the host covers its workspaces)`;
   }
   return `Authentication failed — run: ${login}`;
 }

@@ -605,10 +605,37 @@ claiming its name. It would gain a token only inside its own workspace, and
 [Limits](#limits) already rules out tenants that do not trust each other.
 
 The CLI does this by itself. Given a server address `<address>/w/<name>` and no
-stored token for it, it exchanges when it holds a token for `<address>` and the
-workspace's `/auth/info` offers the exchange. `swamp auth server-login` to a
-workspace's address still works. A serve that was given no root address offers
-no exchange.
+token for it from any source, it exchanges when the workspace's `/auth/info`
+offers the exchange and `servers.json` holds a token for `<address>`. The host's
+address is the one the user gave with `/w/<name>` removed, never one a serve
+answers. A serve that was given no root address offers no exchange.
+
+**What the CLI signs in with, and keeps** (`src/cli/workspace_sign_in.ts`).
+
+- Only a host token `swamp auth server-login` stored is exchanged. A host token
+  from `SWAMP_SERVER_TOKEN` or a token file is not: an exchange from it would
+  either write a credential to a machine that chose to keep them out of files,
+  or mint a workspace token on every command. A token file bound by `--server`
+  to a workspace's address is sent there as it is, whatever it holds, since the
+  user named that address.
+- The workspace token goes into `servers.json` under the workspace's address,
+  with an `expiresAt` on the client's clock (the lifetime the workspace granted,
+  measured by its `Date` header). Within a few minutes of that expiry the CLI
+  exchanges again before it sends the token; if that fails, the still-valid
+  token is used. A token a workspace refuses before its expiry (deleted, or the
+  workspace rebuilt) gets the usual login hint, not a retry.
+- A token stored by `swamp auth server-login` to a workspace's address carries
+  no `expiresAt` and is used as it is.
+- Signing out of the host forgets nothing: the CLI has no server sign-out, and
+  a workspace token expires with the root token it came from either way.
+- Two commands that both find no workspace token both exchange; the later write
+  wins. Writes to `servers.json` hold an OS advisory lock on a sidecar file, so
+  neither drops another server's entry.
+- A network failure or a busy root or workspace leaves the command to go on as
+  it would have. Only a refusal stops it, and the message says which: the host
+  refusing the stored sign-in, the root refusing the code, or the workspace's
+  admission lists refusing the principal, which signing in to the host again
+  does not cure.
 
 A workspace token lives no longer than the root token it came from, and its
 collectives are the ones the root knew at the exchange. The exchange is the

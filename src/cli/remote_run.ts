@@ -36,9 +36,20 @@ import {
   USE_WEBSOCKET_CODE,
   type WorkflowResumePayload,
   type WorkflowRunPayload,
+  type WorkspaceSignInResponse,
 } from "../serve/protocol.ts";
 import { deserializeEvent } from "../serve/serializer.ts";
-import type { ServerCredentialRepository } from "../domain/auth/server_credential.ts";
+import type {
+  ServerCredential,
+  ServerCredentialRepository,
+} from "../domain/auth/server_credential.ts";
+import {
+  HostTokenRefusedError,
+  type JsonReply,
+  SIGN_IN_TIMEOUT_MS,
+  type WorkspaceSignInDeps,
+  workspaceTokenFor,
+} from "./workspace_sign_in.ts";
 import {
   normalizeServerUrl as normalizeServerUrlForCredentials,
   redactServerUrl,
@@ -596,12 +607,101 @@ export async function resolveServerToken(
     if (bound) return readTokenFile(envTokenFile, "SWAMP_SERVER_TOKEN_FILE");
   }
   const repo = credentialRepo ?? new FileServerCredentialRepository();
-  const credential = await repo.get(serverUrl);
+  const token = await signInThroughHost(
+    key,
+    await repo.get(serverUrl),
+    credentialRepo,
+  );
   // A set token file that reached here was not bound to the address.
-  if (!credential?.token && envTokenFile) {
+  if (!token && envTokenFile) {
     warnWithheldTokenFile(key, "flag-or-env");
   }
-  return credential?.token;
+  return token;
+}
+
+/** a hosted workspace with no token gets one through its host; others pass through */
+export async function signInThroughHost(
+  address: string,
+  found: ServerCredential | null,
+  credentialRepo?: ServerCredentialRepository,
+): Promise<string | undefined> {
+  return await workspaceTokenFor(
+    address,
+    found,
+    workspaceSignInDeps(credentialRepo),
+  );
+}
+
+function workspaceSignInDeps(
+  credentialRepo: ServerCredentialRepository | undefined,
+): WorkspaceSignInDeps {
+  const envAware = credentialRepo ?? new FileServerCredentialRepository();
+  return {
+    credentials: credentialRepo ??
+      new FileServerCredentialRepository({ fileOnly: true }),
+    envPairNames: (url) =>
+      envAware instanceof FileServerCredentialRepository &&
+      envAware.envPairNames(url),
+    requestSignInCode: requestWorkspaceSignInCode,
+    fetchJson: fetchSignInJson,
+    headers: resolveExtraHeaders(),
+    now: Date.now,
+  };
+}
+
+async function requestWorkspaceSignInCode(
+  hostAddress: string,
+  hostToken: string,
+  name: string,
+): Promise<WorkspaceSignInResponse> {
+  try {
+    return await requestServerResponse<WorkspaceSignInResponse>(
+      {
+        server: hostAddress,
+        token: hostToken,
+        remoteIndicator: false,
+        log: () => {},
+        restartRetryBudgetMs: 0,
+        timeoutMs: SIGN_IN_TIMEOUT_MS,
+      },
+      { type: "workspace.sign-in", payload: { name } },
+    );
+  } catch (error) {
+    const refused = authFailedMessage(toWebSocketUrl(hostAddress));
+    if (error instanceof UserError && error.message.startsWith(refused)) {
+      throw new HostTokenRefusedError();
+    }
+    throw error;
+  }
+}
+
+async function fetchSignInJson(
+  url: string,
+  init: RequestInit,
+): Promise<JsonReply> {
+  const caCerts = getEnvCaCerts();
+  const ownClient = caCerts?.length
+    ? createTlsHttpClient({ caCerts })
+    : undefined;
+  try {
+    const response = await fetch(url, {
+      ...init,
+      client: ownClient ?? getDefaultHttpClient(),
+    });
+    let body: unknown = null;
+    try {
+      body = await response.json();
+    } catch {
+      // a reply that is not JSON reads as no answer
+    }
+    return {
+      status: response.status,
+      date: response.headers.get("date"),
+      body,
+    };
+  } finally {
+    ownClient?.close();
+  }
 }
 
 /**
@@ -765,6 +865,8 @@ export async function requestNewerServerResponse<T>(
 export interface RequestResponseOptions extends RetryTiming {
   server: string;
   token?: string;
+  /** false when the request is the CLI's own errand, not the command's */
+  remoteIndicator?: false;
   signal?: AbortSignal;
   headers?: Record<string, string>;
   caCerts?: string[];
@@ -798,7 +900,7 @@ export async function requestServerResponse<T>(
   options: RequestResponseOptions,
   request: { type: string; id?: string; payload?: unknown },
 ): Promise<T> {
-  writeRemoteIndicator(options.server);
+  if (options.remoteIndicator !== false) writeRemoteIndicator(options.server);
   const window = new RetryWindow(
     options.restartRetryBudgetMs ?? RESTART_RETRY_BUDGET_MS,
     options,

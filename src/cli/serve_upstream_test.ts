@@ -36,6 +36,7 @@ import { UserError } from "../domain/errors.ts";
 import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { resetWithheldTokenFiles } from "../domain/auth/server_login_hint.ts";
 import { ServeAuthFailedError } from "../infrastructure/datastore_v3/serve_upstream_errors.ts";
+import { ProcessRuntime } from "../infrastructure/runtime/process_runtime.ts";
 
 const UNSET_ENV: Record<string, string | undefined> = {
   SWAMP_SERVE_URL: undefined,
@@ -426,4 +427,60 @@ Deno.test("serveUpstreamAppliesTo: a decision on a run goes to serve; the rest o
 Deno.test("serveUpstreamAppliesTo: workflow waits goes to serve, whose waits are the ones a checkout can signal (swamp-club#4245)", () => {
   assertEquals(serveUpstreamAppliesTo(["workflow", "waits"]), false);
   assertEquals(serveUpstreamRunsLocally(["workflow", "waits"]), false);
+});
+
+Deno.test("resolveServeUpstream: a workspace's valid exchanged token is used without signing in again", async () => {
+  await withTemp(async (dir) => {
+    const address = "http://host.test:9090/w/team";
+    const repo = new FileServerCredentialRepository({ configDir: dir });
+    await repo.save({
+      serverUrl: address,
+      tokenName: "alice",
+      token: "ws.token",
+      principalId: "p-1",
+      obtainedAt: new Date(Date.now() - 60_000).toISOString(),
+      expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+    });
+    await withMockedEnv(
+      { ...UNSET_ENV, SWAMP_SERVE_URL: address },
+      async () => {
+        const target = await new ProcessRuntime(crypto.randomUUID()).run(() =>
+          resolveServeUpstream({
+            engine: "v3",
+            commandPath: ["data", "get"],
+            credentialRepository: repo,
+            getCaCerts: noCaCerts,
+          })
+        );
+        assertEquals(target?.token, "ws.token");
+      },
+    );
+  });
+});
+
+Deno.test("resolveServeUpstream: a SWAMP_SERVER_TOKEN pair naming a workspace is sent as it is", async () => {
+  await withTemp(async (dir) => {
+    const address = "http://host.test:9090/w/team";
+    await withMockedEnv(
+      {
+        ...UNSET_ENV,
+        SWAMP_SERVE_URL: address,
+        SWAMP_SERVER_URL: address,
+        SWAMP_SERVER_TOKEN: "env.token",
+      },
+      async () => {
+        const target = await new ProcessRuntime(crypto.randomUUID()).run(() =>
+          resolveServeUpstream({
+            engine: "v3",
+            commandPath: ["data", "get"],
+            credentialRepository: new FileServerCredentialRepository({
+              configDir: dir,
+            }),
+            getCaCerts: noCaCerts,
+          })
+        );
+        assertEquals(target?.token, "env.token");
+      },
+    );
+  });
 });

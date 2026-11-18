@@ -20,7 +20,9 @@
 import { assertEquals } from "@std/assert";
 import {
   recordWithheldTokenFile,
+  recordWorkspaceSignInGap,
   resetWithheldTokenFiles,
+  resetWorkspaceSignInGaps,
   serverLoginHint,
 } from "./server_login_hint.ts";
 
@@ -73,5 +75,43 @@ Deno.test("serverLoginHint: a datastore upstream withheld the token file from na
     );
   } finally {
     resetWithheldTokenFiles();
+  }
+});
+
+Deno.test("serverLoginHint: a workspace with no host token names the sign-in to its host", () => {
+  resetWorkspaceSignInGaps();
+  try {
+    recordWorkspaceSignInGap(
+      "https://host.example/w/team",
+      "https://host.example",
+      "no-host-token",
+    );
+    assertEquals(
+      serverLoginHint("wss://host.example/w/team"),
+      "Authentication failed — run: swamp auth server-login --server https://host.example (one sign-in to the host covers its workspaces)",
+    );
+    assertEquals(
+      serverLoginHint("https://host.example/w/other"),
+      "Authentication failed — run: swamp auth server-login --server https://host.example/w/other",
+    );
+  } finally {
+    resetWorkspaceSignInGaps();
+  }
+});
+
+Deno.test("serverLoginHint: a host token from SWAMP_SERVER_TOKEN says it is not used for workspaces", () => {
+  resetWorkspaceSignInGaps();
+  try {
+    recordWorkspaceSignInGap(
+      "https://host.example/w/team",
+      "https://host.example",
+      "env-host-token",
+    );
+    assertEquals(
+      serverLoginHint("https://host.example/w/team"),
+      "Authentication failed — a host token from SWAMP_SERVER_TOKEN is not used to sign in to workspaces; run: swamp auth server-login --server https://host.example",
+    );
+  } finally {
+    resetWorkspaceSignInGaps();
   }
 });

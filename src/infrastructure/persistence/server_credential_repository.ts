@@ -28,18 +28,24 @@ import { getSwampLogger } from "../logging/logger.ts";
 import { getSwampConfigDir } from "./paths.ts";
 
 const SERVERS_FILE = "servers.json";
+const SERVERS_LOCK_FILE = "servers.json.lock";
 
 /**
  * an unparseable value or unsupported scheme matches no server and warns
  * without echoing the value, which can carry a credential
  */
-function normalizeEnvServerUrl(envUrl: string): string | undefined {
+function normalizeEnvServerUrl(
+  envUrl: string,
+  warn = true,
+): string | undefined {
   try {
     return normalizeServerUrl(envUrl);
   } catch {
-    const logger = getSwampLogger(["auth", "credential"]);
-    logger
-      .warn`SWAMP_SERVER_TOKEN is set but SWAMP_SERVER_URL is not a valid http(s) or ws(s) URL — token not sent. Fix SWAMP_SERVER_URL or use --token instead.`;
+    if (warn) {
+      const logger = getSwampLogger(["auth", "credential"]);
+      logger
+        .warn`SWAMP_SERVER_TOKEN is set but SWAMP_SERVER_URL is not a valid http(s) or ws(s) URL — token not sent. Fix SWAMP_SERVER_URL or use --token instead.`;
+    }
     return undefined;
   }
 }
@@ -48,6 +54,8 @@ export interface FileServerCredentialRepositoryOptions {
   configDir?: string;
   getServerToken?: () => string | undefined;
   getServerUrl?: () => string | undefined;
+  /** answer from servers.json alone, ignoring the SWAMP_SERVER_TOKEN pair */
+  fileOnly?: boolean;
 }
 
 /** the SWAMP_SERVER_TOKEN env var takes precedence over servers.json */
@@ -61,8 +69,9 @@ export class FileServerCredentialRepository
     this.getConfigDir = options.configDir !== undefined
       ? () => options.configDir!
       : getSwampConfigDir;
-    this.getServerToken = options.getServerToken ??
-      (() => Deno.env.get("SWAMP_SERVER_TOKEN"));
+    this.getServerToken = options.fileOnly
+      ? () => undefined
+      : options.getServerToken ?? (() => Deno.env.get("SWAMP_SERVER_TOKEN"));
     this.getServerUrl = options.getServerUrl ??
       (() => Deno.env.get("SWAMP_SERVER_URL"));
   }
@@ -121,19 +130,54 @@ export class FileServerCredentialRepository
     return all[key] ?? null;
   }
 
+  /** whether get(serverUrl) answers with the SWAMP_SERVER_TOKEN pair; never warns */
+  envPairNames(serverUrl: string): boolean {
+    if (!this.getServerToken()) return false;
+    const envUrl = this.getServerUrl();
+    if (!envUrl) return false;
+    return normalizeEnvServerUrl(envUrl, false) ===
+      normalizeServerUrl(serverUrl);
+  }
+
   async save(credential: ServerCredential): Promise<void> {
     const key = normalizeServerUrl(credential.serverUrl);
-    const all = await this.loadAll();
-    all[key] = { ...credential, serverUrl: key };
-    await this.saveAll(all);
+    await this.withWriteLock(async () => {
+      const all = await this.loadAll();
+      all[key] = { ...credential, serverUrl: key };
+      await this.saveAll(all);
+    });
   }
 
   async remove(serverUrl: string): Promise<void> {
     const key = normalizeServerUrl(serverUrl);
-    const all = await this.loadAll();
-    if (key in all) {
-      delete all[key];
-      await this.saveAll(all);
+    await this.withWriteLock(async () => {
+      const all = await this.loadAll();
+      if (key in all) {
+        delete all[key];
+        await this.saveAll(all);
+      }
+    });
+  }
+
+  /**
+   * readers need no lock: the atomic rename always shows them a whole file. The
+   * sidecar is never removed, so every writer locks the same file, and the OS
+   * drops the lock if its holder dies
+   */
+  private async withWriteLock(write: () => Promise<void>): Promise<void> {
+    const dir = this.getConfigDir();
+    await Deno.mkdir(dir, { recursive: true });
+    const lock = await Deno.open(join(dir, SERVERS_LOCK_FILE), {
+      read: true,
+      write: true,
+      create: true,
+      mode: 0o600,
+    });
+    try {
+      await lock.lock(true);
+      await write();
+    } finally {
+      lock.close();
     }
   }
 

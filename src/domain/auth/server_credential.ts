@@ -24,6 +24,8 @@ export interface ServerCredential {
   principalId: string;
   displayName?: string;
   obtainedAt: string;
+  /** on this machine's clock; only a token from a workspace sign-in has one */
+  expiresAt?: string;
 }
 
 export interface ServerCredentialRepository {

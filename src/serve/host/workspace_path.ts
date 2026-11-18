@@ -18,20 +18,14 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { parseWorkspaceName } from "../../domain/workspace/workspace_name.ts";
+import { WORKSPACE_PATH_PREFIX as WORKSPACE_PREFIX } from "../../domain/workspace/workspace_address.ts";
+
+export { hostedWorkspaceAddress } from "../../domain/workspace/workspace_address.ts";
 
 export type WorkspacePathMatch =
   | { readonly kind: "workspace"; readonly name: string; readonly path: string }
   | { readonly kind: "root"; readonly path: string }
   | { readonly kind: "unknown" };
-
-const WORKSPACE_PREFIX = "/w";
-
-export function hostedWorkspaceAddress(
-  hostAddress: string,
-  name: string,
-): string {
-  return `${hostAddress}${WORKSPACE_PREFIX}/${name}`;
-}
 
 /** the workspace a child's address names under the root's; null when it names none */
 export function workspaceNameUnder(

@@ -449,3 +449,116 @@ Deno.test("FileServerCredentialRepository.get: invalid SWAMP_SERVER_URL warning 
     await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
   }
 });
+
+Deno.test("FileServerCredentialRepository.save: round-trips an expiresAt and reads entries without one", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const repo = new FileServerCredentialRepository({
+      configDir: join(tmpDir, "swamp"),
+      getServerToken: () => undefined,
+      getServerUrl: () => undefined,
+    });
+    await repo.save(TEST_CREDENTIAL);
+    await repo.save({
+      ...TEST_CREDENTIAL_2,
+      expiresAt: "2026-07-18T01:00:00.000Z",
+    });
+
+    assertEquals(
+      (await repo.get(TEST_CREDENTIAL.serverUrl))?.expiresAt,
+      undefined,
+    );
+    assertEquals(
+      (await repo.get(TEST_CREDENTIAL_2.serverUrl))?.expiresAt,
+      "2026-07-18T01:00:00.000Z",
+    );
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("FileServerCredentialRepository.save: concurrent saves from two repositories keep both entries", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const configDir = join(tmpDir, "swamp");
+    const options = {
+      configDir,
+      getServerToken: () => undefined,
+      getServerUrl: () => undefined,
+    };
+    const first = new FileServerCredentialRepository(options);
+    const second = new FileServerCredentialRepository(options);
+    const saves = [];
+    for (let i = 0; i < 20; i++) {
+      const repo = i % 2 === 0 ? first : second;
+      saves.push(repo.save({
+        ...TEST_CREDENTIAL,
+        serverUrl: `https://server-${i}.example`,
+      }));
+    }
+    await Promise.all(saves);
+
+    assertEquals((await first.list()).length, 20);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("FileServerCredentialRepository.get: fileOnly ignores the SWAMP_SERVER_TOKEN pair", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const configDir = join(tmpDir, "swamp");
+    await new FileServerCredentialRepository({
+      configDir,
+      getServerToken: () => undefined,
+      getServerUrl: () => undefined,
+    }).save(TEST_CREDENTIAL);
+    const repo = new FileServerCredentialRepository({
+      configDir,
+      getServerToken: () => "env.token",
+      getServerUrl: () => TEST_CREDENTIAL.serverUrl,
+      fileOnly: true,
+    });
+
+    assertEquals(
+      (await repo.get(TEST_CREDENTIAL.serverUrl))?.token,
+      TEST_CREDENTIAL.token,
+    );
+    assertEquals(repo.envPairNames(TEST_CREDENTIAL.serverUrl), false);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("FileServerCredentialRepository.envPairNames: true only when get would answer with the pair", () => {
+  const pair = (token: string | undefined, url: string | undefined) =>
+    new FileServerCredentialRepository({
+      configDir: "unused",
+      getServerToken: () => token,
+      getServerUrl: () => url,
+    });
+  assertEquals(
+    pair("t", "wss://swamp.acme.internal:9090/").envPairNames(
+      TEST_CREDENTIAL.serverUrl,
+    ),
+    true,
+  );
+  assertEquals(
+    pair("t", "https://other.example").envPairNames(TEST_CREDENTIAL.serverUrl),
+    false,
+  );
+  assertEquals(
+    pair("", TEST_CREDENTIAL.serverUrl).envPairNames(
+      TEST_CREDENTIAL.serverUrl,
+    ),
+    false,
+  );
+  assertEquals(
+    pair("t", undefined).envPairNames(TEST_CREDENTIAL.serverUrl),
+    false,
+  );
+  assertEquals(
+    pair("t", "not a url").envPairNames(TEST_CREDENTIAL.serverUrl),
+    false,
+  );
+});
