@@ -34,84 +34,68 @@ const REPLY = {
 };
 
 interface Seen {
-  readonly path: string;
+  readonly url: string;
   readonly headers: Headers;
   readonly body: unknown;
+  readonly redirect: RequestRedirect | undefined;
 }
 
-async function withRoot(
+function rootAt(
   answer: () => Response,
-  fn: (client: SignInCodeRedeemClient, seen: Seen[]) => Promise<void>,
-): Promise<void> {
+): { client: SignInCodeRedeemClient; seen: Seen[] } {
   const seen: Seen[] = [];
-  const server = Deno.serve(
-    { port: 0, hostname: "127.0.0.1", onListen: () => {} },
-    async (req) => {
+  const client = createSignInCodeRedeemClient({
+    rootAddress: "https://host.example",
+    workspace: "edge-dns",
+    fetch: (input, init) => {
       seen.push({
-        path: new URL(req.url).pathname,
-        headers: req.headers,
-        body: await req.json(),
+        url: String(input),
+        headers: new Headers(init?.headers),
+        body: JSON.parse(String(init?.body)),
+        redirect: init?.redirect,
       });
-      return answer();
+      return Promise.resolve(answer());
     },
-  );
-  try {
-    await fn(
-      createSignInCodeRedeemClient({
-        rootAddress: `http://127.0.0.1:${server.addr.port}`,
-        workspace: "edge-dns",
-      }),
-      seen,
-    );
-  } finally {
-    await server.shutdown();
-  }
+  });
+  return { client, seen };
 }
 
 Deno.test("createSignInCodeRedeemClient: sends the code and its own name, and nothing that authenticates it", async () => {
-  await withRoot(() => Response.json(REPLY), async (client, seen) => {
-    const outcome = await client.redeem("swsc1.abc");
-    assertEquals(outcome, { ok: true, grant: REPLY });
-    assertEquals(seen.length, 1);
-    assertEquals(seen[0].path, "/auth/sign-in-code/redeem");
-    assertEquals(seen[0].body, { code: "swsc1.abc", workspace: "edge-dns" });
-    assertEquals(seen[0].headers.get("authorization"), null);
-    assertEquals(seen[0].headers.get("cookie"), null);
+  const { client, seen } = rootAt(() => Response.json(REPLY));
+  const outcome = await client.redeem("swsc1.abc");
+  assertEquals(outcome, { ok: true, grant: REPLY });
+  assertEquals(seen.length, 1);
+  assertEquals(seen[0].url, "https://host.example/auth/sign-in-code/redeem");
+  assertEquals(seen[0].body, { code: "swsc1.abc", workspace: "edge-dns" });
+  assertEquals(seen[0].headers.get("authorization"), null);
+  assertEquals(seen[0].headers.get("cookie"), null);
+  assertEquals(seen[0].redirect, "manual");
+});
+
+Deno.test("createSignInCodeRedeemClient: only a root's own refusal is a refusal; any other answer is the root being unavailable", async () => {
+  const refused = rootAt(() =>
+    Response.json({ error: "sign_in_code_refused" }, { status: 404 })
+  );
+  assertEquals(await refused.client.redeem("swsc1.abc"), {
+    ok: false,
+    reason: "refused",
   });
-});
-
-Deno.test("createSignInCodeRedeemClient: a 404 is a refusal; any other status is the root being unavailable", async () => {
-  await withRoot(
-    () => Response.json({ error: "not_found" }, { status: 404 }),
-    async (client) => {
-      assertEquals(await client.redeem("swsc1.abc"), {
-        ok: false,
-        reason: "refused",
-      });
-    },
-  );
-  await withRoot(
-    () => new Response("down", { status: 503 }),
-    async (client) => {
-      const outcome = await client.redeem("swsc1.abc");
-      assert(!outcome.ok && outcome.reason === "unavailable");
-      assert(outcome.detail.includes("503"));
-    },
-  );
-});
-
-Deno.test("createSignInCodeRedeemClient: a redirect is not followed", async () => {
-  await withRoot(
-    () =>
-      new Response(null, {
-        status: 302,
-        headers: { location: "http://127.0.0.1:1/elsewhere" },
-      }),
-    async (client) => {
-      const outcome = await client.redeem("swsc1.abc");
-      assert(!outcome.ok && outcome.reason === "unavailable");
-    },
-  );
+  for (
+    const answer of [
+      () => new Response("Not Found", { status: 404 }),
+      () => Response.json({ error: "not_found" }, { status: 404 }),
+      () => new Response("down", { status: 503 }),
+      () =>
+        new Response(null, {
+          status: 302,
+          headers: { location: "https://elsewhere.example/" },
+        }),
+    ]
+  ) {
+    const outcome = await rootAt(answer).client.redeem("swsc1.abc");
+    assert(!outcome.ok && outcome.reason === "unavailable");
+    assert(outcome.detail.includes("https://host.example"));
+  }
 });
 
 Deno.test("createSignInCodeRedeemClient: an unreachable root names its address", async () => {
@@ -126,13 +110,11 @@ Deno.test("createSignInCodeRedeemClient: an unreachable root names its address",
 });
 
 Deno.test("createSignInCodeRedeemClient: a reply past its size limit is refused", async () => {
-  await withRoot(
-    () => Response.json({ ...REPLY, collectives: ["x".repeat(70 * 1024)] }),
-    async (client) => {
-      const outcome = await client.redeem("swsc1.abc");
-      assert(!outcome.ok && outcome.reason === "unavailable");
-    },
+  const { client } = rootAt(() =>
+    Response.json({ ...REPLY, collectives: ["x".repeat(70 * 1024)] })
   );
+  const outcome = await client.redeem("swsc1.abc");
+  assert(!outcome.ok && outcome.reason === "unavailable");
 });
 
 Deno.test("parseRedeemReply: refuses every reply a root would not send", () => {

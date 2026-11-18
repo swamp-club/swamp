@@ -118,7 +118,6 @@ interface Root {
   ctx(options?: ServeCtxOptions, grants?: Grant[]): ConnectionContext;
   /** one host rescan, as the folder watcher runs it */
   rescan(): Promise<void>;
-  /** a token-mode root over the same folder, as a root started in token mode serves */
   tokenCtx(): ConnectionContext;
   readonly hosted: NonNullable<ConnectionContext["hostedWorkspaces"]>;
 }
@@ -391,34 +390,42 @@ Deno.test("serve workspace requests: any person signed in to the root gets a cod
     assertEquals(
       await root.hosted.signInCodes.redeem(issued.code, "edge-dns"),
       {
-        principal: "user:sub-bob",
-        username: "bob",
-        email: null,
-        collectives: ["acme"],
-        groups: ["ops"],
-        expiresAt: ROOT_TOKEN_EXPIRES_AT,
+        kind: "redeemed",
+        grant: {
+          principal: "user:sub-bob",
+          username: "bob",
+          email: null,
+          collectives: ["acme"],
+          groups: ["ops"],
+          expiresAt: ROOT_TOKEN_EXPIRES_AT,
+        },
       },
     );
     assertEquals(
       await root.hosted.signInCodes.redeem(issued.code, "edge-dns"),
-      null,
+      { kind: "unknown" },
     );
   });
 });
 
-Deno.test("serve workspace requests: a code for an unknown workspace is refused, and an invalid name issues nothing", async () => {
+Deno.test("serve workspace requests: sign-in tells no one which workspaces exist, and an invalid name issues nothing", async () => {
   await withRoot(async (root) => {
     const ctx = root.ctx();
-    for (const name of ["edge-dns", "Edge-DNS"]) {
-      const frames = await sendRequest(
-        ctx,
-        request("workspace.sign-in", name),
-        ALICE,
-        { login: ALICE_LOGIN },
-      );
-      assert(errorFrame(frames)?.error?.code, name);
-    }
-    assertEquals(root.hosted.signInCodes.size, 0);
+    const unknown = await sendRequest(
+      ctx,
+      request("workspace.sign-in", "no-such-workspace"),
+      ALICE,
+      { login: ALICE_LOGIN },
+    );
+    reply(unknown, "workspace.sign-in");
+    const invalid = await sendRequest(
+      ctx,
+      request("workspace.sign-in", "Edge-DNS"),
+      ALICE,
+      { login: ALICE_LOGIN },
+    );
+    assertEquals(errorFrame(invalid)?.error?.code, "user_error");
+    assertEquals(root.hosted.signInCodes.size, 1);
   });
 });
 

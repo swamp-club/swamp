@@ -95,7 +95,6 @@ function rootToken(principalId: string, collectives: string[]): ServerToken {
   };
 }
 
-/** what the root binds to the socket its token opened, read by its own auth path */
 async function rootLogin(record: ServerToken) {
   const auth = await authenticateServerToken(
     ROOT_TOKEN,
@@ -141,9 +140,7 @@ interface Host {
   readonly root: ServeRepo;
   readonly workspace: ServeRepo;
   readonly codes: SignInCodeStore;
-  /** the root's request context, in the given auth mode */
   rootCtx(mode: "token" | "oauth"): ConnectionContext;
-  /** one workspace's exchange as serve wires it, recording all it received */
   exchange(
     name: string,
     options: { mode: "token" | "oauth"; lists?: AdmissionLists },
@@ -309,7 +306,7 @@ async function signIn(
   return issued.code as string;
 }
 
-/** the client's side of step 2: only the code goes to the workspace */
+// the client hands the workspace the code and nothing else
 async function exchangeAt(
   workspace: ReturnType<Host["exchange"]>,
   code: string,
@@ -454,7 +451,7 @@ Deno.test("serve workspace sign-in: a principal the workspace's lists do not adm
     });
     const response = await exchangeAt(edge, code);
     assertEquals(response.status, 403);
-    assertEquals((await response.json()).error, "Not admitted");
+    assertEquals((await response.json()).error, "not_admitted");
     await edge.emitter.flush();
     const denied = edge.audit.events.find((e) =>
       e.action === "auth.exchange.denied"

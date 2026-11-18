@@ -53,7 +53,6 @@ const logger = getSwampLogger(["serve", "auth-exchange"]);
 
 const MAX_CODE_LENGTH = 256;
 
-/** where a workspace redeems the codes it is given, and the name they must be bound to */
 export interface ExchangeTarget {
   readonly rootAddress: string;
   readonly workspace: string;
@@ -76,7 +75,6 @@ export function exchangeTarget(
   return { rootAddress, workspace };
 }
 
-/** a workspace offers the exchange only when it has a root to redeem at and tokens to mint */
 export function exchangeOffered(
   target: ExchangeTarget | undefined,
   mode: AuthMode,
@@ -84,7 +82,6 @@ export function exchangeOffered(
   return target !== undefined && mode !== "none";
 }
 
-/** the body of `/auth/info`: what a client needs to choose how to sign in */
 export function authInfoBody(
   authConfig: Pick<ServeAuthConfig, "mode" | "oauthProvider">,
   offersExchange: boolean,
@@ -238,7 +235,7 @@ export async function handleAuthExchange(
         reason,
       });
       audit(deps, "auth.exchange.denied", "denied", grant, reason);
-      return json(403, { error: "Not admitted", reason });
+      return json(403, { error: "not_admitted", reason });
     }
   }
 
@@ -257,7 +254,7 @@ export async function handleAuthExchange(
     logger.error("Sign-in exchange could not mint a token: {error}", {
       error: error instanceof Error ? error.message : String(error),
     });
-    return json(500, { error: "Internal error during token exchange" });
+    return json(500, { error: "internal_error" });
   }
   const tokenName = minted.token.split(".")[0];
   const learned = usernameFromLogin(

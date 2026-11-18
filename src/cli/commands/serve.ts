@@ -2157,7 +2157,7 @@ export const serveCommand = new Command()
     "The host's public address, under which each workspace is reached",
     { hidden: true },
   )
-  // the host gives this to each workspace when it has a root: no serve.yaml key or env var
+  // the host gives this to its workspaces: no serve.yaml key or env var
   .option(
     `${ROOT_ADDRESS_FLAG} <url:string>`,
     "The host root's public address, where this workspace redeems sign-in codes",
@@ -8281,7 +8281,7 @@ export const serveCommand = new Command()
             const exchangeRateCheck = checkIpBurst(clientAddress());
             if (!exchangeRateCheck.allowed) {
               return new Response(
-                JSON.stringify({ error: "Too Many Requests" }),
+                JSON.stringify({ error: "too_many_requests" }),
                 {
                   status: 429,
                   headers: {
@@ -8318,7 +8318,7 @@ export const serveCommand = new Command()
           if (exchangeResponse) return exchangeResponse;
         }
 
-        // answered on this node, never forwarded: the codes it redeems live here
+        // never forwarded: the codes it redeems live in this process
         if (connectionCtx.hostedWorkspaces !== undefined) {
           const redeemResponse = await handleSignInCodeRedeem(req, {
             codes: connectionCtx.hostedWorkspaces.signInCodes,

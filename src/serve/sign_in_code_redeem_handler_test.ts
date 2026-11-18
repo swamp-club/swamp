@@ -89,7 +89,7 @@ Deno.test("handleSignInCodeRedeem: answers who the code was issued to, once, unc
     f.deps,
   );
   assertEquals(second?.status, 404);
-  assertEquals(await second?.json(), { error: "not_found" });
+  assertEquals(await second?.json(), { error: "sign_in_code_refused" });
 });
 
 Deno.test("handleSignInCodeRedeem: another workspace's code answers as an unknown one does", async () => {
@@ -99,7 +99,7 @@ Deno.test("handleSignInCodeRedeem: another workspace's code answers as an unknow
     f.deps,
   );
   assertEquals(response?.status, 404);
-  assertEquals(await response?.json(), { error: "not_found" });
+  assertEquals(await response?.json(), { error: "sign_in_code_refused" });
 });
 
 Deno.test("handleSignInCodeRedeem: leaves other paths alone and refuses other methods", async () => {
@@ -142,16 +142,23 @@ Deno.test("handleSignInCodeRedeem: a body past the sign-in limit is refused", as
   assertEquals(response?.status, 413);
 });
 
-Deno.test("handleSignInCodeRedeem: audits each redeem and refusal with the workspace, never with the code", async () => {
+Deno.test("handleSignInCodeRedeem: audits a redeem and the refusal of a code it issued, never a made-up code, and never the code itself", async () => {
   const f = await fixture();
+  const other = await f.codes.issue("edge-dns", GRANT);
+  assert(other.ok);
   await handleSignInCodeRedeem(
     redeem({ code: f.code, workspace: "edge-dns" }),
     f.deps,
   );
   await handleSignInCodeRedeem(
-    redeem({ code: f.code, workspace: "edge-dns" }),
+    redeem({ code: other.code, workspace: "billing" }),
     f.deps,
   );
+  const madeUp = await handleSignInCodeRedeem(
+    redeem({ code: "swsc1.made-up", workspace: "edge-dns" }),
+    f.deps,
+  );
+  assertEquals(madeUp?.status, 404);
   await f.emitter.flush();
   assertEquals(
     f.sink.events.map((event) => ({
@@ -175,11 +182,13 @@ Deno.test("handleSignInCodeRedeem: audits each redeem and refusal with the works
         action: "auth.sign_in_code.refused",
         outcome: "denied",
         category: "auth",
-        resourceName: "edge-dns",
-        principalId: "anonymous",
-        initiatedBy: "anonymous",
+        resourceName: "billing",
+        principalId: "sub-alice",
+        initiatedBy: "user:alice",
       },
     ],
   );
-  assert(!JSON.stringify(f.sink.events).includes(f.code.split(".")[1]));
+  const recorded = JSON.stringify(f.sink.events);
+  assert(!recorded.includes(f.code.split(".")[1]));
+  assert(!recorded.includes(other.code.split(".")[1]));
 });

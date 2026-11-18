@@ -36,7 +36,7 @@ export interface HostRootWorkspaces {
   readonly services: HostedWorkspaceDeps;
   /** read per request: a reload changes the lists and the name cache */
   readonly rootAccess: () => HostedWorkspaceRootAccess;
-  /** in this process alone: only the root the host started holds the folder, and its address routes here */
+  /** in this process alone: only it holds the folder, and the root's address routes here */
   readonly signInCodes: SignInCodeStore;
 }
 

@@ -48,7 +48,7 @@ Deno.test("SignInCodeStore property: a code is redeemed at most once, whatever t
             issued.code,
             right ? name : `${name}x`,
           );
-          if (result !== null) granted++;
+          if (result.kind === "redeemed") granted++;
         }
         assert(granted <= 1);
         assertEquals(granted === 1, rightName[0]);
@@ -64,7 +64,7 @@ Deno.test("SignInCodeStore property: a code is good only for the exact name it w
       const issued = await store.issue(bound, GRANT);
       assert(issued.ok);
       const result = await store.redeem(issued.code, taken);
-      assertEquals(result !== null, bound === taken);
+      assertEquals(result.kind === "redeemed", bound === taken);
     }),
   );
 });
@@ -80,7 +80,7 @@ Deno.test("SignInCodeStore property: a code is good strictly before its TTL ends
         assert(issued.ok);
         now += elapsed;
         const result = await store.redeem(issued.code, "edge-dns");
-        assertEquals(result !== null, elapsed < SIGN_IN_CODE_TTL_MS);
+        assertEquals(result.kind === "redeemed", elapsed < SIGN_IN_CODE_TTL_MS);
         assertEquals(store.size, 0);
       },
     ),

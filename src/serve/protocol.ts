@@ -76,10 +76,11 @@ export const MAX_HTTP_REQUEST_BODY_BYTES = 64 * 1024;
 /** bearer only; a browser's ambient cookie never reaches this path */
 export const SERVE_ACTION_PATH = "/api/v1/action";
 
-/** where a host's root redeems a workspace's sign-in code */
 export const SIGN_IN_CODE_REDEEM_PATH = "/auth/sign-in-code/redeem";
 
-/** where a workspace trades a sign-in code for its own server token */
+// a workspace reads only this 404 as a refusal, so a proxy's 404 is not taken for one
+export const SIGN_IN_CODE_REFUSED = "sign_in_code_refused";
+
 export const AUTH_EXCHANGE_PATH = "/auth/exchange";
 
 // above the signal route's limit, so a signal it takes is taken here
@@ -1952,7 +1953,7 @@ export interface WorkspaceChangeResponse {
   data: HostedWorkspaceChangeData;
 }
 
-/** a single-use code the named workspace redeems at the root; it is never logged */
+/** the code is never logged */
 export interface WorkspaceSignInResponse {
   data: { name: string; code: string; expiresAt: string };
 }

@@ -28,7 +28,7 @@ import { buildAuditEvent } from "../domain/serve_audit/audit_event_builder.ts";
 import { parseWorkspaceName } from "../domain/workspace/workspace_name.ts";
 import { MAX_AUTH_BODY_BYTES } from "./device_auth_handler.ts";
 import { displayPrincipal } from "./known_usernames.ts";
-import { SIGN_IN_CODE_REDEEM_PATH } from "./protocol.ts";
+import { SIGN_IN_CODE_REDEEM_PATH, SIGN_IN_CODE_REFUSED } from "./protocol.ts";
 import { readBodyWithLimit } from "./webhook.ts";
 
 const MAX_CODE_LENGTH = 256;
@@ -40,7 +40,7 @@ export interface SignInCodeRedeemDeps {
   readonly instanceId?: string;
 }
 
-/** the reply a workspace mints from; it carries no secret but is never cached */
+// carries no credential, but private details, so it is never cached
 export interface SignInCodeRedeemReply {
   readonly principal: string;
   readonly username: string | null;
@@ -121,11 +121,15 @@ export async function handleSignInCodeRedeem(
   } catch {
     return json(400, { error: "invalid_body" });
   }
-  const grant = await deps.codes.redeem(code, name);
-  if (grant === null) {
-    audit(deps, "auth.sign_in_code.refused", "denied", name, null);
-    return json(404, { error: "not_found" });
+  const redeemed = await deps.codes.redeem(code, name);
+  if (redeemed.kind !== "redeemed") {
+    // anyone can post a made-up code, so only one this root issued is audited
+    if (redeemed.kind === "refused") {
+      audit(deps, "auth.sign_in_code.refused", "denied", name, redeemed.grant);
+    }
+    return json(404, { error: SIGN_IN_CODE_REFUSED });
   }
+  const grant = redeemed.grant;
   audit(deps, "auth.sign_in_code.redeemed", "success", name, grant);
   const reply: SignInCodeRedeemReply = {
     principal: grant.principal,

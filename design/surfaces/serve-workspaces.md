@@ -618,8 +618,10 @@ they already hold.
 into every workspace. A caller acting through an integration or a delegation is
 refused one too, since the workspace token would not carry that caller's
 ceiling. A root in `none` mode issues none; its workspaces need no sign-in. The
-request is audited like the other `workspace.*` requests, and the code is in
-neither the audit log nor a log line.
+root does not look the name up, so the request tells no one which workspaces
+exist; a code for a name with no workspace is never redeemed. Each request is
+in the root's audit log with the caller and the workspace name, and the code is
+in neither the audit log nor a log line.
 
 **Where the root keeps codes.** In memory, in the root process the host
 started, keyed by the code's hash. That process is the only node holding the
@@ -638,7 +640,12 @@ other way, but fails under TLS, whose certificate names the public host.
 
 **What redeem answers.** The principal, the username, the login email, the
 collectives and groups, and the root token's expiry. Every refusal answers 404
-alike. A workspace in `oauth` mode refuses a principal with no login email,
+with `sign_in_code_refused`; a workspace takes any other 404 for a root it
+cannot reach, so a proxy's 404 never reads as a refused code. Redeem has no
+rate limit: every workspace reaches it from the host's own address, and a
+256-bit code cannot be guessed. The root audits a redeem and the refusal of a
+code it issued, never a made-up code, so anonymous callers cannot fill its
+audit log. A workspace in `oauth` mode refuses a principal with no login email,
 applies its own admission lists, and records the login identity on the token it
 mints, so its lists keep applying to that token. The exchange route is rate
 limited per address as `/auth/device` is, and a refused code counts against

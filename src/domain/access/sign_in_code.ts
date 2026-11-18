@@ -24,21 +24,25 @@ export const SIGN_IN_CODE_TTL_MS = 60_000;
 export const MAX_SIGN_IN_CODES = 10_000;
 export const MAX_SIGN_IN_CODES_PER_PRINCIPAL = 20;
 
-/** who a code was issued to, as the root knew them when it issued it */
 export interface SignInGrant {
-  /** `user:<id>`: only people sign in through the root */
   readonly principal: string;
   readonly username: string | null;
   readonly email: string | null;
   readonly collectives: readonly string[];
   readonly groups: readonly string[];
-  /** when the root token the code was issued under expires, as ISO 8601 */
+  /** the root token's expiry, which a workspace token never outlives */
   readonly expiresAt: string;
 }
 
 export type SignInCodeIssue =
   | { readonly ok: true; readonly code: string; readonly expiresAt: string }
   | { readonly ok: false; readonly reason: "principal_limit" | "store_full" };
+
+/** unknown: no such code; refused: a code issued here, but expired or bound to another workspace */
+export type SignInCodeRedeem =
+  | { readonly kind: "redeemed"; readonly grant: SignInGrant }
+  | { readonly kind: "unknown" }
+  | { readonly kind: "refused"; readonly grant: SignInGrant };
 
 export interface SignInCodeStoreOptions {
   readonly now?: () => number;
@@ -65,9 +69,8 @@ async function codeHash(code: string): Promise<string> {
 }
 
 /**
- * the root's outstanding sign-in codes, held in this process alone: keyed by
- * hash so no plaintext is kept, and each one is gone after its first redeem
- * or its expiry, whichever comes first
+ * held in this process alone and keyed by hash, so no plaintext is kept; a code
+ * is gone after its first redeem or its expiry, whichever comes first
  */
 export class SignInCodeStore {
   readonly #entries = new Map<string, Entry>();
@@ -84,7 +87,6 @@ export class SignInCodeStore {
       MAX_SIGN_IN_CODES_PER_PRINCIPAL;
   }
 
-  /** `workspace` is a name `parseWorkspaceName` already accepted */
   async issue(workspace: string, grant: SignInGrant): Promise<SignInCodeIssue> {
     const code = `${SIGN_IN_CODE_PREFIX}.${generateOpaqueToken()}`;
     const hash = await codeHash(code);
@@ -113,27 +115,32 @@ export class SignInCodeStore {
     return { ok: true, code, expiresAt: new Date(expiresAtMs).toISOString() };
   }
 
-  /** null for an unknown, used or expired code, or one another workspace's name was bound to */
-  async redeem(code: string, workspace: string): Promise<SignInGrant | null> {
+  async redeem(code: string, workspace: string): Promise<SignInCodeRedeem> {
     const hash = await codeHash(code);
     // read and removed with no await between: of two redeems, one finds it
     const entry = this.#entries.get(hash);
     this.#entries.delete(hash);
     const now = this.#now();
     this.#sweep(now);
-    if (entry === undefined || entry.expiresAtMs <= now) return null;
-    if (entry.workspace !== workspace) return null;
-    if (!(Date.parse(entry.grant.expiresAt) > now)) return null;
-    return entry.grant;
+    if (entry === undefined) return { kind: "unknown" };
+    if (
+      entry.expiresAtMs <= now || entry.workspace !== workspace ||
+      !(Date.parse(entry.grant.expiresAt) > now)
+    ) {
+      return { kind: "refused", grant: entry.grant };
+    }
+    return { kind: "redeemed", grant: entry.grant };
   }
 
   get size(): number {
     return this.#entries.size;
   }
 
+  // entries expire in the order they were issued, so the sweep stops at the first live one
   #sweep(now: number): void {
     for (const [hash, entry] of this.#entries) {
-      if (entry.expiresAtMs <= now) this.#entries.delete(hash);
+      if (entry.expiresAtMs > now) return;
+      this.#entries.delete(hash);
     }
   }
 }

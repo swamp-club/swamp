@@ -80,15 +80,21 @@ Deno.test("SignInCodeStore: the code's prefix is a reserved token name", () => {
 Deno.test("SignInCodeStore.redeem: answers the grant once, for the workspace it names", async () => {
   const store = new SignInCodeStore({ now: clock().now });
   const code = await issued(store, "edge-dns");
-  assertEquals(await store.redeem(code, "edge-dns"), grant());
-  assertEquals(await store.redeem(code, "edge-dns"), null);
+  assertEquals(await store.redeem(code, "edge-dns"), {
+    kind: "redeemed",
+    grant: grant(),
+  });
+  assertEquals(await store.redeem(code, "edge-dns"), { kind: "unknown" });
 });
 
 Deno.test("SignInCodeStore.redeem: a code taken to another workspace is refused and spent", async () => {
   const store = new SignInCodeStore({ now: clock().now });
   const code = await issued(store, "edge-dns");
-  assertEquals(await store.redeem(code, "billing"), null);
-  assertEquals(await store.redeem(code, "edge-dns"), null);
+  assertEquals(await store.redeem(code, "billing"), {
+    kind: "refused",
+    grant: grant(),
+  });
+  assertEquals(await store.redeem(code, "edge-dns"), { kind: "unknown" });
 });
 
 Deno.test("SignInCodeStore.redeem: refuses a code at its expiry and after", async () => {
@@ -97,9 +103,12 @@ Deno.test("SignInCodeStore.redeem: refuses a code at its expiry and after", asyn
   const early = await issued(store, "edge-dns");
   const late = await issued(store, "edge-dns");
   time.advance(SIGN_IN_CODE_TTL_MS - 1);
-  assertEquals(await store.redeem(early, "edge-dns"), grant());
+  assertEquals(await store.redeem(early, "edge-dns"), {
+    kind: "redeemed",
+    grant: grant(),
+  });
   time.advance(1);
-  assertEquals(await store.redeem(late, "edge-dns"), null);
+  assertEquals((await store.redeem(late, "edge-dns")).kind, "refused");
 });
 
 Deno.test("SignInCodeStore.redeem: refuses a code whose root token has expired", async () => {
@@ -111,7 +120,7 @@ Deno.test("SignInCodeStore.redeem: refuses a code whose root token has expired",
     grant({ expiresAt: new Date(T0 + 1_000).toISOString() }),
   );
   time.advance(1_000);
-  assertEquals(await store.redeem(code, "edge-dns"), null);
+  assertEquals((await store.redeem(code, "edge-dns")).kind, "refused");
 });
 
 Deno.test("SignInCodeStore.redeem: an unknown code is refused", async () => {
@@ -119,7 +128,7 @@ Deno.test("SignInCodeStore.redeem: an unknown code is refused", async () => {
   await issued(store, "edge-dns");
   assertEquals(
     await store.redeem(`${SIGN_IN_CODE_PREFIX}.${"0".repeat(64)}`, "edge-dns"),
-    null,
+    { kind: "unknown" },
   );
 });
 
@@ -167,7 +176,9 @@ Deno.test("SignInCodeStore.issue: a caller changing its grant afterwards changes
   const collectives = ["acme"];
   const code = await issued(store, "edge-dns", grant({ collectives }));
   collectives.push("intruders");
-  assertEquals((await store.redeem(code, "edge-dns"))?.collectives, ["acme"]);
+  const redeemed = await store.redeem(code, "edge-dns");
+  assert(redeemed.kind === "redeemed");
+  assertEquals(redeemed.grant.collectives, ["acme"]);
 });
 
 Deno.test("SignInCodeStore.redeem: of two concurrent redeems, exactly one gets the grant", async () => {
@@ -177,5 +188,5 @@ Deno.test("SignInCodeStore.redeem: of two concurrent redeems, exactly one gets t
     store.redeem(code, "edge-dns"),
     store.redeem(code, "edge-dns"),
   ]);
-  assertEquals(results.filter((r) => r !== null).length, 1);
+  assertEquals(results.filter((r) => r.kind === "redeemed").length, 1);
 });

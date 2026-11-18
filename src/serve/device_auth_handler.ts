@@ -543,8 +543,8 @@ async function mintServerTokenImpl(
         state: "active" as const,
         principalId,
         principalEmail,
-        // only an OAuth login sets it, so audit events name a user by what
-        // the provider said, not an operator-typed email
+        // set only from what an OAuth provider said, at login or through the
+        // root's, never from an operator-typed email
         ...(options.oauthIdentity === false ? {} : {
           oauthIdentity: {
             email: principalEmail,
@@ -645,7 +645,6 @@ export interface ExchangeMinted {
   readonly expiresAt: string;
 }
 
-/** mints a workspace's own token for a principal the root vouched for */
 export function createExchangeTokenMinter(
   repoDir: string,
   repoContext: RepositoryContext,
@@ -664,7 +663,7 @@ export function createExchangeTokenMinter(
     if (input.oauthIdentity && !input.email) {
       throw new Error("An OAuth login identity needs an email");
     }
-    // as login: mint and push are one unit a poller pull must not interleave with
+    // mint and push are one unit a poller pull must not interleave with
     const token = await withSyncGate(syncGate, () =>
       mintServerTokenImpl(
         input.principalId,

@@ -24,6 +24,7 @@ import {
   type Principal,
   principalToString,
 } from "../../domain/access/principal.ts";
+import { parseWorkspaceName } from "../../domain/workspace/workspace_name.ts";
 import { hostedWorkspaceCreate } from "../../libswamp/hosted_workspace/create.ts";
 import { hostedWorkspaceDelete } from "../../libswamp/hosted_workspace/delete.ts";
 import type { HostedWorkspaceCaller } from "../../libswamp/hosted_workspace/deps.ts";
@@ -258,10 +259,7 @@ export async function handleWorkspaceChange(
   send(socket, { type, id: requestId, payload: { data: { ...data } } });
 }
 
-/**
- * any person signed in to the root gets a code for one workspace; the
- * workspace still applies its own admission lists when it redeems it
- */
+// the workspace applies its own admission lists when it redeems the code
 export async function handleWorkspaceSignIn(
   socket: WebSocket,
   ctx: ConnectionContext,
@@ -289,7 +287,7 @@ export async function handleWorkspaceSignIn(
     return;
   }
   const caller = accessCallerOf(socket, principal);
-  // the workspace token would not carry the integration's or delegation's ceiling
+  // a workspace token would not carry the caller's ceiling
   if (isIntegrationClient(caller.client) || caller.delegation !== undefined) {
     sendError(
       socket,
@@ -319,15 +317,20 @@ export async function handleWorkspaceSignIn(
     );
     return;
   }
-  const workspace = await outcome(
-    socket,
-    requestId,
-    hostedWorkspaceGet(handlerLibSwampContext(ctx), root.services, {
-      name: payload.name,
-    }),
-  );
-  if (workspace === undefined) return;
-  const issued = await root.signInCodes.issue(workspace.name, {
+  // never looked up, so a caller cannot probe which workspaces exist
+  let workspace: string;
+  try {
+    workspace = parseWorkspaceName(payload.name);
+  } catch (error) {
+    sendError(
+      socket,
+      requestId,
+      "user_error",
+      error instanceof Error ? error.message : String(error),
+    );
+    return;
+  }
+  const issued = await root.signInCodes.issue(workspace, {
     principal: principalToString(principal),
     username: callerOf(principal, ctx).username ??
       caller.loginIdentity?.username ?? null,
@@ -352,7 +355,7 @@ export async function handleWorkspaceSignIn(
     id: requestId,
     payload: {
       data: {
-        name: workspace.name,
+        name: workspace,
         code: issued.code,
         expiresAt: issued.expiresAt,
       },

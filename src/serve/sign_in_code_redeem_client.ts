@@ -23,7 +23,7 @@ import {
 } from "../domain/access/principal.ts";
 import { assertAuthenticatablePrincipal } from "../domain/access/service_principal.ts";
 import type { SignInGrant } from "../domain/access/sign_in_code.ts";
-import { SIGN_IN_CODE_REDEEM_PATH } from "./protocol.ts";
+import { SIGN_IN_CODE_REDEEM_PATH, SIGN_IN_CODE_REFUSED } from "./protocol.ts";
 import { readBodyWithLimit } from "./webhook.ts";
 
 const REDEEM_TIMEOUT_MS = 10_000;
@@ -33,7 +33,6 @@ const MAX_NAME_LENGTH = 256;
 
 export type SignInCodeRedeemOutcome =
   | { readonly ok: true; readonly grant: SignInGrant }
-  /** refused: the root does not know the code for this workspace */
   | { readonly ok: false; readonly reason: "refused" }
   /** the root could not be reached, or answered something no root sends */
   | {
@@ -47,9 +46,7 @@ export interface SignInCodeRedeemClient {
 }
 
 export interface SignInCodeRedeemClientOptions {
-  /** the root's public address, as the host passed it */
   readonly rootAddress: string;
-  /** this workspace's name, which every code it redeems must be bound to */
   readonly workspace: string;
   readonly fetch?: typeof fetch;
   readonly timeoutMs?: number;
@@ -137,8 +134,24 @@ export function createSignInCodeRedeemClient(
         };
       }
       if (response.status === 404) {
-        await response.body?.cancel();
-        return { ok: false, reason: "refused" };
+        const refusal = await readBodyWithLimit(response, MAX_REPLY_BYTES);
+        let error: unknown;
+        try {
+          error = refusal === null
+            ? undefined
+            : JSON.parse(new TextDecoder().decode(refusal))?.error;
+        } catch {
+          error = undefined;
+        }
+        if (error === SIGN_IN_CODE_REFUSED) {
+          return { ok: false, reason: "refused" };
+        }
+        return {
+          ok: false,
+          reason: "unavailable",
+          detail:
+            `the root at ${options.rootAddress} answered 404 without a sign-in refusal: it may not be a host's root`,
+        };
       }
       if (response.status !== 200) {
         await response.body?.cancel();

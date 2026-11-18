@@ -281,7 +281,6 @@ export async function sendRequest(
   options: {
     awaitRuns?: boolean;
     client?: string;
-    /** what a server token login binds to its socket */
     login?: {
       tokenExpiresAt?: string;
       identity?: ActorIdentity;
