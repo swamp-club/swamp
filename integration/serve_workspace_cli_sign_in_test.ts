@@ -36,7 +36,7 @@ import {
   exchangeTarget,
   handleAuthExchange,
 } from "../src/serve/auth_exchange_handler.ts";
-import { SERVE_REQUEST_PATH } from "../src/serve/protocol.ts";
+import { createWorkspaceRouter } from "../src/serve/host/workspace_router.ts";
 import { resetRateLimitState } from "../src/serve/rate_limiter.ts";
 import { createSignInCodeRedeemClient } from "../src/serve/sign_in_code_redeem_client.ts";
 import { handleSignInCodeRedeem } from "../src/serve/sign_in_code_redeem_handler.ts";
@@ -70,12 +70,17 @@ interface Host {
 }
 
 interface HostOptions {
+  /** a reverse proxy's path in front of the host; such a host is a stand-in */
   readonly prefix?: string;
   readonly offerExchange?: boolean;
   readonly rootStatus?: number;
   readonly env?: Record<string, string | undefined>;
 }
 
+/**
+ * the root and the workspace are separate serves behind the host's real router,
+ * which a refusal has to cross; with a prefix one server plays the host
+ */
 async function withHost(
   options: HostOptions,
   fn: (host: Host) => Promise<void>,
@@ -100,96 +105,136 @@ async function withHost(
     sourceIp: "127.0.0.1",
   });
 
-  const server = Deno.serve(
-    { hostname: "127.0.0.1", port: 0, onListen: () => {} },
-    async (req) => {
-      const url = new URL(req.url);
-      const body = req.body === null ? "" : await req.clone().text();
-      seen.push({
-        path: url.pathname,
-        authorization: req.headers.get("authorization"),
-        body,
-      });
-      if (!url.pathname.startsWith(prefix)) {
-        return new Response(null, { status: 404 });
+  const record = async (req: Request, path: string): Promise<string> => {
+    const body = req.body === null ? "" : await req.clone().text();
+    seen.push({
+      path,
+      authorization: req.headers.get("authorization"),
+      body,
+    });
+    return body;
+  };
+  const local = (req: Request, path: string, body: string) =>
+    new Request(new URL(path, "http://127.0.0.1"), {
+      method: req.method,
+      headers: req.headers,
+      ...(req.method === "GET" ? {} : { body }),
+    });
+  const bearer = (req: Request) =>
+    req.headers.get("authorization")?.slice("Bearer ".length) ?? "";
+
+  const workspace = async (req: Request, path: string): Promise<Response> => {
+    const body = await record(req, `${prefix}${WORKSPACE_PATH}${path}`);
+    if (path === "/auth/info") {
+      return Response.json(
+        authInfoBody(
+          { mode: "oauth", oauthProvider: "https://club.example" },
+          options.offerExchange ?? true,
+        ),
+      );
+    }
+    if (path === "/auth/exchange") {
+      return (await handleAuthExchange(
+        local(req, path, body),
+        exchangeDeps(),
+      ))!;
+    }
+    if (req.headers.get("upgrade") === "websocket") {
+      if (!minted.has(bearer(req))) {
+        return new Response("Unauthorized: unknown", { status: 401 });
       }
-      const rest = url.pathname.slice(prefix.length) || "/";
-      const local = (path: string) =>
-        new Request(new URL(path, "http://127.0.0.1"), {
-          method: req.method,
-          headers: req.headers,
-          ...(req.method === "GET" ? {} : { body }),
-        });
-      if (rest === WORKSPACE_PATH || rest.startsWith(`${WORKSPACE_PATH}/`)) {
-        const path = rest.slice(WORKSPACE_PATH.length) || "/";
-        if (path === "/auth/info") {
-          return Response.json(
-            authInfoBody(
-              { mode: "oauth", oauthProvider: "https://club.example" },
-              options.offerExchange ?? true,
-            ),
-          );
-        }
-        if (path === "/auth/exchange") {
-          return (await handleAuthExchange(local(path), exchangeDeps()))!;
-        }
-        if (path === SERVE_REQUEST_PATH) {
-          const bearer = req.headers.get("authorization")?.slice(7) ?? "";
-          if (!minted.has(bearer)) {
-            return Response.json(
-              { code: "unauthorized", message: "Unauthorized: unknown" },
-              { status: 401 },
-            );
-          }
-          const { id, type } = JSON.parse(body);
-          return new Response(
-            JSON.stringify({ type, id, payload: { ok: true } }) + "\n",
-          );
-        }
-        return new Response(null, { status: 404 });
-      }
-      const redeemed = await handleSignInCodeRedeem(local(rest), {
-        codes,
-        sourceIp: "127.0.0.1",
-      });
-      if (redeemed !== null) return redeemed;
-      if (req.headers.get("upgrade") === "websocket") {
-        if (options.rootStatus !== undefined) {
-          return new Response(null, { status: options.rootStatus });
-        }
-        if (req.headers.get("authorization") !== `Bearer ${ROOT_TOKEN}`) {
-          return new Response("Unauthorized: unknown", { status: 401 });
-        }
-        const { socket, response } = Deno.upgradeWebSocket(req);
-        socket.onmessage = async (event) => {
-          const message = JSON.parse(String(event.data));
-          const issued = await codes.issue(message.payload.name, {
-            principal: "user:sub-alice",
-            username: "alice",
-            email: "alice@example.com",
-            collectives: [],
-            groups: [],
-            expiresAt: ROOT_EXPIRES_AT,
-          });
-          assert(issued.ok);
-          socket.send(JSON.stringify({
-            type: message.type,
-            id: message.id,
-            payload: {
-              data: {
-                name: message.payload.name,
-                code: issued.code,
-                expiresAt: issued.expiresAt,
-              },
-            },
-          }));
-        };
-        return response;
-      }
+      const { socket, response } = Deno.upgradeWebSocket(req);
+      socket.onmessage = (event) => {
+        const { type, id } = JSON.parse(String(event.data));
+        socket.send(JSON.stringify({ type, id, payload: { ok: true } }));
+      };
+      return response;
+    }
+    return new Response(null, { status: 404 });
+  };
+
+  const root = async (req: Request, path: string): Promise<Response> => {
+    const body = await record(req, `${prefix}${path}`);
+    const redeemed = await handleSignInCodeRedeem(local(req, path, body), {
+      codes,
+      sourceIp: "127.0.0.1",
+    });
+    if (redeemed !== null) return redeemed;
+    if (req.headers.get("upgrade") !== "websocket") {
       return new Response(null, { status: 404 });
-    },
-  );
-  base = `http://127.0.0.1:${server.addr.port}${prefix}`;
+    }
+    if (options.rootStatus !== undefined) {
+      return new Response(null, { status: options.rootStatus });
+    }
+    if (bearer(req) !== ROOT_TOKEN) {
+      return new Response("Unauthorized: unknown", { status: 401 });
+    }
+    const { socket, response } = Deno.upgradeWebSocket(req);
+    socket.onmessage = async (event) => {
+      const message = JSON.parse(String(event.data));
+      const issued = await codes.issue(message.payload.name, {
+        principal: "user:sub-alice",
+        username: "alice",
+        email: "alice@example.com",
+        collectives: [],
+        groups: [],
+        expiresAt: ROOT_EXPIRES_AT,
+      });
+      assert(issued.ok);
+      socket.send(JSON.stringify({
+        type: message.type,
+        id: message.id,
+        payload: {
+          data: {
+            name: message.payload.name,
+            code: issued.code,
+            expiresAt: issued.expiresAt,
+          },
+        },
+      }));
+    };
+    return response;
+  };
+
+  const listen = (handler: Deno.ServeHandler<Deno.NetAddr>) =>
+    Deno.serve({ hostname: "127.0.0.1", port: 0, onListen: () => {} }, handler);
+  const servers: Deno.HttpServer<Deno.NetAddr>[] = [];
+  const shutdown = new AbortController();
+  if (prefix === "") {
+    const rootServe = listen((req) => root(req, new URL(req.url).pathname));
+    const workspaceServe = listen((req) =>
+      workspace(req, new URL(req.url).pathname)
+    );
+    const router = createWorkspaceRouter({
+      directory: {
+        workspace: (name) =>
+          name === "team"
+            ? { kind: "running", port: workspaceServe.addr.port }
+            : undefined,
+        root: () => ({ kind: "running", port: rootServe.addr.port }),
+      },
+      protocol: "http",
+      trustProxy: false,
+      signal: shutdown.signal,
+    });
+    servers.push(
+      listen((req, info) => router.handle(req, info)),
+      rootServe,
+      workspaceServe,
+    );
+  } else {
+    servers.push(listen((req) => {
+      const path = new URL(req.url).pathname;
+      if (!path.startsWith(prefix)) {
+        return new Response(null, { status: 404 });
+      }
+      const rest = path.slice(prefix.length) || "/";
+      return rest === WORKSPACE_PATH || rest.startsWith(`${WORKSPACE_PATH}/`)
+        ? workspace(req, rest.slice(WORKSPACE_PATH.length) || "/")
+        : root(req, rest);
+    }));
+  }
+  base = `http://127.0.0.1:${servers[0].addr.port}${prefix}`;
   try {
     resetRateLimitState();
     resetWorkspaceSignInGaps();
@@ -226,7 +271,7 @@ async function withHost(
           run: (body) => new ProcessRuntime(crypto.randomUUID()).run(body),
           codeRequests: () =>
             seen.filter((s) =>
-              s.path === (prefix || "/") && s.authorization !== null
+              s.path === `${prefix}/` && s.authorization !== null
             ).length,
           exchanges: () =>
             seen.filter((s) =>
@@ -235,7 +280,8 @@ async function withHost(
         }),
     );
   } finally {
-    await server.shutdown();
+    shutdown.abort();
+    for (const server of servers) await server.shutdown();
     await Deno.remove(configDir, { recursive: true }).catch((e) => {
       if (Deno.build.os !== "windows") throw e;
     });
@@ -250,7 +296,7 @@ function command(host: Host, address: string): Promise<unknown> {
     });
     return await requestServerResponse(
       { server: address, token, remoteIndicator: false, log: () => {} },
-      { type: "data.list", payload: {} },
+      { type: "server.version", payload: {} },
     );
   });
 }
@@ -412,6 +458,47 @@ Deno.test("workspace sign-in from the CLI: an unreachable root leaves a team-mod
         assertEquals(target.token, undefined);
         assertEquals(host.exchanges(), 0);
       },
+    );
+  });
+});
+
+Deno.test("workspace sign-in from the CLI: a host that refuses its stored token says to sign in to the host, through the host's router", async () => {
+  await withHost({}, async (host) => {
+    await host.store({ serverUrl: host.hostAddress, token: "revoked.secret" });
+    const error = await assertRejects(
+      () => command(host, host.workspaceAddress),
+      UserError,
+    );
+    assert(
+      error.message.includes(`the host at ${host.hostAddress} refused your`),
+      error.message,
+    );
+    assert(
+      error.message.includes(
+        `swamp auth server-login --server ${host.hostAddress}`,
+      ),
+      error.message,
+    );
+  });
+});
+
+Deno.test("workspace sign-in from the CLI: a workspace token expiring with its host token says to sign in to the host", async () => {
+  await withHost({}, async (host) => {
+    await host.store({ serverUrl: host.hostAddress, token: "expired.secret" });
+    await host.store({
+      serverUrl: host.workspaceAddress,
+      token: "ws-expired.secret",
+      obtainedAt: new Date(Date.now() - 30 * 86_400_000).toISOString(),
+      expiresAt: new Date(Date.now() - 1000).toISOString(),
+    });
+    const error = await assertRejects(
+      () => command(host, host.workspaceAddress),
+      UserError,
+    );
+    assert(error.message.includes("refused your sign-in"), error.message);
+    assert(
+      !host.seen.some((s) => s.authorization === "Bearer ws-expired.secret"),
+      "the expired token was sent",
     );
   });
 });

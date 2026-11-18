@@ -32,6 +32,9 @@ import { matchWorkspacePath } from "./workspace_path.ts";
 const logger = getLogger(["swamp", "serve", "host"]);
 
 const DEFAULT_WEBSOCKET_OPEN_TIMEOUT_MS = 10_000;
+const REFUSAL_PROBE_TIMEOUT_MS = 3_000;
+// a refusal the caller can act on; anything else stays a 502
+const PASSED_REFUSALS = new Set([401, 403, 421, 429]);
 
 // the WebSocket API cannot pause a read, so a side that stops reading has its
 // relay closed rather than buffered in the host without bound
@@ -105,8 +108,6 @@ export function createWorkspaceRouter(
     };
     upstream.onmessage = (e) => queueForCaller(e.data);
 
-    // the WebSocket API hides a refused handshake's status, so a child's 401
-    // or 421 reaches the caller as this 502
     const outcome = await new Promise<"open" | "refused" | "timeout">(
       (resolve) => {
         const settle = (result: "open" | "refused" | "timeout") => {
@@ -135,9 +136,17 @@ export function createWorkspaceRouter(
       closeQuietly(upstream, 1000, "");
       logger
         .info`A WebSocket to the child on port ${port} did not open: ${outcome}`;
-      return outcome === "timeout"
-        ? hostReply(504, { error: "The workspace did not answer in time." })
-        : hostReply(502, { error: "The workspace could not be reached." });
+      if (outcome === "timeout") {
+        return hostReply(504, {
+          error: "The workspace did not answer in time.",
+        });
+      }
+      const refusal = signal.aborted || req.signal.aborted
+        ? undefined
+        : await refusedHandshakeStatus(port, pathAndQuery, req, forwarding);
+      return refusal === undefined
+        ? hostReply(502, { error: "The workspace could not be reached." })
+        : hostReply(refusal, { error: "The workspace refused the request." });
     }
 
     let upgraded: { socket: WebSocket; response: Response };
@@ -237,6 +246,43 @@ export function createWorkspaceRouter(
       );
     },
   };
+}
+
+/**
+ * the WebSocket API hides a refused handshake's status, so the child is asked
+ * again over HTTP. Without the caller's credentials, so a refused token is not
+ * counted against twice and never reaches the child a second time
+ */
+async function refusedHandshakeStatus(
+  port: number,
+  pathAndQuery: string,
+  req: Request,
+  forwarding: ForwardingOptions,
+): Promise<number | undefined> {
+  const headers = forwardWebSocketHeaders(req, forwarding);
+  headers.delete("authorization");
+  headers.delete("cookie");
+  headers.set("upgrade", "websocket");
+  headers.set("connection", "Upgrade");
+  headers.set("sec-websocket-version", "13");
+  headers.set(
+    "sec-websocket-key",
+    btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(16)))),
+  );
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}${pathAndQuery}`, {
+      headers,
+      redirect: "manual",
+      signal: AbortSignal.any([
+        req.signal,
+        AbortSignal.timeout(REFUSAL_PROBE_TIMEOUT_MS),
+      ]),
+    });
+    await response.body?.cancel();
+    return PASSED_REFUSALS.has(response.status) ? response.status : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function noWorkspace(): Response {

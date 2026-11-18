@@ -190,8 +190,11 @@ streamed body chunked and drops its `Content-Length`, which the v3 datastore's
 chunk upload requires. `node:http` keeps `Content-Length` and `Host` and does
 not decode the reply. A WebSocket is opened with Deno's client, which sets
 `Host` from the URL, so a child reads the public host from `X-Forwarded-Host`.
-That client cannot see why a child refused a handshake, so a refused upgrade
-reaches the caller as 502.
+That client cannot see why a child refused a handshake, so the router asks the
+child again over HTTP, without the caller's `Authorization`, cookies or
+subprotocols, and passes on a 401, 403, 421 or 429; any other refusal reaches
+the caller as 502. Leaving the credentials out means a refused token is not
+counted against twice and is never sent to the child a second time.
 
 The worker data plane is HTTP/2 only under TLS and HTTP/1.1 over plain TCP,
 with the same handlers. The hop from the router to a child is plain loopback

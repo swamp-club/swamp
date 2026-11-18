@@ -36,6 +36,8 @@ interface StandIn {
   /** resolves the SSE route's second event */
   releaseSse(): void;
   readonly cancelled: { value: boolean };
+  /** every request that reached it, in order */
+  readonly seen: Record<string, string | null>[];
   shutdown(): Promise<void>;
 }
 
@@ -44,6 +46,7 @@ function startStandIn(who: string): StandIn {
   let releaseSse = () => {};
   const cancelled = { value: false };
   const hold = { waiting: false, aborted: false };
+  const log: Record<string, string | null>[] = [];
   const server = Deno.serve(
     { hostname: "127.0.0.1", port: 0, onListen() {} },
     async (req) => {
@@ -66,6 +69,7 @@ function startStandIn(who: string): StandIn {
         transferEncoding: req.headers.get("transfer-encoding"),
         subprotocols: req.headers.get("sec-websocket-protocol"),
       };
+      log.push(seen);
       switch (url.pathname) {
         case "/hold":
         case "/ws-hold": {
@@ -94,6 +98,8 @@ function startStandIn(who: string): StandIn {
         }
         case "/ws-refuse":
           return new Response("no", { status: 401 });
+        case "/ws-broken":
+          return new Response("no", { status: 500 });
         case "/upload": {
           const size = (await req.arrayBuffer()).byteLength;
           return Response.json({ ...seen, size });
@@ -179,6 +185,7 @@ function startStandIn(who: string): StandIn {
     hold,
     releaseSse: () => releaseSse(),
     cancelled,
+    seen: log,
     shutdown: () => server.shutdown(),
   };
 }
@@ -530,15 +537,47 @@ Deno.test("workspace router: a WebSocket is relayed with its subprotocol, Origin
   });
 });
 
-Deno.test("workspace router: a child that refuses a WebSocket upgrade is answered 502", async () => {
-  await withFixture(async ({ router }) => {
+const UPGRADE_HEADERS = {
+  connection: "Upgrade",
+  upgrade: "websocket",
+  "sec-websocket-version": "13",
+  "sec-websocket-key": btoa("0123456789abcdef"),
+};
+
+Deno.test("workspace router: a child that refuses a WebSocket for its credentials passes its status on, asked again without them", async () => {
+  await withFixture(async ({ router, child }) => {
     const reply = await nodeRequest(router.port, "/w/edge-dns/ws-refuse", {
       headers: {
-        connection: "Upgrade",
-        upgrade: "websocket",
-        "sec-websocket-version": "13",
-        "sec-websocket-key": btoa("0123456789abcdef"),
+        ...UPGRADE_HEADERS,
+        authorization: "Bearer swamp_abc.secret",
+        cookie: "swamp_session=s1",
+        "sec-websocket-protocol": "bearer.swamp_abc.secret",
       },
+    });
+    assertEquals(reply.status, 401);
+    const asked = child.seen.filter((seen) => seen.path === "/ws-refuse");
+    assertEquals(asked.length, 2);
+    assertEquals(asked[0].authorization, "Bearer swamp_abc.secret");
+    assertEquals(asked[1].authorization, null);
+    assertEquals(asked[1].cookie, null);
+    assertEquals(asked[1].subprotocols, null);
+    assertEquals(asked[1].forwardedPrefix, "/w/edge-dns");
+  });
+});
+
+Deno.test("workspace router: the root's refusal of a WebSocket passes its status on too", async () => {
+  await withFixture(async ({ router }) => {
+    const reply = await nodeRequest(router.port, "/ws-refuse", {
+      headers: UPGRADE_HEADERS,
+    });
+    assertEquals(reply.status, 401);
+  });
+});
+
+Deno.test("workspace router: a child that fails a WebSocket for another reason is answered 502", async () => {
+  await withFixture(async ({ router }) => {
+    const reply = await nodeRequest(router.port, "/w/edge-dns/ws-broken", {
+      headers: UPGRADE_HEADERS,
     });
     assertEquals(reply.status, 502);
   });
