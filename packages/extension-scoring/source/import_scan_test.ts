@@ -119,3 +119,21 @@ Deno.test("statementsWithNestedImports: a member named import or a non-ASCII nei
     ["a.import(1);", "const éimport = 1;"],
   );
 });
+
+// A decorated statement starts at its first decorator, so even a plain one
+// has its export keyword inside it and is walked.
+Deno.test("statementsWithNestedImports: a decorator before export is inside the statement", () => {
+  assertEquals(
+    picked([
+      '@dec(import("./dec.ts")) export class A {}',
+      '@dec(import("./cls.ts")) class B {}',
+      "@plain export class C {}",
+      "@plain class D {}",
+    ]),
+    [
+      '@dec(import("./dec.ts")) export class A {}',
+      '@dec(import("./cls.ts")) class B {}',
+      "@plain export class C {}",
+    ],
+  );
+});

@@ -101,6 +101,8 @@ const statement = fc.oneof(
       `var __export${i} = 1; module.exports = { importKeyPair: 1 };`,
     (i: number) => `export const o${i} = { import: () => import("./o.ts") };`,
     () => "a.import(1);",
+    (i: number) => `@dec(import("./dec.ts")) export class C${i} {}`,
+    (i: number) => `@dec(import("./cls.ts")) class K${i} {}`,
     (i: number) => `import a${i} from "npm:a@1";`,
     () => 'export * from "./star.ts";',
   ),
