@@ -6822,9 +6822,12 @@ so a fence is not reused even if `_control/writer/` is lost.
 - its holder is judged gone by **Writer liveness** (taken over at once, as
   Phase 3 did on the same host); or
 - its last renewal (or its `acquiredAt`) is older than its TTL plus
-  `WRITER_LEASE_CLOCK_SKEW_MS` (10 s), judged on the taker's clock. With the
-  default 30 s TTL, a crashed holder on another host is taken over after
-  40 s. A holder judged alive is taken over after its TTL too: the takeover
+  `WRITER_LEASE_CLOCK_SKEW_MS` (10 s), judged on the taker's clock. The TTL
+  is the one the fence record carries, not the taker's, so holds with
+  different TTLs share a datastore safely. Serve's leadership hold takes
+  `SERVE_WRITER_LEASE_TTL_MS` (15 s), so a crashed serve leader on another
+  host is taken over after 25 s; every other hold (a CLI writer, a recovery
+  hold) keeps the default 30 s and is taken over after 40 s. A holder judged alive is taken over after its TTL too: the takeover
   fences it, so it can land nothing more, and a stopped or hung writer does
   not keep every writer out until someone runs `lock release --force`. Its
   checkout stays protected until a higher fence exists (see **One writer
@@ -6877,8 +6880,10 @@ drop, so they need no format bump; an older swamp judges those records by
 hostname as before.
 
 A fence record that cannot be read is held by an unknown holder only while a
-heartbeat for that fence was written within the taker's TTL plus the
-allowance. A live holder writes its first heartbeat as soon as it has taken
+heartbeat for that fence was written within the longer of the taker's TTL and
+`UNKNOWN_HOLDER_LEASE_TTL_MS` (30 s, the longest TTL any holder records), plus
+the allowance: a 15 s serve never takes over a 30 s holder early just because
+its record cannot be read. A live holder writes its first heartbeat as soon as it has taken
 the fence, so a record a crashed holder left half-written (possible only where
 the filesystem has no hard links) is taken over at once rather than keeping
 every writer out; taking over too early only fences the slow holder.
@@ -9292,8 +9297,9 @@ A leader answers only while its lease is confirmed (swamp-club#4559). A
 process stopped past the lease's TTL (SIGSTOP) may have been taken over by
 the time it runs again, and until its next renewal it would still answer
 from a copy behind the new leader's, as the leader. So a leader whose last
-successful writer-lease renewal is older than the TTL (30 s, the earliest
-another node may judge the lease expired) refuses every datastore API request
+successful writer-lease renewal is older than its TTL (15 s for serve's
+hold; another node judges the lease expired no sooner than that TTL plus the
+clock-skew allowance) refuses every datastore API request
 as the retryable `serve_not_leader`, never sent and naming no leader, and asks
 for a renewal at once (`v3WriterLeaseConfirmed`, through the follower gate's
 `leadUnconfirmed`). A renewal that confirms the lease lifts the refusal; one
@@ -9301,6 +9307,16 @@ that finds a higher fence loses the lead as before. The check reads a
 monotonic clock, so a step of the wall clock never trips it. That clock stops
 while a VM is suspended, so a suspend is not caught: a VM resumed past the
 TTL answers as the leader until its next renewal, at most a third of the TTL.
+
+This refusal, and the adoption of kept model-lock leases, rest on the
+clock-skew allowance rather than the fence: they hold only while the two
+nodes' wall clocks differ by less than it. Shortening serve's TTL keeps both
+sides of the bound in step (the holder stops at its TTL, the taker waits the
+TTL plus the allowance), so only the allowance sets the tolerated clock
+difference, and it stays 10 s. With renewal every 5 s, a healthy leader turns
+unconfirmed only if a renewal takes over 10 s, or over 5 s right after a
+failed one; measured on a GCS-backed team, the lease list a renewal runs took
+at most 316 ms and the heartbeat-sized puts at most 2.4 s.
 
 The gate is checked again where it matters (swamp-club#4581, F43). A commit
 that passed it before the process stopped re-checks the lease's confirmation
