@@ -37,6 +37,7 @@ import {
   handleAuthExchange,
 } from "../src/serve/auth_exchange_handler.ts";
 import { createWorkspaceRouter } from "../src/serve/host/workspace_router.ts";
+import { SERVE_REQUEST_PATH } from "../src/serve/protocol.ts";
 import { resetRateLimitState } from "../src/serve/rate_limiter.ts";
 import { createSignInCodeRedeemClient } from "../src/serve/sign_in_code_redeem_client.ts";
 import { handleSignInCodeRedeem } from "../src/serve/sign_in_code_redeem_handler.ts";
@@ -160,6 +161,16 @@ async function withHost(
       sourceIp: "127.0.0.1",
     });
     if (redeemed !== null) return redeemed;
+    // the token is checked before anything else, as serve's HTTP route does
+    if (path === SERVE_REQUEST_PATH) {
+      return bearer(req) === ROOT_TOKEN
+        ? Response.json({ code: "use_websocket", message: "use the socket" }, {
+          status: 404,
+        })
+        : Response.json({ code: "unauthorized", message: "Unauthorized" }, {
+          status: 401,
+        });
+    }
     if (req.headers.get("upgrade") !== "websocket") {
       return new Response(null, { status: 404 });
     }
@@ -295,7 +306,13 @@ function command(host: Host, address: string): Promise<unknown> {
       server: address,
     });
     return await requestServerResponse(
-      { server: address, token, remoteIndicator: false, log: () => {} },
+      {
+        server: address,
+        token,
+        remoteIndicator: false,
+        log: () => {},
+        restartRetryBudgetMs: 0,
+      },
       { type: "server.version", payload: {} },
     );
   });
@@ -340,8 +357,9 @@ Deno.test("workspace sign-in from the CLI: a host behind a path signs in at that
   });
 });
 
+// behind the host's router a refused WebSocket reads as 502, as it did before
 Deno.test("workspace sign-in from the CLI: a workspace that offers no exchange gives the existing error", async () => {
-  await withHost({ offerExchange: false }, async (host) => {
+  await withHost({ offerExchange: false, prefix: "/proxy" }, async (host) => {
     await host.store({ serverUrl: host.hostAddress });
     const error = await assertRejects(
       () => command(host, host.workspaceAddress),
@@ -367,6 +385,22 @@ Deno.test("workspace sign-in from the CLI: no host token names the one sign-in t
       error.message,
       `Authentication failed — run: swamp auth server-login --server ${host.hostAddress} (one sign-in to the host covers its workspaces)`,
     );
+    assert(
+      !host.seen.some((s) => s.path === `${WORKSPACE_PATH}/`),
+      "the command was sent to the workspace with no token",
+    );
+  });
+});
+
+Deno.test("workspace sign-in from the CLI: a busy root is not taken for a refused sign-in", async () => {
+  await withHost({ rootStatus: 429 }, async (host) => {
+    await host.store({ serverUrl: host.hostAddress });
+    const error = await assertRejects(
+      () => command(host, host.workspaceAddress),
+      UserError,
+    );
+    assert(!error.message.includes("refused your sign-in"), error.message);
+    assertEquals(host.exchanges(), 0);
   });
 });
 

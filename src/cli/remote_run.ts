@@ -61,6 +61,7 @@ import {
   type Sleep,
 } from "../infrastructure/http/rate_limit.ts";
 import {
+  hasWorkspaceSignInGap,
   recordWithheldTokenFile,
   serverLoginHint,
   withheldTokenFileMessage,
@@ -612,6 +613,10 @@ export async function resolveServerToken(
     await repo.get(serverUrl),
     credentialRepo,
   );
+  // the workspace wants a token no source has, so asking would only be refused
+  if (!token && hasWorkspaceSignInGap(key)) {
+    throw new UserError(serverLoginHint(key));
+  }
   // A set token file that reached here was not bound to the address.
   if (!token && envTokenFile) {
     warnWithheldTokenFile(key, "flag-or-env");
@@ -667,11 +672,43 @@ async function requestWorkspaceSignInCode(
       { type: "workspace.sign-in", payload: { name } },
     );
   } catch (error) {
-    const refused = authFailedMessage(toWebSocketUrl(hostAddress));
-    if (error instanceof UserError && error.message.startsWith(refused)) {
+    // a reply over the socket is the root's own answer, not a refused token
+    if (
+      !(error instanceof ServerResponseError) &&
+      await hostRefusesToken(hostAddress, hostToken)
+    ) {
       throw new HostTokenRefusedError();
     }
     throw error;
+  }
+}
+
+/**
+ * a refused WebSocket hides its status behind a host's router or HTTP/2, so the
+ * root's HTTP route, which checks the token before anything else, is asked
+ */
+async function hostRefusesToken(
+  hostAddress: string,
+  hostToken: string,
+): Promise<boolean> {
+  try {
+    const reply = await fetchSignInJson(`${hostAddress}${SERVE_REQUEST_PATH}`, {
+      method: "POST",
+      headers: {
+        ...resolveExtraHeaders(),
+        "content-type": "application/json",
+        "authorization": `Bearer ${hostToken}`,
+      },
+      body: JSON.stringify({
+        type: "server.version",
+        id: crypto.randomUUID(),
+      }),
+      redirect: "manual",
+      signal: AbortSignal.timeout(SIGN_IN_TIMEOUT_MS),
+    });
+    return reply.status === 401;
+  } catch {
+    return false;
   }
 }
 

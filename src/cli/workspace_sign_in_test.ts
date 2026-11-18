@@ -415,6 +415,14 @@ Deno.test("workspaceTokenFor: an expired token whose renewal is refused fails th
   });
 });
 
+Deno.test("workspaceTokenFor: an expired token is not sent when it cannot be replaced", async () => {
+  await inOwnRuntime(async () => {
+    const { deps } = fakeDeps({ authInfo: new TypeError("unreachable") });
+    const found = exchanged(NOW - 1000, NOW - 30 * 86_400_000);
+    assertEquals(await workspaceTokenFor(WORKSPACE, found, deps), undefined);
+  });
+});
+
 Deno.test("workspaceTokenFor: a token inside the margin is renewed early", async () => {
   await inOwnRuntime(async () => {
     const { deps } = fakeDeps();

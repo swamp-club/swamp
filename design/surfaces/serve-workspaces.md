@@ -190,11 +190,8 @@ streamed body chunked and drops its `Content-Length`, which the v3 datastore's
 chunk upload requires. `node:http` keeps `Content-Length` and `Host` and does
 not decode the reply. A WebSocket is opened with Deno's client, which sets
 `Host` from the URL, so a child reads the public host from `X-Forwarded-Host`.
-That client cannot see why a child refused a handshake, so the router asks the
-child again over HTTP, without the caller's `Authorization`, cookies or
-subprotocols, and passes on a 401, 403, 421 or 429; any other refusal reaches
-the caller as 502. Leaving the credentials out means a refused token is not
-counted against twice and is never sent to the child a second time.
+That client cannot see why a child refused a handshake, so a refused upgrade
+reaches the caller as 502.
 
 The worker data plane is HTTP/2 only under TLS and HTTP/1.1 over plain TCP,
 with the same handlers. The hop from the router to a child is plain loopback
@@ -625,8 +622,10 @@ answers. A serve that was given no root address offers no exchange.
   with an `expiresAt` on the client's clock (the lifetime the workspace granted,
   measured by its `Date` header). Within a few minutes of that expiry the CLI
   exchanges again before it sends the token; if that fails, the still-valid
-  token is used. A token a workspace refuses before its expiry (deleted, or the
-  workspace rebuilt) gets the usual login hint, not a retry.
+  token is used. An expired token that cannot be replaced is not sent. A token
+  a workspace refuses before its expiry (deleted, or the workspace rebuilt)
+  gets the usual refusal, not a retry; behind a host that refusal reads as 502,
+  since the router cannot see why a child refused a WebSocket.
 - A token stored by `swamp auth server-login` to a workspace's address carries
   no `expiresAt` and is used as it is.
 - Signing out of the host forgets nothing: the CLI has no server sign-out, and
@@ -634,11 +633,16 @@ answers. A serve that was given no root address offers no exchange.
 - Two commands that both find no workspace token both exchange; the later write
   wins. Writes to `servers.json` hold an OS advisory lock on a sidecar file, so
   neither drops another server's entry.
+- When the workspace offers the exchange and no host token is usable (none
+  stored, or one from `SWAMP_SERVER_TOKEN`), a `--server` command stops before
+  it sends anything, naming the sign-in that covers the host.
 - A network failure or a busy root or workspace leaves the command to go on as
   it would have. Only a refusal stops it, and the message says which: the host
   refusing the stored sign-in, the root refusing the code, or the workspace's
   admission lists refusing the principal, which signing in to the host again
-  does not cure.
+  does not cure. A refused host token is told from a busy root by asking the
+  root's HTTP route, which checks the token first and whose status the host's
+  router passes on; a refused WebSocket's status is hidden there.
 
 A workspace token lives no longer than the root token it came from, and its
 collectives are the ones the root knew at the exchange. The exchange is the

@@ -66,6 +66,11 @@ export function recordWorkspaceSignInGap(
   if (key !== undefined) workspaceSignInGaps.set(key, { hostAddress, gap });
 }
 
+export function hasWorkspaceSignInGap(workspaceAddress: string): boolean {
+  const key = normalizedOrUndefined(workspaceAddress);
+  return key !== undefined && workspaceSignInGaps.has(key);
+}
+
 export function resetWorkspaceSignInGaps(): void {
   workspaceSignInGaps.clear();
 }

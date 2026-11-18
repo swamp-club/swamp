@@ -111,7 +111,7 @@ export async function workspaceTokenFor(
   const expiresAt = Date.parse(found.expiresAt);
   const now = deps.now();
   if (Number.isNaN(expiresAt) || expiresAt <= now) {
-    return (await signInToWorkspace(address, deps)) ?? found.token;
+    return await signInToWorkspace(address, deps);
   }
   // a token granted less than the margin was capped by the host token's own
   // expiry, and a new exchange would end no later
