@@ -17,9 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertStringIncludes } from "@std/assert";
+import { assert, assertStringIncludes } from "@std/assert";
 import { assertFalse } from "@std/assert/false";
 import { buildWorkerPlist } from "./launchd_worker_scheduler.ts";
+import { plistHasWorkerCacheDir } from "./daemon_restart_commands.ts";
 import type { WorkerDaemonConfig } from "../../domain/worker/worker_daemon_config.ts";
 
 const baseConfig: WorkerDaemonConfig = {
@@ -170,4 +171,24 @@ Deno.test("buildWorkerPlist: escapes env values with spaces and newlines", () =>
     plist,
     "<string>Tunnel-Token: a&lt;b\nX-Env: prod</string>",
   );
+});
+
+Deno.test("plistHasWorkerCacheDir: true for a plist enable writes with a cache dir", () => {
+  const plist = buildWorkerPlist({
+    ...baseConfig,
+    cacheDir: "/Library/Application Support/swamp-worker",
+    env: {
+      SWAMP_WORKER_CACHE_DIR: "/Library/Application Support/swamp-worker",
+    },
+  });
+  assert(plistHasWorkerCacheDir(plist));
+});
+
+Deno.test("plistHasWorkerCacheDir: false for a pre-release plist, even when a value mentions the name", () => {
+  assertFalse(plistHasWorkerCacheDir(buildWorkerPlist(baseConfig)));
+  const plist = buildWorkerPlist({
+    ...baseConfig,
+    env: { SWAMP_WORKER_LABELS: "note=SWAMP_WORKER_CACHE_DIR" },
+  });
+  assertFalse(plistHasWorkerCacheDir(plist));
 });

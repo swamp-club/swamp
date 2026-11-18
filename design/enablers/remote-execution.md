@@ -780,7 +780,9 @@ process. `worker daemon enable` without `--cache-dir` therefore gives the daemon
 stable one (`/var/lib/swamp-worker` or `/Library/Application Support/swamp-worker`
 for a system service, `worker-daemon-cache` in the swamp data dir for a
 per-user one), so a restart, a reboot or an autoupdate restart returns as the
-same machine. When the lifetime ends, the token is dead for everyone: the
+same machine. An autoupdate restart leaves a worker daemon whose unit or plist
+sets no `SWAMP_WORKER_CACHE_DIR` running, and records that it must be
+re-enabled with a new token. When the lifetime ends, the token is dead for everyone: the
 orchestrator disconnects the worker and rejects re-enrollment. A replacement
 machine needs a new token; a worker meant to outlive its token is rotated
 before it lapses. Trust is bound
