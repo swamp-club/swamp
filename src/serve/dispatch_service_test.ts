@@ -2679,6 +2679,7 @@ Deno.test("DispatchService: a version 5 worker receives the frame the legacy del
         unresolvedMethodArgs: { run: `echo ${sentinel}` },
         secretBag: [{ sentinel, value: "s3cret", dataOrigin: false }],
         secretValues: ["s3cret"],
+        resolveSecrets: (value) => value,
       }),
   }));
 
@@ -2784,6 +2785,7 @@ Deno.test("DispatchService: a step re-dispatched across versions sends each work
           globalArgs: {},
           methodArgs: { run: "echo s3cret" },
           secretValues: ["s3cret"],
+          resolveSecrets: (value) => value,
         })),
   }));
   assertEquals(h.dispatchCalls.length, 3);
@@ -2826,6 +2828,7 @@ Deno.test("DispatchService: a worker that re-enrolled at another version before 
         globalArgs: {},
         methodArgs: { value: 1 },
         secretValues: ["s3cret"],
+        resolveSecrets: (value) => value,
       });
     },
   }));
@@ -3629,6 +3632,191 @@ Deno.test("DispatchService: a worker gone before its frame is built sends the st
   }));
   assertEquals(platforms, ["linux"]);
   assertEquals(h.dispatchCalls.length, 1);
+});
+
+const V5_SENTINEL = `__SWAMP_VSEC_${"0a1b2c3d".repeat(4)}_0__`;
+const V5_SENTINEL_RUN = `m="${V5_SENTINEL}"; printf %s "$m"`;
+
+/** refuses run text other than the sentinel form, as dataSplicePlacer does */
+function sentinelOnlyPlacer(where: "global" | "method") {
+  return (
+    args: {
+      globalArgs: Record<string, unknown>;
+      methodArgs: Record<string, unknown>;
+    },
+    platform: string,
+  ) => {
+    const run = where === "global" ? args.globalArgs.run : args.methodArgs.run;
+    if (run !== V5_SENTINEL_RUN) {
+      throw new Error("shell_data_placement_refused");
+    }
+    const reference = platform === "windows"
+      ? "$env:__SWAMP_IN_0"
+      : "${__SWAMP_IN_0}";
+    const placedRun = `m="${reference}"; printf %s "$m"`;
+    const env = { __SWAMP_IN_0: V5_SENTINEL };
+    return where === "global"
+      ? {
+        globalArgs: { ...args.globalArgs, run: placedRun },
+        methodArgs: { ...args.methodArgs, env },
+      }
+      : {
+        globalArgs: args.globalArgs,
+        methodArgs: { ...args.methodArgs, run: placedRun, env },
+      };
+  };
+}
+
+function resolveV5Sentinel(value: unknown): unknown {
+  return JSON.parse(JSON.stringify(value).replaceAll(V5_SENTINEL, "s3cret"));
+}
+
+const V5_RESOLVED_RUN = V5_SENTINEL_RUN.replace(V5_SENTINEL, "s3cret");
+
+Deno.test("DispatchService: a version 5 frame carries the placement made on the sentinel form, with values resolved, instead of placing the resolved text (swamp-club#4887)", async () => {
+  const h = createHarness({
+    workers: [snapshot({ name: "w1", protocolVersion: 5 })],
+  });
+  await h.service.executeRemote(stepRequest({
+    globalArgs: { region: "raw" },
+    methodArgs: { run: V5_SENTINEL_RUN },
+    placeArguments: sentinelOnlyPlacer("method"),
+    legacyDelivery: () =>
+      Promise.resolve({
+        globalArgs: { region: "parsed" },
+        methodArgs: { run: V5_RESOLVED_RUN },
+        unresolvedMethodArgs: { run: V5_SENTINEL_RUN },
+        secretBag: [{
+          sentinel: V5_SENTINEL,
+          value: "s3cret",
+          dataOrigin: false,
+        }],
+        secretValues: ["s3cret"],
+        resolveSecrets: resolveV5Sentinel,
+      }),
+  }));
+
+  const params = h.dispatchCalls[0].params;
+  assertEquals(params.execution.protocolVersion, 5);
+  assertEquals(params.execution.globalArgs, { region: "parsed" });
+  assertEquals(params.execution.methodArgs, {
+    run: 'm="${__SWAMP_IN_0}"; printf %s "$m"',
+    env: { __SWAMP_IN_0: "s3cret" },
+  });
+  assertEquals(params.unresolvedMethodArgs, {
+    run: 'm="${__SWAMP_IN_0}"; printf %s "$m"',
+    env: { __SWAMP_IN_0: V5_SENTINEL },
+  });
+});
+
+Deno.test("DispatchService: a version 5 frame whose run is a global argument gets the placed run among its globals and the generated env in the args its worker runs (swamp-club#4887)", async () => {
+  const h = createHarness({
+    workers: [snapshot({ name: "w1", protocolVersion: 5 })],
+  });
+  await h.service.executeRemote(stepRequest({
+    globalArgs: { run: V5_SENTINEL_RUN },
+    methodArgs: {},
+    placeArguments: sentinelOnlyPlacer("global"),
+    legacyDelivery: () =>
+      Promise.resolve({
+        globalArgs: { run: V5_RESOLVED_RUN },
+        methodArgs: {},
+        unresolvedMethodArgs: {},
+        secretBag: [{
+          sentinel: V5_SENTINEL,
+          value: "s3cret",
+          dataOrigin: false,
+        }],
+        secretValues: ["s3cret"],
+        resolveSecrets: resolveV5Sentinel,
+      }),
+  }));
+
+  const params = h.dispatchCalls[0].params;
+  assertEquals(params.execution.globalArgs, {
+    run: 'm="${__SWAMP_IN_0}"; printf %s "$m"',
+  });
+  assertEquals(params.execution.methodArgs, {
+    env: { __SWAMP_IN_0: "s3cret" },
+  });
+  assertEquals(params.unresolvedMethodArgs, {
+    env: { __SWAMP_IN_0: V5_SENTINEL },
+  });
+});
+
+Deno.test("DispatchService: a placement refused on the sentinel form fails a version 5 step before its frame loads anything (swamp-club#4887)", async () => {
+  const h = createHarness({
+    workers: [snapshot({ name: "w1", protocolVersion: 5 })],
+  });
+  let legacyCalls = 0;
+  await assertRejects(
+    () =>
+      h.service.executeRemote(stepRequest({
+        methodArgs: { run: "echo authored-differently" },
+        placeArguments: sentinelOnlyPlacer("method"),
+        legacyDelivery: () => {
+          legacyCalls++;
+          return Promise.reject(new Error("loaded a vault"));
+        },
+      })),
+    Error,
+    "shell_data_placement_refused",
+  );
+  assertEquals(legacyCalls, 0);
+  assertEquals(h.dispatchCalls, []);
+});
+
+Deno.test("DispatchService: a version 5 step re-dispatched to a worker of another platform is placed for each, from one legacy delivery left as it was built (swamp-club#4887)", async () => {
+  const h = createHarness({
+    workers: [
+      snapshot({ name: "w1", platform: "linux", protocolVersion: 5 }),
+      snapshot({ name: "w2", platform: "windows", protocolVersion: 5 }),
+    ],
+  });
+  let attempts = 0;
+  h.setBehavior((name) => {
+    attempts++;
+    if (attempts === 1) {
+      h.pool.delete(name);
+      h.service.notifyGraceExpired(snapshot({ name }));
+      return Promise.reject(new ChannelClosedError("control socket closed"));
+    }
+    return Promise.resolve({
+      status: "success",
+      outputs: [],
+      logs: [],
+      durationMs: 1,
+    });
+  });
+  const delivered = {
+    globalArgs: {},
+    methodArgs: { run: V5_RESOLVED_RUN },
+    unresolvedMethodArgs: { run: V5_SENTINEL_RUN },
+    secretBag: [{ sentinel: V5_SENTINEL, value: "s3cret", dataOrigin: false }],
+    secretValues: ["s3cret"],
+    resolveSecrets: resolveV5Sentinel,
+  };
+  let legacy: Promise<typeof delivered> | undefined;
+  let legacyCalls = 0;
+  await h.service.executeRemote(stepRequest({
+    placement: { labels: {} },
+    methodArgs: { run: V5_SENTINEL_RUN },
+    placeArguments: sentinelOnlyPlacer("method"),
+    legacyDelivery: () =>
+      legacy ??= (legacyCalls++, Promise.resolve(delivered)),
+  }));
+
+  assertEquals(legacyCalls, 1);
+  assertEquals(h.dispatchCalls.map((c) => c.name), ["w1", "w2"]);
+  assertEquals(
+    h.dispatchCalls.map((c) => c.params.execution.methodArgs.run),
+    [
+      'm="${__SWAMP_IN_0}"; printf %s "$m"',
+      'm="$env:__SWAMP_IN_0"; printf %s "$m"',
+    ],
+  );
+  assertEquals(delivered.methodArgs, { run: V5_RESOLVED_RUN });
+  assertEquals(delivered.unresolvedMethodArgs, { run: V5_SENTINEL_RUN });
 });
 
 Deno.test("DispatchService.queueTimeoutMs: reports the reloaded value, and the default when cleared", () => {

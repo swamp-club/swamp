@@ -2084,9 +2084,11 @@ credentials and extensions onto workers:
   it builds the frame, so a re-dispatch after a lost worker is placed again for
   its replacement. The frame carries `run` with `__SWAMP_IN_N` references and
   the text in `env`, so no protocol field was added and version 5 and 6 workers
-  run it as they run any arguments. A version 5 frame whose `run` holds both
-  data and a secret cannot be placed (its arguments carry the secret's value)
-  and is refused, as is a worker whose platform swamp does not know.
+  run it as they run any arguments. A version 5 frame is placed once, on the
+  sentinel form, and the placement is carried onto its resolved arguments and
+  its `unresolvedMethodArgs` with the values substituted afterwards, since the
+  placer cannot tell data from a secret's value in resolved text. A worker
+  whose platform swamp does not know is refused.
 
   **The protected load route (typed-secrets 5.1).** `POST /data/secrets`
   (`src/serve/dispatch_secret_loads.ts`) answers a list of vault references with

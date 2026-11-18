@@ -1623,6 +1623,8 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       ...(shippedEntries.length > 0
         ? { unresolvedMethodArgs, secretBag: shippedEntries }
         : {}),
+      resolveSecrets: (value) =>
+        secretBag?.resolvesAny ? secretBag.resolveDeep(value) : value,
     };
   }
 

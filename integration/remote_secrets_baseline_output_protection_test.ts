@@ -165,6 +165,7 @@ async function secretStepRequest(
           globalArgs: {},
           methodArgs: { secret },
           secretValues: [secret],
+          resolveSecrets: (value) => value,
         }),
     });
   }
@@ -525,6 +526,7 @@ Deno.test({
               globalArgs: {},
               methodArgs,
               secretValues: [shipped],
+              resolveSecrets: (value) => value,
             }),
         });
         await o.dispatchService.executeRemote(request);

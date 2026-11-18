@@ -799,19 +799,34 @@ export class DispatchService {
         redactorSeeds: request.redactorSeeds,
       };
     }
-    // placed on the sentinel form first, so a refusal comes before the version
-    // 5 frame reads any vault value
-    place(request);
+    // placed once, on the sentinel form, so a refusal comes before the version
+    // 5 frame reads any vault value; the placer cannot place the resolved text
+    const sentinelPlaced = place(request);
     const legacy = await request.legacyDelivery?.();
-    // a version 5 frame holds values in place of sentinels; the placer refuses
-    // one whose data-bearing text does not match
-    const placed = place({
-      globalArgs: legacy?.globalArgs ?? request.globalArgs,
-      methodArgs: legacy?.methodArgs ?? request.methodArgs,
-    });
+    const placed = legacy
+      ? {
+        globalArgs: withPlacement(
+          legacy.globalArgs,
+          request.globalArgs,
+          sentinelPlaced.globalArgs,
+          legacy.resolveSecrets,
+        ),
+        methodArgs: withPlacement(
+          legacy.methodArgs,
+          request.methodArgs,
+          sentinelPlaced.methodArgs,
+          legacy.resolveSecrets,
+        ),
+      }
+      : sentinelPlaced;
+    // a worker given a secret bag runs these, not methodArgs
     const unresolvedMethodArgs = legacy?.unresolvedMethodArgs &&
-      place({ globalArgs: {}, methodArgs: legacy.unresolvedMethodArgs })
-        .methodArgs;
+      withPlacement(
+        legacy.unresolvedMethodArgs,
+        request.methodArgs,
+        sentinelPlaced.methodArgs,
+        (value) => value,
+      );
     return {
       protocolVersion,
       globalArgs: placed.globalArgs,
@@ -1551,4 +1566,24 @@ export class WorkerLostError extends Error {
     this.hadWrites = hadWrites;
     this.dispatchId = dispatchId;
   }
+}
+
+/**
+ * a copy of `target` with each key the placement changed or added written over
+ * it; the target is the legacy delivery, which a re-dispatch to a worker of
+ * another platform reuses, so it is never written into
+ */
+function withPlacement(
+  target: Record<string, unknown>,
+  before: Record<string, unknown>,
+  placed: Record<string, unknown>,
+  resolve: (value: unknown) => unknown,
+): Record<string, unknown> {
+  if (placed === before) return target;
+  const result = { ...target };
+  for (const [key, value] of Object.entries(placed)) {
+    if (Object.hasOwn(before, key) && before[key] === value) continue;
+    result[key] = resolve(value);
+  }
+  return result;
 }

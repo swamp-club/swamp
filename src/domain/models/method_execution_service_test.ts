@@ -5058,6 +5058,50 @@ Deno.test("executeWorkflow - placed step without secrets ships no bag fields", a
   assertEquals(request.legacy?.secretBag, undefined);
 });
 
+Deno.test("executeWorkflow: a version 5 delivery's resolveSecrets resolves the step's sentinels as its arguments are resolved (swamp-club#4887)", async () => {
+  const secretBag = new VaultSecretBag(new SecretBagRegistry());
+  const token = secretBag.addSecret(
+    { vaultName: "v", key: "token" },
+    "methods.start.arguments.value",
+  );
+  const region = secretBag.addSecret(
+    { vaultName: "v", key: "region" },
+    "globalArguments.value",
+  );
+  const port = secretBag.addDataReference(
+    { vaultName: "v", key: "port" },
+    "data.latest of model 'app' record r1 version 1 (data.latest), field 'port'",
+    true,
+  );
+  const { loader } = mockLoader({
+    token: "s3cret-value",
+    region: "eu-west-1",
+    port: "8080",
+  });
+
+  const request = await captureRemoteRequest(
+    secretBag,
+    { value: `token ${token}`, counter: port },
+    loader,
+    { value: region },
+  );
+
+  const { resolveSecrets } = request.legacy!;
+  assertEquals(
+    resolveSecrets({
+      run: `echo ${token}`,
+      env: { R: region, P: port },
+    }),
+    { run: "echo s3cret-value", env: { R: "eu-west-1", P: 8080 } },
+  );
+});
+
+Deno.test("executeWorkflow: a version 5 delivery for a step holding no secret resolves nothing (swamp-club#4887)", async () => {
+  const request = await captureRemoteRequest(undefined, { value: "plain" });
+  const value = { run: "echo plain" };
+  assertEquals(request.legacy?.resolveSecrets(value) === value, true);
+});
+
 Deno.test("executeWorkflow: a placed step retains references found only in global arguments", async () => {
   const registry = new SecretBagRegistry();
   const bag = new VaultSecretBag(registry);
@@ -8052,6 +8096,30 @@ Deno.test("dataSplicePlacer: data in run is placed where it was authored, for th
       'echo "$env:__SWAMP_IN_0"',
       where,
     );
+  }
+});
+
+Deno.test("dataSplicePlacer: an argument the placement does not change comes back by reference (swamp-club#4887)", () => {
+  for (const where of ["global", "method"] as const) {
+    const { definition, provenance } = shellWithData(where, "x; id");
+    const place = dataSplicePlacer(
+      definition,
+      shellModel.methods.execute,
+      "execute",
+      provenance,
+    );
+    const args = {
+      globalArgs: { ...definition.globalArguments, tags: { team: "a" } },
+      methodArgs: {
+        ...definition.getMethodArguments("execute"),
+        cwd: { path: "/srv" },
+      },
+    };
+    const placed = place(args, "linux");
+    assertEquals(placed.globalArgs.tags === args.globalArgs.tags, true, where);
+    assertEquals(placed.methodArgs.cwd === args.methodArgs.cwd, true, where);
+    const runSide = where === "global" ? placed.globalArgs : placed.methodArgs;
+    assertEquals(runSide.run, 'echo "${__SWAMP_IN_0}"', where);
   }
 });
 
