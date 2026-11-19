@@ -33,6 +33,7 @@ import { inferMethodKind, isMutatingKind } from "../../domain/models/model.ts";
 import { mergeDataOutputOverrides } from "../../domain/workflows/execution_service.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
+import { stepBehaviorNames } from "../../domain/workflows/step_targets.ts";
 import type { LibSwampContext } from "../context.ts";
 import { notFound, type SwampError } from "../errors.ts";
 import { WorkflowSchemaError } from "../../domain/workflows/workflow_schema_error.ts";
@@ -137,6 +138,8 @@ export interface WorkflowValidateDeps {
    */
   findSkippedWorkflows?: () => Promise<Workflow[]>;
   validate: (workflow: Workflow) => Promise<WorkflowValidationResult[]>;
+  /** one definition walk for every behavior the workflows' steps name */
+  primeStepLookups?: (workflows: readonly Workflow[]) => Promise<void>;
   /**
    * raw-scans workflow files that fail schema parsing, which the repository
    * lookups cannot see, so validate reports the parse error instead of not
@@ -334,6 +337,12 @@ export function createWorkflowValidateDeps(
     findWorkflowByName: (name) => workflowRepo.findByName(name),
     findAllWorkflows: () => workflowRepo.findAll(),
     validate: (workflow) => validationService.validate(workflow),
+    ...(definitionRepo
+      ? {
+        primeStepLookups: (workflows: readonly Workflow[]) =>
+          definitionRepo.primeNameHints(stepBehaviorNames(workflows).names),
+      }
+      : {}),
     ...(workflowsDir
       ? {
         listBrokenWorkflows: () => listBrokenWorkflows(workflowsDir),
@@ -447,6 +456,7 @@ async function* validateAll(
     return;
   }
 
+  await deps.primeStepLookups?.(allWorkflows);
   const results: WorkflowValidateData[] = [];
   for (const broken of brokenWorkflows) {
     results.push(toBrokenValidateData(broken));
@@ -539,6 +549,7 @@ async function* validateSingle(
     return;
   }
 
+  await deps.primeStepLookups?.([workflow]);
   const results = await deps.validate(workflow);
   const validations = toValidationItemData(results);
   const allPassed = results.every((r) => r.passed);

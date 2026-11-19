@@ -4429,3 +4429,298 @@ Deno.test({
     });
   },
 });
+
+async function lookupTally(
+  fn: () => Promise<unknown>,
+): Promise<Record<string, number | undefined>> {
+  const tally = new PhaseTally(true);
+  await withDiagnosticTally("step_outputs", tally, fn);
+  const attributes = tally.attributes();
+  return {
+    filesRead: attributes["swamp.diagnostic.files_read"],
+    primaryWalks: attributes["swamp.diagnostic.primary_walks"],
+  };
+}
+
+async function writeNumberedDefinitions(
+  dir: string,
+  count: number,
+): Promise<string[]> {
+  const names = Array.from(
+    { length: count },
+    (_, i) => `def-${String(i).padStart(2, "0")}`,
+  );
+  for (const name of names) {
+    await writeYaml(
+      join(dir, "models", "test", "example", `${name}.yaml`),
+      crypto.randomUUID(),
+      name,
+      testType.normalized,
+    );
+  }
+  return names;
+}
+
+Deno.test("YamlDefinitionRepository.findAllGlobal: hints every name it lists, so each later findByNameGlobal reads one file and walks nothing", async () => {
+  await withTempDir(async (dir) => {
+    const names = await writeNumberedDefinitions(dir, 12);
+    const repo = new YamlDefinitionRepository(dir);
+    await repo.findAllGlobal();
+
+    const counts = await lookupTally(async () => {
+      for (const name of [...names].reverse()) {
+        assertEquals(
+          (await repo.findByNameGlobal(name))?.definition.name,
+          name,
+        );
+      }
+    });
+    assertEquals(counts.filesRead, names.length);
+    assertEquals(counts.primaryWalks, undefined);
+  });
+});
+
+Deno.test("YamlDefinitionRepository.findAllGlobal: a name declared by two files is hinted to the one a walk finds first", async () => {
+  await withTempDir(async (dir) => {
+    const typeDir = join(dir, "models", "test", "example");
+    const firstId = crypto.randomUUID();
+    await writeYaml(join(typeDir, "a.yaml"), firstId, "shared", "test/example");
+    await writeYaml(
+      join(typeDir, "b.yaml"),
+      crypto.randomUUID(),
+      "shared",
+      "test/example",
+    );
+
+    const walked = await new YamlDefinitionRepository(dir).findByNameGlobal(
+      "shared",
+    );
+    const repo = new YamlDefinitionRepository(dir);
+    await repo.findAllGlobal();
+    const hinted = await repo.findByNameGlobal("shared");
+
+    assertEquals(walked?.definition.id as string | undefined, firstId);
+    assertEquals(hinted?.definition.id as string | undefined, firstId);
+  });
+});
+
+Deno.test("YamlDefinitionRepository.findAllGlobal: a file with an invalid type is not hinted, so its name resolves to the next file as a walk does", async () => {
+  await withTempDir(async (dir) => {
+    const typeDir = join(dir, "models", "test", "example");
+    // "/" normalizes to the empty string, which ModelType.create rejects
+    await writeYaml(join(typeDir, "a.yaml"), crypto.randomUUID(), "ghost", "/");
+    const validId = crypto.randomUUID();
+    await writeYaml(join(typeDir, "b.yaml"), validId, "ghost", "test/example");
+
+    const walked = await new YamlDefinitionRepository(dir).findByNameGlobal(
+      "ghost",
+    );
+    const repo = new YamlDefinitionRepository(dir);
+    await repo.findAllGlobal();
+    const counts = await lookupTally(async () => {
+      assertEquals(
+        (await repo.findByNameGlobal("ghost"))?.definition.id as
+          | string
+          | undefined,
+        validId,
+      );
+    });
+
+    assertEquals(walked?.definition.id as string | undefined, validId);
+    assertEquals(counts.primaryWalks, undefined);
+  });
+});
+
+Deno.test("YamlDefinitionRepository.findAllGlobal: a primary definition replaces an auto-definition's hint for the same name", async () => {
+  await withTempDir(async (dir) => {
+    const autoDir = join(dir, ".swamp", "auto-definitions");
+    const repo = new YamlDefinitionRepository(
+      dir,
+      undefined,
+      undefined,
+      autoDir,
+    );
+    await writeYaml(
+      join(autoDir, "test", "example", "dup.yaml"),
+      crypto.randomUUID(),
+      "dup",
+      "test/example",
+    );
+    await repo.findByNameGlobal("dup");
+    const primaryId = crypto.randomUUID();
+    await writeYaml(
+      join(dir, "models", "test", "example", "dup.yaml"),
+      primaryId,
+      "dup",
+      "test/example",
+    );
+
+    await repo.findAllGlobal();
+    const counts = await lookupTally(async () => {
+      assertEquals(
+        (await repo.findByNameGlobal("dup"))?.definition.id as
+          | string
+          | undefined,
+        primaryId,
+      );
+    });
+    assertEquals(counts.primaryWalks, undefined);
+  });
+});
+
+Deno.test("YamlDefinitionRepository.findAllGlobal: a hinted file rewritten to another name falls back to a walk", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "models", "test", "example", "a.yaml");
+    const id = crypto.randomUUID();
+    await writeYaml(path, id, "before", "test/example");
+    const repo = new YamlDefinitionRepository(dir);
+    await repo.findAllGlobal();
+
+    await writeYaml(path, id, "after", "test/example");
+    assertEquals(await repo.findByNameGlobal("before"), null);
+    assertEquals(
+      (await repo.findByNameGlobal("after"))?.definition.id as
+        | string
+        | undefined,
+      id,
+    );
+  });
+});
+
+Deno.test("YamlDefinitionRepository.primeNameHints: one walk that stops at the last requested name, then each lookup reads one file", async () => {
+  await withTempDir(async (dir) => {
+    const names = await writeNumberedDefinitions(dir, 20);
+    const repo = new YamlDefinitionRepository(dir);
+    const wanted = [names[2], names[5], names[9]];
+
+    const prime = await lookupTally(() => repo.primeNameHints(wanted));
+    const lookups = await lookupTally(async () => {
+      for (const name of wanted) {
+        assertEquals(
+          (await repo.findByNameGlobal(name))?.definition.name,
+          name,
+        );
+      }
+    });
+
+    assertEquals(prime.primaryWalks, 1);
+    assertEquals(prime.filesRead, 10);
+    assertEquals(lookups.filesRead, wanted.length);
+    assertEquals(lookups.primaryWalks, undefined);
+  });
+});
+
+Deno.test("YamlDefinitionRepository.primeNameHints: with no names, hints every primary definition", async () => {
+  await withTempDir(async (dir) => {
+    const names = await writeNumberedDefinitions(dir, 8);
+    const repo = new YamlDefinitionRepository(dir);
+    await repo.primeNameHints();
+
+    const counts = await lookupTally(async () => {
+      for (const name of names) await repo.findByNameGlobal(name);
+    });
+    assertEquals(counts.filesRead, names.length);
+    assertEquals(counts.primaryWalks, undefined);
+  });
+});
+
+Deno.test("YamlDefinitionRepository.primeNameHints: UUIDs and names already hinted cost no walk", async () => {
+  await withTempDir(async (dir) => {
+    const names = await writeNumberedDefinitions(dir, 5);
+    const repo = new YamlDefinitionRepository(dir);
+    await repo.primeNameHints([names[3]]);
+
+    const counts = await lookupTally(() =>
+      repo.primeNameHints([names[3], crypto.randomUUID()])
+    );
+    assertEquals(counts.primaryWalks, undefined);
+    assertEquals(counts.filesRead, undefined);
+  });
+});
+
+Deno.test("YamlDefinitionRepository.primeNameHints: a name it does not find resolves exactly as without the prime", async () => {
+  await withTempDir(async (dir) => {
+    await writeNumberedDefinitions(dir, 5);
+    const autoDir = join(dir, ".swamp", "auto-definitions");
+    const autoId = crypto.randomUUID();
+    await writeYaml(
+      join(autoDir, "test", "example", "auto-only.yaml"),
+      autoId,
+      "auto-only",
+      "test/example",
+    );
+    const repo = new YamlDefinitionRepository(
+      dir,
+      undefined,
+      undefined,
+      autoDir,
+    );
+    await repo.primeNameHints(["missing", "auto-only"]);
+
+    assertEquals(await repo.findByNameGlobal("missing"), null);
+    assertEquals(
+      (await repo.findByNameGlobal("auto-only"))?.definition.id as
+        | string
+        | undefined,
+      autoId,
+    );
+  });
+});
+
+Deno.test("YamlDefinitionRepository.primeNameHints: a primary definition replaces an auto-definition's hint for the same name", async () => {
+  await withTempDir(async (dir) => {
+    const autoDir = join(dir, ".swamp", "auto-definitions");
+    const repo = new YamlDefinitionRepository(
+      dir,
+      undefined,
+      undefined,
+      autoDir,
+    );
+    await writeYaml(
+      join(autoDir, "test", "example", "dup.yaml"),
+      crypto.randomUUID(),
+      "dup",
+      "test/example",
+    );
+    await repo.findByNameGlobal("dup");
+    const primaryId = crypto.randomUUID();
+    await writeYaml(
+      join(dir, "models", "test", "example", "dup.yaml"),
+      primaryId,
+      "dup",
+      "test/example",
+    );
+
+    await repo.primeNameHints(["dup"]);
+    const counts = await lookupTally(async () => {
+      assertEquals(
+        (await repo.findByNameGlobal("dup"))?.definition.id as
+          | string
+          | undefined,
+        primaryId,
+      );
+    });
+    assertEquals(counts.primaryWalks, undefined);
+  });
+});
+
+Deno.test("YamlDefinitionRepository.primeNameHints: skips a file with an invalid type and hints the next file of that name", async () => {
+  await withTempDir(async (dir) => {
+    const typeDir = join(dir, "models", "test", "example");
+    await writeYaml(join(typeDir, "a.yaml"), crypto.randomUUID(), "ghost", "/");
+    const validId = crypto.randomUUID();
+    await writeYaml(join(typeDir, "b.yaml"), validId, "ghost", "test/example");
+    const repo = new YamlDefinitionRepository(dir);
+
+    await repo.primeNameHints(["ghost"]);
+    const counts = await lookupTally(async () => {
+      assertEquals(
+        (await repo.findByNameGlobal("ghost"))?.definition.id as
+          | string
+          | undefined,
+        validId,
+      );
+    });
+    assertEquals(counts.primaryWalks, undefined);
+  });
+});

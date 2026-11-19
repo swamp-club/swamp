@@ -121,6 +121,25 @@ export function workflowStepTargets(workflow: Workflow): StepTarget[] {
 }
 
 /**
+ * the behavior names steps look up by name; `computed` is set when a step names
+ * its behavior by expression, which resolves only as that step runs
+ */
+export function stepBehaviorNames(
+  workflows: readonly Workflow[],
+): { names: string[]; computed: boolean } {
+  const names = new Set<string>();
+  let computed = false;
+  for (const workflow of workflows) {
+    for (const target of workflowStepTargets(workflow)) {
+      if (target.kind !== "model") continue;
+      if (containsExpression(target.modelIdOrName)) computed = true;
+      else names.add(target.modelIdOrName);
+    }
+  }
+  return { names: [...names], computed };
+}
+
+/**
  * a renamed step or one moved to another job has a new scope and counts as
  * changed; removed steps are not returned
  */

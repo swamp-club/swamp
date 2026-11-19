@@ -805,6 +805,88 @@ export class YamlDefinitionRepository implements DefinitionRepository {
   ): Promise<{ definition: Definition; type: ModelType } | null> {
     // models/ is hand-written, so only auto-definitions are filtered
     const mustContain = !primary && isUuid(name) ? name : undefined;
+    let found: { definition: Definition; type: ModelType } | null = null;
+    await this.walkDefinitionFiles(
+      currentDir,
+      pathSegments,
+      mustContain,
+      (definition, fullPath, segments) => {
+        if (definition.name !== name) return false;
+        // resolved before anything is recorded: an invalid type throws into
+        // the walk, which warns and skips the file, and a skipped file must
+        // not leave a hint
+        const modelType = ModelType.create(
+          definition.type ?? segments.join("/"),
+        );
+        this.idToActualPath.set(definition.id as DefinitionId, fullPath);
+        this.globalNameToActualPath.set(name, {
+          path: fullPath,
+          pathSegments: [...segments],
+          primary,
+        });
+        found = { definition, type: modelType };
+        return true;
+      },
+    );
+    return found;
+  }
+
+  /**
+   * one primary walk hinting the first file of each name, as findByNameGlobal's
+   * walk would find it; with no names it hints every primary file. A name not
+   * found leaves no trace, so its lookup walks as before.
+   */
+  async primeNameHints(names?: readonly string[]): Promise<void> {
+    const tally = currentDiagnosticTally();
+    if (names === undefined) {
+      tally.add("primary_walks");
+      await this.collectAllDefinitions(this.baseDir, [], [], true, new Set());
+      return;
+    }
+    const wanted = new Set(
+      names.filter((name) =>
+        !isUuid(name) && !this.globalNameToActualPath.get(name)?.primary
+      ),
+    );
+    if (wanted.size === 0) return;
+    tally.add("primary_walks");
+    await this.walkDefinitionFiles(
+      this.baseDir,
+      [],
+      undefined,
+      (definition, fullPath, segments) => {
+        const name = definition.name;
+        if (!wanted.has(name)) return false;
+        // an invalid type throws into the walk's warn-and-skip, leaving the
+        // name wanted for its next file, as findByNameGlobal's walk would
+        ModelType.create(definition.type ?? segments.join("/"));
+        this.idToActualPath.set(definition.id as DefinitionId, fullPath);
+        this.globalNameToActualPath.set(name, {
+          path: fullPath,
+          pathSegments: [...segments],
+          primary: true,
+        });
+        wanted.delete(name);
+        return wanted.size === 0;
+      },
+    );
+  }
+
+  /**
+   * reads definition files in sorted walk order until `visit` returns true; a
+   * file that fails to parse, or whose visit throws, is warned about and
+   * skipped, while an I/O error is raised
+   */
+  private async walkDefinitionFiles(
+    currentDir: string,
+    pathSegments: string[],
+    mustContain: string | undefined,
+    visit: (
+      definition: Definition,
+      fullPath: string,
+      pathSegments: string[],
+    ) => boolean,
+  ): Promise<boolean> {
     try {
       for (const entry of await readDirSorted(currentDir)) {
         const fullPath = join(currentDir, entry.name);
@@ -818,24 +900,8 @@ export class YamlDefinitionRepository implements DefinitionRepository {
             }
             const data = await readDefinitionData(fullPath, mustContain);
             if (!data) continue;
-            const definition = Definition.fromData(data);
-
-            if (definition.name === name) {
-              // resolved before anything is recorded: an invalid type throws
-              // into the catch below, which warns and skips the file, and a
-              // skipped file must not leave a hint
-              const typeStr = definition.type ?? pathSegments.join("/");
-              const modelType = ModelType.create(typeStr);
-              this.idToActualPath.set(
-                definition.id as DefinitionId,
-                fullPath,
-              );
-              this.globalNameToActualPath.set(name, {
-                path: fullPath,
-                pathSegments: [...pathSegments],
-                primary,
-              });
-              return { definition, type: modelType };
+            if (visit(Definition.fromData(data), fullPath, pathSegments)) {
+              return true;
             }
           } catch (error) {
             if (isIoError(error)) {
@@ -852,32 +918,36 @@ export class YamlDefinitionRepository implements DefinitionRepository {
             logger.warn`Skipping broken definition file ${fullPath}: ${msg}`;
           }
         } else if (entry.isDirectory) {
-          const result = await this.searchDefinitionByName(
+          const stopped = await this.walkDefinitionFiles(
             fullPath,
             [...pathSegments, entry.name],
-            name,
-            primary,
+            mustContain,
+            visit,
           );
-          if (result) {
-            return result;
-          }
+          if (stopped) return true;
         }
       }
     } catch (error) {
       if (error instanceof Deno.errors.NotFound) {
-        return null;
+        return false;
       }
       throw error;
     }
 
-    return null;
+    return false;
   }
 
   async findAllGlobal(): Promise<
     { definition: Definition; type: ModelType }[]
   > {
     const results: { definition: Definition; type: ModelType }[] = [];
-    await this.collectAllDefinitions(this.baseDir, [], results);
+    await this.collectAllDefinitions(
+      this.baseDir,
+      [],
+      results,
+      true,
+      new Set(),
+    );
     return results;
   }
 
@@ -1060,11 +1130,16 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     }
   }
 
+  /**
+   * `hinted` is given only for the primary directory: each name's first file in
+   * walk order becomes its primary name hint, as findByNameGlobal's walk would
+   */
   private async collectAllDefinitions(
     currentDir: string,
     pathSegments: string[],
     results: { definition: Definition; type: ModelType }[],
     recordPaths = true,
+    hinted?: Set<string>,
   ): Promise<void> {
     try {
       for (const entry of await readDirSorted(currentDir)) {
@@ -1079,13 +1154,24 @@ export class YamlDefinitionRepository implements DefinitionRepository {
             entry.isSymlink,
             recordPaths,
           );
-          if (found) results.push(found);
+          if (found) {
+            results.push(found);
+            if (hinted && !hinted.has(found.definition.name)) {
+              hinted.add(found.definition.name);
+              this.globalNameToActualPath.set(found.definition.name, {
+                path: fullPath,
+                pathSegments: [...pathSegments],
+                primary: true,
+              });
+            }
+          }
         } else if (entry.isDirectory) {
           await this.collectAllDefinitions(
             fullPath,
             [...pathSegments, entry.name],
             results,
             recordPaths,
+            hinted,
           );
         }
       }
