@@ -56,6 +56,7 @@ export interface FileServerCredentialRepositoryOptions {
   getServerUrl?: () => string | undefined;
   /** answer from servers.json alone, ignoring the SWAMP_SERVER_TOKEN pair */
   fileOnly?: boolean;
+  lockFile?: (file: Deno.FsFile) => Promise<void>;
 }
 
 /** the SWAMP_SERVER_TOKEN env var takes precedence over servers.json */
@@ -64,6 +65,7 @@ export class FileServerCredentialRepository
   private readonly getConfigDir: () => string;
   private readonly getServerToken: () => string | undefined;
   private readonly getServerUrl: () => string | undefined;
+  private readonly lockFile: (file: Deno.FsFile) => Promise<void>;
 
   constructor(options: FileServerCredentialRepositoryOptions = {}) {
     this.getConfigDir = options.configDir !== undefined
@@ -74,6 +76,7 @@ export class FileServerCredentialRepository
       : options.getServerToken ?? (() => Deno.env.get("SWAMP_SERVER_TOKEN"));
     this.getServerUrl = options.getServerUrl ??
       (() => Deno.env.get("SWAMP_SERVER_URL"));
+    this.lockFile = options.lockFile ?? ((file) => file.lock(true));
   }
 
   /** the same servers.json, answering from the file alone */
@@ -81,6 +84,7 @@ export class FileServerCredentialRepository
     return new FileServerCredentialRepository({
       configDir: this.getConfigDir(),
       fileOnly: true,
+      lockFile: this.lockFile,
     });
   }
 
@@ -182,7 +186,14 @@ export class FileServerCredentialRepository
       mode: 0o600,
     });
     try {
-      await lock.lock(true);
+      try {
+        await this.lockFile(lock);
+      } catch (error) {
+        // a filesystem that cannot lock (some NFS and SMB mounts) still saves,
+        // unguarded against a concurrent writer as it was before the lock
+        getSwampLogger(["auth", "credential"])
+          .debug`Could not lock ${SERVERS_LOCK_FILE}, so servers.json is written without it: ${error}`;
+      }
       await write();
     } finally {
       lock.close();

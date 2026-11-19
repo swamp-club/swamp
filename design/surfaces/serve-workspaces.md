@@ -640,7 +640,9 @@ answers. A serve that was given no root address offers no exchange.
   no server sign-out.
 - Two commands that both find no workspace token both exchange; the later write
   wins. Writes to `servers.json` hold an OS advisory lock on a sidecar file, so
-  neither drops another server's entry.
+  neither drops another server's entry. On a filesystem that cannot lock (some
+  NFS and SMB mounts) the write goes ahead without it, as before the lock, so
+  `swamp auth server-login` keeps working there.
 - When the workspace offers the exchange and no host token is usable (none
   stored, or one from `SWAMP_SERVER_TOKEN`), a `--server` command stops before
   it sends anything, naming the sign-in that covers the host.

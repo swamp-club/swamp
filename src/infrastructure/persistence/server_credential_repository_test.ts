@@ -556,6 +556,30 @@ Deno.test("FileServerCredentialRepository.fileOnlyView: reads and writes the sam
   }
 });
 
+Deno.test("FileServerCredentialRepository.save: a filesystem that cannot lock still saves", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const configDir = join(tmpDir, "swamp");
+    const noLocks = () =>
+      Promise.reject(new Error("No locks available (os error 37)"));
+    const repo = new FileServerCredentialRepository({
+      configDir,
+      getServerToken: () => undefined,
+      getServerUrl: () => undefined,
+      lockFile: noLocks,
+    });
+    await repo.save(TEST_CREDENTIAL);
+    assertEquals(
+      (await repo.get(TEST_CREDENTIAL.serverUrl))?.token,
+      TEST_CREDENTIAL.token,
+    );
+    await repo.fileOnlyView().remove(TEST_CREDENTIAL.serverUrl);
+    assertEquals(await repo.get(TEST_CREDENTIAL.serverUrl), null);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
 Deno.test("FileServerCredentialRepository.envPairNames: true only when get would answer with the pair", () => {
   const pair = (token: string | undefined, url: string | undefined) =>
     new FileServerCredentialRepository({
