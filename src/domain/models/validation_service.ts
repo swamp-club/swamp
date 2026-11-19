@@ -63,6 +63,7 @@ import { outputSpecTags, reservedRunTagRefusal } from "./data_writer.ts";
 import {
   coerceMethodArgs,
   getObjectShape,
+  isRecordSchema,
   parseGlobalArgumentsLeniently,
 } from "./zod_type_coercion.ts";
 import {
@@ -542,7 +543,13 @@ export class DefaultModelValidationService implements ModelValidationService {
           )
         )
         : globalArgsResult,
-      this.validateMethodArguments(methodData, modelDef),
+      this.validateMethodArguments(
+        methodData,
+        modelDef,
+        upgrade.failure
+          ? definition.globalArguments
+          : upgrade.definition.globalArguments,
+      ),
     ];
 
     // Template-like text: swamp's own expressions with the syntax slightly
@@ -990,6 +997,7 @@ export class DefaultModelValidationService implements ModelValidationService {
   private validateMethodArguments(
     methodData: Definition["methodData"],
     modelDef: ModelDefinition,
+    globalArgs: Record<string, unknown>,
   ): Promise<ValidationResult> {
     const errors: string[] = [];
 
@@ -1021,7 +1029,25 @@ export class DefaultModelValidationService implements ModelValidationService {
           continue;
         }
       }
-      const coercedArgs = coerceMethodArgs(staticArgs, methodArgsSchema);
+      // the merge a run parses: method arguments over globals, a global still
+      // holding a swamp expression left for the run to check once evaluated
+      const merged: Record<string, unknown> = {};
+      let dependsOnExpression = false;
+      if (!isRecordSchema(methodArgsSchema)) {
+        for (const [key, value] of Object.entries(globalArgs)) {
+          if (Object.hasOwn(staticArgs, key)) continue;
+          if (!containsSwampExpression(value)) {
+            merged[key] = value;
+          } else if (!shape || Object.hasOwn(shape, key)) {
+            dependsOnExpression = true;
+          }
+        }
+      }
+      if (dependsOnExpression) continue;
+      const coercedArgs = coerceMethodArgs(
+        { ...merged, ...staticArgs },
+        methodArgsSchema,
+      );
       // described as a run's refusal is, so the schema's own code cannot spell
       // a sensitive value here, and a schema that throws while parsing is
       // reported as a run reports it
