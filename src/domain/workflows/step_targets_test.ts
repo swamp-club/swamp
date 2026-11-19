@@ -354,7 +354,7 @@ Deno.test("changedStepTargets: a changed, renamed or moved step counts; one left
   assertEquals(changedNames(make([{ name: "main", steps: [other] }])), []);
 });
 
-Deno.test("stepBehaviorNames: lists each named behavior once across workflows and flags one named by expression", () => {
+Deno.test("stepBehaviorNames: lists each named behavior once across workflows and leaves out one named by expression", () => {
   const first = workflowWith([
     { type: "model_method", modelIdOrName: "db", methodName: "get" },
     { type: "model_method", modelIdOrName: "cache", methodName: "get" },
@@ -369,10 +369,7 @@ Deno.test("stepBehaviorNames: lists each named behavior once across workflows an
   const second = workflowWith([
     { type: "model_method", modelIdOrName: "db", methodName: "put" },
   ]);
-  assertEquals(stepBehaviorNames([first, second]), {
-    names: ["db", "cache"],
-    computed: false,
-  });
+  assertEquals(stepBehaviorNames([first, second]), ["db", "cache"]);
 
   const computed = workflowWith([
     { type: "model_method", modelIdOrName: "db", methodName: "get" },
@@ -382,8 +379,5 @@ Deno.test("stepBehaviorNames: lists each named behavior once across workflows an
       methodName: "get",
     },
   ]);
-  assertEquals(stepBehaviorNames([computed]), {
-    names: ["db"],
-    computed: true,
-  });
+  assertEquals(stepBehaviorNames([computed]), ["db"]);
 });

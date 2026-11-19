@@ -1495,7 +1495,7 @@ Deno.test("createWorkflowValidateDeps: primes the definition repository with the
   const dir = await Deno.makeTempDir({ prefix: "swamp-test-" });
   try {
     const repo = new YamlDefinitionRepository(dir);
-    const primed: (readonly string[] | undefined)[] = [];
+    const primed: (readonly string[])[] = [];
     repo.primeNameHints = (names) => {
       primed.push(names);
       return Promise.resolve();

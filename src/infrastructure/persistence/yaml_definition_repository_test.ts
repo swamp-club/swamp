@@ -4610,20 +4610,6 @@ Deno.test("YamlDefinitionRepository.primeNameHints: one walk that stops at the l
   });
 });
 
-Deno.test("YamlDefinitionRepository.primeNameHints: with no names, hints every primary definition", async () => {
-  await withTempDir(async (dir) => {
-    const names = await writeNumberedDefinitions(dir, 8);
-    const repo = new YamlDefinitionRepository(dir);
-    await repo.primeNameHints();
-
-    const counts = await lookupTally(async () => {
-      for (const name of names) await repo.findByNameGlobal(name);
-    });
-    assertEquals(counts.filesRead, names.length);
-    assertEquals(counts.primaryWalks, undefined);
-  });
-});
-
 Deno.test("YamlDefinitionRepository.primeNameHints: UUIDs and names already hinted cost no walk", async () => {
   await withTempDir(async (dir) => {
     const names = await writeNumberedDefinitions(dir, 5);

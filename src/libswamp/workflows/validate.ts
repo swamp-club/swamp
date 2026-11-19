@@ -340,7 +340,7 @@ export function createWorkflowValidateDeps(
     ...(definitionRepo
       ? {
         primeStepLookups: (workflows: readonly Workflow[]) =>
-          definitionRepo.primeNameHints(stepBehaviorNames(workflows).names),
+          definitionRepo.primeNameHints(stepBehaviorNames(workflows)),
       }
       : {}),
     ...(workflowsDir

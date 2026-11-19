@@ -3692,11 +3692,12 @@ export class WorkflowExecutionService {
     );
   }
 
-  // a behavior named by expression resolves only as its step runs, so a
-  // workflow with one primes every definition instead of its listed names
+  // literal names only: buildRunContext lists, and so hints, every definition
+  // before any step runs; this serves the reserved-tag check that precedes it
   private async primeStepLookups(workflow: Workflow): Promise<void> {
-    const { names, computed } = stepBehaviorNames([workflow]);
-    await this.definitionRepo.primeNameHints(computed ? undefined : names);
+    // the reserved-tag lookups it serves ignore read errors too
+    await this.definitionRepo.primeNameHints(stepBehaviorNames([workflow]))
+      .catch(() => {});
   }
 
   private reservedTagLookups(): ReservedTagLookups {

@@ -833,23 +833,17 @@ export class YamlDefinitionRepository implements DefinitionRepository {
 
   /**
    * one primary walk hinting the first file of each name, as findByNameGlobal's
-   * walk would find it; with no names it hints every primary file. A name not
-   * found leaves no trace, so its lookup walks as before.
+   * walk would find it; a name not found leaves no trace, so its lookup still
+   * walks
    */
-  async primeNameHints(names?: readonly string[]): Promise<void> {
-    const tally = currentDiagnosticTally();
-    if (names === undefined) {
-      tally.add("primary_walks");
-      await this.collectAllDefinitions(this.baseDir, [], [], true, new Set());
-      return;
-    }
+  async primeNameHints(names: readonly string[]): Promise<void> {
     const wanted = new Set(
       names.filter((name) =>
         !isUuid(name) && !this.globalNameToActualPath.get(name)?.primary
       ),
     );
     if (wanted.size === 0) return;
-    tally.add("primary_walks");
+    currentDiagnosticTally().add("primary_walks");
     await this.walkDefinitionFiles(
       this.baseDir,
       [],
