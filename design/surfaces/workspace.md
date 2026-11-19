@@ -1,6 +1,6 @@
 ---
 audience: maintainer
-last-verified: 2026-10-14 @ 3999f85e
+last-verified: 2026-11-19 @ df967e324
 ---
 
 # Workspaces
@@ -19,6 +19,16 @@ There are two kinds:
 - **Imported** workspaces are existing repos registered where they are, by
   `swamp workspace import` or the import form on the `swamp start` page.
   Nothing is moved or copied.
+
+A serve host writes the registry too, once steps 19 to 23 of
+[serve workspaces](./serve-workspaces.md#execution-plan) are built
+([The host](./serve-workspaces.md#the-host) there says how). It registers every
+workspace it runs, recorded as an import would record it, with no trust mark,
+and a host with no host folder registers each workspace a `workspace.create`
+request makes as created. Hosted workspaces therefore appear in
+`swamp workspace list` and on the `swamp start` page beside the user's own, and
+a repo the user registers is listed on that user's host. The host writes
+through the same store, under the same lock, and adds no field.
 
 `swamp start` uses workspaces for its tasks and launches; see
 [start.md](./start.md).
@@ -105,6 +115,11 @@ clears it. When the folder is later deleted, creating a workspace without
 stays, and importing it brings the workspace back. An imported workspace is
 often the user's own project, so no workspace command deletes a folder. When a
 `swamp start` still has the workspace open, `remove` says so and goes ahead.
+
+On a machine that runs a serve host, `remove` of a workspace the host serves
+from elsewhere stops its serve, and the host's wanted and status files for it
+are removed. `remove` of one whose folder is inside the host's `workspaces/`
+has no lasting effect: the host's next rescan registers it again.
 
 ## Known gaps
 
