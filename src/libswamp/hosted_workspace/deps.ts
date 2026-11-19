@@ -83,7 +83,6 @@ export interface HostedWorkspaceDeps {
   /** runs `fn` while no other service changes the named workspace */
   readonly withLock: <T>(name: string, fn: () => Promise<T>) => Promise<T>;
   readonly provisionTimeoutMs: number;
-  /** the workspace registry a created workspace is registered in */
   readonly workspaceStore: HostedRegistryDeps;
 }
 

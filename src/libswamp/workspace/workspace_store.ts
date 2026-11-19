@@ -520,7 +520,6 @@ export async function importWorkspace(
   });
 }
 
-/** the origin an import records for the folder at its real path `real` */
 export async function importOrigin(
   dataDir: string,
   real: string,

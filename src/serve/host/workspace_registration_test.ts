@@ -215,7 +215,6 @@ Deno.test("createWorkspaceRegistrar: an unreadable registry is logged once and n
       await registrar.drain();
       registrar.sync(() => ["alpha"]);
       await registrar.drain();
-      // a removal goes ahead past a registry that cannot be read
       await registrar.unregister("alpha");
     });
     assertEquals(
@@ -239,7 +238,6 @@ Deno.test("createWorkspaceRegistrar: an unregister waits for a sync in flight, s
     let served = ["alpha"];
     registrar.sync(() => served);
     await entered.promise;
-    // the removal begins: the folder is no longer served and goes away
     served = [];
     const unregistered = registrar.unregister("alpha");
     release.resolve();
@@ -285,7 +283,6 @@ Deno.test("createWorkspaceRegistrar: a forgotten name loses its entry, is retrie
     await registrar.drain();
 
     f.interceptUpdate(() => Promise.reject(new Error("lock timed out")));
-    // the folder is gone, so the latest rescan serves only beta
     await captured(async () => {
       registrar.sync(() => ["beta"]);
       registrar.forget("alpha");

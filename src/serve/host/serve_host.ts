@@ -71,7 +71,6 @@ export interface ServeHostOptions {
   readonly processPort: ServeProcessPort;
   /** every child's whole environment */
   readonly childEnv: Readonly<Record<string, string>>;
-  /** the workspace registry the host writes its workspaces to */
   readonly workspaceStore: HostedRegistryDeps;
   readonly onWorkspaceChange?: (change: WorkspaceChange) => void;
   readonly rescanMs?: number;
