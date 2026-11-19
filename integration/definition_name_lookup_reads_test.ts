@@ -254,3 +254,197 @@ Deno.test("Integration: workflow run of a forEach naming its behavior by express
     );
   });
 });
+
+// three disjoint ascending sets of STEPS names, one per offset
+function ascendingStepsAt(names: string[], offset: number): Step[] {
+  return names.slice(0, STEPS * 3).filter((_, i) => i % 3 === offset).map((
+    name,
+  ) => Step.create({ name: `run-${name}`, task: StepTask.model(name, "run") }));
+}
+
+function callingStep(child: Workflow, name = "call"): Step {
+  return Step.create({ name, task: StepTask.workflow(child.name) });
+}
+
+// a parent calling one STEPS-step child
+function parentLayout(names: string[]): Workflow[] {
+  const child = workflowOf(ascendingStepsAt(names, 2));
+  return [workflowOf([callingStep(child)]), child];
+}
+
+// a parent calling two children, the second of which calls a grandchild
+function deepLayout(names: string[]): Workflow[] {
+  const grandchild = workflowOf(ascendingStepsAt(names, 2));
+  const first = workflowOf(ascendingStepsAt(names, 0));
+  const second = workflowOf([
+    ...ascendingStepsAt(names, 1),
+    callingStep(grandchild),
+  ]);
+  const parent = workflowOf([
+    callingStep(first, "call-first"),
+    callingStep(second, "call-second"),
+  ]);
+  return [parent, first, second, grandchild];
+}
+
+async function validateNested(
+  dir: string,
+  workflows: Workflow[],
+  workflowIdOrName?: string,
+) {
+  const repo = createRepositoryContext({ repoDir: dir });
+  try {
+    for (const workflow of workflows) await repo.workflowRepo.save(workflow);
+    const deps = createWorkflowValidateDeps(
+      repo.workflowRepo,
+      new YamlDefinitionRepository(dir),
+    );
+    return await tallied(() =>
+      collect<WorkflowValidateEvent>(
+        workflowValidate(createLibSwampContext(), deps, { workflowIdOrName }),
+      )
+    );
+  } finally {
+    repo.catalogStore.close();
+  }
+}
+
+function assertValidated(events: WorkflowValidateEvent[]) {
+  const completed = events.find((e) => e.kind === "completed");
+  assert(completed, JSON.stringify(events));
+  const data = completed.data as { passed: boolean };
+  assertEquals(data.passed, true, JSON.stringify(completed.data));
+}
+
+for (
+  const [layout, build] of [
+    ["a parent calling a child", parentLayout],
+    ["a parent whose children call a grandchild", deepLayout],
+  ] as const
+) {
+  Deno.test(`Integration: workflow validate of ${layout} resolves every nested step with one definition walk`, async () => {
+    await withHarness(() => ({}), async ({ dir, names }) => {
+      const workflows = build(names);
+      const steps = (workflows.length - 1) * STEPS;
+      const { result: events, filesRead, primaryWalks } = await validateNested(
+        dir,
+        workflows,
+        workflows[0].name,
+      );
+
+      assertValidated(events);
+      assert(primaryWalks <= 1, `${primaryWalks} definition walks`);
+      assert(
+        filesRead <= DEFINITIONS + steps * READS_PER_LOOKUP,
+        `read ${filesRead} definition files for ${steps} nested steps`,
+      );
+    });
+  });
+}
+
+Deno.test("Integration: workflow validate of every workflow, nested ones included, resolves their steps with one definition walk", async () => {
+  await withHarness(() => ({}), async ({ dir, names }) => {
+    const workflows = deepLayout(names);
+    const steps = (workflows.length - 1) * STEPS;
+    const { result: events, filesRead, primaryWalks } = await validateNested(
+      dir,
+      workflows,
+    );
+
+    const completed = events.find((e) => e.kind === "completed");
+    assert(completed && isWorkflowValidateAllData(completed.data));
+    assertEquals(completed.data.passed, true);
+    assert(primaryWalks <= 1, `${primaryWalks} definition walks`);
+    assert(
+      filesRead <= DEFINITIONS + steps * READS_PER_LOOKUP,
+      `read ${filesRead} definition files for ${steps} steps`,
+    );
+  });
+});
+
+async function runNested<T>(
+  dir: string,
+  workflows: Workflow[],
+  start: (
+    service: WorkflowExecutionService,
+  ) => Promise<T>,
+) {
+  const repo = createRepositoryContext({ repoDir: dir });
+  try {
+    for (const workflow of workflows) await repo.workflowRepo.save(workflow);
+    const service = new WorkflowExecutionService(
+      repo.workflowRepo,
+      repo.workflowRunRepo,
+      dir,
+      undefined,
+      undefined,
+      repo.catalogStore,
+    );
+    return await tallied(() => start(service));
+  } finally {
+    repo.catalogStore.close();
+  }
+}
+
+// each child run builds its own definition repository, so walks are per workflow
+for (
+  const [layout, build] of [
+    ["a parent calling a child", parentLayout],
+    ["a parent whose children call a grandchild", deepLayout],
+  ] as const
+) {
+  Deno.test(`Integration: workflow run of ${layout} costs one definition walk per workflow, not one per nested step`, async () => {
+    await withHarness(() => ({}), async ({ dir, names }) => {
+      const workflows = build(names);
+      const steps = (workflows.length - 1) * STEPS;
+      const { result: run, filesRead, primaryWalks } = await runNested(
+        dir,
+        workflows,
+        (service) => service.execute(workflows[0].name),
+      );
+
+      assertEquals(run.status, "succeeded");
+      assert(
+        primaryWalks <= workflows.length,
+        `${primaryWalks} definition walks for ${workflows.length} workflows`,
+      );
+      assert(
+        filesRead <= workflows.length * DEFINITIONS + steps * READS_PER_LOOKUP,
+        `read ${filesRead} definition files for ${steps} nested steps`,
+      );
+    });
+  });
+}
+
+Deno.test("Integration: workflow resume of a parent from its workflow step costs one definition walk per workflow", async () => {
+  await withHarness(() => ({}), async ({ dir, names }) => {
+    const [parent, child] = parentLayout(names);
+    // the child is saved only after the first run, so that run fails at it
+    const { result: failed } = await runNested(
+      dir,
+      [parent],
+      (service) => service.execute(parent.name),
+    );
+    assertEquals(failed.status, "failed");
+
+    const { result: resumed, filesRead, primaryWalks } = await runNested(
+      dir,
+      [child],
+      async (service) => {
+        const events = await collect(
+          service.resume(parent.name, failed.id, { fromStep: "call" }),
+        );
+        const last = events.at(-1);
+        assert(last?.kind === "completed", JSON.stringify(last));
+        return last.run;
+      },
+    );
+
+    assertEquals(resumed.status, "succeeded");
+    assert(primaryWalks <= 2, `${primaryWalks} definition walks`);
+    assert(
+      filesRead <= 2 * DEFINITIONS + STEPS * READS_PER_LOOKUP,
+      `read ${filesRead} definition files for ${STEPS} nested steps`,
+    );
+  });
+});

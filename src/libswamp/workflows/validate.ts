@@ -33,7 +33,7 @@ import { inferMethodKind, isMutatingKind } from "../../domain/models/model.ts";
 import { mergeDataOutputOverrides } from "../../domain/workflows/execution_service.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
-import { stepBehaviorNames } from "../../domain/workflows/step_targets.ts";
+import { reachableStepBehaviorNames } from "../../domain/workflows/step_targets.ts";
 import type { LibSwampContext } from "../context.ts";
 import { notFound, type SwampError } from "../errors.ts";
 import { WorkflowSchemaError } from "../../domain/workflows/workflow_schema_error.ts";
@@ -339,8 +339,16 @@ export function createWorkflowValidateDeps(
     validate: (workflow) => validationService.validate(workflow),
     ...(definitionRepo
       ? {
-        primeStepLookups: (workflows: readonly Workflow[]) =>
-          definitionRepo.primeNameHints(stepBehaviorNames(workflows)),
+        primeStepLookups: async (workflows: readonly Workflow[]) => {
+          const names = await reachableStepBehaviorNames(
+            workflows,
+            async (idOrName) =>
+              await workflowRepo.findByName(idOrName) ??
+                await workflowRepo.findById(createWorkflowId(idOrName)),
+          );
+          // read errors resurface in the validator's own lookup of top-level names
+          await definitionRepo.primeNameHints(names).catch(() => {});
+        },
       }
       : {}),
     ...(workflowsDir
