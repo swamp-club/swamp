@@ -299,7 +299,6 @@ async function withHost(
   }
 }
 
-/** a command run with --server <address>: resolve its token, send one request */
 function command(host: Host, address: string): Promise<unknown> {
   return host.run(async () => {
     const token = await resolveServerTokenFromOptions(address, {
@@ -357,7 +356,7 @@ Deno.test("workspace sign-in from the CLI: a host behind a path signs in at that
   });
 });
 
-// behind the host's router a refused WebSocket reads as 502, as it did before
+// a stand-in host: the workspace's own 401 reaches the client
 Deno.test("workspace sign-in from the CLI: a workspace that offers no exchange gives the existing error", async () => {
   await withHost({ offerExchange: false, prefix: "/proxy" }, async (host) => {
     await host.store({ serverUrl: host.hostAddress });
