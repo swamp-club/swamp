@@ -627,7 +627,6 @@ export async function resolveServerToken(
   return token;
 }
 
-/** a hosted workspace with no token gets one through its host; others pass through */
 export async function signInThroughHost(
   address: string,
   found: ServerCredential | null,

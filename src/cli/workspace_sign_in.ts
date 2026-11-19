@@ -93,7 +93,7 @@ const inFlight = processRuntimeSlot(() =>
 
 /**
  * undefined when the address cannot sign in through its host; throws only a
- * refusal that asking again would not cure
+ * refusal the command should stop on
  */
 export function signInToWorkspace(
   address: string,

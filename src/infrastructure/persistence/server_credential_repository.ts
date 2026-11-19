@@ -189,8 +189,7 @@ export class FileServerCredentialRepository
       try {
         await this.lockFile(lock);
       } catch (error) {
-        // a filesystem that cannot lock (some NFS and SMB mounts) still saves,
-        // unguarded against a concurrent writer as it was before the lock
+        // a filesystem that cannot lock (some NFS and SMB mounts) still saves, unguarded
         getSwampLogger(["auth", "credential"])
           .debug`Could not lock ${SERVERS_LOCK_FILE}, so servers.json is written without it: ${error}`;
       }
