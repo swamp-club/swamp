@@ -75,7 +75,7 @@ export function serverLoginHint(serverUrl: string): string {
 
 /** the token may come from --token, a token file or a login, so both fixes are named */
 export function serverTokenRefusedHint(serverUrl: string): string {
-  return `Authentication failed — the server refused the token sent to ${serverUrl}; check the token, or run: swamp auth server-login --server ${serverUrl}`;
+  return `Authentication failed — the server likely refused the token sent to ${serverUrl}; check the token, or run: swamp auth server-login --server ${serverUrl}`;
 }
 
 function normalizedOrUndefined(serverUrl: string): string | undefined {

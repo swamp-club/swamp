@@ -77,9 +77,9 @@ Deno.test("serverLoginHint: a datastore upstream withheld the token file from na
   }
 });
 
-Deno.test("serverTokenRefusedHint: says the token was refused and names both fixes", () => {
+Deno.test("serverTokenRefusedHint: says the token was likely refused and names both fixes", () => {
   assertEquals(
     serverTokenRefusedHint("wss://serve.example.com/"),
-    "Authentication failed — the server refused the token sent to wss://serve.example.com/; check the token, or run: swamp auth server-login --server wss://serve.example.com/",
+    "Authentication failed — the server likely refused the token sent to wss://serve.example.com/; check the token, or run: swamp auth server-login --server wss://serve.example.com/",
   );
 });

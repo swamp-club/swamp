@@ -1751,7 +1751,7 @@ Deno.test("describeStatuslessFailure: a token sent over wss whose HTTP/2 retry f
   const auth = (url: string) =>
     `Authentication failed — run: swamp auth server-login --server ${url}`;
   const refused =
-    `Authentication failed — the server refused the token sent to ${wss}; check the token, or run: swamp auth server-login --server ${wss}`;
+    `Authentication failed — the server likely refused the token sent to ${wss}; check the token, or run: swamp auth server-login --server ${wss}`;
   for (const retryError of [NO_APPLICATION_PROTOCOL, HTTP2_STREAM_ERROR]) {
     const original = `Could not connect to ${wss}: ${retryError}`;
     const cases: Array<
