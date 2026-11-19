@@ -40,6 +40,7 @@ import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts"
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { catalogDbPath } from "../../infrastructure/persistence/repository_factory.ts";
 import type { Data } from "../../domain/data/data.ts";
+import { ModelType } from "../../domain/models/model_type.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-test-" });
@@ -667,4 +668,32 @@ Deno.test("modelDelete: outside an area no phases are exported", async () => {
       0,
     );
   });
+});
+
+Deno.test("modelDelete: refuses the policy release, which only serve writes, even with force", async () => {
+  let deleted = false;
+  const deps = makeDeps({
+    lookupDefinition: () =>
+      Promise.resolve({
+        definition: testDefinition,
+        type: ModelType.create("swamp/policy-release"),
+      }),
+    deleteDefinition: () => {
+      deleted = true;
+      return Promise.resolve();
+    },
+  });
+  const events = await collect<ModelDeleteEvent>(
+    modelDelete(createLibSwampContext(), deps, {
+      modelIdOrName: "policy-release",
+      force: true,
+    }),
+  );
+  const last = events[events.length - 1] as Extract<
+    ModelDeleteEvent,
+    { kind: "error" }
+  >;
+  assertEquals(last.kind, "error");
+  assertEquals(last.error.code, "validation_failed");
+  assertEquals(deleted, false);
 });

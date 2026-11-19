@@ -34,7 +34,10 @@ import {
   workflowAccessResource,
 } from "../access/access_resources.ts";
 import { controlPlaneRecordResource } from "../access/control_plane_records.ts";
-import { isControlPlaneModelType } from "../models/control_plane_types.ts";
+import {
+  isControlPlaneModelType,
+  isPolicyReleaseModelType,
+} from "../models/control_plane_types.ts";
 import type { DefinitionLookupResult } from "../models/model_lookup.ts";
 import { ModelType } from "../models/model_type.ts";
 import {
@@ -60,6 +63,7 @@ export const RUN_INITIATOR_MISMATCH_CODE = "run_initiator_mismatch";
 export type CommitRefusalReason =
   | KeyBindingRefusal
   | "lease-op"
+  | "serve-only-record"
   | "intent-partition-mismatch"
   | "data-version-unpaired"
   | "definition-type-mismatch"
@@ -175,6 +179,17 @@ export function checkCommitBindings(
   ops: readonly Op[],
 ): CommitAuthorization {
   let definitionType: string | undefined;
+  // followers enforce this record, so only serve writes it, whatever the grants
+  if (
+    partition.identity.kind === "model" &&
+    isPolicyReleaseModelType(partition.identity.type)
+  ) {
+    return refuse(
+      "serve-only-record",
+      0,
+      "Only serve writes the policy release",
+    );
+  }
   for (const [index, op] of ops.entries()) {
     if (op.kind === "lease") {
       return refuse(
@@ -197,6 +212,16 @@ export function checkCommitBindings(
         binding.reason,
         index,
         `Op ${index} (${op.intent.kind} ${op.kind}) cannot write ${op.key}`,
+      );
+    }
+    if (
+      binding.type !== undefined &&
+      isPolicyReleaseModelType(binding.type.normalized)
+    ) {
+      return refuse(
+        "serve-only-record",
+        index,
+        "Only serve writes the policy release",
       );
     }
     if (isBehaviorDefinition(op.intent) && binding.type !== undefined) {

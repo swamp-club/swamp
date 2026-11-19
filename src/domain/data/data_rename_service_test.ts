@@ -321,3 +321,9 @@ Deno.test("rename: an ordinary behavior's data named like the record still renam
   await rename();
   assertEquals(calls.length, 1);
 });
+
+Deno.test("rename: refuses the policy release, which only serve writes", async () => {
+  const { calls, rename } = renameOf("swamp/policy-release");
+  await assertRejects(rename, Error, "only a leading serve writes it");
+  assertEquals(calls, []);
+});

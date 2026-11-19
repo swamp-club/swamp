@@ -40,6 +40,7 @@ const PINNED = [
   "src/serve/config_poller.ts :: ConfigPoller",
   // Only when the lock pulled: acquireModelLocks syncs a v2 custom datastore only.
   "src/serve/delegation_store.ts :: DelegationStore (x2)",
+  "src/serve/policy_release_publisher.ts :: createPolicyReleaseWriter",
   "src/serve/deps.ts :: createStepLockHook",
   // Inside the sync-service branch of the mint.
   "src/serve/device_auth_handler.ts :: mintServerTokenImpl",

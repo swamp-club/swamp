@@ -51,7 +51,11 @@ import {
   validationFailed,
   wordedSwampError,
 } from "../errors.ts";
-import { isIntegrationModelType } from "../../domain/models/control_plane_types.ts";
+import {
+  isIntegrationModelType,
+  isPolicyReleaseModelType,
+  POLICY_RELEASE_SERVE_ONLY,
+} from "../../domain/models/control_plane_types.ts";
 import { wordedText } from "../../domain/behavior_wording.ts";
 import { getLogger } from "@logtape/logtape";
 
@@ -389,7 +393,8 @@ async function* deleteStages(
       | "not_found"
       | "workflow_referenced"
       | "live_data"
-      | "integration_record",
+      | "integration_record"
+      | "policy_release_record",
     error: SwampError,
   ): ModelDeleteEvent => {
     phase.attributes({ "swamp.diagnostic.refusal": reason });
@@ -413,6 +418,13 @@ async function* deleteStages(
     return;
   }
   const { definition, type: modelType } = result;
+  if (isPolicyReleaseModelType(modelType.normalized)) {
+    yield refuse(
+      "policy_release_record",
+      validationFailed(POLICY_RELEASE_SERVE_ONLY),
+    );
+    return;
+  }
   if (isIntegrationModelType(modelType.normalized)) {
     yield refuse(
       "integration_record",

@@ -70,7 +70,7 @@ Deno.test("commitEffectOf: names what a commit to each kind of partition changes
         id: ID,
       }),
     ),
-    "access",
+    "runtime",
   );
   assertEquals(
     commitEffectOf(
@@ -102,4 +102,27 @@ Deno.test("commitEffectsOf: each effect once", () => {
     [...commitEffectsOf([model, model, partitionOf({ kind: "lockfile" })])],
     ["access", "lockfile"],
   );
+});
+
+Deno.test("commitEffectOf: only grant and group commits change the policy; a release has its own effect", () => {
+  const model = (type: string) =>
+    commitEffectOf(partitionOf({
+      kind: "model",
+      type: ModelType.create(type),
+      id: ID,
+    }));
+  assertEquals(model("swamp/group"), "access");
+  assertEquals(model("@swamp/grant"), "access");
+  assertEquals(model("swamp/policy-release"), "policyRelease");
+  for (
+    const type of [
+      "swamp/step-lease",
+      "swamp/worker",
+      "swamp/pending-dispatch",
+      "swamp/fleet-probe",
+      "swamp/enrollment-token",
+    ]
+  ) {
+    assertEquals(model(type), "runtime", type);
+  }
 });

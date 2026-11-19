@@ -17,7 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { isIntegrationModelType } from "../models/control_plane_types.ts";
+import {
+  isIntegrationModelType,
+  isPolicyReleaseModelType,
+  POLICY_RELEASE_SERVE_ONLY,
+} from "../models/control_plane_types.ts";
 import { DataMetadataSchema } from "./data_metadata.ts";
 import type { UnifiedDataRepository } from "./repositories.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
@@ -77,6 +81,9 @@ export class DataRenameService {
       throw new Error(
         "An integration's record can't be renamed, because its id must stay reserved. To stop it being used, revoke it with swamp access integration revoke",
       );
+    }
+    if (isPolicyReleaseModelType(modelType.normalized)) {
+      throw new Error(POLICY_RELEASE_SERVE_ONLY);
     }
 
     const renameResult = await this.dataRepo.rename(

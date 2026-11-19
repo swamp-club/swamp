@@ -25,9 +25,15 @@
 
 import {
   type CommitEffect,
-  commitEffectsOf,
+  commitEffectOf,
+  POLICY_RELEASE_PARTITION,
 } from "../domain/datastore_v3/commit_effects.ts";
-import { CommitsCompactedError } from "../domain/datastore_v3/commit_store.ts";
+import {
+  type CommitChange,
+  CommitsCompactedError,
+} from "../domain/datastore_v3/commit_store.ts";
+
+type Commit = CommitChange["commit"];
 import type { V3CommitFeedSource } from "../infrastructure/datastore_v3/v3_repo_context.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 
@@ -43,6 +49,20 @@ export interface ServeCommitEffectsDeps {
   reloadDelegations?(): Promise<unknown>;
   checkConfig(): void;
   isFollower(): boolean;
+  /**
+   * a follower enforces the leader's released policy in place of rebuilding
+   * its own; without these it rebuilds on every grant or group commit
+   */
+  readonly releases?: PolicyReleaseFollowing;
+}
+
+export interface PolicyReleaseFollowing {
+  /** the current leader's lease fence, as this follower sees it */
+  leaderFence(): number | undefined;
+  /** the newest commit to the release record; read from the copy unless given */
+  headReleaseCommit?(): Promise<Commit | undefined>;
+  /** reads, parses and enforces the release record; throws if it cannot */
+  applyRelease(): Promise<void>;
 }
 
 const EVERY_EFFECT: ReadonlySet<CommitEffect> = new Set([
@@ -50,6 +70,8 @@ const EVERY_EFFECT: ReadonlySet<CommitEffect> = new Set([
   "lockfile",
   "access",
   "integrations",
+  "delegations",
+  "policyRelease",
   "runtime",
 ]);
 
@@ -59,6 +81,9 @@ export class ServeCommitEffects {
   #applied: number;
   readonly #pending = new Set<CommitEffect>();
   #policyKnown = true;
+  /** the fence of the release this follower enforces, if any */
+  #releaseFence: number | undefined;
+  #releaseCommit: Commit | undefined;
   readonly #appliedListeners = new Set<() => void>();
   #running: Promise<void> | undefined;
   #again = false;
@@ -181,10 +206,10 @@ export class ServeCommitEffects {
         this.#cursor = head;
         break;
       }
-      for (
-        const effect of commitEffectsOf(page.map((c) => c.commit.partition))
-      ) {
+      for (const change of page) {
+        const effect = commitEffectOf(change.commit.partition);
         effects.add(effect);
+        if (effect === "policyRelease") this.#releaseCommit = change.commit;
       }
       this.#cursor = page[page.length - 1].cursor;
     }
@@ -195,7 +220,9 @@ export class ServeCommitEffects {
     } catch (error) {
       // Applied on the next pass: the effects stay pending, and the policy
       // is unknown until a reload succeeds.
-      if (effects.has("access")) this.#policyKnown = false;
+      if (effects.has("access") || effects.has("policyRelease")) {
+        this.#policyKnown = false;
+      }
       throw error;
     }
     effects.clear();
@@ -224,7 +251,79 @@ export class ServeCommitEffects {
     }
     // No catalog invalidate: the read model's catch-up before the poke wrote
     // the rows, and a replaced copy's restore rebuilt them.
-    if (effects.has("access")) {
+    if (effects.has("policyRelease")) await this.#followRelease();
+    // a grant commit the leader may be holding: rebuilt from it only until
+    // this follower enforces the current leader's release
+    if (effects.has("access") && !this.followsLeaderRelease()) {
+      await this.#deps.reloadPolicy();
+      this.#policyKnown = true;
+    }
+  }
+
+  /** whether this follower enforces a release the current leader wrote */
+  followsLeaderRelease(): boolean {
+    const releases = this.#deps.releases;
+    if (releases === undefined || this.#releaseFence === undefined) {
+      return false;
+    }
+    return this.#releaseFence === releases.leaderFence();
+  }
+
+  /** at a follower's start: enforce the current leader's release, if it has one */
+  async adoptLeaderRelease(): Promise<boolean> {
+    if (this.#deps.releases === undefined || !this.#deps.isFollower()) {
+      return false;
+    }
+    await this.#followRelease();
+    return this.followsLeaderRelease();
+  }
+
+  async #headReleaseCommit(): Promise<Commit | undefined> {
+    const { commitStore, namespace } = this.#deps.source.datastore;
+    const head = await commitStore.head(namespace, POLICY_RELEASE_PARTITION);
+    if (head.seq === 0) return undefined;
+    try {
+      const [change] = await commitStore.readPartition(
+        namespace,
+        POLICY_RELEASE_PARTITION,
+        head.seq,
+        1,
+      );
+      return change?.commit;
+    } catch (error) {
+      // compacted away: nothing to verify, so it is not enforced
+      if (error instanceof CommitsCompactedError) return undefined;
+      throw error;
+    }
+  }
+
+  async #followRelease(): Promise<void> {
+    const releases = this.#deps.releases;
+    if (releases === undefined) return;
+    const commit = this.#releaseCommit ??
+      await (releases.headReleaseCommit?.() ?? this.#headReleaseCommit());
+    this.#releaseCommit = undefined;
+    if (commit === undefined) return;
+    const fence = releases.leaderFence();
+    // serve's own commit, under the lease the current leader holds
+    if (
+      commit.principal !== undefined || commit.fence === undefined ||
+      commit.fence !== fence
+    ) {
+      if (commit.principal !== undefined) {
+        logger
+          .warn`A policy release committed by ${commit.principal} was refused: only serve publishes the policy`;
+      }
+      return;
+    }
+    try {
+      await releases.applyRelease();
+      this.#releaseFence = fence;
+      this.#policyKnown = true;
+    } catch (error) {
+      // unreadable: back to rebuilding from grant commits, at once
+      logger.warn`The leader's policy release could not be applied: ${error}`;
+      this.#releaseFence = undefined;
       await this.#deps.reloadPolicy();
       this.#policyKnown = true;
     }

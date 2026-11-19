@@ -1145,3 +1145,27 @@ Deno.test("readAccessOf: a methods-scoped read grant does not read a behavior's 
   const unscoped = grantAuthority([{ actions: ["read"] }]);
   assertEquals(unscoped.allows(read.action, read.resource), true);
 });
+
+Deno.test("checkCommitBindings: a commit to the policy release is refused whatever it carries, since only serve writes it", async () => {
+  const release = partitionOf({
+    kind: "model",
+    type: ModelType.create("swamp/policy-release"),
+    id: MODEL_ID,
+  });
+  assertRefused(
+    checkCommitBindings(release, await save()),
+    "serve-only-record",
+    0,
+  );
+  assertRefused(
+    checkCommitBindings(
+      partitionOf({
+        kind: "model",
+        type: ModelType.create("@swamp/policy-release"),
+        id: MODEL_ID,
+      }),
+      [],
+    ),
+    "serve-only-record",
+  );
+});

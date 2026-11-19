@@ -132,9 +132,9 @@ import {
 import { ReadModelIncompleteError } from "../domain/datastore_v3/read_model.ts";
 import { RecordKey } from "../domain/datastore_v3/record_key.ts";
 import {
-  isControlPlaneModelType,
   isDelegationModelType,
   isIntegrationModelType,
+  isPolicyModelType,
 } from "../domain/models/control_plane_types.ts";
 import { ModelType } from "../domain/models/model_type.ts";
 import { createWorkflowRunId } from "../domain/workflows/workflow_id.ts";
@@ -3416,7 +3416,7 @@ class DatastoreApi {
       ) {
         await ctx.delegationDirectory?.reload();
       } else if (
-        identity.kind === "model" && isControlPlaneModelType(identity.type)
+        identity.kind === "model" && isPolicyModelType(identity.type)
       ) {
         await ctx.policySnapshotLoader?.load();
       }

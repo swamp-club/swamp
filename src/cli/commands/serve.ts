@@ -28,6 +28,16 @@ import { RESERVED_TOKEN_NAMES } from "../../domain/access/delegated_token.ts";
 import { DelegationStore } from "../../serve/delegation_store.ts";
 import { createRecordLock } from "../../serve/deps.ts";
 import {
+  createPolicyReleaseWriter,
+  PolicyReleasePublisher,
+} from "../../serve/policy_release_publisher.ts";
+import { PolicyRelease } from "../../domain/access/policy_release.ts";
+import {
+  POLICY_RELEASE_DATA_NAME,
+  POLICY_RELEASE_ID,
+  POLICY_RELEASE_MODEL_TYPE,
+} from "../../domain/models/access/policy_release_model.ts";
+import {
   continueInterruptedRuns,
   type InterruptedRunContinuationCause,
   type InterruptedRunTarget,
@@ -2663,6 +2673,7 @@ export const serveCommand = new Command()
     let configPoller: ConfigPoller | null = null;
     let serveCommitEffects: ServeCommitEffects | undefined;
     let accessDataPoller: AccessDataPoller | null = null;
+    let policyReleasePublisher: PolicyReleasePublisher | undefined;
     let integrationDataPoller: AccessDataPoller | null = null;
     let delegationDataPoller: AccessDataPoller | null = null;
     let runtimeDataPoller: RuntimeDataPoller | null = null;
@@ -4149,6 +4160,27 @@ export const serveCommand = new Command()
       readConditionTypeLiterals,
       readConditionFindings,
     );
+    // a v3 leader publishes the policy it enforces, and its followers enforce
+    // that release; created here, so its writes never join a caller's unit
+    if (v3Location !== undefined) {
+      const publisher = new PolicyReleasePublisher({
+        fence: () => v3WriterFence(v3Location.path),
+        write: createPolicyReleaseWriter({
+          repoDir: resolvedRepoDir,
+          repoContext,
+          lock: createRecordLock(
+            resolvedRepoDir,
+            repoContext,
+            datastoreConfig,
+            syncService,
+            syncGate,
+          ),
+          confirmReplicated,
+        }),
+      });
+      policyReleasePublisher = publisher;
+      policySnapshotLoader.onBuilt((release) => publisher.offer(release));
+    }
     // created before the boot load so on a filesystem datastore it fingerprints
     // the access data first, and a peer write landing after the load still
     // reads as a change
@@ -8774,6 +8806,10 @@ export const serveCommand = new Command()
         const poller = accessDataPoller;
         await stages.run("access data poller", () => poller.stop());
       }
+      if (policyReleasePublisher) {
+        const publisher = policyReleasePublisher;
+        await stages.run("policy release publisher", () => publisher.stop());
+      }
       if (integrationDataPoller) {
         const poller = integrationDataPoller;
         await stages.run("integration data poller", () => poller.stop());
@@ -9340,6 +9376,24 @@ export const serveCommand = new Command()
         reloadDelegations: () => delegationDirectory.reload(),
         checkConfig: () => configPoller?.pollNow(),
         isFollower: () => connectionCtx.followerGate?.role === "follower",
+        releases: {
+          leaderFence: () => connectionCtx.followerGate?.leader()?.fence,
+          applyRelease: async () => {
+            const content = await repoContext.unifiedDataRepo.getContent(
+              POLICY_RELEASE_MODEL_TYPE,
+              POLICY_RELEASE_ID,
+              POLICY_RELEASE_DATA_NAME,
+            );
+            if (content === null) {
+              throw new Error("no policy release is stored");
+            }
+            await policySnapshotLoader.applyRelease(
+              PolicyRelease.parse(
+                JSON.parse(new TextDecoder().decode(content)),
+              ),
+            );
+          },
+        },
       });
       connectionCtx.commitFeed = followerPolicy.commitFeed;
       serveCommitEffects = followerPolicy.effects;
@@ -9460,7 +9514,11 @@ export const serveCommand = new Command()
         },
         // as the leader, so its writes and fire claims are not refused, and
         // after the grant config, which authorizes the catch-up run
-        onLed: () => scheduler.atLead(),
+        onLed: async () => {
+          // a new fence: followers wait for this leader's own release
+          policyReleasePublisher?.offer(policySnapshotLoader.release());
+          await scheduler.atLead();
+        },
         // a node that lost the lead stops as a shutdown does, leaving queued
         // webhook runs pending for the leader and exiting 75 so its supervisor
         // restarts it as a follower; runs outside the leadership tick
@@ -9477,6 +9535,12 @@ export const serveCommand = new Command()
         () => leadership.leader(),
       );
       await leadership.start(v3Follows ? "follower" : "writer");
+      if (leadership.role === "follower") {
+        // boot read the latest grants; the leader's release replaces them
+        await followerPolicy.effects.adoptLeaderRelease().catch((error) => {
+          logger.warn`Enforcing the leader's policy release failed: ${error}`;
+        });
+      }
     }
 
     if (controlPlaneStore?.putIfAbsent) {
