@@ -4375,9 +4375,16 @@ const globalMergeModel: ModelDefinition = defineModel({
     run: z.unknown().optional(),
     shell: z.string().optional(),
     retries: z.number().optional(),
+    region: z.string().default("us-east-1"),
+    label: z.string().transform((v) => v.trim()).optional(),
   }),
   resources: {},
   methods: {
+    deploy: {
+      description: "Deploy",
+      arguments: z.object({ region: z.string(), label: z.string().min(1) }),
+      execute: () => Promise.resolve({ dataHandles: [] }),
+    },
     execute: {
       description: "Run",
       arguments: z.object({ run: z.string(), timeout: z.number().optional() }),
@@ -4532,4 +4539,26 @@ Deno.test("validateModel: a sensitive global argument merged into a method's arg
     );
     assertEquals(result?.error?.includes("hunter2-long"), false, name);
   }
+});
+
+Deno.test("validateModel: a method argument reads a global argument as the global schema parses it, default and transform applied", async () => {
+  const defaulted = await methodArgumentsResult({ label: "web" }, {
+    deploy: { arguments: {} },
+  });
+  assertEquals(defaulted?.passed, true, defaulted?.error);
+
+  const trimmed = await methodArgumentsResult({ label: "   " }, {
+    deploy: { arguments: {} },
+  });
+  assertEquals(trimmed?.passed, false);
+  assertStringIncludes(trimmed?.error ?? "", '"label"');
+});
+
+Deno.test("validateModel: a global argument named __proto__ stays a key in the method's merge", async () => {
+  const globals = JSON.parse('{"run": "echo hi", "__proto__": {"x": 1}}');
+  const result = await methodArgumentsResult(globals, {
+    execute: { arguments: {} },
+  });
+  assertEquals(result?.passed, true, result?.error);
+  assertEquals(Object.getPrototypeOf({}), Object.prototype);
 });

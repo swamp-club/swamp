@@ -546,9 +546,12 @@ export class DefaultModelValidationService implements ModelValidationService {
       this.validateMethodArguments(
         methodData,
         modelDef,
-        upgrade.failure
-          ? definition.globalArguments
-          : upgrade.definition.globalArguments,
+        parsedForChecks(
+          modelDef,
+          upgrade.failure
+            ? definition.globalArguments
+            : upgrade.definition.globalArguments,
+        ),
       ),
     ];
 
@@ -1029,15 +1032,15 @@ export class DefaultModelValidationService implements ModelValidationService {
           continue;
         }
       }
-      // the merge a run parses: method arguments over globals, a global still
-      // holding a swamp expression left for the run to check once evaluated
-      const merged: Record<string, unknown> = {};
+      // the merge a run parses: method arguments over schema-parsed globals, a
+      // global still holding a swamp expression left for the run once evaluated
+      const merged: [string, unknown][] = [];
       let dependsOnExpression = false;
       if (!isRecordSchema(methodArgsSchema)) {
         for (const [key, value] of Object.entries(globalArgs)) {
           if (Object.hasOwn(staticArgs, key)) continue;
           if (!containsSwampExpression(value)) {
-            merged[key] = value;
+            merged.push([key, value]);
           } else if (!shape || Object.hasOwn(shape, key)) {
             dependsOnExpression = true;
           }
@@ -1045,7 +1048,7 @@ export class DefaultModelValidationService implements ModelValidationService {
       }
       if (dependsOnExpression) continue;
       const coercedArgs = coerceMethodArgs(
-        { ...merged, ...staticArgs },
+        { ...Object.fromEntries(merged), ...staticArgs },
         methodArgsSchema,
       );
       // described as a run's refusal is, so the schema's own code cannot spell
