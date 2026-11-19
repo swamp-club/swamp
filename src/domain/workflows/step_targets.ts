@@ -120,6 +120,44 @@ export function workflowStepTargets(workflow: Workflow): StepTarget[] {
   return targets;
 }
 
+// a name given by expression resolves only as its step runs, so it is left out
+export function stepBehaviorNames(workflows: readonly Workflow[]): string[] {
+  const names = new Set<string>();
+  for (const workflow of workflows) {
+    for (const target of workflowStepTargets(workflow)) {
+      if (
+        target.kind === "model" && !containsExpression(target.modelIdOrName)
+      ) {
+        names.add(target.modelIdOrName);
+      }
+    }
+  }
+  return [...names];
+}
+
+// follows literal workflow steps as the reserved-tag check does, each once
+export async function reachableStepBehaviorNames(
+  workflows: readonly Workflow[],
+  findWorkflow: (idOrName: string) => Promise<Workflow | null>,
+): Promise<string[]> {
+  const visited = new Set(workflows.map((workflow) => workflow.id));
+  const reached = [...workflows];
+  for (let i = 0; i < reached.length; i++) {
+    for (const target of workflowStepTargets(reached[i])) {
+      if (
+        target.kind !== "workflow" ||
+        containsExpression(target.workflowIdOrName)
+      ) continue;
+      const child = await findWorkflow(target.workflowIdOrName)
+        .catch(() => null);
+      if (!child || visited.has(child.id)) continue;
+      visited.add(child.id);
+      reached.push(child);
+    }
+  }
+  return stepBehaviorNames(reached);
+}
+
 /**
  * a renamed step or one moved to another job has a new scope and counts as
  * changed; removed steps are not returned

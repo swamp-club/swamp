@@ -22,6 +22,7 @@ import React from "react";
 import { Box, Text } from "ink";
 import type { EventHandlers } from "../../libswamp/stream.ts";
 import type { ModelGetData } from "../../libswamp/models/get.ts";
+import type { ModelTypeDetail } from "../../libswamp/models/type_detail.ts";
 import type {
   ModelSearchEvent,
   ModelSearchItem,
@@ -70,6 +71,19 @@ export type ModelPreviewFetcher = (
   item: ModelSearchItem,
 ) => Promise<ModelGetData>;
 
+export type ModelTypeDetailFetcher = (
+  type: string,
+) => Promise<ModelTypeDetail>;
+
+/**
+ * the picker previews one definition; JSON output describes each result's
+ * type, so it never looks a definition up
+ */
+export interface ModelSearchFetchers {
+  preview?: ModelPreviewFetcher;
+  typeDetail?: ModelTypeDetailFetcher;
+}
+
 export type ModelSearchRenderer = SearchRenderer<
   ModelSearchEvent,
   ModelSearchItem
@@ -77,10 +91,10 @@ export type ModelSearchRenderer = SearchRenderer<
 
 class JsonModelSearchRenderer implements ModelSearchRenderer {
   private _selected: ModelSearchItem | undefined;
-  private readonly fetchPreview: ModelPreviewFetcher | undefined;
+  private readonly fetchTypeDetail: ModelTypeDetailFetcher | undefined;
 
-  constructor(fetchPreview?: ModelPreviewFetcher) {
-    this.fetchPreview = fetchPreview;
+  constructor(fetchTypeDetail?: ModelTypeDetailFetcher) {
+    this.fetchTypeDetail = fetchTypeDetail;
   }
 
   selectedItem(): ModelSearchItem | undefined {
@@ -93,21 +107,18 @@ class JsonModelSearchRenderer implements ModelSearchRenderer {
       completed: async (e) => {
         const filtered = filterModels(e.data.results, e.data.query);
 
-        if (!this.fetchPreview) {
+        if (!this.fetchTypeDetail) {
           console.log(
             JSON.stringify({ query: e.data.query, results: filtered }, null, 2),
           );
           return;
         }
 
-        const typeCache = new Map<
-          string,
-          Pick<ModelGetData, "methods" | "globalArgumentsSchema">
-        >();
+        const typeCache = new Map<string, ModelTypeDetail>();
         for (const item of filtered) {
           if (!typeCache.has(item.type)) {
             try {
-              const detail = await this.fetchPreview(item);
+              const detail = await this.fetchTypeDetail(item.type);
               typeCache.set(item.type, {
                 methods: detail.methods,
                 globalArgumentsSchema: detail.globalArgumentsSchema,
@@ -200,13 +211,13 @@ export function modelSearchPickerLabels(
 
 export function createModelSearchRenderer(
   mode: OutputMode,
-  fetchPreview?: ModelPreviewFetcher,
+  fetchers: ModelSearchFetchers = {},
   surface: CommandSurface = DEFAULT_COMMAND_SURFACE,
   options: SearchRendererOptions = {},
 ): ModelSearchRenderer {
   switch (mode) {
     case "json":
-      return new JsonModelSearchRenderer(fetchPreview);
+      return new JsonModelSearchRenderer(fetchers.typeDetail);
     case "log":
       if (options.interactive === false) {
         return createSearchListRenderer<ModelSearchEvent, ModelSearchItem>({
@@ -217,7 +228,7 @@ export function createModelSearchRenderer(
             carryModelWording(error, new UserError(error.message)),
         });
       }
-      return new InkModelSearchRenderer(fetchPreview, surface);
+      return new InkModelSearchRenderer(fetchers.preview, surface);
   }
 }
 

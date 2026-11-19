@@ -37,11 +37,8 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { behaviorNotFound } from "../errors.ts";
 import { type LookupOptions, selectLookup } from "../lookup_by_id.ts";
-import {
-  type MethodDescribeData,
-  toMethodDescribeData,
-  zodToJsonSchema,
-} from "../types/schema_helpers.ts";
+import type { MethodDescribeData } from "../types/schema_helpers.ts";
+import { modelTypeDetail } from "./type_detail.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 export interface ModelGetData {
@@ -189,14 +186,7 @@ export async function* modelGet(
             (modelDef.upgrades ?? []).map((u) => u.toVersion),
           ).state
           : undefined,
-        globalArgumentsSchema: modelDef?.globalArguments
-          ? zodToJsonSchema(modelDef.globalArguments)
-          : undefined,
-        methods: modelDef
-          ? Object.entries(modelDef.methods).map(
-            ([name, method]) => toMethodDescribeData(name, method),
-          )
-          : undefined,
+        ...modelTypeDetail(modelDef),
         configuredMethods: Object.keys(configuredMethods).length > 0
           ? configuredMethods
           : undefined,

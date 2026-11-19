@@ -99,6 +99,16 @@ export const HTTP_ACTION_TYPES: ReadonlySet<string> = new Set([
 /** a refusal of the HTTP route that the WebSocket would answer */
 export const USE_WEBSOCKET_CODE = "use_websocket";
 
+/** workspace.sign-in refusals: the CLI stops on these rather than going on */
+export const NOT_A_HOST_ROOT_CODE = "not_a_host_root";
+export const SIGN_IN_NOT_OFFERED_CODE = "sign_in_not_offered";
+export const SIGN_IN_REFUSED_FOR_INTEGRATION_CODE =
+  "sign_in_refused_for_integration";
+export const SIGN_IN_REFUSED_FOR_PRINCIPAL_CODE =
+  "sign_in_refused_for_principal";
+export const SIGN_IN_REFUSED_FOR_CREDENTIAL_CODE =
+  "sign_in_refused_for_credential";
+
 /**
  * reads whose replies grow without bound; the CLI sends these over
  * SERVE_REQUEST_PATH, every other request stays on the WebSocket

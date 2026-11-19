@@ -36,9 +36,20 @@ import {
   USE_WEBSOCKET_CODE,
   type WorkflowResumePayload,
   type WorkflowRunPayload,
+  type WorkspaceSignInResponse,
 } from "../serve/protocol.ts";
 import { deserializeEvent } from "../serve/serializer.ts";
-import type { ServerCredentialRepository } from "../domain/auth/server_credential.ts";
+import type {
+  ServerCredential,
+  ServerCredentialRepository,
+} from "../domain/auth/server_credential.ts";
+import {
+  type HostTokenCheck,
+  type JsonReply,
+  SIGN_IN_TIMEOUT_MS,
+  type WorkspaceSignInDeps,
+  workspaceTokenFor,
+} from "./workspace_sign_in.ts";
 import {
   normalizeServerUrl as normalizeServerUrlForCredentials,
   redactServerUrl,
@@ -51,11 +62,15 @@ import {
 } from "../infrastructure/http/rate_limit.ts";
 import {
   recordWithheldTokenFile,
-  serverLoginHint,
-  serverTokenRefusedHint,
   withheldTokenFileMessage,
   type WithheldTokenFileRemedy,
 } from "../domain/auth/server_login_hint.ts";
+import {
+  hasWorkspaceSignInGap,
+  loginHintFor,
+  tokenRefusedHintFor,
+  workspaceRefusalHintFor,
+} from "../infrastructure/auth/workspace_sign_in_notes.ts";
 import { quoteShellWord } from "../domain/shell_word.ts";
 import { processLockHolderMarker } from "../domain/datastore/lock_holder_marker.ts";
 import { COMMIT_MAY_LAND_CODE } from "../domain/datastore_v3/commit_log_unit_of_work.ts";
@@ -597,12 +612,148 @@ export async function resolveServerToken(
     if (bound) return readTokenFile(envTokenFile, "SWAMP_SERVER_TOKEN_FILE");
   }
   const repo = credentialRepo ?? new FileServerCredentialRepository();
-  const credential = await repo.get(serverUrl);
+  const token = await signInThroughHost(
+    key,
+    await repo.get(serverUrl),
+    credentialRepo,
+  );
   // A set token file that reached here was not bound to the address.
-  if (!credential?.token && envTokenFile) {
+  if (!token && envTokenFile) {
     warnWithheldTokenFile(key, "flag-or-env");
   }
-  return credential?.token;
+  // the workspace wants a token no source has, so asking would only be refused
+  if (!token && hasWorkspaceSignInGap(key)) {
+    throw new UserError(loginHintFor(key));
+  }
+  return token;
+}
+
+export async function signInThroughHost(
+  address: string,
+  found: ServerCredential | null,
+  credentialRepo?: ServerCredentialRepository,
+): Promise<string | undefined> {
+  return await workspaceTokenFor(
+    address,
+    found,
+    workspaceSignInDeps(credentialRepo),
+  );
+}
+
+function workspaceSignInDeps(
+  credentialRepo: ServerCredentialRepository | undefined,
+): WorkspaceSignInDeps {
+  const envAware = credentialRepo ?? new FileServerCredentialRepository();
+  return {
+    credentials: envAware instanceof FileServerCredentialRepository
+      ? envAware.fileOnlyView()
+      : envAware,
+    envPairNames: (url) =>
+      envAware instanceof FileServerCredentialRepository &&
+      envAware.envPairNames(url),
+    checkHostToken,
+    requestSignInCode: requestWorkspaceSignInCode,
+    fetchJson: fetchSignInJson,
+    headers: resolveExtraHeaders(),
+    now: Date.now,
+  };
+}
+
+async function requestWorkspaceSignInCode(
+  hostAddress: string,
+  hostToken: string,
+  name: string,
+): Promise<WorkspaceSignInResponse> {
+  return await requestServerResponse<WorkspaceSignInResponse>(
+    {
+      server: hostAddress,
+      token: hostToken,
+      remoteIndicator: false,
+      log: () => {},
+      restartRetryBudgetMs: 0,
+      timeoutMs: SIGN_IN_TIMEOUT_MS,
+    },
+    { type: "workspace.sign-in", payload: { name } },
+  );
+}
+
+/**
+ * a refused WebSocket hides its status behind a host's router or HTTP/2, so the
+ * root's HTTP route, which checks the token before anything else, is asked
+ */
+async function checkHostToken(
+  hostAddress: string,
+  hostToken: string,
+): Promise<HostTokenCheck> {
+  try {
+    const reply = await fetchSignInJson(`${hostAddress}${SERVE_REQUEST_PATH}`, {
+      method: "POST",
+      headers: {
+        ...resolveExtraHeaders(),
+        "content-type": "application/json",
+        "authorization": `Bearer ${hostToken}`,
+      },
+      body: JSON.stringify({
+        type: "server.version",
+        id: crypto.randomUUID(),
+      }),
+      redirect: "manual",
+      signal: AbortSignal.timeout(SIGN_IN_TIMEOUT_MS),
+    });
+    const code = typeof reply.body === "object" && reply.body !== null
+      ? (reply.body as { code?: unknown }).code
+      : undefined;
+    // a proxy's own 401 in front of the root says nothing of the token
+    if (reply.status === 401 && code === "unauthorized") {
+      return { kind: "refused" };
+    }
+    // likewise only serve's own 429 is its lockout or rate limit
+    if (reply.status === 429 && code === "rate_limited") {
+      const retryAfterSeconds = parseRetryAfter(reply.retryAfter ?? null);
+      return retryAfterSeconds === undefined
+        ? { kind: "limited" }
+        : { kind: "limited", retryAfterSeconds };
+    }
+    if (
+      (reply.status >= 200 && reply.status < 300) ||
+      (reply.status === 404 && code === USE_WEBSOCKET_CODE)
+    ) {
+      return { kind: "accepted" };
+    }
+    return { kind: "unknown" };
+  } catch {
+    return { kind: "unknown" };
+  }
+}
+
+async function fetchSignInJson(
+  url: string,
+  init: RequestInit,
+): Promise<JsonReply> {
+  const caCerts = getEnvCaCerts();
+  const ownClient = caCerts?.length
+    ? createTlsHttpClient({ caCerts })
+    : undefined;
+  try {
+    const response = await fetch(url, {
+      ...init,
+      client: ownClient ?? getDefaultHttpClient(),
+    });
+    let body: unknown = null;
+    try {
+      body = await response.json();
+    } catch {
+      // a reply that is not JSON reads as no answer
+    }
+    return {
+      status: response.status,
+      date: response.headers.get("date"),
+      body,
+      retryAfter: response.headers.get("retry-after"),
+    };
+  } finally {
+    ownClient?.close();
+  }
 }
 
 /**
@@ -766,6 +917,8 @@ export async function requestNewerServerResponse<T>(
 export interface RequestResponseOptions extends RetryTiming {
   server: string;
   token?: string;
+  /** false when the request is the CLI's own errand, not the command's */
+  remoteIndicator?: false;
   signal?: AbortSignal;
   headers?: Record<string, string>;
   caCerts?: string[];
@@ -799,7 +952,7 @@ export async function requestServerResponse<T>(
   options: RequestResponseOptions,
   request: { type: string; id?: string; payload?: unknown },
 ): Promise<T> {
-  writeRemoteIndicator(options.server);
+  if (options.remoteIndicator !== false) writeRemoteIndicator(options.server);
   const window = new RetryWindow(
     options.restartRetryBudgetMs ?? RESTART_RETRY_BUDGET_MS,
     options,
@@ -1581,13 +1734,16 @@ function describeHandshakeStatus(
     return authFailedMessage(wsUrl);
   }
   if (statusCode >= 500) {
-    return `Server error (HTTP ${statusCode}) while connecting to ${wsUrl} — check the server log for the cause`;
+    const refusal = workspaceRefusalHintFor(wsUrl);
+    return `Server error (HTTP ${statusCode}) while connecting to ${wsUrl} — check the server log for the cause${
+      refusal === undefined ? "" : `. ${refusal}`
+    }`;
   }
   return originalMessage;
 }
 
 function authFailedMessage(wsUrl: string): string {
-  return serverLoginHint(wsUrl);
+  return loginHintFor(wsUrl);
 }
 
 /**
@@ -1606,7 +1762,7 @@ export function describeStatuslessFailure(
     if (!sentToken) return authFailedMessage(wsUrl);
     if (new URL(wsUrl).protocol === "wss:") {
       if (isHttp2RetryFailure(originalMessage)) {
-        return serverTokenRefusedHint(wsUrl);
+        return tokenRefusedHintFor(wsUrl);
       }
       return `${authFailedMessage(wsUrl)} (${originalMessage})`;
     }

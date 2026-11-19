@@ -290,7 +290,11 @@ The client looks for the token in this order:
    is not a valid `ws(s)://` or `http(s)://` URL matches no server: the CLI
    warns and does not send the token;
 5. stored credentials in `~/.config/swamp/servers.json` (managed by
-   `swamp auth server-login`).
+   `swamp auth server-login`);
+6. for a hosted workspace's address (`<host>/w/<name>`) with no token from the
+   sources above, a workspace token obtained through the host with the host's
+   stored token, then kept in `servers.json`. See Sign-in in
+   [serve-workspaces](../surfaces/serve-workspaces.md#sign-in).
 
 `--token` and `--token-file` are mutually
 exclusive. The file-based options (`--token-file`, `SWAMP_SERVER_TOKEN_FILE`)

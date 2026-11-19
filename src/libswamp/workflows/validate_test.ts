@@ -1450,3 +1450,86 @@ Deno.test("createWorkflowValidateDeps: a forEach over a function swamp does not 
     }
   }
 });
+
+Deno.test("workflowValidate: primes step lookups for every workflow before validating any", async () => {
+  const workflows = [makeWorkflow("a"), makeWorkflow("b")];
+  const calls: string[] = [];
+  const deps = makeDeps({
+    findAllWorkflows: () => Promise.resolve(workflows),
+    primeStepLookups: (primed) => {
+      calls.push(`prime:${primed.map((w) => w.name).join(",")}`);
+      return Promise.resolve();
+    },
+    validate: (workflow) => {
+      calls.push(`validate:${workflow.name}`);
+      return Promise.resolve([WorkflowValidationResult.pass("schema")]);
+    },
+  });
+  await collect<WorkflowValidateEvent>(
+    workflowValidate(createLibSwampContext(), deps, {}),
+  );
+  assertEquals(calls, ["prime:a,b", "validate:a", "validate:b"]);
+});
+
+Deno.test("workflowValidate: primes step lookups for a single workflow before validating it", async () => {
+  const calls: string[] = [];
+  const deps = makeDeps({
+    primeStepLookups: (primed) => {
+      calls.push(`prime:${primed.map((w) => w.name).join(",")}`);
+      return Promise.resolve();
+    },
+    validate: (workflow) => {
+      calls.push(`validate:${workflow.name}`);
+      return Promise.resolve([WorkflowValidationResult.pass("schema")]);
+    },
+  });
+  await collect<WorkflowValidateEvent>(
+    workflowValidate(createLibSwampContext(), deps, {
+      workflowIdOrName: "my-workflow",
+    }),
+  );
+  assertEquals(calls, ["prime:my-workflow", "validate:my-workflow"]);
+});
+
+Deno.test("createWorkflowValidateDeps: primes the definition repository with the literal step behavior names", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-test-" });
+  try {
+    const repo = new YamlDefinitionRepository(dir);
+    const primed: (readonly string[])[] = [];
+    repo.primeNameHints = (names) => {
+      primed.push(names);
+      return Promise.resolve();
+    };
+    const deps = createWorkflowValidateDeps(
+      { getPath: () => "workflows/test.yaml" } as unknown as WorkflowRepository,
+      repo,
+    );
+    await deps.primeStepLookups?.([
+      Workflow.create({
+        name: "wf",
+        jobs: [
+          Job.create({
+            name: "job1",
+            steps: [
+              Step.create({
+                name: "step1",
+                task: StepTask.model("db", "run"),
+              }),
+              Step.create({
+                name: "step2",
+                task: StepTask.model("${{ inputs.target }}", "run"),
+              }),
+            ],
+          }),
+        ],
+      }),
+    ]);
+    assertEquals(primed, [["db"]]);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});

@@ -23,6 +23,7 @@ import {
   resetWithheldTokenFiles,
   serverLoginHint,
   serverTokenRefusedHint,
+  workspaceTokenRefusalHint,
 } from "./server_login_hint.ts";
 
 Deno.test("serverLoginHint: names server-login with the serve URL as given", () => {
@@ -77,9 +78,75 @@ Deno.test("serverLoginHint: a datastore upstream withheld the token file from na
   }
 });
 
-Deno.test("serverTokenRefusedHint: says the token was likely refused and names both fixes", () => {
+const HOST = "https://host.example";
+
+Deno.test("serverLoginHint: a workspace with no host token names the sign-in to its host", () => {
+  assertEquals(
+    serverLoginHint("wss://host.example/w/team", {
+      hostAddress: HOST,
+      kind: "no-host-token",
+    }),
+    "Authentication failed — run: swamp auth server-login --server https://host.example (one sign-in to the host covers its workspaces)",
+  );
+  assertEquals(
+    serverLoginHint("https://host.example/w/other"),
+    "Authentication failed — run: swamp auth server-login --server https://host.example/w/other",
+  );
+});
+
+Deno.test("serverLoginHint: a host token from SWAMP_SERVER_TOKEN says it is not used for workspaces", () => {
+  assertEquals(
+    serverLoginHint("https://host.example/w/team", {
+      hostAddress: HOST,
+      kind: "env-host-token",
+    }),
+    "Authentication failed — a host token from SWAMP_SERVER_TOKEN is not used to sign in to workspaces; run: swamp auth server-login --server https://host.example",
+  );
+});
+
+Deno.test("serverLoginHint: an exchanged workspace token refused says to sign in to the host again", () => {
+  const note = { hostAddress: HOST, kind: "exchanged-token" } as const;
+  assertEquals(
+    serverLoginHint("wss://host.example/w/team", note),
+    "Authentication failed — the workspace refused the token from your host sign-in; sign in to the host again to replace it: swamp auth server-login --server https://host.example",
+  );
+  assertEquals(
+    workspaceTokenRefusalHint(note),
+    "Behind a host this is also how a workspace refusing your token reads; signing in to the host again replaces it: swamp auth server-login --server https://host.example",
+  );
+  assertEquals(
+    workspaceTokenRefusalHint({ hostAddress: HOST, kind: "no-host-token" }),
+    undefined,
+  );
+  assertEquals(workspaceTokenRefusalHint(undefined), undefined);
+});
+
+Deno.test("serverLoginHint: a withheld token file comes first and names the host for a workspace sign-in gap", () => {
+  resetWithheldTokenFiles();
+  try {
+    recordWithheldTokenFile("https://host.example/w/team", "flag-or-env");
+    assertEquals(
+      serverLoginHint("https://host.example/w/team", {
+        hostAddress: HOST,
+        kind: "no-host-token",
+      }),
+      "Authentication failed — SWAMP_SERVER_TOKEN_FILE was not sent to https://host.example/w/team because only .swamp.yaml names that address; set SWAMP_SERVE_URL to it or pass --server to send it, or run: swamp auth server-login --server https://host.example",
+    );
+  } finally {
+    resetWithheldTokenFiles();
+  }
+});
+
+Deno.test("serverTokenRefusedHint: says the token was likely refused and names both fixes, or keeps a workspace's host remedy", () => {
   assertEquals(
     serverTokenRefusedHint("wss://serve.example.com/"),
     "Authentication failed — the server likely refused the token sent to wss://serve.example.com/; check the token, or run: swamp auth server-login --server wss://serve.example.com/",
+  );
+  assertEquals(
+    serverTokenRefusedHint("wss://host.example/w/team", {
+      hostAddress: HOST,
+      kind: "exchanged-token",
+    }),
+    "Authentication failed — the workspace refused the token from your host sign-in; sign in to the host again to replace it: swamp auth server-login --server https://host.example",
   );
 });

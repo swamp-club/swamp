@@ -23,7 +23,9 @@ import {
   analyzeWorkflowExpressions,
   changedStepTargets,
   isComputedStepTarget,
+  reachableStepBehaviorNames,
   readsSelfOrInputs,
+  stepBehaviorNames,
   stepRetargetSourcesChanged,
   type StepTarget,
   stepTargetKey,
@@ -351,4 +353,117 @@ Deno.test("changedStepTargets: a changed, renamed or moved step counts; one left
     ["db"],
   );
   assertEquals(changedNames(make([{ name: "main", steps: [other] }])), []);
+});
+
+Deno.test("stepBehaviorNames: lists each named behavior once across workflows and leaves out one named by expression", () => {
+  const first = workflowWith([
+    { type: "model_method", modelIdOrName: "db", methodName: "get" },
+    { type: "model_method", modelIdOrName: "cache", methodName: "get" },
+    {
+      type: "model_method",
+      modelType: "@acme/thing",
+      modelName: "t1",
+      methodName: "create",
+    },
+    { type: "workflow", workflowIdOrName: "child" },
+  ]);
+  const second = workflowWith([
+    { type: "model_method", modelIdOrName: "db", methodName: "put" },
+  ]);
+  assertEquals(stepBehaviorNames([first, second]), ["db", "cache"]);
+
+  const computed = workflowWith([
+    { type: "model_method", modelIdOrName: "db", methodName: "get" },
+    {
+      type: "model_method",
+      modelIdOrName: "${{ self.item }}",
+      methodName: "get",
+    },
+  ]);
+  assertEquals(stepBehaviorNames([computed]), ["db"]);
+});
+
+function model(name: string): Record<string, unknown> {
+  return { type: "model_method", modelIdOrName: name, methodName: "run" };
+}
+
+function call(ref: string): Record<string, unknown> {
+  return { type: "workflow", workflowIdOrName: ref };
+}
+
+function lookupOf(
+  workflows: Record<string, Workflow>,
+  asked: string[] = [],
+): (idOrName: string) => Promise<Workflow | null> {
+  return (idOrName) => {
+    asked.push(idOrName);
+    if (idOrName === "unreadable") {
+      return Promise.reject(new Error("cannot read"));
+    }
+    return Promise.resolve(workflows[idOrName] ?? null);
+  };
+}
+
+Deno.test("reachableStepBehaviorNames: adds the names of children and grandchildren once each", async () => {
+  const grandchild = workflowWith([model("deep"), model("shared")]);
+  const child = workflowWith([model("shared"), call("grandchild")]);
+  const parent = workflowWith([model("top"), call("child")]);
+
+  assertEquals(
+    await reachableStepBehaviorNames(
+      [parent],
+      lookupOf({ child, grandchild }),
+    ),
+    ["top", "shared", "deep"],
+  );
+});
+
+Deno.test("reachableStepBehaviorNames: a cycle of workflows ends, each looked up once per reference", async () => {
+  const child = workflowWith([model("inner"), call("parent")]);
+  const parent = workflowWith([model("outer"), call("child")]);
+  const asked: string[] = [];
+
+  assertEquals(
+    await reachableStepBehaviorNames(
+      [parent],
+      lookupOf({ parent, child }, asked),
+    ),
+    ["outer", "inner"],
+  );
+  assertEquals(asked, ["child", "parent"]);
+});
+
+Deno.test("reachableStepBehaviorNames: skips a child the lookup does not find or cannot read", async () => {
+  const parent = workflowWith([
+    model("top"),
+    call("absent"),
+    call("unreadable"),
+  ]);
+
+  assertEquals(
+    await reachableStepBehaviorNames([parent], lookupOf({})),
+    ["top"],
+  );
+});
+
+Deno.test("reachableStepBehaviorNames: never looks up a child named by expression, and leaves out direct and computed names", async () => {
+  const child = workflowWith([model("never")]);
+  const parent = workflowWith([
+    call("${{ inputs.wf }}"),
+    {
+      type: "model_method",
+      modelType: "@acme/thing",
+      modelName: "direct",
+      methodName: "run",
+    },
+    model("${{ self.item }}"),
+    model("literal"),
+  ]);
+  const asked: string[] = [];
+
+  assertEquals(
+    await reachableStepBehaviorNames([parent], lookupOf({ child }, asked)),
+    ["literal"],
+  );
+  assertEquals(asked, []);
 });

@@ -34,7 +34,22 @@ import { hostedWorkspaceResume } from "../../libswamp/hosted_workspace/resume.ts
 import { hostedWorkspaceSuspend } from "../../libswamp/hosted_workspace/suspend.ts";
 import type { SwampError } from "../../libswamp/errors.ts";
 import type { HostRootWorkspaces } from "../host_root_workspaces.ts";
-import type { WorkspaceNamePayload } from "../protocol.ts";
+import {
+  NOT_A_HOST_ROOT_CODE,
+  SIGN_IN_NOT_OFFERED_CODE,
+  SIGN_IN_REFUSED_FOR_CREDENTIAL_CODE,
+  SIGN_IN_REFUSED_FOR_INTEGRATION_CODE,
+  SIGN_IN_REFUSED_FOR_PRINCIPAL_CODE,
+  type WorkspaceNamePayload,
+} from "../protocol.ts";
+
+export {
+  NOT_A_HOST_ROOT_CODE,
+  SIGN_IN_NOT_OFFERED_CODE,
+  SIGN_IN_REFUSED_FOR_CREDENTIAL_CODE,
+  SIGN_IN_REFUSED_FOR_INTEGRATION_CODE,
+  SIGN_IN_REFUSED_FOR_PRINCIPAL_CODE,
+};
 import {
   accessCallerOf,
   authorizeOrReject,
@@ -47,14 +62,6 @@ import {
   wouldAuthorize,
 } from "./shared.ts";
 
-export const NOT_A_HOST_ROOT_CODE = "not_a_host_root";
-export const SIGN_IN_NOT_OFFERED_CODE = "sign_in_not_offered";
-export const SIGN_IN_REFUSED_FOR_INTEGRATION_CODE =
-  "sign_in_refused_for_integration";
-export const SIGN_IN_REFUSED_FOR_PRINCIPAL_CODE =
-  "sign_in_refused_for_principal";
-export const SIGN_IN_REFUSED_FOR_CREDENTIAL_CODE =
-  "sign_in_refused_for_credential";
 export const TOO_MANY_SIGN_IN_CODES_CODE = "too_many_sign_in_codes";
 
 type ServiceEvent<D> =

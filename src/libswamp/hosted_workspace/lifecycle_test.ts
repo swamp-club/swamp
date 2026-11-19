@@ -144,7 +144,13 @@ Deno.test("createHostedWorkspaceDeps: a change that cannot get the lock says the
     lockWaitMs: 50,
   });
   const held = Promise.withResolvers<void>();
-  const holding = deps.withLock("edge-dns", () => held.promise);
+  const entered = Promise.withResolvers<void>();
+  const holding = deps.withLock("edge-dns", () => {
+    entered.resolve();
+    return held.promise;
+  });
+  // racing holding fails the test, rather than hanging it, if the holder cannot lock
+  await Promise.race([entered.promise, holding]);
   try {
     const error = await assertRejects(
       () => deps.withLock("edge-dns", () => Promise.resolve()),

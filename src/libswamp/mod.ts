@@ -329,6 +329,10 @@ export {
   type ModelSearchItem,
 } from "./models/search.ts";
 export {
+  createModelTypeDetailLookup,
+  type ModelTypeDetail,
+} from "./models/type_detail.ts";
+export {
   createDoctorSecretsDeps,
   doctorSecrets,
   type DoctorSecretsData,

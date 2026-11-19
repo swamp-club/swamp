@@ -46,6 +46,23 @@ export function resetWithheldTokenFiles(): void {
   withheldTokenFiles.clear();
 }
 
+/** how a process signed in to a workspace through its host, or why it could not */
+export interface WorkspaceSignInNote {
+  readonly hostAddress: string;
+  readonly kind: "no-host-token" | "env-host-token" | "exchanged-token";
+}
+
+/**
+ * a host's router answers 502 for a workspace that refused the socket, so a
+ * server error there may be a refused token signing in to the host again cures
+ */
+export function workspaceTokenRefusalHint(
+  note: WorkspaceSignInNote | undefined,
+): string | undefined {
+  if (note?.kind !== "exchanged-token") return undefined;
+  return `Behind a host this is also how a workspace refusing your token reads; signing in to the host again replaces it: swamp auth server-login --server ${note.hostAddress}`;
+}
+
 /** names the normalized address only, never the file's path or contents */
 export function withheldTokenFileMessage(
   key: string,
@@ -61,20 +78,41 @@ export function withheldTokenFileMessage(
  * when this process withheld SWAMP_SERVER_TOKEN_FILE from the serve, the
  * message says so first, since signing in is then the wrong fix
  */
-export function serverLoginHint(serverUrl: string): string {
-  const login = `swamp auth server-login --server ${serverUrl}`;
+export function serverLoginHint(
+  serverUrl: string,
+  signIn?: WorkspaceSignInNote,
+): string {
   const key = normalizedOrUndefined(serverUrl);
+  const login = `swamp auth server-login --server ${
+    signIn?.hostAddress ?? serverUrl
+  }`;
   const remedy = key === undefined ? undefined : withheldTokenFiles.get(key);
   if (key !== undefined && remedy !== undefined) {
     return `Authentication failed — ${
       withheldTokenFileMessage(key, remedy)
     }, or run: ${login}`;
   }
-  return `Authentication failed — run: ${login}`;
+  switch (signIn?.kind) {
+    case "env-host-token":
+      return `Authentication failed — a host token from SWAMP_SERVER_TOKEN is not used to sign in to workspaces; run: ${login}`;
+    case "no-host-token":
+      return `Authentication failed — run: ${login} (one sign-in to the host covers its workspaces)`;
+    case "exchanged-token":
+      return `Authentication failed — the workspace refused the token from your host sign-in; sign in to the host again to replace it: ${login}`;
+    default:
+      return `Authentication failed — run: ${login}`;
+  }
 }
 
-/** the token may come from --token, a token file or a login, so both fixes are named */
-export function serverTokenRefusedHint(serverUrl: string): string {
+/**
+ * the token may come from --token, a token file or a login, so both fixes are
+ * named; a workspace signed in through its host keeps the host's remedy
+ */
+export function serverTokenRefusedHint(
+  serverUrl: string,
+  signIn?: WorkspaceSignInNote,
+): string {
+  if (signIn !== undefined) return serverLoginHint(serverUrl, signIn);
   return `Authentication failed — the server likely refused the token sent to ${serverUrl}; check the token, or run: swamp auth server-login --server ${serverUrl}`;
 }
 

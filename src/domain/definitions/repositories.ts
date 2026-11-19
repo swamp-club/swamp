@@ -57,6 +57,12 @@ export interface DefinitionRepository {
   findAllGlobal(): Promise<{ definition: Definition; type: ModelType }[]>;
 
   /**
+   * optional: lets a caller about to look up many names by findByNameGlobal
+   * pay one walk for them
+   */
+  primeNameHints?(names: readonly string[]): Promise<void>;
+
+  /**
    * optional: without it, a lookup by id only searches the registered types and
    * the primary definitions
    */

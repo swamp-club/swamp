@@ -910,7 +910,9 @@ grants, subjects and the `can-i` request.
 With `--server`, the CLI opens a WebSocket, sends one request and consumes the
 event stream (`src/cli/remote_run.ts`). URL: the flag, then `SWAMP_SERVE_URL`,
 then `SWAMP_SERVER_URL`. Token: `--token`, then `SWAMP_SERVER_TOKEN`, then
-`~/.config/swamp/servers.json` (written by `swamp auth server-login`). The
+`~/.config/swamp/servers.json` (written by `swamp auth server-login`), then,
+for a hosted workspace, a token obtained through its host (see
+[serve-workspaces § Sign-in](../surfaces/serve-workspaces.md#sign-in)). The
 server builds deps from the shared `RepositoryContext`, drives the same libswamp
 generator as the local command (`src/serve/deps.ts`), and serialises each event
 back over the socket (`src/serve/serializer.ts`).
