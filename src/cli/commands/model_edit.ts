@@ -180,7 +180,7 @@ export function createModelEditCommand(syntax: CommandSyntax) {
 
         const searchRenderer = createModelSearchRenderer(
           cliCtx.outputMode,
-          undefined,
+          {},
           syntax.surface,
         );
         await consumeStream(
