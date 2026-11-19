@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { join } from "@std/path";
+import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { REPO_MARKER_FILE } from "../../infrastructure/persistence/hosted_workspace_folder_scan.ts";
 import {
@@ -38,6 +39,7 @@ const logger = getSwampLogger(["serve", "host", "workspaces"]);
 export const HOST_REGISTRY_LOCK_WAIT: WorkspaceRegistryLockWait = {
   maxWaitMs: 2_000,
   retryIntervalMs: 100,
+  contentionLogLevel: "debug",
 };
 
 export function hostWorkspaceStore(dirs: {
@@ -71,6 +73,8 @@ export interface WorkspaceRegistrar {
   unregister(name: string): Promise<void>;
   /** the entry goes with the next sync, which is tried again until it does */
   forget(name: string): void;
+  /** no sync starts after this, queued or not; a removal may still unregister */
+  close(): void;
   drain(): Promise<void>;
 }
 
@@ -83,6 +87,7 @@ export function createWorkspaceRegistrar(options: {
   let tail: Promise<void> = Promise.resolve();
   let served: () => readonly string[] = () => [];
   let syncQueued = false;
+  let closed = false;
   const forgetting = new Set<string>();
   const reported = new ReasonMemo();
 
@@ -100,11 +105,12 @@ export function createWorkspaceRegistrar(options: {
     );
   };
 
-  const failed = (key: string, what: string, error: unknown) => {
-    if (!reported.changed(key, errorClassOf(error))) return;
+  // one key for every write, so a held lock is one line however many names wait on it
+  const failed = (error: unknown) => {
+    if (!reported.changed("write", errorClassOf(error))) return;
     logger.warn(
-      "{what} in the workspace registry failed, and is tried again at every rescan: {error}",
-      { what, error },
+      "Writing the workspace registry failed, and is tried again at every rescan: {reason}",
+      { reason: reasonOf(error) },
     );
   };
 
@@ -150,61 +156,57 @@ export function createWorkspaceRegistrar(options: {
     }
   };
 
+  /** false when the registry cannot be read, so the run writes nothing more */
   const forgetPending = async (listed: ReadonlySet<string>) => {
     for (const name of [...forgetting]) {
       if (listed.has(name)) {
         forgetting.delete(name);
         continue;
       }
-      try {
-        const outcome = await unregisterHostedWorkspace(store, {
-          workspacesDir,
-          name,
-        });
-        if (outcome.kind === "unreadable") {
-          unreadable(outcome.reason);
-          continue;
-        }
-        forgetting.delete(name);
-        reported.clear(`forget:${name}`);
-        reported.clear("unreadable");
-      } catch (error) {
-        failed(`forget:${name}`, `Removing workspace ${name}`, error);
+      const outcome = await unregisterHostedWorkspace(store, {
+        workspacesDir,
+        name,
+      });
+      if (outcome.kind === "unreadable") {
+        unreadable(outcome.reason);
+        return false;
       }
+      forgetting.delete(name);
     }
+    return true;
   };
 
+  // a write that fails ends the run, so one run waits for the lock at most once
   const runSync = async () => {
     const listed = served();
-    await forgetPending(new Set(listed));
-    if (listed.length === 0) return;
     try {
-      const result = await registerHostedWorkspaces(store, {
-        workspacesDir,
-        names: listed,
-      });
-      if (result.kind === "unreadable") {
-        unreadable(result.reason);
-        return;
+      if (!await forgetPending(new Set(listed))) return;
+      if (listed.length > 0) {
+        const result = await registerHostedWorkspaces(store, {
+          workspacesDir,
+          names: listed,
+        });
+        if (result.kind === "unreadable") {
+          unreadable(result.reason);
+          return;
+        }
+        for (const workspace of result.workspaces) report(workspace);
       }
       reported.clear("unreadable");
-      reported.clear("register");
-      for (const workspace of result.workspaces) report(workspace);
+      reported.clear("write");
     } catch (error) {
-      failed("register", "Registering the host's workspaces", error);
+      failed(error);
     }
   };
 
   // the run joins the queue drain waits for; it reports its own failures
   const requestSync = () => {
-    if (syncQueued) return;
+    if (syncQueued || closed) return;
     syncQueued = true;
     tail = tail.then(async () => {
       syncQueued = false;
-      await runSync();
-    }).catch((error) => {
-      failed("register", "Registering the host's workspaces", error);
-    });
+      if (!closed) await runSync();
+    }).catch(failed);
   };
 
   return {
@@ -231,6 +233,10 @@ export function createWorkspaceRegistrar(options: {
       requestSync();
     },
 
+    close() {
+      closed = true;
+    },
+
     async drain() {
       for (let last = tail;; last = tail) {
         await last;
@@ -242,4 +248,14 @@ export function createWorkspaceRegistrar(options: {
 
 function errorClassOf(error: unknown): string {
   return error instanceof Error ? error.name : typeof error;
+}
+
+// a timeout names the holder and how long it waited, which change every try
+function reasonOf(error: unknown): string {
+  if (error instanceof LockTimeoutError) {
+    return `another process held its lock for longer than ${
+      HOST_REGISTRY_LOCK_WAIT.maxWaitMs / 1000
+    } s`;
+  }
+  return error instanceof Error ? error.message : String(error);
 }

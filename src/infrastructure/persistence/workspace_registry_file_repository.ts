@@ -51,6 +51,7 @@ const RegistryFileSchema = z.object({
 export interface WorkspaceRegistryLockWait {
   readonly maxWaitMs: number;
   readonly retryIntervalMs: number;
+  readonly contentionLogLevel?: "warn" | "debug";
 }
 
 export class WorkspaceRegistryFileRepository
@@ -126,6 +127,7 @@ export class WorkspaceRegistryFileRepository
         maxWaitMs: this.lockWait.maxWaitMs,
         retryIntervalMs: this.lockWait.retryIntervalMs,
         maxBackoffMs: this.lockWait.retryIntervalMs,
+        contentionLogLevel: this.lockWait.contentionLogLevel,
       }),
     });
     await lock.acquire();

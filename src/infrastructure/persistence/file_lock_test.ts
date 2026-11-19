@@ -645,6 +645,55 @@ Deno.test("FileLock - waiter with a small maxBackoffMs acquires after the holder
   });
 });
 
+Deno.test("FileLock - contentionLogLevel debug reports waiting and acquiring at debug, never above", async () => {
+  await withTempDir(async (dir) => {
+    capturedLogRecords.length = 0;
+    await configure({
+      sinks: {
+        capture: (record: LogRecord) => {
+          capturedLogRecords.push(record);
+        },
+      },
+      loggers: [
+        {
+          category: ["datastore", "lock"],
+          lowestLevel: "debug",
+          sinks: ["capture"],
+        },
+      ],
+      reset: true,
+    });
+    const levelsOf = (text: string) =>
+      capturedLogRecords.filter((r) =>
+        r.message.map((p) => String(p)).join("").includes(text)
+      ).map((r) => r.level);
+
+    try {
+      const holder = new FileLock(dir, { ttlMs: 60_000 });
+      await holder.acquire();
+      const waiter = new FileLock(dir, {
+        ttlMs: 60_000,
+        retryIntervalMs: 10,
+        maxBackoffMs: 20,
+        maxWaitMs: 10_000,
+        contentionLogLevel: "debug",
+      });
+      const acquired = waiter.acquire();
+      await waitFor(
+        () => levelsOf("Waiting for lock").length > 0,
+        "waiter to back off",
+      );
+      await holder.release();
+      await acquired;
+      await waiter.release();
+      assertEquals(levelsOf("Waiting for lock"), ["debug"]);
+      assertEquals(levelsOf("Acquired lock"), ["debug"]);
+    } finally {
+      await initializeLogging({ _reset: true });
+    }
+  });
+});
+
 Deno.test("FileLock - maxWaitMs override is respected", async () => {
   await withTempDir(async (dir) => {
     const holder = new FileLock(dir, { ttlMs: 60_000 });

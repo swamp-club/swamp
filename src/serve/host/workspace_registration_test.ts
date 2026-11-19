@@ -20,6 +20,7 @@
 import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
+import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
 import type { WorkspaceRegistry } from "../../domain/workspace/workspace_registry.ts";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { WorkspaceRegistryFileRepository } from "../../infrastructure/persistence/workspace_registry_file_repository.ts";
@@ -297,5 +298,81 @@ Deno.test("createWorkspaceRegistrar: a forgotten name loses its entry, is retrie
     registrar.sync(() => ["beta"]);
     await registrar.drain();
     assertEquals(await f.names(), ["beta"]);
+  });
+});
+
+Deno.test("createWorkspaceRegistrar: a held lock ends the run at its first write, and is logged once without a stack, however many names wait", async () => {
+  await withFixture(async (f) => {
+    for (const name of ["a", "b", "c", "d"]) await f.makeRepo(name);
+    const registrar = createWorkspaceRegistrar(f);
+    registrar.sync(() => ["a", "b", "c", "d"]);
+    await registrar.drain();
+
+    let writes = 0;
+    const timeout = () =>
+      new LockTimeoutError(
+        join(f.dir, "config", "workspaces.json.lock"),
+        null,
+        2000,
+      );
+    const held = createWorkspaceRegistrar({
+      workspacesDir: f.workspacesDir,
+      store: {
+        ...f.store,
+        registry: {
+          load: () => f.repository.load(),
+          update: () => {
+            writes++;
+            return Promise.reject(timeout());
+          },
+        },
+      },
+    });
+    const records = await captured(async () => {
+      for (const name of ["a", "b", "c"]) held.forget(name);
+      held.sync(() => ["d"]);
+      await held.drain();
+      held.sync(() => ["d"]);
+      await held.drain();
+    });
+    assertEquals(writes, 2, "one write attempt per run");
+    const warnings = records.filter((r) => r.level === "warning");
+    assertEquals(warnings.length, 1);
+    assertEquals(
+      warnings[0].properties.reason,
+      "another process held its lock for longer than 2 s",
+    );
+  });
+});
+
+Deno.test("createWorkspaceRegistrar: after close no sync starts, a queued one is skipped, and a removal may still unregister", async () => {
+  await withFixture(async (f) => {
+    await f.makeRepo("alpha");
+    await f.repository.update((r) =>
+      r.register({
+        name: "gone",
+        path: join(f.workspacesDir, "gone"),
+        createdAt: "t",
+      })
+    );
+    const registrar = createWorkspaceRegistrar(f);
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    f.interceptUpdate(async () => {
+      entered.resolve();
+      await release.promise;
+    });
+    // a forget whose run is held at its write, then one queued behind it
+    registrar.sync(() => []);
+    registrar.forget("gone");
+    await entered.promise;
+    registrar.sync(() => ["alpha"]);
+    registrar.close();
+    registrar.sync(() => ["alpha"]);
+    const unregistered = registrar.unregister("gone");
+    release.resolve();
+    await unregistered;
+    await registrar.drain();
+    assertEquals(await f.names(), []);
   });
 });

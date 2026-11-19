@@ -39,6 +39,7 @@ import type {
 import type { ListenedServe } from "../src/serve/listening_line.ts";
 import type { WorkspaceChange } from "../src/serve/host/workspace_folder.ts";
 import { hostWorkspaceStore } from "../src/serve/host/workspace_registration.ts";
+import { FileLock } from "../src/infrastructure/persistence/file_lock.ts";
 import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import {
@@ -1166,6 +1167,11 @@ async function hostLogs(fn: () => Promise<void>): Promise<LogRecord[]> {
         lowestLevel: "info",
         sinks: ["capture"],
       },
+      {
+        category: ["datastore", "lock"],
+        lowestLevel: "info",
+        sinks: ["capture"],
+      },
       { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
     ],
     reset: true,
@@ -1362,4 +1368,51 @@ Deno.test("serve host registry: a registry that cannot be read leaves the host s
     assert(records.some((r) => logText(r).includes("cannot be read")));
     assertEquals(await Deno.readTextFile(registryFile(folder.dir)), content);
   }
+});
+
+Deno.test("serve host registry: a registry lock held by another process is logged once while rescans go on, and the lock's own waiting is not a warning", async () => {
+  await using folder = await hostFolder();
+  const workspaces = join(folder.dir, "workspaces");
+  await makeWorkspace(join(workspaces, "edge-dns"));
+  await writeRegistry(folder.dir, []);
+  const holder = new FileLock(join(folder.dir, "config"), {
+    lockKey: "workspaces.json.lock",
+    ttlMs: 60_000,
+  });
+  await holder.acquire();
+  const added: string[] = [];
+  let records: LogRecord[] = [];
+  try {
+    records = await hostLogs(async () => {
+      const host = await start(
+        folder.dir,
+        NO_ROOT,
+        new StandInPort(),
+        undefined,
+        (change) => added.push(...change.added),
+      );
+      try {
+        // each folder seen is a rescan, and each rescan tries the held lock
+        for (const later of ["later-one", "later-two"]) {
+          await makeWorkspace(join(workspaces, later));
+          await waitFor(() => added.includes(later), `${later} to be seen`);
+        }
+      } finally {
+        await host.shutdown();
+      }
+    });
+  } finally {
+    await holder.release();
+  }
+  const failures = records.filter((r) =>
+    logText(r).includes("Writing the workspace registry failed")
+  );
+  assertEquals(failures.length, 1);
+  assertEquals(
+    records.filter((r) =>
+      r.category.join(".") === "datastore.lock" && r.level !== "debug"
+    ).map(logText),
+    [],
+  );
+  assertEquals(await registered(folder.dir), {});
 });

@@ -247,6 +247,7 @@ interface HostStack {
 // the listener closes last, so a request during the drain is answered, not
 // refused; status files are marked stopped once no serve can report again
 async function stopAll(stack: HostStack): Promise<void> {
+  stack.registrar.close();
   await stack.watcher?.stop();
   await stack.supervisor.shutdown();
   await stack.reconciler.drain();

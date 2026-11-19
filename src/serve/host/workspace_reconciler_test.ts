@@ -69,6 +69,8 @@ class RecordingRegistrar implements WorkspaceRegistrar {
     this.calls.push(`forget:${name}`);
   }
 
+  close(): void {}
+
   drain(): Promise<void> {
     return Promise.resolve();
   }

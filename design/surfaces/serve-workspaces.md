@@ -328,7 +328,9 @@ list until step 20.
   fails or times out is tried again at the next rescan and logged once per
   reason; it never delays or stops a serve, and a rescan does not wait for it.
   The host's writes run one at a time, so a registration a rescan started never
-  lands after a removal has taken the entry away. A registry the host creates adopts the repos under the data dir
+  lands after a removal has taken the entry away. A rescan's writes stop at the
+  first that fails, so they wait for the lock once, and a host that is stopping
+  starts no new registration. A registry the host creates adopts the repos under the data dir
   first, as any command that writes does. The host's read adopts nothing and
   takes no lock a workspace command would wait on.
 - `workspace.create` registers the workspace it made once its folder is renamed

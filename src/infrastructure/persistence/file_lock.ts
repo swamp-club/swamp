@@ -70,6 +70,11 @@ export interface FileLockOptions extends LockOptions {
    * durable v2 datastore
    */
   syncCreatedDirectories?: boolean;
+  /**
+   * debug for a caller that retries on its own schedule and reports a timeout
+   * itself, so waiting is not news on every attempt
+   */
+  contentionLogLevel?: "warn" | "debug";
 }
 
 /**
@@ -278,6 +283,7 @@ export class FileLock implements DistributedLock {
   private readonly sameHostPidCheck: boolean;
   private readonly diagnosticKind: "auto_definition" | "file";
   readonly syncCreatedDirectories: boolean;
+  private readonly contentionLogLevel: "warn" | "debug";
   private heartbeatId: ReturnType<typeof setInterval> | undefined;
   private held = false;
   private releasing = false;
@@ -303,6 +309,7 @@ export class FileLock implements DistributedLock {
     this.sameHostPidCheck = options?.sameHostPidCheck ?? false;
     this.diagnosticKind = options?.diagnosticKind ?? "file";
     this.syncCreatedDirectories = options?.syncCreatedDirectories ?? false;
+    this.contentionLogLevel = options?.contentionLogLevel ?? "warn";
   }
 
   private async ensureLockDir(): Promise<void> {
@@ -375,8 +382,13 @@ export class FileLock implements DistributedLock {
         if (retryCount > 0) {
           const waitMs = Date.now() - startTime;
           const logger = getSwampLogger(["datastore", "lock"]);
-          logger
-            .info`Acquired lock ${this.lockPath} after ${retryCount} retries (${waitMs}ms)`;
+          if (this.contentionLogLevel === "debug") {
+            logger
+              .debug`Acquired lock ${this.lockPath} after ${retryCount} retries (${waitMs}ms)`;
+          } else {
+            logger
+              .info`Acquired lock ${this.lockPath} after ${retryCount} retries (${waitMs}ms)`;
+          }
         }
         return;
       }
@@ -393,8 +405,13 @@ export class FileLock implements DistributedLock {
       if (holder !== "unreadable" && !contentionLogged) {
         const ageMs = Date.now() - new Date(holder.acquiredAt).getTime();
         const logger = getSwampLogger(["datastore", "lock"]);
-        logger
-          .warn`Waiting for lock ${this.lockPath} held by ${holder.holder} (pid ${holder.pid}, acquired ${ageMs}ms ago)`;
+        if (this.contentionLogLevel === "debug") {
+          logger
+            .debug`Waiting for lock ${this.lockPath} held by ${holder.holder} (pid ${holder.pid}, acquired ${ageMs}ms ago)`;
+        } else {
+          logger
+            .warn`Waiting for lock ${this.lockPath} held by ${holder.holder} (pid ${holder.pid}, acquired ${ageMs}ms ago)`;
+        }
         contentionLogged = true;
       }
 
