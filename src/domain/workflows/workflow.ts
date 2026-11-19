@@ -338,16 +338,20 @@ export class Workflow {
   }
 
   /**
-   * precedence is caller inputs, then trigger.inputs, then schema defaults
-   * applied downstream; resolved trigger inputs replace the raw ones so the
-   * rule stays in the aggregate
+   * precedence is caller inputs, then trigger.inputs (trigger-fired runs only),
+   * then schema defaults applied downstream; resolved trigger inputs replace
+   * the raw ones so the rule stays in the aggregate
    */
   baselineInputs(
     callerInputs: Record<string, unknown>,
-    resolvedTriggerInputs?: Record<string, unknown>,
+    options: {
+      triggerFired: boolean;
+      resolvedTriggerInputs?: Record<string, unknown>;
+    },
   ): Record<string, unknown> {
+    if (!options.triggerFired) return deepMerge({}, callerInputs);
     return deepMerge(
-      resolvedTriggerInputs ?? this.trigger?.inputs ?? {},
+      options.resolvedTriggerInputs ?? this.trigger?.inputs ?? {},
       callerInputs,
     );
   }

@@ -1027,7 +1027,10 @@ Deno.test("Workflow.baselineInputs returns caller inputs when no trigger inputs"
     jobs: [createTestJob("job1")],
   });
 
-  assertEquals(workflow.baselineInputs({ foo: "bar" }), { foo: "bar" });
+  assertEquals(
+    workflow.baselineInputs({ foo: "bar" }, { triggerFired: true }),
+    { foo: "bar" },
+  );
 });
 
 Deno.test("Workflow.baselineInputs returns trigger inputs when caller is empty", () => {
@@ -1037,7 +1040,10 @@ Deno.test("Workflow.baselineInputs returns trigger inputs when caller is empty",
     jobs: [createTestJob("job1")],
   });
 
-  assertEquals(workflow.baselineInputs({}), { projectId: "p1", count: 3 });
+  assertEquals(workflow.baselineInputs({}, { triggerFired: true }), {
+    projectId: "p1",
+    count: 3,
+  });
 });
 
 Deno.test("Workflow.baselineInputs lets caller inputs override trigger inputs", () => {
@@ -1050,10 +1056,13 @@ Deno.test("Workflow.baselineInputs lets caller inputs override trigger inputs", 
     jobs: [createTestJob("job1")],
   });
 
-  assertEquals(workflow.baselineInputs({ projectId: "p2" }), {
-    projectId: "p2",
-    region: "us",
-  });
+  assertEquals(
+    workflow.baselineInputs({ projectId: "p2" }, { triggerFired: true }),
+    {
+      projectId: "p2",
+      region: "us",
+    },
+  );
 });
 
 Deno.test("Workflow.baselineInputs preserves non-string trigger input types", () => {
@@ -1066,7 +1075,7 @@ Deno.test("Workflow.baselineInputs preserves non-string trigger input types", ()
     jobs: [createTestJob("job1")],
   });
 
-  const result = workflow.baselineInputs({});
+  const result = workflow.baselineInputs({}, { triggerFired: true });
   assertEquals(result.count, 5);
   assertEquals(result.enabled, false);
   assertEquals(result.ratio, 1.5);
@@ -1085,7 +1094,10 @@ Deno.test("Workflow.baselineInputs uses resolvedTriggerInputs over raw trigger i
   // The webhook path resolves trigger.inputs against the payload first and
   // passes the resolved values as the baseline layer.
   assertEquals(
-    workflow.baselineInputs({}, { identifier: "PLT-1057" }),
+    workflow.baselineInputs({}, {
+      triggerFired: true,
+      resolvedTriggerInputs: { identifier: "PLT-1057" },
+    }),
     { identifier: "PLT-1057" },
   );
 });
@@ -1099,9 +1111,43 @@ Deno.test("Workflow.baselineInputs lets caller override resolvedTriggerInputs", 
 
   assertEquals(
     workflow.baselineInputs({ identifier: "OVERRIDE" }, {
-      identifier: "PLT-1057",
+      triggerFired: true,
+      resolvedTriggerInputs: { identifier: "PLT-1057" },
     }),
     { identifier: "OVERRIDE" },
+  );
+});
+
+Deno.test("Workflow.baselineInputs ignores trigger inputs for a run that is not trigger-fired", () => {
+  const workflow = Workflow.create({
+    name: "manual-run-skips-trigger-inputs",
+    trigger: {
+      schedule: "0 3 * * *",
+      inputs: { dryRun: false, region: "us" },
+    },
+    jobs: [createTestJob("job1")],
+  });
+
+  assertEquals(workflow.baselineInputs({}, { triggerFired: false }), {});
+  assertEquals(
+    workflow.baselineInputs({ region: "eu" }, { triggerFired: false }),
+    { region: "eu" },
+  );
+});
+
+Deno.test("Workflow.baselineInputs ignores resolvedTriggerInputs for a run that is not trigger-fired", () => {
+  const workflow = Workflow.create({
+    name: "manual-run-skips-resolved-trigger-inputs",
+    trigger: { inputs: { identifier: "${{ webhook.body.id }}" } },
+    jobs: [createTestJob("job1")],
+  });
+
+  assertEquals(
+    workflow.baselineInputs({}, {
+      triggerFired: false,
+      resolvedTriggerInputs: { identifier: "PLT-1057" },
+    }),
+    {},
   );
 });
 

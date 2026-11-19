@@ -613,11 +613,13 @@ export async function executeWorkflowWithLocks(
     openUnitOfWork: repoUnitOfWorkFactory(repoContext),
   });
 
-  // precedence is caller inputs > trigger.inputs > schema defaults; webhook
-  // trigger.inputs resolve against the payload here, before coercion and
-  // validation, so a required input mapped from it satisfies the schema
+  // an api run or one with no source is manual and gets no trigger.inputs
+  const triggerFired = options.triggerSource === "schedule" ||
+    options.triggerSource === "webhook";
+  // webhook trigger.inputs resolve before coercion and validation, so a
+  // required input mapped from the payload satisfies the schema
   let resolvedTriggerInputs: Record<string, unknown> | undefined;
-  if (workflow && input.webhook && workflow.triggerInputs) {
+  if (triggerFired && workflow && input.webhook && workflow.triggerInputs) {
     const resolver = new TriggerInputResolver(new CelEvaluator());
     resolvedTriggerInputs = await resolver.resolve(workflow.triggerInputs, {
       model: {},
@@ -630,10 +632,10 @@ export async function executeWorkflowWithLocks(
     ...(workflow
       ? {
         ...input,
-        inputs: workflow.baselineInputs(
-          input.inputs ?? {},
+        inputs: workflow.baselineInputs(input.inputs ?? {}, {
+          triggerFired,
           resolvedTriggerInputs,
-        ),
+        }),
       }
       : input),
     triggerSource: options.triggerSource,
