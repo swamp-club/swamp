@@ -4377,9 +4377,18 @@ const globalMergeModel: ModelDefinition = defineModel({
     retries: z.number().optional(),
     region: z.string().default("us-east-1"),
     label: z.string().transform((v) => v.trim()).optional(),
+    kind: z.string().optional(),
   }),
   resources: {},
   methods: {
+    pick: {
+      description: "Pick",
+      arguments: z.discriminatedUnion("kind", [
+        z.object({ kind: z.literal("a"), n: z.number() }),
+        z.object({ kind: z.literal("b"), s: z.string() }),
+      ]),
+      execute: () => Promise.resolve({ dataHandles: [] }),
+    },
     deploy: {
       description: "Deploy",
       arguments: z.object({ region: z.string(), label: z.string().min(1) }),
@@ -4601,4 +4610,29 @@ Deno.test("validateModel: a global argument only the global schema marks sensiti
   assertEquals(result?.passed, false);
   assertStringIncludes(result?.error ?? "", "bad token ***");
   assertEquals(result?.error?.includes("hunter2-long"), false);
+});
+
+Deno.test("validateModel: an unresolved global leaves a required field nothing supplies to fail", async () => {
+  const result = await methodArgumentsResult(
+    { region: "${{ inputs.r }}" },
+    { deploy: { arguments: {} } },
+  );
+  assertEquals(result?.passed, false);
+  assertStringIncludes(result?.error ?? "", '"label"');
+});
+
+Deno.test("validateModel: an expression global a union method schema cannot read leaves its arguments checked", async () => {
+  const result = await methodArgumentsResult(
+    { shell: "${{ inputs.sh }}" },
+    { pick: { arguments: { kind: "bogus" } } },
+  );
+  assertEquals(result?.passed, false);
+});
+
+Deno.test("validateModel: a union method schema's discriminator filled by an expression global waits for the run", async () => {
+  const result = await methodArgumentsResult(
+    { kind: "${{ inputs.kind }}" },
+    { pick: { arguments: { n: 1 } } },
+  );
+  assertEquals(result?.passed, true, result?.error);
 });

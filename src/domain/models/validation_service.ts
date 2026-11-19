@@ -63,6 +63,7 @@ import { UserError } from "../errors.ts";
 import { SecretRedactor } from "../secrets/secret_redactor.ts";
 import { outputSpecTags, reservedRunTagRefusal } from "./data_writer.ts";
 import {
+  acceptsMethodArgumentKey,
   coerceMethodArgs,
   getObjectShape,
   isRecordSchema,
@@ -1035,7 +1036,7 @@ export class DefaultModelValidationService implements ModelValidationService {
         }
       }
       // the merge a run parses, method arguments over schema-parsed globals; a
-      // field an unevaluated global fills is left to the run, as it leaves it
+      // field an unevaluated global fills is left to the run once evaluated
       const merged: [string, unknown][] = [];
       const unresolved = new Set<string>();
       if (!isRecordSchema(methodArgsSchema)) {
@@ -1043,7 +1044,7 @@ export class DefaultModelValidationService implements ModelValidationService {
           if (Object.hasOwn(staticArgs, key)) continue;
           if (!containsSwampExpression(value)) {
             merged.push([key, value]);
-          } else if (!shape || Object.hasOwn(shape, key)) {
+          } else if (acceptsMethodArgumentKey(methodArgsSchema, key)) {
             unresolved.add(key);
           }
         }
@@ -1068,21 +1069,19 @@ export class DefaultModelValidationService implements ModelValidationService {
       // described as a run's refusal is, so the schema's own code cannot spell
       // a sensitive value here, and a schema that throws while parsing is
       // reported as a run reports it
-      let issues: readonly z.ZodIssue[] | undefined;
+      let issues: z.ZodIssue[] = [];
       try {
-        if (unresolved.size === 0) {
-          const parsed = methodArgsSchema.safeParse(
-            coercedArgs,
-            argumentParseContext(),
+        const parsed = methodArgsSchema.safeParse(
+          coercedArgs,
+          argumentParseContext(),
+        );
+        // an issue at an unresolved field, or at the root where its absence
+        // may be the cause, waits for the evaluated value
+        if (!parsed.success) {
+          issues = parsed.error.issues.filter((issue) =>
+            unresolved.size === 0 ||
+            (issue.path.length > 0 && !unresolved.has(String(issue.path[0])))
           );
-          if (!parsed.success) issues = parsed.error.issues;
-        } else {
-          const parsed = parseGlobalArgumentsLeniently(
-            methodArgsSchema,
-            coercedArgs,
-            unresolved,
-          );
-          if (!parsed.success) issues = parsed.issues;
         }
       } catch (error) {
         errors.push(
@@ -1094,7 +1093,7 @@ export class DefaultModelValidationService implements ModelValidationService {
         );
         continue;
       }
-      if (issues !== undefined) {
+      if (issues.length > 0) {
         const described = formatZodError({
           issues: maskRefusedIssues(methodArgsSchema, coercedArgs, issues),
         });
