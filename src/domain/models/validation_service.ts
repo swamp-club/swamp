@@ -49,6 +49,7 @@ import {
 } from "./template_syntax_scan.ts";
 import { CalVer } from "./calver.ts";
 import {
+  extractSensitiveFieldValues,
   findLiteralSensitiveGlobalArgs,
   literalSensitiveGlobalArgsMessage,
   maskRefusedIssues,
@@ -59,6 +60,7 @@ import {
   MALFORMED_TYPE_VERSION_CODE,
 } from "./definition_upgrade_service.ts";
 import { UserError } from "../errors.ts";
+import { SecretRedactor } from "../secrets/secret_redactor.ts";
 import { outputSpecTags, reservedRunTagRefusal } from "./data_writer.ts";
 import {
   coerceMethodArgs,
@@ -450,8 +452,8 @@ function deliveredMethodData(
 
 /**
  * global arguments parsed by the type's schema as a method run does before its
- * checks, leaving swamp expressions as written; a refused or throwing parse
- * leaves values as given for Global arguments to report
+ * checks and its method merge, leaving swamp expressions as written; a refused
+ * or throwing parse leaves values as given for Global arguments to report
  */
 function parsedForChecks(
   modelDef: ModelDefinition,
@@ -1047,6 +1049,19 @@ export class DefaultModelValidationService implements ModelValidationService {
         }
       }
       if (dependsOnExpression) continue;
+      // a global only the global schema marks sensitive is masked in this
+      // refusal as a run's redactor masks it
+      const redactor = new SecretRedactor();
+      if (modelDef.globalArguments) {
+        for (
+          const value of extractSensitiveFieldValues(
+            modelDef.globalArguments,
+            Object.fromEntries(merged),
+          )
+        ) {
+          redactor.addSecret(value);
+        }
+      }
       const coercedArgs = coerceMethodArgs(
         { ...Object.fromEntries(merged), ...staticArgs },
         methodArgsSchema,
@@ -1063,7 +1078,9 @@ export class DefaultModelValidationService implements ModelValidationService {
       } catch (error) {
         errors.push(
           `Method "${methodName}": ${
-            schemaThrowMessage(error, methodArgsSchema, "Method arguments")
+            redactor.redact(
+              schemaThrowMessage(error, methodArgsSchema, "Method arguments"),
+            )
           }`,
         );
         continue;
@@ -1076,7 +1093,7 @@ export class DefaultModelValidationService implements ModelValidationService {
             result.error.issues,
           ),
         });
-        errors.push(`Method "${methodName}": ${described}`);
+        errors.push(`Method "${methodName}": ${redactor.redact(described)}`);
       }
     }
 

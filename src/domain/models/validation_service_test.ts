@@ -4562,3 +4562,36 @@ Deno.test("validateModel: a global argument named __proto__ stays a key in the m
   assertEquals(result?.passed, true, result?.error);
   assertEquals(Object.getPrototypeOf({}), Object.prototype);
 });
+
+Deno.test("validateModel: a global argument only the global schema marks sensitive is withheld from a method refusal that echoes it", async () => {
+  const model: ModelDefinition = {
+    ...testExprModel,
+    globalArguments: z.object({
+      token: z.string().meta({ sensitive: true }),
+    }),
+    methods: {
+      write: {
+        ...testExprModel.methods.write,
+        arguments: z.object({ token: z.string() }).superRefine((v, ctx) => {
+          ctx.addIssue({
+            code: "custom",
+            path: ["token"],
+            message: `bad token ${v.token}`,
+          });
+        }),
+      },
+    },
+  };
+  const { results } = await new DefaultModelValidationService().validateModel(
+    Definition.create({
+      name: "test-definition",
+      globalArguments: { token: "hunter2-long" },
+      methods: { write: { arguments: {} } },
+    }),
+    model,
+  );
+  const result = results.find((r) => r.name === "Method arguments");
+  assertEquals(result?.passed, false);
+  assertStringIncludes(result?.error ?? "", "bad token ***");
+  assertEquals(result?.error?.includes("hunter2-long"), false);
+});
