@@ -4451,12 +4451,19 @@ Deno.test("validateModel: a global argument the method schema does not declare i
   assertEquals(result?.passed, true, result?.error);
 });
 
-Deno.test("validateModel: a declared global argument holding a swamp expression leaves the method to the run", async () => {
+Deno.test("validateModel: a declared global argument holding a swamp expression leaves its field to the run and checks the rest", async () => {
   const declared = await methodArgumentsResult(
     { run: "${{ inputs.cmd }}" },
     { execute: { arguments: {} } },
   );
   assertEquals(declared?.passed, true, declared?.error);
+
+  const staticInvalid = await methodArgumentsResult(
+    { run: "${{ inputs.cmd }}" },
+    { execute: { arguments: { timeout: "abc" } } },
+  );
+  assertEquals(staticInvalid?.passed, false);
+  assertStringIncludes(staticInvalid?.error ?? "", '"timeout"');
 
   const overridden = await methodArgumentsResult(
     { run: "${{ inputs.cmd }}" },

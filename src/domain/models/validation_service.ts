@@ -1034,21 +1034,20 @@ export class DefaultModelValidationService implements ModelValidationService {
           continue;
         }
       }
-      // the merge a run parses: method arguments over schema-parsed globals, a
-      // global still holding a swamp expression left for the run once evaluated
+      // the merge a run parses, method arguments over schema-parsed globals; a
+      // field an unevaluated global fills is left to the run, as it leaves it
       const merged: [string, unknown][] = [];
-      let dependsOnExpression = false;
+      const unresolved = new Set<string>();
       if (!isRecordSchema(methodArgsSchema)) {
         for (const [key, value] of Object.entries(globalArgs)) {
           if (Object.hasOwn(staticArgs, key)) continue;
           if (!containsSwampExpression(value)) {
             merged.push([key, value]);
           } else if (!shape || Object.hasOwn(shape, key)) {
-            dependsOnExpression = true;
+            unresolved.add(key);
           }
         }
       }
-      if (dependsOnExpression) continue;
       // a global only the global schema marks sensitive is masked in this
       // refusal as a run's redactor masks it
       const redactor = new SecretRedactor();
@@ -1069,12 +1068,22 @@ export class DefaultModelValidationService implements ModelValidationService {
       // described as a run's refusal is, so the schema's own code cannot spell
       // a sensitive value here, and a schema that throws while parsing is
       // reported as a run reports it
-      let result: ReturnType<typeof methodArgsSchema.safeParse>;
+      let issues: readonly z.ZodIssue[] | undefined;
       try {
-        result = methodArgsSchema.safeParse(
-          coercedArgs,
-          argumentParseContext(),
-        );
+        if (unresolved.size === 0) {
+          const parsed = methodArgsSchema.safeParse(
+            coercedArgs,
+            argumentParseContext(),
+          );
+          if (!parsed.success) issues = parsed.error.issues;
+        } else {
+          const parsed = parseGlobalArgumentsLeniently(
+            methodArgsSchema,
+            coercedArgs,
+            unresolved,
+          );
+          if (!parsed.success) issues = parsed.issues;
+        }
       } catch (error) {
         errors.push(
           `Method "${methodName}": ${
@@ -1085,13 +1094,9 @@ export class DefaultModelValidationService implements ModelValidationService {
         );
         continue;
       }
-      if (!result.success) {
+      if (issues !== undefined) {
         const described = formatZodError({
-          issues: maskRefusedIssues(
-            methodArgsSchema,
-            coercedArgs,
-            result.error.issues,
-          ),
+          issues: maskRefusedIssues(methodArgsSchema, coercedArgs, issues),
         });
         errors.push(`Method "${methodName}": ${redactor.redact(described)}`);
       }
