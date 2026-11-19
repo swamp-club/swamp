@@ -141,6 +141,7 @@ Deno.test("createHostedWorkspaceDeps: a change that cannot get the lock says the
     workspacesDir: host.dir,
     provisioner: { provision: () => Promise.resolve() },
     addressOf: (name) => name,
+    workspaceStore: host.store,
     lockWaitMs: 50,
   });
   const held = Promise.withResolvers<void>();

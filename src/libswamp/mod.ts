@@ -2262,3 +2262,11 @@ export {
   MAX_WORKSPACE_PARENT_LENGTH,
   resolveChosenFolder,
 } from "./workspace/workspace_store.ts";
+export {
+  type HostedRegistration,
+  type HostedRegistrationResult,
+  type HostedRegistryDeps,
+  type HostedUnregistration,
+  registerHostedWorkspaces,
+  unregisterHostedWorkspace,
+} from "./workspace/hosted_registration.ts";

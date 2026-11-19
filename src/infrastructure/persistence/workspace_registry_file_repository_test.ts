@@ -20,6 +20,8 @@
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { errorPaths, UserError } from "../../domain/errors.ts";
+import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
+import { FileLock } from "./file_lock.ts";
 import { WorkspaceRegistryFileRepository } from "./workspace_registry_file_repository.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
@@ -184,5 +186,25 @@ Deno.test("WorkspaceRegistryFileRepository: persists origin, loads files without
     assertEquals(legacy?.get("old")?.origin, undefined);
     assertEquals(legacy?.get("odd")?.origin, undefined);
     assertEquals(legacy?.get("odd")?.path, "/w/odd");
+  });
+});
+
+Deno.test("WorkspaceRegistryFileRepository: a bounded lock wait gives up while another holder keeps the lock", async () => {
+  await withTempDir(async (dir) => {
+    const holder = new FileLock(dir, { lockKey: "workspaces.json.lock" });
+    await holder.acquire();
+    try {
+      const repo = new WorkspaceRegistryFileRepository(dir, {
+        maxWaitMs: 200,
+        retryIntervalMs: 50,
+      });
+      await assertRejects(
+        () => repo.update((r) => r.rememberAgent("x")),
+        LockTimeoutError,
+      );
+      assertEquals(await repo.load(), null);
+    } finally {
+      await holder.release();
+    }
   });
 });

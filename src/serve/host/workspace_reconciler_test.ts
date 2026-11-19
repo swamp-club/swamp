@@ -48,6 +48,33 @@ import {
   ReasonMemo,
   type WorkspaceReconciler,
 } from "./workspace_reconciler.ts";
+import type { WorkspaceRegistrar } from "./workspace_registration.ts";
+
+/** records what the reconciler asks of the registry; writes nothing */
+class RecordingRegistrar implements WorkspaceRegistrar {
+  readonly calls: string[] = [];
+  served: () => readonly string[] = () => [];
+  onUnregister: (name: string) => Promise<void> = () => Promise.resolve();
+
+  sync(served: () => readonly string[]): void {
+    this.served = served;
+  }
+
+  async unregister(name: string): Promise<void> {
+    this.calls.push(`unregister:${name}`);
+    await this.onUnregister(name);
+  }
+
+  forget(name: string): void {
+    this.calls.push(`forget:${name}`);
+  }
+
+  close(): void {}
+
+  drain(): Promise<void> {
+    return Promise.resolve();
+  }
+}
 
 class Child implements ServeChild {
   readonly listening: Promise<ListenedServe>;
@@ -115,6 +142,7 @@ interface Harness extends AsyncDisposable {
   readonly statusWriter: StatusWriter;
   readonly reconciler: WorkspaceReconciler;
   readonly repository: HostedWorkspaceFileRepository;
+  readonly registrar: RecordingRegistrar;
   begin(): Promise<readonly string[]>;
   rescan(): Promise<void>;
   observed(name: string): string | undefined;
@@ -123,6 +151,7 @@ interface Harness extends AsyncDisposable {
 async function harness(
   rename?: (from: string, to: string) => Promise<void>,
 ): Promise<Harness> {
+  const registrar = new RecordingRegistrar();
   const dir = await Deno.makeTempDir();
   const port = new Port();
   // a short retry, since one test makes status writes fail on purpose
@@ -151,6 +180,7 @@ async function harness(
     }),
     repository,
     statusWriter,
+    registrar,
     rename,
   });
   return {
@@ -160,6 +190,7 @@ async function harness(
     statusWriter,
     reconciler,
     repository,
+    registrar,
     async begin() {
       const scan = await scanWorkspaces(dir);
       return reconciler.begin(scan, await readWantedFiles(repository, scan));
@@ -776,4 +807,67 @@ Deno.test("createWorkspaceReconciler: a running workspace whose wanted file is r
   await h.rescan();
   assertEquals(h.observed("edge-dns"), "ready");
   assertEquals(h.port.of("edge-dns").length, 1, "never stopped");
+});
+
+Deno.test("createWorkspaceReconciler: begin and each rescan ask the registrar to register the served workspaces of the latest scan", async () => {
+  await using h = await harness();
+  await makeRepo(h.dir, "alpha");
+  await makeRepo(h.dir, "doomed");
+  await want(h.dir, "doomed", "wanted: deleted\n");
+  await h.begin();
+  assertEquals(h.registrar.served(), ["alpha"]);
+  await makeRepo(h.dir, "beta");
+  await h.rescan();
+  assertEquals(h.registrar.served(), ["alpha", "beta"]);
+});
+
+Deno.test("createWorkspaceReconciler: a delete unregisters after the folder is gone and before the status and wanted files", async () => {
+  await using h = await harness();
+  await makeRepo(h.dir, "alpha");
+  await want(h.dir, "alpha", "wanted: deleted\n");
+  await Deno.writeTextFile(join(h.dir, "alpha.status.yaml"), "state: ready\n");
+  const seen: string[][] = [];
+  h.registrar.onUnregister = async () => {
+    seen.push(await entries(h.dir));
+  };
+  await h.begin();
+  await h.reconciler.drain();
+  assertEquals(h.registrar.calls, ["unregister:alpha"]);
+  assertEquals(seen, [["alpha.status.yaml", "alpha.wanted.yaml"]]);
+  assertEquals(await entries(h.dir), []);
+});
+
+Deno.test("createWorkspaceReconciler: a failed unregister keeps the wanted file and is tried again at the next rescan", async () => {
+  await using h = await harness();
+  await makeRepo(h.dir, "alpha");
+  await want(h.dir, "alpha", "wanted: deleted\n");
+  let fail = true;
+  h.registrar.onUnregister = () =>
+    fail ? Promise.reject(new Error("lock timed out")) : Promise.resolve();
+  await h.begin();
+  await h.reconciler.drain();
+  assert(await exists(join(h.dir, "alpha.wanted.yaml")));
+  assert(!(await exists(join(h.dir, "alpha"))));
+
+  fail = false;
+  await h.rescan();
+  await h.reconciler.drain();
+  assertEquals(h.registrar.calls, ["unregister:alpha", "unregister:alpha"]);
+  assertEquals(await entries(h.dir), []);
+});
+
+Deno.test("createWorkspaceReconciler: a folder removed by hand loses its entry once its serve has stopped and its status file is gone", async () => {
+  await using h = await harness();
+  await makeRepo(h.dir, "alpha");
+  await want(h.dir, "alpha", "wanted: active\n");
+  await h.begin();
+  await waitFor(() => h.observed("alpha") === "ready", "ready");
+  await h.statusWriter.drain();
+
+  await Deno.remove(join(h.dir, "alpha"), { recursive: true });
+  await h.rescan();
+  await h.reconciler.drain();
+  assertEquals(h.registrar.calls, ["forget:alpha"]);
+  assert(!(await exists(join(h.dir, "alpha.status.yaml"))));
+  assertEquals(h.registrar.served(), []);
 });

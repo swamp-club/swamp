@@ -42,6 +42,10 @@ import {
   SIGN_IN_REFUSED_FOR_PRINCIPAL_CODE,
 } from "../src/serve/handlers/workspace_handlers.ts";
 import { hostRootWorkspaces } from "../src/serve/host_root_workspaces.ts";
+import {
+  createWorkspaceRegistrar,
+  hostWorkspaceStore,
+} from "../src/serve/host/workspace_registration.ts";
 import type { ListenedServe } from "../src/serve/listening_line.ts";
 import { loadServeConfig } from "../src/serve/serve_config.ts";
 import type {
@@ -127,6 +131,11 @@ async function withRoot(fn: (root: Root) => Promise<void>): Promise<void> {
     const hostDir = await Deno.makeTempDir({ prefix: "swamp-host-" });
     const workspacesDir = join(hostDir, "workspaces");
     await Deno.mkdir(workspacesDir);
+    // a registry and data dir inside the temp folder, never the user's
+    const store = hostWorkspaceStore({
+      dataDir: join(hostDir, "data"),
+      configDir: join(hostDir, "config"),
+    });
     const port = new CountingPort();
     const statusWriter = createStatusWriter({ workspacesDir, retryMs: 10 });
     const supervisor = createServeSupervisor({
@@ -145,11 +154,13 @@ async function withRoot(fn: (root: Root) => Promise<void>): Promise<void> {
       }),
       repository: new HostedWorkspaceFileRepository(workspacesDir),
       statusWriter,
+      registrar: createWorkspaceRegistrar({ workspacesDir, store }),
     });
     const root = hostRootWorkspaces(
       { dir: workspacesDir, address: HOST_ADDRESS },
       {},
       () => ROOT_ACCESS,
+      () => store,
     )!;
     const hostedWorkspaces = {
       ...root,

@@ -54,6 +54,11 @@ import {
   type WorkspaceReconciler,
 } from "./workspace_reconciler.ts";
 import {
+  createWorkspaceRegistrar,
+  type WorkspaceRegistrar,
+} from "./workspace_registration.ts";
+import type { HostedRegistryDeps } from "../../libswamp/workspace/hosted_registration.ts";
+import {
   createWorkspaceRouter,
   type WorkspaceDirectory,
   type WorkspaceRoute,
@@ -66,6 +71,7 @@ export interface ServeHostOptions {
   readonly processPort: ServeProcessPort;
   /** every child's whole environment */
   readonly childEnv: Readonly<Record<string, string>>;
+  readonly workspaceStore: HostedRegistryDeps;
   readonly onWorkspaceChange?: (change: WorkspaceChange) => void;
   readonly rescanMs?: number;
   readonly supervisor?: Pick<
@@ -163,17 +169,23 @@ export async function startServeHost(
       : {}),
   });
 
+  const registrar = createWorkspaceRegistrar({
+    workspacesDir: config.workspacesDir,
+    store: options.workspaceStore,
+  });
   const reconciler = createWorkspaceReconciler({
     workspacesDir: config.workspacesDir,
     supervisor,
     specOf: (name) => specOf(workspaceServe(name)),
     repository,
     statusWriter,
+    registrar,
   });
   const stack: HostStack = {
     watcher: null,
     supervisor,
     reconciler,
+    registrar,
     statusWriter,
     routerAbort,
     server,
@@ -226,6 +238,7 @@ interface HostStack {
   watcher: WorkspaceWatcher | null;
   readonly supervisor: ServeSupervisor;
   readonly reconciler: WorkspaceReconciler;
+  readonly registrar: WorkspaceRegistrar;
   readonly statusWriter: StatusWriter;
   readonly routerAbort: AbortController;
   readonly server: Deno.HttpServer<Deno.NetAddr>;
@@ -234,9 +247,11 @@ interface HostStack {
 // the listener closes last, so a request during the drain is answered, not
 // refused; status files are marked stopped once no serve can report again
 async function stopAll(stack: HostStack): Promise<void> {
+  stack.registrar.close();
   await stack.watcher?.stop();
   await stack.supervisor.shutdown();
   await stack.reconciler.drain();
+  await stack.registrar.drain();
   stack.statusWriter.markShutDown();
   await stack.statusWriter.drain();
   stack.routerAbort.abort();

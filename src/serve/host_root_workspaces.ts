@@ -29,6 +29,7 @@ import {
   HOST_WORKSPACES_DIR_FLAG,
 } from "./host/serve_process.ts";
 import { hostedWorkspaceAddress } from "./host/workspace_path.ts";
+import type { HostedRegistryDeps } from "../libswamp/workspace/hosted_registration.ts";
 import { childHostedWorkspaceProvisioner } from "./workspace_provision_process.ts";
 
 /** what a host's root answers workspace requests with */
@@ -46,11 +47,15 @@ const PROVISION_DROPPED_NAMES: ReadonlySet<string> = new Set([
   "SWAMP_DATASTORE",
 ]);
 
-/** undefined for a serve the host did not start as its root; `env` is the root's own */
+/**
+ * undefined for a serve the host did not start as its root; `env` is the root's
+ * own, and `workspaceStore` is called only for a root
+ */
 export function hostRootWorkspaces(
   flags: { readonly dir?: string; readonly address?: string },
   env: Readonly<Record<string, string>>,
   rootAccess: () => HostedWorkspaceRootAccess,
+  workspaceStore: () => HostedRegistryDeps,
 ): HostRootWorkspaces | undefined {
   const { dir, address } = flags;
   if (dir === undefined && address === undefined) return undefined;
@@ -64,6 +69,7 @@ export function hostRootWorkspaces(
       workspacesDir: dir,
       provisioner: childHostedWorkspaceProvisioner(provisionEnv(env)),
       addressOf: (name) => hostedWorkspaceAddress(address, name),
+      workspaceStore: workspaceStore(),
     }),
     rootAccess,
     signInCodes: new SignInCodeStore(),

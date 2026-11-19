@@ -20,6 +20,14 @@
 import { assertEquals, assertThrows } from "@std/assert";
 import { UserError } from "../domain/errors.ts";
 import { hostRootWorkspaces, provisionEnv } from "./host_root_workspaces.ts";
+import { hostWorkspaceStore } from "./host/workspace_registration.ts";
+
+// paths only: nothing in these tests writes the registry
+const STORE = () =>
+  hostWorkspaceStore({ dataDir: "/host/data", configDir: "/host/config" });
+const NEVER = () => {
+  throw new Error("a serve that is not a host's root builds no registry store");
+};
 
 const ACCESS = () => ({
   mode: "none" as const,
@@ -30,7 +38,7 @@ const ACCESS = () => ({
 });
 
 Deno.test("hostRootWorkspaces: a serve given neither flag is not a host's root", () => {
-  assertEquals(hostRootWorkspaces({}, {}, ACCESS), undefined);
+  assertEquals(hostRootWorkspaces({}, {}, ACCESS, NEVER), undefined);
 });
 
 Deno.test("hostRootWorkspaces: the root's services work on the folder and name each workspace under the host's address", () => {
@@ -41,8 +49,10 @@ Deno.test("hostRootWorkspaces: the root's services work on the folder and name e
     },
     {},
     ACCESS,
+    STORE,
   );
   assertEquals(root?.services.workspacesDir, "/host/workspaces");
+  assertEquals(root?.services.workspaceStore.dataDir, "/host/data");
   assertEquals(
     root?.services.addressOf("edge-dns"),
     "https://serve.example/w/edge-dns",
@@ -59,7 +69,7 @@ Deno.test("hostRootWorkspaces: one flag without the other refuses to start", () 
     ]
   ) {
     assertThrows(
-      () => hostRootWorkspaces(flags, {}, ACCESS),
+      () => hostRootWorkspaces(flags, {}, ACCESS, NEVER),
       UserError,
       "together",
     );

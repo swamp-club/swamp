@@ -36,6 +36,7 @@ import {
   readHostedWorkspaceStatus,
 } from "../../infrastructure/persistence/hosted_workspace_status_file.ts";
 import type { LibSwampContext } from "../context.ts";
+import type { HostedRegistryDeps } from "../workspace/hosted_registration.ts";
 import type { SwampError } from "../errors.ts";
 
 /** who asks; the services do no authorization of their own */
@@ -82,6 +83,7 @@ export interface HostedWorkspaceDeps {
   /** runs `fn` while no other service changes the named workspace */
   readonly withLock: <T>(name: string, fn: () => Promise<T>) => Promise<T>;
   readonly provisionTimeoutMs: number;
+  readonly workspaceStore: HostedRegistryDeps;
 }
 
 export const DEFAULT_PROVISION_TIMEOUT_MS = 120_000;
@@ -91,6 +93,7 @@ export function createHostedWorkspaceDeps(options: {
   workspacesDir: string;
   provisioner: HostedWorkspaceProvisioner;
   addressOf: (name: string) => string;
+  workspaceStore: HostedRegistryDeps;
   provisionTimeoutMs?: number;
   lockWaitMs?: number;
 }): HostedWorkspaceDeps {
@@ -132,6 +135,7 @@ export function createHostedWorkspaceDeps(options: {
       }
     },
     provisionTimeoutMs,
+    workspaceStore: options.workspaceStore,
   };
 }
 

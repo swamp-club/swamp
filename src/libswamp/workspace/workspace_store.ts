@@ -40,6 +40,11 @@ export interface WorkspaceStoreDeps {
   readonly configuredParent?: () => Promise<string | undefined>;
 }
 
+/** what reading and writing the registry needs, without a way to make a repo */
+export type WorkspaceRegistryAccess =
+  & Pick<WorkspaceStoreDeps, "dataDir" | "registry" | "now">
+  & { readonly repo: Pick<WorkspaceStoreDeps["repo"], "isRepo"> };
+
 export function workspacesRoot(dataDir: string): string {
   return join(dataDir, "workspaces");
 }
@@ -66,7 +71,7 @@ export function defaultWorkspacePath(dataDir: string, name: string): string {
  * is read
  */
 export async function loadWorkspaceRegistry(
-  deps: WorkspaceStoreDeps,
+  deps: WorkspaceRegistryAccess,
   options: { readOnly?: boolean } = {},
 ): Promise<WorkspaceRegistry> {
   const existing = await deps.registry.load();
@@ -474,7 +479,7 @@ export async function importWorkspace(
     ? parseWorkspaceNameWithCode(input.name.trim())
     : null;
   const known = await loadWorkspaceRegistry(deps);
-  const realRoot = await realPathOrSelf(workspacesRoot(deps.dataDir));
+  const origin = await importOrigin(deps.dataDir, real);
   const sameFolder = new Set<string>([real]);
   await Promise.all(
     known.list().map(async (entry) => {
@@ -509,15 +514,22 @@ export async function importWorkspace(
       name,
       path: real,
       createdAt: deps.now().toISOString(),
-      // A folder under the data dir's own folder is one Swamp made and
-      // `workspace remove` left behind: bringing it back keeps it created.
-      origin: isUnder(real, workspacesRoot(deps.dataDir)) ||
-          isUnder(real, realRoot)
-        ? "created"
-        : "imported",
+      origin,
     });
     return { name, path: real, alreadyRegistered: false };
   });
+}
+
+export async function importOrigin(
+  dataDir: string,
+  real: string,
+): Promise<WorkspaceOrigin> {
+  const root = workspacesRoot(dataDir);
+  // A folder under the data dir's own folder is one Swamp made and
+  // `workspace remove` left behind: bringing it back keeps it created.
+  return isUnder(real, root) || isUnder(real, await realPathOrSelf(root))
+    ? "created"
+    : "imported";
 }
 
 export function expandHome(
