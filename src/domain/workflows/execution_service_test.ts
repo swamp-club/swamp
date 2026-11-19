@@ -3978,6 +3978,7 @@ async function runDefinitionStep(
       globalArguments: z.object({
         cidr: z.string().optional(),
         target: z.string().optional(),
+        value: z.string().optional(),
       }),
       resources: {},
       methods: { execute: method, delete: method },
@@ -4223,6 +4224,26 @@ Deno.test({
       );
       assertEquals(received, [{ value: "ok" }], String(deleteArguments.value));
     }
+  },
+});
+
+Deno.test({
+  name:
+    "DefaultStepExecutor: a method argument supplied as a global argument passes validation beside an authored arguments block",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  fn: async () => {
+    const received = await runDefinitionStep(
+      {
+        name: "g-run",
+        globalArguments: { value: "from-global" },
+        methods: { execute: { arguments: {} } },
+      },
+      "execute",
+      undefined,
+      {},
+    );
+    assertEquals(received, [{ value: "from-global" }]);
   },
 });
 
@@ -19061,6 +19082,102 @@ Deno.test({
       }
     });
     assertEquals(received, [{ port: 8080, token: "Pl41n-s3cret" }]);
+  },
+});
+
+Deno.test({
+  name:
+    "DefaultStepExecutor: a vault-sourced global argument the method also declares passes the method's format check",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  fn: async () => {
+    const { z } = await import("zod");
+    const { modelRegistry } = await import("../models/model.ts");
+    const { attachSensitiveValues } = await import(
+      "../expressions/sensitive_context.ts"
+    );
+    const { initializeLogging } = await import(
+      "../../infrastructure/logging/logger.ts"
+    );
+    await initializeLogging({});
+    const received: Record<string, unknown>[] = [];
+    await withTempDir(async (tempDir) => {
+      const modelType = ModelType.create(
+        `@test-merge/vault-${crypto.randomUUID().slice(0, 8)}`,
+      );
+      const modelDef = {
+        type: modelType,
+        version: "2026.09.30.1",
+        globalArguments: z.object({ token: z.string() }),
+        resources: {},
+        methods: {
+          run: {
+            description: "records its arguments",
+            arguments: z.object({ token: z.string().regex(/^Pl41n-/) }),
+            execute: (args: Record<string, unknown>) => {
+              received.push({ ...args });
+              return Promise.resolve({});
+            },
+          },
+        },
+      };
+      modelRegistry.register(modelDef);
+      const resolver: DirectTypeResolver = (
+        _typeArg,
+        definitionName,
+        _methodName,
+        _inputs,
+        globalArgs,
+      ) =>
+        Promise.resolve({
+          definition: Definition.create({
+            name: definitionName,
+            type: modelType.normalized,
+            typeVersion: modelDef.version,
+            globalArguments: { token: globalArgs?.token },
+            methods: { run: { arguments: {} } },
+          }),
+          modelType,
+          created: true,
+          routedMethodInputs: {},
+        });
+      const values = new RunSensitiveValues();
+      values.addSecret("Pl41n-s3cret", { vaultName: "prod", key: "token" });
+      const step = Step.create({
+        name: "step",
+        task: StepTask.directExecution(
+          modelType.normalized,
+          "direct",
+          "run",
+          undefined,
+          { token: "${{ inputs.tok }}" },
+        ),
+      });
+      const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+      try {
+        await new DefaultStepExecutor(undefined, resolver).execute(step, {
+          sensitiveValues: values,
+          workflowId: createWorkflowId(crypto.randomUUID()),
+          workflowRunId: crypto.randomUUID(),
+          workflowName: "wf",
+          jobName: "job",
+          stepName: "step",
+          repoDir: tempDir,
+          signal: new AbortController().signal,
+          step,
+          catalogStore,
+          authoredExpressions: new Set(["${{ inputs.tok }}"]),
+          expressionContext: attachSensitiveValues({
+            model: {},
+            env: {},
+            inputs: { tok: "Pl41n-s3cret" },
+          }, values),
+        });
+      } finally {
+        catalogStore.close();
+      }
+    });
+    assertEquals(received, [{ token: "Pl41n-s3cret" }]);
   },
 });
 

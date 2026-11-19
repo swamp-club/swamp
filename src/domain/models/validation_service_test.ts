@@ -4367,3 +4367,272 @@ Deno.test("validateModel: under the untrusted policy method arguments stop at th
     restore();
   }
 });
+
+const globalMergeModel: ModelDefinition = defineModel({
+  type: ModelType.create("test/global-merge"),
+  version: "2026.02.09.1",
+  globalArguments: z.object({
+    run: z.unknown().optional(),
+    shell: z.string().optional(),
+    retries: z.number().optional(),
+    region: z.string().default("us-east-1"),
+    label: z.string().transform((v) => v.trim()).optional(),
+    kind: z.string().optional(),
+  }),
+  resources: {},
+  methods: {
+    pick: {
+      description: "Pick",
+      arguments: z.discriminatedUnion("kind", [
+        z.object({ kind: z.literal("a"), n: z.number() }),
+        z.object({ kind: z.literal("b"), s: z.string() }),
+      ]),
+      execute: () => Promise.resolve({ dataHandles: [] }),
+    },
+    deploy: {
+      description: "Deploy",
+      arguments: z.object({ region: z.string(), label: z.string().min(1) }),
+      execute: () => Promise.resolve({ dataHandles: [] }),
+    },
+    execute: {
+      description: "Run",
+      arguments: z.object({ run: z.string(), timeout: z.number().optional() }),
+      execute: () => Promise.resolve({ dataHandles: [] }),
+    },
+    tagged: {
+      description: "Tag",
+      arguments: z.record(z.string(), z.string()),
+      execute: () => Promise.resolve({ dataHandles: [] }),
+    },
+  },
+});
+
+async function methodArgumentsResult(
+  globalArguments: Record<string, unknown>,
+  methods: Record<string, { arguments: Record<string, unknown> }>,
+  method?: string,
+) {
+  const { results } = await new DefaultModelValidationService().validateModel(
+    Definition.create({ name: "merge-def", globalArguments, methods }),
+    globalMergeModel,
+    undefined,
+    undefined,
+    { method },
+  );
+  return results.find((r) => r.name === "Method arguments");
+}
+
+Deno.test("validateModel: a required method argument supplied as a global argument passes beside an authored arguments block", async () => {
+  const empty = await methodArgumentsResult({ run: "echo hi" }, {
+    execute: { arguments: {} },
+  });
+  assertEquals(empty?.passed, true, empty?.error);
+  const other = await methodArgumentsResult({ run: "echo hi" }, {
+    execute: { arguments: { timeout: 5 } },
+  });
+  assertEquals(other?.passed, true, other?.error);
+});
+
+Deno.test("validateModel: an authored method argument overrides the global argument of the same key", async () => {
+  const invalidAuthored = await methodArgumentsResult({ run: "echo hi" }, {
+    execute: { arguments: { run: 7 } },
+  });
+  assertEquals(invalidAuthored?.passed, false);
+  const invalidGlobal = await methodArgumentsResult({ run: 7 }, {
+    execute: { arguments: { run: "echo hi" } },
+  });
+  assertEquals(invalidGlobal?.passed, true, invalidGlobal?.error);
+});
+
+Deno.test("validateModel: a method argument in neither the method nor the global arguments still fails", async () => {
+  const result = await methodArgumentsResult({ shell: "bash" }, {
+    execute: { arguments: {} },
+  });
+  assertEquals(result?.passed, false);
+  assertStringIncludes(result?.error ?? "", 'received undefined at "run"');
+});
+
+Deno.test("validateModel: a global argument the method schema does not declare is not an unknown method argument", async () => {
+  const result = await methodArgumentsResult(
+    { run: "echo hi", shell: "bash", retries: 3 },
+    { execute: { arguments: {} } },
+  );
+  assertEquals(result?.passed, true, result?.error);
+});
+
+Deno.test("validateModel: a declared global argument holding a swamp expression leaves its field to the run and checks the rest", async () => {
+  const declared = await methodArgumentsResult(
+    { run: "${{ inputs.cmd }}" },
+    { execute: { arguments: {} } },
+  );
+  assertEquals(declared?.passed, true, declared?.error);
+
+  const staticInvalid = await methodArgumentsResult(
+    { run: "${{ inputs.cmd }}" },
+    { execute: { arguments: { timeout: "abc" } } },
+  );
+  assertEquals(staticInvalid?.passed, false);
+  assertStringIncludes(staticInvalid?.error ?? "", '"timeout"');
+
+  const overridden = await methodArgumentsResult(
+    { run: "${{ inputs.cmd }}" },
+    { execute: { arguments: { run: 7 } } },
+  );
+  assertEquals(overridden?.passed, false);
+
+  const undeclared = await methodArgumentsResult(
+    { shell: "${{ inputs.sh }}" },
+    { execute: { arguments: {} } },
+  );
+  assertEquals(undeclared?.passed, false);
+  assertStringIncludes(undeclared?.error ?? "", 'received undefined at "run"');
+});
+
+Deno.test("validateModel: a global argument holding another system's template text is merged and checked", async () => {
+  const result = await methodArgumentsResult(
+    { run: "echo {{ name }}" },
+    { execute: { arguments: {} } },
+  );
+  assertEquals(result?.passed, true, result?.error);
+});
+
+Deno.test("validateModel: a record method schema parses the authored method arguments alone", async () => {
+  const result = await methodArgumentsResult({ retries: 3 }, {
+    tagged: { arguments: { team: "ops" } },
+  });
+  assertEquals(result?.passed, true, result?.error);
+});
+
+Deno.test("validateModel: scoped to a method, only that method's merge is validated", async () => {
+  const methods = {
+    execute: { arguments: {} },
+    tagged: { arguments: { team: "ops" } },
+  };
+  const scoped = await methodArgumentsResult(
+    { shell: "bash" },
+    methods,
+    "tagged",
+  );
+  assertEquals(scoped?.passed, true, scoped?.error);
+  const unscoped = await methodArgumentsResult({ shell: "bash" }, methods);
+  assertEquals(unscoped?.passed, false);
+});
+
+Deno.test("validateModel: a sensitive global argument merged into a method's arguments is withheld from its refusal, as it is from the global arguments' own", async () => {
+  const sensitive = z.string().meta({ sensitive: true });
+  const echoing = z.object({
+    apiKey: sensitive,
+    confirm: z.string().optional(),
+  }).superRefine((v, ctx) => {
+    ctx.addIssue({
+      code: "custom",
+      path: ["confirm"],
+      message: `confirm must equal ${v.apiKey}`,
+    });
+  });
+  const model: ModelDefinition = {
+    ...testExprModel,
+    globalArguments: echoing,
+    methods: {
+      write: { ...testExprModel.methods.write, arguments: echoing },
+    },
+  };
+  const { results } = await new DefaultModelValidationService().validateModel(
+    Definition.create({
+      name: "test-definition",
+      globalArguments: { apiKey: "hunter2-long", confirm: "x" },
+      methods: { write: { arguments: {} } },
+    }),
+    model,
+  );
+  for (const name of ["Global arguments", "Method arguments"]) {
+    const result = results.find((r) => r.name === name);
+    assertEquals(result?.passed, false, name);
+    assertStringIncludes(
+      result?.error ?? "",
+      'Invalid input at "confirm"',
+      name,
+    );
+    assertEquals(result?.error?.includes("hunter2-long"), false, name);
+  }
+});
+
+Deno.test("validateModel: a method argument reads a global argument as the global schema parses it, default and transform applied", async () => {
+  const defaulted = await methodArgumentsResult({ label: "web" }, {
+    deploy: { arguments: {} },
+  });
+  assertEquals(defaulted?.passed, true, defaulted?.error);
+
+  const trimmed = await methodArgumentsResult({ label: "   " }, {
+    deploy: { arguments: {} },
+  });
+  assertEquals(trimmed?.passed, false);
+  assertStringIncludes(trimmed?.error ?? "", '"label"');
+});
+
+Deno.test("validateModel: a global argument named __proto__ stays a key in the method's merge", async () => {
+  const globals = JSON.parse('{"run": "echo hi", "__proto__": {"x": 1}}');
+  const result = await methodArgumentsResult(globals, {
+    execute: { arguments: {} },
+  });
+  assertEquals(result?.passed, true, result?.error);
+  assertEquals(Object.getPrototypeOf({}), Object.prototype);
+});
+
+Deno.test("validateModel: a global argument only the global schema marks sensitive is withheld from a method refusal that echoes it", async () => {
+  const model: ModelDefinition = {
+    ...testExprModel,
+    globalArguments: z.object({
+      token: z.string().meta({ sensitive: true }),
+    }),
+    methods: {
+      write: {
+        ...testExprModel.methods.write,
+        arguments: z.object({ token: z.string() }).superRefine((v, ctx) => {
+          ctx.addIssue({
+            code: "custom",
+            path: ["token"],
+            message: `bad token ${v.token}`,
+          });
+        }),
+      },
+    },
+  };
+  const { results } = await new DefaultModelValidationService().validateModel(
+    Definition.create({
+      name: "test-definition",
+      globalArguments: { token: "hunter2-long" },
+      methods: { write: { arguments: {} } },
+    }),
+    model,
+  );
+  const result = results.find((r) => r.name === "Method arguments");
+  assertEquals(result?.passed, false);
+  assertStringIncludes(result?.error ?? "", "bad token ***");
+  assertEquals(result?.error?.includes("hunter2-long"), false);
+});
+
+Deno.test("validateModel: an unresolved global leaves a required field nothing supplies to fail", async () => {
+  const result = await methodArgumentsResult(
+    { region: "${{ inputs.r }}" },
+    { deploy: { arguments: {} } },
+  );
+  assertEquals(result?.passed, false);
+  assertStringIncludes(result?.error ?? "", '"label"');
+});
+
+Deno.test("validateModel: an expression global a union method schema cannot read leaves its arguments checked", async () => {
+  const result = await methodArgumentsResult(
+    { shell: "${{ inputs.sh }}" },
+    { pick: { arguments: { kind: "bogus" } } },
+  );
+  assertEquals(result?.passed, false);
+});
+
+Deno.test("validateModel: a union method schema's discriminator filled by an expression global waits for the run", async () => {
+  const result = await methodArgumentsResult(
+    { kind: "${{ inputs.kind }}" },
+    { pick: { arguments: { n: 1 } } },
+  );
+  assertEquals(result?.passed, true, result?.error);
+});
