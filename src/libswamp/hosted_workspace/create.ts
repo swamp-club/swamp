@@ -27,6 +27,7 @@ import { parseWorkspaceName } from "../../domain/workspace/workspace_name.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
+import { registerHostedWorkspaces } from "../workspace/hosted_registration.ts";
 import {
   type HostedWorkspaceCaller,
   type HostedWorkspaceDeps,
@@ -189,6 +190,33 @@ async function createUnderLock(
       }`;
     });
     throw error;
+  }
+  await registerCreated(ctx, deps, name);
+}
+
+/** the workspace is whole without its entry; the host's next rescan registers it */
+async function registerCreated(
+  ctx: LibSwampContext,
+  deps: HostedWorkspaceDeps,
+  name: string,
+): Promise<void> {
+  try {
+    const result = await registerHostedWorkspaces(deps.workspaceStore, {
+      workspacesDir: deps.workspacesDir,
+      names: [name],
+    });
+    const outcome = result.kind === "unreadable"
+      ? result.kind
+      : result.workspaces[0]?.kind ?? "gone";
+    if (outcome !== "registered" && outcome !== "present") {
+      ctx.logger
+        .warn`Workspace ${name} was created but not registered (${outcome}); the host's log says why`;
+    }
+  } catch (error) {
+    ctx.logger
+      .warn`Registering workspace ${name} failed, and the host registers it at its next rescan: ${
+      messageOf(error)
+    }`;
   }
 }
 

@@ -19,6 +19,8 @@
 
 import { join } from "@std/path";
 import { HostedWorkspaceFileRepository } from "../../infrastructure/persistence/hosted_workspace_file_repository.ts";
+import { WorkspaceRegistryFileRepository } from "../../infrastructure/persistence/workspace_registry_file_repository.ts";
+import type { HostedRegistryDeps } from "../workspace/hosted_registration.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
   createHostedWorkspaceDeps,
@@ -50,8 +52,27 @@ export const markerProvisioner: HostedWorkspaceProvisioner = {
   },
 };
 
+/** a registry and data dir of their own under `root`, never the user's */
+export function tempWorkspaceStore(root: string): HostedRegistryDeps {
+  return {
+    dataDir: join(root, "data"),
+    registry: new WorkspaceRegistryFileRepository(join(root, "config")),
+    now: () => new Date("2026-11-17T10:00:00.000Z"),
+    repo: {
+      isRepo: async (path) => {
+        try {
+          return (await Deno.stat(join(path, ".swamp.yaml"))).isFile;
+        } catch {
+          return false;
+        }
+      },
+    },
+  };
+}
+
 export interface HostFolder extends AsyncDisposable {
   readonly dir: string;
+  readonly store: HostedRegistryDeps;
   deps(overrides?: Partial<HostedWorkspaceDeps>): HostedWorkspaceDeps;
 }
 
@@ -59,14 +80,17 @@ export async function hostFolder(): Promise<HostFolder> {
   const root = await Deno.makeTempDir();
   const dir = join(root, "workspaces");
   await Deno.mkdir(dir);
+  const store = tempWorkspaceStore(root);
   let tick = Date.parse("2026-11-17T10:00:00.000Z");
   return {
     dir,
+    store,
     deps: (overrides = {}) => ({
       ...createHostedWorkspaceDeps({
         workspacesDir: dir,
         provisioner: markerProvisioner,
         addressOf: (name) => `https://host.example/w/${name}`,
+        workspaceStore: store,
       }),
       repository: new HostedWorkspaceFileRepository(dir),
       // each call a second later, so every write has its own changedAt

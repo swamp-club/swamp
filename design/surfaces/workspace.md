@@ -1,6 +1,6 @@
 ---
 audience: maintainer
-last-verified: 2026-11-19 @ df967e324
+last-verified: 2026-11-19 @ 4cf47dda3
 ---
 
 # Workspaces
@@ -20,11 +20,12 @@ There are two kinds:
   `swamp workspace import` or the import form on the `swamp start` page.
   Nothing is moved or copied.
 
-A serve host writes the registry too, once steps 19 to 23 of
-[serve workspaces](./serve-workspaces.md#execution-plan) are built
-([The host](./serve-workspaces.md#the-host) there says how). It registers every
-workspace it runs, recorded as an import would record it, with no trust mark,
-and a host with no host folder registers each workspace a `workspace.create`
+A serve host writes the registry too
+([The host](./serve-workspaces.md#the-host) in serve workspaces says how). It
+registers every workspace it runs, recorded as an import would record it, with
+no trust mark (step 19 of its
+[execution plan](./serve-workspaces.md#execution-plan), built). Once steps 20
+to 23 are built, a host with no host folder registers each workspace a `workspace.create`
 request makes as created. Hosted workspaces therefore appear in
 `swamp workspace list` and on the `swamp start` page beside the user's own, and
 a repo the user registers is listed on that user's host. The host writes
@@ -138,4 +139,5 @@ chosen or configured folder.
 | Domain         | `src/domain/workspace/`: `WorkspaceRegistry`, `parseWorkspaceName`                                            |
 | Infrastructure | `workspace_registry_file_repository.ts`; `process/start_instance_probe.ts` for "open in start"                 |
 | Application    | `src/libswamp/workspace/`: the services, and `workspace_store.ts`, shared with `swamp start`                  |
+| Serve host     | `src/libswamp/workspace/hosted_registration.ts`; the host's registrar in `src/serve/host/workspace_registration.ts` |
 | CLI            | `src/cli/commands/workspace.ts`, `src/presentation/renderers/workspace.ts`                                    |

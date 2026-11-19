@@ -1,18 +1,20 @@
 ---
 audience: operator, maintainer
 enables: [serve]
-last-verified: 2026-11-19 @ df967e324
+last-verified: 2026-11-19 @ 4cf47dda3
 ---
 
 # Serve workspaces
 
 **Status:** Partly built. Addresses with a path, the host, lifecycle and
 sign-in (steps 1 to 15 of the [execution plan](#execution-plan)) are built, as
-is default off (step 24): `swamp serve host` runs in a host folder, lists every
-workspace folder in its `workspaces/`, runs a serve for each one whose wanted
-file says `active`, and its root takes the `workspace.*` requests and issues
-sign-in codes. The dashboard (steps 16 to 18) is not built, and neither is the
-registry as the host's one list or a host with no host folder (steps 19 to 23).
+are default off (step 24) and the host registering the workspaces it runs
+(step 19): `swamp serve host` runs in a host folder, lists every workspace
+folder in its `workspaces/`, registers each one in the workspace registry, runs
+a serve for each one whose wanted file says `active`, and its root takes the
+`workspace.*` requests and issues sign-in codes. The dashboard (steps 16 to 18)
+is not built, and neither is the registry as the host's one list or a host with
+no host folder (steps 20 to 23).
 It describes how one address hosts several serves, which promoting a local
 workspace to a server assumes.
 
@@ -310,8 +312,9 @@ workspace registry of the user the host runs as, `<config dir>/workspaces.json`
 ([workspace](./workspace.md)), and its serve runs in the entry's folder. The
 registry does not store every folder by its real path, so the host resolves
 each one before it compares one with another. Steps 19 to 21 of the
-[execution plan](#execution-plan) build this; until then the folders in
-`workspaces/` are the list and the host does not touch the registry.
+[execution plan](#execution-plan) build this. Step 19 is built: the host
+writes the registry as below, and the folders in `workspaces/` are still the
+list until step 20.
 
 - With each rescan the host first registers every workspace folder in its
   `workspaces/` that the registry lacks, then reads the registry. A workspace
@@ -320,14 +323,19 @@ each one before it compares one with another. Steps 19 to 21 of the
   `swamp workspace import` would record it, with no trust mark. Nothing is
   moved or copied.
 - The host writes through the workspace store under the registry's lock, and
-  waits for the lock a bounded time. A write that fails or times out is tried
-  again at the next rescan and logged once per reason; it never delays or stops
-  a serve. A registry the host creates adopts the repos under the data dir
+  waits for the lock a bounded time, 2 seconds, which passes a workspace
+  command's one read and write and ends before the next rescan. A write that
+  fails or times out is tried again at the next rescan and logged once per
+  reason; it never delays or stops a serve, and a rescan does not wait for it.
+  The host's writes run one at a time, so a registration a rescan started never
+  lands after a removal has taken the entry away. A registry the host creates adopts the repos under the data dir
   first, as any command that writes does. The host's read adopts nothing and
   takes no lock a workspace command would wait on.
 - `workspace.create` registers the workspace it made once its folder is renamed
-  into place, so a workspace a request created is an entry like any other. A
-  create stopped before that is registered by the next rescan.
+  into place, so a workspace a request created is an entry like any other and
+  `swamp workspace list` shows it at once. The root writes that entry; the
+  host's rescan is the safety net. A create whose registration fails still
+  succeeds, and a create stopped before that is registered by the next rescan.
 - A folder in `workspaces/` that could not be registered, or that a failed
   write has not registered yet, is still served from its folder, so a registry
   write that fails never stops a serve. A folder whose name is registered to
@@ -335,7 +343,9 @@ each one before it compares one with another. Steps 19 to 21 of the
 - A folder removed by hand from `workspaces/` stops its serve and answers 404.
   Its entry is removed once the serve has stopped, with its status file. The
   host removes only an entry whose folder is inside its own `workspaces/` and
-  whose name is that folder's name.
+  whose name is that folder's name. A folder that is a link is registered at
+  its target's real path, so the host never removes that entry. An entry whose
+  folder was removed while the host was stopped stays until step 20.
 
 The host watches `workspaces/` without recursing, so the children's own writes
 never wake it, and rescans every 5 seconds, which finds a marker written after
@@ -661,7 +671,7 @@ The host reads the wanted files with each rescan
 `create` sets the repo up in a hidden `.<name>.creating-<uuid>` folder, writes
 the wanted file as `suspended`, then renames the folder into place, so no scan
 lists a workspace before it is whole, and a new workspace is listed and has no
-serve until a resume. Create then registers the workspace (step 19), and refuses
+serve until a resume. Create then registers the workspace, and refuses
 a name the registry already holds with `already_exists` (step 21). A failed
 create removes the folder and the wanted file it wrote. One per-name lock
 serialises create, suspend, resume and delete, and create removes a `.creating-`
@@ -671,8 +681,10 @@ wanted file with no folder. `delete` writes `deleted`. Once the host sees
 `deleted` it removes the workspace, and a later edit of the file does not stop
 it: it stops the serve and waits for it to exit, renames the folder to a hidden
 `.<name>.deleting-<uuid>` so no scan sees half a folder, removes that, removes
-the registry entry (step 19), removes the status file, and removes the wanted
-file last. Until the end the wanted file still says `deleted`, so a host that
+the registry entry, removes the status file, and removes the wanted
+file last. A registry write that fails keeps the wanted file, so a later rescan
+finishes the removal; a registry that cannot be read is passed over, so a
+corrupt file never holds up a delete. Until the end the wanted file still says `deleted`, so a host that
 stopped halfway finishes at its next start, and the next scan removes a hidden
 folder left behind. A removal touches only names that pass `parseWorkspaceName`,
 and a rename never follows a link, so a workspace folder that is a link loses

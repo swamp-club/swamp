@@ -34,6 +34,7 @@ import {
 import { DENO_SERVE_PROCESS_PORT } from "../../serve/host/deno_serve_process.ts";
 import { HOST_CONFIG_FILE, HostConfig } from "../../serve/host/host_config.ts";
 import { type ServeHost, startServeHost } from "../../serve/host/serve_host.ts";
+import { hostWorkspaceStore } from "../../serve/host/workspace_registration.ts";
 import { reloadsOnHangup } from "../../serve/reload_on_hangup.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -78,14 +79,18 @@ export const serveHostCommand = new Command()
       );
     }
 
+    // the children are pinned to the same two folders, so the root writes the same registry
+    const swampHome = resolve(getSwampDataDir());
+    const configDir = resolve(getSwampConfigDir());
     const host = await startServeHost({
       config,
       processPort: DENO_SERVE_PROCESS_PORT,
       childEnv: hostChildEnv(hostEnv, {
-        swampHome: resolve(getSwampDataDir()),
-        configDir: resolve(getSwampConfigDir()),
+        swampHome,
+        configDir,
         cwd: Deno.cwd(),
       }),
+      workspaceStore: hostWorkspaceStore({ dataDir: swampHome, configDir }),
       onWorkspaceChange: (change) => renderer.workspacesChanged(change),
     });
 

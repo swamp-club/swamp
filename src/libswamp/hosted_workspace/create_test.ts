@@ -254,3 +254,67 @@ Deno.test("hostedWorkspaceCreate: removes a set-up folder an earlier create left
     [other, "edge-dns", "edge-dns.wanted.yaml"].sort(),
   );
 });
+
+Deno.test("hostedWorkspaceCreate: registers the workspace it made at its real path, as an import would", async () => {
+  await using host = await hostFolder();
+  await assertCompletes<HostedWorkspaceCreateEvent>(
+    hostedWorkspaceCreate(ctx, host.deps(), {
+      name: "edge-dns",
+      caller: ALICE,
+      access: OAUTH_ACCESS,
+    }),
+    {
+      kind: "completed",
+      data: {
+        name: "edge-dns",
+        address: "https://host.example/w/edge-dns",
+        wanted: "suspended",
+      },
+    },
+  );
+  const entry = (await host.store.registry.load())?.get("edge-dns");
+  assertEquals(entry?.path, await Deno.realPath(join(host.dir, "edge-dns")));
+  assertEquals(entry?.origin, "imported");
+  assertEquals(entry?.trustedAt, undefined);
+});
+
+Deno.test("hostedWorkspaceCreate: a registry it cannot write still completes the create, and a failed create registers nothing", async () => {
+  await using host = await hostFolder();
+  const deps = host.deps({
+    workspaceStore: {
+      ...host.store,
+      registry: {
+        load: () => host.store.registry.load(),
+        update: () => Promise.reject(new Error("lock timed out")),
+      },
+    },
+  });
+  await assertCompletes<HostedWorkspaceCreateEvent>(
+    hostedWorkspaceCreate(ctx, deps, {
+      name: "edge-dns",
+      caller: ALICE,
+      access: OAUTH_ACCESS,
+    }),
+    {
+      kind: "completed",
+      data: {
+        name: "edge-dns",
+        address: "https://host.example/w/edge-dns",
+        wanted: "suspended",
+      },
+    },
+  );
+  assertEquals(await entries(host.dir), ["edge-dns", "edge-dns.wanted.yaml"]);
+
+  await assertErrors<HostedWorkspaceCreateEvent>(
+    hostedWorkspaceCreate(
+      ctx,
+      host.deps({
+        provisioner: { provision: () => Promise.reject(new Error("no")) },
+      }),
+      { name: "other", caller: ALICE, access: OAUTH_ACCESS },
+    ),
+    "provision_failed",
+  );
+  assertEquals(await host.store.registry.load(), null);
+});

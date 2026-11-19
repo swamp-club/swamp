@@ -34,6 +34,7 @@ import {
 import type { ServeChildSpec } from "./serve_process.ts";
 import type { StatusWriter } from "./status_writer.ts";
 import type { ServeSupervisor } from "./supervisor.ts";
+import type { WorkspaceRegistrar } from "./workspace_registration.ts";
 import {
   deletingFolderName,
   deletingFolderOwner,
@@ -54,6 +55,7 @@ export interface WorkspaceReconcilerOptions {
   readonly specOf: (name: string) => ServeChildSpec;
   readonly repository: HostedWorkspaceRepository;
   readonly statusWriter: Pick<StatusWriter, "setProblem" | "forget" | "track">;
+  readonly registrar: WorkspaceRegistrar;
   readonly rename?: (from: string, to: string) => Promise<void>;
 }
 
@@ -80,7 +82,7 @@ interface Known {
   hiddenName: string | null;
 }
 
-type RemovalStep = "rename" | "list" | "remove";
+type RemovalStep = "rename" | "list" | "remove" | "unregister";
 
 class RemovalStepError extends Error {
   constructor(readonly step: RemovalStep, override readonly cause: unknown) {
@@ -134,8 +136,14 @@ export async function readWantedFiles(
 export function createWorkspaceReconciler(
   options: WorkspaceReconcilerOptions,
 ): WorkspaceReconciler {
-  const { workspacesDir, supervisor, specOf, repository, statusWriter } =
-    options;
+  const {
+    workspacesDir,
+    supervisor,
+    specOf,
+    repository,
+    statusWriter,
+    registrar,
+  } = options;
   const rename = options.rename ?? Deno.rename;
   const known = new Map<string, Known>();
   const pending = new Set<Promise<void>>();
@@ -145,6 +153,7 @@ export function createWorkspaceReconciler(
   // a scan listed before a removal finished still shows its folder
   const removedAt = new Map<string, number>();
   const removalFailures = new ReasonMemo();
+  let latest: WorkspaceScan | null = null;
   const sweepFailures = new ReasonMemo();
 
   const track = (work: Promise<void>) => {
@@ -293,6 +302,10 @@ export function createWorkspaceReconciler(
     await statusWriter.forget(name);
     try {
       await removeData(name, entry);
+      // before the wanted file, so a host stopped here still finishes the removal
+      await registrar.unregister(name).catch((error) => {
+        throw new RemovalStepError("unregister", error);
+      });
     } catch (error) {
       if (!(error instanceof RemovalStepError)) throw error;
       // a status write wakes the folder watcher, so one per reason, not per try
@@ -390,6 +403,7 @@ export function createWorkspaceReconciler(
         await statusWriter.forget(name);
         if (stale()) return;
         await removeHostedWorkspaceStatus(workspacesDir, name);
+        if (!stale()) registrar.forget(name);
       })().catch((error) => {
         logger.warn(
           "Removing the status file of workspace {name} failed: {error}",
@@ -441,20 +455,31 @@ export function createWorkspaceReconciler(
       return status !== undefined && status.wanted !== "deleted";
     });
 
+  // the registrar reads the latest scan when its run starts, not this one
+  const register = (scan: WorkspaceScan) => {
+    latest = scan;
+    registrar.sync(() => latest === null ? [] : served(latest));
+  };
+
   return {
     begin(scan, reads) {
       apply(scan, reads);
+      register(scan);
       return served(scan);
     },
 
     async reconcile(scan) {
       apply(scan, await readWantedFiles(repository, scan));
+      register(scan);
     },
 
     served,
 
     async drain() {
-      while (pending.size > 0) await Promise.all([...pending]);
+      do {
+        while (pending.size > 0) await Promise.all([...pending]);
+        await registrar.drain();
+      } while (pending.size > 0);
     },
   };
 }

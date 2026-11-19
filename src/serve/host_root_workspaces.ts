@@ -29,6 +29,11 @@ import {
   HOST_WORKSPACES_DIR_FLAG,
 } from "./host/serve_process.ts";
 import { hostedWorkspaceAddress } from "./host/workspace_path.ts";
+import { hostWorkspaceStore } from "./host/workspace_registration.ts";
+import {
+  getSwampConfigDir,
+  getSwampDataDir,
+} from "../infrastructure/persistence/paths.ts";
 import { childHostedWorkspaceProvisioner } from "./workspace_provision_process.ts";
 
 /** what a host's root answers workspace requests with */
@@ -64,6 +69,11 @@ export function hostRootWorkspaces(
       workspacesDir: dir,
       provisioner: childHostedWorkspaceProvisioner(provisionEnv(env)),
       addressOf: (name) => hostedWorkspaceAddress(address, name),
+      // the host pins both for its root, so this is the registry the host writes
+      workspaceStore: hostWorkspaceStore({
+        dataDir: getSwampDataDir(),
+        configDir: getSwampConfigDir(),
+      }),
     }),
     rootAccess,
     signInCodes: new SignInCodeStore(),

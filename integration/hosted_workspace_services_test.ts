@@ -52,6 +52,11 @@ import type {
 import { createStatusWriter } from "../src/serve/host/status_writer.ts";
 import { createServeSupervisor } from "../src/serve/host/supervisor.ts";
 import { createWorkspaceReconciler } from "../src/serve/host/workspace_reconciler.ts";
+import {
+  createWorkspaceRegistrar,
+  hostWorkspaceStore,
+} from "../src/serve/host/workspace_registration.ts";
+import type { HostedRegistryDeps } from "../src/libswamp/workspace/hosted_registration.ts";
 
 const ctx = createLibSwampContext();
 const ALICE = { principal: "user:sub-alice", username: "alice" };
@@ -87,6 +92,7 @@ class CountingPort implements ServeProcessPort {
 
 interface Host extends AsyncDisposable {
   readonly dir: string;
+  readonly store: HostedRegistryDeps;
   readonly port: CountingPort;
   deps(overrides?: Partial<HostedWorkspaceDeps>): HostedWorkspaceDeps;
   /** one host rescan, as the folder watcher runs it */
@@ -109,6 +115,10 @@ async function host(): Promise<Host> {
     onStatus: (status) => statusWriter.report(status),
   });
   const repository = new HostedWorkspaceFileRepository(dir);
+  const store = hostWorkspaceStore({
+    dataDir: join(root, "data"),
+    configDir: join(root, "config"),
+  });
   const reconciler = createWorkspaceReconciler({
     workspacesDir: dir,
     supervisor,
@@ -121,15 +131,18 @@ async function host(): Promise<Host> {
     }),
     repository,
     statusWriter,
+    registrar: createWorkspaceRegistrar({ workspacesDir: dir, store }),
   });
   return {
     dir,
+    store,
     port,
     deps: (overrides = {}) => ({
       ...createHostedWorkspaceDeps({
         workspacesDir: dir,
         provisioner: inProcessProvisioner,
         addressOf: (name) => `https://host.example/w/${name}`,
+        workspaceStore: store,
       }),
       ...overrides,
     }),
@@ -339,4 +352,30 @@ Deno.test("hosted workspace services: suspend, resume, get and delete drive the 
     last.error.message,
     "No hosted workspace named edge-dns",
   );
+});
+
+Deno.test("hosted workspace services: create registers the workspace and delete removes its folder and its entry", async () => {
+  await using h = await host();
+  await collect(
+    hostedWorkspaceCreate(ctx, h.deps(), {
+      name: "edge-dns",
+      caller: ALICE,
+      access: ACCESS,
+    }),
+  );
+  const folder = await Deno.realPath(join(h.dir, "edge-dns"));
+  assertEquals(
+    (await h.store.registry.load())?.list().map((e) => [e.name, e.path]),
+    [["edge-dns", folder]],
+  );
+
+  await h.rescan();
+  await collect(hostedWorkspaceDelete(ctx, h.deps(), { name: "edge-dns" }));
+  await h.rescan();
+  await waitFor(
+    async () => (await scanWorkspaces(h.dir)).wantedFiles.length === 0,
+    "the removal finishes",
+  );
+  assertEquals((await h.store.registry.load())?.list(), []);
+  assertEquals((await scanWorkspaces(h.dir)).workspaces, []);
 });

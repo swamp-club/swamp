@@ -48,9 +48,17 @@ const RegistryFileSchema = z.object({
   lastAgent: z.string().min(1).optional().catch(undefined),
 });
 
+export interface WorkspaceRegistryLockWait {
+  readonly maxWaitMs: number;
+  readonly retryIntervalMs: number;
+}
+
 export class WorkspaceRegistryFileRepository
   implements WorkspaceRegistryRepository {
-  constructor(private readonly configDir: string = getSwampConfigDir()) {}
+  constructor(
+    private readonly configDir: string = getSwampConfigDir(),
+    private readonly lockWait?: WorkspaceRegistryLockWait,
+  ) {}
 
   private get path(): string {
     return join(this.configDir, FILE_NAME);
@@ -114,6 +122,11 @@ export class WorkspaceRegistryFileRepository
     await ensureDir(this.configDir);
     const lock = new FileLock(this.configDir, {
       lockKey: `${FILE_NAME}.lock`,
+      ...(this.lockWait === undefined ? {} : {
+        maxWaitMs: this.lockWait.maxWaitMs,
+        retryIntervalMs: this.lockWait.retryIntervalMs,
+        maxBackoffMs: this.lockWait.retryIntervalMs,
+      }),
     });
     await lock.acquire();
     try {
