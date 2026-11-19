@@ -26,6 +26,8 @@ export interface ServerCredential {
   obtainedAt: string;
   /** on this machine's clock; only a token from a workspace sign-in has one */
   expiresAt?: string;
+  /** SHA-256 of the host token a workspace sign-in used */
+  hostTokenDigest?: string;
 }
 
 export interface ServerCredentialRepository {

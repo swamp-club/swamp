@@ -628,8 +628,12 @@ answers. A serve that was given no root address offers no exchange.
   since the router cannot see why a child refused a WebSocket.
 - A token stored by `swamp auth server-login` to a workspace's address carries
   no `expiresAt` and is used as it is.
-- Signing out of the host forgets nothing: the CLI has no server sign-out, and
-  a workspace token expires with the root token it came from either way.
+- An exchanged token records a SHA-256 digest of the host token it came from,
+  and stands only while the host's stored token still matches it. Signing in to
+  the host as someone else, with `--token` too (which stores no principal),
+  replaces the workspace token on the next command, so the workspace runs as
+  the new identity; a host entry removed from `servers.json` stops the
+  workspace token being sent. The CLI has no server sign-out.
 - Two commands that both find no workspace token both exchange; the later write
   wins. Writes to `servers.json` hold an OS advisory lock on a sidecar file, so
   neither drops another server's entry.

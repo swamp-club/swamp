@@ -45,6 +45,22 @@ import { handleSignInCodeRedeem } from "../src/serve/sign_in_code_redeem_handler
 await initializeLogging({});
 
 const ROOT_TOKEN = "root-alice.root-secret-value";
+const BOB_ROOT_TOKEN = "root-bob.root-secret-value";
+const ROOT_PRINCIPALS: Record<
+  string,
+  { principal: string; username: string; email: string }
+> = {
+  [ROOT_TOKEN]: {
+    principal: "user:sub-alice",
+    username: "alice",
+    email: "alice@example.com",
+  },
+  [BOB_ROOT_TOKEN]: {
+    principal: "user:sub-bob",
+    username: "bob",
+    email: "bob@example.com",
+  },
+};
 const WORKSPACE_PATH = "/w/team";
 const ROOT_EXPIRES_AT = new Date(Date.now() + 2 * 86_400_000).toISOString();
 
@@ -60,6 +76,8 @@ interface Host {
   readonly configDir: string;
   readonly seen: Seen[];
   readonly minted: Set<string>;
+  /** the principal of the last token the workspace accepted */
+  readonly ranAs: () => string | undefined;
   store(credential: Partial<ServerCredential> & { serverUrl: string }): Promise<
     void
   >;
@@ -90,6 +108,8 @@ async function withHost(
   const configDir = await Deno.makeTempDir({ prefix: "swamp-ws-sign-in-" });
   const seen: Seen[] = [];
   const minted = new Set<string>();
+  const mintedFor = new Map<string, string>();
+  let ranAs: string | undefined;
   const codes = new SignInCodeStore();
   let base = "";
   const exchangeDeps = () => ({
@@ -98,9 +118,10 @@ async function withHost(
     redeemer: createSignInCodeRedeemClient(
       exchangeTarget(base, `${base}${WORKSPACE_PATH}`)!,
     ),
-    mint: (input: { notAfter: string }) => {
+    mint: (input: { principalId: string; notAfter: string }) => {
       const token = `ws-${crypto.randomUUID()}.secret`;
       minted.add(token);
+      mintedFor.set(token, input.principalId);
       return Promise.resolve({ token, expiresAt: input.notAfter });
     },
     sourceIp: "127.0.0.1",
@@ -144,6 +165,7 @@ async function withHost(
       if (!minted.has(bearer(req))) {
         return new Response("Unauthorized: unknown", { status: 401 });
       }
+      ranAs = mintedFor.get(bearer(req));
       const { socket, response } = Deno.upgradeWebSocket(req);
       socket.onmessage = (event) => {
         const { type, id } = JSON.parse(String(event.data));
@@ -163,7 +185,7 @@ async function withHost(
     if (redeemed !== null) return redeemed;
     // the token is checked before anything else, as serve's HTTP route does
     if (path === SERVE_REQUEST_PATH) {
-      return bearer(req) === ROOT_TOKEN
+      return Object.hasOwn(ROOT_PRINCIPALS, bearer(req))
         ? Response.json({ code: "use_websocket", message: "use the socket" }, {
           status: 404,
         })
@@ -177,16 +199,17 @@ async function withHost(
     if (options.rootStatus !== undefined) {
       return new Response(null, { status: options.rootStatus });
     }
-    if (bearer(req) !== ROOT_TOKEN) {
+    const caller = Object.hasOwn(ROOT_PRINCIPALS, bearer(req))
+      ? ROOT_PRINCIPALS[bearer(req)]
+      : undefined;
+    if (caller === undefined) {
       return new Response("Unauthorized: unknown", { status: 401 });
     }
     const { socket, response } = Deno.upgradeWebSocket(req);
     socket.onmessage = async (event) => {
       const message = JSON.parse(String(event.data));
       const issued = await codes.issue(message.payload.name, {
-        principal: "user:sub-alice",
-        username: "alice",
-        email: "alice@example.com",
+        ...caller,
         collectives: [],
         groups: [],
         expiresAt: ROOT_EXPIRES_AT,
@@ -267,6 +290,7 @@ async function withHost(
           configDir,
           seen,
           minted,
+          ranAs: () => ranAs,
           store: (credential) =>
             new FileServerCredentialRepository({ configDir, fileOnly: true })
               .save({
@@ -419,6 +443,28 @@ Deno.test("workspace sign-in from the CLI: an expired workspace token is replace
       !host.seen.some((s) => s.authorization === "Bearer ws-expired.secret"),
       "the expired token was sent",
     );
+  });
+});
+
+Deno.test("workspace sign-in from the CLI: signing in to the host as someone else switches whom the workspace runs as", async () => {
+  await withHost({}, async (host) => {
+    await host.store({ serverUrl: host.hostAddress, token: BOB_ROOT_TOKEN });
+    assertEquals(await command(host, host.workspaceAddress), { ok: true });
+    assertEquals(host.ranAs(), "user:sub-bob");
+
+    // server-login --token stores no principal, so only the token tells them apart
+    await host.store({
+      serverUrl: host.hostAddress,
+      token: ROOT_TOKEN,
+      principalId: "",
+    });
+    assertEquals(await command(host, host.workspaceAddress), { ok: true });
+    assertEquals(host.ranAs(), "user:sub-alice");
+    assertEquals(host.exchanges(), 2);
+
+    await host.store({ serverUrl: host.hostAddress, token: ROOT_TOKEN });
+    assertEquals(await command(host, host.workspaceAddress), { ok: true });
+    assertEquals(host.exchanges(), 2);
   });
 });
 

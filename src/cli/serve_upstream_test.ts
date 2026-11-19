@@ -434,12 +434,22 @@ Deno.test("resolveServeUpstream: a workspace's valid exchanged token is used wit
     const address = "http://host.test:9090/w/team";
     const repo = new FileServerCredentialRepository({ configDir: dir });
     await repo.save({
+      serverUrl: "http://host.test:9090",
+      tokenName: "alice",
+      token: "host.token",
+      principalId: "p-1",
+      obtainedAt: new Date(Date.now() - 120_000).toISOString(),
+    });
+    await repo.save({
       serverUrl: address,
       tokenName: "alice",
       token: "ws.token",
       principalId: "p-1",
       obtainedAt: new Date(Date.now() - 60_000).toISOString(),
       expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+      // SHA-256 of host.token
+      hostTokenDigest:
+        "2523dd1d3d520eb621b73a0523d3a986c7a39c1f112b210b760402e7662ecee3",
     });
     await withMockedEnv(
       { ...UNSET_ENV, SWAMP_SERVE_URL: address },

@@ -53,6 +53,9 @@ const HOST_CREDENTIAL: ServerCredential = {
   principalId: "user:a",
   obtainedAt: "2026-11-01T00:00:00.000Z",
 };
+// SHA-256 of HOST_CREDENTIAL.token
+const HOST_TOKEN_DIGEST =
+  "822537ba1f35b3b48c4b96a733130634347e268ad85fdb949b82039dab249cd9";
 
 interface Recorded {
   readonly urls: string[];
@@ -147,6 +150,7 @@ Deno.test("signInToWorkspace: exchanges a host token for a workspace token and s
       displayName: "a",
       obtainedAt: new Date(NOW).toISOString(),
       expiresAt: SERVE_EXPIRES_AT,
+      hostTokenDigest: HOST_TOKEN_DIGEST,
     }]);
   });
 });
@@ -362,6 +366,7 @@ function exchanged(expiresAt: number, obtainedAt: number): ServerCredential {
     principalId: "user:a",
     obtainedAt: new Date(obtainedAt).toISOString(),
     expiresAt: new Date(expiresAt).toISOString(),
+    hostTokenDigest: HOST_TOKEN_DIGEST,
   };
 }
 
@@ -447,6 +452,56 @@ Deno.test("workspaceTokenFor: a token granted less than the margin is not renewe
     const found = exchanged(NOW + 60_000, NOW - 60_000);
     assertEquals(await workspaceTokenFor(WORKSPACE, found, deps), "old.secret");
     assertEquals(recorded.urls, []);
+  });
+});
+
+Deno.test("workspaceTokenFor: a valid token from another host sign-in is replaced through the current one", async () => {
+  await inOwnRuntime(async () => {
+    const { deps, recorded } = fakeDeps({
+      stored: { [HOST]: { ...HOST_CREDENTIAL, token: "bob.rotated" } },
+    });
+    const found = exchanged(NOW + 30 * 86_400_000, NOW - 1000);
+    assertEquals(await workspaceTokenFor(WORKSPACE, found, deps), "ws.secret");
+    assertEquals(recorded.codeRequests[0].token, "bob.rotated");
+    assertEquals(
+      recorded.saved[0].hostTokenDigest,
+      "2b17efe38feee77ccd980ceb50b13950c60ca541a2844cef48e3bb5e674061de",
+    );
+  });
+});
+
+Deno.test("workspaceTokenFor: a valid token is not sent once its host token is gone", async () => {
+  await inOwnRuntime(async () => {
+    const { deps, recorded } = fakeDeps({ stored: { [HOST]: undefined } });
+    const found = exchanged(NOW + 30 * 86_400_000, NOW - 1000);
+    assertEquals(await workspaceTokenFor(WORKSPACE, found, deps), undefined);
+    assertEquals(recorded.codeRequests, []);
+    assertStringIncludes(
+      serverLoginHint(WORKSPACE),
+      `swamp auth server-login --server ${HOST}`,
+    );
+  });
+});
+
+Deno.test("workspaceTokenFor: an exchanged token that names no host token is replaced", async () => {
+  await inOwnRuntime(async () => {
+    const { deps } = fakeDeps();
+    const found = {
+      ...exchanged(NOW + 30 * 86_400_000, NOW - 1000),
+      hostTokenDigest: undefined,
+    };
+    assertEquals(await workspaceTokenFor(WORKSPACE, found, deps), "ws.secret");
+  });
+});
+
+Deno.test("workspaceTokenFor: a token from another host sign-in is not sent when it cannot be replaced", async () => {
+  await inOwnRuntime(async () => {
+    const { deps } = fakeDeps({
+      stored: { [HOST]: { ...HOST_CREDENTIAL, token: "bob.rotated" } },
+      authInfo: new TypeError("unreachable"),
+    });
+    const found = exchanged(NOW + 30 * 86_400_000, NOW - 1000);
+    assertEquals(await workspaceTokenFor(WORKSPACE, found, deps), undefined);
   });
 });
 

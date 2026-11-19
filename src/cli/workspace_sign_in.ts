@@ -108,6 +108,11 @@ export async function workspaceTokenFor(
 ): Promise<string | undefined> {
   if (!found?.token) return await signInToWorkspace(address, deps);
   if (found.expiresAt === undefined) return found.token;
+  // an exchanged token acts as the host sign-in that issued it, so a host token
+  // changed or removed since then must not lend it that identity
+  if (!(await issuedByStoredHostToken(address, found, deps))) {
+    return await signInToWorkspace(address, deps);
+  }
   const expiresAt = Date.parse(found.expiresAt);
   const now = deps.now();
   if (Number.isNaN(expiresAt) || expiresAt <= now) {
@@ -230,6 +235,7 @@ async function attemptSignIn(
       expiresAt: new Date(
         localExpiry(obtainedAt, body.expiresAt, exchanged.date),
       ).toISOString(),
+      hostTokenDigest: await hostTokenDigest(host.token),
     });
   } catch (error) {
     // the token still serves this command; only the next one signs in again
@@ -254,6 +260,29 @@ export function localExpiry(
   const granted = Math.max(0, expiresAt - serveNow);
   const asGiven = Math.max(0, expiresAt - obtainedAt);
   return obtainedAt + Math.min(granted, asGiven + MAX_CLOCK_CORRECTION_MS);
+}
+
+async function issuedByStoredHostToken(
+  address: string,
+  found: ServerCredential,
+  deps: WorkspaceSignInDeps,
+): Promise<boolean> {
+  const workspace = splitWorkspaceAddress(address);
+  if (workspace === null) return true;
+  const host = await deps.credentials.get(workspace.hostAddress);
+  if (!host?.token || found.hostTokenDigest === undefined) return false;
+  return found.hostTokenDigest === await hostTokenDigest(host.token);
+}
+
+async function hostTokenDigest(token: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(token),
+  );
+  return Array.from(
+    new Uint8Array(digest),
+    (byte) => byte.toString(16).padStart(2, "0"),
+  ).join("");
 }
 
 async function fetchQuietly(
