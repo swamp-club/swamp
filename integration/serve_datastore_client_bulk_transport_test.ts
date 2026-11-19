@@ -129,8 +129,16 @@ function answer(
     json(res, 200, { held: [] });
   } else if (path.endsWith("/quarantine")) {
     json(res, 200, { duplicate: false });
-  } else if (req.method === "POST" && path.endsWith("/commits")) {
+  } else if (req.method === "POST" && path.includes("/partitions/")) {
     json(res, 200, { seq: 1 });
+  } else if (req.method === "POST" && path.endsWith("/commits")) {
+    const header = new DataView(body.buffer, body.byteOffset).getUint32(0);
+    const { items } = JSON.parse(
+      new TextDecoder().decode(body.subarray(4, 4 + header)),
+    ) as { items: unknown[] };
+    json(res, 200, {
+      results: items.map(() => ({ status: 200, body: { seq: 1 } })),
+    });
   } else {
     json(res, 404, { error: { code: "not_found", message: "none" } });
   }
@@ -147,42 +155,82 @@ function clientFor(url: string): ServeDatastoreClient {
   );
 }
 
-Deno.test("serveDatastoreClientFor: bodies that carry chunks go over HTTP/1.1, every other request over HTTP/2", async () => {
+Deno.test("serveDatastoreClientFor: requests that carry chunk bytes go over HTTP/1.1, every other request over HTTP/2, a chunkless commit included", async () => {
   await using server = await startServer(answer);
   const client = clientFor(server.url);
+  const chunk = new Uint8Array(64 * 1024).fill(7);
+  const hash = sha(chunk);
+  const partition = modelPartition();
+  const carried = [{ sha256: hash, bytes: chunk }];
+  const envelope = () => ({
+    expectedSeq: 0,
+    txnId: crypto.randomUUID(),
+    ops: [],
+  });
+  const deposit = (chunks: typeof carried) => ({
+    commit: { txnId: crypto.randomUUID() },
+    base: { seq: 0 },
+    chunks,
+  });
+  const calls: [string, string, () => Promise<unknown>][] = [
+    ["chunks/has", "2.0", () => client.hasChunks([hash], signal())],
+    ["chunk read", "2.0", () => client.getChunk(hash, signal())],
+    [
+      "chunk upload",
+      "1.1",
+      () => client.putChunk(hash, chunk, signal(), partition),
+    ],
+    [
+      "commit with chunks",
+      "1.1",
+      () => client.postCommit(partition, envelope(), carried, signal()),
+    ],
+    [
+      "chunkless commit",
+      "2.0",
+      () => client.postCommit(partition, envelope(), [], signal()),
+    ],
+    ["batch with chunks", "1.1", () =>
+      client.postCommits(
+        [
+          { partition, envelope: envelope(), chunks: [] },
+          { partition, envelope: envelope(), chunks: carried },
+        ],
+        undefined,
+        signal(),
+      )],
+    ["chunkless batch", "2.0", () =>
+      client.postCommits(
+        [{ partition, envelope: envelope(), chunks: [] }],
+        undefined,
+        signal(),
+      )],
+    [
+      "deposit with chunks",
+      "1.1",
+      () => client.depositQuarantine(deposit(carried), signal()),
+    ],
+    [
+      "chunkless deposit",
+      "2.0",
+      () => client.depositQuarantine(deposit([]), signal()),
+    ],
+  ];
+  const versions: Record<string, string | undefined> = {};
   try {
-    const chunk = new Uint8Array(64 * 1024).fill(7);
-    const hash = sha(chunk);
-    const partition = modelPartition();
-    await client.hasChunks([hash], signal());
-    await client.getChunk(hash, signal());
-    await client.putChunk(hash, chunk, signal(), partition);
-    await client.postCommit(
-      partition,
-      { expectedSeq: 0, txnId: crypto.randomUUID(), ops: [] },
-      [{ sha256: hash, bytes: chunk }],
-      signal(),
-    );
-    await client.depositQuarantine(
-      {
-        commit: { txnId: crypto.randomUUID() },
-        base: { seq: 0 },
-        chunks: [{ sha256: hash, bytes: chunk }],
-      },
-      signal(),
-    );
+    for (const [name, , call] of calls) {
+      const before = server.seen.length;
+      await call();
+      assertEquals(server.seen.length, before + 1, name);
+      versions[name] = server.seen[before].httpVersion;
+    }
   } finally {
     client.close();
   }
-  const versionOf = (method: string, suffix: string) =>
-    server.seen.find((s) => s.method === method && s.path.endsWith(suffix))
-      ?.httpVersion;
-  assertEquals(versionOf("POST", "/chunks/has"), "2.0");
-  const hash = sha(new Uint8Array(64 * 1024).fill(7));
-  assertEquals(versionOf("GET", "/chunks/" + hash), "2.0");
-  assertEquals(versionOf("PUT", "/chunks/" + hash), "1.1");
-  assertEquals(versionOf("POST", "/commits"), "1.1");
-  assertEquals(versionOf("POST", "/quarantine"), "1.1");
+  assertEquals(
+    versions,
+    Object.fromEntries(calls.map(([name, version]) => [name, version])),
+  );
 });
 
 Deno.test("serveDatastoreClientFor: consecutive commits share one HTTP/1.1 connection, and close leaves none open", async () => {

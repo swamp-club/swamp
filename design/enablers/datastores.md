@@ -7289,10 +7289,11 @@ exit code serve being unreachable has.
 
 `{p}` is a canonical partition key, percent-encoded once more in the path.
 
-**Bodies that carry chunks go over HTTP/1.1.** A member's client sends
-commits, commit batches, chunk uploads and quarantine deposits through its own
-keep-alive HTTP/1.1 client, and every other request over the HTTP/2
-connection serve negotiates. One HTTP/2 stream is held to its flow-control
+**Bodies that carry chunks go over HTTP/1.1.** A member's client sends chunk
+uploads, and the commits, commit batches and quarantine deposits that carry
+chunk bytes, through its own keep-alive HTTP/1.1 client, and every other
+request, a chunkless commit included, over the HTTP/2 connection serve
+negotiates. One HTTP/2 stream is held to its flow-control
 window per round trip, which capped a member across the Atlantic at about
 1.7 MiB/s where one HTTP/1.1 connection on the same path carried about
 9.8 MiB/s, and Deno exposes no window setting on either side. Small requests

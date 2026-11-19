@@ -535,7 +535,7 @@ interface RequestSpec {
   readonly noRefusalRetry?: boolean;
   /** this request's own response base, in place of the client's */
   readonly responseBaseMs?: number;
-  /** the body carries chunk bytes, so it goes through the bulk client */
+  /** the body carries chunk bytes; a chunkless commit stays on the shared client */
   readonly bulk?: boolean;
 }
 
@@ -744,7 +744,7 @@ export class ServeDatastoreClient {
         path: `${partitionPath(partition)}/commits`,
         headers: { "content-type": COMMIT_CONTENT_TYPE },
         body: frameCommit(envelope, chunks),
-        bulk: true,
+        bulk: chunks.length > 0,
       },
       signal,
       MAX_WRITTEN_COMMIT_REPLY_BYTES,
@@ -788,7 +788,7 @@ export class ServeDatastoreClient {
         path: "commits",
         headers: { "content-type": COMMIT_CONTENT_TYPE },
         body: framed,
-        bulk: true,
+        bulk: commits.some((commit) => commit.chunks.length > 0),
       },
       signal,
       // each result may carry its whole commit, as a single reply does
@@ -1407,7 +1407,7 @@ export class ServeDatastoreClient {
         base: deposit.base,
         chunks: chunksToWire(deposit.chunks),
       }),
-      bulk: true,
+      bulk: deposit.chunks.length > 0,
     }, signal);
     return { duplicate: body.duplicate === true };
   }
