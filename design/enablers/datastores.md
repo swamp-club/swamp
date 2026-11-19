@@ -7298,7 +7298,10 @@ window per round trip, which capped a member across the Atlantic at about
 9.8 MiB/s, and Deno exposes no window setting on either side. Small requests
 stay on the shared HTTP/2 connection, so they pay no extra handshake; two
 uploads at once each open their own HTTP/1.1 connection. A node retired as
-unreachable or not serving retires both clients.
+unreachable or not serving retires both clients. The HTTP/1.1 client drops a
+connection idle for 30 s (`BULK_POOL_IDLE_TIMEOUT_MS`), before a proxy or load
+balancer on the path would, so a commit is not written into a connection
+being closed under it; `Deno.serve` itself keeps an idle connection open.
 
 **Fewer round trips per write (swamp-club#4525).** A member's one-step write
 is a lock answered with the catch-up, then one `POST commits` carrying the

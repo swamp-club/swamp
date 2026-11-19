@@ -2368,13 +2368,25 @@ export function serveDatastoreClientFor(
           Deno.createHttpClient(caCerts !== undefined ? { caCerts } : {}),
       }
       : {}),
-    // One HTTP/2 stream's flow-control window caps an upload across a long
-    // RTT, and Deno exposes no window setting; HTTP/1.1 is held only by TCP.
-    bulkHttpClient: () =>
-      Deno.createHttpClient({
-        http1: true,
-        http2: false,
-        ...(caCerts !== undefined ? { caCerts } : {}),
-      }),
+    bulkHttpClient: () => Deno.createHttpClient(bulkHttpClientOptions(caCerts)),
   });
+}
+
+/**
+ * dropped by the client before a proxy or load balancer on the path drops it,
+ * so a commit is not written into a connection closing under it
+ */
+export const BULK_POOL_IDLE_TIMEOUT_MS = 30_000;
+
+export function bulkHttpClientOptions(
+  caCerts: string[] | undefined,
+): Deno.CreateHttpClientOptions {
+  // One HTTP/2 stream's flow-control window caps an upload across a long
+  // RTT, and Deno exposes no window setting; HTTP/1.1 is held only by TCP.
+  return {
+    http1: true,
+    http2: false,
+    poolIdleTimeout: BULK_POOL_IDLE_TIMEOUT_MS,
+    ...(caCerts !== undefined ? { caCerts } : {}),
+  };
 }

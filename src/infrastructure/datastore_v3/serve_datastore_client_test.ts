@@ -57,6 +57,8 @@ import {
 } from "./chunk_ingest.ts";
 import { isNetworkFailure } from "./network_failure.ts";
 import {
+  BULK_POOL_IDLE_TIMEOUT_MS,
+  bulkHttpClientOptions,
   clearServeUnreachableLatches,
   COMMIT_CONTENT_TYPE,
   DEFAULT_SERVE_TIMEOUT_MS,
@@ -693,6 +695,16 @@ Deno.test("ServeDatastoreClient: the HTTP client is made on the first request, o
   } finally {
     httpClient.close();
   }
+});
+
+Deno.test("bulkHttpClientOptions: HTTP/1.1 only, idle connections dropped after BULK_POOL_IDLE_TIMEOUT_MS, CA certs passed through", () => {
+  assertEquals(bulkHttpClientOptions(undefined), {
+    http1: true,
+    http2: false,
+    poolIdleTimeout: BULK_POOL_IDLE_TIMEOUT_MS,
+  });
+  assertEquals(bulkHttpClientOptions(["ca"]).caCerts, ["ca"]);
+  assertEquals(BULK_POOL_IDLE_TIMEOUT_MS, 30_000);
 });
 
 Deno.test("ServeDatastoreClient: a body carrying chunks goes through the bulk client when one is given, else the same client as a read", async () => {
