@@ -41,6 +41,8 @@ export interface WorkspaceWatcherOptions {
   readonly onChange: (change: WorkspaceChange) => void | Promise<void>;
   /** every rescan, changed or not, before onChange */
   readonly onRescan?: (scan: WorkspaceScan) => void | Promise<void>;
+  /** after onRescan, the workspaces changes are reported against; all listed by default */
+  readonly served?: (scan: WorkspaceScan) => readonly string[];
   readonly rescanMs?: number;
   readonly debounceMs?: number;
 }
@@ -94,8 +96,9 @@ export function watchWorkspaces(
     skipLog.report(scan.skipped, rescanMs);
     await options.onRescan?.(scan);
     if (stopped) return;
-    const current = new Set(scan.workspaces);
-    const added = scan.workspaces.filter((name) => !known.has(name));
+    const listed = options.served?.(scan) ?? scan.workspaces;
+    const current = new Set(listed);
+    const added = listed.filter((name) => !known.has(name));
     const removed = [...known].filter((name) => !current.has(name)).sort();
     if (added.length === 0 && removed.length === 0) return;
     await onChange({ added, removed });

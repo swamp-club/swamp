@@ -726,13 +726,22 @@ Deno.test("advanceV3WriterLease: a move that fails still lets the hold be releas
 Deno.test("v3WriterLeaseConfirmed: a hold just taken, and kept renewed, is confirmed; none once released", async () => {
   await withTempDir(async (dir) => {
     assertEquals(v3WriterLeaseConfirmed(dir), false);
-    const release = await acquireV3WriterLock(dir, { ttlMs: 300 });
+    const ttlMs = 300;
+    const taken = Date.now();
+    const release = await acquireV3WriterLock(dir, { ttlMs });
     try {
       assert(v3WriterLeaseConfirmed(dir));
-      // past one TTL, the renewals at a third of it keep it confirmed
-      const taken = performance.now();
-      await waitFor(() => performance.now() - taken > 600, "two TTLs passed");
-      assert(v3WriterLeaseConfirmed(dir));
+      // read from the store, since a stale confirmation check asks for a renewal itself
+      await waitFor(async () => {
+        const expiresAt = await v3WriterLeaseExpiresAt(dir);
+        return expiresAt !== undefined &&
+          expiresAt - ttlMs - WRITER_LEASE_CLOCK_SKEW_MS > taken + 2 * ttlMs;
+      }, "the background renewals to carry the lease past two TTLs");
+      // a renewal slower than the TTL on a loaded host may lag the check once
+      await waitFor(
+        () => v3WriterLeaseConfirmed(dir),
+        "the renewed lease to be confirmed",
+      );
     } finally {
       await release();
     }

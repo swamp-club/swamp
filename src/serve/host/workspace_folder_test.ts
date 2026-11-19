@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { REPO_MARKER_FILE } from "../../infrastructure/persistence/hosted_workspace_folder_scan.ts";
@@ -95,6 +95,52 @@ Deno.test("watchWorkspaces: reports a folder added, one whose marker lands late,
       );
       const added = changes.flatMap((c) => c.added);
       assertEquals(added.filter((n) => n === "cost-reports").length, 1);
+    } finally {
+      await watcher.stop();
+    }
+  });
+});
+
+Deno.test("watchWorkspaces: with a served filter, changes follow what is served, not the folders listed", async () => {
+  await withTempDir(async (dir) => {
+    await makeRepo(dir, "edge-dns");
+    await makeRepo(dir, "being-deleted");
+    const hidden = new Set(["being-deleted"]);
+    const changes: WorkspaceChange[] = [];
+    const watcher = watchWorkspaces({
+      dir,
+      initial: ["edge-dns"],
+      onChange: (change) => {
+        changes.push(change);
+      },
+      served: (scan) => scan.workspaces.filter((name) => !hidden.has(name)),
+      rescanMs: 20,
+      debounceMs: 5,
+    });
+    try {
+      await makeRepo(dir, "later");
+      await waitFor(
+        () => changes.some((c) => c.added.includes("later")),
+        "a served folder to be reported",
+      );
+      hidden.add("edge-dns");
+      await waitFor(
+        () => changes.some((c) => c.removed.includes("edge-dns")),
+        "a listed folder no longer served to be reported removed",
+      );
+      assert((await Deno.stat(join(dir, "edge-dns"))).isDirectory);
+      await Deno.remove(join(dir, "being-deleted"), { recursive: true });
+      await makeRepo(dir, "last");
+      await waitFor(
+        () => changes.some((c) => c.added.includes("last")),
+        "a later folder to be reported",
+      );
+      assertEquals(
+        changes.flatMap((c) => [...c.added, ...c.removed])
+          .filter((name) => name === "being-deleted"),
+        [],
+        "a folder never served is never reported",
+      );
     } finally {
       await watcher.stop();
     }

@@ -192,6 +192,7 @@ export async function startServeHost(
       rescanMs,
       onChange: (change) => options.onWorkspaceChange?.(change),
       onRescan: (rescan) => reconciler.reconcile(rescan),
+      served: (rescan) => reconciler.served(rescan),
     }, skipLog);
   } catch (error) {
     await stopAll(stack).catch(
