@@ -605,10 +605,61 @@ claiming its name. It would gain a token only inside its own workspace, and
 [Limits](#limits) already rules out tenants that do not trust each other.
 
 The CLI does this by itself. Given a server address `<address>/w/<name>` and no
-stored token for it, it exchanges when it holds a token for `<address>` and the
-workspace's `/auth/info` offers the exchange. `swamp auth server-login` to a
-workspace's address still works. A serve that was given no root address offers
-no exchange.
+token for it from any source, it exchanges when the workspace's `/auth/info`
+offers the exchange and `servers.json` holds a token for `<address>`. The host's
+address is the one the user gave with `/w/<name>` removed, never one a serve
+answers. A serve that was given no root address offers no exchange.
+
+**What the CLI signs in with, and keeps** (`src/cli/workspace_sign_in.ts`).
+
+- Only a host token `swamp auth server-login` stored is exchanged. A host token
+  from `SWAMP_SERVER_TOKEN` or a token file is not: an exchange from it would
+  either write a credential to a machine that chose to keep them out of files,
+  or mint a workspace token on every command. A token file bound by `--server`
+  to a workspace's address is sent there as it is, whatever it holds, since the
+  user named that address.
+- The workspace token goes into `servers.json` under the workspace's address,
+  with an `expiresAt` on the client's clock (the lifetime the workspace granted,
+  measured by its `Date` header). Within a few minutes of that expiry the CLI
+  exchanges again before it sends the token; if that fails, the still-valid
+  token is used. An expired token that cannot be replaced is not sent. A token
+  a workspace refuses before its expiry (deleted, or the workspace rebuilt)
+  gets the usual refusal, not a retry; behind a host that refusal reads as 502,
+  since the router cannot see why a child refused a WebSocket, so a 502 or a
+  401 from a workspace the CLI sent an exchanged token to names signing in to
+  the host again, which replaces the token.
+- A token stored by `swamp auth server-login` to a workspace's address carries
+  no `expiresAt` and is used as it is.
+- An exchanged token records a SHA-256 digest of the host sign-in it came from
+  (the host entry's `obtainedAt` and token), and stands only while the host's
+  stored entry still matches it. Any `swamp auth server-login` to the host,
+  device or `--token`, as someone else or with the same token, replaces the
+  workspace token on the next command: the workspace runs as the new identity,
+  and a token the workspace revoked has a way out in every mode. A host entry
+  removed from `servers.json` stops the workspace token being sent. The CLI has
+  no server sign-out.
+- Two commands that both find no workspace token both exchange; the later write
+  wins. Writes to `servers.json` hold an OS advisory lock on a sidecar file, so
+  neither drops another server's entry. On a filesystem that cannot lock (some
+  NFS and SMB mounts) the write goes ahead without it, as before the lock, so
+  `swamp auth server-login` keeps working there.
+- When the workspace offers the exchange and no host token is usable (none
+  stored, or one from `SWAMP_SERVER_TOKEN`), a `--server` command stops before
+  it sends anything, naming the sign-in that covers the host.
+- A network failure or a busy root or workspace leaves the command to go on as
+  it would have. Only a refusal stops it, and the message says which: the host
+  refusing the stored sign-in, the root refusing the code, or the workspace's
+  admission lists refusing the principal, which signing in to the host again
+  does not cure. Before asking for a code over the WebSocket, whose refusal
+  the host's router hides, the CLI asks the root's HTTP route, which checks the
+  token first and whose status the router passes on. Serve's own 401 there
+  (its `unauthorized` code, not a proxy's bare 401) is a refused
+  host token and costs the root's lockout (five failures a minute per token
+  name) one failure per attempt; an accepted token clears the count. A 429
+  there, the lockout or a rate limit, stops the command with the wait the root
+  gave, since the code request could only be turned away too (a 429 without
+  serve's `rate_limited` code goes on to the socket); the lockout
+  covers every token of that name, so a valid new one waits as well.
 
 A workspace token lives no longer than the root token it came from, and its
 collectives are the ones the root knew at the exchange. The exchange is the

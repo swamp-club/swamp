@@ -27,6 +27,7 @@ import {
   getEnvCaCerts,
   implicitServeUrl,
   readTokenFile,
+  signInThroughHost,
   tokenFileBoundTo,
   warnWithheldTokenFile,
 } from "./remote_run.ts";
@@ -336,8 +337,11 @@ export async function resolveServeUpstream(
   if (token === undefined) {
     const repo = opts.credentialRepository ??
       new FileServerCredentialRepository();
-    const credential = await repo.get(key);
-    token = credential?.token || undefined;
+    token = await signInThroughHost(
+      key,
+      await repo.get(key),
+      opts.credentialRepository,
+    ) || undefined;
   }
   // A set token file that left no token was not bound to the address.
   if (token === undefined && Deno.env.get("SWAMP_SERVER_TOKEN_FILE")) {
