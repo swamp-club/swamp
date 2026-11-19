@@ -108,11 +108,26 @@ export async function registerHostedWorkspaces(
 
   try {
     // a registry the host creates adopts the repos under the data dir first
-    if (registry === null) await loadWorkspaceRegistry(deps);
+    const known = registry ?? await loadWorkspaceRegistry(deps);
+    // the update runs synchronously, so it compares by the real paths read here
+    const resolved = new Map<string, string>();
+    for (const entry of known.list()) {
+      resolved.set(entry.path, await realOf(entry.path));
+    }
+    const resolvedOf = (path: string) => resolved.get(path) ?? path;
     const written = await deps.registry.update((current) =>
-      lacking.map((want) => registerUnderLock(deps, current, want))
+      lacking.map((want) => registerUnderLock(deps, current, want, resolvedOf))
     );
-    for (const workspace of written) results.push(workspace);
+    for (const workspace of written) {
+      // an entry added meanwhile under another spelling of this folder is not a clash
+      const sameFolder = workspace.kind === "name_elsewhere" &&
+        await realOf(workspace.registeredFolder) === workspace.folder;
+      results.push(
+        sameFolder
+          ? { kind: "present", name: workspace.name, folder: workspace.folder }
+          : workspace,
+      );
+    }
   } catch (error) {
     if (isUnreadable(error)) {
       return { kind: "unreadable", reason: error.message };
@@ -168,11 +183,14 @@ function registerUnderLock(
   deps: HostedRegistryDeps,
   registry: WorkspaceRegistry,
   want: Lacking,
+  resolvedOf: (path: string) => string,
 ): HostedRegistration {
   const { name, folder } = want;
   const byName = registry.get(name);
   // the root registers a workspace it creates, maybe since the read above
-  if (byName?.path === folder) return { kind: "present", name, folder };
+  if (byName !== undefined && resolvedOf(byName.path) === folder) {
+    return { kind: "present", name, folder };
+  }
   if (byName !== undefined) {
     return {
       kind: "name_elsewhere",
@@ -181,7 +199,9 @@ function registerUnderLock(
       registeredFolder: byName.path,
     };
   }
-  const byFolder = registry.list().find((entry) => entry.path === folder);
+  const byFolder = registry.list().find((entry) =>
+    resolvedOf(entry.path) === folder
+  );
   if (byFolder !== undefined) {
     return {
       kind: "folder_elsewhere",

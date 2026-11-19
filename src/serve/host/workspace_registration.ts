@@ -167,6 +167,7 @@ export function createWorkspaceRegistrar(options: {
         }
         forgetting.delete(name);
         reported.clear(`forget:${name}`);
+        reported.clear("unreadable");
       } catch (error) {
         failed(`forget:${name}`, `Removing workspace ${name}`, error);
       }
@@ -221,6 +222,7 @@ export function createWorkspaceRegistrar(options: {
         });
         // a corrupt registry never holds up a delete
         if (outcome.kind === "unreadable") unreadable(outcome.reason);
+        else reported.clear("unreadable");
       });
     },
 

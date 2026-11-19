@@ -273,3 +273,53 @@ Deno.test("unregisterHostedWorkspace: a write that cannot take the lock rejects,
     );
   });
 });
+
+Deno.test({
+  name:
+    "registerHostedWorkspaces: an entry added meanwhile under another spelling of the folder is present, not a clash",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withWorkspaceFixture(async (f) => {
+      const workspacesDir = join(f.dir, "host", "workspaces");
+      const folder = join(workspacesDir, "alpha");
+      await f.makeRepo(folder);
+      const linked = join(f.dir, "linked");
+      await Deno.symlink(join(f.dir, "host"), linked, { type: "dir" });
+      await f.deps.registry.update(() => {});
+      const registry = f.deps.registry;
+      let raced = false;
+      const deps = {
+        ...f.deps,
+        registry: {
+          load: () => registry.load(),
+          update: async <T>(
+            change: Parameters<typeof registry.update<T>>[0],
+          ) => {
+            if (!raced) {
+              raced = true;
+              await registry.update((r) =>
+                r.register({
+                  name: "alpha",
+                  path: join(linked, "workspaces", "alpha"),
+                  createdAt: "other",
+                })
+              );
+            }
+            return await registry.update(change);
+          },
+        },
+      };
+      assertEquals(
+        await registerHostedWorkspaces(deps, {
+          workspacesDir,
+          names: ["alpha"],
+        }),
+        {
+          kind: "done",
+          workspaces: [{ kind: "present", name: "alpha", folder }],
+        },
+      );
+      assertEquals((await registry.load())?.list().length, 1);
+    });
+  },
+});

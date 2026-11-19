@@ -48,6 +48,7 @@ import {
 import { createExchangeTokenMinter } from "../src/serve/device_auth_handler.ts";
 import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
 import { hostRootWorkspaces } from "../src/serve/host_root_workspaces.ts";
+import { hostWorkspaceStore } from "../src/serve/host/workspace_registration.ts";
 import { resetRateLimitState } from "../src/serve/rate_limiter.ts";
 import { createSignInCodeRedeemClient } from "../src/serve/sign_in_code_redeem_client.ts";
 import { handleSignInCodeRedeem } from "../src/serve/sign_in_code_redeem_handler.ts";
@@ -183,6 +184,12 @@ async function withHost(fn: (host: Host) => Promise<void>): Promise<void> {
           { dir: join(hostDir, "workspaces"), address: HOST_ADDRESS },
           {},
           () => rootAccess(mode),
+          // a registry and data dir inside the temp folder, never the user's
+          () =>
+            hostWorkspaceStore({
+              dataDir: join(hostDir, "data"),
+              configDir: join(hostDir, "config"),
+            }),
         )!;
         return {
           ...base,

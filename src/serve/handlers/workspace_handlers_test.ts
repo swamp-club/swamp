@@ -34,6 +34,7 @@ import type {
   HostedWorkspaceRootAccess,
 } from "../../libswamp/hosted_workspace/deps.ts";
 import { hostRootWorkspaces } from "../host_root_workspaces.ts";
+import { hostWorkspaceStore } from "../host/workspace_registration.ts";
 import {
   type ConnectionContext,
   setConnectionClient,
@@ -110,6 +111,11 @@ async function folder(): Promise<Folder> {
     { dir, address: "https://host.example" },
     {},
     () => NONE_ACCESS,
+    () =>
+      hostWorkspaceStore({
+        dataDir: join(root, "data"),
+        configDir: join(root, "config"),
+      }),
   )!;
   const hostedWorkspaces = {
     ...host,

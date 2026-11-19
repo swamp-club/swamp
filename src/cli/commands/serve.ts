@@ -659,8 +659,10 @@ import {
 } from "../../infrastructure/persistence/run_tracker_store.ts";
 import {
   getSwampConfigDir,
+  getSwampDataDir,
   swampPath,
 } from "../../infrastructure/persistence/paths.ts";
+import { hostWorkspaceStore } from "../../serve/host/workspace_registration.ts";
 import { DefaultDatastorePathResolver } from "../../infrastructure/persistence/default_datastore_path_resolver.ts";
 import {
   checkTokenHealth,
@@ -2292,6 +2294,12 @@ export const serveCommand = new Command()
         allowedCollectives: [...authConfig.allowedCollectives],
         nameCache: { ...oauthNameCache },
       }),
+      // the host pins both for its root, so this is the registry the host writes
+      () =>
+        hostWorkspaceStore({
+          dataDir: resolve(getSwampDataDir()),
+          configDir: resolve(getSwampConfigDir()),
+        }),
     );
 
     const signInExchange = exchangeTarget(
