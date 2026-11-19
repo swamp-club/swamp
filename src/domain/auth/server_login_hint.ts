@@ -104,6 +104,18 @@ export function serverLoginHint(
   }
 }
 
+/**
+ * the token may come from --token, a token file or a login, so both fixes are
+ * named; a workspace signed in through its host keeps the host's remedy
+ */
+export function serverTokenRefusedHint(
+  serverUrl: string,
+  signIn?: WorkspaceSignInNote,
+): string {
+  if (signIn !== undefined) return serverLoginHint(serverUrl, signIn);
+  return `Authentication failed — the server likely refused the token sent to ${serverUrl}; check the token, or run: swamp auth server-login --server ${serverUrl}`;
+}
+
 function normalizedOrUndefined(serverUrl: string): string | undefined {
   try {
     return normalizeServerUrl(serverUrl);

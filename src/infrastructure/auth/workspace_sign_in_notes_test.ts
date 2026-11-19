@@ -23,6 +23,7 @@ import {
   hasWorkspaceSignInGap,
   loginHintFor,
   recordWorkspaceSignIn,
+  tokenRefusedHintFor,
   workspaceRefusalHintFor,
 } from "./workspace_sign_in_notes.ts";
 
@@ -83,5 +84,19 @@ Deno.test("loginHintFor: an address that does not parse gets the plain hint", as
       "Authentication failed — run: swamp auth server-login --server not a url",
     );
     assertEquals(hasWorkspaceSignInGap("not a url"), false);
+  });
+});
+
+Deno.test("tokenRefusedHintFor: a workspace signed in through its host keeps the host remedy, any other address gets the likely-refused hint", async () => {
+  await inOwnRuntime(() => {
+    recordWorkspaceSignIn(WORKSPACE, HOST, "exchanged-token");
+    assertEquals(
+      tokenRefusedHintFor("wss://host.example/w/team"),
+      `Authentication failed — the workspace refused the token from your host sign-in; sign in to the host again to replace it: swamp auth server-login --server ${HOST}`,
+    );
+    assertEquals(
+      tokenRefusedHintFor("wss://serve.example/"),
+      "Authentication failed — the server likely refused the token sent to wss://serve.example/; check the token, or run: swamp auth server-login --server wss://serve.example/",
+    );
   });
 });

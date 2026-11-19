@@ -68,6 +68,7 @@ import {
 import {
   hasWorkspaceSignInGap,
   loginHintFor,
+  tokenRefusedHintFor,
   workspaceRefusalHintFor,
 } from "../infrastructure/auth/workspace_sign_in_notes.ts";
 import { quoteShellWord } from "../domain/shell_word.ts";
@@ -1760,11 +1761,23 @@ export function describeStatuslessFailure(
   if (probedStatus === 401 || probedStatus === 403) {
     if (!sentToken) return authFailedMessage(wsUrl);
     if (new URL(wsUrl).protocol === "wss:") {
+      if (isHttp2RetryFailure(originalMessage)) {
+        return tokenRefusedHintFor(wsUrl);
+      }
       return `${authFailedMessage(wsUrl)} (${originalMessage})`;
     }
     return originalMessage;
   }
   return describeHandshakeStatus(wsUrl, probedStatus, originalMessage);
+}
+
+/**
+ * after a wss handshake over HTTP/1.1 is refused, Deno retries it over HTTP/2
+ * and reports only the retry's error, so the refusal's status is lost
+ */
+function isHttp2RetryFailure(message: string): boolean {
+  return message.includes("NoApplicationProtocol") ||
+    message.includes("stream error received");
 }
 
 async function classifyConnectionError(
@@ -1814,6 +1827,9 @@ async function diagnoseConnectFailure(
     probed,
     sentToken,
   );
+  if (!message.includes(originalMessage)) {
+    logger.debug`Connect failure reported as ${message}: ${originalMessage}`;
+  }
   if (probed === undefined) {
     return probe.refused
       ? { message, unreachable: "not accepting connections" }

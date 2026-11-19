@@ -22,6 +22,7 @@ import {
   recordWithheldTokenFile,
   resetWithheldTokenFiles,
   serverLoginHint,
+  serverTokenRefusedHint,
   workspaceTokenRefusalHint,
 } from "./server_login_hint.ts";
 
@@ -134,4 +135,18 @@ Deno.test("serverLoginHint: a withheld token file comes first and names the host
   } finally {
     resetWithheldTokenFiles();
   }
+});
+
+Deno.test("serverTokenRefusedHint: says the token was likely refused and names both fixes, or keeps a workspace's host remedy", () => {
+  assertEquals(
+    serverTokenRefusedHint("wss://serve.example.com/"),
+    "Authentication failed — the server likely refused the token sent to wss://serve.example.com/; check the token, or run: swamp auth server-login --server wss://serve.example.com/",
+  );
+  assertEquals(
+    serverTokenRefusedHint("wss://host.example/w/team", {
+      hostAddress: HOST,
+      kind: "exchanged-token",
+    }),
+    "Authentication failed — the workspace refused the token from your host sign-in; sign in to the host again to replace it: swamp auth server-login --server https://host.example",
+  );
 });

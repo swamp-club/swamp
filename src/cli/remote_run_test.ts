@@ -1745,6 +1745,53 @@ Deno.test("describeStatuslessFailure: classifies from what the tokenless probe g
   }
 });
 
+Deno.test("describeStatuslessFailure: a token sent over wss whose HTTP/2 retry failed is reported as refused", () => {
+  const ws = "ws://serve.test/";
+  const wss = "wss://serve.test/";
+  const auth = (url: string) =>
+    `Authentication failed — run: swamp auth server-login --server ${url}`;
+  const refused =
+    `Authentication failed — the server likely refused the token sent to ${wss}; check the token, or run: swamp auth server-login --server ${wss}`;
+  for (const retryError of [NO_APPLICATION_PROTOCOL, HTTP2_STREAM_ERROR]) {
+    const original = `Could not connect to ${wss}: ${retryError}`;
+    const cases: Array<
+      [string, string, number | undefined, boolean, string]
+    > = [
+      ["401, token sent over wss", wss, 401, true, refused],
+      ["403, token sent over wss", wss, 403, true, refused],
+      ["401, no token sent", wss, 401, false, auth(wss)],
+      ["401, token sent over ws", ws, 401, true, original],
+      [
+        "429, token sent over wss",
+        wss,
+        429,
+        true,
+        "Rate-limited by server — try again later",
+      ],
+      [
+        "500, token sent over wss",
+        wss,
+        500,
+        true,
+        `Server error (HTTP 500) while connecting to ${wss} — check the server log for the cause`,
+      ],
+      ["no answer, token sent over wss", wss, undefined, true, original],
+    ];
+    for (const [label, url, status, sentToken, expected] of cases) {
+      const shown = describeStatuslessFailure(url, original, status, sentToken);
+      assertEquals(shown, expected, `${retryError}: ${label}`);
+      if (expected === refused) {
+        assertEquals(shown.includes(retryError), false, label);
+      }
+    }
+  }
+  const other = `Could not connect to ${wss}: connection reset by peer`;
+  assertEquals(
+    describeStatuslessFailure(wss, other, 401, true),
+    `${auth(wss)} (${other})`,
+  );
+});
+
 Deno.test({
   name: "probeHandshakeStatus: returns undefined for an unreachable server",
   sanitizeOps: false,
@@ -1973,6 +2020,10 @@ function opaquelyFailingSocket(message: string): () => WebSocket {
 const HTTP2_STREAM_ERROR =
   "NetworkError: failed to connect to WebSocket: stream error received: unspecific protocol error detected";
 
+/** a proxy that serves only HTTP/1.1 refusing Deno's h2-only retry */
+const NO_APPLICATION_PROTOCOL =
+  "NetworkError: failed to connect to WebSocket: received fatal alert: NoApplicationProtocol";
+
 Deno.test({
   name:
     "remote run: a tokenless handshake rejected without a status is classified from the probe's 401",
@@ -2054,6 +2105,34 @@ Deno.test({
       assertStringIncludes(error.message, "stream error received");
       assertEquals(error.message.includes("Authentication failed"), false);
       assertEquals(error.message.includes("swamp auth server-login"), false);
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "requestServerResponse: a token handshake over ws:// refused by ALPN keeps the original error and never says the token was refused",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = tokenCheckingServer();
+    try {
+      const error = await assertRejects(
+        () =>
+          requestServerResponse(
+            {
+              server: server.url,
+              token: "stale",
+              createSocket: opaquelyFailingSocket(NO_APPLICATION_PROTOCOL),
+            },
+            { type: "access.grant.list" },
+          ),
+        UserError,
+      );
+      assertStringIncludes(error.message, "NoApplicationProtocol");
+      assertEquals(error.message.includes("refused the token"), false);
     } finally {
       await server.shutdown();
     }

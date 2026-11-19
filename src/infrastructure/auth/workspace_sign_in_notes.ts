@@ -19,6 +19,7 @@
 
 import {
   serverLoginHint,
+  serverTokenRefusedHint,
   type WorkspaceSignInNote,
   workspaceTokenRefusalHint,
 } from "../../domain/auth/server_login_hint.ts";
@@ -46,6 +47,10 @@ export function hasWorkspaceSignInGap(workspaceAddress: string): boolean {
 
 export function loginHintFor(serverUrl: string): string {
   return serverLoginHint(serverUrl, noteFor(serverUrl));
+}
+
+export function tokenRefusedHintFor(serverUrl: string): string {
+  return serverTokenRefusedHint(serverUrl, noteFor(serverUrl));
 }
 
 export function workspaceRefusalHintFor(serverUrl: string): string | undefined {
