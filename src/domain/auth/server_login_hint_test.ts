@@ -19,11 +19,14 @@
 
 import { assertEquals } from "@std/assert";
 import {
+  hasWorkspaceSignInGap,
+  recordExchangedWorkspaceToken,
   recordWithheldTokenFile,
   recordWorkspaceSignInGap,
   resetWithheldTokenFiles,
   resetWorkspaceSignInGaps,
   serverLoginHint,
+  workspaceTokenRefusalHint,
 } from "./server_login_hint.ts";
 
 Deno.test("serverLoginHint: names server-login with the serve URL as given", () => {
@@ -113,5 +116,50 @@ Deno.test("serverLoginHint: a host token from SWAMP_SERVER_TOKEN says it is not 
     );
   } finally {
     resetWorkspaceSignInGaps();
+  }
+});
+
+Deno.test("serverLoginHint: an exchanged workspace token refused says to sign in to the host again", () => {
+  resetWorkspaceSignInGaps();
+  try {
+    recordExchangedWorkspaceToken(
+      "https://host.example/w/team",
+      "https://host.example",
+    );
+    assertEquals(hasWorkspaceSignInGap("https://host.example/w/team"), false);
+    assertEquals(
+      serverLoginHint("wss://host.example/w/team"),
+      "Authentication failed — the workspace refused the token from your host sign-in; sign in to the host again to replace it: swamp auth server-login --server https://host.example",
+    );
+    assertEquals(
+      workspaceTokenRefusalHint("wss://host.example/w/team"),
+      "Behind a host this is also how a workspace refusing your token reads; signing in to the host again replaces it: swamp auth server-login --server https://host.example",
+    );
+    assertEquals(
+      workspaceTokenRefusalHint("https://host.example/w/other"),
+      undefined,
+    );
+  } finally {
+    resetWorkspaceSignInGaps();
+  }
+});
+
+Deno.test("serverLoginHint: a withheld token file comes first and names the host for a workspace sign-in gap", () => {
+  resetWorkspaceSignInGaps();
+  resetWithheldTokenFiles();
+  try {
+    recordWorkspaceSignInGap(
+      "https://host.example/w/team",
+      "https://host.example",
+      "no-host-token",
+    );
+    recordWithheldTokenFile("https://host.example/w/team", "flag-or-env");
+    assertEquals(
+      serverLoginHint("https://host.example/w/team"),
+      "Authentication failed — SWAMP_SERVER_TOKEN_FILE was not sent to https://host.example/w/team because only .swamp.yaml names that address; set SWAMP_SERVE_URL to it or pass --server to send it, or run: swamp auth server-login --server https://host.example",
+    );
+  } finally {
+    resetWorkspaceSignInGaps();
+    resetWithheldTokenFiles();
   }
 });

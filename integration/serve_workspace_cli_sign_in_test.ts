@@ -28,6 +28,7 @@ import { FileServerCredentialRepository } from "../src/infrastructure/persistenc
 import { ProcessRuntime } from "../src/infrastructure/runtime/process_runtime.ts";
 import {
   requestServerResponse,
+  resolveServerToken,
   resolveServerTokenFromOptions,
 } from "../src/cli/remote_run.ts";
 import { resolveServeUpstream } from "../src/cli/serve_upstream.ts";
@@ -38,7 +39,12 @@ import {
 } from "../src/serve/auth_exchange_handler.ts";
 import { createWorkspaceRouter } from "../src/serve/host/workspace_router.ts";
 import { SERVE_REQUEST_PATH } from "../src/serve/protocol.ts";
-import { resetRateLimitState } from "../src/serve/rate_limiter.ts";
+import { tooManyRequests } from "../src/serve/http_caller_auth.ts";
+import {
+  failedAttemptKey,
+  limitFailedAttempts,
+  resetRateLimitState,
+} from "../src/serve/rate_limiter.ts";
 import { createSignInCodeRedeemClient } from "../src/serve/sign_in_code_redeem_client.ts";
 import { handleSignInCodeRedeem } from "../src/serve/sign_in_code_redeem_handler.ts";
 
@@ -176,6 +182,18 @@ async function withHost(
     return new Response(null, { status: 404 });
   };
 
+  // the root's own lockout, which refuses a token name after five failures a
+  // minute whichever token of that name is presented
+  const rootCaller = async (req: Request) => {
+    const token = bearer(req);
+    const guarded = await limitFailedAttempts(
+      failedAttemptKey(token || null, "127.0.0.1"),
+      () => Promise.resolve({ ok: Object.hasOwn(ROOT_PRINCIPALS, token) }),
+    );
+    if (guarded.limited) return tooManyRequests(guarded.retryAfterSeconds);
+    return guarded.result.ok ? ROOT_PRINCIPALS[token] : undefined;
+  };
+
   const root = async (req: Request, path: string): Promise<Response> => {
     const body = await record(req, `${prefix}${path}`);
     const redeemed = await handleSignInCodeRedeem(local(req, path, body), {
@@ -185,7 +203,9 @@ async function withHost(
     if (redeemed !== null) return redeemed;
     // the token is checked before anything else, as serve's HTTP route does
     if (path === SERVE_REQUEST_PATH) {
-      return Object.hasOwn(ROOT_PRINCIPALS, bearer(req))
+      const caller = await rootCaller(req);
+      if (caller instanceof Response) return caller;
+      return caller !== undefined
         ? Response.json({ code: "use_websocket", message: "use the socket" }, {
           status: 404,
         })
@@ -199,9 +219,8 @@ async function withHost(
     if (options.rootStatus !== undefined) {
       return new Response(null, { status: options.rootStatus });
     }
-    const caller = Object.hasOwn(ROOT_PRINCIPALS, bearer(req))
-      ? ROOT_PRINCIPALS[bearer(req)]
-      : undefined;
+    const caller = await rootCaller(req);
+    if (caller instanceof Response) return caller;
     if (caller === undefined) {
       return new Response("Unauthorized: unknown", { status: 401 });
     }
@@ -462,8 +481,8 @@ Deno.test("workspace sign-in from the CLI: signing in to the host as someone els
     assertEquals(host.ranAs(), "user:sub-alice");
     assertEquals(host.exchanges(), 2);
 
-    await host.store({ serverUrl: host.hostAddress, token: ROOT_TOKEN });
     assertEquals(await command(host, host.workspaceAddress), { ok: true });
+    assertEquals(host.ranAs(), "user:sub-alice");
     assertEquals(host.exchanges(), 2);
   });
 });
@@ -579,5 +598,105 @@ Deno.test("workspace sign-in from the CLI: a workspace token expiring with its h
       !host.seen.some((s) => s.authorization === "Bearer ws-expired.secret"),
       "the expired token was sent",
     );
+  });
+});
+
+Deno.test("workspace sign-in from the CLI: the root's lockout reads as a wait, for a refused token and then a valid one of the same name", async () => {
+  await withHost({}, async (host) => {
+    await host.store({
+      serverUrl: host.hostAddress,
+      token: "root-alice.wrong-secret",
+    });
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      const error = await assertRejects(
+        () => command(host, host.workspaceAddress),
+        UserError,
+      );
+      assert(error.message.includes("refused your sign-in"), error.message);
+    }
+    const locked = await assertRejects(
+      () => command(host, host.workspaceAddress),
+      UserError,
+    );
+    assert(
+      locked.message.includes("turning away sign-ins with your host token"),
+      locked.message,
+    );
+
+    await host.store({ serverUrl: host.hostAddress });
+    const stillLocked = await assertRejects(
+      () => command(host, host.workspaceAddress),
+      UserError,
+    );
+    assert(
+      stillLocked.message.includes("turning away sign-ins"),
+      stillLocked.message,
+    );
+    assertEquals(host.codeRequests(), 0);
+    assertEquals(host.exchanges(), 0);
+  });
+});
+
+Deno.test("workspace sign-in from the CLI: signing in to the host again with the same token replaces a valid workspace token", async () => {
+  await withHost({}, async (host) => {
+    await host.store({ serverUrl: host.hostAddress });
+    assertEquals(await command(host, host.workspaceAddress), { ok: true });
+    assertEquals(host.exchanges(), 1);
+
+    await host.store({
+      serverUrl: host.hostAddress,
+      obtainedAt: new Date(Date.now() + 1000).toISOString(),
+    });
+    assertEquals(await command(host, host.workspaceAddress), { ok: true });
+    assertEquals(host.exchanges(), 2);
+    assertEquals(await command(host, host.workspaceAddress), { ok: true });
+    assertEquals(host.exchanges(), 2);
+  });
+});
+
+Deno.test("workspace sign-in from the CLI: a workspace refusing its exchanged token through the host's router names the sign-in that replaces it", async () => {
+  await withHost({}, async (host) => {
+    await host.store({ serverUrl: host.hostAddress });
+    assertEquals(await command(host, host.workspaceAddress), { ok: true });
+    const stored = await host.stored(host.workspaceAddress);
+    assert(stored !== null);
+    host.minted.delete(stored.token);
+
+    const error = await assertRejects(() =>
+      command(host, host.workspaceAddress)
+    );
+    const message = (error as Error).message;
+    assert(message.includes("HTTP 502"), message);
+    assert(
+      message.includes(
+        `signing in to the host again replaces it: swamp auth server-login --server ${host.hostAddress}`,
+      ),
+      message,
+    );
+  });
+});
+
+Deno.test("workspace sign-in from the CLI: a token file withheld from a workspace .swamp.yaml names is reported before the host sign-in", async () => {
+  await withHost({}, async (host) => {
+    const tokenFile = `${host.configDir}/workspace-token`;
+    await Deno.writeTextFile(tokenFile, "ws-file.secret\n");
+    await withMockedEnv({ SWAMP_SERVER_TOKEN_FILE: tokenFile }, async () => {
+      const error = await assertRejects(
+        () => host.run(() => resolveServerToken(host.workspaceAddress)),
+        UserError,
+      );
+      assert(
+        error.message.startsWith(
+          `Authentication failed — SWAMP_SERVER_TOKEN_FILE was not sent to ${host.workspaceAddress}`,
+        ),
+        error.message,
+      );
+      assert(
+        error.message.includes(
+          `or run: swamp auth server-login --server ${host.hostAddress}`,
+        ),
+        error.message,
+      );
+    });
   });
 });

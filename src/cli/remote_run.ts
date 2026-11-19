@@ -44,7 +44,7 @@ import type {
   ServerCredentialRepository,
 } from "../domain/auth/server_credential.ts";
 import {
-  HostTokenRefusedError,
+  type HostTokenCheck,
   type JsonReply,
   SIGN_IN_TIMEOUT_MS,
   type WorkspaceSignInDeps,
@@ -66,6 +66,7 @@ import {
   serverLoginHint,
   withheldTokenFileMessage,
   type WithheldTokenFileRemedy,
+  workspaceTokenRefusalHint,
 } from "../domain/auth/server_login_hint.ts";
 import { quoteShellWord } from "../domain/shell_word.ts";
 import { processLockHolderMarker } from "../domain/datastore/lock_holder_marker.ts";
@@ -613,13 +614,13 @@ export async function resolveServerToken(
     await repo.get(serverUrl),
     credentialRepo,
   );
-  // the workspace wants a token no source has, so asking would only be refused
-  if (!token && hasWorkspaceSignInGap(key)) {
-    throw new UserError(serverLoginHint(key));
-  }
   // A set token file that reached here was not bound to the address.
   if (!token && envTokenFile) {
     warnWithheldTokenFile(key, "flag-or-env");
+  }
+  // the workspace wants a token no source has, so asking would only be refused
+  if (!token && hasWorkspaceSignInGap(key)) {
+    throw new UserError(serverLoginHint(key));
   }
   return token;
 }
@@ -647,6 +648,7 @@ function workspaceSignInDeps(
     envPairNames: (url) =>
       envAware instanceof FileServerCredentialRepository &&
       envAware.envPairNames(url),
+    checkHostToken,
     requestSignInCode: requestWorkspaceSignInCode,
     fetchJson: fetchSignInJson,
     headers: resolveExtraHeaders(),
@@ -659,38 +661,27 @@ async function requestWorkspaceSignInCode(
   hostToken: string,
   name: string,
 ): Promise<WorkspaceSignInResponse> {
-  try {
-    return await requestServerResponse<WorkspaceSignInResponse>(
-      {
-        server: hostAddress,
-        token: hostToken,
-        remoteIndicator: false,
-        log: () => {},
-        restartRetryBudgetMs: 0,
-        timeoutMs: SIGN_IN_TIMEOUT_MS,
-      },
-      { type: "workspace.sign-in", payload: { name } },
-    );
-  } catch (error) {
-    // a reply over the socket is the root's own answer, not a refused token
-    if (
-      !(error instanceof ServerResponseError) &&
-      await hostRefusesToken(hostAddress, hostToken)
-    ) {
-      throw new HostTokenRefusedError();
-    }
-    throw error;
-  }
+  return await requestServerResponse<WorkspaceSignInResponse>(
+    {
+      server: hostAddress,
+      token: hostToken,
+      remoteIndicator: false,
+      log: () => {},
+      restartRetryBudgetMs: 0,
+      timeoutMs: SIGN_IN_TIMEOUT_MS,
+    },
+    { type: "workspace.sign-in", payload: { name } },
+  );
 }
 
 /**
  * a refused WebSocket hides its status behind a host's router or HTTP/2, so the
  * root's HTTP route, which checks the token before anything else, is asked
  */
-async function hostRefusesToken(
+async function checkHostToken(
   hostAddress: string,
   hostToken: string,
-): Promise<boolean> {
+): Promise<HostTokenCheck> {
   try {
     const reply = await fetchSignInJson(`${hostAddress}${SERVE_REQUEST_PATH}`, {
       method: "POST",
@@ -706,9 +697,25 @@ async function hostRefusesToken(
       redirect: "manual",
       signal: AbortSignal.timeout(SIGN_IN_TIMEOUT_MS),
     });
-    return reply.status === 401;
+    if (reply.status === 401) return { kind: "refused" };
+    if (reply.status === 429) {
+      const retryAfterSeconds = parseRetryAfter(reply.retryAfter ?? null);
+      return retryAfterSeconds === undefined
+        ? { kind: "limited" }
+        : { kind: "limited", retryAfterSeconds };
+    }
+    const code = typeof reply.body === "object" && reply.body !== null
+      ? (reply.body as { code?: unknown }).code
+      : undefined;
+    if (
+      (reply.status >= 200 && reply.status < 300) ||
+      (reply.status === 404 && code === "use_websocket")
+    ) {
+      return { kind: "accepted" };
+    }
+    return { kind: "unknown" };
   } catch {
-    return false;
+    return { kind: "unknown" };
   }
 }
 
@@ -735,6 +742,7 @@ async function fetchSignInJson(
       status: response.status,
       date: response.headers.get("date"),
       body,
+      retryAfter: response.headers.get("retry-after"),
     };
   } finally {
     ownClient?.close();
@@ -1719,7 +1727,10 @@ function describeHandshakeStatus(
     return authFailedMessage(wsUrl);
   }
   if (statusCode >= 500) {
-    return `Server error (HTTP ${statusCode}) while connecting to ${wsUrl} — check the server log for the cause`;
+    const refusal = workspaceTokenRefusalHint(wsUrl);
+    return `Server error (HTTP ${statusCode}) while connecting to ${wsUrl} — check the server log for the cause${
+      refusal === undefined ? "" : `. ${refusal}`
+    }`;
   }
   return originalMessage;
 }

@@ -21,6 +21,7 @@ import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { UserError } from "../domain/errors.ts";
 import type { ServerCredential } from "../domain/auth/server_credential.ts";
 import {
+  hasWorkspaceSignInGap,
   resetWorkspaceSignInGaps,
   serverLoginHint,
 } from "../domain/auth/server_login_hint.ts";
@@ -33,7 +34,7 @@ import {
   SIGN_IN_REFUSED_FOR_PRINCIPAL_CODE,
 } from "../serve/handlers/workspace_handlers.ts";
 import {
-  HostTokenRefusedError,
+  type HostTokenCheck,
   type JsonReply,
   localExpiry,
   RENEW_MARGIN_MS,
@@ -53,14 +54,15 @@ const HOST_CREDENTIAL: ServerCredential = {
   principalId: "user:a",
   obtainedAt: "2026-11-01T00:00:00.000Z",
 };
-// SHA-256 of HOST_CREDENTIAL.token
-const HOST_TOKEN_DIGEST =
-  "822537ba1f35b3b48c4b96a733130634347e268ad85fdb949b82039dab249cd9";
+// SHA-256 of HOST_CREDENTIAL's obtainedAt, a newline and its token
+const HOST_SIGN_IN_DIGEST =
+  "17a69c165fce39e131deb25a55a7fbe4a2a313f4e98265053796f6945d040df4";
 
 interface Recorded {
   readonly urls: string[];
   readonly inits: RequestInit[];
   readonly codeRequests: { host: string; token: string; name: string }[];
+  readonly hostChecks: string[];
   readonly saved: ServerCredential[];
 }
 
@@ -71,6 +73,7 @@ function fakeDeps(
     authInfo?: JsonReply | Error;
     exchange?: JsonReply | Error;
     signInCode?: () => Promise<{ data: { code: string } }>;
+    hostCheck?: HostTokenCheck;
     now?: () => number;
   } = {},
 ): { deps: WorkspaceSignInDeps; recorded: Recorded } {
@@ -78,6 +81,7 @@ function fakeDeps(
     urls: [],
     inits: [],
     codeRequests: [],
+    hostChecks: [],
     saved: [],
   };
   const stored: Record<string, ServerCredential | undefined> = {
@@ -94,6 +98,10 @@ function fakeDeps(
       },
     },
     envPairNames: overrides.envPairNames ?? (() => false),
+    checkHostToken: (_host, token) => {
+      recorded.hostChecks.push(token);
+      return Promise.resolve(overrides.hostCheck ?? { kind: "accepted" });
+    },
     requestSignInCode: (host, token, name) => {
       recorded.codeRequests.push({ host, token, name });
       return overrides.signInCode?.() ??
@@ -150,7 +158,7 @@ Deno.test("signInToWorkspace: exchanges a host token for a workspace token and s
       displayName: "a",
       obtainedAt: new Date(NOW).toISOString(),
       expiresAt: SERVE_EXPIRES_AT,
-      hostTokenDigest: HOST_TOKEN_DIGEST,
+      hostSignInDigest: HOST_SIGN_IN_DIGEST,
     }]);
   });
 });
@@ -244,11 +252,9 @@ Deno.test("signInToWorkspace: a network failure at any step is not eligible", as
   }
 });
 
-Deno.test("signInToWorkspace: a host that refuses its own token says to sign in to the host", async () => {
+Deno.test("signInToWorkspace: a host that refuses its own token says to sign in to the host, without asking over the socket", async () => {
   await inOwnRuntime(async () => {
-    const { deps } = fakeDeps({
-      signInCode: () => Promise.reject(new HostTokenRefusedError()),
-    });
+    const { deps, recorded } = fakeDeps({ hostCheck: { kind: "refused" } });
     const error = await assertRejects(
       () => signInToWorkspace(WORKSPACE, deps),
       UserError,
@@ -258,6 +264,35 @@ Deno.test("signInToWorkspace: a host that refuses its own token says to sign in 
       error.message,
       `swamp auth server-login --server ${HOST}`,
     );
+    assertEquals(recorded.hostChecks, ["root.secret"]);
+    assertEquals(recorded.codeRequests, []);
+  });
+});
+
+Deno.test("signInToWorkspace: a host turning the token away for now says how long, without asking over the socket", async () => {
+  await inOwnRuntime(async () => {
+    const { deps, recorded } = fakeDeps({
+      hostCheck: { kind: "limited", retryAfterSeconds: 42 },
+    });
+    const error = await assertRejects(
+      () => signInToWorkspace(WORKSPACE, deps),
+      UserError,
+    );
+    assertEquals(error.code, "rate_limited");
+    assertStringIncludes(error.message, "for 42s");
+    assertStringIncludes(
+      error.message,
+      `swamp auth server-login --server ${HOST}`,
+    );
+    assertEquals(recorded.codeRequests, []);
+  });
+});
+
+Deno.test("signInToWorkspace: a host whose HTTP route gives no answer is still asked over the socket", async () => {
+  await inOwnRuntime(async () => {
+    const { deps, recorded } = fakeDeps({ hostCheck: { kind: "unknown" } });
+    assertEquals(await signInToWorkspace(WORKSPACE, deps), "ws.secret");
+    assertEquals(recorded.codeRequests.length, 1);
   });
 });
 
@@ -366,7 +401,7 @@ function exchanged(expiresAt: number, obtainedAt: number): ServerCredential {
     principalId: "user:a",
     obtainedAt: new Date(obtainedAt).toISOString(),
     expiresAt: new Date(expiresAt).toISOString(),
-    hostTokenDigest: HOST_TOKEN_DIGEST,
+    hostSignInDigest: HOST_SIGN_IN_DIGEST,
   };
 }
 
@@ -409,9 +444,7 @@ Deno.test("workspaceTokenFor: an expired exchanged token is replaced before it i
 
 Deno.test("workspaceTokenFor: an expired token whose renewal is refused fails the command", async () => {
   await inOwnRuntime(async () => {
-    const { deps } = fakeDeps({
-      signInCode: () => Promise.reject(new HostTokenRefusedError()),
-    });
+    const { deps } = fakeDeps({ hostCheck: { kind: "refused" } });
     const found = exchanged(NOW - 1000, NOW - 30 * 86_400_000);
     await assertRejects(
       () => workspaceTokenFor(WORKSPACE, found, deps),
@@ -464,8 +497,8 @@ Deno.test("workspaceTokenFor: a valid token from another host sign-in is replace
     assertEquals(await workspaceTokenFor(WORKSPACE, found, deps), "ws.secret");
     assertEquals(recorded.codeRequests[0].token, "bob.rotated");
     assertEquals(
-      recorded.saved[0].hostTokenDigest,
-      "2b17efe38feee77ccd980ceb50b13950c60ca541a2844cef48e3bb5e674061de",
+      recorded.saved[0].hostSignInDigest,
+      "76a6d474a8a42427985956e39352cd7bc7dc7252518040ca2e4d48ac9413ef1f",
     );
   });
 });
@@ -488,9 +521,54 @@ Deno.test("workspaceTokenFor: an exchanged token that names no host token is rep
     const { deps } = fakeDeps();
     const found = {
       ...exchanged(NOW + 30 * 86_400_000, NOW - 1000),
-      hostTokenDigest: undefined,
+      hostSignInDigest: undefined,
     };
     assertEquals(await workspaceTokenFor(WORKSPACE, found, deps), "ws.secret");
+  });
+});
+
+Deno.test("workspaceTokenFor: signing in to the host again with the same token replaces a valid workspace token", async () => {
+  await inOwnRuntime(async () => {
+    const { deps, recorded } = fakeDeps({
+      stored: {
+        [HOST]: { ...HOST_CREDENTIAL, obtainedAt: "2026-11-19T00:00:00.000Z" },
+      },
+    });
+    const found = exchanged(NOW + 30 * 86_400_000, NOW - 1000);
+    assertEquals(await workspaceTokenFor(WORKSPACE, found, deps), "ws.secret");
+    assertEquals(recorded.codeRequests[0].token, "root.secret");
+    assertEquals(
+      recorded.saved[0].hostSignInDigest,
+      "2d3c52700d035fd7a8ce4acbbf2258d9bed4490fe218db83bf1e98e03816f5ba",
+    );
+  });
+});
+
+Deno.test("workspaceTokenFor: an exchanged token sent is noted for the refusal hint, and is not a gap", async () => {
+  await inOwnRuntime(async () => {
+    const { deps } = fakeDeps();
+    const found = exchanged(NOW + RENEW_MARGIN_MS * 2, NOW - 1000);
+    assertEquals(await workspaceTokenFor(WORKSPACE, found, deps), "old.secret");
+    assertEquals(hasWorkspaceSignInGap(WORKSPACE), false);
+    assertStringIncludes(
+      serverLoginHint(WORKSPACE),
+      `sign in to the host again to replace it: swamp auth server-login --server ${HOST}`,
+    );
+  });
+});
+
+Deno.test("workspaceTokenFor: a token stored by server-login is not noted as exchanged", async () => {
+  await inOwnRuntime(async () => {
+    const { deps } = fakeDeps();
+    const fromLogin = { ...exchanged(0, 0), expiresAt: undefined };
+    assertEquals(
+      await workspaceTokenFor(WORKSPACE, fromLogin, deps),
+      "old.secret",
+    );
+    assertEquals(
+      serverLoginHint(WORKSPACE),
+      `Authentication failed — run: swamp auth server-login --server ${WORKSPACE}`,
+    );
   });
 });
 

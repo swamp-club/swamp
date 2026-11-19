@@ -20,6 +20,7 @@
 import { UserError } from "../domain/errors.ts";
 import type { ServerCredential } from "../domain/auth/server_credential.ts";
 import {
+  recordExchangedWorkspaceToken,
   recordWorkspaceSignInGap,
   serverLoginHint,
 } from "../domain/auth/server_login_hint.ts";
@@ -49,7 +50,15 @@ export interface JsonReply {
   readonly status: number;
   readonly date: string | null;
   readonly body: unknown;
+  readonly retryAfter?: string | null;
 }
+
+/** what the root's HTTP route says of the host token, which it checks first */
+export type HostTokenCheck =
+  | { readonly kind: "accepted" }
+  | { readonly kind: "refused" }
+  | { readonly kind: "limited"; readonly retryAfterSeconds?: number }
+  | { readonly kind: "unknown" };
 
 export interface WorkspaceSignInDeps {
   /** servers.json, never the SWAMP_SERVER_TOKEN pair */
@@ -58,7 +67,10 @@ export interface WorkspaceSignInDeps {
     save(credential: ServerCredential): Promise<void>;
   };
   readonly envPairNames: (serverUrl: string) => boolean;
-  /** throws HostTokenRefusedError when the root refuses the host token itself */
+  readonly checkHostToken: (
+    hostAddress: string,
+    hostToken: string,
+  ) => Promise<HostTokenCheck>;
   readonly requestSignInCode: (
     hostAddress: string,
     hostToken: string,
@@ -67,13 +79,6 @@ export interface WorkspaceSignInDeps {
   readonly fetchJson: (url: string, init: RequestInit) => Promise<JsonReply>;
   readonly headers: Record<string, string>;
   readonly now: () => number;
-}
-
-export class HostTokenRefusedError extends Error {
-  constructor() {
-    super("The host refused its stored token");
-    this.name = "HostTokenRefusedError";
-  }
 }
 
 const inFlight = processRuntimeSlot(() =>
@@ -106,11 +111,26 @@ export async function workspaceTokenFor(
   found: ServerCredential | null,
   deps: WorkspaceSignInDeps,
 ): Promise<string | undefined> {
-  if (!found?.token) return await signInToWorkspace(address, deps);
-  if (found.expiresAt === undefined) return found.token;
-  // an exchanged token acts as the host sign-in that issued it, so a host token
-  // changed or removed since then must not lend it that identity
-  if (!(await issuedByStoredHostToken(address, found, deps))) {
+  if (found?.token && found.expiresAt === undefined) return found.token;
+  const token = await exchangedTokenFor(address, found, deps);
+  const workspace = splitWorkspaceAddress(address);
+  if (token !== undefined && workspace !== null) {
+    recordExchangedWorkspaceToken(address, workspace.hostAddress);
+  }
+  return token;
+}
+
+async function exchangedTokenFor(
+  address: string,
+  found: ServerCredential | null,
+  deps: WorkspaceSignInDeps,
+): Promise<string | undefined> {
+  if (!found?.token || found.expiresAt === undefined) {
+    return await signInToWorkspace(address, deps);
+  }
+  // an exchanged token acts as the host sign-in that issued it, so a host
+  // sign-in made or removed since then must not lend it that identity
+  if (!(await issuedByStoredHostSignIn(address, found, deps))) {
     return await signInToWorkspace(address, deps);
   }
   const expiresAt = Date.parse(found.expiresAt);
@@ -160,18 +180,31 @@ async function attemptSignIn(
     return undefined;
   }
 
+  // asked before the socket, whose refusal a host's router hides, so a refused
+  // token costs the root's lockout one failure and an accepted one clears it
+  const check = await deps.checkHostToken(hostAddress, host.token);
+  if (check.kind === "refused") {
+    throw new UserError(
+      `Could not sign in to the workspace ${name}: the host at ${hostAddress} refused your sign-in. ${
+        serverLoginHint(hostAddress)
+      }`,
+    );
+  }
+  if (check.kind === "limited") {
+    const wait = check.retryAfterSeconds === undefined
+      ? "for now"
+      : `for ${check.retryAfterSeconds}s`;
+    throw new UserError(
+      `Could not sign in to the workspace ${name}: the host at ${hostAddress} is turning away sign-ins with your host token ${wait} after too many attempts or requests. Try again then; if it still refuses your sign-in, run: swamp auth server-login --server ${hostAddress}`,
+      "rate_limited",
+    );
+  }
+
   let code: string;
   try {
     code = (await deps.requestSignInCode(hostAddress, host.token, name)).data
       .code;
   } catch (error) {
-    if (error instanceof HostTokenRefusedError) {
-      throw new UserError(
-        `Could not sign in to the workspace ${name}: the host at ${hostAddress} refused your sign-in. ${
-          serverLoginHint(hostAddress)
-        }`,
-      );
-    }
     const refusal = error instanceof UserError ? error.code : undefined;
     if (refusal !== undefined && ROOT_REFUSAL_CODES.has(refusal)) {
       throw new UserError(
@@ -235,7 +268,7 @@ async function attemptSignIn(
       expiresAt: new Date(
         localExpiry(obtainedAt, body.expiresAt, exchanged.date),
       ).toISOString(),
-      hostTokenDigest: await hostTokenDigest(host.token),
+      hostSignInDigest: await hostSignInDigest(host),
     });
   } catch (error) {
     // the token still serves this command; only the next one signs in again
@@ -262,7 +295,7 @@ export function localExpiry(
   return obtainedAt + Math.min(granted, asGiven + MAX_CLOCK_CORRECTION_MS);
 }
 
-async function issuedByStoredHostToken(
+async function issuedByStoredHostSignIn(
   address: string,
   found: ServerCredential,
   deps: WorkspaceSignInDeps,
@@ -270,14 +303,17 @@ async function issuedByStoredHostToken(
   const workspace = splitWorkspaceAddress(address);
   if (workspace === null) return true;
   const host = await deps.credentials.get(workspace.hostAddress);
-  if (!host?.token || found.hostTokenDigest === undefined) return false;
-  return found.hostTokenDigest === await hostTokenDigest(host.token);
+  if (!host?.token || found.hostSignInDigest === undefined) return false;
+  return found.hostSignInDigest === await hostSignInDigest(host);
 }
 
-async function hostTokenDigest(token: string): Promise<string> {
+/** obtainedAt is in it so that signing in to the host again, even with the same token, starts afresh */
+export async function hostSignInDigest(
+  host: Pick<ServerCredential, "token" | "obtainedAt">,
+): Promise<string> {
   const digest = await crypto.subtle.digest(
     "SHA-256",
-    new TextEncoder().encode(token),
+    new TextEncoder().encode(`${host.obtainedAt}\n${host.token}`),
   );
   return Array.from(
     new Uint8Array(digest),

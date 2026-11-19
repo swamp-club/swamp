@@ -49,12 +49,16 @@ export function resetWithheldTokenFiles(): void {
 export type WorkspaceSignInGap = "no-host-token" | "env-host-token";
 
 /**
- * why this process could not sign in to a workspace through its host, though
- * the workspace offers it; keyed by the workspace's normalized address
+ * how this process signed in to a workspace through its host, or why it could
+ * not though the workspace offers it; keyed by the workspace's normalized
+ * address
  */
 const workspaceSignInGaps = new Map<
   string,
-  { readonly hostAddress: string; readonly gap: WorkspaceSignInGap }
+  {
+    readonly hostAddress: string;
+    readonly gap: WorkspaceSignInGap | "exchanged-token";
+  }
 >();
 
 export function recordWorkspaceSignInGap(
@@ -66,9 +70,34 @@ export function recordWorkspaceSignInGap(
   if (key !== undefined) workspaceSignInGaps.set(key, { hostAddress, gap });
 }
 
+/** the token sent to the workspace came from a sign-in through its host */
+export function recordExchangedWorkspaceToken(
+  workspaceAddress: string,
+  hostAddress: string,
+): void {
+  const key = normalizedOrUndefined(workspaceAddress);
+  if (key !== undefined) {
+    workspaceSignInGaps.set(key, { hostAddress, gap: "exchanged-token" });
+  }
+}
+
 export function hasWorkspaceSignInGap(workspaceAddress: string): boolean {
   const key = normalizedOrUndefined(workspaceAddress);
-  return key !== undefined && workspaceSignInGaps.has(key);
+  const recorded = key === undefined ? undefined : workspaceSignInGaps.get(key);
+  return recorded !== undefined && recorded.gap !== "exchanged-token";
+}
+
+/**
+ * a host's router answers 502 for a workspace that refused the socket, so a
+ * server error there may be a refused token signing in to the host again cures
+ */
+export function workspaceTokenRefusalHint(
+  serverUrl: string,
+): string | undefined {
+  const key = normalizedOrUndefined(serverUrl);
+  const recorded = key === undefined ? undefined : workspaceSignInGaps.get(key);
+  if (recorded?.gap !== "exchanged-token") return undefined;
+  return `Behind a host this is also how a workspace refusing your token reads; signing in to the host again replaces it: swamp auth server-login --server ${recorded.hostAddress}`;
 }
 
 export function resetWorkspaceSignInGaps(): void {
@@ -91,22 +120,27 @@ export function withheldTokenFileMessage(
  * message says so first, since signing in is then the wrong fix
  */
 export function serverLoginHint(serverUrl: string): string {
-  const login = `swamp auth server-login --server ${serverUrl}`;
   const key = normalizedOrUndefined(serverUrl);
+  const signIn = key === undefined ? undefined : workspaceSignInGaps.get(key);
+  const login = `swamp auth server-login --server ${
+    signIn?.hostAddress ?? serverUrl
+  }`;
   const remedy = key === undefined ? undefined : withheldTokenFiles.get(key);
   if (key !== undefined && remedy !== undefined) {
     return `Authentication failed — ${
       withheldTokenFileMessage(key, remedy)
     }, or run: ${login}`;
   }
-  const signIn = key === undefined ? undefined : workspaceSignInGaps.get(key);
-  if (signIn !== undefined) {
-    const hostLogin = `swamp auth server-login --server ${signIn.hostAddress}`;
-    return signIn.gap === "env-host-token"
-      ? `Authentication failed — a host token from SWAMP_SERVER_TOKEN is not used to sign in to workspaces; run: ${hostLogin}`
-      : `Authentication failed — run: ${hostLogin} (one sign-in to the host covers its workspaces)`;
+  switch (signIn?.gap) {
+    case "env-host-token":
+      return `Authentication failed — a host token from SWAMP_SERVER_TOKEN is not used to sign in to workspaces; run: ${login}`;
+    case "no-host-token":
+      return `Authentication failed — run: ${login} (one sign-in to the host covers its workspaces)`;
+    case "exchanged-token":
+      return `Authentication failed — the workspace refused the token from your host sign-in; sign in to the host again to replace it: ${login}`;
+    default:
+      return `Authentication failed — run: ${login}`;
   }
-  return `Authentication failed — run: ${login}`;
 }
 
 function normalizedOrUndefined(serverUrl: string): string | undefined {

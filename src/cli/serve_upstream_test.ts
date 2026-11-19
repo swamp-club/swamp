@@ -30,6 +30,7 @@ import {
   serveUpstreamRunsLocally,
 } from "./serve_upstream.ts";
 import { resetMarkerServerAddress } from "./remote_run.ts";
+import { hostSignInDigest } from "./workspace_sign_in.ts";
 import { withMockedEnv } from "../infrastructure/persistence/path_test_helpers.ts";
 import { FileServerCredentialRepository } from "../infrastructure/persistence/server_credential_repository.ts";
 import { UserError } from "../domain/errors.ts";
@@ -433,13 +434,14 @@ Deno.test("resolveServeUpstream: a workspace's valid exchanged token is used wit
   await withTemp(async (dir) => {
     const address = "http://host.test:9090/w/team";
     const repo = new FileServerCredentialRepository({ configDir: dir });
-    await repo.save({
+    const host = {
       serverUrl: "http://host.test:9090",
       tokenName: "alice",
       token: "host.token",
       principalId: "p-1",
       obtainedAt: new Date(Date.now() - 120_000).toISOString(),
-    });
+    };
+    await repo.save(host);
     await repo.save({
       serverUrl: address,
       tokenName: "alice",
@@ -447,9 +449,8 @@ Deno.test("resolveServeUpstream: a workspace's valid exchanged token is used wit
       principalId: "p-1",
       obtainedAt: new Date(Date.now() - 60_000).toISOString(),
       expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
-      // SHA-256 of host.token
-      hostTokenDigest:
-        "2523dd1d3d520eb621b73a0523d3a986c7a39c1f112b210b760402e7662ecee3",
+      // SHA-256 of the host credential's obtainedAt, a newline and its token
+      hostSignInDigest: await hostSignInDigest(host),
     });
     await withMockedEnv(
       { ...UNSET_ENV, SWAMP_SERVE_URL: address },
