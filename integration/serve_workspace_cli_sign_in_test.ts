@@ -21,7 +21,6 @@ import { assert, assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import { SignInCodeStore } from "../src/domain/access/sign_in_code.ts";
 import type { ServerCredential } from "../src/domain/auth/server_credential.ts";
-import { resetWorkspaceSignInGaps } from "../src/domain/auth/server_login_hint.ts";
 import { UserError } from "../src/domain/errors.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpers.ts";
@@ -296,7 +295,6 @@ async function withHost(
   base = `http://127.0.0.1:${servers[0].addr.port}${prefix}`;
   try {
     resetRateLimitState();
-    resetWorkspaceSignInGaps();
     await withMockedEnv(
       {
         SWAMP_CONFIG_DIR: configDir,
@@ -709,6 +707,14 @@ Deno.test("workspace sign-in from the CLI: a token file withheld from a workspac
 
 Deno.test("workspace sign-in from the CLI: a proxy's own 401 on the root's HTTP route is not taken for a refused token", async () => {
   await withHost({ proxyRequestStatus: 401 }, async (host) => {
+    await host.store({ serverUrl: host.hostAddress });
+    assertEquals(await command(host, host.workspaceAddress), { ok: true });
+    assertEquals(host.exchanges(), 1);
+  });
+});
+
+Deno.test("workspace sign-in from the CLI: a proxy's own 429 on the root's HTTP route is not taken for the root's lockout", async () => {
+  await withHost({ proxyRequestStatus: 429 }, async (host) => {
     await host.store({ serverUrl: host.hostAddress });
     assertEquals(await command(host, host.workspaceAddress), { ok: true });
     assertEquals(host.exchanges(), 1);

@@ -61,13 +61,15 @@ import {
   type Sleep,
 } from "../infrastructure/http/rate_limit.ts";
 import {
-  hasWorkspaceSignInGap,
   recordWithheldTokenFile,
-  serverLoginHint,
   withheldTokenFileMessage,
   type WithheldTokenFileRemedy,
-  workspaceTokenRefusalHint,
 } from "../domain/auth/server_login_hint.ts";
+import {
+  hasWorkspaceSignInGap,
+  loginHintFor,
+  workspaceRefusalHintFor,
+} from "../infrastructure/auth/workspace_sign_in_notes.ts";
 import { quoteShellWord } from "../domain/shell_word.ts";
 import { processLockHolderMarker } from "../domain/datastore/lock_holder_marker.ts";
 import { COMMIT_MAY_LAND_CODE } from "../domain/datastore_v3/commit_log_unit_of_work.ts";
@@ -620,7 +622,7 @@ export async function resolveServerToken(
   }
   // the workspace wants a token no source has, so asking would only be refused
   if (!token && hasWorkspaceSignInGap(key)) {
-    throw new UserError(serverLoginHint(key));
+    throw new UserError(loginHintFor(key));
   }
   return token;
 }
@@ -643,8 +645,9 @@ function workspaceSignInDeps(
 ): WorkspaceSignInDeps {
   const envAware = credentialRepo ?? new FileServerCredentialRepository();
   return {
-    credentials: credentialRepo ??
-      new FileServerCredentialRepository({ fileOnly: true }),
+    credentials: envAware instanceof FileServerCredentialRepository
+      ? envAware.fileOnlyView()
+      : envAware,
     envPairNames: (url) =>
       envAware instanceof FileServerCredentialRepository &&
       envAware.envPairNames(url),
@@ -704,7 +707,8 @@ async function checkHostToken(
     if (reply.status === 401 && code === "unauthorized") {
       return { kind: "refused" };
     }
-    if (reply.status === 429) {
+    // likewise only serve's own 429 is its lockout or rate limit
+    if (reply.status === 429 && code === "rate_limited") {
       const retryAfterSeconds = parseRetryAfter(reply.retryAfter ?? null);
       return retryAfterSeconds === undefined
         ? { kind: "limited" }
@@ -712,7 +716,7 @@ async function checkHostToken(
     }
     if (
       (reply.status >= 200 && reply.status < 300) ||
-      (reply.status === 404 && code === "use_websocket")
+      (reply.status === 404 && code === USE_WEBSOCKET_CODE)
     ) {
       return { kind: "accepted" };
     }
@@ -1730,7 +1734,7 @@ function describeHandshakeStatus(
     return authFailedMessage(wsUrl);
   }
   if (statusCode >= 500) {
-    const refusal = workspaceTokenRefusalHint(wsUrl);
+    const refusal = workspaceRefusalHintFor(wsUrl);
     return `Server error (HTTP ${statusCode}) while connecting to ${wsUrl} — check the server log for the cause${
       refusal === undefined ? "" : `. ${refusal}`
     }`;
@@ -1739,7 +1743,7 @@ function describeHandshakeStatus(
 }
 
 function authFailedMessage(wsUrl: string): string {
-  return serverLoginHint(wsUrl);
+  return loginHintFor(wsUrl);
 }
 
 /**

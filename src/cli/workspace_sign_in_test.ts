@@ -22,9 +22,8 @@ import { UserError } from "../domain/errors.ts";
 import type { ServerCredential } from "../domain/auth/server_credential.ts";
 import {
   hasWorkspaceSignInGap,
-  resetWorkspaceSignInGaps,
-  serverLoginHint,
-} from "../domain/auth/server_login_hint.ts";
+  loginHintFor,
+} from "../infrastructure/auth/workspace_sign_in_notes.ts";
 import { ProcessRuntime } from "../infrastructure/runtime/process_runtime.ts";
 import {
   NOT_A_HOST_ROOT_CODE,
@@ -32,7 +31,7 @@ import {
   SIGN_IN_REFUSED_FOR_CREDENTIAL_CODE,
   SIGN_IN_REFUSED_FOR_INTEGRATION_CODE,
   SIGN_IN_REFUSED_FOR_PRINCIPAL_CODE,
-} from "../serve/handlers/workspace_handlers.ts";
+} from "../serve/protocol.ts";
 import {
   type HostTokenCheck,
   type JsonReply,
@@ -133,7 +132,6 @@ function fakeDeps(
 }
 
 function inOwnRuntime<T>(fn: () => Promise<T>): Promise<T> {
-  resetWorkspaceSignInGaps();
   return new ProcessRuntime(crypto.randomUUID()).run(fn);
 }
 
@@ -198,7 +196,7 @@ Deno.test("signInToWorkspace: a workspace that offers no exchange is not signed 
     assertEquals(await signInToWorkspace(WORKSPACE, deps), undefined);
     assertEquals(recorded.codeRequests, []);
     assertEquals(
-      serverLoginHint(WORKSPACE),
+      loginHintFor(WORKSPACE),
       `Authentication failed — run: swamp auth server-login --server ${WORKSPACE}`,
     );
   });
@@ -210,7 +208,7 @@ Deno.test("signInToWorkspace: no host token records the gap the login hint names
     assertEquals(await signInToWorkspace(WORKSPACE, deps), undefined);
     assertEquals(recorded.codeRequests, []);
     assertStringIncludes(
-      serverLoginHint(WORKSPACE),
+      loginHintFor(WORKSPACE),
       `swamp auth server-login --server ${HOST} (one sign-in`,
     );
   });
@@ -224,7 +222,7 @@ Deno.test("signInToWorkspace: a host token from the SWAMP_SERVER_TOKEN pair is n
     assertEquals(await signInToWorkspace(WORKSPACE, deps), undefined);
     assertEquals(recorded.codeRequests, []);
     assertEquals(recorded.saved, []);
-    assertStringIncludes(serverLoginHint(WORKSPACE), "SWAMP_SERVER_TOKEN");
+    assertStringIncludes(loginHintFor(WORKSPACE), "SWAMP_SERVER_TOKEN");
   });
 });
 
@@ -510,7 +508,7 @@ Deno.test("workspaceTokenFor: a valid token is not sent once its host token is g
     assertEquals(await workspaceTokenFor(WORKSPACE, found, deps), undefined);
     assertEquals(recorded.codeRequests, []);
     assertStringIncludes(
-      serverLoginHint(WORKSPACE),
+      loginHintFor(WORKSPACE),
       `swamp auth server-login --server ${HOST}`,
     );
   });
@@ -551,7 +549,7 @@ Deno.test("workspaceTokenFor: an exchanged token sent is noted for the refusal h
     assertEquals(await workspaceTokenFor(WORKSPACE, found, deps), "old.secret");
     assertEquals(hasWorkspaceSignInGap(WORKSPACE), false);
     assertStringIncludes(
-      serverLoginHint(WORKSPACE),
+      loginHintFor(WORKSPACE),
       `sign in to the host again to replace it: swamp auth server-login --server ${HOST}`,
     );
   });
@@ -566,7 +564,7 @@ Deno.test("workspaceTokenFor: a token stored by server-login is not noted as exc
       "old.secret",
     );
     assertEquals(
-      serverLoginHint(WORKSPACE),
+      loginHintFor(WORKSPACE),
       `Authentication failed — run: swamp auth server-login --server ${WORKSPACE}`,
     );
   });

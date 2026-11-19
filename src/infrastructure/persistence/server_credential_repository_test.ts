@@ -530,6 +530,32 @@ Deno.test("FileServerCredentialRepository.get: fileOnly ignores the SWAMP_SERVER
   }
 });
 
+Deno.test("FileServerCredentialRepository.fileOnlyView: reads and writes the same file without the SWAMP_SERVER_TOKEN pair", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const configDir = join(tmpDir, "swamp");
+    const repo = new FileServerCredentialRepository({
+      configDir,
+      getServerToken: () => "env.token",
+      getServerUrl: () => TEST_CREDENTIAL.serverUrl,
+    });
+    const view = repo.fileOnlyView();
+    await view.save(TEST_CREDENTIAL);
+
+    assertEquals(
+      (await view.get(TEST_CREDENTIAL.serverUrl))?.token,
+      TEST_CREDENTIAL.token,
+    );
+    assertEquals(
+      (await repo.get(TEST_CREDENTIAL.serverUrl))?.token,
+      "env.token",
+    );
+    assertEquals(view.envPairNames(TEST_CREDENTIAL.serverUrl), false);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
 Deno.test("FileServerCredentialRepository.envPairNames: true only when get would answer with the pair", () => {
   const pair = (token: string | undefined, url: string | undefined) =>
     new FileServerCredentialRepository({

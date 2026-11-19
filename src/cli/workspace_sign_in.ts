@@ -20,13 +20,19 @@
 import { UserError } from "../domain/errors.ts";
 import type { ServerCredential } from "../domain/auth/server_credential.ts";
 import {
-  recordExchangedWorkspaceToken,
-  recordWorkspaceSignInGap,
-  serverLoginHint,
-} from "../domain/auth/server_login_hint.ts";
+  loginHintFor,
+  recordWorkspaceSignIn,
+} from "../infrastructure/auth/workspace_sign_in_notes.ts";
 import { splitWorkspaceAddress } from "../domain/workspace/workspace_address.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import { processRuntimeSlot } from "../infrastructure/runtime/process_runtime.ts";
+import {
+  NOT_A_HOST_ROOT_CODE,
+  SIGN_IN_NOT_OFFERED_CODE,
+  SIGN_IN_REFUSED_FOR_CREDENTIAL_CODE,
+  SIGN_IN_REFUSED_FOR_INTEGRATION_CODE,
+  SIGN_IN_REFUSED_FOR_PRINCIPAL_CODE,
+} from "../serve/protocol.ts";
 
 const logger = getSwampLogger(["auth", "workspace-sign-in"]);
 
@@ -39,11 +45,11 @@ const AUTH_EXCHANGE_PATH = "/auth/exchange";
 
 // the root's refusals of workspace.sign-in that asking again will not cure
 const ROOT_REFUSAL_CODES = new Set([
-  "not_a_host_root",
-  "sign_in_not_offered",
-  "sign_in_refused_for_integration",
-  "sign_in_refused_for_principal",
-  "sign_in_refused_for_credential",
+  NOT_A_HOST_ROOT_CODE,
+  SIGN_IN_NOT_OFFERED_CODE,
+  SIGN_IN_REFUSED_FOR_INTEGRATION_CODE,
+  SIGN_IN_REFUSED_FOR_PRINCIPAL_CODE,
+  SIGN_IN_REFUSED_FOR_CREDENTIAL_CODE,
 ]);
 
 export interface JsonReply {
@@ -115,7 +121,7 @@ export async function workspaceTokenFor(
   const token = await exchangedTokenFor(address, found, deps);
   const workspace = splitWorkspaceAddress(address);
   if (token !== undefined && workspace !== null) {
-    recordExchangedWorkspaceToken(address, workspace.hostAddress);
+    recordWorkspaceSignIn(address, workspace.hostAddress, "exchanged-token");
   }
   return token;
 }
@@ -171,12 +177,12 @@ async function attemptSignIn(
   // the pair would make host commands run as another principal than the file's
   // host token, so an env host token is never exchanged
   if (deps.envPairNames(hostAddress)) {
-    recordWorkspaceSignInGap(address, hostAddress, "env-host-token");
+    recordWorkspaceSignIn(address, hostAddress, "env-host-token");
     return undefined;
   }
   const host = await deps.credentials.get(hostAddress);
   if (!host?.token) {
-    recordWorkspaceSignInGap(address, hostAddress, "no-host-token");
+    recordWorkspaceSignIn(address, hostAddress, "no-host-token");
     return undefined;
   }
 
@@ -186,7 +192,7 @@ async function attemptSignIn(
   if (check.kind === "refused") {
     throw new UserError(
       `Could not sign in to the workspace ${name}: the host at ${hostAddress} refused your sign-in. ${
-        serverLoginHint(hostAddress)
+        loginHintFor(hostAddress)
       }`,
     );
   }

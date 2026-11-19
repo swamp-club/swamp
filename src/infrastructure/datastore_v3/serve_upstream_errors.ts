@@ -23,7 +23,7 @@
  * kept so the exit code matches a local run
  */
 
-import { serverLoginHint } from "../../domain/auth/server_login_hint.ts";
+import { loginHintFor } from "../auth/workspace_sign_in_notes.ts";
 import {
   COMMIT_MAY_LAND_CODE,
 } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
@@ -306,7 +306,7 @@ export class ServeUpstreamError extends UserError {
 
 export class ServeAuthFailedError extends ServeUpstreamError {
   constructor(readonly serveUrl: string, readonly serveMessage: string) {
-    super(401, "unauthorized", serverLoginHint(serveUrl));
+    super(401, "unauthorized", loginHintFor(serveUrl));
     this.name = "ServeAuthFailedError";
   }
 }

@@ -76,6 +76,14 @@ export class FileServerCredentialRepository
       (() => Deno.env.get("SWAMP_SERVER_URL"));
   }
 
+  /** the same servers.json, answering from the file alone */
+  fileOnlyView(): FileServerCredentialRepository {
+    return new FileServerCredentialRepository({
+      configDir: this.getConfigDir(),
+      fileOnly: true,
+    });
+  }
+
   private getServersPath(): string {
     return join(this.getConfigDir(), SERVERS_FILE);
   }

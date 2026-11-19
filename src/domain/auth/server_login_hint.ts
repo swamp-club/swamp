@@ -46,45 +46,10 @@ export function resetWithheldTokenFiles(): void {
   withheldTokenFiles.clear();
 }
 
-export type WorkspaceSignInGap = "no-host-token" | "env-host-token";
-
-/**
- * how this process signed in to a workspace through its host, or why it could
- * not though the workspace offers it; keyed by the workspace's normalized
- * address
- */
-const workspaceSignInGaps = new Map<
-  string,
-  {
-    readonly hostAddress: string;
-    readonly gap: WorkspaceSignInGap | "exchanged-token";
-  }
->();
-
-export function recordWorkspaceSignInGap(
-  workspaceAddress: string,
-  hostAddress: string,
-  gap: WorkspaceSignInGap,
-): void {
-  const key = normalizedOrUndefined(workspaceAddress);
-  if (key !== undefined) workspaceSignInGaps.set(key, { hostAddress, gap });
-}
-
-/** the token sent to the workspace came from a sign-in through its host */
-export function recordExchangedWorkspaceToken(
-  workspaceAddress: string,
-  hostAddress: string,
-): void {
-  const key = normalizedOrUndefined(workspaceAddress);
-  if (key !== undefined) {
-    workspaceSignInGaps.set(key, { hostAddress, gap: "exchanged-token" });
-  }
-}
-
-export function hasWorkspaceSignInGap(workspaceAddress: string): boolean {
-  const key = normalizedOrUndefined(workspaceAddress);
-  const recorded = key === undefined ? undefined : workspaceSignInGaps.get(key);
-  return recorded !== undefined && recorded.gap !== "exchanged-token";
+/** how a process signed in to a workspace through its host, or why it could not */
+export interface WorkspaceSignInNote {
+  readonly hostAddress: string;
+  readonly kind: "no-host-token" | "env-host-token" | "exchanged-token";
 }
 
 /**
@@ -92,16 +57,10 @@ export function hasWorkspaceSignInGap(workspaceAddress: string): boolean {
  * server error there may be a refused token signing in to the host again cures
  */
 export function workspaceTokenRefusalHint(
-  serverUrl: string,
+  note: WorkspaceSignInNote | undefined,
 ): string | undefined {
-  const key = normalizedOrUndefined(serverUrl);
-  const recorded = key === undefined ? undefined : workspaceSignInGaps.get(key);
-  if (recorded?.gap !== "exchanged-token") return undefined;
-  return `Behind a host this is also how a workspace refusing your token reads; signing in to the host again replaces it: swamp auth server-login --server ${recorded.hostAddress}`;
-}
-
-export function resetWorkspaceSignInGaps(): void {
-  workspaceSignInGaps.clear();
+  if (note?.kind !== "exchanged-token") return undefined;
+  return `Behind a host this is also how a workspace refusing your token reads; signing in to the host again replaces it: swamp auth server-login --server ${note.hostAddress}`;
 }
 
 /** names the normalized address only, never the file's path or contents */
@@ -119,9 +78,11 @@ export function withheldTokenFileMessage(
  * when this process withheld SWAMP_SERVER_TOKEN_FILE from the serve, the
  * message says so first, since signing in is then the wrong fix
  */
-export function serverLoginHint(serverUrl: string): string {
+export function serverLoginHint(
+  serverUrl: string,
+  signIn?: WorkspaceSignInNote,
+): string {
   const key = normalizedOrUndefined(serverUrl);
-  const signIn = key === undefined ? undefined : workspaceSignInGaps.get(key);
   const login = `swamp auth server-login --server ${
     signIn?.hostAddress ?? serverUrl
   }`;
@@ -131,7 +92,7 @@ export function serverLoginHint(serverUrl: string): string {
       withheldTokenFileMessage(key, remedy)
     }, or run: ${login}`;
   }
-  switch (signIn?.gap) {
+  switch (signIn?.kind) {
     case "env-host-token":
       return `Authentication failed — a host token from SWAMP_SERVER_TOKEN is not used to sign in to workspaces; run: ${login}`;
     case "no-host-token":

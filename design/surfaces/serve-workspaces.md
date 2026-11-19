@@ -650,11 +650,13 @@ answers. A serve that was given no root address offers no exchange.
   admission lists refusing the principal, which signing in to the host again
   does not cure. Before asking for a code over the WebSocket, whose refusal
   the host's router hides, the CLI asks the root's HTTP route, which checks the
-  token first and whose status the router passes on. A 401 there is a refused
+  token first and whose status the router passes on. Serve's own 401 there
+  (its `unauthorized` code, not a proxy's bare 401) is a refused
   host token and costs the root's lockout (five failures a minute per token
   name) one failure per attempt; an accepted token clears the count. A 429
   there, the lockout or a rate limit, stops the command with the wait the root
-  gave, since the code request could only be turned away too; the lockout
+  gave, since the code request could only be turned away too (a 429 without
+  serve's `rate_limited` code goes on to the socket); the lockout
   covers every token of that name, so a valid new one waits as well.
 
 A workspace token lives no longer than the root token it came from, and its

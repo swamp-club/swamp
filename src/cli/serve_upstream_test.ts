@@ -430,43 +430,53 @@ Deno.test("serveUpstreamAppliesTo: workflow waits goes to serve, whose waits are
   assertEquals(serveUpstreamRunsLocally(["workflow", "waits"]), false);
 });
 
-Deno.test("resolveServeUpstream: a workspace's valid exchanged token is used without signing in again", async () => {
-  await withTemp(async (dir) => {
-    const address = "http://host.test:9090/w/team";
-    const repo = new FileServerCredentialRepository({ configDir: dir });
-    const host = {
-      serverUrl: "http://host.test:9090",
-      tokenName: "alice",
-      token: "host.token",
-      principalId: "p-1",
-      obtainedAt: new Date(Date.now() - 120_000).toISOString(),
-    };
-    await repo.save(host);
-    await repo.save({
-      serverUrl: address,
-      tokenName: "alice",
-      token: "ws.token",
-      principalId: "p-1",
-      obtainedAt: new Date(Date.now() - 60_000).toISOString(),
-      expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
-      hostSignInDigest: await hostSignInDigest(host),
+for (
+  const [label, hostPair] of [
+    ["", {}],
+    [", even with a SWAMP_SERVER_TOKEN pair naming the host", {
+      SWAMP_SERVER_URL: "http://host.test:9090",
+      SWAMP_SERVER_TOKEN: "env.token",
+    }],
+  ] as const
+) {
+  Deno.test(`resolveServeUpstream: a workspace's valid exchanged token is used without signing in again${label}`, async () => {
+    await withTemp(async (dir) => {
+      const address = "http://host.test:9090/w/team";
+      const repo = new FileServerCredentialRepository({ configDir: dir });
+      const host = {
+        serverUrl: "http://host.test:9090",
+        tokenName: "alice",
+        token: "host.token",
+        principalId: "p-1",
+        obtainedAt: new Date(Date.now() - 120_000).toISOString(),
+      };
+      await repo.save(host);
+      await repo.save({
+        serverUrl: address,
+        tokenName: "alice",
+        token: "ws.token",
+        principalId: "p-1",
+        obtainedAt: new Date(Date.now() - 60_000).toISOString(),
+        expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+        hostSignInDigest: await hostSignInDigest(host),
+      });
+      await withMockedEnv(
+        { ...UNSET_ENV, SWAMP_SERVE_URL: address, ...hostPair },
+        async () => {
+          const target = await new ProcessRuntime(crypto.randomUUID()).run(() =>
+            resolveServeUpstream({
+              engine: "v3",
+              commandPath: ["data", "get"],
+              credentialRepository: repo,
+              getCaCerts: noCaCerts,
+            })
+          );
+          assertEquals(target?.token, "ws.token");
+        },
+      );
     });
-    await withMockedEnv(
-      { ...UNSET_ENV, SWAMP_SERVE_URL: address },
-      async () => {
-        const target = await new ProcessRuntime(crypto.randomUUID()).run(() =>
-          resolveServeUpstream({
-            engine: "v3",
-            commandPath: ["data", "get"],
-            credentialRepository: repo,
-            getCaCerts: noCaCerts,
-          })
-        );
-        assertEquals(target?.token, "ws.token");
-      },
-    );
   });
-});
+}
 
 Deno.test("resolveServeUpstream: a SWAMP_SERVER_TOKEN pair naming a workspace is sent as it is", async () => {
   await withTemp(async (dir) => {
