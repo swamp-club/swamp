@@ -7289,6 +7289,17 @@ exit code serve being unreachable has.
 
 `{p}` is a canonical partition key, percent-encoded once more in the path.
 
+**Bodies that carry chunks go over HTTP/1.1.** A member's client sends
+commits, commit batches, chunk uploads and quarantine deposits through its own
+keep-alive HTTP/1.1 client, and every other request over the HTTP/2
+connection serve negotiates. One HTTP/2 stream is held to its flow-control
+window per round trip, which capped a member across the Atlantic at about
+1.7 MiB/s where one HTTP/1.1 connection on the same path carried about
+9.8 MiB/s, and Deno exposes no window setting on either side. Small requests
+stay on the shared HTTP/2 connection, so they pay no extra handshake; two
+uploads at once each open their own HTTP/1.1 connection. A node retired as
+unreachable or not serving retires both clients.
+
 **Fewer round trips per write (swamp-club#4525).** A member's one-step write
 is a lock answered with the catch-up, then one `POST commits` carrying the
 write and ending the lease: two requests where it was eight. A workflow step

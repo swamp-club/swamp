@@ -695,6 +695,37 @@ Deno.test("ServeDatastoreClient: the HTTP client is made on the first request, o
   }
 });
 
+Deno.test("ServeDatastoreClient: a body carrying chunks goes through the bulk client when one is given, else the same client as a read", async () => {
+  const chunk = new TextEncoder().encode("payload");
+  const hash = createHash("sha256").update(chunk).digest("hex");
+  const reply = (req: Request) =>
+    req.method === "PUT"
+      ? Response.json({ sha256: hash, size: chunk.length })
+      : Response.json({ held: [] });
+  const httpClient = Deno.createHttpClient({});
+  const bulkClient = Deno.createHttpClient({ http2: false });
+  try {
+    for (const bulk of [undefined, bulkClient]) {
+      const seen: unknown[] = [];
+      const client = new ServeDatastoreClient({
+        baseUrl: BASE,
+        httpClient: () => httpClient,
+        ...(bulk === undefined ? {} : { bulkHttpClient: () => bulk }),
+        fetch: (input, init) => {
+          seen.push((init as { client?: unknown }).client);
+          return Promise.resolve(reply(new Request(input, init)));
+        },
+      });
+      await client.hasChunks([hash], signal());
+      await client.putChunk(hash, chunk, signal(), modelPartition());
+      assertEquals(seen, [httpClient, bulk ?? httpClient]);
+    }
+  } finally {
+    httpClient.close();
+    bulkClient.close();
+  }
+});
+
 Deno.test("serveRequestTimeoutMs: reads SWAMP_SERVE_TIMEOUT_MS, falling back to 30s", () => {
   assertEquals(
     withMockedEnv({ SWAMP_SERVE_TIMEOUT_MS: "1500" }, serveRequestTimeoutMs),
