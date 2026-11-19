@@ -34,7 +34,7 @@ import {
 } from "./placement.ts";
 import { StepTask } from "./step_task.ts";
 import type { AssertSeverity } from "./step_task.ts";
-import { stepBehaviorNames } from "./step_targets.ts";
+import { reachableStepBehaviorNames } from "./step_targets.ts";
 import { gateTimeoutSeconds } from "./approval_timeout.ts";
 import { severityAtOrAbove } from "./assert_severity.ts";
 import {
@@ -3695,9 +3695,12 @@ export class WorkflowExecutionService {
   // literal names only: buildRunContext lists, and so hints, every definition
   // before any step runs; this serves the reserved-tag check that precedes it
   private async primeStepLookups(workflow: Workflow): Promise<void> {
+    const names = await reachableStepBehaviorNames(
+      [workflow],
+      (idOrName) => this.lookupWorkflow(idOrName),
+    );
     // the reserved-tag lookups it serves ignore read errors too
-    await this.definitionRepo.primeNameHints(stepBehaviorNames([workflow]))
-      .catch(() => {});
+    await this.definitionRepo.primeNameHints(names).catch(() => {});
   }
 
   private reservedTagLookups(): ReservedTagLookups {
