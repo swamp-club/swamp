@@ -255,6 +255,40 @@ Deno.test("createWorkspaceReconciler: at startup a suspended workspace is not st
   assert(!(await exists(join(h.dir, "doomed.wanted.yaml"))));
 });
 
+Deno.test("createWorkspaceReconciler: served leaves out a workspace being deleted while its folder is still listed, and after", async () => {
+  const gate = Promise.withResolvers<void>();
+  const renameStarted = Promise.withResolvers<void>();
+  await using h = await harness(async (from, to) => {
+    renameStarted.resolve();
+    await gate.promise;
+    await Deno.rename(from, to);
+  });
+  await makeRepo(h.dir, "never");
+  await makeRepo(h.dir, "running");
+  await want(h.dir, "never", "wanted: deleted\n");
+  await want(h.dir, "running", "wanted: active\n");
+
+  assertEquals(await h.begin(), ["running"]);
+  assertEquals(h.reconciler.served(await scanWorkspaces(h.dir)), ["running"]);
+
+  await want(h.dir, "running", "wanted: deleted\n");
+  await h.rescan();
+  await renameStarted.promise;
+  const stale = await scanWorkspaces(h.dir);
+  assertEquals(stale.workspaces, ["never", "running"]);
+  assertEquals(h.reconciler.served(stale), [], "both folders are listed");
+
+  gate.resolve();
+  await h.reconciler.drain();
+  assertEquals(h.supervisor.lookup(id("running"))?.wanted, "deleted");
+  assertEquals(
+    h.reconciler.served(stale),
+    [],
+    "a listing taken before the removal",
+  );
+  assertEquals(h.reconciler.served(await scanWorkspaces(h.dir)), []);
+});
+
 Deno.test("createWorkspaceReconciler: editing the wanted file suspends and resumes a running workspace", async () => {
   await using h = await harness();
   await makeRepo(h.dir, "edge-dns");

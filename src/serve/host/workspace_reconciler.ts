@@ -61,6 +61,8 @@ export interface WorkspaceReconciler {
   /** at startup, after the bind: nothing here awaits, so every add lands before a request */
   begin(scan: WorkspaceScan, reads: WantedReads): readonly string[];
   reconcile(scan: WorkspaceScan): Promise<void>;
+  /** the listed workspaces the host serves: none being removed or wanted deleted */
+  served(scan: WorkspaceScan): readonly string[];
   /** waits for every removal, including one waiting for its serve to stop */
   drain(): Promise<void>;
 }
@@ -428,18 +430,28 @@ export function createWorkspaceReconciler(
     track(work);
   };
 
+  // the supervisor never forgets a serve, so a deleted one is told by its wanted state
+  const served = (scan: WorkspaceScan): readonly string[] =>
+    scan.workspaces.filter((name) => {
+      const entry = known.get(name);
+      if (entry?.removing === true || entry?.record?.wanted === "deleted") {
+        return false;
+      }
+      const status = supervisor.lookup(workspaceServe(name));
+      return status !== undefined && status.wanted !== "deleted";
+    });
+
   return {
     begin(scan, reads) {
       apply(scan, reads);
-      return scan.workspaces.filter((name) =>
-        known.get(name)?.removing !== true &&
-        supervisor.lookup(workspaceServe(name)) !== undefined
-      );
+      return served(scan);
     },
 
     async reconcile(scan) {
       apply(scan, await readWantedFiles(repository, scan));
     },
+
+    served,
 
     async drain() {
       while (pending.size > 0) await Promise.all([...pending]);
