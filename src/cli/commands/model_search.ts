@@ -41,9 +41,13 @@ import {
   type ModelSearchDeps,
   type ModelSearchItem,
 } from "../../libswamp/models/search.ts";
+import { createModelTypeDetailLookup } from "../../libswamp/models/type_detail.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
-import { createModelSearchRenderer } from "../../presentation/renderers/model_search.tsx";
+import {
+  createModelSearchRenderer,
+  type ModelSearchFetchers,
+} from "../../presentation/renderers/model_search.tsx";
 import {
   createContext,
   type GlobalOptions,
@@ -87,6 +91,18 @@ async function createModelFetchPreview(
   };
 }
 
+// both are built, as each costs only the registry load; the renderer uses the
+// one its output mode needs
+export async function createModelSearchFetchers(
+  definitionRepo: YamlDefinitionRepository,
+  surface: CommandSurface = DEFAULT_COMMAND_SURFACE,
+): Promise<Required<ModelSearchFetchers>> {
+  return {
+    preview: await createModelFetchPreview(definitionRepo, surface),
+    typeDetail: await createModelTypeDetailLookup(),
+  };
+}
+
 export async function modelSearchAction(
   options: AnyOptions,
   query?: string,
@@ -111,7 +127,7 @@ export async function modelSearchAction(
     // a remote search prints a plain list and never starts the picker.
     const renderer = createModelSearchRenderer(
       interactiveOutputMode(ctx),
-      undefined,
+      {},
       surface,
       { interactive: false },
     );
@@ -136,13 +152,9 @@ export async function modelSearchAction(
     isInternalType: (type: string) => modelRegistry.isInternal(type),
   };
 
-  const fetchPreview = await createModelFetchPreview(
-    repoContext.definitionRepo,
-    surface,
-  );
   const renderer = createModelSearchRenderer(
     effectiveMode,
-    fetchPreview,
+    await createModelSearchFetchers(repoContext.definitionRepo, surface),
     surface,
   );
   await consumeStream(

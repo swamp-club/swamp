@@ -19,7 +19,6 @@
 
 import { assertEquals } from "@std/assert";
 import { captureLog } from "./search_list_test_helpers.ts";
-import type { ModelGetData } from "../../libswamp/models/get.ts";
 import type {
   ModelSearchData,
   ModelSearchItem,
@@ -27,7 +26,9 @@ import type {
 import {
   createModelSearchRenderer,
   type ModelPreviewFetcher,
+  type ModelSearchFetchers,
   modelSearchPickerLabels,
+  type ModelTypeDetailFetcher,
 } from "./model_search.tsx";
 
 Deno.test("JsonModelSearchRenderer: single match returns envelope shape", async () => {
@@ -103,25 +104,26 @@ Deno.test("JsonModelSearchRenderer: zero matches returns envelope shape", async 
   assertEquals(renderer.selectedItem(), undefined);
 });
 
-function stubFetchPreview(
-  detailMap: Record<string, Partial<ModelGetData>>,
-): ModelPreviewFetcher {
-  return (item: ModelSearchItem) => {
-    const detail = detailMap[item.name];
-    if (!detail) return Promise.reject(new Error("not found"));
-    return Promise.resolve({
-      id: item.id,
-      name: item.name,
-      type: item.type,
-      version: 1,
-      tags: {},
-      globalArguments: {},
-      ...detail,
-    } as ModelGetData);
-  };
+async function renderJson(
+  fetchers: ModelSearchFetchers,
+  items: ModelSearchItem[],
+): Promise<{ results: Array<Record<string, unknown>> }> {
+  const renderer = createModelSearchRenderer("json", fetchers);
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (...args: unknown[]) => logs.push(String(args[0]));
+  try {
+    await renderer.handlers().completed({
+      kind: "completed",
+      data: { query: "", results: items },
+    });
+  } finally {
+    console.log = originalLog;
+  }
+  return JSON.parse(logs[0]);
 }
 
-Deno.test("JsonModelSearchRenderer: includes methods and globalArgumentsSchema when fetchPreview is provided", async () => {
+Deno.test("JsonModelSearchRenderer: includes methods and globalArgumentsSchema from the type detail", async () => {
   const methods = [
     {
       name: "run",
@@ -138,107 +140,69 @@ Deno.test("JsonModelSearchRenderer: includes methods and globalArgumentsSchema w
     type: "object",
     properties: { timeout: { type: "number" } },
   };
-  const fetchPreview = stubFetchPreview({
-    "my-model": { methods, globalArgumentsSchema },
-  });
-  const renderer = createModelSearchRenderer("json", fetchPreview);
-  const handlers = renderer.handlers();
+  const typeDetail: ModelTypeDetailFetcher = (type) =>
+    type === "swamp/echo"
+      ? Promise.resolve({ methods, globalArgumentsSchema })
+      : Promise.reject(new Error("not found"));
 
-  const items: ModelSearchItem[] = [
+  const parsed = await renderJson({ typeDetail }, [
     { id: "id-1", name: "my-model", type: "swamp/echo" },
-  ];
+  ]);
 
-  const logs: string[] = [];
-  const originalLog = console.log;
-  console.log = (...args: unknown[]) => logs.push(String(args[0]));
-  try {
-    await handlers.completed({
-      kind: "completed",
-      data: { query: "", results: items },
-    });
-  } finally {
-    console.log = originalLog;
-  }
-
-  const parsed = JSON.parse(logs[0]);
   assertEquals(parsed.results.length, 1);
   assertEquals(parsed.results[0].methods, methods);
   assertEquals(parsed.results[0].globalArgumentsSchema, globalArgumentsSchema);
 });
 
-Deno.test("JsonModelSearchRenderer: deduplicates type resolution across models of the same type", async () => {
-  let fetchCount = 0;
-  const methods = [
-    {
-      name: "run",
-      description: "Run it",
-      arguments: {},
-      kindSource: "none" as const,
-    },
-  ];
-  const fetchPreview: ModelPreviewFetcher = (item) => {
-    fetchCount++;
+Deno.test("JsonModelSearchRenderer: resolves each distinct type once, by type", async () => {
+  const requested: string[] = [];
+  const typeDetail: ModelTypeDetailFetcher = (type) => {
+    requested.push(type);
     return Promise.resolve({
-      id: item.id,
-      name: item.name,
-      type: item.type,
-      version: 1,
-      tags: {},
-      globalArguments: {},
-      methods,
-    } as ModelGetData);
-  };
-  const renderer = createModelSearchRenderer("json", fetchPreview);
-  const handlers = renderer.handlers();
-
-  const items: ModelSearchItem[] = [
-    { id: "id-1", name: "model-a", type: "swamp/echo" },
-    { id: "id-2", name: "model-b", type: "swamp/echo" },
-    { id: "id-3", name: "model-c", type: "swamp/echo" },
-  ];
-
-  const logs: string[] = [];
-  const originalLog = console.log;
-  console.log = (...args: unknown[]) => logs.push(String(args[0]));
-  try {
-    await handlers.completed({
-      kind: "completed",
-      data: { query: "", results: items },
+      methods: [{
+        name: type,
+        description: "",
+        arguments: {},
+        kindSource: "none" as const,
+      }],
     });
-  } finally {
-    console.log = originalLog;
-  }
+  };
 
-  assertEquals(fetchCount, 1);
-  const parsed = JSON.parse(logs[0]);
-  for (const result of parsed.results) {
-    assertEquals(result.methods, methods);
-  }
+  const parsed = await renderJson({ typeDetail }, [
+    { id: "id-1", name: "model-a", type: "swamp/echo" },
+    { id: "id-2", name: "model-b", type: "command/shell" },
+    { id: "id-3", name: "model-c", type: "swamp/echo" },
+  ]);
+
+  assertEquals(requested, ["swamp/echo", "command/shell"]);
+  assertEquals(
+    parsed.results.map((r) => (r.methods as Array<{ name: string }>)[0].name),
+    ["swamp/echo", "command/shell", "swamp/echo"],
+  );
 });
 
-Deno.test("JsonModelSearchRenderer: gracefully handles fetchPreview failure", async () => {
-  const fetchPreview: ModelPreviewFetcher = () =>
+Deno.test("JsonModelSearchRenderer: never calls the definition preview", async () => {
+  let previews = 0;
+  const preview: ModelPreviewFetcher = () => {
+    previews++;
+    return Promise.reject(new Error("unexpected preview"));
+  };
+
+  await renderJson({ preview, typeDetail: () => Promise.resolve({}) }, [
+    { id: "id-1", name: "model-a", type: "swamp/echo" },
+  ]);
+
+  assertEquals(previews, 0);
+});
+
+Deno.test("JsonModelSearchRenderer: a type whose detail fails is listed without methods or schema", async () => {
+  const typeDetail: ModelTypeDetailFetcher = () =>
     Promise.reject(new Error("type not found"));
-  const renderer = createModelSearchRenderer("json", fetchPreview);
-  const handlers = renderer.handlers();
 
-  const items: ModelSearchItem[] = [
+  const parsed = await renderJson({ typeDetail }, [
     { id: "id-1", name: "broken-model", type: "missing/type" },
-  ];
+  ]);
 
-  const logs: string[] = [];
-  const originalLog = console.log;
-  console.log = (...args: unknown[]) => logs.push(String(args[0]));
-  try {
-    await handlers.completed({
-      kind: "completed",
-      data: { query: "", results: items },
-    });
-  } finally {
-    console.log = originalLog;
-  }
-
-  const parsed = JSON.parse(logs[0]);
   assertEquals(parsed.results.length, 1);
   assertEquals(parsed.results[0].name, "broken-model");
   assertEquals(parsed.results[0].methods, undefined);
@@ -270,7 +234,7 @@ Deno.test("createModelSearchRenderer: non-interactive log lists matching models 
       "behaviors",
     ]] as const
   ) {
-    const renderer = createModelSearchRenderer("log", undefined, surface, {
+    const renderer = createModelSearchRenderer("log", {}, surface, {
       interactive: false,
     });
     const lines = await captureLog(() =>
