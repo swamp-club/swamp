@@ -352,6 +352,11 @@ export interface ServeDatastoreClientOptions {
    * once, on the first request, never at construction.
    */
   readonly httpClient?: () => Deno.HttpClient;
+  /**
+   * Makes the client for request bodies that carry chunk bytes; without it
+   * they go through the same client as every other request.
+   */
+  readonly bulkHttpClient?: () => Deno.HttpClient;
   readonly timeoutMs?: number;
   readonly extraHeaders?: Readonly<Record<string, string>>;
   readonly fetch?: typeof fetch;
@@ -530,6 +535,8 @@ interface RequestSpec {
   readonly noRefusalRetry?: boolean;
   /** this request's own response base, in place of the client's */
   readonly responseBaseMs?: number;
+  /** the body carries chunk bytes: from BULK_MIN_BODY_BYTES, the bulk client */
+  readonly bulk?: boolean;
 }
 
 function isTimeout(error: unknown): boolean {
@@ -566,6 +573,8 @@ export class ServeDatastoreClient {
   readonly #token: string | undefined;
   readonly #makeHttpClient: (() => Deno.HttpClient) | undefined;
   #httpClient: Deno.HttpClient | undefined;
+  readonly #makeBulkHttpClient: (() => Deno.HttpClient) | undefined;
+  #bulkHttpClient: Deno.HttpClient | undefined;
   // a client whose connection timed out, failed or reached a node that refused
   // as not serving takes no new request; requests in flight on it finish there,
   // and it closes once they have
@@ -599,6 +608,7 @@ export class ServeDatastoreClient {
       : options.namespace;
     this.#token = options.token === "" ? undefined : options.token;
     this.#makeHttpClient = options.httpClient;
+    this.#makeBulkHttpClient = options.bulkHttpClient;
     this.#timeoutMs = options.timeoutMs ?? serveRequestTimeoutMs();
     this.#extraHeaders = options.extraHeaders ?? {};
     this.#fetch = options.fetch ??
@@ -624,6 +634,8 @@ export class ServeDatastoreClient {
   close(): void {
     this.#httpClient?.close();
     this.#httpClient = undefined;
+    this.#bulkHttpClient?.close();
+    this.#bulkHttpClient = undefined;
     for (const client of this.#retiredClients) client.close();
     this.#retiredClients.clear();
   }
@@ -670,6 +682,7 @@ export class ServeDatastoreClient {
       // fetch sends a Content-Length for a byte body, which serve requires.
       headers: { "content-type": "application/octet-stream" },
       body: ownBuffer(bytes),
+      bulk: true,
     }, signal);
     if (typeof body.sha256 !== "string" || typeof body.size !== "number") {
       throw invalidReply("chunks/{sha256}", "sha256 and size");
@@ -731,6 +744,7 @@ export class ServeDatastoreClient {
         path: `${partitionPath(partition)}/commits`,
         headers: { "content-type": COMMIT_CONTENT_TYPE },
         body: frameCommit(envelope, chunks),
+        bulk: chunks.length > 0,
       },
       signal,
       MAX_WRITTEN_COMMIT_REPLY_BYTES,
@@ -774,6 +788,7 @@ export class ServeDatastoreClient {
         path: "commits",
         headers: { "content-type": COMMIT_CONTENT_TYPE },
         body: framed,
+        bulk: commits.some((commit) => commit.chunks.length > 0),
       },
       signal,
       // each result may carry its whole commit, as a single reply does
@@ -1392,6 +1407,7 @@ export class ServeDatastoreClient {
         base: deposit.base,
         chunks: chunksToWire(deposit.chunks),
       }),
+      bulk: deposit.chunks.length > 0,
     }, signal);
     return { duplicate: body.duplicate === true };
   }
@@ -1637,7 +1653,7 @@ export class ServeDatastoreClient {
       if (latch.aborted) {
         throw this.#latched("never", latch.reason, spec);
       }
-      const clientInit = this.#clientInit();
+      const clientInit = this.#clientInit(spec);
       const used = clientInit.client;
       if (used !== undefined) {
         this.#inFlight.set(used, (this.#inFlight.get(used) ?? 0) + 1);
@@ -1942,7 +1958,14 @@ export class ServeDatastoreClient {
     return headers;
   }
 
-  #clientInit(): { client?: Deno.HttpClient } {
+  #clientInit(spec: RequestSpec): { client?: Deno.HttpClient } {
+    if (
+      spec.bulk === true && this.#makeBulkHttpClient !== undefined &&
+      bodyBytesOf(spec.body) >= BULK_MIN_BODY_BYTES
+    ) {
+      this.#bulkHttpClient ??= this.#makeBulkHttpClient();
+      return { client: this.#bulkHttpClient };
+    }
     const make = this.#makeHttpClient ??
       (this.#ownConnectionAfterRetire
         ? () => Deno.createHttpClient({})
@@ -1963,9 +1986,11 @@ export class ServeDatastoreClient {
   }
 
   #retireConnection(): void {
-    const client = this.#httpClient;
-    if (client !== undefined) {
-      this.#httpClient = undefined;
+    const clients = [this.#httpClient, this.#bulkHttpClient];
+    this.#httpClient = undefined;
+    this.#bulkHttpClient = undefined;
+    for (const client of clients) {
+      if (client === undefined) continue;
       if (this.#inFlight.has(client)) this.#retiredClients.add(client);
       else client.close();
     }
@@ -2346,5 +2371,31 @@ export function serveDatastoreClientFor(
           Deno.createHttpClient(caCerts !== undefined ? { caCerts } : {}),
       }
       : {}),
+    bulkHttpClient: () => Deno.createHttpClient(bulkHttpClientOptions(caCerts)),
   });
+}
+
+/**
+ * dropped by the client before a proxy or load balancer on the path drops it,
+ * so a commit is not written into a connection closing under it
+ */
+export const BULK_POOL_IDLE_TIMEOUT_MS = 30_000;
+
+/**
+ * below this a fresh connection's handshake and slow start cost a far member
+ * more round trips than the warm HTTP/2 stream's flow-control window does
+ */
+export const BULK_MIN_BODY_BYTES = 2 * 1024 * 1024;
+
+export function bulkHttpClientOptions(
+  caCerts: string[] | undefined,
+): Deno.CreateHttpClientOptions {
+  // One HTTP/2 stream's flow-control window caps an upload across a long
+  // RTT, and Deno exposes no window setting; HTTP/1.1 is held only by TCP.
+  return {
+    http1: true,
+    http2: false,
+    poolIdleTimeout: BULK_POOL_IDLE_TIMEOUT_MS,
+    ...(caCerts !== undefined ? { caCerts } : {}),
+  };
 }

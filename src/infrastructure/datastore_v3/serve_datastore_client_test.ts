@@ -57,6 +57,9 @@ import {
 } from "./chunk_ingest.ts";
 import { isNetworkFailure } from "./network_failure.ts";
 import {
+  BULK_MIN_BODY_BYTES,
+  BULK_POOL_IDLE_TIMEOUT_MS,
+  bulkHttpClientOptions,
   clearServeUnreachableLatches,
   COMMIT_CONTENT_TYPE,
   DEFAULT_SERVE_TIMEOUT_MS,
@@ -692,6 +695,47 @@ Deno.test("ServeDatastoreClient: the HTTP client is made on the first request, o
     assertEquals(seen, [httpClient, httpClient]);
   } finally {
     httpClient.close();
+  }
+});
+
+Deno.test("bulkHttpClientOptions: HTTP/1.1 only, idle connections dropped after BULK_POOL_IDLE_TIMEOUT_MS, CA certs passed through", () => {
+  assertEquals(bulkHttpClientOptions(undefined), {
+    http1: true,
+    http2: false,
+    poolIdleTimeout: BULK_POOL_IDLE_TIMEOUT_MS,
+  });
+  assertEquals(bulkHttpClientOptions(["ca"]).caCerts, ["ca"]);
+  assertEquals(BULK_POOL_IDLE_TIMEOUT_MS, 30_000);
+});
+
+Deno.test("ServeDatastoreClient: a body carrying BULK_MIN_BODY_BYTES of chunks goes through the bulk client when one is given, else the same client as a read", async () => {
+  const chunk = new Uint8Array(BULK_MIN_BODY_BYTES);
+  const hash = createHash("sha256").update(chunk).digest("hex");
+  const reply = (req: Request) =>
+    req.method === "PUT"
+      ? Response.json({ sha256: hash, size: chunk.length })
+      : Response.json({ held: [] });
+  const httpClient = Deno.createHttpClient({});
+  const bulkClient = Deno.createHttpClient({ http2: false });
+  try {
+    for (const bulk of [undefined, bulkClient]) {
+      const seen: unknown[] = [];
+      const client = new ServeDatastoreClient({
+        baseUrl: BASE,
+        httpClient: () => httpClient,
+        ...(bulk === undefined ? {} : { bulkHttpClient: () => bulk }),
+        fetch: (input, init) => {
+          seen.push((init as { client?: unknown }).client);
+          return Promise.resolve(reply(new Request(input, init)));
+        },
+      });
+      await client.hasChunks([hash], signal());
+      await client.putChunk(hash, chunk, signal(), modelPartition());
+      assertEquals(seen, [httpClient, bulk ?? httpClient]);
+    }
+  } finally {
+    httpClient.close();
+    bulkClient.close();
   }
 });
 
