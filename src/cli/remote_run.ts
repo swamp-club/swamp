@@ -697,16 +697,19 @@ async function checkHostToken(
       redirect: "manual",
       signal: AbortSignal.timeout(SIGN_IN_TIMEOUT_MS),
     });
-    if (reply.status === 401) return { kind: "refused" };
+    const code = typeof reply.body === "object" && reply.body !== null
+      ? (reply.body as { code?: unknown }).code
+      : undefined;
+    // a proxy's own 401 in front of the root says nothing of the token
+    if (reply.status === 401 && code === "unauthorized") {
+      return { kind: "refused" };
+    }
     if (reply.status === 429) {
       const retryAfterSeconds = parseRetryAfter(reply.retryAfter ?? null);
       return retryAfterSeconds === undefined
         ? { kind: "limited" }
         : { kind: "limited", retryAfterSeconds };
     }
-    const code = typeof reply.body === "object" && reply.body !== null
-      ? (reply.body as { code?: unknown }).code
-      : undefined;
     if (
       (reply.status >= 200 && reply.status < 300) ||
       (reply.status === 404 && code === "use_websocket")

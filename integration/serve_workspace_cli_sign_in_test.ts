@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assert, assertEquals, assertRejects } from "@std/assert";
+import { join } from "@std/path";
 import { SignInCodeStore } from "../src/domain/access/sign_in_code.ts";
 import type { ServerCredential } from "../src/domain/auth/server_credential.ts";
 import { resetWorkspaceSignInGaps } from "../src/domain/auth/server_login_hint.ts";
@@ -99,6 +100,8 @@ interface HostOptions {
   readonly prefix?: string;
   readonly offerExchange?: boolean;
   readonly rootStatus?: number;
+  /** a proxy in front of the root answering its HTTP route itself */
+  readonly proxyRequestStatus?: number;
   readonly env?: Record<string, string | undefined>;
 }
 
@@ -203,6 +206,9 @@ async function withHost(
     if (redeemed !== null) return redeemed;
     // the token is checked before anything else, as serve's HTTP route does
     if (path === SERVE_REQUEST_PATH) {
+      if (options.proxyRequestStatus !== undefined) {
+        return new Response("blocked", { status: options.proxyRequestStatus });
+      }
       const caller = await rootCaller(req);
       if (caller instanceof Response) return caller;
       return caller !== undefined
@@ -678,7 +684,7 @@ Deno.test("workspace sign-in from the CLI: a workspace refusing its exchanged to
 
 Deno.test("workspace sign-in from the CLI: a token file withheld from a workspace .swamp.yaml names is reported before the host sign-in", async () => {
   await withHost({}, async (host) => {
-    const tokenFile = `${host.configDir}/workspace-token`;
+    const tokenFile = join(host.configDir, "workspace-token");
     await Deno.writeTextFile(tokenFile, "ws-file.secret\n");
     await withMockedEnv({ SWAMP_SERVER_TOKEN_FILE: tokenFile }, async () => {
       const error = await assertRejects(
@@ -698,5 +704,13 @@ Deno.test("workspace sign-in from the CLI: a token file withheld from a workspac
         error.message,
       );
     });
+  });
+});
+
+Deno.test("workspace sign-in from the CLI: a proxy's own 401 on the root's HTTP route is not taken for a refused token", async () => {
+  await withHost({ proxyRequestStatus: 401 }, async (host) => {
+    await host.store({ serverUrl: host.hostAddress });
+    assertEquals(await command(host, host.workspaceAddress), { ok: true });
+    assertEquals(host.exchanges(), 1);
   });
 });

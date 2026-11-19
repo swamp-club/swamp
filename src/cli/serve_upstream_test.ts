@@ -449,7 +449,6 @@ Deno.test("resolveServeUpstream: a workspace's valid exchanged token is used wit
       principalId: "p-1",
       obtainedAt: new Date(Date.now() - 60_000).toISOString(),
       expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
-      // SHA-256 of the host credential's obtainedAt, a newline and its token
       hostSignInDigest: await hostSignInDigest(host),
     });
     await withMockedEnv(
