@@ -145,7 +145,8 @@ These are merged just like `--input` on `swamp workflow run`, with precedence
 `required` inputs instead of setting a schema `default` that would apply to
 every caller. `trigger.inputs` is a values map (the data to inject), not the
 `inputs` schema block. It applies to trigger-fired runs (scheduled and webhook);
-a manual `swamp workflow run` is unaffected.
+a manual `swamp workflow run` is unaffected, whether it runs locally or on a
+serve through `--server`. Pass any value it needs with `--input`.
 
 For webhook runs, `trigger.inputs` values may be CEL expressions that read the
 request payload through the `webhook` namespace, mapping payload fields onto

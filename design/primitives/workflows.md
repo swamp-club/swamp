@@ -3080,12 +3080,14 @@ The merged inputs go through the same coercion, default-application, and
 validation pipeline as every other run, so a `required` input satisfied only
 by `trigger.inputs` validates.
 
-`executeWorkflowWithLocks` layers in trigger inputs (`workflow.baselineInputs`
-in `src/serve/deps.ts`), so they apply to every serve-executed run: scheduled,
-webhook, and ad-hoc `workflow.run` requests from
-`swamp workflow run --server`. Only a local `swamp workflow run`, which calls
-`workflowRun` directly (`src/cli/commands/workflow_run.ts`), ignores
-`trigger.inputs`. There the operator supplies inputs.
+`executeWorkflowWithLocks` (`src/serve/deps.ts`) layers in trigger inputs
+through `workflow.baselineInputs` only for trigger-fired runs, those with a
+`schedule` or `webhook` trigger source. A manual run never sees them: an ad-hoc
+`workflow.run` request from `swamp workflow run --server` (trigger source
+`api`), and a local `swamp workflow run`, which calls `workflowRun` directly
+(`src/cli/commands/workflow_run.ts`), both get caller inputs over schema
+defaults. The operator supplies inputs, so a manual run that needs a value
+`trigger.inputs` would have supplied passes it with `--input`.
 
 #### Webhook Payload Extraction
 

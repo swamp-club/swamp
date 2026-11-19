@@ -76,10 +76,54 @@ function shellWorkflow(
   });
 }
 
+function markerWorkflow(name: string): Workflow {
+  return Workflow.create({
+    name,
+    trigger: { schedule: "0 3 1 1 *", inputs: { marker: "from-trigger" } },
+    inputs: {
+      type: "object" as const,
+      properties: {
+        marker: { type: "string" as const, default: "from-schema" },
+      },
+    },
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "echo",
+            task: StepTask.directExecution(
+              "command/shell",
+              `${name}-shell`,
+              "execute",
+              { run: "echo marker" },
+            ),
+          }),
+        ],
+      }),
+    ],
+  });
+}
+
+function completedInputs(
+  events: WorkflowRunEvent[],
+): Record<string, unknown> | undefined {
+  const last = events.at(-1);
+  assertEquals(
+    last?.kind,
+    "completed",
+    `run did not complete: ${JSON.stringify(events)}`,
+  );
+  return last?.kind === "completed" ? last.run.inputs : undefined;
+}
+
 async function runViaLocks(
   repoDir: string,
   workflowName: string,
-  options?: { triggerSource?: WorkflowTriggerSource },
+  options?: {
+    triggerSource?: WorkflowTriggerSource;
+    inputs?: Record<string, unknown>;
+  },
 ): Promise<WorkflowRunEvent[]> {
   const {
     repoDir: resolvedRepoDir,
@@ -93,12 +137,12 @@ async function runViaLocks(
     resolvedRepoDir,
     repoContext,
     datastoreConfig,
-    { workflowIdOrName: workflowName },
+    { workflowIdOrName: workflowName, inputs: options?.inputs },
     new AbortController().signal,
     (event) => events.push(event),
     syncService,
     undefined,
-    { syncGate: undefined, ...options },
+    { syncGate: undefined, triggerSource: options?.triggerSource },
   );
   return events;
 }
@@ -192,7 +236,9 @@ Deno.test({
       });
       await new YamlWorkflowRepository(repoDir).save(workflow);
 
-      const events = await runViaLocks(repoDir, workflow.name);
+      const events = await runViaLocks(repoDir, workflow.name, {
+        triggerSource: "schedule",
+      });
       const kinds = events.map((e) => e.kind);
 
       assertEquals(
@@ -217,7 +263,9 @@ Deno.test({
       });
       await new YamlWorkflowRepository(repoDir).save(workflow);
 
-      const events = await runViaLocks(repoDir, workflow.name);
+      const events = await runViaLocks(repoDir, workflow.name, {
+        triggerSource: "schedule",
+      });
       const errorEvent = events.find(
         (e): e is Extract<WorkflowRunEvent, { kind: "error" }> =>
           e.kind === "error",
@@ -285,7 +333,9 @@ Deno.test({
       await new YamlWorkflowRepository(repoDir).save(workflow);
 
       await withTelemetry(async (repo) => {
-        const events = await runViaLocks(repoDir, workflow.name);
+        const events = await runViaLocks(repoDir, workflow.name, {
+          inputs: { projectId: "a6b254a2-0b57-4d0f-bf8b-fef767ab119e" },
+        });
         assertEquals(events.at(-1)?.kind, "completed");
         assertEquals(repo.saved.length, 0);
       });
@@ -316,6 +366,105 @@ Deno.test({
         assertEquals(parents[0].result.status, "error");
         assertEquals(parents[0].triggerSource, "schedule");
       });
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "api run: a manual run with no inputs gets schema defaults, not trigger.inputs",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withRepo(async (repoDir) => {
+      const workflow = markerWorkflow("api-run-schema-default");
+      await new YamlWorkflowRepository(repoDir).save(workflow);
+
+      const events = await runViaLocks(repoDir, workflow.name, {
+        triggerSource: "api",
+      });
+
+      assertEquals(completedInputs(events), { marker: "from-schema" });
+    });
+  },
+});
+
+Deno.test({
+  name: "api run: a caller input wins over the schema default",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withRepo(async (repoDir) => {
+      const workflow = markerWorkflow("api-run-caller-input");
+      await new YamlWorkflowRepository(repoDir).save(workflow);
+
+      const events = await runViaLocks(repoDir, workflow.name, {
+        triggerSource: "api",
+        inputs: { marker: "from-caller" },
+      });
+
+      assertEquals(completedInputs(events), { marker: "from-caller" });
+    });
+  },
+});
+
+Deno.test({
+  name: "scheduled run: trigger.inputs win over the schema default",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withRepo(async (repoDir) => {
+      const workflow = markerWorkflow("scheduled-run-trigger-input");
+      await new YamlWorkflowRepository(repoDir).save(workflow);
+
+      const events = await runViaLocks(repoDir, workflow.name, {
+        triggerSource: "schedule",
+      });
+
+      assertEquals(completedInputs(events), { marker: "from-trigger" });
+    });
+  },
+});
+
+Deno.test({
+  name: "untriggered run: a run with no trigger source gets schema defaults",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withRepo(async (repoDir) => {
+      const workflow = markerWorkflow("untriggered-run-schema-default");
+      await new YamlWorkflowRepository(repoDir).save(workflow);
+
+      const events = await runViaLocks(repoDir, workflow.name);
+
+      assertEquals(completedInputs(events), { marker: "from-schema" });
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "api run: a required input supplied only via trigger.inputs fails validation",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withRepo(async (repoDir) => {
+      const workflow = shellWorkflow("api-run-required-by-trigger", {
+        schedule: "0 3 * * *",
+        inputs: { projectId: "a6b254a2-0b57-4d0f-bf8b-fef767ab119e" },
+      });
+      await new YamlWorkflowRepository(repoDir).save(workflow);
+
+      const events = await runViaLocks(repoDir, workflow.name, {
+        triggerSource: "api",
+      });
+      const errorEvent = events.find(
+        (e): e is Extract<WorkflowRunEvent, { kind: "error" }> =>
+          e.kind === "error",
+      );
+
+      assertEquals(errorEvent?.error.code, "input_validation_failed");
+      assertEquals(events.some((e) => e.kind === "completed"), false);
     });
   },
 });
