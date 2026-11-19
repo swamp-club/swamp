@@ -1714,6 +1714,71 @@ Deno.test(
 );
 
 Deno.test(
+  "CatalogStore: recordedOwners matches a behavior name or id in one namespace",
+  () => {
+    using tempDb = makeTempDb();
+    const store = new CatalogStore(tempDb.path);
+    store.upsert(makeRow({ model_name: "orphan", model_id: "id-a" }));
+    store.upsert(makeRow({ model_name: "orphan", model_id: "id-b" }));
+    store.upsert(
+      makeRow({ model_name: "orphan", model_id: "id-a", data_name: "other" }),
+    );
+    store.upsert(
+      makeRow({ model_name: "orphan", model_id: "id-c", namespace: "peer" }),
+    );
+    store.upsert(makeRow({ model_name: "someone-else", model_id: "id-d" }));
+
+    assertEquals(
+      store.recordedOwners("orphan", "").map((o) => o.model_id),
+      ["id-a", "id-b"],
+    );
+    assertEquals(store.recordedOwners("id-b", ""), [
+      { type_normalized: "test-model", model_id: "id-b", model_name: "orphan" },
+    ]);
+    assertEquals(
+      store.recordedOwners("orphan", "", "other").map((o) => o.model_id),
+      ["id-a"],
+    );
+    assertEquals(
+      store.recordedOwners("orphan", "peer").map((o) => o.model_id),
+      ["id-c"],
+    );
+    assertEquals(store.recordedOwners("missing", ""), []);
+
+    store.close();
+  },
+);
+
+Deno.test(
+  "CatalogStore: recordedOwners skips superseded, deleted and workflow rows",
+  () => {
+    using tempDb = makeTempDb();
+    const store = new CatalogStore(tempDb.path);
+    store.upsert(
+      makeRow({ model_name: "orphan", model_id: "id-old", is_latest: 0 }),
+    );
+    store.upsert(
+      makeRow({
+        model_name: "orphan",
+        model_id: "id-gone",
+        lifecycle: "deleted",
+      }),
+    );
+    store.upsert(
+      makeRow({
+        model_name: "orphan",
+        model_id: "id-wf",
+        type_normalized: "workflow",
+      }),
+    );
+
+    assertEquals(store.recordedOwners("orphan", ""), []);
+
+    store.close();
+  },
+);
+
+Deno.test(
   "CatalogStore: findLatestRow returns null for non-existent data",
   () => {
     using tempDb = makeTempDb();

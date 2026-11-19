@@ -33,6 +33,7 @@ export { createExtensionCelEnvironment } from "../infrastructure/cel/cel_evaluat
 export type { Environment } from "cel-js";
 export {
   alreadyExists,
+  ambiguousBehavior,
   cancelled,
   invalidApiKey,
   isSwampError,

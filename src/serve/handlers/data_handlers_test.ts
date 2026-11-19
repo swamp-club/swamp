@@ -57,6 +57,7 @@ import type {
 import { Data } from "../../domain/data/mod.ts";
 import { Definition } from "../../domain/definitions/definition.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
+import { DataQueryService } from "../../domain/data/data_query_service.ts";
 import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
@@ -252,10 +253,11 @@ async function createSyncFixture(
   });
   await definitionRepo.save(SYNC_TEST_TYPE, definition);
 
+  const catalogStore = new CatalogStore(":memory:");
   const dataRepo = new FileSystemUnifiedDataRepository(
     dir,
     undefined,
-    new CatalogStore(":memory:"),
+    catalogStore,
     markDirty,
   );
   await dataRepo.save(
@@ -281,6 +283,7 @@ async function createSyncFixture(
     repoContext: {
       definitionRepo,
       unifiedDataRepo: dataRepo,
+      dataQueryService: new DataQueryService(catalogStore, dataRepo),
       markDirty,
     } as unknown as ConnectionContext["repoContext"],
     datastoreConfig: {

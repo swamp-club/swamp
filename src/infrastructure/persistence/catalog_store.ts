@@ -268,6 +268,12 @@ export interface CatalogWriter {
   ): void;
 }
 
+export interface CatalogRecordedOwner {
+  readonly type_normalized: string;
+  readonly model_id: string;
+  readonly model_name: string;
+}
+
 export interface CatalogDataName {
   readonly namespace: string;
   readonly type_normalized: string;
@@ -1362,6 +1368,35 @@ export class CatalogStore {
       } ORDER BY rowid DESC LIMIT 1`,
     );
     return (stmt.get(...params) as unknown as CatalogRow) ?? null;
+  }
+
+  /**
+   * owners whose latest, non-deleted rows name `idOrName` as their behavior
+   * name or id; workflow-scoped data is never a behavior's, so it is skipped
+   */
+  recordedOwners(
+    idOrName: string,
+    namespace: string,
+    dataName?: string,
+  ): CatalogRecordedOwner[] {
+    const clauses = [
+      "(model_name = ? OR model_id = ?)",
+      "namespace = ?",
+      "is_latest = 1",
+      "lifecycle != 'deleted'",
+      "type_normalized != 'workflow'",
+    ];
+    const params: string[] = [idOrName, idOrName, namespace];
+    if (dataName !== undefined) {
+      clauses.push("data_name = ?");
+      params.push(dataName);
+    }
+    const stmt = this.db.prepare(
+      `SELECT DISTINCT type_normalized, model_id, model_name FROM catalog
+       WHERE ${clauses.join(" AND ")}
+       ORDER BY type_normalized, model_id, model_name`,
+    );
+    return stmt.all(...params) as unknown as CatalogRecordedOwner[];
   }
 
   findLatestRowsBySpecName(

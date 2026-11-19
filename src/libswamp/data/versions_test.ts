@@ -224,3 +224,54 @@ Deno.test("dataVersions: byId without a by-id lookup fails instead of looking up
   );
   assertEquals(nameLookups, 0);
 });
+
+Deno.test("dataVersions: lists the recorded owner's versions when its definition is gone", async () => {
+  const orphan = {
+    modelType: "command/shell",
+    modelId: "00000000-0000-4000-8000-00000000000a",
+    modelName: "orphan",
+  };
+  const listedFor: string[] = [];
+  const deps = makeDeps({
+    lookupDefinition: () => Promise.resolve(null),
+    findRecordedOwners: () => Promise.resolve([orphan]),
+    listVersions: (type, id) => {
+      listedFor.push(`${type.normalized}:${id}`);
+      return Promise.resolve([1]);
+    },
+  });
+  const events = await collect<DataVersionsEvent>(
+    dataVersions(createLibSwampContext(), deps, {
+      modelIdOrName: "orphan",
+      dataName: "output",
+    }),
+  );
+  const completed = events[1];
+  if (completed.kind !== "completed") throw new Error("not completed");
+  assertEquals(listedFor, [`command/shell:${orphan.modelId}`]);
+  assertEquals(completed.data.modelId, orphan.modelId);
+  assertEquals(completed.data.modelName, "orphan");
+});
+
+Deno.test("dataVersions: refuses a name recorded under several owners", async () => {
+  const owner = (id: string) => ({
+    modelType: "command/shell",
+    modelId: id,
+    modelName: "orphan",
+  });
+  const deps = makeDeps({
+    lookupDefinition: () => Promise.resolve(null),
+    findRecordedOwners: () => Promise.resolve([owner("id-a"), owner("id-b")]),
+  });
+  const events = await collect<DataVersionsEvent>(
+    dataVersions(createLibSwampContext(), deps, {
+      modelIdOrName: "orphan",
+      dataName: "output",
+    }),
+  );
+  const last = events[events.length - 1];
+  assertEquals(
+    last.kind === "error" ? last.error.code : null,
+    "validation_failed",
+  );
+});

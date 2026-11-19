@@ -7186,3 +7186,17 @@ Deno.test("DataQueryService: a query never joins a backfill an invalidation over
     await first;
   }
 });
+
+Deno.test("DataQueryService.findRecordedOwners: returns the owners the catalog records in the repository's own namespace", async () => {
+  using t = setupTest();
+  const { catalog, service } = t;
+  catalog.upsert(makeRow({ model_name: "orphan", model_id: "id-local" }));
+  catalog.upsert(
+    makeRow({ model_name: "orphan", model_id: "id-peer", namespace: "peer" }),
+  );
+
+  assertEquals(await service.findRecordedOwners("orphan", "my-data"), [
+    { modelType: "test-model", modelId: "id-local", modelName: "orphan" },
+  ]);
+  assertEquals(await service.findRecordedOwners("orphan", "absent"), []);
+});

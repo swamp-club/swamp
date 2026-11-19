@@ -252,3 +252,34 @@ Deno.test("dataList: byId without a by-id lookup fails instead of looking up by 
   );
   assertEquals(nameLookups, 0);
 });
+
+Deno.test("dataList: lists the recorded owner's data when its definition is gone", async () => {
+  const orphan = {
+    modelType: "command/shell",
+    modelId: "00000000-0000-4000-8000-00000000000a",
+    modelName: "orphan",
+  };
+  const listedFor: string[] = [];
+  const base = makeDeps();
+  const deps = makeDeps({
+    lookupDefinition: () => Promise.resolve(null),
+    findRecordedOwners: (_idOrName, dataName) => {
+      assertEquals(dataName, undefined);
+      return Promise.resolve([orphan]);
+    },
+    findAllForModel: (type, id) => {
+      listedFor.push(`${type.normalized}:${id}`);
+      return base.findAllForModel(type, id);
+    },
+  });
+  const events = await collect<DataListEvent>(
+    dataList(createLibSwampContext(), deps, { modelIdOrName: "orphan" }),
+  );
+  const completed = events[1];
+  if (completed.kind !== "completed") throw new Error("not completed");
+  const data = completed.data as DataListData;
+  assertEquals(listedFor, [`command/shell:${orphan.modelId}`]);
+  assertEquals(data.modelId, orphan.modelId);
+  assertEquals(data.modelName, "orphan");
+  assertEquals(data.total, 2);
+});

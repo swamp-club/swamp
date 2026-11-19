@@ -17,7 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { Definition } from "../../domain/definitions/definition.ts";
 import { WorkflowDataService } from "../../domain/data/workflow_data_service.ts";
 import {
   findDefinitionByIdGlobal,
@@ -37,14 +36,15 @@ import {
   namespaceFromResolver,
 } from "../../infrastructure/persistence/repository_factory.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
-import { selectLookup } from "../lookup_by_id.ts";
-import type { LibSwampContext } from "../context.ts";
 import {
-  behaviorNotFound,
-  notFound,
-  type SwampError,
-  validationFailed,
-} from "../errors.ts";
+  type DataOwnerLookupDeps,
+  type RecordedDataOwner,
+  recordedOwnerFinder,
+  resolveDataOwner,
+} from "./recorded_owner.ts";
+import type { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
+import type { LibSwampContext } from "../context.ts";
+import { notFound, type SwampError, validationFailed } from "../errors.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import { v3RunArtifactCheck } from "./run_artifact_check.ts";
@@ -107,6 +107,8 @@ export interface DataListInput {
    */
   byId?: boolean;
   expectedName?: string;
+  /** an orphaned owner the caller found and authorized; only it is read */
+  recordedOwner?: RecordedDataOwner;
   workflowName?: string;
   /**
    * Treat `workflowName` as a workflow id the caller already resolved and
@@ -149,14 +151,7 @@ export interface WorkflowRunInfo {
   status: string;
 }
 
-export interface DataListDeps {
-  lookupDefinition: (
-    idOrName: string,
-  ) => Promise<{ definition: Definition; type: ModelType } | null>;
-  lookupDefinitionById?: (
-    id: string,
-    expectedName?: string,
-  ) => Promise<{ definition: Definition; type: ModelType } | null>;
+export interface DataListDeps extends DataOwnerLookupDeps {
   findAllForModel: (
     type: ModelType,
     definitionId: string,
@@ -189,6 +184,7 @@ export function createDataListDeps(
   namespace?: string,
   injectedWorkflowRepo?: WorkflowRepository,
   injectedDefinitionRepo?: YamlDefinitionRepository,
+  injectedCatalogStore?: CatalogStore,
 ): DataListDeps {
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
@@ -206,10 +202,13 @@ export function createDataListDeps(
       undefined,
       unreadableContent,
     );
+  const ownCatalog = injectedDataRepo
+    ? undefined
+    : createCatalogStore(repoDir, datastoreResolver);
   const dataRepo = injectedDataRepo ?? new FileSystemUnifiedDataRepository(
     repoDir,
     dsPath(SWAMP_SUBDIRS.data),
-    createCatalogStore(repoDir, datastoreResolver),
+    ownCatalog!,
     undefined,
     undefined,
     namespaceFromResolver(datastoreResolver),
@@ -235,6 +234,10 @@ export function createDataListDeps(
       findDefinitionByIdOrName(definitionRepo, idOrName),
     lookupDefinitionById: (id, expectedName) =>
       findDefinitionByIdGlobal(definitionRepo, id, expectedName),
+    findRecordedOwners: recordedOwnerFinder(
+      injectedCatalogStore ?? ownCatalog,
+      dataRepo,
+    ),
     findAllForModel: (type, definitionId) =>
       dataRepo.findAllForModel(type, definitionId),
     findWorkflow: async (nameOrId) => {
@@ -410,21 +413,19 @@ async function* modelScopedList(
 ): AsyncIterable<DataListEvent> {
   const modelIdOrName = input.modelIdOrName!;
 
-  const lookupDefinition = selectLookup(
-    "data list",
-    input.byId,
-    deps.lookupDefinition,
-    deps.lookupDefinitionById,
-    input.expectedName,
-  );
-  const result = await lookupDefinition(modelIdOrName);
-  if (!result) {
-    yield { kind: "error", error: behaviorNotFound(modelIdOrName) };
+  const owner = await resolveDataOwner("data list", deps, {
+    modelIdOrName,
+    byId: input.byId,
+    expectedName: input.expectedName,
+    recordedOwner: input.recordedOwner,
+  });
+  if (owner.kind === "error") {
+    yield { kind: "error", error: owner.error };
     return;
   }
-  const { definition, type: modelType } = result;
+  const { modelType } = owner;
 
-  const allData = await deps.findAllForModel(modelType, definition.id);
+  const allData = await deps.findAllForModel(modelType, owner.modelId);
 
   const filteredData = input.typeFilter
     ? allData.filter((d) => d.type === input.typeFilter)
@@ -446,8 +447,8 @@ async function* modelScopedList(
   yield {
     kind: "completed",
     data: {
-      modelId: definition.id,
-      modelName: definition.name,
+      modelId: owner.modelId,
+      modelName: owner.modelName,
       modelType: modelType.normalized,
       namespace: deps.namespace ?? "",
       groups,

@@ -1069,6 +1069,16 @@ itself, such as workflow-scope report output, is named by its workflow — in
 `data.get`, `data.list` and `data.search` alike — and authorized as `data` on
 the workflow's name and tags.
 
+`data.get`, `data.versions` and `data.list` for a behavior name that no
+definition holds read the owner its data records, the way `data.query` judges an
+orphaned item: owners are looked up in the catalog, those the caller may not
+read are dropped before anything is reported, and the one left is authorized
+with `data` read on its recorded name and type (`CanonicalResources.dataOwners`)
+and is exactly the owner libswamp reads. A name recorded under several readable
+owners is refused with their ids; none readable falls back to authorizing the
+name as sent, which then reports not found. The read is audited under the
+owner's recorded name.
+
 The response audit event of a request authorized this way records the name the
 request resolved to, not the id the client sent (a request by a behavior's UUID
 is audited under the behavior's name); a string that matched nothing is recorded

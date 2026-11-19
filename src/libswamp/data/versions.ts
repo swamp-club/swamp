@@ -17,7 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { Definition } from "../../domain/definitions/definition.ts";
 import {
   findDefinitionByIdGlobal,
   findDefinitionByIdOrName,
@@ -31,9 +30,15 @@ import {
   namespaceFromResolver,
 } from "../../infrastructure/persistence/repository_factory.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
-import { selectLookup } from "../lookup_by_id.ts";
+import {
+  type DataOwnerLookupDeps,
+  type RecordedDataOwner,
+  recordedOwnerFinder,
+  resolveDataOwner,
+} from "./recorded_owner.ts";
+import type { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import type { LibSwampContext } from "../context.ts";
-import { behaviorNotFound, notFound, type SwampError } from "../errors.ts";
+import { notFound, type SwampError } from "../errors.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import { maxOf } from "../../domain/array_extrema.ts";
@@ -63,6 +68,8 @@ export interface DataVersionsInput {
   modelIdOrName: string;
   byId?: boolean;
   expectedName?: string;
+  /** an orphaned owner the caller found and authorized; only it is read */
+  recordedOwner?: RecordedDataOwner;
   dataName: string;
 }
 
@@ -73,14 +80,7 @@ interface DataEntry {
   checksum?: string;
 }
 
-export interface DataVersionsDeps {
-  lookupDefinition: (
-    idOrName: string,
-  ) => Promise<{ definition: Definition; type: ModelType } | null>;
-  lookupDefinitionById?: (
-    id: string,
-    expectedName?: string,
-  ) => Promise<{ definition: Definition; type: ModelType } | null>;
+export interface DataVersionsDeps extends DataOwnerLookupDeps {
   listVersions: (
     type: ModelType,
     definitionId: string,
@@ -99,15 +99,19 @@ export function createDataVersionsDeps(
   datastoreResolver?: DatastorePathResolver,
   injectedDataRepo?: FileSystemUnifiedDataRepository,
   injectedDefinitionRepo?: YamlDefinitionRepository,
+  injectedCatalogStore?: CatalogStore,
 ): DataVersionsDeps {
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
   const definitionRepo = injectedDefinitionRepo ??
     new YamlDefinitionRepository(repoDir);
+  const ownCatalog = injectedDataRepo
+    ? undefined
+    : createCatalogStore(repoDir, datastoreResolver);
   const dataRepo = injectedDataRepo ?? new FileSystemUnifiedDataRepository(
     repoDir,
     dsPath(SWAMP_SUBDIRS.data),
-    createCatalogStore(repoDir, datastoreResolver),
+    ownCatalog!,
     undefined,
     undefined,
     namespaceFromResolver(datastoreResolver),
@@ -117,6 +121,10 @@ export function createDataVersionsDeps(
       findDefinitionByIdOrName(definitionRepo, idOrName),
     lookupDefinitionById: (id, expectedName) =>
       findDefinitionByIdGlobal(definitionRepo, id, expectedName),
+    findRecordedOwners: recordedOwnerFinder(
+      injectedCatalogStore ?? ownCatalog,
+      dataRepo,
+    ),
     listVersions: (type, definitionId, name) =>
       dataRepo.listVersions(type, definitionId, name),
     findByName: (type, definitionId, name, version) =>
@@ -135,23 +143,16 @@ export async function* dataVersions(
     (async function* () {
       yield { kind: "resolving" };
 
-      const lookupDefinition = selectLookup(
-        "data versions",
-        input.byId,
-        deps.lookupDefinition,
-        deps.lookupDefinitionById,
-        input.expectedName,
-      );
-      const result = await lookupDefinition(input.modelIdOrName);
-      if (!result) {
-        yield { kind: "error", error: behaviorNotFound(input.modelIdOrName) };
+      const owner = await resolveDataOwner("data versions", deps, input);
+      if (owner.kind === "error") {
+        yield { kind: "error", error: owner.error };
         return;
       }
-      const { definition, type: modelType } = result;
+      const { modelType } = owner;
 
       const versionNumbers = await deps.listVersions(
         modelType,
-        definition.id,
+        owner.modelId,
         input.dataName,
       );
 
@@ -172,7 +173,7 @@ export async function* dataVersions(
       for (const version of versionNumbers) {
         const data = await deps.findByName(
           modelType,
-          definition.id,
+          owner.modelId,
           input.dataName,
           version,
         );
@@ -193,8 +194,8 @@ export async function* dataVersions(
         kind: "completed",
         data: {
           dataName: input.dataName,
-          modelId: definition.id,
-          modelName: definition.name,
+          modelId: owner.modelId,
+          modelName: owner.modelName,
           modelType: modelType.normalized,
           versions,
           total: versions.length,

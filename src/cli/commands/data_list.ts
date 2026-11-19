@@ -121,6 +121,8 @@ export const dataListCommand = withRemoteOptions(
       repoContext.unifiedDataRepo,
       namespace,
       repoContext.workflowRepo,
+      undefined,
+      repoContext.catalogStore,
     );
 
     const renderer = createDataListRenderer(cliCtx.outputMode, !!namespace);

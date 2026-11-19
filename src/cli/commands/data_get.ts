@@ -165,6 +165,8 @@ export const dataGetCommand = withRemoteOptions(
         datastoreResolver,
         repoContext.unifiedDataRepo,
         repoContext.workflowRepo,
+        undefined,
+        repoContext.catalogStore,
       ),
       retentionWatermarks: repoContext.retentionWatermarks,
     };
