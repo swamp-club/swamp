@@ -351,6 +351,36 @@ Deno.test("signInToWorkspace: a refused code and a refused principal say which",
   });
 });
 
+Deno.test("signInToWorkspace: a workspace's refusal reason reaches the message without its escape sequences", async () => {
+  for (
+    const [reason, shown] of [
+      [
+        "\x1b]8;;https://evil.example\x07click\x1b]8;;\x07 not\x1b[31m listed",
+        ": click not listed.",
+      ],
+      ["\x1b[2J\r\n", "."],
+      ["x".repeat(400), `: ${"x".repeat(299)}….`],
+    ] as const
+  ) {
+    await inOwnRuntime(async () => {
+      const { deps } = fakeDeps({
+        exchange: {
+          status: 403,
+          date: null,
+          body: { error: "not_admitted", reason },
+        },
+      });
+      const error = await assertRejects(
+        () => signInToWorkspace(WORKSPACE, deps),
+        UserError,
+      );
+      assertStringIncludes(error.message, `does not admit you${shown}`);
+      // deno-lint-ignore no-control-regex
+      assertEquals(/[\x00-\x1f\x7f-\x9f]/.test(error.message), false);
+    });
+  }
+});
+
 Deno.test("signInToWorkspace: one attempt per address per process", async () => {
   await inOwnRuntime(async () => {
     const { deps, recorded } = fakeDeps();

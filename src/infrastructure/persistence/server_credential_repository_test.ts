@@ -473,7 +473,9 @@ Deno.test("FileServerCredentialRepository.save: round-trips an expiresAt and rea
       "2026-07-18T01:00:00.000Z",
     );
   } finally {
-    await Deno.remove(tmpDir, { recursive: true });
+    await Deno.remove(tmpDir, { recursive: true }).catch((error) => {
+      if (Deno.build.os !== "windows") throw error;
+    });
   }
 });
 
@@ -500,7 +502,9 @@ Deno.test("FileServerCredentialRepository.save: concurrent saves from two reposi
 
     assertEquals((await first.list()).length, 20);
   } finally {
-    await Deno.remove(tmpDir, { recursive: true });
+    await Deno.remove(tmpDir, { recursive: true }).catch((error) => {
+      if (Deno.build.os !== "windows") throw error;
+    });
   }
 });
 
@@ -526,7 +530,9 @@ Deno.test("FileServerCredentialRepository.get: fileOnly ignores the SWAMP_SERVER
     );
     assertEquals(repo.envPairNames(TEST_CREDENTIAL.serverUrl), false);
   } finally {
-    await Deno.remove(tmpDir, { recursive: true });
+    await Deno.remove(tmpDir, { recursive: true }).catch((error) => {
+      if (Deno.build.os !== "windows") throw error;
+    });
   }
 });
 
@@ -552,7 +558,9 @@ Deno.test("FileServerCredentialRepository.fileOnlyView: reads and writes the sam
     );
     assertEquals(view.envPairNames(TEST_CREDENTIAL.serverUrl), false);
   } finally {
-    await Deno.remove(tmpDir, { recursive: true });
+    await Deno.remove(tmpDir, { recursive: true }).catch((error) => {
+      if (Deno.build.os !== "windows") throw error;
+    });
   }
 });
 
@@ -576,7 +584,9 @@ Deno.test("FileServerCredentialRepository.save: a filesystem that cannot lock st
     await repo.fileOnlyView().remove(TEST_CREDENTIAL.serverUrl);
     assertEquals(await repo.get(TEST_CREDENTIAL.serverUrl), null);
   } finally {
-    await Deno.remove(tmpDir, { recursive: true });
+    await Deno.remove(tmpDir, { recursive: true }).catch((error) => {
+      if (Deno.build.os !== "windows") throw error;
+    });
   }
 });
 

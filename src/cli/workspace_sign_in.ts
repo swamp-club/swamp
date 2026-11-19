@@ -24,6 +24,7 @@ import {
   recordWorkspaceSignIn,
 } from "../infrastructure/auth/workspace_sign_in_notes.ts";
 import { splitWorkspaceAddress } from "../domain/workspace/workspace_address.ts";
+import { sanitizeFieldText } from "../domain/vaults/vault_config_fields.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import { processRuntimeSlot } from "../infrastructure/runtime/process_runtime.ts";
 import {
@@ -40,6 +41,7 @@ export const SIGN_IN_TIMEOUT_MS = 10_000;
 /** an exchanged token this close to its expiry is replaced before it is sent */
 export const RENEW_MARGIN_MS = 5 * 60 * 1000;
 const MAX_CLOCK_CORRECTION_MS = 24 * 60 * 60 * 1000;
+const MAX_REFUSAL_REASON_LENGTH = 300;
 const AUTH_INFO_PATH = "/auth/info";
 const AUTH_EXCHANGE_PATH = "/auth/exchange";
 
@@ -244,7 +246,11 @@ async function attemptSignIn(
     );
   }
   if (exchanged.status === 403 && body.error === "not_admitted") {
-    const reason = typeof body.reason === "string" ? `: ${body.reason}` : "";
+    // the workspace's own text, so no escape sequence of its reaches the terminal
+    const said = typeof body.reason === "string"
+      ? sanitizeFieldText(body.reason, MAX_REFUSAL_REASON_LENGTH)
+      : "";
+    const reason = said === "" ? "" : `: ${said}`;
     throw new UserError(
       `The workspace at ${address} does not admit you${reason}. Signing in to the host again will not help; ask the workspace's administrator.`,
       "not_admitted",
