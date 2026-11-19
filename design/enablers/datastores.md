@@ -7289,20 +7289,23 @@ exit code serve being unreachable has.
 
 `{p}` is a canonical partition key, percent-encoded once more in the path.
 
-**Bodies that carry chunks go over HTTP/1.1.** A member's client sends chunk
-uploads, and the commits, commit batches and quarantine deposits that carry
-chunk bytes, through its own keep-alive HTTP/1.1 client, and every other
-request, a chunkless commit included, over the HTTP/2 connection serve
-negotiates. One HTTP/2 stream is held to its flow-control
+**Large bodies that carry chunks go over HTTP/1.1.** A member's client sends
+a chunk upload, commit, commit batch or quarantine deposit whose body carries
+chunk bytes and is at least 2 MiB (`BULK_MIN_BODY_BYTES`) through its own
+keep-alive HTTP/1.1 client, and every other request over the HTTP/2
+connection serve negotiates. One HTTP/2 stream is held to its flow-control
 window per round trip, which capped a member across the Atlantic at about
 1.7 MiB/s where one HTTP/1.1 connection on the same path carried about
-9.8 MiB/s, and Deno exposes no window setting on either side. Small requests
-stay on the shared HTTP/2 connection, so they pay no extra handshake; two
-uploads at once each open their own HTTP/1.1 connection. A node retired as
-unreachable or not serving retires both clients. The HTTP/1.1 client drops a
-connection idle for 30 s (`BULK_POOL_IDLE_TIMEOUT_MS`), before a proxy or load
-balancer on the path would, so a commit is not written into a connection
-being closed under it; `Deno.serve` itself keeps an idle connection open.
+9.8 MiB/s, and Deno exposes no window setting on either side. Below 2 MiB a
+fresh connection's handshake and slow start cost a far member more round
+trips than the warm stream's window does, and since each command is its own
+process the first large body opens that connection; a workflow step's small
+chunked outputs therefore stay on HTTP/2. Two large uploads at once each open
+their own HTTP/1.1 connection. A node retired as unreachable or not serving
+retires both clients. The HTTP/1.1 client drops a connection idle for 30 s
+(`BULK_POOL_IDLE_TIMEOUT_MS`), before a proxy or load balancer on the path
+would, so a commit is not written into a connection being closed under it;
+`Deno.serve` itself keeps an idle connection open.
 
 **Fewer round trips per write (swamp-club#4525).** A member's one-step write
 is a lock answered with the catch-up, then one `POST commits` carrying the

@@ -25,6 +25,7 @@ import type { TLSSocket } from "node:tls";
 import { ServeUpstreamTarget } from "../src/domain/datastore_v3/serve_upstream.ts";
 import { modelPartition } from "../src/domain/datastore_v3/v3_test_helpers.ts";
 import {
+  BULK_MIN_BODY_BYTES,
   ServeDatastoreClient,
   serveDatastoreClientFor,
 } from "../src/infrastructure/datastore_v3/serve_datastore_client.ts";
@@ -155,13 +156,18 @@ function clientFor(url: string): ServeDatastoreClient {
   );
 }
 
-Deno.test("serveDatastoreClientFor: requests that carry chunk bytes go over HTTP/1.1, every other request over HTTP/2, a chunkless commit included", async () => {
+Deno.test("serveDatastoreClientFor: a body carrying BULK_MIN_BODY_BYTES of chunks goes over HTTP/1.1, every other request over HTTP/2, a small chunked commit included", async () => {
   await using server = await startServer(answer);
   const client = clientFor(server.url);
-  const chunk = new Uint8Array(64 * 1024).fill(7);
+  const chunk = new Uint8Array(BULK_MIN_BODY_BYTES).fill(7);
   const hash = sha(chunk);
+  const small = new Uint8Array(BULK_MIN_BODY_BYTES / 4).fill(8);
+  const smallHash = sha(small);
+  const under = chunk.subarray(1);
+  const underHash = sha(under);
   const partition = modelPartition();
   const carried = [{ sha256: hash, bytes: chunk }];
+  const carriedSmall = [{ sha256: smallHash, bytes: small }];
   const envelope = () => ({
     expectedSeq: 0,
     txnId: crypto.randomUUID(),
@@ -190,6 +196,21 @@ Deno.test("serveDatastoreClientFor: requests that carry chunk bytes go over HTTP
       "2.0",
       () => client.postCommit(partition, envelope(), [], signal()),
     ],
+    [
+      "commit with a small chunk",
+      "2.0",
+      () => client.postCommit(partition, envelope(), carriedSmall, signal()),
+    ],
+    [
+      "small chunk upload",
+      "2.0",
+      () => client.putChunk(smallHash, small, signal(), partition),
+    ],
+    [
+      "chunk upload a byte under the threshold",
+      "2.0",
+      () => client.putChunk(underHash, under, signal(), partition),
+    ],
     ["batch with chunks", "1.1", () =>
       client.postCommits(
         [
@@ -215,6 +236,11 @@ Deno.test("serveDatastoreClientFor: requests that carry chunk bytes go over HTTP
       "2.0",
       () => client.depositQuarantine(deposit([]), signal()),
     ],
+    [
+      "deposit with a small chunk",
+      "2.0",
+      () => client.depositQuarantine(deposit(carriedSmall), signal()),
+    ],
   ];
   const versions: Record<string, string | undefined> = {};
   try {
@@ -238,7 +264,7 @@ Deno.test("serveDatastoreClientFor: consecutive commits share one HTTP/1.1 conne
   const client = clientFor(server.url);
   try {
     for (let i = 0; i < 3; i++) {
-      const chunk = new Uint8Array(1024).fill(i);
+      const chunk = new Uint8Array(BULK_MIN_BODY_BYTES).fill(i);
       await client.postCommit(
         modelPartition(),
         { expectedSeq: i, txnId: crypto.randomUUID(), ops: [] },
@@ -295,7 +321,7 @@ Deno.test("ServeDatastoreClient: a node refusing as not serving retires the bulk
   });
   try {
     const partition = modelPartition();
-    const first = new Uint8Array(1024).fill(1);
+    const first = new Uint8Array(BULK_MIN_BODY_BYTES).fill(1);
     const uploading = client.putChunk(sha(first), first, signal(), partition);
     await waitFor(
       () => server.seen.some((s) => s.method === "PUT"),
@@ -304,7 +330,7 @@ Deno.test("ServeDatastoreClient: a node refusing as not serving retires the bulk
     await client.hasChunks(["a".repeat(64)], signal()).catch(() => {});
     release();
     assertEquals((await uploading).size, first.byteLength);
-    const second = new Uint8Array(1024).fill(2);
+    const second = new Uint8Array(BULK_MIN_BODY_BYTES).fill(2);
     await client.putChunk(sha(second), second, signal(), partition);
   } finally {
     client.close();

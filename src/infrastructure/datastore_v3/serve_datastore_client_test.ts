@@ -57,6 +57,7 @@ import {
 } from "./chunk_ingest.ts";
 import { isNetworkFailure } from "./network_failure.ts";
 import {
+  BULK_MIN_BODY_BYTES,
   BULK_POOL_IDLE_TIMEOUT_MS,
   bulkHttpClientOptions,
   clearServeUnreachableLatches,
@@ -707,8 +708,8 @@ Deno.test("bulkHttpClientOptions: HTTP/1.1 only, idle connections dropped after 
   assertEquals(BULK_POOL_IDLE_TIMEOUT_MS, 30_000);
 });
 
-Deno.test("ServeDatastoreClient: a body carrying chunks goes through the bulk client when one is given, else the same client as a read", async () => {
-  const chunk = new TextEncoder().encode("payload");
+Deno.test("ServeDatastoreClient: a body carrying BULK_MIN_BODY_BYTES of chunks goes through the bulk client when one is given, else the same client as a read", async () => {
+  const chunk = new Uint8Array(BULK_MIN_BODY_BYTES);
   const hash = createHash("sha256").update(chunk).digest("hex");
   const reply = (req: Request) =>
     req.method === "PUT"

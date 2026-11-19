@@ -535,7 +535,7 @@ interface RequestSpec {
   readonly noRefusalRetry?: boolean;
   /** this request's own response base, in place of the client's */
   readonly responseBaseMs?: number;
-  /** the body carries chunk bytes; a chunkless commit stays on the shared client */
+  /** the body carries chunk bytes: from BULK_MIN_BODY_BYTES, the bulk client */
   readonly bulk?: boolean;
 }
 
@@ -1959,7 +1959,10 @@ export class ServeDatastoreClient {
   }
 
   #clientInit(spec: RequestSpec): { client?: Deno.HttpClient } {
-    if (spec.bulk === true && this.#makeBulkHttpClient !== undefined) {
+    if (
+      spec.bulk === true && this.#makeBulkHttpClient !== undefined &&
+      bodyBytesOf(spec.body) >= BULK_MIN_BODY_BYTES
+    ) {
       this.#bulkHttpClient ??= this.#makeBulkHttpClient();
       return { client: this.#bulkHttpClient };
     }
@@ -2377,6 +2380,12 @@ export function serveDatastoreClientFor(
  * so a commit is not written into a connection closing under it
  */
 export const BULK_POOL_IDLE_TIMEOUT_MS = 30_000;
+
+/**
+ * below this a fresh connection's handshake and slow start cost a far member
+ * more round trips than the warm HTTP/2 stream's flow-control window does
+ */
+export const BULK_MIN_BODY_BYTES = 2 * 1024 * 1024;
 
 export function bulkHttpClientOptions(
   caCerts: string[] | undefined,
