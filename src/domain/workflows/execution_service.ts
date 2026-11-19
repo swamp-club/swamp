@@ -34,6 +34,7 @@ import {
 } from "./placement.ts";
 import { StepTask } from "./step_task.ts";
 import type { AssertSeverity } from "./step_task.ts";
+import { stepBehaviorNames } from "./step_targets.ts";
 import { gateTimeoutSeconds } from "./approval_timeout.ts";
 import { severityAtOrAbove } from "./assert_severity.ts";
 import {
@@ -1003,6 +1004,8 @@ export interface StepExecutionContext {
   skipAllChecks?: boolean;
   initiatedBy?: string;
   dataBaseDir?: string;
+  /** the run's definition repository, so name hints outlive a single step */
+  definitionRepo?: YamlDefinitionRepository;
   datastoreResolver?: DatastorePathResolver;
   catalogStore: CatalogStore;
   /**
@@ -1558,6 +1561,7 @@ export class DefaultStepExecutor implements StepExecutor {
     if (this.injectedDeps) return this.injectedDeps;
     const deps = await DefaultStepExecutor.buildDeps(ctx.repoDir, {
       dataBaseDir: ctx.dataBaseDir,
+      definitionRepo: ctx.definitionRepo,
       datastoreResolver: ctx.datastoreResolver,
       catalogStore: ctx.catalogStore,
       markDirty: this.markDirty,
@@ -1585,6 +1589,7 @@ export class DefaultStepExecutor implements StepExecutor {
     repoDir: string,
     opts: {
       dataBaseDir?: string;
+      definitionRepo?: YamlDefinitionRepository;
       datastoreResolver?: DatastorePathResolver;
       catalogStore: CatalogStore;
       markDirty?: MarkDirtyHook;
@@ -1604,7 +1609,7 @@ export class DefaultStepExecutor implements StepExecutor {
     // as the repository factory does; without one they stay repo-local.
     const dsPath = (subdir: string): string | undefined =>
       opts.datastoreResolver?.resolvePath(subdir);
-    const definitionRepo = new YamlDefinitionRepository(
+    const definitionRepo = opts.definitionRepo ?? new YamlDefinitionRepository(
       repoDir,
       undefined,
       undefined,
@@ -3687,6 +3692,14 @@ export class WorkflowExecutionService {
     );
   }
 
+  // literal names only: buildRunContext lists, and so hints, every definition
+  // before any step runs; this serves the reserved-tag check that precedes it
+  private async primeStepLookups(workflow: Workflow): Promise<void> {
+    // the reserved-tag lookups it serves ignore read errors too
+    await this.definitionRepo.primeNameHints(stepBehaviorNames([workflow]))
+      .catch(() => {});
+  }
+
   private reservedTagLookups(): ReservedTagLookups {
     return {
       findDefinition: async (idOrName) => {
@@ -3772,6 +3785,7 @@ export class WorkflowExecutionService {
         // Refused before anything runs: a wait opened where its records
         // cannot be shared would accept a signal nothing ever applies.
         if (holdsSignalWait(found)) await this.openSignalWaits(found.name);
+        await this.primeStepLookups(found);
         // refused before any step runs, so a reserved tag a later step supplies
         // cannot fail the run after earlier steps' side effects
         const reservedTag = await reservedWorkflowRunTag(
@@ -4867,6 +4881,7 @@ export class WorkflowExecutionService {
     // before anything runs, as for a new run, so one that turns out
     // unusable refuses here and not after earlier steps have executed.
     if (holdsSignalWait(workflow)) await this.readySignalWaits(workflow.name);
+    await this.primeStepLookups(workflow);
     // so is a reserved tag the remaining steps supply: refused before the run
     // is taken over, a later step's tag cannot fail the resume after earlier
     // steps' side effects
@@ -7473,6 +7488,7 @@ export class WorkflowExecutionService {
           skipAllChecks: options.skipAllChecks,
           initiatedBy: options.initiatedBy,
           dataBaseDir: this.dataBaseDir,
+          definitionRepo: this.definitionRepo,
           datastoreResolver: this.datastoreResolver,
           catalogStore: this.catalogStore,
           namespace: this.namespace,
@@ -8565,6 +8581,7 @@ export class WorkflowExecutionService {
           expressionContext: stepExprContext,
           catalogStore: this.catalogStore,
           dataBaseDir: this.dataBaseDir,
+          definitionRepo: this.definitionRepo,
           datastoreResolver: this.datastoreResolver,
           autoGc: this.autoGc,
           runtimeTags: options.runtimeTags,

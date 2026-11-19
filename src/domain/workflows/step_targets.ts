@@ -120,6 +120,21 @@ export function workflowStepTargets(workflow: Workflow): StepTarget[] {
   return targets;
 }
 
+// a name given by expression resolves only as its step runs, so it is left out
+export function stepBehaviorNames(workflows: readonly Workflow[]): string[] {
+  const names = new Set<string>();
+  for (const workflow of workflows) {
+    for (const target of workflowStepTargets(workflow)) {
+      if (
+        target.kind === "model" && !containsExpression(target.modelIdOrName)
+      ) {
+        names.add(target.modelIdOrName);
+      }
+    }
+  }
+  return [...names];
+}
+
 /**
  * a renamed step or one moved to another job has a new scope and counts as
  * changed; removed steps are not returned
