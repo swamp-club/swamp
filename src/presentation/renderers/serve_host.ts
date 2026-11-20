@@ -39,13 +39,25 @@ export interface ServeHostChange {
   readonly removed: readonly string[];
 }
 
+export interface ServeHostCreated {
+  readonly file: string;
+}
+
 export interface ServeHostRenderer {
+  created(event: ServeHostCreated): void;
   listening(event: ServeHostListening): void;
   workspacesChanged(change: ServeHostChange): void;
   stopped(): void;
 }
 
 class LogServeHostRenderer implements ServeHostRenderer {
+  created(event: ServeHostCreated): void {
+    logger.info(
+      "Created {file}, which listens on 127.0.0.1:8080 only. It names no root, the repo that swamp serve workspace commands talk to and that issues sign-in codes; to add one, set root: to a swamp repo's folder there",
+      { file: event.file },
+    );
+  }
+
   listening(event: ServeHostListening): void {
     const properties = {
       url: event.url,
@@ -80,6 +92,10 @@ class LogServeHostRenderer implements ServeHostRenderer {
 }
 
 class JsonServeHostRenderer implements ServeHostRenderer {
+  created(event: ServeHostCreated): void {
+    writeOutput(JSON.stringify({ status: "created", ...event }));
+  }
+
   listening(event: ServeHostListening): void {
     writeOutput(JSON.stringify({ status: "listening", ...event }));
   }

@@ -21,7 +21,7 @@ import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { join, resolve } from "@std/path";
 import { UserError } from "../../domain/errors.ts";
 import { assertPathEquals } from "../../infrastructure/persistence/path_test_helpers.ts";
-import { locateHostYaml } from "./host_layout.ts";
+import { type HostYamlCreator, locateHostYaml } from "./host_layout.ts";
 
 const CWD = resolve("cwd");
 const CONFIG_DIR = resolve("config-dir");
@@ -40,13 +40,36 @@ function readerOf(files: Record<string, string | Error>) {
 
 const dirs = { cwd: CWD, configDir: CONFIG_DIR, dataDir: DATA_DIR };
 
+const samePath = (path: string) => Promise.resolve(path);
+
+const neverCreate: HostYamlCreator = (path) =>
+  Promise.reject(new Error(`unexpected create of ${path}`));
+
+function creatorOf(text: string, created = true) {
+  const asked: string[] = [];
+  const create: HostYamlCreator = (path) => {
+    asked.push(path);
+    return Promise.resolve({ text, created });
+  };
+  return { create, asked };
+}
+
+function locate(
+  input: Parameters<typeof locateHostYaml>[0],
+  read: Parameters<typeof locateHostYaml>[1],
+  realPath: (path: string) => Promise<string> = samePath,
+  create: HostYamlCreator = neverCreate,
+) {
+  return locateHostYaml(input, read, realPath, create);
+}
+
 Deno.test("locateHostYaml: --host-dir names the host folder, whose workspaces/ is the state folder", async () => {
   const hostDir = resolve("srv", "host");
   const { read, asked } = readerOf({
     [join(hostDir, "host.yaml")]: "address: http://a\n",
     [join(CONFIG_DIR, "host.yaml")]: "address: http://other\n",
   });
-  const { layout, text } = await locateHostYaml(
+  const { layout, text } = await locate(
     { ...dirs, hostDir },
     read,
   );
@@ -61,21 +84,23 @@ Deno.test("locateHostYaml: a relative --host-dir is taken from the current folde
   const { read } = readerOf({
     [join(CWD, "host", "host.yaml")]: "address: http://a\n",
   });
-  const { layout } = await locateHostYaml({ ...dirs, hostDir: "host" }, read);
+  const { layout } = await locate({ ...dirs, hostDir: "host" }, read);
   assertPathEquals(layout.hostFolder!, join(CWD, "host"));
 });
 
-Deno.test("locateHostYaml: --host-dir without a host.yaml does not fall back to the config dir", async () => {
+Deno.test("locateHostYaml: --host-dir without a host.yaml does not fall back to the config dir nor create one", async () => {
   const hostDir = resolve("srv", "host");
   const { read } = readerOf({
     [join(CONFIG_DIR, "host.yaml")]: "address: http://other\n",
   });
+  const { create, asked } = creatorOf("address: http://made\n");
   const error = await assertRejects(
-    () => locateHostYaml({ ...dirs, hostDir }, read),
+    () => locate({ ...dirs, hostDir }, read, samePath, create),
     UserError,
   );
   assertStringIncludes(error.message, join(hostDir, "host.yaml"));
   assertEquals(error.message.includes(CONFIG_DIR), false);
+  assertEquals(asked, []);
 });
 
 Deno.test("locateHostYaml: a host.yaml in the current folder is used over the config dir's", async () => {
@@ -83,7 +108,7 @@ Deno.test("locateHostYaml: a host.yaml in the current folder is used over the co
     [join(CWD, "host.yaml")]: "address: http://here\n",
     [join(CONFIG_DIR, "host.yaml")]: "address: http://other\n",
   });
-  const { layout, text } = await locateHostYaml(dirs, read);
+  const { layout, text } = await locate(dirs, read);
   assertEquals(text, "address: http://here\n");
   assertPathEquals(layout.hostFolder!, CWD);
   assertPathEquals(layout.stateDir, join(CWD, "workspaces"));
@@ -93,7 +118,7 @@ Deno.test("locateHostYaml: with neither --host-dir nor a host.yaml here, the con
   const { read } = readerOf({
     [join(CONFIG_DIR, "host.yaml")]: "address: http://a\n",
   });
-  const { layout, text } = await locateHostYaml(dirs, read);
+  const { layout, text } = await locate(dirs, read);
   assertEquals(text, "address: http://a\n");
   assertEquals(layout.hostFolder, null);
   assertPathEquals(layout.configFile, join(CONFIG_DIR, "host.yaml"));
@@ -101,15 +126,48 @@ Deno.test("locateHostYaml: with neither --host-dir nor a host.yaml here, the con
   assertPathEquals(layout.stateDir, join(DATA_DIR, "host"));
 });
 
-Deno.test("locateHostYaml: with no host.yaml anywhere, the error names every place it looked", async () => {
+Deno.test("locateHostYaml: with no host.yaml anywhere, the config dir's is created and run with no host folder", async () => {
   const { read } = readerOf({});
-  const error = await assertRejects(
-    () => locateHostYaml(dirs, read),
-    UserError,
+  const { create, asked } = creatorOf("address: http://made\n");
+  const { layout, text, created } = await locate(dirs, read, samePath, create);
+  assertEquals(asked.length, 1);
+  assertPathEquals(asked[0], join(CONFIG_DIR, "host.yaml"));
+  assertEquals(text, "address: http://made\n");
+  assertEquals(created, true);
+  assertEquals(layout.hostFolder, null);
+  assertPathEquals(layout.configFile, join(CONFIG_DIR, "host.yaml"));
+  assertPathEquals(layout.stateDir, join(DATA_DIR, "host"));
+});
+
+Deno.test("locateHostYaml: a host.yaml another host created first is reported as not created by this one", async () => {
+  const { read } = readerOf({});
+  const { create } = creatorOf("address: http://theirs\n", false);
+  const { text, created } = await locate(dirs, read, samePath, create);
+  assertEquals(text, "address: http://theirs\n");
+  assertEquals(created, false);
+});
+
+Deno.test("locateHostYaml: started from inside the config dir with no host.yaml, creates it there with no host folder", async () => {
+  const { read } = readerOf({});
+  const { create, asked } = creatorOf("address: http://made\n");
+  const { layout } = await locate(
+    { ...dirs, cwd: CONFIG_DIR },
+    read,
+    samePath,
+    create,
   );
-  assertStringIncludes(error.message, join(CWD, "host.yaml"));
-  assertStringIncludes(error.message, join(CONFIG_DIR, "host.yaml"));
-  assertStringIncludes(error.message, "address:");
+  assertEquals(asked.length, 1);
+  assertPathEquals(asked[0], join(CONFIG_DIR, "host.yaml"));
+  assertEquals(layout.hostFolder, null);
+});
+
+Deno.test("locateHostYaml: an invalid host.yaml found is returned as it is and nothing is created", async () => {
+  const { read } = readerOf({
+    [join(CONFIG_DIR, "host.yaml")]: "not: [valid\n",
+  });
+  const { text, created } = await locate(dirs, read);
+  assertEquals(text, "not: [valid\n");
+  assertEquals(created, false);
 });
 
 Deno.test("locateHostYaml: an unreadable host.yaml here stops the search rather than running the config dir's", async () => {
@@ -118,7 +176,7 @@ Deno.test("locateHostYaml: an unreadable host.yaml here stops the search rather 
     [join(CONFIG_DIR, "host.yaml")]: "address: http://other\n",
   });
   const error = await assertRejects(
-    () => locateHostYaml(dirs, read),
+    () => locate(dirs, read),
     UserError,
   );
   assertStringIncludes(error.message, `Cannot read ${join(CWD, "host.yaml")}`);
@@ -130,7 +188,7 @@ Deno.test("locateHostYaml: started from inside the config dir, its host.yaml run
   const { read, asked } = readerOf({
     [join(CONFIG_DIR, "host.yaml")]: "address: http://a\n",
   });
-  const { layout } = await locateHostYaml(
+  const { layout } = await locate(
     { ...dirs, cwd: CONFIG_DIR },
     read,
     (path) => Promise.resolve(path),
@@ -146,7 +204,7 @@ Deno.test("locateHostYaml: a current folder that is the config dir by another sp
     [join(linked, "host.yaml")]: "address: http://a\n",
     [join(CONFIG_DIR, "host.yaml")]: "address: http://a\n",
   });
-  const { layout } = await locateHostYaml(
+  const { layout } = await locate(
     { ...dirs, cwd: linked },
     read,
     (path) => Promise.resolve(path === linked ? CONFIG_DIR : path),
@@ -159,7 +217,7 @@ Deno.test("locateHostYaml: --host-dir naming the config dir is taken as asked, a
   const { read } = readerOf({
     [join(CONFIG_DIR, "host.yaml")]: "address: http://a\n",
   });
-  const { layout } = await locateHostYaml(
+  const { layout } = await locate(
     { ...dirs, cwd: CONFIG_DIR, hostDir: CONFIG_DIR },
     read,
     (path) => Promise.resolve(path),

@@ -19,6 +19,10 @@
 
 import { join, resolve } from "@std/path";
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
+import {
+  createDefaultHostYaml,
+  type DefaultHostYaml,
+} from "./default_host_yaml.ts";
 
 export const HOST_CONFIG_FILE = "host.yaml";
 export const WORKSPACES_DIR = "workspaces";
@@ -71,6 +75,9 @@ const readHostYamlFile: HostYamlReader = async (path) => {
   }
 };
 
+/** creates host.yaml at path, or reads the one another host created first */
+export type HostYamlCreator = (path: string) => Promise<DefaultHostYaml>;
+
 const realPathOrResolved = async (path: string): Promise<string> => {
   try {
     return await Deno.realPath(path);
@@ -88,7 +95,8 @@ export async function locateHostYaml(
   },
   read: HostYamlReader = readHostYamlFile,
   realPath: (path: string) => Promise<string> = realPathOrResolved,
-): Promise<{ layout: HostLayout; text: string }> {
+  create: HostYamlCreator = createDefaultHostYaml,
+): Promise<{ layout: HostLayout; text: string; created: boolean }> {
   // a cwd that is the config dir is no host folder, so starting there gives its host.yaml no second state folder
   const cwdIsConfigDir = input.hostDir === undefined &&
     await realPath(input.cwd) === await realPath(input.configDir);
@@ -109,17 +117,22 @@ export async function locateHostYaml(
         [layout.configFile],
       );
     }
-    if (text !== null) return { layout, text };
+    if (text !== null) return { layout, text, created: false };
+  }
+  if (input.hostDir === undefined) {
+    // only ever the config dir's, so a host folder is never made implicitly
+    const layout = noHostFolderLayout(input);
+    const { text, created } = await create(layout.configFile);
+    return { layout, text, created };
   }
   const looked = candidates.map((layout) => layout.configFile);
-  const where = input.hostDir !== undefined
-    ? `No ${HOST_CONFIG_FILE} in the host folder ${
-      candidates[0].hostFolder
-    }: looked for ${looked[0]}.`
-    : `No ${HOST_CONFIG_FILE} found: looked for ${looked.join(" and ")}.`;
   throw markErrorPaths(
     new UserError(
-      `${where} Put one in a host folder and run swamp serve host there or pass --host-dir, or put one in the config dir to run a host with no host folder. A ${HOST_CONFIG_FILE} needs at least the public address, such as address: https://serve.example.com`,
+      `No ${HOST_CONFIG_FILE} in the host folder ${
+        candidates[0].hostFolder
+      }: looked for ${
+        looked[0]
+      }. Put one there, or run swamp serve host without --host-dir to use the config dir's, which the first run creates. A ${HOST_CONFIG_FILE} needs at least the public address, such as address: https://serve.example.com`,
     ),
     looked,
   );

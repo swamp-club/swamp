@@ -26,6 +26,7 @@ import {
   assertPathEquals,
   withMockedEnv,
 } from "../../infrastructure/persistence/path_test_helpers.ts";
+import { DEFAULT_HOST_YAML } from "../../serve/host/default_host_yaml.ts";
 import {
   listeningUrl,
   locateHostConfig,
@@ -156,19 +157,21 @@ Deno.test("locateHostConfig: with no --host-dir and no host.yaml here, reads the
   });
 });
 
-Deno.test("locateHostConfig: with no host.yaml anywhere, names the current folder's and the config dir's", async () => {
+Deno.test("locateHostConfig: with no host.yaml anywhere, creates the config dir's with the defaults", async () => {
   await withTempDir(async (dir) => {
     const configDir = join(dir, "config");
-    const error = await assertRejects(
-      () =>
-        withMockedEnv(
-          { SWAMP_CONFIG_DIR: configDir, SWAMP_HOME: join(dir, "data") },
-          () => locateHostConfig(undefined),
-        ),
-      UserError,
+    const { layout, text, created } = await withMockedEnv(
+      { SWAMP_CONFIG_DIR: configDir, SWAMP_HOME: join(dir, "data") },
+      () => locateHostConfig(undefined),
     );
-    assertStringIncludes(error.message, join(Deno.cwd(), "host.yaml"));
-    assertStringIncludes(error.message, join(configDir, "host.yaml"));
+    assertEquals(created, true);
+    assertEquals(layout.hostFolder, null);
+    assertPathEquals(layout.configFile, join(configDir, "host.yaml"));
+    assertEquals(text, DEFAULT_HOST_YAML);
+    assertEquals(
+      await Deno.readTextFile(join(configDir, "host.yaml")),
+      DEFAULT_HOST_YAML,
+    );
   });
 });
 

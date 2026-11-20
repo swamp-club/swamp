@@ -102,3 +102,25 @@ Deno.test("serveHostRenderer log: reports listening, each workspace change and t
   assertEquals(messages[2].includes("removed"), true);
   assertEquals(messages[3], "Serve host stopped");
 });
+
+Deno.test("serveHostRenderer json: prints the created file as a line of its own", () => {
+  const renderer = createServeHostRenderer("json");
+  const output = captureStdout(() => {
+    renderer.created({ file: "/home/op/.config/swamp/host.yaml" });
+    renderer.listening(LISTENING);
+  });
+  assertEquals(output.map((line) => JSON.parse(line)), [
+    { status: "created", file: "/home/op/.config/swamp/host.yaml" },
+    { status: "listening", ...LISTENING },
+  ]);
+});
+
+Deno.test("serveHostRenderer log: names the created file and how to add a root", async () => {
+  const messages = await captureLog((renderer) => {
+    renderer.created({ file: "/home/op/.config/swamp/host.yaml" });
+  });
+  assertEquals(messages.length, 1);
+  assertEquals(messages[0].includes("/home/op/.config/swamp/host.yaml"), true);
+  assertEquals(messages[0].includes("127.0.0.1:8080"), true);
+  assertEquals(messages[0].includes("root:"), true);
+});

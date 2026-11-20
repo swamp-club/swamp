@@ -162,8 +162,19 @@ workspace. It finds them in one of two layouts, chosen in this order:
    (`src/serve/host/host_layout.ts`). A workspace a request creates goes in
    the workspace location, beside the user's own.
 
-The host logs which `host.yaml` it read, and with none in any of these places
-the error names each place it looked. Relative paths in `host.yaml` are taken
+The host logs which `host.yaml` it read. With no `--host-dir` and no
+`host.yaml` found, the first run creates `<config dir>/host.yaml` and starts
+from it (`src/serve/host/default_host_yaml.ts`): a listener on
+`127.0.0.1:8080` whose address is `http://127.0.0.1:8080`, with every other key
+written as a comment saying what it does. Off loopback needs TLS files no
+default can name, so the created file never listens off loopback. It is created
+exclusively, a temp file hard-linked into place: an existing `host.yaml`, even
+an invalid one, is never replaced, and of two hosts starting at once one writes
+it and the other reads it. A host folder is never created, and `--host-dir`
+naming a folder with no `host.yaml` is refused. The host reports the file it
+created before it listens, a line of its own in `--json`. The created file names
+no root, so `swamp serve workspace` has nothing to talk to until the operator
+sets `root:`; the line says so. Relative paths in `host.yaml` are taken
 from the host folder, or from the config dir when there is none. One host runs
 per state folder, in both layouts: the host holds an exclusive kernel lock on
 `.host-lock` there while it runs (`src/infrastructure/persistence/host_state_lock.ts`),
@@ -582,6 +593,10 @@ the field that is wrong:
 | `trust-proxy`                        | `false`                       | The host is behind a proxy, whose forwarding headers it passes on                        |
 | `allow-unauthenticated-behind-proxy` | `false`                       | Admits a child in auth mode `none` behind a proxy; only on a loopback listener with `trust-proxy` or a public `address` |
 | `oauth-client.id`, `oauth-client.secret-file` | none                 | Given together; every child is started with them. The file is relative to the folder that holds `host.yaml`, never inside the state folder nor the root, and a missing, unreadable or empty one is refused at startup; a workspace whose folder holds it is not started, in either layout, and its status says why |
+
+The `host.yaml` a first run creates sets `listen.host`, `listen.port` and
+`address` to the loopback defaults above and lists every other key as a
+comment.
 
 The host binds its listener before it starts any child, so a listener that
 cannot bind starts nothing. SIGTERM and SIGINT stop the watcher, drain every
@@ -1227,10 +1242,18 @@ After 7 an operator who sets each workspace up has a multi-workspace host.
     added by hand has no serve until its wanted file says `active`, a resumed
     workspace comes back after a host restart, and replacing a running
     workspace's wanted file does not stop it. After 8.
+25. **A first host run creates `host.yaml`** (swamp-club#4971). With no
+    `--host-dir` and no `host.yaml` found, the host writes
+    `<config dir>/host.yaml` with the loopback defaults and the other keys as
+    comments, and starts from it. Done when such a host serves from the file it
+    wrote, an existing or invalid `host.yaml` is never replaced, two hosts
+    started at once write it once, `--host-dir` naming a folder with no
+    `host.yaml` is still refused, and `swamp serve host --help` says the first
+    run creates it. After 22.
 
 Issues 16 and 17 need only the first two groups, so the dashboard can proceed
-beside the lifecycle. Issues 19 to 23 run in order, after issue 10, and issue
-24 needs only issue 8.
+beside the lifecycle. Issues 19 to 23 run in order, after issue 10, issue
+24 needs only issue 8, and issue 25 needs issue 22.
 Promoting a local workspace builds on issues 13 and 15 and is designed
 separately.
 
