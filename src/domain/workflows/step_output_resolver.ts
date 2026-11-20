@@ -21,6 +21,7 @@ import type { UnifiedDataRepository } from "../data/repositories.ts";
 import { currentDiagnosticTally } from "../diagnostics/diagnostic_phase.ts";
 
 import { isUnreadableContentError } from "../datastore/unreadable_content.ts";
+import { resourceLoadGuardOf } from "../data/resource_load_guard.ts";
 import type {
   StepOutputGroup,
   StepOutputRecord,
@@ -317,8 +318,16 @@ export class StepOutputResolver {
 export function createDataRepositoryAttributeReader(
   dataRepo: UnifiedDataRepository,
 ): ResourceAttributeReader {
+  const loadGuard = resourceLoadGuardOf(dataRepo);
   return async (ref) => {
     const tally = currentDiagnosticTally();
+    const item = {
+      modelType: ref.modelType,
+      modelName: ref.modelName,
+      dataName: ref.name,
+      version: ref.version,
+    };
+    loadGuard.assertLoadable(item, ref.size ?? 0);
     let content: Uint8Array | null;
     try {
       content = await tally.measure("content_read", () =>
@@ -338,6 +347,7 @@ export function createDataRepositoryAttributeReader(
     }
     tally.add("reads_succeeded");
     tally.add("content_bytes", content.length);
+    loadGuard.assertLoadable(item, content.length);
     let parsed: unknown;
     try {
       parsed = tally.measureSync(

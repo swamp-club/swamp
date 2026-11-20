@@ -30,6 +30,11 @@ import {
   type RetentionConfig,
 } from "../../domain/retention/retention_policy.ts";
 import type { AiTool } from "../../domain/repo/ai_tool.ts";
+import {
+  checkResourceSizeConfig,
+  type ResourceSizeLimits,
+  type ResourceSizePolicy,
+} from "../../domain/data/resource_size_policy.ts";
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import { removedDriverFieldMessage } from "../../domain/removed_driver_fields.ts";
 
@@ -70,6 +75,7 @@ export interface RepoMarkerData {
   skillMigrationDismissed?: boolean;
   autoGc?: boolean;
   garbageCollection?: GarbageCollectionConfig;
+  resourceSize?: ResourceSizeLimits;
   defaultVault?: string;
   serverAddress?: string;
 }
@@ -127,6 +133,21 @@ function validateGarbageCollection(
   }
 }
 
+function validateResourceSize(data: RepoMarkerData, path: string): void {
+  const { ignored, unknownKeys } = checkResourceSizeConfig(data.resourceSize);
+  for (const message of ignored) warnOnce(path, `${message}; ignoring it`);
+  for (const key of unknownKeys) {
+    warnOnce(path, `ignoring unknown key resourceSize.${key}`);
+  }
+}
+
+/** the marker's limits, with any value its validation warned about ignored */
+export function resourceSizePolicyFromMarker(
+  marker: RepoMarkerData | null,
+): ResourceSizePolicy {
+  return checkResourceSizeConfig(marker?.resourceSize).policy;
+}
+
 /**
  * the CLI reads the marker before logging is configured and a warning then
  * reaches no sink, so it counts as shown only once logging is configured
@@ -165,6 +186,7 @@ export class RepoMarkerRepository {
       if (!data) return null;
       rejectRemovedDriverFields(data, path);
       validateGarbageCollection(data, path);
+      validateResourceSize(data, path);
       return normalizeMarker(data);
     } catch (error) {
       if (error instanceof Deno.errors.NotFound) {

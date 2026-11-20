@@ -47,7 +47,12 @@ import type { WrittenVersion } from "../domain/datastore/datastore_sync_service.
 import {
   createFileWriterFactory,
   createResourceWriter,
+  repoResourceSizePolicy,
 } from "../domain/models/data_writer.ts";
+import {
+  describeByteCount,
+  ResourceSizePolicy,
+} from "../domain/data/resource_size_policy.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import { runInRootUnitOfWork } from "../infrastructure/persistence/repo_unit_of_work.ts";
 import { VaultService } from "../domain/vaults/vault_service.ts";
@@ -126,6 +131,10 @@ function json(body: unknown, status = 200): Response {
     headers: { "content-type": "application/json" },
   });
 }
+
+// the write body wraps the resource with its spec, name and overrides, so it
+// runs a little past the resource's own serialized length
+const RESOURCE_BODY_ENVELOPE_BYTES = 64 * 1024;
 
 function errorResponse(status: number, message: string): Response {
   return json({ error: message }, status);
@@ -822,6 +831,27 @@ export class DataPlane {
     dispatchId?: string,
   ): Promise<Response> {
     const dispatch = this.#activeDispatch(workerName, dispatchId);
+    const declaredLength = req.headers.get("content-length");
+    const declaredBytes = Number(declaredLength);
+    if (declaredLength !== null && Number.isSafeInteger(declaredBytes)) {
+      const { maxBytes } = await (this.#repoForWorker(workerName, dispatchId)
+        .resolveResourceSizePolicy?.() ??
+        Promise.resolve(ResourceSizePolicy.DEFAULT));
+      if (
+        maxBytes !== undefined &&
+        declaredBytes > maxBytes + RESOURCE_BODY_ENVELOPE_BYTES
+      ) {
+        return errorResponse(
+          413,
+          `Refused a resource write from ${dispatch.definitionName}.${dispatch.methodName}: its body is ${
+            describeByteCount(declaredBytes)
+          }, past resourceSize.maxBytes of ${
+            describeByteCount(maxBytes)
+          } set in .swamp.yaml. ` +
+            `Write less per resource (split it, or keep bulk content in a file), or raise resourceSize.maxBytes.`,
+        );
+      }
+    }
     const body = await observeExecutionWork(
       "data.body",
       {},
@@ -863,6 +893,8 @@ export class DataPlane {
       false,
       Deno.build.os,
       this.#outputNames(dispatch),
+      undefined,
+      repoResourceSizePolicy(repo),
     );
     // Mark the lease BEFORE persisting: a lease may over-report writes
     // (safe, conservative) but must never under-report them.

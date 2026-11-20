@@ -134,7 +134,7 @@ export const dataQueryCommand = withRemoteOptions(
     )
     .option(
       "--sort <field:string>",
-      "Order by createdAt or tags.<key>, compared as strings, as <field>[:asc|desc] (asc by default); capped at 10000 results without --limit",
+      "Order by createdAt, tags.<key> (string compare) or size (numeric), as <field>[:asc|desc] (asc by default); capped at 10000 results without --limit",
     )
     .option(
       "--cursor <token:string>",

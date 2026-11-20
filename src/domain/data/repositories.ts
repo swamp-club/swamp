@@ -21,6 +21,8 @@ import type { Data } from "./data.ts";
 import type { DataId } from "./data_id.ts";
 import type { ModelType, ModelTypeInput } from "../models/model_type.ts";
 import { isForeignToReader, type Namespace } from "./namespace.ts";
+import type { ResourceLoadGuard } from "./resource_load_guard.ts";
+import type { ResourceSizePolicy } from "./resource_size_policy.ts";
 
 export type ContentAvailability = "current" | "acceptedShort" | "missing";
 
@@ -159,6 +161,12 @@ export interface UnifiedDataRepository {
    * datastore has no remote to read from
    */
   readonly fetchForeignContent?: ForeignContentFetcher;
+
+  /** decoders of stored content consult it; absent means the default guard */
+  readonly loadGuard?: ResourceLoadGuard;
+
+  /** the resource writer's size limits; absent means the defaults */
+  resolveResourceSizePolicy?(): Promise<ResourceSizePolicy>;
 
   findAllGlobal(options?: FindAllGlobalOptions): Promise<
     Array<{ data: Data; modelType: ModelType; modelId: string }>

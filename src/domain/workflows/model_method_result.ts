@@ -20,7 +20,9 @@
 import { isJsonMediaType } from "../data/content_type.ts";
 import { fromData } from "../data/data_record_mapper.ts";
 import type { DataRecord } from "../data/data_record.ts";
+import type { Data } from "../data/data.ts";
 import type { UnifiedDataRepository } from "../data/repositories.ts";
+import { resourceLoadGuardOf } from "../data/resource_load_guard.ts";
 import type { ModelType } from "../models/model_type.ts";
 
 /**
@@ -35,10 +37,28 @@ export async function storedResourceRecord(
   dataName: string,
   modelName: string,
 ): Promise<DataRecord | null> {
+  return (await readStoredResource(
+    dataRepo,
+    type,
+    modelId,
+    dataName,
+    modelName,
+  )).record;
+}
+
+async function readStoredResource(
+  dataRepo: UnifiedDataRepository,
+  type: ModelType,
+  modelId: string,
+  dataName: string,
+  modelName: string,
+): Promise<{ data: Data | null; record: DataRecord | null }> {
   const data = await dataRepo.findByName(type, modelId, dataName);
   // the media type is matched as a media type, parameters and case aside, not
   // as the exact string
-  if (!data || !isJsonMediaType(data.contentType)) return null;
+  if (!data || !isJsonMediaType(data.contentType)) {
+    return { data, record: null };
+  }
   // The mapper reads the content through getContent; make it local and
   // current first, as the data.latest accessor does. A failed download never
   // fails a lookup that would otherwise succeed.
@@ -47,11 +67,12 @@ export async function storedResourceRecord(
   } catch {
     // The read below answers with what is local.
   }
-  return await fromData(data, type, modelId, dataRepo, {
+  const record = await fromData(data, type, modelId, dataRepo, {
     isLatest: true,
     modelName,
     dataName,
   });
+  return { data, record };
 }
 
 /**
@@ -66,18 +87,25 @@ export async function modelMethodResourceResult(
   dataName: string,
   modelName: string,
 ): Promise<unknown> {
-  {
-    const stored = await storedResourceRecord(
-      dataRepo,
-      type,
-      modelId,
-      dataName,
-      modelName,
-    );
-    if (stored) return stored;
-  }
-  const raw = await dataRepo.getContent(type, modelId, dataName);
+  const { data, record } = await readStoredResource(
+    dataRepo,
+    type,
+    modelId,
+    dataName,
+    modelName,
+  );
+  if (record) return record;
+  const guard = resourceLoadGuardOf(dataRepo);
+  const item = {
+    modelType: type.normalized,
+    modelName,
+    dataName,
+    version: data?.version,
+  };
+  guard.assertLoadable(item, data?.size ?? 0);
+  const raw = await dataRepo.getContent(type, modelId, dataName, data?.version);
   if (!raw) return undefined;
+  guard.assertLoadable(item, raw.length);
   const text = new TextDecoder().decode(raw);
   try {
     return JSON.parse(text);

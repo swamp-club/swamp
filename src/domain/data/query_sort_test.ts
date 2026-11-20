@@ -58,6 +58,14 @@ Deno.test("createQuerySort: refuses other fields, unsafe tag keys and directions
   assertThrows(() => parseQuerySort("tags.x:sideways"), UserError);
 });
 
+Deno.test("createQuerySort: accepts size, which names no tag", () => {
+  assertEquals(parseQuerySort("size:desc"), {
+    field: "size",
+    direction: "desc",
+  });
+  assertEquals(querySortTagKey(createQuerySort("size", "asc")), null);
+});
+
 Deno.test("querySortTagKey: names the tag, or null for createdAt", () => {
   assertEquals(
     querySortTagKey(createQuerySort("tags.started.at", "asc")),

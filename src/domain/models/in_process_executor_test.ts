@@ -17,7 +17,15 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assertEquals,
+  assertInstanceOf,
+  assertStringIncludes,
+} from "@std/assert";
+import {
+  ResourceSizePolicy,
+  ResourceTooLargeError,
+} from "../data/resource_size_policy.ts";
 import type { MethodExecutionEvent } from "./method_events.ts";
 import { createExtensionCelEnvironment } from "../../infrastructure/cel/cel_evaluator.ts";
 import { escapeLogTemplate } from "../../infrastructure/logging/logger.ts";
@@ -270,6 +278,38 @@ Deno.test({
     assertStringIncludes(warnings[0], "'a:b'");
     assertStringIncludes(warnings[1], "'c?d'");
   },
+});
+
+Deno.test("InProcessExecutor: a method's resource writes apply the repository's resourceSize policy", async () => {
+  let refused: unknown;
+  const executor: MethodExecutor = {
+    execute: async (_def, _method, context) => {
+      try {
+        await context.writeResource!("output", "output", {
+          value: "x".repeat(200),
+        });
+      } catch (error) {
+        refused = error;
+      }
+      return {};
+    },
+  };
+  const context = createMockContext();
+  context.dataRepository.resolveResourceSizePolicy = () =>
+    Promise.resolve(
+      ResourceSizePolicy.create({ warnBytes: 50, maxBytes: 100 }),
+    );
+
+  await new InProcessExecutor(
+    executor,
+    testDefinition,
+    testMethod,
+    testModelDef,
+    context,
+    "test",
+  ).execute(createMockRequest());
+
+  assertInstanceOf(refused, ResourceTooLargeError);
 });
 
 Deno.test("InProcessExecutor: uses explicit dataHandles when method returns them", async () => {

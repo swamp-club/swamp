@@ -76,6 +76,7 @@ export function buildEnvContext(): Record<string, string> {
 // Re-export DataRecord and FileDataRecord from their canonical
 // location. Importing here too so this file can use them locally.
 import type { FileDataRecord } from "../data/data_record.ts";
+import { resourceLoadGuardOf } from "../data/resource_load_guard.ts";
 export type { DataRecord, FileDataRecord } from "../data/data_record.ts";
 
 function escapeCelString(s: string): string {
@@ -1429,6 +1430,14 @@ export class ModelResolver {
     let textContent: unknown = "";
 
     if (isTextContentType(data.contentType)) {
+      const loadGuard = resourceLoadGuardOf(this.dataRepo);
+      const item = {
+        modelType: modelType.normalized,
+        modelName: modelName ?? data.tags["modelName"],
+        dataName,
+        version: resolvedVersion,
+      };
+      loadGuard.assertLoadable(item, data.size ?? 0);
       const rawBytes = this.dataRepo.getContentSync(
         modelType,
         modelId,
@@ -1436,6 +1445,7 @@ export class ModelResolver {
         resolvedVersion,
       );
       if (rawBytes) {
+        loadGuard.assertLoadable(item, rawBytes.length);
         const decoded = new TextDecoder().decode(rawBytes);
         textContent = decoded;
         if (data.contentType === "application/json") {

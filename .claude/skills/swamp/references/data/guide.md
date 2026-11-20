@@ -99,15 +99,31 @@ output.
 ## Sorting and paging
 
 `--sort createdAt:desc` or `--sort tags.<key>:desc` orders matches by a string
-compare (ISO 8601 times sort in time order; a missing tag sorts as empty). A
-sorted page that fills `--limit` prints a cursor (`nextCursor` in `--json`);
-pass it back with `--cursor <token>` and the same `--sort` for the next page.
-Without `--limit` a sorted query stops at 10,000 results. `--cursor` requires
-`--sort`; neither works with `--single`. Content fields cannot be sorted on.
+compare (ISO 8601 times sort in time order; a missing tag sorts as empty);
+`--sort size:desc` orders by byte size as a number. A sorted page that fills
+`--limit` prints a cursor (`nextCursor` in `--json`); pass it back with
+`--cursor <token>` and the same `--sort` for the next page. Without `--limit` a
+sorted query stops at 10,000 results. `--cursor` requires `--sort`; neither
+works with `--single`. Content fields cannot be sorted on.
 
 ```bash
 swamp data query 'tags.type == "agent-session"' --select 'tags' --sort tags.startedAt:desc --limit 50 --json
 ```
+
+### Finding oversized data
+
+A run that fails with an error starting `Cannot load <behavior>/<name>@v<N>` hit
+data too large to load together. List the largest items without reading their
+content: select only catalog fields, since a query without `--select` loads
+every match.
+
+```bash
+swamp data query 'size > 67108864' --select '{"model": modelName, "name": name, "version": version, "size": size}' --sort size:desc --limit 20
+```
+
+Shrink what the behavior writes per resource (split it, or keep bulk content in
+a file), then garbage-collect the old versions. `.swamp.yaml`
+`resourceSize.warnBytes` and `maxBytes` warn about or refuse oversized writes.
 
 ## Quick Reference
 
@@ -119,6 +135,7 @@ swamp data query 'tags.type == "agent-session"' --select 'tags' --sort tags.star
 | Query by tags            | `swamp data query 'tags.env == "prod"'`               |
 | Query by content         | `swamp data query 'attributes.status == "failed"'`    |
 | Newest first, paged      | See [Sorting and paging](#sorting-and-paging)         |
+| Largest items            | See [Finding oversized data](#finding-oversized-data) |
 | List behavior data       | `swamp data list <model> --json`                      |
 | List workflow data       | `swamp data list --workflow <name> --json`            |
 | Read one item            | See [Reading one item](#reading-one-item)             |

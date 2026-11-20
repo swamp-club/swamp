@@ -22,7 +22,9 @@ import { join } from "@std/path";
 import {
   type RepoMarkerData,
   RepoMarkerRepository,
+  resourceSizePolicyFromMarker,
 } from "./repo_marker_repository.ts";
+import { ResourceSizePolicy } from "../../domain/data/resource_size_policy.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { SwampVersion } from "../../domain/repo/swamp_version.ts";
 import { assertPathEquals } from "./path_test_helpers.ts";
@@ -217,6 +219,57 @@ garbageCollection:
       bookkeeping: "24h",
     });
   });
+});
+
+Deno.test("resourceSizePolicyFromMarker: reads resourceSize limits from .swamp.yaml", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new RepoMarkerRepository();
+    await Deno.writeTextFile(
+      join(dir, ".swamp.yaml"),
+      `swampVersion: "1.2.3"
+initializedAt: "2024-01-15T10:30:00.000Z"
+resourceSize:
+  warnBytes: 1000
+  maxBytes: 5000
+`,
+    );
+
+    const policy = resourceSizePolicyFromMarker(
+      await repo.read(RepoPath.create(dir)),
+    );
+
+    assertEquals([policy.warnBytes, policy.maxBytes], [1000, 5000]);
+  });
+});
+
+Deno.test("RepoMarkerRepository.read keeps a bad resourceSize block as written and the policy ignores it", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new RepoMarkerRepository();
+    await Deno.writeTextFile(
+      join(dir, ".swamp.yaml"),
+      `swampVersion: "1.2.3"
+initializedAt: "2024-01-15T10:30:00.000Z"
+resourceSize:
+  warnBytes: lots
+  maxbytes: 5
+`,
+    );
+
+    const marker = await repo.read(RepoPath.create(dir));
+
+    assertEquals(marker?.resourceSize as unknown, {
+      warnBytes: "lots",
+      maxbytes: 5,
+    });
+    assertEquals(
+      resourceSizePolicyFromMarker(marker),
+      ResourceSizePolicy.DEFAULT,
+    );
+  });
+});
+
+Deno.test("resourceSizePolicyFromMarker: no marker or no block means the defaults", () => {
+  assertEquals(resourceSizePolicyFromMarker(null), ResourceSizePolicy.DEFAULT);
 });
 
 Deno.test("RepoMarkerRepository.read keeps a block with an unknown key", async () => {

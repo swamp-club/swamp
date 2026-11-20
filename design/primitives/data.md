@@ -140,6 +140,22 @@ Methods write through two `MethodContext` functions
 
 Both reject undeclared spec names, empty names and the reserved name `latest`.
 
+**Resource size.** `writeResource` measures the serialized bytes against the
+repo's `resourceSize` policy (`resource_size_policy.ts`; `.swamp.yaml`
+`resourceSize.warnBytes`, default 64 MiB, and an optional `maxBytes`). Past
+`warnBytes` it logs one warning per item per writer on
+`swamp.data.resource-size`, naming the writer, the resource and its size. Past
+`maxBytes` it throws `ResourceTooLargeError` before any vault store or save.
+The repository reads the policy from its own `.swamp.yaml` on first use
+(`FileSystemUnifiedDataRepository.resolveResourceSizePolicy`). Only a
+behavior's own writes apply it: the in-process executor and serve's data plane
+pass `repoResourceSizePolicy(repo)` to `createResourceWriter`, and every other
+writer (serve's ledgers, grants, access tokens) keeps the default policy, so a
+repo's `maxBytes` never refuses swamp's own records. The data plane also
+refuses a resource body whose `Content-Length` is past `maxBytes` before
+parsing it. The check stops an item being persisted; it does not bound memory,
+as the payload is already in memory when it runs.
+
 **One write, in order** (`unified_data_repository.ts` `save`):
 
 1. Tell the sync layer the name directory is dirty.
@@ -345,6 +361,23 @@ the hard form and removes every version.
   Only `search` and `query` read the catalog. `get`, `list` and `versions` use
   the filesystem repository (`src/libswamp/data/{get,list,versions}.ts`). Every
   `swamp data` subcommand accepts `--server` to run against a serve instance.
+
+**Load guard.** Every path that decodes stored content into memory (`fromRow`,
+`fromData` and `fromResourceHandle` in `data_record_mapper.ts`, CEL
+`model.<name>.resource` in `model_resolver.ts`, `readResource`, the workflow
+step output reader, typed step results and `data get`) first asks the
+repository's `ResourceLoadGuard` (`resource_load_guard.ts`) whether the item
+fits: it refuses when the heap in use plus three times the item's size (one
+copy decoded, one to two parsed) would pass V8's heap limit. It checks the
+recorded `size` before reading, and the byte length after reading when the size
+is unrecorded; the raw bytes live outside the V8 heap. Items under 64 MiB are
+never refused. A refusal is `ResourceTooLargeToLoadError`, a user error naming
+the item and its size and pointing at `swamp data query ... --sort size:desc`,
+so a run ends with a diagnosis instead of a V8 abort. The heap figures go to the
+log only, as serve relays the error to remote callers. A query records a refusal
+against its row, as it does a binary-content violation, and raises it only if
+the caller's `include` accepts that row; a row the caller may not read is
+dropped without being named.
 
 ## Versioning and lifecycle
 
@@ -573,6 +606,18 @@ workflow-runs/{workflow-id}/workflow-run-{run-id}.yaml
   gone. Only `swamp data prune` can, and it infers orphans: a definition missing
   during a branch switch looks orphaned
   ([datastores.md](../enablers/datastores.md#orphaned-data-reclamation-swamp-data-prune)).
+- The data plane's `Content-Length` check measures the body a worker sends,
+  which carries sensitive values in full, while the writer measures the stored
+  form with vault references in their place. A resource with large sensitive
+  fields can be refused over serve that a local run would store.
+- On serve each worker write builds its own writer, so the size warning repeats
+  on every write of an oversized item rather than once per run. A running
+  `swamp serve` reads `resourceSize` once per repository and does not see an
+  edit to it until it restarts.
+- The load guard counts uncollected garbage as heap in use, so an item over
+  64 MiB near the limit can be refused that V8 would have fit after a
+  collection. CEL `model.<name>.resource` still loads every latest resource of
+  the behavior on first access, not just the one referenced.
 - The repository constructor still defaults its namespace to solo. The in-code
   note on `FileSystemUnifiedDataRepository` says every direct construction site
   must pass the configured namespace via `namespaceFromResolver`, or it will

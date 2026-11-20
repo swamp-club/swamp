@@ -294,8 +294,8 @@ export interface DataQueryPayload {
   limit?: number;
   select?: string;
   /**
-   * orders matches by createdAt or tags.<key>, compared as strings, with the
-   * item identity as tie-break
+   * orders matches by createdAt or tags.<key>, compared as strings, or size,
+   * compared as a number, with the item identity as tie-break
    */
   sort?: { field: string; direction: "asc" | "desc" };
   /**

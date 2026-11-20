@@ -30,8 +30,9 @@ export const MAX_QUERY_CURSOR_LENGTH = 16_384;
 export type QuerySortDirection = "asc" | "desc";
 
 /**
- * both compare as strings so ISO 8601 UTC times sort in time order, and a row
- * without the tag sorts as empty; ties break on identity so the order is total
+ * createdAt and tags compare as strings so ISO 8601 UTC times sort in time
+ * order, and a row without the tag sorts as empty; size compares as a number;
+ * ties break on identity so the order is total
  */
 export interface QuerySort {
   readonly field: string;
@@ -59,13 +60,13 @@ export function createQuerySort(
       }`,
     );
   }
-  if (field !== "createdAt") {
+  if (field !== "createdAt" && field !== "size") {
     const key = field.startsWith(TAG_PREFIX)
       ? field.slice(TAG_PREFIX.length)
       : null;
     if (key === null || !TAG_KEY.test(key)) {
       throw new UserError(
-        `Cannot sort by ${JSON.stringify(field)}: sort by createdAt or ` +
+        `Cannot sort by ${JSON.stringify(field)}: sort by createdAt, size or ` +
           `tags.<key>, where the key is letters, digits, ".", "_" or "-"`,
       );
     }
@@ -80,7 +81,7 @@ export function parseQuerySort(text: string): QuerySort {
 }
 
 export function querySortTagKey(sort: QuerySort): string | null {
-  if (sort.field === "createdAt") return null;
+  if (sort.field === "createdAt" || sort.field === "size") return null;
   return createQuerySort(sort.field, sort.direction).field.slice(
     TAG_PREFIX.length,
   );

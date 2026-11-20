@@ -43,9 +43,11 @@ import {
   readSensitiveFieldsTag,
   RECORD_KIND_TAG,
   recordSensitiveVaultRefsUnread,
+  repoResourceSizePolicy,
   resolveSensitiveVaultRefs,
   resolveSensitiveVaultRefsLeavingUnread,
   resolveVaultRefsInData,
+  type ResourceSizePolicySource,
   sanitizeVaultKey,
   SENSITIVE_FIELD_JSON_TAG,
   SENSITIVE_FIELD_KEYS_TAG,
@@ -58,6 +60,16 @@ import {
 } from "./data_writer.ts";
 import { ModelType } from "./model_type.ts";
 import { ResourceAttributeBudget } from "./resource_attribute_budget.ts";
+import { configure, type LogRecord, reset } from "@logtape/logtape";
+import { initializeLogging } from "../../infrastructure/logging/logger.ts";
+import {
+  ResourceSizePolicy,
+  ResourceTooLargeError,
+} from "../data/resource_size_policy.ts";
+import {
+  ResourceLoadGuard,
+  ResourceTooLargeToLoadError,
+} from "../data/resource_load_guard.ts";
 import type { ResourceOutputSpec } from "./model.ts";
 import type { MethodExecutionEvent } from "./method_events.ts";
 import { sensitiveOutputTargetVaults } from "./sensitive_output_vault.ts";
@@ -6557,4 +6569,175 @@ Deno.test("createFileWriterFactory: a file writer keeps its name after a failed 
     "already written as file 'log'",
   );
   assertEquals(writes, []);
+});
+
+async function capturingResourceSizeWarnings(
+  fn: () => Promise<void>,
+): Promise<string[]> {
+  const records: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => records.push(record) },
+    loggers: [
+      {
+        category: ["swamp", "data", "resource-size"],
+        lowestLevel: "warning",
+        sinks: ["capture"],
+      },
+      { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+    ],
+    reset: true,
+  });
+  try {
+    await fn();
+  } finally {
+    await reset();
+    await initializeLogging({});
+  }
+  return records.map((record) => record.message.map(String).join(""));
+}
+
+function sizeLimitedRepo(
+  policy: ResourceSizePolicy,
+): UnifiedDataRepository & { saves: number } {
+  const repo = {
+    ...createMockRepo(),
+    saves: 0,
+    resolveResourceSizePolicy: () => Promise.resolve(policy),
+  };
+  repo.save = () => {
+    repo.saves++;
+    return Promise.resolve({ version: 1 });
+  };
+  return repo;
+}
+
+const sizedResources: Record<string, ResourceOutputSpec> = {
+  item: {
+    schema: z.object({ value: z.string() }),
+    lifetime: "infinite",
+    garbageCollection: 10,
+  },
+};
+
+function sizedWriter(
+  repo: UnifiedDataRepository,
+  sizePolicy?: ResourceSizePolicySource,
+) {
+  return createResourceWriter(
+    repo,
+    modelType,
+    modelId,
+    sizedResources,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    "big",
+    undefined,
+    "write",
+    undefined,
+    undefined,
+    false,
+    Deno.build.os,
+    undefined,
+    undefined,
+    sizePolicy,
+  );
+}
+
+Deno.test("createResourceWriter: warns once per item past the repository's warnBytes, naming writer, resource and size", async () => {
+  const repo = sizeLimitedRepo(ResourceSizePolicy.create({ warnBytes: 100 }));
+  const messages = await capturingResourceSizeWarnings(async () => {
+    const { writeResource } = sizedWriter(repo, repoResourceSizePolicy(repo));
+    await writeResource("item", "blob", { value: "x".repeat(200) });
+    await writeResource("item", "blob", { value: "x".repeat(200) });
+    await writeResource("item", "small", { value: "x" });
+  });
+  assertEquals(repo.saves, 3);
+  assertEquals(messages.length, 1);
+  assertStringIncludes(messages[0], "resource item/blob written by big.write");
+  assertStringIncludes(messages[0], "is 212 bytes, past the 100 bytes warning");
+  assertStringIncludes(messages[0], "resourceSize.warnBytes");
+});
+
+Deno.test("createResourceWriter: refuses a resource past the repository's maxBytes before anything is saved", async () => {
+  const repo = sizeLimitedRepo(
+    ResourceSizePolicy.create({ warnBytes: 50, maxBytes: 100 }),
+  );
+  const { writeResource } = sizedWriter(repo, repoResourceSizePolicy(repo));
+  const error = await assertRejects(
+    () => writeResource("item", "blob", { value: "x".repeat(200) }),
+    ResourceTooLargeError,
+  );
+  assertEquals(error.bytes, 212);
+  assertEquals(error.maxBytes, 100);
+  assertEquals(repo.saves, 0);
+});
+
+Deno.test("createResourceWriter: an internal writer, passing no policy, ignores the repository's maxBytes", async () => {
+  const repo = sizeLimitedRepo(
+    ResourceSizePolicy.create({ warnBytes: 50, maxBytes: 100 }),
+  );
+  const { writeResource } = sizedWriter(repo);
+  await writeResource("item", "blob", { value: "x".repeat(200) });
+  assertEquals(repo.saves, 1);
+});
+
+Deno.test("repoResourceSizePolicy: falls back to the defaults for a repository without a policy", async () => {
+  assertEquals(
+    await repoResourceSizePolicy(createMockRepo())(),
+    ResourceSizePolicy.DEFAULT,
+  );
+});
+
+function guardedRepo(
+  recordedSize: number,
+  content: Uint8Array,
+): UnifiedDataRepository & { contentReads: number } {
+  const repo = {
+    ...createMockRepo(),
+    contentReads: 0,
+    loadGuard: new ResourceLoadGuard({
+      heapLimitBytes: () => 1000,
+      heapUsedBytes: () => 0,
+    }, 10),
+    findByName: () =>
+      Promise.resolve(
+        Data.create({
+          name: "blob",
+          contentType: "application/json",
+          lifetime: "infinite",
+          garbageCollection: 5,
+          tags: { type: "resource", modelName: "big" },
+          ownerDefinition: { ownerType: "model-method", ownerRef: "m" },
+          size: recordedSize,
+        }),
+      ),
+  };
+  repo.getContent = () => {
+    repo.contentReads++;
+    return Promise.resolve(content);
+  };
+  return repo;
+}
+
+Deno.test("createResourceReader: refuses an item whose recorded size the guard rejects, without reading it", async () => {
+  const repo = guardedRepo(500, new TextEncoder().encode("{}"));
+  const readResource = createResourceReader(repo, modelType, modelId);
+  const error = await assertRejects(
+    () => readResource("blob"),
+    ResourceTooLargeToLoadError,
+  );
+  assertStringIncludes(error.message, "big/blob@v1");
+  assertEquals(repo.contentReads, 0);
+});
+
+Deno.test("createResourceReader: with no recorded size, refuses on the byte length before decoding", async () => {
+  const repo = guardedRepo(
+    0,
+    new TextEncoder().encode(JSON.stringify({ value: "x".repeat(400) })),
+  );
+  const readResource = createResourceReader(repo, modelType, modelId);
+  await assertRejects(() => readResource("blob"), ResourceTooLargeToLoadError);
+  assertEquals(repo.contentReads, 1);
 });

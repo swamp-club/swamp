@@ -100,6 +100,13 @@ import {
   type RenameForward,
   type UnifiedDataRepository,
 } from "../../domain/data/repositories.ts";
+import type { ResourceLoadGuard } from "../../domain/data/resource_load_guard.ts";
+import { ResourceSizePolicy } from "../../domain/data/resource_size_policy.ts";
+import { RepoPath } from "../../domain/repo/repo_path.ts";
+import {
+  RepoMarkerRepository,
+  resourceSizePolicyFromMarker,
+} from "./repo_marker_repository.ts";
 import { garbageCollectionToColumn } from "../../domain/data/data_metadata.ts";
 import { assertKindContinues } from "../../domain/data/data_kind.ts";
 import { computeLatestFlags } from "../../domain/data/data_query_service.ts";
@@ -269,8 +276,30 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
      */
     private readonly durable: boolean = false,
     private readonly durableWriteHooks: AtomicWriteSync = {},
+    public readonly loadGuard?: ResourceLoadGuard,
+    resourceSizePolicy?: ResourceSizePolicy,
   ) {
     this.baseDir = baseDir ?? swampPath(repoDir, SWAMP_SUBDIRS.data);
+    if (resourceSizePolicy) {
+      this.resourceSizePolicy = Promise.resolve(resourceSizePolicy);
+    }
+  }
+
+  private resourceSizePolicy?: Promise<ResourceSizePolicy>;
+
+  /**
+   * read from this repo's .swamp.yaml on first use, so every writer of the repo
+   * applies its limits without each caller passing them down
+   */
+  resolveResourceSizePolicy(): Promise<ResourceSizePolicy> {
+    this.resourceSizePolicy ??= Promise.resolve()
+      .then(() =>
+        new RepoMarkerRepository().read(RepoPath.create(this.repoDir))
+      )
+      .then(resourceSizePolicyFromMarker)
+      // a marker the CLI could not read fails it there; writes keep defaults
+      .catch(() => ResourceSizePolicy.DEFAULT);
+    return this.resourceSizePolicy;
   }
 
   /**

@@ -118,8 +118,9 @@ export interface DataQueryInput {
   include?: (record: DataRecord) => Promise<boolean>;
   /**
    * Orders the matches by `createdAt` or `tags.<key>`, compared as strings,
-   * with the item identity as the tie-break. A sorted query with no limit is
-   * capped at MAX_QUERY_RESULTS. Cannot be combined with `single`.
+   * or `size`, compared as a number, with the item identity as the tie-break.
+   * A sorted query with no limit is capped at MAX_QUERY_RESULTS. Cannot be
+   * combined with `single`.
    */
   sort?: { field: string; direction: string };
   cursor?: string;

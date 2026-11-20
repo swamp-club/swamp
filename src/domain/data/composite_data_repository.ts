@@ -34,10 +34,13 @@ import type {
   GarbageCollectionResult,
   UnifiedDataRepository,
 } from "./repositories.ts";
+import type { ResourceLoadGuard } from "./resource_load_guard.ts";
+import { ResourceSizePolicy } from "./resource_size_policy.ts";
 
 export class CompositeUnifiedDataRepository implements UnifiedDataRepository {
   readonly namespace: Namespace;
   readonly fetchForeignContent?: ForeignContentFetcher;
+  readonly loadGuard?: ResourceLoadGuard;
 
   // Which repository issued each unsettled deferred version. A receipt
   // carries no lifetime, so settling looks its owner up here.
@@ -52,6 +55,12 @@ export class CompositeUnifiedDataRepository implements UnifiedDataRepository {
   ) {
     this.namespace = persistent.namespace;
     this.fetchForeignContent = persistent.fetchForeignContent;
+    this.loadGuard = persistent.loadGuard;
+  }
+
+  resolveResourceSizePolicy(): Promise<ResourceSizePolicy> {
+    return this.persistent.resolveResourceSizePolicy?.() ??
+      Promise.resolve(ResourceSizePolicy.DEFAULT);
   }
 
   private routeWrite(data: Data): UnifiedDataRepository {
