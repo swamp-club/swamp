@@ -38,6 +38,45 @@ import {
   parseSensitiveFieldsTag,
   resolveSensitiveVaultRefsLeavingUnread,
 } from "../models/data_writer.ts";
+import { UserError } from "../errors.ts";
+
+export const RECORD_CONTENT_TOO_LARGE_CODE = "data_content_too_large";
+
+/**
+ * checked by code so readers that catch a failed read to treat content as
+ * absent rethrow this instead of reading an oversized record as empty
+ */
+export function isRecordContentTooLargeError(error: unknown): boolean {
+  return error instanceof UserError &&
+    error.code === RECORD_CONTENT_TOO_LARGE_CODE;
+}
+
+export interface RecordContentIdentity {
+  modelName: string;
+  dataName: string;
+  version: number;
+}
+
+/** TextDecoder refuses a buffer that would pass V8's maximum string length */
+export function decodeRecordContent(
+  bytes: Uint8Array,
+  identity: RecordContentIdentity,
+): string {
+  try {
+    return new TextDecoder().decode(bytes);
+  } catch (error) {
+    if (!(error instanceof TypeError || error instanceof RangeError)) {
+      throw error;
+    }
+    const mib = (bytes.length / (1024 * 1024)).toFixed(1);
+    throw new UserError(
+      `Data ${identity.modelName}/${identity.dataName} version ` +
+        `${identity.version} has ${mib} MiB of content, more than the ` +
+        `largest text value swamp can load (about 512 MiB)`,
+      RECORD_CONTENT_TOO_LARGE_CODE,
+    );
+  }
+}
 
 export interface DataRecordMapperOptions {
   vaultService?: VaultService;
@@ -71,13 +110,14 @@ function parseContent(
   contentType: string,
   loadAttributes: boolean,
   loadContent: boolean,
+  identity: RecordContentIdentity,
 ): { attributes: Record<string, unknown>; textContent: unknown } {
   let attributes: Record<string, unknown> = {};
   let textContent: unknown = "";
 
   if (!rawBytes) return { attributes, textContent };
 
-  const decoded = new TextDecoder().decode(rawBytes);
+  const decoded = decodeRecordContent(rawBytes, identity);
 
   if (loadContent && isTextContentType(contentType)) {
     textContent = decoded;
@@ -174,6 +214,11 @@ export function fromRow(
     row.content_type,
     loadAttributes,
     loadContent,
+    {
+      modelName: row.model_name,
+      dataName: row.data_name,
+      version: row.version,
+    },
   );
 
   let tags: Record<string, string> = {};
@@ -253,16 +298,21 @@ export async function fromData(
     );
   }
 
+  const resolvedModelName = options.modelName ?? data.tags["modelName"] ?? "";
+
   const { attributes, textContent } = parseContent(
     rawBytes,
     data.contentType,
     true,
     true,
+    {
+      modelName: resolvedModelName,
+      dataName: resolvedName,
+      version: resolvedVersion,
+    },
   );
 
   await resolveVaultRefs(attributes, data.tags, options);
-
-  const resolvedModelName = options.modelName ?? data.tags["modelName"] ?? "";
 
   return {
     id: data.id,
@@ -317,10 +367,15 @@ export async function fromResourceHandle(
         handle.version,
       );
       if (content) {
-        const text = new TextDecoder().decode(content);
+        const text = decodeRecordContent(content, {
+          modelName: handle.tags["modelName"] ?? fallbackModelName,
+          dataName: handle.name,
+          version: handle.version,
+        });
         attributes = JSON.parse(text) as Record<string, unknown>;
       }
-    } catch {
+    } catch (error) {
+      if (isRecordContentTooLargeError(error)) throw error;
       // Not valid JSON, skip attributes
     }
   }

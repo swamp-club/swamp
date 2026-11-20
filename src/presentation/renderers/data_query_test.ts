@@ -64,44 +64,59 @@ function makeRecord(
   };
 }
 
-function captureJsonValue(fn: () => void): unknown {
-  const logs: string[] = [];
-  const originalLog = console.log;
-  console.log = (msg: string) => logs.push(msg);
-  try {
-    fn();
-  } finally {
-    console.log = originalLog;
-  }
-  return JSON.parse(logs[0]);
+function collectingSink() {
+  const parts: Uint8Array[] = [];
+  return {
+    writes: () => parts.length,
+    sink: (bytes: Uint8Array) => {
+      parts.push(bytes.slice());
+      return Promise.resolve(bytes.length);
+    },
+    text: () => {
+      const all = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+      let offset = 0;
+      for (const p of parts) {
+        all.set(p, offset);
+        offset += p.length;
+      }
+      return new TextDecoder().decode(all);
+    },
+  };
 }
 
-function captureJsonOutput(
-  fn: () => void,
-): Record<string, unknown> {
-  return captureJsonValue(fn) as Record<string, unknown>;
+async function renderText(
+  mode: "json" | "log",
+  data: DataQueryData,
+  options: { single?: boolean } = {},
+): Promise<string> {
+  const out = collectingSink();
+  await createDataQueryRenderer(mode, false, { ...options, sink: out.sink })
+    .handlers().completed({ kind: "completed", data });
+  return out.text();
 }
 
-Deno.test("renderJson: JSON record maps attributes to content", () => {
-  const renderer = createDataQueryRenderer("json");
-  const handlers = renderer.handlers();
+async function renderJsonOutput(
+  data: DataQueryData,
+): Promise<Record<string, unknown>> {
+  return JSON.parse(await renderText("json", data));
+}
 
+async function renderLog(data: DataQueryData): Promise<string> {
+  return stripAnsiCode(await renderText("log", data)).trimEnd();
+}
+
+Deno.test("renderJson: JSON record maps attributes to content", async () => {
   const record = makeRecord({
     attributes: { hostname: "worker-01", os: "linux" },
     contentType: "application/json",
     content: "",
   });
 
-  const output = captureJsonOutput(() => {
-    handlers.completed({
-      kind: "completed",
-      data: {
-        predicate: 'modelName == "test"',
-        results: [record],
-        total: 1,
-        limited: false,
-      },
-    });
+  const output = await renderJsonOutput({
+    predicate: 'modelName == "test"',
+    results: [record],
+    total: 1,
+    limited: false,
   });
 
   assertEquals(output.predicate, 'modelName == "test"');
@@ -114,26 +129,18 @@ Deno.test("renderJson: JSON record maps attributes to content", () => {
   assertEquals(results[0].attributes, undefined);
 });
 
-Deno.test("renderJson: non-JSON record gets empty content", () => {
-  const renderer = createDataQueryRenderer("json");
-  const handlers = renderer.handlers();
-
+Deno.test("renderJson: non-JSON record gets empty content", async () => {
   const record = makeRecord({
     contentType: "text/plain",
     attributes: {},
     content: "",
   });
 
-  const output = captureJsonOutput(() => {
-    handlers.completed({
-      kind: "completed",
-      data: {
-        predicate: 'modelName == "test"',
-        results: [record],
-        total: 1,
-        limited: false,
-      },
-    });
+  const output = await renderJsonOutput({
+    predicate: 'modelName == "test"',
+    results: [record],
+    total: 1,
+    limited: false,
   });
 
   const results = output.results as Record<string, unknown>[];
@@ -141,25 +148,17 @@ Deno.test("renderJson: non-JSON record gets empty content", () => {
   assertEquals(results[0].attributes, undefined);
 });
 
-Deno.test("renderJson: projected query is unaffected", () => {
-  const renderer = createDataQueryRenderer("json");
-  const handlers = renderer.handlers();
-
-  const output = captureJsonOutput(() => {
-    handlers.completed({
-      kind: "completed",
-      data: {
-        predicate: 'modelName == "test"',
-        results: [],
-        projected: {
-          shape: "map",
-          columns: ["name", "status"],
-          rows: [{ name: "result", status: "ok" }],
-        },
-        total: 1,
-        limited: false,
-      },
-    });
+Deno.test("renderJson: projected query is unaffected", async () => {
+  const output = await renderJsonOutput({
+    predicate: 'modelName == "test"',
+    results: [],
+    projected: {
+      shape: "map",
+      columns: ["name", "status"],
+      rows: [{ name: "result", status: "ok" }],
+    },
+    total: 1,
+    limited: false,
   });
 
   const results = output.results as Record<string, unknown>[];
@@ -167,26 +166,18 @@ Deno.test("renderJson: projected query is unaffected", () => {
   assertEquals(results[0], { name: "result", status: "ok" });
 });
 
-Deno.test("renderJson: empty attributes produce empty content object", () => {
-  const renderer = createDataQueryRenderer("json");
-  const handlers = renderer.handlers();
-
+Deno.test("renderJson: empty attributes produce empty content object", async () => {
   const record = makeRecord({
     contentType: "application/json",
     attributes: {},
     content: "",
   });
 
-  const output = captureJsonOutput(() => {
-    handlers.completed({
-      kind: "completed",
-      data: {
-        predicate: "true",
-        results: [record],
-        total: 1,
-        limited: false,
-      },
-    });
+  const output = await renderJsonOutput({
+    predicate: "true",
+    results: [record],
+    total: 1,
+    limited: false,
   });
 
   const results = output.results as Record<string, unknown>[];
@@ -256,25 +247,16 @@ Deno.test("renderQueryResultsTerminal: a failed list projection keeps every row"
   ]);
 });
 
-Deno.test("renderJson: a failed list projection stays null", () => {
-  const output = captureJsonOutput(() => {
-    createDataQueryRenderer("json").handlers().completed({
-      kind: "completed",
-      data: listWithFailedProjections(),
-    });
-  });
+Deno.test("renderJson: a failed list projection stays null", async () => {
+  const output = await renderJsonOutput(listWithFailedProjections());
   assertEquals(output.results, [["a", "b"], null, ["c"], "solo"]);
 });
 
-function renderSingle(data: DataQueryData): unknown {
-  const handlers = createDataQueryRenderer("json", false, { single: true })
-    .handlers();
-  return captureJsonValue(() => {
-    handlers.completed({ kind: "completed", data });
-  });
+async function renderSingle(data: DataQueryData): Promise<unknown> {
+  return JSON.parse(await renderText("json", data, { single: true }));
 }
 
-Deno.test("renderJson: single prints the bare record that the envelope carries as results[0]", () => {
+Deno.test("renderJson: single prints the bare record that the envelope carries as results[0]", async () => {
   const record = makeRecord({ attributes: { hostname: "worker-01" } });
   const data: DataQueryData = {
     predicate: 'name == "result"',
@@ -283,13 +265,8 @@ Deno.test("renderJson: single prints the bare record that the envelope carries a
     limited: false,
   };
 
-  const single = renderSingle(data);
-  const envelope = captureJsonOutput(() => {
-    createDataQueryRenderer("json").handlers().completed({
-      kind: "completed",
-      data,
-    });
-  });
+  const single = await renderSingle(data);
+  const envelope = await renderJsonOutput(data);
 
   assertEquals(single, (envelope.results as unknown[])[0]);
   assertEquals(
@@ -298,8 +275,8 @@ Deno.test("renderJson: single prints the bare record that the envelope carries a
   );
 });
 
-Deno.test("renderJson: single prints a bare scalar projection", () => {
-  const output = renderSingle({
+Deno.test("renderJson: single prints a bare scalar projection", async () => {
+  const output = await renderSingle({
     predicate: "true",
     select: "name",
     results: [],
@@ -311,8 +288,8 @@ Deno.test("renderJson: single prints a bare scalar projection", () => {
   assertEquals(output, "result");
 });
 
-Deno.test("renderJson: single prints a bare map projection", () => {
-  const output = renderSingle({
+Deno.test("renderJson: single prints a bare map projection", async () => {
+  const output = await renderSingle({
     predicate: "true",
     select: "attributes",
     results: [],
@@ -328,8 +305,8 @@ Deno.test("renderJson: single prints a bare map projection", () => {
   assertEquals(output, { status: "ok" });
 });
 
-Deno.test("renderJson: single prints null when the one projection failed", () => {
-  const output = renderSingle({
+Deno.test("renderJson: single prints null when the one projection failed", async () => {
+  const output = await renderSingle({
     predicate: "true",
     select: "attributes.missing",
     results: [],
@@ -553,40 +530,22 @@ Deno.test("renderQueryResultsTerminal: a very large nested array renders and par
   assertEquals(JSON.parse(output), content);
 });
 
-Deno.test("renderJson: projected base64 content and its encoding pass through", () => {
-  const renderer = createDataQueryRenderer("json");
-  const output = captureJsonOutput(() => {
-    renderer.handlers().completed({
-      kind: "completed",
-      data: {
-        predicate: 'name == "logo"',
-        results: [],
-        projected: {
-          shape: "map",
-          columns: ["content", "contentEncoding"],
-          rows: [{ content: BASE64_CONTENT, contentEncoding: "base64" }],
-        },
-        total: 1,
-        limited: false,
-      },
-    });
+Deno.test("renderJson: projected base64 content and its encoding pass through", async () => {
+  const output = await renderJsonOutput({
+    predicate: 'name == "logo"',
+    results: [],
+    projected: {
+      shape: "map",
+      columns: ["content", "contentEncoding"],
+      rows: [{ content: BASE64_CONTENT, contentEncoding: "base64" }],
+    },
+    total: 1,
+    limited: false,
   });
   assertEquals(output.results, [
     { content: BASE64_CONTENT, contentEncoding: "base64" },
   ]);
 });
-
-function captureLines(fn: () => void): string {
-  const logs: string[] = [];
-  const originalLog = console.log;
-  console.log = (msg: string) => logs.push(msg);
-  try {
-    fn();
-  } finally {
-    console.log = originalLog;
-  }
-  return stripAnsiCode(logs.join("\n"));
-}
 
 const hintData = {
   predicate: 'name == "classification"',
@@ -599,13 +558,8 @@ const hintData = {
   },
 };
 
-Deno.test("createDataQueryRenderer: log mode prints the spec-name hint as a pasteable command", () => {
-  const output = captureLines(() => {
-    createDataQueryRenderer("log").handlers().completed({
-      kind: "completed",
-      data: hintData,
-    });
-  });
+Deno.test("createDataQueryRenderer: log mode prints the spec-name hint as a pasteable command", async () => {
+  const output = await renderLog(hintData);
 
   assertStringIncludes(output, "No matching data found.");
   assertStringIncludes(
@@ -619,18 +573,13 @@ Deno.test("createDataQueryRenderer: log mode prints the spec-name hint as a past
   );
 });
 
-Deno.test("createDataQueryRenderer: log mode notes conditions that were not carried over", () => {
-  const output = captureLines(() => {
-    createDataQueryRenderer("log").handlers().completed({
-      kind: "completed",
-      data: {
-        ...hintData,
-        specNameHint: {
-          ...hintData.specNameHint,
-          otherFiltersDropped: true,
-        },
-      },
-    });
+Deno.test("createDataQueryRenderer: log mode notes conditions that were not carried over", async () => {
+  const output = await renderLog({
+    ...hintData,
+    specNameHint: {
+      ...hintData.specNameHint,
+      otherFiltersDropped: true,
+    },
   });
 
   assertStringIncludes(
@@ -639,47 +588,31 @@ Deno.test("createDataQueryRenderer: log mode notes conditions that were not carr
   );
 });
 
-Deno.test("createDataQueryRenderer: log mode prints no hint without one", () => {
-  const output = captureLines(() => {
-    createDataQueryRenderer("log").handlers().completed({
-      kind: "completed",
-      data: { ...hintData, specNameHint: undefined },
-    });
-  });
+Deno.test("createDataQueryRenderer: log mode prints no hint without one", async () => {
+  const output = await renderLog({ ...hintData, specNameHint: undefined });
 
   assertEquals(output, "No matching data found.");
 });
 
-Deno.test("renderJson: specNameHint is included only when present", () => {
-  const handlers = createDataQueryRenderer("json").handlers();
-
-  const withHint = captureJsonOutput(() => {
-    handlers.completed({ kind: "completed", data: hintData });
-  });
+Deno.test("renderJson: specNameHint is included only when present", async () => {
+  const withHint = await renderJsonOutput(hintData);
   assertEquals(withHint.specNameHint, hintData.specNameHint);
 
-  const projected = captureJsonOutput(() => {
-    handlers.completed({
-      kind: "completed",
-      data: {
-        ...hintData,
-        select: "name",
-        projected: { shape: "scalar", values: [] },
-      },
-    });
+  const projected = await renderJsonOutput({
+    ...hintData,
+    select: "name",
+    projected: { shape: "scalar", values: [] },
   });
   assertEquals(projected.specNameHint, hintData.specNameHint);
 
-  const without = captureJsonOutput(() => {
-    handlers.completed({
-      kind: "completed",
-      data: { ...hintData, specNameHint: undefined },
-    });
+  const without = await renderJsonOutput({
+    ...hintData,
+    specNameHint: undefined,
   });
   assertEquals("specNameHint" in without, false);
 });
 
-Deno.test("createDataQueryRenderer: a sorted page carries nextCursor in json and a next-page hint in log mode (swamp-club#4177)", () => {
+Deno.test("createDataQueryRenderer: a sorted page carries nextCursor in json and a next-page hint in log mode (swamp-club#4177)", async () => {
   const data = {
     predicate: "true",
     results: [makeRecord()],
@@ -687,53 +620,179 @@ Deno.test("createDataQueryRenderer: a sorted page carries nextCursor in json and
     limited: true,
     nextCursor: "eyJ2IjoxfQ",
   };
-  const json = captureJsonOutput(() => {
-    createDataQueryRenderer("json").handlers().completed({
-      kind: "completed",
-      data,
-    });
-  });
+  const json = await renderJsonOutput(data);
   assertEquals(json.nextCursor, "eyJ2IjoxfQ");
-  const projected = captureJsonOutput(() => {
-    createDataQueryRenderer("json").handlers().completed({
-      kind: "completed",
-      data: {
-        ...data,
-        results: [],
-        projected: { shape: "scalar", values: ["a"] },
-      },
-    });
+  const projected = await renderJsonOutput({
+    ...data,
+    results: [],
+    projected: { shape: "scalar", values: ["a"] },
   });
   assertEquals(projected.nextCursor, "eyJ2IjoxfQ");
 
-  const log = captureLines(() => {
-    createDataQueryRenderer("log").handlers().completed({
-      kind: "completed",
-      data,
-    });
-  });
+  const log = await renderLog(data);
   assertStringIncludes(log, "Next page: re-run with --cursor eyJ2IjoxfQ");
 });
 
-Deno.test("createDataQueryRenderer: an unsorted page prints no cursor (swamp-club#4177)", () => {
+Deno.test("createDataQueryRenderer: an unsorted page prints no cursor (swamp-club#4177)", async () => {
   const data = {
     predicate: "true",
     results: [makeRecord()],
     total: 1,
     limited: true,
   };
-  const json = captureJsonOutput(() => {
-    createDataQueryRenderer("json").handlers().completed({
-      kind: "completed",
-      data,
-    });
-  });
+  const json = await renderJsonOutput(data);
   assertEquals("nextCursor" in json, false);
-  const log = captureLines(() => {
-    createDataQueryRenderer("log").handlers().completed({
-      kind: "completed",
-      data,
-    });
-  });
+  const log = await renderLog(data);
   assertEquals(log.includes("--cursor"), false);
+});
+
+Deno.test("renderJson: the bytes written are JSON.stringify of the envelope with two-space indent and a newline", async () => {
+  const record = makeRecord({ attributes: { host: "a", tags: ["x", "y"] } });
+  const hint = {
+    suggestedPredicate: 'specName == "r"',
+    otherFiltersDropped: true,
+  };
+  const cases: { data: DataQueryData; single?: boolean; expected: unknown }[] =
+    [
+      {
+        data: {
+          predicate: "true",
+          results: [record, makeRecord({ contentType: "text/plain" })],
+          total: 2,
+          limited: true,
+          nextCursor: "abc",
+        },
+        expected: {
+          predicate: "true",
+          results: [
+            (({ attributes: _a, content: _c, ...rest }) => ({
+              ...rest,
+              content: record.attributes,
+            }))(record),
+            (({ attributes: _a, content: _c, ...rest }) => ({
+              ...rest,
+              content: "",
+            }))(makeRecord({ contentType: "text/plain" })),
+          ],
+          total: 2,
+          limited: true,
+          nextCursor: "abc",
+        },
+      },
+      {
+        data: {
+          predicate: "true",
+          results: [],
+          projected: {
+            shape: "map",
+            columns: ["a"],
+            rows: [{ a: { b: [1] } }],
+          },
+          total: 1,
+          limited: false,
+          specNameHint: hint,
+        },
+        expected: {
+          results: [{ a: { b: [1] } }],
+          total: 1,
+          limited: false,
+          specNameHint: hint,
+        },
+      },
+      {
+        data: {
+          predicate: "true",
+          results: [],
+          projected: { shape: "list", rows: [[1, "two"], []] },
+          total: 2,
+          limited: false,
+        },
+        expected: { results: [[1, "two"], []], total: 2, limited: false },
+      },
+      {
+        data: {
+          predicate: "true",
+          results: [],
+          projected: { shape: "scalar", values: ["s", null, 3] },
+          total: 3,
+          limited: false,
+        },
+        expected: { results: ["s", null, 3], total: 3, limited: false },
+      },
+      {
+        data: {
+          predicate: "true",
+          results: [],
+          projected: { shape: "map", columns: ["a"], rows: [{ a: 1 }] },
+          total: 1,
+          limited: false,
+        },
+        single: true,
+        expected: { a: 1 },
+      },
+    ];
+  for (const { data, single, expected } of cases) {
+    assertEquals(
+      await renderText("json", data, { single }),
+      JSON.stringify(expected, null, 2) + "\n",
+    );
+  }
+});
+
+Deno.test("renderJson: a multi-megabyte result reaches the sink as many bounded writes", async () => {
+  const rows = Array.from({ length: 40 }, (_, i) => ({
+    items: Array.from({ length: 2_000 }, (_, j) => ({ id: j, v: `${i}-${j}` })),
+  }));
+  const data: DataQueryData = {
+    predicate: "true",
+    select: "content",
+    results: [],
+    projected: { shape: "map", columns: ["items"], rows },
+    total: rows.length,
+    limited: false,
+  };
+  const out = collectingSink();
+  await createDataQueryRenderer("json", false, { sink: out.sink }).handlers()
+    .completed({ kind: "completed", data });
+
+  const text = out.text();
+  assertEquals(text.length > 4 * 1024 * 1024, true);
+  assertEquals(out.writes() > 50, true);
+  assertEquals(JSON.parse(text).results, rows);
+});
+
+Deno.test("createDataQueryRenderer: log mode writes plain values in pieces, matching renderQueryResultsTerminal", async () => {
+  const nested: DataQueryData = {
+    predicate: "true",
+    select: "content",
+    results: [],
+    projected: {
+      shape: "map",
+      columns: ["items"],
+      rows: Array.from({ length: 20 }, (_, i) => ({
+        items: Array.from({ length: 5_000 }, (_, j) => `${i}-${j}`),
+      })),
+    },
+    total: 20,
+    limited: true,
+  };
+  const scalars: DataQueryData = {
+    predicate: "true",
+    select: "name",
+    results: [],
+    projected: { shape: "scalar", values: ["a", null, { b: 1 }, 2] },
+    total: 4,
+    limited: false,
+  };
+  for (const data of [nested, scalars]) {
+    const out = collectingSink();
+    await createDataQueryRenderer("log", false, { sink: out.sink }).handlers()
+      .completed({ kind: "completed", data });
+    assertEquals(out.text(), renderQueryResultsTerminal(data) + "\n");
+  }
+
+  const out = collectingSink();
+  await createDataQueryRenderer("log", false, { sink: out.sink }).handlers()
+    .completed({ kind: "completed", data: nested });
+  assertEquals(out.writes() > 1, true);
 });

@@ -19,7 +19,7 @@
 
 const FLUSH_CHARS = 64 * 1024;
 
-type Sink = (bytes: Uint8Array) => Promise<number>;
+export type Sink = (bytes: Uint8Array) => Promise<number>;
 
 function viaToJSON(value: unknown, key: string): unknown {
   return typeof value === "object" && value !== null &&
@@ -108,12 +108,12 @@ export function prettyJson(value: unknown): string {
 }
 
 /**
- * writes a `--json` value as JSON.stringify(value, null, 2) plus a newline, in
- * chunks, so a value too large for one string still prints; a reader that
- * closes the pipe early ends the write quietly, as it does for console.log
+ * writes text pieces in batches, never joining more than one batch into a
+ * string; a reader that closes the pipe early ends the write quietly, as it
+ * does for console.log
  */
-export async function writeJsonValue(
-  value: unknown,
+export async function writeTextChunks(
+  chunks: Iterable<string>,
   sink: Sink = (bytes) => Deno.stdout.write(bytes),
 ): Promise<void> {
   const encoder = new TextEncoder();
@@ -132,7 +132,7 @@ export async function writeJsonValue(
   };
   let pending: string[] = [];
   let pendingChars = 0;
-  for (const chunk of prettyJsonChunks(value)) {
+  for (const chunk of chunks) {
     pending.push(chunk);
     pendingChars += chunk.length;
     if (pendingChars >= FLUSH_CHARS) {
@@ -141,6 +141,23 @@ export async function writeJsonValue(
       pendingChars = 0;
     }
   }
-  pending.push("\n");
-  await flush(pending.join(""));
+  if (pending.length > 0) await flush(pending.join(""));
+}
+
+/**
+ * writes a `--json` value as JSON.stringify(value, null, 2) plus a newline, in
+ * chunks, so a value too large for one string still prints
+ */
+export async function writeJsonValue(
+  value: unknown,
+  sink?: Sink,
+): Promise<void> {
+  await writeTextChunks(withNewline(prettyJsonChunks(value)), sink);
+}
+
+export function* withNewline(
+  chunks: Iterable<string>,
+): Generator<string> {
+  yield* chunks;
+  yield "\n";
 }
