@@ -1409,7 +1409,7 @@ export class CatalogStore {
     }));
   }
 
-  /** every behavior name the owner's latest, non-deleted rows were written under */
+  /** every behavior name any non-deleted version of the owner's data was written under */
   recordedNames(
     typeNormalized: string,
     modelId: string,
@@ -1418,7 +1418,7 @@ export class CatalogStore {
     const stmt = this.db.prepare(
       `SELECT DISTINCT model_name FROM catalog
        WHERE type_normalized = ? AND model_id = ? AND namespace = ?
-         AND is_latest = 1 AND lifecycle != 'deleted'
+         AND lifecycle != 'deleted'
        ORDER BY model_name`,
     );
     return (stmt.all(typeNormalized, modelId, namespace) as Array<

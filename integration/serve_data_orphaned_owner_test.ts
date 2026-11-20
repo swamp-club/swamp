@@ -299,7 +299,7 @@ Deno.test("serve data reads: a failed owner lookup is reported only to a caller 
   });
 });
 
-Deno.test("serve data reads: listing an owner renamed before deletion needs read on every name its data was written under", async () => {
+Deno.test("serve data reads: an owner renamed before deletion needs read on every name its data was written under", async () => {
   await withServeRepo(async (repo) => {
     const suffix = crypto.randomUUID();
     const oldName = `old-${suffix}`;
@@ -326,16 +326,74 @@ Deno.test("serve data reads: listing an owner renamed before deletion needs read
     assert(!body.includes(newName), body);
     assert(!body.includes(modelId), body);
 
-    // one item read by name is judged on that item's own recorded name
+    // every read of the owner needs every name, even one item's
     const before = await sendRequest(oldOnly, {
       type: "data.get",
       id: crypto.randomUUID(),
       payload: { modelIdOrName: oldName, dataName: "before" },
     });
-    assertEquals(reply(before, "data.get").name, "before");
+    const beforeBody = JSON.stringify(before);
+    assert(errorFrame(before), beforeBody);
+    assert(!beforeBody.includes(newName), beforeBody);
 
     const both = createServeCtx(repo, dataReader("*"));
     const all = reply(await request(both, "data.list", oldName), "data.list");
     assertEquals([all.modelId, all.total], [modelId, 2]);
+  });
+});
+
+Deno.test("serve data reads: an older version written under a denied name is not read through the newer name", async () => {
+  await withServeRepo(async (repo) => {
+    const suffix = crypto.randomUUID();
+    const secretName = `secret-${suffix}`;
+    const publicName = `public-${suffix}`;
+    const modelId = crypto.randomUUID();
+    await saveOrphaned(repo, secretName, repo.modelType, modelId, "x");
+    await saveOrphaned(repo, publicName, repo.modelType, modelId, "x");
+
+    const publicOnly = createServeCtx(repo, [
+      grant({
+        actions: ["read"],
+        resource: { kind: "data", pattern: "public-*" },
+      }),
+      grant({
+        effect: "deny",
+        actions: ["read"],
+        resource: { kind: "data", pattern: "secret-*" },
+      }),
+    ]);
+    for (
+      const payload of [
+        {
+          type: "data.get",
+          payload: { modelIdOrName: publicName, dataName: "x", version: 1 },
+        },
+        {
+          type: "data.versions",
+          payload: { modelIdOrName: publicName, dataName: "x" },
+        },
+      ]
+    ) {
+      const frames = await sendRequest(publicOnly, {
+        type: payload.type,
+        id: crypto.randomUUID(),
+        payload: payload.payload,
+      });
+      const body = JSON.stringify(frames);
+      assert(errorFrame(frames), body);
+      assert(!body.includes(SECRET), body);
+      assert(!body.includes(secretName), body);
+    }
+
+    const both = createServeCtx(repo, dataReader("*"));
+    const versions = reply(
+      await sendRequest(both, {
+        type: "data.versions",
+        id: crypto.randomUUID(),
+        payload: { modelIdOrName: publicName, dataName: "x" },
+      }),
+      "data.versions",
+    );
+    assertEquals(versions.total, 2);
   });
 });

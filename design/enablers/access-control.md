@@ -1076,11 +1076,12 @@ read are dropped before anything is reported, and the one left is authorized
 with `data` read on its recorded name and type (`CanonicalResources.dataOwners`)
 and is exactly the owner libswamp reads. A name recorded under several readable
 owners is refused with their ids; none readable falls back to authorizing the
-name as sent, which then reports not found. A `data.list` spans every item of
-the owner, so its owner is readable only when every name the catalog records
-for that owner id is readable (a behavior renamed before deletion wrote under
-each); a get or versions read is judged on the one item's recorded name. The
-read is audited under the owner's recorded names.
+name as sent, which then reports not found. A read can reach any version of the
+owner's data, so the owner is readable only when every name any of its data
+versions was recorded under is readable (a behavior renamed before deletion
+wrote under each). This fails closed where `data.query`, which judges each item
+on its own name, would show part of the data. The read is audited under the
+owner's recorded names.
 
 The response audit event of a request authorized this way records the name the
 request resolved to, not the id the client sent (a request by a behavior's UUID

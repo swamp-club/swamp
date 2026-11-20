@@ -179,9 +179,8 @@ async function authorizeRecordedOwner(
 ): Promise<RecordedOwnerAccess> {
   if (target.status !== "missing") return { kind: "unrecorded" };
   const queryService = ctx.repoContext.dataQueryService;
-  // a list spans every item of the owner, written under any of its names
+  // a read can reach any version of the owner's data, written under any name
   const identitiesOf = async (owner: RecordedOwner) => {
-    if (dataName !== undefined) return [owner];
     const names = await queryService.findRecordedNames(
       owner.modelType,
       owner.modelId,

@@ -1784,7 +1784,7 @@ Deno.test(
 );
 
 Deno.test(
-  "CatalogStore: recordedNames lists every name an owner's current rows were written under",
+  "CatalogStore: recordedNames lists every name any version of an owner's data was written under",
   () => {
     using tempDb = makeTempDb();
     const store = new CatalogStore(tempDb.path);
@@ -1821,6 +1821,7 @@ Deno.test(
     assertEquals(store.recordedNames("test-model", "id-a", ""), [
       "old-name",
       "secret-x",
+      "superseded",
     ]);
     assertEquals(store.recordedNames("other-type", "id-a", ""), []);
 
