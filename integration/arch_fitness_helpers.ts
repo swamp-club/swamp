@@ -84,7 +84,8 @@ export async function* productionSourceFiles(
     const entry of walk(dir, {
       exts: [".ts", ".tsx"],
       includeDirs: false,
-      skip: [/_test\.tsx?$/],
+      // a package built with npm holds its dependencies' sources
+      skip: [/_test\.tsx?$/, /[\\/]node_modules[\\/]/],
     })
   ) {
     yield entry.path;

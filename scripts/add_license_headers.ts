@@ -64,10 +64,20 @@ const SKIP_DIRS = new Set([
   ".git",
 ]);
 
+// generated into an author's app, which is theirs to license
+const APP_TEMPLATES = ["packages", "app-sdk", "templates"].join(SEPARATOR);
+
+// shadcn's components in the app platform's UI kit keep their MIT licence, and
+// its build output is generated
+const KIT_THIRD_PARTY =
+  /^packages[\\/]app-platform[\\/](\d+[\\/]ui[\\/](components|lib|hooks)|dist)[\\/]/;
+
 function isSkipped(repoRelativePath: string): boolean {
-  return repoRelativePath.split(SEPARATOR).some((segment) =>
-    SKIP_DIRS.has(segment)
-  );
+  return repoRelativePath.startsWith(APP_TEMPLATES + SEPARATOR) ||
+    KIT_THIRD_PARTY.test(repoRelativePath) ||
+    repoRelativePath.split(SEPARATOR).some((segment) =>
+      SKIP_DIRS.has(segment)
+    );
 }
 
 export async function collectFiles(root = ROOT): Promise<string[]> {

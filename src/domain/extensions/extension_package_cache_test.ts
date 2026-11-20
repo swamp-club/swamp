@@ -47,6 +47,7 @@ function makeManifest(
     reports: [],
     webhooks: [],
     skills: [],
+    apps: [],
     include: [],
     additionalFiles: ["README.md"],
     binaries: [],

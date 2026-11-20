@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { appBundleFiles } from "../../domain/extensions/extension_app_bundle.ts";
 import { Command } from "@cliffy/command";
 import { dirname } from "@std/path";
 import { consumeStream } from "../../libswamp/stream.ts";
@@ -178,6 +179,7 @@ export const extensionQualityCommand = new Command()
             webhooksDir: resolved.webhooksDir,
             allWebhookFiles: resolved.allWebhookFiles,
             webhookEntryPoints: resolved.webhookEntryPoints,
+            appsDir: resolved.appsDir,
             workflowFiles: resolved.workflowFiles,
             skillDirs: resolved.skillDirs,
             allSkillFiles: resolved.allSkillFiles,
@@ -230,7 +232,10 @@ export const extensionQualityCommand = new Command()
               ...resolved.dataFilesByKind.webhooks,
             ],
             workflowFilePaths: resolved.workflowFiles.map((w) => w.sourcePath),
-            additionalFilePaths: resolved.additionalFilePaths,
+            additionalFilePaths: [
+              ...resolved.additionalFilePaths,
+              ...await appBundleFiles(resolved.manifest, resolved.appsDir),
+            ],
             binaryFilePaths: resolved.binaryFilePaths,
             skillFilePaths: resolved.allSkillFiles,
             includeFilePaths: resolved.includeFilePaths,

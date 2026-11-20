@@ -35,6 +35,15 @@ export const ROOT_ROUTES: readonly RootRoute[] = [
       (await import("./commands/access.ts")).createAccessCommand(rest),
   },
   {
+    name: "app",
+    shortDescription: "Build, enable and manage swamp apps",
+    aliases: [],
+    hidden: false,
+    module: "src/cli/commands/app.ts",
+    needsFullTree: false,
+    load: async () => (await import("./commands/app.ts")).appCommand,
+  },
+  {
     name: "version",
     shortDescription: "Display the version of swamp",
     aliases: [],

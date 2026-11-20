@@ -23,6 +23,7 @@
  * browser origin
  */
 
+import { APP_BASE_HEADER } from "../app_assets.ts";
 import { endOnAbort } from "../stream_abort.ts";
 import { getLogger } from "@logtape/logtape";
 import { swampInvocation } from "../swamp_invocation.ts";
@@ -59,6 +60,7 @@ import {
   USE_WEBSOCKET_CODE,
 } from "../protocol.ts";
 import { readBodyWithLimit } from "../webhook.ts";
+import { APP_FILES_PATH } from "../../domain/apps/app_launch.ts";
 
 const logger = getLogger(["swamp", "dashboard", "hub"]);
 
@@ -141,6 +143,9 @@ export interface WorkspaceHub {
 }
 
 const WORKSPACE_ROUTE = /^\/w\/([^/]+)(\/.*)?$/;
+const WORKSPACE_APP_ROUTE = new RegExp(
+  `^/w/([^/]+)${APP_FILES_PATH}/([^/]+)/(.*)$`,
+);
 
 export function createWorkspaceHub(deps: WorkspaceHubDeps): WorkspaceHub {
   // One entry per workspace folder: its child, the dashboard sockets open
@@ -454,11 +459,7 @@ export function createWorkspaceHub(deps: WorkspaceHubDeps): WorkspaceHub {
         status: 502,
       });
     }
-    // fetch has decoded the body but keeps these, which would make the
-    // browser decode it again
-    const replyHeaders = new Headers(upstream.headers);
-    replyHeaders.delete("content-encoding");
-    replyHeaders.delete("content-length");
+    const replyHeaders = decodedHeaders(upstream.headers);
     if (!upstream.body) {
       done();
       return new Response(null, {
@@ -572,12 +573,67 @@ export function createWorkspaceHub(deps: WorkspaceHubDeps): WorkspaceHub {
     return response;
   };
 
+  /**
+   * an iframe load cannot send the hub token, so the child's launch id is the
+   * credential; only an already running child answers, so nothing starts here
+   */
+  const forwardAppFile = async (
+    req: Request,
+    match: RegExpExecArray,
+  ): Promise<Response> => {
+    if (stopping) return new Response("Stopping", { status: 503 });
+    if (req.method !== "GET" && req.method !== "HEAD") {
+      return new Response("Method not allowed", { status: 405 });
+    }
+    let name: string;
+    try {
+      name = decodeURIComponent(match[1]);
+    } catch {
+      return new Response("Not found", { status: 404 });
+    }
+    const repoDir = await deps.resolveWorkspace(name);
+    const entry = repoDir === null ? undefined : entries.get(repoDir);
+    if (entry === undefined) return new Response("Not found", { status: 404 });
+    let child: HubChild;
+    try {
+      child = await entry.child;
+    } catch {
+      return new Response("Not found", { status: 404 });
+    }
+    const url = new URL(req.url);
+    const headers = new Headers({
+      [HUB_TOKEN_HEADER]: child.token,
+      // re-encoded, so a raw `;` in the path cannot end the CSP source list
+      [APP_BASE_HEADER]: `${req.headers.get("host")}/w/${
+        encodeURIComponent(name)
+      }${APP_FILES_PATH}/${match[2]}/`,
+    });
+    try {
+      const upstream = await fetch(
+        `http://127.0.0.1:${child.port}${APP_FILES_PATH}/${match[2]}/${
+          match[3]
+        }${url.search}`,
+        { method: req.method, headers, signal: hubSignal.signal },
+      );
+      return new Response(upstream.body, {
+        status: upstream.status,
+        headers: decodedHeaders(upstream.headers),
+      });
+    } catch {
+      return new Response("The workspace could not be reached.", {
+        status: 502,
+      });
+    }
+  };
+
   return {
     async handle(req, track) {
       const url = new URL(req.url);
       const isHubRoute = url.pathname === "/api/local/workspaces" ||
         WORKSPACE_ROUTE.test(url.pathname);
       if (!isHubRoute) return null;
+      const appFile = WORKSPACE_APP_ROUTE.exec(url.pathname);
+      if (appFile !== null) return await forwardAppFile(req, appFile);
       // The page's token, checked before anything starts or is listed.
       const offered = offeredLocalToken(req);
       if (offered === null || !timingSafeEqual(offered.token, deps.token)) {
@@ -926,6 +982,14 @@ export const SWAMP_CLI_ACTIONS: ActionRunner = {
     };
   },
 };
+
+// fetch already decoded the body; these would make the browser decode it again
+export function decodedHeaders(upstream: Headers): Headers {
+  const headers = new Headers(upstream);
+  headers.delete("content-encoding");
+  headers.delete("content-length");
+  return headers;
+}
 
 function offeredLocalToken(
   req: Request,

@@ -148,6 +148,7 @@ for (
         allReportFiles: [],
         reportEntryPoints: [],
         webhooksDir: root,
+        appsDir: root,
         allWebhookFiles: [],
         webhookEntryPoints: [],
         workflowFiles: [],

@@ -92,7 +92,9 @@ Deno.test("operationsOff: the local dashboard turns off Schedules and Webhooks",
   );
 });
 
-Deno.test("showsLogout: serve has a login to leave, the local dashboard has none", () => {
-  assertEquals(showsLogout(false), true);
-  assertEquals(showsLogout(true), false);
+Deno.test("showsLogout: serve with auth has a login to leave; the local dashboard and a serve without auth have none", () => {
+  assertEquals(showsLogout(false, "token"), true);
+  assertEquals(showsLogout(false, "oauth"), true);
+  assertEquals(showsLogout(false, "none"), false);
+  assertEquals(showsLogout(true, "token"), false);
 });

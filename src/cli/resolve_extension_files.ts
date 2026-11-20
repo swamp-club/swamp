@@ -96,6 +96,7 @@ import { resolveDatastoresDir } from "./resolve_datastores_dir.ts";
 import { resolveReportsDir } from "./resolve_reports_dir.ts";
 import { resolveWebhooksDir } from "./resolve_webhooks_dir.ts";
 import { SKILL_DIRS } from "../domain/repo/skill_dirs.ts";
+import { APP_SOURCE_DIR } from "../domain/apps/app_descriptor.ts";
 import {
   resolveManifestArgument,
   respellUnderRepoDir,
@@ -149,6 +150,8 @@ export interface ResolvedExtensionFiles {
   webhooksDir: string;
   webhookEntryPoints: string[];
   allWebhookFiles: string[];
+  /** base for the folders listed under `apps:` */
+  appsDir: string;
   workflowFiles: Array<{ sourcePath: string; archiveName: string }>;
   skillDirs: Array<{ name: string; absolutePath: string }>;
   allSkillFiles: string[];
@@ -299,6 +302,7 @@ type TypedField =
   | "datastores"
   | "reports"
   | "webhooks"
+  | "apps"
   | "include";
 
 const TYPED_KIND: Record<TypedField, string> = {
@@ -308,6 +312,7 @@ const TYPED_KIND: Record<TypedField, string> = {
   datastores: "Datastore file",
   reports: "Report file",
   webhooks: "Webhook file",
+  apps: "App folder",
   include: "Include file",
 };
 
@@ -435,6 +440,7 @@ async function selectExtensionsRoot(
     "datastores",
     "reports",
     "webhooks",
+    "apps",
     "include",
   ];
   for (const field of fields) {
@@ -677,6 +683,7 @@ export async function resolveExtensionFiles(
     datastores: resolveDatastoresDir(marker),
     reports: resolveReportsDir(marker),
     webhooks: resolveWebhooksDir(marker),
+    apps: APP_SOURCE_DIR,
     include: modelsField === "behaviors"
       ? behaviorsRel
       : resolveModelsDir(marker),
@@ -701,6 +708,7 @@ export async function resolveExtensionFiles(
   const datastoresDir = typedBase("datastores");
   const reportsDir = typedBase("reports");
   const webhooksDir = typedBase("webhooks");
+  const appsDir = typedBase("apps");
   const lookup: TypedLookup = {
     extensionsRoot,
     explicitRoot: ctx.extensionsDir !== undefined,
@@ -1301,6 +1309,7 @@ export async function resolveExtensionFiles(
     webhooksDir,
     webhookEntryPoints,
     allWebhookFiles,
+    appsDir,
     workflowFiles,
     skillDirs,
     allSkillFiles,

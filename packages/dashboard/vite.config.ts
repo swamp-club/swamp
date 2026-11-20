@@ -40,6 +40,8 @@ export default defineConfig({
     fs: {
       allow: [
         ".",
+        fileURLToPath(new URL("../app-sdk", import.meta.url)),
+        fileURLToPath(new URL("../client", import.meta.url)),
         fileURLToPath(
           new URL("../../src/domain/agent_sessions", import.meta.url),
         ),

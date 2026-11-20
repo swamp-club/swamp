@@ -233,7 +233,7 @@
   height: 30px;
   padding: 0 9px;
   border-radius: 6px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
   background: var(--surface-inset);
   color: var(--text-1);
 }

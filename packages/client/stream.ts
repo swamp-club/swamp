@@ -137,3 +137,18 @@ export class SwampClientError extends Error {
     }
   }
 }
+
+// a subscription's pages say done: false, and only an error ends it
+function isOpenPage(payload: unknown): boolean {
+  return typeof payload === "object" && payload !== null &&
+    (payload as { done?: unknown }).done === false;
+}
+
+/** `run.attached` carries a payload but opens a stream, so it ends nothing. */
+export function endsRequest(
+  frame: { readonly type: string; readonly payload?: unknown },
+): boolean {
+  return frame.type === "error" || frame.type === "done" ||
+    (frame.type !== "event" && frame.type !== "run.attached" &&
+      frame.payload !== undefined && !isOpenPage(frame.payload));
+}

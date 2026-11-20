@@ -56,6 +56,7 @@ function makeManifest(
     reports: [],
     webhooks: [],
     skills: [],
+    apps: [],
     include: [],
     additionalFiles: [],
     binaries: [],

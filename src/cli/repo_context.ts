@@ -105,6 +105,7 @@ import {
   FileLock,
   readLockFileState,
 } from "../infrastructure/persistence/file_lock.ts";
+import type { ControlPlaneStore } from "../domain/datastore/control_plane_store.ts";
 import { FileSystemControlPlaneStore } from "../infrastructure/persistence/fs_control_plane_store.ts";
 import {
   ControlPlaneContinuationClaimStore,
@@ -2234,6 +2235,17 @@ export async function localServeControlPlane(
       shared,
     );
     return shared;
+  }
+  return new FileSystemControlPlaneStore(swampPath(resolution.repoDir));
+}
+
+/** the record serve reads, without taking part in a move into team mode */
+export async function localAppControlPlane(
+  repoDir: string,
+): Promise<ControlPlaneStore> {
+  const resolution = await resolveDatastoreForRepo(repoDir);
+  if (resolution.engine === "v3" && resolution.serveUpstream === undefined) {
+    return v3ServeControlPlaneAt(await v3LocationOf(resolution));
   }
   return new FileSystemControlPlaneStore(swampPath(resolution.repoDir));
 }

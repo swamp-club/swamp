@@ -908,3 +908,23 @@ Deno.test("legacyRedirectPath: leaves every other path alone", () => {
     assertEquals(legacyRedirectPath(path), null, path);
   }
 });
+
+Deno.test("parseRoute: an app keeps its scoped name and its own path", () => {
+  assertEquals(parseRoute("/dashboard/apps/@acme%2Fcost/reports/monthly"), {
+    view: "apps",
+    detail: { kind: "app", appName: "@acme/cost", path: "/reports/monthly" },
+  });
+});
+
+Deno.test("parseRoute: the bare apps path is the admin panel", () => {
+  assertEquals(parseRoute("/dashboard/apps"), { view: "apps", detail: null });
+});
+
+Deno.test("buildPath: an app's route round-trips", () => {
+  const state = {
+    view: "apps" as const,
+    detail: { kind: "app" as const, appName: "@acme/cost", path: "/a/b" },
+  };
+  assertEquals(buildPath(state), "/dashboard/apps/@acme%2Fcost/a/b");
+  assertEquals(parseRoute(buildPath(state)), state);
+});

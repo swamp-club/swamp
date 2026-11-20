@@ -22,6 +22,7 @@
  * reuses handleConnection unchanged
  */
 
+import { cachedAppCatalog, isAppPath, serveAppRoute } from "../app_assets.ts";
 import { timingSafeEqual } from "../../domain/crypto/timing_safe_equal.ts";
 import { HUB_TOKEN_HEADER } from "./hub_token.ts";
 import { handleConnection } from "../connection.ts";
@@ -127,6 +128,7 @@ export function startLocalDashboardServer(
       activeRuns: mergeActiveRuns(snapshot.activeRuns, tracked),
     };
   };
+  const appRouteCatalog = ctx.appDeps && cachedAppCatalog(ctx.appDeps.catalog);
   const ac = new AbortController();
   const refusedHostLog = new RefusedHostLog((message) => logger.warn(message));
   let port = 0;
@@ -160,6 +162,15 @@ export function startLocalDashboardServer(
         );
         handleConnection(socket, ctx, null);
         return response;
+      }
+
+      if (ctx.appDeps && appRouteCatalog && isAppPath(url.pathname)) {
+        const answer = await serveAppRoute(req, {
+          ...ctx.appDeps,
+          catalog: appRouteCatalog,
+          trustBaseHeader: true,
+        });
+        if (answer) return answer;
       }
 
       if (url.pathname === SERVE_REQUEST_PATH) {

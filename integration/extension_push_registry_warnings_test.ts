@@ -44,6 +44,7 @@ const manifest: ExtensionManifest = {
   reports: [],
   webhooks: [],
   skills: [],
+  apps: [],
   include: [],
   additionalFiles: [],
   binaries: [],
@@ -110,6 +111,7 @@ async function pushAgainstRegistry(
           reports: 0,
           webhooks: 0,
           skills: 0,
+          apps: 0,
         },
       })
     ) events.push(event);

@@ -378,3 +378,26 @@ Deno.test("RunEventBuffer: a parked buffer sends no terminal frame, so attached 
   assertEquals(buffer.finished, true);
   assertEquals(events.map((e) => e.event.kind), ["started"]);
 });
+
+Deno.test("RunEventBuffer: each event is stamped when pushed, and a replay keeps it", () => {
+  let clock = Date.parse("2026-11-13T00:00:00.000Z");
+  const buffer = new RunEventBuffer(10, { now: () => new Date(clock) });
+  buffer.push(event("job_started"));
+  clock += 5000;
+  buffer.push(event("job_completed"));
+  clock += 60_000;
+  const late = collectingSubscriber();
+  buffer.subscribe(late.subscriber);
+  assertEquals(late.events.map((e) => e.event.at), [
+    "2026-11-13T00:00:00.000Z",
+    "2026-11-13T00:00:05.000Z",
+  ]);
+});
+
+Deno.test("RunEventBuffer: an event already stamped keeps its time", () => {
+  const buffer = new RunEventBuffer(10, { now: () => new Date(0) });
+  buffer.push({ kind: "job_started", at: "2026-11-13T01:02:03.000Z" });
+  const sub = collectingSubscriber();
+  buffer.subscribe(sub.subscriber);
+  assertEquals(sub.events[0].event.at, "2026-11-13T01:02:03.000Z");
+});

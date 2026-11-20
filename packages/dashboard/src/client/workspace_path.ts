@@ -19,12 +19,13 @@
 
 /**
  * The local dashboard (`swamp start` / `swamp dashboard`) serves every
- * workspace from one origin, each under `/dashboard/w/<workspace>/`, and
+ * workspace from one origin, each under `/dashboard/w/<workspace>/` and its
+ * apps under `/apps/w/<workspace>/`, and
  * forwards that workspace's server calls under `/w/<workspace>/`. Under
  * `swamp serve` there is no workspace segment and every path is unchanged.
  */
 
-const WORKSPACE_PATH = /^\/dashboard\/w\/([^/]+)(?=\/|$)/;
+const WORKSPACE_PATH = /^\/(?:dashboard|apps)\/w\/([^/]+)(?=\/|$)/;
 
 /** The workspace a dashboard path addresses, or null for serve's paths. */
 export function workspaceFromPath(pathname: string): string | null {
@@ -47,6 +48,13 @@ export function dashboardBaseFor(workspace: string | null): string {
   return workspace === null
     ? "/dashboard"
     : `/dashboard/w/${encodeURIComponent(workspace)}`;
+}
+
+/** Where a workspace's apps are listed (or serve's, for null). */
+export function appsBaseFor(workspace: string | null): string {
+  return workspace === null
+    ? "/apps"
+    : `/apps/w/${encodeURIComponent(workspace)}`;
 }
 
 /** A server path (`/auth/info`, `/api/v1/health`, `/`) for a workspace. */

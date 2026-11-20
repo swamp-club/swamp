@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { FilesystemAppCatalog } from "../../infrastructure/persistence/filesystem_app_catalog.ts";
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import type { Logger } from "@logtape/logtape";
 import { assertStringIncludes } from "@std/assert/string-includes";
@@ -607,6 +608,7 @@ interface SkillArchiveSpec {
   name: string;
   skills: Record<string, Record<string, string>>;
   dependencies?: string[];
+  apps?: string[];
   files?: Record<string, string>;
   symlinks?: Record<string, string>;
   omitManifest?: boolean;
@@ -624,6 +626,9 @@ async function buildSkillArchive(spec: SkillArchiveSpec): Promise<Uint8Array> {
       Object.keys(spec.skills).length > 0 ? "skills:" : "skills: []",
       ...Object.keys(spec.skills).map((s) => `  - ${s}`),
     ];
+    if (spec.apps && spec.apps.length > 0) {
+      lines.push("apps:", ...spec.apps.map((app) => `  - ${app}`));
+    }
     if (spec.dependencies && spec.dependencies.length > 0) {
       lines.push("dependencies:");
       lines.push(...spec.dependencies.map((d) => `  - "${d}"`));
@@ -4070,6 +4075,54 @@ Deno.test(
           2,
         );
       });
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: a pulled app lands where the catalog finds it, and an upgrade replaces its build",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      const appName = `${name.slice(0, name.indexOf("/"))}/cost`;
+      const files = (build: string) => ({
+        "apps/cost/app.yaml":
+          `name: "${appName}"\ntitle: Cost\nbridge: 1\ncapabilities: [runs:read]\n`,
+        "apps/cost/dist/index.html": build,
+        "apps/cost/dist/assets/main.js": "export {};\n",
+      });
+      const v1 = await buildSkillArchive({
+        name,
+        skills: {},
+        apps: ["apps/cost"],
+        files: files("<html>v1"),
+      });
+      await installArchive(repoDir, lockfile, { [name]: v1 }, name);
+
+      const catalog = new FilesystemAppCatalog({ repoDir });
+      const { apps, problems } = await catalog.list();
+      assertEquals(problems, []);
+      assertEquals(apps.map((app) => app.descriptor.name), [appName]);
+      assertEquals(apps[0].origin, "extension");
+      assertEquals(apps[0].built, true);
+
+      const v2 = await buildSkillArchive({
+        name,
+        skills: {},
+        apps: ["apps/cost"],
+        files: files("<html>v2"),
+        version: "2026.01.02.1",
+      });
+      await installArchive(repoDir, lockfile, { [name]: v2 }, name, {
+        force: true,
+      });
+      const after = await catalog.list();
+      assertEquals(
+        await Deno.readTextFile(
+          join(after.apps[0].root, "dist", "index.html"),
+        ),
+        "<html>v2",
+      );
     });
   },
 );

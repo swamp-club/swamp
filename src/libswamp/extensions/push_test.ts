@@ -79,6 +79,7 @@ function makeManifest(
     reports: [],
     webhooks: [],
     skills: [],
+    apps: [],
     include: [],
     additionalFiles: [],
     binaries: [],
@@ -180,6 +181,7 @@ function makeExecuteInput(
       reports: 0,
       webhooks: 0,
       skills: 0,
+      apps: 0,
     },
     ...overrides,
   };

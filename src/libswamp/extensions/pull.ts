@@ -1873,6 +1873,7 @@ const EXTENSION_ROOT_ENTRIES = new Set([
   "datastores",
   "reports",
   "webhooks",
+  "apps",
   "files",
   "manifest.yaml",
 ]);
@@ -1928,6 +1929,7 @@ export async function applyInstall(
   const absoluteReportsDir = join(absoluteExtRoot, "reports");
   const absoluteWebhooksDir = join(absoluteExtRoot, "webhooks");
   const absoluteFilesDir = join(absoluteExtRoot, "files");
+  const absoluteAppsDir = join(absoluteExtRoot, "apps");
   const bundleRootOf = (sourceKind: string): string => {
     const root = installRoots.bundleRoots.find((r) =>
       r.sourceKind === sourceKind
@@ -2160,6 +2162,7 @@ export async function applyInstall(
     await stage("webhooks", absoluteWebhooksDir);
     await stage("webhook-bundles", webhookBundlesDir);
     await stage("files", absoluteFilesDir);
+    await stage("apps", absoluteAppsDir);
     // shared sources push placed at the archive root go to the same path under
     // the extension root, so relative imports resolve as they do in the
     // archive.

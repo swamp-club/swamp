@@ -26,9 +26,15 @@
 
 import type {
   DataResponse,
+  DataSubscribeFrame,
+  DataSubscribePayload,
   ModelMethodRunEvent,
   ModelMethodRunPayload,
   ModelMethodRunView,
+  RunAttachEvent,
+  RunAttachKind,
+  RunAttachPayload,
+  RunEventStamp,
   ServerMessage,
   ServerRequest,
   WorkflowResumePayload,
@@ -43,6 +49,138 @@ import {
 } from "./stream.ts";
 import { AsyncIterableQueue } from "./queue.ts";
 import { retryAfterDelayMs } from "./http_transport.ts";
+
+/** Handlers a {@link SwampTransport} calls for one connection. */
+export interface SwampTransportHandlers {
+  /** A decoded frame from the server. */
+  onFrame(frame: ServerMessage): void;
+  /** The connection is gone; every request on it is lost. */
+  onClose(): void;
+}
+
+/** One open channel to serve; requests are tracked against the one they used. */
+export interface SwampConnection {
+  readonly isOpen: boolean;
+  send(request: ServerRequest): void;
+  close(): void;
+}
+
+/** Lets a {@link SwampClient} run over something other than a socket it owns. */
+export interface SwampTransport {
+  /** Whether each open gives a new connection, so a draining one can retire. */
+  readonly reopens: boolean;
+  /** Resolves when frames can be sent; rejects if that cannot happen. */
+  open(handlers: SwampTransportHandlers): Promise<SwampConnection>;
+}
+
+/** The default transport: a WebSocket to serve per connection. */
+export class WebSocketTransport implements SwampTransport {
+  readonly reopens = true;
+  private url: string;
+  private token: string | undefined;
+
+  constructor(url: string, token?: string) {
+    this.url = url;
+    this.token = token;
+  }
+
+  open(handlers: SwampTransportHandlers): Promise<SwampConnection> {
+    return new Promise<SwampConnection>((resolve, reject) => {
+      const protocols = this.token ? [`bearer.${this.token}`] : undefined;
+      const socket = new WebSocket(this.url, protocols);
+      let opened = false;
+      const connection: SwampConnection = {
+        get isOpen() {
+          return socket.readyState === WebSocket.OPEN;
+        },
+        send(request) {
+          if (socket.readyState !== WebSocket.OPEN) {
+            throw new Error("WebSocket is not connected");
+          }
+          socket.send(JSON.stringify(request));
+        },
+        close() {
+          socket.close();
+        },
+      };
+
+      socket.onopen = () => {
+        opened = true;
+        resolve(connection);
+      };
+
+      socket.onerror = (event) => {
+        const msg = event instanceof ErrorEvent
+          ? event.message
+          : "WebSocket connection failed";
+        reject(new Error(msg));
+      };
+
+      socket.onmessage = (event) => {
+        let msg: ServerMessage;
+        try {
+          msg = JSON.parse(event.data as string) as ServerMessage;
+        } catch {
+          return;
+        }
+        handlers.onFrame(msg);
+      };
+
+      socket.onclose = () => {
+        if (!opened) {
+          reject(new Error("WebSocket closed before it opened"));
+          return;
+        }
+        handlers.onClose();
+      };
+    });
+  }
+}
+
+/** What an attach says besides the run's own events. */
+export type RunAttachNotice =
+  | {
+    kind: "attached";
+    runId: string;
+    runKind: RunAttachKind;
+    startedAt: string;
+  }
+  | { kind: "elsewhere"; runId: string; instanceId: string }
+  | {
+    kind: "interrupted";
+    runId: string;
+    instanceId: string;
+    reason: "instance_dead";
+  };
+
+/** Everything {@link SwampClient.runAttachStream} yields. */
+export type RunFollowEvent = RunAttachEvent | RunAttachNotice;
+
+function attachNotice(msg: ServerMessage): RunAttachNotice | null {
+  switch (msg.type) {
+    case "run.attached":
+      return {
+        kind: "attached",
+        runId: msg.payload.runId,
+        runKind: msg.payload.kind,
+        startedAt: msg.payload.startedAt,
+      };
+    case "run.elsewhere":
+      return { kind: "elsewhere", ...msg.payload };
+    case "run.interrupted":
+      return { kind: "interrupted", ...msg.payload };
+    default:
+      return null;
+  }
+}
+
+/** A page {@link SwampClient.dataSubscribeStream} yields. */
+export type DataChangesPage = { kind: "changes" } & DataSubscribeFrame;
+
+/** Stops a stream: the run itself goes on, only following it ends. */
+export interface StreamOptions {
+  signal?: AbortSignal;
+}
 
 export interface SwampClientOptions {
   token?: string;
@@ -96,7 +234,7 @@ type PendingKind = "run" | "reply" | "stream";
 interface PendingRequest {
   kind: PendingKind;
   type: string;
-  socket: WebSocket;
+  connection: SwampConnection;
   // deno-lint-ignore no-explicit-any
   resolve: (value: any) => void;
   reject: (error: Error) => void;
@@ -133,20 +271,20 @@ function runResult(event: RunTerminal): WorkflowRunResult {
 }
 
 export class SwampClient {
-  private url: string;
-  private token: string | undefined;
-  private socket: WebSocket | null = null;
+  private transport: SwampTransport;
+  private connection: SwampConnection | null = null;
   private pending = new Map<string, PendingRequest>();
   private connectPromise: Promise<void> | null = null;
-  private retired = new Set<WebSocket>();
+  private retired = new Set<SwampConnection>();
   private retryBudgetMs: number;
   private sleep: (ms: number) => Promise<void>;
   private random: () => number;
   private now: () => number;
 
-  constructor(url: string, options?: SwampClientOptions) {
-    this.url = url;
-    this.token = options?.token;
+  constructor(target: string | SwampTransport, options?: SwampClientOptions) {
+    this.transport = typeof target === "string"
+      ? new WebSocketTransport(target, options?.token)
+      : target;
     this.retryBudgetMs = Math.max(0, options?.retryBudgetMs ?? 30_000);
     this.sleep = options?.sleep ?? defaultSleep;
     this.random = options?.random ?? Math.random;
@@ -154,7 +292,7 @@ export class SwampClient {
   }
 
   /**
-   * Opens the WebSocket connection. Resolves when the connection is ready.
+   * Opens the connection. Resolves when the connection is ready.
    * Safe to call multiple times — returns the same promise if already connecting.
    * A refused connection or a 502, 503 or 504 upgrade is tried again with
    * backoff within `retryBudgetMs`.
@@ -165,9 +303,7 @@ export class SwampClient {
 
   // A connect already under way keeps its own deadline.
   private connectBy(deadline: number): Promise<void> {
-    if (this.socket?.readyState === WebSocket.OPEN) {
-      return Promise.resolve();
-    }
+    if (this.connection?.isOpen) return Promise.resolve();
     if (this.connectPromise) return this.connectPromise;
 
     const promise: Promise<void> = this.openWithRetry(deadline).finally(() => {
@@ -191,49 +327,33 @@ export class SwampClient {
     }
   }
 
-  private openOnce(): Promise<void> {
-    return new Promise<void>((resolve, reject) => {
-      const protocols = this.token ? [`bearer.${this.token}`] : undefined;
-      const socket = new WebSocket(this.url, protocols);
-
-      socket.onopen = () => {
-        this.socket = socket;
-        resolve();
-      };
-
-      socket.onerror = (event) => {
-        const msg = event instanceof ErrorEvent
-          ? event.message
-          : "WebSocket connection failed";
-        reject(new Error(msg));
-      };
-
-      socket.onmessage = (event) => {
-        this.handleMessage(event.data as string);
-      };
-
-      // A socket closed by close() can report it after a reconnect; it settles
-      // only the requests sent on it and never touches the newer socket.
-      socket.onclose = () => {
-        if (this.socket === socket) this.socket = null;
-        this.retired.delete(socket);
-        reject(new Error("WebSocket closed before it opened"));
+  private async openOnce(): Promise<void> {
+    let connection: SwampConnection | null = null;
+    // A connection closed by close() can report it after a reconnect; it
+    // settles only the requests sent on it and never touches the newer one.
+    connection = await this.transport.open({
+      onFrame: (frame) => this.handleMessage(frame),
+      onClose: () => {
+        if (connection === null) return;
+        if (this.connection === connection) this.connection = null;
+        this.retired.delete(connection);
         for (const [id, pending] of this.pending) {
-          if (pending.socket !== socket) continue;
+          if (pending.connection !== connection) continue;
           this.pending.delete(id);
           pending.reject(
             new SwampClientError("connection_closed", "WebSocket closed"),
           );
         }
-      };
+      },
     });
+    this.connection = connection;
   }
 
-  /** Closes the WebSocket connection. */
+  /** Closes the connection. */
   close(): void {
-    this.socket?.close();
-    this.socket = null;
-    for (const socket of this.retired) socket.close();
+    this.connection?.close();
+    this.connection = null;
+    for (const connection of this.retired) connection.close();
     this.retired.clear();
   }
 
@@ -295,12 +415,14 @@ export class SwampClient {
    */
   workflowRunStream(
     payload: WorkflowRunPayload,
-  ): AsyncGenerator<WorkflowRunEvent> {
-    return this.streamWithRetry<WorkflowRunEvent>(
+    options: StreamOptions = {},
+  ): AsyncGenerator<WorkflowRunEvent & RunEventStamp> {
+    return this.streamWithRetry<WorkflowRunEvent & RunEventStamp>(
       (id) => ({ type: "workflow.run", id, payload }),
       (event) =>
         event.kind === "completed" || event.kind === "cancelled" ||
         event.kind === "suspended",
+      options.signal,
     );
   }
 
@@ -310,10 +432,39 @@ export class SwampClient {
    */
   modelMethodRunStream(
     payload: ModelMethodRunPayload,
+    options: StreamOptions = {},
   ): AsyncGenerator<ModelMethodRunEvent> {
     return this.streamWithRetry<ModelMethodRunEvent>(
       (id) => ({ type: "model.method.run", id, payload }),
       (event) => event.kind === "completed" || event.kind === "cancelled",
+      options.signal,
+    );
+  }
+
+  /** Yields `attached` first; `elsewhere` or `interrupted` ends the stream. */
+  runAttachStream(
+    payload: RunAttachPayload,
+    options: StreamOptions = {},
+  ): AsyncGenerator<RunFollowEvent> {
+    return this.streamWithRetry<RunFollowEvent>(
+      (id) => ({ type: "run.attach", id, payload }),
+      (event) =>
+        event.kind === "completed" || event.kind === "cancelled" ||
+        event.kind === "suspended" || event.kind === "elsewhere" ||
+        event.kind === "interrupted",
+      options.signal,
+    );
+  }
+
+  /** Runs until stopped; throws a resumable error to resubscribe from the last cursor. */
+  dataSubscribeStream(
+    payload: DataSubscribePayload,
+    options: StreamOptions = {},
+  ): AsyncGenerator<DataChangesPage> {
+    return this.streamWithRetry<DataChangesPage>(
+      (id) => ({ type: "data.subscribe", id, payload }),
+      () => false,
+      options.signal,
     );
   }
 
@@ -377,36 +528,59 @@ export class SwampClient {
   private async *streamWithRetry<E extends { kind: string }>(
     build: (id: string) => ServerRequest,
     ends: (event: E) => boolean,
+    signal?: AbortSignal,
   ): AsyncGenerator<E> {
+    if (signal?.aborted) return;
     const deadline = this.now() + this.retryBudgetMs;
     for (let attempt = 0;; attempt++) {
       await this.connectBy(deadline);
       const id = crypto.randomUUID();
       const queue = new AsyncIterableQueue<E>();
       let refusal: SwampClientError | undefined;
+      let ended = false;
 
       this.start(build(id), {
         kind: "stream",
-        resolve: () => {},
-        reject: (err) => queue.error(err),
+        resolve: () => {
+          ended = true;
+        },
+        reject: (err) => {
+          ended = true;
+          queue.error(err);
+        },
         refused: (err) => {
+          ended = true;
           refusal = err;
           queue.done();
         },
         handlers: withDefaults<E>({}, (event) => {
           queue.push(event);
           // an error event ends through reject, so the stream throws after it
-          if (ends(event)) queue.done();
+          if (ends(event)) {
+            ended = true;
+            queue.done();
+          }
         }),
         queue,
       });
+      const onAbort = () => queue.done();
+      signal?.addEventListener("abort", onAbort, { once: true });
 
       try {
         yield* queue;
       } finally {
+        signal?.removeEventListener("abort", onAbort);
+        // a consumer that stops early detaches; serve keeps the run going
+        if (!ended && this.pending.has(id)) {
+          try {
+            this.cancel(id);
+          } catch {
+            // The connection is gone, and with it the stream.
+          }
+        }
         this.settle(id);
       }
-      if (refusal === undefined) return;
+      if (refusal === undefined || signal?.aborted) return;
       await this.waitToRestart(refusal, attempt, deadline);
     }
   }
@@ -426,33 +600,26 @@ export class SwampClient {
     await this.sleep(delay);
   }
 
-  // Registers the request against the socket it is sent on; a send that
+  // Registers the request against the connection it is sent on; a send that
   // throws leaves nothing pending.
   private start(
     request: ServerRequest,
-    entry: Omit<PendingRequest, "socket" | "type">,
+    entry: Omit<PendingRequest, "connection" | "type">,
   ): void {
-    const socket = this.socket;
-    if (!socket || socket.readyState !== WebSocket.OPEN) {
+    const connection = this.connection;
+    if (!connection || !connection.isOpen) {
       throw new Error("WebSocket is not connected");
     }
-    this.pending.set(request.id, { ...entry, type: request.type, socket });
+    this.pending.set(request.id, { ...entry, type: request.type, connection });
     try {
-      socket.send(JSON.stringify(request));
+      connection.send(request);
     } catch (error) {
       this.pending.delete(request.id);
       throw error;
     }
   }
 
-  private handleMessage(data: string): void {
-    let msg: ServerMessage;
-    try {
-      msg = JSON.parse(data) as ServerMessage;
-    } catch {
-      return;
-    }
-
+  private handleMessage(msg: ServerMessage): void {
     const pending = this.pending.get(msg.id);
     if (!pending) return;
 
@@ -468,8 +635,11 @@ export class SwampClient {
         pending.refused && !pending.sawEvent && refusedBeforeStart(err)
       ) {
         // a fresh connection may reach a node that can start it
-        if (err.code === "draining" || err.code === "serve_not_leader") {
-          this.retire(pending.socket);
+        if (
+          (err.code === "draining" || err.code === "serve_not_leader") &&
+          this.transport.reopens
+        ) {
+          this.retire(pending.connection);
         }
         pending.refused(err);
       } else {
@@ -539,6 +709,21 @@ export class SwampClient {
       return;
     }
 
+    // a subscription's pages carry payloads but belong in its stream
+    if (pending.queue && msg.type === "data.subscribe") {
+      pending.sawEvent = true;
+      pending.handlers["changes"]?.({ kind: "changes", ...msg.payload });
+      return;
+    }
+
+    // an attach's frames carry payloads but belong in its stream
+    const notice = pending.queue ? attachNotice(msg) : null;
+    if (notice !== null) {
+      pending.sawEvent = true;
+      pending.handlers[notice.kind]?.(notice);
+      return;
+    }
+
     // Request-response: the response type matches the request type and
     // carries a payload (e.g. { type: "workflow.search", id, payload }).
     if ("payload" in msg) {
@@ -548,37 +733,37 @@ export class SwampClient {
     }
   }
 
-  // a retired socket closes once the last request on it settles
+  // a retired connection closes once the last request on it settles
   private settle(id: string): void {
     const pending = this.pending.get(id);
     if (!pending) return;
     this.pending.delete(id);
-    const socket = pending.socket;
-    if (!this.retired.has(socket)) return;
+    const connection = pending.connection;
+    if (!this.retired.has(connection)) return;
     for (const other of this.pending.values()) {
-      if (other.socket === socket) return;
+      if (other.connection === connection) return;
     }
-    this.retired.delete(socket);
-    socket.close();
+    this.retired.delete(connection);
+    connection.close();
   }
 
-  // A draining serve takes no new runs on this socket, so the next start
+  // A draining serve takes no new runs on this connection, so the next start
   // opens another; runs already on it finish there.
-  private retire(socket: WebSocket): void {
-    if (this.socket === socket) this.socket = null;
+  private retire(connection: SwampConnection): void {
+    if (this.connection === connection) this.connection = null;
     for (const pending of this.pending.values()) {
-      if (pending.socket === socket) {
-        this.retired.add(socket);
+      if (pending.connection === connection) {
+        this.retired.add(connection);
         return;
       }
     }
-    socket.close();
+    connection.close();
   }
 
   private send(request: ServerRequest): void {
-    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+    if (!this.connection || !this.connection.isOpen) {
       throw new Error("WebSocket is not connected");
     }
-    this.socket.send(JSON.stringify(request));
+    this.connection.send(request);
   }
 }

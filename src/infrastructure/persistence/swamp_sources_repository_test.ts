@@ -27,6 +27,7 @@ import {
   removeSwampSources,
   resolveExtensionKindsForSource,
   resolveMountedSourceDirs,
+  resolveMountedSourceRoots,
   resolveSourceExtensionDirs,
   writeSwampSources,
 } from "./swamp_sources_repository.ts";
@@ -1280,5 +1281,35 @@ Deno.test("resolveSourceExtensionDirs: a source under an underscore-prefixed anc
     assertEquals(collectDirsForKind(resolved, "models"), [src]);
   } finally {
     await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("resolveMountedSourceRoots: returns each source's own folder", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_sources_test_" });
+  try {
+    const repoDir = join(tmpDir, "repo");
+    const sibling = join(tmpDir, "sibling");
+    await Deno.mkdir(repoDir, { recursive: true });
+    await Deno.mkdir(join(sibling, "extensions", "models"), {
+      recursive: true,
+    });
+    await writeSwampSources(repoDir, { sources: [{ path: "../sibling" }] });
+    const { result } = await withMockedCommand(
+      [{ code: 128, stdout: "" }],
+      () => resolveMountedSourceRoots(repoDir),
+    );
+    assertEquals(result.length, 1);
+    assertPathEquals(result[0], sibling);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("resolveMountedSourceRoots: returns nothing without a sources file", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_sources_test_" });
+  try {
+    assertEquals(await resolveMountedSourceRoots(tmpDir), []);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
   }
 });

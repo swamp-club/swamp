@@ -124,3 +124,42 @@ Deno.test("serveDashboardRoute: serves files, falls back to index.html and ignor
     await post?.body?.cancel();
   });
 });
+
+Deno.test("serveDashboardRoute: /apps pages are the bundle's index, never its files", async () => {
+  await withDist(async (dir) => {
+    for (const path of ["/apps", "/apps/@acme/cost", "/apps/assets/app.js"]) {
+      const page = await serveDashboardRoute(
+        dir,
+        new Request(`http://127.0.0.1${path}`),
+      );
+      assertEquals(await page?.text(), "<html>index</html>");
+    }
+    assertEquals(
+      await serveDashboardRoute(dir, new Request("http://127.0.0.1/appsx")),
+      null,
+    );
+  });
+});
+
+Deno.test("serveDashboardRoute: every dashboard document isolates its opener, its assets do not", async () => {
+  await withDist(async (dir) => {
+    for (const path of ["/dashboard", "/dashboard/start", "/apps", "/apps/x"]) {
+      const page = await serveDashboardRoute(
+        dir,
+        new Request(`http://127.0.0.1${path}`),
+      );
+      assertEquals(
+        page?.headers.get("cross-origin-opener-policy"),
+        "same-origin",
+        path,
+      );
+      await page?.body?.cancel();
+    }
+    const asset = await serveDashboardRoute(
+      dir,
+      new Request("http://127.0.0.1/dashboard/assets/app.js"),
+    );
+    assertEquals(asset?.headers.get("cross-origin-opener-policy"), null);
+    await asset?.body?.cancel();
+  });
+});

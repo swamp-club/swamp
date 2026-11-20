@@ -65,6 +65,15 @@ import {
   INTEGRATION_DATA_NAME,
   INTEGRATION_MODEL_TYPE,
 } from "../../domain/models/access/integration_model.ts";
+import { cachedAppCatalog, serveAppRoute } from "../../serve/app_assets.ts";
+import {
+  readHeldPlatforms,
+  serveAppPlatformRoute,
+} from "../../serve/app_platform_assets.ts";
+import { ControlPlaneAppApprovalRepository } from "../../infrastructure/persistence/control_plane_app_store.ts";
+import { VaultAppLaunchKey } from "../../serve/app_launch_key.ts";
+import { FilesystemAppCatalog } from "../../infrastructure/persistence/filesystem_app_catalog.ts";
+import { resolveMountedSourceRoots } from "../../infrastructure/persistence/swamp_sources_repository.ts";
 import { RunIndexWarmup } from "../../serve/run_index_warmup.ts";
 import { EventLoopLagMonitor } from "../../serve/event_loop_lag.ts";
 import { RUN_INDEX_CACHE_MAX_RUNS } from "../../infrastructure/persistence/run_index_cache.ts";
@@ -4908,6 +4917,11 @@ export const serveCommand = new Command()
           ),
       })
       : null;
+    const appCatalog = new FilesystemAppCatalog({
+      repoDir: resolvedRepoDir,
+      sourceDirs: () => resolveMountedSourceRoots(resolvedRepoDir),
+    });
+    const appRouteCatalog = cachedAppCatalog(appCatalog);
     const connectionCtx: import("../../serve/connection.ts").ConnectionContext =
       {
         handover: serveHandover,
@@ -4949,6 +4963,13 @@ export const serveCommand = new Command()
         runTracker,
         dispatchService,
         controlPlaneStore,
+        appDeps: {
+          catalog: appCatalog,
+          approvals: new ControlPlaneAppApprovalRepository(controlPlaneStore),
+          launchKey: new VaultAppLaunchKey(tokenSecretsProvider),
+          now: () => new Date(),
+          platforms: () => readHeldPlatforms(),
+        },
         defaultVault: repoMarker?.defaultVault,
         instanceId,
         staleTtlMs,
@@ -8397,6 +8418,17 @@ export const serveCommand = new Command()
           if (url.pathname === "/" || url.pathname === "/health") {
             return Response.json(legacyHealthBody(shuttingDown));
           }
+        }
+
+        if (dashboardDistDir && connectionCtx.appDeps) {
+          const platformResponse = await serveAppPlatformRoute(req);
+          if (platformResponse) return platformResponse;
+          const appResponse = await serveAppRoute(req, {
+            ...connectionCtx.appDeps,
+            catalog: appRouteCatalog,
+            trustProxy,
+          });
+          if (appResponse) return appResponse;
         }
 
         if (dashboardDistDir) {

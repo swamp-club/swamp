@@ -1,0 +1,159 @@
+/*
+ * shadcn's variables, fed by the tokens the dashboard sends over the bridge.
+ * The values here are only what an app shows before the first message, or
+ * outside the dashboard.
+ */
+:root {
+  --swamp-bg: #f4f5f7;
+  --swamp-surface: #ffffff;
+  --swamp-surface-hover: #f8f9fb;
+  --swamp-surface-inset: #eceef2;
+  --swamp-text-1: #111318;
+  --swamp-text-2: #4a4e5a;
+  --swamp-text-3: #646979;
+  --swamp-border: #dcdfe6;
+  --swamp-border-strong: #878c99;
+  --swamp-accent: #047857;
+  --swamp-accent-hover: #065f46;
+  --swamp-accent-subtle: #ecfdf5;
+  --swamp-success: #047857;
+  --swamp-warning: #a15308;
+  --swamp-danger: #b91c1c;
+  --swamp-info: #1d4ed8;
+  --swamp-running: #7c3aed;
+  --swamp-cancelled: #4b5563;
+  --swamp-chart-grid: #e8eaef;
+  --swamp-chart-label: #646979;
+
+  --background: var(--swamp-bg);
+  --foreground: var(--swamp-text-1);
+  --card: var(--swamp-surface);
+  --card-foreground: var(--swamp-text-1);
+  --popover: var(--swamp-surface);
+  --popover-foreground: var(--swamp-text-1);
+  --primary: var(--swamp-accent);
+  --primary-foreground: var(--swamp-surface);
+  --secondary: var(--swamp-surface-inset);
+  --secondary-foreground: var(--swamp-text-1);
+  --muted: var(--swamp-surface-inset);
+  --muted-foreground: var(--swamp-text-3);
+  --accent: var(--swamp-surface-hover);
+  --accent-foreground: var(--swamp-text-1);
+  --destructive: var(--swamp-danger);
+  --border: var(--swamp-border);
+  /* control edges need 3:1 (WCAG 1.4.11); card and divider borders are decorative */
+  --input: var(--swamp-border-strong, var(--swamp-border));
+  --ring: var(--swamp-accent);
+  --radius: 0.5rem;
+  --sidebar: var(--swamp-surface);
+  --sidebar-foreground: var(--swamp-text-1);
+  --sidebar-primary: var(--swamp-accent);
+  --sidebar-primary-foreground: var(--swamp-surface);
+  --sidebar-accent: var(--swamp-surface-inset);
+  --sidebar-accent-foreground: var(--swamp-text-1);
+  --sidebar-border: var(--swamp-border);
+  --sidebar-ring: var(--swamp-accent);
+  /* the dashboard's --chart-bar-* are status colours; these are for series */
+  --chart-1: #2a78d6;
+  --chart-2: #d9592a;
+  --chart-3: #16996b;
+  --chart-4: #b37a00;
+  --chart-5: #c9608b;
+}
+
+/* inset is darker than the page in dark mode, so it reads as a hole, not a fill */
+.dark {
+  --primary-foreground: var(--swamp-bg);
+  --secondary: var(--swamp-surface-hover);
+  --muted: var(--swamp-surface-hover);
+  --accent: var(--swamp-surface-hover);
+  --sidebar-primary-foreground: var(--swamp-bg);
+  --sidebar-accent: var(--swamp-surface-hover);
+  --chart-1: #3987e5;
+  --chart-2: #d95926;
+  --chart-3: #199e70;
+  --chart-4: #c98500;
+  --chart-5: #d55181;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --font-sans: "Plus Jakarta Sans", system-ui, -apple-system, "Segoe UI",
+    sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+}
+
+@layer base {
+  *,
+  ::before,
+  ::after {
+    border-color: var(--border);
+    outline-color: color-mix(in oklab, var(--ring) 50%, transparent);
+  }
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: "Plus Jakarta Sans", system-ui, -apple-system, "Segoe UI",
+    sans-serif;
+}
+
+/* Tailwind's reset strips what rendered markdown needs, editors included. */
+.swamp-prose > * + * {
+  margin-top: 0.25rem;
+}
+
+.swamp-prose ul {
+  list-style: disc;
+  padding-left: 1.1rem;
+}
+
+.swamp-prose ol {
+  list-style: decimal;
+  padding-left: 1.1rem;
+}
+
+.swamp-prose a {
+  text-decoration: underline;
+}
+
+.swamp-prose blockquote {
+  border-left: 2px solid var(--border);
+  padding-left: 0.5rem;
+  color: var(--muted-foreground);
+}

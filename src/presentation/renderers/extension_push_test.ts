@@ -58,6 +58,7 @@ function resolved(
     reports: [],
     webhooks: [],
     skills: [],
+    apps: [],
     additionalFiles: [],
     platforms: [],
     labels: [],
@@ -198,6 +199,7 @@ Deno.test("extensionPushRenderer: JSON success reports applied visibility", asyn
         reportCount: 0,
         webhookCount: 0,
         skillCount: 0,
+        appCount: 0,
       },
     });
     assertEquals(JSON.parse(logs[0]).visibility, "private");
@@ -243,6 +245,7 @@ const completedEvent = {
     reportCount: 0,
     webhookCount: 0,
     skillCount: 0,
+    appCount: 0,
   },
 } as const satisfies ExtensionPushEvent;
 

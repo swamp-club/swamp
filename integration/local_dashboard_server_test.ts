@@ -17,7 +17,17 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { join } from "@std/path";
+import { capabilityKey } from "../src/domain/apps/app_descriptor.ts";
+import {
+  APP_LAUNCH_TTL_MS,
+  appApprovalStamp,
+  mintAppLaunchToken,
+} from "../src/domain/apps/app_launch.ts";
+import { EphemeralAppLaunchKey } from "../src/serve/app_launch_key.ts";
+import { APP_BASE_HEADER } from "../src/serve/app_assets.ts";
+import { HUB_TOKEN_HEADER } from "../src/serve/local/hub_token.ts";
 import { captureLogs } from "./remote_secrets_baseline_harness.ts";
 import {
   type LocalDashboardServer,
@@ -208,4 +218,70 @@ Deno.test("localDashboardServer: a 421 names the refused host with no --trusted-
   const warnings = logs.filter((l) => l.text.startsWith("Misdirected request"));
   assertEquals(warnings.map((l) => l.level), ["warning", "warning"]);
   assertEquals(warnings[0].text, expected);
+});
+
+Deno.test("localDashboardServer: serves an enabled app's files under the hub's base", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(join(dir, "dist"));
+    await Deno.writeTextFile(join(dir, "dist", "index.html"), "<html>");
+    const descriptor = {
+      name: "@acme/cost",
+      title: "Cost",
+      entry: "dist/index.html",
+      bridge: 1 as const,
+      capabilities: [],
+      run: [],
+      methods: [],
+    };
+    const launchKey = new EphemeralAppLaunchKey();
+    const id = await mintAppLaunchToken(await launchKey.signing(), {
+      name: descriptor.name,
+      expiresAt: Date.now() + APP_LAUNCH_TTL_MS,
+      approvalStamp: await appApprovalStamp({
+        capabilityKey: capabilityKey(descriptor, "local"),
+        approvedAt: "2026-11-04T00:00:00.000Z",
+      }),
+    });
+    const ctx = {
+      appDeps: {
+        launchKey,
+        now: () => new Date(),
+        catalog: {
+          list: () =>
+            Promise.resolve({
+              apps: [{ descriptor, root: dir, origin: "local", built: true }],
+              problems: [],
+            }),
+        },
+        approvals: {
+          get: () =>
+            Promise.resolve({
+              name: descriptor.name,
+              capabilityKey: capabilityKey(descriptor, "local"),
+              approvedBy: "user:a",
+              approvedAt: "2026-11-04T00:00:00.000Z",
+            }),
+          save: () => Promise.resolve(),
+          delete: () => Promise.resolve(true),
+        },
+      },
+    } as unknown as ConnectionContext;
+    await withServer(async (_server, base) => {
+      const res = await fetch(`${base}/app-files/${id}/index.html`, {
+        headers: {
+          [HUB_TOKEN_HEADER]: TOKEN,
+          [APP_BASE_HEADER]: "hub.test/w/alpha/app-files/x/",
+        },
+      });
+      assertEquals(res.status, 200);
+      assertStringIncludes(
+        res.headers.get("content-security-policy") ?? "",
+        "script-src hub.test/w/alpha/app-files/x/",
+      );
+      await res.body?.cancel();
+    }, ctx);
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
 });

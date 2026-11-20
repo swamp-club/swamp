@@ -95,6 +95,8 @@ export interface ModelMethodRunPayload {
   runtimeTags?: Record<string, string>;
   typeArg?: string;
   definitionName?: string;
+  /** Refuses the run unless the behavior it acts on is of this type. */
+  expectedType?: string;
   skipAllReports?: boolean;
   skipReportNames?: string[];
   skipReportLabels?: string[];
@@ -669,6 +671,51 @@ export interface RunHistoryPayload {
   all?: boolean;
 }
 
+/** Follows a run already in progress, from its event after `afterSeq`. */
+export interface RunAttachPayload {
+  /** kinds newer than old clients, sent only when listed */
+  eventKinds?: string[];
+  runId: string;
+  afterSeq?: number;
+}
+
+/** What a data change did to its item. */
+export type DataChangeKind = "saved" | "deleted" | "renamed";
+
+/** One data item that changed, as `data.subscribe` reports it. */
+export interface DataChange {
+  /** The commit's position; subscribe again from it to resume after it. */
+  cursor: number;
+  /** When the write was committed, on serve's clock (ISO). */
+  at: string;
+  behavior: string;
+  type: string;
+  name: string;
+  /** The version saved or removed; absent when a whole name went. */
+  version?: number;
+  change: DataChangeKind;
+  to?: string;
+}
+
+/** Serve answers `data_feed_unavailable` when its datastore has no change feed. */
+export interface DataSubscribePayload {
+  /** Resume after this cursor; from now when absent. */
+  cursor?: number;
+  /** Behavior names to hear about; any when absent. */
+  behaviors?: string[];
+  /** Behavior types to hear about; any when absent. */
+  types?: string[];
+}
+
+/** A page of changes, or an empty one as a heartbeat every few seconds. */
+export interface DataSubscribeFrame {
+  changes: DataChange[];
+  /** The last position read; subscribe again from it after a disconnect. */
+  cursor: number;
+  head: number;
+  done: false;
+}
+
 // ── Workflow trigger operations ─────────────────────────────────────────
 
 export interface WorkflowTriggerGetPayload {
@@ -829,6 +876,8 @@ export type ServerRequest =
   | { type: "doctor.extensions"; id: string }
   // Run tracking
   | { type: "run.history"; id: string; payload?: RunHistoryPayload }
+  | { type: "run.attach"; id: string; payload: RunAttachPayload }
+  | { type: "data.subscribe"; id: string; payload: DataSubscribePayload }
   // Server admin
   | { type: "worker.list"; id: string; payload?: WorkerListPayload }
   | { type: "worker.queue.list"; id: string }
@@ -1074,6 +1123,10 @@ export type ServerMessage =
   | { type: "doctor.extensions"; id: string; payload: DataResponse }
   // Run tracking responses
   | { type: "run.history"; id: string; payload: RunHistoryResponse }
+  | { type: "run.attached"; id: string; payload: RunAttachedReply }
+  | { type: "data.subscribe"; id: string; payload: DataSubscribeFrame }
+  | { type: "run.elsewhere"; id: string; payload: RunElsewhereReply }
+  | { type: "run.interrupted"; id: string; payload: RunInterruptedReply }
   // Server admin responses
   | { type: "worker.list"; id: string; payload: DataResponse }
   | { type: "worker.queue.list"; id: string; payload: DataResponse }
@@ -1411,3 +1464,784 @@ export interface ModelMethodRunView {
     tags?: Record<string, string>;
   }>;
 }
+
+// replies to app requests mirror libswamp's shapes; lists are already filtered to what the caller may read
+
+export interface ServerVersionPayload {
+  leader?: boolean;
+}
+
+export interface ServerVersionReply {
+  version: string;
+  gitSha: string;
+  /** Optional request features this server honours; absent on older servers. */
+  capabilities?: string[];
+}
+
+/** Retention has removed records older than `cutoff`, so a listing omits them. */
+export interface ReapedBefore {
+  cutoff: string;
+  retention: string;
+}
+
+// data.get
+
+export interface DataGetAlternative {
+  modelName: string;
+  modelType: string;
+  modelId: string;
+  jobName?: string;
+  stepName?: string;
+  version: number;
+  replacementQuery?: string;
+}
+
+export interface DataGetData {
+  id: string;
+  name: string;
+  modelId: string;
+  modelName: string;
+  modelType: string;
+  version: number;
+  contentType: string;
+  lifetime: string;
+  garbageCollection: string | number;
+  streaming: boolean;
+  tags: Record<string, string>;
+  ownerDefinition: {
+    definitionHash?: string;
+    ownerType: string;
+    ownerRef: string;
+    workflowId?: string;
+    workflowRunId?: string;
+    workflowName?: string;
+    jobName?: string;
+    stepName?: string;
+    source?: string;
+  };
+  createdAt: string;
+  size?: number;
+  checksum?: string;
+  contentPath: string;
+  /** Present unless the request set `includeContent: false`. */
+  content?: string;
+  contentEncoding?: "utf-8" | "base64";
+  replacementQuery?: string;
+  /** For a workflow-scoped read without `runId`: follows the latest run. */
+  latestRunQuery?: string;
+  warnings?: string[];
+  /** For a workflow-scoped read: other readable producers of the same name. */
+  alternatives?: DataGetAlternative[];
+}
+
+export interface DataGetReply {
+  data: DataGetData;
+}
+
+// data.query
+
+/** One stored data version as a query matches it. */
+export interface DataRecord {
+  id: string;
+  name: string;
+  version: number;
+  isLatest: boolean;
+  createdAt: string;
+  /** The repo that produced it within a shared datastore; empty when solo. */
+  namespace: string;
+  attributes: Record<string, unknown>;
+  tags: Record<string, string>;
+  modelName: string;
+  modelId: string;
+  modelType: string;
+  specName: string;
+  dataType: string;
+  contentType: string;
+  lifetime: string;
+  /** A count or a duration; empty when unknown. */
+  garbageCollection: number | string;
+  /** Empty when unknown. */
+  lifecycle: "active" | "deleted" | "";
+  ownerType: string;
+  streaming: boolean;
+  size: number;
+  content: unknown;
+  path: string;
+  /** Provenance; empty when not produced inside a workflow. */
+  ownerRef: string;
+  workflowRunId: string;
+  workflowName: string;
+  jobName: string;
+  stepName: string;
+  source: string;
+}
+
+/** What a `select` produced, one entry or row per match. */
+export type ProjectedData =
+  | { shape: "scalar"; values: unknown[] }
+  | { shape: "map"; columns: string[]; rows: Record<string, unknown>[] }
+  | { shape: "list"; rows: unknown[][] };
+
+export interface SpecNameHint {
+  suggestedPredicate: string;
+  otherFiltersDropped: boolean;
+}
+
+export interface DataQueryData {
+  predicate: string;
+  select?: string;
+  /** Empty when the query had a `select`: read `projected` instead. */
+  results: DataRecord[];
+  projected?: ProjectedData;
+  total: number;
+  limited: boolean;
+  specNameHint?: SpecNameHint;
+  /** With a sort, set when the page filled its limit; pass back as `cursor`. */
+  nextCursor?: string;
+}
+
+export interface DataQueryReply {
+  data: DataQueryData;
+}
+
+// data.search
+
+export interface DataSearchItem {
+  id: string;
+  name: string;
+  version: number;
+  contentType: string;
+  type: string;
+  lifetime: string;
+  /** Empty when unknown. */
+  lifecycle: "active" | "deleted" | "";
+  ownerType: string;
+  ownerRef: string;
+  modelId: string;
+  modelName: string;
+  modelType: string;
+  streaming: boolean;
+  size: number;
+  createdAt: string;
+  tags: Record<string, string>;
+  workflowTag?: string;
+  jobTag?: string;
+  stepTag?: string;
+}
+
+export interface DataSearchData {
+  query: string;
+  filters: Record<string, string>;
+  results: DataSearchItem[];
+  total: number;
+  limited: boolean;
+}
+
+export interface DataSearchReply {
+  data: DataSearchData;
+}
+
+// data.versions
+
+export interface DataVersionInfo {
+  version: number;
+  createdAt: string;
+  size?: number;
+  checksum?: string;
+  isLatest: boolean;
+}
+
+export interface DataVersionsData {
+  dataName: string;
+  modelId: string;
+  modelName: string;
+  modelType: string;
+  versions: DataVersionInfo[];
+  total: number;
+}
+
+export interface DataVersionsReply {
+  data: DataVersionsData;
+}
+
+// model.get / model.search
+
+export type StalenessState =
+  | "current"
+  | "upgradable"
+  | "stranded"
+  | "unknown"
+  | "invalid";
+
+export type MethodKind =
+  | "create"
+  | "read"
+  | "update"
+  | "delete"
+  | "list"
+  | "action";
+
+export interface MethodDescribeData {
+  name: string;
+  description: string;
+  /** JSON Schema of the method's arguments. */
+  arguments: object;
+  kind?: MethodKind;
+  kindSource: "declared" | "inferred" | "none";
+  outputLifetime?: string;
+}
+
+export interface ModelGetData {
+  id: string;
+  name: string;
+  description?: string;
+  type: string;
+  version: number;
+  tags: Record<string, string>;
+  /** Sensitive values are redacted. */
+  globalArguments: Record<string, unknown>;
+  autoCreated?: boolean;
+  typeVersion?: string;
+  currentTypeVersion?: string;
+  staleness?: StalenessState;
+  /** JSON Schema of the global arguments. */
+  globalArgumentsSchema?: object;
+  methods?: MethodDescribeData[];
+  configuredMethods?: Record<string, { arguments: Record<string, unknown> }>;
+}
+
+export interface ModelGetReply {
+  data: ModelGetData;
+}
+
+export interface ModelSearchItem {
+  id: string;
+  name: string;
+  type: string;
+}
+
+export interface ModelSearchData {
+  query: string;
+  results: ModelSearchItem[];
+}
+
+export interface ModelSearchReply {
+  data: ModelSearchData;
+}
+
+// model.output.search / model.usage.summary
+
+export interface ModelOutputSearchItem {
+  id: string;
+  definitionId: string;
+  modelName?: string;
+  type: string;
+  methodName: string;
+  status: string;
+  startedAt: string;
+  durationMs?: number;
+  triggeredBy?: "manual" | "workflow" | "model";
+  workflowId?: string;
+  workflowName?: string;
+  workflowRunId?: string;
+  stepName?: string;
+}
+
+export interface ModelOutputSearchData {
+  query: string;
+  results: ModelOutputSearchItem[];
+}
+
+export interface ModelOutputSearchReply {
+  data: ModelOutputSearchData;
+}
+
+export type ModelUsageSummaryReply = ModelUsageSummaryResponse;
+
+// workflow.get / workflow.search
+
+export interface JsonSchemaProperty {
+  type?: "string" | "number" | "integer" | "boolean" | "array" | "object";
+  description?: string;
+  default?: unknown;
+  enum?: unknown[];
+  items?: JsonSchemaProperty;
+  properties?: Record<string, JsonSchemaProperty>;
+  required?: string[];
+  additionalProperties?: boolean | JsonSchemaProperty;
+  [key: string]: unknown;
+}
+
+export interface InputsSchema {
+  type?: "object";
+  properties?: Record<string, JsonSchemaProperty>;
+  required?: string[];
+  additionalProperties?: boolean | JsonSchemaProperty;
+  [key: string]: unknown;
+}
+
+export type TriggerConditionData =
+  | { type: "always" }
+  | { type: "succeeded" }
+  | { type: "failed" }
+  | { type: "completed" }
+  | { type: "skipped" }
+  | { type: "and"; conditions: TriggerConditionData[] }
+  | { type: "or"; conditions: TriggerConditionData[] }
+  | { type: "not"; condition: TriggerConditionData };
+
+export interface ReportSelection {
+  require?: (string | { name: string; methods?: string[] })[];
+  skip?: string[];
+}
+
+export interface WorkflowGetData {
+  id: string;
+  name: string;
+  description?: string;
+  version: number;
+  inputs?: InputsSchema;
+  trigger?: { schedule?: string; inputs?: Record<string, unknown> };
+  tags: Record<string, string>;
+  reports?: ReportSelection;
+  jobs: {
+    name: string;
+    description?: string;
+    dependsOn: { job: string; condition: TriggerConditionData }[];
+    steps: {
+      name: string;
+      description?: string;
+      dependsOn: { step: string; condition: TriggerConditionData }[];
+      task: { type: string; [key: string]: unknown };
+    }[];
+  }[];
+  path: string;
+}
+
+export interface WorkflowGetReply {
+  data: WorkflowGetData;
+}
+
+export interface WorkflowSearchItem {
+  id: string;
+  name: string;
+  description?: string;
+  jobCount: number;
+  stepCount: number;
+  hasInputs: boolean;
+  trigger?: { schedule?: string; inputs?: Record<string, unknown> };
+}
+
+export interface WorkflowSearchData {
+  query: string;
+  /** The requested page. */
+  results: WorkflowSearchItem[];
+}
+
+export interface WorkflowSearchReply {
+  data: WorkflowSearchData;
+  /** Readable workflows matched, across every page. */
+  total: number;
+}
+
+// workflow.run.search / workflow.history.search / workflow.run.summary
+
+export interface WorkflowRunSearchItem {
+  runId: string;
+  workflowId: string;
+  workflowName: string;
+  status: string;
+  startedAt?: string;
+  completedAt?: string;
+  duration?: number;
+  tags?: Record<string, string>;
+  inputs?: Record<string, unknown>;
+  /** Inputs too large to list: only the run's record holds their values. */
+  inputsOmitted?: string[];
+  instanceId?: string;
+  triggerSource?: string;
+  failedStep?: string;
+  failureReason?: string;
+  stepProgress?: { completed: number; total: number };
+  /** Suspended with every gate decided and every nested run finished. */
+  awaitingResume?: boolean;
+  workflowHasInputs?: boolean;
+  /** Absent when the caller may not read the parent's workflow. */
+  parentRun?: {
+    workflowId: string;
+    workflowName: string;
+    runId: string;
+    stepName: string;
+  };
+  nestedWaits?: {
+    workflowId: string;
+    workflowName: string;
+    runId: string;
+    status?: string;
+  }[];
+}
+
+export interface WorkflowRunSearchData {
+  query: string;
+  /** The requested page, newest first. */
+  results: WorkflowRunSearchItem[];
+  reapedBefore?: ReapedBefore;
+}
+
+export interface WorkflowRunSearchReply {
+  data: WorkflowRunSearchData;
+  /** Readable runs matched, across every page. */
+  total: number;
+  since?: string;
+  /** With `since`: the start of the oldest match; absent when none matched. */
+  oldestStartedAt?: string;
+}
+
+export interface HistorySkippedWorkflow {
+  workflowId: string;
+  workflowName: string;
+  runId: string;
+  reason: string;
+}
+
+export interface WorkflowHistorySearchData {
+  query: string;
+  results: WorkflowRunSearchItem[];
+  reapedBefore?: ReapedBefore;
+  /** Workflows left out because a run record could not be read. */
+  skippedWorkflows?: HistorySkippedWorkflow[];
+}
+
+export interface WorkflowHistorySearchReply {
+  data: WorkflowHistorySearchData;
+}
+
+export type WorkflowRunSummaryReply = WorkflowRunSummaryResponse;
+
+// workflow.history.get
+
+export interface DataArtifactRefData {
+  dataId: string;
+  name: string;
+  version: number;
+  tags: Record<string, string>;
+  attributes?: Record<string, unknown>;
+  /** Content left out: the run's attribute budget was spent. */
+  attributesOmitted?: true;
+}
+
+export type StepRunStatus =
+  | "pending"
+  | "running"
+  | "waiting_approval"
+  | "waiting"
+  | "succeeded"
+  | "failed"
+  | "skipped"
+  | "unknown";
+
+export interface SignalWaitView {
+  id: string;
+  deadline: string;
+  key?: string;
+  receipt?: {
+    id: string;
+    waitId: string;
+    receivedAt: string;
+    submittedBy: string;
+    /** The signal arrived before the wait opened and was held for it. */
+    heldAsPending?: true;
+  };
+}
+
+export interface StepRunView {
+  name: string;
+  status: StepRunStatus;
+  error?: string;
+  errorCode?: string;
+  startedAt?: string;
+  completedAt?: string;
+  duration?: number;
+  outputId?: string;
+  artifacts?: {
+    stdout?: string;
+    stderr?: string;
+    exitCode?: number;
+    dataAttributes?: Record<string, unknown>;
+  };
+  dataArtifacts?: DataArtifactRefData[];
+  allowedFailure?: boolean;
+  assertResult?: {
+    passed: boolean;
+    expr: string;
+    message: string;
+    severity: "low" | "medium" | "high";
+    error?: string;
+  };
+  approval?: {
+    status: "approved" | "rejected" | "timed_out";
+    approvedBy?: string;
+    /** Set when serve knew the decider's username; approvedBy keeps the id. */
+    approvedByUsername?: string;
+    approvedAt?: string;
+    rejectedBy?: string;
+    rejectedByUsername?: string;
+    rejectedAt?: string;
+    timeoutAt?: string;
+    reason?: string;
+    approvalDuration?: number;
+    client?: string;
+  };
+  outputs?: Record<string, unknown>;
+  /** Outputs merge only the resources read within the attribute budget. */
+  outputsPartial?: true;
+  /** On skipped steps only. */
+  skipReason?: {
+    kind: "dependency" | "guarded" | "job_skipped";
+    expression?: string;
+  };
+  /** `workflow_changed`: a failed-run resume reset the step; start a new run. */
+  failureKind?: "workflow_changed";
+  /** On a nested workflow step; absent when the caller may not read it. */
+  nestedRun?: {
+    workflowId: string;
+    workflowName: string;
+    runId: string;
+    detached?: true;
+  };
+  wait?: SignalWaitView;
+}
+
+export interface JobRunView {
+  name: string;
+  status: StepRunStatus;
+  steps: StepRunView[];
+  startedAt?: string;
+  completedAt?: string;
+  duration?: number;
+}
+
+export interface ReportResultView {
+  name: string;
+  scope?: string;
+  success: boolean;
+  markdown?: string;
+  json?: Record<string, unknown>;
+  error?: string;
+}
+
+/** One workflow run as its history records it. */
+export interface WorkflowHistoryRunView {
+  id: string;
+  workflowId: string;
+  workflowName: string;
+  inputs?: Record<string, unknown>;
+  status:
+    | "pending"
+    | "running"
+    | "suspended"
+    | "succeeded"
+    | "failed"
+    | "cancelled"
+    | "interrupted";
+  jobs: JobRunView[];
+  startedAt?: string;
+  completedAt?: string;
+  duration?: number;
+  path?: string;
+  reports?: ReportResultView[];
+  workflowDataArtifacts?: DataArtifactRefData[];
+  initiatedBy?: string;
+  /** Set when serve knew the initiator's username; initiatedBy keeps the id. */
+  initiatedByUsername?: string;
+  client?: string;
+  references?: Record<string, string>;
+  parentRun?: {
+    workflowId: string;
+    workflowName: string;
+    runId: string;
+    stepName: string;
+  };
+  inheritedPlacement?: {
+    target?: string;
+    labels?: Record<string, string>;
+    platform?: string;
+    source: { workflowName: string; jobName: string; stepName: string };
+  };
+  nestedWaits?: {
+    workflowId: string;
+    workflowName: string;
+    runId: string;
+    stepName: string;
+    status?: string;
+  }[];
+  /** Suspended, no gate of its own waits, and every nested run finished. */
+  awaitingResume?: boolean;
+  /** Why the run stopped, while it is interrupted. */
+  interruptReason?: string;
+  /** A planned restart stopped it between steps; serve continues it. */
+  parked?: boolean;
+  /** Serve's last automatic continuation of the run, or its refusal. */
+  autoContinuation?: {
+    count: number;
+    continuedAt?: string;
+    interruptReason?: string;
+    resetSteps?: string[];
+    refused?: {
+      at: string;
+      reason: string;
+      steps: string[];
+      message: string;
+    };
+  };
+}
+
+export interface WorkflowHistoryGetReply {
+  data: WorkflowHistoryRunView;
+}
+
+// workflow.history.logs
+
+export type WorkflowHistoryLogsData =
+  | { type: "log"; log: { lines: string[]; path: string } }
+  | { type: "no_log_file"; info: { runId: string; workflowName: string } }
+  | {
+    type: "empty_log";
+    info: { runId: string; workflowName: string; path: string };
+  };
+
+export interface WorkflowHistoryLogsReply {
+  data: WorkflowHistoryLogsData;
+}
+
+// worker.list
+
+export interface WorkerListItem {
+  name: string;
+  tokenName: string;
+  status: "idle" | "busy" | "disconnected" | "unverified" | "draining";
+  labels: Record<string, string>;
+  platform: string;
+  arch: string;
+  instanceUuid: string;
+  enrolledAt: string;
+  lastSeenAt: string;
+  capacity: number;
+  activeDispatchIds: string[];
+  disconnectedAt?: string;
+}
+
+export interface WorkerListData {
+  workers: WorkerListItem[];
+  count: number;
+  filteredDisconnectedCount?: number;
+}
+
+export interface WorkerListReply {
+  data: WorkerListData;
+}
+
+// run.attach
+
+export type RunAttachKind = "workflow-run" | "workflow-resume" | "method-run";
+
+/** The run is here: its events follow as `event` frames, then `done` or `error`. */
+export interface RunAttachedReply {
+  runId: string;
+  /** `method-run` streams model method events; the others workflow events. */
+  kind: RunAttachKind;
+  startedAt: string;
+}
+
+/** The run is live on another serve instance; attach there. */
+export interface RunElsewhereReply {
+  runId: string;
+  instanceId: string;
+}
+
+/** The instance running it has stopped, so the run will not finish. */
+export interface RunInterruptedReply {
+  runId: string;
+  instanceId: string;
+  reason: "instance_dead";
+}
+
+/** A `run.attach` reply that ends the request without a stream. */
+export type RunAttachFrame =
+  | { type: "run.attached"; payload: RunAttachedReply }
+  | { type: "run.elsewhere"; payload: RunElsewhereReply }
+  | { type: "run.interrupted"; payload: RunInterruptedReply };
+
+/** What serve adds to each run event it streams. */
+export interface RunEventStamp {
+  /** Its place in the run, for a later `afterSeq`. */
+  seq?: number;
+  /** When serve emitted it (ISO); absent from older servers. */
+  at?: string;
+}
+
+/** An event of an attached run, numbered for a later `afterSeq`. */
+export type RunAttachEvent =
+  & (WorkflowRunEvent | ModelMethodRunEvent)
+  & { seq: number; at?: string };
+
+// ── App request map ──────────────────────────────────────────────────────
+
+/** Each request an app may make, with what it sends and what it gets back. */
+export interface AppRequestMap {
+  "workflow.run.search": {
+    payload: WorkflowRunSearchPayload | undefined;
+    reply: WorkflowRunSearchReply;
+  };
+  "workflow.run.summary": {
+    payload: WorkflowRunSummaryPayload | undefined;
+    reply: WorkflowRunSummaryReply;
+  };
+  "workflow.history.get": {
+    payload: WorkflowHistoryGetPayload;
+    reply: WorkflowHistoryGetReply;
+  };
+  "workflow.history.logs": {
+    payload: WorkflowHistoryLogsPayload;
+    reply: WorkflowHistoryLogsReply;
+  };
+  "workflow.history.search": {
+    payload: WorkflowHistorySearchPayload | undefined;
+    reply: WorkflowHistorySearchReply;
+  };
+  "model.usage.summary": {
+    payload: ModelUsageSummaryPayload | undefined;
+    reply: ModelUsageSummaryReply;
+  };
+  "data.get": { payload: DataGetPayload; reply: DataGetReply };
+  "data.query": { payload: DataQueryPayload; reply: DataQueryReply };
+  "data.search": {
+    payload: DataSearchPayload | undefined;
+    reply: DataSearchReply;
+  };
+  "data.versions": { payload: DataVersionsPayload; reply: DataVersionsReply };
+  "model.output.search": {
+    payload: ModelOutputSearchPayload | undefined;
+    reply: ModelOutputSearchReply;
+  };
+  "workflow.search": {
+    payload: WorkflowSearchPayload | undefined;
+    reply: WorkflowSearchReply;
+  };
+  "workflow.get": { payload: WorkflowGetPayload; reply: WorkflowGetReply };
+  "model.search": {
+    payload: ModelSearchPayload | undefined;
+    reply: ModelSearchReply;
+  };
+  "model.get": { payload: ModelGetPayload; reply: ModelGetReply };
+  "worker.list": {
+    payload: WorkerListPayload | undefined;
+    reply: WorkerListReply;
+  };
+  "server.version": {
+    payload: ServerVersionPayload | undefined;
+    reply: ServerVersionReply;
+  };
+}
+
+export type AppRequestType = keyof AppRequestMap;

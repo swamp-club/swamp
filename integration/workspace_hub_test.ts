@@ -22,6 +22,7 @@ import { waitFor } from "@swamp-club/swamp-testing";
 import {
   type ActionRunner,
   createWorkspaceHub,
+  decodedHeaders,
   type HubChild,
   type WorkspaceHub,
   type WorkspaceHubDeps,
@@ -108,6 +109,9 @@ function startFakeChild(busy = false): FakeChild {
           headers: { "content-encoding": "gzip", "content-type": "text/plain" },
         });
       }
+      if (url.pathname.endsWith("/app-base")) {
+        return Response.json({ base: req.headers.get("x-swamp-app-base") });
+      }
       return Response.json({ path: url.pathname, search: url.search });
     },
   );
@@ -174,7 +178,9 @@ async function withHub(
     token: TOKEN,
     resolveWorkspace: (name) =>
       Promise.resolve(
-        name === "alpha" || name === "beta" ? `/repos/${name}` : null,
+        name === "alpha" || name === "beta" || name === "al;pha"
+          ? `/repos/${name}`
+          : null,
       ),
     listWorkspaces: () =>
       Promise.resolve([
@@ -713,6 +719,30 @@ Deno.test("workspaceHub: forwards the agent sessions page's data.query to the ch
   });
 });
 
+Deno.test("workspaceHub: forwards an app's data.subscribe to the child and refuses run.attach", async () => {
+  await withHub(async ({ base }) => {
+    const ws = await openSocket(`ws://${base}/w/alpha/`);
+    const seen = frames(ws);
+    ws.send(JSON.stringify({ type: "run.attach", id: "attach", payload: {} }));
+    ws.send(
+      JSON.stringify({ type: "data.subscribe", id: "feed", payload: {} }),
+    );
+    await waitFor(() => seen.length === 2, "a refusal and an echo");
+    const byId = new Map(seen.map((f) => [f.id, f]));
+    assertEquals(
+      (byId.get("attach")?.error as { code: string }).code,
+      "not_available_locally",
+    );
+    assertEquals(byId.get("feed"), {
+      type: "echo",
+      id: "feed",
+      of: "data.subscribe",
+      path: "/",
+    });
+    await closeSocket(ws);
+  });
+});
+
 Deno.test("workspaceHub: writes and reads the dashboard never makes are refused and never reach the child", async () => {
   await withHub(async ({ base }) => {
     const ws = await openSocket(`ws://${base}/w/alpha/`);
@@ -766,6 +796,37 @@ Deno.test("workspaceHub: a cancel reaches the child only for a read it forwarded
       ["r2", "workflow.search"],
     ]);
     await closeSocket(ws);
+  });
+});
+
+Deno.test("workspaceHub: an app's own socket reaches the same child under the same allowlist, apart from the dashboard's", async () => {
+  await withHub(async ({ base, spawned, tracked }) => {
+    const dashboard = await openSocket(`ws://${base}/w/alpha/?compress=gzip`);
+    const app = await openSocket(`ws://${base}/w/alpha/?compress=gzip`);
+    const dashboardSeen = frames(dashboard);
+    const appSeen = frames(app);
+    app.send(read("app:1"));
+    app.send(read("app:2", "vault.get"));
+    app.send(JSON.stringify({ type: "cancel", id: RUN }));
+    await waitFor(() => appSeen.length === 2, "an echo and a refusal");
+    assertEquals(appSeen[0], {
+      type: "echo",
+      id: "app:1",
+      of: "workflow.search",
+      path: "/",
+    });
+    assertEquals(
+      (appSeen[1].error as { code: string }).code,
+      "not_available_locally",
+    );
+    assertEquals(dashboardSeen.length, 0);
+    assertEquals(spawned, ["/repos/alpha"]);
+    assertEquals(tracked.length, 2);
+    await closeSocket(app);
+    dashboard.send(read("d1"));
+    await waitFor(() => dashboardSeen.length === 1, "the dashboard's echo");
+    assertEquals(dashboardSeen[0].id, "d1");
+    await closeSocket(dashboard);
   });
 });
 
@@ -1291,4 +1352,78 @@ Deno.test("workspaceHub: with no launcher, a Swampify launch is refused like any
     );
     await closeSocket(ws);
   });
+});
+
+Deno.test("workspaceHub: an app file needs no hub token, but only reaches a running child", async () => {
+  await withHub(async ({ base, spawned }) => {
+    const cold = await fetch(
+      `http://${base}/w/alpha/app-files/launch/index.html`,
+    );
+    assertEquals(cold.status, 404);
+    await cold.body?.cancel();
+    assertEquals(spawned, []);
+
+    const started = await hubFetch(`http://${base}/w/alpha/api/v1/health`);
+    await started.body?.cancel();
+    const warm = await fetch(
+      `http://${base}/w/alpha/app-files/launch/index.html`,
+    );
+    assertEquals(warm.status, 200);
+    assertEquals(await warm.json(), {
+      path: "/app-files/launch/index.html",
+      search: "",
+    });
+  });
+});
+
+Deno.test("workspaceHub: an app file's base names the workspace percent-encoded, so a ; cannot end its CSP source", async () => {
+  await withHub(async ({ base }) => {
+    const started = await hubFetch(`http://${base}/w/al;pha/api/v1/health`);
+    await started.body?.cancel();
+    const res = await fetch(
+      `http://${base}/w/al;pha/app-files/launch/app-base`,
+    );
+    assertEquals(await res.json(), {
+      base: `${base}/w/al%3Bpha/app-files/launch/`,
+    });
+  });
+});
+
+Deno.test("workspaceHub: an app file route reads only", async () => {
+  await withHub(async ({ base }) => {
+    const started = await hubFetch(`http://${base}/w/alpha/api/v1/health`);
+    await started.body?.cancel();
+    const res = await fetch(
+      `http://${base}/w/alpha/app-files/launch/index.html`,
+      {
+        method: "POST",
+      },
+    );
+    assertEquals(res.status, 405);
+    await res.body?.cancel();
+  });
+});
+
+Deno.test("workspaceHub: skipping the token applies to app files alone", async () => {
+  await withHub(async ({ base }) => {
+    const res = await fetch(`http://${base}/w/alpha/api/v1/health`);
+    assertEquals(res.status, 401);
+    await res.body?.cancel();
+  });
+});
+
+Deno.test("decodedHeaders: a body fetch decoded loses its encoding headers", () => {
+  const headers = decodedHeaders(
+    new Headers({
+      "content-encoding": "gzip",
+      "content-length": "10",
+      "content-security-policy": "sandbox allow-scripts",
+    }),
+  );
+  assertEquals(headers.get("content-encoding"), null);
+  assertEquals(headers.get("content-length"), null);
+  assertEquals(
+    headers.get("content-security-policy"),
+    "sandbox allow-scripts",
+  );
 });

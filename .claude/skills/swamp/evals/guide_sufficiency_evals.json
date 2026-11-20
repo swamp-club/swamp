@@ -304,5 +304,41 @@
     "guide": "vault",
     "answerable_from_guide": false,
     "note": "Vault expression syntax details are in reference.md"
+  },
+  {
+    "query": "Which capability does my app need to read worker.list?",
+    "guide": "app",
+    "answerable_from_guide": true,
+    "note": "Capability table"
+  },
+  {
+    "query": "Where should an API key go if my app calls an external service?",
+    "guide": "app",
+    "answerable_from_guide": true,
+    "note": "Rules section says a behavior"
+  },
+  {
+    "query": "How does my app save a change, like ticking a checklist item?",
+    "guide": "app",
+    "answerable_from_guide": true,
+    "note": "The shape section and useMethodRun with methods: in app.yaml"
+  },
+  {
+    "query": "What platform value should app.yaml have if my app uses useDataChanges?",
+    "guide": "app",
+    "answerable_from_guide": true,
+    "note": "app.yaml section lists the minor per API"
+  },
+  {
+    "query": "How do I make my app refresh when a behavior writes new data, without polling?",
+    "guide": "app",
+    "answerable_from_guide": true,
+    "note": "useDataChanges example in Read, change, follow"
+  },
+  {
+    "query": "Write a d3 treemap of workers with a hover tooltip in my app",
+    "guide": "app",
+    "answerable_from_guide": false,
+    "note": "Chart recipes and the gallery template are in references/patterns.md"
   }
 ]

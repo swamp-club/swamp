@@ -45,6 +45,7 @@ export const PULLED_TYPE_DIRS: ReadonlySet<string> = new Set([
   "reports",
   "webhooks",
   "skills",
+  "apps",
   "files",
 ]);
 
@@ -60,6 +61,7 @@ export const PER_EXTENSION_SCAFFOLD_DIRS: readonly string[] = [
   "datastores",
   "reports",
   "webhooks",
+  "apps",
   "files",
 ];
 

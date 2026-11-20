@@ -304,3 +304,10 @@ export type {
 export { waitFor } from "./wait_for.ts";
 
 export type { WaitForOptions } from "./wait_for.ts";
+
+export {
+  type AppBridgeConformanceHarness,
+  appBridgeConformanceSuite,
+  type AppBridgeGrant,
+  type AppBridgePort,
+} from "./app_bridge_conformance.ts";

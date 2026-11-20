@@ -28,6 +28,7 @@ export type View =
   | "activity"
   | "swampify"
   | "agent-sessions"
+  | "apps"
   | "data"
   | "vaults"
   | "extensions"

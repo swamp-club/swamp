@@ -380,6 +380,36 @@ Deno.test("groupForAudit: dependencies past the limit, in name order, are not lo
   assertEquals(scorecard.earnedPoints, 0);
 });
 
+Deno.test("groupForAudit: a caller's own limit looks up past the shared one", () => {
+  const LIMIT = 100;
+  const specs = Array.from(
+    { length: LIMIT + 1 },
+    (_, i) => spec(`p${String(i).padStart(3, "0")}`, "1.0.0"),
+  );
+  const { groups, overLimit } = groupForAudit(
+    specs,
+    LIMIT,
+  );
+  assertEquals(groups.length, LIMIT);
+  assertEquals(overLimit.map((s) => s.name), ["p100"]);
+  assertEquals(
+    overLimitAudits(overLimit, LIMIT)[0].findings[0]
+      .issue.message,
+    "not audited: not queried: over the 100-dependency limit",
+  );
+});
+
+Deno.test("scorecardResult: an app whose packages cannot be read is not audited and costs the points", () => {
+  const scorecard = scorecardResult([], [], [], [
+    { folder: "cost", reason: "App cost has no bun.lock.\u001b[31m" },
+  ]);
+  assertEquals(scorecard.notAudited.length, 1);
+  assertEquals(scorecard.notAudited[0].packageName, "apps/cost");
+  assertEquals(scorecard.notAudited[0].reason.includes("\u001b"), false);
+  assertEquals(scorecard.passed, false);
+  assertEquals(scorecard.earnedPoints, 0);
+});
+
 Deno.test("scorecardResult: a module that does not parse is not audited and costs the points", () => {
   const scorecard = scorecardResult([], ["models/broken.ts"]);
   assertEquals(scorecard.notAudited, [
@@ -460,4 +490,26 @@ Deno.test("scorecardResult: unaudited code follows the unreadable modules and co
     "github:o/r#abc",
   ]);
   assertEquals([card.passed, card.earnedPoints], [false, 0]);
+});
+
+Deno.test("planNpmPackage: a v2 record's canonical-form rule applies to source imports, not an app's bun.lock packages", () => {
+  const record = {
+    recordedFor: () => undefined,
+    canonicalIssue: () => "not in the canonical form",
+  };
+  const source = spec("left-pad", "^1.0.0");
+  const fromLock: DependencySpecifier = {
+    ...spec("left-pad", "^1.0.0"),
+    sourceFile: "apps/board/bun.lock",
+    bundled: { version: "1.0.0", from: "lockfile", locked: true },
+  };
+  const plan = planNpmPackage(
+    "left-pad",
+    [source, fromLock],
+    packument(),
+    undefined,
+    record,
+  );
+  assertEquals(plan.canonicalIssues, ["not in the canonical form", null]);
+  assertEquals(plan.shipped[1]?.version, "1.0.0");
 });

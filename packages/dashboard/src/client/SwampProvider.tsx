@@ -17,11 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import {
-  localSocketProtocols,
-  serverPath,
-  withLocalToken,
-} from "./workspace_path.ts";
+import { serverPath, withLocalToken } from "./workspace_path.ts";
 import {
   createContext,
   type ReactNode,
@@ -36,10 +32,13 @@ import {
   type Connection,
   createConnection,
   loadAuthInfo,
-  requestAuthInfo,
-  requestTokenProbe,
-  type SocketHandlers,
 } from "./connection.ts";
+import {
+  browserTimers as timers,
+  fetchAuthInfo,
+  openServeSocket,
+  probeToken,
+} from "./serve_socket.ts";
 import { createDashboardSessionClient } from "./dashboard_session.ts";
 import {
   HTTP_REQUEST_TYPES,
@@ -99,28 +98,6 @@ function isDashboardSessionEvent(
     "type" in value && "sourceId" in value &&
     (value.type === "logout" || value.type === "reauthenticated") &&
     typeof value.sourceId === "string";
-}
-
-function getWsUrl(): string {
-  const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  // Ask serve to send large responses as gzip binary frames.
-  return `${proto}//${location.host}${serverPath("/")}?compress=gzip`;
-}
-
-const timers = {
-  setTimer: (fn: () => void, ms: number) =>
-    Number(globalThis.setTimeout(fn, ms)),
-  clearTimer: (id: number) => globalThis.clearTimeout(id),
-};
-
-const fetchAuthInfo = (signal: AbortSignal) =>
-  requestAuthInfo(globalThis.fetch, signal);
-
-async function gunzipFrame(data: ArrayBuffer): Promise<string> {
-  const stream = new Blob([data]).stream().pipeThrough(
-    new DecompressionStream("gzip"),
-  );
-  return await new Response(stream).text();
 }
 
 export function SwampProvider({ children }: { children: ReactNode }) {
@@ -247,39 +224,10 @@ export function SwampProvider({ children }: { children: ReactNode }) {
       pending.resolve(outcome.value);
     };
 
-    const createSocket = (
-      protocols: string[] | undefined,
-      handlers: SocketHandlers,
-    ): WebSocket => {
-      const ws = new WebSocket(getWsUrl(), localSocketProtocols() ?? protocols);
-      ws.binaryType = "arraybuffer";
-      ws.onopen = () => handlers.onOpen();
-      // Every frame goes through one chain so a text frame never overtakes an
-      // earlier compressed frame that is still being decoded.
-      let frameChain: Promise<void> = Promise.resolve();
-      ws.onmessage = (event) => {
-        const data: unknown = event.data;
-        frameChain = frameChain
-          .then(async () => {
-            handlers.onMessage(
-              typeof data === "string"
-                ? data
-                : await gunzipFrame(data as ArrayBuffer),
-            );
-          })
-          .catch((err: unknown) => {
-            console.error("swamp: dropped an undecodable frame", err);
-          });
-      };
-      ws.onclose = (event) => handlers.onClose(event.code);
-      return ws;
-    };
-
     connectionRef.current = createConnection<WebSocket>({
       ...timers,
-      createSocket,
-      probe: (authToken, signal) =>
-        requestTokenProbe(globalThis.fetch, authToken, signal),
+      createSocket: openServeSocket,
+      probe: probeToken,
       fetchAuthInfo,
       onOpen: (ws) => {
         socketRef.current = ws;

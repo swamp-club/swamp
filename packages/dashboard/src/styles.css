@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "./styles/apps.css";
 
 :root {
   --bg: #f4f5f7;
@@ -13,33 +14,34 @@
   --sidebar-accent: #34d399;
   --text-1: #111318;
   --text-2: #4a4e5a;
-  --text-3: #6b7080;
+  --text-3: #646979;
   --border: #dcdfe6;
   --border-subtle: #e8eaef;
-  --accent: #059669;
-  --accent-hover: #047857;
+  --border-strong: #878c99;
+  --accent: #047857;
+  --accent-hover: #065f46;
   --accent-subtle: #ecfdf5;
-  --success: #059669;
+  --success: #047857;
   --success-bg: #ecfdf5;
-  --warning: #d97706;
+  --warning: #a15308;
   --warning-bg: #fffbeb;
-  --danger: #dc2626;
+  --danger: #b91c1c;
   --danger-bg: #fef2f2;
-  --info: #2563eb;
+  --info: #1d4ed8;
   --info-bg: #eff6ff;
   --running: #7c3aed;
   --running-bg: #f5f3ff;
   --skel-shine: rgba(255, 255, 255, 0.65);
   --cancelled: #4b5563;
   --cancelled-bg: #f3f4f6;
-  --tile-idle: #c4c8d2;
-  --chart-bar-1: #059669;
-  --chart-bar-2: #dc2626;
-  --chart-bar-3: #d97706;
+  --tile-idle: #898e99;
+  --chart-bar-1: #047857;
+  --chart-bar-2: #b91c1c;
+  --chart-bar-3: #a15308;
   --chart-bar-4: #7c3aed;
   --chart-bar-5: #4b5563;
   --chart-grid: #e8eaef;
-  --chart-label: #6b7080;
+  --chart-label: #646979;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -49,16 +51,17 @@
     --surface-hover: #1a1e2a;
     --surface-inset: #0f1117;
     --sidebar-bg: #0a0c10;
-    --sidebar-text: #6b7089;
+    --sidebar-text: #747990;
     --sidebar-text-active: #e2e5eb;
     --sidebar-hover: #12141c;
     --sidebar-active: #161a24;
     --sidebar-accent: #34d399;
     --text-1: #e8eaf0;
     --text-2: #9498a6;
-    --text-3: #5e6270;
+    --text-3: #838794;
     --border: #1f2430;
     --border-subtle: #1a1e28;
+    --border-strong: #666971;
     --accent: #34d399;
     --accent-hover: #6ee7b7;
     --accent-subtle: #0d2818;
@@ -75,14 +78,14 @@
     --skel-shine: rgba(255, 255, 255, 0.05);
     --cancelled: #9ca3af;
     --cancelled-bg: #1a1c22;
-    --tile-idle: #3a3f4d;
+    --tile-idle: #656974;
     --chart-bar-1: #34d399;
     --chart-bar-2: #f87171;
     --chart-bar-3: #fbbf24;
     --chart-bar-4: #a78bfa;
     --chart-bar-5: #9ca3af;
     --chart-grid: #1f2430;
-    --chart-label: #5e6270;
+    --chart-label: #838794;
   }
 }
 
@@ -92,16 +95,17 @@
   --surface-hover: #1a1e2a;
   --surface-inset: #0f1117;
   --sidebar-bg: #0a0c10;
-  --sidebar-text: #6b7089;
+  --sidebar-text: #747990;
   --sidebar-text-active: #e2e5eb;
   --sidebar-hover: #12141c;
   --sidebar-active: #161a24;
   --sidebar-accent: #34d399;
   --text-1: #e8eaf0;
   --text-2: #9498a6;
-  --text-3: #5e6270;
+  --text-3: #838794;
   --border: #1f2430;
   --border-subtle: #1a1e28;
+  --border-strong: #666971;
   --accent: #34d399;
   --accent-hover: #6ee7b7;
   --accent-subtle: #0d2818;
@@ -118,14 +122,14 @@
   --skel-shine: rgba(255, 255, 255, 0.05);
   --cancelled: #9ca3af;
   --cancelled-bg: #1a1c22;
-  --tile-idle: #3a3f4d;
+  --tile-idle: #656974;
   --chart-bar-1: #34d399;
   --chart-bar-2: #f87171;
   --chart-bar-3: #fbbf24;
   --chart-bar-4: #a78bfa;
   --chart-bar-5: #9ca3af;
   --chart-grid: #1f2430;
-  --chart-label: #5e6270;
+  --chart-label: #838794;
 }
 
 * {
@@ -783,7 +787,7 @@ a.start-dashboard-link {
   padding: 4px 60px 4px 32px;
   position: relative;
   background: var(--surface);
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
   border-radius: 8px;
   cursor: text;
   transition: border-color 0.12s, box-shadow 0.12s;
@@ -1250,7 +1254,7 @@ a.start-dashboard-link {
   padding: 5px 8px;
   color: var(--text-1);
   background: var(--bg);
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
   border-radius: 5px;
 }
 .sel-search input:focus {
@@ -2091,7 +2095,7 @@ a.run-pip:focus-visible {
 .login-card input {
   width: 100%;
   padding: 10px 14px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
   border-radius: 6px;
   font-family: "JetBrains Mono", monospace;
   font-size: 0.85rem;

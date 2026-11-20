@@ -61,6 +61,7 @@ export const SWAMP_OWNED_DIR_NAMES: readonly string[] = [
   ...new Set<string>([
     ...DEFAULT_DATASTORE_SUBDIRS,
     ...ALWAYS_LOCAL_SUBDIRS,
+    "app-dev",
     "definitions",
     "workflows",
     "vault",

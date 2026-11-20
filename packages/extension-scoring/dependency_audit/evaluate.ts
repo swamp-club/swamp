@@ -145,6 +145,12 @@ export interface DependencyTrustResult {
   shipped?: ShippedDependency[];
 }
 
+/** A swamp app whose package.json or bun.lock could not be audited. */
+export interface AppNotAudited {
+  folder: string;
+  reason: string;
+}
+
 /** A finding as the registry's scorecard words it. */
 export interface ScorecardDependencyFinding {
   packageName: string;
@@ -605,7 +611,8 @@ function canonicalIssuesOf(
 ): (string | null)[] | undefined {
   const issueOf = record?.canonicalIssue;
   return issueOf
-    ? specs.map((spec) => issueOf(specifierText(spec)))
+    // the canonical form is a rule for the archive's source; an app's bun.lock pins its own
+    ? specs.map((spec) => spec.bundled ? null : issueOf(specifierText(spec)))
     : undefined;
 }
 
@@ -755,7 +762,9 @@ export function evaluateJsrPackage(
   return specs.map((spec): SpecifierAudit => {
     // checked here to name the issue; resolveShippedVersion repeats the
     // check for any other caller that hands it a v2 record
-    const issue = record?.canonicalIssue?.(specifierText(spec)) ?? null;
+    const issue = spec.bundled
+      ? null
+      : record?.canonicalIssue?.(specifierText(spec)) ?? null;
     if (issue !== null) return canonicalAudit(name, spec, "jsr", issue);
     const base = summaryBase(name, spec, "jsr");
     const missing = (
@@ -865,17 +874,18 @@ export function evaluateJsrPackage(
 
 /**
  * The specifiers grouped by package, in first-appearance order, with the
- * ones past {@link MAX_AUDITED_DEPENDENCIES} (in registry, name and version
- * order) set aside: those are not looked up.
+ * ones past `limit` (in registry, name and version order) set aside: those
+ * are not looked up.
  */
 export function groupForAudit(
   specifiers: readonly DependencySpecifier[],
+  limit: number = MAX_AUDITED_DEPENDENCIES,
 ): {
   groups: DependencySpecifier[][];
   overLimit: DependencySpecifier[];
 } {
   const ranked = [...specifiers].sort(compareSpecifiers);
-  const over = new Set(ranked.slice(MAX_AUDITED_DEPENDENCIES));
+  const over = new Set(ranked.slice(limit));
   const packages = new Map<string, DependencySpecifier[]>();
   for (const spec of specifiers) {
     if (over.has(spec)) continue;
@@ -886,18 +896,19 @@ export function groupForAudit(
   }
   return {
     groups: [...packages.values()],
-    overLimit: ranked.slice(MAX_AUDITED_DEPENDENCIES),
+    overLimit: ranked.slice(limit),
   };
 }
 
 /** The audit of the specifiers {@link groupForAudit} set aside. */
 export function overLimitAudits(
   specs: readonly DependencySpecifier[],
+  limit: number = MAX_AUDITED_DEPENDENCIES,
 ): SpecifierAudit[] {
   return specs.map((spec) =>
     notAuditedAudit(
       spec,
-      `not queried: over the ${MAX_AUDITED_DEPENDENCIES}-dependency limit`,
+      `not queried: over the ${limit}-dependency limit`,
       summaryBase(spec.name, spec, spec.registry),
       "other",
       null,
@@ -1044,11 +1055,14 @@ export function withUnauditedCode(
  * each is not audited, under its path, so it costs the factor's points as
  * an unaudited dependency does. `unaudited` is a v2 record's code from
  * outside npm and JSR, each not audited under its origin (swamp-club#4018).
+ * `apps` are swamp apps whose packages could not be read, each not
+ * audited under `apps/<folder>`.
  */
 export function scorecardResult(
   audits: readonly { spec: DependencySpecifier; audit: SpecifierAudit }[],
   unreadable: readonly string[] = [],
   unaudited: readonly UnauditedDependency[] = [],
+  apps: readonly AppNotAudited[] = [],
 ): ScorecardDependencyTrust {
   const blockers: ScorecardDependencyFinding[] = [];
   const warnings: ScorecardDependencyFinding[] = [];
@@ -1060,6 +1074,11 @@ export function scorecardResult(
     ...unauditedCodeFindings(unaudited).map((f) => ({
       packageName: f.origin,
       reason: f.reason,
+    })),
+    // the reason quotes the author's package.json, so it is made safe first
+    ...apps.map((app) => ({
+      packageName: `apps/${sanitiseDeprecationNotice(app.folder)}`,
+      reason: sanitiseDeprecationNotice(app.reason),
     })),
   ];
   const audited: ScorecardDependencyAudited[] = [];

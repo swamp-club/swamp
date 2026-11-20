@@ -363,7 +363,7 @@
   font: inherit;
   font-size: 0.78rem;
   padding: 4px 6px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
   border-radius: 6px;
   background: var(--surface);
   color: var(--text-1);

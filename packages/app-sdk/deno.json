@@ -1,0 +1,20 @@
+{
+  "name": "@swamp-club/app-sdk",
+  "version": "0.1.0",
+  "license": "AGPL-3.0-only",
+  "exports": {
+    ".": "./mod.ts",
+    "./bridge": "./bridge.ts",
+    "./capabilities": "./capabilities.ts",
+    "./headers": "./headers.ts",
+    "./react": "./react.tsx",
+    "./mock": "./mock_host.ts",
+    "./vite": "./vite.ts"
+  },
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "jsxImportSource": "react",
+    "jsxImportSourceTypes": "@types/react",
+    "lib": ["ES2022", "DOM", "DOM.Iterable", "deno.ns"]
+  }
+}

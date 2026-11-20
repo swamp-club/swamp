@@ -20,15 +20,17 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { parseArgs } from "@std/cli/parse-args";
-import { expandGlob } from "@std/fs";
+import { exists, expandGlob } from "@std/fs";
 import { parse as parseJsonc } from "@std/jsonc";
 import { isGlob, join, relative, resolve, SEPARATOR } from "@std/path";
+import { AUTHORING_ARCHIVE } from "../src/domain/apps/app_platform.ts";
 
 interface CompileOptions {
   output: string;
   target?: string;
   version?: string;
   bundle: boolean;
+  appPlatform: boolean;
 }
 
 // inside the repo so deno.json resolves the npm externals at the same root
@@ -370,8 +372,8 @@ export function parseCompileOptions(argv: readonly string[]): CompileOptions {
   const refused: string[] = [];
   const args = parseArgs([...argv], {
     string: ["output", "target", "version"],
-    boolean: ["bundle"],
-    negatable: ["bundle"],
+    boolean: ["bundle", "app-platform"],
+    negatable: ["bundle", "app-platform"],
     alias: {
       "o": "output",
       "t": "target",
@@ -381,6 +383,7 @@ export function parseCompileOptions(argv: readonly string[]): CompileOptions {
       "output": "swamp",
       // rollback: set this to false to ship the unbundled build again
       "bundle": true,
+      "app-platform": true,
     },
     unknown: (arg) => {
       refused.push(arg);
@@ -390,7 +393,8 @@ export function parseCompileOptions(argv: readonly string[]): CompileOptions {
   if (refused.length > 0) {
     throw new Error(
       `Unknown argument(s): ${refused.join(", ")}. compile.ts accepts ` +
-        "--output (-o), --target (-t), --version (-v) and --no-bundle.",
+        "--output (-o), --target (-t), --version (-v), --no-bundle and " +
+        "--no-app-platform.",
     );
   }
   return {
@@ -398,7 +402,62 @@ export function parseCompileOptions(argv: readonly string[]): CompileOptions {
     target: args.target,
     version: args.version,
     bundle: args.bundle,
+    appPlatform: args["app-platform"],
   };
+}
+
+const APP_PLATFORM_DIR = join("packages", "app-platform");
+
+async function readMinor(path: string): Promise<number | undefined> {
+  try {
+    const parsed: unknown = JSON.parse(await Deno.readTextFile(path));
+    if (typeof parsed !== "object" || parsed === null) return undefined;
+    const minor = (parsed as { minor?: unknown }).minor;
+    return typeof minor === "number" ? minor : undefined;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return undefined;
+    throw error;
+  }
+}
+
+/** Undefined when every major under packages/app-platform has a build in dist at the source's minor. */
+export async function appPlatformDistProblem(
+  root: string,
+): Promise<string | undefined> {
+  const source = join(root, APP_PLATFORM_DIR);
+  const majors: string[] = [];
+  for await (const entry of Deno.readDir(source)) {
+    if (entry.isDirectory && /^\d+$/.test(entry.name)) majors.push(entry.name);
+  }
+  if (majors.length === 0) {
+    return `no app platform source found under ${APP_PLATFORM_DIR}`;
+  }
+  const rebuild = "Run `deno run build-app-platform` first, or pass " +
+    "--no-app-platform to build a swamp that refuses every app.";
+  for (const major of majors.sort()) {
+    const want = await readMinor(join(source, major, "platform.json"));
+    const built = await readMinor(join(source, "dist", major, "platform.json"));
+    if (built === undefined) {
+      return `app platform ${major} is not built ` +
+        `(${join(APP_PLATFORM_DIR, "dist", major)} is missing). ${rebuild}`;
+    }
+    if (built !== want) {
+      return `app platform ${major} in ${join(APP_PLATFORM_DIR, "dist")} is ` +
+        `${major}.${built} but the source is ${major}.${want}. ${rebuild}`;
+    }
+    const builtDir = join(source, "dist", major);
+    for (const raw of ["dev", "types"]) {
+      if (await exists(join(builtDir, raw))) {
+        return `app platform ${major} in ${join(APP_PLATFORM_DIR, "dist")} ` +
+          `still holds ${raw}/, so it was built but not packed. ${rebuild}`;
+      }
+    }
+    if (!(await exists(join(builtDir, AUTHORING_ARCHIVE)))) {
+      return `app platform ${major} in ${join(APP_PLATFORM_DIR, "dist")} ` +
+        `has no ${AUTHORING_ARCHIVE}. ${rebuild}`;
+    }
+  }
+  return undefined;
 }
 
 async function main(): Promise<boolean> {
@@ -429,6 +488,15 @@ async function main(): Promise<boolean> {
   console.log(
     options.bundle ? "Build: bundled" : "Build: unbundled (--no-bundle)",
   );
+  if (options.appPlatform) {
+    const problem = await appPlatformDistProblem(root);
+    if (problem !== undefined) {
+      console.error(`Error: ${problem}`);
+      return false;
+    }
+  } else {
+    console.log("App platform: left out (--no-app-platform)");
+  }
   const wroteStamp = stamped !== originalContent;
 
   const runner = new BuildRunner();
@@ -453,6 +521,8 @@ async function main(): Promise<boolean> {
 export interface CompileInputs {
   entry: string;
   dashboardDistExists: boolean;
+  /** The app platform's build, which serve answers `/app-platform/` from. */
+  appPlatformDistExists: boolean;
   extraIncludes: readonly string[];
 }
 
@@ -483,9 +553,18 @@ export function compileArgs(
     ".claude/skills",
     "--include",
     "resources/deno",
+    // swamp app init copies these into a new app
+    "--include",
+    "packages/app-sdk",
+    "--include",
+    "packages/client",
     // included only when pre-built; CI builds it before compile
     ...(inputs.dashboardDistExists
       ? ["--include", "packages/dashboard/dist"]
+      : []),
+    // main() refuses a missing or stale build unless --no-app-platform
+    ...(inputs.appPlatformDistExists
+      ? ["--include", "packages/app-platform/dist"]
       : []),
     ...inputs.extraIncludes,
     "--exclude",
@@ -676,8 +755,14 @@ async function compile(
   const dashboardDistExists = await Deno.stat(
     join(root, "packages", "dashboard", "dist"),
   ).then(() => true).catch(() => false);
+  const appPlatformDistExists = options.appPlatform;
   return await runner.run(
-    compileArgs(options, { entry, dashboardDistExists, extraIncludes }),
+    compileArgs(options, {
+      entry,
+      dashboardDistExists,
+      appPlatformDistExists,
+      extraIncludes,
+    }),
     root,
   );
 }

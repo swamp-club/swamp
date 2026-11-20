@@ -23,7 +23,11 @@ type Theme = "light" | "dark" | "system";
 
 const THEME_KEY = "swamp-dashboard-theme";
 
-export function ThemeToggle() {
+/** `header` sits on the page's surface, as on `/apps`, instead of the dark sidebar. */
+export function ThemeToggle(
+  { placement = "sidebar" }: { placement?: "sidebar" | "header" } = {},
+) {
+  const header = placement === "header";
   const [theme, setTheme] = useState<Theme>(
     () => (localStorage.getItem(THEME_KEY) as Theme) ?? "system",
   );
@@ -48,10 +52,12 @@ export function ThemeToggle() {
       className="theme-toggle"
       style={{
         display: "flex",
-        background: "rgba(255,255,255,0.06)",
+        background: header ? "var(--bg)" : "rgba(255,255,255,0.06)",
+        border: header ? "1px solid var(--border)" : undefined,
         borderRadius: 6,
         padding: 2,
-        margin: "0 8px 16px",
+        margin: header ? 0 : "0 8px 16px",
+        minWidth: header ? 96 : undefined,
       }}
     >
       {buttons.map(({ t, label }) => (
@@ -60,13 +66,19 @@ export function ThemeToggle() {
           key={t}
           onClick={() => setTheme(t)}
           title={t}
+          aria-label={`${t} theme`}
+          aria-pressed={theme === t}
           style={{
             flex: 1,
             padding: "5px 0",
             border: "none",
-            background: theme === t ? "rgba(255,255,255,0.1)" : "transparent",
+            background: theme === t
+              ? header ? "var(--surface)" : "rgba(255,255,255,0.1)"
+              : "transparent",
             color: theme === t
-              ? "var(--sidebar-text-active)"
+              ? header ? "var(--text)" : "var(--sidebar-text-active)"
+              : header
+              ? "var(--text-3)"
               : "var(--sidebar-text)",
             cursor: "pointer",
             borderRadius: 4,

@@ -141,6 +141,7 @@ async function prepare(
       allReportFiles: resolved.allReportFiles,
       reportEntryPoints: resolved.reportEntryPoints,
       webhooksDir: resolved.webhooksDir,
+      appsDir: resolved.appsDir,
       allWebhookFiles: resolved.allWebhookFiles,
       webhookEntryPoints: resolved.webhookEntryPoints,
       workflowFiles: resolved.workflowFiles,

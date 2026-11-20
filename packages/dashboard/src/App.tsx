@@ -30,6 +30,10 @@ import { SwampProvider, useSwamp } from "./client/SwampProvider.tsx";
 import { useAuditStream } from "./client/useAuditStream.ts";
 import { auditEnabled } from "./client/audit_state.ts";
 import { useHealthStream } from "./client/useHealthStream.ts";
+import { useApps } from "./apps/useApps.ts";
+import { AppsArea } from "./apps/AppsArea.tsx";
+import { appPagePath, isAppsPath } from "./apps/apps_routes.ts";
+import { ManageApps } from "./views/ManageApps.tsx";
 import { useApprovals } from "./client/useApprovals.ts";
 import { pendingApprovals } from "./client/approvals.ts";
 import { Logo } from "./components/Logo.tsx";
@@ -122,7 +126,7 @@ export function App() {
   }
   return (
     <SwampProvider>
-      <AppShell />
+      <AppShell area={isAppsPath(location.pathname) ? "apps" : "dashboard"} />
     </SwampProvider>
   );
 }
@@ -141,7 +145,8 @@ function LocalTokenMissing() {
   );
 }
 
-function AppShell() {
+/** `/apps` shares the dashboard's sign-in, connection and broker, not its chrome. */
+function AppShell({ area }: { area: "apps" | "dashboard" }) {
   const {
     connected,
     connectionGeneration,
@@ -164,6 +169,10 @@ function AppShell() {
     return <AppShellSkeleton label={connectingLabel(local)} />;
   }
 
+  if (area === "apps") {
+    return <AppsArea key={connectionGeneration} onLogout={logout} />;
+  }
+
   return (
     <TimeRangeProvider>
       <Dashboard key={connectionGeneration} onLogout={logout} />
@@ -172,7 +181,7 @@ function AppShell() {
 }
 
 function Dashboard({ onLogout }: { onLogout: () => void }) {
-  const { local } = useSwamp();
+  const { local, authMode } = useSwamp();
   const {
     view,
     detail,
@@ -188,6 +197,14 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
     useDocumentVisible(),
   );
   const auditStream = useAuditStream();
+  const apps = useApps(false);
+
+  // a dashboard link to an app lands on /apps
+  useEffect(() => {
+    if (detail?.kind === "app") {
+      location.replace(appPagePath(detail.appName, detail.path));
+    }
+  }, [detail]);
 
   const approvals = useApprovals();
   const agentSessionsVisible = useAgentSessionsVisible();
@@ -262,7 +279,11 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
         agentSessionsVisible={agentSessionsVisible}
         swampifyVisible={swampifyVisible}
         auditEnabled={auditEnabled(auditStream.status)}
+        appCount={apps.launchable.length}
+        canManageApps={apps.canManage}
+        pendingAppCount={apps.pendingCount}
         local={local}
+        authMode={authMode}
         onLogout={onLogout}
         collapsed={collapsed}
         onToggleCollapsed={toggleCollapsed}
@@ -395,6 +416,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
                 />
               )}
               {view === "agent-sessions" && <AgentSessions />}
+              {view === "apps" && <ManageApps onChanged={apps.refresh} />}
               {view === "data" && <Data />}
               {view === "vaults" && <Vaults />}
               {view === "extensions" && <Extensions />}

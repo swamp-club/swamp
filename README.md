@@ -259,6 +259,7 @@ deno run test         # Run the test suite
 deno check            # Type-check
 deno lint             # Lint
 deno fmt              # Format
+deno run build-app-platform  # Build the app platform (needs npm; compile requires it)
 deno run compile      # Compile the binary
 ```
 

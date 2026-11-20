@@ -49,30 +49,31 @@ dependencies:
 
 ### Field Reference
 
-| Field             | Required | Description                                                                                                                                              |
-| ----------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `manifestVersion` | Yes      | Must be `1`                                                                                                                                              |
-| `name`            | Yes      | Scoped name: `@collective/name` or `@collective/name/sub/path` (lowercase, hyphens, underscores)                                                         |
-| `version`         | Yes      | CalVer format: `YYYY.MM.DD.MICRO`                                                                                                                        |
-| `description`     | No       | Human-readable description                                                                                                                               |
-| `license`         | No       | SPDX license expression (e.g. `MIT`, `MIT OR Apache-2.0`). Optional; a valid one earns a quality point. See "License".                                   |
-| `visibility`      | No       | `public` (registry default) or `private`. Optional `--visibility` overrides this field; omitting both preserves registry defaults.                       |
-| `repository`      | No       | HTTPS URL of the upstream repository. Required for users to file issues via `swamp issue --extension` — `swamp extension push` warns when absent.        |
-| `paths.base`      | No       | Path resolution mode for typed keys + `additionalFiles`. `typedDir` (default) or `manifest`. See "Path resolution".                                      |
-| `behaviors`       | No*      | Behavior file paths. Resolved via `paths.base`. `models` is the model spelling of this key; a manifest with `models` ignores `behaviors`.                |
-| `workflows`       | No*      | Workflow file paths. Resolved via `paths.base`. Under `manifest`, resolves from manifest dir first, then the extensions root and repo-root fallbacks.    |
-| `vaults`          | No*      | Vault file paths. Resolved via `paths.base`.                                                                                                             |
-| `datastores`      | No*      | Datastore file paths. Resolved via `paths.base`.                                                                                                         |
-| `reports`         | No*      | Report file paths. Resolved via `paths.base`.                                                                                                            |
-| `skills`          | No*      | Skill directory names. Honours `paths.base: manifest` (manifest-relative first, then the extensions root, then project-local; never `~/.claude/skills`). |
-| `include`         | No       | Helper TypeScript files copied alongside behaviors without bundling. Resolved via `paths.base`.                                                          |
-| `additionalFiles` | No       | Extra files (README, LICENSE, etc.) relative to the manifest's own directory.                                                                            |
-| `platforms`       | No       | OS/architecture hints (e.g. `darwin-aarch64`, `linux-x86_64`)                                                                                            |
-| `labels`          | No       | Categorization labels (e.g. `aws`, `kubernetes`, `security`)                                                                                             |
-| `dependencies`    | No       | Other extensions this one depends on                                                                                                                     |
+| Field             | Required | Description                                                                                                                                                          |
+| ----------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `manifestVersion` | Yes      | Must be `1`                                                                                                                                                          |
+| `name`            | Yes      | Scoped name: `@collective/name` or `@collective/name/sub/path` (lowercase, hyphens, underscores)                                                                     |
+| `version`         | Yes      | CalVer format: `YYYY.MM.DD.MICRO`                                                                                                                                    |
+| `description`     | No       | Human-readable description                                                                                                                                           |
+| `license`         | No       | SPDX license expression (e.g. `MIT`, `MIT OR Apache-2.0`). Optional; a valid one earns a quality point. See "License".                                               |
+| `visibility`      | No       | `public` (registry default) or `private`. Optional `--visibility` overrides this field; omitting both preserves registry defaults.                                   |
+| `repository`      | No       | HTTPS URL of the upstream repository. Required for users to file issues via `swamp issue --extension` — `swamp extension push` warns when absent.                    |
+| `paths.base`      | No       | Path resolution mode for typed keys + `additionalFiles`. `typedDir` (default) or `manifest`. See "Path resolution".                                                  |
+| `behaviors`       | No*      | Behavior file paths. Resolved via `paths.base`. `models` is the model spelling of this key; a manifest with `models` ignores `behaviors`.                            |
+| `workflows`       | No*      | Workflow file paths. Resolved via `paths.base`. Under `manifest`, resolves from manifest dir first, then the extensions root and repo-root fallbacks.                |
+| `vaults`          | No*      | Vault file paths. Resolved via `paths.base`.                                                                                                                         |
+| `datastores`      | No*      | Datastore file paths. Resolved via `paths.base`.                                                                                                                     |
+| `reports`         | No*      | Report file paths. Resolved via `paths.base`.                                                                                                                        |
+| `skills`          | No*      | Skill directory names. Honours `paths.base: manifest` (manifest-relative first, then the extensions root, then project-local; never `~/.claude/skills`).             |
+| `apps`            | No*      | App folder names, resolved from `extensions/apps/` (or the manifest's folder under `manifest`). Ships `app.yaml` and the built entry folder only; see the app guide. |
+| `include`         | No       | Helper TypeScript files copied alongside behaviors without bundling. Resolved via `paths.base`.                                                                      |
+| `additionalFiles` | No       | Extra files (README, LICENSE, etc.) relative to the manifest's own directory.                                                                                        |
+| `platforms`       | No       | OS/architecture hints (e.g. `darwin-aarch64`, `linux-x86_64`)                                                                                                        |
+| `labels`          | No       | Categorization labels (e.g. `aws`, `kubernetes`, `security`)                                                                                                         |
+| `dependencies`    | No       | Other extensions this one depends on                                                                                                                                 |
 
 *At least one of `behaviors` (or `models`), `workflows`, `vaults`, `datastores`,
-`reports`, or `skills` must be present with entries.
+`reports`, `skills`, or `apps` must be present with entries.
 
 `behaviors:`, `extensions/behaviors/` and `export const behavior` are the
 behavior spelling of `models:`, `extensions/models/` and `export const model`.

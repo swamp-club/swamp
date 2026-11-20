@@ -432,6 +432,9 @@ export interface ConnectionContext {
   runTracker?: RunTrackerRepository;
   dispatchService?: import("../dispatch_service.ts").DispatchService;
   controlPlaneStore?: ControlPlaneStore;
+  appDeps?: import("../../libswamp/apps/apps.ts").AppDeps & {
+    launchKey: import("../../domain/apps/app_launch.ts").AppLaunchKey;
+  };
   defaultVault?: string;
   instanceId?: string;
   staleTtlMs?: number;
@@ -1385,6 +1388,18 @@ function decideDelegatedSubject(
     resource,
   );
   return decision?.effect === "allow";
+}
+
+/** answers without replying, for a request that only shapes what it returns */
+export function isAllowed(
+  socket: WebSocket,
+  principal: Principal | null,
+  action: Action,
+  resource: AccessResource,
+  ctx: ConnectionContext,
+): boolean {
+  return decideAccess(socket, principal, action, resource, ctx).kind ===
+    "allowed";
 }
 
 export function authorizeOrReject(

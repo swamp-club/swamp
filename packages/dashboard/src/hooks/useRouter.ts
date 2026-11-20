@@ -101,6 +101,7 @@ export interface Router {
   openModel: (modelName: string) => void;
   openWorkflow: (workflowName: string) => void;
   openRun: (workflowName: string, runId?: string) => void;
+  openApp: (appName: string, path?: string) => void;
   closeDetail: () => void;
   /**
    * Back/Escape: a deep-linked data item or report returns to its model or
@@ -125,6 +126,10 @@ export function useRouter(): Router {
       view: "workflows",
       detail: { kind: "workflow", workflowName },
     });
+  }, []);
+
+  const openApp = useCallback((appName: string, path = "/") => {
+    pushState({ view: "apps", detail: { kind: "app", appName, path } });
   }, []);
 
   const openRun = useCallback(
@@ -157,6 +162,7 @@ export function useRouter(): Router {
     openModel,
     openWorkflow,
     openRun,
+    openApp,
     closeDetail,
     goUp,
   };

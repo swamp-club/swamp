@@ -18,11 +18,18 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import {
+  type AppBundle,
+  duplicateAppFolder,
+  readAppBundle,
+} from "../../domain/extensions/extension_app_bundle.ts";
+import { readAppDependencies } from "../../domain/extensions/app_dependencies.ts";
+import {
   basename,
   dirname,
   extname,
   isAbsolute,
   join,
+  normalize,
   relative,
   SEPARATOR,
 } from "@std/path";
@@ -69,8 +76,6 @@ import {
 import type { QualityCheckResult } from "../../domain/extensions/extension_quality_checker.ts";
 import type {
   DependencySpecifier,
-} from "@swamp-club/extension-scoring/dependency-audit";
-import type {
   DependencyTrustResult,
 } from "@swamp-club/extension-scoring/dependency-audit";
 import type {
@@ -171,10 +176,21 @@ export interface ExtensionPushResolvedData {
   reports: ResolvedReportEntry[];
   webhooks: ResolvedWebhookEntry[];
   skills: Array<{ name: string; fileCount: number }>;
+  /** Folders listed under `apps:` in the manifest. */
+  apps: string[];
+  /** How each app's locked packages are audited; absent without apps. */
+  appDependencies?: ExtensionPushAppDependencies[];
   additionalFiles: string[];
   platforms: string[];
   labels: string[];
   dependencies: string[];
+}
+
+/** What `dist/` can hold is audited on npm and OSV; build-only tools get the lock's static checks. */
+export interface ExtensionPushAppDependencies {
+  folder: string;
+  shippedAudited: number;
+  buildOnly: number;
 }
 
 export interface ExtensionPushSuccessData {
@@ -190,6 +206,7 @@ export interface ExtensionPushSuccessData {
   reportCount: number;
   webhookCount: number;
   skillCount: number;
+  appCount: number;
   channel: string;
   visibility: "public" | "private";
   /** Set when public was requested explicitly but the extension stayed private. */
@@ -227,6 +244,8 @@ export interface ExtensionPushPrepareInput {
   webhooksDir: string;
   allWebhookFiles: string[];
   webhookEntryPoints: string[];
+  /** base for the folders listed under `apps:` */
+  appsDir: string;
   workflowFiles: Array<{ sourcePath: string; archiveName: string }>;
   skillDirs: Array<{ name: string; absolutePath: string }>;
   allSkillFiles: string[];
@@ -304,6 +323,7 @@ export type LocalGatesMode = "enforce" | "collect";
 export type LocalGate =
   | "content-collectives"
   | "additional-files"
+  | "apps"
   | "safety"
   | "source-syntax"
   | "dependency-trust"
@@ -381,6 +401,7 @@ export interface ExtensionPushCounts {
   reports: number;
   webhooks: number;
   skills: number;
+  apps: number;
 }
 
 export interface ExtensionPushExecuteInput {
@@ -463,9 +484,11 @@ export interface ExtensionPushPrepareDeps {
     sourceFiles: string[],
     resolver?: BareImportResolver,
   ) => Promise<DependencySpecifier[]>;
+  /** `limit` caps how many packages one call looks up; the shared cap by default */
   checkDependencyTrust: (
     specifiers: DependencySpecifier[],
     project: ExtensionProject,
+    limit?: number,
   ) => Promise<DependencyTrustResult>;
   checkReviewRules: (
     input: ExtensionReviewInput,
@@ -740,13 +763,15 @@ export function createExtensionPushPrepareDeps(
     analyzeExtensionSafety,
     checkExtensionQuality,
     extractDependencySpecifiers,
-    checkDependencyTrust: async (specifiers, project) =>
+    checkDependencyTrust: async (specifiers, project, limit) =>
       checkDependencyTrust(
         specifiers,
         fetcherFor(resolveServerUrl()) ?? globalThis.fetch,
         undefined,
         undefined,
         await readProjectLockfile(project),
+        undefined,
+        limit,
       ),
     checkReviewRules: checkReviewRulesImpl,
     bundleEntryPoint: bundleExtension,
@@ -1169,6 +1194,54 @@ export async function extensionPushPrepare(
     }
   }
 
+  const clashingFolder = duplicateAppFolder(input.manifest.apps);
+  if (clashingFolder !== null) {
+    failGate(
+      "apps",
+      validationFailed(
+        `Two apps use the folder name "${clashingFolder}". Rename one.`,
+      ),
+    );
+  }
+  if (input.manifest.apps.some((app) => basename(normalize(app)) === ".")) {
+    failGate(
+      "apps",
+      validationFailed(
+        "An app must be a folder below the apps directory, not the directory itself.",
+      ),
+    );
+  }
+  const appBundles: AppBundle[] = [];
+  const appDependencySpecifiers: DependencySpecifier[][] = [];
+  const appDependencies: ExtensionPushAppDependencies[] = [];
+  for (const app of input.manifest.apps) {
+    try {
+      appBundles.push(
+        await readAppBundle(join(input.appsDir, app), input.manifest.name),
+      );
+    } catch (error) {
+      failGate(
+        "apps",
+        validationFailed(
+          error instanceof Error ? error.message : String(error),
+        ),
+      );
+    }
+    // the build inlines what runtime dependencies reach, so those are audited like an import
+    const appDeps = await readAppDependencies(join(input.appsDir, app), app);
+    if (appDeps.problems.length > 0) {
+      failGate("apps", validationFailed(appDeps.problems.join("\n")));
+    }
+    if (appDeps.shipped.length > 0) {
+      appDependencySpecifiers.push(appDeps.shipped);
+    }
+    appDependencies.push({
+      folder: basename(normalize(app)),
+      shippedAudited: appDeps.shipped.length,
+      buildOnly: appDeps.buildOnly.length,
+    });
+  }
+
   // read and validated here so a malformed sidecar blocks like a malformed
   // manifest, before any gate runs.
   const sidecar = await readQualitySidecar(input.manifestDir);
@@ -1278,15 +1351,6 @@ export async function extensionPushPrepare(
       specifiers,
       pushProject(input) ?? {},
     );
-    if (dependencyTrustResult.errors.length > 0) {
-      failGate(
-        "dependency-trust",
-        validationFailed(
-          "Extension has dependency trust errors that must be resolved before pushing.",
-          { dependencyTrustErrors: dependencyTrustResult.errors },
-        ),
-      );
-    }
   } else {
     dependencyTrustResult = {
       errors: [],
@@ -1294,6 +1358,33 @@ export async function extensionPushPrepare(
       audited: [],
       passed: true,
     };
+  }
+  // a budget per app, so an app never crowds the extension's imports out of the registry's shared cap
+  for (const appSpecifiers of appDependencySpecifiers) {
+    ctx.logger
+      .debug`Auditing ${appSpecifiers.length} app dependency specifier(s)`;
+    const app = await deps.checkDependencyTrust(
+      appSpecifiers,
+      pushProject(input) ?? {},
+      // everything the app ships is audited; an app has no package budget
+      appSpecifiers.length,
+    );
+    dependencyTrustResult = {
+      ...dependencyTrustResult,
+      errors: [...dependencyTrustResult.errors, ...app.errors],
+      warnings: [...dependencyTrustResult.warnings, ...app.warnings],
+      audited: [...dependencyTrustResult.audited, ...app.audited],
+      passed: dependencyTrustResult.passed && app.passed,
+    };
+  }
+  if (dependencyTrustResult.errors.length > 0) {
+    failGate(
+      "dependency-trust",
+      validationFailed(
+        "Extension has dependency trust errors that must be resolved before pushing.",
+        { dependencyTrustErrors: dependencyTrustResult.errors },
+      ),
+    );
   }
   // code from outside npm and JSR that the bundles hold is not audited and
   // costs the dependency-trust points, as on the registry.
@@ -1331,6 +1422,22 @@ export async function extensionPushPrepare(
         };
       });
     }
+  }
+
+  if (contentMetadata && appBundles.length > 0) {
+    contentMetadata.apps = appBundles.map(({ descriptor, folder }) => ({
+      folder,
+      name: descriptor.name,
+      title: descriptor.title,
+      capabilities: [...descriptor.capabilities],
+      run: [...descriptor.run],
+      methods: descriptor.methods.map(({ behavior, type, methods }) => ({
+        behavior,
+        type,
+        methods: [...methods],
+      })),
+      platform: String(descriptor.platform),
+    }));
   }
 
   const usingCachedArchive = input.cachedArchive !== undefined;
@@ -1527,6 +1634,9 @@ export async function extensionPushPrepare(
     contentMetadata,
     runtimeIndex,
   );
+  if (appDependencies.length > 0) {
+    resolvedData.appDependencies = appDependencies;
+  }
 
   // the version must not be published on any channel. Runs after packaging so
   // the cheaper local gates fire first.
@@ -1612,6 +1722,7 @@ export async function extensionPushPrepare(
       reports: input.reportEntryPoints.length,
       webhooks: input.webhookEntryPoints.length,
       skills: input.skillDirs.length,
+      apps: input.manifest.apps.length,
     },
     isDryRun: input.dryRun,
     registryChecks,
@@ -2606,6 +2717,7 @@ export async function* extensionPush(
           reportCount: input.counts.reports,
           webhookCount: input.counts.webhooks,
           skillCount: input.counts.skills,
+          appCount: input.counts.apps,
           channel: input.channel ?? "stable",
           visibility,
           ...(visibilityWarning ? { visibilityWarning } : {}),
@@ -2953,6 +3065,7 @@ function buildResolvedData(
     datastores: resolvedDatastores,
     reports: resolvedReports,
     webhooks: resolvedWebhooks,
+    apps: input.manifest.apps,
     skills: input.skillDirs.map((s) => ({
       name: s.name,
       fileCount:
@@ -3217,6 +3330,7 @@ async function createArchive(
       "webhooks",
       "webhook-bundles",
       "skills",
+      "apps",
       "files",
     ];
     for (const dir of dirs) {
@@ -3255,6 +3369,9 @@ async function createArchive(
           : {}),
         ...(input.manifest.include.length > 0
           ? { include: input.manifest.include }
+          : {}),
+        ...(input.manifest.apps.length > 0
+          ? { apps: input.manifest.apps }
           : {}),
         additionalFiles: input.manifest.additionalFiles,
         ...(input.manifest.binaries.length > 0
@@ -3452,6 +3569,25 @@ async function createArchive(
         }
       };
       await copySkillDir(absolutePath, destDir);
+    }
+
+    for (const app of input.manifest.apps) {
+      // the apps gate already refused this one; in collect mode it still gets here
+      const bundle = await readAppBundle(
+        join(input.appsDir, app),
+        input.manifest.name,
+      ).catch(() => null);
+      if (bundle === null) continue;
+      for (const [index, file] of bundle.files.entries()) {
+        const destPath = join(
+          extDir,
+          "apps",
+          bundle.folder,
+          bundle.archivePaths[index],
+        );
+        await Deno.mkdir(dirname(destPath), { recursive: true });
+        await Deno.copyFile(file, destPath);
+      }
     }
 
     // additionalFiles (relative) and additionalFilePaths (absolute) are

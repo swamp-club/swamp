@@ -47,6 +47,7 @@ function makeManifest(
     reports: [],
     webhooks: [],
     skills: [],
+    apps: [],
     include: [],
     additionalFiles: [],
     binaries: [],
@@ -171,6 +172,7 @@ Deno.test(
         allReportFiles: [],
         reportEntryPoints: [],
         webhooksDir: join(src, "webhooks"),
+        appsDir: src,
         allWebhookFiles: [],
         webhookEntryPoints: [],
         workflowFiles: [],
@@ -279,6 +281,7 @@ Deno.test(
         allReportFiles: [],
         reportEntryPoints: [],
         webhooksDir: extDir,
+        appsDir: extDir,
         allWebhookFiles: [],
         webhookEntryPoints: [],
         workflowFiles: [],
@@ -375,6 +378,7 @@ Deno.test(
         allReportFiles: [],
         reportEntryPoints: [],
         webhooksDir: extDir,
+        appsDir: extDir,
         allWebhookFiles: [],
         webhookEntryPoints: [],
         workflowFiles: [],
@@ -462,6 +466,7 @@ Deno.test(
         allReportFiles: [],
         reportEntryPoints: [],
         webhooksDir: join(src, "webhooks"),
+        appsDir: src,
         allWebhookFiles: [],
         webhookEntryPoints: [],
         workflowFiles: [],
@@ -547,6 +552,7 @@ Deno.test(
         allReportFiles: [],
         reportEntryPoints: [],
         webhooksDir: extDir,
+        appsDir: extDir,
         allWebhookFiles: [],
         webhookEntryPoints: [],
         workflowFiles: [{ sourcePath: wfRealPath, archiveName: "deploy.yaml" }],
@@ -632,6 +638,7 @@ Deno.test(
         allReportFiles: [],
         reportEntryPoints: [],
         webhooksDir: extDir,
+        appsDir: extDir,
         allWebhookFiles: [],
         webhookEntryPoints: [],
         workflowFiles: [],
@@ -670,6 +677,194 @@ Deno.test(
     } finally {
       await Deno.remove(src, { recursive: true }).catch(() => {});
       await Deno.remove(dst, { recursive: true }).catch(() => {});
+    }
+  },
+);
+
+Deno.test(
+  "round-trip: an app ships its descriptor and build, never its sources",
+  async () => {
+    const src = await Deno.makeTempDir({ prefix: "rt-src-" });
+    const dst = await Deno.makeTempDir({ prefix: "rt-dst-" });
+    try {
+      const modelsDir = join(src, "extensions", "models");
+      await Deno.mkdir(modelsDir, { recursive: true });
+      await Deno.writeTextFile(
+        join(modelsDir, "echo.ts"),
+        'export const model = { type: "@t/e", version: "1.0.0" };',
+      );
+      const app = join(src, "apps", "cost");
+      await Deno.mkdir(join(app, "dist", "assets"), { recursive: true });
+      await Deno.mkdir(join(app, "src"), { recursive: true });
+      await Deno.writeTextFile(
+        join(app, "app.yaml"),
+        'name: "@testuser/cost"\ntitle: Cost\nbridge: 1\nplatform: "1.4"\n' +
+          'methods:\n  - behavior: cost-report\n    type: "@testuser/cost-report"\n    methods: [refresh]\n',
+      );
+      await Deno.writeTextFile(join(app, "dist", "index.html"), "<html>");
+      await Deno.writeTextFile(join(app, "dist", "assets", "main.js"), "1");
+      await Deno.writeTextFile(join(app, "src", "App.tsx"), "secret");
+      await Deno.writeTextFile(
+        join(app, "package.json"),
+        '{ "dependencies": { "react": "^19.2.5", "ms": "^2.1.3" }, "devDependencies": { "vite": "^6.4.6" } }',
+      );
+      await Deno.writeTextFile(
+        join(app, "bun.lock"),
+        '{ "lockfileVersion": 2, "packages": { "react": ["react@19.2.5", "", {}, "sha512-x"], "ms": ["ms@2.1.3", "", {}, "sha512-y"], "vite": ["vite@6.4.6", "", {}, "sha512-z"], }, }',
+      );
+      const audits: { names: string[]; limit?: number }[] = [];
+
+      const base: Omit<ExtensionPushPrepareInput, "sourcePlan"> = {
+        manifest: makeManifest({ apps: ["apps/cost"] }),
+        bareImports: [],
+        graphDependencies: { packageVersions: {}, unaudited: [] },
+        repoDir: src,
+        manifestDir: src,
+        modelsDir,
+        allModelFiles: [join(modelsDir, "echo.ts")],
+        modelEntryPoints: [join(modelsDir, "echo.ts")],
+        vaultsDir: join(src, "vaults"),
+        allVaultFiles: [],
+        vaultEntryPoints: [],
+        datastoresDir: join(src, "datastores"),
+        allDatastoreFiles: [],
+        datastoreEntryPoints: [],
+        reportsDir: join(src, "reports"),
+        allReportFiles: [],
+        reportEntryPoints: [],
+        webhooksDir: join(src, "webhooks"),
+        appsDir: src,
+        allWebhookFiles: [],
+        webhookEntryPoints: [],
+        workflowFiles: [],
+        skillDirs: [],
+        allSkillFiles: [],
+        includeFilePaths: [],
+        additionalFilePaths: [],
+        binaryFilePaths: [],
+        dryRun: true,
+        registryChecks: "skip",
+      };
+      const prepared = await extensionPushPrepare(
+        createLibSwampContext(),
+        makePrepareDeps({
+          checkDependencyTrust: (specifiers, _project, limit) => {
+            audits.push({ names: specifiers.map((spec) => spec.name), limit });
+            return Promise.resolve({
+              errors: [],
+              warnings: [],
+              audited: [],
+              passed: true,
+            });
+          },
+        }),
+        { ...base, sourcePlan: kindDirectorySourcePlan(base) },
+      );
+      await untarArchiveTo(prepared.archiveBytes, dst);
+
+      const shipped = join(dst, "extension", "apps", "cost");
+      await Deno.stat(join(shipped, "app.yaml"));
+      await Deno.stat(join(shipped, "dist", "index.html"));
+      await Deno.stat(join(shipped, "dist", "assets", "main.js"));
+      await Deno.stat(join(shipped, "package.json"));
+      await Deno.stat(join(shipped, "bun.lock"));
+      let sourcesShipped = true;
+      await Deno.stat(join(shipped, "src")).catch(() => {
+        sourcesShipped = false;
+      });
+      // react is the platform's and vite only builds, so ms alone is looked up
+      assertEquals(audits, [{
+        names: ["ms"],
+        limit: 1,
+      }]);
+      assertEquals(prepared.resolvedData.appDependencies, [{
+        folder: "cost",
+        shippedAudited: 1,
+        buildOnly: 2,
+      }]);
+      assertEquals(sourcesShipped, false);
+      assertEquals(prepared.contentMetadata?.apps, [{
+        folder: "cost",
+        name: "@testuser/cost",
+        title: "Cost",
+        capabilities: [],
+        run: [],
+        methods: [{
+          behavior: "cost-report",
+          type: "@testuser/cost-report",
+          methods: ["refresh"],
+        }],
+        platform: "1.4",
+      }]);
+    } finally {
+      await Deno.remove(src, { recursive: true });
+      await Deno.remove(dst, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "extensionPushPrepare: in collect mode an unbuilt app is a gate failure, not a crash",
+  async () => {
+    const src = await Deno.makeTempDir({ prefix: "rt-src-" });
+    try {
+      const modelsDir = join(src, "extensions", "models");
+      await Deno.mkdir(modelsDir, { recursive: true });
+      await Deno.writeTextFile(
+        join(modelsDir, "echo.ts"),
+        'export const model = { type: "@t/e", version: "1.0.0" };',
+      );
+      const app = join(src, "apps", "cost");
+      await Deno.mkdir(app, { recursive: true });
+      await Deno.writeTextFile(
+        join(app, "app.yaml"),
+        'name: "@testuser/cost"\ntitle: Cost\nbridge: 1\n',
+      );
+      await Deno.writeTextFile(join(app, "package.json"), "{}");
+      const base: Omit<ExtensionPushPrepareInput, "sourcePlan"> = {
+        manifest: makeManifest({ apps: ["apps/cost"] }),
+        bareImports: [],
+        graphDependencies: { packageVersions: {}, unaudited: [] },
+        repoDir: src,
+        manifestDir: src,
+        modelsDir,
+        allModelFiles: [join(modelsDir, "echo.ts")],
+        modelEntryPoints: [join(modelsDir, "echo.ts")],
+        vaultsDir: join(src, "vaults"),
+        allVaultFiles: [],
+        vaultEntryPoints: [],
+        datastoresDir: join(src, "datastores"),
+        allDatastoreFiles: [],
+        datastoreEntryPoints: [],
+        reportsDir: join(src, "reports"),
+        allReportFiles: [],
+        reportEntryPoints: [],
+        webhooksDir: join(src, "webhooks"),
+        appsDir: src,
+        allWebhookFiles: [],
+        webhookEntryPoints: [],
+        workflowFiles: [],
+        skillDirs: [],
+        allSkillFiles: [],
+        includeFilePaths: [],
+        additionalFilePaths: [],
+        binaryFilePaths: [],
+        dryRun: true,
+        registryChecks: "skip",
+        localGates: "collect",
+      };
+      const prepared = await extensionPushPrepare(
+        createLibSwampContext(),
+        makePrepareDeps(),
+        { ...base, sourcePlan: kindDirectorySourcePlan(base) },
+      );
+      assertEquals(
+        prepared.gateFailures.filter((failure) => failure.gate === "apps")
+          .length,
+        1,
+      );
+    } finally {
+      await Deno.remove(src, { recursive: true });
     }
   },
 );
