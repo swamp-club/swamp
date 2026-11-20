@@ -554,6 +554,30 @@ Deno.test("hostedWorkspaceCreate: with no host folder, a name or folder already 
   assertEquals(await entries(host.dir), []);
 });
 
+Deno.test("hostedWorkspaceCreate: with no host folder, a plain file holding the name in the location is refused as already_exists naming no host path, touching nothing", async () => {
+  await using host = await noFolderHost();
+  await Deno.mkdir(host.location, { recursive: true });
+  await Deno.writeTextFile(join(host.location, "edge-dns"), "mine");
+  const events = await collect(
+    hostedWorkspaceCreate(ctx, host.deps(), {
+      name: "edge-dns",
+      caller: ALICE,
+      access: OAUTH_ACCESS,
+    }),
+  );
+  const error = events.find((e) => e.kind === "error");
+  assert(error?.kind === "error");
+  assertEquals(error.error.code, "already_exists");
+  assert(!error.error.message.includes(host.root), "no host path");
+  assertEquals(await entries(host.location), ["edge-dns"]);
+  assertEquals(
+    await Deno.readTextFile(join(host.location, "edge-dns")),
+    "mine",
+  );
+  assertEquals(await entries(host.dir), []);
+  assertEquals((await host.store.registry.load())?.get("edge-dns"), undefined);
+});
+
 Deno.test("hostedWorkspaceCreate: with no host folder and no workspace location, create fails as a host error, making nothing", async () => {
   await using host = await noFolderHost();
   const events = await collect(
