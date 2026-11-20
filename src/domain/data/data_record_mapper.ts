@@ -68,11 +68,10 @@ export function decodeRecordContent(
     if (!(error instanceof TypeError || error instanceof RangeError)) {
       throw error;
     }
-    const mib = (bytes.length / (1024 * 1024)).toFixed(1);
     throw new UserError(
       `Data ${identity.modelName}/${identity.dataName} version ` +
-        `${identity.version} has ${mib} MiB of content, more than the ` +
-        `largest text value swamp can load (about 512 MiB)`,
+        `${identity.version} has ${bytes.length} bytes of content, more ` +
+        `than swamp can load as text`,
       RECORD_CONTENT_TOO_LARGE_CODE,
     );
   }
@@ -367,15 +366,10 @@ export async function fromResourceHandle(
         handle.version,
       );
       if (content) {
-        const text = decodeRecordContent(content, {
-          modelName: handle.tags["modelName"] ?? fallbackModelName,
-          dataName: handle.name,
-          version: handle.version,
-        });
+        const text = new TextDecoder().decode(content);
         attributes = JSON.parse(text) as Record<string, unknown>;
       }
-    } catch (error) {
-      if (isRecordContentTooLargeError(error)) throw error;
+    } catch {
       // Not valid JSON, skip attributes
     }
   }

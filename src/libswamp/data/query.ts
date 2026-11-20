@@ -26,6 +26,10 @@ import {
   isUnreadableContentError,
   UNREADABLE_CONTENT_CODE,
 } from "../../domain/datastore/unreadable_content.ts";
+import {
+  isRecordContentTooLargeError,
+  RECORD_CONTENT_TOO_LARGE_CODE,
+} from "../../domain/data/data_record_mapper.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import {
   createQuerySort,
@@ -369,6 +373,8 @@ export async function* dataQuery(
             // as data get reports it
             code: isUnreadableContentError(error)
               ? UNREADABLE_CONTENT_CODE
+              : isRecordContentTooLargeError(error)
+              ? RECORD_CONTENT_TOO_LARGE_CODE
               : "QUERY_FAILED",
             message: error instanceof Error ? error.message : String(error),
           },

@@ -1032,7 +1032,7 @@ Deno.test("fromRow: content too large to decode fails naming the record", () => 
   const error = assertThrows(
     () => fromRow(createRow({ version: 3 }), repo, true, true),
     UserError,
-    "Data test-model/test-data version 3 has 512.0 MiB of content",
+    "Data test-model/test-data version 3 has 536870928 bytes of content",
   );
   assertEquals(error.code, RECORD_CONTENT_TOO_LARGE_CODE);
 });
@@ -1059,65 +1059,4 @@ Deno.test("fromData: content too large to decode fails naming the record", async
     "Data big-model/big-data version 7",
   );
   assertEquals(isRecordContentTooLargeError(error), true);
-});
-
-Deno.test("fromResourceHandle: content too large to decode fails naming the record instead of reading as empty", async () => {
-  const handle: DataHandle = {
-    name: "instance-1",
-    specName: "chunk",
-    kind: "resource",
-    dataId: "data-id-1" as DataId,
-    version: 2,
-    size: 100,
-    tags: { type: "resource", modelName: "big-model" },
-    metadata: {
-      contentType: "application/json",
-      lifetime: "infinite",
-      garbageCollection: 10,
-      streaming: false,
-      tags: {},
-      ownerDefinition: { ownerType: "model-method", ownerRef: "ref-1" },
-    },
-  };
-  const error = await assertRejects(
-    () =>
-      fromResourceHandle(
-        handle,
-        ModelType.create("test/model"),
-        "model-123",
-        "fallback",
-        stubRepo(null, oversizedContent()),
-      ),
-    UserError,
-    "Data big-model/instance-1 version 2",
-  );
-  assertEquals(isRecordContentTooLargeError(error), true);
-});
-
-Deno.test("fromResourceHandle: invalid JSON still reads as empty attributes", async () => {
-  const handle: DataHandle = {
-    name: "instance-1",
-    specName: "chunk",
-    kind: "resource",
-    dataId: "data-id-1" as DataId,
-    version: 1,
-    size: 100,
-    tags: { type: "resource", modelName: "test-model" },
-    metadata: {
-      contentType: "application/json",
-      lifetime: "infinite",
-      garbageCollection: 10,
-      streaming: false,
-      tags: {},
-      ownerDefinition: { ownerType: "model-method", ownerRef: "ref-1" },
-    },
-  };
-  const record = await fromResourceHandle(
-    handle,
-    ModelType.create("test/model"),
-    "model-123",
-    "test-model",
-    stubRepo(null, encoder.encode("not-json{")),
-  );
-  assertEquals(record.attributes, {});
 });

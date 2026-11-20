@@ -30,8 +30,8 @@ import {
 } from "../../libswamp/data/query.ts";
 import { userErrorFromSwampError } from "../../libswamp/errors.ts";
 import { createDataQueryRenderer } from "../../presentation/renderers/data_query.ts";
-import type { Sink } from "../../presentation/output/json_stream.ts";
 import { renderInteractiveQuery } from "../../presentation/renderers/data_query_tui.tsx";
+import type { Sink } from "../../presentation/output/json_stream.ts";
 import {
   createContext,
   type GlobalOptions,
