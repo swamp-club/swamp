@@ -739,8 +739,8 @@ per workspace in the state folder, under its name:
 
 - **Wanted**, `<name>.wanted.yaml`, written by the root: `wanted`
   (`active`, `suspended` or `deleted`), `creator` and `changedAt`, and, when it
-  names one, the `folder` it was written for; one create writes on a host with
-  no host folder also records the new repo's `repoId`. A folder
+  names one, the `folder` it was written for. The wanted file a create writes
+  on a host with no host folder also records the new repo's `repoId`. A folder
   without one is listed and not started, and its status file says
   `wanted: suspended`. Only `wanted` is required, so an operator can suspend or
   resume a workspace by editing that one line while the host runs.

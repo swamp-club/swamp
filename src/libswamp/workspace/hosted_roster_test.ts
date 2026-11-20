@@ -711,5 +711,8 @@ Deno.test("folderRepoIdentity: tells an absent folder, a repoId, no repoId and a
     assertEquals(await folderRepoIdentity(folder), { kind: "unreadable" });
     await Deno.writeTextFile(marker, "x".repeat(64 * 1024 + 1));
     assertEquals(await folderRepoIdentity(folder), { kind: "unreadable" });
+    await Deno.remove(marker);
+    await Deno.mkdir(marker);
+    assertEquals(await folderRepoIdentity(folder), { kind: "unreadable" });
   });
 });

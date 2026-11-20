@@ -2280,8 +2280,6 @@ export {
 export {
   type CreatedOwnership,
   createdOwnership,
-  type CreatedOwnershipOptions,
-  folderRepoIdentity,
   freshFolderClaim,
   hostCreated,
   type HostedRegistryRead,
@@ -2292,7 +2290,6 @@ export {
   hostFolderClaimedBy,
   readHostedRegistry,
   registryOfRead,
-  type RepoIdentity,
   wantedFolderMatches,
   wantedFolderOf,
 } from "./workspace/hosted_roster.ts";

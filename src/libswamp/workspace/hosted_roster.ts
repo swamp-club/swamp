@@ -162,26 +162,26 @@ export async function folderRepoIdentity(
       ? { kind: "absent" }
       : { kind: "unreadable" };
   }
+  const marker = join(folder, REPO_MARKER_FILE);
   let text: string | null | "not a file";
   try {
-    text = await readCapped(
-      join(folder, REPO_MARKER_FILE),
-      MAX_REPO_MARKER_BYTES,
-    );
+    // opening a pipe blocks until a writer appears, which would stall every rescan
+    if (!(await Deno.stat(marker)).isFile) return { kind: "unreadable" };
+    text = await readCapped(marker, MAX_REPO_MARKER_BYTES);
   } catch (error) {
     return error instanceof Deno.errors.NotFound
       ? { kind: "none" }
       : { kind: "unreadable" };
   }
   if (text === null || text === "not a file") return { kind: "unreadable" };
-  let marker: unknown;
+  let parsed: unknown;
   try {
-    marker = parseYaml(text);
+    parsed = parseYaml(text);
   } catch {
     return { kind: "unreadable" };
   }
-  const repoId = typeof marker === "object" && marker !== null
-    ? (marker as Record<string, unknown>).repoId
+  const repoId = typeof parsed === "object" && parsed !== null
+    ? (parsed as Record<string, unknown>).repoId
     : undefined;
   return typeof repoId === "string" && repoId.length > 0
     ? { kind: "id", repoId }
