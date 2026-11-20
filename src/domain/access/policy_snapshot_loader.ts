@@ -318,7 +318,6 @@ export class PolicySnapshotLoader {
   #enforcedGrants: readonly Grant[] = [];
   #enforcedGroups: readonly Group[] = [];
   #onBuilt: ((release: PolicyRelease) => void) | undefined;
-  /** the leader's release this follower enforces, if any */
   #appliedRelease: PolicyRelease | undefined;
   /**
    * each active grant already checked for spellings, with the effect, selector

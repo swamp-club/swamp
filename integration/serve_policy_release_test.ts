@@ -142,7 +142,6 @@ Deno.test("policy release: a held grant reaches no follower until the leader reb
       assertEquals(leader.snapshot.grantsForSubjects(["user:eve"]).length, 0);
       assertEquals(follower.snapshot.grantsForSubjects(["user:eve"]).length, 0);
 
-      // a reload releases it on the leader and, through the release, on followers
       await leader.load();
       await publisher.settled();
       assertEquals(pushes, 2);
@@ -150,7 +149,6 @@ Deno.test("policy release: a held grant reaches no follower until the leader reb
       assertEquals(follower.snapshot.grantsForSubjects(["user:eve"]).length, 1);
       assertEquals(follower.release().digest(), leader.release().digest());
 
-      // a rebuild that changes nothing writes nothing
       await leader.load();
       await publisher.settled();
       assertEquals(pushes, 2);

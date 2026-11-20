@@ -81,7 +81,6 @@ Deno.test("PolicyReleasePublisher: offering never waits for the write, and the n
   const h = harness();
   const open = h.hold();
   h.publisher.offer(release("a"));
-  // the offer returned while its write is held
   assertEquals(h.written, []);
   await Promise.resolve();
   h.publisher.offer(release("b"));

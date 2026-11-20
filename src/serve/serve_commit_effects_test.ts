@@ -636,7 +636,6 @@ Deno.test("ServeCommitEffects: until the current leader has released, a follower
     store.landStamped(RELEASE, { fence: 7 });
     await pass(store, effects);
     assertEquals(effects.followsLeaderRelease(), true);
-    // a new leader that has not released yet: back to grant commits
     takeover(8);
     assertEquals(effects.followsLeaderRelease(), false);
     store.landStamped(GRANT, { fence: 8 });

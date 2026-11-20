@@ -29,7 +29,6 @@ import { type PartitionKey, partitionOf } from "./partition_key.ts";
 import { ModelType } from "../models/model_type.ts";
 import { POLICY_RELEASE_ID } from "../models/access/policy_release_model.ts";
 
-/** where a leader's policy release is committed */
 export const POLICY_RELEASE_PARTITION: PartitionKey = partitionOf({
   kind: "model",
   type: ModelType.create("swamp/policy-release"),

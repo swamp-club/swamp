@@ -153,7 +153,7 @@ export interface PolicyReleaseWriterDeps {
   readonly confirmReplicated?: () => Promise<void>;
 }
 
-/** writes release-main under its own lock and root unit of work, as a delegation record is */
+/** under its own lock and root unit, as a delegation record is written */
 export function createPolicyReleaseWriter(
   deps: PolicyReleaseWriterDeps,
 ): (release: PolicyRelease) => Promise<void> {

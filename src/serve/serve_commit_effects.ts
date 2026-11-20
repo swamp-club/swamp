@@ -50,15 +50,11 @@ export interface ServeCommitEffectsDeps {
   reloadDelegations?(): Promise<unknown>;
   checkConfig(): void;
   isFollower(): boolean;
-  /**
-   * a follower enforces the leader's released policy in place of rebuilding
-   * its own; without these it rebuilds on every grant or group commit
-   */
+  /** without these a follower rebuilds on every grant or group commit */
   readonly releases?: PolicyReleaseFollowing;
 }
 
 export interface PolicyReleaseFollowing {
-  /** the current leader's lease fence, as this follower sees it */
   leaderFence(): number | undefined;
   /** the newest commit to the release record; read from the copy unless given */
   headReleaseCommit?(): Promise<Commit | undefined>;
@@ -84,7 +80,6 @@ export class ServeCommitEffects {
   #applied: number;
   readonly #pending = new Set<CommitEffect>();
   #policyKnown = true;
-  /** the fence of the release this follower enforces, if any */
   #releaseFence: number | undefined;
   #releaseCommit: Commit | undefined;
   readonly #appliedListeners = new Set<() => void>();
@@ -267,7 +262,6 @@ export class ServeCommitEffects {
     }
   }
 
-  /** whether this follower enforces a release the current leader wrote */
   followsLeaderRelease(): boolean {
     const releases = this.#deps.releases;
     if (releases === undefined || this.#releaseFence === undefined) {
@@ -276,7 +270,6 @@ export class ServeCommitEffects {
     return this.#releaseFence === releases.leaderFence();
   }
 
-  /** at a follower's start: enforce the current leader's release, if it has one */
   async adoptLeaderRelease(): Promise<boolean> {
     if (this.#deps.releases === undefined || !this.#deps.isFollower()) {
       return false;

@@ -2264,7 +2264,6 @@ Deno.test("PolicySnapshotLoader.onBuilt: told the enforced policy after every bu
     writeImpliesTag: true,
   });
   assertEquals(told[0].digest(), told[1].digest());
-  // a reload that changes a decision setting releases it too
   loader.setDecisionOptions({ writeImpliesTag: false });
   assertEquals(told.length, 3);
   assertEquals(told[2].decisions.writeImpliesTag, false);
@@ -2374,7 +2373,6 @@ Deno.test("PolicySnapshotLoader.narrowRelease: with no new release, a revoke app
   assertEquals(follower.snapshot.grantsForSubjects(["user:eve"]).length, 0);
   assertEquals(follower.snapshot.grantsForSubjects(["user:mallory"]).length, 0);
   assertEquals(follower.snapshot.grantsForSubjects(["user:adam"]).length, 1);
-  // a follower publishes nothing
   assertEquals(told, []);
   await leader.dispose();
   await follower.dispose();
