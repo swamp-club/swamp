@@ -95,6 +95,9 @@ class FakeWorld {
   readonly groupSignals: [number, Deno.Signal][] = [];
   readonly commandLines = new Map<number, string>();
   readonly starting: Promise<void>[] = [];
+  /** set, a launched supervisor takes its lock but records itself only once this resolves */
+  presenceGate: Promise<void> | undefined;
+  readonly gatedRecords: Promise<void>[] = [];
   syncAnswer: () => Promise<Record<string, unknown>> = () =>
     Promise.resolve({ status: "synced", txid: 2, replicated_txid: 2 });
   leaseCurrent = true;
@@ -132,11 +135,8 @@ class FakeWorld {
       this.sidecars.push(sidecar);
       // Like a real supervisor: retry the lock the command's probe may still
       // hold, then record itself.
-      this.starting.push((async () => {
-        while (!await lock.tryLock(true)) {
-          await new Promise((resolve) => setTimeout(resolve, 1));
-        }
-        await Deno.writeTextFile(
+      const record = () =>
+        Deno.writeTextFile(
           this.paths.presence,
           JSON.stringify({
             supervisorPid,
@@ -148,6 +148,14 @@ class FakeWorld {
             ...(options.owner !== undefined ? { owner: options.owner } : {}),
           }),
         );
+      const gate = this.presenceGate;
+      this.starting.push((async () => {
+        while (!await lock.tryLock(true)) {
+          await new Promise((resolve) => setTimeout(resolve, 1));
+        }
+        // kept out of starting, which the fake sleep awaits before the gate opens
+        if (gate === undefined) await record();
+        else this.gatedRecords.push(gate.then(record));
       })());
       return supervisorPid;
     },
@@ -1309,6 +1317,146 @@ Deno.test({
         } finally {
           holder.close();
         }
+      });
+    }
+  },
+});
+
+async function foreignIdentities() {
+  const here = await localProcess();
+  return [
+    { ...here.identity, bootId: "another-boot" },
+    {
+      ...here.identity,
+      host: `${here.identity.host.split("#")[0]}#pid:[4026532999]`,
+    },
+  ];
+}
+
+async function plantDeadForeignRecord(
+  world: FakeWorld,
+  process: Awaited<ReturnType<typeof foreignIdentities>>[number],
+): Promise<void> {
+  // pid 777 has no command line in the fake world: its supervisor is dead
+  await writePresence(world.paths, {
+    supervisorPid: 777,
+    uid: Deno.uid(),
+    hostname: Deno.hostname(),
+    process,
+    lineageFence: 1,
+    replicaPath: "/replica/_litestream/000000000001",
+  });
+}
+
+function gatePresence(world: FakeWorld): () => void {
+  let open = () => {};
+  world.presenceGate = new Promise((resolve) => {
+    open = resolve;
+  });
+  return open;
+}
+
+Deno.test({
+  name:
+    "LitestreamReplicator: the supervisor it launched is waited for while a dead sidecar's record from another boot or pid namespace is still in place (swamp-club#4929)",
+  ignore: !UNIX,
+  async fn() {
+    for (const process of await foreignIdentities()) {
+      await withWorld(async (world, db) => {
+        await plantDeadForeignRecord(world, process);
+        const open = gatePresence(world);
+        let window: "before" | "seen" | "open" = "before";
+        const base = world.deps();
+        const replicator = new LitestreamReplicator({
+          ...base,
+          async sleep(ms) {
+            await Promise.allSettled(world.starting);
+            if (window === "seen") {
+              window = "open";
+              open();
+              await Promise.all(world.gatedRecords);
+            } else if (window === "before" && world.sidecars.length > 0) {
+              const read = await readPresence(world.paths);
+              if (read.kind === "found" && read.record.supervisorPid === 777) {
+                window = "seen";
+              }
+            }
+            await base.sleep(ms);
+          },
+        });
+        try {
+          await (await replicator.acquire(world.request(db, 1))).release();
+        } finally {
+          open();
+          await Promise.allSettled(world.gatedRecords);
+        }
+        assertEquals(
+          window,
+          "open",
+          "a poll saw the launched supervisor's lock beside the stale record",
+        );
+        assertEquals(world.killed, []);
+        assertEquals(world.sidecars.length, 1);
+      });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "LitestreamReplicator: a command that did not launch the supervisor waits out the same gap and reuses it (swamp-club#4929)",
+  ignore: !UNIX,
+  async fn() {
+    for (const process of await foreignIdentities()) {
+      await withWorld(async (world, db) => {
+        await plantDeadForeignRecord(world, process);
+        const open = gatePresence(world);
+        // the launching command's probe creates the lock file
+        await Deno.writeTextFile(world.paths.supervisorLock, "");
+        world.processes.launch({
+          command: "swamp",
+          args: [
+            SUPERVISOR_MARKER,
+            "--db",
+            world.paths.commitsDb,
+            "--private-root",
+            "/p",
+            "--lineage",
+            "1",
+            "--replica-path",
+            "/replica/_litestream/000000000001",
+            "--idle-ms",
+            "1",
+            "--stop-wait-ms",
+            "1",
+            "--tick-ms",
+            "1",
+          ],
+          cwd: "/",
+        });
+        await Promise.all(world.starting);
+        let waitedInGap = false;
+        const base = world.deps();
+        const replicator = new LitestreamReplicator({
+          ...base,
+          async sleep(ms) {
+            if (!waitedInGap) {
+              waitedInGap = true;
+              open();
+              await Promise.all(world.gatedRecords);
+            }
+            await base.sleep(ms);
+          },
+        });
+        try {
+          await (await replicator.acquire(world.request(db, 1))).release();
+        } finally {
+          open();
+          await Promise.allSettled(world.gatedRecords);
+        }
+        assert(waitedInGap, "the command polled while the gap was open");
+        assertEquals(world.killed, []);
+        assertEquals(world.sidecars.length, 1);
       });
     }
   },

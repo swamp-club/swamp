@@ -936,7 +936,9 @@ its whole life, so the kernel drops it when the supervisor dies. A command:
    sidecar another command or serve uses, kills the verified supervisor's
    process group, and waits for `supervisor.lock` to come free. Anything it
    cannot verify, including another user's or host's sidecar, is waited for and
-   then refused, never killed.
+   then refused, never killed: a supervisor just launched holds the lock before
+   it rewrites a record a dead sidecar left on another boot or pid namespace. A
+   presence file another user owns is refused at once.
 
 **The idle exit** comes after five minutes with no use: `use.lock`'s mtime is
 the last use, and the supervisor stops Litestream only while it holds
