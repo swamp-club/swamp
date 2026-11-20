@@ -28,6 +28,7 @@ import {
   type DataQueryTarget,
 } from "../../domain/data/data_query_command.ts";
 import { isTextContentType } from "../../domain/data/content_type.ts";
+import { resourceLoadGuardOf } from "../../domain/data/resource_load_guard.ts";
 import {
   type ContentEncoding,
   encodeContent,
@@ -376,8 +377,22 @@ export function createDataGetDeps(
       }
       return null;
     },
-    getContent: (modelType, modelId, name, version) =>
-      dataRepo.getContent(modelType, modelId, name, version),
+    getContent: async (modelType, modelId, name, version) => {
+      const bytes = await dataRepo.getContent(
+        modelType,
+        modelId,
+        name,
+        version,
+      );
+      if (bytes) {
+        resourceLoadGuardOf(dataRepo).assertLoadable({
+          modelType: modelType.normalized,
+          dataName: name,
+          version,
+        }, bytes.length);
+      }
+      return bytes;
+    },
     getContentPath: (modelType, modelId, name, version) =>
       dataRepo.getContentPath(modelType, modelId, name, version),
     toRelativePath,

@@ -108,7 +108,16 @@ trustedCollectives: # optional, default: ["swamp"]
   - swamp
   - myorg
 trustMemberCollectives: false # optional, default: false
+resourceSize: # optional
+  warnBytes: 67108864 # default 64 MiB: warn when one resource is larger
+  maxBytes: 268435456 # unset by default: refuse a larger resource write
 ```
+
+`resourceSize` bounds what one `writeResource` call stores. Past `warnBytes` the
+write logs a warning naming the behavior, method, resource and size; past
+`maxBytes` it is refused before anything is saved. A bad value is warned about
+and ignored. Reads are guarded separately: a run that would exhaust memory
+loading oversized data fails naming the item and its size.
 
 `trustedCollectives` controls which extension collectives auto-resolve on first
 use. Only the first-party `swamp` collective is trusted by default.

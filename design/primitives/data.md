@@ -140,6 +140,19 @@ Methods write through two `MethodContext` functions
 
 Both reject undeclared spec names, empty names and the reserved name `latest`.
 
+**Resource size.** `writeResource` measures the serialized bytes against the
+repo's `resourceSize` policy (`resource_size_policy.ts`; `.swamp.yaml`
+`resourceSize.warnBytes`, default 64 MiB, and an optional `maxBytes`). Past
+`warnBytes` it logs one warning per item per run on
+`swamp.data.resource-size`, naming the writer, the resource and its size. Past
+`maxBytes` it throws `ResourceTooLargeError` before any vault store or save.
+The repository reads the policy from its own `.swamp.yaml` on first use
+(`FileSystemUnifiedDataRepository.resolveResourceSizePolicy`), so every writer
+of the repo applies it, workers included: serve's data plane also refuses a
+resource body whose `Content-Length` is past `maxBytes` before parsing it. The
+check stops an item being persisted; it does not bound memory, as the payload
+is already in memory when it runs.
+
 **One write, in order** (`unified_data_repository.ts` `save`):
 
 1. Tell the sync layer the name directory is dirty.
@@ -573,6 +586,10 @@ workflow-runs/{workflow-id}/workflow-run-{run-id}.yaml
   gone. Only `swamp data prune` can, and it infers orphans: a definition missing
   during a branch switch looks orphaned
   ([datastores.md](../enablers/datastores.md#orphaned-data-reclamation-swamp-data-prune)).
+- The load guard counts uncollected garbage as heap in use, so an item over
+  64 MiB near the limit can be refused that V8 would have fit after a
+  collection. CEL `model.<name>.resource` still loads every latest resource of
+  the behavior on first access, not just the one referenced.
 - The repository constructor still defaults its namespace to solo. The in-code
   note on `FileSystemUnifiedDataRepository` says every direct construction site
   must pass the configured namespace via `namespaceFromResolver`, or it will

@@ -46,6 +46,7 @@ import { MAX_WORKER_READ_BODY_BYTES } from "../domain/remote/protocol.ts";
 import { type ActiveDispatch, DispatchRegistry } from "./dispatch_registry.ts";
 import { BundleRegistry, hashAssetBytes } from "./bundle_registry.ts";
 import { ModelType } from "../domain/models/model_type.ts";
+import { ResourceSizePolicy } from "../domain/data/resource_size_policy.ts";
 import type { ModelDefinition } from "../domain/models/model.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import type { UnifiedDataRepository } from "../domain/data/repositories.ts";
@@ -248,11 +249,16 @@ async function withHarness(
     markDirty?: (path?: string) => Promise<void>;
     onVault?: (h: { dispatches: DispatchRegistry; plane: DataPlane }) => void;
     workerReads?: Partial<WorkerReads>;
+    sizePolicy?: ResourceSizePolicy;
   } = {},
 ): Promise<void> {
   const tempDir = await Deno.makeTempDir({ prefix: "swamp-data-plane-test" });
   try {
     const { repo, stored } = createInMemoryRepo(tempDir);
+    const sizePolicy = options.sizePolicy;
+    if (sizePolicy !== undefined) {
+      repo.resolveResourceSizePolicy = () => Promise.resolve(sizePolicy);
+    }
     const markDirty = options.markDirty;
     if (markDirty !== undefined) {
       const save = repo.save.bind(repo);
@@ -710,6 +716,51 @@ Deno.test("DataPlane: malformed resource overrides are refused before anything i
       assertEquals(h.firstWrites, []);
     });
   }
+});
+
+Deno.test("DataPlane: a resource write whose body is past resourceSize.maxBytes is refused before it is parsed", async () => {
+  await withHarness(async (h) => {
+    h.dispatches.register(activeDispatch());
+    const body = JSON.stringify({
+      specName: "result",
+      name: "result",
+      data: { value: "x".repeat(200 * 1024) },
+    });
+    const response = await h.plane.handle(
+      request("/data/resource", {
+        method: "POST",
+        body,
+        headers: { "content-length": String(body.length) },
+      }),
+    );
+    assertEquals(response?.status, 413);
+    assertStringIncludes(await response!.text(), "resourceSize.maxBytes");
+    assertEquals(h.stored.size, 0);
+  }, {
+    sizePolicy: ResourceSizePolicy.create({ warnBytes: 10, maxBytes: 1024 }),
+  });
+});
+
+Deno.test("DataPlane: a resource write past resourceSize.maxBytes but within the body allowance is refused by the writer", async () => {
+  await withHarness(async (h) => {
+    h.dispatches.register(activeDispatch());
+    const body = JSON.stringify({
+      specName: "result",
+      name: "result",
+      data: { value: "x".repeat(2048) },
+    });
+    const response = await h.plane.handle(
+      request("/data/resource", {
+        method: "POST",
+        body,
+        headers: { "content-length": String(body.length) },
+      }),
+    );
+    assertEquals(h.stored.size, 0);
+    assertStringIncludes(await response!.text(), "Refused to write");
+  }, {
+    sizePolicy: ResourceSizePolicy.create({ warnBytes: 10, maxBytes: 1024 }),
+  });
 });
 
 Deno.test("DataPlane: file writer overrides sent at open land on the saved file (swamp-club#3574)", async () => {

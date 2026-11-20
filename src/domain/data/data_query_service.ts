@@ -1422,6 +1422,7 @@ export class DataQueryService {
     const rows = sort
       ? sortedRows({
         tagKey: querySortTagKey(sort),
+        ...(sort.field === "size" ? { column: "size" as const } : {}),
         direction: sort.direction,
         after: options?.after,
       })

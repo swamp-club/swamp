@@ -35,6 +35,10 @@ import { type StepRun, WorkflowRun } from "./workflow_run.ts";
 import { RunSensitiveValues } from "../secrets/mod.ts";
 import type { UnifiedDataRepository } from "../data/repositories.ts";
 import {
+  ResourceLoadGuard,
+  ResourceTooLargeToLoadError,
+} from "../data/resource_load_guard.ts";
+import {
   observeDiagnosticPhase,
   withDiagnosticArea,
 } from "../diagnostics/diagnostic_phase.ts";
@@ -595,6 +599,41 @@ Deno.test("createDataRepositoryAttributeReader: keeps stored references for the 
 
   const raw = await createDataRepositoryAttributeReader(dataRepo)(ref);
   assertEquals(raw?.token, stored.token);
+});
+
+Deno.test("createDataRepositoryAttributeReader: refuses a step output the guard rejects, by recorded size or by byte length", async () => {
+  let reads = 0;
+  const dataRepo = {
+    loadGuard: new ResourceLoadGuard({
+      heapLimitBytes: () => 1000,
+      heapUsedBytes: () => 0,
+    }, 10),
+    getContent: () => {
+      reads++;
+      return Promise.resolve(new TextEncoder().encode("x".repeat(400)));
+    },
+  } as unknown as UnifiedDataRepository;
+  const ref: StepResourceRef = {
+    dataId: "data-1",
+    modelType: "@repro/bigdata",
+    modelId: "model-1",
+    modelName: "big",
+    specName: "blob",
+    contentType: "application/json",
+    name: "blob-0",
+    version: 2,
+    tags: {},
+  };
+  const read = createDataRepositoryAttributeReader(dataRepo);
+
+  await assertRejects(
+    () => read({ ...ref, size: 500 }),
+    ResourceTooLargeToLoadError,
+    "big/blob-0@v2",
+  );
+  assertEquals(reads, 0);
+  await assertRejects(() => read(ref), ResourceTooLargeToLoadError);
+  assertEquals(reads, 1);
 });
 
 Deno.test("StepOutputResolver.resolve: a wait_for_signal step's outputs are its payload and receipt, with no datastore read", async () => {

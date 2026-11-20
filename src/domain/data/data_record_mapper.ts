@@ -31,6 +31,10 @@ import type { SecretRedactor } from "../secrets/mod.ts";
 import type { DataHandle } from "../models/model.ts";
 import { isJsonMediaType, isTextContentType } from "./content_type.ts";
 import {
+  resourceLoadGuardOf,
+  ResourceTooLargeToLoadError,
+} from "./resource_load_guard.ts";
+import {
   garbageCollectionFromColumn,
   lifecycleFromColumn,
 } from "./data_metadata.ts";
@@ -188,12 +192,21 @@ export function fromRow(
 
   let rawBytes: Uint8Array | null = null;
   if (needsBytes) {
+    const loadGuard = resourceLoadGuardOf(dataRepo);
+    const item = {
+      modelType: row.type_normalized,
+      modelName: row.model_name,
+      dataName: row.data_name,
+      version: row.version,
+    };
+    loadGuard.assertLoadable(item, row.size);
     rawBytes = dataRepo.getContentSync(
       ModelType.create(row.type_normalized),
       row.model_id,
       row.data_name,
       row.version,
     );
+    if (rawBytes !== null) loadGuard.assertLoadable(item, rawBytes.length);
     if (rawBytes === null) {
       onMissingContent?.();
     } else if (
@@ -286,12 +299,21 @@ export async function fromData(
 
   let rawBytes: Uint8Array | null = null;
   if (isTextContentType(data.contentType)) {
+    const loadGuard = resourceLoadGuardOf(dataRepo);
+    const item = {
+      modelType: modelType.normalized,
+      modelName: options.modelName ?? data.tags["modelName"],
+      dataName: resolvedName,
+      version: resolvedVersion,
+    };
+    loadGuard.assertLoadable(item, data.size ?? 0);
     rawBytes = await dataRepo.getContent(
       modelType,
       modelId,
       resolvedName,
       resolvedVersion,
     );
+    if (rawBytes !== null) loadGuard.assertLoadable(item, rawBytes.length);
   }
 
   const resolvedModelName = options.modelName ?? data.tags["modelName"] ?? "";
@@ -355,6 +377,14 @@ export async function fromResourceHandle(
 ): Promise<DataRecord> {
   let attributes: Record<string, unknown> = {};
   if (isJsonMediaType(handle.metadata.contentType)) {
+    const loadGuard = resourceLoadGuardOf(dataRepo);
+    const item = {
+      modelType: modelType.normalized,
+      modelName: fallbackModelName,
+      dataName: handle.name,
+      version: handle.version,
+    };
+    loadGuard.assertLoadable(item, handle.size);
     try {
       const content = await dataRepo.getContent(
         modelType,
@@ -363,10 +393,12 @@ export async function fromResourceHandle(
         handle.version,
       );
       if (content) {
+        loadGuard.assertLoadable(item, content.length);
         const text = new TextDecoder().decode(content);
         attributes = JSON.parse(text) as Record<string, unknown>;
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof ResourceTooLargeToLoadError) throw error;
       // Not valid JSON, skip attributes
     }
   }

@@ -1,0 +1,222 @@
+// Swamp, an Automation Framework
+// Copyright (C) 2026 Elder Swamp Club, Inc.
+//
+// This file is part of Swamp.
+//
+// Swamp is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License version 3
+// as published by the Free Software Foundation, with the Swamp
+// Extension and Definition Exception (found in the "COPYING-EXCEPTION"
+// file).
+//
+// Swamp is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
+
+import {
+  assert,
+  assertEquals,
+  assertInstanceOf,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
+import { join } from "@std/path";
+import { ensureDir } from "@std/fs";
+import { z } from "zod";
+import { RunSensitiveValues } from "../src/domain/secrets/mod.ts";
+import { ModelType } from "../src/domain/models/model_type.ts";
+import { Definition } from "../src/domain/definitions/definition.ts";
+import { FileSystemUnifiedDataRepository } from "../src/infrastructure/persistence/unified_data_repository.ts";
+import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
+import { CatalogStore } from "../src/infrastructure/persistence/catalog_store.ts";
+import { DataQueryService } from "../src/domain/data/data_query_service.ts";
+import { ExpressionEvaluationService } from "../src/domain/expressions/expression_evaluation_service.ts";
+import {
+  MissingModelDataError,
+  UnboundExpressionError,
+} from "../src/domain/expressions/errors.ts";
+import { createResourceWriter } from "../src/domain/models/data_writer.ts";
+import type { ResourceOutputSpec } from "../src/domain/models/model.ts";
+import { createDataRepositoryAttributeReader } from "../src/domain/workflows/step_output_resolver.ts";
+import {
+  ResourceLoadGuard,
+  ResourceTooLargeToLoadError,
+} from "../src/domain/data/resource_load_guard.ts";
+import { ResourceTooLargeError } from "../src/domain/data/resource_size_policy.ts";
+import { parseQuerySort } from "../src/domain/data/query_sort.ts";
+
+const type = ModelType.create("repro/bigdata");
+
+const resources: Record<string, ResourceOutputSpec> = {
+  blob: {
+    schema: z.object({ items: z.array(z.string()) }),
+    lifetime: "infinite",
+    garbageCollection: 5,
+  },
+};
+
+interface Fixture {
+  repoDir: string;
+  dataRepo: FileSystemUnifiedDataRepository;
+  catalog: CatalogStore;
+  definitionRepo: YamlDefinitionRepository;
+  big: Definition;
+  write: (name: string, bytes: number) => Promise<unknown>;
+}
+
+// a heap of 1000 bytes refuses any item past a third of it, so a few hundred
+// bytes of content stand in for the hundreds of MB that crash a real run
+async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
+  const repoDir = await Deno.makeTempDir({ prefix: "swamp-resource-size-" });
+  const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+  try {
+    await ensureDir(join(repoDir, ".swamp", "data"));
+    await ensureDir(join(repoDir, "models"));
+    await Deno.writeTextFile(
+      join(repoDir, ".swamp.yaml"),
+      `swampVersion: "1.2.3"
+initializedAt: "2024-01-15T10:30:00.000Z"
+resourceSize:
+  warnBytes: 100
+  maxBytes: 2000
+`,
+    );
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      catalog,
+      undefined,
+      undefined,
+      undefined,
+      false,
+      undefined,
+      undefined,
+      undefined,
+      false,
+      {},
+      new ResourceLoadGuard({
+        heapLimitBytes: () => 1000,
+        heapUsedBytes: () => 0,
+      }, 50),
+    );
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const big = Definition.create({ name: "big", globalArguments: {} });
+    await definitionRepo.save(type, big);
+    const { writeResource } = createResourceWriter(
+      dataRepo,
+      type,
+      big.id,
+      resources,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "big",
+      undefined,
+      "write",
+    );
+    const write = (name: string, bytes: number) =>
+      writeResource("blob", name, { items: ["x".repeat(bytes)] });
+    await fn({ repoDir, dataRepo, catalog, definitionRepo, big, write });
+  } finally {
+    catalog.close();
+    if (Deno.build.os === "windows") {
+      await Deno.remove(repoDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(repoDir, { recursive: true });
+    }
+  }
+}
+
+Deno.test("resource size: a write past the repo's resourceSize.maxBytes is refused and nothing is stored", async () => {
+  await withFixture(async (f) => {
+    const error = await assertRejects(
+      () => f.write("huge", 3000),
+      ResourceTooLargeError,
+    );
+    assertStringIncludes(
+      error.message,
+      "resource blob/huge written by big.write",
+    );
+    assertEquals(await f.dataRepo.findByName(type, f.big.id, "huge"), null);
+  });
+});
+
+Deno.test("resource size: a CEL reference to an oversized resource fails with its name and size, never as data not produced yet", async () => {
+  await withFixture(async (f) => {
+    await f.write("blob-0", 400);
+    await f.write("blob-1", 400);
+    const reader = Definition.create({
+      name: "reader",
+      globalArguments: {
+        n: '${{ size(model.big.resource.blob["blob-0"].attributes.items) }}',
+      },
+    });
+    await f.definitionRepo.save(type, reader);
+    const evalService = new ExpressionEvaluationService(
+      f.definitionRepo,
+      f.repoDir,
+      { dataRepo: f.dataRepo },
+    );
+
+    const error = await assertRejects(() =>
+      evalService.evaluateDefinition(reader, type, new RunSensitiveValues())
+    );
+    assertInstanceOf(error, Error);
+    assertStringIncludes(error.message, "Cannot load big/blob-");
+    assert(!(error instanceof UnboundExpressionError));
+    assert(!(error instanceof MissingModelDataError));
+  });
+});
+
+Deno.test("resource size: data query refuses to hydrate oversized matches, while a size-only select sorted by size lists them", async () => {
+  await withFixture(async (f) => {
+    await f.write("blob-0", 400);
+    await f.write("blob-1", 600);
+    await f.write("small", 10);
+    const dqs = new DataQueryService(f.catalog, f.dataRepo);
+
+    const error = await assertRejects(
+      () => dqs.query('modelName == "big" && specName == "blob"'),
+      ResourceTooLargeToLoadError,
+    );
+    assertStringIncludes(error.message, "--sort size:desc");
+
+    const listed = await dqs.query('modelName == "big" && specName == "blob"', {
+      select: "name",
+      sort: parseQuerySort("size:desc"),
+    });
+    assertEquals(listed, ["blob-1", "blob-0", "small"]);
+  });
+});
+
+Deno.test("resource size: a workflow step output read refuses an oversized resource on its byte length", async () => {
+  await withFixture(async (f) => {
+    const handle = await f.write("blob-0", 400) as {
+      dataId: string;
+      name: string;
+      version: number;
+    };
+    const read = createDataRepositoryAttributeReader(f.dataRepo);
+    await assertRejects(
+      () =>
+        read({
+          dataId: handle.dataId,
+          modelType: type.normalized,
+          modelId: f.big.id,
+          modelName: "big",
+          specName: "blob",
+          contentType: "application/json",
+          name: handle.name,
+          version: handle.version,
+          tags: {},
+        }),
+      ResourceTooLargeToLoadError,
+      "big/blob-0@v1",
+    );
+  });
+});

@@ -82,8 +82,17 @@ import {
   schemaHoldsSensitiveFields,
   setNestedValue,
 } from "./sensitive_field_extractor.ts";
+import {
+  describeByteCount,
+  describeWrittenResource,
+  ResourceSizePolicy,
+  ResourceTooLargeError,
+} from "../data/resource_size_policy.ts";
+import { resourceLoadGuardOf } from "../data/resource_load_guard.ts";
+import { escapeLogTemplate } from "../../infrastructure/logging/logger.ts";
 
 const logger = getLogger(["swamp", "data-writer"]);
+const resourceSizeLogger = getLogger(["swamp", "data", "resource-size"]);
 
 export class DefaultDataWriter implements DataWriter {
   readonly dataId: DataId;
@@ -1132,6 +1141,7 @@ export function createResourceWriter(
   os: typeof Deno.build.os = Deno.build.os,
   outputNames?: ExecutionOutputNames,
   attributeBudget?: ResourceAttributeBudget,
+  sizePolicy?: ResourceSizePolicy,
 ): {
   writeResource: (
     specName: string,
@@ -1145,6 +1155,13 @@ export function createResourceWriter(
   const handles: DataHandle[] = [];
   const deferredReceipts: DeferredWriteReceipt[] = [];
   const portabilityWarned = new Set<string>();
+  const sizeWarned = new Set<string>();
+  let resolvedSizePolicy: Promise<ResourceSizePolicy> | undefined;
+  const effectiveSizePolicy = () =>
+    resolvedSizePolicy ??= sizePolicy
+      ? Promise.resolve(sizePolicy)
+      : repo.resolveResourceSizePolicy?.() ??
+        Promise.resolve(ResourceSizePolicy.DEFAULT);
   let attributesOmittedLogged = false;
   const assertWriteTagsUnreserved = writeTagsGuard(
     modelType,
@@ -1385,6 +1402,38 @@ export function createResourceWriter(
       resolvedTags[SENSITIVE_FIELDS_VERSION_TAG] = SENSITIVE_FIELDS_VERSION;
     }
 
+    const encoded = new TextEncoder().encode(serialized);
+    const policy = await effectiveSizePolicy();
+    const verdict = policy.classify(encoded.length);
+    if (verdict !== "ok") {
+      const written = {
+        modelType: modelType.normalized,
+        definitionName,
+        methodName,
+        specName,
+        name: instanceName,
+      };
+      if (verdict === "refuse") {
+        throw new ResourceTooLargeError(
+          written,
+          encoded.length,
+          policy.maxBytes!,
+        );
+      }
+      const warnKey = `${specName}\0${instanceName}`;
+      if (!sizeWarned.has(warnKey)) {
+        sizeWarned.add(warnKey);
+        resourceSizeLogger.warn(escapeLogTemplate(
+          `${describeWrittenResource(written)} is ${
+            describeByteCount(encoded.length)
+          }, past the ${
+            describeByteCount(policy.warnBytes)
+          } warning threshold; runs that load many resources this large together can run out of memory. ` +
+            `Change the threshold with resourceSize.warnBytes in .swamp.yaml.`,
+        ));
+      }
+    }
+
     // Commit only after the final reference and redaction checks have passed.
     await sensitiveWrite?.store();
 
@@ -1423,7 +1472,7 @@ export function createResourceWriter(
       deferred,
     );
 
-    const handle = await writer.writeText(serialized);
+    const handle = await writer.writeAll(encoded);
     if (!attributeBudget || attributeBudget.admit(handle.size)) {
       handle.attributes = { ...data };
     } else if (!attributesOmittedLogged) {
@@ -2234,6 +2283,14 @@ export function createResourceReader(
       version,
     );
     const resolvedVersion = dataRecord?.version;
+    const loadGuard = resourceLoadGuardOf(repo);
+    const loadedItem = {
+      modelType: modelType.normalized,
+      modelName: dataRecord?.tags["modelName"],
+      dataName: dataRecord?.name ?? instanceName,
+      version: resolvedVersion ?? version,
+    };
+    loadGuard.assertLoadable(loadedItem, dataRecord?.size ?? 0);
 
     // Follow a rename consistently: read and authorize the returned record
     // by its current name and pinned version.
@@ -2244,6 +2301,7 @@ export function createResourceReader(
       resolvedVersion ?? version,
     );
     if (!content || content.length === 0) return null;
+    loadGuard.assertLoadable(loadedItem, content.length);
     let parsed: unknown;
     try {
       parsed = JSON.parse(new TextDecoder().decode(content));

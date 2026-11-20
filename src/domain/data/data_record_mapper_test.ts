@@ -20,6 +20,10 @@
 import { RunSensitiveValues } from "../secrets/mod.ts";
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
+  ResourceLoadGuard,
+  ResourceTooLargeToLoadError,
+} from "./resource_load_guard.ts";
+import {
   fromData,
   fromResourceHandle,
   fromRow,
@@ -85,6 +89,55 @@ function stubRepo(
     getContent: () => Promise.resolve(asyncContent ?? syncContent ?? null),
   } as unknown as UnifiedDataRepository;
 }
+
+function guardedStubRepo(
+  content: Uint8Array,
+): UnifiedDataRepository & { reads: number } {
+  const repo = {
+    namespace: "",
+    reads: 0,
+    loadGuard: new ResourceLoadGuard({
+      heapLimitBytes: () => 1000,
+      heapUsedBytes: () => 0,
+    }, 10),
+    getContentSync: () => {
+      repo.reads++;
+      return content;
+    },
+  };
+  return repo as unknown as UnifiedDataRepository & { reads: number };
+}
+
+Deno.test("fromRow: refuses a row whose recorded size the guard rejects, without reading it", () => {
+  const repo = guardedStubRepo(encoder.encode("{}"));
+  assertThrows(
+    () => fromRow(createRow({ size: 500 }), repo, true, false),
+    ResourceTooLargeToLoadError,
+    "test-data@v1",
+  );
+  assertEquals(repo.reads, 0);
+});
+
+Deno.test("fromRow: refuses text content on its byte length when the row has no recorded size", () => {
+  const repo = guardedStubRepo(encoder.encode("x".repeat(400)));
+  assertThrows(
+    () =>
+      fromRow(
+        createRow({ size: 0, content_type: "text/plain" }),
+        repo,
+        false,
+        true,
+      ),
+    ResourceTooLargeToLoadError,
+  );
+  assertEquals(repo.reads, 1);
+});
+
+Deno.test("fromRow: a row that loads nothing never consults the guard", () => {
+  const repo = guardedStubRepo(encoder.encode("{}"));
+  fromRow(createRow({ size: 500 }), repo, false, false);
+  assertEquals(repo.reads, 0);
+});
 
 Deno.test("fromRow: parses JSON attributes when loadAttributes is true", () => {
   const json = { host: "db.example.com", port: 5432 };

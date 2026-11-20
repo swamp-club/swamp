@@ -21,6 +21,7 @@ import { isJsonMediaType } from "../data/content_type.ts";
 import { fromData } from "../data/data_record_mapper.ts";
 import type { DataRecord } from "../data/data_record.ts";
 import type { UnifiedDataRepository } from "../data/repositories.ts";
+import { resourceLoadGuardOf } from "../data/resource_load_guard.ts";
 import type { ModelType } from "../models/model_type.ts";
 
 /**
@@ -78,6 +79,11 @@ export async function modelMethodResourceResult(
   }
   const raw = await dataRepo.getContent(type, modelId, dataName);
   if (!raw) return undefined;
+  resourceLoadGuardOf(dataRepo).assertLoadable({
+    modelType: type.normalized,
+    modelName,
+    dataName,
+  }, raw.length);
   const text = new TextDecoder().decode(raw);
   try {
     return JSON.parse(text);

@@ -214,6 +214,8 @@ const CATALOG_IDENTITY_COLUMNS = [
 
 export interface CatalogSortOrder {
   readonly tagKey: string | null;
+  /** takes precedence over tagKey */
+  readonly column?: "size";
   readonly direction: "asc" | "desc";
   readonly after?: {
     readonly key: string;
@@ -1268,10 +1270,15 @@ export class CatalogStore {
     if (order.tagKey !== null && /["\\]/.test(order.tagKey)) {
       throw new Error(`Invalid sort tag key: ${order.tagKey}`);
     }
-    const sortExpr = order.tagKey === null
+    const byTag = order.column === undefined && order.tagKey !== null;
+    // zero-padded, so the text key, and a cursor holding it, compares in
+    // numeric order
+    const sortExpr = order.column === "size"
+      ? "printf('%020d', COALESCE(size, 0))"
+      : !byTag
       ? "created_at"
       : "COALESCE(CASE WHEN json_valid(tags) THEN CAST(json_extract(tags, ?) AS TEXT) END, '')";
-    const sortParams = order.tagKey === null ? [] : [`$."${order.tagKey}"`];
+    const sortParams = byTag ? [`$."${order.tagKey}"`] : [];
     const dir = order.direction === "desc" ? "DESC" : "ASC";
     const cmp = order.direction === "desc" ? "<" : ">";
     const orderBy = [

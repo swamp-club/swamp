@@ -48,6 +48,7 @@ import {
   createFileWriterFactory,
   createResourceWriter,
 } from "../domain/models/data_writer.ts";
+import { ResourceSizePolicy } from "../domain/data/resource_size_policy.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import { runInRootUnitOfWork } from "../infrastructure/persistence/repo_unit_of_work.ts";
 import { VaultService } from "../domain/vaults/vault_service.ts";
@@ -126,6 +127,10 @@ function json(body: unknown, status = 200): Response {
     headers: { "content-type": "application/json" },
   });
 }
+
+// the write body wraps the resource with its spec, name and overrides, so it
+// runs a little past the resource's own serialized length
+const RESOURCE_BODY_ENVELOPE_BYTES = 64 * 1024;
 
 function errorResponse(status: number, message: string): Response {
   return json({ error: message }, status);
@@ -822,6 +827,21 @@ export class DataPlane {
     dispatchId?: string,
   ): Promise<Response> {
     const dispatch = this.#activeDispatch(workerName, dispatchId);
+    const declaredBytes = Number(req.headers.get("content-length"));
+    if (Number.isSafeInteger(declaredBytes)) {
+      const { maxBytes } = await (this.#repoForWorker(workerName, dispatchId)
+        .resolveResourceSizePolicy?.() ??
+        Promise.resolve(ResourceSizePolicy.DEFAULT));
+      if (
+        maxBytes !== undefined &&
+        declaredBytes > maxBytes + RESOURCE_BODY_ENVELOPE_BYTES
+      ) {
+        return errorResponse(
+          413,
+          `Resource write body of ${declaredBytes} bytes is past resourceSize.maxBytes of ${maxBytes} bytes`,
+        );
+      }
+    }
     const body = await observeExecutionWork(
       "data.body",
       {},

@@ -2643,6 +2643,50 @@ Deno.test("CatalogStore.iterateSorted: starts after a position, sorts a missing 
   }
 });
 
+Deno.test("CatalogStore.iterateSorted: sorts by size as a number and pages after a size position", () => {
+  using tempDb = makeTempDb();
+  const store = new CatalogStore(tempDb.path);
+  try {
+    // 9 and 10 differ in digit count, so a text comparison would misorder them
+    for (const [name, size] of [["a", 10], ["b", 9], ["c", 1000], ["d", 9]]) {
+      store.upsert(
+        makeRow({
+          data_name: name as string,
+          id: name as string,
+          size: size as number,
+        }),
+      );
+    }
+    const names = (
+      direction: "asc" | "desc",
+      after?: { key: string; id: [string, string, string, string, number] },
+    ) =>
+      [...store.iterateSorted("", [], {
+        tagKey: null,
+        column: "size",
+        direction,
+        after,
+      })].map((r) => r.row.data_name);
+
+    assertEquals(names("asc"), ["b", "d", "a", "c"]);
+    assertEquals(names("desc"), ["c", "a", "d", "b"]);
+    const [first] = [...store.iterateSorted("", [], {
+      tagKey: null,
+      column: "size",
+      direction: "desc",
+    })];
+    assertEquals(
+      names("desc", {
+        key: first.sortKey,
+        id: ["", "test-model", "model-001", "c", 1],
+      }),
+      ["a", "d", "b"],
+    );
+  } finally {
+    store.close();
+  }
+});
+
 function countPrepares(run: () => void): number {
   const prepare = DatabaseSync.prototype.prepare;
   let count = 0;

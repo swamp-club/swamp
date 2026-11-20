@@ -185,6 +185,12 @@ options are:
   swamp enforces it on its own (swamp-club#3473). See
   [Retention](#retention). Separate from `autoGc`, which trims one behavior's
   data versions by their declared policy.
+- `resourceSize`: per-resource size limits for `writeResource`. `warnBytes`
+  (default 64 MiB) logs a warning naming the resource and its size; `maxBytes`
+  (unset by default) refuses the write. A value that is not a positive whole
+  number of bytes, or a `maxBytes` below `warnBytes`, is warned about and
+  ignored, never refused. See
+  [data.md](../primitives/data.md#writing-data).
 - `serverAddress`: default `swamp serve` URL for the repo. When set, every
   serve-aware command uses it without `SWAMP_SERVE_URL` or `--server`.
   Precedence: `--server` flag > `SWAMP_SERVE_URL` env > `SWAMP_SERVER_URL` env >
