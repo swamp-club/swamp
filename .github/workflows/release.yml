@@ -68,10 +68,7 @@ jobs:
           npm run build
 
       - name: Build app platform
-        working-directory: packages/app-platform/1
-        run: |
-          npm ci
-          npm run build
+        run: deno task build-app-platform
 
       - name: Build binaries
         run: |
