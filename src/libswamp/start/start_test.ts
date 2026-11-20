@@ -351,6 +351,23 @@ Deno.test("startPrepare: refuses a non-empty folder that is not a repo", async (
   });
 });
 
+Deno.test("startPrepare: refuses a plain file where the workspace folder would go, leaving it", async () => {
+  await withTempDir(async (dir) => {
+    const f = makeFakes(dir);
+    const ws = join(dir, "workspaces", "first-workspace");
+    await Deno.mkdir(join(dir, "workspaces"), { recursive: true });
+    await Deno.writeTextFile(ws, "mine");
+    const events = await collect(
+      startPrepare(ctx, f.deps, { workspaceName: "first-workspace" }),
+    );
+    const last = lastOf(events);
+    assert(last.kind === "error");
+    assertEquals(last.error.code, "not_a_workspace");
+    assertEquals(f.inits, []);
+    assertEquals(await Deno.readTextFile(ws), "mine");
+  });
+});
+
 Deno.test("startPrepare: refuses an invalid workspace name", async () => {
   await withTempDir(async (dir) => {
     const f = makeFakes(dir);
@@ -2443,6 +2460,13 @@ Deno.test("startCheckWorkspaceLocation: answers the folder a create would make, 
     assertEquals(busy.field, "location");
     assertEquals(busy.code, "not_a_workspace");
     assertEquals(busy.path, join(parent, "busy"));
+    await Deno.writeTextFile(join(parent, "plain"), "x");
+    const plain = await startCheckWorkspaceLocation(ctx, f.deps, {
+      name: "plain",
+      parent,
+    });
+    assert(!plain.ok);
+    assertEquals([plain.field, plain.code], ["location", "not_a_workspace"]);
     const missing = await startCheckWorkspaceLocation(ctx, f.deps, {
       name: "infra",
       parent: join(dir, "nope"),

@@ -90,7 +90,8 @@ page's preview. It refuses:
 - a name that is registered (`name_taken`)
 - a folder that is registered under another name, or a repo folder that isn't
   registered, such as one `remove` left behind (`folder_exists`)
-- a folder that holds something other than a repo (`not_a_workspace`)
+- a folder that holds something other than a repo, or a file where the folder
+  would go (`not_a_workspace`)
 
 Re-registering a left-behind folder without a word would bring back its old
 models unnoticed, so `create` points at `import` instead.

@@ -107,6 +107,28 @@ Deno.test("workspaceCreate: refuses a folder that holds something else", async (
   });
 });
 
+Deno.test("workspaceCreate: refuses a plain file where the folder would go, at the default or a chosen location, leaving it", async () => {
+  await withWorkspaceFixture(async (f) => {
+    const workspaces = join(f.dataDir, "workspaces");
+    const parent = join(f.dir, "dev");
+    await Deno.mkdir(workspaces, { recursive: true });
+    await Deno.mkdir(parent);
+    await Deno.writeTextFile(join(workspaces, "prod"), "mine");
+    await Deno.writeTextFile(join(parent, "prod"), "mine");
+    assertEquals(
+      await errorCode(workspaceCreate(ctx, f.deps, { name: "prod" })),
+      "not_a_workspace",
+    );
+    assertEquals(
+      await errorCode(workspaceCreate(ctx, f.deps, { name: "prod", parent })),
+      "not_a_workspace",
+    );
+    assertEquals(await Deno.readTextFile(join(workspaces, "prod")), "mine");
+    assertEquals(await Deno.readTextFile(join(parent, "prod")), "mine");
+    assertEquals((await f.deps.registry.load())?.get("prod"), undefined);
+  });
+});
+
 Deno.test("workspaceCreate: an existing workspace folder is adopted by the first read, so its name is taken", async () => {
   await withWorkspaceFixture(async (f) => {
     await f.makeRepo(join(f.dataDir, "workspaces", "prod"));

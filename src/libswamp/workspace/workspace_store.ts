@@ -392,6 +392,8 @@ export async function folderState(
   path: string,
 ): Promise<"missing" | "empty" | "not_empty"> {
   try {
+    // a file holds the path too: no folder can be made there
+    if (!(await Deno.stat(path)).isDirectory) return "not_empty";
     for await (const _entry of Deno.readDir(path)) return "not_empty";
     return "empty";
   } catch (error) {
