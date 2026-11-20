@@ -20,6 +20,7 @@
 import { assertEquals, assertThrows } from "@std/assert";
 import { assertStringIncludes } from "@std/assert/string-includes";
 import {
+  extensionDependencyName,
   isSafeRelativePath,
   MAX_LABELS,
   MAX_MANIFEST_BYTES,
@@ -770,5 +771,23 @@ models:
   assertStringIncludes(
     (error as Error).message,
     "control characters",
+  );
+});
+
+Deno.test("extensionDependencyName: drops a pinned version", () => {
+  assertEquals(
+    extensionDependencyName("@swamp/typesafe-ai@2026.10.13.1"),
+    "@swamp/typesafe-ai",
+  );
+  assertEquals(
+    extensionDependencyName("@other/aws/ec2@2026.01.01.1"),
+    "@other/aws/ec2",
+  );
+});
+
+Deno.test("extensionDependencyName: returns a bare name unchanged", () => {
+  assertEquals(
+    extensionDependencyName("@swamp/typesafe-ai"),
+    "@swamp/typesafe-ai",
   );
 });

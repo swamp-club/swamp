@@ -20,7 +20,10 @@
 import { join, resolve, SEPARATOR } from "@std/path";
 import { getLogger } from "@logtape/logtape";
 import { Definition } from "../definitions/definition.ts";
-import { parseExtensionManifest } from "../extensions/extension_manifest.ts";
+import {
+  extensionDependencyName,
+  parseExtensionManifest,
+} from "../extensions/extension_manifest.ts";
 import type {
   InvocationTracking,
   MethodContext,
@@ -776,8 +779,9 @@ export class ModelInvocationService {
       }
       const content = await Deno.readTextFile(manifestPath);
       const manifest = parseExtensionManifest(content);
-      this.#manifestCache.set(extensionName, manifest.dependencies);
-      return manifest.dependencies;
+      const names = manifest.dependencies.map(extensionDependencyName);
+      this.#manifestCache.set(extensionName, names);
+      return names;
     } catch {
       return null;
     }
