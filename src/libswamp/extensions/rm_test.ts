@@ -393,3 +393,46 @@ Deno.test("findDependents: reads the extension's own manifest, not a skill file 
     await Deno.remove(repoDir, { recursive: true }).catch(() => {});
   }
 });
+
+async function findDependentsOfPinned(
+  target: string,
+  dependency: string,
+): Promise<string[]> {
+  const repoDir = await Deno.makeTempDir({ prefix: "swamp_rm_deps_" });
+  try {
+    const dependent = "@test/dependent";
+    const manifestRel = `.swamp/pulled-extensions/${dependent}/manifest.yaml`;
+    await Deno.mkdir(dirname(join(repoDir, manifestRel)), { recursive: true });
+    await Deno.writeTextFile(
+      join(repoDir, manifestRel),
+      `manifestVersion: 1\nname: "${dependent}"\nversion: "2026.01.01.1"\nskills:\n  - foo\ndependencies:\n  - "${dependency}"\n`,
+    );
+    const upstream: UpstreamExtensionsMap = {
+      [dependent]: {
+        version: "1.0.0",
+        pulledAt: "2026-01-01T00:00:00Z",
+        files: [manifestRel],
+      },
+    };
+    return await findDependents(repoDir, upstream, target);
+  } finally {
+    await Deno.remove(repoDir, { recursive: true }).catch(() => {});
+  }
+}
+
+Deno.test("findDependents: lists a dependent that pins the target as name@version", async () => {
+  assertEquals(
+    await findDependentsOfPinned("@test/base", "@test/base@2026.01.01.1"),
+    ["@test/dependent"],
+  );
+});
+
+Deno.test("findDependents: a pinned nested extension does not make a dependent of its parent", async () => {
+  assertEquals(
+    await findDependentsOfPinned(
+      "@test/base",
+      "@test/base/child@2026.01.01.1",
+    ),
+    [],
+  );
+});

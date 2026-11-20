@@ -24,7 +24,10 @@ import { ExtensionCatalogStore } from "../../infrastructure/persistence/extensio
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import { resolveMountedSourceDirs } from "../../infrastructure/persistence/swamp_sources_repository.ts";
 import type { UpstreamExtensionsMap } from "../../infrastructure/persistence/upstream_extensions.ts";
-import { parseExtensionManifest } from "../../domain/extensions/extension_manifest.ts";
+import {
+  extensionDependencyName,
+  parseExtensionManifest,
+} from "../../domain/extensions/extension_manifest.ts";
 import { UserError } from "../../domain/errors.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
@@ -112,7 +115,11 @@ export async function findDependents(
       const manifestPath = join(repoDir, manifestFile);
       const content = await Deno.readTextFile(manifestPath);
       const manifest = parseExtensionManifest(content);
-      if (manifest.dependencies.includes(targetName)) {
+      if (
+        manifest.dependencies.some((dep) =>
+          extensionDependencyName(dep) === targetName
+        )
+      ) {
         dependents.push(extName);
       }
     } catch {
