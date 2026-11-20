@@ -131,7 +131,6 @@ interface Root {
   rescan(): Promise<void>;
   tokenCtx(): ConnectionContext;
   readonly hosted: NonNullable<ConnectionContext["hostedWorkspaces"]>;
-  /** a repo outside workspaces/ registered under `name`, as swamp workspace import does */
   importRepo(name: string): Promise<string>;
   corruptRegistry(): Promise<void>;
 }
@@ -968,7 +967,6 @@ Deno.test("serve workspace requests: admin on a workspace pattern does not reach
         principalId: BOB.id,
       },
     ]);
-    // the same grant still reaches a workspace the host created
     const created = await sendRequest(
       root.ctx({}, [workspaceGrant(BOB, ["write", "admin"], "data-*")]),
       request("workspace.create", "data-made"),

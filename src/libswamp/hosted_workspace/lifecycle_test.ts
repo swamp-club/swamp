@@ -170,7 +170,6 @@ Deno.test("hostedWorkspaceSuspend/Resume: a root admin's resume and suspend of a
   assertEquals((await wantedFile(host.dir, "outside")).wanted, "suspended");
   assertEquals((await wantedFile(host.dir, "outside")).folder, folder);
 
-  // a folder left in a wanted file of the host's own is dropped by the next change
   await Deno.writeTextFile(
     join(host.dir, "by-hand.wanted.yaml"),
     `wanted: suspended\nfolder: ${folder}\n`,
@@ -426,7 +425,6 @@ Deno.test("hostedWorkspaceResume: a name a registered repo holds while a folder 
   );
   assert(!refused.message.includes(host.dir), "names no host path");
   assertEquals(await exists(join(host.dir, "alpha.wanted.yaml")), false);
-  // a suspend writes nothing that could start anything, and is allowed
   await collect(
     hostedWorkspaceSuspend(ctx, host.deps(), {
       name: "alpha",
@@ -445,7 +443,6 @@ Deno.test("hostedWorkspaceSuspend/Resume/Delete: a name with no entry whose want
       rootAdmin: true,
     }),
   );
-  // the registry file gone: a missing file reads as an empty registry
   await Deno.remove(join(host.dir, "..", "config", "workspaces.json"));
   const resume = await errorOf<HostedWorkspaceResumeEvent>(
     hostedWorkspaceResume(ctx, host.deps(), { name: "personal" }),

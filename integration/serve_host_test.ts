@@ -1319,7 +1319,6 @@ Deno.test("serve host registry: a folder whose name is registered elsewhere is n
     const host = await start(folder.dir, NO_ROOT, port);
     try {
       const url = `http://127.0.0.1:${host.port}/w/edge-dns/`;
-      // neither repo is started while both are named edge-dns
       await waitFor(() => isState(url, "stopped"), "listed and stopped");
       for (const later of ["later-one", "later-two"]) {
         await makeWorkspace(join(workspaces, later));
@@ -1525,7 +1524,6 @@ Deno.test("serve host registry: a repo imported while the host runs is listed st
       true,
     );
 
-    // imported again: listed, and nothing starts
     await registry.update((r) => {
       r.register({ name: "outside", path: real, createdAt: "t" });
     });
@@ -1774,7 +1772,6 @@ Deno.test("serve host registry: after an upgrade, a team folder whose name a reg
     assert(reason.includes("swamp workspace remove alpha"), reason);
     assert(!reason.includes("Write folder"), reason);
 
-    // naming the registered folder by hand still starts nothing
     await want(folder.dir, "alpha", `wanted: active\nfolder: ${real}\n`);
     // a workspace added after the write is served only by a later rescan
     await makeWorkspace(join(workspaces, "later"));

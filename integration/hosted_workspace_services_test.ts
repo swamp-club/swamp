@@ -103,7 +103,6 @@ interface Host extends AsyncDisposable {
   /** one host rescan, as the folder watcher runs it */
   rescan(): Promise<void>;
   wanted(name: string): string | undefined;
-  /** waits for every removal the host started */
   drain(): Promise<void>;
 }
 
@@ -456,7 +455,6 @@ Deno.test("hosted workspace services: the host's own replies the same whatever t
   assert(view.kind === "completed" && "data" in view);
   assertEquals((view.data as { owner?: string }).owner, "operator");
 
-  // answered as a host started on that registry serves: from the folders
   await Deno.writeTextFile(registryFile, "{nope");
   assertEquals(await replies(), baseline);
 });
@@ -533,7 +531,6 @@ Deno.test("hosted workspace services: a hand-written deleted for an imported rep
 
 Deno.test("hosted workspace services: an active wanted file left behind under a name starts nothing for a repo imported later under it", async () => {
   await using h = await host();
-  // left by a workspace in workspaces/ that was removed by hand
   await Deno.writeTextFile(
     join(h.dir, "edge-dns.wanted.yaml"),
     "wanted: active\n",
@@ -557,7 +554,6 @@ Deno.test("hosted workspace services: a folder registered under another name is 
   const folder = await Deno.realPath(join(h.dir, "gamma"));
   await Deno.writeTextFile(join(folder, "TEAM_DATA.txt"), "keep me");
   await h.rescan();
-  // the host's user imports the folder under another name
   await h.store.registry.update((registry) => {
     registry.remove("gamma");
     registry.register({
@@ -575,7 +571,6 @@ Deno.test("hosted workspace services: a folder registered under another name is 
     assertEquals(last.error.code, "operator_workspace", name);
   }
 
-  // a deleted written by hand under the folder's name removes nothing either
   await Deno.writeTextFile(
     join(h.dir, "gamma.wanted.yaml"),
     "wanted: deleted\n",
@@ -600,7 +595,6 @@ Deno.test("hosted workspace services: a clash a request cannot see, with the reg
   const team = await Deno.realPath(join(h.dir, "delta"));
   await Deno.writeTextFile(join(team, "TEAM_DATA.txt"), "keep me");
   await h.rescan();
-  // the host's user gives the name to another repo
   await h.store.registry.update((registry) => registry.remove("delta"));
   await importOutside(h, "delta");
   await h.rescan();
@@ -615,7 +609,6 @@ Deno.test("hosted workspace services: a clash a request cannot see, with the reg
   assert(last.kind === "error");
   assertEquals(last.error.code, "operator_workspace");
 
-  // a deleted written by hand while the name is held is dropped by the host
   await Deno.writeTextFile(registryFile, saved);
   await Deno.writeTextFile(
     join(h.dir, "delta.wanted.yaml"),

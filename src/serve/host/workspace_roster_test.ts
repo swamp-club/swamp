@@ -252,7 +252,6 @@ Deno.test("createWorkspaceRoster: a wanted file matches only the folder it was w
       delta: false,
     });
 
-    // a wanted file with no folder does not stand for a folder outside workspaces/
     const plain = new Map<string, WantedRead>([
       ["beta", found(HostedWorkspace.active("beta"))],
     ]);

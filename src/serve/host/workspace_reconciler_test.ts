@@ -159,7 +159,6 @@ interface Harness extends AsyncDisposable {
   readonly moved: Map<string, string>;
   /** registry entries outside the folder: the operator's own, at these folders */
   readonly registered: Map<string, Registered>;
-  /** entries the roster reports gone */
   gone: string[];
   /** a wanted file's match as the roster would give it, where the default rule does not */
   readonly wantedMatch: Map<string, boolean>;
@@ -242,7 +241,6 @@ async function harness(
         shadows: false,
       });
     }
-    // no folder stands for workspaces/<name>, whose real path a host's own listing is
     const wantedMatches = new Map<string, boolean>();
     for (const [name, read] of reads) {
       if (read.kind !== "found") continue;
@@ -1041,7 +1039,6 @@ Deno.test("createWorkspaceReconciler: a registered repo resumed with its folder 
 Deno.test("createWorkspaceReconciler: a wanted file written for another folder starts nothing and says why", async () => {
   await using h = await harness();
   const folder = await operatorRepo(h, "mine");
-  // left behind by a workspace in workspaces/ of the same name
   await want(h.dir, "mine", "wanted: active\n");
   await h.begin();
   await h.rescan();
@@ -1144,7 +1141,6 @@ Deno.test("createWorkspaceReconciler: a registered repo leaving the registry is 
   assert(await exists(join(folder, REPO_MARKER_FILE)), "folder untouched");
   assertEquals(h.registrar.calls, [], "nothing to unregister");
 
-  // imported again under the same name
   h.registered.set("mine", { folder });
   await h.rescan();
   await h.rescan();
@@ -1163,7 +1159,6 @@ Deno.test("createWorkspaceReconciler: a registered repo re-imported before its f
 
   h.registered.delete("mine");
   await h.rescan();
-  // re-imported and resumed while the old serve is still stopping
   h.registered.set("mine", { folder });
   await want(
     h.dir,
@@ -1214,7 +1209,6 @@ Deno.test("createWorkspaceReconciler: a removal that finds its folder is another
   await using h = await harness();
   await makeRepo(h.dir, "gamma");
   await Deno.writeTextFile(join(h.dir, "gamma", "TEAM_DATA.txt"), "keep me");
-  // the folder is registered as beta, so gamma is only a name with a wanted file
   h.registered.set("beta", { folder: join(h.dir, "gamma") });
   await want(h.dir, "gamma", "wanted: deleted\n");
   await h.begin();
@@ -1244,7 +1238,6 @@ Deno.test("createWorkspaceReconciler: an entry shadowing a folder of its name is
   assert(reason.includes("swamp workspace remove alpha"), reason);
   assert(!reason.includes("Write folder"), reason);
 
-  // the name freed: the folder in workspaces/ is the host's own again
   h.registered.delete("alpha");
   await want(h.dir, "alpha", "wanted: active\n");
   await h.rescan();
@@ -1257,14 +1250,12 @@ Deno.test("createWorkspaceReconciler: a deleted for a folder another workspace h
   await makeRepo(h.dir, "gamma");
   await Deno.writeTextFile(join(h.dir, "gamma", "TEAM_DATA.txt"), "keep me");
   h.registered.set("beta", { folder: join(h.dir, "gamma") });
-  // as the roster gives it: the folder is beta's, so not one gamma acts on
   h.wantedMatch.set("gamma", false);
   await want(h.dir, "gamma", "wanted: deleted\n");
   await h.begin();
   await h.reconciler.drain();
   assertEquals(await exists(join(h.dir, "gamma.wanted.yaml")), false);
 
-  // the operator frees the folder: gamma is the host's own again
   h.registered.delete("beta");
   h.wantedMatch.delete("gamma");
   await h.rescan();
@@ -1307,7 +1298,6 @@ Deno.test("createWorkspaceReconciler: a registered repo no longer listed but sti
   await h.begin();
   await waitFor(() => h.observed("mine") === "ready", "started");
 
-  // another entry now claims the folder under a second spelling
   h.registered.delete("mine");
   h.stillRegistered.add("mine");
   await h.rescan();
@@ -1341,7 +1331,6 @@ Deno.test("createWorkspaceReconciler: a removal under way when its folder is reg
   const child = h.port.of("gamma")[0];
   child.ignoresTerminate = true;
 
-  // an authorized delete, then the operator imports the folder as beta while it stops
   await want(
     h.dir,
     "gamma",
@@ -1355,7 +1344,6 @@ Deno.test("createWorkspaceReconciler: a removal under way when its folder is reg
   await h.reconciler.drain();
   assertEquals(await exists(join(h.dir, "gamma.wanted.yaml")), false);
 
-  // the operator frees the name, as the host's log advises
   h.registered.delete("beta");
   await h.rescan();
   await h.rescan();

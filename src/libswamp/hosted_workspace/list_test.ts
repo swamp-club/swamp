@@ -157,7 +157,6 @@ Deno.test("hostedWorkspaceList: a repo registered outside workspaces/ is listed 
   const owners = (await listed()).workspaces.map((w) => [w.name, w.owner]);
   assertEquals(owners, [
     ["alpha", "host"],
-    // the entry has the name, so the folder in workspaces/ is not listed
     ["beta", "operator"],
     ["outside", "operator"],
     ["pending", undefined],

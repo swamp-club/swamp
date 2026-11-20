@@ -40,7 +40,7 @@ export type HostedWorkspaceDeleteEvent =
   | { kind: "completed"; data: HostedWorkspaceDeleteData }
   | { kind: "error"; error: SwampError };
 
-/** the host stops its serve and removes its folder and both files; a registered repo is refused */
+/** the host stops its serve and removes its folder and both files */
 export async function* hostedWorkspaceDelete(
   ctx: LibSwampContext,
   deps: HostedWorkspaceDeps,

@@ -274,7 +274,6 @@ Deno.test("hostedWorkspaceFolders: an entry for a workspaces/<name> folder that 
     assertEquals(roster.workspaces.map(({ name }) => name), ["alpha"]);
     assertEquals(roster.gone, ["gone"]);
 
-    // with no folder scanned at all, nothing is reported gone
     const empty = await hostedWorkspaceFolders({
       workspacesDir,
       scanned: [],
