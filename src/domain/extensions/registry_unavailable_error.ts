@@ -24,6 +24,22 @@ import { UserError } from "../errors.ts";
  * outage; named UserError so CLI output is unchanged, while constructor.name
  * readers see RegistryUnavailableError
  */
+export interface ServerFault {
+  status: number;
+  retried?: string;
+  serverMessage?: string;
+  url?: string;
+}
+
+export function serverFaultMessage(fault: ServerFault): string {
+  const said = fault.serverMessage?.trim().replace(/\.+$/, "");
+  return `swamp-club failed (HTTP ${fault.status}${fault.retried ?? ""})${
+    said ? `: ${said}` : ""
+  }${fault.url ? ` [${fault.url}]` : ""}. ` +
+    "The fault is on swamp-club, not in your extension or setup: retry later, " +
+    "and if it keeps failing report it with `swamp issue bug`.";
+}
+
 export class RegistryUnavailableError extends UserError {
   constructor(message: string, options?: { cause?: unknown }) {
     super(message);

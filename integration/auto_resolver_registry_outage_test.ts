@@ -151,7 +151,7 @@ Deno.test("integration: auto-resolver reports a registry 5xx as a network error"
   assertEquals(events[0], "searching");
   assertStringIncludes(
     events[1],
-    "networkError: Extension API error (HTTP 503 after 6 attempts over",
+    "networkError: swamp-club failed (HTTP 503 after 6 attempts over",
   );
   assertStringIncludes(events[1], "upstream unavailable");
 });

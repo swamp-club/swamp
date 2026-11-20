@@ -19,7 +19,10 @@
 
 import { assertEquals, assertInstanceOf } from "@std/assert";
 import { UserError } from "../errors.ts";
-import { RegistryUnavailableError } from "./registry_unavailable_error.ts";
+import {
+  RegistryUnavailableError,
+  serverFaultMessage,
+} from "./registry_unavailable_error.ts";
 
 Deno.test("RegistryUnavailableError: is a UserError reported under that name", () => {
   const error = new RegistryUnavailableError("Request timed out.");
@@ -39,4 +42,41 @@ Deno.test("RegistryUnavailableError: keeps the underlying failure as its cause",
 Deno.test("RegistryUnavailableError: has no cause when none is given", () => {
   const error = new RegistryUnavailableError("Request timed out.");
   assertEquals("cause" in error, false);
+});
+
+Deno.test("serverFaultMessage: names swamp-club as at fault and says what to do", () => {
+  assertEquals(
+    serverFaultMessage({
+      status: 500,
+      serverMessage: "Internal server error",
+      url: "https://swamp-club.com/api/v1/extensions/%40a%2Fb/versions",
+    }),
+    "swamp-club failed (HTTP 500): Internal server error " +
+      "[https://swamp-club.com/api/v1/extensions/%40a%2Fb/versions]. " +
+      "The fault is on swamp-club, not in your extension or setup: retry " +
+      "later, and if it keeps failing report it with `swamp issue bug`.",
+  );
+});
+
+Deno.test("serverFaultMessage: keeps the retry count and drops a trailing period", () => {
+  assertEquals(
+    serverFaultMessage({
+      status: 503,
+      retried: " after 6 attempts over 30s",
+      serverMessage: "Down for maintenance.",
+    }),
+    "swamp-club failed (HTTP 503 after 6 attempts over 30s): Down for " +
+      "maintenance. The fault is on swamp-club, not in your extension or " +
+      "setup: retry later, and if it keeps failing report it with " +
+      "`swamp issue bug`.",
+  );
+});
+
+Deno.test("serverFaultMessage: reads without a server message or URL", () => {
+  assertEquals(
+    serverFaultMessage({ status: 502 }),
+    "swamp-club failed (HTTP 502). The fault is on swamp-club, not in your " +
+      "extension or setup: retry later, and if it keeps failing report it " +
+      "with `swamp issue bug`.",
+  );
 });

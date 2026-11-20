@@ -1562,7 +1562,7 @@ export async function extensionPushPrepare(
           registryCheckNotRun(
             "version-exists",
             "registry-unavailable",
-            `registry lookup failed: ${lookupFailure}`,
+            lookupFailure,
           ),
         );
       } else {

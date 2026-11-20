@@ -1913,7 +1913,7 @@ Deno.test("SwampClubClient - whoami that stays unavailable fails with the status
   const error = await assertRejects(
     () => client.whoami("key"),
     UserError,
-    "Whoami request failed (HTTP 503) after 6 attempts",
+    "swamp-club failed (HTTP 503 after 6 attempts",
   );
   assertEquals(calls.length, 6);
   assertStringIncludes(error.message, "attempts over");
@@ -1928,9 +1928,22 @@ Deno.test("SwampClubClient - whoami with retry: false asks once, as startup scop
   await assertRejects(
     () => client.whoami("key", undefined, { retry: false }),
     UserError,
-    "Whoami request failed (HTTP 503)",
+    "swamp-club failed (HTTP 503). The fault is on swamp-club",
   );
   assertEquals(calls.length, 1);
+});
+
+Deno.test("SwampClubClient - whoami keeps its wording for a status that is not a server fault", async () => {
+  const { fetch } = scriptedFetch([404]);
+  const client = new SwampClubClient("http://club.test", {}, {
+    sleep: noSleep,
+    fetch,
+  });
+  await assertRejects(
+    () => client.whoami("key"),
+    UserError,
+    "Whoami request failed (HTTP 404)",
+  );
 });
 
 Deno.test("SwampClubClient - whoami does not retry a 401", async () => {

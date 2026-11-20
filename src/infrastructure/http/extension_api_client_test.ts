@@ -1710,8 +1710,27 @@ Deno.test("ExtensionApiClient: a 5xx response throws RegistryUnavailableError", 
   await assertRejects(
     () => client.getExtension("@swamp/s3-datastore"),
     RegistryUnavailableError,
-    "Extension API error (HTTP 503 after 6 attempts over",
+    "swamp-club failed (HTTP 503 after 6 attempts over",
   );
+});
+
+Deno.test("ExtensionApiClient: a 5xx names swamp-club as at fault and keeps its message and URL", async () => {
+  const client = clientAnswering(() =>
+    Promise.resolve(Response.json({ error: "Internal server error" }, {
+      status: 500,
+    }))
+  );
+  const error = await assertRejects(
+    () => client.getExtension("@swamp/s3-datastore"),
+    RegistryUnavailableError,
+  );
+  assertStringIncludes(error.message, "swamp-club failed (HTTP 500");
+  assertStringIncludes(error.message, "): Internal server error");
+  assertStringIncludes(
+    error.message,
+    "The fault is on swamp-club, not in your extension or setup",
+  );
+  assertStringIncludes(error.message, "`swamp issue bug`");
 });
 
 Deno.test("ExtensionApiClient: a 5xx HTML error page throws RegistryUnavailableError", async () => {

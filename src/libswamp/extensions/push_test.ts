@@ -961,7 +961,7 @@ Deno.test("extensionPushPrepare: dry run reports a failed version lookup as not 
   const check = result.registryChecks.find((c) => c.name === "version-exists");
   assertEquals(check?.status, "not-run");
   assertEquals(check?.cause, "registry-unavailable");
-  assertEquals(check?.message, "registry lookup failed: registry down");
+  assertEquals(check?.message, "registry down");
 });
 
 Deno.test("extensionPushPrepare: push fails authentication on a rejected key instead of falling back to the username", async () => {
