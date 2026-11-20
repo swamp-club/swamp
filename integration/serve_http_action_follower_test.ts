@@ -30,6 +30,10 @@ import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
 import { handleHttpActionRequest } from "../src/serve/http_action_route.ts";
 import { LeaderLink } from "../src/serve/leader_link.ts";
 import { SERVE_ACTION_PATH } from "../src/serve/protocol.ts";
+import {
+  PRINCIPAL_RATE_BURST,
+  resetRateLimitState,
+} from "../src/serve/rate_limiter.ts";
 import { ServeAdmission } from "../src/serve/serve_admission.ts";
 import type { ServerTokenAuthResult } from "../src/serve/token_auth.ts";
 import {
@@ -75,13 +79,17 @@ interface Node {
   stop: () => Promise<void>;
 }
 
-function serveNode(ctx: ConnectionContext): Node {
+function serveNode(ctx: ConnectionContext, now?: () => number): Node {
   const sourceIps: string[] = [];
   const server = Deno.serve(
     { port: 0, hostname: "127.0.0.1", onListen: () => {} },
     (req) => {
       sourceIps.push(req.headers.get("x-forwarded-for") ?? "");
-      return handleHttpActionRequest(req, "127.0.0.1", { ctx, authenticate });
+      return handleHttpActionRequest(req, "127.0.0.1", {
+        ctx,
+        authenticate,
+        now,
+      });
     },
   );
   return {
@@ -105,13 +113,14 @@ async function withTeam(
     grants?: Grant[];
     fetch?: typeof fetch;
     followerAdmission?: ServeAdmission;
+    now?: () => number;
   } = {},
 ): Promise<void> {
   await withServeRepo(async (repo) => {
     const ctx = createServeCtx(repo, options.grants ?? [everyAction()], {
       detached: true,
     });
-    const leader = serveNode(ctx);
+    const leader = serveNode(ctx, options.now);
     const address = options.leaderUrl ?? leader.url;
     const known: () => ServeLeader = () => ({
       instanceId: "leader",
@@ -137,7 +146,7 @@ async function withTeam(
         barriers++;
         return Promise.resolve();
       },
-    } as ConnectionContext);
+    } as ConnectionContext, options.now);
     try {
       await fn({ leader, follower, repo, ctx, barriers: () => barriers });
     } finally {
@@ -175,7 +184,11 @@ function test(name: string, fn: () => Promise<void>): void {
     name: `serve HTTP action route through a follower: ${name}`,
     sanitizeOps: false,
     sanitizeResources: false,
-    fn,
+    fn: async () => {
+      // the limiter is module state, so a repeat would inherit the spent allowance
+      resetRateLimitState();
+      await fn();
+    },
   });
 }
 
@@ -605,24 +618,31 @@ test("one person's rate limit through a follower leaves another's alone", async 
       actions: ["read"],
       resource: { kind: "workflow", pattern: "*" },
     });
+  // a frozen clock never refills the bucket, however slowly the requests run
+  const frozen = Date.now();
   await withTeam(async ({ follower }) => {
-    let limited = false;
-    for (let i = 0; i < 260 && !limited; i++) {
+    for (let i = 0; i < PRINCIPAL_RATE_BURST; i++) {
       const reply = await post(
         follower,
         { type: "workflow.approvals" },
         `${person}.secret`,
       );
-      limited = reply.status === 429;
+      assertEquals(reply.status, 200, `request ${i + 1} was refused`);
     }
-    assert(limited, "the caller reached the limit");
+    const over = await post(
+      follower,
+      { type: "workflow.approvals" },
+      `${person}.secret`,
+    );
+    assertEquals(over.status, 429, JSON.stringify(over.body));
+    assertEquals(over.body.code, "rate_limited");
     const fine = await post(
       follower,
       { type: "workflow.approvals" },
       `${other}.secret`,
     );
     assertEquals(fine.status, 200, JSON.stringify(fine.body));
-  }, { grants: [reads(person), reads(other)] });
+  }, { grants: [reads(person), reads(other)], now: () => frozen });
 });
 
 test("a resume forwarded to the leader is decided as the resumer, not the person who started the run", async () => {
