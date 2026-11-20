@@ -63,6 +63,7 @@ import {
   toStoredArchiveIndex,
 } from "./extension_tree_index.ts";
 import type { StoredArchiveIndex } from "../../domain/extensions/extension_package_cache.ts";
+import { RegistryServerError } from "../../domain/extensions/registry_unavailable_error.ts";
 import type {
   ExtensionContentMetadata,
   ExtractedArgument,
@@ -977,9 +978,12 @@ export async function extensionPushPrepare(
         if (isNotAuthenticatedError(error)) {
           signedOut = true;
         } else {
-          lookupFailure = error instanceof Error
+          // a server fault explains itself; the prefix is for a registry that never answered
+          lookupFailure = error instanceof RegistryServerError
             ? error.message
-            : String(error);
+            : `registry did not answer: ${
+              error instanceof Error ? error.message : String(error)
+            }`;
           ctx.logger
             .debug`Could not fetch collectives from server, falling back to username check`;
         }
@@ -1031,7 +1035,7 @@ export async function extensionPushPrepare(
             ? registryCheckNotRun(
               "authentication",
               "registry-unavailable",
-              `registry did not answer: ${lookupFailure}`,
+              lookupFailure,
             )
             : signedInCheck({
               username,
@@ -1070,7 +1074,7 @@ export async function extensionPushPrepare(
               registryCheckNotRun(
                 "private-entitlement",
                 "registry-unavailable",
-                `registry did not answer: ${lookupFailure}`,
+                lookupFailure,
               ),
             );
           } else if (membership.status === "passed") {
@@ -1672,7 +1676,7 @@ export async function extensionPushPrepare(
           registryCheckNotRun(
             "version-exists",
             "registry-unavailable",
-            `registry lookup failed: ${lookupFailure}`,
+            lookupFailure,
           ),
         );
       } else {

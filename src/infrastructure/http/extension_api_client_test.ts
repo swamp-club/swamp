@@ -27,7 +27,10 @@ import {
   REGISTRY_TOKEN_SCOPE_CODE,
 } from "./extension_api_client.ts";
 import { UserError } from "../../domain/errors.ts";
-import { RegistryUnavailableError } from "../../domain/extensions/registry_unavailable_error.ts";
+import {
+  RegistryServerError,
+  RegistryUnavailableError,
+} from "../../domain/extensions/registry_unavailable_error.ts";
 import { MAX_EXTENSION_ARCHIVE_BYTES } from "../../domain/extensions/extension_archive_limits.ts";
 
 const noSleep = () => Promise.resolve();
@@ -1710,7 +1713,21 @@ Deno.test("ExtensionApiClient: a 5xx response throws RegistryUnavailableError", 
   await assertRejects(
     () => client.getExtension("@swamp/s3-datastore"),
     RegistryUnavailableError,
-    "Extension API error (HTTP 503 after 6 attempts over",
+    "swamp-club is unavailable (HTTP 503, still failing after 6 attempts over",
+  );
+});
+
+Deno.test("ExtensionApiClient: a 500 is an internal error to report, without the bare status text", async () => {
+  const client = clientAnswering(() =>
+    Promise.resolve(Response.json({ error: "Internal server error" }, {
+      status: 500,
+    }))
+  );
+  await assertRejects(
+    () => client.getExtension("@swamp/s3-datastore"),
+    RegistryServerError,
+    "swamp-club hit an internal error (HTTP 500). Retrying will most likely " +
+      "fail the same way; report it with `swamp issue bug`",
   );
 });
 

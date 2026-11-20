@@ -20,7 +20,10 @@
 import { UserError } from "../../domain/errors.ts";
 import type { ExtensionContentMetadata } from "../../domain/extensions/extension_content.ts";
 import { parseRegistryAcceptances } from "../../domain/extensions/registry_acceptances.ts";
-import { RegistryUnavailableError } from "../../domain/extensions/registry_unavailable_error.ts";
+import {
+  RegistryServerError,
+  RegistryUnavailableError,
+} from "../../domain/extensions/registry_unavailable_error.ts";
 import {
   formatArchiveBytes,
   MAX_EXTENSION_ARCHIVE_BYTES,
@@ -909,12 +912,19 @@ export class ExtensionApiClient {
       throw new UserError(serverMessage);
     }
 
+    const retried = retriedSuffix(this.retryOutcomes.get(res));
+    if (res.status >= 500) {
+      throw new RegistryServerError({
+        status: res.status,
+        retried,
+        serverMessage,
+        url: res.url || undefined,
+      });
+    }
     const endpoint = res.url ? ` [${res.url}]` : "";
-    const message = `Extension API error (HTTP ${res.status}${
-      retriedSuffix(this.retryOutcomes.get(res))
-    }): ${serverMessage}${endpoint}`;
-    if (res.status >= 500) throw new RegistryUnavailableError(message);
-    throw new UserError(message);
+    throw new UserError(
+      `Extension API error (HTTP ${res.status}${retried}): ${serverMessage}${endpoint}`,
+    );
   }
 
   private async fetch(path: string, init: RequestInit): Promise<Response> {

@@ -40,3 +40,36 @@ export class RegistryUnavailableError extends UserError {
     }
   }
 }
+
+export interface ServerFault {
+  status: number;
+  retried?: string;
+  serverMessage?: string;
+  url?: string;
+}
+
+// the client already retried these, so only time helps; any other 5xx is a server bug that repeats
+const UNAVAILABLE_STATUSES = new Set([502, 503, 504]);
+
+const BARE_STATUS_TEXT =
+  /^(internal server error|bad gateway|service unavailable|gateway timeout)$/i;
+
+export function serverFaultMessage(fault: ServerFault): string {
+  const said = fault.serverMessage?.trim().replace(/\.+$/, "");
+  const detail = said && !BARE_STATUS_TEXT.test(said) ? `: ${said}` : "";
+  const answering = fault.url ? ` answering ${fault.url}` : "";
+  if (UNAVAILABLE_STATUSES.has(fault.status)) {
+    const retried = fault.retried ? `, still failing${fault.retried}` : "";
+    return `swamp-club is unavailable (HTTP ${fault.status}${retried})` +
+      `${answering}${detail}. Try again in a few minutes.`;
+  }
+  return `swamp-club hit an internal error (HTTP ${fault.status})` +
+    `${answering}${detail}. Retrying will most likely fail the same way; ` +
+    "report it with `swamp issue bug` and include this message.";
+}
+
+export class RegistryServerError extends RegistryUnavailableError {
+  constructor(fault: ServerFault) {
+    super(serverFaultMessage(fault));
+  }
+}

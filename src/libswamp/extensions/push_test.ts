@@ -47,6 +47,7 @@ import { buildPrepareInput, topLevelBareImports } from "./push_test_helpers.ts";
 import { createApiCallRecorder } from "../../infrastructure/http/recording_fetcher.ts";
 import { REGISTRY_FORBIDDEN_CODE } from "../../infrastructure/http/extension_api_client.ts";
 import { UserError } from "../../domain/errors.ts";
+import { RegistryServerError } from "../../domain/extensions/registry_unavailable_error.ts";
 import type { CollectiveEntitlement } from "../../domain/extensions/extension_publish_checks.ts";
 import type { ExtensionManifest } from "../../domain/extensions/extension_manifest.ts";
 import type { ReviewFinding } from "../../domain/extensions/extension_review_rules.ts";
@@ -927,6 +928,22 @@ Deno.test("extensionPushPrepare: dry run reports a rejected key as failed authen
   assertEquals(result.registryChecks[3].message, "authentication failed");
 });
 
+Deno.test("extensionPushPrepare: a server fault on the collective lookup is reported without the did-not-answer prefix", async () => {
+  const fault = new RegistryServerError({ status: 500 });
+  const deps = makePrepareDeps({
+    fetchCollectives: () => Promise.reject(fault),
+  });
+
+  const result = await extensionPushPrepare(
+    ctx,
+    deps,
+    makePrepareInput({ dryRun: true }),
+  );
+  assertEquals(result.registryChecks[0].status, "not-run");
+  assertEquals(result.registryChecks[0].cause, "registry-unavailable");
+  assertEquals(result.registryChecks[0].message, fault.message);
+});
+
 Deno.test("extensionPushPrepare: dry run reports authentication as not run when the registry did not answer", async () => {
   const deps = makePrepareDeps({
     fetchCollectives: () => Promise.reject(new Error("fetch failed")),
@@ -963,7 +980,7 @@ Deno.test("extensionPushPrepare: dry run reports a failed version lookup as not 
   const check = result.registryChecks.find((c) => c.name === "version-exists");
   assertEquals(check?.status, "not-run");
   assertEquals(check?.cause, "registry-unavailable");
-  assertEquals(check?.message, "registry lookup failed: registry down");
+  assertEquals(check?.message, "registry down");
 });
 
 Deno.test("extensionPushPrepare: push fails authentication on a rejected key instead of falling back to the username", async () => {
