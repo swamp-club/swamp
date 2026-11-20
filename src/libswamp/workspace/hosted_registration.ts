@@ -175,10 +175,7 @@ export async function unregisterHostedWorkspace(
   }
 }
 
-/**
- * removes the entry for `name` only while it names `folder`, a folder a
- * request created; one now naming another folder is the operator's and kept
- */
+/** removes the entry for `name` only while it names `folder`, a folder a request created */
 export async function unregisterCreatedWorkspace(
   deps: HostedRegistryDeps,
   input: { name: string; folder: string },

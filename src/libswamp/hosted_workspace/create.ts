@@ -201,11 +201,7 @@ async function createUnderLock(
   await registerInHostFolder(ctx, deps, name);
 }
 
-/**
- * with no host folder the entry makes the workspace the host's own, so it is
- * written strictly and before the rename: a create stopped at any step leaves
- * only a hidden folder, or a name a delete finishes
- */
+// the entry before the rename: a create stopped at any step leaves a hidden folder or a name delete finishes
 async function createInLocation(
   ctx: LibSwampContext,
   deps: HostedWorkspaceDeps,
@@ -347,7 +343,8 @@ async function refuseClaimedTemp(
   name: string,
 ): Promise<void> {
   const read = await readHostedRegistry(store);
-  if (read.kind === "unreadable" || read.registry === null) return;
+  if (read.kind === "unreadable") throw nameTaken(name);
+  if (read.registry === null) return;
   const own = await realPathOrSelf(resolve(temp));
   for (const entry of read.registry.list()) {
     if (await realPathOrSelf(resolve(entry.path)) === own) {

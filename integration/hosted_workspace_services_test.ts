@@ -20,6 +20,7 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { waitFor } from "@swamp-club/swamp-testing";
+import { parse as parseYaml } from "@std/yaml";
 import { provisionHostedWorkspace } from "../src/cli/hosted_workspace_provision.ts";
 import type {
   HostedWorkspace,
@@ -1197,4 +1198,102 @@ Deno.test("hosted workspace services, no host folder: a stopped create's removal
   }, "the files go");
   assert(await pathExists(decoy), "a folder outside the location is kept");
   assert(!(await pathExists(leftover)), "the location's own leftover is swept");
+});
+
+async function reimportElsewhere(
+  h: NoFolderHost,
+  name: string,
+): Promise<string> {
+  const imported = join(h.root, "projects", name);
+  await Deno.mkdir(imported, { recursive: true });
+  await Deno.writeTextFile(join(imported, ".swamp.yaml"), "kept: true\n");
+  const real = await Deno.realPath(imported);
+  // swamp workspace remove, then swamp workspace import, between two rescans
+  await h.store.registry.update((registry) => {
+    registry.remove(name);
+    registry.register({
+      name,
+      path: real,
+      createdAt: "2026-11-20T11:00:00.000Z",
+      origin: "imported",
+    });
+  });
+  return real;
+}
+
+async function assertDeleteRefused(h: NoFolderHost, name: string) {
+  const refused = await collect(
+    hostedWorkspaceDelete(ctx, h.deps(), { name }),
+  );
+  const error = refused.find((e) => e.kind === "error");
+  assertEquals(
+    error?.kind === "error" ? error.error.code : null,
+    "operator_workspace",
+  );
+}
+
+Deno.test("hosted workspace services, no host folder: a root admin's resume of a repo imported under a host-created name keeps it the operator's own, and delete is refused", async () => {
+  await using h = await noFolderHost();
+  await collect(
+    hostedWorkspaceCreate(ctx, h.deps(), {
+      name: "edge-dns",
+      caller: ALICE,
+      access: ACCESS,
+    }),
+  );
+  await h.rescan();
+  const imported = await reimportElsewhere(h, "edge-dns");
+  // no rescan yet: the wanted file with the creator is still there
+  const resumed = await collect(
+    hostedWorkspaceResume(ctx, h.deps(), { name: "edge-dns", rootAdmin: true }),
+  );
+  assertEquals(resumed.map((e) => e.kind), ["completed"]);
+  const wanted = parseYaml(
+    await Deno.readTextFile(join(h.dir, "edge-dns.wanted.yaml")),
+  ) as Record<string, unknown>;
+  assertEquals(wanted.creator, null);
+  assertEquals(wanted.folder, imported);
+  await h.rescan();
+  await h.drain();
+  await assertDeleteRefused(h, "edge-dns");
+  await h.rescan();
+  await h.drain();
+  assertEquals(
+    await Deno.readTextFile(join(imported, ".swamp.yaml")),
+    "kept: true\n",
+  );
+  assertEquals(
+    (await h.store.registry.load())?.get("edge-dns")?.path,
+    imported,
+  );
+});
+
+Deno.test("hosted workspace services, no host folder: a host-created wanted file whose name now holds another folder is removed, so writing that folder by hand starts it as the operator's own", async () => {
+  await using h = await noFolderHost();
+  await collect(
+    hostedWorkspaceCreate(ctx, h.deps(), {
+      name: "edge-dns",
+      caller: ALICE,
+      access: ACCESS,
+    }),
+  );
+  await h.rescan();
+  const imported = await reimportElsewhere(h, "edge-dns");
+  await waitFor(async () => {
+    await h.rescan();
+    await h.drain();
+    return !(await pathExists(join(h.dir, "edge-dns.wanted.yaml")));
+  }, "the stale wanted file goes");
+  // as the host's log advises
+  await Deno.writeTextFile(
+    join(h.dir, "edge-dns.wanted.yaml"),
+    `wanted: active\nfolder: ${imported}\n`,
+  );
+  await h.rescan();
+  await assertDeleteRefused(h, "edge-dns");
+  assert(await pathExists(join(imported, ".swamp.yaml")));
+  assert(
+    await pathExists(join(h.dataDir, "workspaces", "edge-dns", ".swamp.yaml")),
+    "the created folder, no longer registered, is kept",
+  );
 });

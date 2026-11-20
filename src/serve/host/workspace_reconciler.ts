@@ -338,6 +338,16 @@ export function createWorkspaceReconciler(
       record = null;
       recordMatches = true;
     }
+    // a creator written for a folder the registry no longer names would make the next folder written the host's own
+    if (
+      !hostFolder && read.kind === "found" && record !== null &&
+      record.creator !== null && !recordMatches &&
+      listing?.owner === "operator"
+    ) {
+      dropCreatedElsewhere(name, read.workspace);
+      record = null;
+      recordMatches = true;
+    }
     if (problem !== entry.problem) {
       if (problem !== null) {
         logger.warn("{reason}; workspace {name} is left as it is", {
@@ -438,6 +448,29 @@ export function createWorkspaceReconciler(
       })().catch((error) => {
         logger.warn(
           "Removing the wanted file of workspace {name}, which says deleted, failed, and is tried again at every rescan: {error}",
+          { name, error },
+        );
+      }),
+    );
+  };
+
+  const dropCreatedElsewhere = (name: string, stale: HostedWorkspace) => {
+    if (dropLog.changed(name, `created:${stale.changedAt ?? ""}`)) {
+      logger.warn(
+        "Workspace {name}'s wanted file was written for a folder a request created, and the registry now names another folder, so the host removes that wanted file; the workspace is the operator's own",
+        { name },
+      );
+    }
+    track(
+      (async () => {
+        // a wanted file written since is kept
+        const now = await repository.findByName(name);
+        if (now.kind === "found" && sameRecord(now.workspace, stale)) {
+          await repository.remove(name);
+        }
+      })().catch((error) => {
+        logger.warn(
+          "Removing the stale wanted file of workspace {name} failed, and is tried again at every rescan: {error}",
           { name, error },
         );
       }),

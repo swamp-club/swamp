@@ -508,6 +508,10 @@ export async function changeHostedWorkspace(
       });
     }
     let next = change.apply(current, deps.now());
+    // with no host folder a creator makes ownership, which only create writes
+    if (listing?.owner === "operator" && !deps.hostFolder) {
+      next = HostedWorkspace.fromRecord({ ...next.toRecord(), creator: null });
+    }
     if (listing !== undefined) {
       next = next.withFolder(
         listing.owner === "operator" || !deps.hostFolder

@@ -407,7 +407,11 @@ its status file and the 503 its address answers say whether it runs.
   path, which only `workspace.create` writes. Removing the creator or the
   folder by hand makes it the operator's own, the safe direction; writing both
   by hand for the entry's folder makes a repo the host's own, which only
-  someone who can already write the state folder can do. A name no entry holds
+  someone who can already write the state folder can do. No request carries a
+  creator to another folder: a suspend or resume of the operator's own writes
+  its folder with no creator, and the host removes a wanted file that has a
+  creator once the registry names another folder for its name, as after a
+  `swamp workspace remove` and an import elsewhere under the same name. A name no entry holds
   is the host's own when its wanted file has a creator and a folder: a create
   stopped before it registered, which a delete finishes without touching a
   folder.
