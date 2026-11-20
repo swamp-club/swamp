@@ -247,7 +247,7 @@ async function createInLocationUnchecked(
     os: Deno.build.os,
     configuredParent: placement.configuredParent,
   }, { name });
-  const { parent, path: target } = location;
+  const { parent } = location;
   await placement.withCreateLock(name, async () => {
     // adopting first, as every registry writer does, so no first write drops the data dir's repos
     const registry = await loadWorkspaceRegistry(store);
@@ -263,18 +263,25 @@ async function createInLocationUnchecked(
       throw nameTaken(name);
     }
     await ensureDir(parent);
-    await removeLeftovers(ctx, parent, name);
-    const temp = join(parent, creatingFolderName(name));
+    // one spelling for the entry, the wanted file and the host's listing, so delete matches its entry
+    const real = await realPathOrSelf(parent);
+    const target = join(real, name);
+    await removeLeftovers(ctx, real, name);
+    const temp = join(real, creatingFolderName(name));
     await Deno.mkdir(temp);
     let wroteWanted = false;
     let registered = false;
+    let tempClaimed = false;
     try {
       await provision(ctx, deps, temp, name, spec);
       await deps.repository.save(workspace.withFolder(target));
       wroteWanted = true;
       await registerInLocation(ctx, store, name, target, at);
       registered = true;
-      await refuseClaimedTemp(ctx, store, temp, name);
+      if (await tempIsClaimed(ctx, store, temp, name)) {
+        tempClaimed = true;
+        throw nameTaken(name);
+      }
       await renameIntoPlace(deps, temp, target, name);
     } catch (error) {
       if (registered) {
@@ -298,12 +305,15 @@ async function createInLocationUnchecked(
           }`;
         });
       }
-      await Deno.remove(temp, { recursive: true }).catch((cause) => {
-        ctx.logger
-          .error`Removing the set-up folder of workspace ${name} after a failed create failed: ${
-          messageOf(cause)
-        }`;
-      });
+      // an entry another name holds now has it, so it is kept
+      if (!tempClaimed) {
+        await Deno.remove(temp, { recursive: true }).catch((cause) => {
+          ctx.logger
+            .error`Removing the set-up folder of workspace ${name} after a failed create failed: ${
+            messageOf(cause)
+          }`;
+        });
+      }
       throw error;
     }
   });
@@ -336,23 +346,24 @@ async function registerInLocation(
 }
 
 // a set-up folder imported under another name would otherwise be moved by the rename
-async function refuseClaimedTemp(
+async function tempIsClaimed(
   ctx: LibSwampContext,
   store: HostedWorkspaceDeps["workspaceStore"],
   temp: string,
   name: string,
-): Promise<void> {
+): Promise<boolean> {
   const read = await readHostedRegistry(store);
   if (read.kind === "unreadable") throw nameTaken(name);
-  if (read.registry === null) return;
+  if (read.registry === null) return false;
   const own = await realPathOrSelf(resolve(temp));
   for (const entry of read.registry.list()) {
     if (await realPathOrSelf(resolve(entry.path)) === own) {
       ctx.logger
         .warn`The set-up folder of workspace ${name} was registered as ${entry.name}, so it is not moved into place`;
-      throw nameTaken(name);
+      return true;
     }
   }
+  return false;
 }
 
 async function provision(

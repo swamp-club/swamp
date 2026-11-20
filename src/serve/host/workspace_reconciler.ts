@@ -77,10 +77,12 @@ export interface WorkspaceReconcilerOptions {
 }
 
 export interface CreatedWorkspaceRemoval {
-  /** the real folder the registry, read afresh, names for `name`; null for none; rejects when unreadable */
-  registeredFolder(name: string): Promise<string | null>;
-  /** removes the entry only while it names `folder`; rejects when it cannot be written */
-  unregister(name: string, folder: string): Promise<void>;
+  /** the folder the registry, read afresh, names for `name`, as written and real; null for none; rejects when unreadable */
+  registeredFolder(
+    name: string,
+  ): Promise<{ readonly path: string; readonly real: string } | null>;
+  /** removes the entry only while it names `path`, as registeredFolder gave it; rejects when it cannot be written */
+  unregister(name: string, path: string): Promise<void>;
   /** where a create puts its hidden folder: the workspace location and the data dir's own; never rejects */
   locations(): Promise<readonly string[]>;
 }
@@ -656,7 +658,7 @@ export function createWorkspaceReconciler(
     const folder = record?.folder ?? null;
     // never a folder named only by the wanted file, which an operator can edit
     const dirs = new Set(await created.locations());
-    let registered: string | null = null;
+    let registered: { path: string; real: string } | null = null;
     if (folder !== null) {
       try {
         registered = await created.registeredFolder(name);
@@ -668,7 +670,7 @@ export function createWorkspaceReconciler(
       await sweepHidden(name, dirs);
       return;
     }
-    if (!(await hostCreated(record, registered))) {
+    if (!(await hostCreated(record, registered.real))) {
       throw new FolderClaimedError("it is registered at another folder");
     }
     const parent = dirname(folder);
@@ -685,7 +687,8 @@ export function createWorkspaceReconciler(
     }
     await sweepHidden(name, dirs);
     // before the wanted file, so a host stopped here still finishes the removal
-    await created.unregister(name, folder).catch((error) => {
+    // the spelling read before the rename, which no longer resolves once the folder is gone
+    await created.unregister(name, registered.path).catch((error) => {
       throw new RemovalStepError("unregister", error);
     });
   };

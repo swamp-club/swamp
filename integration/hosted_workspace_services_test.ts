@@ -683,6 +683,7 @@ interface NoFolderHost extends AsyncDisposable {
 
 async function noFolderHost(
   created?: (base: CreatedWorkspaceRemoval) => CreatedWorkspaceRemoval,
+  options: { readonly linkedDataDir?: boolean } = {},
 ): Promise<NoFolderHost> {
   const root = await Deno.makeTempDir();
   const dir = join(root, "state");
@@ -690,6 +691,11 @@ async function noFolderHost(
   const configDir = join(root, "config");
   await Deno.mkdir(dir);
   await Deno.mkdir(configDir);
+  // a data dir reached through a link, as a temp dir is on macOS
+  if (options.linkedDataDir) {
+    await Deno.mkdir(join(root, "data-real"));
+    await Deno.symlink(join(root, "data-real"), dataDir, { type: "dir" });
+  }
   const port = new CountingPort();
   const statusWriter = createStatusWriter({ workspacesDir: dir, retryMs: 10 });
   const supervisor = createServeSupervisor({
@@ -822,7 +828,7 @@ Deno.test("hosted workspace services, no host folder: create makes the repo in t
   const folder = join(h.dataDir, "workspaces", "edge-dns");
   assert(await pathExists(join(folder, ".swamp.yaml")), "a repo");
   const entry = (await h.store.registry.load())?.get("edge-dns");
-  assertEquals(entry?.path, folder);
+  assertEquals(entry?.path, await Deno.realPath(folder));
   assertEquals(entry?.origin, "created");
   assertEquals(entry?.trustedAt, undefined);
   // the registry file keeps the keys it has today
@@ -1032,8 +1038,11 @@ for (const [point, winner] of Object.entries(IMPORT_POINTS)) {
           async update(fn) {
             const result = await registry.update(fn);
             // the adopting first read writes too; this is the create's own entry
-            const ours = (await registry.load())?.get("edge-dns")?.path ===
-              join(h.dataDir, "workspaces", "edge-dns");
+            const location = await Deno.realPath(join(h.dataDir, "workspaces"))
+              .catch(() => null);
+            const ours = location !== null &&
+              (await registry.load())?.get("edge-dns")?.path ===
+                join(location, "edge-dns");
             if (ours && !entryWritten) {
               entryWritten = true;
               await runImport("after the entry");
@@ -1071,7 +1080,10 @@ for (const [point, winner] of Object.entries(IMPORT_POINTS)) {
       );
     } else {
       assertEquals(events.map((e) => e.kind), ["completed"]);
-      assertEquals(entry?.path, join(location, "edge-dns"));
+      assertEquals(
+        entry?.path,
+        await Deno.realPath(join(location, "edge-dns")),
+      );
     }
     assertEquals(
       await Deno.readTextFile(join(imported, ".swamp.yaml")),
@@ -1150,7 +1162,9 @@ Deno.test("hosted workspace services, no host folder: a removal whose entry, rea
   await using h = await noFolderHost((base) => ({
     ...base,
     registeredFolder: async (name) =>
-      other ?? await base.registeredFolder(name),
+      other === null
+        ? await base.registeredFolder(name)
+        : { path: other, real: other },
   }));
   await collect(
     hostedWorkspaceCreate(ctx, h.deps(), {
@@ -1296,4 +1310,24 @@ Deno.test("hosted workspace services, no host folder: a host-created wanted file
     await pathExists(join(h.dataDir, "workspaces", "edge-dns", ".swamp.yaml")),
     "the created folder, no longer registered, is kept",
   );
+});
+
+Deno.test("hosted workspace services, no host folder: with the data dir reached through a link, delete removes the folder and its entry, and the name can be created again", async () => {
+  await using h = await noFolderHost(undefined, { linkedDataDir: true });
+  for (const round of [1, 2]) {
+    const created = await collect(
+      hostedWorkspaceCreate(ctx, h.deps(), {
+        name: "edge-dns",
+        caller: ALICE,
+        access: ACCESS,
+      }),
+    );
+    assertEquals(created.map((e) => e.kind), ["completed"], `round ${round}`);
+    await h.rescan();
+    await collect(hostedWorkspaceResume(ctx, h.deps(), { name: "edge-dns" }));
+    await h.rescan();
+    await deleteAndSettle(h, "edge-dns");
+    assertEquals(await registeredNames(h), [], `round ${round}`);
+    assertEquals(await names(join(h.root, "data-real", "workspaces")), []);
+  }
 });

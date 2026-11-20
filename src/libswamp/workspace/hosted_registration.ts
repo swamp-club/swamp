@@ -186,9 +186,10 @@ export async function unregisterCreatedWorkspace(
   if (read.kind === "unreadable") return read;
   const before = read.registry?.get(name);
   if (before === undefined) return { kind: "absent" };
-  // the update runs synchronously, so the entry's real path is resolved here
-  const beforeReal = await realPathOrSelf(resolve(before.path));
-  if (beforeReal !== target) return { kind: "not_ours" };
+  // exact first: a folder already removed no longer resolves to the entry's spelling
+  const matches = before.path === input.folder ||
+    await realPathOrSelf(resolve(before.path)) === target;
+  if (!matches) return { kind: "not_ours" };
   try {
     return await deps.registry.update((current): HostedUnregistration => {
       const now = current.get(name);
@@ -205,21 +206,25 @@ export async function unregisterCreatedWorkspace(
   }
 }
 
-/** the real folder the registry, read afresh, names for `name`; null for no entry */
+/** the folder the registry, read afresh, names for `name`, as written and real; null for no entry */
 export async function registeredFolderOf(
   deps: Pick<HostedRegistryDeps, "registry">,
   name: string,
 ): Promise<
-  { kind: "read"; folder: string | null } | {
-    kind: "unreadable";
-    reason: string;
-  }
+  | { kind: "read"; folder: { path: string; real: string } | null }
+  | { kind: "unreadable"; reason: string }
 > {
   const read = await readHostedRegistry(deps);
   if (read.kind === "unreadable") return read;
   const entry = read.registry?.get(name);
   if (entry === undefined) return { kind: "read", folder: null };
-  return { kind: "read", folder: await realPathOrSelf(resolve(entry.path)) };
+  return {
+    kind: "read",
+    folder: {
+      path: entry.path,
+      real: await realPathOrSelf(resolve(entry.path)),
+    },
+  };
 }
 
 function registerUnderLock(

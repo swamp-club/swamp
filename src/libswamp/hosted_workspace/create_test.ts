@@ -381,11 +381,13 @@ Deno.test("hostedWorkspaceCreate: with no host folder, sets up in a hidden folde
   await using host = await noFolderHost();
   const base = host.deps();
   const steps: string[] = [];
-  const target = join(host.location, "edge-dns");
+  // the location exists once create has made it
+  const realTarget = async () =>
+    join(await Deno.realPath(host.location), "edge-dns");
   const deps = host.deps({
     provisioner: {
       async provision(dir, spec, signal) {
-        assertEquals(dirname(dir), host.location);
+        assertEquals(dirname(dir), await Deno.realPath(host.location));
         assert(basename(dir).startsWith(".edge-dns.creating-"), dir);
         steps.push("set up");
         await markerProvisioner.provision(dir, spec, signal);
@@ -395,7 +397,7 @@ Deno.test("hostedWorkspaceCreate: with no host folder, sets up in a hidden folde
       findByName: (n) => base.repository.findByName(n),
       remove: (n) => base.repository.remove(n),
       async save(workspace: HostedWorkspace) {
-        assertEquals(workspace.folder, target);
+        assertEquals(workspace.folder, await realTarget());
         steps.push("wanted file");
         await base.repository.save(workspace);
       },
@@ -414,7 +416,7 @@ Deno.test("hostedWorkspaceCreate: with no host folder, sets up in a hidden folde
       },
     },
     rename: async (from, to) => {
-      assertEquals(to, target);
+      assertEquals(to, await realTarget());
       steps.push("renamed");
       await Deno.rename(from, to);
     },
@@ -441,9 +443,9 @@ Deno.test("hostedWorkspaceCreate: with no host folder, sets up in a hidden folde
   ) as Record<string, unknown>;
   assertEquals(wanted.creator, ALICE.principal);
   assertEquals(wanted.wanted, "suspended");
-  assertEquals(wanted.folder, target);
+  assertEquals(wanted.folder, await realTarget());
   const entry = (await host.store.registry.load())?.get("edge-dns");
-  assertEquals(entry?.path, target);
+  assertEquals(entry?.path, await realTarget());
   assertEquals(entry?.origin, "created");
   assertEquals(entry?.trustedAt, undefined);
 });

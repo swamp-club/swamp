@@ -115,8 +115,11 @@ export function createdWorkspaceRemoval(
       if (read.kind === "unreadable") throw new Error(read.reason);
       return read.folder;
     },
-    async unregister(name, folder) {
-      const result = await unregisterCreatedWorkspace(store, { name, folder });
+    async unregister(name, path) {
+      const result = await unregisterCreatedWorkspace(store, {
+        name,
+        folder: path,
+      });
       if (result.kind === "unreadable") throw new Error(result.reason);
     },
     async locations() {
