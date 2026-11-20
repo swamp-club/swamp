@@ -7085,7 +7085,9 @@ Deno.test("DataQueryService.refreshTypes: re-reads only the given types and keep
     }
     timer = setTimeout(tick, 0);
   };
-  let timer = setTimeout(tick, 0);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  // the refresh need not yield, so the poller reads once before it starts
+  tick();
   try {
     await service.refreshTypes([ModelType.create("access-model")]);
   } finally {
