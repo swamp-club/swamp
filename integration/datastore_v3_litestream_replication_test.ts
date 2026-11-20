@@ -902,14 +902,16 @@ Deno.test({
           pid: other.pid,
           process: { ...here, startTime: "not-its-start-time" },
         });
-        // the owner-gone kill skips the final sync and may cut off this closing one
+        // the owner-gone kill may cut off this closing sync, or come before Litestream answers
         await writeCommand(env, 1).catch((error) => {
-          if (
-            !(error instanceof V3ReplicationError) ||
-            !error.message.includes("the Litestream sidecar failed")
-          ) {
-            throw error;
-          }
+          const cutOff = error instanceof V3ReplicationError &&
+            error.message.includes("the Litestream sidecar failed");
+          const neverAnswered =
+            error instanceof V3ReplicationUnavailableError &&
+            error.message.includes(
+              "the Litestream sidecar did not start in time",
+            );
+          if (!cutOff && !neverAnswered) throw error;
         });
         // the sidecar may already have judged its owner gone and removed this
         const litestreamPid = (await presenceOf(env))?.litestreamPid;
