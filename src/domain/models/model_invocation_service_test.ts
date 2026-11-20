@@ -1776,6 +1776,54 @@ Deno.test("ModelInvocationService: a call into another collective without the ne
   });
 });
 
+Deno.test("ModelInvocationService: a dependency pinned as name@version authorizes a call into that extension", async () => {
+  await withPulledRoot(async (pulledRoot) => {
+    await writeManifest(pulledRoot, "@acme/gcp/gmail", [
+      "@other/aws/ec2@2026.01.01.1",
+    ]);
+    const id = crypto.randomUUID();
+    const result = await invokeAcrossExtensions({
+      pulledRoot,
+      caller: { type: `@acme/gmail-${id}`, extensionName: "@acme/gcp/gmail" },
+      target: { type: `@other/ec2-${id}`, extensionName: "@other/aws/ec2" },
+    });
+    assertEquals(result.ok, true);
+  });
+});
+
+Deno.test("ModelInvocationService: a pinned dependency on another extension does not authorize the call", async () => {
+  await withPulledRoot(async (pulledRoot) => {
+    await writeManifest(pulledRoot, "@acme/gcp/gmail", [
+      "@other/aws/s3@2026.01.01.1",
+    ]);
+    const id = crypto.randomUUID();
+    const result = await invokeAcrossExtensions({
+      pulledRoot,
+      caller: { type: `@acme/gmail-${id}`, extensionName: "@acme/gcp/gmail" },
+      target: { type: `@other/ec2-${id}`, extensionName: "@other/aws/ec2" },
+    });
+    assertEquals(result.ok, false);
+    if (!result.ok) {
+      assertStringIncludes(result.error.message, `add "@other/aws/ec2"`);
+    }
+  });
+});
+
+Deno.test("ModelInvocationService: a pinned parent extension does not authorize a call into its nested extension", async () => {
+  await withPulledRoot(async (pulledRoot) => {
+    await writeManifest(pulledRoot, "@acme/gcp/gmail", [
+      "@other/aws@2026.01.01.1",
+    ]);
+    const id = crypto.randomUUID();
+    const result = await invokeAcrossExtensions({
+      pulledRoot,
+      caller: { type: `@acme/gmail-${id}`, extensionName: "@acme/gcp/gmail" },
+      target: { type: `@other/ec2-${id}`, extensionName: "@other/aws/ec2" },
+    });
+    assertEquals(result.ok, false);
+  });
+});
+
 Deno.test("ModelInvocationService: a caller whose manifest cannot be loaded is refused", async () => {
   await withPulledRoot(async (pulledRoot) => {
     await writeManifest(pulledRoot, "@swamp/gcp/gmail", []);

@@ -196,6 +196,11 @@ export interface ExtensionManifest {
   dependencies: string[];
 }
 
+export function extensionDependencyName(spec: string): string {
+  const versionSepIdx = spec.indexOf("@", 1);
+  return versionSepIdx === -1 ? spec : spec.slice(0, versionSepIdx);
+}
+
 export function parseExtensionManifest(content: string): ExtensionManifest {
   // A string's length never exceeds its UTF-8 size, so the first test refuses
   // an oversized manifest without encoding it.
