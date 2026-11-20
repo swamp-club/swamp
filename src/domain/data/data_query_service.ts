@@ -388,6 +388,18 @@ export class DataQueryService {
     }));
   }
 
+  async findRecordedNames(
+    modelType: string,
+    modelId: string,
+  ): Promise<string[]> {
+    await this.ensurePopulated();
+    return this.catalogStore.recordedNames(
+      modelType,
+      modelId,
+      this.dataRepo.namespace,
+    );
+  }
+
   async getLatestRecord(
     modelName: string,
     dataName: string,

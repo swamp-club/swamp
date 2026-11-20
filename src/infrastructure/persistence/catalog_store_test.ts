@@ -1784,6 +1784,51 @@ Deno.test(
 );
 
 Deno.test(
+  "CatalogStore: recordedNames lists every name an owner's current rows were written under",
+  () => {
+    using tempDb = makeTempDb();
+    const store = new CatalogStore(tempDb.path);
+    store.upsert(
+      makeRow({
+        model_name: "old-name",
+        model_id: "id-a",
+        data_name: "before",
+      }),
+    );
+    store.upsert(
+      makeRow({ model_name: "secret-x", model_id: "id-a", data_name: "after" }),
+    );
+    store.upsert(makeRow({
+      model_name: "superseded",
+      model_id: "id-a",
+      data_name: "after",
+      version: 0,
+      is_latest: 0,
+    }));
+    store.upsert(makeRow({
+      model_name: "gone",
+      model_id: "id-a",
+      data_name: "deleted",
+      lifecycle: "deleted",
+    }));
+    store.upsert(makeRow({
+      model_name: "peer-name",
+      model_id: "id-a",
+      data_name: "peer",
+      namespace: "peer",
+    }));
+
+    assertEquals(store.recordedNames("test-model", "id-a", ""), [
+      "old-name",
+      "secret-x",
+    ]);
+    assertEquals(store.recordedNames("other-type", "id-a", ""), []);
+
+    store.close();
+  },
+);
+
+Deno.test(
   "CatalogStore: recordedOwners skips superseded, deleted and workflow rows",
   () => {
     using tempDb = makeTempDb();

@@ -45,13 +45,14 @@ async function saveOrphaned(
   repo: ServeRepo,
   modelName: string,
   type: ModelType = repo.modelType,
+  modelId: string = crypto.randomUUID(),
+  dataName = "result",
 ): Promise<string> {
-  const modelId = crypto.randomUUID();
   await repo.repoContext.unifiedDataRepo.save(
     type,
     modelId,
     Data.create({
-      name: "result",
+      name: dataName,
       contentType: "application/json",
       lifetime: "infinite",
       garbageCollection: 10,
@@ -295,5 +296,46 @@ Deno.test("serve data reads: a failed owner lookup is reported only to a caller 
       await request(failing(dataReader("orphan-*")), "data.get", name),
     );
     assert(allowed.includes("data_get_failed"), allowed);
+  });
+});
+
+Deno.test("serve data reads: listing an owner renamed before deletion needs read on every name its data was written under", async () => {
+  await withServeRepo(async (repo) => {
+    const suffix = crypto.randomUUID();
+    const oldName = `old-${suffix}`;
+    const newName = `secret-${suffix}`;
+    const modelId = crypto.randomUUID();
+    await saveOrphaned(repo, oldName, repo.modelType, modelId, "before");
+    await saveOrphaned(repo, newName, repo.modelType, modelId, "after");
+
+    const oldOnly = createServeCtx(repo, [
+      grant({
+        actions: ["read"],
+        resource: { kind: "data", pattern: "old-*" },
+      }),
+      grant({
+        effect: "deny",
+        actions: ["read"],
+        resource: { kind: "data", pattern: "secret-*" },
+      }),
+    ]);
+    const listed = await request(oldOnly, "data.list", oldName);
+    const body = JSON.stringify(listed);
+    assert(errorFrame(listed), body);
+    assert(!body.includes("after"), body);
+    assert(!body.includes(newName), body);
+    assert(!body.includes(modelId), body);
+
+    // one item read by name is judged on that item's own recorded name
+    const before = await sendRequest(oldOnly, {
+      type: "data.get",
+      id: crypto.randomUUID(),
+      payload: { modelIdOrName: oldName, dataName: "before" },
+    });
+    assertEquals(reply(before, "data.get").name, "before");
+
+    const both = createServeCtx(repo, dataReader("*"));
+    const all = reply(await request(both, "data.list", oldName), "data.list");
+    assertEquals([all.modelId, all.total], [modelId, 2]);
   });
 });

@@ -1409,6 +1409,23 @@ export class CatalogStore {
     }));
   }
 
+  /** every behavior name the owner's latest, non-deleted rows were written under */
+  recordedNames(
+    typeNormalized: string,
+    modelId: string,
+    namespace: string,
+  ): string[] {
+    const stmt = this.db.prepare(
+      `SELECT DISTINCT model_name FROM catalog
+       WHERE type_normalized = ? AND model_id = ? AND namespace = ?
+         AND is_latest = 1 AND lifecycle != 'deleted'
+       ORDER BY model_name`,
+    );
+    return (stmt.all(typeNormalized, modelId, namespace) as Array<
+      { model_name: string }
+    >).map((row) => row.model_name);
+  }
+
   findLatestRowsBySpecName(
     modelName: string,
     specName: string,

@@ -178,16 +178,33 @@ async function authorizeRecordedOwner(
   failedCode: string,
 ): Promise<RecordedOwnerAccess> {
   if (target.status !== "missing") return { kind: "unrecorded" };
-  let readable: RecordedOwner[];
-  try {
-    const owners = await ctx.repoContext.dataQueryService.findRecordedOwners(
-      idOrName,
-      dataName,
+  const queryService = ctx.repoContext.dataQueryService;
+  // a list spans every item of the owner, written under any of its names
+  const identitiesOf = async (owner: RecordedOwner) => {
+    if (dataName !== undefined) return [owner];
+    const names = await queryService.findRecordedNames(
+      owner.modelType,
+      owner.modelId,
     );
+    return names.length === 0
+      ? [owner]
+      : names.map((modelName) => ({ ...owner, modelName }));
+  };
+  let readable: Array<{ owner: RecordedOwner; identities: RecordedOwner[] }>;
+  try {
+    const owners = await queryService.findRecordedOwners(idOrName, dataName);
     const canRead = ownerReadCheck(socket, ctx, principal);
     readable = [];
     for (const owner of owners) {
-      if (await canRead(owner)) readable.push(owner);
+      const identities = await identitiesOf(owner);
+      let all = true;
+      for (const identity of identities) {
+        if (!(await canRead(identity))) {
+          all = false;
+          break;
+        }
+      }
+      if (all) readable.push({ owner, identities });
     }
   } catch (error) {
     // as a failed resolution: answered only after the name as sent is allowed
@@ -211,7 +228,7 @@ async function authorizeRecordedOwner(
   if (readable.length === 0) return { kind: "unrecorded" };
   if (readable.length > 1) {
     const error = new LibSwampStreamError(
-      ambiguousBehavior(idOrName, readable),
+      ambiguousBehavior(idOrName, readable.map((r) => r.owner)),
     );
     sendError(
       socket,
@@ -222,8 +239,11 @@ async function authorizeRecordedOwner(
     );
     return { kind: "refused" };
   }
-  const owner = readable[0];
-  const resources = await canonicalResources(ctx).dataOwners(owner);
+  const { owner, identities } = readable[0];
+  const canonical = canonicalResources(ctx);
+  const resources = (await Promise.all(
+    identities.map((identity) => canonical.dataOwners(identity)),
+  )).flat();
   for (const resource of resources) {
     if (
       !authorizeOrReject(socket, requestId, principal, "read", resource, ctx)
@@ -234,7 +254,7 @@ async function authorizeRecordedOwner(
     socket,
     requestId,
     "data",
-    resources.map((resource) => resource.name).join(", "),
+    [...new Set(resources.map((resource) => resource.name))].join(", "),
     ctx,
   );
   return { kind: "owner", owner };
