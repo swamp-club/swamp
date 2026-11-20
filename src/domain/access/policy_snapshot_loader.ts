@@ -57,7 +57,7 @@ import type { Data } from "../data/data.ts";
 import type { PrincipalContext } from "./principal_context.ts";
 import type { ConditionEvaluator } from "./policy_snapshot.ts";
 import { PolicySnapshot } from "./policy_snapshot.ts";
-import { PolicyRelease } from "./policy_release.ts";
+import { narrowedPolicy, PolicyRelease } from "./policy_release.ts";
 import type { ResourceKind } from "./resource_selector.ts";
 import {
   CONDITION_FIELDS,
@@ -318,6 +318,8 @@ export class PolicySnapshotLoader {
   #enforcedGrants: readonly Grant[] = [];
   #enforcedGroups: readonly Group[] = [];
   #onBuilt: ((release: PolicyRelease) => void) | undefined;
+  /** the leader's release this follower enforces, if any */
+  #appliedRelease: PolicyRelease | undefined;
   /**
    * each active grant already checked for spellings, with the effect, selector
    * and condition it was checked as, so a reload neither repeats findings nor
@@ -421,8 +423,43 @@ export class PolicySnapshotLoader {
       this.#loadedSignature = snapshotSignature(release.grants, release.groups);
       this.#built = true;
       this.#cachedDecisionService = null;
+      this.#appliedRelease = release;
     };
     const result = this.#builds.then(apply);
+    this.#builds = result.catch(() => {});
+    return result;
+  }
+
+  /**
+   * a follower's grant commit before the leader releases it: a revoke or new
+   * deny applies now, a widening waits, so a stuck publisher never keeps a
+   * revoked grant live here
+   */
+  narrowRelease(): Promise<void> {
+    const release = this.#appliedRelease;
+    if (release === undefined) return this.load().then(() => {});
+    const narrow = async () => {
+      await observeDiagnosticPhase("snapshot_build", {}, async (phase) => {
+        await this.#buildSnapshotWithCounts(phase);
+        const policy = narrowedPolicy(release, {
+          grants: this.#enforcedGrants,
+          groups: this.#enforcedGroups,
+        });
+        this.#decisionOptions = {
+          ...this.#ownDecisionOptions,
+          ...release.decisions,
+        };
+        this.#snapshot = new PolicySnapshot(
+          policy.grants,
+          policy.groups,
+          this.#conditionEvaluator,
+        );
+        this.#enforcedGrants = policy.grants;
+        this.#enforcedGroups = policy.groups;
+        this.#cachedDecisionService = null;
+      });
+    };
+    const result = this.#builds.then(narrow);
     this.#builds = result.catch(() => {});
     return result;
   }
@@ -518,6 +555,7 @@ export class PolicySnapshotLoader {
         async (phase) => {
           const result = await this.#buildSnapshotWithCounts(phase);
           this.#decisionOptions = this.#ownDecisionOptions;
+          this.#appliedRelease = undefined;
           this.#snapshot = result.snapshot;
           this.#cachedDecisionService = null;
           this.#offerRelease();

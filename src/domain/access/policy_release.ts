@@ -20,6 +20,7 @@
 import { z } from "zod";
 import { type Grant, GrantSchema } from "../models/access/grant_model.ts";
 import { type Group, GroupSchema } from "../models/access/group_model.ts";
+import { principalToString } from "./principal.ts";
 
 const GRANT_RECORD = /^@?swamp\/grant\/[^/]+$/;
 const GROUP_RECORD = /^@?swamp\/group\/[^/]+$/;
@@ -123,4 +124,95 @@ export class PolicyRelease {
       this.decisions.writeImpliesTag,
     ]);
   }
+}
+
+/**
+ * never more permissive than either policy: an allow holds only if it is in
+ * both, every deny holds, and a group's members are narrowed the way the grants
+ * naming it need
+ */
+export function narrowedPolicy(
+  release: {
+    readonly grants: readonly Grant[];
+    readonly groups: readonly Group[];
+  },
+  latest: {
+    readonly grants: readonly Grant[];
+    readonly groups: readonly Group[];
+  },
+): { grants: Grant[]; groups: Group[] } {
+  const key = (grant: Grant) => JSON.stringify(grant);
+  const latestKeys = new Set(latest.grants.map(key));
+  const allows = release.grants.filter((grant) =>
+    grant.effect === "allow" && latestKeys.has(key(grant))
+  );
+  const denies = new Map<string, Grant>();
+  for (const grant of [...release.grants, ...latest.grants]) {
+    if (grant.effect === "deny") denies.set(key(grant), grant);
+  }
+  const named = (effectGrants: Iterable<Grant>, name: string) =>
+    [...effectGrants].some((grant) =>
+      grant.subject.kind === "group" && grant.subject.name === name
+    );
+  const releaseGroups = new Map(release.groups.map((g) => [g.name, g]));
+  const latestGroups = new Map(latest.groups.map((g) => [g.name, g]));
+  const groups: Group[] = [];
+  for (
+    const name of new Set([...releaseGroups.keys(), ...latestGroups.keys()])
+  ) {
+    const before = releaseGroups.get(name);
+    const after = latestGroups.get(name);
+    const byAllow = named(allows, name);
+    const byDeny = named(denies.values(), name);
+    if (byAllow && byDeny) {
+      const both = (before?.members ?? []).filter((m) =>
+        (after?.members ?? []).some((n) =>
+          principalToString(n) === principalToString(m)
+        )
+      );
+      const inBoth = new Set(both.map(principalToString));
+      const either = [...(before?.members ?? []), ...(after?.members ?? [])]
+        .filter((m) => !inBoth.has(principalToString(m)));
+      // a worker has no subject kind to name in a deny of its own
+      if (either.some((m) => m.kind === "worker")) {
+        const kept = before ?? after;
+        if (kept) groups.push(kept);
+        continue;
+      }
+      // the group narrows for its allows; its denies follow each member
+      // either side had
+      groups.push({ ...(before ?? after)!, members: both });
+      for (const deny of [...denies.values()]) {
+        if (deny.subject.kind !== "group" || deny.subject.name !== name) {
+          continue;
+        }
+        for (const member of either) {
+          const copy: Grant = {
+            ...deny,
+            subject: {
+              kind: member.kind as "user" | "service",
+              name: member.id,
+            },
+          };
+          denies.set(key(copy), copy);
+        }
+      }
+      continue;
+    }
+    const base = (before ?? after)!;
+    const inAfter = new Set((after?.members ?? []).map(principalToString));
+    const inBefore = new Set((before?.members ?? []).map(principalToString));
+    const members = byDeny
+      ? [
+        ...(before?.members ?? []),
+        ...(after?.members ?? []).filter((m) =>
+          !inBefore.has(principalToString(m))
+        ),
+      ]
+      : (before?.members ?? []).filter((m) =>
+        inAfter.has(principalToString(m))
+      );
+    groups.push({ ...base, members });
+  }
+  return { grants: [...allows, ...denies.values()], groups };
 }

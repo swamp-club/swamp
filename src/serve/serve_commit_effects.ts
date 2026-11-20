@@ -64,6 +64,8 @@ export interface PolicyReleaseFollowing {
   headReleaseCommit?(): Promise<Commit | undefined>;
   /** reads, parses and enforces the release record; throws if it cannot */
   applyRelease(): Promise<void>;
+  /** applies a grant commit's revokes and new denies, holding its widenings */
+  narrowRelease(): Promise<void>;
 }
 
 const EVERY_EFFECT: ReadonlySet<CommitEffect> = new Set([
@@ -253,10 +255,14 @@ export class ServeCommitEffects {
     // No catalog invalidate: the read model's catch-up before the poke wrote
     // the rows, and a replaced copy's restore rebuilt them.
     if (effects.has("policyRelease")) await this.#followRelease();
-    // a grant commit the leader may be holding: rebuilt from it only until
-    // this follower enforces the current leader's release
-    if (effects.has("access") && !this.followsLeaderRelease()) {
-      await this.#deps.reloadPolicy();
+    // a grant commit the leader may be holding: only its narrowing applies
+    // while this follower enforces the current leader's release
+    if (effects.has("access")) {
+      if (this.followsLeaderRelease()) {
+        await this.#deps.releases!.narrowRelease();
+      } else {
+        await this.#deps.reloadPolicy();
+      }
       this.#policyKnown = true;
     }
   }

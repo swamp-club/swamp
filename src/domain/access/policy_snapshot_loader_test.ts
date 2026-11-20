@@ -2339,3 +2339,43 @@ Deno.test("PolicySnapshotLoader: a promoted follower's first build enforces the 
   await oldLeader.dispose();
   await promoted.dispose();
 });
+
+Deno.test("PolicySnapshotLoader.narrowRelease: with no new release, a revoke applies at once and a new allow waits", async () => {
+  const kept = makeGrant();
+  const revoked = makeGrant({ subject: { kind: "user", name: "eve" } });
+  const added = makeGrant({ subject: { kind: "user", name: "mallory" } });
+  const leader = new PolicySnapshotLoader(
+    createMockDataRepo([
+      { attrs: kept, modelId: "g1", dataName: "grant-main" },
+      { attrs: revoked, modelId: "g2", dataName: "grant-main" },
+    ], []),
+    new EventBus(),
+    "manual",
+  );
+  await leader.load();
+  const follower = new PolicySnapshotLoader(
+    createMockDataRepo([
+      { attrs: kept, modelId: "g1", dataName: "grant-main" },
+      {
+        attrs: { ...revoked, state: "revoked" },
+        modelId: "g2",
+        dataName: "grant-main",
+      },
+      { attrs: added, modelId: "g3", dataName: "grant-main" },
+    ], []),
+    new EventBus(),
+    "manual",
+  );
+  const told: PolicyRelease[] = [];
+  follower.onBuilt((release) => told.push(release));
+  await follower.applyRelease(leader.release());
+  assertEquals(follower.snapshot.grantsForSubjects(["user:eve"]).length, 1);
+  await follower.narrowRelease();
+  assertEquals(follower.snapshot.grantsForSubjects(["user:eve"]).length, 0);
+  assertEquals(follower.snapshot.grantsForSubjects(["user:mallory"]).length, 0);
+  assertEquals(follower.snapshot.grantsForSubjects(["user:adam"]).length, 1);
+  // a follower publishes nothing
+  assertEquals(told, []);
+  await leader.dispose();
+  await follower.dispose();
+});

@@ -19,7 +19,10 @@
 
 import { assertEquals, assertThrows } from "@std/assert";
 import type { Grant } from "../models/access/grant_model.ts";
-import { PolicyRelease } from "./policy_release.ts";
+import { narrowedPolicy, PolicyRelease } from "./policy_release.ts";
+import type { Group } from "../models/access/group_model.ts";
+import { PolicySnapshot } from "./policy_snapshot.ts";
+import { GrantBasedAccessDecisionService } from "./grant_based_access_decision_service.ts";
 
 const GRANT: Grant = {
   id: "g1",
@@ -100,4 +103,69 @@ Deno.test("PolicyRelease.digest: the same policy in another order has the same d
       make([GRANT], { ...DECISIONS, writeImpliesTag: false }).digest(),
     false,
   );
+});
+
+function ops(...members: string[]): Group {
+  return {
+    name: "ops",
+    members: members.map((id) => ({ kind: "user" as const, id })),
+    createdBy: { kind: "user", id: "admin" },
+    createdAt: "2026-01-01T00:00:00Z",
+  };
+}
+
+function onOps(id: string, effect: "allow" | "deny", pattern: string): Grant {
+  return {
+    ...GRANT,
+    id,
+    subject: { kind: "group", name: "ops" },
+    effect,
+    resource: { kind: "workflow", pattern },
+  };
+}
+
+function reads(
+  policy: { grants: readonly Grant[]; groups: readonly Group[] },
+  user: string,
+  name: string,
+): boolean {
+  return new GrantBasedAccessDecisionService(
+    new PolicySnapshot(policy.grants, policy.groups),
+  ).decide(
+    {
+      principal: { kind: "user", id: user },
+      collectives: [],
+      groups: [],
+      client: undefined,
+      delegation: undefined,
+    },
+    "read",
+    { kind: "workflow", name, fields: { name, tags: {}, collective: "" } },
+  )?.effect === "allow";
+}
+
+Deno.test("narrowedPolicy: a member removed from a group that allows and denies loses its allow at once", () => {
+  const grants = [onOps("a", "allow", "*"), onOps("d", "deny", "x")];
+  const narrowed = narrowedPolicy(
+    { grants, groups: [ops("ann", "bob")] },
+    { grants, groups: [ops("bob")] },
+  );
+  assertEquals(reads(narrowed, "ann", "y"), false);
+  assertEquals(reads(narrowed, "bob", "y"), true);
+});
+
+Deno.test("narrowedPolicy: a member removed from a group that denies stays denied until the release", () => {
+  const grants = [onOps("d", "deny", "x"), onOps("a", "allow", "*"), {
+    ...GRANT,
+    id: "u",
+    subject: { kind: "user" as const, name: "ann" },
+    resource: { kind: "workflow" as const, pattern: "*" },
+  }];
+  const narrowed = narrowedPolicy(
+    { grants, groups: [ops("ann", "bob")] },
+    { grants, groups: [ops("bob")] },
+  );
+  // the release still denies ann on x through ops; the latest would allow it
+  assertEquals(reads(narrowed, "ann", "x"), false);
+  assertEquals(reads(narrowed, "ann", "y"), true);
 });

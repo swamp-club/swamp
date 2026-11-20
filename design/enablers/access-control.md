@@ -1654,8 +1654,16 @@ changes.
    the current leader's fence, so a forged one is never applied; until it has
    one from the current leader (an older leader in a rolling upgrade, or a new
    leader's first release not landed yet) it rebuilds on each grant or group
-   commit as before, so revokes keep reaching it. Other control-plane commits
-   (workers, leases, tokens) never rebuild a policy. What follows from this:
+   commit as before. While it follows releases, a grant or group commit is
+   applied fail-safe (`narrowedPolicy` in `src/domain/access/policy_release.ts`):
+   an allow holds only if it is unchanged in both the release and the latest
+   grants, every deny from either holds, and group members narrow for the
+   allows naming the group while its denies follow every member either side
+   had. So a revoke, a new deny or a removed member applies at once even if the
+   leader's release write is stuck, and a widening waits for the release; a
+   held narrowing makes a follower stricter than its leader until then. Other
+   control-plane commits (workers, leases, tokens) never rebuild a policy.
+   What follows from this:
    - under `--grant-reload manual` only the grant and group writes serve runs
      itself are held; a forwarded member commit rebuilds the leader's policy
      at once, which also releases its own held writes;

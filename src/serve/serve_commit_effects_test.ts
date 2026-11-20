@@ -538,7 +538,7 @@ function releaseSetup(
   } = {},
 ) {
   const store = fakeSource();
-  const calls = { policy: 0, applied: 0 };
+  const calls = { policy: 0, applied: 0, narrowed: 0 };
   let leaderFence: number | undefined = 7;
   const effects = new ServeCommitEffects({
     source: store.source,
@@ -562,6 +562,10 @@ function releaseSetup(
           return Promise.reject(new Error("not a policy release"));
         }
         calls.applied++;
+        return Promise.resolve();
+      },
+      narrowRelease: () => {
+        calls.narrowed++;
         return Promise.resolve();
       },
     },
@@ -592,16 +596,16 @@ const STEP_LEASE = partitionOf({
   id: ID,
 });
 
-Deno.test("ServeCommitEffects: a follower enforcing the leader's release does not rebuild for a grant commit the leader may be holding", async () => {
+Deno.test("ServeCommitEffects: a follower enforcing the leader's release only narrows for a grant commit the leader may be holding", async () => {
   const { store, calls, effects } = releaseSetup();
   try {
     store.landStamped(RELEASE, { fence: 7 });
     await pass(store, effects);
-    assertEquals(calls, { policy: 0, applied: 1 });
+    assertEquals(calls, { policy: 0, applied: 1, narrowed: 0 });
     assertEquals(effects.followsLeaderRelease(), true);
     store.landStamped(GRANT, { fence: 7 });
     await pass(store, effects);
-    assertEquals(calls, { policy: 0, applied: 1 });
+    assertEquals(calls, { policy: 0, applied: 1, narrowed: 1 });
   } finally {
     await effects.stop();
   }
@@ -661,7 +665,7 @@ Deno.test("ServeCommitEffects: a release that cannot be read rebuilds the policy
   try {
     store.landStamped(RELEASE, { fence: 7 });
     await pass(store, effects);
-    assertEquals(calls, { policy: 1, applied: 0 });
+    assertEquals(calls, { policy: 1, applied: 0, narrowed: 0 });
     assertEquals(effects.policyKnown(), true);
     assertEquals(effects.followsLeaderRelease(), false);
   } finally {

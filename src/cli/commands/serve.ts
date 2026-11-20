@@ -9378,6 +9378,7 @@ export const serveCommand = new Command()
         isFollower: () => connectionCtx.followerGate?.role === "follower",
         releases: {
           leaderFence: () => connectionCtx.followerGate?.leader()?.fence,
+          narrowRelease: () => policySnapshotLoader.narrowRelease(),
           applyRelease: async () => {
             const content = await repoContext.unifiedDataRepo.getContent(
               POLICY_RELEASE_MODEL_TYPE,
