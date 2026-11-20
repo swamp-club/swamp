@@ -248,3 +248,29 @@ Deno.test("storedResourceRecord: the media type is matched by prefix, so applica
   assertEquals(isJsonMediaType("application/json;charset=utf-8"), true);
   assertEquals(isJsonMediaType("application/jsonx"), false);
 });
+
+Deno.test("modelMethodResourceResult: a non-JSON result is looked up once and read at the version found", async () => {
+  const calls: string[] = [];
+  const stored = data("text/plain").withNewVersion({ version: 4 });
+  const dataRepo = {
+    namespace: "ns",
+    findByName: () => {
+      calls.push("findByName");
+      return Promise.resolve(stored);
+    },
+    getContent: (
+      _type: ModelType,
+      _modelId: string,
+      _name: string,
+      version?: number,
+    ) => {
+      calls.push(`getContent@${version}`);
+      return Promise.resolve(new TextEncoder().encode("plain text"));
+    },
+  } as unknown as UnifiedDataRepository;
+  assertEquals(
+    await modelMethodResourceResult(dataRepo, TYPE, "id-1", "creds", "db"),
+    "plain text",
+  );
+  assertEquals(calls, ["findByName", "getContent@4"]);
+});

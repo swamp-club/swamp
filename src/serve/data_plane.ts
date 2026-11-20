@@ -831,8 +831,9 @@ export class DataPlane {
     dispatchId?: string,
   ): Promise<Response> {
     const dispatch = this.#activeDispatch(workerName, dispatchId);
-    const declaredBytes = Number(req.headers.get("content-length"));
-    if (Number.isSafeInteger(declaredBytes)) {
+    const declaredLength = req.headers.get("content-length");
+    const declaredBytes = Number(declaredLength);
+    if (declaredLength !== null && Number.isSafeInteger(declaredBytes)) {
       const { maxBytes } = await (this.#repoForWorker(workerName, dispatchId)
         .resolveResourceSizePolicy?.() ??
         Promise.resolve(ResourceSizePolicy.DEFAULT));

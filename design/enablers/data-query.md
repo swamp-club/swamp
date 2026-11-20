@@ -1137,9 +1137,9 @@ string; `--select` naming only catalog fields with `--sort size:desc` lists the
 largest items without reading any content. Ties break on the item identity
 (namespace, model type, model id, data name, version) in the same direction, so
 the order is total and the same on every copy of the catalog: catalog rowids
-differ between a serve leader and a follower, so they are never part of it. The tag key is letters, digits,
-`.`, `_` or `-`. Sorting by a field inside the record body is not supported:
-every page would read every body.
+differ between a serve leader and a follower, so they are never part of it. The
+tag key is letters, digits, `.`, `_` or `-`. Sorting by a field inside the
+record body is not supported: every page would read every body.
 
 A sorted page that filled its limit returns `nextCursor`. Passing it back as
 `--cursor` (the `cursor` request field) with the same sort returns the rows
