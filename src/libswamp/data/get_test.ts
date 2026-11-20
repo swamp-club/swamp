@@ -1019,3 +1019,34 @@ Deno.test("dataGet: without a data watermark the not-found is unchanged", async 
     false,
   );
 });
+
+Deno.test("dataGet: reads the recorded owner's data when its definition is gone", async () => {
+  const orphan = {
+    modelType: "command/shell",
+    modelId: "00000000-0000-4000-8000-00000000000a",
+    modelName: "orphan",
+  };
+  let readFrom: { type: string; id: string } | undefined;
+  const deps = makeDeps({
+    lookupDefinition: () => Promise.resolve(null),
+    findRecordedOwners: () => Promise.resolve([orphan]),
+    findDataByName: (type, id) => {
+      readFrom = { type: type.normalized, id };
+      return Promise.resolve(makeDataItem());
+    },
+  });
+  const events = await collect<DataGetEvent>(
+    dataGet(createLibSwampContext(), deps, {
+      modelIdOrName: "orphan",
+      dataName: "output",
+      includeContent: false,
+      repoDir: ".",
+    }),
+  );
+  const completed = events.find((e) => e.kind === "completed");
+  assertEquals(readFrom, { type: "command/shell", id: orphan.modelId });
+  if (completed?.kind !== "completed") throw new Error("not completed");
+  assertEquals(completed.data.modelId, orphan.modelId);
+  assertEquals(completed.data.modelName, "orphan");
+  assertEquals(completed.data.modelType, "command/shell");
+});

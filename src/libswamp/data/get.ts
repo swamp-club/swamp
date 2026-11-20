@@ -17,7 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { Definition } from "../../domain/definitions/definition.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
 import {
   findDefinitionByIdGlobal,
@@ -49,10 +48,16 @@ import {
   namespaceFromResolver,
 } from "../../infrastructure/persistence/repository_factory.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
-import { selectLookup } from "../lookup_by_id.ts";
+import {
+  type DataOwnerLookupDeps,
+  type RecordedDataOwner,
+  recordedOwnerFinder,
+  resolveDataOwner,
+} from "./recorded_owner.ts";
+import type { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
-import { behaviorNotFound, notFound, validationFailed } from "../errors.ts";
+import { notFound, validationFailed } from "../errors.ts";
 import { withReapedHint } from "../retention/reaped.ts";
 import type { RetentionWatermarkRepository } from "../../domain/retention/retention_watermark.ts";
 
@@ -126,6 +131,8 @@ export interface DataGetInput {
    * unique, so only a resource with this name and the id is accepted.
    */
   expectedName?: string;
+  /** an orphaned owner the caller found and authorized; only it is read */
+  recordedOwner?: RecordedDataOwner;
   dataName?: string;
   workflowName?: string;
   runId?: string;
@@ -218,14 +225,7 @@ export type DataGetEvent =
   | { kind: "completed"; data: DataGetData }
   | { kind: "error"; error: SwampError };
 
-export interface DataGetDeps {
-  lookupDefinition: (
-    idOrName: string,
-  ) => Promise<{ definition: Definition; type: ModelType } | null>;
-  lookupDefinitionById?: (
-    id: string,
-    expectedName?: string,
-  ) => Promise<{ definition: Definition; type: ModelType } | null>;
+export interface DataGetDeps extends DataOwnerLookupDeps {
   findWorkflow: (idOrName: string) => Promise<WorkflowInfo | null>;
   /**
    * Looks a workflow up by exact id only — with `expectedName`, only a
@@ -276,6 +276,7 @@ export function createDataGetDeps(
   injectedDataRepo?: FileSystemUnifiedDataRepository,
   injectedWorkflowRepo?: WorkflowRepository,
   injectedDefinitionRepo?: YamlDefinitionRepository,
+  injectedCatalogStore?: CatalogStore,
 ): DataGetDeps {
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
@@ -293,10 +294,13 @@ export function createDataGetDeps(
       undefined,
       unreadableContent,
     );
+  const ownCatalog = injectedDataRepo
+    ? undefined
+    : createCatalogStore(repoDir, datastoreResolver);
   const dataRepo = injectedDataRepo ?? new FileSystemUnifiedDataRepository(
     repoDir,
     dsPath(SWAMP_SUBDIRS.data),
-    createCatalogStore(repoDir, datastoreResolver),
+    ownCatalog!,
     undefined,
     undefined,
     namespaceFromResolver(datastoreResolver),
@@ -321,6 +325,10 @@ export function createDataGetDeps(
       findDefinitionByIdOrName(definitionRepo, idOrName),
     lookupDefinitionById: (id, expectedName) =>
       findDefinitionByIdGlobal(definitionRepo, id, expectedName),
+    findRecordedOwners: recordedOwnerFinder(
+      injectedCatalogStore ?? ownCatalog,
+      dataRepo,
+    ),
     findWorkflow: async (idOrName) =>
       await workflowRepo.findByName(idOrName) ??
         await workflowRepo.findById(createWorkflowId(idOrName)),
@@ -419,6 +427,7 @@ export async function* dataGet(
           input.includeContent,
           input.byId ?? false,
           input.expectedName,
+          input.recordedOwner,
         );
       for await (const event of events) {
         yield event.kind === "error"
@@ -692,6 +701,7 @@ async function* modelScopedGet(
   includeContent: boolean,
   byId: boolean,
   expectedName?: string,
+  recordedOwner?: RecordedDataOwner,
 ): AsyncIterable<DataGetEvent> {
   if (!dataName) {
     yield {
@@ -703,23 +713,22 @@ async function* modelScopedGet(
     return;
   }
 
-  const lookupDefinition = selectLookup(
-    "data get",
+  const owner = await resolveDataOwner("data get", deps, {
+    modelIdOrName,
     byId,
-    deps.lookupDefinition,
-    deps.lookupDefinitionById,
     expectedName,
-  );
-  const result = await lookupDefinition(modelIdOrName);
-  if (!result) {
-    yield { kind: "error", error: behaviorNotFound(modelIdOrName) };
+    recordedOwner,
+    dataName,
+  });
+  if (owner.kind === "error") {
+    yield { kind: "error", error: owner.error };
     return;
   }
 
-  const { definition, type: modelType } = result;
+  const { modelType } = owner;
   const data = await deps.findDataByName(
     modelType,
-    definition.id,
+    owner.modelId,
     dataName,
     version,
   );
@@ -739,7 +748,7 @@ async function* modelScopedGet(
   const resolvedName = data.name;
   const absoluteContentPath = deps.getContentPath(
     modelType,
-    definition.id,
+    owner.modelId,
     resolvedName,
     data.version,
   );
@@ -747,8 +756,8 @@ async function* modelScopedGet(
   const output: DataGetData = {
     id: data.id,
     name: data.name,
-    modelId: definition.id,
-    modelName: definition.name,
+    modelId: owner.modelId,
+    modelName: owner.modelName,
     modelType: modelType.normalized,
     version: data.version,
     contentType: data.contentType,
@@ -766,7 +775,7 @@ async function* modelScopedGet(
   if (includeContent) {
     const rawContent = await deps.getContent(
       modelType,
-      definition.id,
+      owner.modelId,
       resolvedName,
       data.version,
     );
@@ -781,7 +790,7 @@ async function* modelScopedGet(
     data,
     {
       modelType: modelType.normalized,
-      modelId: definition.id,
+      modelId: owner.modelId,
       dataName: data.name,
       version: data.version,
     },

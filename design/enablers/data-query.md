@@ -50,6 +50,14 @@ or text that came back base64-encoded) is replaced by a query that selects
 The CLI appends its own `--server` / `--repo-dir` to every
 printed query.
 
+`data get`, `data versions` and `data list` resolve a behavior's definition
+first. When no definition matches, they read the owner the catalog records for
+that name or id in the repository's own namespace (`recordedOwners`), so data
+outlives a deleted or per-run definition as it does for `data query`. A name
+recorded under several owner ids is refused with those ids, and passing an id
+reads that owner. A name with no definition and no recorded data is still
+`Behavior not found`.
+
 ### CLI shortcuts
 
 Deprecated `data get` forms map to these queries:

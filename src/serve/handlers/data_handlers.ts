@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { consumeStream } from "../../libswamp/stream.ts";
+import { ambiguousBehavior } from "../../libswamp/errors.ts";
 import {
   createDataDeleteDeps,
   dataDelete,
@@ -106,6 +107,7 @@ import {
   type RecordedOwner,
   resolveModelTarget,
   resolveWorkflowTarget,
+  type ResourceResolution,
   restrictedModelAuthorization,
   targetArgument,
   unresolvedAccessResource,
@@ -155,6 +157,108 @@ export function resolveRunGcInput(
   };
 }
 
+type RecordedOwnerAccess =
+  | { kind: "unrecorded" }
+  | { kind: "refused" }
+  | { kind: "owner"; owner: RecordedOwner };
+
+/**
+ * a name no definition holds is read through the owner its data records,
+ * authorized on that owner as data.query authorizes items; an owner the caller
+ * cannot read is never named, and the read acts on exactly the owner allowed
+ */
+async function authorizeRecordedOwner(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  principal: Principal | null,
+  target: ResourceResolution,
+  idOrName: string,
+  dataName: string | undefined,
+  failedCode: string,
+): Promise<RecordedOwnerAccess> {
+  if (target.status !== "missing") return { kind: "unrecorded" };
+  const queryService = ctx.repoContext.dataQueryService;
+  // a read can reach any version of the owner's data, written under any name
+  const identitiesOf = async (owner: RecordedOwner) => {
+    const names = await queryService.findRecordedNames(
+      owner.modelType,
+      owner.modelId,
+    );
+    return names.length === 0
+      ? [owner]
+      : names.map((modelName) => ({ ...owner, modelName }));
+  };
+  let readable: Array<{ owner: RecordedOwner; identities: RecordedOwner[] }>;
+  try {
+    const owners = await queryService.findRecordedOwners(idOrName, dataName);
+    const canRead = ownerReadCheck(socket, ctx, principal);
+    readable = [];
+    for (const owner of owners) {
+      const identities = await identitiesOf(owner);
+      let all = true;
+      for (const identity of identities) {
+        if (!(await canRead(identity))) {
+          all = false;
+          break;
+        }
+      }
+      if (all) readable.push({ owner, identities });
+    }
+  } catch (error) {
+    // as a failed resolution: answered only after the name as sent is allowed
+    if (
+      authorizeResolved(
+        socket,
+        requestId,
+        principal,
+        "read",
+        target,
+        idOrName,
+        "data",
+        ctx,
+        failedCode,
+      )
+    ) {
+      sendError(socket, requestId, failedCode, sanitizeErrorForClient(error));
+    }
+    return { kind: "refused" };
+  }
+  if (readable.length === 0) return { kind: "unrecorded" };
+  if (readable.length > 1) {
+    const error = new LibSwampStreamError(
+      ambiguousBehavior(idOrName, readable.map((r) => r.owner)),
+    );
+    sendError(
+      socket,
+      requestId,
+      failedCode,
+      error.message,
+      clientErrorDetails(error),
+    );
+    return { kind: "refused" };
+  }
+  const { owner, identities } = readable[0];
+  const canonical = canonicalResources(ctx);
+  const resources = (await Promise.all(
+    identities.map((identity) => canonical.dataOwners(identity)),
+  )).flat();
+  for (const resource of resources) {
+    if (
+      !authorizeOrReject(socket, requestId, principal, "read", resource, ctx)
+        .allowed
+    ) return { kind: "refused" };
+  }
+  recordAuditedResource(
+    socket,
+    requestId,
+    "data",
+    [...new Set(resources.map((resource) => resource.name))].join(", "),
+    ctx,
+  );
+  return { kind: "owner", owner };
+}
+
 export async function handleDataGet(
   socket: WebSocket,
   ctx: ConnectionContext,
@@ -169,6 +273,7 @@ export async function handleDataGet(
   let model:
     | { idOrName: string; byId: boolean; expectedName?: string }
     | undefined;
+  let recordedOwner: RecordedOwner | undefined;
   if (!payload.workflowName && !payload.modelIdOrName) {
     // neither: libswamp reports the missing argument. An empty name reads as
     // absent, exactly as libswamp reads it
@@ -182,20 +287,35 @@ export async function handleDataGet(
       modelIdOrName,
       "data",
     );
-    if (
-      !authorizeResolved(
-        socket,
-        requestId,
-        principal,
-        "read",
-        target,
-        modelIdOrName,
-        "data",
-        ctx,
-        "data_get_failed",
-      )
-    ) return;
-    model = targetArgument(target, modelIdOrName);
+    const recorded = await authorizeRecordedOwner(
+      socket,
+      ctx,
+      requestId,
+      principal,
+      target,
+      modelIdOrName,
+      payload.dataName,
+      "data_get_failed",
+    );
+    if (recorded.kind === "refused") return;
+    if (recorded.kind === "owner") {
+      recordedOwner = recorded.owner;
+    } else {
+      if (
+        !authorizeResolved(
+          socket,
+          requestId,
+          principal,
+          "read",
+          target,
+          modelIdOrName,
+          "data",
+          ctx,
+          "data_get_failed",
+        )
+      ) return;
+      model = targetArgument(target, modelIdOrName);
+    }
   }
 
   try {
@@ -231,6 +351,7 @@ export async function handleDataGet(
         modelIdOrName: model?.idOrName ?? payload.modelIdOrName,
         byId: model?.byId,
         expectedName: model?.expectedName,
+        recordedOwner,
         dataName: payload.dataName,
         workflowName: payload.workflowName,
         runId: payload.runId,
@@ -577,26 +698,42 @@ export async function handleDataList(
   let workflow:
     | { idOrName: string; byId: boolean; expectedName?: string }
     | undefined;
+  let recordedOwner: RecordedOwner | undefined;
   if (resourceName !== "*") {
     const target = await resolveModelTarget(
       ctx.repoContext.definitionRepo,
       resourceName,
       "data",
     );
-    if (
-      !authorizeResolved(
-        socket,
-        requestId,
-        principal,
-        "read",
-        target,
-        resourceName,
-        "data",
-        ctx,
-        "data_list_failed",
-      )
-    ) return;
-    model = targetArgument(target, resourceName);
+    const recorded = await authorizeRecordedOwner(
+      socket,
+      ctx,
+      requestId,
+      principal,
+      target,
+      resourceName,
+      undefined,
+      "data_list_failed",
+    );
+    if (recorded.kind === "refused") return;
+    if (recorded.kind === "owner") {
+      recordedOwner = recorded.owner;
+    } else {
+      if (
+        !authorizeResolved(
+          socket,
+          requestId,
+          principal,
+          "read",
+          target,
+          resourceName,
+          "data",
+          ctx,
+          "data_list_failed",
+        )
+      ) return;
+      model = targetArgument(target, resourceName);
+    }
   } else if (payload.workflowName) {
     // a workflow-scoped list reveals the run and its steps, so it needs read on
     // the workflow, resolved as the list resolves it (name, then id), before
@@ -650,6 +787,7 @@ export async function handleDataList(
         modelIdOrName: model?.idOrName ?? payload.modelIdOrName,
         byId: model?.byId,
         expectedName: model?.expectedName,
+        recordedOwner,
         workflowName: workflow?.idOrName ?? payload.workflowName,
         workflowById: workflow?.byId,
         expectedWorkflowName: workflow?.expectedName,
@@ -846,20 +984,39 @@ export async function handleDataVersions(
     payload.modelIdOrName,
     "data",
   );
-  if (
-    !authorizeResolved(
-      socket,
-      requestId,
-      principal,
-      "read",
-      target,
-      payload.modelIdOrName,
-      "data",
-      ctx,
-      "data_versions_failed",
-    )
-  ) return;
-  const model = targetArgument(target, payload.modelIdOrName);
+  const recorded = await authorizeRecordedOwner(
+    socket,
+    ctx,
+    requestId,
+    principal,
+    target,
+    payload.modelIdOrName,
+    payload.dataName,
+    "data_versions_failed",
+  );
+  if (recorded.kind === "refused") return;
+  let model:
+    | { idOrName: string; byId: boolean; expectedName?: string }
+    | undefined;
+  let recordedOwner: RecordedOwner | undefined;
+  if (recorded.kind === "owner") {
+    recordedOwner = recorded.owner;
+  } else {
+    if (
+      !authorizeResolved(
+        socket,
+        requestId,
+        principal,
+        "read",
+        target,
+        payload.modelIdOrName,
+        "data",
+        ctx,
+        "data_versions_failed",
+      )
+    ) return;
+    model = targetArgument(target, payload.modelIdOrName);
+  }
 
   try {
     const libCtx = handlerLibSwampContext(ctx);
@@ -873,9 +1030,10 @@ export async function handleDataVersions(
     let result: Record<string, unknown> | undefined;
     await consumeStream(
       dataVersions(libCtx, deps, {
-        modelIdOrName: model.idOrName,
-        byId: model.byId,
-        expectedName: model.expectedName,
+        modelIdOrName: model?.idOrName ?? payload.modelIdOrName,
+        byId: model?.byId,
+        expectedName: model?.expectedName,
+        recordedOwner,
         dataName: payload.dataName,
       }),
       {

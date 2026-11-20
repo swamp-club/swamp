@@ -111,6 +111,22 @@ export function behaviorNotFound(idOrName: string): SwampError {
   );
 }
 
+export function ambiguousBehavior(
+  name: string,
+  owners: readonly { modelType: string; modelId: string }[],
+): SwampError {
+  const listed = owners.map((o) => `${o.modelId} (${o.modelType})`).join(", ");
+  return wordedSwampError(
+    "validation_failed",
+    wordedText((w) =>
+      `No ${w.noun} definition is named ${name}, and its data is recorded ` +
+      `under ${owners.length} ${w.noun} ids: ${listed}. Pass one of the ids ` +
+      `instead of the name.`
+    ),
+    { name, owners: owners.map((o) => ({ ...o })) },
+  );
+}
+
 export function behaviorTypeNotFound(type: string): SwampError {
   return wordedSwampError(
     "not_found",

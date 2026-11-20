@@ -346,6 +346,12 @@ export function createQueryEnvironment(): Environment {
   });
 }
 
+export interface RecordedDataOwner {
+  readonly modelType: string;
+  readonly modelId: string;
+  readonly modelName: string;
+}
+
 export class DataQueryService {
   private readonly queryEnv: Environment;
   private readonly foreignContentCache = new Map<string, Uint8Array>();
@@ -360,6 +366,38 @@ export class DataQueryService {
     this.filterStaleRows = options?.filterStaleRows ?? false;
     this.backfill = options?.backfill ?? true;
     this.queryEnv = createQueryEnvironment();
+  }
+
+  /**
+   * the owners the catalog records for a behavior name or id in this
+   * repository's namespace, for data whose definition is gone
+   */
+  async findRecordedOwners(
+    idOrName: string,
+    dataName?: string,
+  ): Promise<RecordedDataOwner[]> {
+    await this.ensurePopulated();
+    return this.catalogStore.recordedOwners(
+      idOrName,
+      this.dataRepo.namespace,
+      dataName,
+    ).map((row) => ({
+      modelType: row.type_normalized,
+      modelId: row.model_id,
+      modelName: row.model_name,
+    }));
+  }
+
+  async findRecordedNames(
+    modelType: string,
+    modelId: string,
+  ): Promise<string[]> {
+    await this.ensurePopulated();
+    return this.catalogStore.recordedNames(
+      modelType,
+      modelId,
+      this.dataRepo.namespace,
+    );
   }
 
   async getLatestRecord(
