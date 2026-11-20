@@ -72,6 +72,7 @@ import {
 } from "./query_view.ts";
 import { type ContentEncoding, encodeContent } from "./content_encoding.ts";
 import { BinaryContentPredicateError } from "./binary_content_predicate_error.ts";
+import { ResourceTooLargeToLoadError } from "./resource_load_guard.ts";
 import { ModelType } from "../models/model_type.ts";
 import type { Data } from "./data.ts";
 import {
@@ -300,16 +301,23 @@ export interface LatestRecordOptions {
  */
 const FOREIGN_CONTENT_CACHE_ENTRIES = 256;
 
+interface QueryViolation {
+  record: DataRecord;
+  matchesBefore: number;
+  error?: ResourceTooLargeToLoadError;
+}
+
 interface MatchResult {
   records: DataRecord[];
   selectParsed?: (ctx: Record<string, unknown>) => unknown;
   selectReadsContent: boolean;
   selectReadsAttributes: boolean;
   /**
-   * rows whose predicate read content of a non-text type; never matches, the
-   * caller raises BinaryContentPredicateError for one it may read
+   * rows whose predicate read content of a non-text type, or whose content was
+   * too large to load; never matches, the caller raises the error, or
+   * BinaryContentPredicateError, only for a row it may read
    */
-  violations: Array<{ record: DataRecord; matchesBefore: number }>;
+  violations: QueryViolation[];
   hitLimit: boolean;
   positions: QueryCursorPosition[];
 }
@@ -927,9 +935,9 @@ export class DataQueryService {
           matched.violations[nextViolation].matchesBefore <= i;
           nextViolation++
         ) {
-          const { record } = matched.violations[nextViolation];
+          const { record, error } = matched.violations[nextViolation];
           if (!include || await include(record)) {
-            throw new BinaryContentPredicateError(record);
+            throw error ?? new BinaryContentPredicateError(record);
           }
         }
         const record = matched.records[i];
@@ -982,7 +990,8 @@ export class DataQueryService {
   ): DataRecord[] | unknown[] {
     const matched = this.executeMatch(predicate, options);
     if (matched.violations.length > 0) {
-      throw new BinaryContentPredicateError(matched.violations[0].record);
+      const [{ record, error }] = matched.violations;
+      throw error ?? new BinaryContentPredicateError(record);
     }
     return this.project(
       matched.records,
@@ -1447,7 +1456,7 @@ export class DataQueryService {
     // CEL reserves namespace as an identifier, so an ns alias is exposed
     // through a prototype-chain overlay; the record itself is not mutated
     const results: DataRecord[] = [];
-    const violations: Array<{ record: DataRecord; matchesBefore: number }> = [];
+    const violations: QueryViolation[] = [];
     let hitLimit = false;
     const needsHydration = !needsAttributes && !selectParsed;
     const matchedRows: CatalogRow[] = [];
@@ -1565,6 +1574,16 @@ export class DataQueryService {
         // A refusal or a malformed reference the view raised fails the
         // query: never a skipped row, and never a violation in its place.
         if (error instanceof QueryViewRefusal) throw error;
+        // a row too large to load is raised only if the caller may read it, so
+        // the error never names an item outside their reach
+        if (loadError instanceof ResourceTooLargeToLoadError) {
+          violations.push({
+            record,
+            matchesBefore: results.length,
+            error: loadError,
+          });
+          continue;
+        }
         // Required body reads must fail the query, not skip the row.
         if (loadFailed) throw loadError;
         if (readBinaryContent) {
@@ -1586,6 +1605,7 @@ export class DataQueryService {
       // keptBefore[i] counts the records kept before results[i], so a
       // violation's position survives the stale rows dropped here.
       const keptBefore: number[] = [];
+      const hydrationViolations: QueryViolation[] = [];
       for (let i = 0; i < results.length; i++) {
         keptBefore.push(writeIndex);
         const row = matchedRows[i];
@@ -1607,13 +1627,23 @@ export class DataQueryService {
             continue;
           }
         }
-        results[writeIndex] = this.rowToRecord(
-          row,
-          true,
-          needsContent,
-          includePath,
-          reportMissing(row),
-        );
+        try {
+          results[writeIndex] = this.rowToRecord(
+            row,
+            true,
+            needsContent,
+            includePath,
+            reportMissing(row),
+          );
+        } catch (error) {
+          if (!(error instanceof ResourceTooLargeToLoadError)) throw error;
+          hydrationViolations.push({
+            record: results[i],
+            matchesBefore: writeIndex,
+            error,
+          });
+          continue;
+        }
         if (sort) positions[writeIndex] = positions[i];
         writeIndex++;
       }
@@ -1621,6 +1651,9 @@ export class DataQueryService {
       for (const violation of violations) {
         violation.matchesBefore = keptBefore[violation.matchesBefore];
       }
+      for (const violation of hydrationViolations) violations.push(violation);
+      // the caller walks violations in evaluation order
+      violations.sort((a, b) => a.matchesBefore - b.matchesBefore);
       results.length = writeIndex;
       if (sort) positions.length = writeIndex;
     }

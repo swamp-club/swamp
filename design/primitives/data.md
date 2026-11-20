@@ -362,6 +362,23 @@ the hard form and removes every version.
   the filesystem repository (`src/libswamp/data/{get,list,versions}.ts`). Every
   `swamp data` subcommand accepts `--server` to run against a serve instance.
 
+**Load guard.** Every path that decodes stored content into memory (`fromRow`,
+`fromData` and `fromResourceHandle` in `data_record_mapper.ts`, CEL
+`model.<name>.resource` in `model_resolver.ts`, `readResource`, the workflow
+step output reader, typed step results and `data get`) first asks the
+repository's `ResourceLoadGuard` (`resource_load_guard.ts`) whether the item
+fits: it refuses when the heap in use plus three times the item's size (one
+copy decoded, one to two parsed) would pass V8's heap limit. It checks the
+recorded `size` before reading, and the byte length after reading when the size
+is unrecorded; the raw bytes live outside the V8 heap. Items under 64 MiB are
+never refused. A refusal is `ResourceTooLargeToLoadError`, a user error naming
+the item and its size and pointing at `swamp data query ... --sort size:desc`,
+so a run ends with a diagnosis instead of a V8 abort. The heap figures go to the
+log only, as serve relays the error to remote callers. A query records a refusal
+against its row, as it does a binary-content violation, and raises it only if
+the caller's `include` accepts that row; a row the caller may not read is
+dropped without being named.
+
 ## Versioning and lifecycle
 
 Versions only grow; `save` never overwrites. A name's `latest` moves forward on

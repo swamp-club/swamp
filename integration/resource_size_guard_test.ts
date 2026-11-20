@@ -229,3 +229,44 @@ Deno.test("resource size: a workflow step output read refuses an oversized resou
     );
   });
 });
+
+Deno.test("resource size: a refusal for a row the caller may not read is dropped, never named, in hydration and in the predicate", async () => {
+  await withFixture(async (f) => {
+    await f.write("secret", 400);
+    await f.write("small", 10);
+    const dqs = new DataQueryService(f.catalog, f.dataRepo);
+    const hidesSecret = (record: { name: string }) =>
+      Promise.resolve(record.name !== "secret");
+
+    assertEquals(
+      await dqs.query('modelName == "big"', { include: hidesSecret }).then((
+        records,
+      ) => (records as { name: string }[]).map((r) => r.name)),
+      ["small"],
+    );
+    assertEquals(
+      await dqs.query(
+        'modelName == "big" && attributes.items.size() > 0',
+        { include: hidesSecret, select: "name" },
+      ),
+      ["small"],
+    );
+
+    await assertRejects(
+      () =>
+        dqs.query('modelName == "big"', {
+          include: () => Promise.resolve(true),
+        }),
+      ResourceTooLargeToLoadError,
+      "big/secret@v1",
+    );
+    await assertRejects(
+      () =>
+        dqs.query('modelName == "big" && attributes.items.size() > 0', {
+          include: () => Promise.resolve(true),
+        }),
+      ResourceTooLargeToLoadError,
+      "big/secret@v1",
+    );
+  });
+});
