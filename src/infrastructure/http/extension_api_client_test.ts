@@ -27,7 +27,10 @@ import {
   REGISTRY_TOKEN_SCOPE_CODE,
 } from "./extension_api_client.ts";
 import { UserError } from "../../domain/errors.ts";
-import { RegistryUnavailableError } from "../../domain/extensions/registry_unavailable_error.ts";
+import {
+  RegistryServerError,
+  RegistryUnavailableError,
+} from "../../domain/extensions/registry_unavailable_error.ts";
 import { MAX_EXTENSION_ARCHIVE_BYTES } from "../../domain/extensions/extension_archive_limits.ts";
 
 const noSleep = () => Promise.resolve();
@@ -1710,27 +1713,22 @@ Deno.test("ExtensionApiClient: a 5xx response throws RegistryUnavailableError", 
   await assertRejects(
     () => client.getExtension("@swamp/s3-datastore"),
     RegistryUnavailableError,
-    "swamp-club failed (HTTP 503 after 6 attempts over",
+    "swamp-club is unavailable (HTTP 503, still failing after 6 attempts over",
   );
 });
 
-Deno.test("ExtensionApiClient: a 5xx names swamp-club as at fault and keeps its message and URL", async () => {
+Deno.test("ExtensionApiClient: a 500 is an internal error to report, without the bare status text", async () => {
   const client = clientAnswering(() =>
     Promise.resolve(Response.json({ error: "Internal server error" }, {
       status: 500,
     }))
   );
-  const error = await assertRejects(
+  await assertRejects(
     () => client.getExtension("@swamp/s3-datastore"),
-    RegistryUnavailableError,
+    RegistryServerError,
+    "swamp-club hit an internal error (HTTP 500). Retrying will most likely " +
+      "fail the same way; report it with `swamp issue bug`",
   );
-  assertStringIncludes(error.message, "swamp-club failed (HTTP 500");
-  assertStringIncludes(error.message, "): Internal server error");
-  assertStringIncludes(
-    error.message,
-    "The fault is on swamp-club, not in your extension or setup",
-  );
-  assertStringIncludes(error.message, "`swamp issue bug`");
 });
 
 Deno.test("ExtensionApiClient: a 5xx HTML error page throws RegistryUnavailableError", async () => {

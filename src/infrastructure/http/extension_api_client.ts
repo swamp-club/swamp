@@ -21,8 +21,8 @@ import { UserError } from "../../domain/errors.ts";
 import type { ExtensionContentMetadata } from "../../domain/extensions/extension_content.ts";
 import { parseRegistryAcceptances } from "../../domain/extensions/registry_acceptances.ts";
 import {
+  RegistryServerError,
   RegistryUnavailableError,
-  serverFaultMessage,
 } from "../../domain/extensions/registry_unavailable_error.ts";
 import {
   formatArchiveBytes,
@@ -914,12 +914,12 @@ export class ExtensionApiClient {
 
     const retried = retriedSuffix(this.retryOutcomes.get(res));
     if (res.status >= 500) {
-      throw new RegistryUnavailableError(serverFaultMessage({
+      throw new RegistryServerError({
         status: res.status,
         retried,
         serverMessage,
         url: res.url || undefined,
-      }));
+      });
     }
     const endpoint = res.url ? ` [${res.url}]` : "";
     throw new UserError(

@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { UserError } from "../../domain/errors.ts";
-import { serverFaultMessage } from "../../domain/extensions/registry_unavailable_error.ts";
+import { RegistryServerError } from "../../domain/extensions/registry_unavailable_error.ts";
 import {
   type ClientIdentity,
   mergeIdentityHeaders,
@@ -424,12 +424,11 @@ export class SwampClubClient {
         return { authenticated: false };
       }
       if (res.status >= 500) {
-        throw new UserError(
-          serverFaultMessage({
-            status: res.status,
-            retried: retriedSuffix(outcome),
-          }),
-        );
+        throw new RegistryServerError({
+          status: res.status,
+          retried: retriedSuffix(outcome),
+          url: res.url || undefined,
+        });
       }
       throw new UserError(
         `Whoami request failed (HTTP ${res.status})${retriedSuffix(outcome)}`,
