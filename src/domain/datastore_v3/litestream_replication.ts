@@ -221,11 +221,15 @@ export type SidecarAction =
   | { readonly kind: "wait" }
   | { readonly kind: "refuse"; readonly reason: string };
 
+const OTHER_OWNER_REASON =
+  "another user or host runs this datastore's Litestream sidecar";
+
 /**
  * Decides what to do with the sidecar a command found. A kill is only ever
  * decided for a pid whose argv verified it as this database's own; anything
  * this command cannot verify is waited for, then refused, never killed, so
- * two sidecars never share a replica path.
+ * two sidecars never share a replica path. A presence file another user owns
+ * is refused at once.
  */
 export function decideSidecarAction(o: SidecarObservation): SidecarAction {
   const presence = o.presence;
@@ -240,14 +244,15 @@ export function decideSidecarAction(o: SidecarObservation): SidecarAction {
     }
     return { kind: "start" };
   }
-  if (
-    presence.kind === "foreign" ||
-    (presence.kind === "found" && presence.otherOwner)
-  ) {
-    return {
-      kind: "refuse",
-      reason: "another user or host runs this datastore's Litestream sidecar",
-    };
+  if (presence.kind === "foreign") {
+    return { kind: "refuse", reason: OTHER_OWNER_REASON };
+  }
+  if (presence.kind === "found" && presence.otherOwner) {
+    // A supervisor just launched holds the lock before it rewrites a record a
+    // dead sidecar left on another boot or pid namespace.
+    return o.waitedPastDeadline
+      ? { kind: "refuse", reason: OTHER_OWNER_REASON }
+      : { kind: "wait" };
   }
   if (presence.kind === "missing" || !presence.supervisorVerified) {
     // A supervisor that has not written its record yet, or one this command

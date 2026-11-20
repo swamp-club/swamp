@@ -201,15 +201,40 @@ Deno.test("decideSidecarAction: a lock held without a readable record waits, the
   );
 });
 
-Deno.test("decideSidecarAction: another user's or host's sidecar is refused, never touched", () => {
-  assertEquals(
-    decideSidecarAction(observe({ presence: { kind: "foreign" } })).kind,
-    "refuse",
+Deno.test("decideSidecarAction: a presence file another user owns is refused at once", () => {
+  const action = decideSidecarAction(
+    observe({ presence: { kind: "foreign" } }),
   );
-  assertEquals(
-    decideSidecarAction(observe({ presence: { ...OURS, otherOwner: true } }))
-      .kind,
-    "refuse",
+  assertEquals(action.kind, "refuse");
+  assertStringIncludes(
+    action.kind === "refuse" ? action.reason : "",
+    "another user or host",
+  );
+});
+
+Deno.test("decideSidecarAction: another owner's record beside a held lock is waited for, then refused, never touched (swamp-club#4929)", () => {
+  // Another owner forces both verifications false, as the replicator does.
+  const other = observe({
+    presence: {
+      ...OURS,
+      otherOwner: true,
+      supervisorVerified: false,
+      litestreamVerified: false,
+    },
+    answered: false,
+  });
+  assertEquals(decideSidecarAction(other), { kind: "wait" });
+  assertEquals(decideSidecarAction({ ...other, marked: true }), {
+    kind: "wait",
+  });
+  assertEquals(decideSidecarAction({ ...other, lineageFence: 9 }), {
+    kind: "wait",
+  });
+  const refused = decideSidecarAction({ ...other, waitedPastDeadline: true });
+  assertEquals(refused.kind, "refuse");
+  assertStringIncludes(
+    refused.kind === "refuse" ? refused.reason : "",
+    "another user or host",
   );
 });
 
