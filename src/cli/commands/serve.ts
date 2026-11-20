@@ -9511,6 +9511,14 @@ export const serveCommand = new Command()
             "applying the grant config",
             applyGrantConfigAtLead,
           );
+          // a takeover releases held changes, as a restart does: a follower's
+          // policy was the old leader's release, not the latest grants
+          await leaderStep(
+            "building the policy from the latest grants",
+            async () => {
+              await policySnapshotLoader.load();
+            },
+          );
         },
         // as the leader, so its writes and fire claims are not refused, and
         // after the grant config, which authorizes the catch-up run

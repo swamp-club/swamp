@@ -297,6 +297,8 @@ export class PolicySnapshotLoader {
   #rebuildTimer: ReturnType<typeof setTimeout> | null = null;
   #cachedDecisionService: GrantBasedAccessDecisionService | null = null;
   #decisionOptions: GrantBasedAccessDecisionServiceOptions;
+  /** this process's own settings; a release overrides them only until its next build */
+  #ownDecisionOptions: GrantBasedAccessDecisionServiceOptions;
   readonly #eventBus: EventBus;
   #disposed = false;
   /**
@@ -337,6 +339,7 @@ export class PolicySnapshotLoader {
     this.#readTypeLiterals = readTypeLiterals;
     this.#readConditionFindings = readConditionFindings;
     this.#decisionOptions = decisionOptions;
+    this.#ownDecisionOptions = decisionOptions;
     this.#conditionEvaluator = createConditionEvaluator();
 
     this.#eventBus = eventBus;
@@ -366,14 +369,15 @@ export class PolicySnapshotLoader {
       "runImpliesApprove" | "runImpliesSignal" | "writeImpliesTag"
     >,
   ): void {
+    this.#ownDecisionOptions = { ...this.#ownDecisionOptions, ...options };
     this.#decisionOptions = { ...this.#decisionOptions, ...options };
     this.#cachedDecisionService = null;
     if (this.#built) this.#offerRelease();
   }
 
   /**
-   * told the enforced policy after every build and decision-setting change,
-   * inside the build queue; it must not wait on anything a build waits for
+   * told the enforced policy after every build (inside the build queue) and
+   * decision-setting change; it must not wait on anything a build waits for
    */
   onBuilt(listener: (release: PolicyRelease) => void): void {
     this.#onBuilt = listener;
@@ -513,6 +517,7 @@ export class PolicySnapshotLoader {
         {},
         async (phase) => {
           const result = await this.#buildSnapshotWithCounts(phase);
+          this.#decisionOptions = this.#ownDecisionOptions;
           this.#snapshot = result.snapshot;
           this.#cachedDecisionService = null;
           this.#offerRelease();

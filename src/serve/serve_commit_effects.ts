@@ -33,9 +33,10 @@ import {
   CommitsCompactedError,
 } from "../domain/datastore_v3/commit_store.ts";
 
-type Commit = CommitChange["commit"];
 import type { V3CommitFeedSource } from "../infrastructure/datastore_v3/v3_repo_context.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
+
+type Commit = CommitChange["commit"];
 
 const logger = getSwampLogger(["serve", "commit-effects"]);
 

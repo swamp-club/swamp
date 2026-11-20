@@ -2301,3 +2301,41 @@ Deno.test("PolicySnapshotLoader.applyRelease: enforces the leader's policy, not 
   await leader.dispose();
   await follower.dispose();
 });
+
+Deno.test("PolicySnapshotLoader: a promoted follower's first build enforces the latest grants and its own decision settings, not the old leader's release", async () => {
+  const held = makeGrant({ subject: { kind: "user", name: "eve" } });
+  const released = makeGrant();
+  const oldLeader = new PolicySnapshotLoader(
+    createMockDataRepo(
+      [{ attrs: released, modelId: "g1", dataName: "grant-main" }],
+      [],
+    ),
+    new EventBus(),
+    "manual",
+    { writeImpliesTag: false },
+  );
+  await oldLeader.load();
+  const promoted = new PolicySnapshotLoader(
+    createMockDataRepo(
+      [
+        { attrs: released, modelId: "g1", dataName: "grant-main" },
+        { attrs: held, modelId: "g2", dataName: "grant-main" },
+      ],
+      [],
+    ),
+    new EventBus(),
+    "manual",
+    { writeImpliesTag: true },
+  );
+  const told: PolicyRelease[] = [];
+  promoted.onBuilt((release) => told.push(release));
+  await promoted.applyRelease(oldLeader.release());
+  assertEquals(promoted.release().decisions.writeImpliesTag, false);
+  assertEquals(promoted.snapshot.grantsForSubjects(["user:eve"]).length, 0);
+  await promoted.load();
+  assertEquals(promoted.snapshot.grantsForSubjects(["user:eve"]).length, 1);
+  assertEquals(told.at(-1)?.decisions.writeImpliesTag, true);
+  assertEquals(told.at(-1)?.grants.length, 2);
+  await oldLeader.dispose();
+  await promoted.dispose();
+});
