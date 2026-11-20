@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { join } from "@std/path";
+import { dirname, join } from "@std/path";
 import { workspaceServe } from "../../domain/serve/managed_serve.ts";
 import {
   type HostedWorkspace,
@@ -38,12 +38,14 @@ import type { WorkspaceRegistrar } from "./workspace_registration.ts";
 import type { WorkspaceFolders } from "./workspace_roster.ts";
 import type { HostedWorkspaceFolder } from "../../libswamp/workspace/hosted_roster.ts";
 import {
+  creatingFolderOwner,
   deletingFolderName,
   deletingFolderOwner,
   REPO_MARKER_FILE,
   type WorkspaceScan,
 } from "../../infrastructure/persistence/hosted_workspace_folder_scan.ts";
 import {
+  hostCreated,
   hostFolderClaimedBy,
   wantedFolderOf,
 } from "../../libswamp/workspace/hosted_roster.ts";
@@ -68,8 +70,19 @@ export interface WorkspaceReconcilerOptions {
   readonly freshClaim?: (name: string) => Promise<string | null>;
   /** false for a host with no host folder, whose state folder holds no repo; true by default */
   readonly hostFolder?: boolean;
+  /** with no host folder, what removing a workspace a request created needs */
+  readonly created?: CreatedWorkspaceRemoval;
   /** whether a workspace's folder holds the OAuth client's secret file */
   readonly holdsOAuthSecret?: (folder: string) => boolean;
+}
+
+export interface CreatedWorkspaceRemoval {
+  /** the real folder the registry, read afresh, names for `name`; null for none; rejects when unreadable */
+  registeredFolder(name: string): Promise<string | null>;
+  /** removes the entry only while it names `folder`; rejects when it cannot be written */
+  unregister(name: string, folder: string): Promise<void>;
+  /** where a create puts its hidden folder: the workspace location and the data dir's own; never rejects */
+  locations(): Promise<readonly string[]>;
 }
 
 export interface WorkspaceReconciler {
@@ -119,7 +132,7 @@ interface Known {
   hiddenName: string | null;
 }
 
-type RemovalStep = "rename" | "list" | "remove" | "unregister";
+type RemovalStep = "read" | "rename" | "list" | "remove" | "unregister";
 
 class RemovalStepError extends Error {
   constructor(readonly step: RemovalStep, override readonly cause: unknown) {
@@ -359,9 +372,10 @@ export function createWorkspaceReconciler(
     const id = workspaceServe(name);
     const status = supervisor.lookup(id);
     if (listing === null) {
-      // one still registered, as under a second spelling of a folder, keeps its files
+      // one still registered, as under a second spelling of a folder, keeps its files;
+      // with no host folder one a request created leaves its folder too
       if (
-        entry.operator && entry.listedFrom === "registry" &&
+        (entry.operator || !hostFolder) && entry.listedFrom === "registry" &&
         !registered.has(name)
       ) {
         entry.listedFrom = null;
@@ -551,14 +565,18 @@ export function createWorkspaceReconciler(
       await supervisor.whenStopped(id);
     }
     await statusWriter.forget(name);
-    // with no host folder no folder or registry entry is the host's to remove
-    if (hostFolder) {
+    // with no host folder only a folder a request created is the host's to remove
+    if (hostFolder || options.created !== undefined) {
       try {
-        await removeData(name, entry);
-        // before the wanted file, so a host stopped here still finishes the removal
-        await registrar.unregister(name).catch((error) => {
-          throw new RemovalStepError("unregister", error);
-        });
+        if (options.created !== undefined && !hostFolder) {
+          await removeCreated(name, entry, options.created);
+        } else {
+          await removeData(name, entry);
+          // before the wanted file, so a host stopped here still finishes the removal
+          await registrar.unregister(name).catch((error) => {
+            throw new RemovalStepError("unregister", error);
+          });
+        }
       } catch (error) {
         if (error instanceof FolderClaimedError) {
           abandonRemoval(name, entry);
@@ -593,6 +611,79 @@ export function createWorkspaceReconciler(
     entry.recordMatches = true;
     removalFailures.clear(name);
     if (deleted !== null) dropDeleted(name, deleted);
+  };
+
+  // only the folder the wanted file records, and only while the registry, read afresh, names it
+  const removeCreated = async (
+    name: string,
+    removing: Known,
+    created: CreatedWorkspaceRemoval,
+  ) => {
+    const record = removing.record;
+    const folder = record?.folder ?? null;
+    // never a folder named only by the wanted file, which an operator can edit
+    const dirs = new Set(await created.locations());
+    let registered: string | null = null;
+    if (folder !== null) {
+      try {
+        registered = await created.registeredFolder(name);
+      } catch (error) {
+        throw new RemovalStepError("read", error);
+      }
+    }
+    if (record === null || folder === null || registered === null) {
+      await sweepHidden(name, dirs);
+      return;
+    }
+    if (!(await hostCreated(record, registered))) {
+      throw new FolderClaimedError("it is registered at another folder");
+    }
+    const parent = dirname(folder);
+    dirs.add(parent);
+    if (await exists(folder)) {
+      // a rename never follows a link, so a linked folder loses only its link
+      const hidden = removing.hiddenName ??= deletingFolderName(name);
+      try {
+        await rename(folder, join(parent, hidden));
+        removing.hiddenName = null;
+      } catch (error) {
+        throw new RemovalStepError("rename", error);
+      }
+    }
+    await sweepHidden(name, dirs);
+    // before the wanted file, so a host stopped here still finishes the removal
+    await created.unregister(name, folder).catch((error) => {
+      throw new RemovalStepError("unregister", error);
+    });
+  };
+
+  // no live create owns a set-up folder: create refuses while a wanted file exists
+  const sweepHidden = async (name: string, dirs: Iterable<string>) => {
+    let failure: RemovalStepError | null = null;
+    for (const dir of dirs) {
+      let entries: Deno.DirEntry[];
+      try {
+        entries = await Array.fromAsync(Deno.readDir(dir));
+      } catch (error) {
+        if (error instanceof Deno.errors.NotFound) continue;
+        failure ??= new RemovalStepError("list", error);
+        continue;
+      }
+      for (const { name: entry } of entries) {
+        if (
+          deletingFolderOwner(entry) !== name &&
+          creatingFolderOwner(entry) !== name
+        ) continue;
+        try {
+          await Deno.remove(join(dir, entry), { recursive: true });
+        } catch (error) {
+          if (!(error instanceof Deno.errors.NotFound)) {
+            failure ??= new RemovalStepError("remove", error);
+          }
+        }
+      }
+    }
+    if (failure !== null) throw failure;
   };
 
   // the files stay until no folder of the name is left, renamed by an earlier try or not
@@ -735,11 +826,10 @@ export function createWorkspaceReconciler(
   const servedOwn = (): readonly string[] =>
     served().filter((name) => applied.get(name)?.owner === "host");
 
-  // a folder an entry passed over is offered too, so the registrar meets and logs its clash
-  const toRegister = (): readonly string[] => [
-    ...servedOwn(),
-    ...passedOver,
-  ];
+  // a folder an entry passed over is offered too, so the registrar meets and logs its clash;
+  // with no host folder create registers what it makes
+  const toRegister = (): readonly string[] =>
+    hostFolder ? [...servedOwn(), ...passedOver] : [];
 
   // the registrar reads what was last reconciled when its run starts
   const register = () => {

@@ -37,7 +37,10 @@ import {
   locateHostYaml,
 } from "../../serve/host/host_layout.ts";
 import { type ServeHost, startServeHost } from "../../serve/host/serve_host.ts";
-import { hostWorkspaceStore } from "../../serve/host/workspace_registration.ts";
+import {
+  hostConfiguredParent,
+  hostWorkspaceStore,
+} from "../../serve/host/workspace_registration.ts";
 import { reloadsOnHangup } from "../../serve/reload_on_hangup.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -112,6 +115,7 @@ export const serveHostCommand = new Command()
         cwd: Deno.cwd(),
       }),
       workspaceStore: hostWorkspaceStore({ dataDir: swampHome, configDir }),
+      configuredParent: hostConfiguredParent(configDir),
       onWorkspaceChange: (change) => renderer.workspacesChanged(change),
     });
 

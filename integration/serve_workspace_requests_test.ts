@@ -178,6 +178,9 @@ async function withRoot(fn: (root: Root) => Promise<void>): Promise<void> {
       {},
       () => ROOT_ACCESS,
       () => store,
+      () => {
+        throw new Error("a root with a host folder creates in it");
+      },
     )!;
     const hostedWorkspaces = {
       ...root,

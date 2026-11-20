@@ -50,6 +50,23 @@ export interface WorkspaceDeps extends WorkspaceStoreDeps {
   ) => Promise<T>;
 }
 
+/** under the data dir for every workspace, wherever it goes, as `swamp start` keeps it */
+export async function withWorkspaceCreateLock<T>(
+  dataDir: string,
+  name: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const dir = workspacesRoot(dataDir);
+  await ensureDir(dir);
+  const lock = new FileLock(dir, { lockKey: `${name}.lock` });
+  await lock.acquire();
+  try {
+    return await fn();
+  } finally {
+    await lock.release();
+  }
+}
+
 export function createWorkspaceDeps(options: {
   version: string;
   homeDir?: string;
@@ -82,19 +99,7 @@ export function createWorkspaceDeps(options: {
       (await markers.read(RepoPath.create(path)))?.tools ?? [],
     // Read-only: a workspace command never prunes `swamp start`'s records.
     isOpenInStart: (path) => isStartServing(path, false),
-    withCreateLock: async (name, fn) => {
-      // The lock lives under the data dir for every workspace, as
-      // `swamp start` keeps it.
-      const dir = workspacesRoot(dataDir);
-      await ensureDir(dir);
-      const lock = new FileLock(dir, { lockKey: `${name}.lock` });
-      await lock.acquire();
-      try {
-        return await fn();
-      } finally {
-        await lock.release();
-      }
-    },
+    withCreateLock: (name, fn) => withWorkspaceCreateLock(dataDir, name, fn),
     ...(home ? { homeDir: home } : {}),
   };
 }

@@ -21,7 +21,7 @@ import { parse, stringify } from "@std/yaml";
 import { getSwampConfigDir } from "./paths.ts";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 
-const PREFERENCES_FILE_NAME = "workspaces.yaml";
+export const PREFERENCES_FILE_NAME = "workspaces.yaml";
 
 export interface WorkspacePreferences {
   readonly dir?: string;

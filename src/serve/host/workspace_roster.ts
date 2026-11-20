@@ -110,14 +110,17 @@ export function createWorkspaceRoster(options: {
         // with no host folder a wanted file that names none stands for no folder at all
         const unnamed = options.hostFolder === false &&
           workspace.folder === null;
+        // a create stopped before it registered; its removal touches no folder
+        const leftByCreate = options.hostFolder === false && listed === null &&
+          workspace.creator !== null && workspace.folder !== null;
         wantedMatches.set(
           name,
-          !claimed && !unnamed && await wantedFolderMatches({
-            workspacesDir,
-            workspace,
-            listed,
-            realPath: options.realPath,
-          }),
+          leftByCreate || !claimed && !unnamed && await wantedFolderMatches({
+                workspacesDir,
+                workspace,
+                listed,
+                realPath: options.realPath,
+              }),
         );
       }
       return {

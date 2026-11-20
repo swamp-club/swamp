@@ -1,6 +1,6 @@
 ---
 audience: maintainer
-last-verified: 2026-11-19 @ 4cf47dda3
+last-verified: 2026-11-20 @ 0323a2314
 ---
 
 # Workspaces
@@ -25,8 +25,10 @@ A serve host writes the registry too
 registers every workspace it runs, recorded as an import would record it, with
 no trust mark, and takes the workspaces it serves from the registry (steps 19
 and 20 of its [execution plan](./serve-workspaces.md#execution-plan), built).
-Once steps 21 to 23 are built, a host with no host folder registers each workspace a `workspace.create`
-request makes as created. Hosted workspaces therefore appear in
+A host with no host folder creates each workspace a `workspace.create` request
+makes where `swamp workspace create` would, in `workspaces.dir` or
+`<data dir>/workspaces`, and registers it as created. Hosted workspaces
+therefore appear in
 `swamp workspace list` and on the `swamp start` page beside the user's own, and
 a repo the user registers is listed on that user's host. The host writes
 through the same store, under the same lock, and adds no field.
@@ -120,7 +122,10 @@ often the user's own project, so no workspace command deletes a folder. When a
 On a machine that runs a serve host, `remove` of a workspace the host serves
 from elsewhere stops its serve, and the host's wanted and status files for it
 are removed. `remove` of one whose folder is inside the host's `workspaces/`
-has no lasting effect: the host's next rescan registers it again.
+has no lasting effect: the host's next rescan registers it again. `remove` of
+one a host with no host folder created keeps its folder, as for any workspace,
+and the host removes its wanted file; `swamp serve workspace rm` is what
+deletes the folder.
 
 ## Known gaps
 

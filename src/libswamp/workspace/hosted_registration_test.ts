@@ -20,9 +20,15 @@
 import { assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import {
+  creatingFolderName,
+  deletingFolderName,
+} from "../../infrastructure/persistence/hosted_workspace_folder_scan.ts";
+import {
   registerHostedWorkspaces,
+  unregisterCreatedWorkspace,
   unregisterHostedWorkspace,
 } from "./hosted_registration.ts";
+import { loadWorkspaceRegistry } from "./workspace_store.ts";
 import { withWorkspaceFixture } from "./workspace_test_helpers.ts";
 
 async function unregisteredKind(
@@ -341,4 +347,57 @@ Deno.test({
       assertEquals((await registry.load())?.list().length, 1);
     });
   },
+});
+
+Deno.test("loadWorkspaceRegistry: the first read passes over the hidden set-up and removal folders a host leaves in the data dir", async () => {
+  await withWorkspaceFixture(async (f) => {
+    const root = join(f.dataDir, "workspaces");
+    await f.makeRepo(join(root, "local"));
+    await f.makeRepo(join(root, creatingFolderName("fresh")));
+    await f.makeRepo(join(root, deletingFolderName("old")));
+    const registry = await loadWorkspaceRegistry(f.deps);
+    assertEquals(registry.list().map((e) => e.name), ["local"]);
+  });
+});
+
+Deno.test("unregisterCreatedWorkspace: removes the entry only while it names the folder the host created", async () => {
+  await withWorkspaceFixture(async (f) => {
+    const made = join(f.dataDir, "workspaces", "alpha");
+    const other = join(f.dir, "projects", "alpha");
+    await f.makeRepo(made);
+    await f.makeRepo(other);
+    await f.deps.registry.update((registry) => {
+      registry.register({
+        name: "alpha",
+        path: other,
+        createdAt: "2026-11-20T10:00:00.000Z",
+        origin: "imported",
+      });
+    });
+    assertEquals(
+      (await unregisterCreatedWorkspace(f.deps, {
+        name: "alpha",
+        folder: made,
+      }))
+        .kind,
+      "not_ours",
+    );
+    assertEquals((await f.deps.registry.load())?.get("alpha")?.path, other);
+    assertEquals(
+      (await unregisterCreatedWorkspace(f.deps, {
+        name: "alpha",
+        folder: other,
+      }))
+        .kind,
+      "removed",
+    );
+    assertEquals(
+      (await unregisterCreatedWorkspace(f.deps, {
+        name: "alpha",
+        folder: other,
+      }))
+        .kind,
+      "absent",
+    );
+  });
 });

@@ -2198,6 +2198,7 @@ export {
   DEFAULT_PROVISION_TIMEOUT_MS,
   type HostedWorkspaceCaller,
   type HostedWorkspaceDeps,
+  type HostedWorkspacePlacement,
   type HostedWorkspaceProvisioner,
   type HostedWorkspaceProvisionSpec,
   type HostedWorkspaceRootAccess,
@@ -2236,6 +2237,7 @@ export {
 } from "./workspace/create.ts";
 export {
   createWorkspaceDeps,
+  withWorkspaceCreateLock,
   type WorkspaceDeps,
   type WorkspaceFolderState,
   type WorkspaceSummary,
@@ -2263,17 +2265,21 @@ export {
 export {
   MAX_WORKSPACE_PARENT_LENGTH,
   resolveChosenFolder,
+  workspacesRoot,
 } from "./workspace/workspace_store.ts";
 export {
   type HostedRegistration,
   type HostedRegistrationResult,
   type HostedRegistryDeps,
   type HostedUnregistration,
+  registeredFolderOf,
   registerHostedWorkspaces,
+  unregisterCreatedWorkspace,
   unregisterHostedWorkspace,
 } from "./workspace/hosted_registration.ts";
 export {
   freshFolderClaim,
+  hostCreated,
   type HostedRegistryRead,
   type HostedRoster,
   type HostedWorkspaceFolder,

@@ -39,7 +39,10 @@ import type {
 } from "../src/serve/host/serve_process.ts";
 import type { ListenedServe } from "../src/serve/listening_line.ts";
 import type { WorkspaceChange } from "../src/serve/host/workspace_folder.ts";
-import { hostWorkspaceStore } from "../src/serve/host/workspace_registration.ts";
+import {
+  hostConfiguredParent,
+  hostWorkspaceStore,
+} from "../src/serve/host/workspace_registration.ts";
 import { WorkspaceRegistryFileRepository } from "../src/infrastructure/persistence/workspace_registry_file_repository.ts";
 import { FileLock } from "../src/infrastructure/persistence/file_lock.ts";
 import { configure, type LogRecord, reset } from "@logtape/logtape";
@@ -47,9 +50,15 @@ import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpers.ts";
 import { HOST_STATE_LOCK_FILE } from "../src/infrastructure/persistence/host_state_lock.ts";
 import { locateHostConfig } from "../src/cli/commands/serve_host.ts";
-import { hostRootWorkspaces } from "../src/serve/host_root_workspaces.ts";
+import {
+  hostRootWorkspaces,
+  hostWorkspacePlacement,
+} from "../src/serve/host_root_workspaces.ts";
 import { hostedWorkspaceCreate } from "../src/libswamp/hosted_workspace/create.ts";
 import { hostedWorkspaceList } from "../src/libswamp/hosted_workspace/list.ts";
+import { hostedWorkspaceDelete } from "../src/libswamp/hosted_workspace/delete.ts";
+import type { HostedWorkspaceProvisionSpec } from "../src/libswamp/hosted_workspace/deps.ts";
+import { provisionHostedWorkspace } from "../src/cli/hosted_workspace_provision.ts";
 import { createLibSwampContext } from "../src/libswamp/context.ts";
 import { collect } from "../src/libswamp/testing.ts";
 import {
@@ -754,6 +763,16 @@ async function want(dir: string, name: string, yaml: string): Promise<void> {
 async function workspacesEntries(dir: string): Promise<string[]> {
   return (await Array.fromAsync(Deno.readDir(join(dir, "workspaces"))))
     .map((e) => e.name).filter((name) => name !== HOST_STATE_LOCK_FILE).sort();
+}
+
+async function exists(path: string): Promise<boolean> {
+  try {
+    await Deno.lstat(path);
+    return true;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return false;
+    throw error;
+  }
 }
 
 async function isState(url: string, state: string): Promise<boolean> {
@@ -1892,12 +1911,13 @@ async function startNoFolder(
     processPort: port,
     childEnv: { PATH: "/usr/bin" },
     workspaceStore: hostWorkspaceStore({ dataDir, configDir }),
+    configuredParent: hostConfiguredParent(configDir),
     rescanMs: RESCAN_MS,
   });
   return { host, stateDir: layout.stateDir };
 }
 
-Deno.test("serve host with no host folder: reads the config dir's host.yaml, keeps its state under the data dir, and serves its root and a resumed registered workspace", async () => {
+Deno.test("serve host with no host folder: reads the config dir's host.yaml, keeps its state under the data dir, serves its root and a resumed registered workspace, and creates and deletes in the workspace location", async () => {
   await using folder = await hostFolder();
   const stateDir = join(folder.dir, "data", "host");
   await makeRepo(join(folder.dir, "config", "root-repo"));
@@ -1949,7 +1969,11 @@ Deno.test("serve host with no host folder: reads the config dir's host.yaml, kee
       }
     }, "mine's status file in the state folder");
 
-    const services = hostRootWorkspaces(
+    const dirs = {
+      dataDir: join(folder.dir, "data"),
+      configDir: join(folder.dir, "config"),
+    };
+    const rootServices = hostRootWorkspaces(
       {
         dir: root.hostWorkspaces!.dir,
         address: root.hostWorkspaces!.address,
@@ -1963,12 +1987,16 @@ Deno.test("serve host with no host folder: reads the config dir's host.yaml, kee
         allowedCollectives: [],
         nameCache: {},
       }),
-      () =>
-        hostWorkspaceStore({
-          dataDir: join(folder.dir, "data"),
-          configDir: join(folder.dir, "config"),
-        }),
+      () => hostWorkspaceStore(dirs),
+      () => hostWorkspacePlacement(dirs),
     )!.services;
+    const services = {
+      ...rootServices,
+      provisioner: {
+        provision: (dir: string, spec: HostedWorkspaceProvisionSpec) =>
+          provisionHostedWorkspace(dir, spec),
+      },
+    };
     const created = await collect(
       hostedWorkspaceCreate(createLibSwampContext(), services, {
         name: "fresh",
@@ -1982,11 +2010,9 @@ Deno.test("serve host with no host folder: reads the config dir's host.yaml, kee
         },
       }),
     );
-    const refusal = created.find((e) => e.kind === "error");
-    assertEquals(
-      refusal?.kind === "error" ? refusal.error.code : null,
-      "no_host_folder",
-    );
+    assertEquals(created.map((e) => e.kind), ["completed"]);
+    const fresh = join(folder.dir, "data", "workspaces", "fresh");
+    assert(await exists(join(fresh, ".swamp.yaml")), "fresh is a repo");
     const listed = await collect(
       hostedWorkspaceList(createLibSwampContext(), services),
     );
@@ -1995,8 +2021,33 @@ Deno.test("serve host with no host folder: reads the config dir's host.yaml, kee
       done?.kind === "completed"
         ? done.data.workspaces.map((w) => [w.name, w.owner])
         : null,
-      [["idle", "operator"], ["mine", "operator"]],
+      [["fresh", "host"], ["idle", "operator"], ["mine", "operator"]],
     );
+    await waitFor(() => isState(`${base}/w/fresh/`, "stopped"), "fresh listed");
+
+    const deleted = await collect(
+      hostedWorkspaceDelete(createLibSwampContext(), services, {
+        name: "fresh",
+      }),
+    );
+    assertEquals(deleted.map((e) => e.kind), ["completed"]);
+    await waitFor(
+      async () => !(await exists(join(stateDir, "fresh.wanted.yaml"))),
+      "fresh's wanted file removed last",
+    );
+    assert(!(await exists(fresh)), "fresh's folder is removed");
+    assertEquals(
+      (await Array.fromAsync(Deno.readDir(dirname(fresh)))).map((e) => e.name),
+      [],
+    );
+    const registry = await new WorkspaceRegistryFileRepository(
+      dirs.configDir,
+    ).load();
+    assertEquals(
+      registry?.list().map((e) => e.name).sort(),
+      ["idle", "mine"],
+    );
+    assert(!(await exists(join(stateDir, "fresh.status.yaml"))));
   } finally {
     await host.shutdown();
   }

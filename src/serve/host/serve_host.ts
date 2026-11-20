@@ -53,6 +53,7 @@ import {
   type WorkspaceWatcher,
 } from "./workspace_folder.ts";
 import {
+  type CreatedWorkspaceRemoval,
   createWorkspaceReconciler,
   readWantedFiles,
   type WorkspaceReconciler,
@@ -64,7 +65,12 @@ import {
 } from "./workspace_registration.ts";
 import { createWorkspaceRoster } from "./workspace_roster.ts";
 import { freshFolderClaim } from "../../libswamp/workspace/hosted_roster.ts";
-import type { HostedRegistryDeps } from "../../libswamp/workspace/hosted_registration.ts";
+import {
+  type HostedRegistryDeps,
+  registeredFolderOf,
+  unregisterCreatedWorkspace,
+} from "../../libswamp/workspace/hosted_registration.ts";
+import { workspacesRoot } from "../../libswamp/workspace/workspace_store.ts";
 import {
   createWorkspaceRouter,
   type WorkspaceDirectory,
@@ -79,6 +85,8 @@ export interface ServeHostOptions {
   /** every child's whole environment */
   readonly childEnv: Readonly<Record<string, string>>;
   readonly workspaceStore: HostedRegistryDeps;
+  /** workspaces.dir as set, where a host with no host folder creates; undefined for the data dir's own */
+  readonly configuredParent?: () => Promise<string | undefined>;
   readonly onWorkspaceChange?: (change: WorkspaceChange) => void;
   readonly rescanMs?: number;
   readonly supervisor?: Pick<
@@ -95,6 +103,31 @@ export interface ServeHost {
   reload(): void;
   shutdown(): Promise<void>;
   readonly finished: Promise<void>;
+}
+
+export function createdWorkspaceRemoval(
+  options: Pick<ServeHostOptions, "workspaceStore" | "configuredParent">,
+): CreatedWorkspaceRemoval {
+  const store = options.workspaceStore;
+  return {
+    async registeredFolder(name) {
+      const read = await registeredFolderOf(store, name);
+      if (read.kind === "unreadable") throw new Error(read.reason);
+      return read.folder;
+    },
+    async unregister(name, folder) {
+      const result = await unregisterCreatedWorkspace(store, { name, folder });
+      if (result.kind === "unreadable") throw new Error(result.reason);
+    },
+    async locations() {
+      const dirs = [workspacesRoot(store.dataDir)];
+      const configured = await options.configuredParent?.().catch(() =>
+        undefined
+      );
+      if (configured !== undefined) dirs.push(configured);
+      return dirs;
+    },
+  };
 }
 
 export async function startServeHost(
@@ -215,6 +248,7 @@ async function startLocked(
   const reconciler = createWorkspaceReconciler({
     workspacesDir: config.stateDir,
     hostFolder: repos,
+    created: repos ? undefined : createdWorkspaceRemoval(options),
     holdsOAuthSecret: (folder) =>
       secretFile !== null && isWithin(realPathSyncOrSelf(folder), secretFile),
     supervisor,

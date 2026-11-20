@@ -80,6 +80,8 @@ export async function loadWorkspaceRegistry(
   const found: string[] = [];
   try {
     for await (const entry of Deno.readDir(root)) {
+      // a hidden set-up or removal folder holds a repo under no workspace's name
+      if (entry.name.startsWith(".")) continue;
       if (entry.isDirectory && await deps.repo.isRepo(join(root, entry.name))) {
         found.push(entry.name);
       }
@@ -264,7 +266,7 @@ async function existingFolder(path: string, missing: string): Promise<string> {
  * reuses one under the data dir. Reads only.
  */
 export async function checkNewWorkspaceFolder(
-  deps: WorkspaceStoreDeps,
+  deps: { readonly repo: Pick<WorkspaceStoreDeps["repo"], "isRepo"> },
   registry: WorkspaceRegistry,
   location: NewWorkspaceLocation,
   options: { reuseRepo?: boolean } = {},

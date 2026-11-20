@@ -190,6 +190,9 @@ async function withHost(fn: (host: Host) => Promise<void>): Promise<void> {
               dataDir: join(hostDir, "data"),
               configDir: join(hostDir, "config"),
             }),
+          () => {
+            throw new Error("a root with a host folder creates in it");
+          },
         )!;
         return {
           ...base,

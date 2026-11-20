@@ -175,6 +175,56 @@ export async function unregisterHostedWorkspace(
   }
 }
 
+/**
+ * removes the entry for `name` only while it names `folder`, a folder a
+ * request created; one now naming another folder is the operator's and kept
+ */
+export async function unregisterCreatedWorkspace(
+  deps: HostedRegistryDeps,
+  input: { name: string; folder: string },
+): Promise<HostedUnregistration> {
+  const { name } = input;
+  const target = await realPathOrSelf(resolve(input.folder));
+  const read = await readHostedRegistry(deps);
+  if (read.kind === "unreadable") return read;
+  const before = read.registry?.get(name);
+  if (before === undefined) return { kind: "absent" };
+  // the update runs synchronously, so the entry's real path is resolved here
+  const beforeReal = await realPathOrSelf(resolve(before.path));
+  if (beforeReal !== target) return { kind: "not_ours" };
+  try {
+    return await deps.registry.update((current): HostedUnregistration => {
+      const now = current.get(name);
+      if (now === undefined) return { kind: "absent" };
+      if (now.path !== before.path) return { kind: "not_ours" };
+      current.remove(name);
+      return { kind: "removed" };
+    });
+  } catch (error) {
+    if (isUnreadable(error)) {
+      return { kind: "unreadable", reason: error.message };
+    }
+    throw error;
+  }
+}
+
+/** the real folder the registry, read afresh, names for `name`; null for no entry */
+export async function registeredFolderOf(
+  deps: Pick<HostedRegistryDeps, "registry">,
+  name: string,
+): Promise<
+  { kind: "read"; folder: string | null } | {
+    kind: "unreadable";
+    reason: string;
+  }
+> {
+  const read = await readHostedRegistry(deps);
+  if (read.kind === "unreadable") return read;
+  const entry = read.registry?.get(name);
+  if (entry === undefined) return { kind: "read", folder: null };
+  return { kind: "read", folder: await realPathOrSelf(resolve(entry.path)) };
+}
+
 function registerUnderLock(
   deps: HostedRegistryDeps,
   registry: WorkspaceRegistry,

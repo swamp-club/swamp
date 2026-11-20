@@ -83,11 +83,25 @@ export interface HostedWorkspaceProvisioner {
   ): Promise<void>;
 }
 
+/** where a host with no host folder creates: the location swamp workspace create uses */
+export interface HostedWorkspacePlacement {
+  /** workspaces.dir as set; undefined for the data dir's own folder */
+  readonly configuredParent: () => Promise<string | undefined>;
+  /** the lock swamp workspace create holds for the name */
+  readonly withCreateLock: <T>(
+    name: string,
+    fn: () => Promise<T>,
+  ) => Promise<T>;
+}
+
 export interface HostedWorkspaceDeps {
   /** the host's state folder: wanted, status and lock files, and with a host folder its own repos */
   readonly workspacesDir: string;
-  /** false for a host with no host folder, which lists only registered repos and creates none */
+  /** false for a host with no host folder, which lists registered repos and creates in `placement` */
   readonly hostFolder: boolean;
+  /** null for a host with a host folder, which creates in its own */
+  readonly placement: HostedWorkspacePlacement | null;
+  readonly rename: (from: string, to: string) => Promise<void>;
   readonly repository: HostedWorkspaceRepository;
   readonly provisioner: HostedWorkspaceProvisioner;
   readonly addressOf: (name: string) => string;
@@ -106,6 +120,8 @@ const LOCK_WAIT_MARGIN_MS = 30_000;
 export function createHostedWorkspaceDeps(options: {
   workspacesDir: string;
   hostFolder?: boolean;
+  placement?: HostedWorkspacePlacement | null;
+  rename?: (from: string, to: string) => Promise<void>;
   provisioner: HostedWorkspaceProvisioner;
   addressOf: (name: string) => string;
   workspaceStore: HostedRegistryDeps;
@@ -122,6 +138,8 @@ export function createHostedWorkspaceDeps(options: {
   return {
     workspacesDir,
     hostFolder: options.hostFolder ?? true,
+    placement: options.placement ?? null,
+    rename: options.rename ?? Deno.rename,
     repository: new HostedWorkspaceFileRepository(workspacesDir),
     provisioner: options.provisioner,
     addressOf: options.addressOf,
@@ -220,16 +238,6 @@ export function ownerUnknownAdminOnly(name: string): UserError {
   );
 }
 
-/** a create on a host with no host folder; it holds for the root's admins too */
-export const NO_HOST_FOLDER_CODE = "no_host_folder";
-
-export function noHostFolderCreate(): UserError {
-  return new UserError(
-    "This host has no host folder to create workspaces in. Create or import the repo on the host with swamp workspace create or swamp workspace import, then resume it.",
-    NO_HOST_FOLDER_CODE,
-  );
-}
-
 /** not an authorization refusal: it holds for the root's admins too */
 export const WORKSPACE_NAME_CLASH_CODE = "workspace_name_clash";
 
@@ -269,7 +277,7 @@ export interface HostedWorkspaceSummary {
   readonly restarts: number | null;
   /** fixed text per state; the host's own reason stays in its status file */
   readonly reason: string | null;
-  /** host for a workspace in the host's workspaces folder, operator for any other registered repo */
+  /** host for one in the host's workspaces folder or one a request created, operator for any other registered repo */
   readonly owner?: HostedWorkspaceOwner;
 }
 
@@ -373,7 +381,8 @@ export async function hostedWorkspaceNames(
     await readHostedRegistry(deps.workspaceStore),
   );
   const wanted = new Map<string, HostedWorkspace>();
-  if (registry === null) {
+  // with no host folder a wanted file decides whose an entry is
+  if (registry === null || !deps.hostFolder) {
     for (const name of scan.wantedFiles) {
       const read = await deps.repository.findByName(name);
       if (read.kind === "found") wanted.set(name, read.workspace);
@@ -425,9 +434,12 @@ function whoseOf(
       registryRead: names.registryRead,
     };
   }
-  // with no host folder a wanted file never makes a name the host's own
+  // with no host folder a name no entry holds is the host's own only as a create left it
   if (
-    read.kind === "found" && (read.workspace.folder !== null || !hostFolder)
+    read.kind === "found" &&
+    (hostFolder
+      ? read.workspace.folder !== null
+      : read.workspace.creator === null || read.workspace.folder === null)
   ) {
     return {
       owner: "operator",
@@ -498,7 +510,9 @@ export async function changeHostedWorkspace(
     let next = change.apply(current, deps.now());
     if (listing !== undefined) {
       next = next.withFolder(
-        listing.owner === "operator" ? listing.folder : null,
+        listing.owner === "operator" || !deps.hostFolder
+          ? listing.folder
+          : null,
       );
     }
     if (read.kind === "absent" || !next.equals(current)) {

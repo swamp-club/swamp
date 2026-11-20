@@ -22,6 +22,7 @@ import { UserError } from "../domain/errors.ts";
 import {
   createHostedWorkspaceDeps,
   type HostedWorkspaceDeps,
+  type HostedWorkspacePlacement,
   type HostedWorkspaceRootAccess,
 } from "../libswamp/hosted_workspace/deps.ts";
 import {
@@ -30,6 +31,8 @@ import {
   HOST_WORKSPACES_DIR_FLAG,
 } from "./host/serve_process.ts";
 import { hostedWorkspaceAddress } from "./host/workspace_path.ts";
+import { hostConfiguredParent } from "./host/workspace_registration.ts";
+import { withWorkspaceCreateLock } from "../libswamp/workspace/deps.ts";
 import type { HostedRegistryDeps } from "../libswamp/workspace/hosted_registration.ts";
 import { childHostedWorkspaceProvisioner } from "./workspace_provision_process.ts";
 
@@ -64,6 +67,8 @@ export function hostRootWorkspaces(
   env: Readonly<Record<string, string>>,
   rootAccess: () => HostedWorkspaceRootAccess,
   workspaceStore: () => HostedRegistryDeps,
+  /** called only for a root whose host has no host folder */
+  placement: () => HostedWorkspacePlacement,
 ): HostRootWorkspaces | undefined {
   const { dir, address } = flags;
   if (dir === undefined && address === undefined) {
@@ -83,6 +88,7 @@ export function hostRootWorkspaces(
     services: createHostedWorkspaceDeps({
       workspacesDir: dir,
       hostFolder: flags.noFolder !== true,
+      placement: flags.noFolder === true ? placement() : null,
       provisioner: childHostedWorkspaceProvisioner(provisionEnv(env)),
       addressOf: (name) => hostedWorkspaceAddress(address, name),
       workspaceStore: workspaceStore(),
@@ -90,6 +96,18 @@ export function hostRootWorkspaces(
     }),
     rootAccess,
     signInCodes: new SignInCodeStore(),
+  };
+}
+
+/** where a root with no host folder creates, as swamp workspace create would */
+export function hostWorkspacePlacement(dirs: {
+  readonly dataDir: string;
+  readonly configDir: string;
+}): HostedWorkspacePlacement {
+  return {
+    configuredParent: hostConfiguredParent(dirs.configDir),
+    withCreateLock: (name, fn) =>
+      withWorkspaceCreateLock(dirs.dataDir, name, fn),
   };
 }
 

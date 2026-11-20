@@ -46,7 +46,7 @@ export interface HostWorkspacesHandle {
   /** the state folder */
   readonly dir: string;
   readonly address: string;
-  /** false for a host with no host folder, which creates no workspace */
+  /** false for a host with no host folder, which creates in the workspace location */
   readonly hasFolder: boolean;
 }
 

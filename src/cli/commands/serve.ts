@@ -34,7 +34,10 @@ import {
 } from "../../serve/interrupted_run_continuation.ts";
 import { ServeLinkClient } from "../../serve/serve_link_client.ts";
 import { DelegationLinkService } from "../../serve/delegation_link_service.ts";
-import { hostRootWorkspaces } from "../../serve/host_root_workspaces.ts";
+import {
+  hostRootWorkspaces,
+  hostWorkspacePlacement,
+} from "../../serve/host_root_workspaces.ts";
 import {
   HOST_ADDRESS_FLAG,
   HOST_NO_FOLDER_FLAG,
@@ -2176,7 +2179,7 @@ export const serveCommand = new Command()
   )
   .option(
     HOST_NO_FOLDER_FLAG,
-    "The host has no host folder, so this root creates no workspace",
+    "The host has no host folder, so this root creates workspaces in the workspace location",
     { hidden: true },
   )
   .option(
@@ -2314,6 +2317,11 @@ export const serveCommand = new Command()
       // the host pins both for its root, so this is the registry the host writes
       () =>
         hostWorkspaceStore({
+          dataDir: resolve(getSwampDataDir()),
+          configDir: resolve(getSwampConfigDir()),
+        }),
+      () =>
+        hostWorkspacePlacement({
           dataDir: resolve(getSwampDataDir()),
           configDir: resolve(getSwampConfigDir()),
         }),
