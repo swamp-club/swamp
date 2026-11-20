@@ -1750,6 +1750,40 @@ Deno.test(
 );
 
 Deno.test(
+  "CatalogStore: recordedOwners returns a behavior renamed before deletion as one owner, under its newest name",
+  () => {
+    using tempDb = makeTempDb();
+    const store = new CatalogStore(tempDb.path);
+    store.upsert(makeRow({
+      model_name: "old-name",
+      model_id: "id-a",
+      data_name: "before",
+      created_at: "2026-01-01T00:00:00.000Z",
+    }));
+    store.upsert(makeRow({
+      model_name: "new-name",
+      model_id: "id-a",
+      data_name: "after",
+      created_at: "2026-02-01T00:00:00.000Z",
+    }));
+
+    assertEquals(store.recordedOwners("id-a", ""), [
+      {
+        type_normalized: "test-model",
+        model_id: "id-a",
+        model_name: "new-name",
+      },
+    ]);
+    assertEquals(
+      store.recordedOwners("old-name", "").map((o) => o.model_name),
+      ["old-name"],
+    );
+
+    store.close();
+  },
+);
+
+Deno.test(
   "CatalogStore: recordedOwners skips superseded, deleted and workflow rows",
   () => {
     using tempDb = makeTempDb();

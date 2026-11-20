@@ -1372,7 +1372,8 @@ export class CatalogStore {
 
   /**
    * owners whose latest, non-deleted rows name `idOrName` as their behavior
-   * name or id; workflow-scoped data is never a behavior's, so it is skipped
+   * name or id, one per type and id, named as its newest matching row; a
+   * behavior renamed before deletion is still one owner
    */
   recordedOwners(
     idOrName: string,
@@ -1391,12 +1392,21 @@ export class CatalogStore {
       clauses.push("data_name = ?");
       params.push(dataName);
     }
+    // SQLite takes model_name from the row holding MAX(created_at)
     const stmt = this.db.prepare(
-      `SELECT DISTINCT type_normalized, model_id, model_name FROM catalog
+      `SELECT type_normalized, model_id, model_name, MAX(created_at)
+       FROM catalog
        WHERE ${clauses.join(" AND ")}
-       ORDER BY type_normalized, model_id, model_name`,
+       GROUP BY type_normalized, model_id
+       ORDER BY type_normalized, model_id`,
     );
-    return stmt.all(...params) as unknown as CatalogRecordedOwner[];
+    return (stmt.all(...params) as unknown as CatalogRecordedOwner[]).map((
+      row,
+    ) => ({
+      type_normalized: row.type_normalized,
+      model_id: row.model_id,
+      model_name: row.model_name,
+    }));
   }
 
   findLatestRowsBySpecName(

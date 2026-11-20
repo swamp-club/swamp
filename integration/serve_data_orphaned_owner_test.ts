@@ -180,10 +180,24 @@ Deno.test("serve data reads: a name recorded under several owners is refused, na
       ModelType.create(`plain/serve-${crypto.randomUUID().slice(0, 8)}`),
     );
 
+    const events: AuditEvent[] = [];
     const everything = await request(
-      createServeCtx(repo, dataReader("*")),
+      {
+        ...createServeCtx(repo, dataReader("*")),
+        auditEmitter: {
+          emit: (event: AuditEvent) => events.push(event),
+        } as unknown as AuditEmitter,
+      } as ConnectionContext,
       "data.get",
       name,
+    );
+    const auditedRefusal = events.filter((event) =>
+      event.resourceKind === "data"
+    );
+    assert(auditedRefusal.length > 0, JSON.stringify(events));
+    assert(
+      auditedRefusal.every((event) => event.resourceName === name),
+      JSON.stringify(auditedRefusal),
     );
     const refused = errorFrame(everything);
     assert(refused, JSON.stringify(everything));
