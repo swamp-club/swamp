@@ -26,6 +26,7 @@ import {
 import { HostedWorkspace } from "../../domain/serve/hosted_workspace.ts";
 import {
   freshFolderClaim,
+  hostCreated,
   type HostedRoster,
   hostedWorkspaceFolders,
   readHostedRegistry,
@@ -504,7 +505,7 @@ Deno.test("freshFolderClaim: names another entry holding workspaces/<name>, igno
   });
 });
 
-Deno.test("hostedWorkspaceFolders: with no host folder, every entry is the operator's own, one in the state folder included, and none is gone", async () => {
+Deno.test("hostedWorkspaceFolders: with no host folder and no wanted file, every entry is the operator's own, one in the state folder included, and none is gone", async () => {
   await withWorkspaceFixture(async (f) => {
     const stateDir = join(f.dir, "data", "host");
     const outside = join(f.dir, "projects", "outside");
@@ -536,5 +537,71 @@ Deno.test("hostedWorkspaceFolders: with no host folder, every entry is the opera
     );
     assertEquals(roster.gone, []);
     assertEquals(roster.passedOver, []);
+  });
+});
+
+Deno.test("hostedWorkspaceFolders: with no host folder an entry is the host's own only when its wanted file has a creator and names the entry's folder", async () => {
+  await withWorkspaceFixture(async (f) => {
+    const stateDir = join(f.dir, "data", "host");
+    const location = join(f.dir, "data", "workspaces");
+    const at = new Date("2026-11-20T10:00:00.000Z");
+    const created = (name: string, folder: string) =>
+      HostedWorkspace.create(name, "user:sub-alice", at).withFolder(folder);
+    for (const name of ["made", "moved", "hand", "unnamed", "none"]) {
+      await f.makeRepo(join(location, name));
+    }
+    const roster = await hostedWorkspaceFolders({
+      workspacesDir: stateDir,
+      hostFolder: false,
+      scanned: [],
+      registry: registryOf(
+        ...["made", "moved", "hand", "unnamed", "none"].map((name) => ({
+          name,
+          path: join(location, name),
+        })),
+      ),
+      rootRepo: null,
+      wanted: new Map([
+        ["made", created("made", join(location, "made"))],
+        ["moved", created("moved", join(f.dir, "elsewhere", "moved"))],
+        [
+          "hand",
+          HostedWorkspace.active("hand").withFolder(join(location, "hand")),
+        ],
+        ["unnamed", HostedWorkspace.create("unnamed", "user:sub-alice", at)],
+      ]),
+    });
+    assertEquals(
+      roster.workspaces.map(({ name, owner }) => [name, owner]),
+      [
+        ["hand", "operator"],
+        ["made", "host"],
+        ["moved", "operator"],
+        ["none", "operator"],
+        ["unnamed", "operator"],
+      ],
+    );
+  });
+});
+
+Deno.test("hostCreated: compares the wanted file's folder with the entry's by real path, and needs a creator", async () => {
+  await withWorkspaceFixture(async (f) => {
+    const real = join(f.dir, "real");
+    await f.makeRepo(real);
+    const link = join(f.dir, "link");
+    await Deno.symlink(real, link, { type: "dir" });
+    const at = new Date("2026-11-20T10:00:00.000Z");
+    const made = HostedWorkspace.create("alpha", "user:sub-alice", at);
+    assertEquals(await hostCreated(made.withFolder(link), real), true);
+    assertEquals(await hostCreated(made.withFolder(real), link), true);
+    assertEquals(await hostCreated(made, real), false);
+    assertEquals(
+      await hostCreated(HostedWorkspace.active("alpha").withFolder(real), real),
+      false,
+    );
+    assertEquals(
+      await hostCreated(made.withFolder(join(f.dir, "other")), real),
+      false,
+    );
   });
 });

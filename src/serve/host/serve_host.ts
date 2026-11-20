@@ -26,7 +26,11 @@ import {
 } from "../../domain/serve/managed_serve.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { readCredentialFile } from "../../infrastructure/persistence/api_key_source.ts";
-import { HostedWorkspaceFileRepository } from "../../infrastructure/persistence/hosted_workspace_file_repository.ts";
+import {
+  HostedWorkspaceFileRepository,
+  hostedWorkspaceLock,
+} from "../../infrastructure/persistence/hosted_workspace_file_repository.ts";
+import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
 import { validateEndEntityCert } from "../../infrastructure/runtime/tls_cert_validation.ts";
 import {
   acquireHostStateLock,
@@ -53,6 +57,7 @@ import {
   type WorkspaceWatcher,
 } from "./workspace_folder.ts";
 import {
+  type CreatedWorkspaceRemoval,
   createWorkspaceReconciler,
   readWantedFiles,
   type WorkspaceReconciler,
@@ -64,7 +69,12 @@ import {
 } from "./workspace_registration.ts";
 import { createWorkspaceRoster } from "./workspace_roster.ts";
 import { freshFolderClaim } from "../../libswamp/workspace/hosted_roster.ts";
-import type { HostedRegistryDeps } from "../../libswamp/workspace/hosted_registration.ts";
+import {
+  type HostedRegistryDeps,
+  registeredFolderOf,
+  unregisterCreatedWorkspace,
+} from "../../libswamp/workspace/hosted_registration.ts";
+import { workspacesRoot } from "../../libswamp/workspace/workspace_store.ts";
 import {
   createWorkspaceRouter,
   type WorkspaceDirectory,
@@ -79,6 +89,8 @@ export interface ServeHostOptions {
   /** every child's whole environment */
   readonly childEnv: Readonly<Record<string, string>>;
   readonly workspaceStore: HostedRegistryDeps;
+  /** workspaces.dir as set, where a host with no host folder creates; undefined for the data dir's own */
+  readonly configuredParent?: () => Promise<string | undefined>;
   readonly onWorkspaceChange?: (change: WorkspaceChange) => void;
   readonly rescanMs?: number;
   readonly supervisor?: Pick<
@@ -95,6 +107,58 @@ export interface ServeHost {
   reload(): void;
   shutdown(): Promise<void>;
   readonly finished: Promise<void>;
+}
+
+/** short, so a rescan never waits out a create's set-up */
+const IDLE_LOCK_WAIT_MS = 250;
+
+export function createdWorkspaceRemoval(
+  options: Pick<ServeHostOptions, "workspaceStore" | "configuredParent"> & {
+    readonly stateDir: string;
+  },
+): CreatedWorkspaceRemoval {
+  const store = options.workspaceStore;
+  return {
+    async whileIdle(name, fn) {
+      const lock = hostedWorkspaceLock(
+        options.stateDir,
+        name,
+        IDLE_LOCK_WAIT_MS,
+        "debug",
+      );
+      try {
+        await lock.acquire();
+      } catch (error) {
+        if (error instanceof LockTimeoutError) return "busy";
+        throw error;
+      }
+      try {
+        return await fn();
+      } finally {
+        await lock.release();
+      }
+    },
+    async registeredFolder(name) {
+      const read = await registeredFolderOf(store, name);
+      if (read.kind === "unreadable") throw new Error(read.reason);
+      return read.folder;
+    },
+    async unregister(name, path) {
+      const result = await unregisterCreatedWorkspace(store, {
+        name,
+        folder: path,
+      });
+      if (result.kind === "unreadable") throw new Error(result.reason);
+    },
+    async locations() {
+      const dirs = [workspacesRoot(store.dataDir)];
+      const configured = await options.configuredParent?.().catch(() =>
+        undefined
+      );
+      if (configured !== undefined) dirs.push(configured);
+      return dirs;
+    },
+  };
 }
 
 export async function startServeHost(
@@ -215,6 +279,9 @@ async function startLocked(
   const reconciler = createWorkspaceReconciler({
     workspacesDir: config.stateDir,
     hostFolder: repos,
+    created: repos
+      ? undefined
+      : createdWorkspaceRemoval({ ...options, stateDir: config.stateDir }),
     holdsOAuthSecret: (folder) =>
       secretFile !== null && isWithin(realPathSyncOrSelf(folder), secretFile),
     supervisor,

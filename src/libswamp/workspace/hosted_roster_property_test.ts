@@ -223,3 +223,75 @@ Deno.test("hostedWorkspaceFolders: with no host folder no workspace is the host'
     }),
   );
 });
+
+type WantedShape = "none" | "made" | "no_creator" | "no_folder" | "elsewhere";
+
+Deno.test("hostedWorkspaceFolders: with no host folder an entry is the host's own exactly when its wanted file has a creator and names the entry's folder, whatever its spelling", async () => {
+  await fc.assert(
+    fc.asyncProperty(
+      fc.dictionary(
+        fc.constantFrom(...NAMES),
+        fc.record({
+          spelling: fc.constantFrom<Spelling>("exact", "dotted", "trailing"),
+          wanted: fc.constantFrom<WantedShape>(
+            "none",
+            "made",
+            "no_creator",
+            "no_folder",
+            "elsewhere",
+          ),
+        }),
+      ),
+      async (cases) => {
+        const location = join(SEPARATOR, "data", "workspaces");
+        const at = new Date("2026-11-20T10:00:00.000Z");
+        const wanted = new Map<string, HostedWorkspace>();
+        const entries: WorkspaceEntry[] = [];
+        for (
+          const [name, { spelling, wanted: shape }] of Object.entries(cases)
+        ) {
+          const own = join(location, name);
+          entries.push({
+            name,
+            path: spelling === "exact"
+              ? own
+              : spelling === "dotted"
+              ? [location, "..", "workspaces", name].join(SEPARATOR)
+              : own + SEPARATOR,
+            createdAt: "2026-11-20T10:00:00.000Z",
+          });
+          const made = HostedWorkspace.create(name, "user:sub-alice", at);
+          if (shape === "made") wanted.set(name, made.withFolder(own));
+          if (shape === "no_creator") {
+            wanted.set(name, HostedWorkspace.active(name).withFolder(own));
+          }
+          if (shape === "no_folder") wanted.set(name, made);
+          if (shape === "elsewhere") {
+            wanted.set(
+              name,
+              made.withFolder(join(SEPARATOR, "elsewhere", name)),
+            );
+          }
+        }
+        const roster = await hostedWorkspaceFolders({
+          workspacesDir: join(SEPARATOR, "data", "host"),
+          hostFolder: false,
+          scanned: [],
+          registry: WorkspaceRegistry.fromEntries(entries),
+          rootRepo: null,
+          wanted,
+          realPath,
+          isRepo: () => Promise.resolve(true),
+        });
+        for (const workspace of roster.workspaces) {
+          assertEquals(
+            workspace.owner === "host",
+            cases[workspace.name].wanted === "made",
+            workspace.name,
+          );
+        }
+        assertEquals(roster.workspaces.length, Object.keys(cases).length);
+      },
+    ),
+  );
+});

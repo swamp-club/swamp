@@ -116,6 +116,9 @@ async function folder(): Promise<Folder> {
         dataDir: join(root, "data"),
         configDir: join(root, "config"),
       }),
+    () => {
+      throw new Error("a root with a host folder creates in it");
+    },
   )!;
   const hostedWorkspaces = {
     ...host,

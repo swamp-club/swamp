@@ -47,6 +47,25 @@ export function isDeletingFolderName(entry: string): boolean {
   return deletingFolderOwner(entry) !== null;
 }
 
+// hidden, so nothing lists a workspace before its rename into place
+const CREATING_FOLDER_PATTERN =
+  /^\.([a-z0-9][a-z0-9-]{0,62})\.creating-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+export function creatingFolderName(name: string): string {
+  return `.${parseWorkspaceName(name)}.creating-${crypto.randomUUID()}`;
+}
+
+/** the workspace a hidden set-up folder belongs to, or null for any other entry */
+export function creatingFolderOwner(entry: string): string | null {
+  const owner = CREATING_FOLDER_PATTERN.exec(entry)?.[1];
+  if (owner === undefined) return null;
+  try {
+    return parseWorkspaceName(owner);
+  } catch {
+    return null;
+  }
+}
+
 export interface SkippedEntry {
   readonly name: string;
   readonly reason: string;

@@ -1,7 +1,7 @@
 ---
 audience: operator, maintainer
 enables: [serve]
-last-verified: 2026-11-19 @ 4cf47dda3
+last-verified: 2026-11-20 @ 0323a2314
 ---
 
 # Serve workspaces
@@ -9,13 +9,14 @@ last-verified: 2026-11-19 @ 4cf47dda3
 **Status:** Partly built. Addresses with a path, the host, lifecycle and
 sign-in (steps 1 to 15 of the [execution plan](#execution-plan)) are built, as
 are default off (step 24), the host registering the workspaces it runs
-(step 19), taking them from the registry (step 20) and serving a workspace
-registered anywhere (step 21): `swamp serve host` runs in a host folder,
-registers every workspace folder in its `workspaces/` in the workspace
-registry, lists every entry, runs a serve for each one whose wanted file says
-`active` and names its folder, and its root takes the `workspace.*` requests
-and issues sign-in codes. The dashboard (steps 16 to 18) is not built, and
-neither is a host with no host folder (steps 22 and 23).
+(step 19), taking them from the registry (step 20), serving a workspace
+registered anywhere (step 21) and a host with no host folder (steps 22 and
+23): `swamp serve host` runs in a host folder or without one, registers every
+workspace folder in its `workspaces/` in the workspace registry, lists every
+entry, runs a serve for each one whose wanted file says `active` and names its
+folder, and its root takes the `workspace.*` requests and issues sign-in codes.
+With no host folder it creates workspaces in the workspace location. The
+dashboard (steps 16 to 18) is not built.
 It describes how one address hosts several serves, which promoting a local
 workspace to a server assumes.
 
@@ -158,8 +159,8 @@ workspace. It finds them in one of two layouts, chosen in this order:
 2. **No host folder.** Otherwise the host reads `<config dir>/host.yaml` and
    keeps its state folder at `<data dir>/host/`. That folder holds the wanted
    files, the status files and the locks, and no repo
-   (`src/serve/host/host_layout.ts`). Every workspace of such a host is the
-   operator's own until step 23.
+   (`src/serve/host/host_layout.ts`). A workspace a request creates goes in
+   the workspace location, beside the user's own.
 
 The host logs which `host.yaml` it read, and with none in any of these places
 the error names each place it looked. Relative paths in `host.yaml` are taken
@@ -402,8 +403,22 @@ its status file and the 503 its address answers say whether it runs.
   its registry entry. With a host folder, every workspace whose folder is
   at `workspaces/<its name>` is the host's own, whoever made the folder, as
   every workspace is today; one registered under another name is not. With no host folder, a workspace is the host's own when
-  its wanted file has a creator and names the entry's folder, which only
-  `workspace.create` writes (step 23).
+  its wanted file has a creator and names the entry's folder, compared by real
+  path, which only `workspace.create` writes. Removing the creator or the
+  folder by hand makes it the operator's own, the safe direction; writing both
+  by hand for the entry's folder makes a repo the host's own, which only
+  someone who can already write the state folder can do. No request carries a
+  creator to another folder: a suspend or resume of the operator's own writes
+  its folder with no creator, and the host removes a wanted file that has a
+  creator once the registry names another folder for its name, as after a
+  `swamp workspace remove` and an import elsewhere under the same name. A name no entry holds
+  is the host's own when its wanted file has a creator and a folder: a create
+  stopped before it registered. The host settles one at its next rescan, once
+  it holds the name's create lock and so knows no create is running: it removes
+  the wanted file and the hidden set-up folder, so a repo made later at that
+  folder is not the host's own. While the registry cannot be read, a workspace
+  listed from its wanted file has an owner no one can confirm: only the root's
+  admins may suspend or resume it, its creator is kept, and no delete runs.
 - **The operator's own** is any other registered workspace: a repo the host's
   user registered, wherever it is. `workspace.delete` refuses it, for the
   root's admins too, and names `swamp workspace remove`, since no workspace
@@ -597,7 +612,8 @@ true for a host folder that exists today:
   moved. Suspend and resume by request leave a wanted file for a folder in
   `workspaces/` byte for byte as it is written today.
 - New workspaces on a host with a host folder are still created in its
-  `workspaces/`.
+  `workspaces/`. One with no host folder creates where `swamp workspace create`
+  would.
 - The registry file gains no field and no schema version, so an older swamp
   reads and rewrites it without loss.
 - An older `swamp serve workspace` client works against a newer root, and a
@@ -612,8 +628,8 @@ workspaces also appear in `swamp workspace list` and on the `swamp start` page.
 
 A hosted workspace is a repo folder, the one its registry entry names. One a
 request creates is `<host folder>/workspaces/<name>/` on a host with a host
-folder, and `<location>/<name>` in the workspace location on one without
-(step 23). It has:
+folder, and `<location>/<name>` in the workspace location on one without. It
+has:
 
 - **Its own datastore**, the one a new repo gets, inside its folder. Pointing
   it at a bucket is ordinary datastore setup, run in the folder while the
@@ -773,22 +789,57 @@ corrupt file never holds up a delete. Until the end the wanted file still says `
 stopped halfway finishes at its next start, and the next scan removes a hidden
 folder left behind. A removal touches only names that pass `parseWorkspaceName`,
 and a rename never follows a link, so a workspace folder that is a link loses
-only the link. The host never removes or renames a folder outside its own
-`workspaces/`.
+only the link. With a host folder, the host never removes or renames a folder
+outside its own `workspaces/`.
 
-On a host with no host folder, create is refused with `no_host_folder`, with a
-message that says the host has no folder to create workspaces in, until step
-23. The host tells its root with the hidden `--host-no-folder`, given beside
-`--host-workspaces-dir`. From then create
-makes the repo at `<location>/<name>`, where `swamp workspace create` would,
-under the registry's create lock and checks (`newWorkspaceLocation`,
-`checkNewWorkspaceFolder`), and registers it as created. The wanted file it
-writes names that folder, which is what makes the workspace the host's own.
-Delete removes only the folder its wanted file records, and only while the
-registry entry still names that folder. Every point a create or delete can
-stop leaves either nothing, or a name a `delete` can finish, and the hidden
-folders it leaves in the workspace location are passed over by the
-registry's first read. Step 23 settles the order of create's steps.
+On a host with no host folder, which the host tells its root with the hidden
+`--host-no-folder` beside `--host-workspaces-dir`, create makes the repo at
+`<location>/<name>`, where `swamp workspace create` would: the location set
+with `swamp config set workspaces.dir`, else `<data dir>/workspaces`. It holds
+the host's per-name lock and then the registry's create lock, the one
+`swamp workspace create` holds, for the whole set-up, so a
+`swamp workspace create` of the same name meanwhile waits and may time out.
+Under both it reads the registry as every writer does, adopting the data dir's
+repos first, and runs the registry's own checks (`newWorkspaceLocation`,
+`checkNewWorkspaceFolder`), answering `already_exists` with no host path.
+Then, in order:
+
+| Step | What create does                                                   | Left if create stops here                     | How it ends                                                                                   |
+| ---- | ------------------------------------------------------------------ | --------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| 1    | sets the repo up in `<location>/.<name>.creating-<uuid>`           | the hidden folder                             | nothing names it, so `delete` answers `not_found`; the next create of the name removes it     |
+| 2    | writes the wanted file, `suspended`, with its creator and folder   | the hidden folder and the wanted file         | the host's next rescan, holding the name's lock, removes both; a `delete` before then also does |
+| 3    | registers the entry as created, strictly                           | and an entry naming a folder not there yet    | `delete`: no folder to rename; the host removes the hidden folder, the entry and both files   |
+| 4    | renames the hidden folder into place                               | a whole workspace                             | `delete` as for any workspace of the host's own                                               |
+
+The entry is written before the rename, not after: with the rename first, a
+create stopped between the two would leave a whole repo no entry names, which
+no delete may remove. For the length of the rename, `swamp workspace list`
+shows the entry's folder as missing, and a host rescan then lists it as not a
+swamp repo; it is suspended, so nothing starts. A failure undoes the steps in
+reverse: it removes the entry only while it still names the folder, then the
+wanted file, then the hidden folder. An import that takes the name before
+step 3 makes the strict registration fail, and create answers `already_exists`
+having removed only what it made; one after step 3 is refused, since the name
+is taken. Create refuses to rename a hidden folder that some entry has taken,
+and a target already there, so it never moves or replaces a folder it did not
+make.
+
+Delete on such a host is the host's, as with a host folder, with two
+differences. It renames the folder the wanted file records, and only while
+the registry, read afresh, still names that folder for the workspace; an entry
+that now names another folder ends the removal, keeping the folder and the
+entry. It removes the hidden `.<name>.creating-` and `.<name>.deleting-`
+folders in that folder's parent, and, for a name no entry holds, only in the
+current workspace location and `<data dir>/workspaces`, never a directory the
+wanted file alone names; no live create owns one, since create refuses while
+a wanted file exists. It removes the entry only while it names that folder.
+The registry's first read passes over the hidden folders. When
+`swamp workspace remove` takes the entry of a workspace the host created, the
+host stops its serve, keeps its folder and removes its wanted file, so a later
+repo at that path is not the host's own. With the host stopped that removal is
+not seen, and a repo made at the same path under the same name afterwards
+would read as the host's own; swamp-club#4967 records an identity of the repo
+in the wanted file to close that.
 
 Setting up a repo runs as a child process in its folder, the hidden
 `swamp serve provision-workspace`, which reads its access settings as JSON on
@@ -1155,12 +1206,11 @@ After 7 an operator who sets each workspace up has a multi-workspace host.
 22. **A host with no host folder** (swamp-club#4920, built). With no `--host-dir` and
     no `host.yaml` in the current folder, the host reads
     `<config dir>/host.yaml` and keeps its state folder at `<data dir>/host/`.
-    One host runs per state folder, in both layouts. Create is refused with a
-    message that says why. Done when such a host serves its root and each
+    One host runs per state folder, in both layouts. Done when such a host serves its root and each
     resumed registered workspace, a host folder runs unchanged with no file
     moved, a second host on one state folder refuses to start, and
     `swamp serve host --help` describes both layouts. After 21.
-23. **A host with no host folder creates workspaces** (swamp-club#4921).
+23. **A host with no host folder creates workspaces** (swamp-club#4921, built).
     Create makes the repo in the workspace location under the registry's
     create lock, registers it as created, and writes a wanted file that names
     the folder, which makes it the host's own. Done when create makes a folder

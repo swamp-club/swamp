@@ -29,7 +29,10 @@ export type HostedRegistryRead =
   | { readonly kind: "read"; readonly registry: WorkspaceRegistry | null }
   | { readonly kind: "unreadable"; readonly reason: string };
 
-/** the host's own is at `workspaces/<name>`; any other registered repo is the operator's own */
+/**
+ * with a host folder the host's own is at `workspaces/<name>`; with none it is
+ * one a request created; any other registered repo is the operator's own
+ */
 export type HostedWorkspaceOwner = "host" | "operator";
 
 export interface HostedWorkspaceFolder {
@@ -86,6 +89,23 @@ export function wantedFolderOf(
   workspace: HostedWorkspace,
 ): string {
   return workspace.folder ?? join(workspacesDir, workspace.name);
+}
+
+/**
+ * on a host with no host folder, whether a request created the entry's folder:
+ * its wanted file has a creator and names that folder
+ */
+export async function hostCreated(
+  workspace: HostedWorkspace,
+  entryFolder: string,
+  realPath: (path: string) => Promise<string> = realPathOrSelf,
+): Promise<boolean> {
+  if (workspace.creator === null || workspace.folder === null) return false;
+  const [written, entry] = await Promise.all([
+    realPath(resolve(workspace.folder)),
+    realPath(resolve(entryFolder)),
+  ]);
+  return written === entry;
 }
 
 /** another workspace whose folder is `workspaces/<name>`, which nothing done under `name` may touch */
@@ -152,12 +172,12 @@ export async function wantedFolderMatches(input: {
 // an entry claims its folder and its name, so no scanned folder becomes a second serve of one repo
 export async function hostedWorkspaceFolders(input: {
   readonly workspacesDir: string;
-  /** false for a host with no host folder, where no workspace is the host's own; true by default */
+  /** false for a host with no host folder, whose own are the ones a request created; true by default */
   readonly hostFolder?: boolean;
   readonly scanned: readonly string[];
   readonly registry: WorkspaceRegistry | null;
   readonly rootRepo: string | null;
-  /** the wanted files read whole; used only while `registry` is null */
+  /** the wanted files read whole; with a host folder used only while `registry` is null */
   readonly wanted?: ReadonlyMap<string, HostedWorkspace>;
   readonly realPath?: (path: string) => Promise<string>;
   readonly isRepo?: (path: string) => Promise<boolean>;
@@ -188,10 +208,13 @@ export async function hostedWorkspaceFolders(input: {
       if (real === rootReal || claimed.has(real)) continue;
       if (input.hostFolder === false) {
         claimed.add(real);
+        const record = input.wanted?.get(entry.name);
+        const created = record !== undefined &&
+          await hostCreated(record, real, realPath);
         workspaces.set(entry.name, {
           name: entry.name,
           folder: real,
-          owner: "operator",
+          owner: created ? "host" : "operator",
           isRepo: await isRepo(real),
           fromWantedFile: false,
           shadows: false,

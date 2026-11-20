@@ -21,6 +21,7 @@ import { join } from "@std/path";
 import { HostedWorkspaceFileRepository } from "../../infrastructure/persistence/hosted_workspace_file_repository.ts";
 import { WorkspaceRegistryFileRepository } from "../../infrastructure/persistence/workspace_registry_file_repository.ts";
 import type { HostedRegistryDeps } from "../workspace/hosted_registration.ts";
+import { withWorkspaceCreateLock } from "../workspace/deps.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
   createHostedWorkspaceDeps,
@@ -105,6 +106,59 @@ export async function hostFolder(): Promise<HostFolder> {
       }
     },
   };
+}
+
+export interface NoFolderHost extends AsyncDisposable {
+  readonly root: string;
+  /** the state folder */
+  readonly dir: string;
+  /** where a create puts the repo when workspaces.dir is not set */
+  readonly location: string;
+  readonly store: HostedRegistryDeps;
+  /** workspaces.dir as set; undefined for the data dir's own folder */
+  configured: string | undefined;
+  deps(overrides?: Partial<HostedWorkspaceDeps>): HostedWorkspaceDeps;
+}
+
+/** a host with no host folder, its data and config dirs under one temp folder */
+export async function noFolderHost(): Promise<NoFolderHost> {
+  const root = await Deno.makeTempDir();
+  const dir = join(root, "state");
+  await Deno.mkdir(dir);
+  const store = tempWorkspaceStore(root);
+  let tick = Date.parse("2026-11-17T10:00:00.000Z");
+  const host: NoFolderHost = {
+    root,
+    dir,
+    location: join(store.dataDir, "workspaces"),
+    store,
+    configured: undefined,
+    deps: (overrides = {}) => ({
+      ...createHostedWorkspaceDeps({
+        workspacesDir: dir,
+        hostFolder: false,
+        placement: {
+          configuredParent: () => Promise.resolve(host.configured),
+          withCreateLock: (name, fn) =>
+            withWorkspaceCreateLock(store.dataDir, name, fn),
+        },
+        provisioner: markerProvisioner,
+        addressOf: (name) => `https://host.example/w/${name}`,
+        workspaceStore: store,
+      }),
+      repository: new HostedWorkspaceFileRepository(dir),
+      now: () => new Date(tick += 1000),
+      ...overrides,
+    }),
+    async [Symbol.asyncDispose]() {
+      if (Deno.build.os === "windows") {
+        await Deno.remove(root, { recursive: true }).catch(() => {});
+      } else {
+        await Deno.remove(root, { recursive: true });
+      }
+    },
+  };
+  return host;
 }
 
 export async function entries(dir: string): Promise<string[]> {

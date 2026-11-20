@@ -20,6 +20,8 @@
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import {
+  creatingFolderName,
+  creatingFolderOwner,
   deletingFolderName,
   deletingFolderOwner,
   isDeletingFolderName,
@@ -144,4 +146,19 @@ Deno.test("scanWorkspaces: a state folder with repos off reads only its wanted f
     assertEquals(scan.leftovers, []);
     assertEquals(scan.wantedFiles, ["billing"]);
   });
+});
+
+Deno.test("creatingFolderOwner: names the workspace a hidden set-up folder belongs to, and nothing else", () => {
+  assertEquals(creatingFolderOwner(creatingFolderName("edge-dns")), "edge-dns");
+  for (
+    const entry of [
+      "edge-dns",
+      ".edge-dns.creating-",
+      ".edge-dns.creating-not-a-uuid",
+      deletingFolderName("edge-dns"),
+      `.Edge.creating-${crypto.randomUUID()}`,
+    ]
+  ) {
+    assertEquals(creatingFolderOwner(entry), null, entry);
+  }
 });

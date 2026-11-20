@@ -175,6 +175,58 @@ export async function unregisterHostedWorkspace(
   }
 }
 
+/** removes the entry for `name` only while it names `folder`, a folder a request created */
+export async function unregisterCreatedWorkspace(
+  deps: HostedRegistryDeps,
+  input: { name: string; folder: string },
+): Promise<HostedUnregistration> {
+  const { name } = input;
+  const target = await realPathOrSelf(resolve(input.folder));
+  const read = await readHostedRegistry(deps);
+  if (read.kind === "unreadable") return read;
+  const before = read.registry?.get(name);
+  if (before === undefined) return { kind: "absent" };
+  // exact first: a folder already removed no longer resolves to the entry's spelling
+  const matches = before.path === input.folder ||
+    await realPathOrSelf(resolve(before.path)) === target;
+  if (!matches) return { kind: "not_ours" };
+  try {
+    return await deps.registry.update((current): HostedUnregistration => {
+      const now = current.get(name);
+      if (now === undefined) return { kind: "absent" };
+      if (now.path !== before.path) return { kind: "not_ours" };
+      current.remove(name);
+      return { kind: "removed" };
+    });
+  } catch (error) {
+    if (isUnreadable(error)) {
+      return { kind: "unreadable", reason: error.message };
+    }
+    throw error;
+  }
+}
+
+/** the folder the registry, read afresh, names for `name`, as written and real; null for no entry */
+export async function registeredFolderOf(
+  deps: Pick<HostedRegistryDeps, "registry">,
+  name: string,
+): Promise<
+  | { kind: "read"; folder: { path: string; real: string } | null }
+  | { kind: "unreadable"; reason: string }
+> {
+  const read = await readHostedRegistry(deps);
+  if (read.kind === "unreadable") return read;
+  const entry = read.registry?.get(name);
+  if (entry === undefined) return { kind: "read", folder: null };
+  return {
+    kind: "read",
+    folder: {
+      path: entry.path,
+      real: await realPathOrSelf(resolve(entry.path)),
+    },
+  };
+}
+
 function registerUnderLock(
   deps: HostedRegistryDeps,
   registry: WorkspaceRegistry,

@@ -37,7 +37,10 @@ import {
   locateHostYaml,
 } from "../../serve/host/host_layout.ts";
 import { type ServeHost, startServeHost } from "../../serve/host/serve_host.ts";
-import { hostWorkspaceStore } from "../../serve/host/workspace_registration.ts";
+import {
+  hostConfiguredParent,
+  hostWorkspaceStore,
+} from "../../serve/host/workspace_registration.ts";
 import { reloadsOnHangup } from "../../serve/reload_on_hangup.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -50,7 +53,7 @@ export const serveHostCommand = new Command()
     "Run one serve per workspace behind a single address.\n\n" +
       "host.yaml holds the listener, its TLS certificate, the public address and an optional root repo. The host runs in one of two layouts:\n" +
       "  - A host folder, given with --host-dir or the current folder when it holds host.yaml and is not the config dir: host.yaml, and workspaces/ holding one swamp repo per workspace made there plus the state files. Workspace folders added or removed while the host runs are picked up.\n" +
-      "  - No host folder, otherwise: <config dir>/host.yaml, with the state files in <data dir>/host/, which holds no repo. Its workspaces are the repos registered with swamp workspace import or swamp workspace create, and a request cannot create one.\n" +
+      "  - No host folder, otherwise: <config dir>/host.yaml, with the state files in <data dir>/host/, which holds no repo. Its workspaces are the repos registered with swamp workspace import or swamp workspace create; a request creates one where swamp workspace create would, in workspaces.dir or <data dir>/workspaces.\n" +
       "Relative paths in host.yaml are taken from the folder that holds it. The host logs which host.yaml it read. One host runs per state folder: a second exits naming it.\n\n" +
       "Every workspace in the user's workspace registry is listed. Each answers at <address>/w/<name>; the root answers at the address itself. A workspace's serve starts only when its <name>.wanted.yaml in the state folder says wanted: active; the root starts with the host. The host has no repo of its own and authenticates no one: each workspace's serve does.\n\n" +
       "host.yaml can name one OAuth client (oauth-client: id and secret-file, a path outside every repo the host runs). The root and every workspace are started with it through --oauth-client-id and --oauth-client-secret-file, so a workspace in oauth mode needs no client of its own. " +
@@ -112,6 +115,7 @@ export const serveHostCommand = new Command()
         cwd: Deno.cwd(),
       }),
       workspaceStore: hostWorkspaceStore({ dataDir: swampHome, configDir }),
+      configuredParent: hostConfiguredParent(configDir),
       onWorkspaceChange: (change) => renderer.workspacesChanged(change),
     });
 

@@ -22,6 +22,10 @@ import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { REPO_MARKER_FILE } from "../../infrastructure/persistence/hosted_workspace_folder_scan.ts";
 import {
+  PREFERENCES_FILE_NAME,
+  WorkspacePreferencesFileRepository,
+} from "../../infrastructure/persistence/workspace_preferences_file_repository.ts";
+import {
   WorkspaceRegistryFileRepository,
   type WorkspaceRegistryLockWait,
 } from "../../infrastructure/persistence/workspace_registry_file_repository.ts";
@@ -63,6 +67,16 @@ export function hostWorkspaceStore(dirs: {
       },
     },
   };
+}
+
+/** workspaces.dir as the host's config dir holds it; undefined for the data dir's own folder */
+export function hostConfiguredParent(
+  configDir: string,
+): () => Promise<string | undefined> {
+  const preferences = new WorkspacePreferencesFileRepository(
+    join(configDir, PREFERENCES_FILE_NAME),
+  );
+  return async () => (await preferences.read()).dir;
 }
 
 /** one line per reason for a registry the host cannot read, whichever part of the host met it */

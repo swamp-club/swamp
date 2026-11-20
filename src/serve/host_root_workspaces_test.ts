@@ -17,9 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertThrows } from "@std/assert";
+import { assert, assertEquals, assertThrows } from "@std/assert";
 import { UserError } from "../domain/errors.ts";
-import { hostRootWorkspaces, provisionEnv } from "./host_root_workspaces.ts";
+import {
+  hostRootWorkspaces,
+  hostWorkspacePlacement,
+  provisionEnv,
+} from "./host_root_workspaces.ts";
 import { hostWorkspaceStore } from "./host/workspace_registration.ts";
 
 // paths only: nothing in these tests writes the registry
@@ -27,6 +31,11 @@ const STORE = () =>
   hostWorkspaceStore({ dataDir: "/host/data", configDir: "/host/config" });
 const NEVER = () => {
   throw new Error("a serve that is not a host's root builds no registry store");
+};
+const PLACEMENT = () =>
+  hostWorkspacePlacement({ dataDir: "/host/data", configDir: "/host/config" });
+const NO_PLACEMENT = () => {
+  throw new Error("a root with a host folder creates in it");
 };
 
 const ACCESS = () => ({
@@ -38,7 +47,7 @@ const ACCESS = () => ({
 });
 
 Deno.test("hostRootWorkspaces: a serve given neither flag is not a host's root", () => {
-  assertEquals(hostRootWorkspaces({}, {}, ACCESS, NEVER), undefined);
+  assertEquals(hostRootWorkspaces({}, {}, ACCESS, NEVER, NEVER), undefined);
 });
 
 Deno.test("hostRootWorkspaces: the root's services work on the folder and name each workspace under the host's address", () => {
@@ -50,6 +59,7 @@ Deno.test("hostRootWorkspaces: the root's services work on the folder and name e
     {},
     ACCESS,
     STORE,
+    NO_PLACEMENT,
   );
   assertEquals(root?.services.workspacesDir, "/host/workspaces");
   assertEquals(root?.services.hostFolder, true);
@@ -70,14 +80,14 @@ Deno.test("hostRootWorkspaces: one flag without the other refuses to start", () 
     ]
   ) {
     assertThrows(
-      () => hostRootWorkspaces(flags, {}, ACCESS, NEVER),
+      () => hostRootWorkspaces(flags, {}, ACCESS, NEVER, NEVER),
       UserError,
       "together",
     );
   }
 });
 
-Deno.test("hostRootWorkspaces: a root told the host has no host folder gets services that create no workspace", () => {
+Deno.test("hostRootWorkspaces: a root told the host has no host folder gets services that create in the workspace location", () => {
   const root = hostRootWorkspaces(
     {
       dir: "/home/op/.swamp/host",
@@ -87,14 +97,16 @@ Deno.test("hostRootWorkspaces: a root told the host has no host folder gets serv
     {},
     ACCESS,
     STORE,
+    PLACEMENT,
   );
   assertEquals(root?.services.workspacesDir, "/home/op/.swamp/host");
   assertEquals(root?.services.hostFolder, false);
+  assert(root?.services.placement !== null);
 });
 
 Deno.test("hostRootWorkspaces: the no-folder flag alone refuses to start", () => {
   assertThrows(
-    () => hostRootWorkspaces({ noFolder: true }, {}, ACCESS, NEVER),
+    () => hostRootWorkspaces({ noFolder: true }, {}, ACCESS, NEVER, NEVER),
     UserError,
     "--host-no-folder",
   );
