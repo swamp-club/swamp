@@ -27,7 +27,10 @@ import {
 import { parseWorkspaceName } from "../../domain/workspace/workspace_name.ts";
 import { hostedWorkspaceCreate } from "../../libswamp/hosted_workspace/create.ts";
 import { hostedWorkspaceDelete } from "../../libswamp/hosted_workspace/delete.ts";
-import type { HostedWorkspaceCaller } from "../../libswamp/hosted_workspace/deps.ts";
+import {
+  type HostedWorkspaceCaller,
+  OPERATOR_WORKSPACE_CODE,
+} from "../../libswamp/hosted_workspace/deps.ts";
 import { hostedWorkspaceGet } from "../../libswamp/hosted_workspace/get.ts";
 import { hostedWorkspaceList } from "../../libswamp/hosted_workspace/list.ts";
 import { hostedWorkspaceResume } from "../../libswamp/hosted_workspace/resume.ts";
@@ -52,10 +55,12 @@ export {
 };
 import {
   accessCallerOf,
+  auditDenial,
   authorizeOrReject,
   type ConnectionContext,
   getConnectionTokenExpiresAt,
   handlerLibSwampContext,
+  isRootAdmin,
   sanitizeErrorForClient,
   send,
   sendError,
@@ -100,6 +105,16 @@ function admitted(
     return undefined;
   }
   return ctx.hostedWorkspaces;
+}
+
+async function* tapErrors<D>(
+  events: AsyncIterable<ServiceEvent<D>>,
+  onError: (error: SwampError) => void,
+): AsyncIterable<ServiceEvent<D>> {
+  for await (const event of events) {
+    if (event.kind === "error") onError(event.error);
+    yield event;
+  }
 }
 
 /** the services' messages name no host path, so they reach the caller as given */
@@ -235,15 +250,11 @@ export async function handleWorkspaceGet(
   });
 }
 
-const CHANGES = {
-  "workspace.suspend": hostedWorkspaceSuspend,
-  "workspace.resume": hostedWorkspaceResume,
-  "workspace.delete": hostedWorkspaceDelete,
-} as const;
+type ChangeType = "workspace.suspend" | "workspace.resume" | "workspace.delete";
 
 /** suspend, resume and delete each write the wanted file and answer alike */
 export async function handleWorkspaceChange(
-  type: keyof typeof CHANGES,
+  type: ChangeType,
   socket: WebSocket,
   ctx: ConnectionContext,
   requestId: string,
@@ -255,11 +266,37 @@ export async function handleWorkspaceChange(
     name: payload.name,
   });
   if (root === undefined) return;
+  const libCtx = handlerLibSwampContext(ctx);
+  // a grant on workspace:<pattern> does not reach a repo the host's user registered
+  const rootAdmin = type === "workspace.delete"
+    ? false
+    : isRootAdmin(socket, principal, ctx);
+  const events = type === "workspace.delete"
+    ? hostedWorkspaceDelete(libCtx, root.services, { name: payload.name })
+    : (type === "workspace.suspend"
+      ? hostedWorkspaceSuspend
+      : hostedWorkspaceResume)(libCtx, root.services, {
+        name: payload.name,
+        rootAdmin,
+      });
   const data = await outcome(
     socket,
     requestId,
-    CHANGES[type](handlerLibSwampContext(ctx), root.services, {
-      name: payload.name,
+    tapErrors(events, (error) => {
+      if (
+        error.code === OPERATOR_WORKSPACE_CODE &&
+        type !== "workspace.delete" && !rootAdmin
+      ) {
+        auditDenial(
+          socket,
+          ctx,
+          requestId,
+          principal,
+          "admin",
+          workspaceAccessResource(payload.name),
+          OPERATOR_WORKSPACE_CODE,
+        );
+      }
     }),
   );
   if (data === undefined) return;

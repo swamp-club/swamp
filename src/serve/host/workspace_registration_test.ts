@@ -157,7 +157,7 @@ Deno.test("createWorkspaceRegistrar: a clash is logged once across rescans and t
       const part of [
         join(f.workspacesDir, "alpha"),
         join(f.dir, "mine"),
-        "A later release stops serving this folder",
+        "is not served",
         "swamp workspace remove",
       ]
     ) {

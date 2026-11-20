@@ -25,7 +25,7 @@ import {
   hostedWorkspaceErrorEvent,
   hostedWorkspaceNames,
   type HostedWorkspaceSummary,
-  summarizeHostedWorkspace,
+  summarizeListedName,
 } from "./deps.ts";
 
 export interface HostedWorkspaceListData {
@@ -46,9 +46,9 @@ export async function* hostedWorkspaceList(
     {},
     (async function* () {
       try {
-        const { all } = await hostedWorkspaceNames(deps);
+        const names = await hostedWorkspaceNames(deps);
         const workspaces = await Promise.all(
-          all.map((name) => summarizeHostedWorkspace(deps, name)),
+          names.all.map((name) => summarizeListedName(deps, names, name)),
         );
         yield { kind: "completed" as const, data: { workspaces } };
       } catch (error) {

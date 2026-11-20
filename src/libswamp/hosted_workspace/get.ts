@@ -27,7 +27,7 @@ import {
   hostedWorkspaceNames,
   hostedWorkspaceNotFound,
   type HostedWorkspaceSummary,
-  summarizeHostedWorkspace,
+  summarizeListedName,
 } from "./deps.ts";
 
 export type HostedWorkspaceGetData = HostedWorkspaceSummary;
@@ -47,11 +47,11 @@ export async function* hostedWorkspaceGet(
     (async function* () {
       try {
         const name = parseWorkspaceName(input.name);
-        const { all } = await hostedWorkspaceNames(deps);
-        if (!all.includes(name)) throw hostedWorkspaceNotFound(name);
+        const names = await hostedWorkspaceNames(deps);
+        if (!names.all.includes(name)) throw hostedWorkspaceNotFound(name);
         yield {
           kind: "completed" as const,
-          data: await summarizeHostedWorkspace(deps, name),
+          data: await summarizeListedName(deps, names, name),
         };
       } catch (error) {
         yield hostedWorkspaceErrorEvent(ctx, error);

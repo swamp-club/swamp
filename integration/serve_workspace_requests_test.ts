@@ -19,6 +19,8 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
+import { parse as parseYaml } from "@std/yaml";
+import { waitFor } from "@swamp-club/swamp-testing";
 import "../src/domain/models/models.ts";
 import { provisionHostedWorkspace } from "../src/cli/hosted_workspace_provision.ts";
 import { Ceiling } from "../src/domain/access/ceiling.ts";
@@ -57,7 +59,10 @@ import type {
 } from "../src/serve/host/serve_process.ts";
 import { createStatusWriter } from "../src/serve/host/status_writer.ts";
 import { createServeSupervisor } from "../src/serve/host/supervisor.ts";
-import { createWorkspaceReconciler } from "../src/serve/host/workspace_reconciler.ts";
+import {
+  createWorkspaceReconciler,
+  readWantedFiles,
+} from "../src/serve/host/workspace_reconciler.ts";
 import {
   createServeCtx,
   errorFrame,
@@ -126,6 +131,8 @@ interface Root {
   rescan(): Promise<void>;
   tokenCtx(): ConnectionContext;
   readonly hosted: NonNullable<ConnectionContext["hostedWorkspaces"]>;
+  importRepo(name: string): Promise<string>;
+  corruptRegistry(): Promise<void>;
 }
 
 async function withRoot(fn: (root: Root) => Promise<void>): Promise<void> {
@@ -145,6 +152,7 @@ async function withRoot(fn: (root: Root) => Promise<void>): Promise<void> {
       onStatus: (status) => statusWriter.report(status),
     });
     const problems = new RegistryProblemLog();
+    const wantedRepository = new HostedWorkspaceFileRepository(workspacesDir);
     const reconciler = createWorkspaceReconciler({
       workspacesDir,
       supervisor,
@@ -155,11 +163,16 @@ async function withRoot(fn: (root: Root) => Promise<void>): Promise<void> {
         trustedHost: "host.example",
         env: {},
       }),
-      repository: new HostedWorkspaceFileRepository(workspacesDir),
+      repository: wantedRepository,
       statusWriter,
       registrar: createWorkspaceRegistrar({ workspacesDir, store, problems }),
     });
-    const roster = createWorkspaceRoster({ workspacesDir, store, problems });
+    const roster = createWorkspaceRoster({
+      workspacesDir,
+      rootRepo: null,
+      store,
+      problems,
+    });
     const root = hostRootWorkspaces(
       { dir: workspacesDir, address: HOST_ADDRESS },
       {},
@@ -193,7 +206,8 @@ async function withRoot(fn: (root: Root) => Promise<void>): Promise<void> {
           ),
         rescan: async () => {
           const scan = await scanWorkspaces(workspacesDir);
-          await reconciler.reconcile(scan, await roster.read(scan));
+          const reads = await readWantedFiles(wantedRepository, scan);
+          reconciler.reconcile(scan, reads, await roster.read(scan, reads));
         },
         tokenCtx: () =>
           createServeCtx(repo, [ROOT_ADMIN_GRANT("alice")], {
@@ -204,6 +218,21 @@ async function withRoot(fn: (root: Root) => Promise<void>): Promise<void> {
             },
           }),
         hosted: hostedWorkspaces,
+        corruptRegistry: () =>
+          Deno.writeTextFile(
+            join(hostDir, "config", "workspaces.json"),
+            "{not json",
+          ),
+        importRepo: async (name) => {
+          const made = join(hostDir, "projects", name);
+          await Deno.mkdir(made, { recursive: true });
+          await Deno.writeTextFile(join(made, ".swamp.yaml"), "");
+          const folder = await Deno.realPath(made);
+          await store.registry.update((registry) => {
+            registry.register({ name, path: folder, createdAt: "t" });
+          });
+          return folder;
+        },
       });
     } finally {
       await supervisor.shutdown();
@@ -895,5 +924,154 @@ Deno.test("serve workspace requests: access can-i answers as the requests do for
       await admittedTo(ctx, "workspace.suspend", "ops-x", ALICE),
       true,
     );
+  });
+});
+
+Deno.test("serve workspace requests: admin on a workspace pattern does not reach an imported repo, whose suspend and resume are refused and audited", async () => {
+  await withRoot(async (root) => {
+    await root.importRepo("data-mine");
+    const ctx = root.ctx({}, [
+      workspaceGrant(BOB, ["read", "admin"], "data-*"),
+    ]);
+    const audit = recordAudit(ctx);
+    for (const type of ["workspace.resume", "workspace.suspend"]) {
+      const frames = await sendRequest(ctx, request(type, "data-mine"), BOB);
+      const error = errorFrame(frames)?.error;
+      assertEquals(error?.code, "operator_workspace", type);
+      assertStringIncludes(String(error?.message), "root's admins");
+    }
+    const got = reply(
+      await sendRequest(ctx, request("workspace.get", "data-mine"), BOB),
+      "workspace.get",
+    );
+    assertEquals(got.owner, "operator");
+    const denials = audit
+      .filter((event) => event.outcome === "denied")
+      .map(({ action, resourceKind, resourceName, principalId }) => ({
+        action,
+        resourceKind,
+        resourceName,
+        principalId,
+      }));
+    assertEquals(denials, [
+      {
+        action: "admin",
+        resourceKind: "workspace",
+        resourceName: "data-mine",
+        principalId: BOB.id,
+      },
+      {
+        action: "admin",
+        resourceKind: "workspace",
+        resourceName: "data-mine",
+        principalId: BOB.id,
+      },
+    ]);
+    const created = await sendRequest(
+      root.ctx({}, [workspaceGrant(BOB, ["write", "admin"], "data-*")]),
+      request("workspace.create", "data-made"),
+      BOB,
+    );
+    assertEquals(errorFrame(created), undefined);
+    for (const type of ["workspace.resume", "workspace.suspend"]) {
+      const frames = await sendRequest(ctx, request(type, "data-made"), BOB);
+      assertEquals(errorFrame(frames), undefined, type);
+    }
+  });
+});
+
+Deno.test("serve workspace requests: a root admin resumes and suspends an imported repo, which the host serves from its folder, and is refused its delete", async () => {
+  await withRoot(async (root) => {
+    const folder = await root.importRepo("mine");
+    const ctx = root.ctx();
+    await root.rescan();
+    assertEquals(root.port.spawned, []);
+    const listed = reply(
+      await sendRequest(ctx, request("workspace.list"), ALICE),
+      "workspace.list",
+    ) as { workspaces: { name: string; owner?: string; wanted: string }[] };
+    assertEquals(listed.workspaces, [
+      { ...listed.workspaces[0], name: "mine", owner: "operator" },
+    ]);
+    assertEquals(listed.workspaces[0].wanted, "suspended");
+
+    reply(
+      await sendRequest(ctx, request("workspace.resume", "mine"), ALICE),
+      "workspace.resume",
+    );
+    const wanted = parseYaml(
+      await Deno.readTextFile(join(root.workspacesDir, "mine.wanted.yaml")),
+    ) as Record<string, unknown>;
+    assertEquals(wanted.folder, folder);
+    await root.rescan();
+    await waitFor(() => root.port.spawned.includes("mine"), "mine started");
+
+    reply(
+      await sendRequest(ctx, request("workspace.suspend", "mine"), ALICE),
+      "workspace.suspend",
+    );
+    const refused = errorFrame(
+      await sendRequest(ctx, request("workspace.delete", "mine"), ALICE),
+    )?.error;
+    assertEquals(refused?.code, "operator_workspace");
+    assertStringIncludes(String(refused?.message), "swamp workspace remove");
+    assert((await Deno.stat(join(folder, ".swamp.yaml"))).isFile);
+  });
+});
+
+Deno.test("serve workspace requests: create refuses the name of an imported repo", async () => {
+  await withRoot(async (root) => {
+    await root.importRepo("mine");
+    const error = errorFrame(
+      await sendRequest(root.ctx(), request("workspace.create", "mine"), ALICE),
+    )?.error;
+    assertEquals(error?.code, "already_exists");
+  });
+});
+
+Deno.test("serve workspace requests: while the registry cannot be read, an imported repo keeps its refusals", async () => {
+  await withRoot(async (root) => {
+    await root.importRepo("data-personal");
+    const admin = root.ctx();
+    reply(
+      await sendRequest(
+        admin,
+        request("workspace.suspend", "data-personal"),
+        ALICE,
+      ),
+      "workspace.suspend",
+    );
+    await root.corruptRegistry();
+
+    const grantee = root.ctx({}, [
+      workspaceGrant(BOB, ["read", "admin"], "data-*"),
+    ]);
+    const audit = recordAudit(grantee);
+    const resumed = errorFrame(
+      await sendRequest(
+        grantee,
+        request("workspace.resume", "data-personal"),
+        BOB,
+      ),
+    )?.error;
+    assertEquals(resumed?.code, "operator_workspace");
+    assertEquals(
+      audit.filter((e) => e.outcome === "denied").map((e) => e.resourceName),
+      ["data-personal"],
+    );
+    const deleted = errorFrame(
+      await sendRequest(
+        admin,
+        request("workspace.delete", "data-personal"),
+        ALICE,
+      ),
+    )?.error;
+    assertEquals(deleted?.code, "operator_workspace");
+    const wanted = parseYaml(
+      await Deno.readTextFile(
+        join(root.workspacesDir, "data-personal.wanted.yaml"),
+      ),
+    ) as Record<string, unknown>;
+    assertEquals(wanted.wanted, "suspended");
   });
 });

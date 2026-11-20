@@ -59,6 +59,7 @@ import {
   type WorkspaceRegistrar,
 } from "./workspace_registration.ts";
 import { createWorkspaceRoster } from "./workspace_roster.ts";
+import { freshFolderClaim } from "../../libswamp/workspace/hosted_roster.ts";
 import type { HostedRegistryDeps } from "../../libswamp/workspace/hosted_registration.ts";
 import {
   createWorkspaceRouter,
@@ -115,10 +116,11 @@ export async function startServeHost(
   const registryProblems = new RegistryProblemLog();
   const roster = createWorkspaceRoster({
     workspacesDir: config.workspacesDir,
+    rootRepo: config.root,
     store: options.workspaceStore,
     problems: registryProblems,
   });
-  const folders = await roster.read(scan);
+  const folders = await roster.read(scan, reads);
 
   const statusWriter = createStatusWriter({
     workspacesDir: config.workspacesDir,
@@ -188,6 +190,12 @@ export async function startServeHost(
     repository,
     statusWriter,
     registrar,
+    freshClaim: (name) =>
+      freshFolderClaim({
+        store: options.workspaceStore,
+        workspacesDir: config.workspacesDir,
+        name,
+      }),
   });
   const stack: HostStack = {
     watcher: null,
@@ -211,8 +219,14 @@ export async function startServeHost(
       initial: started,
       rescanMs,
       onChange: (change) => options.onWorkspaceChange?.(change),
-      onRescan: async (rescan) =>
-        reconciler.reconcile(rescan, await roster.read(rescan)),
+      onRescan: async (rescan) => {
+        const rescanReads = await readWantedFiles(repository, rescan);
+        reconciler.reconcile(
+          rescan,
+          rescanReads,
+          await roster.read(rescan, rescanReads),
+        );
+      },
       served: () => reconciler.served(),
     }, skipLog);
   } catch (error) {

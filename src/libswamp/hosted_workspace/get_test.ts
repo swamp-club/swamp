@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { join } from "@std/path";
 import { assertEquals } from "@std/assert";
 import type { HostedWorkspaceWanted } from "../../domain/serve/hosted_workspace.ts";
 import type { ObservedServeState } from "../../domain/serve/managed_serve.ts";
@@ -94,6 +95,7 @@ Deno.test("hostedWorkspaceGet: reports the state and restarts, and describes the
           state,
           restarts: 5,
           reason: shown,
+          owner: "host",
         },
       },
     );
@@ -113,17 +115,49 @@ Deno.test("hostedWorkspaceGet: a name with neither a folder nor a wanted file is
   );
 });
 
-Deno.test("hostedWorkspaceGet: a repo registered outside workspaces/ is not found", async () => {
+Deno.test("hostedWorkspaceGet: a repo registered outside workspaces/ is the operator's own, stopped until resumed", async () => {
   await using host = await hostFolder();
+  const outside = join(host.dir, "..", "projects", "outside");
+  await Deno.mkdir(outside, { recursive: true });
+  await Deno.writeTextFile(join(outside, ".swamp.yaml"), "");
   await host.store.registry.update((registry) => {
     registry.register({
       name: "outside",
-      path: Deno.cwd(),
+      path: outside,
+      createdAt: "2026-11-17T10:00:00.000Z",
+    });
+  });
+  await assertCompletes<HostedWorkspaceGetEvent>(
+    hostedWorkspaceGet(ctx, host.deps(), { name: "outside" }),
+    {
+      kind: "completed",
+      data: {
+        name: "outside",
+        address: "https://host.example/w/outside",
+        wanted: "suspended",
+        state: null,
+        restarts: null,
+        reason: null,
+        owner: "operator",
+      },
+    },
+  );
+});
+
+Deno.test("hostedWorkspaceGet: the root's repo is never one of the workspaces, though registered", async () => {
+  await using host = await hostFolder();
+  const root = join(host.dir, "..", "root");
+  await Deno.mkdir(root);
+  await Deno.writeTextFile(join(root, ".swamp.yaml"), "");
+  await host.store.registry.update((registry) => {
+    registry.register({
+      name: "main",
+      path: root,
       createdAt: "2026-11-17T10:00:00.000Z",
     });
   });
   await assertErrors<HostedWorkspaceGetEvent>(
-    hostedWorkspaceGet(ctx, host.deps(), { name: "outside" }),
+    hostedWorkspaceGet(ctx, host.deps({ rootRepo: root }), { name: "main" }),
     "not_found",
   );
 });

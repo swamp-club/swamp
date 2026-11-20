@@ -2202,6 +2202,7 @@ export {
   type HostedWorkspaceProvisionSpec,
   type HostedWorkspaceRootAccess,
   type HostedWorkspaceSummary,
+  OPERATOR_WORKSPACE_CODE,
 } from "./hosted_workspace/deps.ts";
 export {
   hostedWorkspaceDelete,
@@ -2272,10 +2273,17 @@ export {
   unregisterHostedWorkspace,
 } from "./workspace/hosted_registration.ts";
 export {
+  freshFolderClaim,
   type HostedRegistryRead,
+  type HostedRoster,
   type HostedWorkspaceFolder,
   hostedWorkspaceFolders,
+  type HostedWorkspaceOwner,
+  hostFolderClaimedBy,
   readHostedRegistry,
+  registryOfRead,
+  wantedFolderMatches,
+  wantedFolderOf,
 } from "./workspace/hosted_roster.ts";
 
 export {

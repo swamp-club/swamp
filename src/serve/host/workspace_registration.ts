@@ -68,6 +68,8 @@ export function hostWorkspaceStore(dirs: {
 /** one line per reason for a registry the host cannot read, whichever part of the host met it */
 export class RegistryProblemLog {
   readonly #reported = new ReasonMemo();
+  /** the file the host read is gone; a write would create one without the entries it held */
+  fileGone = false;
 
   unreadable(reason: string): void {
     if (!this.#reported.changed("unreadable", reason)) return;
@@ -142,7 +144,7 @@ export function createWorkspaceRegistrar(options: {
           return;
         }
         logger.error(
-          "Workspace folder {folder} cannot be registered: the name {name} is registered to {registered}. A later release stops serving this folder until that is resolved; free the name with swamp workspace remove {name}, or rename the folder",
+          "Workspace folder {folder} is not served: the name {name} is registered to {registered}, so neither is started. Free the name with swamp workspace remove {name} to serve this folder again, or rename one of them",
           {
             folder: workspace.folder,
             name: workspace.name,
@@ -155,7 +157,7 @@ export function createWorkspaceRegistrar(options: {
           return;
         }
         logger.error(
-          "Workspace folder {folder} cannot be registered as {name}: it is registered as {registered}. A later release stops serving this folder until that is resolved; run swamp workspace remove {registered} and the host registers it as {name}",
+          "Workspace folder {folder} is listed as {registered}, not as {name}: it is registered under that name. Run swamp workspace remove {registered} and the host registers it as {name}",
           {
             folder: workspace.folder,
             name: workspace.name,
@@ -191,6 +193,7 @@ export function createWorkspaceRegistrar(options: {
     const listed = served();
     try {
       if (!await forgetPending(new Set(listed))) return;
+      if (problems.fileGone) return;
       if (listed.length > 0) {
         const result = await registerHostedWorkspaces(store, {
           workspacesDir,

@@ -71,6 +71,10 @@ function restartsText(summary: HostedWorkspaceSummaryData): string {
   return summary.restarts === null ? "-" : shown(String(summary.restarts));
 }
 
+function ownerText(summary: HostedWorkspaceSummaryData): string {
+  return summary.owner === undefined ? "-" : shown(String(summary.owner));
+}
+
 export function renderWorkspaceCreate(
   data: WorkspaceCreateResponse["data"],
   mode: OutputMode,
@@ -118,12 +122,16 @@ export function renderWorkspaceList(
     ].join("\n"));
     return;
   }
+  // an older root says nothing of owners, so its list keeps its columns
+  const owners = workspaces.some((summary) => summary.owner !== undefined);
   const headers = ["NAME", "ADDRESS", "STATE", "RESTARTS"];
+  if (owners) headers.push("OWNER");
   const rows = workspaces.map((summary) => [
     shown(summary.name),
     shown(summary.address),
     stateText(summary),
     restartsText(summary),
+    ...(owners ? [ownerText(summary)] : []),
   ]);
   const widths = headers.map((header, i) =>
     Math.max(header.length, maxOf(rows.map((row) => row[i].length)) ?? 0)
@@ -157,6 +165,15 @@ export function renderWorkspaceGet(
     }`,
     `${bold(cyan("Restarts:"))} ${restartsText(summary)}`,
   ];
+  if (summary.owner === "operator") {
+    lines.push(
+      `${
+        bold(cyan("Owner:"))
+      } operator (a repo the host's user registered, run from its own folder)`,
+    );
+  } else if (summary.owner === "host") {
+    lines.push(`${bold(cyan("Owner:"))} host`);
+  }
   if (summary.state !== "ready" && summary.reason !== null) {
     lines.push(`${bold(cyan("Reason:"))} ${shown(summary.reason)}`);
   }

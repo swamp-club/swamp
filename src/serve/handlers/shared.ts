@@ -1942,6 +1942,40 @@ export function resourceDecider(
   return callerResourceDecider(accessCallerOf(socket, principal), action, ctx);
 }
 
+/** one of the root's admins: admin on access:*, which every caller is in none mode */
+export function isRootAdmin(
+  socket: WebSocket,
+  principal: Principal | null,
+  ctx: ConnectionContext,
+): boolean {
+  return callerResourceDecider(accessCallerOf(socket, principal), "admin", ctx)(
+    { kind: "access", name: "*", fields: {} },
+  );
+}
+
+/** a refusal a handler decides after authorization passed, audited as any denial is */
+export function auditDenial(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  principal: Principal | null,
+  action: Action,
+  resource: AccessResource,
+  detail: string,
+): void {
+  emitDenial(
+    socket,
+    ctx,
+    requestId,
+    principal,
+    action,
+    resource,
+    detail,
+    null,
+    [...accessCallerOf(socket, principal).groups],
+  );
+}
+
 export function callerResourceDecider(
   caller: AccessCaller,
   action: Action,

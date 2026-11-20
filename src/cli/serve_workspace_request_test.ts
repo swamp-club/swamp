@@ -179,6 +179,30 @@ Deno.test("sendWorkspaceRequest: a taken name reads as the root's message", asyn
   assertEquals(error.code, "already_exists");
 });
 
+Deno.test("sendWorkspaceRequest: a registered repo's refusal reads as the root's message", async () => {
+  const message =
+    "Workspace mine is a repo the host's user registered, so no request deletes it. To stop serving it, run swamp workspace remove mine on the host; its folder is kept.";
+  const error = await refusedWith(
+    "operator_workspace",
+    message,
+    namedWorkspaceRequest("workspace.delete", "mine"),
+  );
+  assertEquals(error.message, message);
+  assertEquals(error.code, "operator_workspace");
+});
+
+Deno.test("sendWorkspaceRequest: a name clash's refusal reads as the root's message", async () => {
+  const message =
+    "The name alpha is held by a repo the host's user registered while a folder of the same name is in the host's workspaces folder, so neither is started.";
+  const error = await refusedWith(
+    "workspace_name_clash",
+    message,
+    namedWorkspaceRequest("workspace.resume", "alpha"),
+  );
+  assertEquals(error.message, message);
+  assertEquals(error.code, "workspace_name_clash");
+});
+
 Deno.test("sendWorkspaceRequest: a refused request names the root and keeps its reason", async () => {
   const error = await refusedWith(
     "unauthorized",

@@ -140,3 +140,35 @@ Deno.test("serveWantedOfRecord: no record is not started, and a record maps as i
   assertEquals(serveWantedOfRecord(active.suspend(T1)), "suspended");
   assertEquals(serveWantedOfRecord(active.markDeleted(T1)), "deleted");
 });
+
+Deno.test("HostedWorkspace.withFolder: the folder is kept through suspend, resume and delete, and is part of equals", () => {
+  const plain = HostedWorkspace.create("edge-dns", "alice", T1);
+  const named = plain.withFolder("/srv/repos/edge-dns");
+  assertEquals(named.folder, "/srv/repos/edge-dns");
+  assertEquals(plain.folder, null);
+  assert(!named.equals(plain));
+  assertEquals(named.suspend(T2).folder, "/srv/repos/edge-dns");
+  assertEquals(named.suspend(T2).resume(T3).folder, "/srv/repos/edge-dns");
+  assertEquals(named.markDeleted(T2).folder, "/srv/repos/edge-dns");
+  assert(named.withFolder(null).equals(plain));
+  assertEquals(named.withFolder(null).toRecord(), plain.toRecord());
+  assertThrows(() => plain.withFolder(""), UserError);
+});
+
+Deno.test("HostedWorkspace.fromRecord: a record with no folder or a null folder is a workspace in workspaces/", () => {
+  const record = {
+    name: "edge-dns",
+    creator: null,
+    wanted: "active" as const,
+    changedAt: null,
+  };
+  assertEquals(HostedWorkspace.fromRecord(record).folder, null);
+  assertEquals(
+    HostedWorkspace.fromRecord({ ...record, folder: null }).toRecord(),
+    record,
+  );
+  assertThrows(
+    () => HostedWorkspace.fromRecord({ ...record, folder: "" }),
+    UserError,
+  );
+});

@@ -186,6 +186,48 @@ Deno.test("renderWorkspaceList: escapes control characters the root sent", () =>
   assertStringIncludes(out, "https://h\\x07");
 });
 
+Deno.test("renderWorkspaceList: an owner column appears only when the root sends owners", () => {
+  const older = captured(() => renderWorkspaceList([summary()], "log", TARGET));
+  assertEquals(older.includes("OWNER"), false);
+  const newer = captured(() =>
+    renderWorkspaceList(
+      [
+        summary({ owner: "host" }),
+        summary({ name: "mine", owner: "operator" }),
+        summary({ name: "pending" }),
+      ],
+      "log",
+      TARGET,
+    )
+  );
+  const lines = newer.split("\n");
+  assertStringIncludes(lines[0], "OWNER");
+  assert(lines[1].trimEnd().endsWith("host"), lines[1]);
+  assert(lines[2].trimEnd().endsWith("operator"), lines[2]);
+  assert(lines[3].trimEnd().endsWith("-"), lines[3]);
+});
+
+Deno.test("renderWorkspaceGet: log says whose a workspace is when the root says, and json carries it", () => {
+  const operator = captured(() =>
+    renderWorkspaceGet(summary({ owner: "operator" }), "log")
+  );
+  assertStringIncludes(operator, "Owner: operator (");
+  assertStringIncludes(
+    captured(() => renderWorkspaceGet(summary({ owner: "host" }), "log")),
+    "Owner: host",
+  );
+  assertEquals(
+    captured(() => renderWorkspaceGet(summary(), "log")).includes("Owner:"),
+    false,
+  );
+  assertEquals(
+    JSON.parse(
+      captured(() => renderWorkspaceGet(summary({ owner: "host" }), "json")),
+    ).owner,
+    "host",
+  );
+});
+
 Deno.test("renderWorkspaceGet: json is the summary as the root sent it", () => {
   const data = summary({ state: "failed", restarts: 5, reason: "It failed." });
   const out = captured(() => renderWorkspaceGet(data, "json"));

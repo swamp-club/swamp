@@ -73,6 +73,8 @@ const ROOT_MESSAGE_CODES: ReadonlySet<string> = new Set([
   "wanted_unreadable",
   "username_unknown",
   "not_a_user",
+  "operator_workspace",
+  "workspace_name_clash",
   "host_error",
   // an older root refuses create in token mode with this code
   "token_mode_create_refused",
