@@ -474,10 +474,13 @@ spelling an operator writes still matches.
   its own name either: the entry has the folder, so no repo has two serves.
   The host logs that clash the same way, and `workspace.list` and
   `workspace.get` say of the folder's own name that its folder is registered
-  under the other one. Nothing done under the folder's own name reaches it: `workspace.delete` refuses that name with
+  under another name, without naming it, since the caller may hold no grant on
+  it. Nothing done under the folder's own name reaches it: `workspace.delete` refuses that name with
   `operator_workspace`, a wanted file under it neither starts nor removes
   anything, and just before it removes any folder the host checks both the
-  workspaces it last listed and the registry read afresh.
+  workspaces it last listed and the registry read afresh. A removal that finds
+  its folder claimed then is dropped with its `deleted`, never retried, so
+  freeing the name later deletes nothing.
 - A registry entry whose name is not a workspace name is passed over.
 - A registered folder that is gone, or holds no `.swamp.yaml`, is listed and
   not started, and its status file's reason says so. The host looks again at
@@ -501,7 +504,9 @@ keeps the entries last read whole, and registers nothing. At startup, with
 nothing read yet, it serves what the wanted files name, each `active` one in the
 folder that file names or stands for, so a bad registry does not stop a host at
 its next restart. A folder a wanted file names is served only when it holds a
-`.swamp.yaml` and is not the root's repo, and the host logs each one it lists.
+`.swamp.yaml`, is not the root's repo, and is not already a folder in
+`workspaces/` or another wanted file's folder, so no repo gets two serves, and
+the host logs each one it lists.
 When the registry can be read again, a workspace listed only from its wanted
 file that has no entry is stopped, and its wanted file is kept. The workspace
 services answer the same way while the registry cannot be read. They then

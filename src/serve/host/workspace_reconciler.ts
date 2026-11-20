@@ -126,6 +126,13 @@ class RemovalStepError extends Error {
   }
 }
 
+/** the folder another workspace has, which ends a removal rather than failing it */
+class FolderClaimedError extends Error {
+  constructor(readonly claim: string) {
+    super(`its folder is not removed: ${claim}`);
+  }
+}
+
 /** a retry every rescan logs once per reason, not once per attempt */
 export class ReasonMemo {
   readonly #reasons = new Map<string, string>();
@@ -526,6 +533,10 @@ export function createWorkspaceReconciler(
         throw new RemovalStepError("unregister", error);
       });
     } catch (error) {
+      if (error instanceof FolderClaimedError) {
+        abandonRemoval(name, entry);
+        return;
+      }
       if (!(error instanceof RemovalStepError)) throw error;
       // a status write wakes the folder watcher, so one per reason, not per try
       if (!removalFailures.changed(name, error.key)) return;
@@ -547,6 +558,15 @@ export function createWorkspaceReconciler(
     logger.info("Removed workspace {name}", { name });
   };
 
+  // dropped, not retried: a retry after the name is freed would remove the folder
+  const abandonRemoval = (name: string, entry: Known) => {
+    const deleted = entry.record;
+    entry.record = null;
+    entry.recordMatches = true;
+    removalFailures.clear(name);
+    if (deleted !== null) dropDeleted(name, deleted);
+  };
+
   // the files stay until no folder of the name is left, renamed by an earlier try or not
   const removeData = async (name: string, removing: Known) => {
     const folder = join(workspacesDir, name);
@@ -560,12 +580,7 @@ export function createWorkspaceReconciler(
       const claim = claimedBy !== null
         ? `it is registered as ${claimedBy}`
         : await options.freshClaim?.(name) ?? null;
-      if (claim !== null) {
-        throw new RemovalStepError(
-          "rename",
-          new Error(`its folder is not removed: ${claim}`),
-        );
-      }
+      if (claim !== null) throw new FolderClaimedError(claim);
       // a rename never follows a link, so a linked folder loses only its link
       const hidden = removing.hiddenName ??= deletingFolderName(name);
       sweeping.add(hidden);

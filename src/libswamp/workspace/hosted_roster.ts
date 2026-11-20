@@ -229,6 +229,7 @@ export async function hostedWorkspaceFolders(input: {
       if (listed?.owner !== "host") passedOver.push(name);
       continue;
     }
+    claimed.add(real);
     // the scanned spelling, so a folder that could not be registered keeps its path
     workspaces.set(name, {
       name,
@@ -241,11 +242,17 @@ export async function hostedWorkspaceFolders(input: {
   }
 
   if (input.registry === null) {
-    for (const [name, record] of input.wanted ?? []) {
+    const wanted = [...(input.wanted ?? [])].sort(([a], [b]) =>
+      a < b ? -1 : a > b ? 1 : 0
+    );
+    for (const [name, record] of wanted) {
       if (workspaces.has(name) || record.wanted !== "active") continue;
       if (record.folder === null) continue;
       const real = await realPath(resolve(record.folder));
-      if (real === rootReal || !(await isRepo(real))) continue;
+      if (real === rootReal || claimed.has(real) || !(await isRepo(real))) {
+        continue;
+      }
+      claimed.add(real);
       workspaces.set(name, {
         name,
         folder: real,

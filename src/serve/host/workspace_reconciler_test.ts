@@ -1210,7 +1210,7 @@ Deno.test("createWorkspaceReconciler: the registrar is asked to register the hos
   assertEquals(h.registrar.calls, ["forget:vanished"]);
 });
 
-Deno.test("createWorkspaceReconciler: a removal never takes a folder another workspace has, and says so", async () => {
+Deno.test("createWorkspaceReconciler: a removal that finds its folder is another workspace's is dropped, never retried", async () => {
   await using h = await harness();
   await makeRepo(h.dir, "gamma");
   await Deno.writeTextFile(join(h.dir, "gamma", "TEAM_DATA.txt"), "keep me");
@@ -1226,7 +1226,7 @@ Deno.test("createWorkspaceReconciler: a removal never takes a folder another wor
     "keep me",
   );
   assertEquals(h.registrar.calls, []);
-  assert((await statusOf(h, "gamma")).includes("registered as beta"));
+  assertEquals(await exists(join(h.dir, "gamma.wanted.yaml")), false);
 });
 
 Deno.test("createWorkspaceReconciler: an entry shadowing a folder of its name is never started, and says to free the name, not to name its folder", async () => {
@@ -1328,5 +1328,41 @@ Deno.test("createWorkspaceReconciler: a removal stops when the registry, read af
   await h.reconciler.drain();
   assertEquals(asked, ["gamma"]);
   assert(await exists(join(h.dir, "gamma", REPO_MARKER_FILE)));
-  assert((await statusOf(h, "gamma")).includes("registered as beta"));
+  assertEquals(await exists(join(h.dir, "gamma.wanted.yaml")), false);
+});
+
+Deno.test("createWorkspaceReconciler: a removal under way when its folder is registered under another name is dropped, so freeing that name deletes nothing", async () => {
+  await using h = await harness();
+  await makeRepo(h.dir, "gamma");
+  await Deno.writeTextFile(join(h.dir, "gamma", "TEAM_DATA.txt"), "keep me");
+  await want(h.dir, "gamma", "wanted: active\n");
+  await h.begin();
+  await waitFor(() => h.observed("gamma") === "ready", "started");
+  const child = h.port.of("gamma")[0];
+  child.ignoresTerminate = true;
+
+  // an authorized delete, then the operator imports the folder as beta while it stops
+  await want(
+    h.dir,
+    "gamma",
+    "wanted: deleted\nchangedAt: 2026-11-20T00:00:00.000Z\n",
+  );
+  await h.rescan();
+  h.registered.set("beta", { folder: join(h.dir, "gamma") });
+  await h.rescan();
+  child.ignoresTerminate = false;
+  child.exit(0);
+  await h.reconciler.drain();
+  assertEquals(await exists(join(h.dir, "gamma.wanted.yaml")), false);
+
+  // the operator frees the name, as the host's log advises
+  h.registered.delete("beta");
+  await h.rescan();
+  await h.rescan();
+  await h.reconciler.drain();
+  assertEquals(
+    await Deno.readTextFile(join(h.dir, "gamma", "TEAM_DATA.txt")),
+    "keep me",
+  );
+  assertEquals(h.supervisor.lookup(id("gamma"))?.wanted, "suspended");
 });

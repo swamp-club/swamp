@@ -193,12 +193,10 @@ export function operatorWorkspaceUndeletable(name: string): UserError {
   );
 }
 
-export function operatorWorkspaceFolderClaimed(
-  name: string,
-  claimedBy: string,
-): UserError {
+// the other name is not given: the caller may hold no grant on it
+export function operatorWorkspaceFolderClaimed(name: string): UserError {
   return new UserError(
-    `The folder of workspace ${name} is registered as ${claimedBy}, a repo the host's user registered, so no request deletes it. To stop serving it, run swamp workspace remove ${claimedBy} on the host; its folder is kept.`,
+    `The folder of workspace ${name} is registered under another name, a repo the host's user registered, so no request deletes it. On the host, swamp workspace list shows which; its folder is kept.`,
     OPERATOR_WORKSPACE_CODE,
   );
 }
@@ -264,16 +262,17 @@ export async function summarizeHostedWorkspace(
   deps: HostedWorkspaceDeps,
   name: string,
   owner?: HostedWorkspaceOwner,
-  /** for a name not listed, the workspace its `workspaces/<name>` folder is registered as */
-  claimedBy?: string | null,
+  /** for a name not listed, whether another workspace has its `workspaces/<name>` folder */
+  claimed?: boolean,
 ): Promise<HostedWorkspaceSummary> {
   const [wanted, status] = await Promise.all([
     deps.repository.findByName(name),
     readHostedWorkspaceStatus(deps.workspacesDir, name),
   ]);
   const found = status.kind === "found" ? status.status : null;
-  const reason = claimedBy
-    ? `Its folder is registered as ${claimedBy}, so it is listed and served under that name, not this one.`
+  // the other name is not given: the caller may hold no grant on it
+  const reason = claimed
+    ? "Its folder is registered under another name, so it is listed and served under that name, not this one."
     : wanted.kind === "unreadable"
     ? "Its wanted file cannot be read, so the host leaves it as it is."
     : status.kind === "unreadable"
@@ -327,7 +326,12 @@ export async function summarizeListedName(
       workspaces: names.workspaces.values(),
     })
     : null;
-  return await summarizeHostedWorkspace(deps, name, listing?.owner, claimedBy);
+  return await summarizeHostedWorkspace(
+    deps,
+    name,
+    listing?.owner,
+    claimedBy !== null,
+  );
 }
 
 /** a workspace the host would run, or a wanted file with or without one */
@@ -417,7 +421,7 @@ export interface HostedWorkspaceChange {
   /** a refusal decided under the lock from whose the workspace is; null allows */
   readonly refuse: (name: string, whose: WorkspaceWhose) => UserError | null;
   /** for a name not listed whose `workspaces/<name>` folder another workspace has */
-  readonly refuseClaimed?: (name: string, claimedBy: string) => UserError;
+  readonly refuseClaimed?: (name: string) => UserError;
 }
 
 /**
@@ -443,7 +447,7 @@ export async function changeHostedWorkspace(
         name,
         workspaces: names.workspaces.values(),
       });
-      if (claimedBy !== null) throw change.refuseClaimed(name, claimedBy);
+      if (claimedBy !== null) throw change.refuseClaimed(name);
     }
     let current: HostedWorkspace;
     if (read.kind === "found") {

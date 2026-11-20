@@ -24,6 +24,7 @@ import {
   type WorkspaceEntry,
   WorkspaceRegistry,
 } from "../../domain/workspace/workspace_registry.ts";
+import { HostedWorkspace } from "../../domain/serve/hosted_workspace.ts";
 import { hostedWorkspaceFolders } from "./hosted_roster.ts";
 
 const WORKSPACES_DIR = join(SEPARATOR, "host", "workspaces");
@@ -135,6 +136,58 @@ Deno.test("hostedWorkspaceFolders: every entry outside workspaces/ is listed, an
         if (byName.has(name)) continue;
         assertEquals(listedFolders.has(join(WORKSPACES_DIR, name)), true);
       }
+    }),
+  );
+});
+
+// with no registry read, wanted files naming scanned folders, the root, or each other's folder
+const arbFallback = fc.record({
+  scanned: fc.subarray([...NAMES]),
+  wanted: fc.dictionary(
+    fc.constantFrom("w1", "w2", "w3", ...NAMES),
+    fc.record({
+      active: fc.boolean(),
+      target: fc.constantFrom<"scanned" | "root" | "shared" | "own">(
+        "scanned",
+        "root",
+        "shared",
+        "own",
+      ),
+      of: fc.constantFrom(...NAMES),
+    }),
+  ),
+});
+
+Deno.test("hostedWorkspaceFolders: with no registry read, one folder per workspace still, and never the root", async () => {
+  await fc.assert(
+    fc.asyncProperty(arbFallback, async ({ scanned, wanted }) => {
+      const records = new Map(
+        Object.entries(wanted).map(([name, w]) => {
+          const folder = w.target === "scanned"
+            ? join(WORKSPACES_DIR, w.of)
+            : w.target === "root"
+            ? ROOT + SEPARATOR
+            : w.target === "shared"
+            ? join(SEPARATOR, "projects", "shared")
+            : join(SEPARATOR, "projects", name);
+          const record = HostedWorkspace.active(name).withFolder(folder);
+          return [name, w.active ? record : record.suspend(new Date(0))];
+        }),
+      );
+      const { workspaces } = await hostedWorkspaceFolders({
+        workspacesDir: WORKSPACES_DIR,
+        scanned,
+        registry: null,
+        rootRepo: ROOT,
+        wanted: records,
+        realPath,
+        isRepo: () => Promise.resolve(true),
+      });
+      const folders = await Promise.all(
+        workspaces.map((w) => realPath(w.folder)),
+      );
+      assertEquals(folders.length, new Set(folders).size);
+      assertEquals(folders.includes(ROOT), false);
     }),
   );
 });

@@ -347,7 +347,11 @@ Deno.test("hostedWorkspaceDelete: a name whose folder is registered under anothe
     hostedWorkspaceDelete(ctx, host.deps(), { name: "gamma" }),
   );
   assertEquals(refused.code, OPERATOR_WORKSPACE_CODE);
-  assert(refused.message.includes("registered as beta"), refused.message);
+  assert(
+    refused.message.includes("registered under another name"),
+    refused.message,
+  );
+  assert(!refused.message.includes("beta"), "names no other workspace");
   assert(!refused.message.includes(host.dir), "names no host path");
   assertEquals((await wantedFile(host.dir, "gamma")).wanted, "active");
 });
