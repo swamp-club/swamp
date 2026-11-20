@@ -26,7 +26,11 @@ import {
 } from "../../domain/serve/managed_serve.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { readCredentialFile } from "../../infrastructure/persistence/api_key_source.ts";
-import { HostedWorkspaceFileRepository } from "../../infrastructure/persistence/hosted_workspace_file_repository.ts";
+import {
+  HostedWorkspaceFileRepository,
+  hostedWorkspaceLock,
+} from "../../infrastructure/persistence/hosted_workspace_file_repository.ts";
+import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
 import { validateEndEntityCert } from "../../infrastructure/runtime/tls_cert_validation.ts";
 import {
   acquireHostStateLock,
@@ -105,11 +109,35 @@ export interface ServeHost {
   readonly finished: Promise<void>;
 }
 
+/** short, so a rescan never waits out a create's set-up */
+const IDLE_LOCK_WAIT_MS = 250;
+
 export function createdWorkspaceRemoval(
-  options: Pick<ServeHostOptions, "workspaceStore" | "configuredParent">,
+  options: Pick<ServeHostOptions, "workspaceStore" | "configuredParent"> & {
+    readonly stateDir: string;
+  },
 ): CreatedWorkspaceRemoval {
   const store = options.workspaceStore;
   return {
+    async whileIdle(name, fn) {
+      const lock = hostedWorkspaceLock(
+        options.stateDir,
+        name,
+        IDLE_LOCK_WAIT_MS,
+        "debug",
+      );
+      try {
+        await lock.acquire();
+      } catch (error) {
+        if (error instanceof LockTimeoutError) return "busy";
+        throw error;
+      }
+      try {
+        return await fn();
+      } finally {
+        await lock.release();
+      }
+    },
     async registeredFolder(name) {
       const read = await registeredFolderOf(store, name);
       if (read.kind === "unreadable") throw new Error(read.reason);
@@ -251,7 +279,9 @@ async function startLocked(
   const reconciler = createWorkspaceReconciler({
     workspacesDir: config.stateDir,
     hostFolder: repos,
-    created: repos ? undefined : createdWorkspaceRemoval(options),
+    created: repos
+      ? undefined
+      : createdWorkspaceRemoval({ ...options, stateDir: config.stateDir }),
     holdsOAuthSecret: (folder) =>
       secretFile !== null && isWithin(realPathSyncOrSelf(folder), secretFile),
     supervisor,

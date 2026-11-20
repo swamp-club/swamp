@@ -29,8 +29,10 @@ import {
 import type { ObservedServeState } from "../../domain/serve/managed_serve.ts";
 import { parseWorkspaceName } from "../../domain/workspace/workspace_name.ts";
 import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
-import { FileLock } from "../../infrastructure/persistence/file_lock.ts";
-import { HostedWorkspaceFileRepository } from "../../infrastructure/persistence/hosted_workspace_file_repository.ts";
+import {
+  HostedWorkspaceFileRepository,
+  hostedWorkspaceLock,
+} from "../../infrastructure/persistence/hosted_workspace_file_repository.ts";
 import { scanWorkspaces } from "../../infrastructure/persistence/hosted_workspace_folder_scan.ts";
 import {
   type HostedWorkspaceStatus,
@@ -146,11 +148,7 @@ export function createHostedWorkspaceDeps(options: {
     now: () => new Date(),
     withLock: async (name, fn) => {
       await ensureDir(workspacesDir);
-      // hidden, so neither the host's scan nor list sees the lock or its claims
-      const lock = new FileLock(workspacesDir, {
-        lockKey: `.${parseWorkspaceName(name)}.lock`,
-        maxWaitMs: lockWaitMs,
-      });
+      const lock = hostedWorkspaceLock(workspacesDir, name, lockWaitMs);
       try {
         await lock.acquire();
       } catch (error) {
@@ -421,7 +419,8 @@ function whoseOf(
 ): WorkspaceWhose {
   if (listing !== undefined) {
     return {
-      owner: listing.owner,
+      // with no host folder a creator decides, and only the registry can confirm its folder
+      owner: listing.fromWantedFile && !hostFolder ? "unknown" : listing.owner,
       shadows: listing.shadows,
       registryRead: names.registryRead,
     };
@@ -508,8 +507,12 @@ export async function changeHostedWorkspace(
       });
     }
     let next = change.apply(current, deps.now());
-    // with no host folder a creator makes ownership, which only create writes
-    if (listing?.owner === "operator" && !deps.hostFolder) {
+    // with no host folder a creator makes ownership, which only create writes;
+    // one listed from its wanted file has an owner the registry cannot confirm, so it is kept
+    if (
+      listing?.owner === "operator" && !listing.fromWantedFile &&
+      !deps.hostFolder
+    ) {
       next = HostedWorkspace.fromRecord({ ...next.toRecord(), creator: null });
     }
     if (listing !== undefined) {

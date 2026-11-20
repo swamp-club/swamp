@@ -85,6 +85,8 @@ export interface CreatedWorkspaceRemoval {
   unregister(name: string, path: string): Promise<void>;
   /** where a create puts its hidden folder: the workspace location and the data dir's own; never rejects */
   locations(): Promise<readonly string[]>;
+  /** runs `fn` holding the name's create lock, or answers busy while a create or change holds it */
+  whileIdle<T>(name: string, fn: () => Promise<T>): Promise<T | "busy">;
 }
 
 export interface WorkspaceReconciler {
@@ -130,6 +132,8 @@ interface Known {
   /** ends a wait for a stop that a listing again may never bring */
   standDown: (() => void) | null;
   ignoredLogged: boolean;
+  /** a stopped create's leftovers are being removed */
+  settling: boolean;
   /** one hidden name per removal, so a retry neither scatters folders nor changes its error */
   hiddenName: string | null;
 }
@@ -241,6 +245,7 @@ export function createWorkspaceReconciler(
         removing: false,
         generation: 0,
         ignoredLogged: false,
+        settling: false,
         hiddenName: null,
       };
       known.set(name, entry);
@@ -395,6 +400,14 @@ export function createWorkspaceReconciler(
         return;
       }
       entry.listedFrom = null;
+      // a creator with no entry is a create that stopped before it registered, once no create holds the name
+      if (
+        !hostFolder && options.created !== undefined && read.kind === "found" &&
+        record !== null && record.creator !== null && record.folder !== null &&
+        record.wanted !== "deleted" && !entry.settling
+      ) {
+        settleStoppedCreate(name, entry, record, options.created);
+      }
       // a wanted file without a folder may be a workspace still being set up
       if (status !== undefined && status.wanted !== "deleted") {
         supervisor.setWanted(id, "deleted");
@@ -453,6 +466,43 @@ export function createWorkspaceReconciler(
           { name, error },
         );
       }),
+    );
+  };
+
+  // left alone, its creator and folder would make a later repo at that folder the host's own
+  const settleStoppedCreate = (
+    name: string,
+    entry: Known,
+    stopped: HostedWorkspace,
+    created: CreatedWorkspaceRemoval,
+  ) => {
+    entry.settling = true;
+    track(
+      (async () => {
+        const settled = await created.whileIdle(name, async () => {
+          const now = await repository.findByName(name);
+          if (now.kind !== "found" || !sameRecord(now.workspace, stopped)) {
+            return false;
+          }
+          // registered since: a workspace, listed at the next rescan
+          if (await created.registeredFolder(name) !== null) return false;
+          await sweepHidden(name, await created.locations());
+          await repository.remove(name);
+          return true;
+        });
+        if (settled === true) {
+          logger.info(
+            "Workspace {name} was left by a create that stopped before it registered; the host removed its wanted file and set-up folder",
+            { name },
+          );
+        }
+      })().catch((error) => {
+        if (!dropLog.changed(name, `settle:${errorClassOf(error)}`)) return;
+        logger.warn(
+          "Removing what a stopped create of workspace {name} left failed, and is tried again at every rescan: {error}",
+          { name, error },
+        );
+      }).finally(() => entry.settling = false),
     );
   };
 

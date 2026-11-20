@@ -413,8 +413,12 @@ its status file and the 503 its address answers say whether it runs.
   creator once the registry names another folder for its name, as after a
   `swamp workspace remove` and an import elsewhere under the same name. A name no entry holds
   is the host's own when its wanted file has a creator and a folder: a create
-  stopped before it registered, which a delete finishes without touching a
-  folder.
+  stopped before it registered. The host settles one at its next rescan, once
+  it holds the name's create lock and so knows no create is running: it removes
+  the wanted file and the hidden set-up folder, so a repo made later at that
+  folder is not the host's own. While the registry cannot be read, a workspace
+  listed from its wanted file has an owner no one can confirm: only the root's
+  admins may suspend or resume it, its creator is kept, and no delete runs.
 - **The operator's own** is any other registered workspace: a repo the host's
   user registered, wherever it is. `workspace.delete` refuses it, for the
   root's admins too, and names `swamp workspace remove`, since no workspace
@@ -803,7 +807,7 @@ Then, in order:
 | Step | What create does                                                   | Left if create stops here                     | How it ends                                                                                   |
 | ---- | ------------------------------------------------------------------ | --------------------------------------------- | --------------------------------------------------------------------------------------------- |
 | 1    | sets the repo up in `<location>/.<name>.creating-<uuid>`           | the hidden folder                             | nothing names it, so `delete` answers `not_found`; the next create of the name removes it     |
-| 2    | writes the wanted file, `suspended`, with its creator and folder   | the hidden folder and the wanted file         | `delete`: the name is the host's own; the host removes the hidden folder and both files       |
+| 2    | writes the wanted file, `suspended`, with its creator and folder   | the hidden folder and the wanted file         | the host's next rescan, holding the name's lock, removes both; a `delete` before then also does |
 | 3    | registers the entry as created, strictly                           | and an entry naming a folder not there yet    | `delete`: no folder to rename; the host removes the hidden folder, the entry and both files   |
 | 4    | renames the hidden folder into place                               | a whole workspace                             | `delete` as for any workspace of the host's own                                               |
 

@@ -32,6 +32,7 @@ import {
   creatingFolderName,
   scanWorkspaces,
 } from "../src/infrastructure/persistence/hosted_workspace_folder_scan.ts";
+import { hostedWorkspaceLock } from "../src/infrastructure/persistence/hosted_workspace_file_repository.ts";
 import { hostedWorkspaceCreate } from "../src/libswamp/hosted_workspace/create.ts";
 import { hostedWorkspaceDelete } from "../src/libswamp/hosted_workspace/delete.ts";
 import {
@@ -708,6 +709,7 @@ async function noFolderHost(
   const removal = createdWorkspaceRemoval({
     workspaceStore: store,
     configuredParent: hostConfiguredParent(configDir),
+    stateDir: dir,
   });
   const reconciler = createWorkspaceReconciler({
     workspacesDir: dir,
@@ -949,6 +951,21 @@ for (const stop of CREATE_STOPS) {
     await using h = await noFolderHost();
     await leaveCreateStopped(h, "edge-dns", stop);
     await h.rescan();
+    await h.drain();
+    if (stop === "wanted file") {
+      // no create holds the name, so the host removes what it left
+      assert(!(await pathExists(join(h.dir, "edge-dns.wanted.yaml"))));
+      assertEquals(await names(join(h.dataDir, "workspaces")), []);
+      const refused = await collect(
+        hostedWorkspaceDelete(ctx, h.deps(), { name: "edge-dns" }),
+      );
+      const error = refused.find((e) => e.kind === "error");
+      assertEquals(
+        error?.kind === "error" ? error.error.code : null,
+        "not_found",
+      );
+      return;
+    }
     if (stop === "set-up") {
       // nothing names it, so delete finds nothing and the next create sweeps the hidden folder
       const refused = await collect(
@@ -1330,4 +1347,84 @@ Deno.test("hosted workspace services, no host folder: with the data dir reached 
     assertEquals(await registeredNames(h), [], `round ${round}`);
     assertEquals(await names(join(h.root, "data-real", "workspaces")), []);
   }
+});
+
+Deno.test("hosted workspace services, no host folder: a create stopped before it registered is settled by the host, so a later swamp workspace create of the name stays the operator's own", async () => {
+  await using h = await noFolderHost();
+  await leaveCreateStopped(h, "edge-dns", "wanted file");
+  // a create still holding the name is left alone
+  const held = hostedWorkspaceLock(h.dir, "edge-dns", 1_000);
+  await held.acquire();
+  try {
+    await h.rescan();
+    await h.drain();
+    assert(await pathExists(join(h.dir, "edge-dns.wanted.yaml")), "kept");
+  } finally {
+    await held.release();
+  }
+  await h.rescan();
+  await h.drain();
+  assert(!(await pathExists(join(h.dir, "edge-dns.wanted.yaml"))));
+  assertEquals(await names(join(h.dataDir, "workspaces")), []);
+
+  // as swamp workspace create does, at the folder the stopped create named
+  const mine = join(h.dataDir, "workspaces", "edge-dns");
+  await Deno.mkdir(mine, { recursive: true });
+  await Deno.writeTextFile(join(mine, ".swamp.yaml"), "");
+  await h.store.registry.update((registry) => {
+    registry.register({
+      name: "edge-dns",
+      path: mine,
+      createdAt: "2026-11-20T12:00:00.000Z",
+      origin: "created",
+    });
+  });
+  await h.rescan();
+  await assertDeleteRefused(h, "edge-dns");
+  assert(await pathExists(join(mine, ".swamp.yaml")));
+});
+
+Deno.test("hosted workspace services, no host folder: a suspend or resume while the registry cannot be read keeps a host-created workspace the host's own", async () => {
+  await using h = await noFolderHost();
+  await collect(
+    hostedWorkspaceCreate(ctx, h.deps(), {
+      name: "edge-dns",
+      caller: ALICE,
+      access: ACCESS,
+    }),
+  );
+  await collect(hostedWorkspaceResume(ctx, h.deps(), { name: "edge-dns" }));
+  await h.rescan();
+  const registryFile = join(h.configDir, "workspaces.json");
+  const good = await Deno.readTextFile(registryFile);
+  await Deno.writeTextFile(registryFile, "{no");
+
+  const refused = await collect(
+    hostedWorkspaceSuspend(ctx, h.deps(), { name: "edge-dns" }),
+  );
+  const error = refused.find((e) => e.kind === "error");
+  assert(error?.kind === "error");
+  assertEquals(error.error.code, "operator_workspace");
+  assertStringIncludes(
+    error.error.message,
+    "cannot read its workspace registry",
+  );
+
+  const suspended = await collect(
+    hostedWorkspaceSuspend(ctx, h.deps(), {
+      name: "edge-dns",
+      rootAdmin: true,
+    }),
+  );
+  assertEquals(suspended.map((e) => e.kind), ["completed"]);
+  const wanted = parseYaml(
+    await Deno.readTextFile(join(h.dir, "edge-dns.wanted.yaml")),
+  ) as Record<string, unknown>;
+  assertEquals(wanted.creator, ALICE.principal);
+
+  await Deno.writeTextFile(registryFile, good);
+  await h.rescan();
+  await deleteAndSettle(h, "edge-dns");
+  assertEquals(await registeredNames(h), []);
+  assertEquals(await names(join(h.dataDir, "workspaces")), []);
 });

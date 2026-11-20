@@ -28,6 +28,7 @@ import {
 } from "../../domain/serve/hosted_workspace.ts";
 import { parseWorkspaceName } from "../../domain/workspace/workspace_name.ts";
 import { atomicWriteTextFile } from "./atomic_write.ts";
+import { FileLock } from "./file_lock.ts";
 
 export const WANTED_FILE_SUFFIX = ".wanted.yaml";
 export const STATUS_FILE_SUFFIX = ".status.yaml";
@@ -44,6 +45,20 @@ const WantedFileSchema = z.object({
   folder: z.string().min(1).refine(isAbsolute, "must be an absolute path")
     .optional(),
 }).strict();
+
+/** the per-name lock every create and change holds; hidden, so no scan or list sees it */
+export function hostedWorkspaceLock(
+  workspacesDir: string,
+  name: string,
+  maxWaitMs: number,
+  contentionLogLevel: "warn" | "debug" = "warn",
+): FileLock {
+  return new FileLock(workspacesDir, {
+    lockKey: `.${parseWorkspaceName(name)}.lock`,
+    maxWaitMs,
+    contentionLogLevel,
+  });
+}
 
 export function wantedFileName(name: string): string {
   return `${parseWorkspaceName(name)}${WANTED_FILE_SUFFIX}`;
