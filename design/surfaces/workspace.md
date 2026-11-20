@@ -23,9 +23,9 @@ There are two kinds:
 A serve host writes the registry too
 ([The host](./serve-workspaces.md#the-host) in serve workspaces says how). It
 registers every workspace it runs, recorded as an import would record it, with
-no trust mark (step 19 of its
-[execution plan](./serve-workspaces.md#execution-plan), built). Once steps 20
-to 23 are built, a host with no host folder registers each workspace a `workspace.create`
+no trust mark, and takes the workspaces it serves from the registry (steps 19
+and 20 of its [execution plan](./serve-workspaces.md#execution-plan), built).
+Once steps 21 to 23 are built, a host with no host folder registers each workspace a `workspace.create`
 request makes as created. Hosted workspaces therefore appear in
 `swamp workspace list` and on the `swamp start` page beside the user's own, and
 a repo the user registers is listed on that user's host. The host writes
@@ -139,5 +139,5 @@ chosen or configured folder.
 | Domain         | `src/domain/workspace/`: `WorkspaceRegistry`, `parseWorkspaceName`                                            |
 | Infrastructure | `workspace_registry_file_repository.ts`; `process/start_instance_probe.ts` for "open in start"                 |
 | Application    | `src/libswamp/workspace/`: the services, and `workspace_store.ts`, shared with `swamp start`                  |
-| Serve host     | `src/libswamp/workspace/hosted_registration.ts`; the host's registrar in `src/serve/host/workspace_registration.ts` |
+| Serve host     | `src/libswamp/workspace/hosted_registration.ts` and `hosted_roster.ts`; the host's registrar and roster in `src/serve/host/workspace_registration.ts` and `workspace_roster.ts` |
 | CLI            | `src/cli/commands/workspace.ts`, `src/presentation/renderers/workspace.ts`                                    |

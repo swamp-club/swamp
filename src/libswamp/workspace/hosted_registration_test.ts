@@ -210,6 +210,25 @@ Deno.test("registerHostedWorkspaces: an unreadable registry is reported and neve
   }
 });
 
+Deno.test("registerHostedWorkspaces/unregisterHostedWorkspace: a folder in place of the registry file is unreadable, so a removal is not held up", async () => {
+  await withWorkspaceFixture(async (f) => {
+    const workspacesDir = join(f.dir, "host", "workspaces");
+    await f.makeRepo(join(workspacesDir, "alpha"));
+    await Deno.mkdir(join(f.dir, "config", "workspaces.json"), {
+      recursive: true,
+    });
+    const result = await registerHostedWorkspaces(f.deps, {
+      workspacesDir,
+      names: ["alpha"],
+    });
+    assertEquals(result.kind, "unreadable");
+    assertEquals(
+      await unregisteredKind(f.deps, { workspacesDir, name: "alpha" }),
+      "unreadable",
+    );
+  });
+});
+
 Deno.test("unregisterHostedWorkspace: removes only an entry for the folder of that name inside the host's workspaces", async () => {
   await withWorkspaceFixture(async (f) => {
     const workspacesDir = join(f.dir, "host", "workspaces");

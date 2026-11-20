@@ -473,6 +473,48 @@ Deno.test("createServeSupervisor: events from an earlier child are ignored", asy
   await supervisor.shutdown();
 });
 
+Deno.test("createServeSupervisor: setSpec is used by the next spawn and leaves a live child running", async () => {
+  const { port, clock, supervisor } = harness();
+  supervisor.add(spec(EDGE));
+  const child = await startReady(port, supervisor, EDGE, 41_001);
+
+  supervisor.setSpec(spec(EDGE, { repoDir: "/elsewhere/edge-dns" }));
+  assertEquals(port.of(EDGE).length, 1);
+  assertEquals(child.terminated, 0);
+  assertEquals(supervisor.lookup(EDGE)?.observed, "ready");
+
+  child.exit(SAFE_RESTART_EXIT_CODE);
+  await waitFor(
+    () => supervisor.lookup(EDGE)?.observed === "backoff",
+    "the serve to back off",
+  );
+  clock.fire(clock.armed(POLICY.restartDelayMs));
+  assertEquals(port.of(EDGE).length, 2);
+  assertEquals(port.last(EDGE).spec.repoDir, "/elsewhere/edge-dns");
+  await supervisor.shutdown();
+});
+
+Deno.test("createServeSupervisor: setSpec refuses an unknown id, a bad setting and a closing supervisor", async () => {
+  const { supervisor } = harness();
+  supervisor.add(spec(EDGE));
+  assertThrows(
+    () => supervisor.setSpec(spec(workspaceServe("nope"))),
+    UserError,
+    "No serve workspace:nope",
+  );
+  assertThrows(
+    () => supervisor.setSpec(spec(EDGE, { stopGraceMs: 0 })),
+    UserError,
+    "stopGraceMs",
+  );
+  await supervisor.shutdown();
+  assertThrows(
+    () => supervisor.setSpec(spec(EDGE)),
+    UserError,
+    "shutting down",
+  );
+});
+
 Deno.test("createServeSupervisor: refuses a known id, an unknown id and a bad setting", async () => {
   const { supervisor } = harness();
   supervisor.add(spec(EDGE));

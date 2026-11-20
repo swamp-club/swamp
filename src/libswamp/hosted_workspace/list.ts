@@ -46,7 +46,7 @@ export async function* hostedWorkspaceList(
     {},
     (async function* () {
       try {
-        const { all } = await hostedWorkspaceNames(deps.workspacesDir);
+        const { all } = await hostedWorkspaceNames(deps);
         const workspaces = await Promise.all(
           all.map((name) => summarizeHostedWorkspace(deps, name)),
         );

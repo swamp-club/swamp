@@ -55,7 +55,9 @@ import { createWorkspaceReconciler } from "../src/serve/host/workspace_reconcile
 import {
   createWorkspaceRegistrar,
   hostWorkspaceStore,
+  RegistryProblemLog,
 } from "../src/serve/host/workspace_registration.ts";
+import { createWorkspaceRoster } from "../src/serve/host/workspace_roster.ts";
 import type { HostedRegistryDeps } from "../src/libswamp/workspace/hosted_registration.ts";
 
 const ctx = createLibSwampContext();
@@ -119,20 +121,26 @@ async function host(): Promise<Host> {
     dataDir: join(root, "data"),
     configDir: join(root, "config"),
   });
+  const problems = new RegistryProblemLog();
   const reconciler = createWorkspaceReconciler({
     workspacesDir: dir,
     supervisor,
-    specOf: (name) => ({
+    specOf: (name, folder) => ({
       id: workspaceServe(name),
-      repoDir: join(dir, name),
+      repoDir: folder,
       address: `https://host.example/w/${name}`,
       trustedHost: "host.example",
       env: {},
     }),
     repository,
     statusWriter,
-    registrar: createWorkspaceRegistrar({ workspacesDir: dir, store }),
+    registrar: createWorkspaceRegistrar({
+      workspacesDir: dir,
+      store,
+      problems,
+    }),
   });
+  const roster = createWorkspaceRoster({ workspacesDir: dir, store, problems });
   return {
     dir,
     store,
@@ -146,7 +154,10 @@ async function host(): Promise<Host> {
       }),
       ...overrides,
     }),
-    rescan: async () => await reconciler.reconcile(await scanWorkspaces(dir)),
+    rescan: async () => {
+      const scan = await scanWorkspaces(dir);
+      await reconciler.reconcile(scan, await roster.read(scan));
+    },
     wanted: (name) => supervisor.lookup(workspaceServe(name))?.wanted,
     async [Symbol.asyncDispose]() {
       await supervisor.shutdown();
@@ -378,4 +389,56 @@ Deno.test("hosted workspace services: create registers the workspace and delete 
   );
   assertEquals((await h.store.registry.load())?.list(), []);
   assertEquals((await scanWorkspaces(h.dir)).workspaces, []);
+});
+
+Deno.test("hosted workspace services: list and get reply the same whatever the registry holds, and an entry outside workspaces/ is not listed", async () => {
+  await using h = await host();
+  const deps = h.deps();
+  await collect(hostedWorkspaceCreate(ctx, deps, {
+    name: "edge-dns",
+    caller: ALICE,
+    access: ACCESS,
+  }));
+  await Deno.mkdir(join(h.dir, "by-hand"));
+  await Deno.writeTextFile(join(h.dir, "by-hand", ".swamp.yaml"), "");
+  // what reaches a caller: an error's cause stays on the host
+  const shown = (events: { kind: string }[]) =>
+    events.map((e) =>
+      "error" in e && typeof e.error === "object" && e.error !== null
+        ? { ...e, error: { ...e.error, cause: undefined } }
+        : e
+    );
+  const replies = async () => ({
+    list: shown(await collect(hostedWorkspaceList(ctx, deps))),
+    get: shown(
+      await collect(hostedWorkspaceGet(ctx, deps, { name: "edge-dns" })),
+    ),
+    outside: shown(
+      await collect(hostedWorkspaceGet(ctx, deps, { name: "outside" })),
+    ),
+  });
+  const registryFile = join(h.dir, "..", "config", "workspaces.json");
+  await Deno.remove(registryFile);
+  const baseline = await replies();
+  assertEquals(await listedNames(deps), ["by-hand", "edge-dns"]);
+
+  const outside = join(h.dir, "..", "projects", "outside");
+  await Deno.mkdir(outside, { recursive: true });
+  await Deno.writeTextFile(join(outside, ".swamp.yaml"), "");
+  await h.store.registry.update((registry) => {
+    registry.register({
+      name: "edge-dns",
+      path: join(h.dir, "edge-dns"),
+      createdAt: "2026-11-19T00:00:00.000Z",
+    });
+    registry.register({
+      name: "outside",
+      path: outside,
+      createdAt: "2026-11-19T00:00:00.000Z",
+    });
+  });
+  assertEquals(await replies(), baseline);
+
+  await Deno.writeTextFile(registryFile, "{nope");
+  assertEquals(await replies(), baseline);
 });

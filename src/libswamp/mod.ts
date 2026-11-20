@@ -2270,3 +2270,9 @@ export {
   registerHostedWorkspaces,
   unregisterHostedWorkspace,
 } from "./workspace/hosted_registration.ts";
+export {
+  type HostedRegistryRead,
+  type HostedWorkspaceFolder,
+  hostedWorkspaceFolders,
+  readHostedRegistry,
+} from "./workspace/hosted_roster.ts";

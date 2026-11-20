@@ -112,3 +112,18 @@ Deno.test("hostedWorkspaceGet: a name with neither a folder nor a wanted file is
     "user_error",
   );
 });
+
+Deno.test("hostedWorkspaceGet: a repo registered outside workspaces/ is not found", async () => {
+  await using host = await hostFolder();
+  await host.store.registry.update((registry) => {
+    registry.register({
+      name: "outside",
+      path: Deno.cwd(),
+      createdAt: "2026-11-17T10:00:00.000Z",
+    });
+  });
+  await assertErrors<HostedWorkspaceGetEvent>(
+    hostedWorkspaceGet(ctx, host.deps(), { name: "outside" }),
+    "not_found",
+  );
+});

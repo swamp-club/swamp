@@ -8,13 +8,14 @@ last-verified: 2026-11-19 @ 4cf47dda3
 
 **Status:** Partly built. Addresses with a path, the host, lifecycle and
 sign-in (steps 1 to 15 of the [execution plan](#execution-plan)) are built, as
-are default off (step 24) and the host registering the workspaces it runs
-(step 19): `swamp serve host` runs in a host folder, lists every workspace
-folder in its `workspaces/`, registers each one in the workspace registry, runs
-a serve for each one whose wanted file says `active`, and its root takes the
+are default off (step 24), the host registering the workspaces it runs
+(step 19) and taking them from the registry (step 20): `swamp serve host` runs
+in a host folder, registers every workspace folder in its `workspaces/` in the
+workspace registry, lists the entries whose folder is one of them, runs a serve
+for each one whose wanted file says `active`, and its root takes the
 `workspace.*` requests and issues sign-in codes. The dashboard (steps 16 to 18)
-is not built, and neither is the registry as the host's one list or a host with
-no host folder (steps 20 to 23).
+is not built, and neither is a workspace registered elsewhere nor a host with
+no host folder (steps 21 to 23).
 It describes how one address hosts several serves, which promoting a local
 workspace to a server assumes.
 
@@ -312,9 +313,11 @@ workspace registry of the user the host runs as, `<config dir>/workspaces.json`
 ([workspace](./workspace.md)), and its serve runs in the entry's folder. The
 registry does not store every folder by its real path, so the host resolves
 each one before it compares one with another. Steps 19 to 21 of the
-[execution plan](#execution-plan) build this. Step 19 is built: the host
-writes the registry as below, and the folders in `workspaces/` are still the
-list until step 20.
+[execution plan](#execution-plan) build this. Steps 19 and 20 are built: the
+host writes the registry as below, and its workspaces are the entries whose
+folder, resolved, is a workspace folder in `workspaces/` of the entry's own
+name, each served from that real path, plus every workspace folder there that
+no entry names. Every other entry is passed over until step 21.
 
 - With each rescan the host first registers every workspace folder in its
   `workspaces/` that the registry lacks, then reads the registry. A workspace
@@ -347,7 +350,11 @@ list until step 20.
   host removes only an entry whose folder is inside its own `workspaces/` and
   whose name is that folder's name. A folder that is a link is registered at
   its target's real path, so the host never removes that entry. An entry whose
-  folder was removed while the host was stopped stays until step 20.
+  folder was removed while the host was stopped is not listed, and stays in
+  the registry until step 21.
+- The supervisor keeps a serve's folder from its first start, so a workspace
+  whose folder changes, as a link pointed at another repo does, keeps running
+  where it is and starts in its new folder the next time it starts.
 
 The host watches `workspaces/` without recursing, so the children's own writes
 never wake it, and rescans every 5 seconds, which finds a marker written after

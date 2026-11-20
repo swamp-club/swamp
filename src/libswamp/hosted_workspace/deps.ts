@@ -37,6 +37,10 @@ import {
 } from "../../infrastructure/persistence/hosted_workspace_status_file.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { HostedRegistryDeps } from "../workspace/hosted_registration.ts";
+import {
+  hostedWorkspaceFolders,
+  readHostedRegistry,
+} from "../workspace/hosted_roster.ts";
 import type { SwampError } from "../errors.ts";
 
 /** who asks; the services do no authorization of their own */
@@ -228,15 +232,22 @@ function reasonShown(status: HostedWorkspaceStatus): string | null {
   return "The host reported a problem with it. The host's status file for it has the details.";
 }
 
-/** a folder the host would run, or a wanted file with or without one */
+/** a workspace the host would run, or a wanted file with or without one */
 export async function hostedWorkspaceNames(
-  workspacesDir: string,
+  deps: Pick<HostedWorkspaceDeps, "workspacesDir" | "workspaceStore">,
 ): Promise<{ folders: Set<string>; all: string[] }> {
-  const scan = await scanWorkspaces(workspacesDir);
-  const folders = new Set(scan.workspaces);
+  const scan = await scanWorkspaces(deps.workspacesDir);
+  const read = await readHostedRegistry(deps.workspaceStore);
+  // the host logs a registry it cannot read; a request is answered from the folders
+  const workspaces = await hostedWorkspaceFolders({
+    workspacesDir: deps.workspacesDir,
+    scanned: scan.workspaces,
+    registry: read.kind === "read" ? read.registry : null,
+  });
+  const folders = new Set(workspaces.map(({ name }) => name));
   return {
     folders,
-    all: [...new Set([...scan.workspaces, ...scan.wantedFiles])].sort(),
+    all: [...new Set([...folders, ...scan.wantedFiles])].sort(),
   };
 }
 
@@ -260,7 +271,7 @@ export async function changeHostedWorkspace(
         "wanted_unreadable",
       );
     } else if (
-      (await hostedWorkspaceNames(deps.workspacesDir)).folders.has(name)
+      (await hostedWorkspaceNames(deps)).folders.has(name)
     ) {
       current = HostedWorkspace.active(name);
     } else {
