@@ -1328,9 +1328,11 @@ Deno.test("serve host registry: a folder whose name is registered elsewhere is n
         );
       }
       assertEquals(port.of("workspace:edge-dns").length, 0);
-      const status = await readStatus(folder.dir, "edge-dns");
-      const reason = String(status?.reason);
-      assert(reason.includes("swamp workspace remove edge-dns"), reason);
+      let reason = "";
+      await waitFor(async () => {
+        reason = String((await readStatus(folder.dir, "edge-dns"))?.reason);
+        return reason.includes("swamp workspace remove edge-dns");
+      }, "edge-dns's status file to name the clash");
       assert(!reason.includes("Write folder"), reason);
     } finally {
       await host.shutdown();
@@ -1495,7 +1497,11 @@ Deno.test("serve host registry: a repo imported while the host runs is listed st
       "outside listed and stopped",
     );
     assertEquals(port.of("workspace:outside").length, 0);
-    assertEquals((await readStatus(folder.dir, "outside"))?.state, "stopped");
+    await waitFor(
+      async () =>
+        (await readStatus(folder.dir, "outside"))?.state === "stopped",
+      "outside's status file to say stopped",
+    );
 
     await want(folder.dir, "outside", `wanted: active\nfolder: ${real}\n`);
     await waitFor(
@@ -1768,8 +1774,11 @@ Deno.test("serve host registry: after an upgrade, a team folder whose name a reg
   try {
     const url = `http://127.0.0.1:${host.port}/w/alpha/`;
     await waitFor(() => isState(url, "stopped"), "alpha listed and stopped");
-    const reason = String((await readStatus(folder.dir, "alpha"))?.reason);
-    assert(reason.includes("swamp workspace remove alpha"), reason);
+    let reason = "";
+    await waitFor(async () => {
+      reason = String((await readStatus(folder.dir, "alpha"))?.reason);
+      return reason.includes("swamp workspace remove alpha");
+    }, "alpha's status file to name the clash");
     assert(!reason.includes("Write folder"), reason);
 
     await want(folder.dir, "alpha", `wanted: active\nfolder: ${real}\n`);
