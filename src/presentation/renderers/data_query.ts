@@ -28,9 +28,15 @@ import type { EventHandlers } from "../../libswamp/stream.ts";
 import { userErrorFromSwampError } from "../../libswamp/errors.ts";
 import type { OutputMode } from "../output/output.ts";
 import { maxOf } from "../../domain/array_extrema.ts";
-import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { quoteShellWord } from "../../domain/shell_word.ts";
 import { renderMarkdownToTerminal } from "../markdown_renderer.ts";
+import {
+  prettyJsonChunks,
+  type Sink,
+  withNewline,
+  writeJsonValue,
+  writeTextChunks,
+} from "../output/json_stream.ts";
 import { Table } from "@cliffy/table";
 import { bold, dim } from "@std/fmt/colors";
 
@@ -194,52 +200,47 @@ function recordToJsonOutput(
   };
 }
 
-function renderSingleJson(data: DataQueryData): void {
-  let value: unknown;
+function singleJsonValue(data: DataQueryData): unknown {
   if (data.projected) {
-    value = data.projected.shape === "scalar"
+    const value = data.projected.shape === "scalar"
       ? data.projected.values[0]
       : data.projected.rows[0];
-  } else {
-    value = recordToJsonOutput(data.results[0]);
+    return value ?? null;
   }
-  writeOutput(JSON.stringify(value ?? null, null, 2));
+  return recordToJsonOutput(data.results[0]) ?? null;
 }
 
-function renderJson(data: DataQueryData, single: boolean): void {
-  if (single) {
-    renderSingleJson(data);
-    return;
-  }
+function jsonEnvelope(data: DataQueryData): Record<string, unknown> {
+  const tail = {
+    total: data.total,
+    limited: data.limited,
+    ...(data.specNameHint && { specNameHint: data.specNameHint }),
+    ...(data.nextCursor && { nextCursor: data.nextCursor }),
+  };
   if (data.projected) {
     const results = data.projected.shape === "scalar"
       ? data.projected.values
       : data.projected.rows;
-    writeOutput(JSON.stringify(
-      {
-        results,
-        total: data.total,
-        limited: data.limited,
-        ...(data.specNameHint && { specNameHint: data.specNameHint }),
-        ...(data.nextCursor && { nextCursor: data.nextCursor }),
-      },
-      null,
-      2,
-    ));
-  } else {
-    writeOutput(JSON.stringify(
-      {
-        predicate: data.predicate,
-        results: data.results.map(recordToJsonOutput),
-        total: data.total,
-        limited: data.limited,
-        ...(data.specNameHint && { specNameHint: data.specNameHint }),
-        ...(data.nextCursor && { nextCursor: data.nextCursor }),
-      },
-      null,
-      2,
-    ));
+    return { results, ...tail };
   }
+  return {
+    predicate: data.predicate,
+    results: data.results.map(recordToJsonOutput),
+    ...tail,
+  };
+}
+
+// written in pieces: the selected content of many records can pass V8's
+// maximum string length
+async function renderJson(
+  data: DataQueryData,
+  single: boolean,
+  sink: Sink | undefined,
+): Promise<void> {
+  await writeJsonValue(
+    single ? singleJsonValue(data) : jsonEnvelope(data),
+    sink,
+  );
 }
 
 export function renderQueryResultsMarkdown(
@@ -272,20 +273,48 @@ function hasNestedCell(
  * projected values are data, not markdown: marked would restyle markdown syntax
  * in the content and overflows its stack on a multi-megabyte line
  */
-function renderValuesPlain(
+function* valuesPlainChunks(
   values: readonly unknown[],
   data: DataQueryData,
   separator = "\n",
-): string {
-  let out = values.map((v) => {
-    if (v === null || v === undefined) return "";
-    if (typeof v === "object") return JSON.stringify(v, null, 2);
-    return String(v);
-  }).join(separator);
-  if (data.limited) {
-    out += `\n\nShowing ${data.total} results (limit reached)`;
+): Generator<string> {
+  for (let i = 0; i < values.length; i++) {
+    if (i > 0) yield separator;
+    const v = values[i];
+    if (v === null || v === undefined) continue;
+    if (typeof v === "object") yield* prettyJsonChunks(v);
+    else yield String(v);
   }
-  return out;
+  if (data.limited) {
+    yield `\n\nShowing ${data.total} results (limit reached)`;
+  }
+}
+
+/**
+ * the pieces of renderQueryResultsTerminal, so plain values too large to join
+ * into one string still print
+ */
+function* queryResultsTerminalChunks(
+  data: DataQueryData,
+  showNamespace: boolean,
+): Generator<string> {
+  if (data.projected?.shape === "scalar") {
+    yield* valuesPlainChunks(data.projected.values, data);
+    return;
+  }
+  // one nested cell makes the whole result JSON: a table is as wide as its
+  // widest cell, and a half-table listing reads worse than either form
+  if (data.projected && hasNestedCell(data.projected)) {
+    yield* valuesPlainChunks(data.projected.rows, data, "\n\n");
+    return;
+  }
+  if (data.projected) {
+    yield renderMarkdownToTerminal(
+      renderQueryResultsMarkdown(data, showNamespace),
+    );
+    return;
+  }
+  yield renderDefaultTable(data, showNamespace);
 }
 
 /**
@@ -296,20 +325,7 @@ export function renderQueryResultsTerminal(
   data: DataQueryData,
   showNamespace = false,
 ): string {
-  if (data.projected?.shape === "scalar") {
-    return renderValuesPlain(data.projected.values, data);
-  }
-  // one nested cell makes the whole result JSON: a table is as wide as its
-  // widest cell, and a half-table listing reads worse than either form
-  if (data.projected && hasNestedCell(data.projected)) {
-    return renderValuesPlain(data.projected.rows, data, "\n\n");
-  }
-  if (data.projected) {
-    return renderMarkdownToTerminal(
-      renderQueryResultsMarkdown(data, showNamespace),
-    );
-  }
-  return renderDefaultTable(data, showNamespace);
+  return [...queryResultsTerminalChunks(data, showNamespace)].join("");
 }
 
 function renderSpecNameHint(hint: SpecNameHint): string {
@@ -329,27 +345,32 @@ function renderSpecNameHint(hint: SpecNameHint): string {
 export function createDataQueryRenderer(
   outputMode: OutputMode,
   showNamespace = false,
-  options: { single?: boolean } = {},
+  options: { single?: boolean; sink?: Sink } = {},
 ): { handlers: () => EventHandlers<DataQueryEvent> } {
   return {
     handlers: () => ({
       resolving: () => {},
       match: () => {},
       projected_match: () => {},
-      completed: (event: DataQueryEvent & { kind: "completed" }) => {
+      completed: async (event: DataQueryEvent & { kind: "completed" }) => {
         if (outputMode === "json") {
-          renderJson(event.data, options.single ?? false);
+          await renderJson(event.data, options.single ?? false, options.sink);
           return;
         }
-        writeOutput(renderQueryResultsTerminal(event.data, showNamespace));
+        await writeTextChunks(
+          withNewline(queryResultsTerminalChunks(event.data, showNamespace)),
+          options.sink,
+        );
+        const trailer: string[] = [];
         if (event.data.specNameHint) {
-          writeOutput(renderSpecNameHint(event.data.specNameHint));
+          trailer.push(renderSpecNameHint(event.data.specNameHint), "\n");
         }
         if (event.data.nextCursor) {
-          writeOutput(
-            `\nNext page: re-run with --cursor ${event.data.nextCursor}`,
+          trailer.push(
+            `\nNext page: re-run with --cursor ${event.data.nextCursor}\n`,
           );
         }
+        await writeTextChunks(trailer, options.sink);
       },
       error: (event: DataQueryEvent & { kind: "error" }) => {
         throw userErrorFromSwampError(event.error);

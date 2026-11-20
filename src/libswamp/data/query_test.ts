@@ -324,6 +324,30 @@ Deno.test("dataQuery: an unreadable record's error keeps its code (swamp-club#36
   });
 });
 
+Deno.test("dataQuery: a record too large to load keeps its code", async () => {
+  const deps: DataQueryDeps = {
+    query: () =>
+      Promise.reject(
+        new UserError(
+          "Data m/d version 1 is too big",
+          "data_content_too_large",
+        ),
+      ),
+  };
+
+  const events = await collect<DataQueryEvent>(
+    dataQuery(createLibSwampContext(), deps, { predicate: "true" }),
+  );
+
+  assertEquals(events[1], {
+    kind: "error",
+    error: {
+      code: "data_content_too_large",
+      message: "Data m/d version 1 is too big",
+    },
+  });
+});
+
 Deno.test("dataQuery: stringifies non-Error throws in the error event", async () => {
   const deps: DataQueryDeps = {
     query: () => Promise.reject("catastrophe"),

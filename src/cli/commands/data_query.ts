@@ -31,6 +31,7 @@ import {
 import { userErrorFromSwampError } from "../../libswamp/errors.ts";
 import { createDataQueryRenderer } from "../../presentation/renderers/data_query.ts";
 import { renderInteractiveQuery } from "../../presentation/renderers/data_query_tui.tsx";
+import type { Sink } from "../../presentation/output/json_stream.ts";
 import {
   createContext,
   type GlobalOptions,
@@ -83,12 +84,13 @@ export function remoteQueryPayload(
  * the match count comes from the records the response carries, not its total,
  * so a malformed response fails clearly instead of crashing the renderer.
  */
-export function renderRemoteQueryResponse(
+export async function renderRemoteQueryResponse(
   predicate: string,
   data: DataQueryData,
   outputMode: OutputMode,
   single: boolean,
-): void {
+  sink?: Sink,
+): Promise<void> {
   if (single) {
     const matches = data.projected
       ? data.projected.shape === "scalar"
@@ -102,10 +104,8 @@ export function renderRemoteQueryResponse(
     });
     if (error) throw userErrorFromSwampError(error);
   }
-  createDataQueryRenderer(outputMode, false, { single }).handlers().completed({
-    kind: "completed",
-    data,
-  });
+  await createDataQueryRenderer(outputMode, false, { single, sink }).handlers()
+    .completed({ kind: "completed", data });
 }
 
 export const dataQueryCommand = withRemoteOptions(
@@ -214,7 +214,7 @@ export const dataQueryCommand = withRemoteOptions(
         }),
       },
     );
-    renderRemoteQueryResponse(
+    await renderRemoteQueryResponse(
       predicate,
       response.data as unknown as DataQueryData,
       ctx.outputMode,

@@ -18,7 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
-import { prettyJson, prettyJsonChunks, writeJsonValue } from "./json_stream.ts";
+import {
+  prettyJson,
+  prettyJsonChunks,
+  writeJsonValue,
+  writeTextChunks,
+} from "./json_stream.ts";
 import {
   deeplyNestedAttributes,
   nestedTreeDepth,
@@ -58,6 +63,43 @@ Deno.test("writeJsonValue: a sink that takes part of each write still receives t
   const out = collectingSink(7_000);
   await writeJsonValue(value, out.sink);
   assertEquals(out.text(), JSON.stringify(value, null, 2) + "\n");
+});
+
+Deno.test("writeTextChunks: writes the pieces verbatim and adds nothing", async () => {
+  const out = collectingSink(3);
+  await writeTextChunks(["a", "", "é\n", "bc"], out.sink);
+  assertEquals(out.text(), "aé\nbc");
+});
+
+Deno.test("writeTextChunks: many pieces reach the sink as bounded batches, not one write", async () => {
+  const piece = "y".repeat(1000);
+  const sizes: number[] = [];
+  await writeTextChunks(Array.from({ length: 2000 }, () => piece), (bytes) => {
+    sizes.push(bytes.length);
+    return Promise.resolve(bytes.length);
+  });
+  assertEquals(sizes.reduce((a, b) => a + b, 0), 2_000_000);
+  assertEquals(sizes.length > 1, true);
+  assertEquals(Math.max(...sizes) < 2_000_000, true);
+});
+
+Deno.test("writeTextChunks: a piece of at least a batch is written on its own, not joined to queued pieces", async () => {
+  const big = "z".repeat(200_000);
+  const writes: string[] = [];
+  await writeTextChunks(["a", "b", big, "c"], (bytes) => {
+    writes.push(new TextDecoder().decode(bytes));
+    return Promise.resolve(bytes.length);
+  });
+  assertEquals(writes, ["ab", big, "c"]);
+});
+
+Deno.test("writeTextChunks: nothing to write makes no write", async () => {
+  let calls = 0;
+  await writeTextChunks([], () => {
+    calls++;
+    return Promise.resolve(0);
+  });
+  assertEquals(calls, 0);
 });
 
 Deno.test("writeJsonValue: a value whose JSON is too large for one string is written whole", async () => {

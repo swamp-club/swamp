@@ -74,7 +74,11 @@ import { type ContentEncoding, encodeContent } from "./content_encoding.ts";
 import { BinaryContentPredicateError } from "./binary_content_predicate_error.ts";
 import { ModelType } from "../models/model_type.ts";
 import type { Data } from "./data.ts";
-import { fromRow } from "./data_record_mapper.ts";
+import {
+  decodeRecordContent,
+  fromRow,
+  type RecordContentIdentity,
+} from "./data_record_mapper.ts";
 import { specNameClashRemedy } from "./spec_name_clash.ts";
 import { garbageCollectionToColumn } from "./data_metadata.ts";
 
@@ -350,6 +354,14 @@ export interface RecordedDataOwner {
   readonly modelType: string;
   readonly modelId: string;
   readonly modelName: string;
+}
+
+function recordIdentity(record: DataRecord): RecordContentIdentity {
+  return {
+    modelName: record.modelName,
+    dataName: record.name,
+    version: record.version,
+  };
 }
 
 export class DataQueryService {
@@ -693,10 +705,9 @@ export class DataQueryService {
     ) return;
     const bytes = await this.foreignContent(record);
     if (!bytes) return;
+    const text = decodeRecordContent(bytes, recordIdentity(record));
     try {
-      record.attributes = JSON.parse(
-        new TextDecoder().decode(bytes),
-      ) as Record<string, unknown>;
+      record.attributes = JSON.parse(text) as Record<string, unknown>;
     } catch {
       // Invalid JSON — leave attributes empty
     }
@@ -1813,11 +1824,9 @@ export class DataQueryService {
     }
     const bytes = await this.foreignContent(record);
     if (bytes && record.contentType === "application/json") {
+      const text = decodeRecordContent(bytes, recordIdentity(record));
       try {
-        return {
-          content: JSON.parse(new TextDecoder().decode(bytes)),
-          contentEncoding: "utf-8",
-        };
+        return { content: JSON.parse(text), contentEncoding: "utf-8" };
       } catch {
         return { content: {}, contentEncoding: "utf-8" };
       }

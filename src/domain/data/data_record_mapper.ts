@@ -38,6 +38,41 @@ import {
   parseSensitiveFieldsTag,
   resolveSensitiveVaultRefsLeavingUnread,
 } from "../models/data_writer.ts";
+import { UserError } from "../errors.ts";
+
+export const RECORD_CONTENT_TOO_LARGE_CODE = "data_content_too_large";
+
+export function isRecordContentTooLargeError(error: unknown): boolean {
+  return error instanceof UserError &&
+    error.code === RECORD_CONTENT_TOO_LARGE_CODE;
+}
+
+export interface RecordContentIdentity {
+  modelName: string;
+  dataName: string;
+  version: number;
+}
+
+// V8's maximum string length; decoded text is never longer than its bytes
+const MAX_STRING_LENGTH = 2 ** 29 - 24;
+
+/** TextDecoder refuses a buffer that would pass V8's maximum string length */
+export function decodeRecordContent(
+  bytes: Uint8Array,
+  identity: RecordContentIdentity,
+): string {
+  try {
+    return new TextDecoder().decode(bytes);
+  } catch (error) {
+    if (bytes.length <= MAX_STRING_LENGTH) throw error;
+    throw new UserError(
+      `Data ${identity.modelName}/${identity.dataName} version ` +
+        `${identity.version} has ${bytes.length} bytes of content, more ` +
+        `than swamp can load as text`,
+      RECORD_CONTENT_TOO_LARGE_CODE,
+    );
+  }
+}
 
 export interface DataRecordMapperOptions {
   vaultService?: VaultService;
@@ -71,13 +106,14 @@ function parseContent(
   contentType: string,
   loadAttributes: boolean,
   loadContent: boolean,
+  identity: RecordContentIdentity,
 ): { attributes: Record<string, unknown>; textContent: unknown } {
   let attributes: Record<string, unknown> = {};
   let textContent: unknown = "";
 
   if (!rawBytes) return { attributes, textContent };
 
-  const decoded = new TextDecoder().decode(rawBytes);
+  const decoded = decodeRecordContent(rawBytes, identity);
 
   if (loadContent && isTextContentType(contentType)) {
     textContent = decoded;
@@ -174,6 +210,11 @@ export function fromRow(
     row.content_type,
     loadAttributes,
     loadContent,
+    {
+      modelName: row.model_name,
+      dataName: row.data_name,
+      version: row.version,
+    },
   );
 
   let tags: Record<string, string> = {};
@@ -253,16 +294,21 @@ export async function fromData(
     );
   }
 
+  const resolvedModelName = options.modelName ?? data.tags["modelName"] ?? "";
+
   const { attributes, textContent } = parseContent(
     rawBytes,
     data.contentType,
     true,
     true,
+    {
+      modelName: resolvedModelName,
+      dataName: resolvedName,
+      version: resolvedVersion,
+    },
   );
 
   await resolveVaultRefs(attributes, data.tags, options);
-
-  const resolvedModelName = options.modelName ?? data.tags["modelName"] ?? "";
 
   return {
     id: data.id,

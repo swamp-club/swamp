@@ -18,12 +18,14 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { RunSensitiveValues } from "../secrets/mod.ts";
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
   fromData,
   fromResourceHandle,
   fromRow,
+  isRecordContentTooLargeError,
   localContentPath,
+  RECORD_CONTENT_TOO_LARGE_CODE,
 } from "./data_record_mapper.ts";
 import { VaultService } from "../vaults/vault_service.ts";
 import {
@@ -36,6 +38,7 @@ import type { DataId } from "./data_id.ts";
 import type { CatalogRow } from "../../infrastructure/persistence/catalog_store.ts";
 import type { UnifiedDataRepository } from "./repositories.ts";
 import { Data } from "./data.ts";
+import { UserError } from "../errors.ts";
 import { ModelType } from "../models/model_type.ts";
 
 const encoder = new TextEncoder();
@@ -1016,4 +1019,44 @@ Deno.test("fromRow: a solo row stays the repository's own legacy row with a fetc
 
   assertEquals(reads(), 1);
   assertEquals(record.attributes, { who: "alpha" });
+});
+
+// past V8's maximum string length; zero pages stay unmapped until touched,
+// and TextDecoder refuses the length before reading a byte
+function oversizedContent(): Uint8Array {
+  return new Uint8Array((1 << 29) + 16);
+}
+
+Deno.test("fromRow: content too large to decode fails naming the record", () => {
+  const repo = stubRepo(oversizedContent());
+  const error = assertThrows(
+    () => fromRow(createRow({ version: 3 }), repo, true, true),
+    UserError,
+    "Data test-model/test-data version 3 has 536870928 bytes of content",
+  );
+  assertEquals(error.code, RECORD_CONTENT_TOO_LARGE_CODE);
+});
+
+Deno.test("fromData: content too large to decode fails naming the record", async () => {
+  const data = Data.create({
+    name: "big-data",
+    contentType: "application/json",
+    lifetime: "infinite",
+    garbageCollection: 10,
+    tags: { type: "resource" },
+    ownerDefinition: owner,
+  });
+  const error = await assertRejects(
+    () =>
+      fromData(
+        data,
+        ModelType.create("test/model"),
+        "model-123",
+        stubRepo(null, oversizedContent()),
+        { modelName: "big-model", version: 7 },
+      ),
+    UserError,
+    "Data big-model/big-data version 7",
+  );
+  assertEquals(isRecordContentTooLargeError(error), true);
 });

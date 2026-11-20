@@ -7202,3 +7202,42 @@ Deno.test("DataQueryService.findRecordedOwners: returns the owners the catalog r
   ]);
   assertEquals(await service.findRecordedOwners("orphan", "absent"), []);
 });
+
+// past V8's maximum string length; zero pages stay unmapped until touched,
+// and TextDecoder refuses the length before reading a byte
+function oversizedContent(): Uint8Array {
+  return new Uint8Array((1 << 29) + 16);
+}
+
+Deno.test("DataQueryService: a foreign record too large to decode fails the query by name instead of reading as empty", async () => {
+  using t = setupForeignTest(() => Promise.resolve(oversizedContent()));
+  const { catalog, service } = t;
+  catalog.upsert(foreignRow({ version: 4 }));
+
+  const error = await assertRejects(
+    () => service.query('modelName == "scanner"', { loadAttributes: true }),
+    UserError,
+    "Data scanner/results version 4",
+  );
+  assertEquals(error.code, "data_content_too_large");
+
+  catalog.close();
+});
+
+Deno.test("DataQueryService: a projected foreign record too large to decode fails by name instead of projecting empty content", async () => {
+  using t = setupForeignTest(
+    soloReadingFetcher(() => Promise.resolve(oversizedContent())),
+    "alpha",
+  );
+  const { catalog, service } = t;
+  catalog.upsert(foreignRow({ namespace: "", version: 5 }));
+
+  const error = await assertRejects(
+    () => service.query('ns == ""', { select: "content" }),
+    UserError,
+    "Data scanner/results version 5",
+  );
+  assertEquals(error.code, "data_content_too_large");
+
+  catalog.close();
+});

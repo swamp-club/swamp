@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects, assertThrows } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { Command } from "@cliffy/command";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -97,37 +97,37 @@ Deno.test("remoteQueryPayload: a single-result query asks the server for two mat
 
 Deno.test("renderRemoteQueryResponse: --single prints the one match as an object", async () => {
   const { renderRemoteQueryResponse } = await import("./data_query.ts");
-  const lines: string[] = [];
-  const originalLog = console.log;
-  console.log = (msg: string) => lines.push(msg);
-  try {
-    renderRemoteQueryResponse(
-      "true",
-      {
-        predicate: "true",
-        results: [{
-          id: "record-1",
-          name: "state",
-          contentType: "application/json",
-          attributes: { ok: true },
-        } as unknown as DataRecord],
-        total: 1,
-        limited: false,
-      },
-      "json",
-      true,
-    );
-  } finally {
-    console.log = originalLog;
-  }
-  const output = JSON.parse(lines[0]) as Record<string, unknown>;
+  const out: Uint8Array[] = [];
+  const sink = (bytes: Uint8Array) => {
+    out.push(bytes.slice());
+    return Promise.resolve(bytes.length);
+  };
+  await renderRemoteQueryResponse(
+    "true",
+    {
+      predicate: "true",
+      results: [{
+        id: "record-1",
+        name: "state",
+        contentType: "application/json",
+        attributes: { ok: true },
+      } as unknown as DataRecord],
+      total: 1,
+      limited: false,
+    },
+    "json",
+    true,
+    sink,
+  );
+  const text = out.map((b) => new TextDecoder().decode(b)).join("");
+  const output = JSON.parse(text) as Record<string, unknown>;
   assertEquals(output.name, "state");
   assertEquals(output.content, { ok: true });
 });
 
 Deno.test("renderRemoteQueryResponse: --single rejects several matches with their code", async () => {
   const { renderRemoteQueryResponse } = await import("./data_query.ts");
-  const error = assertThrows(
+  const error = await assertRejects(
     () =>
       renderRemoteQueryResponse(
         "true",
@@ -151,7 +151,7 @@ Deno.test("renderRemoteQueryResponse: --single rejects several matches with thei
 
 Deno.test("renderRemoteQueryResponse: --single rejects a response with no count", async () => {
   const { renderRemoteQueryResponse } = await import("./data_query.ts");
-  const error = assertThrows(
+  const error = await assertRejects(
     () =>
       renderRemoteQueryResponse(
         "true",
@@ -166,7 +166,7 @@ Deno.test("renderRemoteQueryResponse: --single rejects a response with no count"
 
 Deno.test("renderRemoteQueryResponse: --single rejects a count of one that carries no record", async () => {
   const { renderRemoteQueryResponse } = await import("./data_query.ts");
-  const error = assertThrows(
+  const error = await assertRejects(
     () =>
       renderRemoteQueryResponse(
         "true",
@@ -182,32 +182,32 @@ Deno.test("renderRemoteQueryResponse: --single rejects a count of one that carri
 
 Deno.test("renderRemoteQueryResponse: --single counts projected values", async () => {
   const { renderRemoteQueryResponse } = await import("./data_query.ts");
-  const lines: string[] = [];
-  const originalLog = console.log;
-  console.log = (msg: string) => lines.push(msg);
-  try {
-    renderRemoteQueryResponse(
-      "true",
-      {
-        predicate: "true",
-        select: "name",
-        results: [],
-        projected: { shape: "scalar", values: ["state"] },
-        total: 1,
-        limited: false,
-      },
-      "json",
-      true,
-    );
-  } finally {
-    console.log = originalLog;
-  }
-  assertEquals(JSON.parse(lines[0]), "state");
+  const out: Uint8Array[] = [];
+  const sink = (bytes: Uint8Array) => {
+    out.push(bytes.slice());
+    return Promise.resolve(bytes.length);
+  };
+  await renderRemoteQueryResponse(
+    "true",
+    {
+      predicate: "true",
+      select: "name",
+      results: [],
+      projected: { shape: "scalar", values: ["state"] },
+      total: 1,
+      limited: false,
+    },
+    "json",
+    true,
+    sink,
+  );
+  const text = out.map((b) => new TextDecoder().decode(b)).join("");
+  assertEquals(JSON.parse(text), "state");
 });
 
 Deno.test("renderRemoteQueryResponse: --single carries the server's spec-name hint into the no-match error", async () => {
   const { renderRemoteQueryResponse } = await import("./data_query.ts");
-  const error = assertThrows(
+  const error = await assertRejects(
     () =>
       renderRemoteQueryResponse(
         'name == "classification"',
