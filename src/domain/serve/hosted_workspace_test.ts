@@ -172,3 +172,42 @@ Deno.test("HostedWorkspace.fromRecord: a record with no folder or a null folder 
     UserError,
   );
 });
+
+Deno.test("HostedWorkspace.withRepoId: the repoId is kept through suspend, resume and delete, and is part of equals", () => {
+  const plain = HostedWorkspace.create("edge-dns", "alice", T1)
+    .withFolder("/srv/repos/edge-dns");
+  const made = plain.withRepoId("repo-1");
+  assertEquals(made.repoId, "repo-1");
+  assertEquals(plain.repoId, null);
+  assert(!made.equals(plain));
+  assert(!made.equals(plain.withRepoId("repo-2")));
+  assertEquals(made.suspend(T2).repoId, "repo-1");
+  assertEquals(made.suspend(T2).resume(T3).repoId, "repo-1");
+  assertEquals(made.markDeleted(T2).repoId, "repo-1");
+  assert(made.withRepoId(null).equals(plain));
+  assertEquals(made.withRepoId(null).toRecord(), plain.toRecord());
+  assertThrows(() => plain.withRepoId(""), UserError);
+});
+
+Deno.test("HostedWorkspace.fromRecord: a record with no repoId or a null repoId has none, and an empty one is refused", () => {
+  const record = {
+    name: "edge-dns",
+    creator: "alice",
+    wanted: "active" as const,
+    changedAt: null,
+    folder: "/srv/repos/edge-dns",
+  };
+  assertEquals(HostedWorkspace.fromRecord(record).repoId, null);
+  assertEquals(
+    HostedWorkspace.fromRecord({ ...record, repoId: null }).toRecord(),
+    record,
+  );
+  assertEquals(
+    HostedWorkspace.fromRecord({ ...record, repoId: "repo-1" }).repoId,
+    "repo-1",
+  );
+  assertThrows(
+    () => HostedWorkspace.fromRecord({ ...record, repoId: "" }),
+    UserError,
+  );
+});

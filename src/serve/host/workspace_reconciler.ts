@@ -45,7 +45,7 @@ import {
   type WorkspaceScan,
 } from "../../infrastructure/persistence/hosted_workspace_folder_scan.ts";
 import {
-  hostCreated,
+  createdOwnership,
   hostFolderClaimedBy,
   wantedFolderOf,
 } from "../../libswamp/workspace/hosted_roster.ts";
@@ -345,13 +345,15 @@ export function createWorkspaceReconciler(
       record = null;
       recordMatches = true;
     }
-    // a creator written for a folder the registry no longer names would make the next folder written the host's own
+    // a creator written for a folder the registry no longer names would make the next folder written the host's own;
+    // one over another repo would carry its old wanted state to that repo
+    const replaced = listing?.replaced === true;
     if (
       !hostFolder && read.kind === "found" && record !== null &&
-      record.creator !== null && !recordMatches &&
+      record.creator !== null && (!recordMatches || replaced) &&
       listing?.owner === "operator"
     ) {
-      dropCreatedElsewhere(name, read.workspace);
+      dropCreatedElsewhere(name, read.workspace, replaced);
       record = null;
       recordMatches = true;
     }
@@ -506,10 +508,16 @@ export function createWorkspaceReconciler(
     );
   };
 
-  const dropCreatedElsewhere = (name: string, stale: HostedWorkspace) => {
+  const dropCreatedElsewhere = (
+    name: string,
+    stale: HostedWorkspace,
+    replaced: boolean,
+  ) => {
     if (dropLog.changed(name, `created:${stale.changedAt ?? ""}`)) {
       logger.warn(
-        "Workspace {name}'s wanted file was written for a folder a request created, and the registry now names another folder, so the host removes that wanted file; the workspace is the operator's own",
+        replaced
+          ? "Workspace {name}'s wanted file was written for a repo a request created, and its folder now holds another repo, so the host removes that wanted file; the workspace is the operator's own"
+          : "Workspace {name}'s wanted file was written for a folder a request created, and the registry now names another folder, so the host removes that wanted file; the workspace is the operator's own",
         { name },
       );
     }
@@ -720,8 +728,16 @@ export function createWorkspaceReconciler(
       await sweepHidden(name, dirs);
       return;
     }
-    if (!(await hostCreated(record, registered.real))) {
-      throw new FolderClaimedError("it is registered at another folder");
+    const ownership = await createdOwnership(record, registered.real);
+    if (ownership === "replaced") {
+      throw new FolderClaimedError(
+        "it holds another repo than the one the workspace was created with",
+      );
+    }
+    if (ownership !== "host") {
+      throw new FolderClaimedError(
+        "it is registered at another folder, or holds no repo the workspace was created with",
+      );
     }
     const parent = dirname(folder);
     dirs.add(parent);

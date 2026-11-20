@@ -145,6 +145,7 @@ interface Registered {
   isRepo?: boolean;
   fromWantedFile?: boolean;
   shadows?: boolean;
+  replaced?: boolean;
 }
 
 interface Harness extends AsyncDisposable {
@@ -234,6 +235,7 @@ async function harness(
         isRepo: entry.isRepo ?? true,
         fromWantedFile: entry.fromWantedFile ?? false,
         shadows: entry.shadows ?? false,
+        ...(entry.replaced ? { replaced: true } : {}),
       });
     }
     const claimed = new Set([...registered.values()].map((r) => r.folder));
@@ -1438,4 +1440,58 @@ Deno.test("createWorkspaceReconciler: with no host folder, a deleted wanted file
     (await entries(h.dir)).filter((e) => e.startsWith(".stray.deleting-")),
     [],
   );
+});
+
+Deno.test("createWorkspaceReconciler: with no host folder, a creator's wanted file over another repo at its folder is removed, and that repo is not started from it", async () => {
+  await using h = await harness(undefined, undefined, { hostFolder: false });
+  const folder = await operatorRepo(h, "mine");
+  h.registered.set("mine", { folder, replaced: true });
+  await want(
+    h.dir,
+    "mine",
+    `wanted: active\ncreator: user:sub-alice\nfolder: ${folder}\nrepoId: repo-old\n`,
+  );
+  await h.begin();
+  await waitFor(
+    async () => !(await exists(join(h.dir, "mine.wanted.yaml"))),
+    "the stale wanted file is removed",
+  );
+  await h.rescan();
+  await h.reconciler.drain();
+  assertEquals(h.port.of("mine").length, 0);
+  assert(await exists(join(folder, REPO_MARKER_FILE)), "folder kept");
+  assertEquals(h.registrar.calls, []);
+});
+
+Deno.test("createWorkspaceReconciler: with no host folder, a creator's wanted file the roster cannot tell is replaced is kept", async () => {
+  await using h = await harness(undefined, undefined, { hostFolder: false });
+  const folder = await operatorRepo(h, "mine");
+  await want(
+    h.dir,
+    "mine",
+    `wanted: suspended\ncreator: user:sub-alice\nfolder: ${folder}\nrepoId: repo-old\n`,
+  );
+  await h.begin();
+  await h.rescan();
+  await h.reconciler.drain();
+  assert(await exists(join(h.dir, "mine.wanted.yaml")), "kept");
+});
+
+Deno.test("createWorkspaceReconciler: with no host folder, a deleted wanted file a create wrote for another repo at its folder removes no folder", async () => {
+  await using h = await harness(undefined, undefined, { hostFolder: false });
+  const folder = await operatorRepo(h, "mine");
+  h.registered.set("mine", { folder, replaced: true });
+  await want(
+    h.dir,
+    "mine",
+    `wanted: deleted\ncreator: user:sub-alice\nfolder: ${folder}\nrepoId: repo-old\n`,
+  );
+  await h.begin();
+  await waitFor(
+    async () => !(await exists(join(h.dir, "mine.wanted.yaml"))),
+    "the stale wanted file is removed",
+  );
+  await h.reconciler.drain();
+  assert(await exists(join(folder, REPO_MARKER_FILE)), "folder kept");
+  assertEquals(h.registrar.calls, []);
 });

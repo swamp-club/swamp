@@ -507,6 +507,37 @@ Deno.test("hostedWorkspaceSuspend/Resume: on a host with no host folder a root a
   assertEquals((await wantedFile(host.dir, "outside")).wanted, "suspended");
 });
 
+Deno.test("hostedWorkspaceSuspend/Resume/Delete: on a host with no host folder a wanted file a create wrote for another repo at the same folder makes it the operator's, and a root admin's resume drops its creator and repoId", async () => {
+  await using host = await hostFolder();
+  const deps = host.deps({ hostFolder: false });
+  const folder = await registerOutside(host, "reused");
+  await Deno.writeTextFile(join(folder, ".swamp.yaml"), "repoId: repo-new\n");
+  await Deno.writeTextFile(
+    join(host.dir, "reused.wanted.yaml"),
+    `wanted: suspended\ncreator: alice\nfolder: ${folder}\nrepoId: repo-old\n`,
+  );
+  const resume = await errorOf<HostedWorkspaceResumeEvent>(
+    hostedWorkspaceResume(ctx, deps, { name: "reused" }),
+  );
+  assertEquals(resume.code, OPERATOR_WORKSPACE_CODE);
+  const deleted = await errorOf<HostedWorkspaceDeleteEvent>(
+    hostedWorkspaceDelete(ctx, deps, { name: "reused" }),
+  );
+  assertEquals(deleted.code, OPERATOR_WORKSPACE_CODE);
+  assertEquals((await wantedFile(host.dir, "reused")).wanted, "suspended");
+
+  await collect(
+    hostedWorkspaceResume(ctx, deps, { name: "reused", rootAdmin: true }),
+  );
+  assertEquals(await wantedFile(host.dir, "reused"), {
+    wanted: "active",
+    creator: null,
+    changedAt: (await wantedFile(host.dir, "reused")).changedAt,
+    folder,
+  });
+  assertEquals(await exists(join(folder, ".swamp.yaml")), true);
+});
+
 Deno.test("hostedWorkspaceSuspend/Resume: on a host with no host folder a stray wanted file with no folder is the operator's, never opened to a grant holder", async () => {
   await using host = await hostFolder();
   const deps = host.deps({ hostFolder: false });

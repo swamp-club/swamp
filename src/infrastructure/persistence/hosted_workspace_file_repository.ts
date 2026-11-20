@@ -44,6 +44,7 @@ const WantedFileSchema = z.object({
   ).nullable().optional(),
   folder: z.string().min(1).refine(isAbsolute, "must be an absolute path")
     .optional(),
+  repoId: z.string().min(1).optional(),
 }).strict();
 
 /** the per-name lock every create and change holds; hidden, so no scan or list sees it */
@@ -141,12 +142,14 @@ export class HostedWorkspaceFileRepository
         wanted: parsed.data.wanted,
         changedAt: parsed.data.changedAt ?? null,
         folder: parsed.data.folder ?? null,
+        repoId: parsed.data.repoId ?? null,
       }),
     };
   }
 
   async save(workspace: HostedWorkspace): Promise<void> {
-    const { creator, wanted, changedAt, folder } = workspace.toRecord();
+    const { creator, wanted, changedAt, folder, repoId } = workspace
+      .toRecord();
     // no key for a workspace in workspaces/, so its file stays one an older host reads
     await atomicWriteTextFile(
       join(this.workspacesDir, wantedFileName(workspace.name)),
@@ -155,6 +158,7 @@ export class HostedWorkspaceFileRepository
         creator,
         changedAt,
         ...(folder ? { folder } : {}),
+        ...(repoId ? { repoId } : {}),
       }),
     );
   }

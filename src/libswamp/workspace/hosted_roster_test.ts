@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertNotEquals } from "@std/assert";
 import { join, SEPARATOR } from "@std/path";
 import {
   type WorkspaceEntry,
@@ -25,12 +25,15 @@ import {
 } from "../../domain/workspace/workspace_registry.ts";
 import { HostedWorkspace } from "../../domain/serve/hosted_workspace.ts";
 import {
+  createdOwnership,
+  folderRepoIdentity,
   freshFolderClaim,
   hostCreated,
   type HostedRoster,
   hostedWorkspaceFolders,
   readHostedRegistry,
   registryOfRead,
+  type RepoIdentity,
   wantedFolderOf,
 } from "./hosted_roster.ts";
 import { withWorkspaceFixture } from "./workspace_test_helpers.ts";
@@ -540,14 +543,24 @@ Deno.test("hostedWorkspaceFolders: with no host folder and no wanted file, every
   });
 });
 
-Deno.test("hostedWorkspaceFolders: with no host folder an entry is the host's own only when its wanted file has a creator and names the entry's folder", async () => {
+Deno.test("hostedWorkspaceFolders: with no host folder an entry is the host's own only when its wanted file has a creator, names the entry's folder and records the repo in it", async () => {
   await withWorkspaceFixture(async (f) => {
     const stateDir = join(f.dir, "data", "host");
     const location = join(f.dir, "data", "workspaces");
     const at = new Date("2026-11-20T10:00:00.000Z");
-    const created = (name: string, folder: string) =>
-      HostedWorkspace.create(name, "user:sub-alice", at).withFolder(folder);
-    for (const name of ["made", "moved", "hand", "unnamed", "none"]) {
+    const created = (name: string, folder: string, repoId = "test") =>
+      HostedWorkspace.create(name, "user:sub-alice", at).withFolder(folder)
+        .withRepoId(repoId);
+    const names = [
+      "made",
+      "moved",
+      "hand",
+      "unnamed",
+      "none",
+      "replaced",
+      "unrecorded",
+    ];
+    for (const name of names) {
       await f.makeRepo(join(location, name));
     }
     const roster = await hostedWorkspaceFolders({
@@ -555,7 +568,7 @@ Deno.test("hostedWorkspaceFolders: with no host folder an entry is the host's ow
       hostFolder: false,
       scanned: [],
       registry: registryOf(
-        ...["made", "moved", "hand", "unnamed", "none"].map((name) => ({
+        ...names.map((name) => ({
           name,
           path: join(location, name),
         })),
@@ -569,29 +582,44 @@ Deno.test("hostedWorkspaceFolders: with no host folder an entry is the host's ow
           HostedWorkspace.active("hand").withFolder(join(location, "hand")),
         ],
         ["unnamed", HostedWorkspace.create("unnamed", "user:sub-alice", at)],
+        [
+          "replaced",
+          created("replaced", join(location, "replaced"), "an-older-repo"),
+        ],
+        [
+          "unrecorded",
+          created("unrecorded", join(location, "unrecorded")).withRepoId(null),
+        ],
       ]),
     });
     assertEquals(
-      roster.workspaces.map(({ name, owner }) => [name, owner]),
+      roster.workspaces.map(({ name, owner, replaced }) => [
+        name,
+        owner,
+        replaced ?? false,
+      ]),
       [
-        ["hand", "operator"],
-        ["made", "host"],
-        ["moved", "operator"],
-        ["none", "operator"],
-        ["unnamed", "operator"],
+        ["hand", "operator", false],
+        ["made", "host", false],
+        ["moved", "operator", false],
+        ["none", "operator", false],
+        ["replaced", "operator", true],
+        ["unnamed", "operator", false],
+        ["unrecorded", "operator", false],
       ],
     );
   });
 });
 
-Deno.test("hostCreated: compares the wanted file's folder with the entry's by real path, and needs a creator", async () => {
+Deno.test("hostCreated: compares the wanted file's folder with the entry's by real path, and needs a creator and a repoId", async () => {
   await withWorkspaceFixture(async (f) => {
     const real = join(f.dir, "real");
     await f.makeRepo(real);
     const link = join(f.dir, "link");
     await Deno.symlink(real, link, { type: "dir" });
     const at = new Date("2026-11-20T10:00:00.000Z");
-    const made = HostedWorkspace.create("alpha", "user:sub-alice", at);
+    const made = HostedWorkspace.create("alpha", "user:sub-alice", at)
+      .withRepoId("test");
     assertEquals(await hostCreated(made.withFolder(link), real), true);
     assertEquals(await hostCreated(made.withFolder(real), link), true);
     assertEquals(await hostCreated(made, real), false);
@@ -603,5 +631,85 @@ Deno.test("hostCreated: compares the wanted file's folder with the entry's by re
       await hostCreated(made.withFolder(join(f.dir, "other")), real),
       false,
     );
+  });
+});
+
+Deno.test("createdOwnership: a folder holding another repo is replaced, an absent one is the create's own, and one it cannot read is the operator's", async () => {
+  await withWorkspaceFixture(async (f) => {
+    const folder = join(f.dir, "alpha");
+    const made = HostedWorkspace.create(
+      "alpha",
+      "user:sub-alice",
+      new Date("2026-11-20T10:00:00.000Z"),
+    ).withFolder(folder).withRepoId("repo-1");
+    const as = (identity: RepoIdentity) => ({
+      repoIdentity: () => Promise.resolve(identity),
+    });
+    assertEquals(
+      await createdOwnership(made, folder, as({ kind: "absent" })),
+      "host",
+    );
+    assertEquals(
+      await createdOwnership(
+        made,
+        folder,
+        as({ kind: "id", repoId: "repo-1" }),
+      ),
+      "host",
+    );
+    assertEquals(
+      await createdOwnership(
+        made,
+        folder,
+        as({ kind: "id", repoId: "repo-2" }),
+      ),
+      "replaced",
+    );
+    assertEquals(
+      await createdOwnership(made, folder, as({ kind: "none" })),
+      "operator",
+    );
+    assertEquals(
+      await createdOwnership(made, folder, as({ kind: "unreadable" })),
+      "operator",
+    );
+    assertEquals(
+      await createdOwnership(
+        made.withRepoId(null),
+        folder,
+        as({ kind: "absent" }),
+      ),
+      "operator",
+    );
+
+    // removed and made again at the same folder while the host was stopped
+    await f.makeRepo(folder);
+    await Deno.writeTextFile(join(folder, ".swamp.yaml"), "repoId: repo-2\n");
+    assertEquals(await createdOwnership(made, folder), "replaced");
+    assertEquals(await hostCreated(made, folder), false);
+  });
+});
+
+Deno.test("folderRepoIdentity: tells an absent folder, a repoId, no repoId and a marker it cannot read apart", async () => {
+  await withWorkspaceFixture(async (f) => {
+    const folder = join(f.dir, "alpha");
+    assertEquals(await folderRepoIdentity(folder), { kind: "absent" });
+    const link = join(f.dir, "dangling");
+    await Deno.symlink(join(f.dir, "nowhere"), link, { type: "dir" });
+    assertNotEquals((await folderRepoIdentity(link)).kind, "absent");
+    await Deno.mkdir(folder);
+    assertEquals(await folderRepoIdentity(folder), { kind: "none" });
+    const marker = join(folder, ".swamp.yaml");
+    await Deno.writeTextFile(marker, "swampVersion: x\n");
+    assertEquals(await folderRepoIdentity(folder), { kind: "none" });
+    await Deno.writeTextFile(marker, "repoId: repo-1\n");
+    assertEquals(await folderRepoIdentity(folder), {
+      kind: "id",
+      repoId: "repo-1",
+    });
+    await Deno.writeTextFile(marker, "repoId: [unclosed\n");
+    assertEquals(await folderRepoIdentity(folder), { kind: "unreadable" });
+    await Deno.writeTextFile(marker, "x".repeat(64 * 1024 + 1));
+    assertEquals(await folderRepoIdentity(folder), { kind: "unreadable" });
   });
 });

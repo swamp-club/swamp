@@ -513,7 +513,11 @@ export async function changeHostedWorkspace(
       listing?.owner === "operator" && !listing.fromWantedFile &&
       !deps.hostFolder
     ) {
-      next = HostedWorkspace.fromRecord({ ...next.toRecord(), creator: null });
+      next = HostedWorkspace.fromRecord({
+        ...next.toRecord(),
+        creator: null,
+        repoId: null,
+      });
     }
     if (listing !== undefined) {
       next = next.withFolder(

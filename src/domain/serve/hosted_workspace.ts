@@ -38,6 +38,8 @@ export interface HostedWorkspaceRecord {
   readonly changedAt: string | null;
   /** the folder it was written for; absent or null stands for `workspaces/<name>` */
   readonly folder?: string | null;
+  /** the repoId of the repo create made; absent or null for any other */
+  readonly repoId?: string | null;
 }
 
 /** the file says active where the supervisor says running; this is the one mapping */
@@ -92,9 +94,12 @@ export class HostedWorkspace {
       );
     }
     return new HostedWorkspace(
-      recordWithFolder(
-        { ...record, name: parseWorkspaceName(record.name) },
-        record.folder ?? null,
+      recordWithRepoId(
+        recordWithFolder(
+          { ...record, name: parseWorkspaceName(record.name) },
+          record.folder ?? null,
+        ),
+        record.repoId ?? null,
       ),
     );
   }
@@ -119,6 +124,10 @@ export class HostedWorkspace {
     return this.record.folder ?? null;
   }
 
+  get repoId(): string | null {
+    return this.record.repoId ?? null;
+  }
+
   toRecord(): HostedWorkspaceRecord {
     return { ...this.record };
   }
@@ -132,11 +141,16 @@ export class HostedWorkspace {
     const b = other.record;
     return a.name === b.name && a.creator === b.creator &&
       a.wanted === b.wanted && a.changedAt === b.changedAt &&
-      (a.folder ?? null) === (b.folder ?? null);
+      (a.folder ?? null) === (b.folder ?? null) &&
+      (a.repoId ?? null) === (b.repoId ?? null);
   }
 
   withFolder(folder: string | null): HostedWorkspace {
     return new HostedWorkspace(recordWithFolder(this.record, folder));
+  }
+
+  withRepoId(repoId: string | null): HostedWorkspace {
+    return new HostedWorkspace(recordWithRepoId(this.record, repoId));
   }
 
   suspend(at: Date): HostedWorkspace {
@@ -183,6 +197,17 @@ function recordWithFolder(
   }
   const { folder: _dropped, ...rest } = record;
   return folder === null ? rest : { ...rest, folder };
+}
+
+function recordWithRepoId(
+  record: HostedWorkspaceRecord,
+  repoId: string | null,
+): HostedWorkspaceRecord {
+  if (repoId === "") {
+    throw new UserError("A hosted workspace's repoId cannot be empty.");
+  }
+  const { repoId: _dropped, ...rest } = record;
+  return repoId === null ? rest : { ...rest, repoId };
 }
 
 export type HostedWorkspaceRead =
