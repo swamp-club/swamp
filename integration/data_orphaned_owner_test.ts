@@ -62,7 +62,6 @@ async function withRepo(
   }
 }
 
-// runs a behavior's write as a run does, then deletes its definition
 async function orphanedRun(
   repoContext: RepositoryContext,
   name: string,

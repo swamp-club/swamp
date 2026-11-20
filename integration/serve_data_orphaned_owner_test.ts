@@ -208,7 +208,7 @@ Deno.test("serve data reads: a name recorded under several owners is refused, na
     }
     assert(body.includes("validation_failed"), body);
 
-    // the scoped owner is unreadable, so it is never named
+    // the ns deny covers only the scoped type
     const scopedDenied = await request(
       createServeCtx(
         repo,

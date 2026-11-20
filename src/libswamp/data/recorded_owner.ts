@@ -43,7 +43,6 @@ export interface DataOwnerLookupDeps {
     id: string,
     expectedName?: string,
   ) => Promise<{ definition: Definition; type: ModelType } | null>;
-  /** the owners the data catalog records for a behavior name or id */
   findRecordedOwners?: (
     idOrName: string,
     dataName?: string,
