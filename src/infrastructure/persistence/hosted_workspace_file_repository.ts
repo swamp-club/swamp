@@ -90,7 +90,7 @@ export function hostedWorkspaceFileOf(
   return null;
 }
 
-/** one wanted file per workspace, beside its folder in the workspaces folder */
+/** one wanted file per workspace, in the host's state folder */
 export class HostedWorkspaceFileRepository
   implements HostedWorkspaceRepository {
   constructor(private readonly workspacesDir: string) {}
@@ -150,7 +150,6 @@ export class HostedWorkspaceFileRepository
   async save(workspace: HostedWorkspace): Promise<void> {
     const { creator, wanted, changedAt, folder, repoId } = workspace
       .toRecord();
-    // no key for a workspace in workspaces/, so its file stays one an older host reads
     await atomicWriteTextFile(
       join(this.workspacesDir, wantedFileName(workspace.name)),
       stringifyYaml({

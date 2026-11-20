@@ -47,7 +47,10 @@ import {
 } from "../src/serve/auth_exchange_handler.ts";
 import { createExchangeTokenMinter } from "../src/serve/device_auth_handler.ts";
 import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
-import { hostRootWorkspaces } from "../src/serve/host_root_workspaces.ts";
+import {
+  hostRootWorkspaces,
+  hostWorkspacePlacement,
+} from "../src/serve/host_root_workspaces.ts";
 import { hostWorkspaceStore } from "../src/serve/host/workspace_registration.ts";
 import { resetRateLimitState } from "../src/serve/rate_limiter.ts";
 import { createSignInCodeRedeemClient } from "../src/serve/sign_in_code_redeem_client.ts";
@@ -181,7 +184,7 @@ async function withHost(fn: (host: Host) => Promise<void>): Promise<void> {
       });
       const hosted = (mode: "token" | "oauth") => {
         const base = hostRootWorkspaces(
-          { dir: join(hostDir, "workspaces"), address: HOST_ADDRESS },
+          { dir: join(hostDir, "state"), address: HOST_ADDRESS },
           {},
           () => rootAccess(mode),
           // a registry and data dir inside the temp folder, never the user's
@@ -190,9 +193,11 @@ async function withHost(fn: (host: Host) => Promise<void>): Promise<void> {
               dataDir: join(hostDir, "data"),
               configDir: join(hostDir, "config"),
             }),
-          () => {
-            throw new Error("a root with a host folder creates in it");
-          },
+          () =>
+            hostWorkspacePlacement({
+              dataDir: join(hostDir, "data"),
+              configDir: join(hostDir, "config"),
+            }),
         )!;
         return {
           ...base,

@@ -117,7 +117,6 @@ Deno.test("isJsonLogLineCommand: serve host writes its log into its JSON stream,
       ["serve", "host"],
       ["serve", "host", "--json"],
       ["--json", "serve", "host"],
-      ["serve", "host", "--host-dir", "/srv/host", "--json"],
       ["--log-level=debug", "serve", "host", "--json"],
     ]
   ) {

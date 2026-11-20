@@ -203,6 +203,10 @@ Deno.test("serveCommand has hidden host-child options that serve daemon enable d
       name,
     );
   }
+  assertEquals(
+    serveCommand.getOptions(true).some((o) => o.name === "host-no-folder"),
+    false,
+  );
 });
 
 Deno.test("serveCommand has --datastore-poll-interval option", async () => {

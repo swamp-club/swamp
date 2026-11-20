@@ -22,12 +22,16 @@ import { join, resolve } from "@std/path";
 import { UserError } from "../../domain/errors.ts";
 import { assertPathEquals } from "../../infrastructure/persistence/path_test_helpers.ts";
 import { HostConfig } from "./host_config.ts";
-import { hostFolderLayout, noHostFolderLayout } from "./host_layout.ts";
+import { hostLayout } from "./host_layout.ts";
 
-const HOST_DIR = resolve("host-folder");
+const CONFIG_DIR = resolve("config-dir");
+const DATA_DIR = resolve("data-dir");
 
 function parse(yaml: string): HostConfig {
-  return HostConfig.parse(yaml, hostFolderLayout(HOST_DIR));
+  return HostConfig.parse(
+    yaml,
+    hostLayout({ configDir: CONFIG_DIR, dataDir: DATA_DIR }),
+  );
 }
 
 function refusal(yaml: string): string {
@@ -47,11 +51,10 @@ Deno.test("HostConfig.parse: a minimal file listens on loopback over http", () =
   assertEquals(config.root, null);
   assertEquals(config.trustProxy, false);
   assertEquals(config.oauthClient, null);
-  assertPathEquals(config.stateDir, join(HOST_DIR, "workspaces"));
-  assertPathEquals(config.hostFolder!, HOST_DIR);
+  assertPathEquals(config.stateDir, join(DATA_DIR, "host"));
 });
 
-Deno.test("HostConfig.parse: TLS resolves both files against the host folder and defaults to 443", () => {
+Deno.test("HostConfig.parse: TLS resolves both files against the config dir and defaults to 443", () => {
   const config = parse(
     [
       "listen:",
@@ -65,9 +68,12 @@ Deno.test("HostConfig.parse: TLS resolves both files against the host folder and
   assertEquals(config.listen.port, 443);
   assertEquals(config.protocol, "https");
   assertEquals(config.offLoopback, true);
-  assertPathEquals(config.listen.certFile!, join(HOST_DIR, "tls", "cert.pem"));
+  assertPathEquals(
+    config.listen.certFile!,
+    join(CONFIG_DIR, "tls", "cert.pem"),
+  );
   assertPathEquals(config.listen.keyFile!, resolve("/etc/swamp/key.pem"));
-  assertPathEquals(config.root!, resolve(HOST_DIR, "..", "root-repo"));
+  assertPathEquals(config.root!, resolve(CONFIG_DIR, "..", "root-repo"));
 });
 
 Deno.test("HostConfig: derives each child's address and the trusted host from the public address", () => {
@@ -123,40 +129,6 @@ Deno.test("HostConfig.parse: refuses an off-loopback listener without TLS, as se
   assertStringIncludes(
     refusal("address: http://a\nlisten:\n  host: 0.0.0.0\n"),
     "requires TLS",
-  );
-});
-
-Deno.test("HostConfig.parse: refuses a root inside workspaces/", () => {
-  for (
-    const root of ["workspaces", "workspaces/edge-dns", "./workspaces/x/y"]
-  ) {
-    assertStringIncludes(
-      refusal(`address: http://a\nroot: ${root}\n`),
-      "inside workspaces/",
-      root,
-    );
-  }
-  assertEquals(
-    parse("address: http://a\nroot: workspaces-root\n").root !== null,
-    true,
-  );
-});
-
-Deno.test("HostConfig.parse: refuses a root that contains workspaces/", () => {
-  for (const root of [".", "./", "..", "../..", resolve(HOST_DIR, "..")]) {
-    assertStringIncludes(
-      refusal(`address: http://a\nroot: ${root}\n`),
-      "contains workspaces/",
-      root,
-    );
-  }
-  assertEquals(
-    parse("address: http://a\nroot: root-repo\n").root !== null,
-    true,
-  );
-  assertEquals(
-    parse("address: http://a\nroot: ../sibling-repo\n").root !== null,
-    true,
   );
 });
 
@@ -242,14 +214,14 @@ Deno.test("HostConfig.noAuthRefusal: a loopback host whose address is a public n
   );
 });
 
-Deno.test("HostConfig.parse: an OAuth client keeps its id and resolves the secret file against the host folder", () => {
+Deno.test("HostConfig.parse: an OAuth client keeps its id and resolves the secret file against the config dir", () => {
   const config = parse(
     "address: http://a\noauth-client:\n  id: client-123\n  secret-file: secrets/oauth\n",
   );
   assertEquals(config.oauthClient?.id, "client-123");
   assertPathEquals(
     config.oauthClient!.secretFile,
-    join(HOST_DIR, "secrets", "oauth"),
+    join(CONFIG_DIR, "secrets", "oauth"),
   );
   const absolute = parse(
     "address: http://a\noauth-client:\n  id: c\n  secret-file: /run/secrets/oauth\n",
@@ -260,10 +232,8 @@ Deno.test("HostConfig.parse: an OAuth client keeps its id and resolves the secre
   );
 });
 
-Deno.test("HostConfig.parse: refuses an OAuth client secret file inside workspaces/ or the root repo", () => {
+Deno.test("HostConfig.parse: refuses an OAuth client secret file inside the root repo", () => {
   const cases: Array<[string, string]> = [
-    ["workspaces/edge-dns/secret", "inside workspaces/"],
-    ["./workspaces/secret", "inside workspaces/"],
     ["root-repo/secret", "inside the root repo"],
     ["root-repo/.swamp/secret", "inside the root repo"],
   ];
@@ -282,19 +252,8 @@ Deno.test("HostConfig.parse: refuses an OAuth client secret file inside workspac
   );
 });
 
-const CONFIG_DIR = resolve("config-dir");
-const DATA_DIR = resolve("data-dir");
-const NO_FOLDER = noHostFolderLayout({
-  configDir: CONFIG_DIR,
-  dataDir: DATA_DIR,
-});
-
-function parseNoFolder(yaml: string): HostConfig {
-  return HostConfig.parse(yaml, NO_FOLDER);
-}
-
-Deno.test("HostConfig.parse: with no host folder, relative paths are taken from the config dir and the state folder is under the data dir", () => {
-  const config = parseNoFolder(
+Deno.test("HostConfig.parse: relative paths are taken from the config dir and the state folder is under the data dir", () => {
+  const config = parse(
     [
       "listen:",
       "  cert-file: tls/cert.pem",
@@ -306,7 +265,6 @@ Deno.test("HostConfig.parse: with no host folder, relative paths are taken from 
       "  secret-file: secrets/oauth",
     ].join("\n"),
   );
-  assertEquals(config.hostFolder, null);
   assertPathEquals(config.stateDir, join(DATA_DIR, "host"));
   assertPathEquals(
     config.listen.certFile!,
@@ -320,42 +278,42 @@ Deno.test("HostConfig.parse: with no host folder, relative paths are taken from 
   );
 });
 
-Deno.test("HostConfig.parse: with no host folder, host.yaml still refuses unknown keys", () => {
+Deno.test("HostConfig.parse: host.yaml still refuses unknown keys", () => {
   assertStringIncludes(
     assertThrows(
-      () => parseNoFolder("address: http://a\nworkspaces: here\n"),
+      () => parse("address: http://a\nworkspaces: here\n"),
       UserError,
     ).message,
     "Invalid host.yaml",
   );
 });
 
-Deno.test("HostConfig.parse: with no host folder, a root inside or containing the state folder is refused", () => {
+Deno.test("HostConfig.parse: a root inside or containing the state folder is refused", () => {
   const inside = assertThrows(
     () =>
-      parseNoFolder(
+      parse(
         `address: http://a\nroot: ${join(DATA_DIR, "host", "r")}\n`,
       ),
     UserError,
   ).message;
   assertStringIncludes(inside, "inside the host's state folder");
   const containing = assertThrows(
-    () => parseNoFolder(`address: http://a\nroot: ${DATA_DIR}\n`),
+    () => parse(`address: http://a\nroot: ${DATA_DIR}\n`),
     UserError,
   ).message;
   assertStringIncludes(containing, "contains the host's state folder");
   assertEquals(
-    parseNoFolder(`address: http://a\nroot: ${join(DATA_DIR, "root")}\n`)
+    parse(`address: http://a\nroot: ${join(DATA_DIR, "root")}\n`)
       .root !==
       null,
     true,
   );
 });
 
-Deno.test("HostConfig.parse: with no host folder, a secret file inside the state folder or the root is refused", () => {
+Deno.test("HostConfig.parse: a secret file inside the state folder or the root is refused", () => {
   const state = assertThrows(
     () =>
-      parseNoFolder(
+      parse(
         `address: http://a\noauth-client:\n  id: c\n  secret-file: ${
           join(DATA_DIR, "host", "secret")
         }\n`,
@@ -365,7 +323,7 @@ Deno.test("HostConfig.parse: with no host folder, a secret file inside the state
   assertStringIncludes(state, "inside the host's state folder");
   const root = assertThrows(
     () =>
-      parseNoFolder(
+      parse(
         "address: http://a\nroot: root-repo\noauth-client:\n  id: c\n  secret-file: root-repo/secret\n",
       ),
     UserError,

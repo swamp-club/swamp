@@ -19,12 +19,10 @@
 
 import type { HostedWorkspace } from "../../domain/serve/hosted_workspace.ts";
 import type { WorkspaceRegistry } from "../../domain/workspace/workspace_registry.ts";
-import type { WorkspaceScan } from "../../infrastructure/persistence/hosted_workspace_folder_scan.ts";
 import type { HostedRegistryDeps } from "../../libswamp/workspace/hosted_registration.ts";
 import {
   type HostedWorkspaceFolder,
   hostedWorkspaceFolders,
-  hostFolderClaimedBy,
   readHostedRegistry,
   registryOfRead,
   wantedFolderMatches,
@@ -34,38 +32,29 @@ import type { WantedReads } from "./workspace_reconciler.ts";
 
 export interface WorkspaceFolders {
   readonly workspaces: ReadonlyMap<string, HostedWorkspaceFolder>;
-  /**
-   * for each wanted file read whole, whether it was written for the folder it
-   * would act on: its workspace's folder, or `workspaces/<name>` for a name not listed
-   */
+  /** for each wanted file read whole, whether it was written for the folder it would act on */
   readonly wantedMatches: ReadonlyMap<string, boolean>;
-  /** entries of the host's own whose folder is gone; the host unregisters them */
-  readonly gone: readonly string[];
-  readonly passedOver: readonly string[];
   /** every name the registry read holds, listed or not */
   readonly registered: ReadonlySet<string>;
 }
 
 export interface WorkspaceRoster {
-  read(scan: WorkspaceScan, reads: WantedReads): Promise<WorkspaceFolders>;
+  read(reads: WantedReads): Promise<WorkspaceFolders>;
 }
 
 export function createWorkspaceRoster(options: {
-  readonly workspacesDir: string;
-  /** false for a host with no host folder; true by default */
-  readonly hostFolder?: boolean;
   readonly rootRepo: string | null;
   readonly store: Pick<HostedRegistryDeps, "registry">;
   readonly problems: RegistryProblemLog;
   readonly realPath?: (path: string) => Promise<string>;
   readonly isRepo?: (path: string) => Promise<boolean>;
 }): WorkspaceRoster {
-  const { workspacesDir, store, problems } = options;
+  const { store, problems } = options;
   // null until a read succeeds, so a host started on a bad registry serves what its files name
   let lastRead: WorkspaceRegistry | null = null;
   let fileSeen = false;
   return {
-    async read(scan, reads) {
+    async read(reads) {
       const read = await readHostedRegistry(store);
       // no command removes the file, so one gone while the host runs is kept as last read
       if (read.kind === "read" && read.registry === null && fileSeen) {
@@ -86,9 +75,6 @@ export function createWorkspaceRoster(options: {
         if (wantedRead.kind === "found") wanted.set(name, wantedRead.workspace);
       }
       const roster = await hostedWorkspaceFolders({
-        workspacesDir,
-        hostFolder: options.hostFolder,
-        scanned: scan.workspaces,
         registry: lastRead,
         rootRepo: options.rootRepo,
         wanted,
@@ -99,35 +85,21 @@ export function createWorkspaceRoster(options: {
       const wantedMatches = new Map<string, boolean>();
       for (const [name, workspace] of wanted) {
         const listed = workspaces.get(name)?.folder ?? null;
-        // a folder another workspace has is never one this name acts on
-        const claimed = listed === null &&
-          await hostFolderClaimedBy({
-              workspacesDir,
-              name,
-              workspaces: workspaces.values(),
-              realPath: options.realPath,
-            }) !== null;
-        // with no host folder a wanted file that names none stands for no folder at all
-        const unnamed = options.hostFolder === false &&
-          workspace.folder === null;
         // a create stopped before it registered; its removal touches no folder
-        const leftByCreate = options.hostFolder === false && listed === null &&
-          workspace.creator !== null && workspace.folder !== null;
+        const leftByCreate = listed === null && workspace.creator !== null &&
+          workspace.folder !== null;
         wantedMatches.set(
           name,
-          leftByCreate || !claimed && !unnamed && await wantedFolderMatches({
-                workspacesDir,
-                workspace,
-                listed,
-                realPath: options.realPath,
-              }),
+          leftByCreate || await wantedFolderMatches({
+            workspace,
+            listed,
+            realPath: options.realPath,
+          }),
         );
       }
       return {
         workspaces,
         wantedMatches,
-        gone: roster.gone,
-        passedOver: roster.passedOver,
         registered: roster.registered,
       };
     },

@@ -43,9 +43,13 @@ import {
   SIGN_IN_REFUSED_FOR_INTEGRATION_CODE,
   SIGN_IN_REFUSED_FOR_PRINCIPAL_CODE,
 } from "../src/serve/handlers/workspace_handlers.ts";
-import { hostRootWorkspaces } from "../src/serve/host_root_workspaces.ts";
 import {
-  createWorkspaceRegistrar,
+  hostRootWorkspaces,
+  hostWorkspacePlacement,
+} from "../src/serve/host_root_workspaces.ts";
+import { createdWorkspaceRemoval } from "../src/serve/host/serve_host.ts";
+import {
+  hostConfiguredParent,
   hostWorkspaceStore,
   RegistryProblemLog,
 } from "../src/serve/host/workspace_registration.ts";
@@ -123,9 +127,12 @@ class CountingPort implements ServeProcessPort {
 
 interface Root {
   readonly repo: ServeRepo;
+  /** the host's state folder */
   readonly workspacesDir: string;
+  /** where a create puts the repo */
+  readonly location: string;
   readonly port: CountingPort;
-  /** a root context over the host folder, deciding Alice's root admin and the given grants */
+  /** a root context over the host, deciding Alice's root admin and the given grants */
   ctx(options?: ServeCtxOptions, grants?: Grant[]): ConnectionContext;
   /** one host rescan, as the folder watcher runs it */
   rescan(): Promise<void>;
@@ -138,13 +145,12 @@ interface Root {
 async function withRoot(fn: (root: Root) => Promise<void>): Promise<void> {
   await withServeRepo(async (repo) => {
     const hostDir = await Deno.makeTempDir({ prefix: "swamp-host-" });
-    const workspacesDir = join(hostDir, "workspaces");
+    const workspacesDir = join(hostDir, "state");
     await Deno.mkdir(workspacesDir);
     // a registry and data dir inside the temp folder, never the user's
-    const store = hostWorkspaceStore({
-      dataDir: join(hostDir, "data"),
-      configDir: join(hostDir, "config"),
-    });
+    const dataDir = join(hostDir, "data");
+    const configDir = join(hostDir, "config");
+    const store = hostWorkspaceStore({ dataDir, configDir });
     const port = new CountingPort();
     const statusWriter = createStatusWriter({ workspacesDir, retryMs: 10 });
     const supervisor = createServeSupervisor({
@@ -165,10 +171,13 @@ async function withRoot(fn: (root: Root) => Promise<void>): Promise<void> {
       }),
       repository: wantedRepository,
       statusWriter,
-      registrar: createWorkspaceRegistrar({ workspacesDir, store, problems }),
+      created: createdWorkspaceRemoval({
+        workspaceStore: store,
+        configuredParent: hostConfiguredParent(configDir),
+        stateDir: workspacesDir,
+      }),
     });
     const roster = createWorkspaceRoster({
-      workspacesDir,
       rootRepo: null,
       store,
       problems,
@@ -178,9 +187,7 @@ async function withRoot(fn: (root: Root) => Promise<void>): Promise<void> {
       {},
       () => ROOT_ACCESS,
       () => store,
-      () => {
-        throw new Error("a root with a host folder creates in it");
-      },
+      () => hostWorkspacePlacement({ dataDir, configDir }),
     )!;
     const hostedWorkspaces = {
       ...root,
@@ -195,6 +202,7 @@ async function withRoot(fn: (root: Root) => Promise<void>): Promise<void> {
       await fn({
         repo,
         workspacesDir,
+        location: join(dataDir, "workspaces"),
         port,
         ctx: (options = {}, grants = []) =>
           createServeCtx(
@@ -210,7 +218,7 @@ async function withRoot(fn: (root: Root) => Promise<void>): Promise<void> {
         rescan: async () => {
           const scan = await scanWorkspaces(workspacesDir);
           const reads = await readWantedFiles(wantedRepository, scan);
-          reconciler.reconcile(scan, reads, await roster.read(scan, reads));
+          reconciler.reconcile(scan, reads, await roster.read(reads));
         },
         tokenCtx: () =>
           createServeCtx(repo, [ROOT_ADMIN_GRANT("alice")], {
@@ -290,7 +298,7 @@ Deno.test("serve workspace requests: a root admin creates, lists, gets, resumes,
     assertEquals(stored.workspace.creator, "user:sub-alice");
     const auth = loadServeConfig(
       undefined,
-      join(root.workspacesDir, "edge-dns"),
+      join(root.location, "edge-dns"),
     )
       ?.auth;
     assertEquals(auth?.admins, ["alice"]);
@@ -419,7 +427,7 @@ Deno.test("serve workspace requests: a token-mode root creates a workspace whose
       "workspace.create",
     );
     assertEquals(created.name, "billing");
-    const auth = loadServeConfig(undefined, join(root.workspacesDir, "billing"))
+    const auth = loadServeConfig(undefined, join(root.location, "billing"))
       ?.auth;
     assertEquals(auth?.mode, "token");
     assertEquals(auth?.admins, ["user:alice"]);

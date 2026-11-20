@@ -2066,7 +2066,7 @@ export interface HostedWorkspaceSummaryData {
   restarts: number | null;
   /** fixed text per state; never the host's own reason */
   reason: string | null;
-  /** host: in the host's workspaces folder; operator: a repo the host's user registered. An older root sends none */
+  /** host: one a request created; operator: a repo the host's user registered. An older root sends none */
   owner?: "host" | "operator";
 }
 

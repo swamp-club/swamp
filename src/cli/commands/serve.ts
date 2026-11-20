@@ -40,7 +40,6 @@ import {
 } from "../../serve/host_root_workspaces.ts";
 import {
   HOST_ADDRESS_FLAG,
-  HOST_NO_FOLDER_FLAG,
   HOST_WORKSPACES_DIR_FLAG,
   ROOT_ADDRESS_FLAG,
 } from "../../serve/host/serve_process.ts";
@@ -2178,11 +2177,6 @@ export const serveCommand = new Command()
     { hidden: true },
   )
   .option(
-    HOST_NO_FOLDER_FLAG,
-    "The host has no host folder, so this root creates workspaces in the workspace location",
-    { hidden: true },
-  )
-  .option(
     `${HOST_ADDRESS_FLAG} <url:string>`,
     "The host's public address, under which each workspace is reached",
     { hidden: true },
@@ -2297,7 +2291,6 @@ export const serveCommand = new Command()
       {
         dir: options.hostWorkspacesDir as string | undefined,
         address: options.hostAddress as string | undefined,
-        noFolder: options.hostNoFolder === true,
         repoDir,
       },
       Deno.env.toObject(),

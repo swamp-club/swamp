@@ -2268,29 +2268,22 @@ export {
   workspacesRoot,
 } from "./workspace/workspace_store.ts";
 export {
-  type HostedRegistration,
-  type HostedRegistrationResult,
   type HostedRegistryDeps,
   type HostedUnregistration,
   registeredFolderOf,
-  registerHostedWorkspaces,
   unregisterCreatedWorkspace,
-  unregisterHostedWorkspace,
 } from "./workspace/hosted_registration.ts";
 export {
   type CreatedOwnership,
   createdOwnership,
-  freshFolderClaim,
   type HostedRegistryRead,
   type HostedRoster,
   type HostedWorkspaceFolder,
   hostedWorkspaceFolders,
   type HostedWorkspaceOwner,
-  hostFolderClaimedBy,
   readHostedRegistry,
   registryOfRead,
   wantedFolderMatches,
-  wantedFolderOf,
 } from "./workspace/hosted_roster.ts";
 
 export {

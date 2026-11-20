@@ -74,44 +74,7 @@ export function tempWorkspaceStore(root: string): HostedRegistryDeps {
   };
 }
 
-export interface HostFolder extends AsyncDisposable {
-  readonly dir: string;
-  readonly store: HostedRegistryDeps;
-  deps(overrides?: Partial<HostedWorkspaceDeps>): HostedWorkspaceDeps;
-}
-
-export async function hostFolder(): Promise<HostFolder> {
-  const root = await Deno.makeTempDir();
-  const dir = join(root, "workspaces");
-  await Deno.mkdir(dir);
-  const store = tempWorkspaceStore(root);
-  let tick = Date.parse("2026-11-17T10:00:00.000Z");
-  return {
-    dir,
-    store,
-    deps: (overrides = {}) => ({
-      ...createHostedWorkspaceDeps({
-        workspacesDir: dir,
-        provisioner: markerProvisioner,
-        addressOf: (name) => `https://host.example/w/${name}`,
-        workspaceStore: store,
-      }),
-      repository: new HostedWorkspaceFileRepository(dir),
-      // each call a second later, so every write has its own changedAt
-      now: () => new Date(tick += 1000),
-      ...overrides,
-    }),
-    async [Symbol.asyncDispose]() {
-      if (Deno.build.os === "windows") {
-        await Deno.remove(root, { recursive: true }).catch(() => {});
-      } else {
-        await Deno.remove(root, { recursive: true });
-      }
-    },
-  };
-}
-
-export interface NoFolderHost extends AsyncDisposable {
+export interface TestHost extends AsyncDisposable {
   readonly root: string;
   /** the state folder */
   readonly dir: string;
@@ -123,14 +86,14 @@ export interface NoFolderHost extends AsyncDisposable {
   deps(overrides?: Partial<HostedWorkspaceDeps>): HostedWorkspaceDeps;
 }
 
-/** a host with no host folder, its data and config dirs under one temp folder */
-export async function noFolderHost(): Promise<NoFolderHost> {
+/** a host, its state folder, data and config dirs under one temp folder */
+export async function testHost(): Promise<TestHost> {
   const root = await Deno.makeTempDir();
   const dir = join(root, "state");
   await Deno.mkdir(dir);
   const store = tempWorkspaceStore(root);
   let tick = Date.parse("2026-11-17T10:00:00.000Z");
-  const host: NoFolderHost = {
+  const host: TestHost = {
     root,
     dir,
     location: join(store.dataDir, "workspaces"),
@@ -139,7 +102,6 @@ export async function noFolderHost(): Promise<NoFolderHost> {
     deps: (overrides = {}) => ({
       ...createHostedWorkspaceDeps({
         workspacesDir: dir,
-        hostFolder: false,
         placement: {
           configuredParent: () => Promise.resolve(host.configured),
           withCreateLock: (name, fn) =>

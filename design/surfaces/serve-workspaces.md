@@ -8,15 +8,13 @@ last-verified: 2026-11-20 @ 0323a2314
 
 **Status:** Partly built. Addresses with a path, the host, lifecycle and
 sign-in (steps 1 to 15 of the [execution plan](#execution-plan)) are built, as
-are default off (step 24), the host registering the workspaces it runs
-(step 19), taking them from the registry (step 20), serving a workspace
-registered anywhere (step 21) and a host with no host folder (steps 22 and
-23): `swamp serve host` runs in a host folder or without one, registers every
-workspace folder in its `workspaces/` in the workspace registry, lists every
-entry, runs a serve for each one whose wanted file says `active` and names its
-folder, and its root takes the `workspace.*` requests and issues sign-in codes.
-With no host folder it creates workspaces in the workspace location. The
-dashboard (steps 16 to 18) is not built.
+are default off (step 24), taking the workspaces from the registry
+(steps 19 to 21), a host with no host folder (steps 22 and 23) and removing the
+host folder layout (step 26): `swamp serve host` reads `<config dir>/host.yaml`,
+lists every entry of the workspace registry, runs a serve for each one whose
+wanted file says `active` and names its folder, and its root takes the
+`workspace.*` requests, creates workspaces in the workspace location and issues
+sign-in codes. The dashboard (steps 16 to 18) is not built.
 It describes how one address hosts several serves, which promoting a local
 workspace to a server assumes.
 
@@ -141,50 +139,29 @@ reverse proxy. The dashboard is the exception; see [Dashboard](#dashboard).
 ## The host
 
 `swamp serve host` is a hidden command for now: it runs, but serve's help and
-`swamp help serve` do not list it. It reads `host.yaml` and keeps a **state
-folder** of small files, one wanted file, one status file and one lock per
-workspace. It finds them in one of two layouts, chosen in this order:
+`swamp help serve` do not list it. It reads `<config dir>/host.yaml` and keeps
+a **state folder** at `<data dir>/host/` of small files, one wanted file, one
+status file and one lock per workspace, and no repo
+(`src/serve/host/host_layout.ts`). Its workspaces are the registry's entries,
+and a workspace a request creates goes in the workspace location, beside the
+user's own.
 
-1. **A host folder**, given with `--host-dir`, or the current folder when it
-   holds a `host.yaml` and is not the config dir. This is how every host runs
-   today. A host started from inside the config dir uses the second layout, so
-   starting there never gives that `host.yaml` a second state folder.
-
-   ```
-   <host folder>/
-     host.yaml            the listener, the public address, the root, an OAuth client
-     workspaces/          the state folder, and one repo per workspace made here
-   ```
-
-2. **No host folder.** Otherwise the host reads `<config dir>/host.yaml` and
-   keeps its state folder at `<data dir>/host/`. That folder holds the wanted
-   files, the status files and the locks, and no repo
-   (`src/serve/host/host_layout.ts`). A workspace a request creates goes in
-   the workspace location, beside the user's own.
-
-The host logs which `host.yaml` it read. With no `--host-dir` and no
-`host.yaml` found, the first run creates `<config dir>/host.yaml` and starts
-from it (`src/serve/host/default_host_yaml.ts`): a listener on
-`127.0.0.1:8080` whose address is `http://127.0.0.1:8080`, with every other key
-written as a comment saying what it does. Off loopback needs TLS files no
-default can name, so the created file never listens off loopback. It is created
-exclusively, a temp file hard-linked into place: an existing `host.yaml`, even
-an invalid one, is never replaced, and of two hosts starting at once one writes
-it and the other reads it. A host folder is never created, and `--host-dir`
-naming a folder with no `host.yaml` is refused. The host reports the file it
-created before it listens, a line of its own in `--json`. The created file names
-no root, so `swamp serve workspace` has nothing to talk to until the operator
-sets `root:`; the line says so. Relative paths in `host.yaml` are taken
-from the host folder, or from the config dir when there is none. One host runs
-per state folder, in both layouts: the host holds an exclusive kernel lock on
-`.host-lock` there while it runs (`src/infrastructure/persistence/host_state_lock.ts`),
-which the kernel releases when the process dies, and a second host on the same
-state folder exits naming it. The file has no `.lock` suffix, so no
-workspace's own lock can be it.
-
-The host folder is not under `<data dir>/workspaces`. That folder belongs to
-the local workspace registry, which keeps its create locks there and adopts the
-repos it finds there on its first read.
+The host logs which `host.yaml` it read. With none in the config dir, the
+first run creates one and starts from it (`src/serve/host/default_host_yaml.ts`):
+a listener on `127.0.0.1:8080` whose address is `http://127.0.0.1:8080`, with
+every other key written as a comment saying what it does. Off loopback needs
+TLS files no default can name, so the created file never listens off loopback.
+It is created exclusively, a temp file hard-linked into place: an existing
+`host.yaml`, even an invalid one, is never replaced, and of two hosts starting
+at once one writes it and the other reads it. The host reports the file it
+created before it listens, a line of its own in `--json`. The created file
+names no root, so `swamp serve workspace` has nothing to talk to until the
+operator sets `root:`; the line says so. Relative paths in `host.yaml` are
+taken from the config dir. One host runs per state folder: the host holds an
+exclusive kernel lock on `.host-lock` there while it runs
+(`src/infrastructure/persistence/host_state_lock.ts`), which the kernel
+releases when the process dies, and a second host exits naming it. The file
+has no `.lock` suffix, so no workspace's own lock can be it.
 
 The host holds the listener and its TLS certificate. A request whose path
 starts with `/w/<name>/` goes to that workspace's serve with the prefix
@@ -275,8 +252,7 @@ public name, `--trust-proxy` and `--exit-on-stdin-close`. The child reports the
 port it got on its `--json` listening line. The root alone is also given
 the state folder and the host's address, as the hidden
 `--host-workspaces-dir` and `--host-address`, which make it the serve that
-takes the [lifecycle requests](#lifecycle), and with no host folder
-`--host-no-folder` too. A workspace is also given the
+takes the [lifecycle requests](#lifecycle). A workspace is also given the
 root's address, as the hidden `--root-address`, which [Sign-in](#sign-in) uses;
 a host with no root gives none. The child inherits the host's environment, as
 plain serve inherits its operator's, so models and workers see
@@ -331,71 +307,30 @@ workspace registry of the user the host runs as, `<config dir>/workspaces.json`
 ([workspace](./workspace.md)), and its serve runs in the entry's folder. The
 registry does not store every folder by its real path, so the host resolves
 each one before it compares one with another. Steps 19 to 21 of the
-[execution plan](#execution-plan) build this, and are built: the host writes
-the registry as below, and its workspaces are every entry, each at the real
-path of its folder, plus every workspace folder in `workspaces/` whose name
-and real path no entry has. One rule in `hostedWorkspaceFolders`
-(`src/libswamp/workspace/hosted_roster.ts`) decides this for the host and the
-workspace services alike.
+[execution plan](#execution-plan) build this, and are built: the host's
+workspaces are every entry, each at the real path of its folder. One rule in
+`hostedWorkspaceFolders` (`src/libswamp/workspace/hosted_roster.ts`) decides
+this for the host and the workspace services alike.
 
-- With each rescan the host first registers every workspace folder in its
-  `workspaces/` that the registry lacks, then reads the registry. A workspace
-  folder is a repo folder whose name is a workspace name and that holds a
-  `.swamp.yaml`. Its entry has the folder's name and real path, recorded as
-  `swamp workspace import` would record it, with no trust mark. Nothing is
-  moved or copied.
-- The host writes through the workspace store under the registry's lock, and
-  waits for the lock a bounded time, 2 seconds, which passes a workspace
-  command's one read and write and ends before the next rescan. A write that
-  fails or times out is tried again at the next rescan and logged once per
-  reason; it never delays or stops a serve, and a rescan does not wait for it.
-  The host's writes run one at a time, so a registration a rescan started never
-  lands after a removal has taken the entry away. A rescan's writes stop at the
-  first that fails, so they wait for the lock once, and a host that is stopping
-  starts no new registration. A registry the host creates adopts the repos under the data dir
-  first, as any command that writes does. The host's read adopts nothing and
-  takes no lock a workspace command would wait on.
-- `workspace.create` registers the workspace it made once its folder is renamed
-  into place, so a workspace a request created is an entry like any other and
-  `swamp workspace list` shows it at once. The root writes that entry; the
-  host's rescan is the safety net. A create whose registration fails still
-  succeeds, and a create stopped before that is registered by the next rescan.
-- A folder in `workspaces/` that could not be registered, or that a failed
-  write has not registered yet, is still served from its folder, so a registry
-  write that fails never stops a serve. A folder whose name or real path
-  another entry has is the exception; see Names and folders below.
-- A folder removed by hand from `workspaces/` stops its serve and answers 404.
-  Its entry is removed once the serve has stopped, with its status file. The
-  host removes only an entry whose folder is inside its own `workspaces/` and
-  whose name is that folder's name. A folder that is a link is registered at
-  its target's real path, so the host never removes that entry. An entry for
-  `workspaces/<name>` whose folder was removed while the host was stopped is
-  not listed, and the host removes it as it would after a removal by hand. A
-  host whose `workspaces/` holds no workspace folder at all removes none, since
-  a folder that was unmounted looks the same. Such an entry does not hold its
-  name: `workspace.create` makes the folder there, which keeps the entry.
-- The supervisor keeps a serve's folder from its first start, so a workspace
-  whose folder changes keeps running where it is and starts in its new folder
-  the next time it starts. A link in `workspaces/` that is pointed at another
-  repo is the exception: its entry still names the first target, which keeps
-  the name (see Names and folders), so it is listed there and stopped until
-  `swamp workspace remove <name>` frees the name and the host registers the
-  link at its new target.
+- The host never writes the registry itself. `workspace.create` registers the
+  workspace it makes, and a delete removes that entry; `swamp workspace import`
+  and `swamp workspace remove` are the operator's.
+- The host reads the registry with each rescan, every 5 seconds, which finds an
+  entry another command wrote. Its read adopts nothing and takes no lock a
+  workspace command would wait on.
+- The supervisor keeps a serve's folder from its first start, so a serve
+  already running keeps its folder when the entry's folder changes; the wanted
+  file rule below stops it until its wanted file names the new folder.
 
-The host watches `workspaces/` without recursing, so the children's own writes
-never wake it, and rescans every 5 seconds, which finds a marker written after
-its folder and an entry another command registered. An operator can make a
-workspace by hand in `workspaces/`, and the lifecycle below does the same thing.
-The workspace services take their workspaces from the same registry entries and
-folders as the host.
+The host watches its state folder without recursing, so a changed wanted file
+is seen at once and the children's own writes never wake it.
 
 **Listed is not started.** Every workspace of the host is listed and has a
 status file, wherever its folder is. The host never starts a serve for a
 workspace on its own. It starts one only when the workspace's wanted file says
-`active`, which a resume writes. Finding a folder in `workspaces/`, reading a
-registry entry and creating a workspace all leave the workspace listed and
-stopped, and its address answers 503 with its state. Registering a repo never
-starts one. The choice is kept in the wanted file, so a workspace someone
+`active`, which a resume writes. Reading a registry entry and creating a
+workspace both leave the workspace listed and stopped, and its address answers
+503 with its state. Registering a repo never starts one. The choice is kept in the wanted file, so a workspace someone
 resumed comes back after a host restart. The root is the one exception: naming
 it in `host.yaml` is the operator turning it on. The host logs one line for
 each workspace it lists and does not start, naming the wanted file to write.
@@ -411,9 +346,7 @@ its status file and the 503 its address answers say whether it runs.
 
 - **The host's own** is a workspace a request created. Grants on
   `workspace:<pattern>` reach it, and `workspace.delete` removes its folder and
-  its registry entry. With a host folder, every workspace whose folder is
-  at `workspaces/<its name>` is the host's own, whoever made the folder, as
-  every workspace is today; one registered under another name is not. With no host folder, a workspace is the host's own when
+  its registry entry. A workspace is the host's own when
   its wanted file has a creator, names the entry's folder, compared by real
   path, and records the `repoId` of the repo create made, which only
   `workspace.create` writes; the folder must hold a `.swamp.yaml` with that
@@ -475,19 +408,15 @@ applied to a folder other than the one it was written for. Otherwise a wanted
 file left by a removed workspace, or by a create that did not finish, would
 start a serve in whatever repo is imported under that name later.
 
-- A wanted file can name its folder. One that names none stands for
-  `workspaces/<name>`, which is what every wanted file means today.
+- A wanted file names its folder. One that names none starts nothing.
 - The host starts a serve only when the wanted file's folder is the entry's
   folder, and the status file's reason says when it is not.
-- A `deleted` the host cannot act on, because it stands for another folder,
-  for a folder another workspace has, or for a name in a clash, is never left
-  waiting: freeing the name later, as the host advises, would carry it out. The
+- A `deleted` the host cannot act on, because it was written for another
+  folder, is never left waiting: freeing the name later, as the host advises, would carry it out. The
   host removes that wanted file, unless it was rewritten since, logs that it
   deleted nothing, and the workspace is stopped as one with no wanted file. To
   delete it, delete it again once the name is the host's own.
-- `suspend` and `resume` write the folder for a workspace outside
-  `workspaces/`, and leave it out for one inside, so the wanted files of an
-  existing host folder do not change and an older host still reads them.
+- `suspend` and `resume` write the entry's folder.
 - An operator who resumes one of their own workspaces by hand names its folder
   in the wanted file. Editing the `wanted` line of an existing file works as
   before.
@@ -503,27 +432,8 @@ spelling an operator writes still matches.
 
 - A registered folder that is the root's repo is passed over, so no repo has two
   serves from one host.
-- A folder in `workspaces/` whose name is registered to another folder is not
-  served: the registry entry has the name, and is listed in its place. Neither
-  is started while both are named so, whatever the wanted file says, since
-  serving the entry's repo would answer at the address the folder's clients
-  use. `workspace.resume` refuses that name to everyone with
-  `workspace_name_clash`, which is not an authorization refusal and is in the
-  client's list of root-written codes, and the status file's reason says to free the name
-  with `swamp workspace remove <name>` or rename one of them, never to name the
-  entry's folder. The host logs an error once per start that names both
-  folders and `swamp workspace remove`, and leaves the registry unchanged.
-- A folder in `workspaces/` registered under another name is not served under
-  its own name either: the entry has the folder, so no repo has two serves.
-  The host logs that clash the same way, and `workspace.list` and
-  `workspace.get` say of the folder's own name that its folder is registered
-  under another name, without naming it, since the caller may hold no grant on
-  it. Nothing done under the folder's own name reaches it: `workspace.delete` refuses that name with
-  `operator_workspace`, a wanted file under it neither starts nor removes
-  anything, and just before it removes any folder the host checks both the
-  workspaces it last listed and the registry read afresh. A removal that finds
-  its folder claimed then is dropped with its `deleted`, never retried, so
-  freeing the name later deletes nothing.
+- Two entries for one folder are one workspace, under the first name, so no
+  repo has two serves.
 - A registry entry whose name is not a workspace name is passed over.
 - A registered folder that is gone, or holds no `.swamp.yaml`, is listed and
   not started, and its status file's reason says so. The host looks again at
@@ -531,24 +441,21 @@ spelling an operator writes still matches.
 - A workspace's wanted and status files are in the state folder under its
   registry name, wherever its folder is.
 
-**Leaving the registry** (step 21). A workspace of the operator's own is stopped
-when it leaves the registry, and its wanted and status files are removed. One
+**Leaving the registry** (step 21). A workspace is stopped when it leaves the
+registry, and its wanted and status files are removed. One
 that is no longer listed but still registered, as when another entry names its
 folder by a second spelling, is stopped and keeps its files. Its
 folder is not touched. A later import under the same name starts nothing. A
 wanted file written since it left, as by a resume after a new import, is kept.
-An entry for a folder in `workspaces/` cannot leave this way: the next rescan
-registers it again, so `swamp workspace remove` has no lasting effect on it
-while the folder is there.
 
 **A registry that cannot be read** (steps 19 to 21), because it is corrupt or a
 newer swamp wrote it. While the host runs, it logs that, changes nothing and
-keeps the entries last read whole, and registers nothing. At startup, with
+keeps the entries last read whole. At startup, with
 nothing read yet, it serves what the wanted files name, each `active` one in the
-folder that file names or stands for, so a bad registry does not stop a host at
+folder that file names, so a bad registry does not stop a host at
 its next restart. A folder a wanted file names is served only when it holds a
-`.swamp.yaml`, is not the root's repo, and is not already a folder in
-`workspaces/` or another wanted file's folder, so no repo gets two serves, and
+`.swamp.yaml`, is not the root's repo, and is not already another wanted
+file's folder, so no repo gets two serves, and
 the host logs each one it lists.
 When the registry can be read again, a workspace listed only from its wanted
 file that has no entry is stopped, and its wanted file is kept. The workspace
@@ -559,25 +466,24 @@ root's admins may suspend or resume it. Each refusal says the registry is
 why. A name with no entry whose wanted file names a folder gets them too,
 since only a change to a registered repo writes that. A registry file
 that does not exist at startup is an empty one: a host with no registry file
-and an empty `workspaces/` lists nothing and creates no file. One that
+lists nothing and creates no file. One that
 disappears while the host runs is treated as one that cannot be read, since no
 command removes it: the host keeps the entries it last read, stops nothing,
-registers nothing, since a write would create a registry without the entries
-it held, and logs it once, until the file is back.
+and logs it once, until the file is back.
 
 **A hand-written `deleted` for a workspace of the operator's own** (step 21).
 The delete
 service refuses one, but an operator can still write the file. The host never
-removes or renames a folder outside its own `workspaces/`, and with no host
-folder never one a request did not create, whatever the wanted file says. It
+removes or renames a folder a request did not create, whatever the wanted file
+says. It
 stops the serve, the workspace stays listed, and the status file's reason says
 why nothing was removed and names `swamp workspace remove`. Unlike `deleted`
 for the host's own, it is not final: writing `active` again, or a root admin's
 resume, resumes it, since nothing that cannot be undone has started.
 
-**The refusals** these rules add use `operator_workspace`, apart from the name
-clash's `workspace_name_clash` (see Names and folders); both are in the
-client's list of codes whose message the root wrote, so an older client
+**The refusals** these rules add use `operator_workspace`, which is in the
+client's list of codes whose message the root wrote, as is
+`workspace_name_clash`, which a root from before step 26 sends, so an older client
 shows the root's own message. `workspace.delete` refuses an operator's own
 workspace with it for everyone. `workspace.suspend` and `workspace.resume`
 refuse it for a caller who is not one of the root's admins (admin on
@@ -599,11 +505,11 @@ the field that is wrong:
 | `address`                            | required                      | The public address; may carry a path when a proxy serves the host under one             |
 | `listen.host`                        | `127.0.0.1`                   | Off loopback needs TLS, as for serve                                                     |
 | `listen.port`                        | `443` with TLS, `8080` without |                                                                                          |
-| `listen.cert-file`, `listen.key-file` | none                          | Given together; relative to the folder that holds `host.yaml`                            |
-| `root`                               | none                          | The root workspace's repo; relative to the folder that holds `host.yaml`, never inside the state folder (`workspaces/` with a host folder) nor containing it; a folder without `.swamp.yaml` is refused at startup |
+| `listen.cert-file`, `listen.key-file` | none                          | Given together; relative to the config dir                                               |
+| `root`                               | none                          | The root workspace's repo; relative to the config dir, never inside the state folder nor containing it; a folder without `.swamp.yaml` is refused at startup |
 | `trust-proxy`                        | `false`                       | The host is behind a proxy, whose forwarding headers it passes on                        |
 | `allow-unauthenticated-behind-proxy` | `false`                       | Admits a child in auth mode `none` behind a proxy; only on a loopback listener with `trust-proxy` or a public `address` |
-| `oauth-client.id`, `oauth-client.secret-file` | none                 | Given together; every child is started with them. The file is relative to the folder that holds `host.yaml`, never inside the state folder nor the root, and a missing, unreadable or empty one is refused at startup; a workspace whose folder holds it is not started, in either layout, and its status says why |
+| `oauth-client.id`, `oauth-client.secret-file` | none                 | Given together; every child is started with them. The file is relative to the config dir, never inside the state folder nor the root, and a missing, unreadable or empty one is refused at startup; a workspace whose folder holds it is not started, and its status says why |
 
 The `host.yaml` a first run creates sets `listen.host`, `listen.port` and
 `address` to the loopback defaults above and lists every other key as a
@@ -626,36 +532,27 @@ a child's exit, is in that log.
 
 ## Compatibility
 
-Making the registry the host's list and the host folder optional keeps these
-true for a host folder that exists today:
+The command is hidden, so removing the host folder layout (step 26) keeps no
+compatibility for it: a host folder is no longer read. The command's addresses
+and its clients stay compatible:
 
-- The same command, the same `host.yaml` and the same addresses.
-- Every workspace that ran before an upgrade runs after it, with no step by the
-  operator. The one exception is a folder in `workspaces/` whose name or real
-  path another entry has (see Names and folders in [The host](#the-host)),
-  which is not served; the host logs that clash at every start.
-- Repos, wanted files and status files stay where they are, and nothing is
-  moved. Suspend and resume by request leave a wanted file for a folder in
-  `workspaces/` byte for byte as it is written today.
-- New workspaces on a host with a host folder are still created in its
-  `workspaces/`. One with no host folder creates where `swamp workspace create`
-  would.
+- The same addresses, and the same `host.yaml` keys.
 - The registry file gains no field and no schema version, so an older swamp
   reads and rewrites it without loss.
+- A wanted file with no `folder`, as an older host wrote, still parses; it
+  starts nothing.
 - An older `swamp serve workspace` client works against a newer root, and a
   newer client against an older root. A field added to a reply is optional, and
   a new refusal reaches an older client with the root's own message.
 
-One thing changes for an existing host: every repo its user has registered is
-listed on it, stopped. None starts until a root admin resumes it. Its
-workspaces also appear in `swamp workspace list` and on the `swamp start` page.
+Every repo the host's user has registered is listed on the host, stopped. None
+starts until a root admin resumes it. Its workspaces also appear in
+`swamp workspace list` and on the `swamp start` page.
 
 ## A hosted workspace
 
 A hosted workspace is a repo folder, the one its registry entry names. One a
-request creates is `<host folder>/workspaces/<name>/` on a host with a host
-folder, and `<location>/<name>` in the workspace location on one without. It
-has:
+request creates is `<location>/<name>` in the workspace location. It has:
 
 - **Its own datastore**, the one a new repo gets, inside its folder. Pointing
   it at a bucket is ordinary datastore setup, run in the folder while the
@@ -716,7 +613,7 @@ delete refuses it and only the root's admins may suspend or resume it.
 
 | Request             | Does                                                                                           | Needs on the root                |
 | ------------------- | ---------------------------------------------------------------------------------------------- | -------------------------------- |
-| `workspace.create`  | Makes the folder, sets up the repo, writes its `serve.yaml` with the caller as its first admin | `write` on `workspace:<name>`    |
+| `workspace.create`  | Makes the folder in the workspace location, sets up the repo, writes its `serve.yaml` with the caller as its first admin | `write` on `workspace:<name>`    |
 | `workspace.list`    | Names, addresses and states                                                                    | any authenticated principal      |
 | `workspace.get`     | One workspace: state, restarts, and why it is not ready, described by state                    | `read` on `workspace:<name>`     |
 | `workspace.suspend` | Stops its serve and keeps everything; `resume` starts it again                                 | `admin` on `workspace:<name>`    |
@@ -753,10 +650,9 @@ The root and the supervisor never call each other. They share two small files
 per workspace in the state folder, under its name:
 
 - **Wanted**, `<name>.wanted.yaml`, written by the root: `wanted`
-  (`active`, `suspended` or `deleted`), `creator` and `changedAt`, and, when it
-  names one, the `folder` it was written for. The wanted file a create writes
-  on a host with no host folder also records the new repo's `repoId`. A folder
-  without one is listed and not started, and its status file says
+  (`active`, `suspended` or `deleted`), `creator`, `changedAt` and `folder`,
+  and, for one a create wrote, the new repo's `repoId`. A workspace without
+  one is listed and not started, and its status file says
   `wanted: suspended`. Only `wanted` is required, so an operator can suspend or
   resume a workspace by editing that one line while the host runs.
 - **Status**, `<name>.status.yaml`, written by the host: `state`
@@ -786,49 +682,21 @@ The host reads the wanted files with each rescan
   not a regular file) is reported in the host's log and in the status file,
   and changes nothing: the workspace keeps the last state read whole, and is
   not started when the host has read none. A wanted file that is absent while
-  its folder is there follows the same rule, whether the scan listed it and it
-  was gone by the read, as while an editor saves by removing and recreating
+  its workspace is listed follows the same rule, whether the scan listed it and
+  it was gone by the read, as while an editor saves by removing and recreating
   it, or the scan saw none: a running workspace keeps running and a suspended
-  one stays stopped until a wanted file says otherwise. Once the folder is
-  gone too, the host forgets that state, so a folder added back by hand with
-  no wanted file is not started.
-- A wanted file that is `active` or `suspended` with no folder beside it is left
-  alone until the folder appears.
-- A folder removed by hand stops its serve, as before, and its status file is
-  removed once the serve has stopped.
+  one stays stopped until a wanted file says otherwise.
+- A wanted file with no entry starts nothing. One a create left, with a creator
+  and a folder, is settled as [Whose a workspace is](#the-host) describes.
 
-`create` sets the repo up in a hidden `.<name>.creating-<uuid>` folder, writes
-the wanted file as `suspended`, then renames the folder into place, so no scan
-lists a workspace before it is whole, and a new workspace is listed and has no
-serve until a resume. Create then registers the workspace, and refuses
-a name the registry already holds with `already_exists` (step 21). A failed
-create removes the folder and the wanted file it wrote. One per-name lock
-serialises create, suspend, resume and delete, and create removes a `.creating-`
-folder an earlier create left. A create stopped between the wanted file and the
-rename leaves the name taken until a `delete`, which the host completes for a
-wanted file with no folder. `delete` writes `deleted`. Once the host sees
-`deleted` it removes the workspace, and a later edit of the file does not stop
-it: it stops the serve and waits for it to exit, renames the folder to a hidden
-`.<name>.deleting-<uuid>` so no scan sees half a folder, removes that, removes
-the registry entry, removes the status file, and removes the wanted
-file last. A registry write that fails keeps the wanted file, so a later rescan
-finishes the removal; a registry that cannot be read is passed over, so a
-corrupt file never holds up a delete. Until the end the wanted file still says `deleted`, so a host that
-stopped halfway finishes at its next start, and the next scan removes a hidden
-folder left behind. A removal touches only names that pass `parseWorkspaceName`,
-and a rename never follows a link, so a workspace folder that is a link loses
-only the link. With a host folder, the host never removes or renames a folder
-outside its own `workspaces/`.
-
-On a host with no host folder, which the host tells its root with the hidden
-`--host-no-folder` beside `--host-workspaces-dir`, create makes the repo at
-`<location>/<name>`, where `swamp workspace create` would: the location set
-with `swamp config set workspaces.dir`, else `<data dir>/workspaces`. It holds
-the host's per-name lock and then the registry's create lock, the one
-`swamp workspace create` holds, for the whole set-up, so a
-`swamp workspace create` of the same name meanwhile waits and may time out.
-Under both it reads the registry as every writer does, adopting the data dir's
-repos first, and runs the registry's own checks (`newWorkspaceLocation`,
+`create` makes the repo at `<location>/<name>`, where `swamp workspace create`
+would: the location set with `swamp config set workspaces.dir`, else
+`<data dir>/workspaces`. It holds the host's per-name lock and then the
+registry's create lock, the one `swamp workspace create` holds, for the whole set-up, so a
+`swamp workspace create` of the same name meanwhile waits and may time out; the
+per-name lock also serialises suspend, resume and delete. Under both it reads
+the registry as every writer does, adopting the data dir's repos first, and
+runs the registry's own checks (`newWorkspaceLocation`,
 `checkNewWorkspaceFolder`), answering `already_exists` with no host path.
 Then, in order:
 
@@ -852,8 +720,19 @@ is taken. Create refuses to rename a hidden folder that some entry has taken,
 and a target already there, so it never moves or replaces a folder it did not
 make.
 
-Delete on such a host is the host's, as with a host folder, with two
-differences. It renames the folder the wanted file records, and only while
+`delete` writes `deleted`. Once the host sees `deleted` it removes the
+workspace, and a later edit of the file does not stop it: it stops the serve
+and waits for it to exit, renames the folder to a hidden
+`.<name>.deleting-<uuid>` beside it so no reader sees half a folder, removes
+that, removes the registry entry, removes the status file, and removes the
+wanted file last. A registry write that fails keeps the wanted file, so a later
+rescan finishes the removal. Until the end the wanted file still says
+`deleted`, so a host that stopped halfway finishes at its next start. A removal
+touches only names that pass `parseWorkspaceName`, and a rename never follows a
+link, so a workspace folder that is a link loses only the link. The host never
+removes or renames a folder a request did not create.
+
+Delete renames the folder the wanted file records, and only while
 the registry, read afresh, still names that folder for the workspace; an entry
 that now names another folder ends the removal, keeping the folder and the
 entry. It removes the hidden `.<name>.creating-` and `.<name>.deleting-`
@@ -996,7 +875,7 @@ in neither the audit log nor a log line.
 
 **Where the root keeps codes.** In memory, in the root process the host
 started, keyed by the code's hash. That process is the only node holding the
-`workspaces/` folder, so it alone answers `workspace.sign-in`, and the root's
+host's state folder, so it alone answers `workspace.sign-in`, and the root's
 public address routes there through the host's router. Redeem
 (`POST /auth/sign-in-code/redeem`) is answered on the node that received it,
 never forwarded to a leader. A code is gone after its first redeem, refused or
@@ -1076,7 +955,7 @@ that and a hosted workspace:
 | `ManagedServe`    | Entity              | Wanted state, observed state, crash count, backoff; property-tested over random event sequences |
 | Workspace router  | Host transport      | Prefix match, forward, 503 and 404; in `src/serve/host/`                                        |
 | `WorkspaceRegistry` | Aggregate root (existing) | The host's list of workspaces; read with each rescan, written only through the workspace store |
-| Reconciler        | Host service        | Joins the registry, the folder scan, the wanted files and the supervisor; runs removals         |
+| Reconciler        | Host service        | Joins the registry, the wanted files and the supervisor; runs removals                          |
 | Status writer     | Host service        | Writes each workspace's status file, one write in flight; a projection, not a repository        |
 | Provisioner       | Application service | Sets a repo up under a temporary name as a child process and renames it into place              |
 | `workspace`       | Resource kind       | In `resource_selector.ts`; `read`, `write`, `admin`                                             |
@@ -1263,10 +1142,19 @@ After 7 an operator who sets each workspace up has a multi-workspace host.
     started at once write it once, `--host-dir` naming a folder with no
     `host.yaml` is still refused, and `swamp serve host --help` says the first
     run creates it. After 22.
+26. **Remove the host folder layout** (swamp-club#4970, built). The host always
+    reads `<config dir>/host.yaml` and keeps its state in `<data dir>/host/`;
+    `--host-dir`, the current-folder lookup, the hidden `--host-no-folder` and
+    the `workspaces/` scan are gone, and the host writes no registry entry. A
+    workspace is the host's own only when its wanted file has a creator and
+    names the entry's folder and records the repo in it. Done when the host
+    reads or creates only the config dir's `host.yaml` and the in-process host
+    tests run against a config dir and data dir. Closes swamp-club#4951.
+    After 25.
 
 Issues 16 and 17 need only the first two groups, so the dashboard can proceed
-beside the lifecycle. Issues 19 to 23 run in order, after issue 10, issue
-24 needs only issue 8, and issue 25 needs issue 22.
+beside the lifecycle. Issues 19 to 23 and 26 run in order, after issue 10,
+issue 24 needs only issue 8, and issue 25 needs issue 22.
 Promoting a local workspace builds on issues 13 and 15 and is designed
 separately.
 

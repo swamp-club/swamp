@@ -20,7 +20,6 @@
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import {
   scanWorkspaces,
-  type SkippedEntry,
   type WorkspaceScan,
 } from "../../infrastructure/persistence/hosted_workspace_folder_scan.ts";
 
@@ -36,15 +35,13 @@ export interface WorkspaceChange {
 
 export interface WorkspaceWatcherOptions {
   readonly dir: string;
-  /** false for a state folder that holds no repo; true by default */
-  readonly repos?: boolean;
   /** the workspaces the caller already runs; changes are reported against it */
   readonly initial: readonly string[];
   readonly onChange: (change: WorkspaceChange) => void | Promise<void>;
   /** every rescan, changed or not, before onChange */
   readonly onRescan?: (scan: WorkspaceScan) => void | Promise<void>;
-  /** after onRescan, the workspaces changes are reported against; all listed by default */
-  readonly served?: (scan: WorkspaceScan) => readonly string[];
+  /** after onRescan, the workspaces changes are reported against */
+  readonly served: (scan: WorkspaceScan) => readonly string[];
   readonly rescanMs?: number;
   readonly debounceMs?: number;
 }
@@ -54,34 +51,9 @@ export interface WorkspaceWatcher {
   stop(): Promise<void>;
 }
 
-/** logs each skipped entry once, and again only when its reason changes */
-export class SkipLog {
-  readonly #reasons = new Map<string, string>();
-
-  report(skipped: readonly SkippedEntry[], rescanMs: number): void {
-    const seen = new Set<string>();
-    for (const { name, reason } of skipped) {
-      seen.add(name);
-      if (this.#reasons.get(name) === reason) continue;
-      this.#reasons.set(name, reason);
-      logger.warn(
-        "Skipping {name} in the workspaces folder: {reason}; the folder is rescanned every {seconds} s",
-        { name, reason, seconds: rescanMs / 1000 },
-      );
-    }
-    for (const name of [...this.#reasons.keys()]) {
-      if (!seen.has(name)) this.#reasons.delete(name);
-    }
-  }
-}
-
-/**
- * the watch is not recursive, so writes a child makes inside its own repo
- * never reach it; the periodic rescan catches a marker written after its folder
- */
+/** the periodic rescan catches a registry change, which the state folder's watch never sees */
 export function watchWorkspaces(
   options: WorkspaceWatcherOptions,
-  skipLog: SkipLog = new SkipLog(),
 ): WorkspaceWatcher {
   const { dir, onChange } = options;
   const rescanMs = options.rescanMs ?? DEFAULT_RESCAN_MS;
@@ -93,12 +65,11 @@ export function watchWorkspaces(
   let debounce: ReturnType<typeof setTimeout> | undefined;
 
   const rescanOnce = async () => {
-    const scan = await scanWorkspaces(dir, { repos: options.repos });
+    const scan = await scanWorkspaces(dir);
     if (stopped) return;
-    skipLog.report(scan.skipped, rescanMs);
     await options.onRescan?.(scan);
     if (stopped) return;
-    const listed = options.served?.(scan) ?? scan.workspaces;
+    const listed = options.served(scan);
     const current = new Set(listed);
     const added = listed.filter((name) => !known.has(name));
     const removed = [...known].filter((name) => !current.has(name)).sort();
@@ -121,7 +92,7 @@ export function watchWorkspaces(
         try {
           await rescanOnce();
         } catch (error) {
-          logger.error("Rescanning the workspaces folder failed: {error}", {
+          logger.error("Rescanning the state folder failed: {error}", {
             error,
           });
         }
@@ -136,7 +107,7 @@ export function watchWorkspaces(
     fsWatcher = Deno.watchFs(dir, { recursive: false });
   } catch (error) {
     logger.warn(
-      "Cannot watch the workspaces folder, so changes are seen only by the rescan every {seconds} s: {error}",
+      "Cannot watch the state folder, so changes are seen only by the rescan every {seconds} s: {error}",
       { seconds: rescanMs / 1000, error },
     );
   }
@@ -148,7 +119,7 @@ export function watchWorkspaces(
       }
     } catch (error) {
       if (!stopped) {
-        logger.warn("Watching the workspaces folder stopped: {error}", {
+        logger.warn("Watching the state folder stopped: {error}", {
           error,
         });
       }

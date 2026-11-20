@@ -70,8 +70,8 @@ export const FOLLOWER_FORWARDED_REQUESTS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * answered by the node holding the host folder, so a follower takes them as it
- * does reads; four of them change the folder, so none is ever a cookie's to send
+ * answered by the node holding the host's state folder, so a follower takes them
+ * as it does reads; four of them change it, so none is ever a cookie's to send
  */
 export const HOST_FOLDER_REQUESTS: ReadonlySet<string> = new Set([
   "workspace.create",

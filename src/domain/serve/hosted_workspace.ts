@@ -31,12 +31,12 @@ export type HostedWorkspaceWanted = typeof HOSTED_WORKSPACE_WANTED[number];
 
 export interface HostedWorkspaceRecord {
   readonly name: string;
-  /** null for a workspace whose folder was made by hand */
+  /** null for a workspace no request created */
   readonly creator: string | null;
   readonly wanted: HostedWorkspaceWanted;
   /** null when the wanted file names no time */
   readonly changedAt: string | null;
-  /** the folder it was written for; absent or null stands for `workspaces/<name>` */
+  /** the folder it was written for; absent or null names none, which starts nothing */
   readonly folder?: string | null;
   /** the repoId of the repo create made; absent or null for any other */
   readonly repoId?: string | null;
@@ -187,7 +187,7 @@ export class HostedWorkspace {
   }
 }
 
-// no key for no folder, so a workspace in workspaces/ keeps the record an older host reads
+// no key for no folder, so an older host reads the record
 function recordWithFolder(
   record: HostedWorkspaceRecord,
   folder: string | null,

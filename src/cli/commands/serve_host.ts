@@ -51,51 +51,33 @@ export const serveHostCommand = new Command()
   .hidden()
   .description(
     "Run one serve per workspace behind a single address.\n\n" +
-      "host.yaml holds the listener, its TLS certificate, the public address and an optional root repo. The host runs in one of two layouts:\n" +
-      "  - A host folder, given with --host-dir or the current folder when it holds host.yaml and is not the config dir: host.yaml, and workspaces/ holding one swamp repo per workspace made there plus the state files. Workspace folders added or removed while the host runs are picked up.\n" +
-      "  - No host folder, otherwise: <config dir>/host.yaml, with the state files in <data dir>/host/, which holds no repo. Its workspaces are the repos registered with swamp workspace import or swamp workspace create; a request creates one where swamp workspace create would, in workspaces.dir or <data dir>/workspaces.\n" +
-      "With no --host-dir and no host.yaml in either place, the first run creates <config dir>/host.yaml listening on 127.0.0.1:8080 with address http://127.0.0.1:8080, the other keys written as comments, and starts from it. It never replaces an existing host.yaml, even an invalid one, and never creates a host folder; --host-dir naming a folder with no host.yaml is refused.\n" +
-      "Relative paths in host.yaml are taken from the folder that holds it. The host logs which host.yaml it read. One host runs per state folder: a second exits naming it.\n\n" +
-      "Every workspace in the user's workspace registry is listed. Each answers at <address>/w/<name>; the root answers at the address itself. A workspace's serve starts only when its <name>.wanted.yaml in the state folder says wanted: active; the root starts with the host. The host has no repo of its own and authenticates no one: each workspace's serve does.\n\n" +
+      "<config dir>/host.yaml holds the listener, its TLS certificate, the public address and an optional root repo; relative paths in it are taken from the config dir. " +
+      "With no host.yaml there, the first run creates one listening on 127.0.0.1:8080 with address http://127.0.0.1:8080, the other keys written as comments, and starts from it; it never replaces an existing host.yaml, even an invalid one. " +
+      "The host keeps its state files in <data dir>/host/, which holds no repo. The host logs which host.yaml it read. One host runs per state folder: a second exits naming it.\n\n" +
+      "Every workspace in the user's workspace registry is listed, as swamp workspace import or swamp workspace create registered it; a request creates one where swamp workspace create would, in workspaces.dir or <data dir>/workspaces. Each answers at <address>/w/<name>; the root answers at the address itself. A workspace's serve starts only when its <name>.wanted.yaml in the state folder says wanted: active; the root starts with the host. The host has no repo of its own and authenticates no one: each workspace's serve does.\n\n" +
       "host.yaml can name one OAuth client (oauth-client: id and secret-file, a path outside every repo the host runs). The root and every workspace are started with it through --oauth-client-id and --oauth-client-secret-file, so a workspace in oauth mode needs no client of its own. " +
       "It replaces a root's own client, so links the root made under that client are no longer found. " +
       "A workspace's first start still looks up its admins and allowed users; it does so unattended only with SWAMP_API_KEY or SWAMP_API_KEY_FILE in the host's environment, and otherwise needs one device grant.\n\n" +
       "The host is one trust domain, as plain serve is: every workspace's models see the host's whole environment, cloud credentials included, so host only workspaces whose teams trust each other and the host's operator. " +
       "Serve settings in the environment (SWAMP_GRANTS_FILE, SWAMP_APPROVE_REQUIRES_EXPLICIT_GRANT and the rest) are not passed on: each workspace's serve settings come from its own repo.",
   )
-  .option(
-    "--host-dir <dir:string>",
-    "The host folder holding host.yaml and workspaces/ (default: the current directory when it holds host.yaml and is not the config dir, otherwise no host folder and the config dir's host.yaml)",
-  )
   .example(
-    "Run the host in the current folder",
+    "Run the host from host.yaml in the config dir, which the first run creates",
     "swamp serve host",
   )
   .example(
-    "Run the host in another folder and print the listening line as JSON",
-    "swamp serve host --host-dir /srv/swamp-host --json",
-  )
-  .example(
-    "Run a host with no host folder, from host.yaml in the config dir, which the first run creates",
-    "cd ~ && swamp serve host",
+    "Run the host and print the listening line as JSON",
+    "swamp serve host --json",
   )
   .action(async function (options: AnyOptions) {
     const ctx = createContext(options as GlobalOptions, ["serve", "host"]);
     const renderer = createServeHostRenderer(ctx.outputMode);
-    const { layout, text, created } = await locateHostConfig(
-      options.hostDir as string | undefined,
-    );
+    const { layout, text, created } = await locateHostConfig();
     if (created) renderer.created({ file: layout.configFile });
-    ctx.logger.info(
-      layout.hostFolder === null
-        ? "Read {file}; the host has no host folder and keeps its state in {state}"
-        : "Read {file}; the host folder is {folder}",
-      {
-        file: layout.configFile,
-        folder: layout.hostFolder,
-        state: layout.stateDir,
-      },
-    );
+    ctx.logger.info("Read {file}; the host keeps its state in {state}", {
+      file: layout.configFile,
+      state: layout.stateDir,
+    });
     const config = HostConfig.parse(text, layout);
     const hostEnv = Deno.env.toObject();
     for (const name of withheldServeSettings(hostEnv)) {
@@ -226,12 +208,10 @@ export async function serveUntilStopped(
 }
 
 /** the swamp dirs are read here, so the host and the children it pins to them agree */
-export async function locateHostConfig(
-  hostDir: string | undefined,
-): Promise<{ layout: HostLayout; text: string; created: boolean }> {
+export async function locateHostConfig(): Promise<
+  { layout: HostLayout; text: string; created: boolean }
+> {
   return await locateHostYaml({
-    ...(hostDir === undefined ? {} : { hostDir }),
-    cwd: Deno.cwd(),
     configDir: resolve(getSwampConfigDir()),
     dataDir: resolve(getSwampDataDir()),
   });

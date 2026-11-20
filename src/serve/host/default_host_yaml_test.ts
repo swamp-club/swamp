@@ -25,7 +25,7 @@ import {
   DEFAULT_HOST_YAML,
 } from "./default_host_yaml.ts";
 import { HostConfig } from "./host_config.ts";
-import { noHostFolderLayout } from "./host_layout.ts";
+import { hostLayout } from "./host_layout.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const tempDir = await Deno.makeTempDir();
@@ -49,7 +49,7 @@ async function entries(dir: string): Promise<string[]> {
 Deno.test("DEFAULT_HOST_YAML: parses to a loopback host on 8080 whose address is its own listener", () => {
   const config = HostConfig.parse(
     DEFAULT_HOST_YAML,
-    noHostFolderLayout({ configDir: "config", dataDir: "data" }),
+    hostLayout({ configDir: "config", dataDir: "data" }),
   );
   assertEquals(config.listen.host, "127.0.0.1");
   assertEquals(config.listen.port, 8080);

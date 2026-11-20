@@ -21,7 +21,7 @@ import { assertEquals } from "@std/assert";
 import fc from "fast-check";
 import { resolve } from "@std/path";
 import { HostConfig } from "./host_config.ts";
-import { hostFolderLayout } from "./host_layout.ts";
+import { hostLayout } from "./host_layout.ts";
 import { matchWorkspacePath } from "./workspace_path.ts";
 
 const arbName = fc.stringMatching(/^[a-z0-9][a-z0-9-]{0,62}$/);
@@ -34,7 +34,7 @@ Deno.test("HostConfig.childAddress: the router maps any child's address path bac
     fc.property(arbName, (name) => {
       const config = HostConfig.parse(
         "address: https://serve.example\n",
-        hostFolderLayout(resolve("host")),
+        hostLayout({ configDir: resolve("config"), dataDir: resolve("data") }),
       );
       const path = new URL(config.childAddress(name)).pathname;
       assertEquals(matchWorkspacePath(path), {
@@ -51,7 +51,7 @@ Deno.test("HostConfig.childAddress: a proxy's prefix is kept before /w/<name>", 
     fc.property(arbPrefix, arbName, (prefix, name) => {
       const config = HostConfig.parse(
         `address: https://serve.example${prefix}/\n`,
-        hostFolderLayout(resolve("host")),
+        hostLayout({ configDir: resolve("config"), dataDir: resolve("data") }),
       );
       assertEquals(
         config.childAddress(name),

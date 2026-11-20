@@ -33,10 +33,7 @@ import {
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
-import {
-  registerHostedWorkspaces,
-  unregisterCreatedWorkspace,
-} from "../workspace/hosted_registration.ts";
+import { unregisterCreatedWorkspace } from "../workspace/hosted_registration.ts";
 import {
   folderRepoIdentity,
   readHostedRegistry,
@@ -100,17 +97,10 @@ export async function* hostedWorkspaceCreate(
           input.caller.principal,
           at,
         ).suspend(at);
-        const { placement } = deps;
-        // never the state folder, which holds no repo
-        if (!deps.hostFolder && placement === null) {
-          throw new Error("This root has no workspace location to create in.");
-        }
         await deps.withLock(
           name,
           () =>
-            placement === null || deps.hostFolder
-              ? createUnderLock(ctx, deps, workspace, spec)
-              : createInLocation(ctx, deps, placement, workspace, spec, at),
+            createInLocation(ctx, deps, deps.placement, workspace, spec, at),
         );
         yield {
           kind: "completed" as const,
@@ -156,52 +146,6 @@ function provisionSpecOf(
     admin: username,
     adminSubject: caller.principal.slice("user:".length),
   };
-}
-
-async function createUnderLock(
-  ctx: LibSwampContext,
-  deps: HostedWorkspaceDeps,
-  workspace: HostedWorkspace,
-  spec: HostedWorkspaceProvisionSpec,
-): Promise<void> {
-  const { name } = workspace;
-  const { workspacesDir } = deps;
-  const target = join(workspacesDir, name);
-  if (
-    await entryExists(target) ||
-    (await deps.repository.findByName(name)).kind !== "absent" ||
-    await registeredElsewhere(deps, name)
-  ) {
-    throw nameTaken(name);
-  }
-  await removeLeftovers(ctx, workspacesDir, name);
-  const temp = join(workspacesDir, creatingFolderName(name));
-  await Deno.mkdir(temp);
-  let wroteWanted = false;
-  try {
-    await provision(ctx, deps, temp, name, spec);
-    await deps.repository.save(workspace);
-    wroteWanted = true;
-    await renameIntoPlace(deps, temp, target, name);
-  } catch (error) {
-    // the lock is held, so the wanted file is still the one written above
-    if (wroteWanted) {
-      await deps.repository.remove(name).catch((cause) => {
-        ctx.logger
-          .error`Removing the wanted file of workspace ${name} after a failed create failed: ${
-          messageOf(cause)
-        }`;
-      });
-    }
-    await Deno.remove(temp, { recursive: true }).catch((cause) => {
-      ctx.logger
-        .error`Removing the set-up folder of workspace ${name} after a failed create failed: ${
-        messageOf(cause)
-      }`;
-    });
-    throw error;
-  }
-  await registerInHostFolder(ctx, deps, name);
 }
 
 // the entry before the rename: a create stopped at any step leaves a hidden folder or a name delete finishes
@@ -415,32 +359,6 @@ async function provisionedRepoId(
   );
 }
 
-/** the workspace is whole without its entry; the host's next rescan registers it */
-async function registerInHostFolder(
-  ctx: LibSwampContext,
-  deps: HostedWorkspaceDeps,
-  name: string,
-): Promise<void> {
-  try {
-    const result = await registerHostedWorkspaces(deps.workspaceStore, {
-      workspacesDir: deps.workspacesDir,
-      names: [name],
-    });
-    const outcome = result.kind === "unreadable"
-      ? result.kind
-      : result.workspaces[0]?.kind ?? "gone";
-    if (outcome !== "registered" && outcome !== "present") {
-      ctx.logger
-        .warn`Workspace ${name} was created but not registered (${outcome}); the host's log says why`;
-    }
-  } catch (error) {
-    ctx.logger
-      .warn`Registering workspace ${name} failed, and the host registers it at its next rescan: ${
-      messageOf(error)
-    }`;
-  }
-}
-
 /** a folder an earlier create left; the lock proves no create still owns it */
 async function removeLeftovers(
   ctx: LibSwampContext,
@@ -477,21 +395,6 @@ async function renameIntoPlace(
       await new Promise((resolve) => setTimeout(resolve, RENAME_RETRY_MS));
     }
   }
-}
-
-// an entry for `workspaces/<name>` itself holds no other repo; an unreadable registry is the host's to report
-async function registeredElsewhere(
-  deps: HostedWorkspaceDeps,
-  name: string,
-): Promise<boolean> {
-  const read = await readHostedRegistry(deps.workspaceStore);
-  const entry = read.kind === "read" ? read.registry?.get(name) : undefined;
-  if (entry === undefined) return false;
-  const spots = new Set([
-    join(resolve(deps.workspacesDir), name),
-    join(await realPathOrSelf(deps.workspacesDir), name),
-  ]);
-  return !spots.has(resolve(entry.path));
 }
 
 async function entryExists(path: string): Promise<boolean> {

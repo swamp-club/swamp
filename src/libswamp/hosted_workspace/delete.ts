@@ -25,7 +25,6 @@ import {
   changeHostedWorkspace,
   type HostedWorkspaceDeps,
   hostedWorkspaceErrorEvent,
-  operatorWorkspaceFolderClaimed,
   operatorWorkspaceUndeletable,
   registryUnreadableUndeletable,
 } from "./deps.ts";
@@ -60,7 +59,6 @@ export async function* hostedWorkspaceDelete(
               : whose.owner === "operator"
               ? operatorWorkspaceUndeletable(name)
               : null,
-          refuseClaimed: operatorWorkspaceFolderClaimed,
         });
         yield {
           kind: "completed" as const,
