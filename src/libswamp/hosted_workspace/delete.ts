@@ -25,6 +25,9 @@ import {
   changeHostedWorkspace,
   type HostedWorkspaceDeps,
   hostedWorkspaceErrorEvent,
+  operatorWorkspaceFolderClaimed,
+  operatorWorkspaceUndeletable,
+  registryUnreadableUndeletable,
 } from "./deps.ts";
 
 export interface HostedWorkspaceDeleteData {
@@ -37,7 +40,7 @@ export type HostedWorkspaceDeleteEvent =
   | { kind: "completed"; data: HostedWorkspaceDeleteData }
   | { kind: "error"; error: SwampError };
 
-/** the host stops its serve and removes its folder and both files */
+/** the host stops its serve and removes its folder and both files; a registered repo is refused */
 export async function* hostedWorkspaceDelete(
   ctx: LibSwampContext,
   deps: HostedWorkspaceDeps,
@@ -48,12 +51,17 @@ export async function* hostedWorkspaceDelete(
     {},
     (async function* () {
       try {
-        const workspace = await changeHostedWorkspace(
-          ctx,
-          deps,
-          input.name,
-          (current, at) => current.markDeleted(at),
-        );
+        const workspace = await changeHostedWorkspace(ctx, deps, input.name, {
+          apply: (current, at) => current.markDeleted(at),
+          // without the registry no clash can be seen, so nothing is deleted
+          refuse: (name, whose) =>
+            !whose.registryRead
+              ? registryUnreadableUndeletable(name)
+              : whose.owner === "operator"
+              ? operatorWorkspaceUndeletable(name)
+              : null,
+          refuseClaimed: operatorWorkspaceFolderClaimed,
+        });
         yield {
           kind: "completed" as const,
           data: {

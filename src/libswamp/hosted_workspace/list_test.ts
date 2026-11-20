@@ -82,6 +82,7 @@ Deno.test("hostedWorkspaceList: lists folders and wanted files with their addres
             state: null,
             restarts: null,
             reason: null,
+            owner: "host",
           },
           {
             name: "edge-dns",
@@ -90,6 +91,7 @@ Deno.test("hostedWorkspaceList: lists folders and wanted files with their addres
             state: "ready",
             restarts: 1,
             reason: null,
+            owner: "host",
           },
           {
             name: "pending",
@@ -113,7 +115,7 @@ Deno.test("hostedWorkspaceList: an empty host folder lists nothing", async () =>
   );
 });
 
-Deno.test("hostedWorkspaceList: a repo registered outside workspaces/ is not listed, and no registry changes the reply", async () => {
+Deno.test("hostedWorkspaceList: a repo registered outside workspaces/ is listed as the operator's own, and a registry that cannot be read is answered from the folders", async () => {
   await using host = await hostFolder();
   const deps = host.deps();
   for (const name of ["alpha", "beta"]) {
@@ -152,11 +154,53 @@ Deno.test("hostedWorkspaceList: a repo registered outside workspaces/ is not lis
       });
     }
   });
-  assertEquals(await listed(), baseline);
+  const owners = (await listed()).workspaces.map((w) => [w.name, w.owner]);
+  assertEquals(owners, [
+    ["alpha", "host"],
+    // the entry has the name, so the folder in workspaces/ is not listed
+    ["beta", "operator"],
+    ["outside", "operator"],
+    ["pending", undefined],
+  ]);
+  const outsideSummary = (await listed()).workspaces.find((w) =>
+    w.name === "outside"
+  );
+  assertEquals(outsideSummary?.wanted, "suspended");
 
   await Deno.writeTextFile(
     join(dirname(host.dir), "config", "workspaces.json"),
     "{not json",
   );
   assertEquals(await listed(), baseline);
+});
+
+Deno.test("hostedWorkspaceList: a name whose folder is registered under another name says so", async () => {
+  await using host = await hostFolder();
+  await Deno.mkdir(join(host.dir, "gamma"));
+  await Deno.writeTextFile(join(host.dir, "gamma", ".swamp.yaml"), "");
+  await Deno.writeTextFile(
+    join(host.dir, "gamma.wanted.yaml"),
+    "wanted: active\n",
+  );
+  const real = await Deno.realPath(join(host.dir, "gamma"));
+  await host.store.registry.update((registry) => {
+    registry.register({
+      name: "beta",
+      path: real,
+      createdAt: "2026-11-17T10:00:00.000Z",
+    });
+  });
+  const events = await collect(hostedWorkspaceList(ctx, host.deps()));
+  const done = events.find((e) => e.kind === "completed");
+  if (done?.kind !== "completed") throw new Error("list did not complete");
+  const gamma = done.data.workspaces.find((w) => w.name === "gamma");
+  assertEquals(gamma?.owner, undefined);
+  assertEquals(
+    gamma?.reason,
+    "Its folder is registered as beta, so it is listed and served under that name, not this one.",
+  );
+  assertEquals(
+    done.data.workspaces.find((w) => w.name === "beta")?.owner,
+    "operator",
+  );
 });

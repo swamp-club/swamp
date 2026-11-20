@@ -52,7 +52,12 @@ const PROVISION_DROPPED_NAMES: ReadonlySet<string> = new Set([
  * own, and `workspaceStore` is called only for a root
  */
 export function hostRootWorkspaces(
-  flags: { readonly dir?: string; readonly address?: string },
+  flags: {
+    readonly dir?: string;
+    readonly address?: string;
+    /** the root's own repo, never listed as one of its workspaces */
+    readonly repoDir?: string;
+  },
   env: Readonly<Record<string, string>>,
   rootAccess: () => HostedWorkspaceRootAccess,
   workspaceStore: () => HostedRegistryDeps,
@@ -70,6 +75,7 @@ export function hostRootWorkspaces(
       provisioner: childHostedWorkspaceProvisioner(provisionEnv(env)),
       addressOf: (name) => hostedWorkspaceAddress(address, name),
       workspaceStore: workspaceStore(),
+      rootRepo: flags.repoDir ?? null,
     }),
     rootAccess,
     signInCodes: new SignInCodeStore(),

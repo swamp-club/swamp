@@ -73,22 +73,67 @@ const realPath = (path: string) => {
   );
 };
 
-Deno.test("hostedWorkspaceFolders: the workspaces are always the scanned names, each at its own folder", async () => {
+const ROOT = join(SEPARATOR, "host", "root");
+
+function rosterOf(scanned: string[], entries: Record<string, Spelling>) {
+  const list = Object.entries(entries).map(([name, spelling]) =>
+    entryOf(name, spelling)
+  );
+  return hostedWorkspaceFolders({
+    workspacesDir: WORKSPACES_DIR,
+    scanned,
+    registry: WorkspaceRegistry.fromEntries(list),
+    rootRepo: ROOT,
+    realPath,
+    isRepo: () => Promise.resolve(true),
+  });
+}
+
+Deno.test("hostedWorkspaceFolders: one name and one folder per workspace, never the root, sorted", async () => {
   await fc.assert(
     fc.asyncProperty(arbCase, async ({ scanned, entries }) => {
-      const list = Object.entries(entries).map(([name, spelling]) =>
-        entryOf(name, spelling)
+      const { workspaces } = await rosterOf(scanned, entries);
+      const names = workspaces.map((w) => w.name);
+      assertEquals(names, [...new Set(names)].sort());
+      const folders = await Promise.all(
+        workspaces.map((w) => realPath(w.folder)),
       );
-      const registry = WorkspaceRegistry.fromEntries(list);
-      const folders = await hostedWorkspaceFolders({
-        workspacesDir: WORKSPACES_DIR,
-        scanned,
-        registry,
-        realPath,
-      });
-      assertEquals(folders.map((f) => f.name), [...scanned].sort());
-      for (const { name, folder } of folders) {
-        assertEquals(await realPath(folder), join(WORKSPACES_DIR, name));
+      assertEquals(folders.length, new Set(folders).size);
+      assertEquals(folders.includes(ROOT), false);
+    }),
+  );
+});
+
+Deno.test("hostedWorkspaceFolders: the host's own is exactly a workspace at workspaces/<its name>, and only once scanned", async () => {
+  await fc.assert(
+    fc.asyncProperty(arbCase, async ({ scanned, entries }) => {
+      const { workspaces } = await rosterOf(scanned, entries);
+      for (const { name, folder, owner } of workspaces) {
+        const own = (await realPath(folder)) === join(WORKSPACES_DIR, name);
+        assertEquals(owner === "host", own);
+        if (owner === "host") {
+          assertEquals((scanned as string[]).includes(name), true);
+        }
+      }
+    }),
+  );
+});
+
+Deno.test("hostedWorkspaceFolders: every entry outside workspaces/ is listed, and a scanned folder is passed over only when an entry has its name or folder", async () => {
+  await fc.assert(
+    fc.asyncProperty(arbCase, async ({ scanned, entries }) => {
+      const { workspaces } = await rosterOf(scanned, entries);
+      const byName = new Map(workspaces.map((w) => [w.name, w]));
+      for (const [name, spelling] of Object.entries(entries)) {
+        if (spelling !== "outside") continue;
+        assertEquals(byName.get(name)?.owner, "operator");
+      }
+      const listedFolders = new Set(
+        await Promise.all(workspaces.map((w) => realPath(w.folder))),
+      );
+      for (const name of scanned) {
+        if (byName.has(name)) continue;
+        assertEquals(listedFolders.has(join(WORKSPACES_DIR, name)), true);
       }
     }),
   );

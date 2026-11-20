@@ -36,6 +36,8 @@ export interface HostedWorkspaceRecord {
   readonly wanted: HostedWorkspaceWanted;
   /** null when the wanted file names no time */
   readonly changedAt: string | null;
+  /** the folder it was written for; absent or null stands for `workspaces/<name>` */
+  readonly folder?: string | null;
 }
 
 /** the file says active where the supervisor says running; this is the one mapping */
@@ -89,10 +91,12 @@ export class HostedWorkspace {
         `Invalid wanted state "${record.wanted}". Use active, suspended or deleted.`,
       );
     }
-    return new HostedWorkspace({
-      ...record,
-      name: parseWorkspaceName(record.name),
-    });
+    return new HostedWorkspace(
+      recordWithFolder(
+        { ...record, name: parseWorkspaceName(record.name) },
+        record.folder ?? null,
+      ),
+    );
   }
 
   get name(): string {
@@ -111,6 +115,10 @@ export class HostedWorkspace {
     return this.record.changedAt;
   }
 
+  get folder(): string | null {
+    return this.record.folder ?? null;
+  }
+
   toRecord(): HostedWorkspaceRecord {
     return { ...this.record };
   }
@@ -123,7 +131,12 @@ export class HostedWorkspace {
     const a = this.record;
     const b = other.record;
     return a.name === b.name && a.creator === b.creator &&
-      a.wanted === b.wanted && a.changedAt === b.changedAt;
+      a.wanted === b.wanted && a.changedAt === b.changedAt &&
+      (a.folder ?? null) === (b.folder ?? null);
+  }
+
+  withFolder(folder: string | null): HostedWorkspace {
+    return new HostedWorkspace(recordWithFolder(this.record, folder));
   }
 
   suspend(at: Date): HostedWorkspace {
@@ -158,6 +171,18 @@ export class HostedWorkspace {
       changedAt: at.toISOString(),
     });
   }
+}
+
+// no key for no folder, so a workspace in workspaces/ keeps the record an older host reads
+function recordWithFolder(
+  record: HostedWorkspaceRecord,
+  folder: string | null,
+): HostedWorkspaceRecord {
+  if (folder === "") {
+    throw new UserError("A hosted workspace's folder cannot be empty.");
+  }
+  const { folder: _dropped, ...rest } = record;
+  return folder === null ? rest : { ...rest, folder };
 }
 
 export type HostedWorkspaceRead =

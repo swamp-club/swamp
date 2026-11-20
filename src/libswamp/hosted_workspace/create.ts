@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { join } from "@std/path";
+import { join, resolve } from "@std/path";
 import { UserError } from "../../domain/errors.ts";
 import {
   HostedWorkspace,
@@ -28,6 +28,8 @@ import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { registerHostedWorkspaces } from "../workspace/hosted_registration.ts";
+import { readHostedRegistry } from "../workspace/hosted_roster.ts";
+import { realPathOrSelf } from "../workspace/workspace_store.ts";
 import {
   type HostedWorkspaceCaller,
   type HostedWorkspaceDeps,
@@ -141,7 +143,8 @@ async function createUnderLock(
   const target = join(workspacesDir, name);
   if (
     await entryExists(target) ||
-    (await deps.repository.findByName(name)).kind !== "absent"
+    (await deps.repository.findByName(name)).kind !== "absent" ||
+    await registeredElsewhere(deps, name)
   ) {
     throw nameTaken(name);
   }
@@ -256,6 +259,25 @@ async function renameIntoPlace(
   }
 }
 
+/**
+ * an entry for `workspaces/<name>` itself holds no other repo, as one left by a
+ * folder removed while the host was stopped; an unreadable registry is the
+ * host's to report, and the folder and wanted file checks still hold
+ */
+async function registeredElsewhere(
+  deps: HostedWorkspaceDeps,
+  name: string,
+): Promise<boolean> {
+  const read = await readHostedRegistry(deps.workspaceStore);
+  const entry = read.kind === "read" ? read.registry?.get(name) : undefined;
+  if (entry === undefined) return false;
+  const spots = new Set([
+    join(resolve(deps.workspacesDir), name),
+    join(await realPathOrSelf(deps.workspacesDir), name),
+  ]);
+  return !spots.has(resolve(entry.path));
+}
+
 async function entryExists(path: string): Promise<boolean> {
   try {
     await Deno.lstat(path);
@@ -268,7 +290,7 @@ async function entryExists(path: string): Promise<boolean> {
 
 function nameTaken(name: string): UserError {
   return new UserError(
-    `The name ${name} is taken: a workspace, a link or a wanted file already holds it.`,
+    `The name ${name} is taken: a workspace, a link, a wanted file or a registered repo already holds it.`,
     "already_exists",
   );
 }

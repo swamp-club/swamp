@@ -51,7 +51,10 @@ import type {
 } from "../src/serve/host/serve_process.ts";
 import { createStatusWriter } from "../src/serve/host/status_writer.ts";
 import { createServeSupervisor } from "../src/serve/host/supervisor.ts";
-import { createWorkspaceReconciler } from "../src/serve/host/workspace_reconciler.ts";
+import {
+  createWorkspaceReconciler,
+  readWantedFiles,
+} from "../src/serve/host/workspace_reconciler.ts";
 import {
   createWorkspaceRegistrar,
   hostWorkspaceStore,
@@ -100,6 +103,8 @@ interface Host extends AsyncDisposable {
   /** one host rescan, as the folder watcher runs it */
   rescan(): Promise<void>;
   wanted(name: string): string | undefined;
+  /** waits for every removal the host started */
+  drain(): Promise<void>;
 }
 
 const inProcessProvisioner: HostedWorkspaceProvisioner = {
@@ -140,7 +145,12 @@ async function host(): Promise<Host> {
       problems,
     }),
   });
-  const roster = createWorkspaceRoster({ workspacesDir: dir, store, problems });
+  const roster = createWorkspaceRoster({
+    workspacesDir: dir,
+    rootRepo: null,
+    store,
+    problems,
+  });
   return {
     dir,
     store,
@@ -156,9 +166,11 @@ async function host(): Promise<Host> {
     }),
     rescan: async () => {
       const scan = await scanWorkspaces(dir);
-      await reconciler.reconcile(scan, await roster.read(scan));
+      const reads = await readWantedFiles(repository, scan);
+      reconciler.reconcile(scan, reads, await roster.read(scan, reads));
     },
     wanted: (name) => supervisor.lookup(workspaceServe(name))?.wanted,
+    drain: () => reconciler.drain(),
     async [Symbol.asyncDispose]() {
       await supervisor.shutdown();
       await reconciler.drain();
@@ -391,7 +403,7 @@ Deno.test("hosted workspace services: create registers the workspace and delete 
   assertEquals((await scanWorkspaces(h.dir)).workspaces, []);
 });
 
-Deno.test("hosted workspace services: list and get reply the same whatever the registry holds, and an entry outside workspaces/ is not listed", async () => {
+Deno.test("hosted workspace services: the host's own replies the same whatever the registry holds, and an entry outside workspaces/ is listed as the operator's own", async () => {
   await using h = await host();
   const deps = h.deps();
   await collect(hostedWorkspaceCreate(ctx, deps, {
@@ -437,8 +449,217 @@ Deno.test("hosted workspace services: list and get reply the same whatever the r
       createdAt: "2026-11-19T00:00:00.000Z",
     });
   });
-  assertEquals(await replies(), baseline);
+  const registered = await replies();
+  assertEquals(registered.get, baseline.get);
+  assertEquals(await listedNames(deps), ["by-hand", "edge-dns", "outside"]);
+  const view = registered.outside[registered.outside.length - 1];
+  assert(view.kind === "completed" && "data" in view);
+  assertEquals((view.data as { owner?: string }).owner, "operator");
 
+  // answered as a host started on that registry serves: from the folders
   await Deno.writeTextFile(registryFile, "{nope");
   assertEquals(await replies(), baseline);
+});
+
+async function importOutside(h: Host, name: string): Promise<string> {
+  const made = join(h.dir, "..", "projects", name);
+  await Deno.mkdir(made, { recursive: true });
+  await Deno.writeTextFile(join(made, ".swamp.yaml"), "");
+  const folder = await Deno.realPath(made);
+  await h.store.registry.update((registry) => {
+    registry.register({
+      name,
+      path: folder,
+      createdAt: "2026-11-20T00:00:00.000Z",
+    });
+  });
+  return folder;
+}
+
+Deno.test("hosted workspace services: a root admin's resume serves an imported repo from its folder, a suspend stops it, and delete is refused leaving it whole", async () => {
+  await using h = await host();
+  const folder = await importOutside(h, "outside");
+  await h.rescan();
+  assertEquals(h.wanted("outside"), "suspended");
+  assertEquals(h.port.spawned, []);
+
+  await collect(
+    hostedWorkspaceResume(ctx, h.deps(), { name: "outside", rootAdmin: true }),
+  );
+  await h.rescan();
+  assertEquals(h.wanted("outside"), "running");
+  await waitFor(() => h.port.spawned.includes("outside"), "outside started");
+
+  await collect(
+    hostedWorkspaceSuspend(ctx, h.deps(), { name: "outside", rootAdmin: true }),
+  );
+  await h.rescan();
+  assertEquals(h.wanted("outside"), "suspended");
+
+  const refused = await collect(
+    hostedWorkspaceDelete(ctx, h.deps(), { name: "outside" }),
+  );
+  const last = refused[refused.length - 1];
+  assert(last.kind === "error");
+  assertEquals(last.error.code, "operator_workspace");
+  await h.rescan();
+  assertEquals(h.wanted("outside"), "suspended");
+  assert((await Deno.stat(join(folder, ".swamp.yaml"))).isFile);
+});
+
+Deno.test("hosted workspace services: a hand-written deleted for an imported repo stops it and leaves its folder and entry", async () => {
+  await using h = await host();
+  const folder = await importOutside(h, "outside");
+  await Deno.writeTextFile(
+    join(h.dir, "outside.wanted.yaml"),
+    `wanted: active\nfolder: ${folder}\n`,
+  );
+  await h.rescan();
+  assertEquals(h.wanted("outside"), "running");
+
+  await Deno.writeTextFile(
+    join(h.dir, "outside.wanted.yaml"),
+    `wanted: deleted\nfolder: ${folder}\n`,
+  );
+  await h.rescan();
+  await h.rescan();
+  assertEquals(h.wanted("outside"), "suspended");
+  assert((await Deno.stat(join(folder, ".swamp.yaml"))).isFile);
+  assertEquals(
+    (await h.store.registry.load())?.get("outside")?.path,
+    folder,
+  );
+});
+
+Deno.test("hosted workspace services: an active wanted file left behind under a name starts nothing for a repo imported later under it", async () => {
+  await using h = await host();
+  // left by a workspace in workspaces/ that was removed by hand
+  await Deno.writeTextFile(
+    join(h.dir, "edge-dns.wanted.yaml"),
+    "wanted: active\n",
+  );
+  await h.rescan();
+  await importOutside(h, "edge-dns");
+  await h.rescan();
+  await h.rescan();
+  assertEquals(h.wanted("edge-dns"), "suspended");
+  assertEquals(h.port.spawned, []);
+});
+
+Deno.test("hosted workspace services: a folder registered under another name is never deleted through its folder's name", async () => {
+  await using h = await host();
+  const deps = h.deps();
+  await collect(hostedWorkspaceCreate(ctx, deps, {
+    name: "gamma",
+    caller: ALICE,
+    access: ACCESS,
+  }));
+  const folder = await Deno.realPath(join(h.dir, "gamma"));
+  await Deno.writeTextFile(join(folder, "TEAM_DATA.txt"), "keep me");
+  await h.rescan();
+  // the host's user imports the folder under another name
+  await h.store.registry.update((registry) => {
+    registry.remove("gamma");
+    registry.register({
+      name: "beta",
+      path: folder,
+      createdAt: "2026-11-20T00:00:00.000Z",
+    });
+  });
+  await h.rescan();
+
+  for (const name of ["gamma", "beta"]) {
+    const refused = await collect(hostedWorkspaceDelete(ctx, deps, { name }));
+    const last = refused[refused.length - 1];
+    assert(last.kind === "error", name);
+    assertEquals(last.error.code, "operator_workspace", name);
+  }
+
+  // a deleted written by hand under the folder's name removes nothing either
+  await Deno.writeTextFile(
+    join(h.dir, "gamma.wanted.yaml"),
+    "wanted: deleted\n",
+  );
+  for (let i = 0; i < 3; i++) await h.rescan();
+  await h.drain();
+  assertEquals(
+    await Deno.readTextFile(join(folder, "TEAM_DATA.txt")),
+    "keep me",
+  );
+  assertEquals((await h.store.registry.load())?.get("beta")?.path, folder);
+});
+
+Deno.test("hosted workspace services: a clash a request cannot see, with the registry unreadable, deletes nothing once the name is freed", async () => {
+  await using h = await host();
+  const deps = h.deps();
+  await collect(hostedWorkspaceCreate(ctx, deps, {
+    name: "delta",
+    caller: ALICE,
+    access: ACCESS,
+  }));
+  const team = await Deno.realPath(join(h.dir, "delta"));
+  await Deno.writeTextFile(join(team, "TEAM_DATA.txt"), "keep me");
+  await h.rescan();
+  // the host's user gives the name to another repo
+  await h.store.registry.update((registry) => registry.remove("delta"));
+  await importOutside(h, "delta");
+  await h.rescan();
+
+  const registryFile = join(h.dir, "..", "config", "workspaces.json");
+  const saved = await Deno.readTextFile(registryFile);
+  await Deno.writeTextFile(registryFile, "{nope");
+  const refused = await collect(
+    hostedWorkspaceDelete(ctx, deps, { name: "delta" }),
+  );
+  const last = refused[refused.length - 1];
+  assert(last.kind === "error");
+  assertEquals(last.error.code, "operator_workspace");
+
+  // a deleted written by hand while the name is held is dropped by the host
+  await Deno.writeTextFile(registryFile, saved);
+  await Deno.writeTextFile(
+    join(h.dir, "delta.wanted.yaml"),
+    "wanted: deleted\n",
+  );
+  await h.rescan();
+  await h.drain();
+  await h.store.registry.update((registry) => registry.remove("delta"));
+  for (let i = 0; i < 3; i++) await h.rescan();
+  await h.drain();
+  assertEquals(await Deno.readTextFile(join(team, "TEAM_DATA.txt")), "keep me");
+});
+
+Deno.test("hosted workspace services: a hand-written deleted under a folder's name, while the folder is registered under another, deletes nothing once that entry goes", async () => {
+  await using h = await host();
+  const deps = h.deps();
+  await collect(hostedWorkspaceCreate(ctx, deps, {
+    name: "gamma",
+    caller: ALICE,
+    access: ACCESS,
+  }));
+  const folder = await Deno.realPath(join(h.dir, "gamma"));
+  await Deno.writeTextFile(join(folder, "TEAM_DATA.txt"), "keep me");
+  await h.rescan();
+  await h.store.registry.update((registry) => {
+    registry.remove("gamma");
+    registry.register({
+      name: "beta",
+      path: folder,
+      createdAt: "2026-11-20T00:00:00.000Z",
+    });
+  });
+  await h.rescan();
+  await Deno.writeTextFile(
+    join(h.dir, "gamma.wanted.yaml"),
+    "wanted: deleted\n",
+  );
+  await h.rescan();
+  await h.drain();
+  await h.store.registry.update((registry) => registry.remove("beta"));
+  for (let i = 0; i < 3; i++) await h.rescan();
+  await h.drain();
+  assertEquals(
+    await Deno.readTextFile(join(folder, "TEAM_DATA.txt")),
+    "keep me",
+  );
 });

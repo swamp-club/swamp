@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { join } from "@std/path";
+import { isAbsolute, join } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { z } from "zod";
 import {
@@ -41,6 +41,8 @@ const WantedFileSchema = z.object({
   changedAt: z.union([z.string().min(1), z.date()]).transform((value) =>
     value instanceof Date ? value.toISOString() : value
   ).nullable().optional(),
+  folder: z.string().min(1).refine(isAbsolute, "must be an absolute path")
+    .optional(),
 }).strict();
 
 export function wantedFileName(name: string): string {
@@ -123,15 +125,22 @@ export class HostedWorkspaceFileRepository
         creator: parsed.data.creator ?? null,
         wanted: parsed.data.wanted,
         changedAt: parsed.data.changedAt ?? null,
+        folder: parsed.data.folder ?? null,
       }),
     };
   }
 
   async save(workspace: HostedWorkspace): Promise<void> {
-    const { creator, wanted, changedAt } = workspace.toRecord();
+    const { creator, wanted, changedAt, folder } = workspace.toRecord();
+    // no key for a workspace in workspaces/, so its file stays one an older host reads
     await atomicWriteTextFile(
       join(this.workspacesDir, wantedFileName(workspace.name)),
-      stringifyYaml({ wanted, creator, changedAt }),
+      stringifyYaml({
+        wanted,
+        creator,
+        changedAt,
+        ...(folder ? { folder } : {}),
+      }),
     );
   }
 

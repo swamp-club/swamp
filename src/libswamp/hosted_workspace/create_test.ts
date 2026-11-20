@@ -228,6 +228,57 @@ Deno.test("hostedWorkspaceCreate: a folder, a link or a wanted file makes the na
   }
 });
 
+Deno.test("hostedWorkspaceCreate: a name the registry holds is taken, wherever its folder is", async () => {
+  await using host = await hostFolder();
+  await host.store.registry.update((registry) => {
+    registry.register({
+      name: "mine",
+      path: join(host.dir, "..", "projects", "mine"),
+      createdAt: "2026-11-17T10:00:00.000Z",
+    });
+  });
+  await assertErrors<HostedWorkspaceCreateEvent>(
+    hostedWorkspaceCreate(ctx, host.deps(), {
+      name: "mine",
+      caller: ALICE,
+      access: OAUTH_ACCESS,
+    }),
+    "already_exists",
+  );
+  assertEquals(await entries(host.dir), []);
+});
+
+Deno.test("hostedWorkspaceCreate: an entry left for workspaces/<name> by a folder removed while the host was stopped does not hold the name", async () => {
+  await using host = await hostFolder();
+  const spot = join(await Deno.realPath(host.dir), "alpha");
+  await host.store.registry.update((registry) => {
+    registry.register({
+      name: "alpha",
+      path: spot,
+      createdAt: "2026-11-17T10:00:00.000Z",
+    });
+  });
+  await assertCompletes<HostedWorkspaceCreateEvent>(
+    hostedWorkspaceCreate(ctx, host.deps(), {
+      name: "alpha",
+      caller: ALICE,
+      access: OAUTH_ACCESS,
+    }),
+    {
+      kind: "completed",
+      data: {
+        name: "alpha",
+        address: "https://host.example/w/alpha",
+        wanted: "suspended",
+      },
+    },
+  );
+  assertEquals(
+    (await host.store.registry.load())?.list().map((e) => [e.name, e.path]),
+    [["alpha", spot]],
+  );
+});
+
 Deno.test("hostedWorkspaceCreate: removes a set-up folder an earlier create left behind", async () => {
   await using host = await hostFolder();
   const leftover = `.edge-dns.creating-${crypto.randomUUID()}`;

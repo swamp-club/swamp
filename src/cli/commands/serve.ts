@@ -2279,6 +2279,7 @@ export const serveCommand = new Command()
       {
         dir: options.hostWorkspacesDir as string | undefined,
         address: options.hostAddress as string | undefined,
+        repoDir,
       },
       Deno.env.toObject(),
       () => ({

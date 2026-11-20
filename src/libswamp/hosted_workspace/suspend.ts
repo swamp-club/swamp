@@ -22,6 +22,7 @@ import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import {
+  adminOnlyRefusal,
   changeHostedWorkspace,
   type HostedWorkspaceDeps,
   hostedWorkspaceErrorEvent,
@@ -41,19 +42,19 @@ export type HostedWorkspaceSuspendEvent =
 export async function* hostedWorkspaceSuspend(
   ctx: LibSwampContext,
   deps: HostedWorkspaceDeps,
-  input: { name: string },
+  /** rootAdmin: the caller is one of the root's admins, as the request handler decided */
+  input: { name: string; rootAdmin?: boolean },
 ): AsyncIterable<HostedWorkspaceSuspendEvent> {
   yield* withGeneratorSpan(
     "swamp.hosted_workspace.suspend",
     {},
     (async function* () {
       try {
-        const workspace = await changeHostedWorkspace(
-          ctx,
-          deps,
-          input.name,
-          (current, at) => current.suspend(at),
-        );
+        const workspace = await changeHostedWorkspace(ctx, deps, input.name, {
+          apply: (current, at) => current.suspend(at),
+          refuse: (name, whose) =>
+            adminOnlyRefusal(name, whose, input.rootAdmin),
+        });
         yield {
           kind: "completed" as const,
           data: {

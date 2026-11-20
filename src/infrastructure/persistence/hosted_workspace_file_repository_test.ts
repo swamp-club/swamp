@@ -109,6 +109,50 @@ Deno.test("HostedWorkspaceFileRepository: an unquoted time an operator typed is 
   });
 });
 
+Deno.test("HostedWorkspaceFileRepository: a suspend and a resume of a workspace in workspaces/ write the bytes an older host wrote", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new HostedWorkspaceFileRepository(dir);
+    const path = join(dir, "edge-dns.wanted.yaml");
+    const created = HostedWorkspace.create(
+      "edge-dns",
+      "alice",
+      new Date("2026-11-17T10:00:00.000Z"),
+    );
+    await repo.save(created.suspend(new Date("2026-11-17T11:00:00.000Z")));
+    assertEquals(
+      await Deno.readTextFile(path),
+      "wanted: suspended\ncreator: alice\nchangedAt: '2026-11-17T11:00:00.000Z'\n",
+    );
+    await repo.save(created.resume(new Date("2026-11-17T12:00:00.000Z")));
+    assertEquals(
+      await Deno.readTextFile(path),
+      "wanted: active\ncreator: alice\nchangedAt: '2026-11-17T12:00:00.000Z'\n",
+    );
+  });
+});
+
+Deno.test("HostedWorkspaceFileRepository: a folder is written and read back, and one that is not absolute is unreadable", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new HostedWorkspaceFileRepository(dir);
+    const folder = join(dir, "elsewhere", "edge-dns");
+    const workspace = HostedWorkspace.active("edge-dns").withFolder(folder);
+    await repo.save(workspace);
+    const read = await repo.findByName("edge-dns");
+    assert(read.kind === "found");
+    assert(read.workspace.equals(workspace));
+    assertEquals(read.workspace.folder, folder);
+
+    await Deno.writeTextFile(
+      join(dir, "edge-dns.wanted.yaml"),
+      "wanted: active\nfolder: repos/edge-dns\n",
+    );
+    assertStringIncludes(
+      await unreadableReason(repo, "edge-dns"),
+      "folder: must be an absolute path",
+    );
+  });
+});
+
 Deno.test("HostedWorkspaceFileRepository: a missing file is absent and removing it again is fine", async () => {
   await withTempDir(async (dir) => {
     const repo = new HostedWorkspaceFileRepository(dir);

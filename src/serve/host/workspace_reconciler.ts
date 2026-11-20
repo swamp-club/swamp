@@ -36,11 +36,17 @@ import type { StatusWriter } from "./status_writer.ts";
 import type { ServeSupervisor } from "./supervisor.ts";
 import type { WorkspaceRegistrar } from "./workspace_registration.ts";
 import type { WorkspaceFolders } from "./workspace_roster.ts";
+import type { HostedWorkspaceFolder } from "../../libswamp/workspace/hosted_roster.ts";
 import {
   deletingFolderName,
   deletingFolderOwner,
+  REPO_MARKER_FILE,
   type WorkspaceScan,
 } from "../../infrastructure/persistence/hosted_workspace_folder_scan.ts";
+import {
+  hostFolderClaimedBy,
+  wantedFolderOf,
+} from "../../libswamp/workspace/hosted_roster.ts";
 
 const logger = getSwampLogger(["serve", "host", "workspaces"]);
 
@@ -67,23 +73,39 @@ export interface WorkspaceReconciler {
     reads: WantedReads,
     folders: WorkspaceFolders,
   ): readonly string[];
-  reconcile(scan: WorkspaceScan, folders: WorkspaceFolders): Promise<void>;
+  reconcile(
+    scan: WorkspaceScan,
+    reads: WantedReads,
+    folders: WorkspaceFolders,
+  ): void;
   /** the workspaces last reconciled that the host serves: none being removed or wanted deleted */
   served(): readonly string[];
+  /** the served workspaces of the host's own, which are the ones it registers */
+  servedOwn(): readonly string[];
   /** waits for every removal, including one waiting for its serve to stop */
   drain(): Promise<void>;
 }
 
 interface Known {
   folder: string | null;
+  /** the operator's own as last listed, so an unlisted name is never removed on a guess */
+  operator: boolean;
+  /** where it was last listed from; a registry listing that ends is leaving the registry */
+  listedFrom: "registry" | "wanted_file" | null;
   /** the folder the supervisor's spec names, so a changed folder reaches the next start */
   specFolder: string | null;
   /** the last wanted record read whole; null for no file */
   record: HostedWorkspace | null;
+  /** whether that record was written for the folder it would act on */
+  recordMatches: boolean;
   problem: string | null;
+  /** why the host holds it stopped whatever the record says; null when it does not */
+  held: string | null;
   removing: boolean;
   /** bumped when the workspace is added again or removed, so stale cleanup stands down */
   generation: number;
+  /** ends a wait for a stop that a listing again may never bring */
+  standDown: (() => void) | null;
   ignoredLogged: boolean;
   /** one hidden name per removal, so a retry neither scatters folders nor changes its error */
   hiddenName: string | null;
@@ -160,7 +182,9 @@ export function createWorkspaceReconciler(
   // a scan listed before a removal finished still shows its folder
   const removedAt = new Map<string, number>();
   const removalFailures = new ReasonMemo();
-  let applied: WorkspaceFolders = new Map();
+  const dropLog = new ReasonMemo();
+  let applied: ReadonlyMap<string, HostedWorkspaceFolder> = new Map();
+  let scanned: readonly string[] = [];
   const sweepFailures = new ReasonMemo();
 
   const track = (work: Promise<void>) => {
@@ -173,9 +197,14 @@ export function createWorkspaceReconciler(
     if (entry === undefined) {
       entry = {
         folder: null,
+        operator: false,
+        listedFrom: null,
         specFolder: null,
         record: null,
+        recordMatches: true,
         problem: null,
+        held: null,
+        standDown: null,
         removing: false,
         generation: 0,
         ignoredLogged: false,
@@ -191,9 +220,10 @@ export function createWorkspaceReconciler(
     reads: WantedReads,
     folders: WorkspaceFolders,
   ) => {
-    applied = folders;
+    applied = folders.workspaces;
+    scanned = scan.workspaces;
     const names = new Set([
-      ...folders.keys(),
+      ...folders.workspaces.keys(),
       ...scan.wantedFiles,
       ...known.keys(),
     ]);
@@ -205,21 +235,34 @@ export function createWorkspaceReconciler(
       const read = reads.get(name) ?? { kind: "absent" };
       // the next scan, listed after the save, decides
       if (read.kind === "vanished") continue;
-      step(name, folders.get(name) ?? null, read);
+      step(
+        name,
+        folders.workspaces.get(name) ?? null,
+        folders.wantedMatches.get(name),
+        read,
+      );
     }
+    for (const name of folders.gone) registrar.forget(name);
     sweepFailures.retain(new Set(scan.leftovers));
     for (const leftover of scan.leftovers) sweep(leftover);
   };
 
+  // the host's own, wanted deleted by a file written for its folder
+  const removable = (entry: Known) =>
+    !entry.operator && entry.record?.wanted === "deleted" &&
+    entry.recordMatches;
+
   const step = (
     name: string,
-    folder: string | null,
+    listing: HostedWorkspaceFolder | null,
+    readMatches: boolean | undefined,
     read: HostedWorkspaceRead,
   ) => {
     const entry = knownOf(name);
+    if (listing !== null) entry.operator = listing.owner === "operator";
     // deleted is never left: an edit after removal began is not obeyed, and a
     // removal that failed is tried again whatever the file now says
-    if (entry.removing || entry.record?.wanted === "deleted") {
+    if (entry.removing || removable(entry)) {
       if (
         read.kind === "found" && read.workspace.wanted !== "deleted" &&
         !entry.ignoredLogged
@@ -234,13 +277,29 @@ export function createWorkspaceReconciler(
       return;
     }
 
+    const folder = listing?.folder ?? null;
     let record = entry.record;
+    let recordMatches = entry.recordMatches;
     let problem: string | null = null;
-    if (read.kind === "found") record = read.workspace;
-    // a folder keeps its last record across an absent file, as while an editor saves
+    if (read.kind === "found") {
+      record = read.workspace;
+      recordMatches = readMatches ?? record.folder === null;
+    } // a folder keeps its last record across an absent file, as while an editor saves
     else if (read.kind === "absent") {
-      if (folder === null) record = null;
+      if (folder === null) {
+        record = null;
+        recordMatches = true;
+      }
     } else problem = read.reason;
+    // never left waiting: freeing the name, as the host advises, would carry it out
+    if (
+      read.kind === "found" && record?.wanted === "deleted" &&
+      (!recordMatches || listing?.shadows === true)
+    ) {
+      dropDeleted(name, read.workspace);
+      record = null;
+      recordMatches = true;
+    }
     if (problem !== entry.problem) {
       if (problem !== null) {
         logger.warn("{reason}; workspace {name} is left as it is", {
@@ -249,20 +308,37 @@ export function createWorkspaceReconciler(
         });
       }
       entry.problem = problem;
-      statusWriter.setProblem(name, problem);
     }
-    const changed = !sameRecord(record, entry.record);
+    const held = listing === null
+      ? null
+      : heldReason(name, listing, record, recordMatches);
+    if (held !== entry.held && held !== null) {
+      logger.warn("Workspace {name} is not started: {reason}", {
+        name,
+        reason: held,
+      });
+    }
+    const changed = !sameRecord(record, entry.record) || held !== entry.held;
+    statusWriter.setProblem(name, problem ?? held);
     const hadFolder = entry.folder !== null;
     entry.record = record;
+    entry.recordMatches = recordMatches;
+    entry.held = held;
     entry.folder = folder;
 
-    if (record?.wanted === "deleted") {
+    if (removable(entry)) {
       startRemoval(name, entry);
       return;
     }
     const id = workspaceServe(name);
     const status = supervisor.lookup(id);
-    if (folder === null) {
+    if (listing === null) {
+      if (entry.operator && entry.listedFrom === "registry") {
+        entry.listedFrom = null;
+        leaveRegistry(name, entry);
+        return;
+      }
+      entry.listedFrom = null;
       // a wanted file without a folder may be a workspace still being set up
       if (status !== undefined && status.wanted !== "deleted") {
         supervisor.setWanted(id, "deleted");
@@ -270,28 +346,28 @@ export function createWorkspaceReconciler(
       }
       return;
     }
-    if (status !== undefined && entry.specFolder !== folder) {
+    entry.listedFrom = listing.fromWantedFile ? "wanted_file" : "registry";
+    if (status !== undefined && entry.specFolder !== listing.folder) {
       // a live serve keeps its folder; its next start runs in this one
-      supervisor.setSpec(specOf(name, folder));
-      entry.specFolder = folder;
+      supervisor.setSpec(specOf(name, listing.folder));
+      entry.specFolder = listing.folder;
     }
-    const wanted = serveWantedOfRecord(record);
+    const wanted = held === null ? serveWantedOfRecord(record) : "suspended";
     if (status === undefined || !hadFolder || status.wanted === "deleted") {
       entry.generation++;
+      entry.standDown?.();
+      entry.standDown = null;
       statusWriter.track(name);
       if (status === undefined) {
-        supervisor.add(specOf(name, folder), wanted);
-        entry.specFolder = folder;
+        supervisor.add(specOf(name, listing.folder), wanted);
+        entry.specFolder = listing.folder;
       } else if (wanted === "running") {
         // resume, not wanted running: a re-added folder also clears failed
         supervisor.resume(id);
       } else supervisor.setWanted(id, wanted);
-      // an unreadable file has already said why, naming the file
-      if (wanted !== "running" && problem === null) {
-        logger.info(
-          "Workspace {name} is listed and not started; write wanted: active to {path} to start it",
-          { name, path: join(workspacesDir, wantedFileName(name)) },
-        );
+      // an unreadable file or a held workspace has already said why
+      if (wanted !== "running" && problem === null && held === null) {
+        logNotStarted(name, listing);
       }
       return;
     }
@@ -299,6 +375,117 @@ export function createWorkspaceReconciler(
     // a changed active record is how an operator takes a workspace out of failed
     if (wanted === "running") supervisor.resume(id);
     else supervisor.setWanted(id, wanted);
+  };
+
+  const dropDeleted = (name: string, deleted: HostedWorkspace) => {
+    if (dropLog.changed(name, deleted.changedAt ?? "")) {
+      logger.warn(
+        "Workspace {name}'s wanted file says deleted, but its folder is another workspace's or its name is held by a registered repo, so the host removes that wanted file and deletes nothing. Delete it again once the name is the host's own",
+        { name },
+      );
+    }
+    track(
+      (async () => {
+        // a wanted file written since is kept
+        const now = await repository.findByName(name);
+        if (now.kind === "found" && sameRecord(now.workspace, deleted)) {
+          await repository.remove(name);
+        }
+      })().catch((error) => {
+        logger.warn(
+          "Removing the wanted file of workspace {name}, which says deleted, failed, and is tried again at every rescan: {error}",
+          { name, error },
+        );
+      }),
+    );
+  };
+
+  const heldReason = (
+    name: string,
+    listing: HostedWorkspaceFolder,
+    record: HostedWorkspace | null,
+    recordMatches: boolean,
+  ): string | null => {
+    // never "write its folder": that would serve another repo at this address
+    if (listing.shadows) {
+      return `${
+        join(workspacesDir, name)
+      } and ${listing.folder} are both named ${name}, and the registry gives the name to ${listing.folder}, so neither is started. Run swamp workspace remove ${name} on the host to serve ${
+        join(workspacesDir, name)
+      } again, or rename one of them`;
+    }
+    if (record?.wanted === "deleted" && listing.owner === "operator") {
+      return `Its wanted file says deleted, but ${listing.folder} is not in the host's workspaces folder, so nothing was removed. Run swamp workspace remove ${name} on the host to stop listing it`;
+    }
+    if (record !== null && !recordMatches) {
+      return `Its wanted file was written for ${
+        wantedFolderOf(workspacesDir, record)
+      }, not for ${listing.folder}, so it is not started. Write folder: ${listing.folder} in ${
+        join(workspacesDir, wantedFileName(name))
+      } to start it`;
+    }
+    if (!listing.isRepo) {
+      return `${listing.folder} is not a swamp repo: it is gone or has no ${REPO_MARKER_FILE}, so it is not started`;
+    }
+    return null;
+  };
+
+  const logNotStarted = (name: string, listing: HostedWorkspaceFolder) => {
+    const path = join(workspacesDir, wantedFileName(name));
+    if (listing.owner === "operator") {
+      logger.info(
+        "Workspace {name} at {folder} is listed and not started; write wanted: active and folder: {folder} to {path} to start it",
+        { name, folder: listing.folder, path },
+      );
+      return;
+    }
+    logger.info(
+      "Workspace {name} is listed and not started; write wanted: active to {path} to start it",
+      { name, path },
+    );
+  };
+
+  // the folder is the operator's and is never touched; a re-listing stands this down
+  const leaveRegistry = (name: string, entry: Known) => {
+    const id = workspaceServe(name);
+    const generation = ++entry.generation;
+    const left = entry.record;
+    const stale = () => entry.generation !== generation || entry.removing;
+    const status = supervisor.lookup(id);
+    if (status !== undefined && status.wanted !== "deleted") {
+      supervisor.setWanted(id, "deleted");
+    }
+    logger.info(
+      "Workspace {name} left the workspace registry; its serve is stopped and its folder is kept",
+      { name },
+    );
+    const relisted = new Promise<void>((resolve) => entry.standDown = resolve);
+    track(
+      (async () => {
+        if (status !== undefined) {
+          await Promise.race([supervisor.whenStopped(id), relisted]);
+        }
+        if (stale()) return;
+        await statusWriter.forget(name);
+        if (stale()) return;
+        await removeHostedWorkspaceStatus(workspacesDir, name);
+        // a wanted file written since, as by a resume after a new import, is kept
+        const now = await repository.findByName(name);
+        if (stale()) return;
+        if (now.kind === "found" && sameRecord(now.workspace, left)) {
+          await repository.remove(name);
+        }
+        statusWriter.setProblem(name, null);
+        entry.record = null;
+        entry.recordMatches = true;
+        entry.held = null;
+      })().catch((error) => {
+        logger.warn(
+          "Removing the files of workspace {name}, which left the workspace registry, failed: {error}",
+          { name, error },
+        );
+      }),
+    );
   };
 
   const startRemoval = (name: string, entry: Known) => {
@@ -356,6 +543,20 @@ export function createWorkspaceReconciler(
   const removeData = async (name: string, removing: Known) => {
     const folder = join(workspacesDir, name);
     if (await exists(folder)) {
+      // the last check before a folder goes: one another workspace has is never removed
+      const claimedBy = await hostFolderClaimedBy({
+        workspacesDir,
+        name,
+        workspaces: applied.values(),
+      });
+      if (claimedBy !== null) {
+        throw new RemovalStepError(
+          "rename",
+          new Error(
+            `its folder is registered as ${claimedBy}, so it is not removed`,
+          ),
+        );
+      }
       // a rename never follows a link, so a linked folder loses only its link
       const hidden = removing.hiddenName ??= deletingFolderName(name);
       sweeping.add(hidden);
@@ -479,9 +680,18 @@ export function createWorkspaceReconciler(
       return status !== undefined && status.wanted !== "deleted";
     });
 
+  const servedOwn = (): readonly string[] =>
+    served().filter((name) => applied.get(name)?.owner === "host");
+
+  // a folder an entry passed over is offered too, so the registrar meets and logs its clash
+  const toRegister = (): readonly string[] => [
+    ...servedOwn(),
+    ...scanned.filter((name) => applied.get(name)?.owner !== "host"),
+  ];
+
   // the registrar reads what was last reconciled when its run starts
   const register = () => {
-    registrar.sync(served);
+    registrar.sync(toRegister);
   };
 
   return {
@@ -491,12 +701,13 @@ export function createWorkspaceReconciler(
       return served();
     },
 
-    async reconcile(scan, folders) {
-      apply(scan, await readWantedFiles(repository, scan), folders);
+    reconcile(scan, reads, folders) {
+      apply(scan, reads, folders);
       register();
     },
 
     served,
+    servedOwn,
 
     async drain() {
       do {
