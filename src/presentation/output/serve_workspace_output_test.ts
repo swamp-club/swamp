@@ -211,7 +211,11 @@ Deno.test("renderWorkspaceGet: log says whose a workspace is when the root says,
   const operator = captured(() =>
     renderWorkspaceGet(summary({ owner: "operator" }), "log")
   );
-  assertStringIncludes(operator, "Owner: the host's user");
+  assertStringIncludes(operator, "Owner: operator (");
+  assertStringIncludes(
+    captured(() => renderWorkspaceGet(summary({ owner: "host" }), "log")),
+    "Owner: host",
+  );
   assertEquals(
     captured(() => renderWorkspaceGet(summary(), "log")).includes("Owner:"),
     false,

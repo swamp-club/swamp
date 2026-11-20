@@ -197,7 +197,7 @@ Deno.test("hostedWorkspaceList: a name whose folder is registered under another 
   assertEquals(gamma?.owner, undefined);
   assertEquals(
     gamma?.reason,
-    "Its folder is registered under another name, so it is listed and served under that name, not this one.",
+    "Its folder is registered under another name, so it is listed under that name, not this one.",
   );
   assertEquals(
     done.data.workspaces.find((w) => w.name === "beta")?.owner,

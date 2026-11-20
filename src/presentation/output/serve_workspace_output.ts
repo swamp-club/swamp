@@ -169,10 +169,10 @@ export function renderWorkspaceGet(
     lines.push(
       `${
         bold(cyan("Owner:"))
-      } the host's user; a registered repo, served where it is`,
+      } operator (a repo the host's user registered, run from its own folder)`,
     );
   } else if (summary.owner === "host") {
-    lines.push(`${bold(cyan("Owner:"))} this host`);
+    lines.push(`${bold(cyan("Owner:"))} host`);
   }
   if (summary.state !== "ready" && summary.reason !== null) {
     lines.push(`${bold(cyan("Reason:"))} ${shown(summary.reason)}`);

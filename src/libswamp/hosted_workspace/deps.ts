@@ -196,14 +196,14 @@ export function operatorWorkspaceUndeletable(name: string): UserError {
 // the other name is not given: the caller may hold no grant on it
 export function operatorWorkspaceFolderClaimed(name: string): UserError {
   return new UserError(
-    `The folder of workspace ${name} is registered under another name, a repo the host's user registered, so no request deletes it. On the host, swamp workspace list shows which; its folder is kept.`,
+    `The folder of workspace ${name} is a repo the host's user registered under another name, so no request deletes it. swamp workspace list on the host shows which; its folder is kept.`,
     OPERATOR_WORKSPACE_CODE,
   );
 }
 
 export function registryUnreadableUndeletable(name: string): UserError {
   return new UserError(
-    `The host cannot read its workspace registry, so it cannot tell whether a repo the host's user registered holds the name or the folder of workspace ${name}, and no request deletes a workspace until it can. Fix the registry on the host, then retry.`,
+    `No workspace can be deleted while the host cannot read its workspace registry, since a registered repo may hold the name or folder of ${name}. Fix the registry on the host, then retry.`,
     OPERATOR_WORKSPACE_CODE,
   );
 }
@@ -272,7 +272,7 @@ export async function summarizeHostedWorkspace(
   const found = status.kind === "found" ? status.status : null;
   // the other name is not given: the caller may hold no grant on it
   const reason = claimed
-    ? "Its folder is registered under another name, so it is listed and served under that name, not this one."
+    ? "Its folder is registered under another name, so it is listed under that name, not this one."
     : wanted.kind === "unreadable"
     ? "Its wanted file cannot be read, so the host leaves it as it is."
     : status.kind === "unreadable"

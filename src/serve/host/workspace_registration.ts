@@ -144,7 +144,7 @@ export function createWorkspaceRegistrar(options: {
           return;
         }
         logger.error(
-          "Workspace folder {folder} is not served: the name {name} is registered to {registered}, which is served under that name instead. Free the name with swamp workspace remove {name}, or rename the folder",
+          "Workspace folder {folder} is not served: the name {name} is registered to {registered}, so neither is started. Free the name with swamp workspace remove {name} to serve this folder again, or rename one of them",
           {
             folder: workspace.folder,
             name: workspace.name,
@@ -157,7 +157,7 @@ export function createWorkspaceRegistrar(options: {
           return;
         }
         logger.error(
-          "Workspace folder {folder} is served as {registered}, not as {name}: it is registered under that name. Run swamp workspace remove {registered} and the host registers it as {name}",
+          "Workspace folder {folder} is listed as {registered}, not as {name}: it is registered under that name. Run swamp workspace remove {registered} and the host registers it as {name}",
           {
             folder: workspace.folder,
             name: workspace.name,
