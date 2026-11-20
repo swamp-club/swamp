@@ -42,10 +42,6 @@ import { UserError } from "../errors.ts";
 
 export const RECORD_CONTENT_TOO_LARGE_CODE = "data_content_too_large";
 
-/**
- * checked by code so readers that catch a failed read to treat content as
- * absent rethrow this instead of reading an oversized record as empty
- */
 export function isRecordContentTooLargeError(error: unknown): boolean {
   return error instanceof UserError &&
     error.code === RECORD_CONTENT_TOO_LARGE_CODE;
@@ -57,6 +53,9 @@ export interface RecordContentIdentity {
   version: number;
 }
 
+// V8's maximum string length; decoded text is never longer than its bytes
+const MAX_STRING_LENGTH = 2 ** 29 - 24;
+
 /** TextDecoder refuses a buffer that would pass V8's maximum string length */
 export function decodeRecordContent(
   bytes: Uint8Array,
@@ -65,9 +64,7 @@ export function decodeRecordContent(
   try {
     return new TextDecoder().decode(bytes);
   } catch (error) {
-    if (!(error instanceof TypeError || error instanceof RangeError)) {
-      throw error;
-    }
+    if (bytes.length <= MAX_STRING_LENGTH) throw error;
     throw new UserError(
       `Data ${identity.modelName}/${identity.dataName} version ` +
         `${identity.version} has ${bytes.length} bytes of content, more ` +

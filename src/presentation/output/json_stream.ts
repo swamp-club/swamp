@@ -133,6 +133,12 @@ export async function writeTextChunks(
   let pending: string[] = [];
   let pendingChars = 0;
   for (const chunk of chunks) {
+    // a piece near the string limit is written alone, never joined
+    if (chunk.length >= FLUSH_CHARS && pending.length > 0) {
+      if (!await flush(pending.join(""))) return;
+      pending = [];
+      pendingChars = 0;
+    }
     pending.push(chunk);
     pendingChars += chunk.length;
     if (pendingChars >= FLUSH_CHARS) {

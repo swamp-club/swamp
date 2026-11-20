@@ -83,6 +83,16 @@ Deno.test("writeTextChunks: many pieces reach the sink as bounded batches, not o
   assertEquals(Math.max(...sizes) < 2_000_000, true);
 });
 
+Deno.test("writeTextChunks: a piece of at least a batch is written on its own, not joined to queued pieces", async () => {
+  const big = "z".repeat(200_000);
+  const writes: string[] = [];
+  await writeTextChunks(["a", "b", big, "c"], (bytes) => {
+    writes.push(new TextDecoder().decode(bytes));
+    return Promise.resolve(bytes.length);
+  });
+  assertEquals(writes, ["ab", big, "c"]);
+});
+
 Deno.test("writeTextChunks: nothing to write makes no write", async () => {
   let calls = 0;
   await writeTextChunks([], () => {
