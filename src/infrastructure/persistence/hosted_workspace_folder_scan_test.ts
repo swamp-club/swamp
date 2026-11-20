@@ -125,3 +125,23 @@ Deno.test("scanWorkspaces: a missing folder holds no workspaces", async () => {
     });
   });
 });
+
+Deno.test("scanWorkspaces: a state folder with repos off reads only its wanted files", async () => {
+  await withTempDir(async (dir) => {
+    await makeRepo(dir, "edge-dns");
+    await Deno.mkdir(join(dir, "not-a-repo"));
+    await Deno.writeTextFile(
+      join(dir, "billing.wanted.yaml"),
+      "wanted: active\n",
+    );
+    await Deno.writeTextFile(join(dir, "billing.status.json"), "{}");
+    await Deno.mkdir(join(dir, deletingFolderName("edge-dns")));
+    await Deno.writeTextFile(join(dir, ".host-lock"), "");
+
+    const scan = await scanWorkspaces(dir, { repos: false });
+    assertEquals(scan.workspaces, []);
+    assertEquals(scan.skipped, []);
+    assertEquals(scan.leftovers, []);
+    assertEquals(scan.wantedFiles, ["billing"]);
+  });
+});

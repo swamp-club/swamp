@@ -52,6 +52,8 @@ export interface WorkspaceRoster {
 
 export function createWorkspaceRoster(options: {
   readonly workspacesDir: string;
+  /** false for a host with no host folder; true by default */
+  readonly hostFolder?: boolean;
   readonly rootRepo: string | null;
   readonly store: Pick<HostedRegistryDeps, "registry">;
   readonly problems: RegistryProblemLog;
@@ -85,6 +87,7 @@ export function createWorkspaceRoster(options: {
       }
       const roster = await hostedWorkspaceFolders({
         workspacesDir,
+        hostFolder: options.hostFolder,
         scanned: scan.workspaces,
         registry: lastRead,
         rootRepo: options.rootRepo,
@@ -104,9 +107,12 @@ export function createWorkspaceRoster(options: {
               workspaces: workspaces.values(),
               realPath: options.realPath,
             }) !== null;
+        // with no host folder a wanted file that names none stands for no folder at all
+        const unnamed = options.hostFolder === false &&
+          workspace.folder === null;
         wantedMatches.set(
           name,
-          !claimed && await wantedFolderMatches({
+          !claimed && !unnamed && await wantedFolderMatches({
             workspacesDir,
             workspace,
             listed,

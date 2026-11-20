@@ -485,3 +485,38 @@ Deno.test("hostedWorkspaceDelete: while the registry cannot be read, no workspac
   assert(refused.message.includes("registry"), refused.message);
   assertEquals(await exists(join(host.dir, "delta.wanted.yaml")), false);
 });
+
+Deno.test("hostedWorkspaceSuspend/Resume: on a host with no host folder a root admin resumes and suspends a registered repo, naming its folder, and a grant holder is refused", async () => {
+  await using host = await hostFolder();
+  const deps = host.deps({ hostFolder: false });
+  const folder = await registerOutside(host, "outside");
+  const refused = await errorOf<HostedWorkspaceResumeEvent>(
+    hostedWorkspaceResume(ctx, deps, { name: "outside" }),
+  );
+  assertEquals(refused.code, OPERATOR_WORKSPACE_CODE);
+  assertEquals(await exists(join(host.dir, "outside.wanted.yaml")), false);
+
+  await collect(
+    hostedWorkspaceResume(ctx, deps, { name: "outside", rootAdmin: true }),
+  );
+  assertEquals((await wantedFile(host.dir, "outside")).wanted, "active");
+  assertEquals((await wantedFile(host.dir, "outside")).folder, folder);
+  await collect(
+    hostedWorkspaceSuspend(ctx, deps, { name: "outside", rootAdmin: true }),
+  );
+  assertEquals((await wantedFile(host.dir, "outside")).wanted, "suspended");
+});
+
+Deno.test("hostedWorkspaceSuspend/Resume: on a host with no host folder a stray wanted file with no folder is the operator's, never opened to a grant holder", async () => {
+  await using host = await hostFolder();
+  const deps = host.deps({ hostFolder: false });
+  await Deno.writeTextFile(
+    join(host.dir, "stray.wanted.yaml"),
+    "wanted: suspended\n",
+  );
+  const refused = await errorOf<HostedWorkspaceResumeEvent>(
+    hostedWorkspaceResume(ctx, deps, { name: "stray", rootAdmin: false }),
+  );
+  assertEquals(refused.code, OPERATOR_WORKSPACE_CODE);
+  assertEquals((await wantedFile(host.dir, "stray")).wanted, "suspended");
+});

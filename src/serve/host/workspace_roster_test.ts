@@ -432,3 +432,39 @@ async function exists(path: string): Promise<boolean> {
     return false;
   }
 }
+
+Deno.test("createWorkspaceRoster: with no host folder, a wanted file that names no folder matches nothing, even a repo registered inside the state folder", async () => {
+  await withFixture(async (f) => {
+    const inState = join(f.workspacesDir, "alpha");
+    await f.makeRepo("alpha");
+    await f.register("alpha", inState);
+    const roster = createWorkspaceRoster({
+      workspacesDir: f.workspacesDir,
+      hostFolder: false,
+      rootRepo: null,
+      store: f.store,
+      problems: new RegistryProblemLog(),
+      isRepo: () => Promise.resolve(true),
+    });
+    const found = (workspace: HostedWorkspace) => ({
+      kind: "found" as const,
+      workspace,
+    });
+    const read = await roster.read(
+      await scanWorkspaces(f.workspacesDir, { repos: false }),
+      new Map<string, WantedRead>([
+        ["alpha", found(HostedWorkspace.active("alpha"))],
+      ]),
+    );
+    assertEquals(read.workspaces.get("alpha")?.owner, "operator");
+    assertEquals(read.wantedMatches.get("alpha"), false);
+
+    const named = await roster.read(
+      await scanWorkspaces(f.workspacesDir, { repos: false }),
+      new Map<string, WantedRead>([
+        ["alpha", found(HostedWorkspace.active("alpha").withFolder(inState))],
+      ]),
+    );
+    assertEquals(named.wantedMatches.get("alpha"), true);
+  });
+});

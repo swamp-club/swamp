@@ -36,6 +36,8 @@ export interface WorkspaceChange {
 
 export interface WorkspaceWatcherOptions {
   readonly dir: string;
+  /** false for a state folder that holds no repo; true by default */
+  readonly repos?: boolean;
   /** the workspaces the caller already runs; changes are reported against it */
   readonly initial: readonly string[];
   readonly onChange: (change: WorkspaceChange) => void | Promise<void>;
@@ -91,7 +93,7 @@ export function watchWorkspaces(
   let debounce: ReturnType<typeof setTimeout> | undefined;
 
   const rescanOnce = async () => {
-    const scan = await scanWorkspaces(dir);
+    const scan = await scanWorkspaces(dir, { repos: options.repos });
     if (stopped) return;
     skipLog.report(scan.skipped, rescanMs);
     await options.onRescan?.(scan);

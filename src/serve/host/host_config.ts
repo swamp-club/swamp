@@ -17,15 +17,17 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { isAbsolute, join, relative, resolve, SEPARATOR } from "@std/path";
+import { isAbsolute, relative, resolve, SEPARATOR } from "@std/path";
 import { parse as parseYaml } from "@std/yaml";
 import { z } from "zod";
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import type { ListenerProtocol } from "./forwarding_headers.ts";
+import {
+  HOST_CONFIG_FILE,
+  type HostLayout,
+  WORKSPACES_DIR,
+} from "./host_layout.ts";
 import { hostedWorkspaceAddress } from "./workspace_path.ts";
-
-export const HOST_CONFIG_FILE = "host.yaml";
-export const WORKSPACES_DIR = "workspaces";
 
 // the same set serve's own off-loopback check uses
 const LOOPBACK_HOSTS: ReadonlySet<string> = new Set([
@@ -66,7 +68,7 @@ export interface HostOAuthClient {
 
 export class HostConfig {
   private constructor(
-    readonly hostDir: string,
+    readonly layout: HostLayout,
     readonly listen: HostListen,
     readonly address: string,
     readonly root: string | null,
@@ -75,7 +77,7 @@ export class HostConfig {
     readonly oauthClient: HostOAuthClient | null,
   ) {}
 
-  static parse(text: string, hostDir: string): HostConfig {
+  static parse(text: string, layout: HostLayout): HostConfig {
     let raw: unknown;
     try {
       raw = parseYaml(text);
@@ -92,7 +94,11 @@ export class HostConfig {
       );
     }
     const yaml = parsed.data;
-    const dir = resolve(hostDir);
+    const dir = resolve(layout.baseDir);
+    const stateDir = resolve(layout.stateDir);
+    const stateName = layout.hostFolder !== null
+      ? `${WORKSPACES_DIR}/`
+      : `the host's state folder ${stateDir}`;
 
     const certFile = yaml.listen?.["cert-file"];
     const keyFile = yaml.listen?.["key-file"];
@@ -121,18 +127,22 @@ export class HostConfig {
     let root: string | null = null;
     if (yaml.root !== undefined) {
       root = resolve(dir, yaml.root);
-      if (isWithin(join(dir, WORKSPACES_DIR), root)) {
+      if (isWithin(stateDir, root)) {
         throw markErrorPaths(
           invalid(
-            `root ${yaml.root} is inside ${WORKSPACES_DIR}/, where every repo is a workspace`,
+            layout.hostFolder !== null
+              ? `root ${yaml.root} is inside ${WORKSPACES_DIR}/, where every repo is a workspace`
+              : `root ${yaml.root} is inside ${stateName}, which holds no repo`,
           ),
           [yaml.root],
         );
       }
-      if (isWithin(root, join(dir, WORKSPACES_DIR))) {
+      if (isWithin(root, stateDir)) {
         throw markErrorPaths(
           invalid(
-            `root ${yaml.root} contains ${WORKSPACES_DIR}/, so its repo would hold every workspace's repo; name a folder beside ${WORKSPACES_DIR}/`,
+            layout.hostFolder !== null
+              ? `root ${yaml.root} contains ${WORKSPACES_DIR}/, so its repo would hold every workspace's repo; name a folder beside ${WORKSPACES_DIR}/`
+              : `root ${yaml.root} contains ${stateName}, so its repo would hold the host's wanted and status files`,
           ),
           [yaml.root],
         );
@@ -151,10 +161,15 @@ export class HostConfig {
       );
     }
 
-    const oauthClient = parseOAuthClient(yaml["oauth-client"], dir, root);
+    const oauthClient = parseOAuthClient(yaml["oauth-client"], {
+      dir,
+      stateDir,
+      stateName,
+      root,
+    });
 
     return new HostConfig(
-      dir,
+      { ...layout, baseDir: dir, stateDir },
       listen,
       address,
       root,
@@ -164,8 +179,14 @@ export class HostConfig {
     );
   }
 
-  get workspacesDir(): string {
-    return join(this.hostDir, WORKSPACES_DIR);
+  /** the wanted, status and lock files; with a host folder, also its workspaces' repos */
+  get stateDir(): string {
+    return this.layout.stateDir;
+  }
+
+  /** null for a host with no host folder */
+  get hostFolder(): string | null {
+    return this.layout.hostFolder;
   }
 
   get protocol(): ListenerProtocol {
@@ -210,14 +231,19 @@ export class HostConfig {
 // a file in a repo can be copied or committed by that repo's own git, sync or team
 function parseOAuthClient(
   raw: { id: string; "secret-file": string } | undefined,
-  dir: string,
-  root: string | null,
+  at: {
+    readonly dir: string;
+    readonly stateDir: string;
+    readonly stateName: string;
+    readonly root: string | null;
+  },
 ): HostOAuthClient | null {
   if (raw === undefined) return null;
+  const { root } = at;
   const given = raw["secret-file"];
-  const secretFile = resolve(dir, given);
-  const holder = isWithin(join(dir, WORKSPACES_DIR), secretFile)
-    ? `${WORKSPACES_DIR}/`
+  const secretFile = resolve(at.dir, given);
+  const holder = isWithin(at.stateDir, secretFile)
+    ? at.stateName
     : root !== null && isWithin(root, secretFile)
     ? "the root repo"
     : null;
@@ -257,7 +283,7 @@ function isLoopbackName(address: string): boolean {
     /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(hostname);
 }
 
-function isWithin(parent: string, child: string): boolean {
+export function isWithin(parent: string, child: string): boolean {
   const rel = relative(parent, child);
   return rel === "" ||
     (!isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${SEPARATOR}`));

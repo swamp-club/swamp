@@ -64,8 +64,16 @@ export interface WorkspaceScan {
   readonly startedAt: number;
 }
 
-/** a missing folder holds no workspaces; hidden entries are passed over silently */
-export async function scanWorkspaces(dir: string): Promise<WorkspaceScan> {
+/**
+ * a missing folder holds no workspaces; hidden entries are passed over
+ * silently. With repos false the folder is a state folder: only its wanted
+ * files are read, and no entry in it is a workspace, skipped or a leftover.
+ */
+export async function scanWorkspaces(
+  dir: string,
+  options: { readonly repos?: boolean } = {},
+): Promise<WorkspaceScan> {
+  const repos = options.repos ?? true;
   const startedAt = performance.now();
   const workspaces: string[] = [];
   const skipped: SkippedEntry[] = [];
@@ -83,7 +91,9 @@ export async function scanWorkspaces(dir: string): Promise<WorkspaceScan> {
   for (const entry of entries) {
     if (entry.name.startsWith(".")) {
       // a removal renames whatever is there, a link or a file included
-      if (isDeletingFolderName(entry.name)) leftovers.push(entry.name);
+      if (repos && isDeletingFolderName(entry.name)) {
+        leftovers.push(entry.name);
+      }
       continue;
     }
     const file = hostedWorkspaceFileOf(entry.name);
@@ -91,6 +101,7 @@ export async function scanWorkspaces(dir: string): Promise<WorkspaceScan> {
       if (file.kind === "wanted") wantedFiles.push(file.name);
       continue;
     }
+    if (!repos) continue;
     const reason = await skipReason(dir, entry.name);
     if (reason === null) workspaces.push(entry.name);
     else skipped.push({ name: entry.name, reason });

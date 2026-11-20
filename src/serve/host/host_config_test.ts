@@ -22,11 +22,12 @@ import { join, resolve } from "@std/path";
 import { UserError } from "../../domain/errors.ts";
 import { assertPathEquals } from "../../infrastructure/persistence/path_test_helpers.ts";
 import { HostConfig } from "./host_config.ts";
+import { hostFolderLayout, noHostFolderLayout } from "./host_layout.ts";
 
 const HOST_DIR = resolve("host-folder");
 
 function parse(yaml: string): HostConfig {
-  return HostConfig.parse(yaml, HOST_DIR);
+  return HostConfig.parse(yaml, hostFolderLayout(HOST_DIR));
 }
 
 function refusal(yaml: string): string {
@@ -46,7 +47,8 @@ Deno.test("HostConfig.parse: a minimal file listens on loopback over http", () =
   assertEquals(config.root, null);
   assertEquals(config.trustProxy, false);
   assertEquals(config.oauthClient, null);
-  assertPathEquals(config.workspacesDir, join(HOST_DIR, "workspaces"));
+  assertPathEquals(config.stateDir, join(HOST_DIR, "workspaces"));
+  assertPathEquals(config.hostFolder!, HOST_DIR);
 });
 
 Deno.test("HostConfig.parse: TLS resolves both files against the host folder and defaults to 443", () => {
@@ -278,4 +280,95 @@ Deno.test("HostConfig.parse: refuses an OAuth client secret file inside workspac
     ).oauthClient !== null,
     true,
   );
+});
+
+const CONFIG_DIR = resolve("config-dir");
+const DATA_DIR = resolve("data-dir");
+const NO_FOLDER = noHostFolderLayout({
+  configDir: CONFIG_DIR,
+  dataDir: DATA_DIR,
+});
+
+function parseNoFolder(yaml: string): HostConfig {
+  return HostConfig.parse(yaml, NO_FOLDER);
+}
+
+Deno.test("HostConfig.parse: with no host folder, relative paths are taken from the config dir and the state folder is under the data dir", () => {
+  const config = parseNoFolder(
+    [
+      "listen:",
+      "  cert-file: tls/cert.pem",
+      "  key-file: tls/key.pem",
+      "address: https://serve.acme.internal",
+      "root: root-repo",
+      "oauth-client:",
+      "  id: c",
+      "  secret-file: secrets/oauth",
+    ].join("\n"),
+  );
+  assertEquals(config.hostFolder, null);
+  assertPathEquals(config.stateDir, join(DATA_DIR, "host"));
+  assertPathEquals(
+    config.listen.certFile!,
+    join(CONFIG_DIR, "tls", "cert.pem"),
+  );
+  assertPathEquals(config.listen.keyFile!, join(CONFIG_DIR, "tls", "key.pem"));
+  assertPathEquals(config.root!, join(CONFIG_DIR, "root-repo"));
+  assertPathEquals(
+    config.oauthClient!.secretFile,
+    join(CONFIG_DIR, "secrets", "oauth"),
+  );
+});
+
+Deno.test("HostConfig.parse: with no host folder, host.yaml still refuses unknown keys", () => {
+  assertStringIncludes(
+    assertThrows(
+      () => parseNoFolder("address: http://a\nworkspaces: here\n"),
+      UserError,
+    ).message,
+    "Invalid host.yaml",
+  );
+});
+
+Deno.test("HostConfig.parse: with no host folder, a root inside or containing the state folder is refused", () => {
+  const inside = assertThrows(
+    () =>
+      parseNoFolder(
+        `address: http://a\nroot: ${join(DATA_DIR, "host", "r")}\n`,
+      ),
+    UserError,
+  ).message;
+  assertStringIncludes(inside, "inside the host's state folder");
+  const containing = assertThrows(
+    () => parseNoFolder(`address: http://a\nroot: ${DATA_DIR}\n`),
+    UserError,
+  ).message;
+  assertStringIncludes(containing, "contains the host's state folder");
+  assertEquals(
+    parseNoFolder(`address: http://a\nroot: ${join(DATA_DIR, "root")}\n`)
+      .root !==
+      null,
+    true,
+  );
+});
+
+Deno.test("HostConfig.parse: with no host folder, a secret file inside the state folder or the root is refused", () => {
+  const state = assertThrows(
+    () =>
+      parseNoFolder(
+        `address: http://a\noauth-client:\n  id: c\n  secret-file: ${
+          join(DATA_DIR, "host", "secret")
+        }\n`,
+      ),
+    UserError,
+  ).message;
+  assertStringIncludes(state, "inside the host's state folder");
+  const root = assertThrows(
+    () =>
+      parseNoFolder(
+        "address: http://a\nroot: root-repo\noauth-client:\n  id: c\n  secret-file: root-repo/secret\n",
+      ),
+    UserError,
+  ).message;
+  assertStringIncludes(root, "inside the root repo");
 });

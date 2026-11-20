@@ -23,8 +23,12 @@ import { waitFor } from "@swamp-club/swamp-testing";
 import { UserError } from "../../domain/errors.ts";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import {
+  assertPathEquals,
+  withMockedEnv,
+} from "../../infrastructure/persistence/path_test_helpers.ts";
+import {
   listeningUrl,
-  readHostYaml,
+  locateHostConfig,
   serveUntilStopped,
   type StopSignals,
 } from "./serve_host.ts";
@@ -123,25 +127,55 @@ Deno.test("listeningUrl: brackets an IPv6 listener and leaves the rest as they a
   );
 });
 
-Deno.test("readHostYaml: reads host.yaml from the host folder", async () => {
+Deno.test("locateHostConfig: --host-dir reads that folder's host.yaml and keeps state in its workspaces/", async () => {
   await withTempDir(async (dir) => {
     await Deno.writeTextFile(join(dir, "host.yaml"), "address: http://a\n");
-    assertEquals(await readHostYaml(dir), "address: http://a\n");
+    const { layout, text } = await locateHostConfig(dir);
+    assertEquals(text, "address: http://a\n");
+    assertPathEquals(layout.hostFolder!, dir);
+    assertPathEquals(layout.stateDir, join(dir, "workspaces"));
   });
 });
 
-Deno.test("readHostYaml: a folder without host.yaml points at --host-dir", async () => {
+Deno.test("locateHostConfig: with no --host-dir and no host.yaml here, reads the config dir's and keeps state under the data dir", async () => {
   await withTempDir(async (dir) => {
-    const error = await assertRejects(() => readHostYaml(dir), UserError);
-    assertStringIncludes(error.message, "No host.yaml in");
-    assertStringIncludes(error.message, "--host-dir");
+    const configDir = join(dir, "config");
+    const dataDir = join(dir, "data");
+    await Deno.mkdir(configDir);
+    await Deno.writeTextFile(
+      join(configDir, "host.yaml"),
+      "address: http://a\n",
+    );
+    const { layout } = await withMockedEnv(
+      { SWAMP_CONFIG_DIR: configDir, SWAMP_HOME: dataDir },
+      () => locateHostConfig(undefined),
+    );
+    assertEquals(layout.hostFolder, null);
+    assertPathEquals(layout.configFile, join(configDir, "host.yaml"));
+    assertPathEquals(layout.stateDir, join(dataDir, "host"));
   });
 });
 
-Deno.test("readHostYaml: a host.yaml that cannot be read says so", async () => {
+Deno.test("locateHostConfig: with no host.yaml anywhere, names the current folder's and the config dir's", async () => {
+  await withTempDir(async (dir) => {
+    const configDir = join(dir, "config");
+    const error = await assertRejects(
+      () =>
+        withMockedEnv(
+          { SWAMP_CONFIG_DIR: configDir, SWAMP_HOME: join(dir, "data") },
+          () => locateHostConfig(undefined),
+        ),
+      UserError,
+    );
+    assertStringIncludes(error.message, join(Deno.cwd(), "host.yaml"));
+    assertStringIncludes(error.message, join(configDir, "host.yaml"));
+  });
+});
+
+Deno.test("locateHostConfig: a host.yaml that cannot be read says so", async () => {
   await withTempDir(async (dir) => {
     await Deno.mkdir(join(dir, "host.yaml"));
-    const error = await assertRejects(() => readHostYaml(dir), UserError);
+    const error = await assertRejects(() => locateHostConfig(dir), UserError);
     assertStringIncludes(error.message, "Cannot read");
   });
 });

@@ -26,6 +26,7 @@ import {
 } from "../libswamp/hosted_workspace/deps.ts";
 import {
   HOST_ADDRESS_FLAG,
+  HOST_NO_FOLDER_FLAG,
   HOST_WORKSPACES_DIR_FLAG,
 } from "./host/serve_process.ts";
 import { hostedWorkspaceAddress } from "./host/workspace_path.ts";
@@ -55,6 +56,8 @@ export function hostRootWorkspaces(
   flags: {
     readonly dir?: string;
     readonly address?: string;
+    /** the host has no host folder, so the state folder holds no repo */
+    readonly noFolder?: boolean;
     /** the root's own repo, never listed as one of its workspaces */
     readonly repoDir?: string;
   },
@@ -63,7 +66,14 @@ export function hostRootWorkspaces(
   workspaceStore: () => HostedRegistryDeps,
 ): HostRootWorkspaces | undefined {
   const { dir, address } = flags;
-  if (dir === undefined && address === undefined) return undefined;
+  if (dir === undefined && address === undefined) {
+    if (flags.noFolder === true) {
+      throw new UserError(
+        `${HOST_NO_FOLDER_FLAG} is given with ${HOST_WORKSPACES_DIR_FLAG} and ${HOST_ADDRESS_FLAG}, by the host to its root.`,
+      );
+    }
+    return undefined;
+  }
   if (!dir || !address) {
     throw new UserError(
       `${HOST_WORKSPACES_DIR_FLAG} and ${HOST_ADDRESS_FLAG} are given together, by the host to its root.`,
@@ -72,6 +82,7 @@ export function hostRootWorkspaces(
   return {
     services: createHostedWorkspaceDeps({
       workspacesDir: dir,
+      hostFolder: flags.noFolder !== true,
       provisioner: childHostedWorkspaceProvisioner(provisionEnv(env)),
       addressOf: (name) => hostedWorkspaceAddress(address, name),
       workspaceStore: workspaceStore(),

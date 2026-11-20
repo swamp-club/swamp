@@ -35,7 +35,7 @@ export interface ServeChildSpec {
   readonly stopGraceMs?: number;
   /** passed as --oauth-client-id and --oauth-client-secret-file */
   readonly oauthClient?: HostOAuthClient | null;
-  /** the root's alone: passed as --host-workspaces-dir and --host-address */
+  /** the root's alone: passed as --host-workspaces-dir, --host-address and, with no host folder, --host-no-folder */
   readonly hostWorkspaces?: HostWorkspacesHandle;
   /** a workspace's alone, when the host has a root: passed as --root-address */
   readonly rootAddress?: string;
@@ -43,12 +43,16 @@ export interface ServeChildSpec {
 
 /** what makes a serve a host's root, able to answer workspace requests */
 export interface HostWorkspacesHandle {
+  /** the state folder */
   readonly dir: string;
   readonly address: string;
+  /** false for a host with no host folder, which creates no workspace */
+  readonly hasFolder: boolean;
 }
 
 export const HOST_WORKSPACES_DIR_FLAG = "--host-workspaces-dir";
 export const HOST_ADDRESS_FLAG = "--host-address";
+export const HOST_NO_FOLDER_FLAG = "--host-no-folder";
 export const ROOT_ADDRESS_FLAG = "--root-address";
 
 /** `code` is null when the child died by a signal or could not be spawned. */
@@ -93,6 +97,7 @@ export function serveChildArgs(spec: ServeChildSpec): string[] {
       spec.hostWorkspaces.dir,
       HOST_ADDRESS_FLAG,
       spec.hostWorkspaces.address,
+      ...(spec.hostWorkspaces.hasFolder ? [] : [HOST_NO_FOLDER_FLAG]),
     ]
     : [];
   const root = spec.rootAddress !== undefined

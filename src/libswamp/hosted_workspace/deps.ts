@@ -84,7 +84,10 @@ export interface HostedWorkspaceProvisioner {
 }
 
 export interface HostedWorkspaceDeps {
+  /** the host's state folder: wanted, status and lock files, and with a host folder its own repos */
   readonly workspacesDir: string;
+  /** false for a host with no host folder, which lists only registered repos and creates none */
+  readonly hostFolder: boolean;
   readonly repository: HostedWorkspaceRepository;
   readonly provisioner: HostedWorkspaceProvisioner;
   readonly addressOf: (name: string) => string;
@@ -102,6 +105,7 @@ const LOCK_WAIT_MARGIN_MS = 30_000;
 
 export function createHostedWorkspaceDeps(options: {
   workspacesDir: string;
+  hostFolder?: boolean;
   provisioner: HostedWorkspaceProvisioner;
   addressOf: (name: string) => string;
   workspaceStore: HostedRegistryDeps;
@@ -117,6 +121,7 @@ export function createHostedWorkspaceDeps(options: {
     provisionTimeoutMs + LOCK_WAIT_MARGIN_MS;
   return {
     workspacesDir,
+    hostFolder: options.hostFolder ?? true,
     repository: new HostedWorkspaceFileRepository(workspacesDir),
     provisioner: options.provisioner,
     addressOf: options.addressOf,
@@ -212,6 +217,16 @@ export function ownerUnknownAdminOnly(name: string): UserError {
   return new UserError(
     `The host cannot read its workspace registry, so only the root's admins may suspend or resume workspace ${name} until it can.`,
     OPERATOR_WORKSPACE_CODE,
+  );
+}
+
+/** a create on a host with no host folder; it holds for the root's admins too */
+export const NO_HOST_FOLDER_CODE = "no_host_folder";
+
+export function noHostFolderCreate(): UserError {
+  return new UserError(
+    "This host has no host folder to create workspaces in. Create or import the repo on the host with swamp workspace create or swamp workspace import, then resume it.",
+    NO_HOST_FOLDER_CODE,
   );
 }
 
@@ -338,7 +353,11 @@ export async function summarizeListedName(
 export async function hostedWorkspaceNames(
   deps: Pick<
     HostedWorkspaceDeps,
-    "workspacesDir" | "workspaceStore" | "repository" | "rootRepo"
+    | "workspacesDir"
+    | "hostFolder"
+    | "workspaceStore"
+    | "repository"
+    | "rootRepo"
   >,
 ): Promise<{
   workspaces: ReadonlyMap<string, HostedWorkspaceFolder>;
@@ -346,7 +365,9 @@ export async function hostedWorkspaceNames(
   /** false while the registry cannot be read, when whose a name is may be unknown */
   registryRead: boolean;
 }> {
-  const scan = await scanWorkspaces(deps.workspacesDir);
+  const scan = await scanWorkspaces(deps.workspacesDir, {
+    repos: deps.hostFolder,
+  });
   // the host logs a registry it cannot read; a request is answered as a host started then serves
   const registry = registryOfRead(
     await readHostedRegistry(deps.workspaceStore),
@@ -360,6 +381,7 @@ export async function hostedWorkspaceNames(
   }
   const roster = await hostedWorkspaceFolders({
     workspacesDir: deps.workspacesDir,
+    hostFolder: deps.hostFolder,
     scanned: scan.workspaces,
     registry,
     rootRepo: deps.rootRepo,
@@ -386,6 +408,7 @@ function whoseOf(
   listing: HostedWorkspaceFolder | undefined,
   names: { registryRead: boolean },
   read: HostedWorkspaceRead,
+  hostFolder: boolean,
 ): WorkspaceWhose {
   if (listing !== undefined) {
     return {
@@ -402,7 +425,10 @@ function whoseOf(
       registryRead: names.registryRead,
     };
   }
-  if (read.kind === "found" && read.workspace.folder !== null) {
+  // with no host folder a wanted file never makes a name the host's own
+  if (
+    read.kind === "found" && (read.workspace.folder !== null || !hostFolder)
+  ) {
     return {
       owner: "operator",
       shadows: false,
@@ -435,7 +461,10 @@ export async function changeHostedWorkspace(
     const names = await hostedWorkspaceNames(deps);
     const listing = names.workspaces.get(name);
     const read = await deps.repository.findByName(name);
-    const refusal = change.refuse(name, whoseOf(listing, names, read));
+    const refusal = change.refuse(
+      name,
+      whoseOf(listing, names, read, deps.hostFolder),
+    );
     if (refusal !== null) throw refusal;
     if (listing === undefined && change.refuseClaimed !== undefined) {
       const claimedBy = await hostFolderClaimedBy({

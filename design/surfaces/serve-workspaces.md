@@ -145,7 +145,9 @@ folder** of small files, one wanted file, one status file and one lock per
 workspace. It finds them in one of two layouts, chosen in this order:
 
 1. **A host folder**, given with `--host-dir`, or the current folder when it
-   holds a `host.yaml`. This is how every host runs today.
+   holds a `host.yaml` and is not the config dir. This is how every host runs
+   today. A host started from inside the config dir uses the second layout, so
+   starting there never gives that `host.yaml` a second state folder.
 
    ```
    <host folder>/
@@ -155,15 +157,18 @@ workspace. It finds them in one of two layouts, chosen in this order:
 
 2. **No host folder.** Otherwise the host reads `<config dir>/host.yaml` and
    keeps its state folder at `<data dir>/host/`. That folder holds the wanted
-   files, the status files and the locks, and no repo. Step 22 of the
-   [execution plan](#execution-plan) builds this layout.
+   files, the status files and the locks, and no repo
+   (`src/serve/host/host_layout.ts`). Every workspace of such a host is the
+   operator's own until step 23.
 
 The host logs which `host.yaml` it read, and with none in any of these places
 the error names each place it looked. Relative paths in `host.yaml` are taken
-from the host folder, or from the config dir when there is none. From step 22
-one host runs per state folder, in both layouts: the host holds an exclusive
-lock on a file there while it runs, which the kernel releases when the process
-dies, and a second host on the same state folder exits naming it.
+from the host folder, or from the config dir when there is none. One host runs
+per state folder, in both layouts: the host holds an exclusive kernel lock on
+`.host-lock` there while it runs (`src/infrastructure/persistence/host_state_lock.ts`),
+which the kernel releases when the process dies, and a second host on the same
+state folder exits naming it. The file has no `.lock` suffix, so no
+workspace's own lock can be it.
 
 The host folder is not under `<data dir>/workspaces`. That folder belongs to
 the local workspace registry, which keeps its create locks there and adopts the
@@ -258,7 +263,8 @@ public name, `--trust-proxy` and `--exit-on-stdin-close`. The child reports the
 port it got on its `--json` listening line. The root alone is also given
 the state folder and the host's address, as the hidden
 `--host-workspaces-dir` and `--host-address`, which make it the serve that
-takes the [lifecycle requests](#lifecycle). A workspace is also given the
+takes the [lifecycle requests](#lifecycle), and with no host folder
+`--host-no-folder` too. A workspace is also given the
 root's address, as the hidden `--root-address`, which [Sign-in](#sign-in) uses;
 a host with no root gives none. The child inherits the host's environment, as
 plain serve inherits its operator's, so models and workers see
@@ -557,10 +563,10 @@ the field that is wrong:
 | `listen.host`                        | `127.0.0.1`                   | Off loopback needs TLS, as for serve                                                     |
 | `listen.port`                        | `443` with TLS, `8080` without |                                                                                          |
 | `listen.cert-file`, `listen.key-file` | none                          | Given together; relative to the folder that holds `host.yaml`                            |
-| `root`                               | none                          | The root workspace's repo; relative to the folder that holds `host.yaml`, never inside `workspaces/` nor containing it; a folder without `.swamp.yaml` is refused at startup |
+| `root`                               | none                          | The root workspace's repo; relative to the folder that holds `host.yaml`, never inside the state folder (`workspaces/` with a host folder) nor containing it; a folder without `.swamp.yaml` is refused at startup |
 | `trust-proxy`                        | `false`                       | The host is behind a proxy, whose forwarding headers it passes on                        |
 | `allow-unauthenticated-behind-proxy` | `false`                       | Admits a child in auth mode `none` behind a proxy; only on a loopback listener with `trust-proxy` or a public `address` |
-| `oauth-client.id`, `oauth-client.secret-file` | none                 | Given together; every child is started with them. The file is relative to the folder that holds `host.yaml`, never inside `workspaces/` nor the root, and a missing, unreadable or empty one is refused at startup; a workspace whose folder holds it is not started (step 22) |
+| `oauth-client.id`, `oauth-client.secret-file` | none                 | Given together; every child is started with them. The file is relative to the folder that holds `host.yaml`, never inside the state folder nor the root, and a missing, unreadable or empty one is refused at startup; a workspace whose folder holds it is not started, in either layout, and its status says why |
 
 The host binds its listener before it starts any child, so a listener that
 cannot bind starts nothing. SIGTERM and SIGINT stop the watcher, drain every
@@ -770,8 +776,10 @@ and a rename never follows a link, so a workspace folder that is a link loses
 only the link. The host never removes or renames a folder outside its own
 `workspaces/`.
 
-On a host with no host folder, create is refused, with a message that says the
-host has no folder to create workspaces in, until step 23. From then create
+On a host with no host folder, create is refused with `no_host_folder`, with a
+message that says the host has no folder to create workspaces in, until step
+23. The host tells its root with the hidden `--host-no-folder`, given beside
+`--host-workspaces-dir`. From then create
 makes the repo at `<location>/<name>`, where `swamp workspace create` would,
 under the registry's create lock and checks (`newWorkspaceLocation`,
 `checkNewWorkspaceFolder`), and registers it as created. The wanted file it
@@ -1144,7 +1152,7 @@ After 7 an operator who sets each workspace up has a multi-workspace host.
     folder, a left-behind `active` wanted file starts nothing for a later
     import, a hand-written `deleted` leaves its folder untouched, and the
     access suites cover the refusals. After 20.
-22. **A host with no host folder** (swamp-club#4920). With no `--host-dir` and
+22. **A host with no host folder** (swamp-club#4920, built). With no `--host-dir` and
     no `host.yaml` in the current folder, the host reads
     `<config dir>/host.yaml` and keeps its state folder at `<data dir>/host/`.
     One host runs per state folder, in both layouts. Create is refused with a

@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { join } from "@std/path";
+import { join, resolve } from "@std/path";
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import {
   ROOT_SERVE,
@@ -28,7 +28,11 @@ import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { readCredentialFile } from "../../infrastructure/persistence/api_key_source.ts";
 import { HostedWorkspaceFileRepository } from "../../infrastructure/persistence/hosted_workspace_file_repository.ts";
 import { validateEndEntityCert } from "../../infrastructure/runtime/tls_cert_validation.ts";
-import type { HostConfig } from "./host_config.ts";
+import {
+  acquireHostStateLock,
+  type HostStateLock,
+} from "../../infrastructure/persistence/host_state_lock.ts";
+import { type HostConfig, isWithin } from "./host_config.ts";
 import type { ServeChildSpec, ServeProcessPort } from "./serve_process.ts";
 import { createStatusWriter, type StatusWriter } from "./status_writer.ts";
 import {
@@ -96,8 +100,25 @@ export interface ServeHost {
 export async function startServeHost(
   options: ServeHostOptions,
 ): Promise<ServeHost> {
+  const { config } = options;
+
+  // before any wanted file is read or status written, and released on every failed start
+  const lock = await acquireHostStateLock(config.stateDir);
+  try {
+    return await startLocked(options, lock);
+  } catch (error) {
+    lock.release();
+    throw error;
+  }
+}
+
+async function startLocked(
+  options: ServeHostOptions,
+  lock: HostStateLock,
+): Promise<ServeHost> {
   const { config, processPort, childEnv } = options;
   const rescanMs = options.rescanMs ?? DEFAULT_RESCAN_MS;
+  const repos = config.hostFolder !== null;
 
   const tls = await readTls(config);
   if (config.root !== null) await requireRootRepo(config.root);
@@ -109,13 +130,14 @@ export async function startServeHost(
     );
   }
   const skipLog = new SkipLog();
-  const scan = await scanWorkspaces(config.workspacesDir);
+  const scan = await scanWorkspaces(config.stateDir, { repos });
   skipLog.report(scan.skipped, rescanMs);
-  const repository = new HostedWorkspaceFileRepository(config.workspacesDir);
+  const repository = new HostedWorkspaceFileRepository(config.stateDir);
   const reads = await readWantedFiles(repository, scan);
   const registryProblems = new RegistryProblemLog();
   const roster = createWorkspaceRoster({
-    workspacesDir: config.workspacesDir,
+    workspacesDir: config.stateDir,
+    hostFolder: repos,
     rootRepo: config.root,
     store: options.workspaceStore,
     problems: registryProblems,
@@ -123,7 +145,7 @@ export async function startServeHost(
   const folders = await roster.read(scan, reads);
 
   const statusWriter = createStatusWriter({
-    workspacesDir: config.workspacesDir,
+    workspacesDir: config.stateDir,
   });
   const supervisor = createServeSupervisor({
     ...options.supervisor,
@@ -168,8 +190,9 @@ export async function startServeHost(
     ...(id.kind === "root"
       ? {
         hostWorkspaces: {
-          dir: config.workspacesDir,
+          dir: config.stateDir,
           address: config.address,
+          hasFolder: repos,
         },
       }
       // the root answers at the host's address
@@ -179,12 +202,21 @@ export async function startServeHost(
   });
 
   const registrar = createWorkspaceRegistrar({
-    workspacesDir: config.workspacesDir,
+    workspacesDir: config.stateDir,
     store: options.workspaceStore,
     problems: registryProblems,
   });
+  const secretFile = config.oauthClient === null
+    ? null
+    // a workspace's folder is compared by its real path, so the file is too
+    : await Deno.realPath(config.oauthClient.secretFile).catch(() =>
+      resolve(config.oauthClient!.secretFile)
+    );
   const reconciler = createWorkspaceReconciler({
-    workspacesDir: config.workspacesDir,
+    workspacesDir: config.stateDir,
+    hostFolder: repos,
+    holdsOAuthSecret: (folder) =>
+      secretFile !== null && isWithin(realPathSyncOrSelf(folder), secretFile),
     supervisor,
     specOf: (name, folder) => specOf(workspaceServe(name), folder),
     repository,
@@ -193,11 +225,12 @@ export async function startServeHost(
     freshClaim: (name) =>
       freshFolderClaim({
         store: options.workspaceStore,
-        workspacesDir: config.workspacesDir,
+        workspacesDir: config.stateDir,
         name,
       }),
   });
   const stack: HostStack = {
+    lock,
     watcher: null,
     supervisor,
     reconciler,
@@ -212,9 +245,9 @@ export async function startServeHost(
     // scanned workspace before the supervisor knows it
     if (config.root !== null) supervisor.add(specOf(ROOT_SERVE, config.root));
     started = reconciler.begin(scan, reads, folders);
-    await Deno.mkdir(config.workspacesDir, { recursive: true });
     stack.watcher = watchWorkspaces({
-      dir: config.workspacesDir,
+      dir: config.stateDir,
+      repos,
       // changes are reported against what the host announced it started
       initial: started,
       rescanMs,
@@ -258,6 +291,7 @@ export async function startServeHost(
 }
 
 interface HostStack {
+  readonly lock: HostStateLock;
   watcher: WorkspaceWatcher | null;
   readonly supervisor: ServeSupervisor;
   readonly reconciler: WorkspaceReconciler;
@@ -270,15 +304,19 @@ interface HostStack {
 // the listener closes last, so a request during the drain is answered, not
 // refused; status files are marked stopped once no serve can report again
 async function stopAll(stack: HostStack): Promise<void> {
-  stack.registrar.close();
-  await stack.watcher?.stop();
-  await stack.supervisor.shutdown();
-  await stack.reconciler.drain();
-  await stack.registrar.drain();
-  stack.statusWriter.markShutDown();
-  await stack.statusWriter.drain();
-  stack.routerAbort.abort();
-  await stack.server.shutdown();
+  try {
+    stack.registrar.close();
+    await stack.watcher?.stop();
+    await stack.supervisor.shutdown();
+    await stack.reconciler.drain();
+    await stack.registrar.drain();
+    stack.statusWriter.markShutDown();
+    await stack.statusWriter.drain();
+    stack.routerAbort.abort();
+    await stack.server.shutdown();
+  } finally {
+    stack.lock.release();
+  }
 }
 
 export function noAuthAdmission(
@@ -309,6 +347,15 @@ export function hostDirectory(
     workspace: (name) => routeOf(workspaceServe(name)),
     root: () => config.root === null ? undefined : routeOf(ROOT_SERVE),
   };
+}
+
+// a workspace in workspaces/ is listed by its spelled path, which a symlinked host folder hides
+function realPathSyncOrSelf(path: string): string {
+  try {
+    return Deno.realPathSync(path);
+  } catch {
+    return resolve(path);
+  }
 }
 
 async function readTls(

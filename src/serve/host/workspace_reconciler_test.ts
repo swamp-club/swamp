@@ -175,7 +175,12 @@ interface Harness extends AsyncDisposable {
 async function harness(
   rename?: (from: string, to: string) => Promise<void>,
   freshClaim?: (name: string) => Promise<string | null>,
+  layout: {
+    hostFolder?: boolean;
+    holdsOAuthSecret?: (folder: string) => boolean;
+  } = {},
 ): Promise<Harness> {
+  const repos = layout.hostFolder ?? true;
   const registrar = new RecordingRegistrar();
   const dir = await Deno.makeTempDir();
   const port = new Port();
@@ -208,6 +213,8 @@ async function harness(
     registrar,
     rename,
     freshClaim,
+    hostFolder: layout.hostFolder,
+    holdsOAuthSecret: layout.holdsOAuthSecret,
   });
   const moved = new Map<string, string>();
   const registered = new Map<string, Registered>();
@@ -289,12 +296,12 @@ async function harness(
     foldersOf,
     reconcileScan,
     async begin() {
-      const scan = await scanWorkspaces(dir);
+      const scan = await scanWorkspaces(dir, { repos });
       const reads = await readWantedFiles(repository, scan);
       return reconciler.begin(scan, reads, foldersOf(scan, reads));
     },
     async rescan() {
-      await reconcileScan(await scanWorkspaces(dir));
+      await reconcileScan(await scanWorkspaces(dir, { repos }));
     },
     observed(name) {
       return supervisor.lookup(workspaceServe(name))?.observed;
@@ -1376,4 +1383,59 @@ Deno.test("createWorkspaceReconciler: a deleted held for a registered repo never
     "keep me",
   );
   assertEquals(h.registrar.calls.filter((c) => c.startsWith("unregister")), []);
+});
+
+Deno.test("createWorkspaceReconciler: a workspace whose folder holds the OAuth client's secret file is not started, and says why", async () => {
+  let secretHolder = "";
+  await using h = await harness(undefined, undefined, {
+    holdsOAuthSecret: (folder) => folder === secretHolder,
+  });
+  const folder = await operatorRepo(h, "mine");
+  const other = await operatorRepo(h, "other");
+  secretHolder = folder;
+  await want(h.dir, "mine", `wanted: active\nfolder: ${folder}\n`);
+  await want(h.dir, "other", `wanted: active\nfolder: ${other}\n`);
+  await h.begin();
+  await waitFor(() => h.observed("other") === "ready", "other started");
+  assertEquals(h.port.of("mine").length, 0);
+  const { reason } = parseYaml(await statusOf(h, "mine")) as {
+    reason: string;
+  };
+  assert(reason.includes("oauth-client.secret-file"), reason);
+  assert(reason.includes(folder), reason);
+
+  secretHolder = "";
+  await h.rescan();
+  await waitFor(() => h.observed("mine") === "ready", "started once moved");
+});
+
+Deno.test("createWorkspaceReconciler: with no host folder, a wanted file that names no folder starts nothing and says to name one", async () => {
+  await using h = await harness(undefined, undefined, { hostFolder: false });
+  const folder = await operatorRepo(h, "mine");
+  await want(h.dir, "mine", "wanted: active\n");
+  await h.begin();
+  assertEquals(h.port.of("mine").length, 0);
+  const { reason } = parseYaml(await statusOf(h, "mine")) as {
+    reason: string;
+  };
+  assert(reason.includes("names no folder"), reason);
+  assert(reason.includes(`folder: ${folder}`), reason);
+});
+
+Deno.test("createWorkspaceReconciler: with no host folder, a deleted wanted file removes only its files, never a folder in the state folder nor a registry entry", async () => {
+  await using h = await harness(undefined, undefined, { hostFolder: false });
+  await makeRepo(h.dir, "stray");
+  await want(h.dir, "stray", "wanted: deleted\n");
+  await h.begin();
+  await waitFor(
+    async () => !(await exists(join(h.dir, "stray.wanted.yaml"))),
+    "wanted file removed",
+  );
+  await h.reconciler.drain();
+  assert(await exists(join(h.dir, "stray", REPO_MARKER_FILE)), "folder kept");
+  assertEquals(h.registrar.calls, []);
+  assertEquals(
+    (await entries(h.dir)).filter((e) => e.startsWith(".stray.deleting-")),
+    [],
+  );
 });

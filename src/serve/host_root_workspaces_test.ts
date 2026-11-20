@@ -52,6 +52,7 @@ Deno.test("hostRootWorkspaces: the root's services work on the folder and name e
     STORE,
   );
   assertEquals(root?.services.workspacesDir, "/host/workspaces");
+  assertEquals(root?.services.hostFolder, true);
   assertEquals(root?.services.workspaceStore.dataDir, "/host/data");
   assertEquals(
     root?.services.addressOf("edge-dns"),
@@ -74,6 +75,29 @@ Deno.test("hostRootWorkspaces: one flag without the other refuses to start", () 
       "together",
     );
   }
+});
+
+Deno.test("hostRootWorkspaces: a root told the host has no host folder gets services that create no workspace", () => {
+  const root = hostRootWorkspaces(
+    {
+      dir: "/home/op/.swamp/host",
+      address: "https://serve.example",
+      noFolder: true,
+    },
+    {},
+    ACCESS,
+    STORE,
+  );
+  assertEquals(root?.services.workspacesDir, "/home/op/.swamp/host");
+  assertEquals(root?.services.hostFolder, false);
+});
+
+Deno.test("hostRootWorkspaces: the no-folder flag alone refuses to start", () => {
+  assertThrows(
+    () => hostRootWorkspaces({ noFolder: true }, {}, ACCESS, NEVER),
+    UserError,
+    "--host-no-folder",
+  );
 });
 
 Deno.test("provisionEnv: drops the repo and datastore names, in any case, and keeps the rest", () => {

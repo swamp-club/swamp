@@ -66,6 +66,10 @@ export interface WorkspaceReconcilerOptions {
   readonly rename?: (from: string, to: string) => Promise<void>;
   /** why the registry, read afresh, forbids removing `workspaces/<name>`; null when it does not */
   readonly freshClaim?: (name: string) => Promise<string | null>;
+  /** false for a host with no host folder, whose state folder holds no repo; true by default */
+  readonly hostFolder?: boolean;
+  /** whether a workspace's folder holds the OAuth client's secret file */
+  readonly holdsOAuthSecret?: (folder: string) => boolean;
 }
 
 export interface WorkspaceReconciler {
@@ -185,6 +189,7 @@ export function createWorkspaceReconciler(
     registrar,
   } = options;
   const rename = options.rename ?? Deno.rename;
+  const hostFolder = options.hostFolder ?? true;
   const known = new Map<string, Known>();
   const pending = new Set<Promise<void>>();
   // hidden folders a removal of ours is working on, so the sweep leaves them
@@ -442,6 +447,13 @@ export function createWorkspaceReconciler(
     if (record?.wanted === "deleted" && listing.owner === "operator") {
       return `Its wanted file says deleted, but ${listing.folder} is not in the host's workspaces folder, so nothing was removed. Run swamp workspace remove ${name} on the host to stop listing it`;
     }
+    if (
+      record !== null && !recordMatches && record.folder === null && !hostFolder
+    ) {
+      return `Its wanted file names no folder, and this host has no host folder, so it is not started. Write folder: ${listing.folder} in ${
+        join(workspacesDir, wantedFileName(name))
+      } to start it`;
+    }
     if (record !== null && !recordMatches) {
       return `Its wanted file was written for ${
         wantedFolderOf(workspacesDir, record)
@@ -451,6 +463,9 @@ export function createWorkspaceReconciler(
     }
     if (!listing.isRepo) {
       return `${listing.folder} is not a swamp repo: it is gone or has no ${REPO_MARKER_FILE}, so it is not started`;
+    }
+    if (options.holdsOAuthSecret?.(listing.folder) === true) {
+      return `${listing.folder} holds the OAuth client's secret file named by oauth-client.secret-file in host.yaml, so it is not started: a repo's own git, sync or team can copy it. Move the file outside every repo the host runs`;
     }
     return null;
   };
@@ -536,26 +551,29 @@ export function createWorkspaceReconciler(
       await supervisor.whenStopped(id);
     }
     await statusWriter.forget(name);
-    try {
-      await removeData(name, entry);
-      // before the wanted file, so a host stopped here still finishes the removal
-      await registrar.unregister(name).catch((error) => {
-        throw new RemovalStepError("unregister", error);
-      });
-    } catch (error) {
-      if (error instanceof FolderClaimedError) {
-        abandonRemoval(name, entry);
+    // with no host folder no folder or registry entry is the host's to remove
+    if (hostFolder) {
+      try {
+        await removeData(name, entry);
+        // before the wanted file, so a host stopped here still finishes the removal
+        await registrar.unregister(name).catch((error) => {
+          throw new RemovalStepError("unregister", error);
+        });
+      } catch (error) {
+        if (error instanceof FolderClaimedError) {
+          abandonRemoval(name, entry);
+          return;
+        }
+        if (!(error instanceof RemovalStepError)) throw error;
+        // a status write wakes the folder watcher, so one per reason, not per try
+        if (!removalFailures.changed(name, error.key)) return;
+        logger.error(
+          "Removing workspace {name} failed, and is tried again at every rescan: {error}",
+          { name, error: error.cause },
+        );
+        await reportRemovalFailure(name, error.cause);
         return;
       }
-      if (!(error instanceof RemovalStepError)) throw error;
-      // a status write wakes the folder watcher, so one per reason, not per try
-      if (!removalFailures.changed(name, error.key)) return;
-      logger.error(
-        "Removing workspace {name} failed, and is tried again at every rescan: {error}",
-        { name, error: error.cause },
-      );
-      await reportRemovalFailure(name, error.cause);
-      return;
     }
     await removeHostedWorkspaceStatus(workspacesDir, name);
     await repository.remove(name);

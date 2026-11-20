@@ -191,3 +191,35 @@ Deno.test("hostedWorkspaceFolders: with no registry read, one folder per workspa
     }),
   );
 });
+
+Deno.test("hostedWorkspaceFolders: with no host folder no workspace is the host's own, every entry but the root's is listed once, and none is gone", async () => {
+  await fc.assert(
+    fc.asyncProperty(arbCase, async ({ entries }) => {
+      const list = Object.entries(entries).map(([name, spelling]) =>
+        entryOf(name, spelling)
+      );
+      const roster = await hostedWorkspaceFolders({
+        workspacesDir: WORKSPACES_DIR,
+        hostFolder: false,
+        scanned: [],
+        registry: WorkspaceRegistry.fromEntries(list),
+        rootRepo: ROOT,
+        realPath,
+        isRepo: () => Promise.resolve(true),
+      });
+      assertEquals(
+        roster.workspaces.every((w) => w.owner === "operator"),
+        true,
+      );
+      assertEquals(roster.gone, []);
+      const folders = await Promise.all(
+        roster.workspaces.map((w) => realPath(w.folder)),
+      );
+      assertEquals(folders.length, new Set(folders).size);
+      const distinct = new Set(
+        await Promise.all(list.map((e) => realPath(e.path))),
+      );
+      assertEquals(roster.workspaces.length, distinct.size);
+    }),
+  );
+});
