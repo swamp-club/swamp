@@ -88,10 +88,7 @@ export function wantedFolderOf(
   return workspace.folder ?? join(workspacesDir, workspace.name);
 }
 
-/**
- * another workspace whose folder is `workspaces/<name>`, as when that folder
- * is registered under another name; nothing done under `name` may touch it
- */
+/** another workspace whose folder is `workspaces/<name>`, which nothing done under `name` may touch */
 export async function hostFolderClaimedBy(input: {
   readonly workspacesDir: string;
   readonly name: string;

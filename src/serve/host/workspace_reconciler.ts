@@ -100,6 +100,8 @@ interface Known {
   record: HostedWorkspace | null;
   /** whether that record was written for the folder it would act on */
   recordMatches: boolean;
+  /** the folder that match was decided for; a record never acts on another */
+  recordFolder: string | null;
   problem: string | null;
   /** why the host holds it stopped whatever the record says; null when it does not */
   held: string | null;
@@ -212,6 +214,7 @@ export function createWorkspaceReconciler(
         specFolder: null,
         record: null,
         recordMatches: true,
+        recordFolder: null,
         problem: null,
         held: null,
         standDown: null,
@@ -258,10 +261,10 @@ export function createWorkspaceReconciler(
     for (const leftover of scan.leftovers) sweep(leftover);
   };
 
-  // the host's own, wanted deleted by a file written for its folder
-  const removable = (entry: Known) =>
+  // the host's own, wanted deleted by a file written for the folder it would remove
+  const removable = (entry: Known, folder: string | null) =>
     !entry.operator && entry.record?.wanted === "deleted" &&
-    entry.recordMatches;
+    entry.recordMatches && entry.recordFolder === folder;
 
   const step = (
     name: string,
@@ -273,7 +276,7 @@ export function createWorkspaceReconciler(
     if (listing !== null) entry.operator = listing.owner === "operator";
     // deleted is never left: an edit after removal began is not obeyed, and a
     // removal that failed is tried again whatever the file now says
-    if (entry.removing || removable(entry)) {
+    if (entry.removing || removable(entry, listing?.folder ?? null)) {
       if (
         read.kind === "found" && read.workspace.wanted !== "deleted" &&
         !entry.ignoredLogged
@@ -302,6 +305,12 @@ export function createWorkspaceReconciler(
         recordMatches = true;
       }
     } else problem = read.reason;
+    // a record kept from another folder was never written for this one
+    if (
+      read.kind !== "found" && record !== null && entry.recordFolder !== folder
+    ) {
+      recordMatches = false;
+    }
     // never left waiting: freeing the name, as the host advises, would carry it out
     if (
       read.kind === "found" && record?.wanted === "deleted" &&
@@ -334,10 +343,11 @@ export function createWorkspaceReconciler(
     const hadFolder = entry.folder !== null;
     entry.record = record;
     entry.recordMatches = recordMatches;
+    entry.recordFolder = folder;
     entry.held = held;
     entry.folder = folder;
 
-    if (removable(entry)) {
+    if (removable(entry, folder)) {
       startRemoval(name, entry);
       return;
     }

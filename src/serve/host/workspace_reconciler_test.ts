@@ -1354,3 +1354,26 @@ Deno.test("createWorkspaceReconciler: a removal under way when its folder is reg
   );
   assertEquals(h.supervisor.lookup(id("gamma"))?.wanted, "suspended");
 });
+
+Deno.test("createWorkspaceReconciler: a deleted held for a registered repo never removes a folder that takes its name in workspaces/", async () => {
+  await using h = await harness();
+  const folder = await operatorRepo(h, "mine");
+  await want(h.dir, "mine", `wanted: deleted\nfolder: ${folder}\n`);
+  await h.begin();
+  await h.rescan();
+  await h.reconciler.drain();
+  assert(await exists(join(h.dir, "mine.wanted.yaml")), "held, not removed");
+
+  // in one rescan the entry goes and a repo appears at workspaces/mine
+  h.registered.delete("mine");
+  await makeRepo(h.dir, "mine");
+  await Deno.writeTextFile(join(h.dir, "mine", "TEAM_DATA.txt"), "keep me");
+  await h.rescan();
+  await h.rescan();
+  await h.reconciler.drain();
+  assertEquals(
+    await Deno.readTextFile(join(h.dir, "mine", "TEAM_DATA.txt")),
+    "keep me",
+  );
+  assertEquals(h.registrar.calls.filter((c) => c.startsWith("unregister")), []);
+});

@@ -381,11 +381,7 @@ export interface WorkspaceWhose {
   readonly registryRead: boolean;
 }
 
-/**
- * a name not listed is the operator's when its wanted file names a folder,
- * which only a change to a registered repo writes, and may be while the
- * registry cannot be read; either way it gets the operator's rules
- */
+// only a change to a registered repo writes a folder, and an unreadable registry may hide one
 function whoseOf(
   listing: HostedWorkspaceFolder | undefined,
   names: { registryRead: boolean },

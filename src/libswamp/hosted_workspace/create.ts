@@ -259,11 +259,7 @@ async function renameIntoPlace(
   }
 }
 
-/**
- * an entry for `workspaces/<name>` itself holds no other repo, as one left by a
- * folder removed while the host was stopped; an unreadable registry is the
- * host's to report, and the folder and wanted file checks still hold
- */
+// an entry for `workspaces/<name>` itself holds no other repo; an unreadable registry is the host's to report
 async function registeredElsewhere(
   deps: HostedWorkspaceDeps,
   name: string,

@@ -540,9 +540,12 @@ workspace with it for everyone. `workspace.suspend` and `workspace.resume`
 refuse it for a caller who is not one of the root's admins (admin on
 `access:*`, as every caller is in auth mode `none`); the request handler
 decides that and passes it in, and the service refuses under the workspace's
-lock, so whose the workspace is cannot change between the check and the write.
-That refusal is audited as a denial of `admin` on `workspace:<name>`, like any
-refused grant. `workspace.create` refuses a name the registry holds with
+lock, so no other request changes the workspace between the check and the
+write. Registry commands such as `swamp workspace import` take no such lock,
+which is why the host checks a wanted file's folder again before it acts on
+it. That refusal is audited as a denial of `admin` on `workspace:<name>`, like
+any refused grant; the same request also has the allow of the grant check it
+passed first. `workspace.create` refuses a name the registry holds with
 `already_exists`.
 
 **`host.yaml`** (`src/serve/host/host_config.ts`) refuses unknown keys and names
