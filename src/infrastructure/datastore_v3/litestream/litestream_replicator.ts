@@ -388,7 +388,7 @@ export class LitestreamReplicator {
   ): Promise<number> {
     const timings = this.deps.timings;
     let waitingSince = this.deps.now();
-    let launched = false;
+    let launchedPid: number | undefined;
     while (true) {
       const waited = this.deps.now() - waitingSince >= timings.startWaitMs;
       const step = await this.#observeAndDecide(
@@ -409,10 +409,16 @@ export class LitestreamReplicator {
           await this.deps.sleep(timings.pollMs);
           continue;
         case "start": {
-          if (launched) {
-            // The launched supervisor has not taken its lock yet: it loads
-            // before it does. Wait for it rather than launch another.
+          if (launchedPid !== undefined) {
+            // The lock is free: the launched supervisor either has not taken
+            // it yet (it loads first), so wait rather than launch another, or
+            // has already exited.
             step.release();
+            if (!this.deps.processes.isAlive(launchedPid)) {
+              throw new V3ReplicationUnavailableError(
+                "the Litestream sidecar exited before it started",
+              );
+            }
             if (waited) {
               throw new V3ReplicationUnavailableError(
                 "the Litestream sidecar did not start in time",
@@ -425,7 +431,7 @@ export class LitestreamReplicator {
             if (action.orphanPid !== undefined) {
               this.deps.processes.signal(action.orphanPid, "SIGKILL");
             }
-            await this.#launch(
+            launchedPid = await this.#launch(
               paths,
               replica,
               lineageFence,
@@ -439,7 +445,6 @@ export class LitestreamReplicator {
             // too: a lock left held would block every later start.
             step.release();
           }
-          launched = true;
           waitingSince = this.deps.now();
           await this.deps.sleep(timings.pollMs);
           continue;
@@ -447,7 +452,7 @@ export class LitestreamReplicator {
         case "replace":
           step.release();
           await this.#replace(paths, action, use);
-          launched = false;
+          launchedPid = undefined;
           waitingSince = this.deps.now();
           continue;
       }
@@ -569,7 +574,7 @@ export class LitestreamReplicator {
     replicaPath: string,
     owner: SupervisorOwner | undefined,
     snapshotIntervalMs: number | undefined,
-  ): Promise<void> {
+  ): Promise<number> {
     // Fails here, in the command, when the binary cannot be had.
     await this.deps.resolveBinary();
     await resetForeignLitestreamState(paths, lineageFence);
@@ -603,7 +608,7 @@ export class LitestreamReplicator {
       cwd: paths.privateDir,
       ...(supervisor.env !== undefined ? { env: supervisor.env } : {}),
     };
-    this.deps.processes.launch(launch);
+    return this.deps.processes.launch(launch);
   }
 
   async #replace(

@@ -909,7 +909,7 @@ Deno.test({
           const neverAnswered =
             error instanceof V3ReplicationUnavailableError &&
             error.message.includes(
-              "the Litestream sidecar did not start in time",
+              "the Litestream sidecar exited before it started",
             );
           if (!cutOff && !neverAnswered) throw error;
         });

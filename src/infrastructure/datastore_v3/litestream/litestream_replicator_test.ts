@@ -841,6 +841,69 @@ Deno.test({
   },
 });
 
+function neverLockingLaunch(world: FakeWorld, alive: boolean) {
+  const launched: number[] = [];
+  const deps = world.deps();
+  const replicator = new LitestreamReplicator({
+    ...deps,
+    processes: {
+      ...world.processes,
+      launch: () => {
+        const pid = world.nextPid++;
+        launched.push(pid);
+        return pid;
+      },
+      isAlive: (pid) =>
+        launched.includes(pid) ? alive : world.processes.isAlive(pid),
+    },
+  });
+  return { replicator, launched, startWaitMs: deps.timings.startWaitMs };
+}
+
+Deno.test({
+  name:
+    "LitestreamReplicator.acquire: a launched supervisor that exits before it starts fails at once, not at the start deadline",
+  ignore: !UNIX,
+  async fn() {
+    await withWorld(async (world, db) => {
+      const { replicator, launched, startWaitMs } = neverLockingLaunch(
+        world,
+        false,
+      );
+      const started = world.time;
+      await assertRejects(
+        () => replicator.acquire(world.request(db, 1)),
+        V3ReplicationUnavailableError,
+        "the Litestream sidecar exited before it started",
+      );
+      assertEquals(launched.length, 1);
+      assert(world.time - started < startWaitMs, "it did not wait out");
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "LitestreamReplicator.acquire: a launched supervisor that lives but never starts fails at the start deadline",
+  ignore: !UNIX,
+  async fn() {
+    await withWorld(async (world, db) => {
+      const { replicator, launched, startWaitMs } = neverLockingLaunch(
+        world,
+        true,
+      );
+      const started = world.time;
+      await assertRejects(
+        () => replicator.acquire(world.request(db, 1)),
+        V3ReplicationUnavailableError,
+        "the Litestream sidecar did not start in time",
+      );
+      assertEquals(launched.length, 1);
+      assert(world.time - started >= startWaitMs, "it waited out");
+    });
+  },
+});
+
 Deno.test({
   name:
     "LitestreamReplicator: a fence that went back to a used lineage path is refused, with what to do",
