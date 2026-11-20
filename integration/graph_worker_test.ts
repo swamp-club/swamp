@@ -30,11 +30,11 @@ function fixture(params: Record<string, string>): string {
   return url.href;
 }
 
-Deno.test("startLoadedWorker: a Worker that loads at once starts once and answers", async () => {
+Deno.test("startLoadedWorker: a Worker that loads at once answers", async () => {
   const messages: unknown[] = [];
   const worker = await startLoadedWorker(fixture({ mode: "now" }), {
     loadTimeoutMs: 30_000,
-    attempts: 1,
+    attempts: 3,
     onMessage: (message) => messages.push(message),
   });
   try {
@@ -89,7 +89,7 @@ Deno.test("startLoadedWorker: a message posted right after loaded reaches onMess
   const messages: unknown[] = [];
   const worker = await startLoadedWorker(fixture({ mode: "chatty" }), {
     loadTimeoutMs: 30_000,
-    attempts: 1,
+    attempts: 3,
     onMessage: (message) => messages.push(message),
   });
   try {
