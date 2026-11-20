@@ -7059,10 +7059,8 @@ Deno.test("DataQueryService.refreshTypes: re-reads only the given types and keep
   using _cleanup = cleanupOnDispose(catalog, dir);
   writeTypeData(dir, "access-model", 2, 1, "access");
   writeTypeData(dir, "other-model", 2, 1, "other");
-  const service = new DataQueryService(
-    catalog,
-    new FileSystemUnifiedDataRepository(dir, undefined, catalog),
-  );
+  const dataRepo = new FileSystemUnifiedDataRepository(dir, undefined, catalog);
+  const service = new DataQueryService(catalog, dataRepo);
   await service.query("true");
   assertEquals(latestVersions(catalog, "access-model"), ["d-0@1", "d-1@1"]);
 
@@ -7073,9 +7071,15 @@ Deno.test("DataQueryService.refreshTypes: re-reads only the given types and keep
     join(dir, ".swamp", "data", "access-model", "model-001", "d-0", "1"),
     { recursive: true },
   );
-  // a reader running between the refresh's steps never sees two latest rows
+  // a reader at every read the refresh awaits and after its commit never sees
+  // two latest rows
   let mostLatest = 0;
-  const tick = () => {
+  let committed = false;
+  let samplesBeforeCommit = 0;
+  let samplesAfterCommit = 0;
+  const sample = () => {
+    if (committed) samplesAfterCommit++;
+    else samplesBeforeCommit++;
     for (const name of ["d-0", "d-1"]) {
       const latest = [...catalog.iterate()].filter((row) =>
         row.type_normalized === "access-model" && row.data_name === name &&
@@ -7083,16 +7087,33 @@ Deno.test("DataQueryService.refreshTypes: re-reads only the given types and keep
       ).length;
       mostLatest = Math.max(mostLatest, latest);
     }
-    timer = setTimeout(tick, 0);
   };
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  // the refresh need not yield, so the poller reads once before it starts
-  tick();
-  try {
-    await service.refreshTypes([ModelType.create("access-model")]);
-  } finally {
-    clearTimeout(timer);
-  }
+  const findAllForType = dataRepo.findAllForType.bind(dataRepo);
+  dataRepo.findAllForType = (type, options) => {
+    sample();
+    return findAllForType(type, options);
+  };
+  const listVersions = dataRepo.listVersions.bind(dataRepo);
+  dataRepo.listVersions = (type, modelId, dataName) => {
+    sample();
+    return listVersions(type, modelId, dataName);
+  };
+  const findByName = dataRepo.findByName.bind(dataRepo);
+  dataRepo.findByName = (type, modelId, dataName, version) => {
+    sample();
+    return findByName(type, modelId, dataName, version);
+  };
+  const upsert = catalog.upsertNamesRecomputingFlags.bind(catalog);
+  catalog.upsertNamesRecomputingFlags = (rows) => {
+    upsert(rows);
+    committed = true;
+    sample();
+  };
+
+  await service.refreshTypes([ModelType.create("access-model")]);
+
+  assert(samplesBeforeCommit > 0, "no reader ran before the commit");
+  assertEquals(samplesAfterCommit, 1);
   assertEquals(mostLatest, 1);
 
   assertEquals(catalog.isPopulated(), true);
