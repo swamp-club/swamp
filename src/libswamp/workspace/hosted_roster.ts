@@ -152,6 +152,8 @@ export async function wantedFolderMatches(input: {
 // an entry claims its folder and its name, so no scanned folder becomes a second serve of one repo
 export async function hostedWorkspaceFolders(input: {
   readonly workspacesDir: string;
+  /** false for a host with no host folder, where no workspace is the host's own; true by default */
+  readonly hostFolder?: boolean;
   readonly scanned: readonly string[];
   readonly registry: WorkspaceRegistry | null;
   readonly rootRepo: string | null;
@@ -184,6 +186,18 @@ export async function hostedWorkspaceFolders(input: {
       if (!isWorkspaceName(entry.name)) continue;
       const real = await realPath(resolve(entry.path));
       if (real === rootReal || claimed.has(real)) continue;
+      if (input.hostFolder === false) {
+        claimed.add(real);
+        workspaces.set(entry.name, {
+          name: entry.name,
+          folder: real,
+          owner: "operator",
+          isRepo: await isRepo(real),
+          fromWantedFile: false,
+          shadows: false,
+        });
+        continue;
+      }
       const inside = join(insideBase, entry.name);
       const insideReal = scannedReal.get(entry.name) ??
         await realPath(inside);

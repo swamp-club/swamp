@@ -503,3 +503,38 @@ Deno.test("freshFolderClaim: names another entry holding workspaces/<name>, igno
     assertEquals(await claim(), null);
   });
 });
+
+Deno.test("hostedWorkspaceFolders: with no host folder, every entry is the operator's own, one in the state folder included, and none is gone", async () => {
+  await withWorkspaceFixture(async (f) => {
+    const stateDir = join(f.dir, "data", "host");
+    const outside = join(f.dir, "projects", "outside");
+    const inState = join(stateDir, "alpha");
+    const root = join(f.dir, "projects", "root");
+    await f.makeRepo(outside);
+    await f.makeRepo(inState);
+    await f.makeRepo(root);
+    const roster = await hostedWorkspaceFolders({
+      workspacesDir: stateDir,
+      hostFolder: false,
+      scanned: [],
+      registry: registryOf(
+        { name: "alpha", path: inState },
+        { name: "gone", path: join(stateDir, "gone") },
+        { name: "outside", path: outside },
+        { name: "root", path: root },
+      ),
+      rootRepo: root,
+    });
+    assertEquals(listed(roster), [
+      { name: "alpha", folder: inState, owner: "operator" },
+      { name: "gone", folder: join(stateDir, "gone"), owner: "operator" },
+      { name: "outside", folder: outside, owner: "operator" },
+    ]);
+    assertEquals(
+      roster.workspaces.find((w) => w.name === "gone")?.isRepo,
+      false,
+    );
+    assertEquals(roster.gone, []);
+    assertEquals(roster.passedOver, []);
+  });
+});

@@ -36,6 +36,7 @@ import {
   hostedWorkspaceErrorEvent,
   type HostedWorkspaceProvisionSpec,
   type HostedWorkspaceRootAccess,
+  noHostFolderCreate,
 } from "./deps.ts";
 
 export interface HostedWorkspaceCreateInput {
@@ -74,6 +75,7 @@ export async function* hostedWorkspaceCreate(
     (async function* () {
       try {
         const name = parseWorkspaceName(input.name);
+        if (!deps.hostFolder) throw noHostFolderCreate();
         const spec = provisionSpecOf(input);
         const at = deps.now();
         // listed at once, but no serve starts until a resume

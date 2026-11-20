@@ -20,7 +20,7 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { parse as parseYaml } from "@std/yaml";
-import { assertCompletes, assertErrors } from "../testing.ts";
+import { assertCompletes, assertErrors, collect } from "../testing.ts";
 import {
   hostedWorkspaceCreate,
   type HostedWorkspaceCreateEvent,
@@ -368,4 +368,32 @@ Deno.test("hostedWorkspaceCreate: a registry it cannot write still completes the
     "provision_failed",
   );
   assertEquals(await host.store.registry.load(), null);
+});
+
+Deno.test("hostedWorkspaceCreate: a host with no host folder refuses create with no_host_folder, touching nothing and naming no host path", async () => {
+  await using host = await hostFolder();
+  let provisioned = false;
+  const events = await collect(
+    hostedWorkspaceCreate(
+      ctx,
+      host.deps({
+        hostFolder: false,
+        provisioner: {
+          provision() {
+            provisioned = true;
+            return Promise.resolve();
+          },
+        },
+      }),
+      { name: "edge-dns", caller: ALICE, access: OAUTH_ACCESS },
+    ),
+  );
+  const error = events.find((e) => e.kind === "error");
+  if (error?.kind !== "error") throw new Error("expected a refusal");
+  assertEquals(error.error.code, "no_host_folder");
+  assertStringIncludes(error.error.message, "no host folder");
+  assertStringIncludes(error.error.message, "swamp workspace import");
+  assert(!error.error.message.includes(host.dir), "names no host path");
+  assertEquals(provisioned, false);
+  assertEquals(await entries(host.dir), []);
 });

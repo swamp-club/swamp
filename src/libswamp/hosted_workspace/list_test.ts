@@ -203,3 +203,27 @@ Deno.test("hostedWorkspaceList: a name whose folder is registered under another 
     "operator",
   );
 });
+
+Deno.test("hostedWorkspaceList: a host with no host folder lists only registered repos, each the operator's own, never a folder in its state folder", async () => {
+  await using host = await hostFolder();
+  const deps = host.deps({ hostFolder: false });
+  await Deno.mkdir(join(host.dir, "stray"));
+  await Deno.writeTextFile(join(host.dir, "stray", ".swamp.yaml"), "");
+  const outside = join(dirname(host.dir), "projects", "outside");
+  await Deno.mkdir(outside, { recursive: true });
+  await Deno.writeTextFile(join(outside, ".swamp.yaml"), "");
+  await host.store.registry.update((registry) => {
+    registry.register({
+      name: "outside",
+      path: outside,
+      createdAt: "2026-11-17T10:00:00.000Z",
+    });
+  });
+  const events = await collect(hostedWorkspaceList(ctx, deps));
+  const done = events.find((e) => e.kind === "completed");
+  if (done?.kind !== "completed") throw new Error("list did not complete");
+  assertEquals(
+    done.data.workspaces.map((w) => [w.name, w.owner, w.wanted]),
+    [["outside", "operator", "suspended"]],
+  );
+});

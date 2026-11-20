@@ -203,6 +203,18 @@ Deno.test("sendWorkspaceRequest: a name clash's refusal reads as the root's mess
   assertEquals(error.code, "workspace_name_clash");
 });
 
+Deno.test("sendWorkspaceRequest: a create refused on a host with no host folder reads as the root's message", async () => {
+  const message =
+    "This host has no host folder to create workspaces in. Create or import the repo on the host with swamp workspace create or swamp workspace import, then resume it.";
+  const error = await refusedWith(
+    "no_host_folder",
+    message,
+    namedWorkspaceRequest("workspace.create", "edge-dns"),
+  );
+  assertEquals(error.message, message);
+  assertEquals(error.code, "no_host_folder");
+});
+
 Deno.test("sendWorkspaceRequest: a refused request names the root and keeps its reason", async () => {
   const error = await refusedWith(
     "unauthorized",

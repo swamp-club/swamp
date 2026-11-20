@@ -37,6 +37,7 @@ import { DelegationLinkService } from "../../serve/delegation_link_service.ts";
 import { hostRootWorkspaces } from "../../serve/host_root_workspaces.ts";
 import {
   HOST_ADDRESS_FLAG,
+  HOST_NO_FOLDER_FLAG,
   HOST_WORKSPACES_DIR_FLAG,
   ROOT_ADDRESS_FLAG,
 } from "../../serve/host/serve_process.ts";
@@ -2170,7 +2171,12 @@ export const serveCommand = new Command()
   // the host gives these to its root alone: no serve.yaml key or env var
   .option(
     `${HOST_WORKSPACES_DIR_FLAG} <path:string>`,
-    "The host's workspaces folder, which makes this serve the host's root",
+    "The host's state folder, which makes this serve the host's root",
+    { hidden: true },
+  )
+  .option(
+    HOST_NO_FOLDER_FLAG,
+    "The host has no host folder, so this root creates no workspace",
     { hidden: true },
   )
   .option(
@@ -2288,6 +2294,7 @@ export const serveCommand = new Command()
       {
         dir: options.hostWorkspacesDir as string | undefined,
         address: options.hostAddress as string | undefined,
+        noFolder: options.hostNoFolder === true,
         repoDir,
       },
       Deno.env.toObject(),
