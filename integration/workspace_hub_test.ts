@@ -40,10 +40,10 @@ type FakeChild = HubChild & {
   busyAsks: number;
 };
 
-function startFakeChild(): FakeChild {
+function startFakeChild(busy = false): FakeChild {
   const token = crypto.randomUUID();
   let stopped = false;
-  const state = { busy: false, busyAsks: 0 };
+  const state = { busy, busyAsks: 0 };
   let resolveExited!: () => void;
   const exited = new Promise<void>((resolve) => resolveExited = resolve);
   const server = Deno.serve(
@@ -159,6 +159,7 @@ async function withHub(
     failFirstSpawn?: boolean;
     switchable?: boolean;
     idleMs?: number;
+    childrenStartBusy?: boolean;
     actions?: ActionRunner;
     trustedHosts?: TrustedHosts;
     launchSwampify?: WorkspaceHubDeps["launchSwampify"];
@@ -186,7 +187,7 @@ async function withHub(
         failNext = false;
         return Promise.reject(new Error("no start"));
       }
-      const child = startFakeChild();
+      const child = startFakeChild(options.childrenStartBusy);
       children.push(child);
       return Promise.resolve(child);
     },
@@ -445,7 +446,6 @@ Deno.test("workspaceHub: a busy child is not stopped until its runs end", async 
   await withHub(async ({ base, children }) => {
     const res = await hubFetch(`http://${base}/w/alpha/auth/info`);
     await res.body?.cancel();
-    children[0].busy = true;
     await waitFor(
       () => children[0].busyAsks >= 2,
       "the hub to ask the busy child again",
@@ -453,7 +453,7 @@ Deno.test("workspaceHub: a busy child is not stopped until its runs end", async 
     assertEquals(children[0].stopped(), false);
     children[0].busy = false;
     await waitFor(() => children[0].stopped(), "the child to stop");
-  }, { idleMs: 20 });
+  }, { idleMs: 20, childrenStartBusy: true });
 });
 
 Deno.test("workspaceHub: a child stopped for idling starts again on next use", async () => {
