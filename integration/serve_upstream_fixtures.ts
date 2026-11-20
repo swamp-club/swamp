@@ -546,27 +546,39 @@ export function serveEnv(
   };
 }
 
+// one process stands for many CLI commands, and each command's teardown closes
+// every v3 datastore the process holds, so overlapping commands take turns
+let commandTurn: Promise<unknown> = Promise.resolve();
+
+function inTurn<T>(run: () => Promise<T>): Promise<T> {
+  const turn = commandTurn.then(run, run);
+  commandTurn = turn.catch(() => {});
+  return turn;
+}
+
 export async function writeCommand<T>(
   scratch: Pick<Scratch, "configDir">,
   client: Pick<Client, "repoDir">,
   env: Record<string, string | undefined>,
   fn: (repos: RepositoryContext) => Promise<T>,
 ): Promise<T> {
-  return await withClientEnv(scratch, env, ["model", "method"], async () => {
-    try {
-      const ctx = await requireInitializedRepo({
-        repoDir: client.repoDir,
-        outputMode: "json",
-      });
-      return await runInRootUnitOfWork(
-        ctx.repoContext,
-        { flush: undefined },
-        () => fn(ctx.repoContext),
-      );
-    } finally {
-      await endCommand();
-    }
-  });
+  return await inTurn(() =>
+    withClientEnv(scratch, env, ["model", "method"], async () => {
+      try {
+        const ctx = await requireInitializedRepo({
+          repoDir: client.repoDir,
+          outputMode: "json",
+        });
+        return await runInRootUnitOfWork(
+          ctx.repoContext,
+          { flush: undefined },
+          () => fn(ctx.repoContext),
+        );
+      } finally {
+        await endCommand();
+      }
+    })
+  );
 }
 
 /**
@@ -598,17 +610,19 @@ export async function readCommand<T>(
   env: Record<string, string | undefined>,
   fn: (repos: RepositoryContext) => Promise<T>,
 ): Promise<T> {
-  return await withClientEnv(scratch, env, ["data", "get"], async () => {
-    try {
-      const ctx = await requireInitializedRepoReadOnly({
-        repoDir: client.repoDir,
-        outputMode: "json",
-      });
-      return await fn(ctx.repoContext);
-    } finally {
-      await endCommand();
-    }
-  });
+  return await inTurn(() =>
+    withClientEnv(scratch, env, ["data", "get"], async () => {
+      try {
+        const ctx = await requireInitializedRepoReadOnly({
+          repoDir: client.repoDir,
+          outputMode: "json",
+        });
+        return await fn(ctx.repoContext);
+      } finally {
+        await endCommand();
+      }
+    })
+  );
 }
 
 /** A fixed instant, so two runs of one script write the same metadata. */
