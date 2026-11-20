@@ -42,6 +42,7 @@ import {
   createResourceDeleter,
   createResourceReader,
   createResourceWriter,
+  repoResourceSizePolicy,
 } from "./data_writer.ts";
 import { DataAccessService } from "../data/data_access_service.ts";
 import {
@@ -221,6 +222,7 @@ export class InProcessExecutor {
       Deno.build.os,
       outputNames,
       new ResourceAttributeBudget(this.resourceAttributeCapBytes),
+      repoResourceSizePolicy(this.context.dataRepository),
     );
 
     const {

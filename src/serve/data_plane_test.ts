@@ -734,7 +734,10 @@ Deno.test("DataPlane: a resource write whose body is past resourceSize.maxBytes 
       }),
     );
     assertEquals(response?.status, 413);
-    assertStringIncludes(await response!.text(), "resourceSize.maxBytes");
+    const text = await response!.text();
+    assertStringIncludes(text, "Refused a resource write from ");
+    assertStringIncludes(text, "past resourceSize.maxBytes of 1.0 KiB");
+    assertStringIncludes(text, "Write less per resource");
     assertEquals(h.stored.size, 0);
   }, {
     sizePolicy: ResourceSizePolicy.create({ warnBytes: 10, maxBytes: 1024 }),

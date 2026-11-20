@@ -39,7 +39,10 @@ import {
   MissingModelDataError,
   UnboundExpressionError,
 } from "../src/domain/expressions/errors.ts";
-import { createResourceWriter } from "../src/domain/models/data_writer.ts";
+import {
+  createResourceWriter,
+  repoResourceSizePolicy,
+} from "../src/domain/models/data_writer.ts";
 import type { ResourceOutputSpec } from "../src/domain/models/model.ts";
 import { createDataRepositoryAttributeReader } from "../src/domain/workflows/step_output_resolver.ts";
 import {
@@ -68,8 +71,7 @@ interface Fixture {
   write: (name: string, bytes: number) => Promise<unknown>;
 }
 
-// a heap of 1000 bytes refuses any item past a third of it, so a few hundred
-// bytes of content stand in for the hundreds of MB that crash a real run
+// a heap of 1000 bytes refuses any item past a third of it
 async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
   const repoDir = await Deno.makeTempDir({ prefix: "swamp-resource-size-" });
   const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
@@ -118,6 +120,13 @@ resourceSize:
       "big",
       undefined,
       "write",
+      undefined,
+      undefined,
+      false,
+      Deno.build.os,
+      undefined,
+      undefined,
+      repoResourceSizePolicy(dataRepo),
     );
     const write = (name: string, bytes: number) =>
       writeResource("blob", name, { items: ["x".repeat(bytes)] });

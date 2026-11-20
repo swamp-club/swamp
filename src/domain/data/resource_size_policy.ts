@@ -19,8 +19,7 @@
 
 import { UserError } from "../errors.ts";
 
-// About twenty resources this size, parsed together at three times their size,
-// fill a 4 GB heap.
+// sized so a few dozen of these, parsed together, still fit a default V8 heap
 export const DEFAULT_RESOURCE_WARN_BYTES = 64 * 1024 * 1024;
 
 export type ResourceSizeVerdict = "ok" | "warn" | "refuse";

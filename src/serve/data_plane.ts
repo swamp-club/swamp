@@ -47,8 +47,12 @@ import type { WrittenVersion } from "../domain/datastore/datastore_sync_service.
 import {
   createFileWriterFactory,
   createResourceWriter,
+  repoResourceSizePolicy,
 } from "../domain/models/data_writer.ts";
-import { ResourceSizePolicy } from "../domain/data/resource_size_policy.ts";
+import {
+  describeByteCount,
+  ResourceSizePolicy,
+} from "../domain/data/resource_size_policy.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import { runInRootUnitOfWork } from "../infrastructure/persistence/repo_unit_of_work.ts";
 import { VaultService } from "../domain/vaults/vault_service.ts";
@@ -838,7 +842,12 @@ export class DataPlane {
       ) {
         return errorResponse(
           413,
-          `Resource write body of ${declaredBytes} bytes is past resourceSize.maxBytes of ${maxBytes} bytes`,
+          `Refused a resource write from ${dispatch.definitionName}.${dispatch.methodName}: its body is ${
+            describeByteCount(declaredBytes)
+          }, past resourceSize.maxBytes of ${
+            describeByteCount(maxBytes)
+          } set in .swamp.yaml. ` +
+            `Write less per resource (split it, or keep bulk content in a file), or raise resourceSize.maxBytes.`,
         );
       }
     }
@@ -883,6 +892,8 @@ export class DataPlane {
       false,
       Deno.build.os,
       this.#outputNames(dispatch),
+      undefined,
+      repoResourceSizePolicy(repo),
     );
     // Mark the lease BEFORE persisting: a lease may over-report writes
     // (safe, conservative) but must never under-report them.

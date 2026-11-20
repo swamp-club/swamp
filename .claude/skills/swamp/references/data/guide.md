@@ -112,12 +112,10 @@ swamp data query 'tags.type == "agent-session"' --select 'tags' --sort tags.star
 
 ### Finding oversized data
 
-A run that fails with
-`Cannot load <behavior>/<name>@v<N>: it is ... and loading
-it would exhaust the memory left to this process`
-hit data too large to load together. List the largest items without reading
-their content: select only catalog fields, since a query without `--select`
-loads every match.
+A run that fails with an error starting `Cannot load <behavior>/<name>@v<N>` hit
+data too large to load together. List the largest items without reading their
+content: select only catalog fields, since a query without `--select` loads
+every match.
 
 ```bash
 swamp data query 'size > 67108864' --select '{"model": modelName, "name": name, "version": version, "size": size}' --sort size:desc --limit 20

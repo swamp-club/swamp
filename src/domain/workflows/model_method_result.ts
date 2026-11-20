@@ -77,13 +77,18 @@ export async function modelMethodResourceResult(
     );
     if (stored) return stored;
   }
-  const raw = await dataRepo.getContent(type, modelId, dataName);
-  if (!raw) return undefined;
-  resourceLoadGuardOf(dataRepo).assertLoadable({
+  const data = await dataRepo.findByName(type, modelId, dataName);
+  const guard = resourceLoadGuardOf(dataRepo);
+  const item = {
     modelType: type.normalized,
     modelName,
     dataName,
-  }, raw.length);
+    version: data?.version,
+  };
+  guard.assertLoadable(item, data?.size ?? 0);
+  const raw = await dataRepo.getContent(type, modelId, dataName);
+  if (!raw) return undefined;
+  guard.assertLoadable(item, raw.length);
   const text = new TextDecoder().decode(raw);
   try {
     return JSON.parse(text);

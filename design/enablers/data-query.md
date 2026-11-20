@@ -1134,10 +1134,10 @@ SQL, so ISO 8601 UTC times sort in time order; a row without the tag sorts as
 the empty string, last when descending. `size` sorts on the byte count
 zero-padded to 20 digits, so it orders numerically and its cursor key stays a
 string; `--select` naming only catalog fields with `--sort size:desc` lists the
-largest items without reading any content. Ties break on the item identity (namespace, model type, model
-id, data name, version) in the same direction, so the order is total and the
-same on every copy of the catalog: catalog rowids differ between a serve leader
-and a follower, so they are never part of it. The tag key is letters, digits,
+largest items without reading any content. Ties break on the item identity
+(namespace, model type, model id, data name, version) in the same direction, so
+the order is total and the same on every copy of the catalog: catalog rowids
+differ between a serve leader and a follower, so they are never part of it. The tag key is letters, digits,
 `.`, `_` or `-`. Sorting by a field inside the record body is not supported:
 every page would read every body.
 

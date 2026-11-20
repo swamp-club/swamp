@@ -25,6 +25,8 @@ import { Data, RECORD_KIND_TAG } from "./data.ts";
 import { DataKindConflictError } from "./data_kind.ts";
 import { ModelType } from "../models/model_type.ts";
 import type { RenameForward, UnreadableModelRecord } from "./repositories.ts";
+import { ResourceLoadGuard } from "./resource_load_guard.ts";
+import { ResourceSizePolicy } from "./resource_size_policy.ts";
 
 function createTestData(overrides: Partial<{
   name: string;
@@ -746,4 +748,39 @@ Deno.test("CompositeUnifiedDataRepository: a lifetime change that keeps the kind
     TEST_CONTENT,
   );
   assertEquals(version, 1);
+});
+
+Deno.test("CompositeUnifiedDataRepository: carries the persistent repository's load guard and size policy", async () => {
+  const persistentCatalog = new CatalogStore(":memory:");
+  const ephemeralCatalog = new CatalogStore(":memory:");
+  try {
+    const guard = new ResourceLoadGuard();
+    const policy = ResourceSizePolicy.create({ warnBytes: 10 });
+    const persistent = Object.assign(
+      new InMemoryUnifiedDataRepository(persistentCatalog),
+      {
+        loadGuard: guard,
+        resolveResourceSizePolicy: () => Promise.resolve(policy),
+      },
+    );
+    const composite = new CompositeUnifiedDataRepository(
+      persistent,
+      new InMemoryUnifiedDataRepository(ephemeralCatalog),
+    );
+    assertEquals(composite.loadGuard, guard);
+    assertEquals(await composite.resolveResourceSizePolicy(), policy);
+
+    const bare = new CompositeUnifiedDataRepository(
+      new InMemoryUnifiedDataRepository(persistentCatalog),
+      new InMemoryUnifiedDataRepository(ephemeralCatalog),
+    );
+    assertEquals(bare.loadGuard, undefined);
+    assertEquals(
+      await bare.resolveResourceSizePolicy(),
+      ResourceSizePolicy.DEFAULT,
+    );
+  } finally {
+    persistentCatalog.close();
+    ephemeralCatalog.close();
+  }
 });

@@ -1113,3 +1113,91 @@ Deno.test("fromData: content too large to decode fails naming the record", async
   );
   assertEquals(isRecordContentTooLargeError(error), true);
 });
+
+function asyncGuardedRepo(
+  content: Uint8Array,
+): UnifiedDataRepository & { reads: number } {
+  const repo = {
+    namespace: "",
+    reads: 0,
+    loadGuard: new ResourceLoadGuard({
+      heapLimitBytes: () => 1000,
+      heapUsedBytes: () => 0,
+    }, 10),
+    getContent: () => {
+      repo.reads++;
+      return Promise.resolve(content);
+    },
+  };
+  return repo as unknown as UnifiedDataRepository & { reads: number };
+}
+
+Deno.test("fromData: refuses an item the guard rejects, by recorded size before reading or by byte length", async () => {
+  const make = (size?: number) =>
+    Data.create({
+      name: "big-data",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "resource", modelName: "big" },
+      ownerDefinition: { ownerType: "model-method", ownerRef: "ref" },
+      size,
+    });
+  const sized = asyncGuardedRepo(encoder.encode("{}"));
+  await assertRejects(
+    () => fromData(make(500), ModelType.create("test/model"), "m", sized),
+    ResourceTooLargeToLoadError,
+    "big/big-data@v1",
+  );
+  assertEquals(sized.reads, 0);
+
+  const unsized = asyncGuardedRepo(encoder.encode("x".repeat(400)));
+  await assertRejects(
+    () => fromData(make(), ModelType.create("test/model"), "m", unsized),
+    ResourceTooLargeToLoadError,
+  );
+  assertEquals(unsized.reads, 1);
+});
+
+Deno.test("fromResourceHandle: a guard refusal is raised, not swallowed as unparseable JSON", async () => {
+  const handle: DataHandle = {
+    name: "blob",
+    specName: "blob",
+    kind: "resource",
+    dataId: "data-id-1" as DataId,
+    version: 2,
+    size: 0,
+    tags: { type: "resource" },
+    metadata: {
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      streaming: false,
+      tags: {},
+      ownerDefinition: { ownerType: "model-method", ownerRef: "ref-1" },
+    },
+  };
+  await assertRejects(
+    () =>
+      fromResourceHandle(
+        handle,
+        ModelType.create("test/model"),
+        "m",
+        "big",
+        asyncGuardedRepo(encoder.encode("x".repeat(400))),
+      ),
+    ResourceTooLargeToLoadError,
+    "big/blob@v2",
+  );
+  await assertRejects(
+    () =>
+      fromResourceHandle(
+        { ...handle, size: 500 },
+        ModelType.create("test/model"),
+        "m",
+        "big",
+        asyncGuardedRepo(encoder.encode("{}")),
+      ),
+    ResourceTooLargeToLoadError,
+  );
+});

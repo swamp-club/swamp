@@ -1116,6 +1116,18 @@ async function settledBy(
   }
 }
 
+export type ResourceSizePolicySource =
+  | ResourceSizePolicy
+  | (() => Promise<ResourceSizePolicy>);
+
+export function repoResourceSizePolicy(
+  repo: UnifiedDataRepository,
+): () => Promise<ResourceSizePolicy> {
+  return () =>
+    repo.resolveResourceSizePolicy?.() ??
+      Promise.resolve(ResourceSizePolicy.DEFAULT);
+}
+
 export function createResourceWriter(
   repo: UnifiedDataRepository,
   modelType: ModelType,
@@ -1141,7 +1153,9 @@ export function createResourceWriter(
   os: typeof Deno.build.os = Deno.build.os,
   outputNames?: ExecutionOutputNames,
   attributeBudget?: ResourceAttributeBudget,
-  sizePolicy?: ResourceSizePolicy,
+  // a behavior's own writes pass the repo's policy; internal writers keep the
+  // default, so a repo's maxBytes never refuses swamp's own records
+  sizePolicy: ResourceSizePolicySource = ResourceSizePolicy.DEFAULT,
 ): {
   writeResource: (
     specName: string,
@@ -1158,10 +1172,9 @@ export function createResourceWriter(
   const sizeWarned = new Set<string>();
   let resolvedSizePolicy: Promise<ResourceSizePolicy> | undefined;
   const effectiveSizePolicy = () =>
-    resolvedSizePolicy ??= sizePolicy
-      ? Promise.resolve(sizePolicy)
-      : repo.resolveResourceSizePolicy?.() ??
-        Promise.resolve(ResourceSizePolicy.DEFAULT);
+    resolvedSizePolicy ??= typeof sizePolicy === "function"
+      ? sizePolicy()
+      : Promise.resolve(sizePolicy);
   let attributesOmittedLogged = false;
   const assertWriteTagsUnreserved = writeTagsGuard(
     modelType,

@@ -43,9 +43,11 @@ import {
   readSensitiveFieldsTag,
   RECORD_KIND_TAG,
   recordSensitiveVaultRefsUnread,
+  repoResourceSizePolicy,
   resolveSensitiveVaultRefs,
   resolveSensitiveVaultRefsLeavingUnread,
   resolveVaultRefsInData,
+  type ResourceSizePolicySource,
   sanitizeVaultKey,
   SENSITIVE_FIELD_JSON_TAG,
   SENSITIVE_FIELD_KEYS_TAG,
@@ -6617,22 +6619,36 @@ const sizedResources: Record<string, ResourceOutputSpec> = {
   },
 };
 
+function sizedWriter(
+  repo: UnifiedDataRepository,
+  sizePolicy?: ResourceSizePolicySource,
+) {
+  return createResourceWriter(
+    repo,
+    modelType,
+    modelId,
+    sizedResources,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    "big",
+    undefined,
+    "write",
+    undefined,
+    undefined,
+    false,
+    Deno.build.os,
+    undefined,
+    undefined,
+    sizePolicy,
+  );
+}
+
 Deno.test("createResourceWriter: warns once per item past the repository's warnBytes, naming writer, resource and size", async () => {
   const repo = sizeLimitedRepo(ResourceSizePolicy.create({ warnBytes: 100 }));
   const messages = await capturingResourceSizeWarnings(async () => {
-    const { writeResource } = createResourceWriter(
-      repo,
-      modelType,
-      modelId,
-      sizedResources,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      "big",
-      undefined,
-      "write",
-    );
+    const { writeResource } = sizedWriter(repo, repoResourceSizePolicy(repo));
     await writeResource("item", "blob", { value: "x".repeat(200) });
     await writeResource("item", "blob", { value: "x".repeat(200) });
     await writeResource("item", "small", { value: "x" });
@@ -6644,16 +6660,11 @@ Deno.test("createResourceWriter: warns once per item past the repository's warnB
   assertStringIncludes(messages[0], "resourceSize.warnBytes");
 });
 
-Deno.test("createResourceWriter: refuses a resource past maxBytes before anything is saved", async () => {
+Deno.test("createResourceWriter: refuses a resource past the repository's maxBytes before anything is saved", async () => {
   const repo = sizeLimitedRepo(
     ResourceSizePolicy.create({ warnBytes: 50, maxBytes: 100 }),
   );
-  const { writeResource } = createResourceWriter(
-    repo,
-    modelType,
-    modelId,
-    sizedResources,
-  );
+  const { writeResource } = sizedWriter(repo, repoResourceSizePolicy(repo));
   const error = await assertRejects(
     () => writeResource("item", "blob", { value: "x".repeat(200) }),
     ResourceTooLargeError,
@@ -6663,32 +6674,20 @@ Deno.test("createResourceWriter: refuses a resource past maxBytes before anythin
   assertEquals(repo.saves, 0);
 });
 
-Deno.test("createResourceWriter: an explicit size policy overrides the repository's", async () => {
+Deno.test("createResourceWriter: an internal writer, passing no policy, ignores the repository's maxBytes", async () => {
   const repo = sizeLimitedRepo(
     ResourceSizePolicy.create({ warnBytes: 50, maxBytes: 100 }),
   );
-  const { writeResource } = createResourceWriter(
-    repo,
-    modelType,
-    modelId,
-    sizedResources,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    false,
-    Deno.build.os,
-    undefined,
-    undefined,
-    ResourceSizePolicy.DEFAULT,
-  );
+  const { writeResource } = sizedWriter(repo);
   await writeResource("item", "blob", { value: "x".repeat(200) });
   assertEquals(repo.saves, 1);
+});
+
+Deno.test("repoResourceSizePolicy: falls back to the defaults for a repository without a policy", async () => {
+  assertEquals(
+    await repoResourceSizePolicy(createMockRepo())(),
+    ResourceSizePolicy.DEFAULT,
+  );
 });
 
 function guardedRepo(

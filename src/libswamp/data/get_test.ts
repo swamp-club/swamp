@@ -36,6 +36,10 @@ import {
   type WorkflowDataItemInfo,
 } from "./get.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
+import {
+  ResourceLoadGuard,
+  ResourceTooLargeToLoadError,
+} from "../../domain/data/resource_load_guard.ts";
 
 function makeModelType(): ModelType {
   return ModelType.create("model/type");
@@ -1049,4 +1053,64 @@ Deno.test("dataGet: reads the recorded owner's data when its definition is gone"
   assertEquals(completed.data.modelId, orphan.modelId);
   assertEquals(completed.data.modelName, "orphan");
   assertEquals(completed.data.modelType, "command/shell");
+});
+
+function refusingGuard(): ResourceLoadGuard {
+  return new ResourceLoadGuard({
+    heapLimitBytes: () => 90,
+    heapUsedBytes: () => 0,
+  }, 10);
+}
+
+Deno.test("dataGet refuses content the load guard rejects by recorded size, naming the behavior, without reading it", async () => {
+  let reads = 0;
+  const deps = makeDeps({
+    loadGuard: refusingGuard(),
+    getContent: () => {
+      reads++;
+      return Promise.resolve(new Uint8Array(1));
+    },
+  });
+  await assertRejects(
+    () =>
+      collect<DataGetEvent>(
+        dataGet(createLibSwampContext(), deps, {
+          modelIdOrName: "my-model",
+          dataName: "output",
+          includeContent: true,
+          repoDir: ".",
+        }),
+      ),
+    ResourceTooLargeToLoadError,
+    "my-model/output@v1",
+  );
+  assertEquals(reads, 0);
+});
+
+Deno.test("dataGet refuses workflow-scoped content on its byte length when no size was recorded", async () => {
+  const base = makeDeps();
+  const deps = makeDeps({
+    loadGuard: refusingGuard(),
+    findDataInWorkflowRun: async (...args) => {
+      const match = await base.findDataInWorkflowRun(...args);
+      return match && {
+        ...match,
+        item: { ...match.item, data: { ...match.item.data, size: undefined } },
+      };
+    },
+    getContent: () => Promise.resolve(new Uint8Array(40)),
+  });
+  await assertRejects(
+    () =>
+      collect<DataGetEvent>(
+        dataGet(createLibSwampContext(), deps, {
+          workflowName: "wf",
+          dataName: "output",
+          includeContent: true,
+          repoDir: ".",
+        }),
+      ),
+    ResourceTooLargeToLoadError,
+    "my-model/output",
+  );
 });

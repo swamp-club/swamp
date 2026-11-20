@@ -28,7 +28,11 @@ import {
   type DataQueryTarget,
 } from "../../domain/data/data_query_command.ts";
 import { isTextContentType } from "../../domain/data/content_type.ts";
-import { resourceLoadGuardOf } from "../../domain/data/resource_load_guard.ts";
+import {
+  type LoadedItemRef,
+  type ResourceLoadGuard,
+  resourceLoadGuardOf,
+} from "../../domain/data/resource_load_guard.ts";
 import {
   type ContentEncoding,
   encodeContent,
@@ -257,6 +261,8 @@ export interface DataGetDeps extends DataOwnerLookupDeps {
     name: string,
     version: number,
   ) => Promise<Uint8Array | null>;
+  /** absent means the default guard */
+  loadGuard?: ResourceLoadGuard;
   getContentPath: (
     modelType: ModelType,
     modelId: string,
@@ -377,26 +383,28 @@ export function createDataGetDeps(
       }
       return null;
     },
-    getContent: async (modelType, modelId, name, version) => {
-      const bytes = await dataRepo.getContent(
-        modelType,
-        modelId,
-        name,
-        version,
-      );
-      if (bytes) {
-        resourceLoadGuardOf(dataRepo).assertLoadable({
-          modelType: modelType.normalized,
-          dataName: name,
-          version,
-        }, bytes.length);
-      }
-      return bytes;
-    },
+    getContent: (modelType, modelId, name, version) =>
+      dataRepo.getContent(modelType, modelId, name, version),
+    loadGuard: dataRepo.loadGuard,
     getContentPath: (modelType, modelId, name, version) =>
       dataRepo.getContentPath(modelType, modelId, name, version),
     toRelativePath,
   };
+}
+
+// the recorded size is decided before the read; the byte length covers an
+// item whose size was never recorded
+async function readGuardedContent(
+  deps: Pick<DataGetDeps, "loadGuard">,
+  item: LoadedItemRef,
+  recordedSize: number | undefined,
+  read: () => Promise<Uint8Array | null>,
+): Promise<Uint8Array | null> {
+  const guard = resourceLoadGuardOf(deps);
+  guard.assertLoadable(item, recordedSize ?? 0);
+  const bytes = await read();
+  if (bytes) guard.assertLoadable(item, bytes.length);
+  return bytes;
 }
 
 export async function* dataGet(
@@ -666,11 +674,22 @@ async function* workflowScopedGet(
   };
 
   if (input.includeContent) {
-    const rawContent = await deps.getContent(
-      item.modelType,
-      item.modelId,
-      item.data.name,
-      item.data.version,
+    const rawContent = await readGuardedContent(
+      deps,
+      {
+        modelType: item.modelType.normalized,
+        modelName: item.modelName,
+        dataName: item.data.name,
+        version: item.data.version,
+      },
+      item.data.size,
+      () =>
+        deps.getContent(
+          item.modelType,
+          item.modelId,
+          item.data.name,
+          item.data.version,
+        ),
     );
     if (rawContent) {
       const { content, contentEncoding } = encodeContent(rawContent);
@@ -788,11 +807,17 @@ async function* modelScopedGet(
   };
 
   if (includeContent) {
-    const rawContent = await deps.getContent(
-      modelType,
-      owner.modelId,
-      resolvedName,
-      data.version,
+    const rawContent = await readGuardedContent(
+      deps,
+      {
+        modelType: modelType.normalized,
+        modelName: owner.modelName,
+        dataName: resolvedName,
+        version: data.version,
+      },
+      data.size,
+      () =>
+        deps.getContent(modelType, owner.modelId, resolvedName, data.version),
     );
     if (rawContent) {
       const { content, contentEncoding } = encodeContent(rawContent);

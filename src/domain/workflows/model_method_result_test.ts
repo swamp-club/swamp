@@ -17,7 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
+import {
+  ResourceLoadGuard,
+  ResourceTooLargeToLoadError,
+} from "../data/resource_load_guard.ts";
 import { Data } from "../data/data.ts";
 import type { UnifiedDataRepository } from "../data/repositories.ts";
 import { ModelType } from "../models/model_type.ts";
@@ -152,6 +156,55 @@ Deno.test("modelMethodResourceResult: a typed consumer is handed the stored reco
       undefined,
     );
   }
+});
+
+function guarded(base: UnifiedDataRepository): UnifiedDataRepository {
+  return {
+    ...base,
+    loadGuard: new ResourceLoadGuard({
+      heapLimitBytes: () => 90,
+      heapUsedBytes: () => 0,
+    }, 10),
+  } as UnifiedDataRepository;
+}
+
+Deno.test("modelMethodResourceResult: refuses a non-JSON result the guard rejects, by recorded size before reading or by byte length", async () => {
+  const sized = Data.create({
+    name: "creds",
+    contentType: "text/plain",
+    lifetime: "infinite",
+    garbageCollection: 10,
+    tags: { type: "resource", modelName: "db" },
+    ownerDefinition: { ownerType: "model-method", ownerRef: "test" },
+    size: 40,
+  });
+  const bySize = repo(sized, "short");
+  await assertRejects(
+    () =>
+      modelMethodResourceResult(
+        guarded(bySize.repo),
+        TYPE,
+        "id-1",
+        "creds",
+        "db",
+      ),
+    ResourceTooLargeToLoadError,
+    "db/creds@v1",
+  );
+  assertEquals(bySize.calls.includes("getContent:creds"), false);
+
+  const byLength = repo(data("text/plain"), "x".repeat(40));
+  await assertRejects(
+    () =>
+      modelMethodResourceResult(
+        guarded(byLength.repo),
+        TYPE,
+        "id-1",
+        "creds",
+        "db",
+      ),
+    ResourceTooLargeToLoadError,
+  );
 });
 
 Deno.test("storedResourceRecord: the media type is matched by prefix, so application/json with parameters reads as stored (typed-secrets 4.1)", async () => {
