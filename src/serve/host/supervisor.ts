@@ -97,6 +97,8 @@ export interface ServeSupervisor {
   add(spec: ServeChildSpec, wanted?: WantedServeState): void;
   setWanted(id: ServeId, wanted: WantedServeState): void;
   resume(id: ServeId): void;
+  /** the next spawn runs with `spec`; a live child is left running */
+  setSpec(spec: ServeChildSpec): void;
   lookup(id: ServeId): ServeStatus | undefined;
   /** settles once the serve has no live child */
   whenStopped(id: ServeId): Promise<void>;
@@ -116,7 +118,7 @@ interface LiveChild {
 }
 
 interface Entry {
-  readonly spec: ServeChildSpec;
+  spec: ServeChildSpec;
   serve: ManagedServe;
   child: LiveChild | null;
   lastExit: ServeChildExit | null;
@@ -392,6 +394,15 @@ export function createServeSupervisor(
       // an operator bringing a stopped or failed serve back is no restart
       if (entry.child === null) entry.unrequestedExit = false;
       apply(entry, { kind: "resume" });
+    },
+
+    setSpec(spec) {
+      refuseWhenClosing();
+      const entry = entryOf(spec.id);
+      if (spec.stopGraceMs !== undefined) {
+        positiveWhole("stopGraceMs", spec.stopGraceMs);
+      }
+      entry.spec = spec;
     },
 
     lookup(id) {

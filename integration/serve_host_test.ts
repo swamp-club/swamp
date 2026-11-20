@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assert, assertEquals, assertRejects } from "@std/assert";
-import { basename, dirname, join } from "@std/path";
+import { basename, dirname, join, SEPARATOR } from "@std/path";
 import { parse as parseYaml } from "@std/yaml";
 import { waitFor } from "@swamp-club/swamp-testing";
 import type { AuthMode } from "../src/domain/access/serve_auth_config.ts";
@@ -1415,4 +1415,189 @@ Deno.test("serve host registry: a registry lock held by another process is logge
     [],
   );
   assertEquals(await registered(folder.dir), {});
+});
+
+Deno.test("serve host registry: a workspace registered by another spelling of its folder is one workspace, served from the entry's folder", async () => {
+  await using folder = await hostFolder();
+  const workspaces = join(folder.dir, "workspaces");
+  await makeWorkspace(join(workspaces, "edge-dns"));
+  await makeWorkspace(join(workspaces, "cost-reports"));
+  const real = await Deno.realPath(workspaces);
+  await writeRegistry(folder.dir, [
+    {
+      name: "edge-dns",
+      path: [real, "..", "workspaces", "edge-dns"].join(SEPARATOR),
+    },
+    { name: "cost-reports", path: join(real, "cost-reports") + SEPARATOR },
+  ]);
+  const before = await Deno.readTextFile(registryFile(folder.dir));
+  const port = new StandInPort();
+  const host = await start(folder.dir, NO_ROOT, port);
+  try {
+    const base = `http://127.0.0.1:${host.port}`;
+    assertEquals(host.workspaces, ["cost-reports", "edge-dns"]);
+    for (const name of ["edge-dns", "cost-reports"]) {
+      await waitFor(
+        () => answers(`${base}/w/${name}/`, `workspace:${name}`),
+        `${name} to answer`,
+      );
+      const children = port.of(`workspace:${name}`);
+      assertEquals(children.length, 1);
+      assertEquals(children[0].spec.repoDir, join(real, name));
+    }
+    // a few rescans, none of which registers either folder a second time
+    for (const later of ["later-one", "later-two"]) {
+      await makeWorkspace(join(workspaces, later));
+      await waitFor(
+        async () => (await registered(folder.dir))[later] !== undefined,
+        `${later} to be registered`,
+      );
+    }
+    const entries = await registered(folder.dir);
+    const original = JSON.parse(before).workspaces;
+    assertEquals(entries["edge-dns"], original[0]);
+    assertEquals(entries["cost-reports"], original[1]);
+    assertEquals(port.of("workspace:edge-dns").length, 1);
+  } finally {
+    await host.shutdown();
+  }
+});
+
+Deno.test("serve host registry: a repo registered outside workspaces/ is not listed, has no status file and no serve", async () => {
+  await using folder = await hostFolder();
+  const workspaces = join(folder.dir, "workspaces");
+  await makeWorkspace(join(workspaces, "edge-dns"));
+  await makeRepo(join(folder.dir, "projects", "outside"));
+  await writeRegistry(folder.dir, [
+    { name: "outside", path: join(folder.dir, "projects", "outside") },
+  ]);
+  const port = new StandInPort();
+  const added: string[] = [];
+  const host = await start(
+    folder.dir,
+    NO_ROOT,
+    port,
+    undefined,
+    (change) => added.push(...change.added),
+  );
+  try {
+    const base = `http://127.0.0.1:${host.port}`;
+    assertEquals(host.workspaces, ["edge-dns"]);
+    await waitFor(
+      () => answers(`${base}/w/edge-dns/`, "workspace:edge-dns"),
+      "edge-dns to answer",
+    );
+    await makeWorkspace(join(workspaces, "later"));
+    await waitFor(() => added.includes("later"), "a rescan to see later");
+    assertEquals((await get(`${base}/w/outside/`)).status, 404);
+    assertEquals(port.of("workspace:outside").length, 0);
+    assertEquals(await readStatus(folder.dir, "outside"), null);
+    assertEquals(added.includes("outside"), false);
+  } finally {
+    await host.shutdown();
+  }
+});
+
+Deno.test("serve host registry: a registry that turns unreadable while the host runs stops nothing, and folders are still added and removed", async () => {
+  for (const spoil of ["corrupt", "folder"] as const) {
+    await using folder = await hostFolder();
+    const workspaces = join(folder.dir, "workspaces");
+    await makeWorkspace(join(workspaces, "edge-dns"));
+    await makeWorkspace(join(workspaces, "going"));
+    const port = new StandInPort();
+    const added: string[] = [];
+    const records = await hostLogs(async () => {
+      const host = await start(
+        folder.dir,
+        NO_ROOT,
+        port,
+        undefined,
+        (change) => added.push(...change.added),
+      );
+      try {
+        const base = `http://127.0.0.1:${host.port}`;
+        await waitFor(
+          async () => Object.keys(await registered(folder.dir)).length === 2,
+          "both to be registered",
+        );
+        if (spoil === "corrupt") {
+          await Deno.writeTextFile(registryFile(folder.dir), "{nope");
+        } else {
+          await Deno.remove(registryFile(folder.dir));
+          await Deno.mkdir(registryFile(folder.dir));
+        }
+        await makeWorkspace(join(workspaces, "later"));
+        await waitFor(
+          () => answers(`${base}/w/later/`, "workspace:later"),
+          `${spoil}: a folder added meanwhile to answer`,
+        );
+        await want(folder.dir, "going", "wanted: deleted\n");
+        await waitFor(
+          async () =>
+            !(await workspacesEntries(folder.dir)).some((e) =>
+              e.startsWith("going")
+            ),
+          `${spoil}: the delete to finish`,
+        );
+        assert(await answers(`${base}/w/edge-dns/`, "workspace:edge-dns"));
+        assertEquals(port.of("workspace:edge-dns").length, 1, "never stopped");
+      } finally {
+        await host.shutdown();
+      }
+    });
+    assert(
+      records.some((r) => logText(r).includes("cannot be read")),
+      `${spoil}: logged`,
+    );
+    assertEquals(
+      records.filter((r) => logText(r).includes("Rescanning")).map(logText),
+      [],
+      `${spoil}: no rescan failed`,
+    );
+  }
+});
+
+Deno.test({
+  name:
+    "serve host registry: a linked workspace whose link is retargeted starts in its new target",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await using folder = await hostFolder();
+    const workspaces = join(folder.dir, "workspaces");
+    const first = join(folder.dir, "elsewhere", "first");
+    const second = join(folder.dir, "elsewhere", "second");
+    await makeRepo(first);
+    await makeRepo(second);
+    await Deno.mkdir(workspaces);
+    await Deno.symlink(first, join(workspaces, "linked"), { type: "dir" });
+    await want(folder.dir, "linked", "wanted: active\n");
+    const port = new StandInPort();
+    const host = await start(folder.dir, NO_ROOT, port);
+    try {
+      const url = `http://127.0.0.1:${host.port}/w/linked/`;
+      await waitFor(() => answers(url, "workspace:linked"), "linked served");
+      await waitFor(
+        async () => (await registered(folder.dir)).linked !== undefined,
+        "linked to be registered at its target",
+      );
+
+      await Deno.remove(join(workspaces, "linked"));
+      await Deno.symlink(second, join(workspaces, "linked"), { type: "dir" });
+      await want(folder.dir, "linked", "wanted: suspended\n");
+      await waitFor(
+        async () =>
+          (await readStatus(folder.dir, "linked"))?.state === "stopped",
+        "linked to stop",
+      );
+      await want(folder.dir, "linked", "wanted: active\n");
+      await waitFor(() => answers(url, "workspace:linked"), "linked again");
+      const children = port.of("workspace:linked");
+      assertEquals(
+        await Deno.realPath(children[children.length - 1].spec.repoDir),
+        await Deno.realPath(second),
+      );
+    } finally {
+      await host.shutdown();
+    }
+  },
 });

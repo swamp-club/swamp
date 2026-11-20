@@ -47,7 +47,7 @@ export async function* hostedWorkspaceGet(
     (async function* () {
       try {
         const name = parseWorkspaceName(input.name);
-        const { all } = await hostedWorkspaceNames(deps.workspacesDir);
+        const { all } = await hostedWorkspaceNames(deps);
         if (!all.includes(name)) throw hostedWorkspaceNotFound(name);
         yield {
           kind: "completed" as const,

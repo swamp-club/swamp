@@ -55,8 +55,10 @@ import {
 } from "./workspace_reconciler.ts";
 import {
   createWorkspaceRegistrar,
+  RegistryProblemLog,
   type WorkspaceRegistrar,
 } from "./workspace_registration.ts";
+import { createWorkspaceRoster } from "./workspace_roster.ts";
 import type { HostedRegistryDeps } from "../../libswamp/workspace/hosted_registration.ts";
 import {
   createWorkspaceRouter,
@@ -110,6 +112,13 @@ export async function startServeHost(
   skipLog.report(scan.skipped, rescanMs);
   const repository = new HostedWorkspaceFileRepository(config.workspacesDir);
   const reads = await readWantedFiles(repository, scan);
+  const registryProblems = new RegistryProblemLog();
+  const roster = createWorkspaceRoster({
+    workspacesDir: config.workspacesDir,
+    store: options.workspaceStore,
+    problems: registryProblems,
+  });
+  const folders = await roster.read(scan);
 
   const statusWriter = createStatusWriter({
     workspacesDir: config.workspacesDir,
@@ -147,11 +156,9 @@ export async function startServeHost(
   }
   const bound = server.addr;
 
-  const specOf = (id: ServeId): ServeChildSpec => ({
+  const specOf = (id: ServeId, repoDir: string): ServeChildSpec => ({
     id,
-    repoDir: id.kind === "root"
-      ? config.root!
-      : join(config.workspacesDir, id.name),
+    repoDir,
     address: id.kind === "root" ? config.address : config.childAddress(id.name),
     trustedHost: config.trustedHost,
     env: childEnv,
@@ -172,11 +179,12 @@ export async function startServeHost(
   const registrar = createWorkspaceRegistrar({
     workspacesDir: config.workspacesDir,
     store: options.workspaceStore,
+    problems: registryProblems,
   });
   const reconciler = createWorkspaceReconciler({
     workspacesDir: config.workspacesDir,
     supervisor,
-    specOf: (name) => specOf(workspaceServe(name)),
+    specOf: (name, folder) => specOf(workspaceServe(name), folder),
     repository,
     statusWriter,
     registrar,
@@ -194,8 +202,8 @@ export async function startServeHost(
   try {
     // no await between the bind and these adds, so no request sees a
     // scanned workspace before the supervisor knows it
-    if (config.root !== null) supervisor.add(specOf(ROOT_SERVE));
-    started = reconciler.begin(scan, reads);
+    if (config.root !== null) supervisor.add(specOf(ROOT_SERVE, config.root));
+    started = reconciler.begin(scan, reads, folders);
     await Deno.mkdir(config.workspacesDir, { recursive: true });
     stack.watcher = watchWorkspaces({
       dir: config.workspacesDir,
@@ -203,8 +211,9 @@ export async function startServeHost(
       initial: started,
       rescanMs,
       onChange: (change) => options.onWorkspaceChange?.(change),
-      onRescan: (rescan) => reconciler.reconcile(rescan),
-      served: (rescan) => reconciler.served(rescan),
+      onRescan: async (rescan) =>
+        reconciler.reconcile(rescan, await roster.read(rescan)),
+      served: () => reconciler.served(),
     }, skipLog);
   } catch (error) {
     await stopAll(stack).catch(

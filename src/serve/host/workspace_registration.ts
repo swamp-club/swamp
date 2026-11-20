@@ -65,7 +65,23 @@ export function hostWorkspaceStore(dirs: {
   };
 }
 
-/** the host writes the registry and never reads it to decide what it serves */
+/** one line per reason for a registry the host cannot read, whichever part of the host met it */
+export class RegistryProblemLog {
+  readonly #reported = new ReasonMemo();
+
+  unreadable(reason: string): void {
+    if (!this.#reported.changed("unreadable", reason)) return;
+    logger.warn(
+      "The workspace registry cannot be read, so the host leaves it unchanged until it can: {reason}",
+      { reason },
+    );
+  }
+
+  readable(): void {
+    this.#reported.clear("unreadable");
+  }
+}
+
 export interface WorkspaceRegistrar {
   /** registers what `served` names when the run starts; the caller does not wait */
   sync(served: () => readonly string[]): void;
@@ -81,8 +97,10 @@ export interface WorkspaceRegistrar {
 export function createWorkspaceRegistrar(options: {
   readonly workspacesDir: string;
   readonly store: HostedRegistryDeps;
+  readonly problems?: RegistryProblemLog;
 }): WorkspaceRegistrar {
   const { workspacesDir, store } = options;
+  const problems = options.problems ?? new RegistryProblemLog();
   // every write runs in turn, so a sync never registers a name a removal unregistered
   let tail: Promise<void> = Promise.resolve();
   let served: () => readonly string[] = () => [];
@@ -95,14 +113,6 @@ export function createWorkspaceRegistrar(options: {
     const run = tail.then(work);
     tail = run.then(() => {}, () => {});
     return run;
-  };
-
-  const unreadable = (reason: string) => {
-    if (!reported.changed("unreadable", reason)) return;
-    logger.warn(
-      "The workspace registry cannot be read, so the host leaves it unchanged until it can: {reason}",
-      { reason },
-    );
   };
 
   // one key for every write, so a held lock is one line however many names wait on it
@@ -168,7 +178,7 @@ export function createWorkspaceRegistrar(options: {
         name,
       });
       if (outcome.kind === "unreadable") {
-        unreadable(outcome.reason);
+        problems.unreadable(outcome.reason);
         return false;
       }
       forgetting.delete(name);
@@ -187,12 +197,12 @@ export function createWorkspaceRegistrar(options: {
           names: listed,
         });
         if (result.kind === "unreadable") {
-          unreadable(result.reason);
+          problems.unreadable(result.reason);
           return;
         }
         for (const workspace of result.workspaces) report(workspace);
       }
-      reported.clear("unreadable");
+      problems.readable();
       reported.clear("write");
     } catch (error) {
       failed(error);
@@ -223,8 +233,8 @@ export function createWorkspaceRegistrar(options: {
           name,
         });
         // a corrupt registry never holds up a delete
-        if (outcome.kind === "unreadable") unreadable(outcome.reason);
-        else reported.clear("unreadable");
+        if (outcome.kind === "unreadable") problems.unreadable(outcome.reason);
+        else problems.readable();
       });
     },
 

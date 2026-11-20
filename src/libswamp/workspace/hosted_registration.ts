@@ -23,6 +23,7 @@ import type {
   WorkspaceOrigin,
   WorkspaceRegistry,
 } from "../../domain/workspace/workspace_registry.ts";
+import { readHostedRegistry } from "./hosted_roster.ts";
 import {
   importOrigin,
   loadWorkspaceRegistry,
@@ -77,15 +78,9 @@ export async function registerHostedWorkspaces(
   deps: HostedRegistryDeps,
   input: { workspacesDir: string; names: readonly string[] },
 ): Promise<HostedRegistrationResult> {
-  let registry: WorkspaceRegistry | null;
-  try {
-    registry = await deps.registry.load();
-  } catch (error) {
-    if (isUnreadable(error)) {
-      return { kind: "unreadable", reason: error.message };
-    }
-    throw error;
-  }
+  const read = await readHostedRegistry(deps);
+  if (read.kind === "unreadable") return read;
+  const registry = read.registry;
   const realOf = memoRealPaths();
   const results: HostedRegistration[] = [];
   const lacking: Lacking[] = [];
@@ -160,11 +155,12 @@ export async function unregisterHostedWorkspace(
     }
     return null;
   };
+  const read = await readHostedRegistry(deps);
+  if (read.kind === "unreadable") return read;
+  if (read.registry === null) return { kind: "absent" };
+  const before = ours(read.registry);
+  if (before !== null) return before;
   try {
-    const registry = await deps.registry.load();
-    if (registry === null) return { kind: "absent" };
-    const before = ours(registry);
-    if (before !== null) return before;
     return await deps.registry.update((current) => {
       const now = ours(current);
       if (now !== null) return now;

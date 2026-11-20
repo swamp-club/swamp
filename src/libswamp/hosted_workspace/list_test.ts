@@ -17,11 +17,16 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { join } from "@std/path";
+import { assertEquals } from "@std/assert";
+import { dirname, join, SEPARATOR } from "@std/path";
 import { writeHostedWorkspaceStatus } from "../../infrastructure/persistence/hosted_workspace_status_file.ts";
 import { assertCompletes, collect } from "../testing.ts";
 import { hostedWorkspaceCreate } from "./create.ts";
-import { hostedWorkspaceList, type HostedWorkspaceListEvent } from "./list.ts";
+import {
+  hostedWorkspaceList,
+  type HostedWorkspaceListData,
+  type HostedWorkspaceListEvent,
+} from "./list.ts";
 import {
   ALICE,
   ctx,
@@ -106,4 +111,52 @@ Deno.test("hostedWorkspaceList: an empty host folder lists nothing", async () =>
     hostedWorkspaceList(ctx, host.deps()),
     { kind: "completed", data: { workspaces: [] } },
   );
+});
+
+Deno.test("hostedWorkspaceList: a repo registered outside workspaces/ is not listed, and no registry changes the reply", async () => {
+  await using host = await hostFolder();
+  const deps = host.deps();
+  for (const name of ["alpha", "beta"]) {
+    await Deno.mkdir(join(host.dir, name));
+    await Deno.writeTextFile(join(host.dir, name, ".swamp.yaml"), "");
+  }
+  await Deno.writeTextFile(
+    join(host.dir, "pending.wanted.yaml"),
+    "wanted: suspended\n",
+  );
+  const listed = async (): Promise<HostedWorkspaceListData> => {
+    const events = await collect(hostedWorkspaceList(ctx, deps));
+    const done = events.find((e) => e.kind === "completed");
+    if (done?.kind !== "completed") throw new Error("list did not complete");
+    return done.data;
+  };
+  const baseline = await listed();
+
+  const outside = join(dirname(host.dir), "projects", "outside");
+  await Deno.mkdir(outside, { recursive: true });
+  await Deno.writeTextFile(join(outside, ".swamp.yaml"), "");
+  const real = await Deno.realPath(host.dir);
+  await host.store.registry.update((registry) => {
+    for (
+      const [name, path] of [
+        ["outside", outside],
+        // one folder by another spelling, and one name registered elsewhere
+        ["alpha", [real, "..", "workspaces", "alpha"].join(SEPARATOR)],
+        ["beta", outside + SEPARATOR + ".."],
+      ]
+    ) {
+      registry.register({
+        name,
+        path,
+        createdAt: "2026-11-17T10:00:00.000Z",
+      });
+    }
+  });
+  assertEquals(await listed(), baseline);
+
+  await Deno.writeTextFile(
+    join(dirname(host.dir), "config", "workspaces.json"),
+    "{not json",
+  );
+  assertEquals(await listed(), baseline);
 });

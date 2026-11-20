@@ -35,6 +35,7 @@ import type { ServeChildSpec } from "./serve_process.ts";
 import type { StatusWriter } from "./status_writer.ts";
 import type { ServeSupervisor } from "./supervisor.ts";
 import type { WorkspaceRegistrar } from "./workspace_registration.ts";
+import type { WorkspaceFolders } from "./workspace_roster.ts";
 import {
   deletingFolderName,
   deletingFolderOwner,
@@ -50,9 +51,9 @@ export interface WorkspaceReconcilerOptions {
   readonly workspacesDir: string;
   readonly supervisor: Pick<
     ServeSupervisor,
-    "add" | "setWanted" | "resume" | "lookup" | "whenStopped"
+    "add" | "setWanted" | "resume" | "setSpec" | "lookup" | "whenStopped"
   >;
-  readonly specOf: (name: string) => ServeChildSpec;
+  readonly specOf: (name: string, folder: string) => ServeChildSpec;
   readonly repository: HostedWorkspaceRepository;
   readonly statusWriter: Pick<StatusWriter, "setProblem" | "forget" | "track">;
   readonly registrar: WorkspaceRegistrar;
@@ -61,16 +62,22 @@ export interface WorkspaceReconcilerOptions {
 
 export interface WorkspaceReconciler {
   /** at startup, after the bind: nothing here awaits, so every add lands before a request */
-  begin(scan: WorkspaceScan, reads: WantedReads): readonly string[];
-  reconcile(scan: WorkspaceScan): Promise<void>;
-  /** the listed workspaces the host serves: none being removed or wanted deleted */
-  served(scan: WorkspaceScan): readonly string[];
+  begin(
+    scan: WorkspaceScan,
+    reads: WantedReads,
+    folders: WorkspaceFolders,
+  ): readonly string[];
+  reconcile(scan: WorkspaceScan, folders: WorkspaceFolders): Promise<void>;
+  /** the workspaces last reconciled that the host serves: none being removed or wanted deleted */
+  served(): readonly string[];
   /** waits for every removal, including one waiting for its serve to stop */
   drain(): Promise<void>;
 }
 
 interface Known {
-  folder: boolean;
+  folder: string | null;
+  /** the folder the supervisor's spec names, so a changed folder reaches the next start */
+  specFolder: string | null;
   /** the last wanted record read whole; null for no file */
   record: HostedWorkspace | null;
   problem: string | null;
@@ -153,7 +160,7 @@ export function createWorkspaceReconciler(
   // a scan listed before a removal finished still shows its folder
   const removedAt = new Map<string, number>();
   const removalFailures = new ReasonMemo();
-  let latest: WorkspaceScan | null = null;
+  let applied: WorkspaceFolders = new Map();
   const sweepFailures = new ReasonMemo();
 
   const track = (work: Promise<void>) => {
@@ -165,7 +172,8 @@ export function createWorkspaceReconciler(
     let entry = known.get(name);
     if (entry === undefined) {
       entry = {
-        folder: false,
+        folder: null,
+        specFolder: null,
         record: null,
         problem: null,
         removing: false,
@@ -178,10 +186,14 @@ export function createWorkspaceReconciler(
     return entry;
   };
 
-  const apply = (scan: WorkspaceScan, reads: WantedReads) => {
-    const folders = new Set(scan.workspaces);
+  const apply = (
+    scan: WorkspaceScan,
+    reads: WantedReads,
+    folders: WorkspaceFolders,
+  ) => {
+    applied = folders;
     const names = new Set([
-      ...scan.workspaces,
+      ...folders.keys(),
       ...scan.wantedFiles,
       ...known.keys(),
     ]);
@@ -193,13 +205,17 @@ export function createWorkspaceReconciler(
       const read = reads.get(name) ?? { kind: "absent" };
       // the next scan, listed after the save, decides
       if (read.kind === "vanished") continue;
-      step(name, folders.has(name), read);
+      step(name, folders.get(name) ?? null, read);
     }
     sweepFailures.retain(new Set(scan.leftovers));
     for (const leftover of scan.leftovers) sweep(leftover);
   };
 
-  const step = (name: string, folder: boolean, read: HostedWorkspaceRead) => {
+  const step = (
+    name: string,
+    folder: string | null,
+    read: HostedWorkspaceRead,
+  ) => {
     const entry = knownOf(name);
     // deleted is never left: an edit after removal began is not obeyed, and a
     // removal that failed is tried again whatever the file now says
@@ -223,7 +239,7 @@ export function createWorkspaceReconciler(
     if (read.kind === "found") record = read.workspace;
     // a folder keeps its last record across an absent file, as while an editor saves
     else if (read.kind === "absent") {
-      if (!folder) record = null;
+      if (folder === null) record = null;
     } else problem = read.reason;
     if (problem !== entry.problem) {
       if (problem !== null) {
@@ -236,7 +252,7 @@ export function createWorkspaceReconciler(
       statusWriter.setProblem(name, problem);
     }
     const changed = !sameRecord(record, entry.record);
-    const hadFolder = entry.folder;
+    const hadFolder = entry.folder !== null;
     entry.record = record;
     entry.folder = folder;
 
@@ -246,7 +262,7 @@ export function createWorkspaceReconciler(
     }
     const id = workspaceServe(name);
     const status = supervisor.lookup(id);
-    if (!folder) {
+    if (folder === null) {
       // a wanted file without a folder may be a workspace still being set up
       if (status !== undefined && status.wanted !== "deleted") {
         supervisor.setWanted(id, "deleted");
@@ -254,14 +270,22 @@ export function createWorkspaceReconciler(
       }
       return;
     }
+    if (status !== undefined && entry.specFolder !== folder) {
+      // a live serve keeps its folder; its next start runs in this one
+      supervisor.setSpec(specOf(name, folder));
+      entry.specFolder = folder;
+    }
     const wanted = serveWantedOfRecord(record);
     if (status === undefined || !hadFolder || status.wanted === "deleted") {
       entry.generation++;
       statusWriter.track(name);
-      if (status === undefined) supervisor.add(specOf(name), wanted);
-      // resume, not wanted running: a re-added folder also clears failed
-      else if (wanted === "running") supervisor.resume(id);
-      else supervisor.setWanted(id, wanted);
+      if (status === undefined) {
+        supervisor.add(specOf(name, folder), wanted);
+        entry.specFolder = folder;
+      } else if (wanted === "running") {
+        // resume, not wanted running: a re-added folder also clears failed
+        supervisor.resume(id);
+      } else supervisor.setWanted(id, wanted);
       // an unreadable file has already said why, naming the file
       if (wanted !== "running" && problem === null) {
         logger.info(
@@ -445,8 +469,8 @@ export function createWorkspaceReconciler(
   };
 
   // the supervisor never forgets a serve, so a deleted one is told by its wanted state
-  const served = (scan: WorkspaceScan): readonly string[] =>
-    scan.workspaces.filter((name) => {
+  const served = (): readonly string[] =>
+    [...applied.keys()].filter((name) => {
       const entry = known.get(name);
       if (entry?.removing === true || entry?.record?.wanted === "deleted") {
         return false;
@@ -455,22 +479,21 @@ export function createWorkspaceReconciler(
       return status !== undefined && status.wanted !== "deleted";
     });
 
-  // the registrar reads the latest scan when its run starts, not this one
-  const register = (scan: WorkspaceScan) => {
-    latest = scan;
-    registrar.sync(() => latest === null ? [] : served(latest));
+  // the registrar reads what was last reconciled when its run starts
+  const register = () => {
+    registrar.sync(served);
   };
 
   return {
-    begin(scan, reads) {
-      apply(scan, reads);
-      register(scan);
-      return served(scan);
+    begin(scan, reads, folders) {
+      apply(scan, reads, folders);
+      register();
+      return served();
     },
 
-    async reconcile(scan) {
-      apply(scan, await readWantedFiles(repository, scan));
-      register(scan);
+    async reconcile(scan, folders) {
+      apply(scan, await readWantedFiles(repository, scan), folders);
+      register();
     },
 
     served,

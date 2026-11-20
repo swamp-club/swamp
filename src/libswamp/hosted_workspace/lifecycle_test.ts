@@ -107,6 +107,30 @@ Deno.test("hostedWorkspaceSuspend: a folder made by hand gets a wanted file with
   assertNotEquals(file.changedAt, null);
 });
 
+Deno.test("hostedWorkspaceSuspend/Resume: a registry that cannot be read still finds a folder, and an entry outside workspaces/ is not found", async () => {
+  await using host = await hostFolder();
+  await host.store.registry.update((registry) => {
+    registry.register({
+      name: "outside",
+      path: Deno.cwd(),
+      createdAt: "2026-11-17T10:00:00.000Z",
+    });
+  });
+  await assertErrors<HostedWorkspaceResumeEvent>(
+    hostedWorkspaceResume(ctx, host.deps(), { name: "outside" }),
+    "not_found",
+  );
+
+  await Deno.mkdir(join(host.dir, "by-hand"));
+  await Deno.writeTextFile(join(host.dir, "by-hand", ".swamp.yaml"), "");
+  await Deno.writeTextFile(
+    join(host.dir, "..", "config", "workspaces.json"),
+    "{not json",
+  );
+  await collect(hostedWorkspaceSuspend(ctx, host.deps(), { name: "by-hand" }));
+  assertEquals((await wantedFile(host.dir, "by-hand")).wanted, "suspended");
+});
+
 Deno.test("hostedWorkspaceResume: refuses a workspace being deleted, an unknown name and an unreadable wanted file", async () => {
   await using host = await hostFolder();
   const deps = host.deps();

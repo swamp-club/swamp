@@ -41,6 +41,7 @@ import {
   deletingFolderName,
   REPO_MARKER_FILE,
   scanWorkspaces,
+  type WorkspaceScan,
 } from "../../infrastructure/persistence/hosted_workspace_folder_scan.ts";
 import {
   createWorkspaceReconciler,
@@ -49,6 +50,7 @@ import {
   type WorkspaceReconciler,
 } from "./workspace_reconciler.ts";
 import type { WorkspaceRegistrar } from "./workspace_registration.ts";
+import type { WorkspaceFolders } from "./workspace_roster.ts";
 
 /** records what the reconciler asks of the registry; writes nothing */
 class RecordingRegistrar implements WorkspaceRegistrar {
@@ -143,6 +145,9 @@ interface Harness extends AsyncDisposable {
   readonly reconciler: WorkspaceReconciler;
   readonly repository: HostedWorkspaceFileRepository;
   readonly registrar: RecordingRegistrar;
+  /** a workspace's folder when it is not the scanned one, as a registry entry gives */
+  readonly moved: Map<string, string>;
+  foldersOf(scan: WorkspaceScan): WorkspaceFolders;
   begin(): Promise<readonly string[]>;
   rescan(): Promise<void>;
   observed(name: string): string | undefined;
@@ -171,9 +176,9 @@ async function harness(
   const reconciler = createWorkspaceReconciler({
     workspacesDir: dir,
     supervisor,
-    specOf: (name) => ({
+    specOf: (name, folder) => ({
       id: workspaceServe(name),
-      repoDir: join(dir, name),
+      repoDir: folder,
       address: `http://127.0.0.1/w/${name}`,
       trustedHost: "127.0.0.1",
       env: {},
@@ -183,6 +188,12 @@ async function harness(
     registrar,
     rename,
   });
+  const moved = new Map<string, string>();
+  const foldersOf = (scan: WorkspaceScan): WorkspaceFolders =>
+    new Map(scan.workspaces.map((name) => [
+      name,
+      moved.get(name) ?? join(dir, name),
+    ]));
   return {
     dir,
     port,
@@ -191,12 +202,19 @@ async function harness(
     reconciler,
     repository,
     registrar,
+    moved,
+    foldersOf,
     async begin() {
       const scan = await scanWorkspaces(dir);
-      return reconciler.begin(scan, await readWantedFiles(repository, scan));
+      return reconciler.begin(
+        scan,
+        await readWantedFiles(repository, scan),
+        foldersOf(scan),
+      );
     },
     async rescan() {
-      await reconciler.reconcile(await scanWorkspaces(dir));
+      const scan = await scanWorkspaces(dir);
+      await reconciler.reconcile(scan, foldersOf(scan));
     },
     observed(name) {
       return supervisor.lookup(workspaceServe(name))?.observed;
@@ -300,24 +318,44 @@ Deno.test("createWorkspaceReconciler: served leaves out a workspace being delete
   await want(h.dir, "running", "wanted: active\n");
 
   assertEquals(await h.begin(), ["running"]);
-  assertEquals(h.reconciler.served(await scanWorkspaces(h.dir)), ["running"]);
+  assertEquals(h.reconciler.served(), ["running"]);
 
   await want(h.dir, "running", "wanted: deleted\n");
   await h.rescan();
   await renameStarted.promise;
   const stale = await scanWorkspaces(h.dir);
   assertEquals(stale.workspaces, ["never", "running"]);
-  assertEquals(h.reconciler.served(stale), [], "both folders are listed");
+  assertEquals(h.reconciler.served(), [], "both folders are listed");
 
   gate.resolve();
   await h.reconciler.drain();
   assertEquals(h.supervisor.lookup(id("running"))?.wanted, "deleted");
-  assertEquals(
-    h.reconciler.served(stale),
-    [],
-    "a listing taken before the removal",
-  );
-  assertEquals(h.reconciler.served(await scanWorkspaces(h.dir)), []);
+  assertEquals(h.reconciler.served(), [], "after the removal");
+  assertEquals(h.reconciler.served(), []);
+});
+
+Deno.test("createWorkspaceReconciler: a workspace's folder that changes is used at its next start, and a running serve is left alone", async () => {
+  await using h = await harness();
+  await makeRepo(h.dir, "edge-dns");
+  await want(h.dir, "edge-dns", "wanted: active\n");
+  await h.begin();
+  await waitFor(() => h.observed("edge-dns") === "ready", "ready");
+  assertEquals(h.port.of("edge-dns")[0].spec.repoDir, join(h.dir, "edge-dns"));
+
+  const elsewhere = join(h.dir, "..", "registered", "edge-dns");
+  h.moved.set("edge-dns", elsewhere);
+  await h.rescan();
+  assertEquals(h.port.of("edge-dns").length, 1, "not restarted");
+  assertEquals(h.observed("edge-dns"), "ready");
+
+  await want(h.dir, "edge-dns", "wanted: suspended\n");
+  await h.rescan();
+  await waitFor(() => h.observed("edge-dns") === "stopped", "stopped");
+  await want(h.dir, "edge-dns", "wanted: active\n");
+  await h.rescan();
+  await waitFor(() => h.observed("edge-dns") === "ready", "ready again");
+  assertEquals(h.port.of("edge-dns").length, 2);
+  assertEquals(h.port.of("edge-dns")[1].spec.repoDir, elsewhere);
 });
 
 Deno.test("createWorkspaceReconciler: editing the wanted file suspends and resumes a running workspace", async () => {
@@ -553,7 +591,7 @@ Deno.test("createWorkspaceReconciler: a scan listed before a removal finished do
   await h.reconciler.drain();
   assertEquals(await entries(h.dir), []);
 
-  await h.reconciler.reconcile(stale);
+  await h.reconciler.reconcile(stale, h.foldersOf(stale));
   await h.reconciler.drain();
   await h.statusWriter.drain();
   assertEquals(h.port.of("edge-dns").length, 1, "not started again");
@@ -648,7 +686,7 @@ Deno.test("createWorkspaceReconciler: a wanted file listed by the scan but gone 
 
   const listed = await scanWorkspaces(h.dir);
   await Deno.remove(join(h.dir, "parked.wanted.yaml"));
-  await h.reconciler.reconcile(listed);
+  await h.reconciler.reconcile(listed, h.foldersOf(listed));
   assertEquals(h.port.of("parked").length, 0, "not resumed mid-save");
 
   await want(h.dir, "parked", "wanted: suspended\n");
@@ -672,7 +710,10 @@ Deno.test("createWorkspaceReconciler: begin names only the workspaces it handed 
   const vanished = await readWantedFiles(h.repository, listed);
   assertEquals(reads.get("edge-dns")?.kind, "found");
   assertEquals(vanished.get("edge-dns")?.kind, "vanished");
-  assertEquals(h.reconciler.begin(listed, vanished), []);
+  assertEquals(
+    h.reconciler.begin(listed, vanished, h.foldersOf(listed)),
+    [],
+  );
   await want(h.dir, "edge-dns", "wanted: active\n");
   await h.rescan();
   await waitFor(
@@ -799,7 +840,7 @@ Deno.test("createWorkspaceReconciler: a running workspace whose wanted file is r
   // removed after the listing, then listed while gone, then back
   const listed = await scanWorkspaces(h.dir);
   await Deno.remove(join(h.dir, "edge-dns.wanted.yaml"));
-  await h.reconciler.reconcile(listed);
+  await h.reconciler.reconcile(listed, h.foldersOf(listed));
   await h.rescan();
   await h.rescan();
   assertEquals(h.supervisor.lookup(id("edge-dns"))?.wanted, "running");

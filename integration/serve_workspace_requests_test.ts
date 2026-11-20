@@ -45,7 +45,9 @@ import { hostRootWorkspaces } from "../src/serve/host_root_workspaces.ts";
 import {
   createWorkspaceRegistrar,
   hostWorkspaceStore,
+  RegistryProblemLog,
 } from "../src/serve/host/workspace_registration.ts";
+import { createWorkspaceRoster } from "../src/serve/host/workspace_roster.ts";
 import type { ListenedServe } from "../src/serve/listening_line.ts";
 import { loadServeConfig } from "../src/serve/serve_config.ts";
 import type {
@@ -142,20 +144,22 @@ async function withRoot(fn: (root: Root) => Promise<void>): Promise<void> {
       processPort: port,
       onStatus: (status) => statusWriter.report(status),
     });
+    const problems = new RegistryProblemLog();
     const reconciler = createWorkspaceReconciler({
       workspacesDir,
       supervisor,
-      specOf: (name) => ({
+      specOf: (name, folder) => ({
         id: workspaceServe(name),
-        repoDir: join(workspacesDir, name),
+        repoDir: folder,
         address: `${HOST_ADDRESS}/w/${name}`,
         trustedHost: "host.example",
         env: {},
       }),
       repository: new HostedWorkspaceFileRepository(workspacesDir),
       statusWriter,
-      registrar: createWorkspaceRegistrar({ workspacesDir, store }),
+      registrar: createWorkspaceRegistrar({ workspacesDir, store, problems }),
     });
+    const roster = createWorkspaceRoster({ workspacesDir, store, problems });
     const root = hostRootWorkspaces(
       { dir: workspacesDir, address: HOST_ADDRESS },
       {},
@@ -187,8 +191,10 @@ async function withRoot(fn: (root: Root) => Promise<void>): Promise<void> {
               ...options,
             },
           ),
-        rescan: async () =>
-          await reconciler.reconcile(await scanWorkspaces(workspacesDir)),
+        rescan: async () => {
+          const scan = await scanWorkspaces(workspacesDir);
+          await reconciler.reconcile(scan, await roster.read(scan));
+        },
         tokenCtx: () =>
           createServeCtx(repo, [ROOT_ADMIN_GRANT("alice")], {
             authMode: "token",
