@@ -729,6 +729,13 @@ export function createWorkspaceReconciler(
       return;
     }
     const ownership = await createdOwnership(record, registered.real);
+    // retried, so a marker that cannot be read for a moment never ends an accepted delete
+    if (ownership === "unknown") {
+      throw new RemovalStepError(
+        "read",
+        new Error("its folder's .swamp.yaml cannot be read"),
+      );
+    }
     if (ownership === "replaced") {
       throw new FolderClaimedError(
         "it holds another repo than the one the workspace was created with",

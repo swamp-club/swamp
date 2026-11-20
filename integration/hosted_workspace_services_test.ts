@@ -1294,6 +1294,53 @@ Deno.test("hosted workspace services, no host folder: a removal whose folder, re
   assertEquals(await registeredNames(h), ["edge-dns"]);
 });
 
+Deno.test("hosted workspace services, no host folder: a removal whose folder's marker cannot be read for a moment is tried again and finishes", async () => {
+  let marker: string | null = null;
+  let text = "";
+  await using h = await noFolderHost((base) => ({
+    ...base,
+    registeredFolder: async (name) => {
+      const registered = await base.registeredFolder(name);
+      // a directory where the marker was reads as unreadable, at the first attempt only
+      if (registered !== null && marker === null) {
+        marker = join(registered.real, ".swamp.yaml");
+        text = await Deno.readTextFile(marker);
+        await Deno.remove(marker);
+        await Deno.mkdir(marker);
+      }
+      return registered;
+    },
+  }));
+  await collect(
+    hostedWorkspaceCreate(ctx, h.deps(), {
+      name: "edge-dns",
+      caller: ALICE,
+      access: ACCESS,
+    }),
+  );
+  await h.rescan();
+  const events = await collect(
+    hostedWorkspaceDelete(ctx, h.deps(), { name: "edge-dns" }),
+  );
+  assertEquals(events.map((e) => e.kind), ["completed"]);
+  await waitFor(async () => {
+    await h.rescan();
+    await h.drain();
+    return marker !== null;
+  }, "the first removal attempt reads the marker");
+  assert(await pathExists(join(h.dir, "edge-dns.wanted.yaml")), "kept");
+  assert(marker !== null);
+  await Deno.remove(marker);
+  await Deno.writeTextFile(marker, text);
+  await waitFor(async () => {
+    await h.rescan();
+    await h.drain();
+    return !(await pathExists(join(h.dir, "edge-dns.wanted.yaml")));
+  }, "the removal finishes");
+  assertEquals(await names(join(h.dataDir, "workspaces")), []);
+  assertEquals(await registeredNames(h), []);
+});
+
 Deno.test("hosted workspace services, no host folder: a stopped create's removal sweeps only the workspace location, never a folder its wanted file alone names", async () => {
   await using h = await noFolderHost();
   const elsewhere = join(h.root, "elsewhere");

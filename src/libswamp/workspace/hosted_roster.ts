@@ -59,8 +59,11 @@ export type RepoIdentity =
   | { readonly kind: "none" }
   | { readonly kind: "unreadable" };
 
-/** whose a wanted file's create makes an entry's folder; replaced only on a repoId read whole */
-export type CreatedOwnership = "host" | "operator" | "replaced";
+/**
+ * whose a wanted file's create makes an entry's folder; replaced only on a repoId
+ * read whole, unknown while the folder's marker cannot be read
+ */
+export type CreatedOwnership = "host" | "operator" | "replaced" | "unknown";
 
 export interface CreatedOwnershipOptions {
   readonly realPath?: (path: string) => Promise<string>;
@@ -147,6 +150,7 @@ export async function createdOwnership(
   if (written !== entry) return "operator";
   const identity = await repoIdentity(entryFolder);
   if (identity.kind === "absent") return "host";
+  if (identity.kind === "unreadable") return "unknown";
   if (identity.kind !== "id") return "operator";
   return identity.repoId === workspace.repoId ? "host" : "replaced";
 }

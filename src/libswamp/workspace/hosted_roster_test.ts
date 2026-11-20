@@ -634,7 +634,7 @@ Deno.test("hostCreated: compares the wanted file's folder with the entry's by re
   });
 });
 
-Deno.test("createdOwnership: a folder holding another repo is replaced, an absent one is the create's own, and one it cannot read is the operator's", async () => {
+Deno.test("createdOwnership: a folder holding another repo is replaced, an absent one is the create's own, and one it cannot read is unknown", async () => {
   await withWorkspaceFixture(async (f) => {
     const folder = join(f.dir, "alpha");
     const made = HostedWorkspace.create(
@@ -671,7 +671,7 @@ Deno.test("createdOwnership: a folder holding another repo is replaced, an absen
     );
     assertEquals(
       await createdOwnership(made, folder, as({ kind: "unreadable" })),
-      "operator",
+      "unknown",
     );
     assertEquals(
       await createdOwnership(
