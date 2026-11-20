@@ -50,7 +50,10 @@ import { startDetachedResume } from "../src/serve/resume_launcher.ts";
 import { handleMessage, MAX_ACTIVE_REQUESTS } from "../src/serve/connection.ts";
 import { handleHttpActionRequest } from "../src/serve/http_action_route.ts";
 import { SERVE_ACTION_PATH } from "../src/serve/protocol.ts";
-import { resetRateLimitState } from "../src/serve/rate_limiter.ts";
+import {
+  PRINCIPAL_RATE_BURST,
+  resetRateLimitState,
+} from "../src/serve/rate_limiter.ts";
 import {
   DASHBOARD_SESSION_COOKIE,
   type ServerTokenAuthResult,
@@ -118,14 +121,14 @@ interface Route {
   shutdown: () => Promise<void>;
 }
 
-function startRoute(ctx: ConnectionContext): Route {
+function startRoute(ctx: ConnectionContext, now?: () => number): Route {
   const server = Deno.serve(
     { port: 0, hostname: "127.0.0.1", onListen: () => {} },
     (req) =>
       handleHttpActionRequest(
         req,
         req.headers.get("x-test-ip") ?? "127.0.0.1",
-        { ctx, authenticate },
+        { ctx, authenticate, now },
       ),
   );
   const url = `http://127.0.0.1:${server.addr.port}${SERVE_ACTION_PATH}`;
@@ -159,10 +162,11 @@ function startRoute(ctx: ConnectionContext): Route {
 async function withRoute(
   grants: ReturnType<typeof grant>[] | undefined,
   fn: (route: Route, repo: ServeRepo, ctx: ConnectionContext) => Promise<void>,
+  options: { now?: () => number } = {},
 ): Promise<void> {
   await withServeRepo(async (repo) => {
     const ctx = createServeCtx(repo, grants, { detached: true });
-    const route = startRoute(ctx);
+    const route = startRoute(ctx, options.now);
     try {
       await fn(route, repo, ctx);
     } finally {
@@ -1188,23 +1192,27 @@ test("a broken workflow file discloses no path", async () => {
 });
 
 test("one person's rate limit leaves another's allowance alone", async () => {
+  // a frozen clock never refills the bucket, however slowly the requests run
+  const frozen = Date.now();
   await withRoute([everyAction()], async (route) => {
     const person = `person-${crypto.randomUUID()}.secret`;
-    let limited = false;
-    for (let i = 0; i < 260 && !limited; i++) {
+    for (let i = 0; i < PRINCIPAL_RATE_BURST; i++) {
       const reply = await route.post({ type: "workflow.approvals" }, {
         token: person,
       });
-      limited = reply.status === 429;
-      if (limited) assertEquals(reply.body.code, "rate_limited");
+      assertNotEquals(reply.status, 429, `request ${i + 1} was limited`);
     }
-    assert(limited, "the caller reached the limit");
+    const over = await route.post({ type: "workflow.approvals" }, {
+      token: person,
+    });
+    assertEquals(over.status, 429, JSON.stringify(over.body));
+    assertEquals(over.body.code, "rate_limited");
     const other = await route.post(
       { type: "workflow.approvals" },
       { token: "other.secret" },
     );
     assertNotEquals(other.status, 429);
-  });
+  }, { now: () => frozen });
 });
 
 test("wrong secrets lock out the guesser's address, not the token's holder", async () => {
