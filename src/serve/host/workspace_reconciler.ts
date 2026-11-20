@@ -64,6 +64,8 @@ export interface WorkspaceReconcilerOptions {
   readonly statusWriter: Pick<StatusWriter, "setProblem" | "forget" | "track">;
   readonly registrar: WorkspaceRegistrar;
   readonly rename?: (from: string, to: string) => Promise<void>;
+  /** why the registry, read afresh, forbids removing `workspaces/<name>`; null when it does not */
+  readonly freshClaim?: (name: string) => Promise<string | null>;
 }
 
 export interface WorkspaceReconciler {
@@ -184,7 +186,8 @@ export function createWorkspaceReconciler(
   const removalFailures = new ReasonMemo();
   const dropLog = new ReasonMemo();
   let applied: ReadonlyMap<string, HostedWorkspaceFolder> = new Map();
-  let scanned: readonly string[] = [];
+  let passedOver: readonly string[] = [];
+  let registered: ReadonlySet<string> = new Set();
   const sweepFailures = new ReasonMemo();
 
   const track = (work: Promise<void>) => {
@@ -221,7 +224,8 @@ export function createWorkspaceReconciler(
     folders: WorkspaceFolders,
   ) => {
     applied = folders.workspaces;
-    scanned = scan.workspaces;
+    passedOver = folders.passedOver;
+    registered = folders.registered;
     const names = new Set([
       ...folders.workspaces.keys(),
       ...scan.wantedFiles,
@@ -333,7 +337,11 @@ export function createWorkspaceReconciler(
     const id = workspaceServe(name);
     const status = supervisor.lookup(id);
     if (listing === null) {
-      if (entry.operator && entry.listedFrom === "registry") {
+      // one still registered, as under a second spelling of a folder, keeps its files
+      if (
+        entry.operator && entry.listedFrom === "registry" &&
+        !registered.has(name)
+      ) {
         entry.listedFrom = null;
         leaveRegistry(name, entry);
         return;
@@ -549,12 +557,13 @@ export function createWorkspaceReconciler(
         name,
         workspaces: applied.values(),
       });
-      if (claimedBy !== null) {
+      const claim = claimedBy !== null
+        ? `it is registered as ${claimedBy}`
+        : await options.freshClaim?.(name) ?? null;
+      if (claim !== null) {
         throw new RemovalStepError(
           "rename",
-          new Error(
-            `its folder is registered as ${claimedBy}, so it is not removed`,
-          ),
+          new Error(`its folder is not removed: ${claim}`),
         );
       }
       // a rename never follows a link, so a linked folder loses only its link
@@ -686,7 +695,7 @@ export function createWorkspaceReconciler(
   // a folder an entry passed over is offered too, so the registrar meets and logs its clash
   const toRegister = (): readonly string[] => [
     ...servedOwn(),
-    ...scanned.filter((name) => applied.get(name)?.owner !== "host"),
+    ...passedOver,
   ];
 
   // the registrar reads what was last reconciled when its run starts

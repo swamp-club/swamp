@@ -27,7 +27,11 @@ import { join } from "@std/path";
 import { parse as parseYaml } from "@std/yaml";
 import { UserError } from "../../domain/errors.ts";
 import { assertErrors, collect } from "../testing.ts";
-import { createHostedWorkspaceDeps, OPERATOR_WORKSPACE_CODE } from "./deps.ts";
+import {
+  createHostedWorkspaceDeps,
+  OPERATOR_WORKSPACE_CODE,
+  WORKSPACE_NAME_CLASH_CODE,
+} from "./deps.ts";
 import {
   hostedWorkspaceCreate,
   type HostedWorkspaceCreateEvent,
@@ -411,7 +415,7 @@ Deno.test("hostedWorkspaceResume: a name a registered repo holds while a folder 
   const refused = await errorOf<HostedWorkspaceResumeEvent>(
     hostedWorkspaceResume(ctx, host.deps(), { name: "alpha", rootAdmin: true }),
   );
-  assertEquals(refused.code, OPERATOR_WORKSPACE_CODE);
+  assertEquals(refused.code, WORKSPACE_NAME_CLASH_CODE);
   assert(
     refused.message.includes("swamp workspace remove alpha"),
     refused.message,

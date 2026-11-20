@@ -2273,6 +2273,7 @@ export {
   unregisterHostedWorkspace,
 } from "./workspace/hosted_registration.ts";
 export {
+  freshFolderClaim,
   type HostedRegistryRead,
   type HostedRoster,
   type HostedWorkspaceFolder,

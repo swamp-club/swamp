@@ -41,6 +41,9 @@ export interface WorkspaceFolders {
   readonly wantedMatches: ReadonlyMap<string, boolean>;
   /** entries of the host's own whose folder is gone; the host unregisters them */
   readonly gone: readonly string[];
+  readonly passedOver: readonly string[];
+  /** every name the registry read holds, listed or not */
+  readonly registered: ReadonlySet<string>;
 }
 
 export interface WorkspaceRoster {
@@ -111,7 +114,13 @@ export function createWorkspaceRoster(options: {
           }),
         );
       }
-      return { workspaces, wantedMatches, gone: roster.gone };
+      return {
+        workspaces,
+        wantedMatches,
+        gone: roster.gone,
+        passedOver: roster.passedOver,
+        registered: roster.registered,
+      };
     },
   };
 }

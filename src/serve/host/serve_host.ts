@@ -59,6 +59,7 @@ import {
   type WorkspaceRegistrar,
 } from "./workspace_registration.ts";
 import { createWorkspaceRoster } from "./workspace_roster.ts";
+import { freshFolderClaim } from "../../libswamp/workspace/hosted_roster.ts";
 import type { HostedRegistryDeps } from "../../libswamp/workspace/hosted_registration.ts";
 import {
   createWorkspaceRouter,
@@ -189,6 +190,12 @@ export async function startServeHost(
     repository,
     statusWriter,
     registrar,
+    freshClaim: (name) =>
+      freshFolderClaim({
+        store: options.workspaceStore,
+        workspacesDir: config.workspacesDir,
+        name,
+      }),
   });
   const stack: HostStack = {
     watcher: null,

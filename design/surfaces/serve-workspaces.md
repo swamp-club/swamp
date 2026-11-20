@@ -465,7 +465,8 @@ spelling an operator writes still matches.
   is started while both are named so, whatever the wanted file says, since
   serving the entry's repo would answer at the address the folder's clients
   use. `workspace.resume` refuses that name to everyone with
-  `operator_workspace`, and the status file's reason says to free the name
+  `workspace_name_clash`, which is not an authorization refusal and is in the
+  client's list of root-written codes, and the status file's reason says to free the name
   with `swamp workspace remove <name>` or rename one of them, never to name the
   entry's folder. The host logs an error once per start that names both
   folders and `swamp workspace remove`, and leaves the registry unchanged.
@@ -475,7 +476,8 @@ spelling an operator writes still matches.
   `workspace.get` say of the folder's own name that its folder is registered
   under the other one. Nothing done under the folder's own name reaches it: `workspace.delete` refuses that name with
   `operator_workspace`, a wanted file under it neither starts nor removes
-  anything, and the host checks again just before it removes any folder.
+  anything, and just before it removes any folder the host checks both the
+  workspaces it last listed and the registry read afresh.
 - A registry entry whose name is not a workspace name is passed over.
 - A registered folder that is gone, or holds no `.swamp.yaml`, is listed and
   not started, and its status file's reason says so. The host looks again at
@@ -484,7 +486,9 @@ spelling an operator writes still matches.
   registry name, wherever its folder is.
 
 **Leaving the registry** (step 21). A workspace of the operator's own is stopped
-when it leaves the registry, and its wanted and status files are removed. Its
+when it leaves the registry, and its wanted and status files are removed. One
+that is no longer listed but still registered, as when another entry names its
+folder by a second spelling, is stopped and keeps its files. Its
 folder is not touched. A later import under the same name starts nothing. A
 wanted file written since it left, as by a resume after a new import, is kept.
 An entry for a folder in `workspaces/` cannot leave this way: the next rescan
@@ -523,8 +527,9 @@ why nothing was removed and names `swamp workspace remove`. Unlike `deleted`
 for the host's own, it is not final: writing `active` again, or a root admin's
 resume, resumes it, since nothing that cannot be undone has started.
 
-**The refusals** these rules add use one code, `operator_workspace`, which is
-in the client's list of codes whose message the root wrote, so an older client
+**The refusals** these rules add use `operator_workspace`, apart from the name
+clash's `workspace_name_clash` (see Names and folders); both are in the
+client's list of codes whose message the root wrote, so an older client
 shows the root's own message. `workspace.delete` refuses an operator's own
 workspace with it for everyone. `workspace.suspend` and `workspace.resume`
 refuse it for a caller who is not one of the root's admins (admin on

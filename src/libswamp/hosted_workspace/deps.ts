@@ -217,10 +217,13 @@ export function ownerUnknownAdminOnly(name: string): UserError {
   );
 }
 
+/** not an authorization refusal: it holds for the root's admins too */
+export const WORKSPACE_NAME_CLASH_CODE = "workspace_name_clash";
+
 export function nameClashUnstartable(name: string): UserError {
   return new UserError(
     `The name ${name} is held by a repo the host's user registered while a folder of the same name is in the host's workspaces folder, so neither is started. Run swamp workspace remove ${name} on the host to serve the host's folder again, or rename one of them.`,
-    OPERATOR_WORKSPACE_CODE,
+    WORKSPACE_NAME_CLASH_CODE,
   );
 }
 

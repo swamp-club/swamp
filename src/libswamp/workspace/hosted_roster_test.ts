@@ -25,6 +25,7 @@ import {
 } from "../../domain/workspace/workspace_registry.ts";
 import { HostedWorkspace } from "../../domain/serve/hosted_workspace.ts";
 import {
+  freshFolderClaim,
   type HostedRoster,
   hostedWorkspaceFolders,
   readHostedRegistry,
@@ -70,6 +71,8 @@ Deno.test("hostedWorkspaceFolders: an entry at its own scanned folder is the hos
         shadows: false,
       }],
       gone: [],
+      passedOver: [],
+      registered: new Set(["alpha"]),
     });
   });
 });
@@ -278,7 +281,8 @@ Deno.test("hostedWorkspaceFolders: an entry for a workspaces/<name> folder that 
       registry,
       rootRepo: null,
     });
-    assertEquals(empty, { workspaces: [], gone: [] });
+    assertEquals(empty.workspaces, []);
+    assertEquals(empty.gone, []);
   });
 });
 
@@ -448,5 +452,55 @@ Deno.test("hostedWorkspaceFolders: an entry whose name is also a folder in works
       roster.workspaces.map(({ name, shadows }) => [name, shadows]),
       [["alpha", true], ["other", false]],
     );
+  });
+});
+
+Deno.test({
+  name:
+    "hostedWorkspaceFolders: a folder an entry took is passed over, and one that is the root's repo is not offered",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withWorkspaceFixture(async (f) => {
+      const workspacesDir = join(f.dir, "host", "workspaces");
+      const root = join(f.dir, "host", "root");
+      await f.makeRepo(root);
+      await f.makeRepo(join(workspacesDir, "alpha"));
+      await f.makeRepo(join(workspacesDir, "gamma"));
+      await f.makeRepo(join(f.dir, "ext", "alpha"));
+      await Deno.symlink(root, join(workspacesDir, "rooted"), { type: "dir" });
+      const roster = await hostedWorkspaceFolders({
+        workspacesDir,
+        scanned: ["alpha", "gamma", "rooted"],
+        registry: registryOf(
+          { name: "alpha", path: join(f.dir, "ext", "alpha") },
+          { name: "beta", path: join(workspacesDir, "gamma") },
+        ),
+        rootRepo: root,
+      });
+      assertEquals(roster.passedOver, ["alpha", "gamma"]);
+      assertEquals([...roster.registered].sort(), ["alpha", "beta"]);
+    });
+  },
+});
+
+Deno.test("freshFolderClaim: names another entry holding workspaces/<name>, ignores its own, and defers when the registry cannot be read", async () => {
+  await withWorkspaceFixture(async (f) => {
+    const workspacesDir = join(f.dir, "host", "workspaces");
+    await f.makeRepo(join(workspacesDir, "gamma"));
+    const folder = await Deno.realPath(join(workspacesDir, "gamma"));
+    const claim = () =>
+      freshFolderClaim({ store: f.deps, workspacesDir, name: "gamma" });
+    assertEquals(await claim(), null);
+    await f.deps.registry.update((registry) => {
+      registry.register({ name: "gamma", path: folder, createdAt: "t" });
+    });
+    assertEquals(await claim(), null);
+    await f.deps.registry.update((registry) => {
+      registry.remove("gamma");
+      registry.register({ name: "beta", path: folder, createdAt: "t" });
+    });
+    assertEquals(await claim(), "it is registered as beta");
+    await Deno.writeTextFile(join(f.dir, "config", "workspaces.json"), "{no");
+    assertEquals(await claim(), null);
   });
 });

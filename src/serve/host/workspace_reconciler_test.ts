@@ -163,6 +163,8 @@ interface Harness extends AsyncDisposable {
   gone: string[];
   /** a wanted file's match as the roster would give it, where the default rule does not */
   readonly wantedMatch: Map<string, boolean>;
+  /** names the registry holds though they are not listed */
+  readonly stillRegistered: Set<string>;
   foldersOf(scan: WorkspaceScan, reads: WantedReads): WorkspaceFolders;
   begin(): Promise<readonly string[]>;
   rescan(): Promise<void>;
@@ -173,6 +175,7 @@ interface Harness extends AsyncDisposable {
 
 async function harness(
   rename?: (from: string, to: string) => Promise<void>,
+  freshClaim?: (name: string) => Promise<string | null>,
 ): Promise<Harness> {
   const registrar = new RecordingRegistrar();
   const dir = await Deno.makeTempDir();
@@ -205,10 +208,12 @@ async function harness(
     statusWriter,
     registrar,
     rename,
+    freshClaim,
   });
   const moved = new Map<string, string>();
   const registered = new Map<string, Registered>();
   const wantedMatch = new Map<string, boolean>();
+  const stillRegistered = new Set<string>();
   const state = { gone: [] as string[] };
   const foldersOf = (
     scan: WorkspaceScan,
@@ -244,12 +249,22 @@ async function harness(
       const listing = workspaces.get(name);
       wantedMatches.set(
         name,
-        wantedMatch.get(name) ?? read.workspace.folder === null
-          ? listing?.owner !== "operator"
-          : read.workspace.folder === (listing?.folder ?? join(dir, name)),
+        wantedMatch.get(name) ??
+          (read.workspace.folder === null
+            ? listing?.owner !== "operator"
+            : read.workspace.folder === (listing?.folder ?? join(dir, name))),
       );
     }
-    return { workspaces, wantedMatches, gone: state.gone };
+    const passedOver = scan.workspaces.filter((name) =>
+      workspaces.get(name)?.owner === "operator" || claimed.has(join(dir, name))
+    );
+    return {
+      workspaces,
+      wantedMatches,
+      gone: state.gone,
+      passedOver,
+      registered: new Set([...registered.keys(), ...stillRegistered]),
+    };
   };
   const reconcileScan = async (scan: WorkspaceScan) => {
     const reads = await readWantedFiles(repository, scan);
@@ -266,6 +281,7 @@ async function harness(
     moved,
     registered,
     wantedMatch,
+    stillRegistered,
     get gone() {
       return state.gone;
     },
@@ -1282,4 +1298,35 @@ Deno.test("createWorkspaceReconciler: a deleted for a name in a clash is dropped
   );
   assert(await exists(join(folder, REPO_MARKER_FILE)));
   assertEquals(h.supervisor.lookup(id("delta"))?.wanted, "suspended");
+});
+
+Deno.test("createWorkspaceReconciler: a registered repo no longer listed but still registered is stopped and keeps its files", async () => {
+  await using h = await harness();
+  const folder = await operatorRepo(h, "mine");
+  await want(h.dir, "mine", `wanted: active\nfolder: ${folder}\n`);
+  await h.begin();
+  await waitFor(() => h.observed("mine") === "ready", "started");
+
+  // another entry now claims the folder under a second spelling
+  h.registered.delete("mine");
+  h.stillRegistered.add("mine");
+  await h.rescan();
+  await h.reconciler.drain();
+  assertEquals(h.supervisor.lookup(id("mine"))?.wanted, "deleted");
+  assert(await exists(join(h.dir, "mine.wanted.yaml")), "wanted file kept");
+});
+
+Deno.test("createWorkspaceReconciler: a removal stops when the registry, read afresh, gives the folder to another name", async () => {
+  const asked: string[] = [];
+  await using h = await harness(undefined, (name) => {
+    asked.push(name);
+    return Promise.resolve("it is registered as beta");
+  });
+  await makeRepo(h.dir, "gamma");
+  await want(h.dir, "gamma", "wanted: deleted\n");
+  await h.begin();
+  await h.reconciler.drain();
+  assertEquals(asked, ["gamma"]);
+  assert(await exists(join(h.dir, "gamma", REPO_MARKER_FILE)));
+  assert((await statusOf(h, "gamma")).includes("registered as beta"));
 });
