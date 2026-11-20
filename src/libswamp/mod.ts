@@ -2278,8 +2278,9 @@ export {
   unregisterHostedWorkspace,
 } from "./workspace/hosted_registration.ts";
 export {
+  type CreatedOwnership,
+  createdOwnership,
   freshFolderClaim,
-  hostCreated,
   type HostedRegistryRead,
   type HostedRoster,
   type HostedWorkspaceFolder,

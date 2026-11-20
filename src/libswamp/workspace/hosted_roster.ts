@@ -18,10 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { join, resolve } from "@std/path";
+import { parse as parseYaml } from "@std/yaml";
 import type { HostedWorkspace } from "../../domain/serve/hosted_workspace.ts";
 import { isWorkspaceName } from "../../domain/workspace/workspace_name.ts";
 import { WorkspaceRegistry } from "../../domain/workspace/workspace_registry.ts";
 import { REPO_MARKER_FILE } from "../../infrastructure/persistence/hosted_workspace_folder_scan.ts";
+import { readCapped } from "../../infrastructure/persistence/hosted_workspace_file_repository.ts";
 import type { HostedRegistryDeps } from "./hosted_registration.ts";
 import { realPathOrSelf } from "./workspace_store.ts";
 
@@ -45,7 +47,31 @@ export interface HostedWorkspaceFolder {
   readonly fromWantedFile: boolean;
   /** a folder of its name in `workspaces/` is passed over for it, so neither is started */
   readonly shadows: boolean;
+  /** with no host folder, its folder holds another repo than the one its wanted file's create made */
+  readonly replaced?: boolean;
 }
+
+/** what a folder says of the repo in it, read whole or not */
+export type RepoIdentity =
+  | { readonly kind: "absent" }
+  | { readonly kind: "id"; readonly repoId: string }
+  /** a folder with no marker, or a marker read whole that names no repoId */
+  | { readonly kind: "none" }
+  | { readonly kind: "unreadable" };
+
+/**
+ * whose a wanted file's create makes an entry's folder; replaced only on a repoId
+ * read whole, unknown while the folder's marker cannot be read
+ */
+export type CreatedOwnership = "host" | "operator" | "replaced" | "unknown";
+
+export interface CreatedOwnershipOptions {
+  readonly realPath?: (path: string) => Promise<string>;
+  readonly repoIdentity?: (folder: string) => Promise<RepoIdentity>;
+}
+
+// workspace code runs as the host's user and can write its marker
+const MAX_REPO_MARKER_BYTES = 64 * 1024;
 
 export interface HostedRoster {
   /** sorted by name */
@@ -93,19 +119,77 @@ export function wantedFolderOf(
 
 /**
  * on a host with no host folder, whether a request created the entry's folder:
- * its wanted file has a creator and names that folder
+ * its wanted file has a creator, names that folder and records a repoId, and the
+ * folder is absent (a create registers before it renames) or holds that repo
  */
 export async function hostCreated(
   workspace: HostedWorkspace,
   entryFolder: string,
-  realPath: (path: string) => Promise<string> = realPathOrSelf,
+  options: CreatedOwnershipOptions = {},
 ): Promise<boolean> {
-  if (workspace.creator === null || workspace.folder === null) return false;
+  return await createdOwnership(workspace, entryFolder, options) === "host";
+}
+
+export async function createdOwnership(
+  workspace: HostedWorkspace,
+  entryFolder: string,
+  options: CreatedOwnershipOptions = {},
+): Promise<CreatedOwnership> {
+  const realPath = options.realPath ?? realPathOrSelf;
+  const repoIdentity = options.repoIdentity ?? folderRepoIdentity;
+  if (
+    workspace.creator === null || workspace.folder === null ||
+    workspace.repoId === null
+  ) {
+    return "operator";
+  }
   const [written, entry] = await Promise.all([
     realPath(resolve(workspace.folder)),
     realPath(resolve(entryFolder)),
   ]);
-  return written === entry;
+  if (written !== entry) return "operator";
+  const identity = await repoIdentity(entryFolder);
+  if (identity.kind === "absent") return "host";
+  if (identity.kind === "unreadable") return "unknown";
+  if (identity.kind !== "id") return "operator";
+  return identity.repoId === workspace.repoId ? "host" : "replaced";
+}
+
+/** a link counts as present, so a dangling one is never taken for a folder not made yet */
+export async function folderRepoIdentity(
+  folder: string,
+): Promise<RepoIdentity> {
+  try {
+    await Deno.lstat(folder);
+  } catch (error) {
+    return error instanceof Deno.errors.NotFound
+      ? { kind: "absent" }
+      : { kind: "unreadable" };
+  }
+  const marker = join(folder, REPO_MARKER_FILE);
+  let text: string | null | "not a file";
+  try {
+    // opening a pipe blocks until a writer appears, which would stall every rescan
+    if (!(await Deno.stat(marker)).isFile) return { kind: "unreadable" };
+    text = await readCapped(marker, MAX_REPO_MARKER_BYTES);
+  } catch (error) {
+    return error instanceof Deno.errors.NotFound
+      ? { kind: "none" }
+      : { kind: "unreadable" };
+  }
+  if (text === null || text === "not a file") return { kind: "unreadable" };
+  let parsed: unknown;
+  try {
+    parsed = parseYaml(text);
+  } catch {
+    return { kind: "unreadable" };
+  }
+  const repoId = typeof parsed === "object" && parsed !== null
+    ? (parsed as Record<string, unknown>).repoId
+    : undefined;
+  return typeof repoId === "string" && repoId.length > 0
+    ? { kind: "id", repoId }
+    : { kind: "none" };
 }
 
 /** another workspace whose folder is `workspaces/<name>`, which nothing done under `name` may touch */
@@ -181,6 +265,7 @@ export async function hostedWorkspaceFolders(input: {
   readonly wanted?: ReadonlyMap<string, HostedWorkspace>;
   readonly realPath?: (path: string) => Promise<string>;
   readonly isRepo?: (path: string) => Promise<boolean>;
+  readonly repoIdentity?: (folder: string) => Promise<RepoIdentity>;
 }): Promise<HostedRoster> {
   const realPath = input.realPath ?? realPathOrSelf;
   const isRepo = input.isRepo ?? hasRepoMarker;
@@ -209,15 +294,20 @@ export async function hostedWorkspaceFolders(input: {
       if (input.hostFolder === false) {
         claimed.add(real);
         const record = input.wanted?.get(entry.name);
-        const created = record !== undefined &&
-          await hostCreated(record, real, realPath);
+        const ownership = record === undefined
+          ? "operator"
+          : await createdOwnership(record, real, {
+            realPath,
+            repoIdentity: input.repoIdentity,
+          });
         workspaces.set(entry.name, {
           name: entry.name,
           folder: real,
-          owner: created ? "host" : "operator",
+          owner: ownership === "host" ? "host" : "operator",
           isRepo: await isRepo(real),
           fromWantedFile: false,
           shadows: false,
+          ...(ownership === "replaced" ? { replaced: true } : {}),
         });
         continue;
       }

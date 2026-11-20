@@ -444,6 +444,11 @@ Deno.test("hostedWorkspaceCreate: with no host folder, sets up in a hidden folde
   assertEquals(wanted.creator, ALICE.principal);
   assertEquals(wanted.wanted, "suspended");
   assertEquals(wanted.folder, await realTarget());
+  const marker = parseYaml(
+    await Deno.readTextFile(join(await realTarget(), ".swamp.yaml")),
+  ) as Record<string, unknown>;
+  assertEquals(typeof wanted.repoId, "string");
+  assertEquals(wanted.repoId, marker.repoId);
   const entry = (await host.store.registry.load())?.get("edge-dns");
   assertEquals(entry?.path, await realTarget());
   assertEquals(entry?.origin, "created");
@@ -476,6 +481,11 @@ Deno.test("hostedWorkspaceCreate: with no host folder, a failure at each step le
     (host: NoFolderHost) => Partial<HostedWorkspaceDeps>
   > = {
     "set-up": () => ({ provisioner: { provision: fail } }),
+    "a set-up with no repoId": () => ({
+      provisioner: {
+        provision: (dir) => Deno.writeTextFile(join(dir, ".swamp.yaml"), ""),
+      },
+    }),
     "wanted file": (host) => {
       const base = host.deps();
       return {

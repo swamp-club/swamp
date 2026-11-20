@@ -37,7 +37,10 @@ import {
   registerHostedWorkspaces,
   unregisterCreatedWorkspace,
 } from "../workspace/hosted_registration.ts";
-import { readHostedRegistry } from "../workspace/hosted_roster.ts";
+import {
+  folderRepoIdentity,
+  readHostedRegistry,
+} from "../workspace/hosted_roster.ts";
 import {
   checkNewWorkspaceFolder,
   loadWorkspaceRegistry,
@@ -274,7 +277,10 @@ async function createInLocationUnchecked(
     let tempClaimed = false;
     try {
       await provision(ctx, deps, temp, name, spec);
-      await deps.repository.save(workspace.withFolder(target));
+      const repoId = await provisionedRepoId(ctx, temp, name);
+      await deps.repository.save(
+        workspace.withFolder(target).withRepoId(repoId),
+      );
       wroteWanted = true;
       await registerInLocation(ctx, store, name, target, at);
       registered = true;
@@ -391,6 +397,22 @@ async function provision(
     failure.cause = error;
     throw failure;
   }
+}
+
+// recorded so a repo made later at the same folder is never taken for this one
+async function provisionedRepoId(
+  ctx: LibSwampContext,
+  temp: string,
+  name: string,
+): Promise<string> {
+  const identity = await folderRepoIdentity(temp);
+  if (identity.kind === "id") return identity.repoId;
+  ctx.logger
+    .error`Setting up workspace ${name} left no repoId in its .swamp.yaml (${identity.kind})`;
+  throw new UserError(
+    `Setting up workspace ${name} failed. The host's log has the details.`,
+    "provision_failed",
+  );
 }
 
 /** the workspace is whole without its entry; the host's next rescan registers it */

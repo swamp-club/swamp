@@ -414,15 +414,25 @@ its status file and the 503 its address answers say whether it runs.
   its registry entry. With a host folder, every workspace whose folder is
   at `workspaces/<its name>` is the host's own, whoever made the folder, as
   every workspace is today; one registered under another name is not. With no host folder, a workspace is the host's own when
-  its wanted file has a creator and names the entry's folder, compared by real
-  path, which only `workspace.create` writes. Removing the creator or the
-  folder by hand makes it the operator's own, the safe direction; writing both
-  by hand for the entry's folder makes a repo the host's own, which only
+  its wanted file has a creator, names the entry's folder, compared by real
+  path, and records the `repoId` of the repo create made, which only
+  `workspace.create` writes; the folder must hold a `.swamp.yaml` with that
+  `repoId`, or be absent, since create registers before it renames. So a repo
+  made at the same folder after a `swamp workspace remove` while the host was
+  stopped is the operator's own, and a copy of the repo create made, put back
+  at its folder, is the host's own again. A wanted file without a `repoId`, as
+  one written before it was recorded, is the operator's own. Removing the
+  creator, the folder or the `repoId` by hand makes it the operator's own, the
+  safe direction; writing them by hand makes a repo the host's own, which only
   someone who can already write the state folder can do. No request carries a
   creator to another folder: a suspend or resume of the operator's own writes
-  its folder with no creator, and the host removes a wanted file that has a
-  creator once the registry names another folder for its name, as after a
-  `swamp workspace remove` and an import elsewhere under the same name. A name no entry holds
+  its folder with no creator and no `repoId`, and the host removes a wanted
+  file that has a creator once the registry names another folder for its name,
+  as after a `swamp workspace remove` and an import elsewhere under the same
+  name, or once its folder holds a `.swamp.yaml`, read whole, with another
+  `repoId`, so the old workspace's wanted state never reaches the new repo. A
+  `.swamp.yaml` that cannot be read makes the workspace the operator's own and
+  keeps its wanted file. A name no entry holds
   is the host's own when its wanted file has a creator and a folder: a create
   stopped before it registered. The host settles one at its next rescan, once
   it holds the name's create lock and so knows no create is running: it removes
@@ -445,7 +455,8 @@ folder. Code in a workspace runs as that user and could edit a wanted file to
 make a repo the host's own, but it could as well remove the folder itself;
 [Limits](#limits) already rules out tenants that do not trust each other.
 Removing the creator or the folder from a wanted file makes a workspace the
-operator's own, which is the safe direction.
+operator's own, which is the safe direction. A repo's `.swamp.yaml` is read
+with the same trust, and capped in size, since the same code can write it.
 
 Registering is an act of the host's user on the host's machine. No request
 registers a repo, since that would let a remote caller name a folder for the
@@ -742,7 +753,9 @@ The root and the supervisor never call each other. They share two small files
 per workspace in the state folder, under its name:
 
 - **Wanted**, `<name>.wanted.yaml`, written by the root: `wanted`
-  (`active`, `suspended` or `deleted`), `creator` and `changedAt`. A folder
+  (`active`, `suspended` or `deleted`), `creator` and `changedAt`, and, when it
+  names one, the `folder` it was written for. The wanted file a create writes
+  on a host with no host folder also records the new repo's `repoId`. A folder
   without one is listed and not started, and its status file says
   `wanted: suspended`. Only `wanted` is required, so an operator can suspend or
   resume a workspace by editing that one line while the host runs.
@@ -822,7 +835,7 @@ Then, in order:
 | Step | What create does                                                   | Left if create stops here                     | How it ends                                                                                   |
 | ---- | ------------------------------------------------------------------ | --------------------------------------------- | --------------------------------------------------------------------------------------------- |
 | 1    | sets the repo up in `<location>/.<name>.creating-<uuid>`           | the hidden folder                             | nothing names it, so `delete` answers `not_found`; the next create of the name removes it     |
-| 2    | writes the wanted file, `suspended`, with its creator and folder   | the hidden folder and the wanted file         | the host's next rescan, holding the name's lock, removes both; a `delete` before then also does |
+| 2    | writes the wanted file, `suspended`, with its creator, folder and the set-up repo's `repoId` | the hidden folder and the wanted file         | the host's next rescan, holding the name's lock, removes both; a `delete` before then also does |
 | 3    | registers the entry as created, strictly                           | and an entry naming a folder not there yet    | `delete`: no folder to rename; the host removes the hidden folder, the entry and both files   |
 | 4    | renames the hidden folder into place                               | a whole workspace                             | `delete` as for any workspace of the host's own                                               |
 

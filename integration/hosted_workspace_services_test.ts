@@ -926,12 +926,13 @@ async function leaveCreateStopped(
   await Deno.mkdir(location, { recursive: true });
   const temp = join(location, creatingFolderName(name));
   await Deno.mkdir(temp);
-  await Deno.writeTextFile(join(temp, ".swamp.yaml"), "");
+  const repoId = crypto.randomUUID();
+  await Deno.writeTextFile(join(temp, ".swamp.yaml"), `repoId: ${repoId}\n`);
   if (stop === "set-up") return;
   const target = join(location, name);
   await Deno.writeTextFile(
     join(h.dir, `${name}.wanted.yaml`),
-    `creator: user:sub-alice\nwanted: suspended\nchangedAt: 2026-11-20T10:00:00.000Z\nfolder: ${target}\n`,
+    `creator: user:sub-alice\nwanted: suspended\nchangedAt: 2026-11-20T10:00:00.000Z\nfolder: ${target}\nrepoId: ${repoId}\n`,
   );
   if (stop === "wanted file") return;
   await h.store.registry.update((registry) => {
@@ -1150,6 +1151,58 @@ Deno.test("hosted workspace services, no host folder: a workspace swamp workspac
   }
 });
 
+Deno.test("hosted workspace services, no host folder: a repo made again at a created workspace's folder while the host was stopped is the operator's own, and delete leaves it whole", async () => {
+  await using h = await noFolderHost();
+  await collect(
+    hostedWorkspaceCreate(ctx, h.deps(), {
+      name: "edge-dns",
+      caller: ALICE,
+      access: ACCESS,
+    }),
+  );
+  await collect(
+    hostedWorkspaceResume(ctx, h.deps(), { name: "edge-dns", rootAdmin: true }),
+  );
+  const folder = (await h.store.registry.load())?.get("edge-dns")?.path;
+  assert(folder !== undefined);
+  // with the host stopped: swamp workspace remove, the folder deleted by hand, and swamp workspace create again
+  await h.store.registry.update((registry) => {
+    registry.remove("edge-dns");
+  });
+  await Deno.remove(folder, { recursive: true });
+  await Deno.mkdir(folder);
+  await Deno.writeTextFile(
+    join(folder, ".swamp.yaml"),
+    `repoId: ${crypto.randomUUID()}\n`,
+  );
+  await h.store.registry.update((registry) => {
+    registry.register({
+      name: "edge-dns",
+      path: folder,
+      createdAt: "2026-11-20T11:00:00.000Z",
+      origin: "created",
+    });
+  });
+
+  await waitFor(async () => {
+    await h.rescan();
+    await h.drain();
+    return !(await pathExists(join(h.dir, "edge-dns.wanted.yaml")));
+  }, "the stale wanted file goes");
+  const refused = await collect(
+    hostedWorkspaceDelete(ctx, h.deps(), { name: "edge-dns" }),
+  );
+  const error = refused.find((e) => e.kind === "error");
+  assertEquals(
+    error?.kind === "error" ? error.error.code : null,
+    "operator_workspace",
+  );
+  await h.rescan();
+  await h.drain();
+  assert(await pathExists(join(folder, ".swamp.yaml")));
+  assertEquals(await registeredNames(h), ["edge-dns"]);
+});
+
 Deno.test("hosted workspace services, no host folder: a host-created workspace that leaves the registry keeps its folder and loses its wanted file", async () => {
   await using h = await noFolderHost();
   await collect(
@@ -1202,6 +1255,90 @@ Deno.test("hosted workspace services, no host folder: a removal whose entry, rea
     await pathExists(join(h.dataDir, "workspaces", "edge-dns", ".swamp.yaml")),
   );
   assertEquals(await registeredNames(h), ["edge-dns"]);
+});
+
+Deno.test("hosted workspace services, no host folder: a removal whose folder, read afresh, holds another repo removes no folder and no entry", async () => {
+  let replace = false;
+  await using h = await noFolderHost((base) => ({
+    ...base,
+    registeredFolder: async (name) => {
+      const registered = await base.registeredFolder(name);
+      // the repo is made again between the delete request and the removal
+      if (replace && registered !== null) {
+        await Deno.writeTextFile(
+          join(registered.real, ".swamp.yaml"),
+          `repoId: ${crypto.randomUUID()}\n`,
+        );
+      }
+      return registered;
+    },
+  }));
+  await collect(
+    hostedWorkspaceCreate(ctx, h.deps(), {
+      name: "edge-dns",
+      caller: ALICE,
+      access: ACCESS,
+    }),
+  );
+  await h.rescan();
+  await collect(hostedWorkspaceDelete(ctx, h.deps(), { name: "edge-dns" }));
+  replace = true;
+  await waitFor(async () => {
+    await h.rescan();
+    await h.drain();
+    return !(await pathExists(join(h.dir, "edge-dns.wanted.yaml")));
+  }, "the deleted wanted file is dropped");
+  assert(
+    await pathExists(join(h.dataDir, "workspaces", "edge-dns", ".swamp.yaml")),
+  );
+  assertEquals(await registeredNames(h), ["edge-dns"]);
+});
+
+Deno.test("hosted workspace services, no host folder: a removal whose folder's marker cannot be read for a moment is tried again and finishes", async () => {
+  let marker: string | null = null;
+  let text = "";
+  await using h = await noFolderHost((base) => ({
+    ...base,
+    registeredFolder: async (name) => {
+      const registered = await base.registeredFolder(name);
+      // a directory where the marker was reads as unreadable, at the first attempt only
+      if (registered !== null && marker === null) {
+        marker = join(registered.real, ".swamp.yaml");
+        text = await Deno.readTextFile(marker);
+        await Deno.remove(marker);
+        await Deno.mkdir(marker);
+      }
+      return registered;
+    },
+  }));
+  await collect(
+    hostedWorkspaceCreate(ctx, h.deps(), {
+      name: "edge-dns",
+      caller: ALICE,
+      access: ACCESS,
+    }),
+  );
+  await h.rescan();
+  const events = await collect(
+    hostedWorkspaceDelete(ctx, h.deps(), { name: "edge-dns" }),
+  );
+  assertEquals(events.map((e) => e.kind), ["completed"]);
+  await waitFor(async () => {
+    await h.rescan();
+    await h.drain();
+    return marker !== null;
+  }, "the first removal attempt reads the marker");
+  assert(await pathExists(join(h.dir, "edge-dns.wanted.yaml")), "kept");
+  assert(marker !== null);
+  await Deno.remove(marker);
+  await Deno.writeTextFile(marker, text);
+  await waitFor(async () => {
+    await h.rescan();
+    await h.drain();
+    return !(await pathExists(join(h.dir, "edge-dns.wanted.yaml")));
+  }, "the removal finishes");
+  assertEquals(await names(join(h.dataDir, "workspaces")), []);
+  assertEquals(await registeredNames(h), []);
 });
 
 Deno.test("hosted workspace services, no host folder: a stopped create's removal sweeps only the workspace location, never a folder its wanted file alone names", async () => {

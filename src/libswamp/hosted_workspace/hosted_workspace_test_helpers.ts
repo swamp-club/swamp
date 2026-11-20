@@ -46,10 +46,13 @@ export const OAUTH_ACCESS: HostedWorkspaceRootAccess = {
   nameCache: {},
 };
 
-/** writes only the repo marker, which is what makes a folder a workspace */
+/** writes only the repo marker, which is what makes a folder a workspace, with a repoId as init writes */
 export const markerProvisioner: HostedWorkspaceProvisioner = {
   async provision(dir) {
-    await Deno.writeTextFile(join(dir, ".swamp.yaml"), "");
+    await Deno.writeTextFile(
+      join(dir, ".swamp.yaml"),
+      `repoId: ${crypto.randomUUID()}\n`,
+    );
   },
 };
 

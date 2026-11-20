@@ -153,6 +153,32 @@ Deno.test("HostedWorkspaceFileRepository: a folder is written and read back, and
   });
 });
 
+Deno.test("HostedWorkspaceFileRepository: a repoId is written and read back, a workspace without one writes no key, and an empty one is unreadable", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new HostedWorkspaceFileRepository(dir);
+    const folder = join(dir, "elsewhere", "edge-dns");
+    const made = HostedWorkspace.create("edge-dns", "alice", new Date())
+      .withFolder(folder).withRepoId("repo-1");
+    await repo.save(made);
+    const read = await repo.findByName("edge-dns");
+    assert(read.kind === "found");
+    assert(read.workspace.equals(made));
+    assertEquals(read.workspace.repoId, "repo-1");
+
+    await repo.save(made.withRepoId(null));
+    const written = parseYaml(
+      await Deno.readTextFile(join(dir, "edge-dns.wanted.yaml")),
+    ) as Record<string, unknown>;
+    assert(!("repoId" in written));
+
+    await Deno.writeTextFile(
+      join(dir, "edge-dns.wanted.yaml"),
+      `wanted: active\nfolder: ${folder}\nrepoId: ""\n`,
+    );
+    assertStringIncludes(await unreadableReason(repo, "edge-dns"), "repoId");
+  });
+});
+
 Deno.test("HostedWorkspaceFileRepository: a missing file is absent and removing it again is fine", async () => {
   await withTempDir(async (dir) => {
     const repo = new HostedWorkspaceFileRepository(dir);

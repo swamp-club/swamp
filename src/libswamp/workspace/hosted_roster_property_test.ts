@@ -18,14 +18,14 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { join, normalize, SEPARATOR } from "@std/path";
+import { basename, join, normalize, SEPARATOR } from "@std/path";
 import fc from "fast-check";
 import {
   type WorkspaceEntry,
   WorkspaceRegistry,
 } from "../../domain/workspace/workspace_registry.ts";
 import { HostedWorkspace } from "../../domain/serve/hosted_workspace.ts";
-import { hostedWorkspaceFolders } from "./hosted_roster.ts";
+import { hostedWorkspaceFolders, type RepoIdentity } from "./hosted_roster.ts";
 
 const WORKSPACES_DIR = join(SEPARATOR, "host", "workspaces");
 const NAMES = ["alpha", "beta", "gamma", "delta"] as const;
@@ -224,9 +224,17 @@ Deno.test("hostedWorkspaceFolders: with no host folder no workspace is the host'
   );
 });
 
-type WantedShape = "none" | "made" | "no_creator" | "no_folder" | "elsewhere";
+type WantedShape =
+  | "none"
+  | "made"
+  | "no_creator"
+  | "no_folder"
+  | "elsewhere"
+  | "no_repo_id"
+  | "replaced";
+type FolderState = "repo" | "absent" | "unreadable";
 
-Deno.test("hostedWorkspaceFolders: with no host folder an entry is the host's own exactly when its wanted file has a creator and names the entry's folder, whatever its spelling", async () => {
+Deno.test("hostedWorkspaceFolders: with no host folder an entry is the host's own exactly when its wanted file has a creator, names the entry's folder, whatever its spelling, and records the repo in it or a folder not there yet", async () => {
   await fc.assert(
     fc.asyncProperty(
       fc.dictionary(
@@ -239,7 +247,10 @@ Deno.test("hostedWorkspaceFolders: with no host folder an entry is the host's ow
             "no_creator",
             "no_folder",
             "elsewhere",
+            "no_repo_id",
+            "replaced",
           ),
+          folder: fc.constantFrom<FolderState>("repo", "absent", "unreadable"),
         }),
       ),
       async (cases) => {
@@ -260,8 +271,15 @@ Deno.test("hostedWorkspaceFolders: with no host folder an entry is the host's ow
               : own + SEPARATOR,
             createdAt: "2026-11-20T10:00:00.000Z",
           });
-          const made = HostedWorkspace.create(name, "user:sub-alice", at);
+          const made = HostedWorkspace.create(name, "user:sub-alice", at)
+            .withRepoId(`repo-${name}`);
           if (shape === "made") wanted.set(name, made.withFolder(own));
+          if (shape === "no_repo_id") {
+            wanted.set(name, made.withFolder(own).withRepoId(null));
+          }
+          if (shape === "replaced") {
+            wanted.set(name, made.withFolder(own).withRepoId(`old-${name}`));
+          }
           if (shape === "no_creator") {
             wanted.set(name, HostedWorkspace.active(name).withFolder(own));
           }
@@ -282,11 +300,28 @@ Deno.test("hostedWorkspaceFolders: with no host folder an entry is the host's ow
           wanted,
           realPath,
           isRepo: () => Promise.resolve(true),
+          repoIdentity: (folder) => {
+            const name = basename(normalize(folder));
+            const state = cases[name].folder;
+            return Promise.resolve<RepoIdentity>(
+              state === "repo"
+                ? { kind: "id", repoId: `repo-${name}` }
+                : { kind: state },
+            );
+          },
         });
         for (const workspace of roster.workspaces) {
+          const { wanted: shape, folder } = cases[workspace.name];
           assertEquals(
             workspace.owner === "host",
-            cases[workspace.name].wanted === "made",
+            folder === "absent"
+              ? shape === "made" || shape === "replaced"
+              : shape === "made" && folder === "repo",
+            workspace.name,
+          );
+          assertEquals(
+            workspace.replaced === true,
+            shape === "replaced" && folder === "repo",
             workspace.name,
           );
         }
