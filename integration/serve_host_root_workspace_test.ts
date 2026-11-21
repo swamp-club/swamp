@@ -179,7 +179,7 @@ Deno.test("root workspace: after swamp workspace remove keeps its folder, the st
   );
   assertEquals(removed.kind, "completed");
   const error = await assertRejects(() => resolveIn(d, creator), UserError);
-  assertStringIncludes(error.message, "a folder is already there");
+  assertStringIncludes(error.message, "is no longer registered");
   assertStringIncludes(
     error.message,
     `swamp workspace import "${folder}" --name ${ROOT_WORKSPACE_NAME}`,

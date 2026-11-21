@@ -161,12 +161,14 @@ export async function resolveRootWorkspace(
 
   const location = await deps.location();
   if (await entryExists(location)) {
-    throw markErrorPaths(
-      new UserError(
-        `The host would create its root workspace ${ROOT_WORKSPACE_NAME} at ${location}, but a folder is already there and ${ROOT_WORKSPACE_NAME} is not registered. Bring it back with: swamp workspace import "${location}" --name ${ROOT_WORKSPACE_NAME}. Or move the folder aside so the host makes a new one, or set root: in host.yaml.`,
-      ),
-      [location],
-    );
+    // an import is offered only where the next start would take it as the root
+    const own = record !== null && record.repoId !== null &&
+      await realPath(resolve(record.folder)) === await realPath(location) &&
+      sameRepo(await repoIdentity(location), record.repoId);
+    const what = own
+      ? `The root workspace ${ROOT_WORKSPACE_NAME} at ${location} is no longer registered. Bring it back with: swamp workspace import "${location}" --name ${ROOT_WORKSPACE_NAME}. Or move the folder aside so the host makes a new one, or set root: in host.yaml.`
+      : `The host would create its root workspace ${ROOT_WORKSPACE_NAME} at ${location}, but a folder this host did not make, or did not finish making, is already there. Move it aside so the host makes a new one, or set root: ${location} in host.yaml to use it as the root.`;
+    throw markErrorPaths(new UserError(what), [location]);
   }
   const leftFolder = record !== null &&
       await realPath(resolve(record.folder)) !== await realPath(location) &&
@@ -207,6 +209,10 @@ export async function resolveRootWorkspace(
   }
   await writeRecord(recordFile, { folder, repoId: identity.repoId });
   return { name: ROOT_WORKSPACE_NAME, folder, created: true, leftFolder };
+}
+
+function sameRepo(identity: RepoIdentity, repoId: string): boolean {
+  return identity.kind === "id" && identity.repoId === repoId;
 }
 
 async function readRecord(file: string): Promise<RootWorkspaceRecord | null> {

@@ -277,17 +277,42 @@ Deno.test("resolveRootWorkspace: a new root made elsewhere names the old folder 
   });
 });
 
-Deno.test("resolveRootWorkspace: a folder left at the location is refused with how to bring it back", async () => {
-  for (const recorded of [true, false]) {
+Deno.test("resolveRootWorkspace: the root's own folder left at the location is refused with how to bring it back", async () => {
+  await withFixture(async (f) => {
+    await makeRepo(f.location, "repo-1");
+    await writeRecord(f, f.location, "repo-1");
+    const message = await refusal(f);
+    assertStringIncludes(message, "is no longer registered");
+    assertStringIncludes(
+      message,
+      `swamp workspace import "${f.location}" --name ${ROOT_WORKSPACE_NAME}`,
+    );
+    assertEquals(f.creates, []);
+  });
+});
+
+Deno.test("resolveRootWorkspace: a folder at the location the host cannot vouch for is refused without offering an import", async () => {
+  const records: Array<[string, string | null] | null> = [
+    null,
+    ["location", null],
+    ["location", "another-repo"],
+    ["elsewhere", "repo-1"],
+  ];
+  for (const record of records) {
     await withFixture(async (f) => {
       await makeRepo(f.location, "repo-1");
-      if (recorded) await writeRecord(f, f.location, "repo-1");
+      if (record !== null) {
+        const [where, repoId] = record;
+        await writeRecord(
+          f,
+          where === "location" ? f.location : join(f.stateDir, "..", where),
+          repoId,
+        );
+      }
       const message = await refusal(f);
-      assertStringIncludes(message, "a folder is already there");
-      assertStringIncludes(
-        message,
-        `swamp workspace import "${f.location}" --name ${ROOT_WORKSPACE_NAME}`,
-      );
+      assertStringIncludes(message, "a folder this host did not make");
+      assertStringIncludes(message, `set root: ${f.location}`);
+      assertEquals(message.includes("swamp workspace import"), false);
       assertEquals(f.creates, []);
     });
   }

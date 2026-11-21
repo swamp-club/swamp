@@ -78,16 +78,16 @@ class LogServeHostRenderer implements ServeHostRenderer {
     const properties = {
       name: event.name,
       folder: event.folder,
-      serveYaml: event.serveConfig,
+      serveConfig: event.serveConfig,
     };
     if (event.created) {
-      logger.info(
-        "Created root workspace {name} at {folder}. It runs with serve's default auth until {serveYaml} sets auth.mode; while that default is none, anyone on this machine can create, resume and delete workspaces through it, and run code as this user",
+      logger.warn(
+        "Created root workspace {name} at {folder}. It runs with serve's default auth until {serveConfig} sets auth.mode; while that default is none, anyone on this machine can create, resume and delete workspaces through it, and run code as this user",
         properties,
       );
     } else {
       logger.info(
-        "Starting root workspace {name} from {folder}, with the auth {serveYaml} sets, or serve's default; while that is none, anyone on this machine can create, resume and delete workspaces through it",
+        "Starting root workspace {name} from {folder}, with the auth {serveConfig} sets, or serve's default; while that is none, anyone on this machine can create, resume and delete workspaces through it",
         properties,
       );
     }
