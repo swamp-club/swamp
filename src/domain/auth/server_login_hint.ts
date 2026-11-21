@@ -22,8 +22,7 @@ import { normalizeServerUrl } from "./server_url.ts";
 /**
  * a command resolving its own serve address takes --server or SWAMP_SERVE_URL;
  * a v3 datastore whose upstream is serve takes only SWAMP_SERVE_URL, since
- * --server would run the command on serve; a token SWAMP_SERVER_URL pairs with
- * another server is sent by changing or unsetting that variable
+ * --server would run the command on serve
  */
 export type WithheldTokenFileRemedy = "flag-or-env" | "env" | PairedRemedy;
 

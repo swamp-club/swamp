@@ -203,8 +203,8 @@ options are:
   another server to it. `SWAMP_SERVER_TOKEN_FILE` applies only to an address
   that `--server`, `SWAMP_SERVE_URL` or `SWAMP_SERVER_URL` names, and
   `SWAMP_SERVER_TOKEN` likewise, except that a set `SWAMP_SERVER_URL` pairs it
-  with its own server alone. Keep
-  credentials out of it when editing by hand too.
+  with its own server alone. Keep credentials out of it when editing by hand
+  too.
 
 ### Run Garbage Collection
 
