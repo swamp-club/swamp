@@ -192,9 +192,9 @@ router opens to the child, with the query, subprotocols, `Origin` and cookies
 carried over. The router passes `Authorization` and `Origin` through
 untouched: each serve authenticates its own callers and the router adds no
 credential. To a workspace it forwards only that workspace's own dashboard
-session cookie and removes every other, since the root's cookie has `Path=/`
-and a browser sends it under `/w/` too; the root's requests keep every
-cookie. It overwrites `X-Forwarded-For` with the caller's address,
+session cookie and removes every other, since the root's cookie is scoped to a
+prefix of every workspace's path and a browser sends it under `/w/` too; the
+root's requests keep every cookie. It overwrites `X-Forwarded-For` with the caller's address,
 `X-Forwarded-Host` with the caller's `Host` and `X-Forwarded-Proto` with the
 listener's protocol, so a caller cannot supply its own. Serve reads the
 protocol for its dashboard session cookie's `Secure` flag and expected origin,
@@ -964,9 +964,9 @@ that and a hosted workspace:
   the local token and its switcher reads the local hub's list. Under a host it
   signs in to the workspace's serve, and its switcher lists what
   `workspace.list` returns.
-- Serve's dashboard session cookie had one name and `Path=/`, so the root's
-  and every workspace's would overwrite each other. A serve with a path in its
-  `--address` now names its cookie for that path and scopes it to that path
+- With one cookie name at `Path=/`, the root's and every workspace's sessions
+  would overwrite each other. A serve with a path in its `--address` names its
+  cookie for that path and scopes it to that path
   (`src/serve/dashboard_session_cookie.ts`). The name is
   `swamp-dashboard-session` followed by the path with every byte other than a
   letter, digit or hyphen written as `_` and two hex digits, so `/w/data` is

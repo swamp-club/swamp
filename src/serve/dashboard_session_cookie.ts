@@ -15,16 +15,15 @@
 // GNU Affero General Public License for more details.
 //
 // You should have received a copy of the GNU Affero General Public License
+// along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
+
 import { normalizeServerUrl } from "../domain/auth/server_url.ts";
 
 export const PLAIN_DASHBOARD_SESSION_COOKIE = "swamp-dashboard-session";
 
 const KEPT_NAME_BYTE = /^[A-Za-z0-9-]$/;
 
-/**
- * The dashboard session cookie a serve sets and reads: one per address path,
- * so serves sharing a browser origin under a host keep their own sessions.
- */
+/** one per address path, so serves sharing a browser origin keep their own sessions */
 export class DashboardSessionCookie {
   static readonly plain = new DashboardSessionCookie(
     PLAIN_DASHBOARD_SESSION_COOKIE,

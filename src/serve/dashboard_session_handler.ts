@@ -72,10 +72,7 @@ export type UpgradeDashboardSession =
   | { kind: "unknown" }
   | { kind: "originMismatch" };
 
-/**
- * Resolves the session id a WebSocket upgrade presented; the caller reads the
- * id and spends the IP burst before this looks anything up.
- */
+/** the caller reads the id and spends the IP burst before this looks anything up */
 export async function resolveUpgradeDashboardSession(
   sessionId: string,
   origin: string | null,
