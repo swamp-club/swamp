@@ -30,10 +30,8 @@ import { handleHttpRequest } from "../src/serve/http_request_route.ts";
 import { SERVE_REQUEST_PATH } from "../src/serve/protocol.ts";
 import type { HttpCallerSessionAuth } from "../src/serve/http_caller_auth.ts";
 import type { DashboardSession } from "../src/serve/dashboard_session_store.ts";
-import {
-  DASHBOARD_SESSION_COOKIE,
-  type ServerTokenAuthResult,
-} from "../src/serve/token_auth.ts";
+import type { ServerTokenAuthResult } from "../src/serve/token_auth.ts";
+import { PLAIN_DASHBOARD_SESSION_COOKIE as DASHBOARD_SESSION_COOKIE } from "../src/serve/dashboard_session_cookie.ts";
 import { requestOverHttp } from "../packages/dashboard/src/client/http_request.ts";
 import { RequestError } from "../packages/dashboard/src/client/stream.ts";
 import {
@@ -164,6 +162,7 @@ Deno.test({
         expiresAt: "2026-11-02T00:00:00.000Z",
       };
       const server = startRoute(createServeCtx(repo, readEverything), {
+        cookieName: DASHBOARD_SESSION_COOKIE,
         sessions: {
           create: () => Promise.reject(new Error("not used")),
           get: (id) => Promise.resolve(id === session.id ? session : null),
@@ -235,6 +234,7 @@ Deno.test({
           }),
         ]),
         {
+          cookieName: DASHBOARD_SESSION_COOKIE,
           sessions: {
             create: () => Promise.reject(new Error("not used")),
             get: (id) => {

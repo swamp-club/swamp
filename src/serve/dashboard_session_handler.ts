@@ -17,10 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import {
-  DASHBOARD_SESSION_COOKIE,
-  extractDashboardSessionId,
-} from "./token_auth.ts";
+import { extractDashboardSessionId } from "./token_auth.ts";
+import type { DashboardSessionCookie } from "./dashboard_session_cookie.ts";
 import { DIRECT_DASHBOARD_CLIENT } from "../domain/access/client.ts";
 import {
   type DeviceAuthDeps,
@@ -69,6 +67,31 @@ export async function resolveDashboardSessionForOrigin(
   return session;
 }
 
+export type UpgradeDashboardSession =
+  | { kind: "session"; session: DashboardSession }
+  | { kind: "unknown" }
+  | { kind: "originMismatch" };
+
+/**
+ * Resolves the session id a WebSocket upgrade presented; the caller reads the
+ * id and spends the IP burst before this looks anything up.
+ */
+export async function resolveUpgradeDashboardSession(
+  sessionId: string,
+  origin: string | null,
+  sessions: DashboardSessionStore,
+): Promise<UpgradeDashboardSession> {
+  const session = await resolveDashboardSessionForOrigin(
+    sessionId,
+    origin,
+    sessions,
+  );
+  if (session !== null) return { kind: "session", session };
+  return await sessions.get(sessionId) === null
+    ? { kind: "unknown" }
+    : { kind: "originMismatch" };
+}
+
 export type DashboardSessionAuthentication =
   | ({ ok: true } & DashboardSessionIdentity)
   | {
@@ -85,6 +108,7 @@ export interface DashboardSessionDeps {
     session: DashboardSession,
   ): Promise<DashboardSessionAuthentication>;
   sessions: DashboardSessionStore;
+  cookie: DashboardSessionCookie;
   secure: boolean;
   /** Browser-origin requests must be same-origin before changing a session. */
   originAllowed?(req: Request): boolean;
@@ -93,16 +117,6 @@ export interface DashboardSessionDeps {
   limitGuesses<T extends { readonly ok: boolean }>(
     attempt: () => Promise<T>,
   ): Promise<FailedAttemptGuard<T>>;
-}
-
-function cookie(value: string, secure: boolean): string {
-  return `${DASHBOARD_SESSION_COOKIE}=${
-    encodeURIComponent(value)
-  }; Path=/; HttpOnly; SameSite=Strict${secure ? "; Secure" : ""}`;
-}
-
-function expiredCookie(secure: boolean): string {
-  return `${cookie("", secure)}; Max-Age=0`;
 }
 
 function tooManyGuesses(retryAfterSeconds: number): Response {
@@ -141,11 +155,11 @@ async function sessionCreatedResponse(
     }
     throw error;
   }
-  const previousSessionId = extractDashboardSessionId(req);
+  const previousSessionId = extractDashboardSessionId(req, deps.cookie.name);
   if (previousSessionId !== null) await deps.sessions.delete(previousSessionId);
   return new Response(null, {
     status: 204,
-    headers: { "set-cookie": cookie(session.id, deps.secure) },
+    headers: { "set-cookie": deps.cookie.setHeader(session.id, deps.secure) },
   });
 }
 
@@ -190,7 +204,7 @@ export async function handleDashboardSession(
   }
 
   if (req.method === "DELETE") {
-    const sessionId = extractDashboardSessionId(req);
+    const sessionId = extractDashboardSessionId(req, deps.cookie.name);
     if (sessionId !== null) {
       const guarded = await deps.limitGuesses(async () => {
         const known = await deps.sessions.get(sessionId) !== null;
@@ -201,12 +215,12 @@ export async function handleDashboardSession(
     }
     return new Response(null, {
       status: 204,
-      headers: { "set-cookie": expiredCookie(deps.secure) },
+      headers: { "set-cookie": deps.cookie.expireHeader(deps.secure) },
     });
   }
 
   if (req.method === "GET") {
-    const sessionId = extractDashboardSessionId(req);
+    const sessionId = extractDashboardSessionId(req, deps.cookie.name);
     if (sessionId === null) return new Response(null, { status: 401 });
     const guarded = await deps.limitGuesses(async () => {
       const session = await resolveDashboardSessionForOrigin(

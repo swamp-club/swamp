@@ -27,6 +27,8 @@ export interface ForwardingOptions {
   readonly trustProxy: boolean;
   /** the path the router removed, `/w/<name>`; undefined for the root workspace */
   readonly removedPrefix: string | undefined;
+  /** the one cookie a workspace's serve is sent; undefined forwards every cookie */
+  readonly keepCookie?: string;
 }
 
 const HOP_BY_HOP = [
@@ -95,7 +97,24 @@ export function forwardRequestHeaders(
   const prefix = prior.prefix + (options.removedPrefix ?? "");
   if (prefix.length > 0) headers.set("x-forwarded-prefix", prefix);
   else headers.delete("x-forwarded-prefix");
+  if (options.keepCookie !== undefined) {
+    keepOnlyCookie(headers, options.keepCookie);
+  }
   return headers;
+}
+
+// the root's cookie has Path=/ and reaches every workspace's path, so a
+// workspace's serve sees no session but its own
+function keepOnlyCookie(headers: Headers, name: string): void {
+  const kept = (headers.get("cookie") ?? "")
+    .split(";")
+    .map((entry) => entry.trim())
+    .filter((entry) => {
+      const separator = entry.indexOf("=");
+      return separator > 0 && entry.slice(0, separator).trim() === name;
+    });
+  if (kept.length > 0) headers.set("cookie", kept.join("; "));
+  else headers.delete("cookie");
 }
 
 /** the request headers for the router's own handshake with the child */

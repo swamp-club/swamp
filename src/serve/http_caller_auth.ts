@@ -58,6 +58,8 @@ export interface HttpCallerAuthDeps {
 
 export interface HttpCallerSessionAuth {
   readonly sessions: DashboardSessionStore;
+  /** the serve's own cookie name; any other is not its session */
+  readonly cookieName: string;
   readonly authenticate: (
     session: DashboardSession,
     sourceIp: string,
@@ -99,7 +101,7 @@ export async function authenticateHttpCaller(
     const sessionAuth = deps.dashboardSession;
     const sessionId = sessionAuth === undefined
       ? null
-      : extractDashboardSessionId(req);
+      : extractDashboardSessionId(req, sessionAuth.cookieName);
     if (sessionAuth !== undefined && sessionId !== null) {
       return await authenticateSessionCaller(
         req,

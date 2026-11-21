@@ -280,7 +280,9 @@ import {
   handleDashboardSession,
   normalizeDashboardOrigin,
   resolveDashboardSessionForOrigin,
+  resolveUpgradeDashboardSession,
 } from "../../serve/dashboard_session_handler.ts";
+import { DashboardSessionCookie } from "../../serve/dashboard_session_cookie.ts";
 import { ControlPlaneDashboardSessionStore } from "../../serve/dashboard_session_store.ts";
 import {
   traceHttpRequests,
@@ -7182,6 +7184,7 @@ export const serveCommand = new Command()
     const dashboardSessions = new ControlPlaneDashboardSessionStore(
       controlPlaneStore,
     );
+    const dashboardCookie = DashboardSessionCookie.forAddress(ownerAddress);
     const authenticateDashboardHealth = async (
       req: Request,
       remoteAddr: string,
@@ -7193,7 +7196,7 @@ export const serveCommand = new Command()
       if (authHeader?.startsWith("Bearer ")) {
         return await authenticateToken(req, remoteAddr, adminAuthDeps);
       }
-      const sessionId = extractDashboardSessionId(req);
+      const sessionId = extractDashboardSessionId(req, dashboardCookie.name);
       if (sessionId === null) {
         return await authenticateToken(req, remoteAddr, adminAuthDeps);
       }
@@ -7359,7 +7362,7 @@ export const serveCommand = new Command()
               return response;
             }
             const dashboardSessionId = extracted === null
-              ? extractDashboardSessionId(req)
+              ? extractDashboardSessionId(req, dashboardCookie.name)
               : null;
             // an upgrade that presents nothing costs no lookup, so it is
             // refused before it can spend the IP burst
@@ -7385,32 +7388,26 @@ export const serveCommand = new Command()
               });
             }
 
-            const dashboardSession = dashboardSessionId === null
+            const upgradeSession = dashboardSessionId === null
               ? null
-              : await resolveDashboardSessionForOrigin(
+              : await resolveUpgradeDashboardSession(
                 dashboardSessionId,
                 req.headers.get("origin"),
                 dashboardSessions,
               );
-            if (
-              !extracted && dashboardSessionId !== null &&
-              dashboardSession === null
-            ) {
-              const storedSession = await dashboardSessions.get(
-                dashboardSessionId,
+            if (upgradeSession?.kind === "unknown") {
+              logger.warn(
+                "WebSocket dashboard session rejected: unknown session from {ip}",
+                { ip: remoteAddr },
               );
-              if (storedSession === null) {
-                logger.warn(
-                  "WebSocket dashboard session rejected: unknown session from {ip}",
-                  { ip: remoteAddr },
-                );
-                return new Response(
-                  "Unauthorized: dashboard session expired",
-                  {
-                    status: 401,
-                  },
-                );
-              }
+              return new Response(
+                "Unauthorized: dashboard session expired",
+                {
+                  status: 401,
+                },
+              );
+            }
+            if (upgradeSession?.kind === "originMismatch") {
               logger.warn(
                 "WebSocket dashboard session rejected: origin mismatch from {ip}",
                 { ip: remoteAddr },
@@ -7422,6 +7419,9 @@ export const serveCommand = new Command()
                 },
               );
             }
+            const dashboardSession = upgradeSession?.kind === "session"
+              ? upgradeSession.session
+              : null;
 
             let rateLimitCredential: string;
             let transport: "bearer" | "subprotocol" | "query" | "cookie";
@@ -7706,6 +7706,7 @@ export const serveCommand = new Command()
               ),
             dashboardSession: {
               sessions: dashboardSessions,
+              cookieName: dashboardCookie.name,
               authenticate: (session, sourceIp) =>
                 authenticateDashboardSession(
                   session,
@@ -8154,6 +8155,7 @@ export const serveCommand = new Command()
             trustedHosts,
           );
           const dashboardSessionResponse = await handleDashboardSession(req, {
+            cookie: dashboardCookie,
             secure: dashboardOrigin.secure,
             originAllowed: (request) => {
               const allowed = validateDashboardSessionOrigin(

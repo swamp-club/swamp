@@ -17,12 +17,15 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import {
+  DashboardSessionCookie,
+  PLAIN_DASHBOARD_SESSION_COOKIE as DASHBOARD_SESSION_COOKIE,
+} from "./dashboard_session_cookie.ts";
 import { assertEquals, assertRejects } from "@std/assert";
 import {
   authenticateDashboardSession,
   authenticateServerToken,
   classifyRedeemError,
-  DASHBOARD_SESSION_COOKIE,
   extractDashboardSessionId,
   extractWebSocketToken,
   readServerTokenRecord,
@@ -124,7 +127,10 @@ Deno.test("extractDashboardSessionId: extracts the dashboard session cookie", ()
   const req = makeReq("http://localhost:4000/", {
     cookie: `${DASHBOARD_SESSION_COOKIE}=mytoken.secret123`,
   });
-  assertEquals(extractDashboardSessionId(req), "mytoken.secret123");
+  assertEquals(
+    extractDashboardSessionId(req, DASHBOARD_SESSION_COOKIE),
+    "mytoken.secret123",
+  );
   assertEquals(extractWebSocketToken(req), null);
 });
 
@@ -132,7 +138,7 @@ Deno.test("extractDashboardSessionId: ignores an invalid dashboard session cooki
   const req = makeReq("http://localhost:4000/", {
     cookie: `${DASHBOARD_SESSION_COOKIE}=%E0%A4%A`,
   });
-  assertEquals(extractDashboardSessionId(req), null);
+  assertEquals(extractDashboardSessionId(req, DASHBOARD_SESSION_COOKIE), null);
 });
 
 Deno.test("extractDashboardSessionId: rejects duplicate dashboard session cookies", () => {
@@ -140,7 +146,22 @@ Deno.test("extractDashboardSessionId: rejects duplicate dashboard session cookie
     cookie:
       `${DASHBOARD_SESSION_COOKIE}=first.secret; ${DASHBOARD_SESSION_COOKIE}=second.secret`,
   });
-  assertEquals(extractDashboardSessionId(req), null);
+  assertEquals(extractDashboardSessionId(req, DASHBOARD_SESSION_COOKIE), null);
+});
+
+Deno.test("extractDashboardSessionId: reads only the cookie it is named, ignoring the plain one", () => {
+  const cookie = DashboardSessionCookie.forAddress(
+    "https://serve.example.test/w/data",
+  );
+  const req = makeReq("http://localhost:4000/", {
+    cookie:
+      `${DASHBOARD_SESSION_COOKIE}=root.secret; ${cookie.name}=data.secret`,
+  });
+  assertEquals(extractDashboardSessionId(req, cookie.name), "data.secret");
+  const plainOnly = makeReq("http://localhost:4000/", {
+    cookie: `${DASHBOARD_SESSION_COOKIE}=root.secret`,
+  });
+  assertEquals(extractDashboardSessionId(plainOnly, cookie.name), null);
 });
 
 Deno.test("extractWebSocketToken: returns null when no token present", () => {

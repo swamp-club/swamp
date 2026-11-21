@@ -49,6 +49,7 @@ async function answer(
       directory,
       protocol: "https",
       trustProxy: false,
+      sessionCookieName: (name) => `session-${name}`,
       signal: shutdown.signal,
     });
     const response = await router.handle(
@@ -110,6 +111,7 @@ Deno.test("createWorkspaceRouter: a router already shut down answers 503 without
     directory: directoryOf({ a: { kind: "running", port: 1 } }),
     protocol: "https",
     trustProxy: false,
+    sessionCookieName: (name) => `session-${name}`,
     signal: shutdown.signal,
   });
   shutdown.abort();

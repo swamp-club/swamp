@@ -180,6 +180,32 @@ Deno.test("forwardRequestHeaders: behind a trusted proxy the removed path is app
   assertEquals(prefixOf("/", undefined), null);
 });
 
+Deno.test("forwardRequestHeaders: a workspace's serve is sent only the cookie it keeps", () => {
+  const keep = { ...DIRECT, keepCookie: "swamp-dashboard-session_2Fw_2Fa" };
+  const headers = forwardRequestHeaders(
+    request({
+      cookie:
+        "swamp-dashboard-session=root; swamp-dashboard-session_2Fw_2Fa=mine; swamp-dashboard-session_2Fw_2Fa-2=other; junk",
+    }),
+    keep,
+  );
+  assertEquals(headers.get("cookie"), "swamp-dashboard-session_2Fw_2Fa=mine");
+  assertEquals(
+    forwardRequestHeaders(
+      request({ cookie: "swamp-dashboard-session=root" }),
+      keep,
+    ).has("cookie"),
+    false,
+  );
+  assertEquals(
+    forwardWebSocketHeaders(
+      request({ cookie: "a=b; swamp-dashboard-session_2Fw_2Fa=mine" }),
+      keep,
+    ).get("cookie"),
+    "swamp-dashboard-session_2Fw_2Fa=mine",
+  );
+});
+
 Deno.test("forwardWebSocketHeaders: the handshake headers are left to the router's own client", () => {
   const headers = forwardWebSocketHeaders(
     request({

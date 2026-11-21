@@ -41,10 +41,8 @@ import {
 } from "./http_request_route.ts";
 import { MAX_HTTP_REQUEST_BODY_BYTES } from "./protocol.ts";
 import type { DashboardSession } from "./dashboard_session_store.ts";
-import {
-  DASHBOARD_SESSION_COOKIE,
-  type ServerTokenAuthResult,
-} from "./token_auth.ts";
+import type { ServerTokenAuthResult } from "./token_auth.ts";
+import { PLAIN_DASHBOARD_SESSION_COOKIE as DASHBOARD_SESSION_COOKIE } from "./dashboard_session_cookie.ts";
 
 function authConfig(mode: "none" | "token"): ServeAuthConfig {
   return {
@@ -644,6 +642,7 @@ Deno.test("handleHttpRequest: the dashboard's session cookie from its own origin
     authenticate: () =>
       Promise.reject(new Error("a cookie caller presents no bearer token")),
     dashboardSession: {
+      cookieName: DASHBOARD_SESSION_COOKIE,
       sessions: {
         create: () => Promise.reject(new Error("not used")),
         get: (id) => Promise.resolve(id === session.id ? session : null),

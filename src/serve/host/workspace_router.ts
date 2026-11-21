@@ -51,6 +51,8 @@ export interface WorkspaceRouterOptions {
   readonly directory: WorkspaceDirectory;
   readonly protocol: ListenerProtocol;
   readonly trustProxy: boolean;
+  /** the dashboard session cookie a workspace's serve reads, from its address */
+  readonly sessionCookieName: (workspace: string) => string;
   /** aborting it ends every forwarded stream and relayed socket */
   readonly signal: AbortSignal;
   readonly webSocketOpenTimeoutMs?: number;
@@ -225,6 +227,9 @@ export function createWorkspaceRouter(
         removedPrefix: match.kind === "workspace"
           ? `/w/${match.name}`
           : undefined,
+        ...(match.kind === "workspace"
+          ? { keepCookie: options.sessionCookieName(match.name) }
+          : {}),
       };
       if (req.headers.get("upgrade")?.toLowerCase() === "websocket") {
         return relayWebSocket(req, route.port, pathAndQuery, forwarding);

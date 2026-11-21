@@ -212,8 +212,6 @@ export type WebSocketTokenTransport =
   | "subprotocol"
   | "query";
 
-export const DASHBOARD_SESSION_COOKIE = "swamp-dashboard-session";
-
 export interface ExtractedWebSocketToken {
   token: string;
   transport: WebSocketTokenTransport;
@@ -227,7 +225,10 @@ const SUBPROTOCOL_PREFIX = "bearer.";
  * Duplicate and malformed cookies are rejected instead of selecting an
  * attacker-controlled value by position.
  */
-export function extractDashboardSessionId(req: Request): string | null {
+export function extractDashboardSessionId(
+  req: Request,
+  cookieName: string,
+): string | null {
   const cookie = req.headers.get("cookie");
   if (cookie === null) return null;
 
@@ -236,7 +237,7 @@ export function extractDashboardSessionId(req: Request): string | null {
     const separator = entry.indexOf("=");
     if (separator <= 0) continue;
     const name = entry.slice(0, separator).trim();
-    if (name !== DASHBOARD_SESSION_COOKIE) continue;
+    if (name !== cookieName) continue;
     if (sessionId !== null) return null;
 
     try {
