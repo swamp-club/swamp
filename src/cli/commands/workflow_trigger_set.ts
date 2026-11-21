@@ -179,11 +179,15 @@ export const workflowTriggerSetCommand = withRemoteOptions(
       options,
     );
     // an older server drops catchUp and saves the override without it, so the
-    // probe comes first; a catch-up of none is probed too, or it is lost
+    // probe comes first and asks the leader, which saves the override; a
+    // catch-up of none is probed too, or it is lost
     if (catchUp) {
       const version = await requestServerResponse<
         { version: string; capabilities?: string[] }
-      >({ server, token }, { type: "server.version" });
+      >({ server, token }, {
+        type: "server.version",
+        payload: { leader: true },
+      });
       if (
         !version.capabilities?.includes(SERVE_CAPABILITY_SCHEDULE_CATCH_UP)
       ) {

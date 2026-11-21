@@ -54,8 +54,10 @@ function versionedResumeServer(capabilities: string[] | undefined): {
   url: string;
   shutdown: () => Promise<void>;
   resumes: Record<string, unknown>[];
+  versionRequests: (Record<string, unknown> | undefined)[];
 } {
   const resumes: Record<string, unknown>[] = [];
+  const versionRequests: (Record<string, unknown> | undefined)[] = [];
   const server = Deno.serve(
     { port: 0, hostname: "127.0.0.1", onListen: () => {} },
     (req) => {
@@ -67,6 +69,7 @@ function versionedResumeServer(capabilities: string[] | undefined): {
           payload: Record<string, unknown>;
         };
         if (request.type === "server.version") {
+          versionRequests.push(request.payload);
           socket.send(JSON.stringify({
             type: "server.version",
             id: request.id,
@@ -93,6 +96,7 @@ function versionedResumeServer(capabilities: string[] | undefined): {
     url: `ws://127.0.0.1:${server.addr.port}`,
     shutdown: () => server.shutdown(),
     resumes,
+    versionRequests,
   };
 }
 
@@ -311,6 +315,7 @@ Deno.test({
         // Nothing was asked to resume: an older serve would drop fromJob
         // and reset the step in every job.
         assertEquals(server.resumes, []);
+        assertEquals(server.versionRequests, [{ leader: true }]);
       } finally {
         await server.shutdown();
       }
@@ -328,6 +333,7 @@ Deno.test({
     const previousExitCode = Deno.exitCode;
     try {
       await resumeFromJobOverServer(server.url);
+      assertEquals(server.versionRequests, [{ leader: true }]);
       assertEquals(server.resumes.length, 1);
       assertEquals(server.resumes[0].from, "restart");
       assertEquals(server.resumes[0].fromJob, "host-b");

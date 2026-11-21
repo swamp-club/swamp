@@ -122,6 +122,7 @@ Deno.test({
         );
         // an older serve would save the override without its catch-up
         assertEquals(server.requests.map((r) => r.type), ["server.version"]);
+        assertEquals(server.requests[0].payload, { leader: true });
       } finally {
         await server.shutdown();
       }
@@ -162,6 +163,7 @@ Deno.test({
         "server.version",
         "workflow.trigger.set",
       ]);
+      assertEquals(server.requests[0].payload, { leader: true });
       assertEquals(server.requests[1].payload?.catchUp, {
         policy: "latest",
         maxDelay: "6h",

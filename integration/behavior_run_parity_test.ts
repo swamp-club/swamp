@@ -435,6 +435,10 @@ Deno.test({
         );
       }
       assertEquals(server.runs, []);
+      // asked of the leader: a newer follower would answer for an older one
+      assertEquals(server.versionRequests, [{ leader: true }, {
+        leader: true,
+      }]);
     } finally {
       await server.shutdown();
     }
@@ -454,6 +458,9 @@ Deno.test({
         await runLiteralOverServer(positionals, server.url);
       }
       assertEquals(server.runs.length, 2);
+      assertEquals(server.versionRequests, [{ leader: true }, {
+        leader: true,
+      }]);
       for (const run of server.runs) {
         assertEquals(run.literalInputs, true);
         assertEquals(run.inputs, { body: "@/etc/passwd ${{ env.HOME }}" });

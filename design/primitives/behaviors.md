@@ -421,7 +421,8 @@ makes them data instead (see `design/enablers/expressions.md`, "Position and
 Value Provenance"): they reach the method verbatim, `@` is not read as a file,
 and a routed global argument holding expression text is refused before it is
 persisted. Over `swamp serve` the client sends it only to a server whose
-`server.version` lists the `literal-inputs` capability.
+`server.version` lists the `literal-inputs` capability, asked of the leader
+that runs it rather than a follower in front of it.
 
 A type marks a method argument as data with `.meta({ data: true })`: whatever
 a caller supplies for it, by any of those routes, over serve or through a

@@ -2300,8 +2300,9 @@ Step "restart" is in more than one job: "host-a", "host-b". Add --job <job> to c
 YAML (an expression-named job by its unevaluated name). Serve's
 `workflow.resume` takes it as `fromJob`. An older serve strips the unknown
 field and would reset the step in every job, so with `--server` the CLI first
-asks `server.version` and refuses `--job` unless the reply lists the
-`resume-from-job` capability (`SERVE_CAPABILITY_RESUME_FROM_JOB`). It requires
+asks the leader's `server.version` and refuses `--job` unless the reply lists
+the `resume-from-job` capability (`SERVE_CAPABILITY_RESUME_FROM_JOB`); a
+follower forwards the check, since only the leader runs the resume. It requires
 `--from`: alone it would
 be ignored and a retry would re-run every job, so the CLI, `resolveResumableRun`
 and `resume()` all refuse it. A step name used in one job needs no `--job`. The
@@ -3017,8 +3018,9 @@ an override with neither `schedule` nor `inputs`.
 `swamp workflow trigger set` requires `--schedule`, and sets `catchUp` with
 `--catch-up <none|latest>` and `--catch-up-max-delay <duration>`
 (`src/cli/commands/workflow_trigger_set.ts`). With `--server`, `--catch-up`
-first checks that `server.version` lists the `schedule-catch-up` capability
-(`SERVE_CAPABILITY_SCHEDULE_CATCH_UP`); a serve without it would save the
+first checks that the leader's `server.version` lists the `schedule-catch-up`
+capability (`SERVE_CAPABILITY_SCHEDULE_CATCH_UP`), since the leader saves the
+override; a serve without it would save the
 override without its catch-up, so the command refuses before sending anything
 and tells the user to upgrade swamp serve. Unknown keys in an override entry
 produce a warning and are ignored (`src/serve/serve_config.ts`).
