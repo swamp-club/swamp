@@ -17,21 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import {
-  assert,
-  assertEquals,
-  assertNotEquals,
-  assertRejects,
-} from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import { parse as parseYaml } from "@std/yaml";
 import { UserError } from "../../domain/errors.ts";
 import { assertErrors, collect } from "../testing.ts";
-import {
-  createHostedWorkspaceDeps,
-  OPERATOR_WORKSPACE_CODE,
-  WORKSPACE_NAME_CLASH_CODE,
-} from "./deps.ts";
+import { createHostedWorkspaceDeps, OPERATOR_WORKSPACE_CODE } from "./deps.ts";
 import {
   hostedWorkspaceCreate,
   type HostedWorkspaceCreateEvent,
@@ -43,9 +34,9 @@ import {
 import {
   ALICE,
   ctx,
-  type HostFolder,
-  hostFolder,
   OAUTH_ACCESS,
+  type TestHost,
+  testHost,
 } from "./hosted_workspace_test_helpers.ts";
 import {
   hostedWorkspaceResume,
@@ -66,7 +57,7 @@ async function wantedFile(
 }
 
 Deno.test("hostedWorkspaceSuspend/Resume/Delete: each writes the wanted file with a new changedAt and keeps the creator", async () => {
-  await using host = await hostFolder();
+  await using host = await testHost();
   const deps = host.deps();
   await collect(hostedWorkspaceCreate(ctx, deps, {
     name: "edge-dns",
@@ -101,19 +92,8 @@ Deno.test("hostedWorkspaceSuspend/Resume/Delete: each writes the wanted file wit
   }
 });
 
-Deno.test("hostedWorkspaceSuspend: a folder made by hand gets a wanted file with no creator", async () => {
-  await using host = await hostFolder();
-  await Deno.mkdir(join(host.dir, "by-hand"));
-  await Deno.writeTextFile(join(host.dir, "by-hand", ".swamp.yaml"), "");
-  await collect(hostedWorkspaceSuspend(ctx, host.deps(), { name: "by-hand" }));
-  const file = await wantedFile(host.dir, "by-hand");
-  assertEquals(file.wanted, "suspended");
-  assertEquals(file.creator, null);
-  assertNotEquals(file.changedAt, null);
-});
-
 async function registerOutside(
-  host: { dir: string; store: HostFolder["store"] },
+  host: { dir: string; store: TestHost["store"] },
   name: string,
 ): Promise<string> {
   const made = join(host.dir, "..", "projects", name);
@@ -130,24 +110,9 @@ async function registerOutside(
   return folder;
 }
 
-Deno.test("hostedWorkspaceSuspend/Resume: a registry that cannot be read still finds a folder", async () => {
-  await using host = await hostFolder();
-  await Deno.mkdir(join(host.dir, "by-hand"));
-  await Deno.writeTextFile(join(host.dir, "by-hand", ".swamp.yaml"), "");
-  await Deno.mkdir(join(host.dir, "..", "config"), { recursive: true });
-  await Deno.writeTextFile(
-    join(host.dir, "..", "config", "workspaces.json"),
-    "{not json",
-  );
-  await collect(hostedWorkspaceSuspend(ctx, host.deps(), { name: "by-hand" }));
-  assertEquals((await wantedFile(host.dir, "by-hand")).wanted, "suspended");
-});
-
-Deno.test("hostedWorkspaceSuspend/Resume: a root admin's resume and suspend of a registered repo name its folder; a workspace in workspaces/ names none", async () => {
-  await using host = await hostFolder();
+Deno.test("hostedWorkspaceSuspend/Resume: a root admin's resume and suspend of a registered repo name its folder", async () => {
+  await using host = await testHost();
   const folder = await registerOutside(host, "outside");
-  await Deno.mkdir(join(host.dir, "by-hand"));
-  await Deno.writeTextFile(join(host.dir, "by-hand", ".swamp.yaml"), "");
 
   await collect(
     hostedWorkspaceResume(ctx, host.deps(), {
@@ -169,17 +134,10 @@ Deno.test("hostedWorkspaceSuspend/Resume: a root admin's resume and suspend of a
   );
   assertEquals((await wantedFile(host.dir, "outside")).wanted, "suspended");
   assertEquals((await wantedFile(host.dir, "outside")).folder, folder);
-
-  await Deno.writeTextFile(
-    join(host.dir, "by-hand.wanted.yaml"),
-    `wanted: suspended\nfolder: ${folder}\n`,
-  );
-  await collect(hostedWorkspaceResume(ctx, host.deps(), { name: "by-hand" }));
-  assertEquals("folder" in await wantedFile(host.dir, "by-hand"), false);
 });
 
 Deno.test("hostedWorkspaceSuspend/Resume/Delete: a registered repo refuses a caller who is not a root admin, and refuses delete to everyone, writing nothing", async () => {
-  await using host = await hostFolder();
+  await using host = await testHost();
   await registerOutside(host, "outside");
   for (
     const events of [
@@ -207,14 +165,14 @@ Deno.test("hostedWorkspaceSuspend/Resume/Delete: a registered repo refuses a cal
 });
 
 Deno.test("hostedWorkspaceResume: refuses a workspace being deleted, an unknown name and an unreadable wanted file", async () => {
-  await using host = await hostFolder();
+  await using host = await testHost();
   const deps = host.deps();
   await Deno.writeTextFile(
     join(host.dir, "going.wanted.yaml"),
     "wanted: deleted\n",
   );
   const deleting = await assertErrors<HostedWorkspaceResumeEvent>(
-    hostedWorkspaceResume(ctx, deps, { name: "going" }),
+    hostedWorkspaceResume(ctx, deps, { name: "going", rootAdmin: true }),
     "user_error",
   );
   assertEquals(deleting.message.includes("being deleted"), true);
@@ -235,9 +193,10 @@ Deno.test("hostedWorkspaceResume: refuses a workspace being deleted, an unknown 
 });
 
 Deno.test("createHostedWorkspaceDeps: a change that cannot get the lock says the workspace is busy and names no host path", async () => {
-  await using host = await hostFolder();
+  await using host = await testHost();
   const deps = createHostedWorkspaceDeps({
     workspacesDir: host.dir,
+    placement: host.deps().placement,
     provisioner: { provision: () => Promise.resolve() },
     addressOf: (name) => name,
     workspaceStore: host.store,
@@ -268,7 +227,7 @@ Deno.test("createHostedWorkspaceDeps: a change that cannot get the lock says the
 });
 
 Deno.test("hostedWorkspaceSuspend/Create: a file-system error becomes an error event that names no host path", async () => {
-  await using host = await hostFolder();
+  await using host = await testHost();
   const denied = () =>
     Promise.reject(
       new Deno.errors.PermissionDenied(
@@ -327,36 +286,8 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
-Deno.test("hostedWorkspaceDelete: a name whose folder is registered under another name is refused, writing nothing", async () => {
-  await using host = await hostFolder();
-  await Deno.mkdir(join(host.dir, "gamma"));
-  await Deno.writeTextFile(join(host.dir, "gamma", ".swamp.yaml"), "");
-  await Deno.writeTextFile(
-    join(host.dir, "gamma.wanted.yaml"),
-    "wanted: active\n",
-  );
-  await host.store.registry.update((registry) => {
-    registry.register({
-      name: "beta",
-      path: Deno.realPathSync(join(host.dir, "gamma")),
-      createdAt: "2026-11-17T10:00:00.000Z",
-    });
-  });
-  const refused = await errorOf<HostedWorkspaceDeleteEvent>(
-    hostedWorkspaceDelete(ctx, host.deps(), { name: "gamma" }),
-  );
-  assertEquals(refused.code, OPERATOR_WORKSPACE_CODE);
-  assert(
-    refused.message.includes("registered under another name"),
-    refused.message,
-  );
-  assert(!refused.message.includes("beta"), "names no other workspace");
-  assert(!refused.message.includes(host.dir), "names no host path");
-  assertEquals((await wantedFile(host.dir, "gamma")).wanted, "active");
-});
-
 Deno.test("hostedWorkspaceSuspend/Resume/Delete: while the registry cannot be read, a name the host cannot place gets the operator's rules", async () => {
-  await using host = await hostFolder();
+  await using host = await testHost();
   const folder = await registerOutside(host, "personal");
   await collect(
     hostedWorkspaceSuspend(ctx, host.deps(), {
@@ -395,7 +326,7 @@ Deno.test("hostedWorkspaceSuspend/Resume/Delete: while the registry cannot be re
 });
 
 Deno.test("hostedWorkspaceResume: a root admin resumes a registered repo whose wanted file says deleted", async () => {
-  await using host = await hostFolder();
+  await using host = await testHost();
   const folder = await registerOutside(host, "personal");
   await Deno.writeTextFile(
     join(host.dir, "personal.wanted.yaml"),
@@ -410,32 +341,8 @@ Deno.test("hostedWorkspaceResume: a root admin resumes a registered repo whose w
   assertEquals((await wantedFile(host.dir, "personal")).wanted, "active");
 });
 
-Deno.test("hostedWorkspaceResume: a name a registered repo holds while a folder of that name is in workspaces/ is refused to everyone", async () => {
-  await using host = await hostFolder();
-  await Deno.mkdir(join(host.dir, "alpha"));
-  await Deno.writeTextFile(join(host.dir, "alpha", ".swamp.yaml"), "");
-  await registerOutside(host, "alpha");
-  const refused = await errorOf<HostedWorkspaceResumeEvent>(
-    hostedWorkspaceResume(ctx, host.deps(), { name: "alpha", rootAdmin: true }),
-  );
-  assertEquals(refused.code, WORKSPACE_NAME_CLASH_CODE);
-  assert(
-    refused.message.includes("swamp workspace remove alpha"),
-    refused.message,
-  );
-  assert(!refused.message.includes(host.dir), "names no host path");
-  assertEquals(await exists(join(host.dir, "alpha.wanted.yaml")), false);
-  await collect(
-    hostedWorkspaceSuspend(ctx, host.deps(), {
-      name: "alpha",
-      rootAdmin: true,
-    }),
-  );
-  assertEquals((await wantedFile(host.dir, "alpha")).wanted, "suspended");
-});
-
 Deno.test("hostedWorkspaceSuspend/Resume/Delete: a name with no entry whose wanted file names a folder gets the operator's rules", async () => {
-  await using host = await hostFolder();
+  await using host = await testHost();
   const folder = await registerOutside(host, "personal");
   await collect(
     hostedWorkspaceSuspend(ctx, host.deps(), {
@@ -457,7 +364,7 @@ Deno.test("hostedWorkspaceSuspend/Resume/Delete: a name with no entry whose want
 });
 
 Deno.test("hostedWorkspaceResume: a name with nothing is not found, whatever the registry", async () => {
-  await using host = await hostFolder();
+  await using host = await testHost();
   await Deno.mkdir(join(host.dir, "..", "config"), { recursive: true });
   await Deno.writeTextFile(
     join(host.dir, "..", "config", "workspaces.json"),
@@ -470,10 +377,12 @@ Deno.test("hostedWorkspaceResume: a name with nothing is not found, whatever the
 });
 
 Deno.test("hostedWorkspaceDelete: while the registry cannot be read, no workspace is deleted, the host's own included", async () => {
-  await using host = await hostFolder();
-  await Deno.mkdir(join(host.dir, "delta"));
-  await Deno.writeTextFile(join(host.dir, "delta", ".swamp.yaml"), "");
-  await Deno.mkdir(join(host.dir, "..", "config"), { recursive: true });
+  await using host = await testHost();
+  await collect(hostedWorkspaceCreate(ctx, host.deps(), {
+    name: "delta",
+    caller: ALICE,
+    access: OAUTH_ACCESS,
+  }));
   await Deno.writeTextFile(
     join(host.dir, "..", "config", "workspaces.json"),
     "{not json",
@@ -483,12 +392,12 @@ Deno.test("hostedWorkspaceDelete: while the registry cannot be read, no workspac
   );
   assertEquals(refused.code, OPERATOR_WORKSPACE_CODE);
   assert(refused.message.includes("registry"), refused.message);
-  assertEquals(await exists(join(host.dir, "delta.wanted.yaml")), false);
+  assertEquals((await wantedFile(host.dir, "delta")).wanted, "suspended");
 });
 
-Deno.test("hostedWorkspaceSuspend/Resume: on a host with no host folder a root admin resumes and suspends a registered repo, naming its folder, and a grant holder is refused", async () => {
-  await using host = await hostFolder();
-  const deps = host.deps({ hostFolder: false });
+Deno.test("hostedWorkspaceSuspend/Resume: a root admin resumes and suspends a registered repo, naming its folder, and a grant holder is refused", async () => {
+  await using host = await testHost();
+  const deps = host.deps();
   const folder = await registerOutside(host, "outside");
   const refused = await errorOf<HostedWorkspaceResumeEvent>(
     hostedWorkspaceResume(ctx, deps, { name: "outside" }),
@@ -507,9 +416,9 @@ Deno.test("hostedWorkspaceSuspend/Resume: on a host with no host folder a root a
   assertEquals((await wantedFile(host.dir, "outside")).wanted, "suspended");
 });
 
-Deno.test("hostedWorkspaceSuspend/Resume/Delete: on a host with no host folder a wanted file a create wrote for another repo at the same folder makes it the operator's, and a root admin's resume drops its creator and repoId", async () => {
-  await using host = await hostFolder();
-  const deps = host.deps({ hostFolder: false });
+Deno.test("hostedWorkspaceSuspend/Resume/Delete: a wanted file a create wrote for another repo at the same folder makes it the operator's, and a root admin's resume drops its creator and repoId", async () => {
+  await using host = await testHost();
+  const deps = host.deps();
   const folder = await registerOutside(host, "reused");
   await Deno.writeTextFile(join(folder, ".swamp.yaml"), "repoId: repo-new\n");
   await Deno.writeTextFile(
@@ -538,9 +447,9 @@ Deno.test("hostedWorkspaceSuspend/Resume/Delete: on a host with no host folder a
   assertEquals(await exists(join(folder, ".swamp.yaml")), true);
 });
 
-Deno.test("hostedWorkspaceSuspend/Resume: on a host with no host folder a stray wanted file with no folder is the operator's, never opened to a grant holder", async () => {
-  await using host = await hostFolder();
-  const deps = host.deps({ hostFolder: false });
+Deno.test("hostedWorkspaceSuspend/Resume: a stray wanted file with no folder is the operator's, never opened to a grant holder", async () => {
+  await using host = await testHost();
+  const deps = host.deps();
   await Deno.writeTextFile(
     join(host.dir, "stray.wanted.yaml"),
     "wanted: suspended\n",

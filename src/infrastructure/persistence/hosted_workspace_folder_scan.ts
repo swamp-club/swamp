@@ -17,7 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { join } from "@std/path";
 import { parseWorkspaceName } from "../../domain/workspace/workspace_name.ts";
 import { hostedWorkspaceFileOf } from "./hosted_workspace_file_repository.ts";
 
@@ -43,10 +42,6 @@ export function deletingFolderOwner(entry: string): string | null {
   }
 }
 
-export function isDeletingFolderName(entry: string): boolean {
-  return deletingFolderOwner(entry) !== null;
-}
-
 // hidden, so nothing lists a workspace before its rename into place
 const CREATING_FOLDER_PATTERN =
   /^\.([a-z0-9][a-z0-9-]{0,62})\.creating-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -66,97 +61,31 @@ export function creatingFolderOwner(entry: string): string | null {
   }
 }
 
-export interface SkippedEntry {
-  readonly name: string;
-  readonly reason: string;
-}
-
 export interface WorkspaceScan {
-  /** sorted */
-  readonly workspaces: readonly string[];
-  readonly skipped: readonly SkippedEntry[];
-  /** the workspaces with a wanted file, with or without a folder; sorted */
+  /** the workspaces with a wanted file; sorted */
   readonly wantedFiles: readonly string[];
-  /** folders an interrupted removal left under their hidden name */
-  readonly leftovers: readonly string[];
   /** performance.now() before the folder was listed */
   readonly startedAt: number;
 }
 
-/**
- * a missing folder holds no workspaces; hidden entries are passed over
- * silently. With repos false the folder is a state folder: only its wanted
- * files are read, and no entry in it is a workspace, skipped or a leftover.
- */
-export async function scanWorkspaces(
-  dir: string,
-  options: { readonly repos?: boolean } = {},
-): Promise<WorkspaceScan> {
-  const repos = options.repos ?? true;
+/** the host's state folder holds no workspace: only its wanted files are read; a missing folder has none */
+export async function scanWorkspaces(dir: string): Promise<WorkspaceScan> {
   const startedAt = performance.now();
-  const workspaces: string[] = [];
-  const skipped: SkippedEntry[] = [];
   const wantedFiles: string[] = [];
-  const leftovers: string[] = [];
   let entries: Deno.DirEntry[];
   try {
     entries = await Array.fromAsync(Deno.readDir(dir));
   } catch (error) {
     if (error instanceof Deno.errors.NotFound) {
-      return { workspaces, skipped, wantedFiles, leftovers, startedAt };
+      return { wantedFiles, startedAt };
     }
     throw error;
   }
   for (const entry of entries) {
-    if (entry.name.startsWith(".")) {
-      // a removal renames whatever is there, a link or a file included
-      if (repos && isDeletingFolderName(entry.name)) {
-        leftovers.push(entry.name);
-      }
-      continue;
-    }
+    if (entry.name.startsWith(".")) continue;
     const file = hostedWorkspaceFileOf(entry.name);
-    if (file !== null) {
-      if (file.kind === "wanted") wantedFiles.push(file.name);
-      continue;
-    }
-    if (!repos) continue;
-    const reason = await skipReason(dir, entry.name);
-    if (reason === null) workspaces.push(entry.name);
-    else skipped.push({ name: entry.name, reason });
+    if (file?.kind === "wanted") wantedFiles.push(file.name);
   }
-  workspaces.sort();
   wantedFiles.sort();
-  leftovers.sort();
-  return { workspaces, skipped, wantedFiles, leftovers, startedAt };
-}
-
-async function skipReason(dir: string, name: string): Promise<string | null> {
-  try {
-    parseWorkspaceName(name);
-  } catch (error) {
-    return error instanceof Error ? error.message : String(error);
-  }
-  const path = join(dir, name);
-  if (!(await isDirectory(path))) return "it is not a folder";
-  if (!(await isFile(join(path, REPO_MARKER_FILE)))) {
-    return `it has no ${REPO_MARKER_FILE}, so it is not a swamp repo yet`;
-  }
-  return null;
-}
-
-async function isDirectory(path: string): Promise<boolean> {
-  try {
-    return (await Deno.stat(path)).isDirectory;
-  } catch {
-    return false;
-  }
-}
-
-async function isFile(path: string): Promise<boolean> {
-  try {
-    return (await Deno.stat(path)).isFile;
-  } catch {
-    return false;
-  }
+  return { wantedFiles, startedAt };
 }

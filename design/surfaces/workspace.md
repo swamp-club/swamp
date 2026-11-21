@@ -20,18 +20,14 @@ There are two kinds:
   `swamp workspace import` or the import form on the `swamp start` page.
   Nothing is moved or copied.
 
-A serve host writes the registry too
-([The host](./serve-workspaces.md#the-host) in serve workspaces says how). It
-registers every workspace it runs, recorded as an import would record it, with
-no trust mark, and takes the workspaces it serves from the registry (steps 19
-and 20 of its [execution plan](./serve-workspaces.md#execution-plan), built).
-A host with no host folder creates each workspace a `workspace.create` request
-makes where `swamp workspace create` would, in `workspaces.dir` or
-`<data dir>/workspaces`, and registers it as created. Hosted workspaces
-therefore appear in
+A serve host takes the workspaces it serves from the registry
+([The host](./serve-workspaces.md#the-host) in serve workspaces says how).
+Its root creates each workspace a `workspace.create` request makes where
+`swamp workspace create` would, in `workspaces.dir` or
+`<data dir>/workspaces`, and registers it as created, through the same store,
+under the same lock, adding no field. Hosted workspaces therefore appear in
 `swamp workspace list` and on the `swamp start` page beside the user's own, and
-a repo the user registers is listed on that user's host. The host writes
-through the same store, under the same lock, and adds no field.
+a repo the user registers is listed on that user's host.
 
 `swamp start` uses workspaces for its tasks and launches; see
 [start.md](./start.md).
@@ -121,12 +117,10 @@ often the user's own project, so no workspace command deletes a folder. When a
 `swamp start` still has the workspace open, `remove` says so and goes ahead.
 
 On a machine that runs a serve host, `remove` of a workspace the host serves
-from elsewhere stops its serve, and the host's wanted and status files for it
-are removed. `remove` of one whose folder is inside the host's `workspaces/`
-has no lasting effect: the host's next rescan registers it again. `remove` of
-one a host with no host folder created keeps its folder, as for any workspace,
-and the host removes its wanted file; `swamp serve workspace rm` is what
-deletes the folder.
+stops its serve, and the host's wanted and status files for it are removed. Its
+folder is kept, as for any workspace, the host's own included;
+`swamp serve workspace rm` is what deletes the folder of a workspace the host
+created.
 
 ## Known gaps
 

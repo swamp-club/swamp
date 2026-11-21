@@ -22,11 +22,7 @@ import { parse as parseYaml } from "@std/yaml";
 import { z } from "zod";
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import type { ListenerProtocol } from "./forwarding_headers.ts";
-import {
-  HOST_CONFIG_FILE,
-  type HostLayout,
-  WORKSPACES_DIR,
-} from "./host_layout.ts";
+import { HOST_CONFIG_FILE, type HostLayout } from "./host_layout.ts";
 import { hostedWorkspaceAddress } from "./workspace_path.ts";
 
 // the same set serve's own off-loopback check uses
@@ -96,9 +92,7 @@ export class HostConfig {
     const yaml = parsed.data;
     const dir = resolve(layout.baseDir);
     const stateDir = resolve(layout.stateDir);
-    const stateName = layout.hostFolder !== null
-      ? `${WORKSPACES_DIR}/`
-      : `the host's state folder ${stateDir}`;
+    const stateName = `the host's state folder ${stateDir}`;
 
     const certFile = yaml.listen?.["cert-file"];
     const keyFile = yaml.listen?.["key-file"];
@@ -130,9 +124,7 @@ export class HostConfig {
       if (isWithin(stateDir, root)) {
         throw markErrorPaths(
           invalid(
-            layout.hostFolder !== null
-              ? `root ${yaml.root} is inside ${WORKSPACES_DIR}/, where every repo is a workspace`
-              : `root ${yaml.root} is inside ${stateName}, which holds no repo`,
+            `root ${yaml.root} is inside ${stateName}, which holds no repo`,
           ),
           [yaml.root],
         );
@@ -140,9 +132,7 @@ export class HostConfig {
       if (isWithin(root, stateDir)) {
         throw markErrorPaths(
           invalid(
-            layout.hostFolder !== null
-              ? `root ${yaml.root} contains ${WORKSPACES_DIR}/, so its repo would hold every workspace's repo; name a folder beside ${WORKSPACES_DIR}/`
-              : `root ${yaml.root} contains ${stateName}, so its repo would hold the host's wanted and status files`,
+            `root ${yaml.root} contains ${stateName}, so its repo would hold the host's wanted and status files`,
           ),
           [yaml.root],
         );
@@ -179,14 +169,9 @@ export class HostConfig {
     );
   }
 
-  /** the wanted, status and lock files; with a host folder, also its workspaces' repos */
+  /** the wanted, status and lock files */
   get stateDir(): string {
     return this.layout.stateDir;
-  }
-
-  /** null for a host with no host folder */
-  get hostFolder(): string | null {
-    return this.layout.hostFolder;
   }
 
   get protocol(): ListenerProtocol {

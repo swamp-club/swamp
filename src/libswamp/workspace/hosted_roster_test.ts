@@ -27,14 +27,13 @@ import { HostedWorkspace } from "../../domain/serve/hosted_workspace.ts";
 import {
   createdOwnership,
   folderRepoIdentity,
-  freshFolderClaim,
   hostCreated,
   type HostedRoster,
   hostedWorkspaceFolders,
   readHostedRegistry,
   registryOfRead,
   type RepoIdentity,
-  wantedFolderOf,
+  wantedFolderMatches,
 } from "./hosted_roster.ts";
 import { withWorkspaceFixture } from "./workspace_test_helpers.ts";
 
@@ -52,147 +51,52 @@ function registryOf(
 const listed = (roster: HostedRoster) =>
   roster.workspaces.map(({ name, folder, owner }) => ({ name, folder, owner }));
 
-Deno.test("hostedWorkspaceFolders: an entry at its own scanned folder is the host's own at that folder", async () => {
+Deno.test("hostedWorkspaceFolders: with no wanted file, every entry is the operator's own at its real path, and the root's is not listed", async () => {
   await withWorkspaceFixture(async (f) => {
-    const workspacesDir = join(f.dir, "host", "workspaces");
-    await f.makeRepo(join(workspacesDir, "alpha"));
+    const outside = join(f.dir, "projects", "outside");
+    const root = join(f.dir, "projects", "root");
+    await f.makeRepo(outside);
+    await f.makeRepo(root);
     const roster = await hostedWorkspaceFolders({
-      workspacesDir,
-      scanned: ["alpha"],
-      registry: registryOf({
-        name: "alpha",
-        path: join(workspacesDir, "alpha"),
-      }),
-      rootRepo: null,
+      registry: registryOf(
+        { name: "gone", path: join(f.dir, "projects", "gone") },
+        {
+          name: "outside",
+          path: [f.dir, "projects", "..", "projects", "outside"].join(
+            SEPARATOR,
+          ),
+        },
+        { name: "root", path: root },
+      ),
+      rootRepo: root,
     });
     assertEquals(roster, {
-      workspaces: [{
-        name: "alpha",
-        folder: join(workspacesDir, "alpha"),
-        owner: "host",
-        isRepo: true,
-        fromWantedFile: false,
-        shadows: false,
-      }],
-      gone: [],
-      passedOver: [],
-      registered: new Set(["alpha"]),
-    });
-  });
-});
-
-Deno.test("hostedWorkspaceFolders: an entry naming its folder by another spelling is one workspace at the real path", async () => {
-  await withWorkspaceFixture(async (f) => {
-    const workspacesDir = join(f.dir, "host", "workspaces");
-    await f.makeRepo(join(workspacesDir, "alpha"));
-    await f.makeRepo(join(workspacesDir, "beta"));
-    const roster = await hostedWorkspaceFolders({
-      workspacesDir,
-      scanned: ["alpha", "beta"],
-      registry: registryOf(
+      workspaces: [
         {
-          name: "alpha",
-          path: [workspacesDir, "..", "workspaces", "alpha"].join(SEPARATOR),
+          name: "gone",
+          folder: join(f.dir, "projects", "gone"),
+          owner: "operator",
+          isRepo: false,
+          fromWantedFile: false,
         },
-        { name: "beta", path: join(workspacesDir, "beta") + SEPARATOR },
-      ),
-      rootRepo: null,
+        {
+          name: "outside",
+          folder: outside,
+          owner: "operator",
+          isRepo: true,
+          fromWantedFile: false,
+        },
+      ],
+      registered: new Set(["gone", "outside", "root"]),
     });
-    assertEquals(listed(roster), [
-      { name: "alpha", folder: join(workspacesDir, "alpha"), owner: "host" },
-      { name: "beta", folder: join(workspacesDir, "beta"), owner: "host" },
-    ]);
-  });
-});
-
-Deno.test({
-  name:
-    "hostedWorkspaceFolders: a linked folder registered at its target is the host's own; retargeted, the entry keeps the name",
-  ignore: Deno.build.os === "windows",
-  fn: async () => {
-    await withWorkspaceFixture(async (f) => {
-      const workspacesDir = join(f.dir, "host", "workspaces");
-      const target = join(f.dir, "elsewhere", "repo");
-      await f.makeRepo(target);
-      await Deno.mkdir(workspacesDir, { recursive: true });
-      await Deno.symlink(target, join(workspacesDir, "linked"), {
-        type: "dir",
-      });
-      const registry = registryOf({ name: "linked", path: target });
-      assertEquals(
-        listed(
-          await hostedWorkspaceFolders({
-            workspacesDir,
-            scanned: ["linked"],
-            registry,
-            rootRepo: null,
-          }),
-        ),
-        [{ name: "linked", folder: target, owner: "host" }],
-      );
-
-      const other = join(f.dir, "elsewhere", "other");
-      await f.makeRepo(other);
-      await Deno.remove(join(workspacesDir, "linked"));
-      await Deno.symlink(other, join(workspacesDir, "linked"), {
-        type: "dir",
-      });
-      assertEquals(
-        listed(
-          await hostedWorkspaceFolders({
-            workspacesDir,
-            scanned: ["linked"],
-            registry,
-            rootRepo: null,
-          }),
-        ),
-        [{ name: "linked", folder: target, owner: "operator" }],
-      );
-    });
-  },
-});
-
-Deno.test("hostedWorkspaceFolders: an entry outside workspaces/ is the operator's own at its folder", async () => {
-  await withWorkspaceFixture(async (f) => {
-    const workspacesDir = join(f.dir, "host", "workspaces");
-    const outside = join(f.dir, "projects", "outside");
-    await f.makeRepo(join(workspacesDir, "alpha"));
-    await f.makeRepo(outside);
-    const roster = await hostedWorkspaceFolders({
-      workspacesDir,
-      scanned: ["alpha"],
-      registry: registryOf({ name: "outside", path: outside }),
-      rootRepo: null,
-    });
-    assertEquals(roster.workspaces, [
-      {
-        name: "alpha",
-        folder: join(workspacesDir, "alpha"),
-        owner: "host",
-        isRepo: true,
-        fromWantedFile: false,
-        shadows: false,
-      },
-      {
-        name: "outside",
-        folder: outside,
-        owner: "operator",
-        isRepo: true,
-        fromWantedFile: false,
-        shadows: false,
-      },
-    ]);
   });
 });
 
 Deno.test("hostedWorkspaceFolders: an operator's folder that is gone or holds no repo is listed and not a repo", async () => {
   await withWorkspaceFixture(async (f) => {
-    const workspacesDir = join(f.dir, "host", "workspaces");
     const empty = join(f.dir, "projects", "empty");
     await Deno.mkdir(empty, { recursive: true });
     const roster = await hostedWorkspaceFolders({
-      workspacesDir,
-      scanned: [],
       registry: registryOf(
         { name: "empty", path: empty },
         { name: "removed", path: join(f.dir, "projects", "removed") },
@@ -215,12 +119,9 @@ Deno.test("hostedWorkspaceFolders: an operator's folder that is gone or holds no
 
 Deno.test("hostedWorkspaceFolders: the root's repo is never a workspace, however it is registered", async () => {
   await withWorkspaceFixture(async (f) => {
-    const workspacesDir = join(f.dir, "host", "workspaces");
     const root = join(f.dir, "host", "root");
     await f.makeRepo(root);
     const roster = await hostedWorkspaceFolders({
-      workspacesDir,
-      scanned: [],
       registry: registryOf({ name: "main", path: root + SEPARATOR }),
       rootRepo: [f.dir, "host", ".", "root"].join(SEPARATOR),
     });
@@ -228,70 +129,26 @@ Deno.test("hostedWorkspaceFolders: the root's repo is never a workspace, however
   });
 });
 
-Deno.test("hostedWorkspaceFolders: a folder in workspaces/ whose name or folder another entry has is not listed; the entry is", async () => {
+Deno.test("hostedWorkspaceFolders: two entries for one folder list it once, under the first name; both names are registered", async () => {
   await withWorkspaceFixture(async (f) => {
-    const workspacesDir = join(f.dir, "host", "workspaces");
-    await f.makeRepo(join(workspacesDir, "alpha"));
-    await f.makeRepo(join(workspacesDir, "beta"));
-    await f.makeRepo(join(f.dir, "projects", "beta"));
+    const folder = join(f.dir, "projects", "shared");
+    await f.makeRepo(folder);
     const roster = await hostedWorkspaceFolders({
-      workspacesDir,
-      scanned: ["alpha", "beta"],
       registry: registryOf(
-        { name: "renamed", path: join(workspacesDir, "alpha") },
-        { name: "beta", path: join(f.dir, "projects", "beta") },
+        { name: "alpha", path: folder },
+        { name: "beta", path: folder + SEPARATOR },
       ),
       rootRepo: null,
     });
     assertEquals(listed(roster), [
-      {
-        name: "beta",
-        folder: join(f.dir, "projects", "beta"),
-        owner: "operator",
-      },
-      {
-        name: "renamed",
-        folder: join(workspacesDir, "alpha"),
-        owner: "operator",
-      },
+      { name: "alpha", folder, owner: "operator" },
     ]);
+    assertEquals([...roster.registered].sort(), ["alpha", "beta"]);
   });
 });
 
-Deno.test("hostedWorkspaceFolders: an entry for a workspaces/<name> folder that is gone is not listed and is reported gone", async () => {
+Deno.test("hostedWorkspaceFolders: with no registry read, each active wanted file naming a repo folder", async () => {
   await withWorkspaceFixture(async (f) => {
-    const workspacesDir = join(f.dir, "host", "workspaces");
-    await f.makeRepo(join(workspacesDir, "alpha"));
-    // no marker yet: not listed, and not gone either
-    await Deno.mkdir(join(workspacesDir, "settling"));
-    const registry = registryOf(
-      { name: "alpha", path: join(workspacesDir, "alpha") },
-      { name: "gone", path: join(workspacesDir, "gone") },
-      { name: "settling", path: join(workspacesDir, "settling") },
-    );
-    const roster = await hostedWorkspaceFolders({
-      workspacesDir,
-      scanned: ["alpha"],
-      registry,
-      rootRepo: null,
-    });
-    assertEquals(roster.workspaces.map(({ name }) => name), ["alpha"]);
-    assertEquals(roster.gone, ["gone"]);
-
-    const empty = await hostedWorkspaceFolders({
-      workspacesDir,
-      scanned: [],
-      registry,
-      rootRepo: null,
-    });
-    assertEquals(empty.workspaces, []);
-    assertEquals(empty.gone, []);
-  });
-});
-
-Deno.test("hostedWorkspaceFolders: with no registry read, the scanned folders and each active wanted file naming a repo folder", async () => {
-  await withWorkspaceFixture(async (f) => {
-    const workspacesDir = join(f.dir, "host", "workspaces");
     const root = join(f.dir, "host", "root");
     const named = join(f.dir, "projects", "named");
     await f.makeRepo(root);
@@ -316,55 +173,65 @@ Deno.test("hostedWorkspaceFolders: with no registry read, the scanned folders an
       ["plain", HostedWorkspace.active("plain")],
     ]);
     const roster = await hostedWorkspaceFolders({
-      workspacesDir,
-      scanned: ["beta", "alpha"],
       registry: null,
       rootRepo: root,
       wanted,
     });
-    assertEquals(roster.workspaces, [
-      {
-        name: "alpha",
-        folder: join(workspacesDir, "alpha"),
-        owner: "host",
-        isRepo: true,
-        fromWantedFile: false,
-        shadows: false,
-      },
-      {
-        name: "beta",
-        folder: join(workspacesDir, "beta"),
-        owner: "host",
-        isRepo: true,
-        fromWantedFile: false,
-        shadows: false,
-      },
-      {
+    assertEquals(roster, {
+      workspaces: [{
         name: "named",
         folder: named,
         owner: "operator",
         isRepo: true,
         fromWantedFile: true,
-        shadows: false,
-      },
-    ]);
+      }],
+      registered: new Set<string>(),
+    });
   });
 });
 
 Deno.test("hostedWorkspaceFolders: an entry with a name no workspace may have is passed over", async () => {
   await withWorkspaceFixture(async (f) => {
-    const workspacesDir = join(f.dir, "host", "workspaces");
-    const registry = registryOf({
-      name: "Not_A_Name",
-      path: join(f.dir, "projects", "odd"),
-    });
     const roster = await hostedWorkspaceFolders({
-      workspacesDir,
-      scanned: [],
-      registry,
+      registry: registryOf({
+        name: "Not_A_Name",
+        path: join(f.dir, "projects", "odd"),
+      }),
       rootRepo: null,
     });
     assertEquals(roster.workspaces, []);
+  });
+});
+
+Deno.test("wantedFolderMatches: compares the wanted file's folder with the listed one by real path, and never matches a file that names none or a name not listed", async () => {
+  await withWorkspaceFixture(async (f) => {
+    const folder = join(f.dir, "projects", "alpha");
+    await f.makeRepo(folder);
+    const named = HostedWorkspace.active("alpha").withFolder(
+      [f.dir, "projects", ".", "alpha"].join(SEPARATOR),
+    );
+    assertEquals(
+      await wantedFolderMatches({ workspace: named, listed: folder }),
+      true,
+    );
+    assertEquals(
+      await wantedFolderMatches({
+        workspace: named,
+        listed: join(f.dir, "projects", "other"),
+      }),
+      false,
+    );
+    assertEquals(
+      await wantedFolderMatches({ workspace: named, listed: null }),
+      false,
+    );
+    assertEquals(
+      await wantedFolderMatches({
+        workspace: HostedWorkspace.active("alpha"),
+        listed: folder,
+      }),
+      false,
+    );
   });
 });
 
@@ -374,21 +241,6 @@ Deno.test("registryOfRead: a missing file is an empty registry, and one that can
     [],
   );
   assertEquals(registryOfRead({ kind: "unreadable", reason: "bad" }), null);
-});
-
-Deno.test("wantedFolderOf: a wanted file with no folder stands for workspaces/<name>", () => {
-  const workspacesDir = join(SEPARATOR, "host", "workspaces");
-  assertEquals(
-    wantedFolderOf(workspacesDir, HostedWorkspace.active("alpha")),
-    join(workspacesDir, "alpha"),
-  );
-  assertEquals(
-    wantedFolderOf(
-      workspacesDir,
-      HostedWorkspace.active("alpha").withFolder(join(SEPARATOR, "srv", "a")),
-    ),
-    join(SEPARATOR, "srv", "a"),
-  );
 });
 
 Deno.test("readHostedRegistry: reads without writing, and a missing file is no registry", async () => {
@@ -436,116 +288,8 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
-Deno.test("hostedWorkspaceFolders: an entry whose name is also a folder in workspaces/ shadows it", async () => {
+Deno.test("hostedWorkspaceFolders: an entry is the host's own only when its wanted file has a creator, names the entry's folder and records the repo in it", async () => {
   await withWorkspaceFixture(async (f) => {
-    const workspacesDir = join(f.dir, "host", "workspaces");
-    await f.makeRepo(join(workspacesDir, "alpha"));
-    await f.makeRepo(join(f.dir, "ext", "alpha"));
-    await f.makeRepo(join(f.dir, "ext", "other"));
-    const roster = await hostedWorkspaceFolders({
-      workspacesDir,
-      scanned: ["alpha"],
-      registry: registryOf(
-        { name: "alpha", path: join(f.dir, "ext", "alpha") },
-        { name: "other", path: join(f.dir, "ext", "other") },
-      ),
-      rootRepo: null,
-    });
-    assertEquals(
-      roster.workspaces.map(({ name, shadows }) => [name, shadows]),
-      [["alpha", true], ["other", false]],
-    );
-  });
-});
-
-Deno.test({
-  name:
-    "hostedWorkspaceFolders: a folder an entry took is passed over, and one that is the root's repo is not offered",
-  ignore: Deno.build.os === "windows",
-  fn: async () => {
-    await withWorkspaceFixture(async (f) => {
-      const workspacesDir = join(f.dir, "host", "workspaces");
-      const root = join(f.dir, "host", "root");
-      await f.makeRepo(root);
-      await f.makeRepo(join(workspacesDir, "alpha"));
-      await f.makeRepo(join(workspacesDir, "gamma"));
-      await f.makeRepo(join(f.dir, "ext", "alpha"));
-      await Deno.symlink(root, join(workspacesDir, "rooted"), { type: "dir" });
-      const roster = await hostedWorkspaceFolders({
-        workspacesDir,
-        scanned: ["alpha", "gamma", "rooted"],
-        registry: registryOf(
-          { name: "alpha", path: join(f.dir, "ext", "alpha") },
-          { name: "beta", path: join(workspacesDir, "gamma") },
-        ),
-        rootRepo: root,
-      });
-      assertEquals(roster.passedOver, ["alpha", "gamma"]);
-      assertEquals([...roster.registered].sort(), ["alpha", "beta"]);
-    });
-  },
-});
-
-Deno.test("freshFolderClaim: names another entry holding workspaces/<name>, ignores its own, and defers when the registry cannot be read", async () => {
-  await withWorkspaceFixture(async (f) => {
-    const workspacesDir = join(f.dir, "host", "workspaces");
-    await f.makeRepo(join(workspacesDir, "gamma"));
-    const folder = await Deno.realPath(join(workspacesDir, "gamma"));
-    const claim = () =>
-      freshFolderClaim({ store: f.deps, workspacesDir, name: "gamma" });
-    assertEquals(await claim(), null);
-    await f.deps.registry.update((registry) => {
-      registry.register({ name: "gamma", path: folder, createdAt: "t" });
-    });
-    assertEquals(await claim(), null);
-    await f.deps.registry.update((registry) => {
-      registry.remove("gamma");
-      registry.register({ name: "beta", path: folder, createdAt: "t" });
-    });
-    assertEquals(await claim(), "it is registered as beta");
-    await Deno.writeTextFile(join(f.dir, "config", "workspaces.json"), "{no");
-    assertEquals(await claim(), null);
-  });
-});
-
-Deno.test("hostedWorkspaceFolders: with no host folder and no wanted file, every entry is the operator's own, one in the state folder included, and none is gone", async () => {
-  await withWorkspaceFixture(async (f) => {
-    const stateDir = join(f.dir, "data", "host");
-    const outside = join(f.dir, "projects", "outside");
-    const inState = join(stateDir, "alpha");
-    const root = join(f.dir, "projects", "root");
-    await f.makeRepo(outside);
-    await f.makeRepo(inState);
-    await f.makeRepo(root);
-    const roster = await hostedWorkspaceFolders({
-      workspacesDir: stateDir,
-      hostFolder: false,
-      scanned: [],
-      registry: registryOf(
-        { name: "alpha", path: inState },
-        { name: "gone", path: join(stateDir, "gone") },
-        { name: "outside", path: outside },
-        { name: "root", path: root },
-      ),
-      rootRepo: root,
-    });
-    assertEquals(listed(roster), [
-      { name: "alpha", folder: inState, owner: "operator" },
-      { name: "gone", folder: join(stateDir, "gone"), owner: "operator" },
-      { name: "outside", folder: outside, owner: "operator" },
-    ]);
-    assertEquals(
-      roster.workspaces.find((w) => w.name === "gone")?.isRepo,
-      false,
-    );
-    assertEquals(roster.gone, []);
-    assertEquals(roster.passedOver, []);
-  });
-});
-
-Deno.test("hostedWorkspaceFolders: with no host folder an entry is the host's own only when its wanted file has a creator, names the entry's folder and records the repo in it", async () => {
-  await withWorkspaceFixture(async (f) => {
-    const stateDir = join(f.dir, "data", "host");
     const location = join(f.dir, "data", "workspaces");
     const at = new Date("2026-11-20T10:00:00.000Z");
     const created = (name: string, folder: string, repoId = "test") =>
@@ -564,9 +308,6 @@ Deno.test("hostedWorkspaceFolders: with no host folder an entry is the host's ow
       await f.makeRepo(join(location, name));
     }
     const roster = await hostedWorkspaceFolders({
-      workspacesDir: stateDir,
-      hostFolder: false,
-      scanned: [],
       registry: registryOf(
         ...names.map((name) => ({
           name,

@@ -51,7 +51,6 @@ import {
 } from "../../infrastructure/persistence/hosted_workspace_folder_scan.ts";
 import {
   DEFAULT_RESCAN_MS,
-  SkipLog,
   watchWorkspaces,
   type WorkspaceChange,
   type WorkspaceWatcher,
@@ -62,13 +61,8 @@ import {
   readWantedFiles,
   type WorkspaceReconciler,
 } from "./workspace_reconciler.ts";
-import {
-  createWorkspaceRegistrar,
-  RegistryProblemLog,
-  type WorkspaceRegistrar,
-} from "./workspace_registration.ts";
+import { RegistryProblemLog } from "./workspace_registration.ts";
 import { createWorkspaceRoster } from "./workspace_roster.ts";
-import { freshFolderClaim } from "../../libswamp/workspace/hosted_roster.ts";
 import {
   type HostedRegistryDeps,
   registeredFolderOf,
@@ -89,7 +83,7 @@ export interface ServeHostOptions {
   /** every child's whole environment */
   readonly childEnv: Readonly<Record<string, string>>;
   readonly workspaceStore: HostedRegistryDeps;
-  /** workspaces.dir as set, where a host with no host folder creates; undefined for the data dir's own */
+  /** workspaces.dir as set, where the host creates; undefined for the data dir's own */
   readonly configuredParent?: () => Promise<string | undefined>;
   readonly onWorkspaceChange?: (change: WorkspaceChange) => void;
   readonly rescanMs?: number;
@@ -182,7 +176,6 @@ async function startLocked(
 ): Promise<ServeHost> {
   const { config, processPort, childEnv } = options;
   const rescanMs = options.rescanMs ?? DEFAULT_RESCAN_MS;
-  const repos = config.hostFolder !== null;
 
   const tls = await readTls(config);
   if (config.root !== null) await requireRootRepo(config.root);
@@ -193,20 +186,16 @@ async function startLocked(
       "host.yaml oauth-client.secret-file",
     );
   }
-  const skipLog = new SkipLog();
-  const scan = await scanWorkspaces(config.stateDir, { repos });
-  skipLog.report(scan.skipped, rescanMs);
+  const scan = await scanWorkspaces(config.stateDir);
   const repository = new HostedWorkspaceFileRepository(config.stateDir);
   const reads = await readWantedFiles(repository, scan);
   const registryProblems = new RegistryProblemLog();
   const roster = createWorkspaceRoster({
-    workspacesDir: config.stateDir,
-    hostFolder: repos,
     rootRepo: config.root,
     store: options.workspaceStore,
     problems: registryProblems,
   });
-  const folders = await roster.read(scan, reads);
+  const folders = await roster.read(reads);
 
   const statusWriter = createStatusWriter({
     workspacesDir: config.stateDir,
@@ -256,7 +245,6 @@ async function startLocked(
         hostWorkspaces: {
           dir: config.stateDir,
           address: config.address,
-          hasFolder: repos,
         },
       }
       // the root answers at the host's address
@@ -265,11 +253,6 @@ async function startLocked(
       : {}),
   });
 
-  const registrar = createWorkspaceRegistrar({
-    workspacesDir: config.stateDir,
-    store: options.workspaceStore,
-    problems: registryProblems,
-  });
   const secretFile = config.oauthClient === null
     ? null
     // a workspace's folder is compared by its real path, so the file is too
@@ -278,30 +261,19 @@ async function startLocked(
     );
   const reconciler = createWorkspaceReconciler({
     workspacesDir: config.stateDir,
-    hostFolder: repos,
-    created: repos
-      ? undefined
-      : createdWorkspaceRemoval({ ...options, stateDir: config.stateDir }),
+    created: createdWorkspaceRemoval({ ...options, stateDir: config.stateDir }),
     holdsOAuthSecret: (folder) =>
       secretFile !== null && isWithin(realPathSyncOrSelf(folder), secretFile),
     supervisor,
     specOf: (name, folder) => specOf(workspaceServe(name), folder),
     repository,
     statusWriter,
-    registrar,
-    freshClaim: (name) =>
-      freshFolderClaim({
-        store: options.workspaceStore,
-        workspacesDir: config.stateDir,
-        name,
-      }),
   });
   const stack: HostStack = {
     lock,
     watcher: null,
     supervisor,
     reconciler,
-    registrar,
     statusWriter,
     routerAbort,
     server,
@@ -314,7 +286,6 @@ async function startLocked(
     started = reconciler.begin(scan, reads, folders);
     stack.watcher = watchWorkspaces({
       dir: config.stateDir,
-      repos,
       // changes are reported against what the host announced it started
       initial: started,
       rescanMs,
@@ -324,11 +295,11 @@ async function startLocked(
         reconciler.reconcile(
           rescan,
           rescanReads,
-          await roster.read(rescan, rescanReads),
+          await roster.read(rescanReads),
         );
       },
       served: () => reconciler.served(),
-    }, skipLog);
+    });
   } catch (error) {
     await stopAll(stack).catch(
       (cleanup) => {
@@ -362,7 +333,6 @@ interface HostStack {
   watcher: WorkspaceWatcher | null;
   readonly supervisor: ServeSupervisor;
   readonly reconciler: WorkspaceReconciler;
-  readonly registrar: WorkspaceRegistrar;
   readonly statusWriter: StatusWriter;
   readonly routerAbort: AbortController;
   readonly server: Deno.HttpServer<Deno.NetAddr>;
@@ -372,11 +342,9 @@ interface HostStack {
 // refused; status files are marked stopped once no serve can report again
 async function stopAll(stack: HostStack): Promise<void> {
   try {
-    stack.registrar.close();
     await stack.watcher?.stop();
     await stack.supervisor.shutdown();
     await stack.reconciler.drain();
-    await stack.registrar.drain();
     stack.statusWriter.markShutDown();
     await stack.statusWriter.drain();
     stack.routerAbort.abort();
@@ -416,7 +384,7 @@ export function hostDirectory(
   };
 }
 
-// a workspace in workspaces/ is listed by its spelled path, which a symlinked host folder hides
+// a folder may be relinked after the roster resolved it
 function realPathSyncOrSelf(path: string): string {
   try {
     return Deno.realPathSync(path);

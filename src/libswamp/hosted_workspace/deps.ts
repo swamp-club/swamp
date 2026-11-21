@@ -44,7 +44,6 @@ import {
   type HostedWorkspaceFolder,
   hostedWorkspaceFolders,
   type HostedWorkspaceOwner,
-  hostFolderClaimedBy,
   readHostedRegistry,
   registryOfRead,
 } from "../workspace/hosted_roster.ts";
@@ -85,7 +84,7 @@ export interface HostedWorkspaceProvisioner {
   ): Promise<void>;
 }
 
-/** where a host with no host folder creates: the location swamp workspace create uses */
+/** where a host creates: the location swamp workspace create uses */
 export interface HostedWorkspacePlacement {
   /** workspaces.dir as set; undefined for the data dir's own folder */
   readonly configuredParent: () => Promise<string | undefined>;
@@ -97,12 +96,9 @@ export interface HostedWorkspacePlacement {
 }
 
 export interface HostedWorkspaceDeps {
-  /** the host's state folder: wanted, status and lock files, and with a host folder its own repos */
+  /** the host's state folder: wanted, status and lock files */
   readonly workspacesDir: string;
-  /** false for a host with no host folder, which lists registered repos and creates in `placement` */
-  readonly hostFolder: boolean;
-  /** null for a host with a host folder, which creates in its own */
-  readonly placement: HostedWorkspacePlacement | null;
+  readonly placement: HostedWorkspacePlacement;
   readonly rename: (from: string, to: string) => Promise<void>;
   readonly repository: HostedWorkspaceRepository;
   readonly provisioner: HostedWorkspaceProvisioner;
@@ -121,8 +117,7 @@ const LOCK_WAIT_MARGIN_MS = 30_000;
 
 export function createHostedWorkspaceDeps(options: {
   workspacesDir: string;
-  hostFolder?: boolean;
-  placement?: HostedWorkspacePlacement | null;
+  placement: HostedWorkspacePlacement;
   rename?: (from: string, to: string) => Promise<void>;
   provisioner: HostedWorkspaceProvisioner;
   addressOf: (name: string) => string;
@@ -139,8 +134,7 @@ export function createHostedWorkspaceDeps(options: {
     provisionTimeoutMs + LOCK_WAIT_MARGIN_MS;
   return {
     workspacesDir,
-    hostFolder: options.hostFolder ?? true,
-    placement: options.placement ?? null,
+    placement: options.placement,
     rename: options.rename ?? Deno.rename,
     repository: new HostedWorkspaceFileRepository(workspacesDir),
     provisioner: options.provisioner,
@@ -214,14 +208,6 @@ export function operatorWorkspaceUndeletable(name: string): UserError {
   );
 }
 
-// the other name is not given: the caller may hold no grant on it
-export function operatorWorkspaceFolderClaimed(name: string): UserError {
-  return new UserError(
-    `The folder of workspace ${name} is a repo the host's user registered under another name, so no request deletes it. swamp workspace list on the host shows which; its folder is kept.`,
-    OPERATOR_WORKSPACE_CODE,
-  );
-}
-
 export function registryUnreadableUndeletable(name: string): UserError {
   return new UserError(
     `No workspace can be deleted while the host cannot read its workspace registry, since a registered repo may hold the name or folder of ${name}. Fix the registry on the host, then retry.`,
@@ -233,16 +219,6 @@ export function ownerUnknownAdminOnly(name: string): UserError {
   return new UserError(
     `The host cannot read its workspace registry, so only the root's admins may suspend or resume workspace ${name} until it can.`,
     OPERATOR_WORKSPACE_CODE,
-  );
-}
-
-/** not an authorization refusal: it holds for the root's admins too */
-export const WORKSPACE_NAME_CLASH_CODE = "workspace_name_clash";
-
-export function nameClashUnstartable(name: string): UserError {
-  return new UserError(
-    `The name ${name} is held by a repo the host's user registered while a folder of the same name is in the host's workspaces folder, so neither is started. Run swamp workspace remove ${name} on the host to serve the host's folder again, or rename one of them.`,
-    WORKSPACE_NAME_CLASH_CODE,
   );
 }
 
@@ -275,7 +251,7 @@ export interface HostedWorkspaceSummary {
   readonly restarts: number | null;
   /** fixed text per state; the host's own reason stays in its status file */
   readonly reason: string | null;
-  /** host for one in the host's workspaces folder or one a request created, operator for any other registered repo */
+  /** host for one a request created, operator for any other registered repo */
   readonly owner?: HostedWorkspaceOwner;
 }
 
@@ -283,18 +259,13 @@ export async function summarizeHostedWorkspace(
   deps: HostedWorkspaceDeps,
   name: string,
   owner?: HostedWorkspaceOwner,
-  /** for a name not listed, whether another workspace has its `workspaces/<name>` folder */
-  claimed?: boolean,
 ): Promise<HostedWorkspaceSummary> {
   const [wanted, status] = await Promise.all([
     deps.repository.findByName(name),
     readHostedWorkspaceStatus(deps.workspacesDir, name),
   ]);
   const found = status.kind === "found" ? status.status : null;
-  // the other name is not given: the caller may hold no grant on it
-  const reason = claimed
-    ? "Its folder is registered under another name, so it is listed under that name, not this one."
-    : wanted.kind === "unreadable"
+  const reason = wanted.kind === "unreadable"
     ? "Its wanted file cannot be read, so the host leaves it as it is."
     : status.kind === "unreadable"
     ? "Its status file cannot be read."
@@ -339,19 +310,10 @@ export async function summarizeListedName(
   names: { workspaces: ReadonlyMap<string, HostedWorkspaceFolder> },
   name: string,
 ): Promise<HostedWorkspaceSummary> {
-  const listing = names.workspaces.get(name);
-  const claimedBy = listing === undefined
-    ? await hostFolderClaimedBy({
-      workspacesDir: deps.workspacesDir,
-      name,
-      workspaces: names.workspaces.values(),
-    })
-    : null;
   return await summarizeHostedWorkspace(
     deps,
     name,
-    listing?.owner,
-    claimedBy !== null,
+    names.workspaces.get(name)?.owner,
   );
 }
 
@@ -360,7 +322,6 @@ export async function hostedWorkspaceNames(
   deps: Pick<
     HostedWorkspaceDeps,
     | "workspacesDir"
-    | "hostFolder"
     | "workspaceStore"
     | "repository"
     | "rootRepo"
@@ -371,25 +332,18 @@ export async function hostedWorkspaceNames(
   /** false while the registry cannot be read, when whose a name is may be unknown */
   registryRead: boolean;
 }> {
-  const scan = await scanWorkspaces(deps.workspacesDir, {
-    repos: deps.hostFolder,
-  });
+  const scan = await scanWorkspaces(deps.workspacesDir);
   // the host logs a registry it cannot read; a request is answered as a host started then serves
   const registry = registryOfRead(
     await readHostedRegistry(deps.workspaceStore),
   );
+  // a wanted file decides whose an entry is
   const wanted = new Map<string, HostedWorkspace>();
-  // with no host folder a wanted file decides whose an entry is
-  if (registry === null || !deps.hostFolder) {
-    for (const name of scan.wantedFiles) {
-      const read = await deps.repository.findByName(name);
-      if (read.kind === "found") wanted.set(name, read.workspace);
-    }
+  for (const name of scan.wantedFiles) {
+    const read = await deps.repository.findByName(name);
+    if (read.kind === "found") wanted.set(name, read.workspace);
   }
   const roster = await hostedWorkspaceFolders({
-    workspacesDir: deps.workspacesDir,
-    hostFolder: deps.hostFolder,
-    scanned: scan.workspaces,
     registry,
     rootRepo: deps.rootRepo,
     wanted,
@@ -405,7 +359,6 @@ export async function hostedWorkspaceNames(
 /** unknown: not listed while the registry cannot be read, so it may be a registered repo */
 export interface WorkspaceWhose {
   readonly owner: HostedWorkspaceOwner | "unknown";
-  readonly shadows: boolean;
   /** false while the registry cannot be read, when no clash can be seen */
   readonly registryRead: boolean;
 }
@@ -415,51 +368,37 @@ function whoseOf(
   listing: HostedWorkspaceFolder | undefined,
   names: { registryRead: boolean },
   read: HostedWorkspaceRead,
-  hostFolder: boolean,
 ): WorkspaceWhose {
   if (listing !== undefined) {
     return {
-      // with no host folder a creator decides, and only the registry can confirm its folder
-      owner: listing.fromWantedFile && !hostFolder ? "unknown" : listing.owner,
-      shadows: listing.shadows,
+      // a creator decides, and only the registry can confirm its folder
+      owner: listing.fromWantedFile ? "unknown" : listing.owner,
       registryRead: names.registryRead,
     };
   }
   // a name with neither is not found, which the caller says
   if (!names.registryRead && read.kind !== "absent") {
-    return {
-      owner: "unknown",
-      shadows: false,
-      registryRead: names.registryRead,
-    };
+    return { owner: "unknown", registryRead: names.registryRead };
   }
-  // with no host folder a name no entry holds is the host's own only as a create left it
+  // a name no entry holds is the host's own only as a create left it
   if (
     read.kind === "found" &&
-    (hostFolder
-      ? read.workspace.folder !== null
-      : read.workspace.creator === null || read.workspace.folder === null)
+    (read.workspace.creator === null || read.workspace.folder === null)
   ) {
-    return {
-      owner: "operator",
-      shadows: false,
-      registryRead: names.registryRead,
-    };
+    return { owner: "operator", registryRead: names.registryRead };
   }
-  return { owner: "host", shadows: false, registryRead: names.registryRead };
+  return { owner: "host", registryRead: names.registryRead };
 }
 
 export interface HostedWorkspaceChange {
   readonly apply: (workspace: HostedWorkspace, at: Date) => HostedWorkspace;
   /** a refusal decided under the lock from whose the workspace is; null allows */
   readonly refuse: (name: string, whose: WorkspaceWhose) => UserError | null;
-  /** for a name not listed whose `workspaces/<name>` folder another workspace has */
-  readonly refuseClaimed?: (name: string) => UserError;
 }
 
 /**
- * every change writes a new changedAt and names the folder it was written for,
- * none for one in workspaces/; an unreadable wanted file is left for the operator
+ * every change writes a new changedAt and names the folder it was written for;
+ * an unreadable wanted file is left for the operator
  */
 export async function changeHostedWorkspace(
   ctx: LibSwampContext,
@@ -472,19 +411,8 @@ export async function changeHostedWorkspace(
     const names = await hostedWorkspaceNames(deps);
     const listing = names.workspaces.get(name);
     const read = await deps.repository.findByName(name);
-    const refusal = change.refuse(
-      name,
-      whoseOf(listing, names, read, deps.hostFolder),
-    );
+    const refusal = change.refuse(name, whoseOf(listing, names, read));
     if (refusal !== null) throw refusal;
-    if (listing === undefined && change.refuseClaimed !== undefined) {
-      const claimedBy = await hostFolderClaimedBy({
-        workspacesDir: deps.workspacesDir,
-        name,
-        workspaces: names.workspaces.values(),
-      });
-      if (claimedBy !== null) throw change.refuseClaimed(name);
-    }
     let current: HostedWorkspace;
     if (read.kind === "found") {
       current = read.workspace;
@@ -507,25 +435,16 @@ export async function changeHostedWorkspace(
       });
     }
     let next = change.apply(current, deps.now());
-    // with no host folder a creator makes ownership, which only create writes;
+    // a creator makes ownership, which only create writes;
     // one listed from its wanted file has an owner the registry cannot confirm, so it is kept
-    if (
-      listing?.owner === "operator" && !listing.fromWantedFile &&
-      !deps.hostFolder
-    ) {
+    if (listing?.owner === "operator" && !listing.fromWantedFile) {
       next = HostedWorkspace.fromRecord({
         ...next.toRecord(),
         creator: null,
         repoId: null,
       });
     }
-    if (listing !== undefined) {
-      next = next.withFolder(
-        listing.owner === "operator" || !deps.hostFolder
-          ? listing.folder
-          : null,
-      );
-    }
+    if (listing !== undefined) next = next.withFolder(listing.folder);
     if (read.kind === "absent" || !next.equals(current)) {
       await deps.repository.save(next);
     }

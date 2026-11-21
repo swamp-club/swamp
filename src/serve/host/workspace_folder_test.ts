@@ -17,10 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals } from "@std/assert";
-import { join } from "@std/path";
+import { assertEquals } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
-import { REPO_MARKER_FILE } from "../../infrastructure/persistence/hosted_workspace_folder_scan.ts";
 import { watchWorkspaces, type WorkspaceChange } from "./workspace_folder.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
@@ -36,11 +34,6 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-async function makeRepo(dir: string, name: string): Promise<void> {
-  await Deno.mkdir(join(dir, name), { recursive: true });
-  await Deno.writeTextFile(join(dir, name, REPO_MARKER_FILE), "");
-}
-
 Deno.test("watchWorkspaces: onRescan sees every rescan, even with nothing changed", async () => {
   await withTempDir(async (dir) => {
     let rescans = 0;
@@ -52,6 +45,7 @@ Deno.test("watchWorkspaces: onRescan sees every rescan, even with nothing change
       onRescan: () => {
         rescans++;
       },
+      served: () => [],
     });
     try {
       await waitFor(() => rescans >= 2, "two rescans");
@@ -61,9 +55,9 @@ Deno.test("watchWorkspaces: onRescan sees every rescan, even with nothing change
   });
 });
 
-Deno.test("watchWorkspaces: reports a folder added, one whose marker lands late, and one removed", async () => {
+Deno.test("watchWorkspaces: changes follow what is served, each reported once", async () => {
   await withTempDir(async (dir) => {
-    await makeRepo(dir, "edge-dns");
+    const served = new Set(["edge-dns"]);
     const changes: WorkspaceChange[] = [];
     const watcher = watchWorkspaces({
       dir,
@@ -71,27 +65,20 @@ Deno.test("watchWorkspaces: reports a folder added, one whose marker lands late,
       onChange: (change) => {
         changes.push(change);
       },
+      served: () => [...served].sort(),
       rescanMs: 20,
       debounceMs: 5,
     });
     try {
-      await makeRepo(dir, "cost-reports");
+      served.add("cost-reports");
       await waitFor(
         () => changes.some((c) => c.added.includes("cost-reports")),
-        "the added folder to be reported",
+        "a workspace newly served to be reported",
       );
-
-      await Deno.mkdir(join(dir, "late"));
-      await Deno.writeTextFile(join(dir, "late", REPO_MARKER_FILE), "");
-      await waitFor(
-        () => changes.some((c) => c.added.includes("late")),
-        "the folder whose marker landed late to be reported",
-      );
-
-      await Deno.remove(join(dir, "edge-dns"), { recursive: true });
+      served.delete("edge-dns");
       await waitFor(
         () => changes.some((c) => c.removed.includes("edge-dns")),
-        "the removed folder to be reported",
+        "a workspace no longer served to be reported removed",
       );
       const added = changes.flatMap((c) => c.added);
       assertEquals(added.filter((n) => n === "cost-reports").length, 1);
@@ -101,54 +88,9 @@ Deno.test("watchWorkspaces: reports a folder added, one whose marker lands late,
   });
 });
 
-Deno.test("watchWorkspaces: with a served filter, changes follow what is served, not the folders listed", async () => {
-  await withTempDir(async (dir) => {
-    await makeRepo(dir, "edge-dns");
-    await makeRepo(dir, "being-deleted");
-    const hidden = new Set(["being-deleted"]);
-    const changes: WorkspaceChange[] = [];
-    const watcher = watchWorkspaces({
-      dir,
-      initial: ["edge-dns"],
-      onChange: (change) => {
-        changes.push(change);
-      },
-      served: (scan) => scan.workspaces.filter((name) => !hidden.has(name)),
-      rescanMs: 20,
-      debounceMs: 5,
-    });
-    try {
-      await makeRepo(dir, "later");
-      await waitFor(
-        () => changes.some((c) => c.added.includes("later")),
-        "a served folder to be reported",
-      );
-      hidden.add("edge-dns");
-      await waitFor(
-        () => changes.some((c) => c.removed.includes("edge-dns")),
-        "a listed folder no longer served to be reported removed",
-      );
-      assert((await Deno.stat(join(dir, "edge-dns"))).isDirectory);
-      await Deno.remove(join(dir, "being-deleted"), { recursive: true });
-      await makeRepo(dir, "last");
-      await waitFor(
-        () => changes.some((c) => c.added.includes("last")),
-        "a later folder to be reported",
-      );
-      assertEquals(
-        changes.flatMap((c) => [...c.added, ...c.removed])
-          .filter((name) => name === "being-deleted"),
-        [],
-        "a folder never served is never reported",
-      );
-    } finally {
-      await watcher.stop();
-    }
-  });
-});
-
 Deno.test("watchWorkspaces: stop waits for a rescan in flight and reports nothing after", async () => {
   await withTempDir(async (dir) => {
+    const served = new Set<string>();
     let entered = false;
     let release!: () => void;
     const held = new Promise<void>((resolve) => release = resolve);
@@ -161,10 +103,11 @@ Deno.test("watchWorkspaces: stop waits for a rescan in flight and reports nothin
         changes.push(change);
         await held;
       },
+      served: () => [...served],
       rescanMs: 10,
       debounceMs: 5,
     });
-    await makeRepo(dir, "edge-dns");
+    served.add("edge-dns");
     await waitFor(() => entered, "a change to be reported");
     let stopped = false;
     const stopping = watcher.stop().then(() => stopped = true);
@@ -172,13 +115,14 @@ Deno.test("watchWorkspaces: stop waits for a rescan in flight and reports nothin
     assertEquals(stopped, false, "stop waits for the rescan in flight");
     release();
     await stopping;
-    await makeRepo(dir, "cost-reports");
+    served.add("cost-reports");
     assertEquals(changes.length, 1);
   });
 });
 
 Deno.test("watchWorkspaces: a change whose handler throws is logged and reported again", async () => {
   await withTempDir(async (dir) => {
+    const served = new Set<string>();
     const seen: string[] = [];
     const watcher = watchWorkspaces({
       dir,
@@ -189,16 +133,17 @@ Deno.test("watchWorkspaces: a change whose handler throws is logged and reported
           throw new Error("handler failed");
         }
       },
+      served: () => [...served].sort(),
       rescanMs: 10,
       debounceMs: 5,
     });
     try {
-      await makeRepo(dir, "first");
+      served.add("first");
       await waitFor(
         () => seen.filter((n) => n === "first").length >= 2,
         "the failed change to be reported again",
       );
-      await makeRepo(dir, "second");
+      served.add("second");
       await waitFor(() => seen.includes("second"), "the next change");
       const firstReports = seen.filter((n) => n === "first").length;
       assertEquals(firstReports, 2, "reported again only until it succeeds");

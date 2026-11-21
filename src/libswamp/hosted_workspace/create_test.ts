@@ -34,22 +34,21 @@ import {
   ALICE,
   ctx,
   entries,
-  hostFolder,
   markerProvisioner,
-  type NoFolderHost,
-  noFolderHost,
   OAUTH_ACCESS,
+  type TestHost,
+  testHost,
 } from "./hosted_workspace_test_helpers.ts";
 
 Deno.test("hostedWorkspaceCreate: sets the repo up, records the creator and renames it into place", async () => {
-  await using host = await hostFolder();
+  await using host = await testHost();
   let spec: HostedWorkspaceProvisionSpec | undefined;
   const deps = host.deps({
     provisioner: {
       async provision(dir, given) {
         spec = given;
         assert(dir.includes(".edge-dns.creating-"), dir);
-        await Deno.writeTextFile(join(dir, ".swamp.yaml"), "");
+        await Deno.writeTextFile(join(dir, ".swamp.yaml"), "repoId: test\n");
       },
     },
   });
@@ -70,7 +69,8 @@ Deno.test("hostedWorkspaceCreate: sets the repo up, records the creator and rena
   );
   assertEquals(spec?.admin, "alice");
   assertEquals(spec?.adminSubject, "sub-alice");
-  assertEquals(await entries(host.dir), ["edge-dns", "edge-dns.wanted.yaml"]);
+  assertEquals(await entries(host.location), ["edge-dns"]);
+  assertEquals(await entries(host.dir), ["edge-dns.wanted.yaml"]);
   const wanted = parseYaml(
     await Deno.readTextFile(join(host.dir, "edge-dns.wanted.yaml")),
   ) as Record<string, unknown>;
@@ -83,13 +83,13 @@ Deno.test("hostedWorkspaceCreate: token mode names the caller's principal; none 
   for (
     const [mode, admin] of [["token", "user:alice"], ["none", null]] as const
   ) {
-    await using host = await hostFolder();
+    await using host = await testHost();
     let spec: HostedWorkspaceProvisionSpec | undefined;
     const deps = host.deps({
       provisioner: {
         async provision(dir, given) {
           spec = given;
-          await Deno.writeTextFile(join(dir, ".swamp.yaml"), "");
+          await Deno.writeTextFile(join(dir, ".swamp.yaml"), "repoId: test\n");
         },
       },
     });
@@ -112,7 +112,7 @@ Deno.test("hostedWorkspaceCreate: token mode names the caller's principal; none 
 });
 
 Deno.test("hostedWorkspaceCreate: refuses an invalid name, and an oauth caller without a plain username, touching nothing", async () => {
-  await using host = await hostFolder();
+  await using host = await testHost();
   await assertErrors<HostedWorkspaceCreateEvent>(
     hostedWorkspaceCreate(ctx, host.deps(), {
       name: "Bad_Name",
@@ -145,7 +145,7 @@ Deno.test("hostedWorkspaceCreate: refuses an invalid name, and an oauth caller w
 });
 
 Deno.test("hostedWorkspaceCreate: a failed set-up leaves nothing under the name and names no host path", async () => {
-  await using host = await hostFolder();
+  await using host = await testHost();
   const deps = host.deps({
     provisioner: {
       async provision(dir) {
@@ -162,20 +162,21 @@ Deno.test("hostedWorkspaceCreate: a failed set-up leaves nothing under the name 
     }),
     "provision_failed",
   );
-  assertEquals(error.message.includes(host.dir), false);
-  assertStringIncludes(String(error.cause?.cause), host.dir);
+  assertEquals(error.message.includes(host.root), false);
+  assertStringIncludes(String(error.cause?.cause), host.location);
+  assertEquals(await entries(host.location), []);
   assertEquals(await entries(host.dir), []);
 });
 
-Deno.test("hostedWorkspaceCreate: a failure after the wanted file is written removes it too", async () => {
-  await using host = await hostFolder();
+Deno.test("hostedWorkspaceCreate: a failure after the wanted file is written removes it and the entry too", async () => {
+  await using host = await testHost();
   const base = host.deps();
   // a folder appears at the name while the repo is set up, so the rename fails
   const deps = host.deps({
     provisioner: {
       async provision(dir) {
-        await Deno.writeTextFile(join(dir, ".swamp.yaml"), "");
-        await Deno.mkdir(join(host.dir, "edge-dns", "inside"), {
+        await Deno.writeTextFile(join(dir, ".swamp.yaml"), "repoId: test\n");
+        await Deno.mkdir(join(dirname(dir), "edge-dns", "inside"), {
           recursive: true,
         });
       },
@@ -190,38 +191,42 @@ Deno.test("hostedWorkspaceCreate: a failure after the wanted file is written rem
     }),
     "already_exists",
   );
-  assertEquals(await entries(host.dir), ["edge-dns"]);
-  assertEquals(await entries(join(host.dir, "edge-dns")), ["inside"]);
+  assertEquals(await entries(host.dir), []);
+  assertEquals(await entries(host.location), ["edge-dns"]);
+  assertEquals(await entries(join(host.location, "edge-dns")), ["inside"]);
+  assertEquals((await host.store.registry.load())?.get("edge-dns"), undefined);
 });
 
 Deno.test("hostedWorkspaceCreate: a folder, a link or a wanted file makes the name taken", async () => {
-  const setups: [string, (dir: string) => Promise<void>][] = [
-    ["folder", (dir) => Deno.mkdir(join(dir, "edge-dns"))],
-    ["file", (dir) => Deno.writeTextFile(join(dir, "edge-dns"), "")],
+  const setups: [string, (host: TestHost) => Promise<void>][] = [
+    ["folder", (host) => Deno.mkdir(join(host.location, "edge-dns"))],
     [
       "dangling link",
-      (dir) =>
-        Deno.symlink(join(dir, "nowhere"), join(dir, "edge-dns"), {
-          type: "dir",
-        }),
+      (host) =>
+        Deno.symlink(
+          join(host.location, "nowhere"),
+          join(host.location, "edge-dns"),
+          { type: "dir" },
+        ),
     ],
     [
       "wanted file",
-      (dir) =>
+      (host) =>
         Deno.writeTextFile(
-          join(dir, "edge-dns.wanted.yaml"),
+          join(host.dir, "edge-dns.wanted.yaml"),
           "wanted: suspended\n",
         ),
     ],
     [
       "unreadable wanted file",
-      (dir) => Deno.writeTextFile(join(dir, "edge-dns.wanted.yaml"), "{"),
+      (host) => Deno.writeTextFile(join(host.dir, "edge-dns.wanted.yaml"), "{"),
     ],
   ];
   for (const [label, setup] of setups) {
-    await using host = await hostFolder();
-    await setup(host.dir);
-    const before = await entries(host.dir);
+    await using host = await testHost();
+    await Deno.mkdir(host.location, { recursive: true });
+    await setup(host);
+    const before = [await entries(host.dir), await entries(host.location)];
     const error = await assertErrors<HostedWorkspaceCreateEvent>(
       hostedWorkspaceCreate(ctx, host.deps(), {
         name: "edge-dns",
@@ -231,12 +236,16 @@ Deno.test("hostedWorkspaceCreate: a folder, a link or a wanted file makes the na
       "already_exists",
     );
     assertStringIncludes(error.message, "taken", label);
-    assertEquals(await entries(host.dir), before, label);
+    assertEquals(
+      [await entries(host.dir), await entries(host.location)],
+      before,
+      label,
+    );
   }
 });
 
 Deno.test("hostedWorkspaceCreate: a name the registry holds is taken, wherever its folder is", async () => {
-  await using host = await hostFolder();
+  await using host = await testHost();
   await host.store.registry.update((registry) => {
     registry.register({
       name: "mine",
@@ -255,43 +264,12 @@ Deno.test("hostedWorkspaceCreate: a name the registry holds is taken, wherever i
   assertEquals(await entries(host.dir), []);
 });
 
-Deno.test("hostedWorkspaceCreate: an entry left for workspaces/<name> by a folder removed while the host was stopped does not hold the name", async () => {
-  await using host = await hostFolder();
-  const spot = join(await Deno.realPath(host.dir), "alpha");
-  await host.store.registry.update((registry) => {
-    registry.register({
-      name: "alpha",
-      path: spot,
-      createdAt: "2026-11-17T10:00:00.000Z",
-    });
-  });
-  await assertCompletes<HostedWorkspaceCreateEvent>(
-    hostedWorkspaceCreate(ctx, host.deps(), {
-      name: "alpha",
-      caller: ALICE,
-      access: OAUTH_ACCESS,
-    }),
-    {
-      kind: "completed",
-      data: {
-        name: "alpha",
-        address: "https://host.example/w/alpha",
-        wanted: "suspended",
-      },
-    },
-  );
-  assertEquals(
-    (await host.store.registry.load())?.list().map((e) => [e.name, e.path]),
-    [["alpha", spot]],
-  );
-});
-
 Deno.test("hostedWorkspaceCreate: removes a set-up folder an earlier create left behind", async () => {
-  await using host = await hostFolder();
+  await using host = await testHost();
   const leftover = `.edge-dns.creating-${crypto.randomUUID()}`;
-  await Deno.mkdir(join(host.dir, leftover));
+  await Deno.mkdir(join(host.location, leftover), { recursive: true });
   const other = `.edge-dns-2.creating-${crypto.randomUUID()}`;
-  await Deno.mkdir(join(host.dir, other));
+  await Deno.mkdir(join(host.location, other));
   await assertCompletes<HostedWorkspaceCreateEvent>(
     hostedWorkspaceCreate(ctx, host.deps(), {
       name: "edge-dns",
@@ -307,37 +285,11 @@ Deno.test("hostedWorkspaceCreate: removes a set-up folder an earlier create left
       },
     },
   );
-  assertEquals(
-    await entries(host.dir),
-    [other, "edge-dns", "edge-dns.wanted.yaml"].sort(),
-  );
+  assertEquals(await entries(host.location), [other, "edge-dns"].sort());
 });
 
-Deno.test("hostedWorkspaceCreate: registers the workspace it made at its real path, as an import would", async () => {
-  await using host = await hostFolder();
-  await assertCompletes<HostedWorkspaceCreateEvent>(
-    hostedWorkspaceCreate(ctx, host.deps(), {
-      name: "edge-dns",
-      caller: ALICE,
-      access: OAUTH_ACCESS,
-    }),
-    {
-      kind: "completed",
-      data: {
-        name: "edge-dns",
-        address: "https://host.example/w/edge-dns",
-        wanted: "suspended",
-      },
-    },
-  );
-  const entry = (await host.store.registry.load())?.get("edge-dns");
-  assertEquals(entry?.path, await Deno.realPath(join(host.dir, "edge-dns")));
-  assertEquals(entry?.origin, "imported");
-  assertEquals(entry?.trustedAt, undefined);
-});
-
-Deno.test("hostedWorkspaceCreate: a registry it cannot write still completes the create, and a failed create registers nothing", async () => {
-  await using host = await hostFolder();
+Deno.test("hostedWorkspaceCreate: a registry it cannot write fails the create, leaving no folder and no wanted file", async () => {
+  await using host = await testHost();
   const deps = host.deps({
     workspaceStore: {
       ...host.store,
@@ -347,38 +299,21 @@ Deno.test("hostedWorkspaceCreate: a registry it cannot write still completes the
       },
     },
   });
-  await assertCompletes<HostedWorkspaceCreateEvent>(
+  await assertErrors<HostedWorkspaceCreateEvent>(
     hostedWorkspaceCreate(ctx, deps, {
       name: "edge-dns",
       caller: ALICE,
       access: OAUTH_ACCESS,
     }),
-    {
-      kind: "completed",
-      data: {
-        name: "edge-dns",
-        address: "https://host.example/w/edge-dns",
-        wanted: "suspended",
-      },
-    },
+    "host_error",
   );
-  assertEquals(await entries(host.dir), ["edge-dns", "edge-dns.wanted.yaml"]);
-
-  await assertErrors<HostedWorkspaceCreateEvent>(
-    hostedWorkspaceCreate(
-      ctx,
-      host.deps({
-        provisioner: { provision: () => Promise.reject(new Error("no")) },
-      }),
-      { name: "other", caller: ALICE, access: OAUTH_ACCESS },
-    ),
-    "provision_failed",
-  );
+  assertEquals(await entries(host.location), []);
+  assertEquals(await entries(host.dir), []);
   assertEquals(await host.store.registry.load(), null);
 });
 
-Deno.test("hostedWorkspaceCreate: with no host folder, sets up in a hidden folder, writes the wanted file with its folder, registers, then renames into place", async () => {
-  await using host = await noFolderHost();
+Deno.test("hostedWorkspaceCreate: sets up in a hidden folder, writes the wanted file with its folder, registers, then renames into place", async () => {
+  await using host = await testHost();
   const base = host.deps();
   const steps: string[] = [];
   // the location exists once create has made it
@@ -455,8 +390,8 @@ Deno.test("hostedWorkspaceCreate: with no host folder, sets up in a hidden folde
   assertEquals(entry?.trustedAt, undefined);
 });
 
-Deno.test("hostedWorkspaceCreate: with no host folder and workspaces.dir set, the repo goes there", async () => {
-  await using host = await noFolderHost();
+Deno.test("hostedWorkspaceCreate: with workspaces.dir set, the repo goes there", async () => {
+  await using host = await testHost();
   const chosen = join(host.root, "projects");
   await Deno.mkdir(chosen);
   host.configured = await Deno.realPath(chosen);
@@ -474,11 +409,11 @@ Deno.test("hostedWorkspaceCreate: with no host folder and workspaces.dir set, th
   );
 });
 
-Deno.test("hostedWorkspaceCreate: with no host folder, a failure at each step leaves no folder, no wanted file and no entry", async () => {
+Deno.test("hostedWorkspaceCreate: a failure at each step leaves no folder, no wanted file and no entry", async () => {
   const fail = () => Promise.reject(new Error("stopped"));
   const failures: Record<
     string,
-    (host: NoFolderHost) => Partial<HostedWorkspaceDeps>
+    (host: TestHost) => Partial<HostedWorkspaceDeps>
   > = {
     "set-up": () => ({ provisioner: { provision: fail } }),
     "a set-up with no repoId": () => ({
@@ -499,7 +434,7 @@ Deno.test("hostedWorkspaceCreate: with no host folder, a failure at each step le
     "rename": () => ({ rename: fail }),
   };
   for (const [step, overrides] of Object.entries(failures)) {
-    await using host = await noFolderHost();
+    await using host = await testHost();
     const events = await collect(
       hostedWorkspaceCreate(ctx, host.deps(overrides(host)), {
         name: "edge-dns",
@@ -521,8 +456,8 @@ Deno.test("hostedWorkspaceCreate: with no host folder, a failure at each step le
   }
 });
 
-Deno.test("hostedWorkspaceCreate: with no host folder, a name or folder already taken is refused naming no host path, touching nothing", async () => {
-  await using host = await noFolderHost();
+Deno.test("hostedWorkspaceCreate: a name or folder already taken is refused naming no host path, touching nothing", async () => {
+  await using host = await testHost();
   const elsewhere = join(host.root, "projects", "taken");
   await Deno.mkdir(elsewhere, { recursive: true });
   await host.store.registry.update((registry) => {
@@ -554,8 +489,8 @@ Deno.test("hostedWorkspaceCreate: with no host folder, a name or folder already 
   assertEquals(await entries(host.dir), []);
 });
 
-Deno.test("hostedWorkspaceCreate: with no host folder, a plain file holding the name in the location is refused as already_exists naming no host path, touching nothing", async () => {
-  await using host = await noFolderHost();
+Deno.test("hostedWorkspaceCreate: a plain file holding the name in the location is refused as already_exists naming no host path, touching nothing", async () => {
+  await using host = await testHost();
   await Deno.mkdir(host.location, { recursive: true });
   await Deno.writeTextFile(join(host.location, "edge-dns"), "mine");
   const events = await collect(
@@ -576,18 +511,4 @@ Deno.test("hostedWorkspaceCreate: with no host folder, a plain file holding the 
   );
   assertEquals(await entries(host.dir), []);
   assertEquals((await host.store.registry.load())?.get("edge-dns"), undefined);
-});
-
-Deno.test("hostedWorkspaceCreate: with no host folder and no workspace location, create fails as a host error, making nothing", async () => {
-  await using host = await noFolderHost();
-  const events = await collect(
-    hostedWorkspaceCreate(ctx, host.deps({ placement: null }), {
-      name: "edge-dns",
-      caller: ALICE,
-      access: OAUTH_ACCESS,
-    }),
-  );
-  const error = events.find((e) => e.kind === "error");
-  assertEquals(error?.kind === "error" ? error.error.code : null, "host_error");
-  assertEquals(await entries(host.dir), []);
 });

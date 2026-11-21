@@ -74,8 +74,9 @@ const ROOT_MESSAGE_CODES: ReadonlySet<string> = new Set([
   "username_unknown",
   "not_a_user",
   "operator_workspace",
-  "workspace_name_clash",
   "host_error",
+  // an older root refuses resume of a shared name with this code
+  "workspace_name_clash",
   // an older root with no host folder refuses create with this code
   "no_host_folder",
   // an older root refuses create in token mode with this code

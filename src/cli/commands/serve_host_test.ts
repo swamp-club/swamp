@@ -128,17 +128,7 @@ Deno.test("listeningUrl: brackets an IPv6 listener and leaves the rest as they a
   );
 });
 
-Deno.test("locateHostConfig: --host-dir reads that folder's host.yaml and keeps state in its workspaces/", async () => {
-  await withTempDir(async (dir) => {
-    await Deno.writeTextFile(join(dir, "host.yaml"), "address: http://a\n");
-    const { layout, text } = await locateHostConfig(dir);
-    assertEquals(text, "address: http://a\n");
-    assertPathEquals(layout.hostFolder!, dir);
-    assertPathEquals(layout.stateDir, join(dir, "workspaces"));
-  });
-});
-
-Deno.test("locateHostConfig: with no --host-dir and no host.yaml here, reads the config dir's and keeps state under the data dir", async () => {
+Deno.test("locateHostConfig: reads the config dir's host.yaml and keeps state under the data dir", async () => {
   await withTempDir(async (dir) => {
     const configDir = join(dir, "config");
     const dataDir = join(dir, "data");
@@ -147,25 +137,24 @@ Deno.test("locateHostConfig: with no --host-dir and no host.yaml here, reads the
       join(configDir, "host.yaml"),
       "address: http://a\n",
     );
-    const { layout } = await withMockedEnv(
+    const { layout, text } = await withMockedEnv(
       { SWAMP_CONFIG_DIR: configDir, SWAMP_HOME: dataDir },
-      () => locateHostConfig(undefined),
+      () => locateHostConfig(),
     );
-    assertEquals(layout.hostFolder, null);
+    assertEquals(text, "address: http://a\n");
     assertPathEquals(layout.configFile, join(configDir, "host.yaml"));
     assertPathEquals(layout.stateDir, join(dataDir, "host"));
   });
 });
 
-Deno.test("locateHostConfig: with no host.yaml anywhere, creates the config dir's with the defaults", async () => {
+Deno.test("locateHostConfig: with no host.yaml in the config dir, creates it with the defaults", async () => {
   await withTempDir(async (dir) => {
     const configDir = join(dir, "config");
     const { layout, text, created } = await withMockedEnv(
       { SWAMP_CONFIG_DIR: configDir, SWAMP_HOME: join(dir, "data") },
-      () => locateHostConfig(undefined),
+      () => locateHostConfig(),
     );
     assertEquals(created, true);
-    assertEquals(layout.hostFolder, null);
     assertPathEquals(layout.configFile, join(configDir, "host.yaml"));
     assertEquals(text, DEFAULT_HOST_YAML);
     assertEquals(
@@ -177,10 +166,26 @@ Deno.test("locateHostConfig: with no host.yaml anywhere, creates the config dir'
 
 Deno.test("locateHostConfig: a host.yaml that cannot be read says so", async () => {
   await withTempDir(async (dir) => {
-    await Deno.mkdir(join(dir, "host.yaml"));
-    const error = await assertRejects(() => locateHostConfig(dir), UserError);
+    const configDir = join(dir, "config");
+    await Deno.mkdir(join(configDir, "host.yaml"), { recursive: true });
+    const error = await assertRejects(
+      () =>
+        withMockedEnv(
+          { SWAMP_CONFIG_DIR: configDir, SWAMP_HOME: join(dir, "data") },
+          () => locateHostConfig(),
+        ),
+      UserError,
+    );
     assertStringIncludes(error.message, "Cannot read");
   });
+});
+
+Deno.test("serveHostCommand: takes no --host-dir", async () => {
+  const { serveHostCommand } = await import("./serve_host.ts");
+  assertEquals(
+    serveHostCommand.getOptions(true).some((o) => o.name === "host-dir"),
+    false,
+  );
 });
 
 Deno.test("serveUntilStopped: a stop request drains the host before the signals are let go", async () => {

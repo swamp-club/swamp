@@ -26,7 +26,6 @@ import {
   changeHostedWorkspace,
   type HostedWorkspaceDeps,
   hostedWorkspaceErrorEvent,
-  nameClashUnstartable,
 } from "./deps.ts";
 
 export interface HostedWorkspaceResumeData {
@@ -54,9 +53,7 @@ export async function* hostedWorkspaceResume(
         const workspace = await changeHostedWorkspace(ctx, deps, input.name, {
           apply: (current, at) => current.resume(at),
           refuse: (name, whose) =>
-            whose.shadows
-              ? nameClashUnstartable(name)
-              : adminOnlyRefusal(name, whose, input.rootAdmin),
+            adminOnlyRefusal(name, whose, input.rootAdmin),
         });
         yield {
           kind: "completed" as const,

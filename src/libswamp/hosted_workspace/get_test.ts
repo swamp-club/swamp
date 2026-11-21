@@ -28,19 +28,19 @@ import { hostedWorkspaceGet, type HostedWorkspaceGetEvent } from "./get.ts";
 import {
   ALICE,
   ctx,
-  hostFolder,
   OAUTH_ACCESS,
+  testHost,
 } from "./hosted_workspace_test_helpers.ts";
 
 Deno.test("hostedWorkspaceGet: reports the state and restarts, and describes the host's reason without repeating it", async () => {
-  await using host = await hostFolder();
+  await using host = await testHost();
   const deps = host.deps();
   await collect(hostedWorkspaceCreate(ctx, deps, {
     name: "edge-dns",
     caller: ALICE,
     access: OAUTH_ACCESS,
   }));
-  const raw = "error: cannot open /srv/host/workspaces/edge-dns/secret.yaml";
+  const raw = "error: cannot open /srv/workspaces/edge-dns/secret.yaml";
   const cases: Array<{
     state: ObservedServeState;
     wanted: HostedWorkspaceWanted;
@@ -103,7 +103,7 @@ Deno.test("hostedWorkspaceGet: reports the state and restarts, and describes the
 });
 
 Deno.test("hostedWorkspaceGet: a name with neither a folder nor a wanted file is not found", async () => {
-  await using host = await hostFolder();
+  await using host = await testHost();
   const error = await assertErrors<HostedWorkspaceGetEvent>(
     hostedWorkspaceGet(ctx, host.deps(), { name: "edge-dns" }),
     "not_found",
@@ -115,8 +115,8 @@ Deno.test("hostedWorkspaceGet: a name with neither a folder nor a wanted file is
   );
 });
 
-Deno.test("hostedWorkspaceGet: a repo registered outside workspaces/ is the operator's own, stopped until resumed", async () => {
-  await using host = await hostFolder();
+Deno.test("hostedWorkspaceGet: a repo no request created is the operator's own, stopped until resumed", async () => {
+  await using host = await testHost();
   const outside = join(host.dir, "..", "projects", "outside");
   await Deno.mkdir(outside, { recursive: true });
   await Deno.writeTextFile(join(outside, ".swamp.yaml"), "");
@@ -145,7 +145,7 @@ Deno.test("hostedWorkspaceGet: a repo registered outside workspaces/ is the oper
 });
 
 Deno.test("hostedWorkspaceGet: the root's repo is never one of the workspaces, though registered", async () => {
-  await using host = await hostFolder();
+  await using host = await testHost();
   const root = join(host.dir, "..", "root");
   await Deno.mkdir(root);
   await Deno.writeTextFile(join(root, ".swamp.yaml"), "");

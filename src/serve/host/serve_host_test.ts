@@ -28,12 +28,11 @@ import {
   workspaceServe,
 } from "../../domain/serve/managed_serve.ts";
 import { HostConfig } from "./host_config.ts";
-import { hostFolderLayout } from "./host_layout.ts";
+import { hostLayout } from "./host_layout.ts";
 import { hostDirectory, noAuthAdmission } from "./serve_host.ts";
 import type { ServeChildSpec } from "./serve_process.ts";
 import type { ServeStatus } from "./supervisor.ts";
 
-const HOST_DIR = resolve("host-folder");
 const SPEC: ServeChildSpec = {
   id: workspaceServe("edge-dns"),
   repoDir: "/r",
@@ -43,7 +42,10 @@ const SPEC: ServeChildSpec = {
 };
 
 function config(yaml: string): HostConfig {
-  return HostConfig.parse(yaml, hostFolderLayout(HOST_DIR));
+  return HostConfig.parse(
+    yaml,
+    hostLayout({ configDir: resolve("config"), dataDir: resolve("data") }),
+  );
 }
 
 function status(

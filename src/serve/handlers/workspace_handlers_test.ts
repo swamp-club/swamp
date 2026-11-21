@@ -33,7 +33,10 @@ import type {
   HostedWorkspaceProvisionSpec,
   HostedWorkspaceRootAccess,
 } from "../../libswamp/hosted_workspace/deps.ts";
-import { hostRootWorkspaces } from "../host_root_workspaces.ts";
+import {
+  hostRootWorkspaces,
+  hostWorkspacePlacement,
+} from "../host_root_workspaces.ts";
 import { hostWorkspaceStore } from "../host/workspace_registration.ts";
 import {
   type ConnectionContext,
@@ -105,7 +108,7 @@ interface Folder extends AsyncDisposable {
 
 async function folder(): Promise<Folder> {
   const root = await Deno.makeTempDir({ prefix: "swamp-workspace-handlers-" });
-  const dir = join(root, "workspaces");
+  const dir = join(root, "state");
   const specs: HostedWorkspaceProvisionSpec[] = [];
   const host = hostRootWorkspaces(
     { dir, address: "https://host.example" },
@@ -116,9 +119,11 @@ async function folder(): Promise<Folder> {
         dataDir: join(root, "data"),
         configDir: join(root, "config"),
       }),
-    () => {
-      throw new Error("a root with a host folder creates in it");
-    },
+    () =>
+      hostWorkspacePlacement({
+        dataDir: join(root, "data"),
+        configDir: join(root, "config"),
+      }),
   )!;
   const hostedWorkspaces = {
     ...host,
@@ -127,7 +132,10 @@ async function folder(): Promise<Folder> {
       provisioner: {
         async provision(target: string, spec: HostedWorkspaceProvisionSpec) {
           specs.push(spec);
-          await Deno.writeTextFile(join(target, ".swamp.yaml"), "");
+          await Deno.writeTextFile(
+            join(target, ".swamp.yaml"),
+            `repoId: ${crypto.randomUUID()}\n`,
+          );
         },
       },
     },

@@ -34,7 +34,6 @@ import {
 import type { ServeChildSpec } from "./serve_process.ts";
 import type { StatusWriter } from "./status_writer.ts";
 import type { ServeSupervisor } from "./supervisor.ts";
-import type { WorkspaceRegistrar } from "./workspace_registration.ts";
 import type { WorkspaceFolders } from "./workspace_roster.ts";
 import type { HostedWorkspaceFolder } from "../../libswamp/workspace/hosted_roster.ts";
 import {
@@ -44,11 +43,7 @@ import {
   REPO_MARKER_FILE,
   type WorkspaceScan,
 } from "../../infrastructure/persistence/hosted_workspace_folder_scan.ts";
-import {
-  createdOwnership,
-  hostFolderClaimedBy,
-  wantedFolderOf,
-} from "../../libswamp/workspace/hosted_roster.ts";
+import { createdOwnership } from "../../libswamp/workspace/hosted_roster.ts";
 
 const logger = getSwampLogger(["serve", "host", "workspaces"]);
 
@@ -64,14 +59,9 @@ export interface WorkspaceReconcilerOptions {
   readonly specOf: (name: string, folder: string) => ServeChildSpec;
   readonly repository: HostedWorkspaceRepository;
   readonly statusWriter: Pick<StatusWriter, "setProblem" | "forget" | "track">;
-  readonly registrar: WorkspaceRegistrar;
   readonly rename?: (from: string, to: string) => Promise<void>;
-  /** why the registry, read afresh, forbids removing `workspaces/<name>`; null when it does not */
-  readonly freshClaim?: (name: string) => Promise<string | null>;
-  /** false for a host with no host folder, whose state folder holds no repo; true by default */
-  readonly hostFolder?: boolean;
-  /** with no host folder, what removing a workspace a request created needs */
-  readonly created?: CreatedWorkspaceRemoval;
+  /** what removing a workspace a request created needs */
+  readonly created: CreatedWorkspaceRemoval;
   /** whether a workspace's folder holds the OAuth client's secret file */
   readonly holdsOAuthSecret?: (folder: string) => boolean;
 }
@@ -103,8 +93,6 @@ export interface WorkspaceReconciler {
   ): void;
   /** the workspaces last reconciled that the host serves: none being removed or wanted deleted */
   served(): readonly string[];
-  /** the served workspaces of the host's own, which are the ones it registers */
-  servedOwn(): readonly string[];
   /** waits for every removal, including one waiting for its serve to stop */
   drain(): Promise<void>;
 }
@@ -205,23 +193,17 @@ export function createWorkspaceReconciler(
     specOf,
     repository,
     statusWriter,
-    registrar,
+    created,
   } = options;
   const rename = options.rename ?? Deno.rename;
-  const hostFolder = options.hostFolder ?? true;
   const known = new Map<string, Known>();
   const pending = new Set<Promise<void>>();
-  // hidden folders a removal of ours is working on, so the sweep leaves them
-  const sweeping = new Set<string>();
-  const sweeps = new Map<string, Promise<void>>();
   // a scan listed before a removal finished still shows its folder
   const removedAt = new Map<string, number>();
   const removalFailures = new ReasonMemo();
   const dropLog = new ReasonMemo();
   let applied: ReadonlyMap<string, HostedWorkspaceFolder> = new Map();
-  let passedOver: readonly string[] = [];
   let registered: ReadonlySet<string> = new Set();
-  const sweepFailures = new ReasonMemo();
 
   const track = (work: Promise<void>) => {
     const settled = work.finally(() => pending.delete(settled));
@@ -259,7 +241,6 @@ export function createWorkspaceReconciler(
     folders: WorkspaceFolders,
   ) => {
     applied = folders.workspaces;
-    passedOver = folders.passedOver;
     registered = folders.registered;
     const names = new Set([
       ...folders.workspaces.keys(),
@@ -281,9 +262,6 @@ export function createWorkspaceReconciler(
         read,
       );
     }
-    for (const name of folders.gone) registrar.forget(name);
-    sweepFailures.retain(new Set(scan.leftovers));
-    for (const leftover of scan.leftovers) sweep(leftover);
   };
 
   // the host's own, wanted deleted by a file written for the folder it would remove
@@ -339,7 +317,7 @@ export function createWorkspaceReconciler(
     // never left waiting: freeing the name, as the host advises, would carry it out
     if (
       read.kind === "found" && record?.wanted === "deleted" &&
-      (!recordMatches || listing?.shadows === true)
+      !recordMatches
     ) {
       dropDeleted(name, read.workspace);
       record = null;
@@ -349,7 +327,7 @@ export function createWorkspaceReconciler(
     // one over another repo would carry its old wanted state to that repo
     const replaced = listing?.replaced === true;
     if (
-      !hostFolder && read.kind === "found" && record !== null &&
+      read.kind === "found" && record !== null &&
       record.creator !== null && (!recordMatches || replaced) &&
       listing?.owner === "operator"
     ) {
@@ -391,12 +369,8 @@ export function createWorkspaceReconciler(
     const id = workspaceServe(name);
     const status = supervisor.lookup(id);
     if (listing === null) {
-      // one still registered, as under a second spelling of a folder, keeps its files;
-      // with no host folder one a request created leaves its folder too
-      if (
-        (entry.operator || !hostFolder) && entry.listedFrom === "registry" &&
-        !registered.has(name)
-      ) {
+      // one still registered, as under a second spelling of a folder, keeps its files
+      if (entry.listedFrom === "registry" && !registered.has(name)) {
         entry.listedFrom = null;
         leaveRegistry(name, entry);
         return;
@@ -404,11 +378,11 @@ export function createWorkspaceReconciler(
       entry.listedFrom = null;
       // a creator with no entry is a create that stopped before it registered, once no create holds the name
       if (
-        !hostFolder && options.created !== undefined && read.kind === "found" &&
-        record !== null && record.creator !== null && record.folder !== null &&
-        record.wanted !== "deleted" && !entry.settling
+        read.kind === "found" && record !== null && record.creator !== null &&
+        record.folder !== null && record.wanted !== "deleted" &&
+        !entry.settling
       ) {
-        settleStoppedCreate(name, entry, record, options.created);
+        settleStoppedCreate(name, entry, record);
       }
       // a wanted file without a folder may be a workspace still being set up
       if (status !== undefined && status.wanted !== "deleted") {
@@ -476,7 +450,6 @@ export function createWorkspaceReconciler(
     name: string,
     entry: Known,
     stopped: HostedWorkspace,
-    created: CreatedWorkspaceRemoval,
   ) => {
     entry.settling = true;
     track(
@@ -543,28 +516,14 @@ export function createWorkspaceReconciler(
     record: HostedWorkspace | null,
     recordMatches: boolean,
   ): string | null => {
-    // never "write its folder": that would serve another repo at this address
-    if (listing.shadows) {
-      return `${
-        join(workspacesDir, name)
-      } and ${listing.folder} are both named ${name}, and the registry gives the name to ${listing.folder}, so neither is started. Run swamp workspace remove ${name} on the host to serve ${
-        join(workspacesDir, name)
-      } again, or rename one of them`;
-    }
     if (record?.wanted === "deleted" && listing.owner === "operator") {
-      return `Its wanted file says deleted, but ${listing.folder} is not in the host's workspaces folder, so nothing was removed. Run swamp workspace remove ${name} on the host to stop listing it`;
-    }
-    if (
-      record !== null && !recordMatches && record.folder === null && !hostFolder
-    ) {
-      return `Its wanted file names no folder, and this host has no host folder, so it is not started. Write folder: ${listing.folder} in ${
-        join(workspacesDir, wantedFileName(name))
-      } to start it`;
+      return `Its wanted file says deleted, but no request created ${listing.folder}, so nothing was removed. Run swamp workspace remove ${name} on the host to stop listing it`;
     }
     if (record !== null && !recordMatches) {
-      return `Its wanted file was written for ${
-        wantedFolderOf(workspacesDir, record)
-      }, not for ${listing.folder}, so it is not started. Write folder: ${listing.folder} in ${
+      const written = record.folder === null
+        ? "Its wanted file names no folder"
+        : `Its wanted file was written for ${record.folder}, not for ${listing.folder}`;
+      return `${written}, so it is not started. Write folder: ${listing.folder} in ${
         join(workspacesDir, wantedFileName(name))
       } to start it`;
     }
@@ -658,33 +617,23 @@ export function createWorkspaceReconciler(
       await supervisor.whenStopped(id);
     }
     await statusWriter.forget(name);
-    // with no host folder only a folder a request created is the host's to remove
-    if (hostFolder || options.created !== undefined) {
-      try {
-        if (options.created !== undefined && !hostFolder) {
-          await removeCreated(name, entry, options.created);
-        } else {
-          await removeData(name, entry);
-          // before the wanted file, so a host stopped here still finishes the removal
-          await registrar.unregister(name).catch((error) => {
-            throw new RemovalStepError("unregister", error);
-          });
-        }
-      } catch (error) {
-        if (error instanceof FolderClaimedError) {
-          abandonRemoval(name, entry);
-          return;
-        }
-        if (!(error instanceof RemovalStepError)) throw error;
-        // a status write wakes the folder watcher, so one per reason, not per try
-        if (!removalFailures.changed(name, error.key)) return;
-        logger.error(
-          "Removing workspace {name} failed, and is tried again at every rescan: {error}",
-          { name, error: error.cause },
-        );
-        await reportRemovalFailure(name, error.cause);
+    // only a folder a request created is the host's to remove
+    try {
+      await removeCreated(name, entry);
+    } catch (error) {
+      if (error instanceof FolderClaimedError) {
+        abandonRemoval(name, entry);
         return;
       }
+      if (!(error instanceof RemovalStepError)) throw error;
+      // a status write wakes the folder watcher, so one per reason, not per try
+      if (!removalFailures.changed(name, error.key)) return;
+      logger.error(
+        "Removing workspace {name} failed, and is tried again at every rescan: {error}",
+        { name, error: error.cause },
+      );
+      await reportRemovalFailure(name, error.cause);
+      return;
     }
     await removeHostedWorkspaceStatus(workspacesDir, name);
     await repository.remove(name);
@@ -707,11 +656,7 @@ export function createWorkspaceReconciler(
   };
 
   // only the folder the wanted file records, and only while the registry, read afresh, names it
-  const removeCreated = async (
-    name: string,
-    removing: Known,
-    created: CreatedWorkspaceRemoval,
-  ) => {
+  const removeCreated = async (name: string, removing: Known) => {
     const record = removing.record;
     const folder = record?.folder ?? null;
     // never a folder named only by the wanted file, which an operator can edit
@@ -795,59 +740,6 @@ export function createWorkspaceReconciler(
     if (failure !== null) throw failure;
   };
 
-  // the files stay until no folder of the name is left, renamed by an earlier try or not
-  const removeData = async (name: string, removing: Known) => {
-    const folder = join(workspacesDir, name);
-    if (await exists(folder)) {
-      // the last check before a folder goes: one another workspace has is never removed
-      const claimedBy = await hostFolderClaimedBy({
-        workspacesDir,
-        name,
-        workspaces: applied.values(),
-      });
-      const claim = claimedBy !== null
-        ? `it is registered as ${claimedBy}`
-        : await options.freshClaim?.(name) ?? null;
-      if (claim !== null) throw new FolderClaimedError(claim);
-      // a rename never follows a link, so a linked folder loses only its link
-      const hidden = removing.hiddenName ??= deletingFolderName(name);
-      sweeping.add(hidden);
-      try {
-        await rename(folder, join(workspacesDir, hidden));
-        // kept only while the rename itself fails; a later folder gets its own
-        removing.hiddenName = null;
-      } catch (error) {
-        throw new RemovalStepError("rename", error);
-      } finally {
-        sweeping.delete(hidden);
-      }
-    }
-    let entries: Deno.DirEntry[];
-    try {
-      entries = await Array.fromAsync(Deno.readDir(workspacesDir));
-    } catch (error) {
-      throw new RemovalStepError("list", error);
-    }
-    // every folder gets its try, so one that cannot go never shields another
-    let failure: RemovalStepError | null = null;
-    for (const { name: entry } of entries) {
-      if (deletingFolderOwner(entry) !== name) continue;
-      // a sweep that began before this removal may still be on it
-      await sweeps.get(entry);
-      sweeping.add(entry);
-      try {
-        await Deno.remove(join(workspacesDir, entry), { recursive: true });
-      } catch (error) {
-        if (!(error instanceof Deno.errors.NotFound)) {
-          failure ??= new RemovalStepError("remove", error);
-        }
-      } finally {
-        sweeping.delete(entry);
-      }
-    }
-    if (failure !== null) throw failure;
-  };
-
   // the status writer has forgotten the name, so this write cannot race it
   const reportRemovalFailure = async (name: string, error: unknown) => {
     const status = supervisor.lookup(workspaceServe(name));
@@ -880,7 +772,6 @@ export function createWorkspaceReconciler(
         await statusWriter.forget(name);
         if (stale()) return;
         await removeHostedWorkspaceStatus(workspacesDir, name);
-        if (!stale()) registrar.forget(name);
       })().catch((error) => {
         logger.warn(
           "Removing the status file of workspace {name} failed: {error}",
@@ -891,34 +782,6 @@ export function createWorkspaceReconciler(
         );
       }),
     );
-  };
-
-  const sweep = (leftover: string) => {
-    if (sweeping.has(leftover)) return;
-    // a removal still pending for its workspace owns it, and reports through the status file
-    const owner = known.get(deletingFolderOwner(leftover) ?? "");
-    if (owner?.removing || owner?.record?.wanted === "deleted") return;
-    sweeping.add(leftover);
-    const work = Deno.remove(join(workspacesDir, leftover), { recursive: true })
-      .then(
-        () => sweepFailures.clear(leftover),
-        (error) => {
-          if (error instanceof Deno.errors.NotFound) {
-            sweepFailures.clear(leftover);
-            return;
-          }
-          if (!sweepFailures.changed(leftover, messageOf(error))) return;
-          logger.warn(
-            "Removing {folder}, left by an interrupted removal, failed, and is tried again at every rescan: {error}",
-            { folder: leftover, error },
-          );
-        },
-      ).finally(() => {
-        sweeping.delete(leftover);
-        sweeps.delete(leftover);
-      });
-    sweeps.set(leftover, work);
-    track(work);
   };
 
   // the supervisor never forgets a serve, so a deleted one is told by its wanted state
@@ -932,39 +795,20 @@ export function createWorkspaceReconciler(
       return status !== undefined && status.wanted !== "deleted";
     });
 
-  const servedOwn = (): readonly string[] =>
-    served().filter((name) => applied.get(name)?.owner === "host");
-
-  // a folder an entry passed over is offered too, so the registrar meets and logs its clash;
-  // with no host folder create registers what it makes
-  const toRegister = (): readonly string[] =>
-    hostFolder ? [...servedOwn(), ...passedOver] : [];
-
-  // the registrar reads what was last reconciled when its run starts
-  const register = () => {
-    registrar.sync(toRegister);
-  };
-
   return {
     begin(scan, reads, folders) {
       apply(scan, reads, folders);
-      register();
       return served();
     },
 
     reconcile(scan, reads, folders) {
       apply(scan, reads, folders);
-      register();
     },
 
     served,
-    servedOwn,
 
     async drain() {
-      do {
-        while (pending.size > 0) await Promise.all([...pending]);
-        await registrar.drain();
-      } while (pending.size > 0);
+      while (pending.size > 0) await Promise.all([...pending]);
     },
   };
 }

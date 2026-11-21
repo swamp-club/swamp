@@ -155,7 +155,7 @@ Deno.test("HostedWorkspace.withFolder: the folder is kept through suspend, resum
   assertThrows(() => plain.withFolder(""), UserError);
 });
 
-Deno.test("HostedWorkspace.fromRecord: a record with no folder or a null folder is a workspace in workspaces/", () => {
+Deno.test("HostedWorkspace.fromRecord: a record with no folder or a null folder names no folder", () => {
   const record = {
     name: "edge-dns",
     creator: null,

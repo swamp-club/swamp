@@ -27,7 +27,7 @@ import {
 import { HostedWorkspace } from "../../domain/serve/hosted_workspace.ts";
 import { hostedWorkspaceFolders, type RepoIdentity } from "./hosted_roster.ts";
 
-const WORKSPACES_DIR = join(SEPARATOR, "host", "workspaces");
+const LOCATION = join(SEPARATOR, "data", "workspaces");
 const NAMES = ["alpha", "beta", "gamma", "delta"] as const;
 
 type Spelling = "exact" | "dotted" | "trailing" | "outside" | "other_name";
@@ -40,18 +40,17 @@ const arbSpelling = fc.constantFrom<Spelling>(
   "other_name",
 );
 
-// each name is scanned or not, and has no entry or one of these spellings
+// each name has no entry or one of these spellings
 const arbCase = fc.record({
-  scanned: fc.subarray([...NAMES]),
   entries: fc.dictionary(fc.constantFrom(...NAMES), arbSpelling),
 });
 
 function entryOf(name: string, spelling: Spelling): WorkspaceEntry {
-  const own = join(WORKSPACES_DIR, name);
+  const own = join(LOCATION, name);
   const path = spelling === "exact"
     ? own
     : spelling === "dotted"
-    ? [WORKSPACES_DIR, "..", "workspaces", name].join(SEPARATOR)
+    ? [LOCATION, "..", "workspaces", name].join(SEPARATOR)
     : spelling === "trailing"
     ? own + SEPARATOR
     : spelling === "outside"
@@ -76,13 +75,11 @@ const realPath = (path: string) => {
 
 const ROOT = join(SEPARATOR, "host", "root");
 
-function rosterOf(scanned: string[], entries: Record<string, Spelling>) {
+function rosterOf(entries: Record<string, Spelling>) {
   const list = Object.entries(entries).map(([name, spelling]) =>
     entryOf(name, spelling)
   );
   return hostedWorkspaceFolders({
-    workspacesDir: WORKSPACES_DIR,
-    scanned,
     registry: WorkspaceRegistry.fromEntries(list),
     rootRepo: ROOT,
     realPath,
@@ -92,8 +89,8 @@ function rosterOf(scanned: string[], entries: Record<string, Spelling>) {
 
 Deno.test("hostedWorkspaceFolders: one name and one folder per workspace, never the root, sorted", async () => {
   await fc.assert(
-    fc.asyncProperty(arbCase, async ({ scanned, entries }) => {
-      const { workspaces } = await rosterOf(scanned, entries);
+    fc.asyncProperty(arbCase, async ({ entries }) => {
+      const { workspaces } = await rosterOf(entries);
       const names = workspaces.map((w) => w.name);
       assertEquals(names, [...new Set(names)].sort());
       const folders = await Promise.all(
@@ -105,50 +102,14 @@ Deno.test("hostedWorkspaceFolders: one name and one folder per workspace, never 
   );
 });
 
-Deno.test("hostedWorkspaceFolders: the host's own is exactly a workspace at workspaces/<its name>, and only once scanned", async () => {
-  await fc.assert(
-    fc.asyncProperty(arbCase, async ({ scanned, entries }) => {
-      const { workspaces } = await rosterOf(scanned, entries);
-      for (const { name, folder, owner } of workspaces) {
-        const own = (await realPath(folder)) === join(WORKSPACES_DIR, name);
-        assertEquals(owner === "host", own);
-        if (owner === "host") {
-          assertEquals((scanned as string[]).includes(name), true);
-        }
-      }
-    }),
-  );
-});
-
-Deno.test("hostedWorkspaceFolders: every entry outside workspaces/ is listed, and a scanned folder is passed over only when an entry has its name or folder", async () => {
-  await fc.assert(
-    fc.asyncProperty(arbCase, async ({ scanned, entries }) => {
-      const { workspaces } = await rosterOf(scanned, entries);
-      const byName = new Map(workspaces.map((w) => [w.name, w]));
-      for (const [name, spelling] of Object.entries(entries)) {
-        if (spelling !== "outside") continue;
-        assertEquals(byName.get(name)?.owner, "operator");
-      }
-      const listedFolders = new Set(
-        await Promise.all(workspaces.map((w) => realPath(w.folder))),
-      );
-      for (const name of scanned) {
-        if (byName.has(name)) continue;
-        assertEquals(listedFolders.has(join(WORKSPACES_DIR, name)), true);
-      }
-    }),
-  );
-});
-
-// with no registry read, wanted files naming scanned folders, the root, or each other's folder
+// with no registry read, wanted files naming folders in the location, the root, or each other's folder
 const arbFallback = fc.record({
-  scanned: fc.subarray([...NAMES]),
   wanted: fc.dictionary(
     fc.constantFrom("w1", "w2", "w3", ...NAMES),
     fc.record({
       active: fc.boolean(),
-      target: fc.constantFrom<"scanned" | "root" | "shared" | "own">(
-        "scanned",
+      target: fc.constantFrom<"location" | "root" | "shared" | "own">(
+        "location",
         "root",
         "shared",
         "own",
@@ -160,11 +121,11 @@ const arbFallback = fc.record({
 
 Deno.test("hostedWorkspaceFolders: with no registry read, one folder per workspace still, and never the root", async () => {
   await fc.assert(
-    fc.asyncProperty(arbFallback, async ({ scanned, wanted }) => {
+    fc.asyncProperty(arbFallback, async ({ wanted }) => {
       const records = new Map(
         Object.entries(wanted).map(([name, w]) => {
-          const folder = w.target === "scanned"
-            ? join(WORKSPACES_DIR, w.of)
+          const folder = w.target === "location"
+            ? join(LOCATION, w.of)
             : w.target === "root"
             ? ROOT + SEPARATOR
             : w.target === "shared"
@@ -175,8 +136,6 @@ Deno.test("hostedWorkspaceFolders: with no registry read, one folder per workspa
         }),
       );
       const { workspaces } = await hostedWorkspaceFolders({
-        workspacesDir: WORKSPACES_DIR,
-        scanned,
         registry: null,
         rootRepo: ROOT,
         wanted: records,
@@ -192,16 +151,13 @@ Deno.test("hostedWorkspaceFolders: with no registry read, one folder per workspa
   );
 });
 
-Deno.test("hostedWorkspaceFolders: with no host folder no workspace is the host's own, every entry but the root's is listed once, and none is gone", async () => {
+Deno.test("hostedWorkspaceFolders: with no wanted file no workspace is the host's own, and every entry but the root's is listed once", async () => {
   await fc.assert(
     fc.asyncProperty(arbCase, async ({ entries }) => {
       const list = Object.entries(entries).map(([name, spelling]) =>
         entryOf(name, spelling)
       );
       const roster = await hostedWorkspaceFolders({
-        workspacesDir: WORKSPACES_DIR,
-        hostFolder: false,
-        scanned: [],
         registry: WorkspaceRegistry.fromEntries(list),
         rootRepo: ROOT,
         realPath,
@@ -211,7 +167,6 @@ Deno.test("hostedWorkspaceFolders: with no host folder no workspace is the host'
         roster.workspaces.every((w) => w.owner === "operator"),
         true,
       );
-      assertEquals(roster.gone, []);
       const folders = await Promise.all(
         roster.workspaces.map((w) => realPath(w.folder)),
       );
@@ -234,7 +189,7 @@ type WantedShape =
   | "replaced";
 type FolderState = "repo" | "absent" | "unreadable";
 
-Deno.test("hostedWorkspaceFolders: with no host folder an entry is the host's own exactly when its wanted file has a creator, names the entry's folder, whatever its spelling, and records the repo in it or a folder not there yet", async () => {
+Deno.test("hostedWorkspaceFolders: an entry is the host's own exactly when its wanted file has a creator, names the entry's folder, whatever its spelling, and records the repo in it or a folder not there yet", async () => {
   await fc.assert(
     fc.asyncProperty(
       fc.dictionary(
@@ -292,9 +247,6 @@ Deno.test("hostedWorkspaceFolders: with no host folder an entry is the host's ow
           }
         }
         const roster = await hostedWorkspaceFolders({
-          workspacesDir: join(SEPARATOR, "data", "host"),
-          hostFolder: false,
-          scanned: [],
           registry: WorkspaceRegistry.fromEntries(entries),
           rootRepo: null,
           wanted,

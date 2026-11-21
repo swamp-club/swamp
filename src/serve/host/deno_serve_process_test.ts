@@ -165,15 +165,16 @@ Deno.test("serveChildArgs: only a spec with the host's workspaces folder is give
     trustedHost: "serve.example",
     env: {},
   };
+  const root = serveChildArgs({
+    ...spec,
+    hostWorkspaces: {
+      dir: "/host/workspaces",
+      address: "https://serve.example",
+    },
+  });
+  assertEquals(root.includes("--host-no-folder"), false);
   assertEquals(
-    serveChildArgs({
-      ...spec,
-      hostWorkspaces: {
-        dir: "/host/workspaces",
-        address: "https://serve.example",
-        hasFolder: true,
-      },
-    }).slice(-4),
+    root.slice(-4),
     [
       "--host-workspaces-dir",
       "/host/workspaces",
@@ -184,29 +185,6 @@ Deno.test("serveChildArgs: only a spec with the host's workspaces folder is give
   const plain = serveChildArgs(spec);
   assertEquals(plain.includes("--host-workspaces-dir"), false);
   assertEquals(plain.includes("--host-address"), false);
-  assertEquals(plain.includes("--host-no-folder"), false);
-});
-
-Deno.test("serveChildArgs: the root of a host with no host folder is told so beside its state folder", () => {
-  const args = serveChildArgs({
-    id: ROOT_SERVE,
-    repoDir: "/srv/root",
-    address: "https://serve.example",
-    trustedHost: "serve.example",
-    env: {},
-    hostWorkspaces: {
-      dir: "/home/op/.swamp/host",
-      address: "https://serve.example",
-      hasFolder: false,
-    },
-  });
-  assertEquals(args.slice(-5), [
-    "--host-workspaces-dir",
-    "/home/op/.swamp/host",
-    "--host-address",
-    "https://serve.example",
-    "--host-no-folder",
-  ]);
 });
 
 Deno.test("serveChildArgs: a spec with the root's address is given it, and one without is not", () => {
