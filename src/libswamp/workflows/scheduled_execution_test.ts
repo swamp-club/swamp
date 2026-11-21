@@ -839,6 +839,70 @@ Deno.test("ScheduledExecutionService: cronFireDedup error falls through to execu
   assertEquals(skipped.length, 0);
 });
 
+Deno.test("ScheduledExecutionService: a cronFireDedup that never settles times out and the fire runs", async () => {
+  const wf = createTestWorkflow("dedup-hang-wf", "* * * * * *");
+  const events: ScheduledExecutionEvent[] = [];
+
+  const mockRepo = createMockWorkflowRepo([wf]);
+  let executionCount = 0;
+  const service = new ScheduledExecutionService({
+    workflowRepo: mockRepo,
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: () => {
+      executionCount++;
+      return Promise.resolve();
+    },
+    cronFireDedup: () => new Promise<boolean>(() => {}),
+    cronFireDedupTimeoutMs: 50,
+  });
+
+  await service.start((e) => events.push(e));
+
+  await waitFor(() => executionCount >= 1, "a fire past its stalled claim");
+  await service.stop();
+
+  assertGreater(
+    events.filter((e) => e.kind === "schedule_fired").length,
+    0,
+  );
+  const skipped = events.filter((e) =>
+    e.kind === "schedule_skipped" &&
+    (e as { dedupSkip?: boolean }).dedupSkip === true
+  );
+  assertEquals(skipped.length, 0);
+});
+
+Deno.test("ScheduledExecutionService: every fire whose claim stalls still reaches execution", async () => {
+  const wf = createTestWorkflow("dedup-hang-many-wf", "* * * * * *");
+
+  const mockRepo = createMockWorkflowRepo([wf]);
+  let claims = 0;
+  let executionCount = 0;
+  const service = new ScheduledExecutionService({
+    workflowRepo: mockRepo,
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: () => {
+      executionCount++;
+      return Promise.resolve();
+    },
+    cronFireDedup: () => {
+      claims++;
+      return new Promise<boolean>(() => {});
+    },
+    cronFireDedupTimeoutMs: 50,
+  });
+
+  await service.start(() => {});
+
+  await waitFor(() => claims >= 3, "three stalled claims");
+  const made = claims;
+  await waitFor(
+    () => executionCount >= made,
+    "every stalled claim to reach execution",
+  );
+  await service.stop();
+});
+
 Deno.test("ScheduledExecutionService: pendingRunHook delete awaits enqueue before running", async () => {
   const wf = createTestWorkflow("hook-order-wf", "* * * * * *");
   const ops: string[] = [];
