@@ -32,6 +32,19 @@ export class DashboardSessionCookie {
 
   private constructor(readonly name: string, readonly path: string) {}
 
+  /**
+   * The dashboard bundle calls origin-absolute paths, so only a host's
+   * workspace, reached under its path on a shared origin, scopes its cookie.
+   */
+  static forServe(
+    address: string | undefined,
+    hostedWorkspace: boolean,
+  ): DashboardSessionCookie {
+    return hostedWorkspace
+      ? DashboardSessionCookie.forAddress(address)
+      : DashboardSessionCookie.plain;
+  }
+
   /** the path comes from the configured address, never a forwarding header */
   static forAddress(address: string | undefined): DashboardSessionCookie {
     if (address === undefined) return DashboardSessionCookie.plain;

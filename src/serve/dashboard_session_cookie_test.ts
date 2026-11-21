@@ -38,6 +38,22 @@ Deno.test("DashboardSessionCookie.forAddress: no address, or one with no path, i
   }
 });
 
+Deno.test("DashboardSessionCookie.forServe: only a host's workspace scopes its cookie to its address path", () => {
+  const address = "https://serve.example.test/w/edge-dns";
+  assertEquals(
+    DashboardSessionCookie.forServe(address, true),
+    DashboardSessionCookie.forAddress(address),
+  );
+  assertEquals(
+    DashboardSessionCookie.forServe("https://example.test/swamp", false),
+    DashboardSessionCookie.plain,
+  );
+  assertEquals(
+    DashboardSessionCookie.forServe(undefined, true),
+    DashboardSessionCookie.plain,
+  );
+});
+
 Deno.test("DashboardSessionCookie.forAddress: a path names the cookie and scopes it to that path", () => {
   const cookie = DashboardSessionCookie.forAddress(
     "https://serve.example.test/w/edge-dns",

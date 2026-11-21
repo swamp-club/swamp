@@ -965,17 +965,21 @@ that and a hosted workspace:
   signs in to the workspace's serve, and its switcher lists what
   `workspace.list` returns.
 - With one cookie name at `Path=/`, the root's and every workspace's sessions
-  would overwrite each other. A serve with a path in its `--address` names its
-  cookie for that path and scopes it to that path
+  would overwrite each other. A workspace a host runs names its cookie for its
+  address path and scopes it to that path
   (`src/serve/dashboard_session_cookie.ts`). The name is
   `swamp-dashboard-session` followed by the path with every byte other than a
   letter, digit or hyphen written as `_` and two hex digits, so `/w/data` is
   `swamp-dashboard-session_2Fw_2Fdata`: the same on every start, a legal
   cookie name, and different for every path. The path comes from the
-  normalized `--address`, never a forwarding header, so it must be the path
-  browsers use. Such a serve reads only its own cookie and ignores the plain
-  one; a serve without a path keeps the plain name and `Path=/`. The router
-  derives each workspace's name from the same address the workspace is given.
+  normalized `--address`, never a forwarding header. The host marks each
+  workspace with the hidden `--hosted-workspace` flag; such a serve reads only
+  its own cookie and ignores the plain one. Every other serve, the root and a
+  lone serve with a path in its `--address` included, keeps the plain name and
+  `Path=/`: the dashboard bundle calls origin-absolute paths, so a lone serve
+  behind a path prefix is reached at the origin root and would never be sent a
+  cookie scoped to its path. The router derives each workspace's name from the
+  same address the workspace is given.
 - Every workspace shares one browser origin. The pages are all swamp's own
   dashboard, so one workspace's page is not another tenant's code, but a
   script-injection bug in the dashboard would reach every workspace a browser
@@ -1119,10 +1123,10 @@ After 7 an operator who sets each workspace up has a multi-workspace host.
 
 ### Dashboard
 
-16. **A dashboard session cookie per path** (swamp-club#4912, built). A serve with a path in its
-    `--address` names its cookie for that path and scopes it to that path, and
-    the router forwards to a workspace only its own cookie. A serve without one
-    is unchanged (`src/serve/dashboard_session_cookie.ts`).
+16. **A dashboard session cookie per path** (swamp-club#4912, built). A
+    workspace a host runs names its cookie for its address path and scopes it
+    to that path, and the router forwards to a workspace only its own cookie.
+    Every other serve is unchanged (`src/serve/dashboard_session_cookie.ts`).
 17. **Sign-in under a workspace segment.** The page tells a host from the local
     dashboard by `/auth/info`, and under a host it signs in to the workspace's
     serve instead of asking for the local token. After 16.

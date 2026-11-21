@@ -51,6 +51,7 @@ export interface HostWorkspacesHandle {
 export const HOST_WORKSPACES_DIR_FLAG = "--host-workspaces-dir";
 export const HOST_ADDRESS_FLAG = "--host-address";
 export const ROOT_ADDRESS_FLAG = "--root-address";
+export const HOSTED_WORKSPACE_FLAG = "--hosted-workspace";
 
 /** `code` is null when the child died by a signal or could not be spawned. */
 export interface ServeChildExit {
@@ -99,6 +100,7 @@ export function serveChildArgs(spec: ServeChildSpec): string[] {
   const root = spec.rootAddress !== undefined
     ? [ROOT_ADDRESS_FLAG, spec.rootAddress]
     : [];
+  const hosted = spec.id.kind === "workspace" ? [HOSTED_WORKSPACE_FLAG] : [];
   return [
     "serve",
     "--json",
@@ -112,6 +114,7 @@ export function serveChildArgs(spec: ServeChildSpec): string[] {
     spec.trustedHost,
     "--trust-proxy",
     "--exit-on-stdin-close",
+    ...hosted,
     "--repo-dir",
     spec.repoDir,
     ...root,

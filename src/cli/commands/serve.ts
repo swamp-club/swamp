@@ -41,6 +41,7 @@ import {
 import {
   HOST_ADDRESS_FLAG,
   HOST_WORKSPACES_DIR_FLAG,
+  HOSTED_WORKSPACE_FLAG,
   ROOT_ADDRESS_FLAG,
 } from "../../serve/host/serve_process.ts";
 import {
@@ -2187,6 +2188,11 @@ export const serveCommand = new Command()
   .option(
     `${ROOT_ADDRESS_FLAG} <url:string>`,
     "The host root's public address, where this workspace redeems sign-in codes",
+    { hidden: true },
+  )
+  .option(
+    HOSTED_WORKSPACE_FLAG,
+    "This serve is a workspace a host runs, sharing its browser origin with other serves",
     { hidden: true },
   )
   .option(
@@ -7184,7 +7190,10 @@ export const serveCommand = new Command()
     const dashboardSessions = new ControlPlaneDashboardSessionStore(
       controlPlaneStore,
     );
-    const dashboardCookie = DashboardSessionCookie.forAddress(ownerAddress);
+    const dashboardCookie = DashboardSessionCookie.forServe(
+      ownerAddress,
+      options.hostedWorkspace === true,
+    );
     const authenticateDashboardHealth = async (
       req: Request,
       remoteAddr: string,

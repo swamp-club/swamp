@@ -756,7 +756,7 @@ function hostedServe(mount: string): HostedServe {
   return {
     mount,
     deps: createDeps(
-      DashboardSessionCookie.forAddress(mount === "" ? HOST : HOST + mount),
+      DashboardSessionCookie.forServe(HOST + mount, mount !== ""),
     ),
   };
 }
@@ -884,4 +884,20 @@ Deno.test("resolveUpgradeDashboardSession: resolves the session a renamed cookie
     await resolveUpgradeDashboardSession("0".repeat(64), HOST, sessions),
     { kind: "unknown" },
   );
+});
+
+Deno.test("handleDashboardSession: a serve with a path that no host runs keeps the plain cookie, reached at the origin root", async () => {
+  const direct: HostedServe = {
+    mount: "",
+    deps: createDeps(
+      DashboardSessionCookie.forServe(`${HOST}/swamp`, false),
+    ),
+  };
+  const jar = new CookieJar();
+  assertEquals(await browserRequest(jar, direct, "POST"), 204);
+  assertEquals(
+    jar.header("/auth/dashboard/session").split("=")[0],
+    DASHBOARD_SESSION_COOKIE,
+  );
+  assertEquals(await browserRequest(jar, direct, "GET"), 200);
 });

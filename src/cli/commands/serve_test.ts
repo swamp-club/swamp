@@ -194,7 +194,14 @@ Deno.test("serveCommand has hidden host-child options that serve daemon enable d
   const daemonEnable = serveCommand.getCommand("daemon")!.getCommand(
     "enable",
   )!;
-  for (const name of ["host-workspaces-dir", "host-address", "root-address"]) {
+  for (
+    const name of [
+      "host-workspaces-dir",
+      "host-address",
+      "root-address",
+      "hosted-workspace",
+    ]
+  ) {
     const opt = serveCommand.getOptions(true).find((o) => o.name === name);
     assertEquals(opt?.hidden, true, name);
     assertEquals(
