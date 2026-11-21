@@ -32,6 +32,7 @@ import {
   type ServeHostOptions,
   startServeHost,
 } from "../src/serve/host/serve_host.ts";
+import type { RootWorkspace } from "../src/serve/host/root_workspace.ts";
 import type {
   ServeChild,
   ServeChildExit,
@@ -316,6 +317,7 @@ async function start(
   port: StandInPort,
   supervisor?: ServeHostOptions["supervisor"],
   onWorkspaceChange?: ServeHostOptions["onWorkspaceChange"],
+  rootWorkspace?: ServeHostOptions["rootWorkspace"],
 ): Promise<ServeHost> {
   await Deno.writeTextFile(join(h.configDir, "host.yaml"), yaml);
   return await startServeHost({
@@ -333,6 +335,7 @@ async function start(
     rescanMs: RESCAN_MS,
     supervisor,
     onWorkspaceChange,
+    rootWorkspace,
   });
 }
 
@@ -1758,4 +1761,150 @@ Deno.test("serve host: a workspace whose folder holds the OAuth secret file is n
   } finally {
     await host.shutdown();
   }
+});
+
+/** a root workspace as resolveRootWorkspace leaves one: a registered repo in the workspace location */
+async function rootWorkspaceOf(
+  h: HostDirs,
+  calls: { count: number },
+  folder = join(h.location, "host-root"),
+): Promise<() => Promise<RootWorkspace>> {
+  await makeRepo(folder);
+  await register(h, "host-root", folder, "created");
+  return () => {
+    calls.count++;
+    return Promise.resolve({
+      name: "host-root",
+      folder,
+      created: false,
+      leftFolder: null,
+    });
+  };
+}
+
+Deno.test("serve host: with no root in host.yaml the root workspace answers at the address, is never listed, and has no address under /w/", async () => {
+  await using h = await hostDirs();
+  await makeWorkspace(h, "edge-dns");
+  const calls = { count: 0 };
+  const rootWorkspace = await rootWorkspaceOf(h, calls);
+  const port = new StandInPort();
+  const host = await start(
+    h,
+    "address: https://serve.acme.internal\nlisten: {port: 0}\n",
+    port,
+    undefined,
+    undefined,
+    rootWorkspace,
+  );
+  try {
+    const base = `http://127.0.0.1:${host.port}`;
+    assertEquals(calls.count, 1);
+    assertEquals(host.rootWorkspace?.name, "host-root");
+    assertEquals(host.workspaces, ["edge-dns"]);
+    await waitFor(
+      () => answers(`${base}/health`, "root"),
+      "the root to answer",
+    );
+    const root = port.of("root")[0].spec;
+    assertEquals(root.repoDir, join(h.location, "host-root"));
+    assertEquals(root.address, "https://serve.acme.internal");
+    assertEquals(root.hostWorkspaces, {
+      dir: h.stateDir,
+      address: "https://serve.acme.internal",
+    });
+    assertEquals((await get(`${base}/w/host-root/`)).status, 404);
+    await waitFor(
+      () => answers(`${base}/w/edge-dns/`, "workspace:edge-dns"),
+      "edge-dns to answer",
+    );
+    assertEquals(
+      port.of("workspace:edge-dns")[0].spec.rootAddress,
+      "https://serve.acme.internal",
+    );
+    assertEquals(port.of("workspace:host-root").length, 0);
+  } finally {
+    await host.shutdown();
+  }
+});
+
+Deno.test("serve host: an explicit root never asks for a root workspace, and one made earlier is an ordinary workspace", async () => {
+  await using h = await hostDirs();
+  await makeRepo(join(h.configDir, "root-repo"));
+  const calls = { count: 0 };
+  const rootWorkspace = await rootWorkspaceOf(h, calls);
+  const port = new StandInPort();
+  const host = await start(
+    h,
+    `${NO_ROOT}root: root-repo\n`,
+    port,
+    undefined,
+    undefined,
+    rootWorkspace,
+  );
+  try {
+    assertEquals(calls.count, 0);
+    assertEquals(host.rootWorkspace, null);
+    assertEquals(host.workspaces, ["host-root"]);
+    assertEquals(
+      port.of("root")[0].spec.repoDir,
+      join(h.configDir, "root-repo"),
+    );
+    assertEquals(
+      (await Deno.stat(join(h.location, "host-root", ".swamp.yaml"))).isFile,
+      true,
+    );
+  } finally {
+    await host.shutdown();
+  }
+});
+
+Deno.test("serve host: behind a proxy the root workspace in auth mode none is refused, and its refusal names its serve.yaml", async () => {
+  await using h = await hostDirs();
+  const calls = { count: 0 };
+  const rootWorkspace = await rootWorkspaceOf(h, calls);
+  const port = new StandInPort({ root: "none" });
+  const serveYaml = join(h.location, "host-root", ".swamp", "serve.yaml");
+  await hostLogs(async (records) => {
+    const host = await start(
+      h,
+      "address: https://serve.acme.internal\nlisten: {port: 0}\ntrust-proxy: true\n",
+      port,
+      undefined,
+      undefined,
+      rootWorkspace,
+    );
+    try {
+      const base = `http://127.0.0.1:${host.port}`;
+      await waitFor(async () => {
+        const { status, body } = await get(`${base}/health`);
+        return status === 503 && body.state === "refused";
+      }, "the root to answer refused");
+      await waitFor(
+        () => Promise.resolve(logged(records, serveYaml)),
+        "the refusal to name the root workspace's serve.yaml",
+      );
+    } finally {
+      await host.shutdown();
+    }
+  });
+});
+
+Deno.test("serve host: a root workspace whose folder is inside the state folder refuses to start and starts no serve", async () => {
+  await using h = await hostDirs();
+  const calls = { count: 0 };
+  const rootWorkspace = await rootWorkspaceOf(
+    h,
+    calls,
+    join(h.stateDir, "nested", "host-root"),
+  );
+  const port = new StandInPort();
+  const error = await assertRejects(
+    () => start(h, NO_ROOT, port, undefined, undefined, rootWorkspace),
+    UserError,
+  );
+  assert(
+    error.message.includes("cannot be the host's root"),
+    error.message,
+  );
+  assertEquals(port.children.length, 0);
 });

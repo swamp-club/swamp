@@ -311,6 +311,8 @@ const NOT_A_SINK: Record<string, Record<string, string>> = {
     "src/serve/local/workspace_hub.ts: spawnDashboardChild": CLI_REINVOCATION,
     "src/serve/workspace_provision_process.ts: childHostedWorkspaceProvisioner":
       CLI_REINVOCATION,
+    "src/serve/root_workspace_process.ts: childRootWorkspaceCreator":
+      CLI_REINVOCATION,
     "src/cli/context.ts: getGitRootSync": TOOLING,
     "src/domain/extensions/dependency_resolution/deno_info.ts: runDenoInfo":
       TOOLING,
@@ -506,6 +508,10 @@ const NOT_A_SINK: Record<string, Record<string, string>> = {
       CONFIG_WRITE,
     "src/infrastructure/persistence/hosted_workspace_file_repository.ts: HostedWorkspaceFileRepository":
       CONFIG_WRITE,
+    "src/serve/host/root_workspace.ts: writeRecord":
+      "Writes the host's root workspace record: a fixed workspace name, the " +
+      "folder swamp workspace create made and that repo's repoId; no " +
+      "expression or secret reaches it.",
     "src/infrastructure/persistence/hosted_workspace_status_file.ts: writeHostedWorkspaceStatus":
       "Writes a hosted workspace's observed state, restart count and a " +
       "reason: a wanted-file or admission message, or the last lines of the " +

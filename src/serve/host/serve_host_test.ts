@@ -17,8 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
-import { resolve } from "@std/path";
+import { assertEquals, assertStringIncludes } from "@std/assert";
+import { join, resolve } from "@std/path";
 import {
   type ObservedServeState,
   ROOT_SERVE,
@@ -30,6 +30,7 @@ import {
 import { HostConfig } from "./host_config.ts";
 import { hostLayout } from "./host_layout.ts";
 import { hostDirectory, noAuthAdmission } from "./serve_host.ts";
+import { ROOT_WORKSPACE_NAME } from "./root_workspace.ts";
 import type { ServeChildSpec } from "./serve_process.ts";
 import type { ServeStatus } from "./supervisor.ts";
 
@@ -107,7 +108,7 @@ Deno.test("noAuthAdmission: an off-loopback host refuses a child in auth mode no
 
 Deno.test("hostDirectory: answers each workspace from the supervisor's status", () => {
   const directory = hostDirectory(
-    config("address: http://a\nroot: ../root\n"),
+    resolve("root"),
     lookupOf([
       status(workspaceServe("up"), "running", "ready", { port: 41_001 }),
       status(workspaceServe("booting"), "running", "starting"),
@@ -139,8 +140,34 @@ Deno.test("hostDirectory: answers each workspace from the supervisor's status", 
 
 Deno.test("hostDirectory: a host with no root answers nothing for the root", () => {
   const directory = hostDirectory(
-    config("address: http://a\n"),
+    null,
     lookupOf([status(ROOT_SERVE, "running", "ready", { port: 41_000 })]),
   );
   assertEquals(directory.root(), undefined);
+});
+
+Deno.test("noAuthAdmission: refuses the root workspace in auth mode none with the serve.yaml to edit", () => {
+  const folder = resolve("data", "workspaces", ROOT_WORKSPACE_NAME);
+  const admit = noAuthAdmission(
+    config("address: https://a\ntrust-proxy: true\n"),
+    { name: ROOT_WORKSPACE_NAME, folder, created: true, leftFolder: null },
+  )!;
+  const rootSpec = { ...SPEC, id: ROOT_SERVE, repoDir: folder };
+  const refusal = admit(rootSpec, { port: 1, authMode: "none" }) ?? "";
+  assertStringIncludes(refusal, "trust-proxy");
+  assertStringIncludes(refusal, join(folder, ".swamp", "serve.yaml"));
+  assertStringIncludes(refusal, "set root: in host.yaml");
+  assertEquals(admit(rootSpec, { port: 1, authMode: "token" }), null);
+  const other = admit(SPEC, { port: 1, authMode: "none" }) ?? "";
+  assertEquals(other.includes(ROOT_WORKSPACE_NAME), false);
+});
+
+Deno.test("noAuthAdmission: an explicit root keeps the message every child gets", () => {
+  const admit = noAuthAdmission(
+    config("address: https://a\ntrust-proxy: true\nroot: ../root\n"),
+  )!;
+  assertEquals(
+    admit({ ...SPEC, id: ROOT_SERVE }, { port: 1, authMode: "none" }),
+    admit(SPEC, { port: 1, authMode: "none" }),
+  );
 });

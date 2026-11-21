@@ -33,7 +33,17 @@ const LISTENING = {
   url: "https://0.0.0.0:443",
   address: "https://serve.acme.internal",
   root: true,
+  rootWorkspace: null,
   workspaces: 2,
+};
+
+const ROOT_WORKSPACE = {
+  name: "host-root",
+  folder: "/home/op/.local/share/swamp/workspaces/host-root",
+  created: true,
+  serveConfig:
+    "/home/op/.local/share/swamp/workspaces/host-root/.swamp/serve.yaml",
+  leftFolder: null,
 };
 
 function captureStdout(fn: () => void): string[] {
@@ -106,21 +116,68 @@ Deno.test("serveHostRenderer log: reports listening, each workspace change and t
 Deno.test("serveHostRenderer json: prints the created file as a line of its own", () => {
   const renderer = createServeHostRenderer("json");
   const output = captureStdout(() => {
-    renderer.created({ file: "/home/op/.config/swamp/host.yaml" });
+    renderer.created({
+      file: "/home/op/.config/swamp/host.yaml",
+      rootWorkspace: "host-root",
+    });
     renderer.listening(LISTENING);
   });
   assertEquals(output.map((line) => JSON.parse(line)), [
-    { status: "created", file: "/home/op/.config/swamp/host.yaml" },
+    {
+      status: "created",
+      file: "/home/op/.config/swamp/host.yaml",
+      rootWorkspace: "host-root",
+    },
     { status: "listening", ...LISTENING },
   ]);
 });
 
-Deno.test("serveHostRenderer log: names the created file and how to add a root", async () => {
+Deno.test("serveHostRenderer log: names the created file and the root workspace the host uses", async () => {
   const messages = await captureLog((renderer) => {
-    renderer.created({ file: "/home/op/.config/swamp/host.yaml" });
+    renderer.created({
+      file: "/home/op/.config/swamp/host.yaml",
+      rootWorkspace: "host-root",
+    });
   });
   assertEquals(messages.length, 1);
   assertEquals(messages[0].includes("/home/op/.config/swamp/host.yaml"), true);
   assertEquals(messages[0].includes("127.0.0.1:8080"), true);
+  assertEquals(messages[0].includes("root workspace host-root"), true);
   assertEquals(messages[0].includes("root:"), true);
+});
+
+Deno.test("serveHostRenderer json: says which workspace is the root", () => {
+  const renderer = createServeHostRenderer("json");
+  const output = captureStdout(() => {
+    renderer.rootWorkspace(ROOT_WORKSPACE);
+    renderer.listening({ ...LISTENING, rootWorkspace: "host-root" });
+  });
+  assertEquals(output.map((line) => JSON.parse(line)), [
+    { status: "root_workspace", ...ROOT_WORKSPACE },
+    { status: "listening", ...LISTENING, rootWorkspace: "host-root" },
+  ]);
+});
+
+Deno.test("serveHostRenderer log: names the root workspace, its folder and what its default auth allows", async () => {
+  const messages = await captureLog((renderer) => {
+    renderer.rootWorkspace(ROOT_WORKSPACE);
+    renderer.rootWorkspace({
+      ...ROOT_WORKSPACE,
+      created: false,
+      leftFolder: "/old/host-root",
+    });
+    renderer.listening({ ...LISTENING, rootWorkspace: "host-root" });
+  });
+  assertEquals(messages.length, 4);
+  assertEquals(messages[0].startsWith("Created root workspace"), true);
+  assertEquals(messages[0].includes(ROOT_WORKSPACE.folder), true);
+  assertEquals(messages[0].includes(ROOT_WORKSPACE.serveConfig), true);
+  assertEquals(messages[0].includes("anyone on this machine"), true);
+  assertEquals(messages[1].startsWith("Starting root workspace"), true);
+  assertEquals(messages[1].includes("anyone on this machine"), true);
+  assertEquals(messages[2].includes("/old/host-root"), true);
+  assertEquals(
+    messages[3].includes("with root workspace host-root and 2"),
+    true,
+  );
 });

@@ -2264,6 +2264,8 @@ export {
 } from "./workspace/remove.ts";
 export {
   MAX_WORKSPACE_PARENT_LENGTH,
+  newWorkspaceLocation,
+  realPathOrSelf,
   resolveChosenFolder,
   workspacesRoot,
 } from "./workspace/workspace_store.ts";
@@ -2276,6 +2278,7 @@ export {
 export {
   type CreatedOwnership,
   createdOwnership,
+  folderRepoIdentity,
   type HostedRegistryRead,
   type HostedRoster,
   type HostedWorkspaceFolder,
@@ -2283,6 +2286,7 @@ export {
   type HostedWorkspaceOwner,
   readHostedRegistry,
   registryOfRead,
+  type RepoIdentity,
   wantedFolderMatches,
 } from "./workspace/hosted_roster.ts";
 
