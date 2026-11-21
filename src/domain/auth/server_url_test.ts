@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertThrows } from "@std/assert";
-import { normalizeServerUrl, redactServerUrl } from "./server_url.ts";
+import {
+  envServerTokenBinding,
+  normalizeServerUrl,
+  redactServerUrl,
+} from "./server_url.ts";
 
 Deno.test("normalizeServerUrl: strips trailing slash", () => {
   assertEquals(
@@ -180,4 +184,36 @@ Deno.test("redactServerUrl: returns undefined for a value that does not parse", 
 Deno.test("redactServerUrl: returns undefined for a URL without a host", () => {
   assertEquals(redactServerUrl("localhost:9000/?token=s3cret"), undefined);
   assertEquals(redactServerUrl("mailto:alice@example.com"), undefined);
+});
+
+Deno.test("envServerTokenBinding: SWAMP_SERVER_URL pairs the token with its server alone", () => {
+  const key = "https://a.example.com";
+  assertEquals(
+    envServerTokenBinding(key, "wss://A.example.com:443/", []),
+    "bound",
+  );
+  assertEquals(
+    envServerTokenBinding("https://b.example.com", key, [
+      "https://b.example.com",
+    ]),
+    "paired-elsewhere",
+  );
+  assertEquals(
+    envServerTokenBinding(key, "not a url", [key]),
+    "paired-elsewhere",
+  );
+});
+
+Deno.test("envServerTokenBinding: without SWAMP_SERVER_URL an address the user named binds the token", () => {
+  const key = "http://127.0.0.1:9427";
+  assertEquals(
+    envServerTokenBinding(key, undefined, [undefined, "ws://127.0.0.1:9427/"]),
+    "bound",
+  );
+  assertEquals(envServerTokenBinding(key, "", [key]), "bound");
+  assertEquals(
+    envServerTokenBinding(key, undefined, ["http://other:9427", "", "bad"]),
+    "unnamed",
+  );
+  assertEquals(envServerTokenBinding(key, undefined, []), "unnamed");
 });

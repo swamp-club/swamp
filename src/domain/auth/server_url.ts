@@ -65,3 +65,30 @@ export function redactServerUrl(url: string): string | undefined {
   const pathname = parsed.pathname === "/" ? "" : parsed.pathname;
   return `${parsed.protocol}//${parsed.host}${pathname}`;
 }
+
+export type EnvServerTokenBinding = "bound" | "paired-elsewhere" | "unnamed";
+
+/**
+ * SWAMP_SERVER_URL, when set, pairs SWAMP_SERVER_TOKEN with that server alone;
+ * otherwise an address the user named outside the repository binds it
+ */
+export function envServerTokenBinding(
+  key: string,
+  serverUrl: string | undefined,
+  named: readonly (string | undefined)[],
+): EnvServerTokenBinding {
+  if (serverUrl) {
+    return namesServer(serverUrl, key) ? "bound" : "paired-elsewhere";
+  }
+  return named.some((value) => value && namesServer(value, key))
+    ? "bound"
+    : "unnamed";
+}
+
+function namesServer(value: string, key: string): boolean {
+  try {
+    return normalizeServerUrl(value) === key;
+  } catch {
+    return false;
+  }
+}

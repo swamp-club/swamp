@@ -7856,8 +7856,8 @@ names the run it sends to serve without the flag. A v2 checkout is unchanged.
 
 **Tokens.** The token comes only from sources bound to the address:
 `servers.json`'s entry for it, `SWAMP_SERVER_TOKEN` when `SWAMP_SERVER_URL`
-names it, and `SWAMP_SERVER_TOKEN_FILE` only when an environment address names
-it. A `serverAddress` in a cloned repository's `.swamp.yaml` never receives a
+names it (or, with `SWAMP_SERVER_URL` unset, when `SWAMP_SERVE_URL` does), and
+`SWAMP_SERVER_TOKEN_FILE` only when an environment address names it. A `serverAddress` in a cloned repository's `.swamp.yaml` never receives a
 token that was meant for another server; when `SWAMP_SERVER_TOKEN_FILE` is set
 but withheld and no other source has a token, the CLI warns once and serve's 401
 says why, naming `SWAMP_SERVE_URL` as the way to send it. A missing token sends

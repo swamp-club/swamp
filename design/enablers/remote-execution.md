@@ -285,10 +285,14 @@ The client looks for the token in this order:
    receives it. When no other source supplies a token either, the CLI warns
    once that the file was not sent and how to send it, and a 401 from that
    server says the same before the login hint;
-4. the `SWAMP_SERVER_TOKEN` env var, scoped by `SWAMP_SERVER_URL` (both must be
-   set; both accept `ws(s)://` or `http(s)://` URLs). A `SWAMP_SERVER_URL` that
-   is not a valid `ws(s)://` or `http(s)://` URL matches no server: the CLI
-   warns and does not send the token;
+4. the `SWAMP_SERVER_TOKEN` env var. When `SWAMP_SERVER_URL` is set it pairs
+   the token with that server alone; otherwise the token goes to the address
+   the `--server` flag or `SWAMP_SERVE_URL` names. Both accept `ws(s)://` or
+   `http(s)://` URLs, and a `SWAMP_SERVER_URL` that is not one matches no
+   server: the CLI warns and does not send the token. A `serverAddress` from
+   `.swamp.yaml` alone never receives it. When no other source supplies a
+   token, the CLI warns once that it was not sent and why, and a 401 from that
+   server says the same;
 5. stored credentials in `~/.config/swamp/servers.json` (managed by
    `swamp auth server-login`);
 6. for a hosted workspace's address (`<host>/w/<name>`) with no token from the

@@ -286,6 +286,94 @@ Deno.test("resolveServeUpstream: SWAMP_SERVER_TOKEN without a matching SWAMP_SER
   });
 });
 
+Deno.test("resolveServeUpstream: SWAMP_SERVE_URL alone binds SWAMP_SERVER_TOKEN", async () => {
+  await withTemp(async (dir) => {
+    const repo = new FileServerCredentialRepository({ configDir: dir });
+    await withMockedEnv(
+      {
+        ...UNSET_ENV,
+        SWAMP_SERVE_URL: "http://serve.test:9090",
+        SWAMP_SERVER_TOKEN: "serve.secret",
+      },
+      async () => {
+        const target = await resolveServeUpstream({
+          engine: "v3",
+          commandPath: ["data", "get"],
+          credentialRepository: repo,
+          getCaCerts: noCaCerts,
+        });
+        assertEquals(target?.token, "serve.secret");
+      },
+    );
+  });
+});
+
+Deno.test("resolveServeUpstream: a withheld SWAMP_SERVER_TOKEN warns once and its 401 says why, naming the variable and never the token", async () => {
+  for (
+    const [label, env, reason] of [
+      ["marker only", {}, "only .swamp.yaml names that address"],
+      [
+        "paired elsewhere",
+        {
+          SWAMP_SERVE_URL: "http://elsewhere.test:9090",
+          SWAMP_SERVER_URL: "http://other.test:9090",
+        },
+        "SWAMP_SERVER_URL pairs it with another server",
+      ],
+    ] as const
+  ) {
+    await withTemp(async (dir) => {
+      const repo = new FileServerCredentialRepository({ configDir: dir });
+      const captured: LogRecord[] = [];
+      resetWithheldTokenFiles();
+      await configure({
+        sinks: { capture: (record: LogRecord) => captured.push(record) },
+        loggers: [
+          {
+            category: ["swamp", "cli", "remote-run"],
+            lowestLevel: "warning",
+            sinks: ["capture"],
+          },
+          { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+        ],
+        reset: true,
+      });
+      try {
+        await withMockedEnv(
+          { ...UNSET_ENV, ...env, SWAMP_SERVER_TOKEN: "leaked.secret" },
+          async () => {
+            for (let i = 0; i < 2; i++) {
+              const target = await resolveServeUpstream({
+                engine: "v3",
+                commandPath: ["data", "get"],
+                markerServerAddress: "http://elsewhere.test:9090",
+                credentialRepository: repo,
+                getCaCerts: noCaCerts,
+              });
+              assertEquals(target?.token, undefined, label);
+            }
+          },
+        );
+        const warnings = captured.map((r) =>
+          r.message.map((p) => String(p)).join("")
+        );
+        assertEquals(warnings.length, 1, label);
+        assertStringIncludes(warnings[0], "SWAMP_SERVER_TOKEN was not sent");
+        assertStringIncludes(warnings[0], reason);
+        assertEquals(warnings[0].includes("leaked.secret"), false, label);
+        const auth = new ServeAuthFailedError(
+          "http://elsewhere.test:9090",
+          "Unauthorized",
+        );
+        assertStringIncludes(auth.message, reason);
+      } finally {
+        await reset();
+        resetWithheldTokenFiles();
+      }
+    });
+  }
+});
+
 Deno.test("resolveServeUpstream: a matching env address uses SWAMP_SERVER_TOKEN_FILE over servers.json", async () => {
   await withTemp(async (dir) => {
     const tokenFile = await writeTokenFile(dir, "file.secret");

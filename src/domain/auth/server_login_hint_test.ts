@@ -65,6 +65,41 @@ Deno.test("serverLoginHint: says the token file was withheld from that serve bef
   }
 });
 
+Deno.test("serverLoginHint: names SWAMP_SERVER_TOKEN when that is the token withheld", () => {
+  resetWithheldTokenFiles();
+  try {
+    recordWithheldTokenFile(
+      "https://serve.example.com",
+      "flag-or-env",
+      "SWAMP_SERVER_TOKEN",
+    );
+    recordWithheldTokenFile(
+      "http://serve.test:9090",
+      "env",
+      "SWAMP_SERVER_TOKEN",
+    );
+    recordWithheldTokenFile(
+      "http://b.test:9090",
+      "paired",
+      "SWAMP_SERVER_TOKEN",
+    );
+    assertEquals(
+      serverLoginHint("https://serve.example.com"),
+      "Authentication failed — SWAMP_SERVER_TOKEN was not sent to https://serve.example.com because only .swamp.yaml names that address; set SWAMP_SERVE_URL to it or pass --server to send it, or run: swamp auth server-login --server https://serve.example.com",
+    );
+    assertEquals(
+      serverLoginHint("http://serve.test:9090"),
+      "Authentication failed — SWAMP_SERVER_TOKEN was not sent to http://serve.test:9090 because only .swamp.yaml names that address; set SWAMP_SERVE_URL to it to send it, or run: swamp auth server-login --server http://serve.test:9090",
+    );
+    assertEquals(
+      serverLoginHint("ws://b.test:9090"),
+      "Authentication failed — SWAMP_SERVER_TOKEN was not sent to http://b.test:9090 because SWAMP_SERVER_URL pairs it with another server; set SWAMP_SERVER_URL to http://b.test:9090 or unset it to send it, or run: swamp auth server-login --server ws://b.test:9090",
+    );
+  } finally {
+    resetWithheldTokenFiles();
+  }
+});
+
 Deno.test("serverLoginHint: a datastore upstream withheld the token file from names only SWAMP_SERVE_URL", () => {
   resetWithheldTokenFiles();
   try {

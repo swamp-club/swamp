@@ -201,7 +201,9 @@ options are:
   `--token`, `SWAMP_SERVER_TOKEN`, `SWAMP_SERVER_TOKEN_FILE` or
   `~/.config/swamp/servers.json`, and none of them sends a token meant for
   another server to it. `SWAMP_SERVER_TOKEN_FILE` applies only to an address
-  that `--server`, `SWAMP_SERVE_URL` or `SWAMP_SERVER_URL` names. Keep
+  that `--server`, `SWAMP_SERVE_URL` or `SWAMP_SERVER_URL` names, and
+  `SWAMP_SERVER_TOKEN` likewise, except that a set `SWAMP_SERVER_URL` pairs it
+  with its own server alone. Keep
   credentials out of it when editing by hand too.
 
 ### Run Garbage Collection

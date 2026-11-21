@@ -31,20 +31,26 @@ import { resetWithheldTokenFiles } from "../../domain/auth/server_login_hint.ts"
  * file is not a _test.ts file and may not import the helper.
  */
 export async function upgradeAuthorizationHeaders(
-  tokenFileContent: string,
+  tokenFileContent: string | undefined,
   run: (serverUrl: string) => Promise<void>,
   withEnv: (
     env: Record<string, string | undefined>,
     fn: () => Promise<void>,
   ) => Promise<void>,
+  envFor: (serverUrl: string) => Record<string, string | undefined> =
+    () => ({}),
 ): Promise<(string | null)[]> {
   const headers: (string | null)[] = [];
   const dir = await Deno.makeTempDir({ prefix: "swamp-token-file-binding-" });
   const previousExitCode = Deno.exitCode;
   let server: Deno.HttpServer<Deno.NetAddr> | undefined;
   try {
-    const tokenFile = join(dir, "token");
-    await Deno.writeTextFile(tokenFile, `${tokenFileContent}\n`);
+    const tokenFile = tokenFileContent === undefined
+      ? undefined
+      : join(dir, "token");
+    if (tokenFile !== undefined) {
+      await Deno.writeTextFile(tokenFile, `${tokenFileContent}\n`);
+    }
     server = Deno.serve(
       { port: 0, hostname: "127.0.0.1", onListen: () => {} },
       (req) => {
@@ -68,6 +74,7 @@ export async function upgradeAuthorizationHeaders(
       SWAMP_SERVER_TOKEN: undefined,
       SWAMP_SERVER_TOKEN_FILE: tokenFile,
       SWAMP_CONFIG_DIR: dir,
+      ...envFor(url),
     }, async () => {
       try {
         await run(url);

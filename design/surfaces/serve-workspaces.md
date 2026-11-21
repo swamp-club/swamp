@@ -844,11 +844,12 @@ answers. A serve that was given no root address offers no exchange.
 **What the CLI signs in with, and keeps** (`src/cli/workspace_sign_in.ts`).
 
 - Only a host token `swamp auth server-login` stored is exchanged. A host token
-  from `SWAMP_SERVER_TOKEN` or a token file is not: an exchange from it would
-  either write a credential to a machine that chose to keep them out of files,
-  or mint a workspace token on every command. A token file bound by `--server`
-  to a workspace's address is sent there as it is, whatever it holds, since the
-  user named that address.
+  from `SWAMP_SERVER_TOKEN` (bound to the host by `SWAMP_SERVER_URL`, or with
+  that unset by `SWAMP_SERVE_URL`) or a token file is not: an exchange from it
+  would either write a credential to a machine that chose to keep them out of
+  files, or mint a workspace token on every command. A token file or
+  `SWAMP_SERVER_TOKEN` bound by `--server` to a workspace's address is sent
+  there as it is, whatever it holds, since the user named that address.
 - The workspace token goes into `servers.json` under the workspace's address,
   with an `expiresAt` on the client's clock (the lifetime the workspace granted,
   measured by its `Date` header). Within a few minutes of that expiry the CLI
