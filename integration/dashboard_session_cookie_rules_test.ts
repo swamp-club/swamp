@@ -45,8 +45,8 @@ Deno.test("dashboard session cookie: only its own module names the plain cookie"
     naming,
     [],
     "production modules that name the plain dashboard session cookie",
-    "A serve with a path in its address reads and writes a cookie named for\n" +
-      "that path. Take the cookie from DashboardSessionCookie.forAddress so\n" +
-      "every reader and writer agrees on it.",
+    "A workspace a host runs reads and writes a cookie named for its address\n" +
+      "path. Take the cookie from DashboardSessionCookie.forServe so every\n" +
+      "reader and writer agrees on it.",
   );
 });
