@@ -809,14 +809,16 @@ Deno.test("workspaceHub: an app's own socket reaches the same child under the sa
     app.send(read("app:2", "vault.get"));
     app.send(JSON.stringify({ type: "cancel", id: RUN }));
     await waitFor(() => appSeen.length === 2, "an echo and a refusal");
-    assertEquals(appSeen[0], {
+    // the hub refuses vault.get itself while the echo crosses to the child
+    const reply = (id: string) => appSeen.find((frame) => frame.id === id);
+    assertEquals(reply("app:1"), {
       type: "echo",
       id: "app:1",
       of: "workflow.search",
       path: "/",
     });
     assertEquals(
-      (appSeen[1].error as { code: string }).code,
+      (reply("app:2")?.error as { code: string }).code,
       "not_available_locally",
     );
     assertEquals(dashboardSeen.length, 0);
