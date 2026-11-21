@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { resolve } from "@std/path";
+import { join, resolve } from "@std/path";
 import { createContext, type GlobalOptions } from "../context.ts";
 import {
   getSwampConfigDir,
@@ -36,7 +36,14 @@ import {
   type HostLayout,
   locateHostYaml,
 } from "../../serve/host/host_layout.ts";
+import {
+  resolveRootWorkspace,
+  ROOT_WORKSPACE_NAME,
+  rootWorkspaceLocation,
+  SERVE_CONFIG_PATH,
+} from "../../serve/host/root_workspace.ts";
 import { type ServeHost, startServeHost } from "../../serve/host/serve_host.ts";
+import { childRootWorkspaceCreator } from "../../serve/root_workspace_process.ts";
 import {
   hostConfiguredParent,
   hostWorkspaceStore,
@@ -52,6 +59,8 @@ export const serveHostCommand = new Command()
   .description(
     "Run one serve per workspace behind a single address.\n\n" +
       "<config dir>/host.yaml holds the listener, its TLS certificate, the public address and an optional root repo; relative paths in it are taken from the config dir. " +
+      "The root is the serve at the address itself, which swamp serve workspace commands talk to and which issues sign-in codes. With no root: in host.yaml, the host uses its root workspace host-root, an ordinary workspace it makes with swamp workspace create on its first start and finds again by its registry entry; it is never listed among the workspaces. " +
+      "The root workspace takes its auth from its own .swamp/serve.yaml, as plain swamp serve does, so while serve's default is auth mode none anyone on this machine can create, resume and delete workspaces through it and run code as the host's user; set auth.mode there to change that. Off loopback or behind a proxy a root in auth mode none is refused. " +
       "With no host.yaml there, the first run creates one listening on 127.0.0.1:8080 with address http://127.0.0.1:8080, the other keys written as comments, and starts from it; it never replaces an existing host.yaml, even an invalid one. " +
       "The host keeps its state files in <data dir>/host/, which holds no repo. The host logs which host.yaml it read. One host runs per state folder: a second exits naming it.\n\n" +
       "Every workspace in the user's workspace registry is listed, as swamp workspace import or swamp workspace create registered it; a request creates one where swamp workspace create would, in workspaces.dir or <data dir>/workspaces. Each answers at <address>/w/<name>; the root answers at the address itself. A workspace's serve starts only when its <name>.wanted.yaml in the state folder says wanted: active; the root starts with the host. The host has no repo of its own and authenticates no one: each workspace's serve does.\n\n" +
@@ -73,7 +82,12 @@ export const serveHostCommand = new Command()
     const ctx = createContext(options as GlobalOptions, ["serve", "host"]);
     const renderer = createServeHostRenderer(ctx.outputMode);
     const { layout, text, created } = await locateHostConfig();
-    if (created) renderer.created({ file: layout.configFile });
+    if (created) {
+      renderer.created({
+        file: layout.configFile,
+        rootWorkspace: ROOT_WORKSPACE_NAME,
+      });
+    }
     ctx.logger.info("Read {file}; the host keeps its state in {state}", {
       file: layout.configFile,
       state: layout.stateDir,
@@ -90,25 +104,48 @@ export const serveHostCommand = new Command()
     // the children are pinned to the same two folders, so the root writes the same registry
     const swampHome = resolve(getSwampDataDir());
     const configDir = resolve(getSwampConfigDir());
+    const childEnv = hostChildEnv(hostEnv, {
+      swampHome,
+      configDir,
+      cwd: Deno.cwd(),
+    });
+    const workspaceStore = hostWorkspaceStore({
+      dataDir: swampHome,
+      configDir,
+    });
+    const configuredParent = hostConfiguredParent(configDir);
     const host = await startServeHost({
       config,
       processPort: DENO_SERVE_PROCESS_PORT,
-      childEnv: hostChildEnv(hostEnv, {
-        swampHome,
-        configDir,
-        cwd: Deno.cwd(),
-      }),
-      workspaceStore: hostWorkspaceStore({ dataDir: swampHome, configDir }),
-      configuredParent: hostConfiguredParent(configDir),
+      childEnv,
+      workspaceStore,
+      configuredParent,
+      rootWorkspace: () =>
+        resolveRootWorkspace({
+          stateDir: config.stateDir,
+          store: workspaceStore,
+          location: rootWorkspaceLocation({
+            dataDir: swampHome,
+            configuredParent,
+          }),
+          creator: childRootWorkspaceCreator({ env: childEnv, cwd: swampHome }),
+        }),
       onWorkspaceChange: (change) => renderer.workspacesChanged(change),
     });
+    if (host.rootWorkspace !== null) {
+      renderer.rootWorkspace({
+        ...host.rootWorkspace,
+        serveConfig: join(host.rootWorkspace.folder, SERVE_CONFIG_PATH),
+      });
+    }
 
     renderer.listening({
       host: host.hostname,
       port: host.port,
       url: listeningUrl(config.protocol, host.hostname, host.port),
       address: config.address,
-      root: config.root !== null,
+      root: config.root !== null || host.rootWorkspace !== null,
+      rootWorkspace: host.rootWorkspace?.name ?? null,
       workspaces: host.workspaces.length,
     });
     await serveUntilStopped(host, PROCESS_STOP_SIGNALS);

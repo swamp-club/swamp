@@ -121,21 +121,13 @@ export class HostConfig {
     let root: string | null = null;
     if (yaml.root !== undefined) {
       root = resolve(dir, yaml.root);
-      if (isWithin(stateDir, root)) {
-        throw markErrorPaths(
-          invalid(
-            `root ${yaml.root} is inside ${stateName}, which holds no repo`,
-          ),
-          [yaml.root],
-        );
-      }
-      if (isWithin(root, stateDir)) {
-        throw markErrorPaths(
-          invalid(
-            `root ${yaml.root} contains ${stateName}, so its repo would hold the host's wanted and status files`,
-          ),
-          [yaml.root],
-        );
+      const refusal = rootPlacementRefusal(
+        `root ${yaml.root}`,
+        root,
+        stateDir,
+      );
+      if (refusal !== null) {
+        throw markErrorPaths(invalid(refusal), [yaml.root]);
       }
     }
 
@@ -191,6 +183,17 @@ export class HostConfig {
     return hostedWorkspaceAddress(this.address, name);
   }
 
+  /** why `folder`, a root not named in host.yaml, cannot be the root, or null */
+  rootRefusal(folder: string): string | null {
+    const placement = rootPlacementRefusal(folder, folder, this.stateDir);
+    if (placement !== null) return placement;
+    const secretFile = this.oauthClient?.secretFile;
+    if (secretFile !== undefined && isWithin(folder, secretFile)) {
+      return `${folder} holds oauth-client.secret-file ${secretFile}; keep the secret outside every repo the host runs`;
+    }
+    return null;
+  }
+
   /** why a child in auth mode none may not run behind this host, or null */
   noAuthRefusal(): string | null {
     if (this.offLoopback) {
@@ -241,6 +244,22 @@ function parseOAuthClient(
     );
   }
   return { id: raw.id, secretFile };
+}
+
+// one rule for an explicit root and the root workspace; `named` is how the message names it
+function rootPlacementRefusal(
+  named: string,
+  root: string,
+  stateDir: string,
+): string | null {
+  const stateName = `the host's state folder ${stateDir}`;
+  if (isWithin(stateDir, root)) {
+    return `${named} is inside ${stateName}, which holds no repo`;
+  }
+  if (isWithin(root, stateDir)) {
+    return `${named} contains ${stateName}, so its repo would hold the host's wanted and status files`;
+  }
+  return null;
 }
 
 function parseAddress(raw: string): string {

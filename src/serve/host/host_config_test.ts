@@ -330,3 +330,38 @@ Deno.test("HostConfig.parse: a secret file inside the state folder or the root i
   ).message;
   assertStringIncludes(root, "inside the root repo");
 });
+
+Deno.test("HostConfig.rootRefusal: a root workspace inside or containing the state folder is refused, as an explicit root is", () => {
+  const config = parse("address: http://127.0.0.1:8080\n");
+  const stateDir = join(DATA_DIR, "host");
+  const inside = join(stateDir, "workspaces", "host-root");
+  assertStringIncludes(
+    config.rootRefusal(inside) ?? "",
+    `${inside} is inside the host's state folder`,
+  );
+  assertStringIncludes(
+    config.rootRefusal(DATA_DIR) ?? "",
+    `${DATA_DIR} contains the host's state folder`,
+  );
+  assertEquals(
+    config.rootRefusal(join(DATA_DIR, "workspaces", "host-root")),
+    null,
+  );
+});
+
+Deno.test("HostConfig.rootRefusal: a root workspace holding the OAuth client's secret file is refused", () => {
+  const folder = join(DATA_DIR, "workspaces", "host-root");
+  const config = parse(
+    [
+      "address: http://127.0.0.1:8080",
+      "oauth-client:",
+      "  id: client-1",
+      `  secret-file: ${join(folder, "secret")}`,
+    ].join("\n"),
+  );
+  assertStringIncludes(
+    config.rootRefusal(folder) ?? "",
+    "holds oauth-client.secret-file",
+  );
+  assertEquals(config.rootRefusal(join(DATA_DIR, "elsewhere")), null);
+});

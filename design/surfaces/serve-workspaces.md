@@ -155,9 +155,9 @@ It is created exclusively, a temp file hard-linked into place: an existing
 `host.yaml`, even an invalid one, is never replaced, and of two hosts starting
 at once one writes it and the other reads it. The host reports the file it
 created before it listens, a line of its own in `--json`. The created file
-names no root, so `swamp serve workspace` has nothing to talk to until the
-operator sets `root:`; the line says so. Relative paths in `host.yaml` are
-taken from the config dir. One host runs per state folder: the host holds an
+names no root, so the host uses its root workspace, and the line names it.
+Relative paths in `host.yaml` are taken from the config dir. One host runs per
+state folder: the host holds an
 exclusive kernel lock on `.host-lock` there while it runs
 (`src/infrastructure/persistence/host_state_lock.ts`), which the kernel
 releases when the process dies, and a second host exits naming it. The file
@@ -289,7 +289,15 @@ something must forward it to a loopback listener. `host.yaml` can set
 caller. A child reports its auth mode as `authMode` on its `--json` listening
 line. A refused child is stopped as a requested stop, never restarted, and
 answers 503 with state `refused` until the host restarts or its folder is
-removed and added again.
+removed and added again. The root workspace is no exception, and its refusal
+names its `.swamp/serve.yaml` to set an auth mode in, or says to set `root:`.
+
+A host with no `root:` on loopback runs its root workspace with serve's
+default auth, which is `none` today. Until an auth mode is set in that
+workspace's `serve.yaml`, anyone on the machine can create, resume and delete
+workspaces through the root, and a workspace it creates copies that mode, so
+anyone on the machine can run code as the host's user. Both of the host's
+lines about the root workspace say so, as `swamp serve host --help` does.
 
 `--exit-on-stdin-close` is a new hidden flag: serve starts its drain when stdin
 reaches end of file, as the dashboard child already does. The host keeps each
@@ -301,6 +309,31 @@ closes.
 **The root workspace** is the repo `root:` names in `host.yaml`. An existing
 serve becomes a root by naming its repo there and keeping its settings in its
 `serve.yaml`. Its address does not change.
+
+With no `root:`, the root is an ordinary workspace named `host-root`
+(`src/serve/host/root_workspace.ts`). On its first start the host runs
+`swamp workspace create host-root` as a child, with the same config and data
+dirs it pins every child to, so the repo goes where that command puts one, in
+`workspaces.dir` or `<data dir>/workspaces`, registered as created under the
+create lock and with no `serve.yaml`. The host loads no repo code itself, and
+it still never writes the registry. It keeps `root-workspace.yaml` in its state
+folder, naming that folder and its repoId, and on later starts it finds the
+root by that record and the registry entry, and never creates it again. It
+does not start when the entry's folder is gone or holds another repo, when
+`host-root` is registered with no record of its own, or when a folder is
+already where a new one would go, as `swamp workspace remove` leaves one. Each
+refusal names the folder and what to do: put it back, import it with
+`--name host-root`, move it aside, or set `root:`. A record whose entry was
+removed, with its folder gone or moved aside, gets a new root workspace, and
+the host names any earlier folder it leaves on disk. Its auth is plain serve's:
+the host writes none, and the root reads its own `serve.yaml` only, since the
+host's serve settings never reach a child. Its folder is the root's, so like an
+explicit root it is never listed, has no address under `/w/`, and no workspace
+request can suspend or delete it. Naming a `root:` later leaves it an ordinary
+workspace the host never deletes, since it has no wanted file. The host logs
+the root workspace's name and folder when it creates and when it starts it,
+and `--json` adds a `root_workspace` event and a `rootWorkspace` field on
+`listening`.
 
 **The registry is the list.** A workspace of the host is an entry in the
 workspace registry of the user the host runs as, `<config dir>/workspaces.json`
@@ -506,7 +539,7 @@ the field that is wrong:
 | `listen.host`                        | `127.0.0.1`                   | Off loopback needs TLS, as for serve                                                     |
 | `listen.port`                        | `443` with TLS, `8080` without |                                                                                          |
 | `listen.cert-file`, `listen.key-file` | none                          | Given together; relative to the config dir                                               |
-| `root`                               | none                          | The root workspace's repo; relative to the config dir, never inside the state folder nor containing it; a folder without `.swamp.yaml` is refused at startup |
+| `root`                               | the root workspace `host-root` | The root workspace's repo; relative to the config dir, never inside the state folder nor containing it; a folder without `.swamp.yaml` is refused at startup. Unset, the host makes and uses its root workspace (see The root workspace), held to the same rules |
 | `trust-proxy`                        | `false`                       | The host is behind a proxy, whose forwarding headers it passes on                        |
 | `allow-unauthenticated-behind-proxy` | `false`                       | Admits a child in auth mode `none` behind a proxy; only on a loopback listener with `trust-proxy` or a public `address` |
 | `oauth-client.id`, `oauth-client.secret-file` | none                 | Given together; every child is started with them. The file is relative to the config dir, never inside the state folder nor the root, and a missing, unreadable or empty one is refused at startup; a workspace whose folder holds it is not started, and its status says why |
@@ -1151,9 +1184,18 @@ After 7 an operator who sets each workspace up has a multi-workspace host.
     reads or creates only the config dir's `host.yaml` and the in-process host
     tests run against a config dir and data dir. Closes swamp-club#4951.
     After 25.
+27. **A host with no root uses a root workspace** (swamp-club#4975, built).
+    With no `root:`, the host's root is the workspace `host-root`, which
+    `swamp workspace create` makes on the first start and the host finds again
+    by its record and registry entry. It runs with serve's default auth, and
+    the host's no-auth refusal names its `serve.yaml`. Done when a fresh host
+    serves its root workspace at the address and never lists it, a restart
+    creates nothing, each folder left by a remove or gone from its entry is
+    refused with what to do, and an explicit `root:` never creates one.
+    After 26 and 25.
 
 Issues 16 and 17 need only the first two groups, so the dashboard can proceed
-beside the lifecycle. Issues 19 to 23 and 26 run in order, after issue 10,
+beside the lifecycle. Issues 19 to 23, 26 and 27 run in order, after issue 10,
 issue 24 needs only issue 8, and issue 25 needs issue 22.
 Promoting a local workspace builds on issues 13 and 15 and is designed
 separately.

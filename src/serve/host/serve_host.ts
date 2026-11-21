@@ -63,6 +63,7 @@ import {
 } from "./workspace_reconciler.ts";
 import { RegistryProblemLog } from "./workspace_registration.ts";
 import { createWorkspaceRoster } from "./workspace_roster.ts";
+import { type RootWorkspace, SERVE_CONFIG_PATH } from "./root_workspace.ts";
 import {
   type HostedRegistryDeps,
   registeredFolderOf,
@@ -85,6 +86,8 @@ export interface ServeHostOptions {
   readonly workspaceStore: HostedRegistryDeps;
   /** workspaces.dir as set, where the host creates; undefined for the data dir's own */
   readonly configuredParent?: () => Promise<string | undefined>;
+  /** decides the root when host.yaml names none; absent, such a host has no root */
+  readonly rootWorkspace?: () => Promise<RootWorkspace>;
   readonly onWorkspaceChange?: (change: WorkspaceChange) => void;
   readonly rescanMs?: number;
   readonly supervisor?: Pick<
@@ -98,6 +101,8 @@ export interface ServeHost {
   readonly port: number;
   /** the workspaces found at startup, sorted */
   readonly workspaces: readonly string[];
+  /** null when host.yaml names the root */
+  readonly rootWorkspace: RootWorkspace | null;
   reload(): void;
   shutdown(): Promise<void>;
   readonly finished: Promise<void>;
@@ -186,12 +191,27 @@ async function startLocked(
       "host.yaml oauth-client.secret-file",
     );
   }
+  const rootWorkspace = config.root === null && options.rootWorkspace
+    ? await options.rootWorkspace()
+    : null;
+  if (rootWorkspace !== null) {
+    const refusal = config.rootRefusal(rootWorkspace.folder);
+    if (refusal !== null) {
+      throw markErrorPaths(
+        new UserError(
+          `The root workspace ${rootWorkspace.name} cannot be the host's root: ${refusal}. Set root: in host.yaml to a swamp repo of your own.`,
+        ),
+        [rootWorkspace.folder],
+      );
+    }
+  }
+  const root = config.root ?? rootWorkspace?.folder ?? null;
   const scan = await scanWorkspaces(config.stateDir);
   const repository = new HostedWorkspaceFileRepository(config.stateDir);
   const reads = await readWantedFiles(repository, scan);
   const registryProblems = new RegistryProblemLog();
   const roster = createWorkspaceRoster({
-    rootRepo: config.root,
+    rootRepo: root,
     store: options.workspaceStore,
     problems: registryProblems,
   });
@@ -203,12 +223,12 @@ async function startLocked(
   const supervisor = createServeSupervisor({
     ...options.supervisor,
     processPort,
-    admit: noAuthAdmission(config),
+    admit: noAuthAdmission(config, rootWorkspace),
     onStatus: (status) => statusWriter.report(status),
   });
   const routerAbort = new AbortController();
   const router = createWorkspaceRouter({
-    directory: hostDirectory(config, supervisor),
+    directory: hostDirectory(root, supervisor),
     protocol: config.protocol,
     trustProxy: config.trustProxy,
     signal: routerAbort.signal,
@@ -248,7 +268,7 @@ async function startLocked(
         },
       }
       // the root answers at the host's address
-      : config.root !== null
+      : root !== null
       ? { rootAddress: config.address }
       : {}),
   });
@@ -282,7 +302,7 @@ async function startLocked(
   try {
     // no await between the bind and these adds, so no request sees a
     // scanned workspace before the supervisor knows it
-    if (config.root !== null) supervisor.add(specOf(ROOT_SERVE, config.root));
+    if (root !== null) supervisor.add(specOf(ROOT_SERVE, root));
     started = reconciler.begin(scan, reads, folders);
     stack.watcher = watchWorkspaces({
       dir: config.stateDir,
@@ -316,6 +336,7 @@ async function startLocked(
     hostname: bound.hostname,
     port: bound.port,
     workspaces: started,
+    rootWorkspace,
     reload() {
       const asked = supervisor.reload();
       logger.info("Asked {count} ready serves to reload", { count: asked });
@@ -356,15 +377,27 @@ async function stopAll(stack: HostStack): Promise<void> {
 
 export function noAuthAdmission(
   config: HostConfig,
+  rootWorkspace: RootWorkspace | null = null,
 ): ServeAdmission | undefined {
   const refusal = config.noAuthRefusal();
   if (refusal === null) return undefined;
-  return (_spec, listened) => listened.authMode === "none" ? refusal : null;
+  // the root workspace has serve's default auth, which only its own serve.yaml changes
+  const rootRefusal = rootWorkspace === null
+    ? refusal
+    : `${refusal}. The root workspace ${rootWorkspace.name} takes its auth from ${
+      join(rootWorkspace.folder, SERVE_CONFIG_PATH)
+    }: set auth.mode there, or set root: in host.yaml to a swamp repo of your own`;
+  return (spec, listened) =>
+    listened.authMode !== "none"
+      ? null
+      : spec.id.kind === "root"
+      ? rootRefusal
+      : refusal;
 }
 
 /** a removed workspace answers 404; one not ready answers 503 with its state */
 export function hostDirectory(
-  config: HostConfig,
+  root: string | null,
   supervisor: Pick<ServeSupervisor, "lookup">,
 ): WorkspaceDirectory {
   const routeOf = (id: ServeId): WorkspaceRoute | undefined => {
@@ -380,7 +413,7 @@ export function hostDirectory(
   };
   return {
     workspace: (name) => routeOf(workspaceServe(name)),
-    root: () => config.root === null ? undefined : routeOf(ROOT_SERVE),
+    root: () => root === null ? undefined : routeOf(ROOT_SERVE),
   };
 }
 
