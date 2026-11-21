@@ -4224,7 +4224,7 @@ async function assertSnapshotMatchesFindById(
     for (const raw of ids) {
       const id = raw as DefinitionId;
       const expected = await fixture.repo().findById(type, id);
-      const actual = snapshot.find(type, id);
+      const actual = await snapshot.find(type, id);
       assertEquals(
         actual?.toData() ?? null,
         expected?.toData() ?? null,
@@ -4290,7 +4290,10 @@ Deno.test("YamlDefinitionRepository.snapshotById: finds what a fresh findById fi
     await assertSnapshotMatchesFindById(fixture, [testType, otherType], ids);
 
     const snapshot = await fixture.repo().snapshotById();
-    assertEquals(snapshot.find(testType, badType as DefinitionId)?.type, "/");
+    assertEquals(
+      (await snapshot.find(testType, badType as DefinitionId))?.type,
+      "/",
+    );
     assertEquals(
       snapshot.declaresType(retyped as DefinitionId, testType),
       true,
@@ -4332,7 +4335,7 @@ Deno.test("YamlDefinitionRepository.snapshotById: an id-named file that does not
       const expected = await assertRejects(() =>
         fixture.repo().findById(testType, id)
       );
-      const actual = assertThrows(() => snapshot.find(testType, id));
+      const actual = await assertRejects(() => snapshot.find(testType, id));
       assertEquals(
         (actual as Error).message,
         (expected as Error).message,
@@ -4342,7 +4345,52 @@ Deno.test("YamlDefinitionRepository.snapshotById: an id-named file that does not
       await fixture.repo().findById(testType, brokenUnderName),
       null,
     );
-    assertEquals(snapshot.find(testType, brokenUnderName), null);
+    assertEquals(await snapshot.find(testType, brokenUnderName), null);
+  });
+});
+
+Deno.test("YamlDefinitionRepository.snapshotById: an id-named auto-definition the datastore could not materialise raises as findById does", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = snapshotFixture(dir);
+    const id = crypto.randomUUID() as DefinitionId;
+    const unreadablePath = join(
+      fixture.secondaryDir,
+      testType.toDirectoryPath(),
+      `${id}.yaml`,
+    );
+    const repo = new YamlDefinitionRepository(
+      fixture.repoDir,
+      undefined,
+      fixture.primaryDir,
+      fixture.secondaryDir,
+      undefined,
+      (path) =>
+        Promise.resolve(
+          path === unreadablePath
+            ? new UserError("could not be materialised")
+            : undefined,
+        ),
+    );
+
+    await assertRejects(
+      () => repo.findById(testType, id),
+      UserError,
+      "could not be materialised",
+    );
+    const snapshot = await repo.snapshotById();
+    await assertRejects(
+      () => snapshot.find(testType, id),
+      UserError,
+      "could not be materialised",
+    );
+    assertEquals(
+      await snapshot.find(testType, crypto.randomUUID() as DefinitionId),
+      null,
+    );
+    assertEquals(
+      await (await fixture.repo().snapshotById()).find(testType, id),
+      null,
+    );
   });
 });
 
@@ -4425,7 +4473,7 @@ Deno.test({
         "outside-legacy",
       );
       const snapshot = await fixture.repo().snapshotById();
-      assertThrows(() => snapshot.find(testType, outsideLegacy));
+      await assertRejects(() => snapshot.find(testType, outsideLegacy));
     });
   },
 });

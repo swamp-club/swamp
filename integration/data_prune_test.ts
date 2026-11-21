@@ -612,6 +612,45 @@ Deno.test("Data Prune: an invalid declared type aborts the prune and deletes not
   });
 });
 
+Deno.test("Data Prune: an invalid declared type aborts the prune through an injected repository, with or without serve's id index", async () => {
+  for (const indexed of [true, false]) {
+    await withTempDir(async (repoDir) => {
+      const autoRoot = swampPath(repoDir, SWAMP_SUBDIRS.autoDefinitions);
+      const type = ModelType.create("test/prune");
+      const id = crypto.randomUUID();
+      await writeDefinitionFile(
+        autoRoot,
+        type.toDirectoryPath(),
+        "bad-type.yaml",
+        definitionYaml(id, "bad-type", "/"),
+      );
+      const dataRepo = openDataRepo(repoDir);
+      await writeData(dataRepo, type, id, "state", 2);
+      const definitionRepo = new YamlDefinitionRepository(repoDir);
+      if (indexed) {
+        definitionRepo.useIdIndex(new DefinitionIdIndex(definitionRepo));
+      }
+      const deps = createDataPruneDeps(
+        repoDir,
+        undefined,
+        undefined,
+        definitionRepo,
+      );
+
+      await assertRejects(
+        () => deps.deleteOrphanedData({ dryRun: false }),
+        Error,
+        "normalization resulted in empty string",
+      );
+      assertEquals(
+        (await dataRepo.listVersions(type, id, "state")).length,
+        2,
+        indexed ? "indexed" : "walked",
+      );
+    });
+  }
+});
+
 Deno.test("Data Prune: a broken definition stored under its name leaves its data orphaned, a broken id-named one aborts", async () => {
   await withTempDir(async (repoDir) => {
     const autoRoot = swampPath(repoDir, SWAMP_SUBDIRS.autoDefinitions);

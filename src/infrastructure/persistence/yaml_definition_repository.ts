@@ -112,7 +112,7 @@ const logger = getLogger(["definition-repo"]);
 
 export interface DefinitionByIdSnapshot {
   /** what findById returns on a fresh repository, its errors included */
-  find(type: ModelType, id: DefinitionId): Definition | null;
+  find(type: ModelType, id: DefinitionId): Promise<Definition | null>;
   declaresType(id: DefinitionId, type: ModelType): boolean;
 }
 
@@ -1008,9 +1008,9 @@ export class YamlDefinitionRepository implements DefinitionRepository {
   }
 
   /**
-   * the scan keeps a definition whose declared type is invalid, records no
-   * paths or hints, and ignores unreadableContent; an id-named symlink leaving
-   * the repository raises where findById would read it
+   * the scan keeps a definition whose declared type is invalid and records no
+   * paths or hints; an id-named symlink leaving the repository raises where
+   * findById would read it
    */
   async snapshotById(): Promise<DefinitionByIdSnapshot> {
     const roots = [this.baseDir, this.secondaryBaseDir].filter((dir) =>
@@ -1043,14 +1043,20 @@ export class YamlDefinitionRepository implements DefinitionRepository {
       return null;
     };
     return {
-      find: (type, id) => {
+      find: async (type, id) => {
         const primaryDir = this.getTypeDir(type);
         const found = definitionAt(join(primaryDir, `${id}.yaml`), id) ??
           firstIn(primaryDir, id, true);
         if (found || !this.secondaryBaseDir) return found;
         const autoDir = this.getTypeDir(type, this.secondaryBaseDir);
-        return definitionAt(join(autoDir, `${id}.yaml`), id) ??
+        const autoFound = definitionAt(join(autoDir, `${id}.yaml`), id) ??
           firstIn(autoDir, id, false);
+        // as findById: an id-named auto-definition the datastore could not
+        // materialise fails loudly instead of reading as absent
+        if (!autoFound) {
+          await this.throwIfUnreadable(join(autoDir, `${id}.yaml`));
+        }
+        return autoFound;
       },
       declaresType: (id, type) =>
         (byId.get(id) ?? []).some((file) =>
@@ -1058,13 +1064,6 @@ export class YamlDefinitionRepository implements DefinitionRepository {
           declaresType(file.read.definition, type)
         ),
     };
-  }
-
-  async declaresTypeById(id: DefinitionId, type: ModelType): Promise<boolean> {
-    const found = this.idIndex
-      ? await this.idIndex.findAllById(id)
-      : await this.findAllByIdGlobal(id);
-    return found.some(({ definition }) => declaresType(definition, type));
   }
 
   private async collectSnapshotFiles(

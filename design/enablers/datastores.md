@@ -589,11 +589,14 @@ cost of every write.
 
 `swamp data prune` reclaims them. It walks the data root (`findAllGlobal`),
 groups by `(type, modelId)`, and checks whether each group's definition still
-exists. The check uses the definition repository's `findById`, which searches
-both `models/` and `.swamp/auto-definitions/`, like `swamp behavior get`. So
-auto-definition-backed behaviors (ones auto-created by a direct run or a
-workflow, and installed `@swamp/*` behaviors) count as live and are never
-pruned. Groups with
+exists. The check reads one snapshot per pass of both `models/` and
+`.swamp/auto-definitions/`, answering as `findById` does, in the CLI and in
+`swamp serve` alike (serve does not answer it from its definition index, which
+skips a definition it cannot type). So auto-definition-backed behaviors (ones
+auto-created by a direct run or a workflow, and installed `@swamp/*` behaviors)
+count as live and are never pruned. A definition whose declared type is invalid,
+or an id-named auto-definition the datastore could not materialise, aborts the
+prune and deletes nothing. Groups with
 no live definition are removed by the definition-free `delete(type, modelId,
 dataName)`, which deletes all versions on disk and their catalog rows.
 
