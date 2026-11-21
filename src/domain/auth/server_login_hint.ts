@@ -24,21 +24,36 @@ import { normalizeServerUrl } from "./server_url.ts";
  * a v3 datastore whose upstream is serve takes only SWAMP_SERVE_URL, since
  * --server would run the command on serve
  */
-export type WithheldTokenFileRemedy = "flag-or-env" | "env";
+export type WithheldTokenFileRemedy = "flag-or-env" | "env" | PairedRemedy;
+
+export interface PairedRemedy {
+  readonly invalidUrl: boolean;
+  readonly unsetBinds: boolean;
+}
+
+export type WithheldTokenVariable =
+  | "SWAMP_SERVER_TOKEN_FILE"
+  | "SWAMP_SERVER_TOKEN";
+
+interface WithheldToken {
+  readonly remedy: WithheldTokenFileRemedy;
+  readonly variable: WithheldTokenVariable;
+}
 
 /**
  * lives beside serverLoginHint because the remote-run and datastore API clients
  * build their 401 message from it and cannot see how the CLI resolved the
  * token; grows only with distinct addresses
  */
-const withheldTokenFiles = new Map<string, WithheldTokenFileRemedy>();
+const withheldTokenFiles = new Map<string, WithheldToken>();
 
 export function recordWithheldTokenFile(
   key: string,
   remedy: WithheldTokenFileRemedy,
+  variable: WithheldTokenVariable = "SWAMP_SERVER_TOKEN_FILE",
 ): boolean {
   if (withheldTokenFiles.has(key)) return false;
-  withheldTokenFiles.set(key, remedy);
+  withheldTokenFiles.set(key, { remedy, variable });
   return true;
 }
 
@@ -63,20 +78,29 @@ export function workspaceTokenRefusalHint(
   return `Behind a host this is also how a workspace refusing your token reads; signing in to the host again replaces it: swamp auth server-login --server ${note.hostAddress}`;
 }
 
-/** names the normalized address only, never the file's path or contents */
+/** names the normalized address only, never the token or the file's path */
 export function withheldTokenFileMessage(
   key: string,
   remedy: WithheldTokenFileRemedy,
+  variable: WithheldTokenVariable = "SWAMP_SERVER_TOKEN_FILE",
 ): string {
+  if (typeof remedy === "object") {
+    const why = remedy.invalidUrl
+      ? "SWAMP_SERVER_URL is not a valid http(s) or ws(s) URL"
+      : "SWAMP_SERVER_URL pairs it with another server";
+    const unset = remedy.unsetBinds ? " or unset it" : "";
+    return `${variable} was not sent to ${key} because ${why}; set SWAMP_SERVER_URL to ${key}${unset} to send it`;
+  }
   const how = remedy === "env"
     ? "set SWAMP_SERVE_URL to it to send it"
     : "set SWAMP_SERVE_URL to it or pass --server to send it";
-  return `SWAMP_SERVER_TOKEN_FILE was not sent to ${key} because only .swamp.yaml names that address; ${how}`;
+  return `${variable} was not sent to ${key} because only .swamp.yaml names that address; ${how}`;
 }
 
 /**
- * when this process withheld SWAMP_SERVER_TOKEN_FILE from the serve, the
- * message says so first, since signing in is then the wrong fix
+ * when this process withheld SWAMP_SERVER_TOKEN_FILE or SWAMP_SERVER_TOKEN
+ * from the serve, the message says so first, since signing in is then the
+ * wrong fix
  */
 export function serverLoginHint(
   serverUrl: string,
@@ -86,10 +110,10 @@ export function serverLoginHint(
   const login = `swamp auth server-login --server ${
     signIn?.hostAddress ?? serverUrl
   }`;
-  const remedy = key === undefined ? undefined : withheldTokenFiles.get(key);
-  if (key !== undefined && remedy !== undefined) {
+  const withheld = key === undefined ? undefined : withheldTokenFiles.get(key);
+  if (key !== undefined && withheld !== undefined) {
     return `Authentication failed — ${
-      withheldTokenFileMessage(key, remedy)
+      withheldTokenFileMessage(key, withheld.remedy, withheld.variable)
     }, or run: ${login}`;
   }
   switch (signIn?.kind) {

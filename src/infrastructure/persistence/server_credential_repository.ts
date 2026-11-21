@@ -22,7 +22,10 @@ import type {
   ServerCredential,
   ServerCredentialRepository,
 } from "../../domain/auth/server_credential.ts";
-import { normalizeServerUrl } from "../../domain/auth/server_url.ts";
+import {
+  envServerTokenBinding,
+  normalizeServerUrl,
+} from "../../domain/auth/server_url.ts";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { getSwampLogger } from "../logging/logger.ts";
 import { getSwampConfigDir } from "./paths.ts";
@@ -54,17 +57,22 @@ export interface FileServerCredentialRepositoryOptions {
   configDir?: string;
   getServerToken?: () => string | undefined;
   getServerUrl?: () => string | undefined;
+  getServeUrl?: () => string | undefined;
   /** answer from servers.json alone, ignoring the SWAMP_SERVER_TOKEN pair */
   fileOnly?: boolean;
   lockFile?: (file: Deno.FsFile) => Promise<void>;
 }
 
-/** the SWAMP_SERVER_TOKEN env var takes precedence over servers.json */
+/**
+ * the SWAMP_SERVER_TOKEN env var takes precedence over servers.json for the
+ * server envServerTokenBinding binds it to
+ */
 export class FileServerCredentialRepository
   implements ServerCredentialRepository {
   private readonly getConfigDir: () => string;
   private readonly getServerToken: () => string | undefined;
   private readonly getServerUrl: () => string | undefined;
+  private readonly getServeUrl: () => string | undefined;
   private readonly lockFile: (file: Deno.FsFile) => Promise<void>;
 
   constructor(options: FileServerCredentialRepositoryOptions = {}) {
@@ -76,6 +84,8 @@ export class FileServerCredentialRepository
       : options.getServerToken ?? (() => Deno.env.get("SWAMP_SERVER_TOKEN"));
     this.getServerUrl = options.getServerUrl ??
       (() => Deno.env.get("SWAMP_SERVER_URL"));
+    this.getServeUrl = options.getServeUrl ??
+      (() => Deno.env.get("SWAMP_SERVE_URL"));
     this.lockFile = options.lockFile ?? ((file) => file.lock(true));
   }
 
@@ -119,23 +129,14 @@ export class FileServerCredentialRepository
     const key = normalizeServerUrl(serverUrl);
 
     const envToken = this.getServerToken();
-    if (envToken) {
-      const envUrl = this.getServerUrl();
-      if (envUrl) {
-        if (normalizeEnvServerUrl(envUrl) === key) {
-          return {
-            serverUrl: key,
-            tokenName: "",
-            token: envToken,
-            principalId: "",
-            obtainedAt: "",
-          };
-        }
-      } else {
-        const logger = getSwampLogger(["auth", "credential"]);
-        logger
-          .warn`SWAMP_SERVER_TOKEN is set but SWAMP_SERVER_URL is not — token not sent. Set SWAMP_SERVER_URL to the target server URL or use --token instead.`;
-      }
+    if (envToken && this.envNames(key, true)) {
+      return {
+        serverUrl: key,
+        tokenName: "",
+        token: envToken,
+        principalId: "",
+        obtainedAt: "",
+      };
     }
 
     const all = await this.loadAll();
@@ -145,10 +146,15 @@ export class FileServerCredentialRepository
   /** whether get(serverUrl) answers with the SWAMP_SERVER_TOKEN pair; never warns */
   envPairNames(serverUrl: string): boolean {
     if (!this.getServerToken()) return false;
-    const envUrl = this.getServerUrl();
-    if (!envUrl) return false;
-    return normalizeEnvServerUrl(envUrl, false) ===
-      normalizeServerUrl(serverUrl);
+    return this.envNames(normalizeServerUrl(serverUrl), false);
+  }
+
+  // the caller reports a withheld token, so only a bad URL warns here
+  private envNames(key: string, warn: boolean): boolean {
+    const serverUrl = this.getServerUrl();
+    if (serverUrl && warn) normalizeEnvServerUrl(serverUrl);
+    return envServerTokenBinding(key, serverUrl, [this.getServeUrl()])
+      .kind === "bound";
   }
 
   async save(credential: ServerCredential): Promise<void> {

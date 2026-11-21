@@ -322,13 +322,14 @@ Deno.test("FileServerCredentialRepository.get: SWAMP_SERVER_TOKEN does not match
   }
 });
 
-Deno.test("FileServerCredentialRepository.get: SWAMP_SERVER_TOKEN without SWAMP_SERVER_URL falls through to file with warning", async () => {
+Deno.test("FileServerCredentialRepository.get: SWAMP_SERVER_TOKEN with no address naming the server falls through to file", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
     const repo = new FileServerCredentialRepository({
       configDir: join(tmpDir, "swamp"),
       getServerToken: () => "env_token_123",
       getServerUrl: () => undefined,
+      getServeUrl: () => undefined,
     });
     await repo.save(TEST_CREDENTIAL);
 
@@ -338,6 +339,48 @@ Deno.test("FileServerCredentialRepository.get: SWAMP_SERVER_TOKEN without SWAMP_
   } finally {
     await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
   }
+});
+
+Deno.test("FileServerCredentialRepository.get: SWAMP_SERVE_URL naming the server binds SWAMP_SERVER_TOKEN", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const repo = new FileServerCredentialRepository({
+      configDir: join(tmpDir, "swamp"),
+      getServerToken: () => "env_token_serve",
+      getServerUrl: () => undefined,
+      getServeUrl: () => "wss://SWAMP.example.com:443/",
+    });
+    await repo.save(TEST_CREDENTIAL);
+
+    assertEquals(
+      (await repo.get("https://swamp.example.com"))?.token,
+      "env_token_serve",
+    );
+    assertEquals(repo.envPairNames("https://swamp.example.com"), true);
+    assertEquals(
+      (await repo.get(TEST_CREDENTIAL.serverUrl))?.token,
+      TEST_CREDENTIAL.token,
+    );
+    assertEquals(repo.envPairNames(TEST_CREDENTIAL.serverUrl), false);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("FileServerCredentialRepository.envPairNames: false without SWAMP_SERVER_TOKEN or a matching address", () => {
+  const unset = new FileServerCredentialRepository({
+    getServerToken: () => undefined,
+    getServerUrl: () => "https://swamp.example.com",
+    getServeUrl: () => "https://swamp.example.com",
+  });
+  assertEquals(unset.envPairNames("https://swamp.example.com"), false);
+  const elsewhere = new FileServerCredentialRepository({
+    getServerToken: () => "env_token",
+    getServerUrl: () => "https://other.example.com",
+    getServeUrl: () => "not a url",
+  });
+  assertEquals(elsewhere.envPairNames("https://swamp.example.com"), false);
+  assertEquals(elsewhere.envPairNames("https://other.example.com"), true);
 });
 
 Deno.test("FileServerCredentialRepository.get: SWAMP_SERVER_TOKEN normalizes env URL for comparison", async () => {

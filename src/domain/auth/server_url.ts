@@ -65,3 +65,51 @@ export function redactServerUrl(url: string): string | undefined {
   const pathname = parsed.pathname === "/" ? "" : parsed.pathname;
   return `${parsed.protocol}//${parsed.host}${pathname}`;
 }
+
+export type EnvServerTokenBinding =
+  | { readonly kind: "bound" }
+  | { readonly kind: "unnamed" }
+  | {
+    readonly kind: "paired";
+    readonly invalidUrl: boolean;
+    // whether unsetting SWAMP_SERVER_URL would let a named address bind it
+    readonly unsetBinds: boolean;
+  };
+
+/**
+ * SWAMP_SERVER_URL, when set, pairs SWAMP_SERVER_TOKEN with that server alone;
+ * otherwise an address the user named outside the repository binds it
+ */
+export function envServerTokenBinding(
+  key: string,
+  serverUrl: string | undefined,
+  named: readonly (string | undefined)[],
+): EnvServerTokenBinding {
+  const namedBinds = named.some((value) => value && namesServer(value, key));
+  if (serverUrl) {
+    if (namesServer(serverUrl, key)) return { kind: "bound" };
+    return {
+      kind: "paired",
+      invalidUrl: !parses(serverUrl),
+      unsetBinds: namedBinds,
+    };
+  }
+  return { kind: namedBinds ? "bound" : "unnamed" };
+}
+
+function parses(value: string): boolean {
+  try {
+    normalizeServerUrl(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function namesServer(value: string, key: string): boolean {
+  try {
+    return normalizeServerUrl(value) === key;
+  } catch {
+    return false;
+  }
+}

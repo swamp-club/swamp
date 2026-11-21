@@ -20,6 +20,8 @@
 import { processRuntimeSlot } from "../infrastructure/runtime/process_runtime.ts";
 import type { ServerCredentialRepository } from "../domain/auth/server_credential.ts";
 import { resolveExtraHeaders } from "../domain/auth/extra_headers.ts";
+import { envServerTokenBinding } from "../domain/auth/server_url.ts";
+import { hasWorkspaceSignInGap } from "../infrastructure/auth/workspace_sign_in_notes.ts";
 import type { DatastoreEngine } from "../domain/datastore/datastore_format.ts";
 import { ServeUpstreamTarget } from "../domain/datastore_v3/serve_upstream.ts";
 import { FileServerCredentialRepository } from "../infrastructure/persistence/server_credential_repository.ts";
@@ -344,9 +346,23 @@ export async function resolveServeUpstream(
       opts.credentialRepository,
     ) || undefined;
   }
-  // A set token file that left no token was not bound to the address.
+  // A set token file or token that left no token was not bound to the address.
   if (token === undefined && Deno.env.get("SWAMP_SERVER_TOKEN_FILE")) {
     warnWithheldTokenFile(key, "env");
+  } else if (
+    token === undefined && Deno.env.get("SWAMP_SERVER_TOKEN") &&
+    !hasWorkspaceSignInGap(key)
+  ) {
+    const binding = envServerTokenBinding(
+      key,
+      Deno.env.get("SWAMP_SERVER_URL"),
+      [Deno.env.get("SWAMP_SERVE_URL")],
+    );
+    warnWithheldTokenFile(
+      key,
+      binding.kind === "paired" ? binding : "env",
+      "SWAMP_SERVER_TOKEN",
+    );
   }
 
   const caCerts = (opts.getCaCerts ?? getEnvCaCerts)();

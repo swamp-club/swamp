@@ -926,7 +926,10 @@ grants, subjects and the `can-i` request.
 
 With `--server`, the CLI opens a WebSocket, sends one request and consumes the
 event stream (`src/cli/remote_run.ts`). URL: the flag, then `SWAMP_SERVE_URL`,
-then `SWAMP_SERVER_URL`. Token: `--token`, then `SWAMP_SERVER_TOKEN`, then
+then `SWAMP_SERVER_URL`. Token: `--token` or `--token-file`, then
+`SWAMP_SERVER_TOKEN_FILE`, then `SWAMP_SERVER_TOKEN`, each environment token
+only for an address `--server` or the environment names (`SWAMP_SERVER_URL`,
+when set, pairs `SWAMP_SERVER_TOKEN` with its server alone), then
 `~/.config/swamp/servers.json` (written by `swamp auth server-login`), then,
 for a hosted workspace, a token obtained through its host (see
 [serve-workspaces § Sign-in](../surfaces/serve-workspaces.md#sign-in)). The

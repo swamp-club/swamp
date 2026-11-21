@@ -51,6 +51,7 @@ import {
   workspaceTokenFor,
 } from "./workspace_sign_in.ts";
 import {
+  envServerTokenBinding,
   normalizeServerUrl as normalizeServerUrlForCredentials,
   redactServerUrl,
 } from "../domain/auth/server_url.ts";
@@ -64,6 +65,7 @@ import {
   recordWithheldTokenFile,
   withheldTokenFileMessage,
   type WithheldTokenFileRemedy,
+  type WithheldTokenVariable,
 } from "../domain/auth/server_login_hint.ts";
 import {
   hasWorkspaceSignInGap,
@@ -576,16 +578,17 @@ export function tokenFileBoundTo(
 }
 
 /**
- * warns once per address that the token file was not sent and no other source
- * supplied a token, and records it so a 401 says why. names only the normalized
- * address, never the file's path or contents
+ * warns once per address that the token was not sent and no other source
+ * supplied one, and records it so a 401 says why. names only the normalized
+ * address, never the token or the file's path
  */
 export function warnWithheldTokenFile(
   key: string,
   remedy: WithheldTokenFileRemedy,
+  variable: WithheldTokenVariable = "SWAMP_SERVER_TOKEN_FILE",
 ): void {
-  if (recordWithheldTokenFile(key, remedy)) {
-    logger.warn(withheldTokenFileMessage(key, remedy));
+  if (recordWithheldTokenFile(key, remedy, variable)) {
+    logger.warn(withheldTokenFileMessage(key, remedy, variable));
   }
 }
 
@@ -602,15 +605,23 @@ export async function resolveServerToken(
 ): Promise<string | undefined> {
   const key = parseServerFlag(serverUrl);
   if (explicitToken) return explicitToken;
+  const namedBy = [
+    serverFlag,
+    Deno.env.get("SWAMP_SERVE_URL"),
+    Deno.env.get("SWAMP_SERVER_URL"),
+  ];
   const envTokenFile = Deno.env.get("SWAMP_SERVER_TOKEN_FILE");
-  if (envTokenFile) {
-    const bound = tokenFileBoundTo(key, [
+  if (envTokenFile && tokenFileBoundTo(key, namedBy)) {
+    return readTokenFile(envTokenFile, "SWAMP_SERVER_TOKEN_FILE");
+  }
+  const envToken = Deno.env.get("SWAMP_SERVER_TOKEN");
+  const envTokenBinding = envToken
+    ? envServerTokenBinding(key, Deno.env.get("SWAMP_SERVER_URL"), [
       serverFlag,
       Deno.env.get("SWAMP_SERVE_URL"),
-      Deno.env.get("SWAMP_SERVER_URL"),
-    ]);
-    if (bound) return readTokenFile(envTokenFile, "SWAMP_SERVER_TOKEN_FILE");
-  }
+    ])
+    : undefined;
+  if (envToken && envTokenBinding?.kind === "bound") return envToken;
   const repo = credentialRepo ?? new FileServerCredentialRepository();
   const token = await signInThroughHost(
     key,
@@ -624,6 +635,14 @@ export async function resolveServerToken(
   // the workspace wants a token no source has, so asking would only be refused
   if (!token && hasWorkspaceSignInGap(key)) {
     throw new UserError(loginHintFor(key));
+  }
+  // after the sign-in gap, whose message says why a host's env token is unused
+  if (!token && envToken && !envTokenFile) {
+    warnWithheldTokenFile(
+      key,
+      envTokenBinding?.kind === "paired" ? envTokenBinding : "flag-or-env",
+      "SWAMP_SERVER_TOKEN",
+    );
   }
   return token;
 }

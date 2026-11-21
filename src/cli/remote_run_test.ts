@@ -78,7 +78,10 @@ import type { ServerCredential } from "../domain/auth/server_credential.ts";
 import type { ServerCredentialRepository } from "../domain/auth/server_credential.ts";
 import { withMockedEnv } from "../infrastructure/persistence/path_test_helpers.ts";
 import { configure, type LogRecord, reset } from "@logtape/logtape";
-import { resetWithheldTokenFiles } from "../domain/auth/server_login_hint.ts";
+import {
+  resetWithheldTokenFiles,
+  serverLoginHint,
+} from "../domain/auth/server_login_hint.ts";
 import {
   MAX_FORWARDED_LOCK_TOKENS_LENGTH,
   SWAMP_LOCK_HOLDER_TOKENS,
@@ -1049,6 +1052,7 @@ Deno.test("readTokenFile: throws UserError for empty file", async () => {
 const UNSET_SERVE_URL_ENV: Record<string, string | undefined> = {
   SWAMP_SERVE_URL: undefined,
   SWAMP_SERVER_URL: undefined,
+  SWAMP_SERVER_TOKEN: undefined,
 };
 
 Deno.test("resolveServerToken: reads token from SWAMP_SERVER_TOKEN_FILE env var", async () => {
@@ -1263,6 +1267,194 @@ async function captureRemoteRunWarnings(
   }
   return captured.map((r) => r.message.map((p) => String(p)).join(""));
 }
+
+async function withServerTokenEnv(
+  env: Record<string, string | undefined>,
+  fn: () => Promise<void>,
+): Promise<void> {
+  resetWithheldTokenFiles();
+  try {
+    await withMockedEnv({
+      ...UNSET_SERVE_URL_ENV,
+      SWAMP_SERVER_TOKEN_FILE: undefined,
+      SWAMP_SERVER_TOKEN: "env.secret",
+      ...env,
+    }, fn);
+  } finally {
+    resetWithheldTokenFiles();
+  }
+}
+
+Deno.test("resolveServerTokenFromOptions: --server, SWAMP_SERVE_URL or SWAMP_SERVER_URL naming the address binds SWAMP_SERVER_TOKEN", async () => {
+  const cases: [string, { server?: string }, Record<string, string>][] = [
+    ["--server", { server: "wss://SERVE.test:443/" }, {}],
+    ["SWAMP_SERVE_URL", {}, { SWAMP_SERVE_URL: "https://serve.test" }],
+    ["SWAMP_SERVER_URL", {}, { SWAMP_SERVER_URL: "https://serve.test" }],
+  ];
+  for (const [label, options, env] of cases) {
+    await withServerTokenEnv(env, async () => {
+      const warnings = await captureRemoteRunWarnings(async () => {
+        assertEquals(
+          await resolveServerTokenFromOptions(
+            "https://serve.test",
+            options,
+            NO_CREDENTIALS,
+          ),
+          "env.secret",
+          label,
+        );
+      });
+      assertEquals(warnings, [], label);
+    });
+  }
+});
+
+Deno.test("resolveServerTokenFromOptions: SWAMP_SERVER_TOKEN ranks below --token and a bound token file, above stored credentials", async () => {
+  const stored: ServerCredentialRepository = {
+    ...NO_CREDENTIALS,
+    get: (url: string): Promise<ServerCredential | null> =>
+      Promise.resolve({
+        serverUrl: url,
+        tokenName: "stored",
+        token: "stored.credential",
+        principalId: "user:test",
+        obtainedAt: "2026-06-18T00:00:00Z",
+      }),
+  };
+  await withServerTokenEnv({}, async () => {
+    const options = { server: "https://serve.test" };
+    assertEquals(
+      await resolveServerTokenFromOptions(
+        "https://serve.test",
+        { ...options, token: "flag.token" },
+        stored,
+      ),
+      "flag.token",
+    );
+    assertEquals(
+      await resolveServerTokenFromOptions(
+        "https://serve.test",
+        options,
+        stored,
+      ),
+      "env.secret",
+    );
+  });
+  await withTokenFileEnv(
+    "file.secret",
+    { SWAMP_SERVER_TOKEN: "env.secret" },
+    async () => {
+      assertEquals(
+        await resolveServerTokenFromOptions(
+          "https://serve.test",
+          { server: "https://serve.test" },
+          stored,
+        ),
+        "file.secret",
+      );
+    },
+  );
+});
+
+Deno.test("resolveServerTokenFromOptions: SWAMP_SERVER_URL naming another server keeps SWAMP_SERVER_TOKEN paired with it", async () => {
+  await withServerTokenEnv(
+    {
+      SWAMP_SERVER_URL: "https://paired.test",
+      SWAMP_SERVE_URL: "https://serve.test",
+    },
+    async () => {
+      const warnings = await captureRemoteRunWarnings(async () => {
+        assertEquals(
+          await resolveServerTokenFromOptions(
+            "https://serve.test",
+            { server: "https://serve.test" },
+            NO_CREDENTIALS,
+          ),
+          undefined,
+        );
+      });
+      assertEquals(warnings.length, 1);
+      assertStringIncludes(
+        warnings[0],
+        "SWAMP_SERVER_TOKEN was not sent to https://serve.test because SWAMP_SERVER_URL pairs it with another server",
+      );
+      assertEquals(warnings[0].includes("env.secret"), false);
+      assertStringIncludes(
+        serverLoginHint("https://serve.test"),
+        "SWAMP_SERVER_URL pairs it with another server",
+      );
+    },
+  );
+});
+
+Deno.test("resolveServerTokenFromOptions: a withheld SWAMP_SERVER_TOKEN suggests unsetting SWAMP_SERVER_URL only when that would send it, and names an invalid one", async () => {
+  const cases: [string, Record<string, string>, string][] = [
+    [
+      ".swamp.yaml only, paired elsewhere",
+      { SWAMP_SERVER_URL: "https://paired.test" },
+      "because SWAMP_SERVER_URL pairs it with another server; set SWAMP_SERVER_URL to https://marker.test to send it",
+    ],
+    [
+      "invalid, .swamp.yaml only",
+      { SWAMP_SERVER_URL: "not a url" },
+      "because SWAMP_SERVER_URL is not a valid http(s) or ws(s) URL; set SWAMP_SERVER_URL to https://marker.test to send it",
+    ],
+    [
+      "invalid, SWAMP_SERVE_URL names it",
+      {
+        SWAMP_SERVER_URL: "not a url",
+        SWAMP_SERVE_URL: "https://marker.test",
+      },
+      "because SWAMP_SERVER_URL is not a valid http(s) or ws(s) URL; set SWAMP_SERVER_URL to https://marker.test or unset it to send it",
+    ],
+  ];
+  for (const [label, env, expected] of cases) {
+    await withServerTokenEnv(env, async () => {
+      const warnings = await captureRemoteRunWarnings(async () => {
+        assertEquals(
+          await resolveServerTokenFromOptions(
+            "https://marker.test",
+            {},
+            NO_CREDENTIALS,
+          ),
+          undefined,
+          label,
+        );
+      });
+      assertEquals(warnings.length, 1, label);
+      assertStringIncludes(warnings[0], expected, label);
+      assertEquals(warnings[0].includes("not a url"), false, label);
+    });
+  }
+});
+
+Deno.test("resolveServerTokenFromOptions: a .swamp.yaml-only address never receives SWAMP_SERVER_TOKEN, and its 401 says why", async () => {
+  await withServerTokenEnv({}, async () => {
+    const warnings = await captureRemoteRunWarnings(async () => {
+      for (let i = 0; i < 2; i++) {
+        assertEquals(
+          await resolveServerTokenFromOptions(
+            "https://marker.test",
+            {},
+            NO_CREDENTIALS,
+          ),
+          undefined,
+        );
+      }
+    });
+    assertEquals(warnings.length, 1);
+    assertStringIncludes(
+      warnings[0],
+      "SWAMP_SERVER_TOKEN was not sent to https://marker.test because only .swamp.yaml names that address",
+    );
+    assertStringIncludes(warnings[0], "--server");
+    assertEquals(warnings[0].includes("env.secret"), false);
+    assertStringIncludes(
+      serverLoginHint("https://marker.test"),
+      "SWAMP_SERVER_TOKEN was not sent",
+    );
+  });
+});
 
 Deno.test("resolveServerTokenFromOptions: a .swamp.yaml-only address does not receive the token file", async () => {
   await withTokenFileEnv("file.secret", {}, async () => {
