@@ -1184,15 +1184,15 @@ async function runMethodViaServer(
   );
 
   try {
-    // an older server ignores literalInputs, so the flag goes only to one that
-    // says it honours it; dropping the probe would fail open. It runs inside
-    // the try, under the run's signal so --timeout bounds it
+    // an older server ignores literalInputs, so the flag goes only to a leader
+    // that says it honours it; dropping the probe would fail open. Inside the
+    // try, so --timeout bounds it
     if (literalInputs) {
       const version = await requestServerResponse<
         { version: string; capabilities?: string[] }
       >(
         { server, token, signal: abort.signal },
-        { type: "server.version" },
+        { type: "server.version", payload: { leader: true } },
       );
       if (!version.capabilities?.includes(SERVE_CAPABILITY_LITERAL_INPUTS)) {
         throw new UserError(

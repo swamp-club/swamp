@@ -158,9 +158,9 @@ export async function resumeRunOverServer(
   const handlers = renderer.handlers();
   let finished = false;
   try {
-    // an older server ignores fromJob and resets the --from step in every
-    // job that has it, so --job is sent only to one that says it honours
-    // it; the probe runs inside the try so --timeout bounds it
+    // an older server ignores fromJob and resets the --from step in every job
+    // that has it, so --job goes only to a leader that says it honours it; the
+    // probe runs inside the try so --timeout bounds it
     if (request.fromJob !== undefined) {
       const version = await requestServerResponse<
         { version: string; capabilities?: string[] }
@@ -170,7 +170,7 @@ export async function resumeRunOverServer(
           token: connection.token,
           signal: abort.signal,
         },
-        { type: "server.version" },
+        { type: "server.version", payload: { leader: true } },
       );
       if (
         !version.capabilities?.includes(SERVE_CAPABILITY_RESUME_FROM_JOB)
