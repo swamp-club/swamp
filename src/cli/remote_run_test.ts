@@ -1387,6 +1387,47 @@ Deno.test("resolveServerTokenFromOptions: SWAMP_SERVER_URL naming another server
   );
 });
 
+Deno.test("resolveServerTokenFromOptions: a withheld SWAMP_SERVER_TOKEN suggests unsetting SWAMP_SERVER_URL only when that would send it, and names an invalid one", async () => {
+  const cases: [string, Record<string, string>, string][] = [
+    [
+      ".swamp.yaml only, paired elsewhere",
+      { SWAMP_SERVER_URL: "https://paired.test" },
+      "because SWAMP_SERVER_URL pairs it with another server; set SWAMP_SERVER_URL to https://marker.test to send it",
+    ],
+    [
+      "invalid, .swamp.yaml only",
+      { SWAMP_SERVER_URL: "not a url" },
+      "because SWAMP_SERVER_URL is not a valid http(s) or ws(s) URL; set SWAMP_SERVER_URL to https://marker.test to send it",
+    ],
+    [
+      "invalid, SWAMP_SERVE_URL names it",
+      {
+        SWAMP_SERVER_URL: "not a url",
+        SWAMP_SERVE_URL: "https://marker.test",
+      },
+      "because SWAMP_SERVER_URL is not a valid http(s) or ws(s) URL; set SWAMP_SERVER_URL to https://marker.test or unset it to send it",
+    ],
+  ];
+  for (const [label, env, expected] of cases) {
+    await withServerTokenEnv(env, async () => {
+      const warnings = await captureRemoteRunWarnings(async () => {
+        assertEquals(
+          await resolveServerTokenFromOptions(
+            "https://marker.test",
+            {},
+            NO_CREDENTIALS,
+          ),
+          undefined,
+          label,
+        );
+      });
+      assertEquals(warnings.length, 1, label);
+      assertStringIncludes(warnings[0], expected, label);
+      assertEquals(warnings[0].includes("not a url"), false, label);
+    });
+  }
+});
+
 Deno.test("resolveServerTokenFromOptions: a .swamp.yaml-only address never receives SWAMP_SERVER_TOKEN, and its 401 says why", async () => {
   await withServerTokenEnv({}, async () => {
     const warnings = await captureRemoteRunWarnings(async () => {

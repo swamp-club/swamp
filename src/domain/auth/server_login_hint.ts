@@ -25,7 +25,12 @@ import { normalizeServerUrl } from "./server_url.ts";
  * --server would run the command on serve; a token SWAMP_SERVER_URL pairs with
  * another server is sent by changing or unsetting that variable
  */
-export type WithheldTokenFileRemedy = "flag-or-env" | "env" | "paired";
+export type WithheldTokenFileRemedy = "flag-or-env" | "env" | PairedRemedy;
+
+export interface PairedRemedy {
+  readonly invalidUrl: boolean;
+  readonly unsetBinds: boolean;
+}
 
 export type WithheldTokenVariable =
   | "SWAMP_SERVER_TOKEN_FILE"
@@ -80,8 +85,12 @@ export function withheldTokenFileMessage(
   remedy: WithheldTokenFileRemedy,
   variable: WithheldTokenVariable = "SWAMP_SERVER_TOKEN_FILE",
 ): string {
-  if (remedy === "paired") {
-    return `${variable} was not sent to ${key} because SWAMP_SERVER_URL pairs it with another server; set SWAMP_SERVER_URL to ${key} or unset it to send it`;
+  if (typeof remedy === "object") {
+    const why = remedy.invalidUrl
+      ? "SWAMP_SERVER_URL is not a valid http(s) or ws(s) URL"
+      : "SWAMP_SERVER_URL pairs it with another server";
+    const unset = remedy.unsetBinds ? " or unset it" : "";
+    return `${variable} was not sent to ${key} because ${why}; set SWAMP_SERVER_URL to ${key}${unset} to send it`;
   }
   const how = remedy === "env"
     ? "set SWAMP_SERVE_URL to it to send it"

@@ -153,8 +153,8 @@ export class FileServerCredentialRepository
   private envNames(key: string, warn: boolean): boolean {
     const serverUrl = this.getServerUrl();
     if (serverUrl && warn) normalizeEnvServerUrl(serverUrl);
-    return envServerTokenBinding(key, serverUrl, [this.getServeUrl()]) ===
-      "bound";
+    return envServerTokenBinding(key, serverUrl, [this.getServeUrl()])
+      .kind === "bound";
   }
 
   async save(credential: ServerCredential): Promise<void> {

@@ -353,12 +353,16 @@ export async function resolveServeUpstream(
     token === undefined && Deno.env.get("SWAMP_SERVER_TOKEN") &&
     !hasWorkspaceSignInGap(key)
   ) {
-    const paired = envServerTokenBinding(
+    const binding = envServerTokenBinding(
       key,
       Deno.env.get("SWAMP_SERVER_URL"),
       [Deno.env.get("SWAMP_SERVE_URL")],
-    ) === "paired-elsewhere";
-    warnWithheldTokenFile(key, paired ? "paired" : "env", "SWAMP_SERVER_TOKEN");
+    );
+    warnWithheldTokenFile(
+      key,
+      binding.kind === "paired" ? binding : "env",
+      "SWAMP_SERVER_TOKEN",
+    );
   }
 
   const caCerts = (opts.getCaCerts ?? getEnvCaCerts)();

@@ -188,32 +188,37 @@ Deno.test("redactServerUrl: returns undefined for a URL without a host", () => {
 
 Deno.test("envServerTokenBinding: SWAMP_SERVER_URL pairs the token with its server alone", () => {
   const key = "https://a.example.com";
-  assertEquals(
-    envServerTokenBinding(key, "wss://A.example.com:443/", []),
-    "bound",
-  );
+  assertEquals(envServerTokenBinding(key, "wss://A.example.com:443/", []), {
+    kind: "bound",
+  });
   assertEquals(
     envServerTokenBinding("https://b.example.com", key, [
       "https://b.example.com",
     ]),
-    "paired-elsewhere",
+    { kind: "paired", invalidUrl: false, unsetBinds: true },
   );
-  assertEquals(
-    envServerTokenBinding(key, "not a url", [key]),
-    "paired-elsewhere",
-  );
+  assertEquals(envServerTokenBinding("https://b.example.com", key, []), {
+    kind: "paired",
+    invalidUrl: false,
+    unsetBinds: false,
+  });
+  assertEquals(envServerTokenBinding(key, "not a url", [key]), {
+    kind: "paired",
+    invalidUrl: true,
+    unsetBinds: true,
+  });
 });
 
 Deno.test("envServerTokenBinding: without SWAMP_SERVER_URL an address the user named binds the token", () => {
   const key = "http://127.0.0.1:9427";
   assertEquals(
     envServerTokenBinding(key, undefined, [undefined, "ws://127.0.0.1:9427/"]),
-    "bound",
+    { kind: "bound" },
   );
-  assertEquals(envServerTokenBinding(key, "", [key]), "bound");
+  assertEquals(envServerTokenBinding(key, "", [key]), { kind: "bound" });
   assertEquals(
     envServerTokenBinding(key, undefined, ["http://other:9427", "", "bad"]),
-    "unnamed",
+    { kind: "unnamed" },
   );
-  assertEquals(envServerTokenBinding(key, undefined, []), "unnamed");
+  assertEquals(envServerTokenBinding(key, undefined, []), { kind: "unnamed" });
 });

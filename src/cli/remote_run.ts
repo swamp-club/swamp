@@ -621,7 +621,7 @@ export async function resolveServerToken(
       Deno.env.get("SWAMP_SERVE_URL"),
     ])
     : undefined;
-  if (envToken && envTokenBinding === "bound") return envToken;
+  if (envToken && envTokenBinding?.kind === "bound") return envToken;
   const repo = credentialRepo ?? new FileServerCredentialRepository();
   const token = await signInThroughHost(
     key,
@@ -640,7 +640,7 @@ export async function resolveServerToken(
   if (!token && envToken && !envTokenFile) {
     warnWithheldTokenFile(
       key,
-      envTokenBinding === "paired-elsewhere" ? "paired" : "flag-or-env",
+      envTokenBinding?.kind === "paired" ? envTokenBinding : "flag-or-env",
       "SWAMP_SERVER_TOKEN",
     );
   }

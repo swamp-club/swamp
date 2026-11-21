@@ -80,7 +80,17 @@ Deno.test("serverLoginHint: names SWAMP_SERVER_TOKEN when that is the token with
     );
     recordWithheldTokenFile(
       "http://b.test:9090",
-      "paired",
+      { invalidUrl: false, unsetBinds: true },
+      "SWAMP_SERVER_TOKEN",
+    );
+    recordWithheldTokenFile(
+      "http://c.test:9090",
+      { invalidUrl: false, unsetBinds: false },
+      "SWAMP_SERVER_TOKEN",
+    );
+    recordWithheldTokenFile(
+      "http://d.test:9090",
+      { invalidUrl: true, unsetBinds: false },
       "SWAMP_SERVER_TOKEN",
     );
     assertEquals(
@@ -94,6 +104,14 @@ Deno.test("serverLoginHint: names SWAMP_SERVER_TOKEN when that is the token with
     assertEquals(
       serverLoginHint("ws://b.test:9090"),
       "Authentication failed — SWAMP_SERVER_TOKEN was not sent to http://b.test:9090 because SWAMP_SERVER_URL pairs it with another server; set SWAMP_SERVER_URL to http://b.test:9090 or unset it to send it, or run: swamp auth server-login --server ws://b.test:9090",
+    );
+    assertEquals(
+      serverLoginHint("http://c.test:9090"),
+      "Authentication failed — SWAMP_SERVER_TOKEN was not sent to http://c.test:9090 because SWAMP_SERVER_URL pairs it with another server; set SWAMP_SERVER_URL to http://c.test:9090 to send it, or run: swamp auth server-login --server http://c.test:9090",
+    );
+    assertEquals(
+      serverLoginHint("http://d.test:9090"),
+      "Authentication failed — SWAMP_SERVER_TOKEN was not sent to http://d.test:9090 because SWAMP_SERVER_URL is not a valid http(s) or ws(s) URL; set SWAMP_SERVER_URL to http://d.test:9090 to send it, or run: swamp auth server-login --server http://d.test:9090",
     );
   } finally {
     resetWithheldTokenFiles();
