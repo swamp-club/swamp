@@ -2838,7 +2838,9 @@ jobs:
   Serve wires it to `executeWorkflowWithLocks` (`src/serve/deps.ts`), the same
   path as WebSocket `workflow.run` and webhooks, not the local CLI path.
 - In an HA deployment, each fire is claimed once across instances through the
-  `cronFireDedup` hook. A workflow fires single-flight per instance.
+  `cronFireDedup` hook. A workflow fires single-flight per instance. The claim
+  has a 5s deadline (`cronFireDedupTimeoutMs`); a claim that fails or times out
+  runs the fire, accepting a rare double run over losing the slot.
 - **Overlap prevention:** if a workflow is still running from the previous
   scheduled trigger, the next trigger is skipped with a warning.
 - **Concurrency:** fires that are not skipped join one queue. Up to

@@ -58,6 +58,7 @@ import { workflowsDirFor } from "./broken_workflow.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import type { WorkflowRunEvent, WorkflowRunInput } from "./run.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import { withDeadline } from "../../infrastructure/persistence/datastore_format_marker_reader.ts";
 import {
   extractFirstStepError,
   type WorkflowRunView,
@@ -77,6 +78,12 @@ const RUN_HISTORY_TIMEOUT_MS = 5_000;
 
 /** a pass that outlives this would catch up against a stale now */
 const CATCH_UP_TIMEOUT_MS = 60_000;
+
+/**
+ * a claim the control plane never answers would park the fire for good; one
+ * that times out runs the fire, as a failed claim does
+ */
+const CRON_FIRE_DEDUP_TIMEOUT_MS = 5_000;
 
 async function settleWithin(
   promise: Promise<unknown>,
@@ -297,6 +304,7 @@ export interface ScheduledExecutionDeps {
   runHistoryTimeoutMs?: number;
   /** once spent, the catch-up pass checks no further schedule */
   catchUpTimeoutMs?: number;
+  cronFireDedupTimeoutMs?: number;
   /**
    * How many scheduled runs may be in flight at once. Different workflows run
    * together up to this limit; a workflow never overlaps itself. Defaults to
@@ -1486,7 +1494,12 @@ export class ScheduledExecutionService {
 
     if (this.deps.cronFireDedup) {
       try {
-        const claimed = await this.deps.cronFireDedup(workflowId, fireTime);
+        const dedup = this.deps.cronFireDedup;
+        // putIfAbsent takes no signal, so a stalled claim is abandoned
+        const claimed = await withDeadline(
+          () => dedup(workflowId, fireTime),
+          this.deps.cronFireDedupTimeoutMs ?? CRON_FIRE_DEDUP_TIMEOUT_MS,
+        );
         if (!claimed) {
           this.emit({
             kind: "schedule_skipped",
