@@ -161,19 +161,9 @@ export function createDataPruneDeps(
     return defType.toDirectoryPath() === type.toDirectoryPath();
   };
 
-  // serve injects its indexed repository, whose lookups need no snapshot; on a
-  // miss, either path keeps data whose type a definition with the id declares
+  // serve's injected repository is read through the same snapshot: its id
+  // index skips a definition whose declared type is invalid, reading it absent
   const definitionLiveness = (): IsModelLive => {
-    if (injectedDefinitionRepo) {
-      return async (type, modelId) => {
-        const id = createDefinitionId(modelId);
-        const definition = await definitionRepo.findById(type, id);
-        if (definition === null) {
-          return await definitionRepo.declaresTypeById(id, type);
-        }
-        return declaredTypeMatches(definition, type);
-      };
-    }
     // taken at the first lookup, after the data is listed, so it holds every
     // definition that listed data could belong to
     let snapshot: Promise<DefinitionByIdSnapshot> | undefined;
@@ -181,7 +171,7 @@ export function createDataPruneDeps(
       snapshot ??= definitionRepo.snapshotById();
       const view = await snapshot;
       const id = createDefinitionId(modelId);
-      const definition = view.find(type, id);
+      const definition = await view.find(type, id);
       if (definition === null) return view.declaresType(id, type);
       return declaredTypeMatches(definition, type);
     };
