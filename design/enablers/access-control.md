@@ -1659,7 +1659,9 @@ changes.
    an allow holds only if it is unchanged in both the release and the latest
    grants, every deny from either holds, and group members narrow for the
    allows naming the group while its denies follow every member either side
-   had. So a revoke, a new deny or a removed member applies at once even if the
+   had (a worker, which no grant can name, keeps the release's membership). A
+   release is itself narrowed against the latest grants when it is applied, so
+   one built before a revoke never brings the revoked grant back. So a revoke, a new deny or a removed member applies at once even if the
    leader's release write is stuck, and a widening waits for the release; a
    held narrowing makes a follower stricter than its leader until then. Other
    control-plane commits (workers, leases, tokens) never rebuild a policy.

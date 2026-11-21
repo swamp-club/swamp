@@ -128,11 +128,15 @@ export class PolicyReleasePublisher {
       const delay = this.#deps.retryDelayMs?.(attempt) ??
         Math.min(FIRST_RETRY_MS * 2 ** attempt, MAX_RETRY_MS);
       await new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, delay);
-        this.#stop.signal.addEventListener("abort", () => {
+        const onAbort = () => {
           clearTimeout(timer);
           resolve();
-        }, { once: true });
+        };
+        const timer = setTimeout(() => {
+          this.#stop.signal.removeEventListener("abort", onAbort);
+          resolve();
+        }, delay);
+        this.#stop.signal.addEventListener("abort", onAbort, { once: true });
       });
     }
   }

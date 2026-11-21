@@ -300,32 +300,43 @@ export class ServeCommitEffects {
   async #followRelease(): Promise<void> {
     const releases = this.#deps.releases;
     if (releases === undefined) return;
-    const commit = this.#releaseCommit ??
-      await (releases.headReleaseCommit?.() ?? this.#headReleaseCommit());
+    const head = () =>
+      releases.headReleaseCommit?.() ?? this.#headReleaseCommit();
+    let commit = this.#releaseCommit ?? await head();
     this.#releaseCommit = undefined;
-    if (commit === undefined) return;
-    const fence = releases.leaderFence();
-    // serve's own commit, under the lease the current leader holds
-    if (
-      commit.principal !== undefined || commit.fence === undefined ||
-      commit.fence !== fence
-    ) {
-      if (commit.principal !== undefined) {
-        logger
-          .warn`A policy release committed by ${commit.principal} was refused: only serve publishes the policy`;
+    // the content read is the head's, so a head that moves is checked again
+    for (let attempt = 0; commit !== undefined && attempt < 3; attempt++) {
+      const fence = releases.leaderFence();
+      // serve's own commit, under the lease the current leader holds
+      if (
+        commit.principal !== undefined || commit.fence === undefined ||
+        commit.fence !== fence
+      ) {
+        if (commit.principal !== undefined) {
+          logger
+            .warn`A policy release committed by ${commit.principal} was refused: only serve publishes the policy`;
+        }
+        return;
       }
-      return;
-    }
-    try {
-      await releases.applyRelease();
-      this.#releaseFence = fence;
-      this.#policyKnown = true;
-    } catch (error) {
-      // unreadable: back to rebuilding from grant commits, at once
-      logger.warn`The leader's policy release could not be applied: ${error}`;
-      this.#releaseFence = undefined;
-      await this.#deps.reloadPolicy();
-      this.#policyKnown = true;
+      try {
+        await releases.applyRelease();
+        // a release built before a revoke must not bring the revoked grant back
+        await releases.narrowRelease();
+      } catch (error) {
+        // unreadable: back to rebuilding from grant commits, at once
+        logger.warn`The leader's policy release could not be applied: ${error}`;
+        this.#releaseFence = undefined;
+        await this.#deps.reloadPolicy();
+        this.#policyKnown = true;
+        return;
+      }
+      const now = await head();
+      if (now === undefined || now.seq === commit.seq) {
+        this.#releaseFence = fence;
+        this.#policyKnown = true;
+        return;
+      }
+      commit = now;
     }
   }
 

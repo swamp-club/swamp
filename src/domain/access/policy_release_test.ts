@@ -169,3 +169,27 @@ Deno.test("narrowedPolicy: a member removed from a group that denies stays denie
   assertEquals(reads(narrowed, "ann", "x"), false);
   assertEquals(reads(narrowed, "ann", "y"), true);
 });
+
+Deno.test("narrowedPolicy: in a group that allows and denies, a removed user loses its allow even when a worker's membership differs", () => {
+  const grants = [onOps("a", "allow", "*"), onOps("d", "deny", "x")];
+  const before: Group = {
+    ...ops("ann", "bob"),
+    members: [
+      { kind: "user", id: "ann" },
+      { kind: "user", id: "bob" },
+      { kind: "worker", id: "w1" },
+    ],
+  };
+  const after: Group = {
+    ...ops("bob"),
+    members: [{ kind: "user", id: "bob" }, { kind: "worker", id: "w2" }],
+  };
+  const narrowed = narrowedPolicy(
+    { grants, groups: [before] },
+    { grants, groups: [after] },
+  );
+  assertEquals(reads(narrowed, "ann", "y"), false);
+  assertEquals(reads(narrowed, "bob", "y"), true);
+  const members = narrowed.groups[0].members.map((m) => `${m.kind}:${m.id}`);
+  assertEquals(members.sort(), ["user:bob", "worker:w1"]);
+});

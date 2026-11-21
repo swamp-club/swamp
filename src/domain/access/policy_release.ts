@@ -129,7 +129,7 @@ export class PolicyRelease {
 /**
  * never more permissive than either policy: an allow holds only if it is in
  * both, every deny holds, and a group's members are narrowed the way the grants
- * naming it need
+ * naming it need; a worker, which no grant names, keeps the release's membership
  */
 export function narrowedPolicy(
   release: {
@@ -173,20 +173,20 @@ export function narrowedPolicy(
       const inBoth = new Set(both.map(principalToString));
       const either = [...(before?.members ?? []), ...(after?.members ?? [])]
         .filter((m) => !inBoth.has(principalToString(m)));
-      // a worker has no subject kind to name in a deny of its own
-      if (either.some((m) => m.kind === "worker")) {
-        const kept = before ?? after;
-        if (kept) groups.push(kept);
-        continue;
-      }
+      // a worker has no subject kind to name in a deny of its own, so a
+      // worker that differs keeps the release's membership; users narrow
+      const workers = (before?.members ?? []).filter((m) =>
+        m.kind === "worker" && !inBoth.has(principalToString(m))
+      );
+      const named = either.filter((m) => m.kind !== "worker");
       // the group narrows for its allows; its denies follow each member
       // either side had
-      groups.push({ ...(before ?? after)!, members: both });
+      groups.push({ ...(before ?? after)!, members: [...both, ...workers] });
       for (const deny of [...denies.values()]) {
         if (deny.subject.kind !== "group" || deny.subject.name !== name) {
           continue;
         }
-        for (const member of either) {
+        for (const member of named) {
           const copy: Grant = {
             ...deny,
             subject: {

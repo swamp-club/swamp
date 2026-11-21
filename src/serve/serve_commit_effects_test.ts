@@ -601,11 +601,12 @@ Deno.test("ServeCommitEffects: a follower enforcing the leader's release only na
   try {
     store.landStamped(RELEASE, { fence: 7 });
     await pass(store, effects);
-    assertEquals(calls, { policy: 0, applied: 1, narrowed: 0 });
+    // applied, then narrowed against the latest grants
+    assertEquals(calls, { policy: 0, applied: 1, narrowed: 1 });
     assertEquals(effects.followsLeaderRelease(), true);
     store.landStamped(GRANT, { fence: 7 });
     await pass(store, effects);
-    assertEquals(calls, { policy: 0, applied: 1, narrowed: 1 });
+    assertEquals(calls, { policy: 0, applied: 1, narrowed: 2 });
   } finally {
     await effects.stop();
   }
@@ -683,5 +684,40 @@ Deno.test("ServeCommitEffects.adoptLeaderRelease: a starting follower enforces t
   } finally {
     await matching.effects.stop();
     await stale.effects.stop();
+  }
+});
+
+Deno.test("ServeCommitEffects: a release is narrowed as it is applied, and a head that moved meanwhile is checked before it is kept", async () => {
+  const store = fakeSource();
+  const order: string[] = [];
+  const heads = [
+    { partition: RELEASE, fence: 7, seq: 1 },
+    { partition: RELEASE, fence: 7, seq: 2 },
+    { partition: RELEASE, fence: 7, seq: 2 },
+  ];
+  const effects = new ServeCommitEffects({
+    source: store.source,
+    reloadPolicy: () => Promise.resolve(),
+    checkConfig: () => {},
+    isFollower: () => true,
+    releases: {
+      leaderFence: () => 7,
+      headReleaseCommit: () =>
+        Promise.resolve(heads.shift() as unknown as Commit),
+      applyRelease: () => {
+        order.push("apply");
+        return Promise.resolve();
+      },
+      narrowRelease: () => {
+        order.push("narrow");
+        return Promise.resolve();
+      },
+    },
+  });
+  try {
+    assertEquals(await effects.adoptLeaderRelease(), true);
+    assertEquals(order, ["apply", "narrow", "apply", "narrow"]);
+  } finally {
+    await effects.stop();
   }
 });
