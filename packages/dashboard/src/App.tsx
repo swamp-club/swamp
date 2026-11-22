@@ -37,7 +37,8 @@ import { ManageApps } from "./views/ManageApps.tsx";
 import { useApprovals } from "./client/useApprovals.ts";
 import { pendingApprovals } from "./client/approvals.ts";
 import { Logo } from "./components/Logo.tsx";
-import { localToken, PAGE_WORKSPACE } from "./client/workspace_path.ts";
+import { PAGE_WORKSPACE } from "./client/workspace_path.ts";
+import { WorkspaceUnavailable } from "./views/WorkspaceUnavailable.tsx";
 import {
   AppShellSkeleton,
   connectingLabel,
@@ -119,11 +120,6 @@ export function App() {
       </Suspense>
     );
   }
-  // A workspace page needs the token `swamp start` or `swamp dashboard`
-  // handed it; without one every request would be refused.
-  if (PAGE_WORKSPACE !== null && localToken() === null) {
-    return <LocalTokenMissing />;
-  }
   return (
     <SwampProvider>
       <AppShell area={isAppsPath(location.pathname) ? "apps" : "dashboard"} />
@@ -155,7 +151,20 @@ function AppShell({ area }: { area: "apps" | "dashboard" }) {
     sessionReady,
     logout,
     local,
+    workspaceAbsence,
   } = useSwamp();
+
+  // The local hub refuses a page without its token; a host says when a
+  // workspace is not there or not running. Either replaces the sign-in.
+  if (workspaceAbsence?.kind === "refused") return <LocalTokenMissing />;
+  if (workspaceAbsence !== null && PAGE_WORKSPACE !== null) {
+    return (
+      <WorkspaceUnavailable
+        workspace={PAGE_WORKSPACE}
+        absence={workspaceAbsence}
+      />
+    );
+  }
 
   if (authMode === null || !sessionReady) {
     return <AppShellSkeleton label="Connecting" />;

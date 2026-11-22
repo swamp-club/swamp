@@ -89,17 +89,6 @@ function stored(storage: () => Storage, key: string): string | null {
   }
 }
 
-/**
- * The local dashboard's token: what `swamp start` or `swamp dashboard`
- * handed the page in its URL. Null under serve, and on a workspace page
- * opened without it.
- */
-export function localToken(): string | null {
-  if (PAGE_WORKSPACE === null) return null;
-  return stored(() => sessionStorage, START_TOKEN_KEY) ??
-    stored(() => localStorage, LOCAL_TOKEN_KEY);
-}
-
 /** Where a token is kept; the browser's storage unless a test passes its own. */
 export interface TokenStores {
   readonly session: () => Storage;
@@ -151,6 +140,64 @@ export function forgetLocalToken(
   } catch {
     // Storage blocked: nothing was stored.
   }
+}
+
+/** The local token a page holds, and whether a serve host answers the page. */
+export interface PageTokens {
+  /** The token, or null under serve, without one, or under a host. */
+  token(): string | null;
+  /**
+   * Marks the page as a workspace a serve host runs, from an `/auth/info`
+   * answer without `local`: its token is the local hub's, never sent to a serve.
+   */
+  markHosted(): void;
+}
+
+export function createPageTokens(
+  workspace: string | null,
+  stores: TokenStores = BROWSER_STORES,
+): PageTokens {
+  let hosted = false;
+  const token = (): string | null => {
+    if (workspace === null || hosted) return null;
+    return stored(stores.session, START_TOKEN_KEY) ??
+      stored(stores.local, LOCAL_TOKEN_KEY);
+  };
+  return {
+    token,
+    markHosted() {
+      if (workspace === null || hosted) return;
+      const stale = token();
+      hosted = true;
+      forgetLocalToken(stale, stores);
+    },
+  };
+}
+
+const pageTokens = createPageTokens(PAGE_WORKSPACE);
+
+/**
+ * The local dashboard's token: what `swamp start` or `swamp dashboard`
+ * handed the page in its URL. Null under serve, on a workspace page opened
+ * without it, and on a workspace page a serve host answers.
+ */
+export function localToken(): string | null {
+  return pageTokens.token();
+}
+
+/** {@link PageTokens.markHosted} for this page. */
+export function markHostedWorkspace(): void {
+  pageTokens.markHosted();
+}
+
+/**
+ * The cross-tab session channel for a page: one per workspace segment, so a
+ * sign-out in one workspace's tab leaves the root's and the others' alone.
+ */
+export function sessionChannelFor(workspace: string | null): string {
+  return workspace === null
+    ? "swamp-dashboard-session"
+    : `swamp-dashboard-session/w/${encodeURIComponent(workspace)}`;
 }
 
 /** `headers` plus the local token, when the page has one. */
