@@ -19,7 +19,9 @@
 
 import { localSocketProtocols, serverPath } from "./workspace_path.ts";
 import {
+  type AuthAnswer,
   type AuthInfo,
+  requestAuthAnswer,
   requestAuthInfo,
   requestTokenProbe,
   type SocketHandlers,
@@ -41,6 +43,10 @@ export const browserTimers: Timers = {
 
 export const fetchAuthInfo = (signal: AbortSignal): Promise<AuthInfo | null> =>
   requestAuthInfo(globalThis.fetch, signal);
+
+export const fetchAuthAnswer = (
+  signal: AbortSignal,
+): Promise<AuthAnswer | null> => requestAuthAnswer(globalThis.fetch, signal);
 
 export const probeToken = (
   token: string | null,

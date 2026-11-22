@@ -19,16 +19,19 @@
 
 import { assert, assertEquals } from "@std/assert";
 import {
+  type AuthAnswer,
   type AuthInfo,
   type ConnectionDeps,
   createConnection,
   loadAuthInfo,
   parseAuthInfo,
+  requestAuthAnswer,
   requestAuthInfo,
   requestTokenProbe,
   type SocketHandlers,
   socketProtocols,
   type Timers,
+  type WorkspaceAbsence,
 } from "./connection.ts";
 import { MAX_DELAY_MS, type ProbeResult } from "./reconnect.ts";
 
@@ -472,6 +475,114 @@ Deno.test("requestAuthInfo: returns null for errors and unusable answers", async
   );
 });
 
+Deno.test("requestAuthAnswer: tells the local dashboard from a hosted workspace", async () => {
+  const signal = new AbortController().signal;
+  const reply = (body: string) => () =>
+    Promise.resolve(new Response(body, { status: 200 }));
+  assertEquals(
+    await requestAuthAnswer(reply('{"mode":"none","local":true}'), signal, "w"),
+    { kind: "info", info: { mode: "none", local: true } },
+  );
+  assertEquals(
+    await requestAuthAnswer(
+      reply(
+        '{"mode":"oauth","verificationBaseUri":"https://p","exchange":true}',
+      ),
+      signal,
+      "w",
+    ),
+    {
+      kind: "info",
+      info: { mode: "oauth", verificationBaseUri: "https://p", exchange: true },
+    },
+  );
+  assertEquals(
+    await requestAuthAnswer(reply('{"mode":"token"}'), signal, "w"),
+    { kind: "info", info: { mode: "token" } },
+  );
+});
+
+Deno.test("requestAuthAnswer: reads the host's and the hub's refusals on a workspace page", async () => {
+  const signal = new AbortController().signal;
+  const reply = (body: string, status: number) => () =>
+    Promise.resolve(new Response(body, { status }));
+  assertEquals(
+    await requestAuthAnswer(reply("Unauthorized", 401), signal, "w"),
+    { kind: "refused" },
+  );
+  assertEquals(
+    await requestAuthAnswer(
+      reply('{"error":"No workspace answers at this address."}', 404),
+      signal,
+      "w",
+    ),
+    { kind: "absent" },
+  );
+  assertEquals(
+    await requestAuthAnswer(
+      reply(
+        '{"error":"The workspace is not running.","workspace":"w","state":"stopped"}',
+        503,
+      ),
+      signal,
+      "w",
+    ),
+    { kind: "unavailable", state: "stopped" },
+  );
+  assertEquals(
+    await requestAuthAnswer(
+      reply('{"error":"The host is shutting down."}', 503),
+      signal,
+      "w",
+    ),
+    { kind: "unavailable", state: null },
+  );
+  // a plain serve's or the local hub's 404 also says no such workspace
+  assertEquals(
+    await requestAuthAnswer(reply("No workspace named w", 404), signal, "w"),
+    { kind: "absent" },
+  );
+  assertEquals(
+    await requestAuthAnswer(reply("Not Found", 404), signal, "w"),
+    { kind: "absent" },
+  );
+  // the local hub's plain-text 503 stays retryable
+  assertEquals(
+    await requestAuthAnswer(reply("Stopping", 503), signal, "w"),
+    null,
+  );
+  assertEquals(
+    await requestAuthAnswer(
+      () => Promise.reject(new TypeError("down")),
+      signal,
+      "w",
+    ),
+    null,
+  );
+});
+
+Deno.test("requestAuthAnswer: a page with no workspace segment retries every refusal", async () => {
+  const signal = new AbortController().signal;
+  const reply = (body: string, status: number) => () =>
+    Promise.resolve(new Response(body, { status }));
+  assertEquals(
+    await requestAuthAnswer(reply("Unauthorized", 401), signal, null),
+    null,
+  );
+  assertEquals(
+    await requestAuthAnswer(reply('{"error":"gone"}', 404), signal, null),
+    null,
+  );
+  assertEquals(
+    await requestAuthAnswer(
+      reply('{"error":"x","state":"stopped"}', 503),
+      signal,
+      null,
+    ),
+    null,
+  );
+});
+
 Deno.test("requestTokenProbe: sends the token and reports the status", async () => {
   const signal = new AbortController().signal;
   let seen: RequestInit | undefined;
@@ -499,17 +610,24 @@ Deno.test("requestTokenProbe: sends the token and reports the status", async () 
 
 function authLoader() {
   const timers = fakeTimers();
-  const requests: Pending<AuthInfo | null>[] = [];
+  const requests: Pending<AuthAnswer | null>[] = [];
   const loaded: AuthInfo[] = [];
-  const cancel = loadAuthInfo({
-    ...timers.api,
-    random: () => 1,
-    checkTimeoutMs: CHECK_TIMEOUT,
-    fetchAuthInfo: (signal) =>
-      new Promise((reply) => requests.push({ arg: null, signal, reply })),
-  }, (info) => loaded.push(info));
-  return { timers, requests, loaded, cancel };
+  const absences: WorkspaceAbsence[] = [];
+  const cancel = loadAuthInfo(
+    {
+      ...timers.api,
+      random: () => 1,
+      checkTimeoutMs: CHECK_TIMEOUT,
+      fetchAuthAnswer: (signal) =>
+        new Promise((reply) => requests.push({ arg: null, signal, reply })),
+    },
+    (info) => loaded.push(info),
+    (absence) => absences.push(absence),
+  );
+  return { timers, requests, loaded, absences, cancel };
 }
+
+const info = (value: AuthInfo): AuthAnswer => ({ kind: "info", info: value });
 
 Deno.test("loadAuthInfo: retries with backoff until serve answers", async () => {
   const l = authLoader();
@@ -521,10 +639,35 @@ Deno.test("loadAuthInfo: retries with backoff until serve answers", async () => 
   await settle();
   assertEquals(l.timers.retries(), [1000]);
   l.timers.fireRetry();
-  l.requests[2].reply({ mode: "token" });
+  l.requests[2].reply(info({ mode: "token" }));
   await settle();
   assertEquals(l.loaded, [{ mode: "token" }]);
   assertEquals(l.timers.retries(), []);
+});
+
+Deno.test("loadAuthInfo: reports a workspace that is not running and retries until it answers", async () => {
+  const l = authLoader();
+  l.requests[0].reply({ kind: "unavailable", state: "starting" });
+  await settle();
+  assertEquals(l.absences, [{ kind: "unavailable", state: "starting" }]);
+  assertEquals(l.timers.retries(), [500]);
+  l.timers.fireRetry();
+  l.requests[1].reply(info({ mode: "token", exchange: true }));
+  await settle();
+  assertEquals(l.loaded, [{ mode: "token", exchange: true }]);
+  assertEquals(l.timers.retries(), []);
+});
+
+Deno.test("loadAuthInfo: an absent workspace or a refused page stops asking", async () => {
+  for (const absence of [{ kind: "absent" }, { kind: "refused" }] as const) {
+    const l = authLoader();
+    l.requests[0].reply(absence);
+    await settle();
+    assertEquals(l.absences, [absence]);
+    assertEquals(l.loaded, []);
+    assertEquals(l.timers.retries(), []);
+    assertEquals(l.requests.length, 1);
+  }
 });
 
 Deno.test("loadAuthInfo: a request that never answers times out and retries", () => {
@@ -543,7 +686,7 @@ Deno.test("loadAuthInfo: cancel stops further attempts", async () => {
   const inFlight = authLoader();
   inFlight.cancel();
   assertEquals(inFlight.requests[0].signal.aborted, true);
-  inFlight.requests[0].reply({ mode: "none" });
+  inFlight.requests[0].reply(info({ mode: "none" }));
   await settle();
   assertEquals(inFlight.loaded, []);
 });

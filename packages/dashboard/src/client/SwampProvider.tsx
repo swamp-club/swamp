@@ -17,7 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { serverPath, withLocalToken } from "./workspace_path.ts";
+import {
+  markHostedWorkspace,
+  PAGE_WORKSPACE,
+  serverPath,
+  sessionChannelFor,
+  withLocalToken,
+} from "./workspace_path.ts";
 import {
   createContext,
   type ReactNode,
@@ -32,9 +38,11 @@ import {
   type Connection,
   createConnection,
   loadAuthInfo,
+  type WorkspaceAbsence,
 } from "./connection.ts";
 import {
   browserTimers as timers,
+  fetchAuthAnswer,
   fetchAuthInfo,
   openServeSocket,
   probeToken,
@@ -64,6 +72,8 @@ interface SwampContextValue {
   verificationBaseUri: string | null;
   /** True when served by the local dashboard rather than `swamp serve`. */
   local: boolean;
+  /** Why a workspace page has no workspace to sign in to, or null. */
+  workspaceAbsence: WorkspaceAbsence | null;
   login: (token: string) => Promise<void>;
   completeLogin: () => Promise<void>;
   logout: () => void;
@@ -83,7 +93,7 @@ interface SwampContextValue {
 }
 
 const SwampContext = createContext<SwampContextValue | null>(null);
-const SESSION_CHANNEL = "swamp-dashboard-session";
+const SESSION_CHANNEL = sessionChannelFor(PAGE_WORKSPACE);
 const dashboardSession = createDashboardSessionClient(globalThis.fetch);
 
 interface DashboardSessionEvent {
@@ -110,6 +120,9 @@ export function SwampProvider({ children }: { children: ReactNode }) {
     null,
   );
   const [local, setLocal] = useState(false);
+  const [workspaceAbsence, setWorkspaceAbsence] = useState<
+    WorkspaceAbsence | null
+  >(null);
   const socketRef = useRef<WebSocket | null>(null);
   const sessionGenerationRef = useRef(0);
   const sessionSourceIdRef = useRef(crypto.randomUUID());
@@ -126,6 +139,8 @@ export function SwampProvider({ children }: { children: ReactNode }) {
   >(new Map());
 
   const applyAuthInfo = useCallback((info: AuthInfo) => {
+    if (info.local !== true) markHostedWorkspace();
+    setWorkspaceAbsence(null);
     setAuthMode(info.mode);
     setVerificationBaseUri(info.verificationBaseUri ?? null);
     setLocal(info.local === true);
@@ -146,9 +161,15 @@ export function SwampProvider({ children }: { children: ReactNode }) {
 
   // Serve may be down when the page loads; keep asking rather than guess a
   // mode, which would connect without a token and never show login.
-  useEffect(() => loadAuthInfo({ ...timers, fetchAuthInfo }, applyAuthInfo), [
-    applyAuthInfo,
-  ]);
+  useEffect(
+    () =>
+      loadAuthInfo(
+        { ...timers, fetchAuthAnswer },
+        applyAuthInfo,
+        setWorkspaceAbsence,
+      ),
+    [applyAuthInfo],
+  );
 
   useEffect(() => {
     const controller = new AbortController();
@@ -391,6 +412,7 @@ export function SwampProvider({ children }: { children: ReactNode }) {
         authMode,
         verificationBaseUri,
         local,
+        workspaceAbsence,
         login,
         completeLogin,
         logout,

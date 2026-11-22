@@ -20,6 +20,7 @@
 import { assertEquals } from "@std/assert";
 import { MemoryStorage } from "./memory_storage_test_helpers.ts";
 import {
+  createPageTokens,
   dashboardBaseFor,
   forgetLocalToken,
   keepLocalToken,
@@ -29,6 +30,7 @@ import {
   PAGE_WORKSPACE,
   serverPath,
   serverPathFor,
+  sessionChannelFor,
   type TokenStores,
   withLocalToken,
   workspaceFromPath,
@@ -130,4 +132,42 @@ Deno.test("forgetLocalToken: leaves another swamp start's token for other tabs",
   forgetLocalToken("tok-old", stores);
   assertEquals(stores.sessionStore.getItem("swamp-start-token"), null);
   assertEquals(stores.localStore.getItem(LOCAL_TOKEN_KEY), "tok-new");
+});
+
+Deno.test("createPageTokens: a workspace page reads the token it was handed", () => {
+  const stores = memoryStores();
+  keepLocalToken("tok-1", stores);
+  assertEquals(createPageTokens("data", stores).token(), "tok-1");
+  assertEquals(createPageTokens(null, stores).token(), null);
+});
+
+Deno.test("createPageTokens: a page a serve host answers drops the local token", () => {
+  const stores = memoryStores();
+  keepLocalToken("tok-1", stores);
+  const tokens = createPageTokens("data", stores);
+  tokens.markHosted();
+  assertEquals(tokens.token(), null);
+  assertEquals(stores.sessionStore.getItem("swamp-start-token"), null);
+  assertEquals(stores.localStore.getItem(LOCAL_TOKEN_KEY), null);
+  keepLocalToken("tok-2", stores);
+  assertEquals(tokens.token(), null);
+});
+
+Deno.test("createPageTokens: marking a page with no workspace segment changes nothing", () => {
+  const stores = memoryStores();
+  keepLocalToken("tok-1", stores);
+  createPageTokens(null, stores).markHosted();
+  assertEquals(stores.localStore.getItem(LOCAL_TOKEN_KEY), "tok-1");
+});
+
+Deno.test("sessionChannelFor: one channel per workspace segment, the plain one without", () => {
+  assertEquals(sessionChannelFor(null), "swamp-dashboard-session");
+  assertEquals(
+    sessionChannelFor("data"),
+    "swamp-dashboard-session/w/data",
+  );
+  assertEquals(
+    sessionChannelFor("a/b"),
+    "swamp-dashboard-session/w/a%2Fb",
+  );
 });

@@ -14,8 +14,9 @@ host folder layout (step 26): `swamp serve host` reads `<config dir>/host.yaml`,
 lists every entry of the workspace registry, runs a serve for each one whose
 wanted file says `active` and names its folder, and its root takes the
 `workspace.*` requests, creates workspaces in the workspace location and issues
-sign-in codes. A dashboard session cookie per path (step 16) is built; the rest
-of the dashboard (steps 17 and 18) is not.
+sign-in codes. A dashboard session cookie per path (step 16) and the sign-in
+under a workspace segment (step 17) are built; the switcher listing the host's
+workspaces (step 18) is not.
 It describes how one address hosts several serves, which promoting a local
 workspace to a server assumes.
 
@@ -960,10 +961,28 @@ already knows a workspace segment: a workspace's pages are
 (`packages/dashboard/src/client/workspace_path.ts`). Three things stand between
 that and a hosted workspace:
 
-- The page takes a workspace segment to mean the local dashboard. It asks for
-  the local token and its switcher reads the local hub's list. Under a host it
-  signs in to the workspace's serve, and its switcher lists what
-  `workspace.list` returns.
+- A workspace segment does not by itself mean the local dashboard. The page
+  reads `/w/<name>/auth/info` and follows the answer
+  (`packages/dashboard/src/client/connection.ts`). The local dashboard
+  answers `local: true` and its hub answers 401 to a page without the local
+  token; a serve never sends `local`, and the page's token handling depends on
+  that. The page sends any local token it holds on that first request, since
+  the hub demands it there, so the router drops the `x-swamp-local-token`
+  header from everything it forwards and a token left by an earlier hub on the
+  same origin never reaches a serve. Under a host the page drops the token,
+  shows the sign-in for the workspace's own auth mode, and sends it to
+  `/w/<name>/auth/…`. A browser signed in to the root signs in to each
+  workspace directly; using the [sign-in exchange](#sign-in) from the browser
+  is not built. A 404 from anything (the host, the hub, a plain serve) and the
+  host's JSON 503 take the place of the sign-in with a page saying the
+  workspace does not exist or naming its state, and a 503 is retried until the
+  workspace answers. The switcher is shown only on the local dashboard until it lists
+  what `workspace.list` returns (step 18).
+- The root serves the pages: `/dashboard/w/<name>/…` reaches the root
+  unchanged and the bundle's assets load from `/dashboard/`, so a hosted
+  workspace's pages need the root's own `dashboard` setting on. The page's
+  `/apps/w/<name>/…` area passes the same check but is not verified under a
+  host.
 - With one cookie name at `Path=/`, the root's and every workspace's sessions
   would overwrite each other. A workspace a host runs names its cookie for its
   address path and scopes it to that path
@@ -983,7 +1002,9 @@ that and a hosted workspace:
 - Every workspace shares one browser origin. The pages are all swamp's own
   dashboard, so one workspace's page is not another tenant's code, but a
   script-injection bug in the dashboard would reach every workspace a browser
-  is signed in to.
+  is signed in to. The tabs' sign-in and sign-out notices go over a channel
+  named for the page's workspace segment, so signing out of one workspace
+  leaves the root's and the others' tabs signed in.
 
 ## What a client sees
 
@@ -1127,9 +1148,10 @@ After 7 an operator who sets each workspace up has a multi-workspace host.
     workspace a host runs names its cookie for its address path and scopes it
     to that path, and the router forwards to a workspace only its own cookie.
     Every other serve is unchanged (`src/serve/dashboard_session_cookie.ts`).
-17. **Sign-in under a workspace segment.** The page tells a host from the local
-    dashboard by `/auth/info`, and under a host it signs in to the workspace's
-    serve instead of asking for the local token. After 16.
+17. **Sign-in under a workspace segment** (swamp-club#4913, built). The page
+    tells a host from the local dashboard by `/auth/info`, and under a host it
+    signs in to the workspace's serve instead of asking for the local token.
+    After 16.
 18. **The switcher lists the host's workspaces.** Under a host it reads
     `workspace.list` from the root. After 11 and 17.
 

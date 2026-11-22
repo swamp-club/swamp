@@ -426,7 +426,8 @@ export function Sidebar({
         </button>
       </div>
 
-      {PAGE_WORKSPACE !== null && !collapsed && (
+      {/* only the local hub answers the switcher's workspace list */}
+      {PAGE_WORKSPACE !== null && local && !collapsed && (
         <WorkspaceSwitcher current={PAGE_WORKSPACE} />
       )}
 

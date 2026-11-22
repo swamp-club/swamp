@@ -17,7 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { serverPath, withLocalToken } from "./workspace_path.ts";
+import {
+  PAGE_WORKSPACE,
+  serverPath,
+  withLocalToken,
+} from "./workspace_path.ts";
 import {
   backoffDelayMs,
   type CloseAction,
@@ -39,6 +43,17 @@ export interface AuthInfo {
   /** a host's workspace that takes a sign-in code from its root at `/auth/exchange` */
   exchange?: true;
 }
+
+/** Why a workspace page has no workspace to sign in to. */
+export type WorkspaceAbsence =
+  | { readonly kind: "absent" }
+  | { readonly kind: "unavailable"; readonly state: string | null }
+  | { readonly kind: "refused" };
+
+/** A page's `/auth/info` answer: a usable body, or why there is none. */
+export type AuthAnswer =
+  | { readonly kind: "info"; readonly info: AuthInfo }
+  | WorkspaceAbsence;
 
 /** Aborts a token probe or `/auth/info` request that has not answered. */
 export const CHECK_TIMEOUT_MS = 10_000;
@@ -343,16 +358,63 @@ export async function requestAuthInfo(
   fetchFn: FetchFn,
   signal: AbortSignal,
 ): Promise<AuthInfo | null> {
+  const answer = await requestAuthAnswer(fetchFn, signal, null);
+  return answer?.kind === "info" ? answer.info : null;
+}
+
+/** A serve host's JSON refusal (`host_reply.ts`), or null for any other body. */
+async function hostRefusal(
+  response: Response,
+): Promise<Record<string, unknown> | null> {
+  try {
+    const body: unknown = await response.json();
+    return typeof body === "object" && body !== null && "error" in body &&
+        typeof body.error === "string"
+      ? body as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * One `/auth/info` request for a page. On a workspace page, a 401 is the local
+ * hub refusing the page's token, a 404 from anything says the workspace is not
+ * there, and the host's JSON 503 says it is not running; the hub's plain-text
+ * 503 stays retryable. Null on a network error or unusable answer.
+ */
+export async function requestAuthAnswer(
+  fetchFn: FetchFn,
+  signal: AbortSignal,
+  workspace: string | null = PAGE_WORKSPACE,
+): Promise<AuthAnswer | null> {
   try {
     const response = await fetchFn(serverPath("/auth/info"), {
       signal,
       headers: withLocalToken(),
     });
-    if (!response.ok) {
-      await response.body?.cancel();
-      return null;
+    if (response.ok) {
+      const info = parseAuthInfo(await response.json());
+      return info === null ? null : { kind: "info", info };
     }
-    return parseAuthInfo(await response.json());
+    if (workspace !== null && response.status === 401) {
+      await response.body?.cancel();
+      return { kind: "refused" };
+    }
+    if (workspace !== null && response.status === 404) {
+      await response.body?.cancel();
+      return { kind: "absent" };
+    }
+    if (workspace !== null && response.status === 503) {
+      const refusal = await hostRefusal(response);
+      if (refusal === null) return null;
+      return {
+        kind: "unavailable",
+        state: typeof refusal.state === "string" ? refusal.state : null,
+      };
+    }
+    await response.body?.cancel();
+    return null;
   } catch {
     return null;
   }
@@ -397,15 +459,18 @@ export async function requestTokenProbe(
 
 /**
  * Reads `/auth/info`, retrying with backoff until serve answers with a valid
- * mode. Returns a function that cancels it.
+ * mode, a workspace is reported absent, or the local hub refuses the page. A
+ * workspace that is not running is reported and retried, so the page recovers
+ * once it starts. Returns a function that cancels it.
  */
 export function loadAuthInfo(
   deps: Timers & {
-    fetchAuthInfo(signal: AbortSignal): Promise<AuthInfo | null>;
+    fetchAuthAnswer(signal: AbortSignal): Promise<AuthAnswer | null>;
     random?: () => number;
     checkTimeoutMs?: number;
   },
   onLoaded: (info: AuthInfo) => void,
+  onAbsence: (absence: WorkspaceAbsence) => void = () => {},
 ): () => void {
   const random = deps.random ?? Math.random;
   const checkTimeoutMs = deps.checkTimeoutMs ?? CHECK_TIMEOUT_MS;
@@ -415,17 +480,21 @@ export function loadAuthInfo(
   let cancelRequest: (() => void) | null = null;
 
   const run = () => {
-    cancelRequest = attemptWithTimeout<AuthInfo | null>(
+    cancelRequest = attemptWithTimeout<AuthAnswer | null>(
       deps,
       checkTimeoutMs,
-      (signal) => deps.fetchAuthInfo(signal),
+      (signal) => deps.fetchAuthAnswer(signal),
       null,
-      (info) => {
+      (answer) => {
         cancelRequest = null;
         if (cancelled) return;
-        if (info !== null) {
-          onLoaded(info);
+        if (answer?.kind === "info") {
+          onLoaded(answer.info);
           return;
+        }
+        if (answer !== null) {
+          onAbsence(answer);
+          if (answer.kind !== "unavailable") return;
         }
         retryTimer = deps.setTimer(() => {
           retryTimer = null;
