@@ -235,7 +235,11 @@ async function withHost(fn: (host: Host) => Promise<void>): Promise<void> {
   } finally {
     shutdown.abort();
     for (const server of servers) await server.shutdown();
-    await Deno.remove(distDir, { recursive: true }).catch(() => {});
+    if (Deno.build.os === "windows") {
+      await Deno.remove(distDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(distDir, { recursive: true });
+    }
   }
 }
 
