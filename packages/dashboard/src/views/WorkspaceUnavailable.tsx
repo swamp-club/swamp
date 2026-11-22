@@ -27,7 +27,7 @@ export function workspaceAbsenceText(
   absence: Exclude<WorkspaceAbsence, { kind: "refused" }>,
 ): string {
   if (absence.kind === "absent") {
-    return `There is no workspace named ${workspace} on this host.`;
+    return `There is no workspace named ${workspace} here.`;
   }
   switch (absence.state) {
     case "stopped":

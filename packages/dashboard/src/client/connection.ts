@@ -379,9 +379,9 @@ async function hostRefusal(
 
 /**
  * One `/auth/info` request for a page. On a workspace page, a 401 is the local
- * hub refusing the page's token, and the host's JSON 404 and 503 say the
- * workspace is not there or not running; the hub's own plain-text 404 and 503
- * stay retryable. Null on a network error or unusable answer.
+ * hub refusing the page's token, a 404 from anything says the workspace is not
+ * there, and the host's JSON 503 says it is not running; the hub's plain-text
+ * 503 stays retryable. Null on a network error or unusable answer.
  */
 export async function requestAuthAnswer(
   fetchFn: FetchFn,
@@ -401,13 +401,14 @@ export async function requestAuthAnswer(
       await response.body?.cancel();
       return { kind: "refused" };
     }
-    if (
-      workspace !== null &&
-      (response.status === 404 || response.status === 503)
-    ) {
+    if (workspace !== null && response.status === 404) {
+      await response.body?.cancel();
+      return { kind: "absent" };
+    }
+    if (workspace !== null && response.status === 503) {
       const refusal = await hostRefusal(response);
       if (refusal === null) return null;
-      return response.status === 404 ? { kind: "absent" } : {
+      return {
         kind: "unavailable",
         state: typeof refusal.state === "string" ? refusal.state : null,
       };

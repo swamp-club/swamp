@@ -966,13 +966,17 @@ that and a hosted workspace:
   (`packages/dashboard/src/client/connection.ts`). The local dashboard
   answers `local: true` and its hub answers 401 to a page without the local
   token; a serve never sends `local`, and the page's token handling depends on
-  that. Under a host the page drops any local token it holds, shows the sign-in
-  for the workspace's own auth mode, and sends it to `/w/<name>/auth/…`. A
-  browser signed in to the root signs in to each workspace directly; using the
-  [sign-in exchange](#sign-in) from the browser is not built. The host's JSON
-  404 and 503 take the place of the sign-in with a page saying the workspace
-  does not exist or naming its state, and a 503 is retried until the workspace
-  answers. The switcher is shown only on the local dashboard until it lists
+  that. The page sends any local token it holds on that first request, since
+  the hub demands it there, so the router drops the `x-swamp-local-token`
+  header from everything it forwards and a token left by an earlier hub on the
+  same origin never reaches a serve. Under a host the page drops the token,
+  shows the sign-in for the workspace's own auth mode, and sends it to
+  `/w/<name>/auth/…`. A browser signed in to the root signs in to each
+  workspace directly; using the [sign-in exchange](#sign-in) from the browser
+  is not built. A 404 from anything (the host, the hub, a plain serve) and the
+  host's JSON 503 take the place of the sign-in with a page saying the
+  workspace does not exist or naming its state, and a 503 is retried until the
+  workspace answers. The switcher is shown only on the local dashboard until it lists
   what `workspace.list` returns (step 18).
 - The root serves the pages: `/dashboard/w/<name>/…` reaches the root
   unchanged and the bundle's assets load from `/dashboard/`, so a hosted

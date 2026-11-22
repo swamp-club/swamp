@@ -537,11 +537,16 @@ Deno.test("requestAuthAnswer: reads the host's and the hub's refusals on a works
     ),
     { kind: "unavailable", state: null },
   );
-  // the local hub's own plain-text answers stay retryable
+  // a plain serve's or the local hub's 404 also says no such workspace
   assertEquals(
     await requestAuthAnswer(reply("No workspace named w", 404), signal, "w"),
-    null,
+    { kind: "absent" },
   );
+  assertEquals(
+    await requestAuthAnswer(reply("Not Found", 404), signal, "w"),
+    { kind: "absent" },
+  );
+  // the local hub's plain-text 503 stays retryable
   assertEquals(
     await requestAuthAnswer(reply("Stopping", 503), signal, "w"),
     null,

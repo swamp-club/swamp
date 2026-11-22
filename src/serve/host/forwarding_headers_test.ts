@@ -97,6 +97,16 @@ Deno.test("forwardRequestHeaders: hop-by-hop headers, the ones Connection names,
   }
 });
 
+Deno.test("forwardRequestHeaders: a local hub's token is never sent on to a serve", () => {
+  for (const options of [DIRECT, { ...DIRECT, removedPrefix: undefined }]) {
+    const headers = forwardRequestHeaders(
+      request({ "x-swamp-local-token": "stale-hub-token" }),
+      options,
+    );
+    assertEquals(headers.has("x-swamp-local-token"), false);
+  }
+});
+
 Deno.test("forwardRequestHeaders: forwarding headers a direct caller sends are overwritten", () => {
   const headers = forwardRequestHeaders(
     request({

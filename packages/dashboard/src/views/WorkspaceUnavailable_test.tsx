@@ -29,7 +29,7 @@ import {
 Deno.test("workspaceAbsenceText: says the workspace does not exist", () => {
   assertEquals(
     workspaceAbsenceText("data", { kind: "absent" }),
-    "There is no workspace named data on this host.",
+    "There is no workspace named data here.",
   );
 });
 

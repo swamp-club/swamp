@@ -44,8 +44,9 @@ const HOP_BY_HOP = [
 
 // Deno.serve already answered a caller's 100-continue, so the child is never
 // asked for a second one; Forwarded is dropped because only the X-Forwarded-*
-// headers below are vouched for
-const REQUEST_ONLY = ["expect", "forwarded"];
+// headers below are vouched for; a local hub's token, left in a browser that
+// once ran one on this origin, is never sent on to a serve
+const REQUEST_ONLY = ["expect", "forwarded", "x-swamp-local-token"];
 
 const WEBSOCKET_HANDSHAKE = [
   "host",
