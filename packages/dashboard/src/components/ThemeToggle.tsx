@@ -23,14 +23,37 @@ type Theme = "light" | "dark" | "system";
 
 const THEME_KEY = "swamp-dashboard-theme";
 
-/** `header` sits on the page's surface, as on `/apps`, instead of the dark sidebar. */
+const browserStorage = (): Storage => localStorage;
+
+function readTheme(storage: () => Storage): Theme {
+  try {
+    const stored = storage().getItem(THEME_KEY);
+    return stored === "light" || stored === "dark" ? stored : "system";
+  } catch {
+    return "system";
+  }
+}
+
+function writeTheme(storage: () => Storage, theme: Theme): void {
+  try {
+    storage().setItem(THEME_KEY, theme);
+  } catch {
+    // Storage blocked: the choice lasts for this page load only.
+  }
+}
+
+/**
+ * `header` sits on the page's surface, as on `/apps`, instead of the dark sidebar.
+ * `storage` is the browser's unless a test passes its own.
+ */
 export function ThemeToggle(
-  { placement = "sidebar" }: { placement?: "sidebar" | "header" } = {},
+  { placement = "sidebar", storage = browserStorage }: {
+    placement?: "sidebar" | "header";
+    storage?: () => Storage;
+  } = {},
 ) {
   const header = placement === "header";
-  const [theme, setTheme] = useState<Theme>(
-    () => (localStorage.getItem(THEME_KEY) as Theme) ?? "system",
-  );
+  const [theme, setTheme] = useState<Theme>(() => readTheme(storage));
 
   useEffect(() => {
     if (theme === "system") {
@@ -38,8 +61,8 @@ export function ThemeToggle(
     } else {
       document.documentElement.setAttribute("data-theme", theme);
     }
-    localStorage.setItem(THEME_KEY, theme);
-  }, [theme]);
+    writeTheme(storage, theme);
+  }, [theme, storage]);
 
   const buttons: { t: Theme; label: string }[] = [
     { t: "light", label: "☀" },

@@ -19,15 +19,59 @@
 
 /** @jsxRuntime automatic */
 /** @jsxImportSource react */
-import { assert } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import { renderToStaticMarkup } from "react-dom/server";
+import { MemoryStorage } from "../client/memory_storage_test_helpers.ts";
 import { ThemeToggle } from "./ThemeToggle.tsx";
 
+function pressed(html: string): string[] {
+  return [...html.matchAll(/aria-label="(\w+) theme" aria-pressed="true"/g)]
+    .map((m) => m[1]);
+}
+
+function storing(value: string | null): () => Storage {
+  const storage = new MemoryStorage();
+  if (value !== null) storage.setItem("swamp-dashboard-theme", value);
+  return () => storage;
+}
+
 Deno.test("ThemeToggle: the header placement offers the three themes on the page's surface", () => {
-  const html = renderToStaticMarkup(<ThemeToggle placement="header" />);
+  const storage = storing(null);
+  const html = renderToStaticMarkup(
+    <ThemeToggle placement="header" storage={storage} />,
+  );
   for (const theme of ["light", "system", "dark"]) {
     assert(html.includes(`aria-label="${theme} theme"`));
   }
   assert(html.includes("var(--border)"));
-  assert(!renderToStaticMarkup(<ThemeToggle />).includes("var(--border)"));
+  assert(
+    !renderToStaticMarkup(<ThemeToggle storage={storage} />).includes(
+      "var(--border)",
+    ),
+  );
+});
+
+Deno.test("ThemeToggle: the stored theme is the one pressed", () => {
+  const html = renderToStaticMarkup(<ThemeToggle storage={storing("dark")} />);
+  assertEquals(pressed(html), ["dark"]);
+});
+
+Deno.test("ThemeToggle: nothing stored, or a value it never writes, presses system", () => {
+  for (const value of [null, "sepia"]) {
+    const html = renderToStaticMarkup(<ThemeToggle storage={storing(value)} />);
+    assertEquals(pressed(html), ["system"]);
+  }
+});
+
+Deno.test("ThemeToggle: storage that refuses to be read presses system instead of throwing", () => {
+  const locked = () => {
+    throw new Error("database is locked");
+  };
+  const unreachable = renderToStaticMarkup(<ThemeToggle storage={locked} />);
+  assertEquals(pressed(unreachable), ["system"]);
+
+  const refusing = new MemoryStorage();
+  refusing.getItem = locked;
+  const html = renderToStaticMarkup(<ThemeToggle storage={() => refusing} />);
+  assertEquals(pressed(html), ["system"]);
 });

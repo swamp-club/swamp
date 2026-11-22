@@ -252,6 +252,8 @@ interface SidebarProps {
    * it shapes only a static render.
    */
   initialLogoutStep?: LogoutStep;
+  /** Where the theme choice is kept; the browser's storage unless a test passes its own. */
+  themeStorage?: () => Storage;
 }
 
 export function Sidebar({
@@ -273,6 +275,7 @@ export function Sidebar({
   drawerOpen,
   onCloseDrawer,
   initialLogoutStep = "idle",
+  themeStorage,
 }: SidebarProps) {
   const [tooltip, setTooltip] = useState<RailTooltip | null>(null);
   const [logoutStep, setLogoutStep] = useState<LogoutStep>(initialLogoutStep);
@@ -584,7 +587,7 @@ export function Sidebar({
         />
       </div>
 
-      <ThemeToggle />
+      <ThemeToggle storage={themeStorage} />
 
       <div
         ref={footerRef}
