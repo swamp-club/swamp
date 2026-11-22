@@ -70,6 +70,7 @@ import {
   unregisterCreatedWorkspace,
 } from "../../libswamp/workspace/hosted_registration.ts";
 import { workspacesRoot } from "../../libswamp/workspace/workspace_store.ts";
+import { DashboardSessionCookie } from "../dashboard_session_cookie.ts";
 import {
   createWorkspaceRouter,
   type WorkspaceDirectory,
@@ -231,6 +232,8 @@ async function startLocked(
     directory: hostDirectory(root, supervisor),
     protocol: config.protocol,
     trustProxy: config.trustProxy,
+    sessionCookieName: (name) =>
+      DashboardSessionCookie.forAddress(config.childAddress(name)).name,
     signal: routerAbort.signal,
   });
 

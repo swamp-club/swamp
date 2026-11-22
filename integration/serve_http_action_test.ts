@@ -54,10 +54,8 @@ import {
   PRINCIPAL_RATE_BURST,
   resetRateLimitState,
 } from "../src/serve/rate_limiter.ts";
-import {
-  DASHBOARD_SESSION_COOKIE,
-  type ServerTokenAuthResult,
-} from "../src/serve/token_auth.ts";
+import type { ServerTokenAuthResult } from "../src/serve/token_auth.ts";
+import { PLAIN_DASHBOARD_SESSION_COOKIE as DASHBOARD_SESSION_COOKIE } from "../src/serve/dashboard_session_cookie.ts";
 import {
   CALLER,
   createServeCtx,

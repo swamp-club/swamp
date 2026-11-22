@@ -198,6 +198,7 @@ function startRouter(
     directory,
     protocol: "https",
     trustProxy,
+    sessionCookieName: (name) => `session-${name}`,
     signal: shutdownSignal.signal,
     webSocketOpenTimeoutMs: 60_000,
   });
@@ -298,14 +299,14 @@ function base(router: RunningRouter): string {
   return `http://127.0.0.1:${router.port}`;
 }
 
-Deno.test("workspace router: a request reaches its workspace without the prefix and the reply comes back", async () => {
+Deno.test("workspace router: a request reaches its workspace without the prefix, carrying only that workspace's cookie, and the reply comes back", async () => {
   await withFixture(async ({ router }) => {
     const reply = await nodeRequest(router.port, "/w/edge-dns/api/v1/x?q=1", {
       method: "POST",
       headers: {
         host: "serve.acme.internal",
         authorization: "Bearer swamp_abc",
-        cookie: "swamp_session=s1",
+        cookie: "swamp-dashboard-session=root; session-edge-dns=s1; other=x",
         origin: "https://serve.acme.internal",
         "content-type": "application/json",
       },
@@ -320,7 +321,7 @@ Deno.test("workspace router: a request reaches its workspace without the prefix 
     assertEquals(seen.search, "?q=1");
     assertEquals(seen.host, "serve.acme.internal");
     assertEquals(seen.authorization, "Bearer swamp_abc");
-    assertEquals(seen.cookie, "swamp_session=s1");
+    assertEquals(seen.cookie, "session-edge-dns=s1");
     assertEquals(seen.origin, "https://serve.acme.internal");
   });
 });
@@ -483,7 +484,7 @@ Deno.test("workspace router: 204, 304 and HEAD replies pass with no body", async
   });
 });
 
-Deno.test("workspace router: a WebSocket is relayed with its subprotocol, Origin, cookies and query", async () => {
+Deno.test("workspace router: a WebSocket is relayed with its subprotocol, Origin, its workspace's cookie and query", async () => {
   await withFixture(async ({ router }) => {
     const ws = new WebSocket(
       `ws://127.0.0.1:${router.port}/w/edge-dns/ws?compress=1`,
@@ -491,7 +492,7 @@ Deno.test("workspace router: a WebSocket is relayed with its subprotocol, Origin
         protocols: ["bearer.swamp_abc", "other"],
         headers: {
           origin: "https://serve.acme.internal",
-          cookie: "swamp_session=s1",
+          cookie: "swamp-dashboard-session=root; session-edge-dns=s1",
         },
       },
     );
@@ -508,7 +509,7 @@ Deno.test("workspace router: a WebSocket is relayed with its subprotocol, Origin
       assertEquals(seen.path, "/ws");
       assertEquals(seen.search, "?compress=1");
       assertEquals(seen.origin, "https://serve.acme.internal");
-      assertEquals(seen.cookie, "swamp_session=s1");
+      assertEquals(seen.cookie, "session-edge-dns=s1");
       assertEquals(seen.subprotocols, "bearer.swamp_abc, other");
       assertEquals(seen.forwardedFor, "127.0.0.1");
       assertEquals(seen.forwardedProto, "https");
@@ -572,6 +573,28 @@ Deno.test("workspace router: a path outside /w/ reaches the root unchanged, with
     assertEquals(seen.path, "/api/v1/request");
     assertEquals(seen.search, "?x=y");
     assertEquals(seen.forwardedPrefix, null);
+  });
+});
+
+Deno.test("workspace router: a workspace's serve is sent no cookie when the caller holds none of its own", async () => {
+  await withFixture(async ({ router }) => {
+    const reply = await fetch(`${base(router)}/w/edge-dns/x`, {
+      headers: { cookie: "swamp-dashboard-session=root; session-other=s2" },
+    });
+    const seen = await reply.json();
+    assertEquals(seen.who, "edge-dns");
+    assertEquals(seen.cookie, null);
+  });
+});
+
+Deno.test("workspace router: a path outside /w/ carries every cookie to the root", async () => {
+  await withFixture(async ({ router }) => {
+    const reply = await fetch(`${base(router)}/x`, {
+      headers: { cookie: "swamp-dashboard-session=root; other=x" },
+    });
+    const seen = await reply.json();
+    assertEquals(seen.who, "root");
+    assertEquals(seen.cookie, "swamp-dashboard-session=root; other=x");
   });
 });
 

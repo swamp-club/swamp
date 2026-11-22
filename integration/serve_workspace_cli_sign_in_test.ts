@@ -273,6 +273,7 @@ async function withHost(
       },
       protocol: "http",
       trustProxy: false,
+      sessionCookieName: (name) => `session-${name}`,
       signal: shutdown.signal,
     });
     servers.push(

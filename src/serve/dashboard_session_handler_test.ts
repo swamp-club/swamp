@@ -22,10 +22,15 @@ import {
   dashboardSessionLimited,
   handleDashboardSession,
   resolveDashboardSessionForOrigin,
+  resolveUpgradeDashboardSession,
 } from "./dashboard_session_handler.ts";
 import { checkIpBurst, limitDashboardSessionGuesses } from "./rate_limiter.ts";
 import { ControlPlaneDashboardSessionStore } from "./dashboard_session_store.ts";
-import { DASHBOARD_SESSION_COOKIE } from "./token_auth.ts";
+import {
+  DashboardSessionCookie,
+  PLAIN_DASHBOARD_SESSION_COOKIE as DASHBOARD_SESSION_COOKIE,
+} from "./dashboard_session_cookie.ts";
+import { extractDashboardSessionId } from "./token_auth.ts";
 import {
   type DeviceAuthDeps,
   MAX_AUTH_BODY_BYTES,
@@ -53,13 +58,14 @@ function createSessionStore(): ControlPlaneDashboardSessionStore {
   return new ControlPlaneDashboardSessionStore(store);
 }
 
-function createDeps() {
+function createDeps(cookie = DashboardSessionCookie.plain) {
   const ip = `session-${crypto.randomUUID()}`;
   return {
     ip,
     limitGuesses: <T extends { readonly ok: boolean }>(
       attempt: () => Promise<T>,
     ) => limitDashboardSessionGuesses(ip, attempt),
+    cookie,
     secure: true,
     sessions: createSessionStore(),
     authenticateToken: (token: string) =>
@@ -652,4 +658,246 @@ Deno.test("handleDashboardSession: a dashboard login mints direct:dashboard", as
     },
   );
   assertEquals(minted, "direct:dashboard");
+});
+
+const SESSION_ID = /^swamp-dashboard-session=([^;]+); /;
+
+Deno.test("handleDashboardSession: a serve with no path sets and clears the cookie it always has", async () => {
+  for (const secure of [true, false]) {
+    const deps = { ...createDeps(), secure };
+    const created = await handleDashboardSession(
+      new Request("https://serve.test/auth/dashboard/session", {
+        method: "POST",
+        headers: { origin: ORIGIN },
+        body: JSON.stringify({ token: "admin.secret" }),
+      }),
+      deps,
+    );
+    const setCookie = created?.headers.get("set-cookie") ?? "";
+    const id = SESSION_ID.exec(setCookie)?.[1] ?? "";
+    const flags = secure ? "; Secure" : "";
+    assertEquals(
+      setCookie,
+      `swamp-dashboard-session=${id}; Path=/; HttpOnly; SameSite=Strict${flags}`,
+    );
+    const cleared = await handleDashboardSession(
+      new Request("https://serve.test/auth/dashboard/session", {
+        method: "DELETE",
+        headers: { origin: ORIGIN },
+      }),
+      deps,
+    );
+    assertEquals(
+      cleared?.headers.get("set-cookie"),
+      `swamp-dashboard-session=; Path=/; HttpOnly; SameSite=Strict${flags}; Max-Age=0`,
+    );
+  }
+});
+
+/** a browser's cookies for one origin, matched by path as RFC 6265 section 5.1.4 says */
+class CookieJar {
+  readonly #cookies = new Map<
+    string,
+    { name: string; value: string; path: string }
+  >();
+
+  store(setCookie: string): void {
+    const [pair, ...attributes] = setCookie.split(";").map((part) =>
+      part.trim()
+    );
+    const eq = pair.indexOf("=");
+    const name = pair.slice(0, eq);
+    const value = pair.slice(eq + 1);
+    const path = attributes.find((a) => a.startsWith("Path="))?.slice(5) ??
+      "/";
+    const key = `${name}\n${path}`;
+    if (attributes.includes("Max-Age=0")) this.#cookies.delete(key);
+    else this.#cookies.set(key, { name, value, path });
+  }
+
+  header(requestPath: string): string {
+    return [...this.#cookies.values()]
+      .filter((cookie) => pathMatches(requestPath, cookie.path))
+      .map((cookie) => `${cookie.name}=${cookie.value}`)
+      .join("; ");
+  }
+
+  get size(): number {
+    return this.#cookies.size;
+  }
+}
+
+function pathMatches(requestPath: string, cookiePath: string): boolean {
+  if (requestPath === cookiePath) return true;
+  return requestPath.startsWith(cookiePath) &&
+    (cookiePath.endsWith("/") || requestPath[cookiePath.length] === "/");
+}
+
+Deno.test("CookieJar: matches paths as a browser does", () => {
+  assertEquals(pathMatches("/w/data", "/w/data"), true);
+  assertEquals(pathMatches("/w/data/auth/dashboard/session", "/w/data"), true);
+  assertEquals(
+    pathMatches("/w/data-2/auth/dashboard/session", "/w/data"),
+    false,
+  );
+  assertEquals(pathMatches("/w", "/w/data"), false);
+  assertEquals(pathMatches("/w/data", "/"), true);
+});
+
+const HOST = "https://serve.example.test";
+
+interface HostedServe {
+  /** the path a browser reaches the serve under, `""` for the root */
+  readonly mount: string;
+  readonly deps: ReturnType<typeof createDeps>;
+}
+
+function hostedServe(mount: string): HostedServe {
+  return {
+    mount,
+    deps: createDeps(
+      DashboardSessionCookie.forServe(HOST + mount, mount !== ""),
+    ),
+  };
+}
+
+// the router removes the mount before the serve sees the request
+async function browserRequest(
+  jar: CookieJar,
+  serve: HostedServe,
+  method: "GET" | "POST" | "DELETE",
+): Promise<number | undefined> {
+  const headers: Record<string, string> = { origin: HOST };
+  const cookie = jar.header(`${serve.mount}/auth/dashboard/session`);
+  if (cookie !== "") headers.cookie = cookie;
+  const response = await handleDashboardSession(
+    new Request("http://127.0.0.1/auth/dashboard/session", {
+      method,
+      headers,
+      ...(method === "POST"
+        ? { body: JSON.stringify({ token: "admin.secret" }) }
+        : {}),
+    }),
+    serve.deps,
+  );
+  const setCookie = response?.headers.get("set-cookie");
+  if (setCookie) jar.store(setCookie);
+  await response?.body?.cancel();
+  return response?.status;
+}
+
+Deno.test("handleDashboardSession: a root and two workspaces on one origin each keep their own session", async () => {
+  const root = hostedServe("");
+  const data = hostedServe("/w/data");
+  const data2 = hostedServe("/w/data-2");
+  const jar = new CookieJar();
+
+  for (const serve of [root, data, data2]) {
+    assertEquals(await browserRequest(jar, serve, "POST"), 204);
+  }
+  assertEquals(jar.size, 3);
+  for (const serve of [root, data, data2]) {
+    assertEquals(await browserRequest(jar, serve, "GET"), 200);
+  }
+
+  assertEquals(await browserRequest(jar, data, "DELETE"), 204);
+  assertEquals(jar.size, 2);
+  assertEquals(await browserRequest(jar, data, "GET"), 401);
+  assertEquals(await browserRequest(jar, root, "GET"), 200);
+  assertEquals(await browserRequest(jar, data2, "GET"), 200);
+});
+
+Deno.test("handleDashboardSession: a workspace's cookie is named and scoped for its path alone", async () => {
+  const data = hostedServe("/w/data");
+  const data2 = hostedServe("/w/data-2");
+  const jar = new CookieJar();
+  await browserRequest(jar, data, "POST");
+  await browserRequest(jar, data2, "POST");
+
+  assertEquals(data.deps.cookie.name, "swamp-dashboard-session_2Fw_2Fdata");
+  assertEquals(data.deps.cookie.path, "/w/data");
+  assertEquals(data2.deps.cookie.name, "swamp-dashboard-session_2Fw_2Fdata-2");
+  assertEquals(data2.deps.cookie.path, "/w/data-2");
+  const sentToData2 = jar.header("/w/data-2/auth/dashboard/session");
+  assertEquals(sentToData2.includes(`${data.deps.cookie.name}=`), false);
+  assertStringIncludes(sentToData2, `${data2.deps.cookie.name}=`);
+});
+
+Deno.test("handleDashboardSession: a serve with a path refuses a session under the plain cookie name", async () => {
+  const data = hostedServe("/w/data");
+  const created = await handleDashboardSession(
+    new Request("http://127.0.0.1/auth/dashboard/session", {
+      method: "POST",
+      headers: { origin: HOST },
+      body: JSON.stringify({ token: "admin.secret" }),
+    }),
+    data.deps,
+  );
+  const id = created?.headers.get("set-cookie")?.split(";", 1)[0]
+    .split("=")[1];
+  const status = await handleDashboardSession(
+    new Request("http://127.0.0.1/auth/dashboard/session", {
+      headers: { origin: HOST, cookie: `${DASHBOARD_SESSION_COOKIE}=${id}` },
+    }),
+    data.deps,
+  );
+  assertEquals(status?.status, 401);
+});
+
+Deno.test("resolveUpgradeDashboardSession: resolves the session a renamed cookie carries", async () => {
+  const cookie = DashboardSessionCookie.forAddress(`${HOST}/w/data`);
+  const sessions = createSessionStore();
+  const session = await sessions.create({
+    tokenName: "admin",
+    tokenCreatedAt: "2026-10-06T00:00:00.000Z",
+  }, HOST);
+  const upgrade = (header: string) =>
+    new Request("http://127.0.0.1/", {
+      headers: { origin: HOST, upgrade: "websocket", cookie: header },
+    });
+
+  const renamed = extractDashboardSessionId(
+    upgrade(`${cookie.name}=${session.id}`),
+    cookie.name,
+  );
+  assertEquals(renamed, session.id);
+  assertEquals(
+    await resolveUpgradeDashboardSession(renamed!, HOST, sessions),
+    { kind: "session", session },
+  );
+  assertEquals(
+    extractDashboardSessionId(
+      upgrade(`${DASHBOARD_SESSION_COOKIE}=${session.id}`),
+      cookie.name,
+    ),
+    null,
+  );
+  assertEquals(
+    await resolveUpgradeDashboardSession(
+      session.id,
+      "https://elsewhere.test",
+      sessions,
+    ),
+    { kind: "originMismatch" },
+  );
+  assertEquals(
+    await resolveUpgradeDashboardSession("0".repeat(64), HOST, sessions),
+    { kind: "unknown" },
+  );
+});
+
+Deno.test("handleDashboardSession: a serve with a path that no host runs keeps the plain cookie, reached at the origin root", async () => {
+  const direct: HostedServe = {
+    mount: "",
+    deps: createDeps(
+      DashboardSessionCookie.forServe(`${HOST}/swamp`, false),
+    ),
+  };
+  const jar = new CookieJar();
+  assertEquals(await browserRequest(jar, direct, "POST"), 204);
+  assertEquals(
+    jar.header("/auth/dashboard/session").split("=")[0],
+    DASHBOARD_SESSION_COOKIE,
+  );
+  assertEquals(await browserRequest(jar, direct, "GET"), 200);
 });

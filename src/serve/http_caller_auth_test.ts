@@ -29,10 +29,8 @@ import type {
   DashboardSession,
   DashboardSessionStore,
 } from "./dashboard_session_store.ts";
-import {
-  DASHBOARD_SESSION_COOKIE,
-  type ServerTokenAuthResult,
-} from "./token_auth.ts";
+import type { ServerTokenAuthResult } from "./token_auth.ts";
+import { PLAIN_DASHBOARD_SESSION_COOKIE as DASHBOARD_SESSION_COOKIE } from "./dashboard_session_cookie.ts";
 import { checkIpBurst, resetRateLimitState } from "./rate_limiter.ts";
 
 function request(authorization?: string): Request {
@@ -344,6 +342,7 @@ function sessionAuth(
   const asked: DashboardSession[] = [];
   return {
     asked,
+    cookieName: DASHBOARD_SESSION_COOKIE,
     sessions,
     authenticate: (session) => {
       asked.push(session);
@@ -482,6 +481,7 @@ Deno.test("authenticateHttpCaller: concurrent reads on one session token are all
   let release!: () => void;
   const released = new Promise<void>((resolve) => release = resolve);
   const auth: HttpCallerSessionAuth = {
+    cookieName: DASHBOARD_SESSION_COOKIE,
     sessions: store,
     authenticate: async () => {
       await released;

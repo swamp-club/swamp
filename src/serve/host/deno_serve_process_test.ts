@@ -151,6 +151,7 @@ Deno.test("serveChildArgs: the flags the host adds to every child", () => {
       "serve.example",
       "--trust-proxy",
       "--exit-on-stdin-close",
+      "--hosted-workspace",
       "--repo-dir",
       "/host/workspaces/edge-dns",
     ],
@@ -182,6 +183,7 @@ Deno.test("serveChildArgs: only a spec with the host's workspaces folder is give
       "https://serve.example",
     ],
   );
+  assertEquals(root.includes("--hosted-workspace"), false);
   const plain = serveChildArgs(spec);
   assertEquals(plain.includes("--host-workspaces-dir"), false);
   assertEquals(plain.includes("--host-address"), false);
