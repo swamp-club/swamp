@@ -4530,11 +4530,13 @@ class SqliteCompactedBase implements CompactedBaseWriter {
   readonly #upsertRecord: StatementSync;
   readonly #deleteRecord: StatementSync;
   readonly #selectVersions: StatementSync;
-  readonly #deleteVersions: StatementSync;
+  readonly #deleteVersion: StatementSync;
   readonly #insertVersion: StatementSync;
+  readonly #updateVersion: StatementSync;
   readonly #selectCatalog: StatementSync;
-  readonly #deleteCatalog: StatementSync;
+  readonly #deleteCatalogRow: StatementSync;
   readonly #insertCatalog: StatementSync;
+  readonly #stampCatalogRow: StatementSync;
   readonly #selectForward: StatementSync;
   readonly #upsertForward: StatementSync;
   readonly #deleteForward: StatementSync;
@@ -4576,6 +4578,8 @@ class SqliteCompactedBase implements CompactedBaseWriter {
    */
   readonly #versions = new Map<string, readonly LiveDataVersion[]>();
   readonly #catalog = new Map<string, CatalogNameState>();
+  /** each metadata object is serialised once: a fold compares a name's live versions on every commit */
+  readonly #serialized = new WeakMap<object, string>();
   /** Chunks released in the batch so far. */
   #released = 0;
 
@@ -4594,22 +4598,28 @@ class SqliteCompactedBase implements CompactedBaseWriter {
     this.#selectVersions = db.prepare(
       "SELECT metadata FROM base_versions WHERE namespace = ? AND partition = ? AND name = ? ORDER BY version",
     );
-    this.#deleteVersions = db.prepare(
-      "DELETE FROM base_versions WHERE namespace = ? AND partition = ? AND name = ?",
+    this.#deleteVersion = db.prepare(
+      "DELETE FROM base_versions WHERE namespace = ? AND partition = ? AND name = ? AND version = ?",
     );
     this.#insertVersion = db.prepare(
       "INSERT INTO base_versions (namespace, partition, name, version, metadata, changed_seq) VALUES (?, ?, ?, ?, ?, ?)",
+    );
+    this.#updateVersion = db.prepare(
+      "UPDATE base_versions SET metadata = ?, changed_seq = ? WHERE namespace = ? AND partition = ? AND name = ? AND version = ?",
     );
     this.#selectCatalog = db.prepare(
       "SELECT c.version, v.metadata FROM base_catalog AS c LEFT JOIN base_versions AS v " +
         "USING (namespace, partition, name, version) " +
         "WHERE c.namespace = ? AND c.partition = ? AND c.name = ? ORDER BY c.version",
     );
-    this.#deleteCatalog = db.prepare(
-      "DELETE FROM base_catalog WHERE namespace = ? AND partition = ? AND name = ?",
+    this.#deleteCatalogRow = db.prepare(
+      "DELETE FROM base_catalog WHERE namespace = ? AND partition = ? AND name = ? AND version = ?",
     );
     this.#insertCatalog = db.prepare(
       "INSERT INTO base_catalog (namespace, partition, name, version, changed_seq) VALUES (?, ?, ?, ?, ?)",
+    );
+    this.#stampCatalogRow = db.prepare(
+      "UPDATE base_catalog SET changed_seq = ? WHERE namespace = ? AND partition = ? AND name = ? AND version = ?",
     );
     this.#selectForward = db.prepare(
       "SELECT renamed_to FROM base_forwards WHERE namespace = ? AND partition = ? AND name = ?",
@@ -4831,23 +4841,37 @@ class SqliteCompactedBase implements CompactedBaseWriter {
     name: string,
     versions: readonly LiveDataVersion[],
   ): void {
-    const kept = new Set(versions.map((v) => v.version));
-    const gone = this.#at === null
-      ? []
-      : this.liveVersions(namespace, partition, name).filter((v) =>
-        !kept.has(v.version)
-      );
-    this.#versions.set(nameKey(namespace, partition, name), versions);
-    this.#deleteVersions.run(namespace, partition, name);
+    // only changed rows: a full rewrite per commit stalls the loop on a name with many versions
+    const previous = new Map(
+      this.liveVersions(namespace, partition, name).map((v) => [
+        v.version,
+        v.metadata,
+      ]),
+    );
     for (const { version, metadata } of versions) {
-      this.#insertVersion.run(
-        namespace,
-        partition,
-        name,
-        version,
-        JSON.stringify(metadata),
-        this.#at,
-      );
+      const before = previous.get(version);
+      previous.delete(version);
+      if (before === undefined) {
+        this.#insertVersion.run(
+          namespace,
+          partition,
+          name,
+          version,
+          this.#serialize(metadata),
+          this.#at,
+        );
+      } else if (!this.#same(before, metadata)) {
+        this.#updateVersion.run(
+          this.#serialize(metadata),
+          this.#at,
+          namespace,
+          partition,
+          name,
+          version,
+        );
+      } else {
+        continue;
+      }
       this.#written(
         namespace,
         partition,
@@ -4855,7 +4879,8 @@ class SqliteCompactedBase implements CompactedBaseWriter {
         versionRowKey(name, version),
       );
     }
-    for (const { version } of gone) {
+    for (const version of previous.keys()) {
+      this.#deleteVersion.run(namespace, partition, name, version);
       this.#removed(
         namespace,
         partition,
@@ -4863,6 +4888,23 @@ class SqliteCompactedBase implements CompactedBaseWriter {
         versionRowKey(name, version),
       );
     }
+    this.#versions.set(nameKey(namespace, partition, name), versions);
+  }
+
+  #serialize(metadata: LiveDataVersion["metadata"]): string {
+    let text = this.#serialized.get(metadata);
+    if (text === undefined) {
+      text = JSON.stringify(metadata);
+      this.#serialized.set(metadata, text);
+    }
+    return text;
+  }
+
+  #same(
+    a: LiveDataVersion["metadata"],
+    b: LiveDataVersion["metadata"],
+  ): boolean {
+    return a === b || this.#serialize(a) === this.#serialize(b);
   }
 
   catalogName(
@@ -4910,28 +4952,37 @@ class SqliteCompactedBase implements CompactedBaseWriter {
     );
     for (const metadata of state.rows) {
       const shown = live.get(metadata.version);
-      if (
-        shown === undefined ||
-        JSON.stringify(shown) !== JSON.stringify(metadata)
-      ) {
+      if (shown === undefined || !this.#same(shown, metadata)) {
         throw new Error(
           `A catalog row of ${name}@${metadata.version} is not the live version's metadata`,
         );
       }
     }
-    const previous = this.#at === null
-      ? undefined
-      : this.catalogName(namespace, partition, name);
-    this.#catalog.set(nameKey(namespace, partition, name), state);
-    this.#deleteCatalog.run(namespace, partition, name);
+    const previous = this.catalogName(namespace, partition, name);
+    const before = new Map(previous.rows.map((row) => [row.version, row]));
     for (const metadata of state.rows) {
-      this.#insertCatalog.run(
-        namespace,
-        partition,
-        name,
-        metadata.version,
-        this.#at,
-      );
+      const row = before.get(metadata.version);
+      before.delete(metadata.version);
+      if (row === undefined) {
+        this.#insertCatalog.run(
+          namespace,
+          partition,
+          name,
+          metadata.version,
+          this.#at,
+        );
+      } else if (!this.#same(row, metadata)) {
+        // its metadata is read through base_versions: a difference resends it
+        this.#stampCatalogRow.run(
+          this.#at,
+          namespace,
+          partition,
+          name,
+          metadata.version,
+        );
+      } else {
+        continue;
+      }
       this.#written(
         namespace,
         partition,
@@ -4939,22 +4990,18 @@ class SqliteCompactedBase implements CompactedBaseWriter {
         versionRowKey(name, metadata.version),
       );
     }
-    if (previous !== undefined) {
-      const shown = new Set(state.rows.map((row) => row.version));
-      for (const row of previous.rows) {
-        if (!shown.has(row.version)) {
-          this.#removed(
-            namespace,
-            partition,
-            "catalog",
-            versionRowKey(name, row.version),
-          );
-        }
-      }
+    for (const version of before.keys()) {
+      this.#deleteCatalogRow.run(namespace, partition, name, version);
+      this.#removed(
+        namespace,
+        partition,
+        "catalog",
+        versionRowKey(name, version),
+      );
     }
     if (state.forward === undefined) {
       this.#deleteForward.run(namespace, partition, name);
-      if (previous?.forward !== undefined) {
+      if (previous.forward !== undefined) {
         this.#removed(namespace, partition, "forward", name);
       }
     } else {
@@ -4967,6 +5014,7 @@ class SqliteCompactedBase implements CompactedBaseWriter {
       );
       this.#written(namespace, partition, "forward", name);
     }
+    this.#catalog.set(nameKey(namespace, partition, name), state);
   }
 
   fileOwnership(namespace: string, key: string): FileOwnership | undefined {

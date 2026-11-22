@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { assert, assertEquals } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import type { ControlPlaneStore } from "../domain/datastore/control_plane_store.ts";
@@ -96,6 +97,7 @@ class FakeFeed implements FollowerCopyFeed {
   followed: (string | undefined)[] = [];
   stops = 0;
   current = () => this.current_;
+  staleReason = () => this.current_ ? undefined : "stale in the test";
   follow = (leader: { instanceId: string } | undefined) => {
     this.followed.push(leader?.instanceId);
   };
@@ -324,6 +326,7 @@ Deno.test("ServeLeadership: a follower that takes the lease aborts its forwards 
     store: memoryStore(),
     feed: {
       current: () => true,
+      staleReason: () => undefined,
       follow: feed.follow,
       stop: () => {
         events.push(`feed-stop:${leadership.role}`);
@@ -751,6 +754,7 @@ Deno.test("ServeLeadership: a feed that is not current is stopped before the res
   const order: string[] = [];
   const feed: FollowerCopyFeed = {
     current: () => false,
+    staleReason: () => "stale in the test",
     follow: () => order.push("follow"),
     stop: () => {
       order.push("stop");
@@ -779,6 +783,51 @@ Deno.test("ServeLeadership: a feed that is not current is stopped before the res
   } finally {
     await leadership.stop();
   }
+});
+
+Deno.test("ServeLeadership: a restore that replaces the feed logs why the feed was not current (swamp-club#4981)", async () => {
+  const records: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => records.push(record) },
+    loggers: [
+      {
+        category: ["serve", "leadership"],
+        lowestLevel: "info",
+        sinks: ["capture"],
+      },
+      { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+    ],
+    reset: true,
+  });
+  try {
+    const feed = new FakeFeed();
+    const leadership = new ServeLeadership({
+      instanceId: "me",
+      lease: new FakeLease(),
+      store: memoryStore(),
+      feed,
+      refreshCopy: () => Promise.resolve(),
+      onLead: () => Promise.resolve(),
+      onLostLead: () => Promise.resolve(),
+      tickMs: 3_600_000,
+    });
+    await leadership.start("follower");
+    try {
+      records.length = 0;
+      await leadership.tick();
+    } finally {
+      await leadership.stop();
+    }
+  } finally {
+    await reset();
+    await initializeLogging({});
+  }
+  const restores = records
+    .map((record) => record.message.map(String).join(""))
+    .filter((message) => message.startsWith("Restoring this node's copy"));
+  assertEquals(restores, [
+    "Restoring this node's copy instead of following the leader's commit feed: stale in the test",
+  ]);
 });
 
 Deno.test("ServeLeadership.stop: a promotion in flight sees the stop and never takes the leader role (swamp-club#4327)", async () => {

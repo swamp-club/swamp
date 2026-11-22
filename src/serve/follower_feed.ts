@@ -159,6 +159,26 @@ export class FollowerFeed implements FollowerCopyFeed {
     return this.current(this.#leader);
   }
 
+  /** why it is not current, for the log of the restore that replaces it */
+  staleReason(leader: ServeLeader | undefined): string | undefined {
+    if (this.current(leader)) return undefined;
+    const followed = this.#leader;
+    if (followed === undefined) return "it follows no leader";
+    if (leader === undefined) return "no leader is named";
+    if (
+      leader.instanceId !== followed.instanceId ||
+      leader.fence !== followed.fence
+    ) {
+      return "the leader changed";
+    }
+    if (this.#failed) return "it failed";
+    if (this.#socket === undefined) return "it has no connection";
+    if (this.#lastFrameAt === undefined) return "no frame arrived yet";
+    return `no frame for ${
+      this.#now() - this.#lastFrameAt
+    } ms, past the ${FOLLOWER_FEED_SILENCE_MS} ms allowed`;
+  }
+
   /**
    * applies of the leader's commits that failed on this node since the last
    * frame applied; failures the leader or the network caused never count

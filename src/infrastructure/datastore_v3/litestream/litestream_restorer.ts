@@ -195,7 +195,7 @@ export interface RestoreAndCheckRequest {
 export async function restoreAndCheck(
   request: RestoreAndCheckRequest,
 ): Promise<{ readonly exactTxid: boolean }> {
-  const attempt = (extra: readonly string[]) =>
+  const run = (extra: readonly string[]) =>
     runRestoreAttempt(
       request.binary,
       request.config,
@@ -205,6 +205,16 @@ export async function restoreAndCheck(
       extra,
       request.replicaType,
     );
+  // the writer's compaction can remove a listed file: list again once, at the same target
+  const attempt = async (extra: readonly string[]): Promise<RestoreOutcome> => {
+    const first = await run(extra);
+    if (first.kind !== "vanished") return first;
+    await removeDatabase(request.temp);
+    const second = await run(extra);
+    return second.kind === "vanished"
+      ? { kind: "failed", message: second.message }
+      : second;
+  };
   let exactTxid = true;
   const exact = await attempt(["-txid", request.txid]);
   if (exact.kind === "unavailable") {
@@ -279,6 +289,7 @@ export function installByRename(
 type RestoreOutcome =
   | { readonly kind: "ok" }
   | { readonly kind: "unavailable" }
+  | { readonly kind: "vanished"; readonly message: string }
   | { readonly kind: "failed"; readonly message: string };
 
 function runRestoreAttempt(
@@ -342,11 +353,15 @@ async function runRestore(
   if (signal.aborted) throw signal.reason;
   const stderr = new TextDecoder().decode(result.stderr).trim();
   if (/no matching backup files/i.test(stderr)) return { kind: "unavailable" };
+  if (VANISHED_FILE.test(stderr)) return { kind: "vanished", message: stderr };
   return {
     kind: "failed",
     message: stderr === "" ? `exit code ${result.code}` : stderr,
   };
 }
+
+/** Litestream 0.5.17's wording for a backup file removed after it was listed */
+const VANISHED_FILE = /ltx file\b.*\bfile does not exist/i;
 
 const DAMAGED_FILE_CODES = new Set([11, 26]);
 

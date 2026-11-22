@@ -40,7 +40,18 @@ import {
 
 const ignore = Deno.build.os === "windows";
 
-type Mode = "exact" | "fallback" | "fail" | "slow";
+type Mode =
+  | "exact"
+  | "fallback"
+  | "fail"
+  | "slow"
+  | "vanish-once"
+  | "vanish-always"
+  | "fallback-vanish-once";
+
+/** the stderr Litestream prints when a listed backup file is gone */
+const VANISHED =
+  "Error: decode database: decode header: decode header for input 885: reopen ltx file at offset 0: file does not exist";
 
 async function fakeBinary(dir: string, source: string, mode: Mode) {
   const script = join(dir, "litestream");
@@ -56,8 +67,14 @@ while [ $# -gt 0 ]; do
   shift
 done
 echo "$txid" >> "${join(dir, "calls")}"
+n=$(wc -l < "${join(dir, "calls")}" | tr -d ' ')
 case "${mode}" in
   fail) echo "Error: replica unreachable" >&2; exit 1 ;;
+  vanish-once) if [ "$n" = 1 ]; then echo "${VANISHED}" >&2; exit 1; fi ;;
+  vanish-always) echo "${VANISHED}" >&2; exit 1 ;;
+  fallback-vanish-once)
+    if [ -n "$txid" ]; then echo "Error: no matching backup files available" >&2; exit 1; fi
+    if [ "$n" = 2 ]; then echo "${VANISHED}" >&2; exit 1; fi ;;
   slow) exec sleep 30 ;;
   fallback) if [ -n "$txid" ]; then echo "Error: no matching backup files available" >&2; exit 1; fi ;;
 esac
@@ -238,6 +255,70 @@ Deno.test({
           findSpan(spans, name);
         }
       });
+    });
+  },
+});
+
+async function calls(dir: string): Promise<string[]> {
+  return (await Deno.readTextFile(join(dir, "calls"))).split("\n").slice(0, -1);
+}
+
+Deno.test({
+  name:
+    "restoreV3Copy: a backup file removed after the restore listed it is restored again once at the same TXID (swamp-club#4981)",
+  ignore,
+  async fn() {
+    await withDir(async (dir) => {
+      await storeWith(join(dir, "source.db"), 5);
+      const result = await restore(dir, "vanish-once", withPartition(3));
+      assertEquals(result, { exactTxid: true, truncated: 2 });
+      assertEquals(count(join(dir, "copy", "commits.db")), 3);
+      assertEquals(await calls(dir), ["0000000000000004", "0000000000000004"]);
+      assertEquals(await leftovers(dir), []);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "restoreV3Copy: a latest-state restore that meets a removed backup file is retried once at the latest state (swamp-club#4981)",
+  ignore,
+  async fn() {
+    await withDir(async (dir) => {
+      await storeWith(join(dir, "source.db"), 6);
+      const result = await restore(
+        dir,
+        "fallback-vanish-once",
+        withPartition(4),
+      );
+      assertEquals(result, { exactTxid: false, truncated: 2 });
+      assertEquals(await calls(dir), ["0000000000000004", "", ""]);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "restoreV3Copy: a backup file still missing on the second try fails with Litestream's reason, and another failure is not tried again (swamp-club#4981)",
+  ignore,
+  async fn() {
+    await withDir(async (dir) => {
+      await storeWith(join(dir, "source.db"), 3);
+      const error = await assertRejects(
+        () => restore(dir, "vanish-always", withPartition(2)),
+        V3RestoreError,
+      );
+      assertStringIncludes(error.message, "file does not exist");
+      assertEquals(await calls(dir), ["0000000000000004", "0000000000000004"]);
+      assertEquals(await leftovers(dir), []);
+    });
+    await withDir(async (dir) => {
+      await storeWith(join(dir, "source.db"), 3);
+      await assertRejects(
+        () => restore(dir, "fail", withPartition(2)),
+        V3RestoreError,
+      );
+      assertEquals(await calls(dir), ["0000000000000004"]);
     });
   },
 });
