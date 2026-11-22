@@ -159,14 +159,17 @@ function isResolveSuccess(r: ResolveResult): r is ResolveSuccess {
   return r.ok && "definition" in r;
 }
 
-/** ephemeral data is never published */
+/**
+ * ephemeral data is never published; a failed method's handles can come from
+ * extension code, so a missing metadata must not throw before the lock's flush
+ */
 function writtenVersionsOf(
   handles: readonly DataHandle[],
   modelType: string,
   modelId: string,
 ): WrittenVersion[] {
   return handles
-    .filter((handle) => handle.metadata.lifetime !== "ephemeral")
+    .filter((handle) => handle.metadata?.lifetime !== "ephemeral")
     .map((handle) => ({
       modelType,
       modelId,
@@ -529,7 +532,6 @@ export class ModelInvocationService {
       handles = recoveredDataHandles(error);
       outcome = failureOf(error);
     }
-    // the target's writes are pushed under its lock before the caller resumes
     try {
       await lock.flush(
         writtenVersionsOf(handles, target.modelType, target.modelId),

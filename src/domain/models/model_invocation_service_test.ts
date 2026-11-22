@@ -2172,3 +2172,23 @@ Deno.test("ModelInvocationService: without a lock hook a nested run takes no loc
   assertEquals(result.ok, true);
   assertEquals(called, true);
 });
+
+Deno.test("ModelInvocationService: a failed nested run whose handles carry no metadata still releases the lock", async () => {
+  const h = makeLockHarness({
+    run: () =>
+      Promise.reject(
+        Object.assign(new Error("extension threw"), {
+          dataHandles: [{ dataId: "d", name: "n", version: 1, tags: {} }],
+        }),
+      ),
+  });
+  const result = await h.svc.invoke(
+    { definition: "lock-a", method: "m1" },
+    makeStubContext(),
+  );
+
+  assertEquals(result.ok, false);
+  assertStringIncludes(errorOf(result), "extension threw");
+  assertEquals(h.events, ["lock lock-a", "run lock-a.m1", "flush lock-a"]);
+  assertEquals(h.flushed.map((w) => w.map((v) => v.dataName)), [["n"]]);
+});
