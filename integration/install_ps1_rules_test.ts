@@ -134,3 +134,29 @@ Deno.test("install.ps1: removes the archive after extraction and before installi
       "they are not on disk while the binary is copied into place",
   );
 });
+
+Deno.test("install.ps1: resolves a bare version through an anchored, size-capped pointer before building the asset URL", async () => {
+  const lines = codeLines(await Deno.readTextFile(INSTALL_PS1));
+
+  const indexOf = (pattern: RegExp): number => {
+    const matches = lines.flatMap((line, index) =>
+      pattern.test(line.text) ? [index] : []
+    );
+    assertEquals(matches.length, 1, `expected one line matching ${pattern}`);
+    return matches[0];
+  };
+
+  indexOf(/-cnotmatch '\^\[0-9\]\{8\}\\\.\[0-9\]\{6\}\\\.\[0-9\]\+\$'/);
+  indexOf(
+    /\[regex\]::Escape\(\$RequestedVersion\) \+ '-sha\\\.\[0-9a-f\]\{8,40\}\\n\?\\z'/,
+  );
+  indexOf(/\$total -gt 256 -or \$body -cnotmatch \$pattern/);
+  indexOf(/New-Object byte\[\] 257/);
+  const resolve = indexOf(/^\$Version = Resolve-ReleaseVersion \$Version$/);
+  const assetUrl = indexOf(/^\$assetUrl = Get-AssetUrl\b/);
+  assert(
+    resolve < assetUrl,
+    "the bare swampVersion from .swamp.yaml is resolved to its full -sha " +
+      "version before the asset URL is built",
+  );
+});

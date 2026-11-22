@@ -32,7 +32,8 @@ print_usage() {
 	                              [default: $default_platform]
 	    -V, --version=<VERSION>   Release version to install
 	                              [examples: stable,
-	                              20250218.210911.0-sha.bda1ce6ea]
+	                              20250218.210911.0-sha.bda1ce6ea,
+	                              20250218.210911.0 (swampVersion in .swamp.yaml)]
 	                              [default: stable]
 
 	EXAMPLES:
@@ -75,16 +76,19 @@ main() {
 
   check_dynamic_linker "$os_type" "$cpu_type"
 
+  local tmpdir
+  tmpdir="$(mktemp_directory)"
+  cleanup_directory "$tmpdir"
+
+  resolve_release_version "$version" "$tmpdir"
+  version="$RESOLVED_VERSION"
+
   section "Downloading and installing '$bin' release '$version' on '$platform'"
 
   local asset_url
   asset_url="$(
     asset_url "$bin" "$version" "$os_type" "$cpu_type" "$platform"
   )" || die "Unsupported platform '$platform' for '$bin' release '$version'"
-
-  local tmpdir
-  tmpdir="$(mktemp_directory)"
-  cleanup_directory "$tmpdir"
 
   local asset checksum resolved_asset_url release_version release_asset
   local release_checksums
@@ -289,6 +293,69 @@ asset_url() {
   asset_url="$asset_url/$os_type/$cpu_type/$bin-$version-$type-$platform.$extension"
 
   echo "$asset_url"
+}
+
+is_bare_version() {
+  local _patch
+  case "$1" in
+    [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9].[0-9][0-9][0-9][0-9][0-9][0-9].*) ;;
+    *) return 1 ;;
+  esac
+  _patch="${1#????????.??????.}"
+  case "$_patch" in
+    '' | *[!0-9]*) return 1 ;;
+  esac
+  return 0
+}
+
+# A bare calver (swampVersion in .swamp.yaml) resolves through its release's pointer.
+resolve_release_version() {
+  local _version _tmpdir _url _body _headers _status _line _suffix _bytes
+  _version="$1"
+  _tmpdir="$2"
+  RESOLVED_VERSION="$_version"
+  is_bare_version "$_version" || return 0
+
+  _url="$ARTIFACT_ORIGIN/swamp/$_version/version"
+  _body="$_tmpdir/version"
+  _headers="$_tmpdir/version.headers"
+  : >"$_headers"
+  info "Resolving release version '$_version' from $_url"
+  # The body is capped at 257 bytes so an oversized response cannot fill the disk.
+  if check_cmd curl; then
+    curl -sS --proto '=https' --max-filesize 256 -D "$_headers" "$_url" 2>/dev/null \
+      | head -c 257 >"$_body" || true
+  elif check_cmd wget; then
+    wget -S -O - "$_url" 2>"$_headers" | head -c 257 >"$_body" || true
+  else
+    die "Resolving a release version requires 'curl' or 'wget'"
+  fi
+  _status="$(tr -d '\r' <"$_headers" | awk '/^ *HTTP\//{code=$2} END{print code}')"
+  case "$_status" in
+    200) ;;
+    404) die "No swamp release found for version '$_version'" ;;
+    '') die "Could not reach $_url to resolve version '$_version'" ;;
+    *) die "Resolving version '$_version' failed with HTTP status $_status" ;;
+  esac
+
+  _line="$(head -n 1 "$_body")"
+  _bytes="$(($(wc -c <"$_body")))"
+  case "$_line" in
+    "$_version"-sha.*) _suffix="${_line#"$_version"-sha.}" ;;
+    *) die "Invalid release version pointer for '$_version'" ;;
+  esac
+  case "$_suffix" in
+    '' | *[!0-9a-f]*) die "Invalid release version pointer for '$_version'" ;;
+  esac
+  if [ "${#_suffix}" -lt 8 ] || [ "${#_suffix}" -gt 40 ]; then
+    die "Invalid release version pointer for '$_version'"
+  fi
+  # head -n 1 stops at the first newline, so only a single trailing newline fits.
+  if [ "$_bytes" -ne "${#_line}" ] && [ "$_bytes" -ne "$((${#_line} + 1))" ]; then
+    die "Invalid release version pointer for '$_version'"
+  fi
+  info "Resolved version '$_version' to '$_line'"
+  RESOLVED_VERSION="$_line"
 }
 
 validate_artifact_url() {

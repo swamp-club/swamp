@@ -62,6 +62,7 @@ async function withStore(
   fn: (fixture: {
     dist: string;
     store: string;
+    bin: string;
     download: string;
     run: (
       script: string,
@@ -138,6 +139,7 @@ cp "$FIXTURE_ROOT/store/\u0024{url#https://artifacts.swamp-club.com/}" "$output"
     await fn({
       dist,
       store,
+      bin,
       download: join(root, "download"),
       async run(script, args = [version], env = {}, umask = "022") {
         const windows = Deno.build.os === "windows";
@@ -188,6 +190,8 @@ cp "$FIXTURE_ROOT/store/\u0024{url#https://artifacts.swamp-club.com/}" "$output"
 }
 
 const upload = "upload_release_artifacts.sh";
+const backfill = "backfill_version_pointers.sh";
+const pointerKey = "swamp/20261021.120000.0/version";
 const download = "download_release_artifact.sh";
 
 Deno.test("release dry run packages every variant without cloud access", () =>
@@ -195,7 +199,8 @@ Deno.test("release dry run packages every variant without cloud access", () =>
     const result = await f.run(upload, [version], { DRY_RUN: "true" });
     assert(result.success, result.output);
     assertEquals(await f.calls(), "");
-    assertEquals(result.output.split("Dry run: would upload ").length - 1, 10);
+    assertEquals(result.output.split("Dry run: would upload ").length - 1, 11);
+    assertStringIncludes(result.output, pointerKey);
     for (const [, platform] of assets) {
       assertStringIncludes(result.output, objectKey(platform));
     }
@@ -235,7 +240,13 @@ Deno.test("release uploader publishes five verified variants and never accesses 
         assertEquals(bytes, await Deno.readFile(join(f.dist, name)));
       }
     }
-    assertEquals((await f.calls()).trim().split("\n").length, 10);
+    const calls = (await f.calls()).trim().split("\n");
+    assertEquals(calls.length, 11);
+    assertStringIncludes(calls.at(-1)!, pointerKey);
+    assertEquals(
+      await Deno.readTextFile(join(f.store, pointerKey)),
+      `${version}\n`,
+    );
   }));
 
 Deno.test("release archives normalize ownership, mode and time across retries", () =>
@@ -516,3 +527,111 @@ Deno.test("release workflow publishes GCS and GitHub assets before UAT", async (
     }
   }
 });
+
+Deno.test("release uploader writes no pointer when a variant upload fails", () =>
+  withStore(async (f) => {
+    assert(!(await f.run(upload, [version], { FAIL_UPLOAD: "true" })).success);
+    assert(!(await f.calls()).includes(pointerKey));
+  }));
+
+Deno.test("release uploader rejects a conflicting version pointer", () =>
+  withStore(async (f) => {
+    await Deno.mkdir(join(f.store, "swamp/20261021.120000.0"), {
+      recursive: true,
+    });
+    await Deno.writeTextFile(
+      join(f.store, pointerKey),
+      "20261021.120000.0-sha.00000000\n",
+    );
+    const result = await f.run(upload);
+    assert(!result.success);
+    assertStringIncludes(result.output, "Existing artifact differs");
+  }));
+
+Deno.test("pointer-only upload publishes just the pointer of a published release", () =>
+  withStore(async (f) => {
+    assert((await f.run(upload)).success);
+    await Deno.remove(join(f.store, pointerKey));
+    await Deno.remove(f.dist, { recursive: true });
+    const result = await f.run(upload, [version], { POINTER_ONLY: "true" });
+    assert(result.success, result.output);
+    assertEquals(
+      await Deno.readTextFile(join(f.store, pointerKey)),
+      `${version}\n`,
+    );
+    const retry = await f.run(upload, [version], { POINTER_ONLY: "true" });
+    assert(retry.success, retry.output);
+  }));
+
+Deno.test("pointer-only upload refuses an unpublished release", () =>
+  withStore(async (f) => {
+    const result = await f.run(upload, [version], { POINTER_ONLY: "true" });
+    assert(!result.success);
+    assertStringIncludes(result.output, "is not published");
+    assert(!(await f.calls()).includes("storage cp"));
+  }));
+
+Deno.test("pointer-only dry run makes no cloud calls", () =>
+  withStore(async (f) => {
+    const result = await f.run(upload, [version], {
+      POINTER_ONLY: "true",
+      DRY_RUN: "true",
+    });
+    assert(result.success, result.output);
+    assertStringIncludes(result.output, pointerKey);
+    assertEquals(await f.calls(), "");
+    assert(!(await f.run(upload, [version], { POINTER_ONLY: "yes" })).success);
+  }));
+
+async function stubReleases(bin: string, tags: string[]) {
+  await Deno.writeTextFile(
+    join(bin, "gh"),
+    `#!/bin/bash\nprintf '%s\\n' ${tags.map((t) => `'${t}'`).join(" ")}\n`,
+    { mode: 0o755 },
+  );
+}
+
+Deno.test("backfill publishes pointers for published releases and skips the rest", () =>
+  withStore(async (f) => {
+    assert((await f.run(upload)).success);
+    await Deno.remove(join(f.store, pointerKey));
+    const unpublished = "20250101.000000.0-sha.12345678";
+    await stubReleases(f.bin, [`v${version}`, `v${unpublished}`, "nightly"]);
+    const result = await f.run(backfill, []);
+    assert(result.success, result.output);
+    assertStringIncludes(
+      result.output,
+      "Pointers published: 1, skipped: 2, failed: 0",
+    );
+    assertEquals(
+      await Deno.readTextFile(join(f.store, pointerKey)),
+      `${version}\n`,
+    );
+    const rerun = await f.run(backfill, []);
+    assertStringIncludes(
+      rerun.output,
+      "Pointers published: 1, skipped: 2, failed: 0",
+    );
+  }));
+
+Deno.test("backfill fails when a pointer conflicts", () =>
+  withStore(async (f) => {
+    assert((await f.run(upload)).success);
+    await Deno.writeTextFile(
+      join(f.store, pointerKey),
+      "20261021.120000.0-sha.00000000\n",
+    );
+    await stubReleases(f.bin, [`v${version}`]);
+    const result = await f.run(backfill, []);
+    assert(!result.success);
+    assertStringIncludes(result.output, "failed: 1");
+  }));
+
+Deno.test("backfill dry run makes no cloud calls", () =>
+  withStore(async (f) => {
+    await stubReleases(f.bin, [`v${version}`]);
+    const result = await f.run(backfill, [], { DRY_RUN: "true" });
+    assert(result.success, result.output);
+    assertStringIncludes(result.output, pointerKey);
+    assertEquals(await f.calls(), "");
+  }));

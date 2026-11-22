@@ -14,7 +14,8 @@
 
 .PARAMETER Version
     Release version to install. Default: stable
-    Examples: stable, 20250218.210911.0-sha.bda1ce6ea
+    Examples: stable, 20250218.210911.0-sha.bda1ce6ea, or the bare
+    20250218.210911.0 recorded as swampVersion in .swamp.yaml
 
 .PARAMETER AddToPath
     Add the installation directory to the system PATH. Default: $true
@@ -192,6 +193,57 @@ function Get-ReleaseVersion {
     }
 
     return $version
+}
+
+# A bare calver (swampVersion in .swamp.yaml) resolves through its release's pointer.
+function Resolve-ReleaseVersion {
+    param([string]$RequestedVersion)
+
+    if ($RequestedVersion -cnotmatch '^[0-9]{8}\.[0-9]{6}\.[0-9]+$') {
+        return $RequestedVersion
+    }
+
+    $url = "$ArtifactOrigin/$BinName/$RequestedVersion/version"
+    Write-Info "Resolving release version '$RequestedVersion' from $url"
+
+    Add-Type -AssemblyName System.Net.Http
+    $client = New-Object System.Net.Http.HttpClient
+    $buffer = New-Object byte[] 257
+    $total = 0
+    try {
+        try {
+            $response = $client.GetAsync($url, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
+        } catch {
+            throw "Could not reach $url to resolve version '$RequestedVersion'"
+        }
+        $status = [int]$response.StatusCode
+        if ($status -eq 404) {
+            throw "No swamp release found for version '$RequestedVersion'"
+        }
+        if ($status -ne 200) {
+            throw "Resolving version '$RequestedVersion' failed with HTTP status $status"
+        }
+        # At most 257 bytes are read, so an oversized response is refused unbuffered.
+        $stream = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
+        while ($total -lt $buffer.Length) {
+            $read = $stream.Read($buffer, $total, $buffer.Length - $total)
+            if ($read -le 0) {
+                break
+            }
+            $total += $read
+        }
+    } finally {
+        $client.Dispose()
+    }
+
+    $body = [System.Text.Encoding]::ASCII.GetString($buffer, 0, $total)
+    $pattern = '^' + [regex]::Escape($RequestedVersion) + '-sha\.[0-9a-f]{8,40}\n?\z'
+    if ($total -gt 256 -or $body -cnotmatch $pattern) {
+        throw "Invalid release version pointer for '$RequestedVersion'"
+    }
+    $resolved = $body.TrimEnd("`n")
+    Write-Info "Resolved version '$RequestedVersion' to '$resolved'"
+    return $resolved
 }
 
 function Download-File {
@@ -408,7 +460,7 @@ function Show-Help {
     Write-Host ""
     Write-Host "Parameters:"
     Write-Host "  -Destination <dir>   Installation directory. Default: %SWAMP_HOME%\bin when SWAMP_HOME is set, otherwise C:\Program Files\swamp (admin) or %LOCALAPPDATA%\swamp (user)"
-    Write-Host "  -Version <version>   Release version to install. Default: stable"
+    Write-Host "  -Version <version>   Release version to install, full or the bare swampVersion. Default: stable"
     Write-Host "  -AddToPath <bool>    Add the installation directory to the PATH. Default: `$true"
     Write-Host "  -Help                Show this help message."
     Write-Host ""
@@ -458,6 +510,8 @@ function Main {
     New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
 
     try {
+        $Version = Resolve-ReleaseVersion $Version
+
         # Build download URL and resolve S3 redirect
         Write-Header "Downloading '$BinName' release '$Version'"
         $assetUrl = Get-AssetUrl -Version $Version -OsType $osType -CpuType $cpuType
