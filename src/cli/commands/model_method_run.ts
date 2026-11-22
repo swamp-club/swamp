@@ -23,6 +23,7 @@ import {
   lastEvaluatedDefinition,
 } from "../last_evaluated_trust.ts";
 import { Command } from "@cliffy/command";
+import { workflowStepLockHook } from "./workflow_run.ts";
 import {
   createContext,
   type GlobalOptions,
@@ -718,6 +719,13 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
           let methodFailed = false;
           const runDeps: typeof deps = {
             ...deps,
+            // a context.runModel target is locked as a workflow step's is
+            nestedRunLock: workflowStepLockHook(
+              repoDir,
+              repoContext,
+              datastoreConfig,
+              syncService,
+            ),
             onWrittenVersions: (versions, outcome) => {
               for (const version of versions) {
                 written.push(version);

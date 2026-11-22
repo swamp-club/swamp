@@ -986,3 +986,34 @@ Deno.test("LockHolderMarker.remoteHandOff: is bound to the scope it was built in
   assertEquals(none.lent, undefined);
   await none.end();
 });
+
+Deno.test("LockHolderMarker.holdsModel: true only inside a scope holding the behavior, including nested scopes", async () => {
+  const marker = new LockHolderMarker(fakeEnv().store, 4242, () => "h");
+  const ctr = { modelType: "@repro/counter", modelId: "ctr-id" };
+  assertEquals(marker.holdsModel(ctr.modelType, ctr.modelId), false);
+  await marker.runHolding(["n1"], async () => {
+    assertEquals(marker.holdsModel(ctr.modelType, ctr.modelId), true);
+    assertEquals(marker.holdsModel(ctr.modelType, "other-id"), false);
+    await marker.runHolding(["n2"], () => {
+      assertEquals(marker.holdsModel(ctr.modelType, ctr.modelId), true);
+      return Promise.resolve();
+    }, [{ modelType: "@repro/caller", modelId: "clr-id" }]);
+  }, [ctr]);
+  assertEquals(marker.holdsModel(ctr.modelType, ctr.modelId), false);
+});
+
+Deno.test("LockHolderMarker.holdsModel: a sibling scope does not see another's behavior", async () => {
+  const marker = new LockHolderMarker(fakeEnv().store, 4242, () => "h");
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => release = resolve);
+  const holder = marker.runHolding([], () => held, [
+    { modelType: "t", modelId: "x" },
+  ]);
+  const sibling = marker.runHolding(
+    [],
+    () => Promise.resolve(marker.holdsModel("t", "x")),
+  );
+  assertEquals(await sibling, false);
+  release();
+  await holder;
+});

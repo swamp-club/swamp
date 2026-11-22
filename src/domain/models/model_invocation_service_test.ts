@@ -25,6 +25,7 @@ import {
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import "../../domain/models/models.ts";
 import type {
+  DataHandle,
   InvocationTracking,
   MethodContext,
   ModelDefinition,
@@ -39,7 +40,10 @@ import type { CommonMethodContextDeps } from "./method_context.ts";
 import {
   ModelInvocationService,
   type ModelInvocationServiceDeps,
+  type NestedRunLock,
 } from "./model_invocation_service.ts";
+import { LockHolderMarker } from "../datastore/lock_holder_marker.ts";
+import type { WrittenVersion } from "../datastore/datastore_sync_service.ts";
 import { ModelType } from "./model_type.ts";
 import { Definition } from "../definitions/definition.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
@@ -1844,4 +1848,347 @@ Deno.test("ModelInvocationService: a caller whose manifest cannot be loaded is r
       );
     }
   });
+});
+
+const LOCK_TARGET_TYPE = ModelType.create(
+  `test/lock-target-${crypto.randomUUID()}`,
+);
+defineModel({
+  type: LOCK_TARGET_TYPE,
+  version: "2026.11.22.1",
+  methods: {
+    m1: {
+      description: "test method",
+      arguments: z.object({}),
+      execute: () => Promise.resolve({ dataHandles: [] }),
+    },
+    m2: {
+      description: "test method",
+      arguments: z.object({}),
+      execute: () => Promise.resolve({ dataHandles: [] }),
+    },
+    m3: {
+      description: "test method",
+      arguments: z.object({}),
+      execute: () => Promise.resolve({ dataHandles: [] }),
+    },
+  },
+});
+
+function lockTestHandle(
+  name: string,
+  lifetime: string = "infinite",
+): DataHandle {
+  return {
+    name,
+    specName: "state",
+    kind: "resource",
+    dataId: `id-${name}` as DataHandle["dataId"],
+    version: 1,
+    size: 1,
+    tags: {},
+    metadata: { lifetime } as DataHandle["metadata"],
+  };
+}
+
+interface LockHarness {
+  svc: ModelInvocationService;
+  marker: LockHolderMarker;
+  events: string[];
+  flushed: WrittenVersion[][];
+  defs: Map<string, Definition>;
+}
+
+/**
+ * child runs are scripted per definition name; each may call back into the
+ * service with its own context, as a method calling runModel does
+ */
+function makeLockHarness(options: {
+  run?: (
+    defName: string,
+    ctx: MethodContext,
+    svc: ModelInvocationService,
+  ) => Promise<{ dataHandles?: DataHandle[] }>;
+  lock?: NestedRunLock;
+  flush?: (written?: readonly WrittenVersion[]) => Promise<void>;
+}): LockHarness {
+  const env = new Map<string, string>();
+  const marker = new LockHolderMarker({
+    get: (key) => env.get(key),
+    set: (key, value) => void env.set(key, value),
+  });
+  const events: string[] = [];
+  const flushed: WrittenVersion[][] = [];
+  const defs = new Map<string, Definition>();
+  for (const name of ["a", "b", "c"]) {
+    defs.set(
+      name,
+      Definition.create({
+        name: `lock-${name}`,
+        type: LOCK_TARGET_TYPE.normalized,
+        globalArguments: {},
+      }),
+    );
+  }
+  const byName = (name: string) =>
+    [...defs.values()].find((d) => d.name === name);
+  const executionService: MethodExecutionService = {
+    execute: () => Promise.resolve({ dataHandles: [] }),
+    executeWorkflow: async (def, _modelDef, method, ctx) => {
+      events.push(`run ${def.name}.${method}`);
+      return await (options.run?.(def.name, ctx, svc) ??
+        Promise.resolve({ dataHandles: [] }));
+    },
+  };
+  const svc: ModelInvocationService = new ModelInvocationService({
+    executionService,
+    lockHolderMarker: marker,
+    nestedRunLock: options.lock ?? ((modelType, modelId) => {
+      const name = [...defs.values()].find((d) => d.id === modelId)?.name;
+      events.push(`lock ${name}`);
+      assertEquals(modelType, LOCK_TARGET_TYPE.normalized);
+      return Promise.resolve({
+        heldLockIds: [],
+        flush: async (written) => {
+          events.push(`flush ${name}`);
+          flushed.push([...(written ?? [])]);
+          await options.flush?.(written);
+        },
+      });
+    }),
+    commonDeps: {
+      dataRepository: {
+        findAllForModel: () => Promise.resolve([]),
+        getContent: () => Promise.resolve(null),
+      },
+      definitionRepository: {
+        findByNameGlobal: (name: string) => {
+          const definition = byName(name);
+          return Promise.resolve(
+            definition ? { definition, type: LOCK_TARGET_TYPE } : null,
+          );
+        },
+        findById: () => Promise.resolve(null),
+      },
+      createCelEnvironment: () =>
+        ({}) as ReturnType<MethodContext["createCelEnvironment"]>,
+    } as unknown as CommonMethodContextDeps,
+    evaluationService: passthroughEvaluator,
+    repoDir: "/tmp/test-repo",
+  });
+  return { svc, marker, events, flushed, defs };
+}
+
+Deno.test("ModelInvocationService: takes the target's lock before the nested run and pushes its writes under it", async () => {
+  let heldInside = false;
+  const h = makeLockHarness({
+    run: (_name, ctx) => {
+      heldInside = h.marker.holdsModel(ctx.modelType.normalized, ctx.modelId);
+      return Promise.resolve({
+        dataHandles: [
+          lockTestHandle("state"),
+          lockTestHandle("scratch", "ephemeral"),
+        ],
+      });
+    },
+  });
+  const result = await h.svc.invoke(
+    { definition: "lock-a", method: "m1" },
+    makeStubContext(),
+  );
+
+  assertEquals(result.ok, true);
+  assertEquals(h.events, ["lock lock-a", "run lock-a.m1", "flush lock-a"]);
+  assertEquals(heldInside, true);
+  assertEquals(h.flushed, [[{
+    modelType: LOCK_TARGET_TYPE.normalized,
+    modelId: h.defs.get("a")!.id,
+    dataName: "state",
+    version: 1,
+    dataId: "id-state",
+  }]]);
+});
+
+Deno.test("ModelInvocationService: a self-call runs under the lock its caller holds", async () => {
+  const h = makeLockHarness({});
+  const a = h.defs.get("a")!;
+  const result = await h.marker.runHolding(
+    [],
+    () =>
+      h.svc.invoke(
+        { definition: "lock-a", method: "m2" },
+        makeStubContext({
+          modelType: LOCK_TARGET_TYPE,
+          modelId: a.id,
+          methodName: "m1",
+        }),
+      ),
+    [{ modelType: LOCK_TARGET_TYPE.normalized, modelId: a.id }],
+  );
+
+  assertEquals(result.ok, true);
+  assertEquals(h.events, ["run lock-a.m2"]);
+});
+
+Deno.test("ModelInvocationService: a call back into an ancestor's behavior takes no second lock", async () => {
+  const h = makeLockHarness({
+    run: async (name, ctx, svc) => {
+      if (name === "lock-b") {
+        const back = await svc.invoke(
+          { definition: "lock-a", method: "m3" },
+          ctx,
+        );
+        assertEquals(back.ok, true);
+      }
+      return { dataHandles: [] };
+    },
+  });
+  const a = h.defs.get("a")!;
+  const result = await h.marker.runHolding(
+    [],
+    () =>
+      h.svc.invoke(
+        { definition: "lock-b", method: "m2" },
+        makeStubContext({
+          modelType: LOCK_TARGET_TYPE,
+          modelId: a.id,
+          methodName: "m1",
+        }),
+      ),
+    [{ modelType: LOCK_TARGET_TYPE.normalized, modelId: a.id }],
+  );
+
+  assertEquals(result.ok, true);
+  assertEquals(h.events, [
+    "lock lock-b",
+    "run lock-b.m2",
+    "run lock-a.m3",
+    "flush lock-b",
+  ]);
+});
+
+Deno.test("ModelInvocationService: nested-nested runs lock each target and push innermost first", async () => {
+  const next: Record<string, [string, string]> = {
+    "lock-a": ["lock-b", "m2"],
+    "lock-b": ["lock-c", "m3"],
+  };
+  const h = makeLockHarness({
+    run: async (name, ctx, svc) => {
+      const call = next[name];
+      if (call) {
+        const r = await svc.invoke(
+          { definition: call[0], method: call[1] },
+          ctx,
+        );
+        assertEquals(r.ok, true);
+      }
+      return { dataHandles: [] };
+    },
+  });
+  const result = await h.svc.invoke(
+    { definition: "lock-a", method: "m1" },
+    makeStubContext(),
+  );
+
+  assertEquals(result.ok, true);
+  assertEquals(h.events, [
+    "lock lock-a",
+    "run lock-a.m1",
+    "lock lock-b",
+    "run lock-b.m2",
+    "lock lock-c",
+    "run lock-c.m3",
+    "flush lock-c",
+    "flush lock-b",
+    "flush lock-a",
+  ]);
+});
+
+Deno.test("ModelInvocationService: a lock that times out fails the call and never runs the target", async () => {
+  const h = makeLockHarness({
+    lock: () => Promise.reject(new Error("Lock timed out after 60000ms")),
+  });
+  const result = await h.svc.invoke(
+    { definition: "lock-a", method: "m1" },
+    makeStubContext(),
+  );
+
+  assertEquals(result.ok, false);
+  assertStringIncludes(errorOf(result), "Lock timed out");
+  assertEquals(h.events, []);
+});
+
+Deno.test("ModelInvocationService: a push that fails after the nested run succeeded fails the call", async () => {
+  const h = makeLockHarness({
+    flush: () => Promise.reject(new Error("push refused")),
+  });
+  const result = await h.svc.invoke(
+    { definition: "lock-a", method: "m1" },
+    makeStubContext(),
+  );
+
+  assertEquals(result.ok, false);
+  assertStringIncludes(errorOf(result), "push refused");
+});
+
+Deno.test("ModelInvocationService: a failed nested run pushes what it wrote and reports its own error", async () => {
+  const h = makeLockHarness({
+    run: () => {
+      const error = new Error("method blew up");
+      (error as Error & { dataHandles?: DataHandle[] }).dataHandles = [
+        lockTestHandle("partial"),
+      ];
+      return Promise.reject(error);
+    },
+    flush: () => Promise.reject(new Error("remote unreachable")),
+  });
+  const result = await h.svc.invoke(
+    { definition: "lock-a", method: "m1" },
+    makeStubContext(),
+  );
+
+  assertEquals(result.ok, false);
+  assertStringIncludes(errorOf(result), "method blew up");
+  assertEquals(h.flushed.map((w) => w.map((v) => v.dataName)), [["partial"]]);
+});
+
+Deno.test("ModelInvocationService: without a lock hook a nested run takes no lock", async () => {
+  let called = false;
+  const svc = makeProvenanceSvc({
+    captureContext: () => {
+      called = true;
+    },
+    targetDefName: "unlocked-target",
+    targetDef: Definition.create({
+      name: "unlocked-target",
+      type: "test/provenance-target",
+      globalArguments: {},
+    }),
+  });
+  const result = await svc.invoke(
+    { definition: "unlocked-target", method: "greet" },
+    makeStubContext(),
+  );
+  assertEquals(result.ok, true);
+  assertEquals(called, true);
+});
+
+Deno.test("ModelInvocationService: a failed nested run whose handles carry no metadata still releases the lock", async () => {
+  const h = makeLockHarness({
+    run: () =>
+      Promise.reject(
+        Object.assign(new Error("extension threw"), {
+          dataHandles: [{ dataId: "d", name: "n", version: 1, tags: {} }],
+        }),
+      ),
+  });
+  const result = await h.svc.invoke(
+    { definition: "lock-a", method: "m1" },
+    makeStubContext(),
+  );
+
+  assertEquals(result.ok, false);
+  assertStringIncludes(errorOf(result), "extension threw");
+  assertEquals(h.events, ["lock lock-a", "run lock-a.m1", "flush lock-a"]);
+  assertEquals(h.flushed.map((w) => w.map((v) => v.dataName)), [["n"]]);
 });

@@ -576,6 +576,17 @@ inside X.
 **Failure semantics:** Y's failure reaches X as `{ ok: false }`, and X decides
 how to handle it. Data X and Y already saved stays.
 
+**Locking:** The nested run takes Y's per-behavior lock before Y's method
+runs, as a workflow step does, so it serializes with any other run on Y. It
+pushes Y's writes under that lock and releases it before X resumes. When the
+call chain already holds Y's lock (X calling a method on its own behavior, or
+on the behavior of a run further up the chain), the nested run uses that lock
+instead of waiting on itself. A lock that cannot be taken within the lock
+timeout returns `{ ok: false }`: two behaviors whose methods call each other
+fail this way rather than hang. The lock comes from the `nestedRunLock` the
+run's `ModelInvocationService` is built with;
+`integration/model_lock_scope_rules_test.ts` pins the sites that supply it.
+
 **Depth and cycle limits:** At most 10 levels deep, matching workflow nesting.
 Cycles are detected through an ancestor chain of `(modelType, method)` pairs.
 At most 100 total `runModel` calls per top-level execution, matching follow-up

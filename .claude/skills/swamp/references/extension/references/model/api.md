@@ -506,6 +506,12 @@ for (const r of [result, created]) {
   built-in and user-authored behavior types need no declaration.
 - **Limits:** 10 nested levels, 100 `runModel` calls per top-level execution,
   and cycles are rejected.
+- **Locking:** the call takes the target behavior's lock first, so it waits for
+  any other run on that behavior, and the target's writes are pushed before the
+  call returns. A call on your own behavior (or one a run above you holds) uses
+  the lock already held. A lock not taken within the lock timeout returns
+  `{ ok: false }`, so two behaviors calling each other fail rather than hang —
+  see [concurrency](../../../behavior/references/concurrency.md).
 
 ### Where each API is available
 
