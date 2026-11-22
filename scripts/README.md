@@ -52,6 +52,22 @@ For locally built binaries,
 <version>` exercises the
 same packaging without GCS access.
 
+Each release also publishes `swamp/<bare>/version`, where `<bare>` is the
+version without its `-sha` suffix and the body is the full version. That is the
+form `swamp repo init` and `swamp repo upgrade` record as `swampVersion` in
+`.swamp.yaml`; `install.sh` and `install.ps1` resolve a bare `--version` through
+it, then download and verify the full version as usual. The pointer is uploaded
+after every variant, so an interrupted release leaves none.
+
+`POINTER_ONLY=true` uploads only the pointer of an already published release.
+`scripts/backfill_version_pointers.sh` runs it for every GitHub release, skipping
+tags whose artifacts never reached the bucket, and needs the same gcloud access:
+
+```sh
+DRY_RUN=true bash scripts/backfill_version_pointers.sh
+bash scripts/backfill_version_pointers.sh
+```
+
 Versioned uploads use create-only generation preconditions. Retries accept only
 identical bytes. Unix archives use Python's USTAR format with name `swamp`, mode
 0755, UID/GID zero, empty owner/group names and zero timestamps, wrapped in gzip

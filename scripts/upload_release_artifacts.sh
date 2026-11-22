@@ -6,6 +6,7 @@ set -euo pipefail
 # Usage: bash scripts/upload_release_artifacts.sh <version>
 # Requires authenticated gcloud and python3; GCS_BUCKET and BINARIES_DIR are optional.
 # DRY_RUN=true verifies and packages all assets without accessing GCS.
+# POINTER_ONLY=true uploads only the bare-version pointer of an already published release.
 VERSION="${1:-}"
 VERSION="${VERSION#v}"
 if [[ ! "$VERSION" =~ ^[0-9]{8}\.[0-9]{6}\.[0-9]+-sha\.[0-9a-f]{8,40}$ ]]; then
@@ -20,22 +21,23 @@ case "$DRY_RUN" in
     true|false) ;;
     *) echo "Error: DRY_RUN must be true or false"; exit 1 ;;
 esac
-REVISION=$(git rev-parse HEAD)
+POINTER_ONLY="${POINTER_ONLY:-false}"
+case "$POINTER_ONLY" in
+    true|false) ;;
+    *) echo "Error: POINTER_ONLY must be true or false"; exit 1 ;;
+esac
+# .swamp.yaml records the bare version; installers resolve it through this pointer.
+BARE_VERSION="${VERSION%%-sha.*}"
+POINTER="gs://$GCS_BUCKET/swamp/$BARE_VERSION/version"
+if [[ "$POINTER_ONLY" == true ]]; then
+    REVISION="${VERSION##*-sha.}"
+else
+    REVISION=$(git rev-parse HEAD)
+fi
 TEMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TEMP_DIR"' EXIT
 
 BINARIES="swamp-darwin-aarch64:darwin/aarch64 swamp-darwin-x86_64:darwin/x86_64 swamp-linux-x86_64:linux/x86_64 swamp-linux-aarch64:linux/aarch64 swamp-windows-x86_64.zip:windows/x86_64"
-
-# Verify the whole release before uploading any part of it.
-for mapping in $BINARIES; do
-    binary="${mapping%%:*}"
-    expected=$(awk -v f="$binary" '$2==f{print $1}' "$BINARIES_DIR/checksums.txt")
-    actual=$(sha256sum "$BINARIES_DIR/$binary" | awk '{print $1}')
-    if [[ -z "$expected" || "$expected" != "$actual" ]]; then
-        echo "Error: Missing or mismatched checksum for $binary"
-        exit 1
-    fi
-done
 
 upload_immutable() {
     local source="$1" destination="$2" content_type="$3" expected actual
@@ -54,6 +56,34 @@ upload_immutable() {
         fi
     fi
 }
+
+upload_pointer() {
+    printf '%s\n' "$VERSION" > "$TEMP_DIR/version"
+    upload_immutable "$TEMP_DIR/version" "$POINTER" "text/plain"
+}
+
+if [[ "$POINTER_ONLY" == true ]]; then
+    probe="gs://$GCS_BUCKET/swamp/$VERSION/binary/linux/x86_64/swamp-${VERSION}-binary-linux-x86_64.tar.gz.sha256"
+    if [[ "$DRY_RUN" != true ]] && ! gcloud storage cat "$probe" > /dev/null; then
+        echo "Error: Release $VERSION is not published: $probe"
+        exit 3
+    fi
+    upload_pointer
+    echo "Version pointer $BARE_VERSION -> $VERSION"
+    exit 0
+fi
+
+# Verify the whole release before uploading any part of it.
+for mapping in $BINARIES; do
+    binary="${mapping%%:*}"
+    expected=$(awk -v f="$binary" '$2==f{print $1}' "$BINARIES_DIR/checksums.txt")
+    actual=$(sha256sum "$BINARIES_DIR/$binary" | awk '{print $1}')
+    if [[ -z "$expected" || "$expected" != "$actual" ]]; then
+        echo "Error: Missing or mismatched checksum for $binary"
+        exit 1
+    fi
+done
+
 
 for mapping in $BINARIES; do
     binary="${mapping%%:*}"
@@ -95,6 +125,9 @@ PY
     upload_immutable "$TEMP_DIR/$archive" "$destination" "$content_type"
     upload_immutable "$TEMP_DIR/$archive.sha256" "$destination.sha256" "text/plain"
 done
+
+# Last, so an interrupted release never leaves a pointer to missing variants.
+upload_pointer
 
 if [[ "$DRY_RUN" == true ]]; then
     echo "Dry run complete: verified and packaged all five variants; no GCS access"
