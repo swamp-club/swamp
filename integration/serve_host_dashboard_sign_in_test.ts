@@ -67,17 +67,13 @@ function memorySessions(): ControlPlaneDashboardSessionStore {
 
 interface ServeSpec {
   readonly name: string;
-  /** a workspace a host runs, which gets --hosted-workspace and a root address */
   readonly hosted: boolean;
   readonly address: () => string;
   readonly trustedHost: () => string;
   readonly distDir?: string;
 }
 
-/**
- * one serve's dashboard routes, wired from the functions serve.ts composes
- * with the --trust-proxy and --trusted-hosts a host gives each child
- */
+// wired as serve.ts wires it, with the trust flags a host gives each child
 function serveHandler(spec: ServeSpec): Deno.ServeHandler<Deno.NetAddr> {
   const sessions = memorySessions();
   const ip = `dashboard-${crypto.randomUUID()}`;
@@ -296,7 +292,6 @@ Deno.test("serve host dashboard: the root and two workspaces keep their own sess
     assertEquals(await whoami(host, "/w/team"), "team");
     assertEquals(await whoami(host, "/w/data"), "data");
 
-    // a workspace takes only its own token
     const crossed = await signIn(host, "/w/team", "data.secret");
     assertEquals(crossed.status, 401);
     await crossed.body?.cancel();
