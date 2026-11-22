@@ -117,6 +117,8 @@ function harness(options: {
   info?: AuthInfo | null;
   signedIn?: boolean;
   visible?: boolean;
+  /** the first session check answers when this settles */
+  holdFirstSession?: Promise<boolean>;
 } = {}) {
   const timers = fakeTimers();
   const visibility = fakeVisibility(options.visible ?? true);
@@ -129,6 +131,7 @@ function harness(options: {
       ? { mode: "oauth" } as AuthInfo
       : options.info,
     signedIn: options.signedIn ?? true,
+    hold: options.holdFirstSession ?? null as Promise<boolean> | null,
   };
   const reader = startRootWorkspaceReader({
     authInfo: () => {
@@ -137,7 +140,9 @@ function harness(options: {
     },
     sessionRestored: () => {
       calls.session++;
-      return Promise.resolve(state.signedIn);
+      const held = state.hold;
+      state.hold = null;
+      return held ?? Promise.resolve(state.signedIn);
     },
     openSocket: (handlers) => {
       const socket = new FakeSocket(handlers);
@@ -355,4 +360,42 @@ Deno.test("startOwnConnectionReader: the root page reads over its own connection
   assertEquals(timers.pending(), []);
   assertEquals(reads, 2);
   reader.stop();
+});
+
+Deno.test("startRootWorkspaceReader: a sign-in to the root broadcast while the first check is waiting is not lost", async () => {
+  const held = Promise.withResolvers<boolean>();
+  const h = harness({ signedIn: false, holdFirstSession: held.promise });
+  await waitFor(() => h.calls.session === 1, "first session check sent");
+  h.state.signedIn = true;
+  h.broadcast("reauthenticated");
+  held.resolve(false);
+  await waitFor(() => h.sockets.length === 1, "socket opened after the redo");
+  assertEquals(h.calls.session, 2);
+  h.reader.stop();
+});
+
+Deno.test("startRootWorkspaceReader: a sign-out broadcast while a check is waiting is not undone by that check", async () => {
+  const held = Promise.withResolvers<boolean>();
+  const h = harness({ signedIn: false, holdFirstSession: held.promise });
+  await waitFor(() => h.calls.session === 1, "first session check sent");
+  h.state.signedIn = false;
+  h.broadcast("logout");
+  held.resolve(true);
+  await waitFor(() => h.calls.session === 2, "check redone");
+  await waitFor(() => h.last()?.kind === "sign-in", "still sign-in");
+  assertEquals(h.sockets.length, 0);
+  h.reader.stop();
+});
+
+Deno.test("startRootWorkspaceReader: a root that does not answer is not asked again while the tab is hidden", async () => {
+  const h = harness({ info: null });
+  await waitFor(() => h.views.length === 1, "unread shown");
+  h.visibility.set(false);
+  h.timers.fire();
+  assertEquals(h.calls.authInfo, 1);
+  assertEquals(h.timers.pending(), [HOST_LIST_INTERVAL_MS]);
+  h.visibility.set(true);
+  h.timers.fire();
+  await waitFor(() => h.calls.authInfo === 2, "asked again once visible");
+  h.reader.stop();
 });

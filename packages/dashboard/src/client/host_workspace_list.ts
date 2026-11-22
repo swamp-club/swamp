@@ -68,7 +68,7 @@ export function parseHostWorkspaceList(
   return listed;
 }
 
-/** The word the switcher puts beside a workspace that is not ready; the workspace's own page says the same. */
+/** The word beside a workspace that is not ready; its own page names the same state. */
 export function hostStateMark(state: HostWorkspaceState): string | null {
   switch (state) {
     case "ready":

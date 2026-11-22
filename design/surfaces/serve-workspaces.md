@@ -1010,8 +1010,9 @@ that and a hosted workspace:
 root whose `/auth/info` says `hostRoot: true` (a serve that answers workspace
 requests), it lists the root, which opens `/dashboard/`, and every workspace
 `workspace.list` on the root returns, by name. A workspace that is not ready
-is marked stopped, starting or failed in the words its own page uses, and
-choosing it opens that page. The page's own workspace is always listed, read
+is marked stopped, starting (backoff included), failed, or not running when
+the host has written no state, and choosing it opens its page, which names the
+same state. The page's own workspace is always listed, read
 or not (`packages/dashboard/src/client/host_workspace_list.ts`,
 `components/HostWorkspaceSwitcher.tsx`).
 

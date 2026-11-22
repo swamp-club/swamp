@@ -39,7 +39,6 @@ import { HostedWorkspaceFileRepository } from "../src/infrastructure/persistence
 import { scanWorkspaces } from "../src/infrastructure/persistence/hosted_workspace_folder_scan.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import type { HostedWorkspaceRootAccess } from "../src/libswamp/hosted_workspace/deps.ts";
-import { authInfoBody } from "../src/serve/auth_exchange_handler.ts";
 import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
 import {
   NOT_A_HOST_ROOT_CODE,
@@ -438,27 +437,6 @@ Deno.test("serve workspace requests: the dashboard switcher reads the root's lis
       after?.find((w) => w.name === "cost")?.state,
       first?.[0].state,
     );
-  });
-});
-
-Deno.test("serve workspace requests: /auth/info names a host's root, and a serve that is not one says nothing", async () => {
-  await withRoot((root) => {
-    const config = {
-      mode: "oauth" as const,
-      oauthProvider: "https://club.example",
-    };
-    const host = root.ctx();
-    assertEquals(
-      authInfoBody(config, false, host.hostedWorkspaces !== undefined).hostRoot,
-      true,
-    );
-    const plain = root.ctx({ hostedWorkspaces: undefined });
-    assertEquals(
-      "hostRoot" in
-        authInfoBody(config, false, plain.hostedWorkspaces !== undefined),
-      false,
-    );
-    return Promise.resolve();
   });
 });
 

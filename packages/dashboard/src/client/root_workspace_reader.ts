@@ -170,6 +170,8 @@ export function startRootWorkspaceReader(deps: RootReaderDeps): Reader {
   let stopped = false;
   let access: "checking" | "sign-in" | "read" = "checking";
   let checking = false;
+  // bumped by every root sign-in or sign-out broadcast; a check that spans one is redone
+  let sessionEpoch = 0;
   let socket: RootSocket | null = null;
   let opened = false;
   let pendingId: string | null = null;
@@ -258,7 +260,8 @@ export function startRootWorkspaceReader(deps: RootReaderDeps): Reader {
     if (recheckTimer !== null || stopped) return;
     recheckTimer = deps.timers.setTimer(() => {
       recheckTimer = null;
-      startCheck(false);
+      if (deps.visibility.visible()) startCheck(false);
+      else recheckLater();
     }, HOST_LIST_INTERVAL_MS);
   };
 
@@ -266,9 +269,10 @@ export function startRootWorkspaceReader(deps: RootReaderDeps): Reader {
   async function check(readNow: boolean): Promise<void> {
     if (checking || stopped) return;
     checking = true;
+    const epoch = sessionEpoch;
     try {
       const info = await deps.authInfo();
-      if (stopped) return;
+      if (stopped || epoch !== sessionEpoch) return;
       if (info === null) {
         emit({ kind: "listed", workspaces: null });
         recheckLater();
@@ -277,7 +281,7 @@ export function startRootWorkspaceReader(deps: RootReaderDeps): Reader {
       const signedIn = info.mode === "none"
         ? false
         : await deps.sessionRestored();
-      if (stopped) return;
+      if (stopped || epoch !== sessionEpoch) return;
       if (rootListAccess(info.mode, signedIn) === "sign-in") {
         signIn();
         return;
@@ -291,6 +295,7 @@ export function startRootWorkspaceReader(deps: RootReaderDeps): Reader {
       recheckLater();
     } finally {
       checking = false;
+      if (!stopped && epoch !== sessionEpoch) startCheck(true);
     }
   }
 
@@ -299,6 +304,7 @@ export function startRootWorkspaceReader(deps: RootReaderDeps): Reader {
   }
 
   const unsubscribe = deps.sessionEvents((event) => {
+    sessionEpoch++;
     if (event === "logout") signIn();
     else if (access === "sign-in") startCheck(true);
   });
