@@ -42,11 +42,13 @@ const HOP_BY_HOP = [
   "upgrade",
 ];
 
+// a local hub's token never reaches a serve, whatever a stale browser sends
+const LOCAL_HUB_TOKEN = "x-swamp-local-token";
+
 // Deno.serve already answered a caller's 100-continue, so the child is never
 // asked for a second one; Forwarded is dropped because only the X-Forwarded-*
-// headers below are vouched for; a local hub's token, left in a browser that
-// once ran one on this origin, is never sent on to a serve
-const REQUEST_ONLY = ["expect", "forwarded", "x-swamp-local-token"];
+// headers below are vouched for
+const REQUEST_ONLY = ["expect", "forwarded", LOCAL_HUB_TOKEN];
 
 const WEBSOCKET_HANDSHAKE = [
   "host",
