@@ -8386,6 +8386,7 @@ export const serveCommand = new Command()
           const authInfo = authInfoBody(
             authConfig,
             exchangeOffered(signInExchange, authConfig.mode),
+            connectionCtx.hostedWorkspaces !== undefined,
           );
           return new Response(JSON.stringify(authInfo), {
             headers: { "content-type": "application/json" },

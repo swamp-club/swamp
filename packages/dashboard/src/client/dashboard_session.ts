@@ -75,11 +75,12 @@ function requestSignal(signal?: AbortSignal): AbortSignal {
 export function createDashboardSessionClient(
   fetchFn: SessionFetch,
   sleepFn: SessionSleep = sleep,
+  sessionPath: string = DASHBOARD_SESSION_PATH,
 ) {
   return {
     async restore(signal?: AbortSignal): Promise<boolean> {
       for (let retry = 0;; retry++) {
-        const response = await fetchFn(DASHBOARD_SESSION_PATH, {
+        const response = await fetchFn(sessionPath, {
           headers: withLocalOrigin(),
           signal: requestSignal(signal),
         });
@@ -98,7 +99,7 @@ export function createDashboardSessionClient(
     },
 
     async exchange(token: string): Promise<boolean> {
-      const response = await fetchFn(DASHBOARD_SESSION_PATH, {
+      const response = await fetchFn(sessionPath, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ token }),
@@ -114,7 +115,7 @@ export function createDashboardSessionClient(
     },
 
     async clear(): Promise<void> {
-      const response = await fetchFn(DASHBOARD_SESSION_PATH, {
+      const response = await fetchFn(sessionPath, {
         method: "DELETE",
         signal: requestSignal(),
       });

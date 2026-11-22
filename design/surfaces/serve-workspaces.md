@@ -14,9 +14,9 @@ host folder layout (step 26): `swamp serve host` reads `<config dir>/host.yaml`,
 lists every entry of the workspace registry, runs a serve for each one whose
 wanted file says `active` and names its folder, and its root takes the
 `workspace.*` requests, creates workspaces in the workspace location and issues
-sign-in codes. A dashboard session cookie per path (step 16) and the sign-in
-under a workspace segment (step 17) are built; the switcher listing the host's
-workspaces (step 18) is not.
+sign-in codes. A dashboard session cookie per path (step 16), the sign-in
+under a workspace segment (step 17) and the switcher listing the host's
+workspaces (step 18) are built.
 It describes how one address hosts several serves, which promoting a local
 workspace to a server assumes.
 
@@ -976,8 +976,7 @@ that and a hosted workspace:
   is not built. A 404 from anything (the host, the hub, a plain serve) and the
   host's JSON 503 take the place of the sign-in with a page saying the
   workspace does not exist or naming its state, and a 503 is retried until the
-  workspace answers. The switcher is shown only on the local dashboard until it lists
-  what `workspace.list` returns (step 18).
+  workspace answers. The workspace switcher is described below.
 - The root serves the pages: `/dashboard/w/<name>/…` reaches the root
   unchanged and the bundle's assets load from `/dashboard/`, so a hosted
   workspace's pages need the root's own `dashboard` setting on. The page's
@@ -1005,6 +1004,35 @@ that and a hosted workspace:
   is signed in to. The tabs' sign-in and sign-out notices go over a channel
   named for the page's workspace segment, so signing out of one workspace
   leaves the root's and the others' tabs signed in.
+
+**The switcher.** On the local dashboard the switcher reads the hub's list at
+`/api/local/workspaces`, unchanged. Under a host, on a workspace page or on a
+root whose `/auth/info` says `hostRoot: true` (a serve that answers workspace
+requests), it lists the root, which opens `/dashboard/`, and every workspace
+`workspace.list` on the root returns, by name. A workspace that is not ready
+is marked stopped, starting or failed in the words its own page uses, and
+choosing it opens that page. The page's own workspace is always listed, read
+or not (`packages/dashboard/src/client/host_workspace_list.ts`,
+`components/HostWorkspaceSwitcher.tsx`).
+
+- **Reaching the root.** A workspace page's connection goes to the workspace,
+  and `workspace.list` is a host folder request, never answered on the HTTP
+  route that takes a cookie. So the page opens a second WebSocket to the root's
+  own address, which carries the root's `Path=/` cookie and never the
+  workspace's, and sends only `workspace.list` over it
+  (`client/root_workspace_reader.ts`). The root page asks over its own
+  connection.
+- **Not signed in to the root.** Before opening that socket the page reads the
+  root's `/auth/info` and, unless the root is in mode `none`, asks
+  `GET /auth/dashboard/session` there once. On a 401 it lists the page's own
+  workspace and the root with a link to sign in to the host, and opens no
+  socket, so the root is sent nothing it would refuse. A refused upgrade hides
+  its status from the page, so a socket that closes before opening asks the
+  session once more instead of reopening.
+- **How often.** The socket is held only while the tab is visible, and the
+  list is read every 30 seconds, at once on coming back into view, and when a
+  root tab broadcasts a sign-in on the root's channel. A sign-out broadcast
+  there closes the socket.
 
 ## What a client sees
 
@@ -1152,8 +1180,10 @@ After 7 an operator who sets each workspace up has a multi-workspace host.
     tells a host from the local dashboard by `/auth/info`, and under a host it
     signs in to the workspace's serve instead of asking for the local token.
     After 16.
-18. **The switcher lists the host's workspaces.** Under a host it reads
-    `workspace.list` from the root. After 11 and 17.
+18. **The switcher lists the host's workspaces** (swamp-club#4914, built).
+    Under a host it reads `workspace.list` from the root over a second socket
+    once the root's session check passes, every 30 seconds while the tab is
+    visible. After 11 and 17.
 
 ### Default off and the registry
 

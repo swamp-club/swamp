@@ -72,6 +72,8 @@ interface SwampContextValue {
   verificationBaseUri: string | null;
   /** True when served by the local dashboard rather than `swamp serve`. */
   local: boolean;
+  /** this page's serve is a host's root, which answers `workspace.list` */
+  hostRoot: boolean;
   /** Why a workspace page has no workspace to sign in to, or null. */
   workspaceAbsence: WorkspaceAbsence | null;
   login: (token: string) => Promise<void>;
@@ -120,6 +122,7 @@ export function SwampProvider({ children }: { children: ReactNode }) {
     null,
   );
   const [local, setLocal] = useState(false);
+  const [hostRoot, setHostRoot] = useState(false);
   const [workspaceAbsence, setWorkspaceAbsence] = useState<
     WorkspaceAbsence | null
   >(null);
@@ -144,6 +147,7 @@ export function SwampProvider({ children }: { children: ReactNode }) {
     setAuthMode(info.mode);
     setVerificationBaseUri(info.verificationBaseUri ?? null);
     setLocal(info.local === true);
+    setHostRoot(info.hostRoot === true);
   }, []);
 
   const restoreSession = useCallback(async (signal?: AbortSignal) => {
@@ -412,6 +416,7 @@ export function SwampProvider({ children }: { children: ReactNode }) {
         authMode,
         verificationBaseUri,
         local,
+        hostRoot,
         workspaceAbsence,
         login,
         completeLogin,

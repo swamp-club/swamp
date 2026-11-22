@@ -272,7 +272,7 @@ re-read once.
 | Hub | `src/serve/local/workspace_hub.ts`, mounted by `src/serve/start/start_server.ts` (`hub` option) |
 | Child server | `src/serve/local/local_dashboard_server.ts` |
 | Actions | `src/serve/local/local_actions.ts` |
-| SPA | `packages/dashboard/src/client/workspace_path.ts`, `client/workspace_list.ts`, `components/WorkspaceSwitcher.tsx`, `views/ServeOnlyStates.tsx` |
+| SPA | `packages/dashboard/src/client/workspace_path.ts`, `client/workspace_list.ts`, `components/WorkspaceSwitcher.tsx`, `views/ServeOnlyStates.tsx`; under a serve host `components/HostWorkspaceSwitcher.tsx` instead |
 | Fixed repo | `src/serve/local/fixed_repo.ts` (`resolveFixedRepo`) |
 | Trusted hosts | `src/serve/local/trusted_hosts.ts` (`TrustedHosts`), on serve's parser in `src/serve/origin.ts` |
 | Tests | `integration/workspace_hub_test.ts`, `integration/local_dashboard_server_test.ts`, `integration/start_server_test.ts` (dashboard tab lifetime), unit tests beside each file |

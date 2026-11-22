@@ -25,6 +25,7 @@ import type { AuditEvent } from "../domain/serve_audit/audit_event.ts";
 import type { AuditSink } from "../domain/serve_audit/audit_sink.ts";
 import {
   type AuthExchangeDeps,
+  authInfoBody,
   exchangeTarget,
   handleAuthExchange,
 } from "./auth_exchange_handler.ts";
@@ -335,4 +336,28 @@ Deno.test("exchangeTarget: a workspace's name is what its address adds to the ro
       "--root-address",
     );
   }
+});
+
+Deno.test("authInfoBody: names a host root only when asked, leaving every other body unchanged", () => {
+  const oauth = {
+    mode: "oauth" as const,
+    oauthProvider: "https://club.example",
+  };
+  assertEquals(authInfoBody(oauth, false), {
+    mode: "oauth",
+    verificationBaseUri: "https://club.example",
+  });
+  assertEquals(authInfoBody(oauth, true, true), {
+    mode: "oauth",
+    verificationBaseUri: "https://club.example",
+    exchange: true,
+    hostRoot: true,
+  });
+  assertEquals(
+    authInfoBody({ mode: "token", oauthProvider: "" }, false, true),
+    {
+      mode: "token",
+      hostRoot: true,
+    },
+  );
 });
