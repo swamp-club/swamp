@@ -190,7 +190,7 @@ function AppShell({ area }: { area: "apps" | "dashboard" }) {
 }
 
 function Dashboard({ onLogout }: { onLogout: () => void }) {
-  const { local, authMode } = useSwamp();
+  const { local, hostRoot, authMode } = useSwamp();
   const {
     view,
     detail,
@@ -292,6 +292,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
         canManageApps={apps.canManage}
         pendingAppCount={apps.pendingCount}
         local={local}
+        hostRoot={hostRoot}
         authMode={authMode}
         onLogout={onLogout}
         collapsed={collapsed}

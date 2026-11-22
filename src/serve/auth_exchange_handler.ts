@@ -82,9 +82,11 @@ export function exchangeOffered(
   return target !== undefined && mode !== "none";
 }
 
+/** hostRoot tells the dashboard it may ask this serve for workspace.list */
 export function authInfoBody(
   authConfig: Pick<ServeAuthConfig, "mode" | "oauthProvider">,
   offersExchange: boolean,
+  hostRoot = false,
 ): Record<string, string | boolean> {
   return {
     mode: authConfig.mode,
@@ -92,6 +94,7 @@ export function authInfoBody(
       ? { verificationBaseUri: authConfig.oauthProvider }
       : {}),
     ...(offersExchange ? { exchange: true } : {}),
+    ...(hostRoot ? { hostRoot: true } : {}),
   };
 }
 

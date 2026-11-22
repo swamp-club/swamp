@@ -42,6 +42,8 @@ export interface AuthInfo {
   local?: true;
   /** a host's workspace that takes a sign-in code from its root at `/auth/exchange` */
   exchange?: true;
+  /** a serve host's root, which answers `workspace.list` */
+  hostRoot?: true;
 }
 
 /** Why a workspace page has no workspace to sign in to. */
@@ -338,16 +340,15 @@ export function socketProtocols(
 /** Validates an `/auth/info` body. */
 export function parseAuthInfo(value: unknown): AuthInfo | null {
   if (typeof value !== "object" || value === null) return null;
-  const { mode, verificationBaseUri, local, exchange } = value as Record<
-    string,
-    unknown
-  >;
+  const { mode, verificationBaseUri, local, exchange, hostRoot } =
+    value as Record<string, unknown>;
   if (mode !== "none" && mode !== "token" && mode !== "oauth") return null;
   return {
     mode,
     ...(typeof verificationBaseUri === "string" ? { verificationBaseUri } : {}),
     ...(local === true ? { local } : {}),
     ...(exchange === true ? { exchange } : {}),
+    ...(hostRoot === true ? { hostRoot } : {}),
   };
 }
 

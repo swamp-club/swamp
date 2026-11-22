@@ -99,6 +99,7 @@ function serveHandler(spec: ServeSpec): Deno.ServeHandler<Deno.NetAddr> {
       return Response.json(authInfoBody(
         { mode: "token", oauthProvider: "https://club.example" },
         spec.hosted,
+        !spec.hosted,
       ));
     }
     if (spec.distDir !== undefined) {
@@ -278,7 +279,7 @@ Deno.test("serve host dashboard: a workspace's /auth/info is a serve's, never th
     const info = await (await host.request("/w/team/auth/info")).json();
     assertEquals(info, { mode: "token", exchange: true });
     const root = await (await host.request("/auth/info")).json();
-    assertEquals(root, { mode: "token" });
+    assertEquals(root, { mode: "token", hostRoot: true });
   });
 });
 
@@ -347,5 +348,23 @@ Deno.test("serve host dashboard: an unknown workspace is 404 and a stopped one i
     const body = await stopped.json();
     assertEquals(body.state, "stopped");
     assertStringIncludes(body.error, "not running");
+  });
+});
+
+Deno.test("serve host dashboard: the switcher's root check answers 401 to a browser signed in only to a workspace, and the root's session once it signs in there", async () => {
+  await withHost(async (host) => {
+    assertEquals((await signIn(host, "/w/team", "team.secret")).status, 204);
+    const info = await (await host.request("/auth/info")).json();
+    assertEquals(info.hostRoot, true);
+    const before = await host.request("/auth/dashboard/session");
+    assertEquals(before.status, 401);
+    await before.body?.cancel();
+
+    assertEquals((await signIn(host, "", "root.secret")).status, 204);
+    const after = await host.request("/auth/dashboard/session");
+    assertEquals(await after.json(), { authenticated: true });
+    // the root's socket and reads go to its own paths, which carry its cookie
+    assertEquals(await whoami(host, ""), "root");
+    assertEquals(await whoami(host, "/w/team"), "team");
   });
 });

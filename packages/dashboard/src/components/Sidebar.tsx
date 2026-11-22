@@ -27,6 +27,7 @@ import { Logo } from "./Logo.tsx";
 import { NavIcon } from "./nav_icons.tsx";
 import { ThemeToggle } from "./ThemeToggle.tsx";
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher.tsx";
+import { HostWorkspaceSwitcher } from "./HostWorkspaceSwitcher.tsx";
 import { operationsOff, showsLogout } from "./sidebar_state.ts";
 import type { AuthMode } from "../client/connection.ts";
 import {
@@ -240,6 +241,8 @@ interface SidebarProps {
    * webhooks are off and there is no login to leave.
    */
   local?: boolean;
+  /** The page's serve is a host's root; from its `/auth/info`. */
+  hostRoot?: boolean;
   authMode?: AuthMode | null;
   onLogout: () => void;
   collapsed: boolean;
@@ -256,6 +259,23 @@ interface SidebarProps {
   themeStorage?: () => Storage;
 }
 
+/**
+ * Which list the switcher reads: the local hub's, a serve host's root, or
+ * none. Nothing until `/auth/info` answers, so a local page never asks a root.
+ */
+export function workspaceSwitcherKind(
+  { workspace, local, hostRoot, authMode }: {
+    workspace: string | null;
+    local: boolean;
+    hostRoot: boolean;
+    authMode: AuthMode | null;
+  },
+): "local" | "host" | null {
+  if (authMode === null) return null;
+  if (local) return workspace === null ? null : "local";
+  return workspace !== null || hostRoot ? "host" : null;
+}
+
 export function Sidebar({
   activeView,
   appCount = 0,
@@ -268,6 +288,7 @@ export function Sidebar({
   swampifyVisible = false,
   auditEnabled = true,
   local = false,
+  hostRoot = false,
   authMode = null,
   onLogout,
   collapsed,
@@ -281,6 +302,12 @@ export function Sidebar({
   const [logoutStep, setLogoutStep] = useState<LogoutStep>(initialLogoutStep);
   const [flyout, setFlyout] = useState<FlyoutAnchor | null>(null);
   const off = operationsOff({ auditEnabled, local });
+  const switcher = workspaceSwitcherKind({
+    workspace: PAGE_WORKSPACE,
+    local,
+    hostRoot,
+    authMode,
+  });
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const footerRef = useRef<HTMLDivElement>(null);
   const confirmRef = useRef<HTMLDivElement>(null);
@@ -426,9 +453,11 @@ export function Sidebar({
         </button>
       </div>
 
-      {/* only the local hub answers the switcher's workspace list */}
-      {PAGE_WORKSPACE !== null && local && !collapsed && (
+      {!collapsed && switcher === "local" && PAGE_WORKSPACE !== null && (
         <WorkspaceSwitcher current={PAGE_WORKSPACE} />
+      )}
+      {!collapsed && switcher === "host" && (
+        <HostWorkspaceSwitcher current={PAGE_WORKSPACE} />
       )}
 
       <div style={{ padding: "0 8px", marginBottom: 24 }}>

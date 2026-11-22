@@ -19,10 +19,10 @@
 
 /** @jsxRuntime automatic */
 /** @jsxImportSource react */
-import { assert, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryStorage } from "../client/memory_storage_test_helpers.ts";
-import { Sidebar } from "./Sidebar.tsx";
+import { Sidebar, workspaceSwitcherKind } from "./Sidebar.tsx";
 import { NAV_ICONS } from "./nav_icons.tsx";
 import type { LogoutStep } from "./logout_confirm.ts";
 
@@ -132,4 +132,21 @@ Deno.test("Sidebar: apps open under /apps; only a manager sees Manage apps", () 
   assert(manager.includes("Manage apps"));
   assert(!manager.includes('href="/apps"'));
   assert(!render().includes('href="/apps"'));
+});
+
+Deno.test("workspaceSwitcherKind: the local hub's list on a local workspace page, the host's on a hosted page or a host root, none elsewhere", () => {
+  const kind = (
+    workspace: string | null,
+    local: boolean,
+    hostRoot: boolean,
+    authMode: "none" | "token" | "oauth" | null = "oauth",
+  ) => workspaceSwitcherKind({ workspace, local, hostRoot, authMode });
+  assertEquals(kind("repo1", true, false, "none"), "local");
+  assertEquals(kind(null, true, false, "none"), null);
+  assertEquals(kind("edge-dns", false, false), "host");
+  assertEquals(kind(null, false, true), "host");
+  assertEquals(kind(null, false, false), null);
+  // before /auth/info answers, a local page is not yet known to be local
+  assertEquals(kind("repo1", false, false, null), null);
+  assertEquals(kind(null, false, true, null), null);
 });

@@ -29,10 +29,10 @@ import {
 } from "./connection.ts";
 import type { ProbeResult } from "./reconnect.ts";
 
-function getWsUrl(): string {
+function getWsUrl(socketPath: string): string {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   // Ask serve to send large responses as gzip binary frames.
-  return `${proto}//${location.host}${serverPath("/")}?compress=gzip`;
+  return `${proto}//${location.host}${socketPath}?compress=gzip`;
 }
 
 export const browserTimers: Timers = {
@@ -64,8 +64,12 @@ async function gunzipFrame(data: ArrayBuffer): Promise<string> {
 export function openServeSocket(
   protocols: string[] | undefined,
   handlers: SocketHandlers,
+  socketPath: string = serverPath("/"),
 ): WebSocket {
-  const ws = new WebSocket(getWsUrl(), localSocketProtocols() ?? protocols);
+  const ws = new WebSocket(
+    getWsUrl(socketPath),
+    localSocketProtocols() ?? protocols,
+  );
   ws.binaryType = "arraybuffer";
   ws.onopen = () => handlers.onOpen();
   // Every frame goes through one chain so a text frame never overtakes an
