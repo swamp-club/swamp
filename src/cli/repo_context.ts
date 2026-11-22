@@ -2747,6 +2747,8 @@ export interface ModelLockResult {
    */
   heldLockIds: readonly string[];
   lentLocks: LentLocks;
+  /** the behaviors these locks hold, which a nested runModel need not lock */
+  lockedModels: ReadonlyArray<{ modelType: string; modelId: string }>;
   leaseLost?: AbortSignal;
   /**
    * for a caller that has withdrawn from its run every version a refused
@@ -4385,6 +4387,7 @@ export async function acquireModelLocks(
     synced,
     heldLockIds: lockIds(),
     lentLocks,
+    lockedModels: [...heldLockModels],
     leaseLost: leaseLost.signal,
     acknowledgeRefusals,
   };
@@ -4395,10 +4398,19 @@ export async function acquireModelLocks(
  * generator's body runs in the context of whoever iterates it
  */
 export function runUnderModelLocks<T>(
-  lockResult: Pick<ModelLockResult, "lentLocks"> | undefined,
+  lockResult:
+    | Pick<ModelLockResult, "lentLocks">
+      & Partial<
+        Pick<ModelLockResult, "lockedModels">
+      >
+    | undefined,
   fn: () => Promise<T>,
 ): Promise<T> {
-  return processLockHolderMarker.runHolding(lockResult?.lentLocks ?? [], fn);
+  return processLockHolderMarker.runHolding(
+    lockResult?.lentLocks ?? [],
+    fn,
+    lockResult?.lockedModels ?? [],
+  );
 }
 
 /**

@@ -66,6 +66,7 @@ import {
 import { remoteOutputsOf } from "../../domain/remote/remote_dispatch.ts";
 import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import type { UnifiedDataRepository } from "../../domain/data/repositories.ts";
+import type { NestedRunLock } from "../../domain/models/model_invocation_service.ts";
 import type { WrittenVersion } from "../../domain/datastore/datastore_sync_service.ts";
 import type { OutputRepository } from "../../domain/models/repositories.ts";
 import type { VaultService } from "../../domain/vaults/vault_service.ts";
@@ -334,6 +335,8 @@ export interface ModelMethodRunDeps {
     persistedProvenance?: ProvenanceMap,
   ) => Promise<void>;
   createExecutionService: () => MethodExecutionService;
+  /** the lock a context.runModel nested run takes on its target */
+  nestedRunLock?: NestedRunLock;
   /** lowers the run's attribute budget; production runs leave it at the default */
   resourceAttributeCapBytes?: number;
   createVaultService: () => Promise<VaultService>;
@@ -1454,6 +1457,7 @@ export async function* modelMethodRun(
                 (executionService as { modelInvocationService?: unknown })
                   .modelInvocationService = new ModelInvocationService({
                     executionService,
+                    nestedRunLock: deps.nestedRunLock,
                     commonDeps,
                     evaluationService,
                     repoDir: deps.repoDir,

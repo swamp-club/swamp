@@ -112,7 +112,7 @@ import {
   typeSearch,
   type TypeSearchDeps,
 } from "../../libswamp/types/search.ts";
-import { createModelMethodRunDeps } from "../deps.ts";
+import { createModelMethodRunDeps, createStepLockHook } from "../deps.ts";
 import { withRunSyncGate, withSharedSyncGate } from "../sync_gate.ts";
 import { createCommandTelemetry } from "../telemetry.ts";
 import { serializeEvent } from "../serializer.ts";
@@ -1018,6 +1018,13 @@ export async function handleModelMethodRun(
             });
             const runDeps: typeof deps = {
               ...deps,
+              nestedRunLock: createStepLockHook(
+                ctx.repoDir,
+                ctx.repoContext,
+                ctx.datastoreConfig,
+                ctx.syncService,
+                ctx.syncGate,
+              ),
               onWrittenVersions: (versions) => {
                 for (const version of versions) written.push(version);
               },
@@ -1395,6 +1402,13 @@ export async function handleModelMethodRun(
             });
             const runDeps: typeof deps = {
               ...deps,
+              nestedRunLock: createStepLockHook(
+                ctx.repoDir,
+                ctx.repoContext,
+                ctx.datastoreConfig,
+                ctx.syncService,
+                ctx.syncGate,
+              ),
               onWrittenVersions: (versions) => {
                 for (const version of versions) written.push(version);
               },

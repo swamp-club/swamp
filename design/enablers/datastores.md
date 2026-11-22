@@ -10660,7 +10660,12 @@ clears the first two from its own env:
   so its children fall back to the pid match rather than wait on the step's
   own lock), and a CLI or `swamp serve` method run
   (`runUnderModelLocks`, `src/cli/repo_context.ts`). Scopes nest, so
-  `runModel()` and other in-process nesting carry the outer run's locks.
+  `runModel()` and other in-process nesting carry the outer run's locks. A
+  scope also records the behaviors its locks hold (`runHolding`'s third
+  argument, read by `holdsModel`): a `runModel()` nested run takes its
+  target's lock through the run's step lock hook and runs in a scope of its
+  own, unless a scope above it already holds the target, and pushes the
+  target's writes under that lock before the caller resumes.
   `integration/model_lock_scope_rules_test.ts` pins the model-run sites.
 
 A run requested through `--server` crosses no process boundary to inherit

@@ -185,3 +185,63 @@ Deno.test("a run's locks reach a hop only through a hand-off that is ended", asy
     );
   }
 });
+
+/**
+ * a context.runModel nested run takes its target's lock only through the
+ * nestedRunLock its service is built with; a site that leaves it out runs
+ * nested methods unlocked, and nothing fails, so the sites are pinned
+ */
+const NESTED_RUN_LOCKED = [
+  "src/cli/commands/model_method_run.ts",
+  "src/domain/workflows/execution_service.ts",
+  "src/serve/handlers/model_handlers.ts",
+];
+
+/** Built-in control-plane runs whose models never call runModel. */
+const NESTED_RUN_EXEMPT = [
+  "src/cli/commands/access_grant.ts",
+  "src/cli/commands/access_group.ts",
+  "src/cli/commands/access_integration.ts",
+  "src/cli/commands/serve.ts",
+  "src/cli/commands/worker_prune.ts",
+  "src/libswamp/access/token_create.ts",
+  "src/libswamp/access/token_revoke.ts",
+  "src/libswamp/access/token_rotate.ts",
+  "src/libswamp/worker/token_create.ts",
+  "src/libswamp/worker/token_revoke.ts",
+  "src/libswamp/worker/token_rotate.ts",
+  "src/serve/dispatch_service.ts",
+  "src/serve/handlers/admin_handlers.ts",
+  "src/serve/worker_gateway.ts",
+];
+
+Deno.test("every site that starts a method run hands its nested runs a target lock", async () => {
+  const sites: string[] = [];
+  const unlocked: string[] = [];
+  for await (const filePath of productionSourceFiles(SRC_DIR)) {
+    const source = await Deno.readTextFile(filePath);
+    const site = repoRelative(filePath);
+    const starts = callCount(source, "modelMethodRun") +
+      (/\bnew ModelInvocationService\s*\(/.test(source) &&
+          !site.startsWith("src/libswamp/")
+        ? 1
+        : 0);
+    if (starts === 0 || site === "src/libswamp/models/run.ts") continue;
+    sites.push(site);
+    if (
+      NESTED_RUN_LOCKED.includes(site) &&
+      !/\bnestedRunLock\s*:/.test(source)
+    ) {
+      unlocked.push(site);
+    }
+  }
+
+  assertPinnedSet(
+    sites.sort(),
+    [...NESTED_RUN_LOCKED, ...NESTED_RUN_EXEMPT].sort(),
+    "files that start method runs",
+    "Pass nestedRunLock (the run's step lock hook) so a context.runModel " +
+      "target is locked, then add the file to NESTED_RUN_LOCKED.",
+  );
+  assertEquals(unlocked, [], "these sites must pass nestedRunLock");
+});

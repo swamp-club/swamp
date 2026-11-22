@@ -1728,6 +1728,7 @@ export class DefaultStepExecutor implements StepExecutor {
       );
       executionService.modelInvocationService = new ModelInvocationService({
         executionService,
+        nestedRunLock: this.stepLockHook,
         commonDeps: {
           dataRepository: unifiedDataRepo,
           definitionRepository: definitionRepo,
@@ -2663,7 +2664,16 @@ export class DefaultStepExecutor implements StepExecutor {
           });
         const result = heldLockIds === undefined
           ? await invoke()
-          : await processLockHolderMarker.runHolding(heldLockIds, invoke);
+          : await processLockHolderMarker.runHolding(
+            heldLockIds,
+            invoke,
+            this.stepLockHook
+              ? [{
+                modelType: modelType.normalized,
+                modelId: originalDefinition.id,
+              }]
+              : [],
+          );
 
         if (heartbeatInterval) clearInterval(heartbeatInterval);
         if (runTracker) runTracker.complete(output.id, "completed");

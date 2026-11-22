@@ -108,8 +108,14 @@ interface HeldScope {
   readonly parent: HeldScope | undefined;
   readonly lent: LentLocks | undefined;
   readonly fixed: readonly string[];
+  /** behavior keys whose per-model lock this scope's run holds */
+  readonly models: readonly string[];
   live: number;
   reclaiming: Promise<void> | undefined;
+}
+
+function heldModelKey(modelType: string, modelId: string): string {
+  return JSON.stringify([modelType, modelId]);
 }
 
 function scopeChain(scope: HeldScope | undefined): HeldScope[] {
@@ -190,15 +196,28 @@ export class LockHolderMarker {
   runHolding<T>(
     locks: readonly string[] | LentLocks,
     fn: () => Promise<T>,
+    models: ReadonlyArray<{ modelType: string; modelId: string }> = [],
   ): Promise<T> {
     const lent = "reclaim" in locks ? locks : undefined;
     return this.#held.run({
       parent: this.#held.getStore(),
       lent,
       fixed: lent ? [] : [...(locks as readonly string[])],
+      models: models.map((m) => heldModelKey(m.modelType, m.modelId)),
       live: 0,
       reclaiming: undefined,
     }, fn);
+  }
+
+  /**
+   * scoped to this async call chain, never the process, so parallel runs on
+   * one behavior in this process still wait for each other
+   */
+  holdsModel(modelType: string, modelId: string): boolean {
+    const key = heldModelKey(modelType, modelId);
+    return scopeChain(this.#held.getStore()).some((at) =>
+      at.models.includes(key)
+    );
   }
 
   /**
@@ -299,6 +318,7 @@ export class LockHolderMarker {
       parent: this.#held.getStore(),
       lent: undefined,
       fixed: adopted,
+      models: [],
       live: 0,
       reclaiming: undefined,
     }, fn);

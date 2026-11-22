@@ -25,6 +25,7 @@ import {
   parseExtensionManifest,
 } from "../extensions/extension_manifest.ts";
 import type {
+  DataHandle,
   InvocationTracking,
   MethodContext,
   ModelDefinition,
@@ -34,7 +35,19 @@ import type {
   RunModelResult,
 } from "./model.ts";
 import { ModelType } from "./model_type.ts";
-import type { MethodExecutionService } from "./method_execution_service.ts";
+import {
+  type MethodExecutionService,
+  recoveredDataHandles,
+} from "./method_execution_service.ts";
+import {
+  isUnpublishedDataError,
+  type WrittenVersion,
+} from "../datastore/datastore_sync_service.ts";
+import {
+  type LentLocks,
+  type LockHolderMarker,
+  processLockHolderMarker,
+} from "../datastore/lock_holder_marker.ts";
 import { findDefinitionByIdOrName } from "./model_lookup.ts";
 import { modelRegistry } from "./model.ts";
 import { resolveModelType } from "../extensions/extension_auto_resolver.ts";
@@ -94,8 +107,30 @@ function wordedFailure(
   };
 }
 
+/** the shape of a workflow step's lock hook, so either can be handed in */
+export interface NestedRunLockResult {
+  /** pushes the given versions under the lock, then releases it */
+  flush: (written?: readonly WrittenVersion[]) => Promise<void>;
+  heldLockIds?: readonly string[];
+  lentLocks?: LentLocks;
+  leaseLost?: AbortSignal;
+}
+
+export type NestedRunLock = (
+  modelType: string,
+  modelId: string,
+  step?: { readonly methodName: string; readonly behaviorName: string },
+  signal?: AbortSignal,
+) => Promise<NestedRunLockResult>;
+
 export interface ModelInvocationServiceDeps {
   executionService: MethodExecutionService;
+  /**
+   * takes the target's per-behavior lock; absent, nested runs take none, which
+   * only built-in runs whose models never call runModel may rely on
+   */
+  nestedRunLock?: NestedRunLock;
+  lockHolderMarker?: Pick<LockHolderMarker, "holdsModel" | "runHolding">;
   commonDeps: CommonMethodContextDeps;
   evaluationService: Pick<
     ExpressionEvaluationService,
@@ -125,6 +160,33 @@ type ResolveResult = ResolveSuccess | RunModelResult;
 
 function isResolveSuccess(r: ResolveResult): r is ResolveSuccess {
   return r.ok && "definition" in r;
+}
+
+/** ephemeral data is never published */
+function writtenVersionsOf(
+  handles: readonly DataHandle[],
+  modelType: string,
+  modelId: string,
+): WrittenVersion[] {
+  return handles
+    .filter((handle) => handle.metadata.lifetime !== "ephemeral")
+    .map((handle) => ({
+      modelType,
+      modelId,
+      dataName: handle.name,
+      version: handle.version,
+      dataId: handle.dataId,
+    }));
+}
+
+function failureOf(error: unknown): RunModelResult {
+  return {
+    ok: false,
+    error: {
+      message: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined,
+    },
+  };
 }
 
 function ancestorKey(modelType: string, method: string): string {
@@ -371,45 +433,71 @@ export class ModelInvocationService {
       };
     }
 
-    const childContext = buildMethodContext(
-      // buildMethodContext takes the redactor only from the common deps.
-      { ...this.#deps.commonDeps, redactor },
-      {
-        signal: callerContext.signal,
-        repoDir: this.#deps.repoDir,
-        modelType: modelDef.type,
-        modelId: childDefinition.id,
-        globalArgs: childDefinition.globalArguments,
-        definition: {
-          id: childDefinition.id,
-          name: childDefinition.name,
-          version: childDefinition.version,
-          tags: childDefinition.tags ?? {},
-        },
-        methodName,
-        logger: getLogger([
-          "swamp",
-          "model",
-          "run",
-          childDefinition.name,
+    // a scope that already holds the target (a self-call, or a call back into
+    // an ancestor's behavior) runs under that lock; taking it again would wait
+    // on ourselves
+    const marker = this.#deps.lockHolderMarker ?? processLockHolderMarker;
+    const target = { modelType: targetType, modelId: childDefinition.id };
+    let lock: NestedRunLockResult | undefined;
+    if (
+      this.#deps.nestedRunLock !== undefined &&
+      !marker.holdsModel(target.modelType, target.modelId)
+    ) {
+      try {
+        lock = await this.#deps.nestedRunLock(
+          target.modelType,
+          target.modelId,
+          { methodName, behaviorName: childDefinition.name },
+          callerContext.signal,
+        );
+      } catch (error) {
+        return failureOf(error);
+      }
+    }
+    const signal = lock?.leaseLost === undefined
+      ? callerContext.signal
+      : AbortSignal.any([callerContext.signal, lock.leaseLost]);
+
+    // built inside the run so nothing can throw between the lock and its flush
+    const run = async () => {
+      const childContext = buildMethodContext(
+        // buildMethodContext takes the redactor only from the common deps.
+        { ...this.#deps.commonDeps, redactor },
+        {
+          signal,
+          repoDir: this.#deps.repoDir,
+          modelType: modelDef.type,
+          modelId: childDefinition.id,
+          globalArgs: childDefinition.globalArguments,
+          definition: {
+            id: childDefinition.id,
+            name: childDefinition.name,
+            version: childDefinition.version,
+            tags: childDefinition.tags ?? {},
+          },
           methodName,
-        ]),
-        extensionFilesRoot: modelDef.extensionFilesRoot,
-        // The nested run's own vault values; the caller's bag is never passed.
-        vaultSecrets: secretBag,
-      },
-    );
-    childContext._invocationTracking = childTracking;
+          logger: getLogger([
+            "swamp",
+            "model",
+            "run",
+            childDefinition.name,
+            methodName,
+          ]),
+          extensionFilesRoot: modelDef.extensionFilesRoot,
+          // The nested run's own vault values; the caller's bag is never passed.
+          vaultSecrets: secretBag,
+        },
+      );
+      childContext._invocationTracking = childTracking;
 
-    const callerModelDef = modelRegistry.get(callerContext.modelType);
-    childContext._invocationProvenance = {
-      triggeredBy: "model",
-      parentOutputId: callerContext._currentOutputId,
-      callerExtension: callerModelDef?.extensionName,
-    };
+      const callerModelDef = modelRegistry.get(callerContext.modelType);
+      childContext._invocationProvenance = {
+        triggeredBy: "model",
+        parentOutputId: callerContext._currentOutputId,
+        callerExtension: callerModelDef?.extensionName,
+      };
 
-    try {
-      const result = await this.#deps.executionService.executeWorkflow(
+      return this.#deps.executionService.executeWorkflow(
         childDefinition,
         modelDef,
         methodName,
@@ -420,17 +508,42 @@ export class ModelInvocationService {
           argumentProvenance,
         },
       );
-
-      return { ok: true, resources: result.dataHandles ?? [] };
-    } catch (error) {
-      return {
-        ok: false,
-        error: {
-          message: error instanceof Error ? error.message : String(error),
-          stack: error instanceof Error ? error.stack : undefined,
-        },
-      };
+    };
+    if (lock === undefined) {
+      try {
+        const result = await run();
+        return { ok: true, resources: result.dataHandles ?? [] };
+      } catch (error) {
+        return failureOf(error);
+      }
     }
+
+    let handles: DataHandle[];
+    let outcome: RunModelResult;
+    try {
+      const result = await marker.runHolding(
+        lock.lentLocks ?? lock.heldLockIds ?? [],
+        run,
+        [target],
+      );
+      handles = result.dataHandles ?? [];
+      outcome = { ok: true, resources: handles };
+    } catch (error) {
+      handles = recoveredDataHandles(error);
+      outcome = failureOf(error);
+    }
+    // the target's writes are pushed under its lock before the caller resumes
+    try {
+      await lock.flush(
+        writtenVersionsOf(handles, target.modelType, target.modelId),
+      );
+    } catch (error) {
+      if (outcome.ok || !isUnpublishedDataError(error)) {
+        return failureOf(error);
+      }
+      logger.error("{message}", { message: error.message });
+    }
+    return outcome;
   }
 
   /**

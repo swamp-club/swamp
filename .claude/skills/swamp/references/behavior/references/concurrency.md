@@ -17,6 +17,23 @@ A method acquires its per-instance lock before execution and releases it in a
 `finally` block after the method completes. If the process crashes without
 releasing, the lock expires after the TTL.
 
+## Nested Runs (`context.runModel`)
+
+A nested run takes its target behavior's lock before the target's method runs,
+the same as a workflow step, so it waits for a `swamp behavior run` (or another
+nested run) on that behavior. Its writes are pushed under that lock, which is
+released before the calling method continues.
+
+- A method calling `runModel` on its own behavior, or on a behavior a run
+  further up the call chain holds, uses the lock already held and does not wait
+- Two behaviors whose methods call each other through `runModel` while both run
+  wait on each other's lock; the call fails with a lock timeout
+  (`SWAMP_LOCK_TIMEOUT_MS`, default 60 s) and `runModel` returns
+  `{ ok: false }`. Avoid such cycles, or call in one direction only
+- A child `swamp` process (a shell step, `Deno.Command`) whose method calls
+  `runModel` on a behavior its parent run holds waits on that lock, as a direct
+  child `swamp behavior run` of that behavior does
+
 ## Workflow Step Locking
 
 Workflow steps acquire per-behavior locks individually — the workflow does not
