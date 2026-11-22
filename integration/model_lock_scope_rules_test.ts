@@ -186,11 +186,7 @@ Deno.test("a run's locks reach a hop only through a hand-off that is ended", asy
   }
 });
 
-/**
- * a context.runModel nested run takes its target's lock only through the
- * nestedRunLock its service is built with; a site that leaves it out runs
- * nested methods unlocked, and nothing fails, so the sites are pinned
- */
+/** a site without nestedRunLock runs nested methods unlocked and nothing fails */
 const NESTED_RUN_LOCKED = [
   "src/cli/commands/model_method_run.ts",
   "src/domain/workflows/execution_service.ts",

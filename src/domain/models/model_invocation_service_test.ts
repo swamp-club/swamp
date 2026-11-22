@@ -43,10 +43,7 @@ import {
   type NestedRunLock,
 } from "./model_invocation_service.ts";
 import { LockHolderMarker } from "../datastore/lock_holder_marker.ts";
-import {
-  DataVersionConflictError,
-  type WrittenVersion,
-} from "../datastore/datastore_sync_service.ts";
+import type { WrittenVersion } from "../datastore/datastore_sync_service.ts";
 import { ModelType } from "./model_type.ts";
 import { Definition } from "../definitions/definition.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
@@ -2143,8 +2140,7 @@ Deno.test("ModelInvocationService: a failed nested run pushes what it wrote and 
       ];
       return Promise.reject(error);
     },
-    flush: (written) =>
-      Promise.reject(new DataVersionConflictError(written ?? [])),
+    flush: () => Promise.reject(new Error("remote unreachable")),
   });
   const result = await h.svc.invoke(
     { definition: "lock-a", method: "m1" },

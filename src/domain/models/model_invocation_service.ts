@@ -39,10 +39,7 @@ import {
   type MethodExecutionService,
   recoveredDataHandles,
 } from "./method_execution_service.ts";
-import {
-  isUnpublishedDataError,
-  type WrittenVersion,
-} from "../datastore/datastore_sync_service.ts";
+import type { WrittenVersion } from "../datastore/datastore_sync_service.ts";
 import {
   type LentLocks,
   type LockHolderMarker,
@@ -107,7 +104,7 @@ function wordedFailure(
   };
 }
 
-/** the shape of a workflow step's lock hook, so either can be handed in */
+/** a workflow step's lock hook satisfies this, so steps hand in their own */
 export interface NestedRunLockResult {
   /** pushes the given versions under the lock, then releases it */
   flush: (written?: readonly WrittenVersion[]) => Promise<void>;
@@ -459,7 +456,7 @@ export class ModelInvocationService {
       : AbortSignal.any([callerContext.signal, lock.leaseLost]);
 
     // built inside the run so nothing can throw between the lock and its flush
-    const run = async () => {
+    const run = () => {
       const childContext = buildMethodContext(
         // buildMethodContext takes the redactor only from the common deps.
         { ...this.#deps.commonDeps, redactor },
@@ -538,10 +535,11 @@ export class ModelInvocationService {
         writtenVersionsOf(handles, target.modelType, target.modelId),
       );
     } catch (error) {
-      if (outcome.ok || !isUnpublishedDataError(error)) {
-        return failureOf(error);
-      }
-      logger.error("{message}", { message: error.message });
+      if (outcome.ok) return failureOf(error);
+      // the method's own failure is what the caller must see
+      logger.error("Publishing a failed nested run's data failed: {message}", {
+        message: error instanceof Error ? error.message : String(error),
+      });
     }
     return outcome;
   }

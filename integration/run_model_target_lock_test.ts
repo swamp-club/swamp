@@ -72,7 +72,7 @@ function gate(): Gate {
 }
 
 async function withFixture(fn: (fx: Fixture) => Promise<void>) {
-  const dir = await Deno.makeTempDir({ prefix: "swamp-4992-" });
+  const dir = await Deno.makeTempDir({ prefix: "swamp-run-model-lock-" });
   const types: ModelType[] = [];
   try {
     await Deno.mkdir(join(dir, "models"), { recursive: true });
@@ -216,7 +216,6 @@ function registerCounter(
   });
 }
 
-/** a method that calls each target in turn through runModel */
 function registerCaller(
   type: ModelType,
   methods: Record<
