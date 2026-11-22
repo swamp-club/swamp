@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import { MemoryStorage } from "./memory_storage_test_helpers.ts";
 import {
   dashboardBaseFor,
   forgetLocalToken,
@@ -81,28 +82,6 @@ Deno.test("local token helpers: under serve (no workspace) nothing is added", ()
   assertEquals(withLocalToken(), {});
   assertEquals(localSocketProtocols(), undefined);
 });
-
-class MemoryStorage implements Storage {
-  #items = new Map<string, string>();
-  get length(): number {
-    return this.#items.size;
-  }
-  clear(): void {
-    this.#items.clear();
-  }
-  getItem(key: string): string | null {
-    return this.#items.get(key) ?? null;
-  }
-  key(index: number): string | null {
-    return [...this.#items.keys()][index] ?? null;
-  }
-  removeItem(key: string): void {
-    this.#items.delete(key);
-  }
-  setItem(key: string, value: string): void {
-    this.#items.set(key, value);
-  }
-}
 
 function memoryStores(): TokenStores & {
   sessionStore: MemoryStorage;

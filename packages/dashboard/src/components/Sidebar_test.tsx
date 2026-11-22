@@ -21,6 +21,7 @@
 /** @jsxImportSource react */
 import { assert, assertStringIncludes } from "@std/assert";
 import { renderToStaticMarkup } from "react-dom/server";
+import { MemoryStorage } from "../client/memory_storage_test_helpers.ts";
 import { Sidebar } from "./Sidebar.tsx";
 import { NAV_ICONS } from "./nav_icons.tsx";
 import type { LogoutStep } from "./logout_confirm.ts";
@@ -55,6 +56,7 @@ function render(
       drawerOpen={false}
       onCloseDrawer={() => {}}
       initialLogoutStep={options.logoutStep}
+      themeStorage={() => new MemoryStorage()}
     />,
   );
 }
