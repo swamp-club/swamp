@@ -522,13 +522,13 @@ export class DatastoreLockLeases {
     // Taken for a caller that hung up or cancelled, or during shutdown:
     // nobody will renew or release it, so it goes now.
     if (signal.aborted || cancelled() || this.#disposed) {
-      await lock.release();
+      await this.#releaseTaken(key, lock);
       return { kind: "held", heldBy: "serve" };
     }
     // Checked again now the lock is taken: concurrent acquires by one
     // principal must not pass the cap together.
     if (this.#heldBy(principal) >= this.#maxPerPrincipal) {
-      await lock.release();
+      await this.#releaseTaken(key, lock);
       return { kind: "too-many" };
     }
     let fence: number | undefined;
@@ -538,7 +538,7 @@ export class DatastoreLockLeases {
       try {
         base = await request.fenced();
       } catch (error) {
-        await lock.release();
+        await this.#releaseTaken(key, lock);
         throw error;
       }
       fence = Math.max(base.leaseFence ?? 0, this.#issued.get(key) ?? 0) + 1;
@@ -549,7 +549,7 @@ export class DatastoreLockLeases {
     // cancelled, or shutdown begun, meanwhile; nobody would renew or release
     // the lease.
     if (signal.aborted || cancelled() || this.#disposed) {
-      await lock.release();
+      await this.#releaseTaken(key, lock);
       return { kind: "held", heldBy: "serve" };
     }
     const lease: Lease = {
@@ -1123,6 +1123,15 @@ export class DatastoreLockLeases {
     }
     this.#waiters.get(lease.key)?.[0]?.wake();
     return failure;
+  }
+
+  /** a lock given up before it became a lease hands the next waiter its turn */
+  async #releaseTaken(key: string, lock: TryLock): Promise<void> {
+    try {
+      await lock.release();
+    } finally {
+      this.#waiters.get(key)?.[0]?.wake();
+    }
   }
 
   /** a waiter that gave up hands its turn to the next one */

@@ -19,6 +19,7 @@
 
 import { assertEquals } from "@std/assert";
 import { ModelType } from "../models/model_type.ts";
+import { CONTROL_PLANE_MODEL_TYPES } from "../models/control_plane_types.ts";
 import {
   ACCESS_CONTROL_MODEL_TYPES,
   forwardedCommitClass,
@@ -120,5 +121,26 @@ Deno.test("forwardedCommitClass: no shared intent can write a record a resolver 
         );
       }
     }
+  }
+});
+
+Deno.test("forwardedCommitClass: every control-plane type is classed as access control or as fleet", () => {
+  // a new control-plane type fails here until it is placed: an access-control
+  // type left out would be judged shared
+  const fleet = new Set([
+    "swamp/worker",
+    "swamp/step-lease",
+    "swamp/pending-dispatch",
+    "swamp/fleet-probe",
+  ]);
+  for (const type of CONTROL_PLANE_MODEL_TYPES) {
+    assertEquals(
+      ACCESS_CONTROL_MODEL_TYPES.has(type) !== fleet.has(type),
+      true,
+      type,
+    );
+  }
+  for (const type of ACCESS_CONTROL_MODEL_TYPES) {
+    assertEquals(CONTROL_PLANE_MODEL_TYPES.includes(type), true, type);
   }
 });

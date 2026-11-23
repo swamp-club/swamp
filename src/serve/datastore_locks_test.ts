@@ -1633,3 +1633,39 @@ Deno.test("DatastoreLockLeases.acquire: a waiter that gives up hands its turn to
   await subject.release("user:carol", granted.lease.leaseId);
   await subject.dispose();
 });
+
+Deno.test("DatastoreLockLeases.acquire: a waiter that takes the lock and gives it straight back wakes the next", async () => {
+  const locks = fakeLocks();
+  const subject = leases(locks, {
+    retryIntervalMs: 60_000,
+    maxLeasesPerPrincipal: 1,
+  });
+  const first = await subject.acquire(request("user:alice"));
+  assert(first.kind === "acquired");
+  const bob = subject.acquire(request("user:bob", { waitMs: 30_000 }));
+  const carol = subject.acquire(request("user:carol", { waitMs: 30_000 }));
+  await waitFor(
+    () => subject.waitingForTesting(lockKeyOf(model)) === 2,
+    "2 waiting",
+  );
+  // bob reaches the cap while waiting, so takes the lock only to refuse it
+  const other = await subject.acquire({
+    ...request("user:bob"),
+    target: { kind: "workflow-run", runId: RUN },
+  });
+  assert(other.kind === "acquired");
+  let granted = false;
+  const carolGranted = carol.then((outcome) => {
+    granted = true;
+    return outcome;
+  });
+  await subject.release("user:alice", first.lease.leaseId);
+  assertEquals((await bob).kind, "too-many");
+  // bounded well inside the retry interval: only bob's hand-on wakes carol
+  await waitFor(() => granted, "carol granted");
+  const outcome = await carolGranted;
+  assert(outcome.kind === "acquired");
+  await subject.release("user:carol", outcome.lease.leaseId);
+  await subject.release("user:bob", other.lease.leaseId);
+  await subject.dispose();
+});

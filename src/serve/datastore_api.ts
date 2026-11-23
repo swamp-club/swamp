@@ -1369,9 +1369,8 @@ class DatastoreApi {
       return adoptionPendingResponse();
     }
     const referenced = referencedChunks(ops);
-    // Every chunk named and not carried is checked under the forwarded
-    // lock, which every caller's commits share: bound that work, before
-    // any carried chunk is read. The envelope lists what the body carries.
+    // Every chunk named and not carried is checked again in the commit's
+    // forwarded section: bound that work, before any carried chunk is read. The envelope lists what the body carries.
     const declared = new Set(envelope.chunks.map((chunk) => chunk.sha256));
     if (
       referenced.filter((hash) => !declared.has(hash)).length >
@@ -1414,8 +1413,8 @@ class DatastoreApi {
       principal: this.#caller.principal,
       ops,
     };
-    // Content is checked outside the forwarded lock, which every caller's
-    // commits share: the checks read definitions and the catalog. Every
+    // Content is checked before the commit's forwarded section: the checks
+    // read definitions and the catalog. Every
     // record they read is guarded below. A retry of a commit that already
     // landed is answered as it, without judging its content again.
     let content: ForwardedContentAuthority | undefined;
@@ -1470,7 +1469,7 @@ class DatastoreApi {
         ));
       if (!checked.ok) return refusalResponse(checked);
     }
-    // Authorised again under the datastore's forwarded-commit lock, once the
+    // Authorised again in the commit's forwarded section, once the
     // content is in: key ownership cannot change between the check and the
     // append, and a grant revoked during the upload applies.
     const commitClass = content?.usedPredicate() === true
@@ -1561,7 +1560,7 @@ class DatastoreApi {
           return undefined;
         });
         if (notProvided !== undefined) return { notProvided };
-        // Judged under the forwarded lock, as leases change hands between
+        // Judged in the forwarded section, as leases change hands between
         // commits: the live fenced lease covering the partition decides, once
         // any kept lease on it is adopted.
         if (this.#adoptionPendingOn(partition)) {
