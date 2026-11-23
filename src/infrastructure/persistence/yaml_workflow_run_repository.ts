@@ -2529,6 +2529,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
         // save() writes the record before it queues its entry, so this read
         // is at least as new as every entry already written.
         const path = this.getPath(workflowId, run.id);
+        const statAt = this.now();
         const before = await statRecord(path);
         const current = await this.findById(workflowId, run.id);
         const after = await statRecord(path);
@@ -2539,7 +2540,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
           id: current.id,
           entry: indexEntryOf(
             summary,
-            sameFingerprint(before, after, this.now()),
+            sameFingerprint(before, after, statAt),
           ),
         }], false);
       });

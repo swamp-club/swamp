@@ -127,10 +127,14 @@ Three things do write back:
 
 ## Known limits
 
-- **A write the stat cannot see.** Two writes to a record in one millisecond at
-  one size, or a platform with only mtime and size restoring both, look like one
-  version. A run's record is replaced whole, so the inode tells them apart wherever
-  there is one.
+- **A write the stat cannot see.** Deno reports ctime in whole seconds, so a
+  same-size rewrite in place with its mtime set back, in the second of a stat,
+  leaves that stat unchanged. No row is kept for a stat whose mtime or ctime is
+  less than two seconds old (or in the future) when it is taken, with the clock
+  read before the stat; a later read backfills it (swamp-club#5016). A save is
+  always inside that window, so its row is usually left to the first read after
+  it. A platform with only mtime and size, restoring both, still looks like one
+  version.
 - **Order of two finishes.** A save stats its record just after writing it, and
   keeps no row if the size is not what it wrote. Another save of that output
   landing in between, at the same size, leaves this save's values under the other's

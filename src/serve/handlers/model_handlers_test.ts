@@ -2333,7 +2333,14 @@ Deno.test("handleModelUsageSummary: counts only what the principal may read, and
 Deno.test("handleModelUsageSummary: a warm read answers from the output summaries, with a window or without one", async () => {
   await withTempDir(async (dir) => {
     const definitionRepo = new YamlDefinitionRepository(dir);
-    const outputRepo = new YamlOutputRepository(dir);
+    const outputRepo = new YamlOutputRepository(
+      dir,
+      undefined,
+      undefined,
+      undefined,
+      // past the racy window, so the saved records get rows
+      () => Date.now() + 60_000,
+    );
     const model = await saveEditModel(definitionRepo, "readable");
     await saveUsageOutput(outputRepo, model, "execute", "2026-01-01T00:00:00Z");
     await saveUsageOutput(

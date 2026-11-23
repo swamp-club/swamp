@@ -123,6 +123,9 @@ async function withExportedSpans(
   );
 }
 
+/** a clock past the racy window, so a record written by the test gets a row */
+const settledClock = () => Date.now() + 60_000;
+
 function attribute(span: OtlpSpan, key: string): OtlpValue | undefined {
   return span.attributes.find((a) => a.key === key)?.value;
 }
@@ -189,6 +192,9 @@ async function initRepo(dir: string): Promise<Repo> {
     outputs: new YamlOutputRepository(
       repoDir,
       resolver.resolvePath(SWAMP_SUBDIRS.outputs),
+      undefined,
+      undefined,
+      settledClock,
     ),
   };
 }
