@@ -90,7 +90,7 @@ export type InstallationInspection =
   | { state: "truncated"; path: string; missing: string[] }
   | { state: "legacy"; paths: string[] };
 
-/** a local source that failed to index; error is empty for rows recorded before errors were kept */
+/** a local source that failed to index; error is empty when none was recorded */
 export interface FailedLocalSource {
   file: string;
   error: string;
