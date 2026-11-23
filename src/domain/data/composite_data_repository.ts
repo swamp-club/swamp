@@ -26,6 +26,8 @@ import type { Namespace } from "./namespace.ts";
 import type {
   AgedDataVersionPage,
   ContentAvailability,
+  DeclaredGarbageBatchOptions,
+  DeclaredGarbageBatchResult,
   DeferredWriteReceipt,
   FindAllForTypeOptions,
   FindAllGlobalOptions,
@@ -234,6 +236,20 @@ export class CompositeUnifiedDataRepository implements UnifiedDataRepository {
       return Promise.resolve({ versions: [] });
     }
     return this.persistent.findVersionsCreatedBefore(cutoff, options);
+  }
+
+  collectDeclaredGarbageBatch(
+    options: DeclaredGarbageBatchOptions,
+  ): Promise<DeclaredGarbageBatchResult> {
+    if (!this.persistent.collectDeclaredGarbageBatch) {
+      return Promise.resolve({
+        versionsRemoved: 0,
+        bytesReclaimed: 0,
+        names: 0,
+        failed: 0,
+      });
+    }
+    return this.persistent.collectDeclaredGarbageBatch(options);
   }
 
   hasPendingVersions(

@@ -1005,3 +1005,54 @@ Deno.test("isExpired: workflow lifetime — not expired when workflowId missing"
 
   assertEquals(await service.isExpired(data), false);
 });
+
+Deno.test("deleteVersionsBeyondDeclaredLimits: threads the cursor through the scan and reports more until it is spent", async () => {
+  const cursors: Array<string | undefined> = [];
+  const pages = ["p1", undefined];
+  const repo = Object.assign(new MockDataRepository(), {
+    collectDeclaredGarbageBatch: (options: { cursor?: string }) => {
+      cursors.push(options.cursor);
+      return Promise.resolve({
+        versionsRemoved: 4,
+        bytesReclaimed: 40,
+        names: 1,
+        failed: 0,
+        cursor: pages.shift(),
+      });
+    },
+  });
+  const service = new DefaultDataLifecycleService(
+    repo as never,
+    new MockWorkflowRunRepository() as never,
+  );
+  const scan: { cursor?: string } = {};
+  const first = await service.deleteVersionsBeyondDeclaredLimits({
+    limit: 4,
+    scan,
+    now: 0,
+  });
+  const second = await service.deleteVersionsBeyondDeclaredLimits({
+    limit: 4,
+    scan,
+    now: 0,
+  });
+  assertEquals(cursors, [undefined, "p1"]);
+  assertEquals([first.more, second.more], [true, false]);
+  assertEquals(first.versionsDeleted, 4);
+  assertEquals(scan.cursor, undefined);
+});
+
+Deno.test("deleteVersionsBeyondDeclaredLimits: a repository that cannot page deletes nothing", async () => {
+  const service = new DefaultDataLifecycleService(
+    new MockDataRepository() as never,
+    new MockWorkflowRunRepository() as never,
+  );
+  assertEquals(
+    await service.deleteVersionsBeyondDeclaredLimits({
+      limit: 10,
+      scan: {},
+      now: 0,
+    }),
+    { versionsDeleted: 0, bytesReclaimed: 0, names: 0, failed: 0, more: false },
+  );
+});

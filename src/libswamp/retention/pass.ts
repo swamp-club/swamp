@@ -42,6 +42,8 @@ export interface RetentionBatchResult {
   deleted: number;
   bytesReclaimed: number;
   more: boolean;
+  /** data names the batch removed versions from, where the kind has names */
+  names?: number;
   /**
    * True when the collector skipped items it failed to remove: the kind's
    * cutoff is then not fully applied, though the pass moves on.
@@ -133,6 +135,8 @@ export interface RetentionPassOptions {
    * process is busy. The next pass picks up where this one stopped.
    */
   shouldBackOff?: () => boolean;
+  /** limits the pass to these kinds; absent, every kind with a retention runs */
+  kinds?: readonly RetentionKind[];
   /**
    * Log the per-kind summary at debug rather than info. The CLI's
    * end-of-command pass sets it, so a command's own output is not followed
@@ -188,7 +192,11 @@ export async function runRetentionPass(
     "swamp.retention.pass",
     { "retention.kinds": deps.collectors.map((c) => c.kind).join(",") },
     async (span) => {
+      const only = options.kinds === undefined
+        ? undefined
+        : new Set(options.kinds);
       for (const collector of deps.collectors) {
+        if (only && !only.has(collector.kind)) continue;
         const cutoff = options.policy.cutoff(collector.kind, now);
         const retention = options.policy.durationFor(collector.kind);
         if (!cutoff || !retention) continue;
@@ -230,6 +238,9 @@ export async function runRetentionPass(
                   "retention.deleted": batch.deleted,
                   "retention.bytes_reclaimed": batch.bytesReclaimed,
                   "retention.more": batch.more,
+                  ...(batch.names === undefined
+                    ? {}
+                    : { "retention.names": batch.names }),
                 });
                 return batch;
               },

@@ -276,7 +276,17 @@ garbageCollection:
   audit: 90d              # .swamp/audit logs; default for serve audit stores (with automatic on)
   bookkeeping: 24h        # opt-in: serve worker GC grace, with automatic on (leases, dispatches, workers, enrollment tokens)
   autoDefinitions: 60d    # opt-in only: auto-definitions left with no data and no outputs
+  versionLimits: true     # default: serve applies each data name's declared garbageCollection, automatic or not
 ```
+
+- **Declared version limits** (`versionLimits`, on unless `false`): each data
+  name keeps what its spec declares (`garbageCollection`: a count, or a
+  duration that never removes the latest version), by the same rules as
+  `swamp data gc` (`keep_last_versions.ts`). `swamp serve` applies it hourly
+  even without `automatic`: with `automatic` off its pass runs this kind
+  alone (`RetentionPolicy.enforcedKinds`). The CLI end-of-command pass runs
+  it only with `automatic` on. It is not a duration, so it never makes
+  `hasAnyRetention` true, and doctor's retention scan leaves it to the pass.
 
 - **Units**: as `--older-than`: `m` is minutes and `mo` months, so
   `data: 6m` keeps six minutes of data, not six months. Leave a key unset
@@ -359,12 +369,19 @@ garbageCollection:
   partition's high-water mark, so retention empties a name there too, and
   `swamp data delete` cannot reuse a number either (swamp-club#3532).
 - **Automatic passes** (`runRepoRetention`, `src/libswamp/retention/`): the
-  collectors run in order (runs, snapshots, outputs, data, auto-definitions,
-  audit), in
+  collectors run in order (runs, snapshots, outputs, data, declared version
+  limits, auto-definitions, audit), in
   batches of 100. Data batches share one scan per pass, resuming where the
-  last stopped, so a name retention keeps is read once per pass. Each batch is traced (`swamp.retention.batch`); an outputs batch also exports its listing, scan, orphan-log sweep, commit and gate wait as phases ([serve phase telemetry](../enablers/serve-phase-telemetry.md)).
+  last stopped, so a name retention keeps is read once per pass. Declared
+  version limits page the catalog for names above their limit
+  (`namesOverDeclaredLimit`, in key order), remove at most a batch of versions
+  (a name cut off resumes in the next batch) and examine at most a batch of
+  names; removals take the `data.gc` path, so on v3 they are ordinary
+  commits. Each batch is traced (`swamp.retention.batch`, with
+  `retention.names` for declared limits); an outputs batch also exports its listing, scan, orphan-log sweep, commit and gate wait as phases ([serve phase telemetry](../enablers/serve-phase-telemetry.md)).
   - `swamp serve` runs `RetentionGcService` five minutes after start and then
-    hourly. It reads `.swamp.yaml` each tick, takes the sync gate per batch
+    hourly, for the kinds `enforcedKinds()` names (declared version limits
+    alone when `automatic` is off). It reads `.swamp.yaml` each tick, takes the sync gate per batch
     (never for the whole pass), backs off while every run slot is taken,
     shares a mutex with `run.gc` and `data.gc` (taken before the sync gate,
     in that order everywhere), claims the hour only once it holds the
@@ -394,7 +411,8 @@ garbageCollection:
     after the lock was taken releases it at once.
     Read-only commands, hook mode and `swamp serve` itself never run one. A
     failure is logged at debug and never fails the command.
-- **Without `automatic`**: the keys only set the manual commands' defaults
+- **Without `automatic`**: serve still applies declared version limits unless
+  `versionLimits: false`; the other keys only set the manual commands' defaults
   (`swamp run gc`, `swamp data gc`); audit logs keep their 7 days and serve's
   worker GC its 24-hour grace.
 - **Watermarks**: one record per kind at `_control/retention/watermarks/<kind>`

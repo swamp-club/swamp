@@ -108,6 +108,18 @@ export interface DataRetentionScan {
 
 const RETENTION_PAGE_SIZE = 500;
 
+export interface DeclaredLimitScan {
+  cursor?: string;
+}
+
+export interface DeclaredLimitBatchResult {
+  versionsDeleted: number;
+  bytesReclaimed: number;
+  names: number;
+  failed: number;
+  more: boolean;
+}
+
 /**
  * injected as a port so the service stays decoupled from the definition
  * repository; libswamp wires it with the same lookup swamp model get uses,
@@ -165,6 +177,16 @@ export interface DataLifecycleService {
     cutoff: Date,
     options: DeleteDataOlderThanOptions,
   ): Promise<DataRetentionResult>;
+
+  /**
+   * one bounded batch of each name's declared garbageCollection; the scan
+   * carries the position between the batches of one pass
+   */
+  deleteVersionsBeyondDeclaredLimits(options: {
+    limit: number;
+    scan: DeclaredLimitScan;
+    now: number;
+  }): Promise<DeclaredLimitBatchResult>;
 
   findOrphanedData(isModelLive: IsModelLive): Promise<OrphanedDataInfo[]>;
 
@@ -604,6 +626,35 @@ export class DefaultDataLifecycleService implements DataLifecycleService {
 
     if (scan) scan.cursor = undefined;
     return result;
+  }
+
+  async deleteVersionsBeyondDeclaredLimits(options: {
+    limit: number;
+    scan: DeclaredLimitScan;
+    now: number;
+  }): Promise<DeclaredLimitBatchResult> {
+    if (!this.dataRepo.collectDeclaredGarbageBatch) {
+      return {
+        versionsDeleted: 0,
+        bytesReclaimed: 0,
+        names: 0,
+        failed: 0,
+        more: false,
+      };
+    }
+    const batch = await this.dataRepo.collectDeclaredGarbageBatch({
+      limit: options.limit,
+      cursor: options.scan.cursor,
+      now: options.now,
+    });
+    options.scan.cursor = batch.cursor;
+    return {
+      versionsDeleted: batch.versionsRemoved,
+      bytesReclaimed: batch.bytesReclaimed,
+      names: batch.names,
+      failed: batch.failed,
+      more: batch.cursor !== undefined,
+    };
   }
 
   async findOrphanedData(

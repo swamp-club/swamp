@@ -1,0 +1,335 @@
+// Swamp, an Automation Framework
+// Copyright (C) 2026 Elder Swamp Club, Inc.
+//
+// This file is part of Swamp.
+//
+// Swamp is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License version 3
+// as published by the Free Software Foundation, with the Swamp
+// Extension and Definition Exception (found in the "COPYING-EXCEPTION"
+// file).
+//
+// Swamp is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
+
+import "../src/domain/models/models.ts";
+import { assert, assertEquals } from "@std/assert";
+import fc from "fast-check";
+import { join } from "@std/path";
+import { RepoPath } from "../src/domain/repo/repo_path.ts";
+import { RepoService } from "../src/domain/repo/repo_service.ts";
+import { ModelType } from "../src/domain/models/model_type.ts";
+import type { GarbageCollectionPolicy } from "../src/domain/data/data_metadata.ts";
+import {
+  type RetentionConfig,
+  RetentionPolicy,
+} from "../src/domain/retention/retention_policy.ts";
+import type { DatastorePathResolver } from "../src/domain/datastore/datastore_path_resolver.ts";
+import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
+import { CatalogStore } from "../src/infrastructure/persistence/catalog_store.ts";
+import { DefaultDatastorePathResolver } from "../src/infrastructure/persistence/default_datastore_path_resolver.ts";
+import { flushDatastoreSync } from "../src/infrastructure/persistence/datastore_sync_coordinator.ts";
+import { catalogDbPath } from "../src/infrastructure/persistence/repository_factory.ts";
+import { SWAMP_SUBDIRS } from "../src/infrastructure/persistence/paths.ts";
+import { FileSystemUnifiedDataRepository } from "../src/infrastructure/persistence/unified_data_repository.ts";
+import { YamlWorkflowRunRepository } from "../src/infrastructure/persistence/yaml_workflow_run_repository.ts";
+import { resolveDatastoreForRepo } from "../src/cli/repo_context.ts";
+import { VERSION } from "../src/infrastructure/runtime/build_info.ts";
+import { runRepoRetention } from "../src/libswamp/retention/run.ts";
+import type { RetentionBatchResult } from "../src/libswamp/retention/pass.ts";
+import {
+  DAY_MS,
+  saveAgedDataVersions,
+} from "../src/libswamp/retention/retention_fixture_test_helpers.ts";
+
+await initializeLogging({});
+
+const TYPE = ModelType.create("test/version-limits");
+const HOUR_MS = 3_600_000;
+
+async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-version-limits-" });
+  try {
+    await fn(dir);
+  } finally {
+    await flushDatastoreSync().catch(() => {});
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+}
+
+interface Repo {
+  repoDir: string;
+  resolver: DatastorePathResolver;
+  catalog: CatalogStore;
+  data: FileSystemUnifiedDataRepository;
+  runs: YamlWorkflowRunRepository;
+}
+
+async function withRepo(
+  dir: string,
+  fn: (repo: Repo) => Promise<void>,
+): Promise<void> {
+  const repoDir = join(dir, "repo");
+  await Deno.mkdir(repoDir, { recursive: true });
+  const homeDir = join(dir, "home");
+  await new RepoService(VERSION, {
+    homeDir,
+    configDir: join(homeDir, ".config", "swamp"),
+  }).init(RepoPath.create(repoDir), { tools: [] });
+  const { datastoreConfig } = await resolveDatastoreForRepo(repoDir);
+  const resolver = new DefaultDatastorePathResolver(repoDir, datastoreConfig);
+  const catalog = new CatalogStore(catalogDbPath(repoDir, resolver));
+  try {
+    const data = new FileSystemUnifiedDataRepository(
+      repoDir,
+      resolver.resolvePath(SWAMP_SUBDIRS.data),
+      catalog,
+    );
+    const runs = new YamlWorkflowRunRepository(
+      repoDir,
+      undefined,
+      resolver.resolvePath(SWAMP_SUBDIRS.workflowRuns),
+    );
+    await fn({ repoDir, resolver, catalog, data, runs });
+  } finally {
+    catalog.close();
+  }
+}
+
+/** runs one pass as serve does and records every batch's result */
+async function pass(
+  repo: Repo,
+  config: RetentionConfig,
+  batchSize: number,
+): Promise<{ batches: RetentionBatchResult[]; deleted: number }> {
+  const policy = RetentionPolicy.fromConfig(config);
+  const batches: RetentionBatchResult[] = [];
+  const result = await runRepoRetention(
+    {
+      repoDir: repo.repoDir,
+      datastoreResolver: repo.resolver,
+      dataRepos: {
+        catalogStore: repo.catalog,
+        unifiedDataRepo: repo.data,
+        workflowRunRepo: repo.runs,
+      },
+      runBatch: async <T>(fn: () => Promise<T>): Promise<T> => {
+        const batch = await fn();
+        batches.push(batch as RetentionBatchResult);
+        return batch;
+      },
+    },
+    { policy, batchSize, kinds: policy.enforcedKinds() },
+  );
+  assert(result.complete, "the pass finished");
+  return {
+    batches,
+    deleted: result.kinds.reduce((sum, kind) => sum + kind.deleted, 0),
+  };
+}
+
+async function versionsOnDisk(
+  repo: Repo,
+  modelId: string,
+  name: string,
+): Promise<number[]> {
+  const dir = join(
+    repo.resolver.resolvePath(SWAMP_SUBDIRS.data),
+    TYPE.normalized,
+    modelId,
+    name,
+  );
+  const versions: number[] = [];
+  for await (const entry of Deno.readDir(dir)) {
+    if (entry.isDirectory && /^\d+$/.test(entry.name)) {
+      versions.push(Number(entry.name));
+    }
+  }
+  return versions.sort((a, b) => a - b);
+}
+
+function save(
+  repo: Repo,
+  modelId: string,
+  name: string,
+  count: number,
+  gc: GarbageCollectionPolicy,
+  ageMs: (index: number) => number = () => 0,
+): Promise<number[]> {
+  return saveAgedDataVersions(
+    repo.data,
+    TYPE,
+    modelId,
+    name,
+    Array.from({ length: count }, (_, i) => ageMs(i)),
+    gc,
+  );
+}
+
+Deno.test("versionLimits retention: a name declaring 3 keeps its newest 3; a name within its limit is untouched", async () => {
+  await withTempDir((dir) =>
+    withRepo(dir, async (repo) => {
+      const over = await save(repo, "m1", "log", 20, 3);
+      const within = await save(repo, "m1", "result", 5, 10);
+
+      const { deleted } = await pass(repo, {}, 100);
+
+      assertEquals(deleted, 17);
+      assertEquals(await versionsOnDisk(repo, "m1", "log"), over.slice(-3));
+      assertEquals(await versionsOnDisk(repo, "m1", "result"), within);
+      assertEquals(
+        repo.data.getLatestVersionSync(TYPE, "m1", "log"),
+        over[over.length - 1],
+      );
+    })
+  );
+});
+
+Deno.test("versionLimits retention: a duration declaration removes older versions and keeps the latest", async () => {
+  await withTempDir((dir) =>
+    withRepo(dir, async (repo) => {
+      // oldest first: 5d, 4d, 3d, 2h, 1h
+      const ages = [5 * DAY_MS, 4 * DAY_MS, 3 * DAY_MS, 2 * HOUR_MS, HOUR_MS];
+      const recent = await save(repo, "m1", "recent", 5, "1d", (i) => ages[i]);
+      // every version is past the limit, the latest included
+      const stale = await save(
+        repo,
+        "m1",
+        "stale",
+        3,
+        "1d",
+        (i) => (5 - i) * DAY_MS,
+      );
+
+      await pass(repo, {}, 100);
+
+      assertEquals(await versionsOnDisk(repo, "m1", "recent"), recent.slice(3));
+      assertEquals(await versionsOnDisk(repo, "m1", "stale"), stale.slice(-1));
+    })
+  );
+});
+
+Deno.test("versionLimits retention: versionLimits false deletes nothing", async () => {
+  await withTempDir((dir) =>
+    withRepo(dir, async (repo) => {
+      const versions = await save(repo, "m1", "log", 12, 2);
+      const policy = RetentionPolicy.fromConfig({ versionLimits: false });
+      assertEquals(policy.enforcedKinds(), []);
+      await runRepoRetention(
+        {
+          repoDir: repo.repoDir,
+          datastoreResolver: repo.resolver,
+          dataRepos: {
+            catalogStore: repo.catalog,
+            unifiedDataRepo: repo.data,
+            workflowRunRepo: repo.runs,
+          },
+          runBatch: (fn) => fn(),
+        },
+        { policy, kinds: policy.enforcedKinds() },
+      );
+      assertEquals(await versionsOnDisk(repo, "m1", "log"), versions);
+    })
+  );
+});
+
+Deno.test("versionLimits retention: with automatic off only declared limits apply, never data retention", async () => {
+  await withTempDir((dir) =>
+    withRepo(dir, async (repo) => {
+      // all ten past data: 1d, which automatic off must not apply
+      const versions = await save(
+        repo,
+        "m1",
+        "log",
+        10,
+        4,
+        (i) => (20 - i) * DAY_MS,
+      );
+      const { batches } = await pass(
+        repo,
+        { retention: "1d", data: "1d", workflowRuns: "1d" },
+        100,
+      );
+      assertEquals(batches.length, 1);
+      assertEquals(await versionsOnDisk(repo, "m1", "log"), versions.slice(-4));
+    })
+  );
+});
+
+Deno.test("versionLimits retention: a backlog clears over several batches, none above the batch size", async () => {
+  await withTempDir((dir) =>
+    withRepo(dir, async (repo) => {
+      const names = ["a", "b", "c", "d"];
+      const saved = new Map<string, number[]>();
+      for (const name of names) {
+        saved.set(name, await save(repo, "m1", name, 60, 7));
+      }
+
+      const { batches, deleted } = await pass(repo, {}, 25);
+
+      assertEquals(deleted, 4 * 53);
+      assert(batches.length > 1, `${batches.length} batches`);
+      for (const batch of batches) {
+        assert(batch.deleted <= 25, `a batch deleted ${batch.deleted}`);
+      }
+      assertEquals(batches[batches.length - 1].more, false);
+      for (const name of names) {
+        assertEquals(
+          await versionsOnDisk(repo, "m1", name),
+          saved.get(name)!.slice(-7),
+        );
+      }
+    })
+  );
+});
+
+Deno.test("versionLimits retention: batched passes leave the same versions as collectGarbage", async () => {
+  await fc.assert(
+    fc.asyncProperty(
+      fc.array(
+        fc.record({
+          count: fc.integer({ min: 1, max: 12 }),
+          keep: fc.integer({ min: 1, max: 6 }),
+        }),
+        { minLength: 1, maxLength: 4 },
+      ),
+      fc.integer({ min: 1, max: 9 }),
+      async (specs, batchSize) => {
+        await withTempDir(async (dir) => {
+          const expected = new Map<string, number[]>();
+          await withRepo(join(dir, "oracle"), async (repo) => {
+            for (const [i, spec] of specs.entries()) {
+              await save(repo, "m1", `n${i}`, spec.count, spec.keep);
+            }
+            await repo.data.collectGarbage(TYPE, "m1");
+            for (const i of specs.keys()) {
+              expected.set(`n${i}`, await versionsOnDisk(repo, "m1", `n${i}`));
+            }
+          });
+          await withRepo(join(dir, "batched"), async (repo) => {
+            for (const [i, spec] of specs.entries()) {
+              await save(repo, "m1", `n${i}`, spec.count, spec.keep);
+            }
+            await pass(repo, {}, batchSize);
+            for (const i of specs.keys()) {
+              assertEquals(
+                await versionsOnDisk(repo, "m1", `n${i}`),
+                expected.get(`n${i}`),
+              );
+            }
+          });
+        });
+      },
+    ),
+    { numRuns: 15 },
+  );
+});

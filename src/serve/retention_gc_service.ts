@@ -19,7 +19,10 @@
 
 import { runDetached } from "../infrastructure/tracing/mod.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
-import type { RetentionPolicy } from "../domain/retention/retention_policy.ts";
+import type {
+  RetentionKind,
+  RetentionPolicy,
+} from "../domain/retention/retention_policy.ts";
 import type { RetentionWatermarkRepository } from "../domain/retention/retention_watermark.ts";
 import { hourStartOf } from "../infrastructure/persistence/control_plane_retention_watermark_repository.ts";
 import type { RetentionPassResult } from "../libswamp/retention/pass.ts";
@@ -46,6 +49,8 @@ export interface RetentionPassControl {
   /** aborted by dispose, so storage work a pass waits on stops with it */
   readonly signal: AbortSignal;
   manualGcWaiting(): boolean;
+  /** the kinds this pass applies: policy.enforcedKinds() */
+  readonly kinds: readonly RetentionKind[];
 }
 
 export interface RetentionGcDeps {
@@ -65,7 +70,8 @@ export interface RetentionGcDeps {
 }
 
 /**
- * runs only when garbageCollection.automatic is true; of serves sharing a
+ * runs every kind when garbageCollection.automatic is true, and only declared
+ * version limits when it is not (unless versionLimits is false); of serves sharing a
  * datastore the one claiming the hour runs its pass. A pass stops at a batch
  * boundary on shutdown, spent budget or a waiting manual gc.
  */
@@ -131,7 +137,9 @@ export class RetentionGcService {
 
   async #sweep(): Promise<RetentionPassResult | undefined> {
     const policy = await this.#deps.readPolicy();
-    if (!policy.automatic || !policy.hasAnyRetention) return undefined;
+    // Declared version limits run without automatic; every other kind needs it.
+    const kinds = policy.enforcedKinds();
+    if (kinds.length === 0) return undefined;
 
     const now = this.#deps.now?.() ?? new Date();
     // The hour is claimed only once this process holds the mutex, so a
@@ -150,6 +158,7 @@ export class RetentionGcService {
         isStopping: () => this.#disposed,
         signal: this.#abort.signal,
         manualGcWaiting: () => this.#deps.mutex.waiting,
+        kinds,
       });
     });
     if (outcome === undefined) {

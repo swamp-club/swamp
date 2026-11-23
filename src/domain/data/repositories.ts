@@ -149,6 +149,25 @@ export interface FindVersionsCreatedBeforeOptions {
   excludeTypes?: readonly string[];
 }
 
+export interface DeclaredGarbageBatchOptions {
+  /** versions removed per call, and names examined, at most */
+  limit: number;
+  cursor?: string;
+  /** the clock a duration limit is judged by */
+  now: number;
+}
+
+export interface DeclaredGarbageBatchResult {
+  versionsRemoved: number;
+  bytesReclaimed: number;
+  /** names that lost versions */
+  names: number;
+  /** names whose collection failed and were skipped */
+  failed: number;
+  /** absent once every name has been examined */
+  cursor?: string;
+}
+
 export interface UnifiedDataRepository {
   /**
    * catalog rows this repository produces, at runtime and in backfill, are
@@ -435,6 +454,14 @@ export interface UnifiedDataRepository {
     cutoff: Date,
     options: FindVersionsCreatedBeforeOptions,
   ): Promise<AgedDataVersionPage>;
+
+  /**
+   * applies each name's declared garbageCollection a bounded batch at a time,
+   * resuming from cursor; absent when the repository has no catalog to page
+   */
+  collectDeclaredGarbageBatch?(
+    options: DeclaredGarbageBatchOptions,
+  ): Promise<DeclaredGarbageBatchResult>;
 
   /**
    * a version written but not yet promoted or rolled back; deleting the name

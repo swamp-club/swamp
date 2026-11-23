@@ -20,6 +20,8 @@
 import {
   type DataRetentionResult,
   type DataRetentionScan,
+  type DeclaredLimitBatchResult,
+  type DeclaredLimitScan,
   DefaultDataLifecycleService,
   type ExpiredDataInfo,
   type LifecycleGCResult,
@@ -124,6 +126,11 @@ export interface DataGcDeps {
     cutoff: Date,
     opts: { dryRun: boolean; limit?: number; scan?: DataRetentionScan },
   ) => Promise<DataRetentionResult>;
+  deleteVersionsBeyondDeclaredLimits?: (opts: {
+    limit: number;
+    scan: DeclaredLimitScan;
+    now: number;
+  }) => Promise<DeclaredLimitBatchResult>;
   compactCatalog?: () => {
     walPagesTotal: number;
     walPagesCheckpointed: number;
@@ -182,6 +189,12 @@ export function createDataGcDepsFrom(
         isExempt: isRetentionExempt,
         exemptTypes: [...RETENTION_EXEMPT_MODEL_TYPES],
       });
+    },
+    deleteVersionsBeyondDeclaredLimits: async (opts) => {
+      // Candidates come from the catalog, so it is filled from disk first.
+      await new DataQueryService(catalogStore, unifiedDataRepo)
+        .ensurePopulated();
+      return await service.deleteVersionsBeyondDeclaredLimits(opts);
     },
     compactCatalog: () => catalogStore.checkpoint(),
   };

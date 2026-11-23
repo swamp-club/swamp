@@ -30,7 +30,10 @@ import type { CatalogStore } from "../../infrastructure/persistence/catalog_stor
 import type { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import type { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
 import type { RetentionCollector } from "./pass.ts";
-import type { DataRetentionScan } from "../../domain/data/data_lifecycle_service.ts";
+import type {
+  DataRetentionScan,
+  DeclaredLimitScan,
+} from "../../domain/data/data_lifecycle_service.ts";
 import {
   type AutoDefinitionRetentionSources,
   createAutoDefinitionReaper,
@@ -65,7 +68,8 @@ export interface RetentionCollectorSources {
 /**
  * collectors run in order: runs first (data with a workflow or job lifetime
  * expires with its run), evaluated snapshots, method outputs and run logs,
- * model data, auto-definitions left with neither, then the agent command log
+ * model data, each name's declared version limit, auto-definitions left with
+ * neither, then the agent command log
  */
 export function createRetentionCollectors(
   sources: RetentionCollectorSources,
@@ -98,6 +102,7 @@ export function createRetentionCollectors(
     settledNames: new Set(),
     countedVersions: new Set(),
   };
+  const declaredScan: DeclaredLimitScan = {};
   const daysBefore = (cutoff: Date): number =>
     Math.max(0, (now() - cutoff.getTime()) / DAY_MS);
 
@@ -159,6 +164,26 @@ export function createRetentionCollectors(
         return {
           deleted: result.versionsDeleted,
           bytesReclaimed: result.bytesReclaimed,
+          more: result.more,
+          incomplete: result.failed > 0,
+        };
+      },
+    },
+    {
+      kind: "versionLimits",
+      collectBatch: async (_cutoff, limit) => {
+        if (!data.deleteVersionsBeyondDeclaredLimits) {
+          return { deleted: 0, bytesReclaimed: 0, more: false };
+        }
+        const result = await data.deleteVersionsBeyondDeclaredLimits({
+          limit,
+          scan: declaredScan,
+          now: now(),
+        });
+        return {
+          deleted: result.versionsDeleted,
+          bytesReclaimed: result.bytesReclaimed,
+          names: result.names,
           more: result.more,
           incomplete: result.failed > 0,
         };

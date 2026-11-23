@@ -581,6 +581,9 @@ export async function scanRetention(
         // removability depends on data and outputs the pass itself may remove
         // first, so only the pass can judge it
         return null;
+      case "versionLimits":
+        // each name carries its own limit; only the pass applies them
+        return null;
     }
   };
 

@@ -237,3 +237,65 @@ Deno.test("checkRetentionConfig: ignores a bad autoDefinitions without refusing 
     assertEquals(ignored.map((e) => e.field), ["autoDefinitions"]);
   }
 });
+
+Deno.test("RetentionPolicy.versionLimits: on without a block, off only when false", () => {
+  assertEquals(RetentionPolicy.fromConfig(undefined).versionLimits, true);
+  assertEquals(RetentionPolicy.fromConfig({}).versionLimits, true);
+  assertEquals(
+    RetentionPolicy.fromConfig({ versionLimits: false }).versionLimits,
+    false,
+  );
+});
+
+Deno.test("RetentionPolicy.enforcedKinds: without automatic only version limits are enforced", () => {
+  assertEquals(
+    RetentionPolicy.fromConfig({ retention: "30d", data: "7d" })
+      .enforcedKinds(),
+    ["versionLimits"],
+  );
+  assertEquals(
+    RetentionPolicy.fromConfig({ retention: "30d", versionLimits: false })
+      .enforcedKinds(),
+    [],
+  );
+});
+
+Deno.test("RetentionPolicy.enforcedKinds: with automatic every kind with a retention", () => {
+  assertEquals(
+    RetentionPolicy.fromConfig({ automatic: true, outputs: "7d" })
+      .enforcedKinds(),
+    ["outputs", "versionLimits"],
+  );
+  assertEquals(
+    RetentionPolicy.fromConfig({
+      automatic: true,
+      outputs: "7d",
+      versionLimits: false,
+    }).enforcedKinds(),
+    ["outputs"],
+  );
+});
+
+Deno.test("RetentionPolicy: version limits are not a duration retention", () => {
+  const policy = RetentionPolicy.fromConfig({});
+  assertEquals(policy.hasAnyRetention, false);
+  assertEquals(policy.retentionMs("versionLimits"), undefined);
+  assertEquals(policy.durationFor("versionLimits"), "declared");
+  const now = new Date("2026-11-23T00:00:00.000Z");
+  assertEquals(policy.cutoff("versionLimits", now), now);
+  assertEquals(
+    RetentionPolicy.fromConfig({ versionLimits: false }).cutoff(
+      "versionLimits",
+      now,
+    ),
+    undefined,
+  );
+});
+
+Deno.test("checkRetentionConfig: a non-boolean versionLimits is ignored, never refused", () => {
+  const raw = { versionLimits: "7d" } as unknown as RetentionConfig;
+  const { errors, ignored } = checkRetentionConfig(raw);
+  assertEquals(errors, []);
+  assertEquals(ignored.map((p) => p.field), ["versionLimits"]);
+  assertEquals(RetentionPolicy.fromConfig(raw).versionLimits, true);
+});

@@ -9812,8 +9812,9 @@ export const serveCommand = new Command()
       workerGcService.start();
     }
 
-    // applies garbageCollection hourly when automatic is on; the policy is read
-    // every tick so toggling it needs no restart
+    // applies garbageCollection hourly when automatic is on, and declared version
+    // limits even when it is off; the policy is read every tick so toggling it
+    // needs no restart
     retentionGcService = new RetentionGcService({
       intervalMs: DEFAULT_RETENTION_GC_INTERVAL_MS,
       initialDelayMs: DEFAULT_RETENTION_GC_INITIAL_DELAY_MS,
@@ -9879,6 +9880,7 @@ export const serveCommand = new Command()
           },
           {
             policy,
+            kinds: control.kinds,
             isStopping: control.isStopping,
             budgetMs: control.budgetMs,
             // Busy: every run slot taken, or a manual gc waiting for the
