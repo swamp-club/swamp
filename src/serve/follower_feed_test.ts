@@ -163,6 +163,39 @@ Deno.test("FollowerFeed: an error frame stops the feed, and it is no longer curr
   await t.feed.stop();
 });
 
+Deno.test("FollowerFeed.staleReason: names what stopped a current feed: the silence and how long, a failure, a leader change (swamp-club#4981)", async () => {
+  let now = 1_000_000;
+  const t = setup(() => now);
+  assertEquals(t.feed.staleReason(leader("a", 1)), "it follows no leader");
+  t.feed.follow(leader("a", 1));
+  await waitFor(() => t.sockets.length === 1, "the socket");
+  t.sockets[0].open();
+  t.sockets[0].deliver(frame([]));
+  await waitFor(() => t.fresh() === 1, "a heartbeat");
+  assertEquals(t.feed.staleReason(leader("a", 1)), undefined);
+  assertEquals(t.feed.staleReason(leader("a", 2)), "the leader changed");
+  now += FOLLOWER_FEED_SILENCE_MS + 1;
+  assertEquals(
+    t.feed.staleReason(leader("a", 1)),
+    `no frame for ${
+      FOLLOWER_FEED_SILENCE_MS + 1
+    } ms, past the ${FOLLOWER_FEED_SILENCE_MS} ms allowed`,
+  );
+  t.sockets[0].deliver({
+    type: "error",
+    id: "follower-feed",
+    error: { code: "commits_compacted", message: "compacted" },
+  });
+  await waitFor(
+    () =>
+      t.feed.staleReason(leader("a", 1)) !== undefined &&
+      !t.feed.staleReason(leader("a", 1))!.startsWith("no frame"),
+    "the failure",
+  );
+  assertEquals(t.feed.staleReason(leader("a", 1)), "it failed");
+  await t.feed.stop();
+});
+
 Deno.test("FollowerFeed: its subscribe names lease ops and step starts, so the leader sends them to this copy (swamp-club#4168)", async () => {
   const t = setup();
   t.feed.follow(leader("a", 1));

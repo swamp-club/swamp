@@ -21,6 +21,7 @@
 // shows which auto-checkpoint each connection had when it began
 
 import { assert, assertEquals } from "@std/assert";
+import { join } from "@std/path";
 import type { DatabaseSync } from "node:sqlite";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { leaseOp } from "../src/domain/datastore_v3/op.ts";
@@ -43,6 +44,7 @@ import {
   type ReplicationEnv,
   SIDECAR_TESTS_IGNORED,
   withReplicationEnv,
+  writeCommand,
 } from "./datastore_v3_litestream_helpers.ts";
 
 const ignore = SIDECAR_TESTS_IGNORED;
@@ -83,7 +85,12 @@ function launchRecorder() {
 }
 
 /** a leader's commits, as its feed sends them: one partition, seqs from `from` */
-function leaderChanges(from: number, count: number, fence: number) {
+function leaderChanges(
+  from: number,
+  count: number,
+  fence: number,
+  cursorOffset = 0,
+) {
   const partition = partitionOf({
     kind: "model",
     type: MODEL_TYPE,
@@ -92,7 +99,7 @@ function leaderChanges(from: number, count: number, fence: number) {
   return Array.from({ length: count }, (_, i) => {
     const seq = from + i;
     return {
-      cursor: seq,
+      cursor: seq + cursorOffset,
       commit: modelCommit(seq, [leaseOp({ holder: "serve", fence })], {
         partition,
         fence,
@@ -102,7 +109,9 @@ function leaderChanges(from: number, count: number, fence: number) {
   });
 }
 
-async function follow(env: ReplicationEnv) {
+async function follow(
+  env: Pick<ReplicationEnv, "datastorePath" | "config" | "repoDir">,
+) {
   // another serve, alive on this host, leads
   const leader = await plantV3WriterLease(env.datastorePath, {
     pid: Deno.ppid,
@@ -235,5 +244,43 @@ Deno.test({
         assertEquals(connections.filter((value) => value !== 0), []);
       }
     }, { deps: recorder.deps });
+  },
+});
+
+Deno.test({
+  name:
+    "v3 follower checkpointing: a follower whose copy is restored at boot from the lineage another writer published keeps the default auto-checkpoint, so applying the leader's feed checkpoints its WAL (swamp-club#4981)",
+  ignore,
+  async fn() {
+    await withReplicationEnv(async (env) => {
+      // another writer publishes a lineage; the follower's own checkout has
+      // no copy yet, so its boot restores one from that lineage
+      await writeCommand(env, 3);
+      const member = { ...env, repoDir: join(env.root, "follower") };
+      await Deno.mkdir(member.repoDir, { recursive: true });
+      const leader = await follow(member);
+      try {
+        const handle = v3DatastoreFor(member.repoDir, env.config);
+        const restored = handle.commitStore.highWaterMark().cursor;
+        assert(restored >= 3, `restored to cursor ${restored}`);
+        assertEquals(
+          storeConnectionsAt(handle.commitsDbPath).map(autoCheckpointOf),
+          [1000],
+        );
+        const before = (await Deno.stat(handle.commitsDbPath)).size;
+        // past SQLite's 1000-frame auto-checkpoint
+        for (let from = 1; from <= 700; from += 100) {
+          await applyV3LeaderChanges(
+            member.repoDir,
+            env.config,
+            leaderChanges(from, 100, leader.fence, restored),
+          );
+        }
+        assertEquals(handle.commitStore.highWaterMark().cursor, restored + 700);
+        assert((await Deno.stat(handle.commitsDbPath)).size > before);
+      } finally {
+        await leader.release();
+      }
+    });
   },
 });

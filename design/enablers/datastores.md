@@ -5390,7 +5390,9 @@ or below that seq. **There's no local fold and no local partition rebuild.**
     whole each time would cost O(partition size), like the exit-time fold did.
 - **Serve's store** records, per base row (`base_records`, `base_versions`,
   `base_catalog`, `base_forwards`), the `changed_seq` of the fold that last
-  wrote it. It records the rows a fold deletes in `base_removed`, and keeps a
+  changed it. A fold writes only the version and catalog rows a commit
+  changes, so a difference carries those rows and never a name's unchanged
+  versions. It records the rows a fold deletes in `base_removed`, and keeps a
   **difference horizon** per partition.
   - `base_removed` is pruned after the retention age, or under a size cap, and
     the horizon moves with it.

@@ -221,6 +221,32 @@ Deno.test("SqliteCommitStore.highWaterMark: is the compaction point once every c
   });
 });
 
+async function rowsWrittenByOneFold(live: number): Promise<number> {
+  let written = 0;
+  await withStore(async (store, path) => {
+    for (let seq = 1; seq <= live; seq++) {
+      await store.append(modelCommit(seq, [versionOp("n", seq)]));
+    }
+    await store.compactHistory(live);
+    await store.append(
+      modelCommit(live + 1, [versionOp("n", live + 1), deleteVersion("n", 1)]),
+    );
+    const [db] = storeConnectionsAt(path);
+    const changes = () =>
+      (db.prepare("SELECT total_changes() AS n").get() as { n: number }).n;
+    const before = changes();
+    await store.compactHistory(live + 1);
+    written = changes() - before;
+  });
+  return written;
+}
+
+Deno.test("SqliteCommitStore.compactHistory: folding a commit writes only the versions and catalog rows it changes, however many versions its name holds (swamp-club#4981)", async () => {
+  const small = await rowsWrittenByOneFold(20);
+  const large = await rowsWrittenByOneFold(200);
+  assertEquals(large, small);
+});
+
 Deno.test("stopAutoCheckpointAt: turns auto-checkpoint off on every open store at the path and on stores opened there later, never at another path (swamp-club#4679)", async () => {
   await withTempDir(async (dir) => {
     const path = join(dir, "commits.db");
@@ -2390,7 +2416,7 @@ Deno.test("SqliteCommitStore.compactHistory: each base row a fold writes carries
         "SELECT version, changed_seq FROM base_versions ORDER BY version",
       )
         .map((row) => row.changed_seq),
-      [2, 2],
+      [1, 2],
     );
     assertEquals(rawRows(path, "SELECT * FROM base_removed"), []);
   });

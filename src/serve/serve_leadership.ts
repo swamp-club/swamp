@@ -82,6 +82,7 @@ export interface LeadershipLease {
  */
 export interface FollowerCopyFeed {
   current(leader: ServeLeader | undefined): boolean;
+  staleReason(leader: ServeLeader | undefined): string | undefined;
   follow(leader: ServeLeader | undefined): void;
   stop(): Promise<void>;
 }
@@ -410,6 +411,10 @@ export class ServeLeadership {
         this.awaitingNewLeader && this.#refreshedAt !== undefined &&
         this.#now() - this.#refreshedAt < this.#tickMs
       ) return;
+      logger
+        .info`Restoring this node's copy instead of following the leader's commit feed: ${
+        feed.staleReason(this.#leader) ?? "it is not current"
+      }`;
       // stopped before the restore so nothing the old socket delivers is queued
       // to apply after it
       await feed.stop();
