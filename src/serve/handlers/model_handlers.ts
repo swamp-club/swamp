@@ -81,6 +81,7 @@ import {
 import { isSwampError } from "../../libswamp/errors.ts";
 import { modelMethodRun } from "../../libswamp/models/run.ts";
 import {
+  currentDiagnosticTally,
   observeDiagnosticPhase,
   withDiagnosticArea,
 } from "../../domain/diagnostics/diagnostic_phase.ts";
@@ -236,7 +237,10 @@ import {
   runInRootUnitOfWork,
   servesV3Datastore,
 } from "../../infrastructure/persistence/repo_unit_of_work.ts";
-import { TimeSlice } from "../../infrastructure/persistence/scan_permits.ts";
+import {
+  mapBounded,
+  TimeSlice,
+} from "../../infrastructure/persistence/scan_permits.ts";
 import { containedLogFileReader } from "./log_file_containment.ts";
 import {
   DataVersionConflictError,
@@ -2466,11 +2470,13 @@ export async function handleModelOutputSearch(
           if (payload?.limit !== undefined) {
             data.results = data.results.slice(0, payload.limit);
           }
-          await redactWorkflowLinks(
-            data.results,
-            ctx.authConfig.mode === "none",
-            nestedRunReadDecider(ctx, socket, principal, canonical),
-          );
+          const results = data.results;
+          await phase.tally.measure("redact", () =>
+            redactWorkflowLinks(
+              results,
+              ctx.authConfig.mode === "none",
+              nestedRunReadDecider(ctx, socket, principal, canonical),
+            ));
           phase.tally.add("results", data.results.length);
         }
         send(socket, {
@@ -2576,11 +2582,12 @@ export async function handleModelUsageSummary(
       const summary = data;
       await observeDiagnosticPhase("response", {}, async (phase) => {
         phase.tally.add("extension_workflow_walks", 0);
-        await redactWorkflowLinks(
-          summary.models.flatMap((model) => model.recent),
-          ctx.authConfig.mode === "none",
-          nestedRunReadDecider(ctx, socket, principal, canonical),
-        );
+        await phase.tally.measure("redact", () =>
+          redactWorkflowLinks(
+            summary.models.flatMap((model) => model.recent),
+            ctx.authConfig.mode === "none",
+            nestedRunReadDecider(ctx, socket, principal, canonical),
+          ));
         phase.tally.add("results", summary.models.length);
         send(socket, {
           type: "model.usage.summary",
@@ -3454,6 +3461,9 @@ export async function handleModelTypeSearch(
   }
 }
 
+/** bounds the workflow owner lookups one redaction has open at once */
+const WORKFLOW_LINK_DECISION_CONCURRENCY = 8;
+
 /**
  * a linkage whose workflow does not resolve cannot be authorized, so it is
  * dropped too unless the server has no authorization
@@ -3467,19 +3477,40 @@ export async function redactWorkflowLinks(
   canRead: (workflow: NamedWorkflow) => Promise<boolean>,
 ): Promise<void> {
   const slice = new TimeSlice();
+  const workflowKey = (workflowId: string, workflowName: string) =>
+    JSON.stringify([workflowId, workflowName]);
+  const decided = new Map<string, boolean>();
+  if (!unrestricted) {
+    const pending = new Map<string, NamedWorkflow>();
+    for (const item of items) {
+      if (slice.over) await slice.next();
+      if (item.workflowId === undefined || !item.workflowName) continue;
+      const key = workflowKey(item.workflowId, item.workflowName);
+      if (!pending.has(key)) {
+        pending.set(key, {
+          workflowId: item.workflowId,
+          workflowName: item.workflowName,
+        });
+      }
+    }
+    currentDiagnosticTally().add("workflows_decided", pending.size);
+    const entries = [...pending];
+    const answers = await mapBounded(
+      entries,
+      WORKFLOW_LINK_DECISION_CONCURRENCY,
+      ([, workflow]) => canRead(workflow),
+    );
+    entries.forEach(([key], i) => decided.set(key, answers[i]));
+  }
   for (const item of items) {
     if (slice.over) await slice.next();
     if (
       item.workflowId === undefined && item.workflowRunId === undefined &&
       item.stepName === undefined
     ) continue;
-    let readable = unrestricted;
-    if (!readable && item.workflowId !== undefined && item.workflowName) {
-      readable = await canRead({
-        workflowId: item.workflowId,
-        workflowName: item.workflowName,
-      });
-    }
+    const readable = unrestricted ||
+      (item.workflowId !== undefined && !!item.workflowName &&
+        decided.get(workflowKey(item.workflowId, item.workflowName)) === true);
     if (!readable) {
       delete item.workflowId;
       delete item.workflowName;

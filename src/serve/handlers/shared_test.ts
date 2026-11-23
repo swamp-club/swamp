@@ -103,6 +103,10 @@ import {
   withCommittedUnknownSteps,
 } from "./shared.ts";
 import type { ServerMessage } from "../protocol.ts";
+import {
+  observeDiagnosticPhase,
+  withDiagnosticArea,
+} from "../../domain/diagnostics/diagnostic_phase.ts";
 import { delegationSessionName } from "../delegated_token_auth.ts";
 import type { TokenAdmissionChecker } from "../token_admission.ts";
 import type { AuditEvent } from "../../domain/serve_audit/audit_event.ts";
@@ -115,6 +119,7 @@ import {
   findSpan,
   isChildOf,
   withCapturedSpans,
+  withObservedSpans,
 } from "../../infrastructure/tracing/span_test_helpers.ts";
 
 function makeGrant(overrides: Partial<Grant> = {}): Grant {
@@ -555,6 +560,49 @@ Deno.test("send: opted-in socket gets large frames as gzip binary that round-tri
   assertInstanceOf(frame, Uint8Array);
   const decoded = new TextDecoder().decode(gunzipSync(frame));
   assertEquals(decoded, JSON.stringify(message));
+});
+
+Deno.test("send: a reply inside a diagnostic phase records its serialize and send work and its uncompressed bytes", async () => {
+  await withObservedSpans(async (spans) => {
+    const { socket, frames } = makeFrameSocket();
+    setConnectionCompression(socket, "gzip");
+    const message = largeMessage();
+    await withDiagnosticArea(
+      "output_search",
+      () =>
+        observeDiagnosticPhase("response", {}, () => {
+          send(socket, message);
+          return Promise.resolve();
+        }),
+    );
+
+    assertInstanceOf(frames[0], Uint8Array);
+    const attributes = findSpan(spans, "swamp.diagnostic.response").attributes;
+    assertEquals(
+      attributes["swamp.diagnostic.reply_bytes"],
+      new TextEncoder().encode(JSON.stringify(message)).byteLength,
+    );
+    assertEquals(
+      typeof attributes["swamp.diagnostic.serialize_work_ms"],
+      "number",
+    );
+    assertEquals(typeof attributes["swamp.diagnostic.send_work_ms"], "number");
+  });
+});
+
+Deno.test("send: a reply outside any diagnostic phase records nothing on one", async () => {
+  await withObservedSpans(async (spans) => {
+    const { socket, frames } = makeFrameSocket();
+    await withDiagnosticArea("output_search", async () => {
+      send(socket, largeMessage());
+      await observeDiagnosticPhase("response", {}, () => Promise.resolve());
+    });
+
+    assertEquals(frames.length, 1);
+    const attributes = findSpan(spans, "swamp.diagnostic.response").attributes;
+    assertEquals(attributes["swamp.diagnostic.reply_bytes"], undefined);
+    assertEquals(attributes["swamp.diagnostic.send_work_ms"], undefined);
+  });
 });
 
 Deno.test("send: opted-in socket keeps small frames as text", () => {

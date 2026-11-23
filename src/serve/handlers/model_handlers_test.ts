@@ -1597,6 +1597,70 @@ Deno.test("redactWorkflowLinks: over many items, each keeps or drops its own lin
   );
 });
 
+function linkedItems(count: number, workflows: number) {
+  return Array.from({ length: count }, (_, i) => ({
+    id: `o${i}`,
+    definitionId: "d1",
+    type: "command/shell",
+    methodName: "execute",
+    status: "succeeded",
+    startedAt: "2026-01-01T00:00:00.000Z",
+    triggeredBy: "workflow" as const,
+    workflowId: `w${i % workflows}`,
+    workflowName: `workflow-${i % workflows}`,
+    workflowRunId: `r${i}`,
+    stepName: "s1",
+  }));
+}
+
+Deno.test("redactWorkflowLinks: decides distinct workflows concurrently, at most 8 at a time, each once", async () => {
+  const items = linkedItems(5_000, 20);
+  const asked: string[] = [];
+  let inFlight = 0;
+  let peak = 0;
+  const waiting: Array<() => void> = [];
+  const redaction = redactWorkflowLinks(items, false, (workflow) => {
+    asked.push(workflow.workflowId);
+    inFlight++;
+    peak = Math.max(peak, inFlight);
+    return new Promise<boolean>((resolve) => {
+      waiting.push(() => {
+        inFlight--;
+        resolve(workflow.workflowId !== "w1");
+      });
+    });
+  });
+  await waitFor(() => waiting.length === 8, "8 lookups in flight");
+  while (waiting.length > 0 || asked.length < 20) {
+    await waitFor(() => waiting.length > 0, "a lookup in flight");
+    waiting.shift()!();
+  }
+  await redaction;
+
+  assertEquals(peak, 8);
+  assertEquals(new Set(asked).size, 20);
+  assertEquals(asked.length, 20);
+  assertEquals(
+    items.every((item, i) =>
+      i % 20 === 1
+        ? item.workflowRunId === undefined
+        : item.workflowRunId === `r${i}`
+    ),
+    true,
+  );
+});
+
+Deno.test("redactWorkflowLinks: asks nothing when the server has no authorization", async () => {
+  const items = linkedItems(100, 5);
+  let asked = 0;
+  await redactWorkflowLinks(items, true, () => {
+    asked++;
+    return Promise.resolve(false);
+  });
+  assertEquals(asked, 0);
+  assertEquals(items.every((item, i) => item.workflowRunId === `r${i}`), true);
+});
+
 Deno.test("handleModelEdit: a rename without allowRename is refused and writes nothing", async () => {
   await withTempDir(async (dir) => {
     const repo = new YamlDefinitionRepository(dir, undefined, undefined, false);
@@ -4181,12 +4245,22 @@ Deno.test("handleModelOutputSearch: names and redacts links to many extension wo
       const linked = results.filter((row) => row.workflowId !== undefined);
       assertEquals(linked.map((row) => row.workflowName), ["readable-wf"]);
       assertEquals(extension.walks, 1);
+      const response = findSpan(spans, "swamp.diagnostic.response").attributes;
+      assertEquals(response["swamp.diagnostic.extension_workflow_walks"], 0);
       assertEquals(
-        findSpan(spans, "swamp.diagnostic.response").attributes[
-          "swamp.diagnostic.extension_workflow_walks"
-        ],
-        0,
+        response["swamp.diagnostic.workflows_decided"],
+        LINKED_EXTENSION_WORKFLOWS.length,
       );
+      assertEquals(
+        response["swamp.diagnostic.reply_bytes"],
+        new TextEncoder().encode(socket.sent[0] as string).byteLength,
+      );
+      for (const work of ["redact", "serialize", "send"]) {
+        assertEquals(
+          typeof response[`swamp.diagnostic.${work}_work_ms`],
+          "number",
+        );
+      }
     });
   });
 });
