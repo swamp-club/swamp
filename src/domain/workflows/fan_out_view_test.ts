@@ -153,7 +153,6 @@ Deno.test("fanOutJobView: a failed lane names its failing step, error and assert
   assertEquals(view.members[0].assertions, [
     { step: "verify[a]", severity: "high", message: "status was ***" },
   ]);
-  // an allowed failure neither fails the lane nor spends the budget
   assertEquals(view.members[1].lane, "succeeded");
   assertEquals(view.members[1].failedSteps, undefined);
   assertEquals(view.budget, { allowed: 0, used: 1 });
@@ -194,7 +193,7 @@ Deno.test("fanOutJobView: a budget halt holds the lanes it names and is kept as 
   }]);
 });
 
-Deno.test("fanOutJobView: a lane skipped with job_skipped that no halt or rejection named is not held", () => {
+Deno.test("fanOutJobView: a lane skipped with job_skipped is held only when a halt names it or a gate was rejected", () => {
   const view = fanOutJobView(job([
     step("apply[a]", "succeeded", { startedAt: T0 }),
     held("apply[b]"),

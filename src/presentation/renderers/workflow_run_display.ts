@@ -413,10 +413,14 @@ function fanOutLines(fanOut: FanOutRunView): string[] {
     lines.push(`      Batch ${index + 1}: ${workerList(batch)}`);
   });
   lines.push(`      ${cyan("Members:")}`);
-  for (const member of fanOut.members) lines.push(...memberLines(member));
+  for (const member of fanOut.members) {
+    for (const line of memberLines(member)) lines.push(line);
+  }
   if (fanOut.gates.length > 0) {
     lines.push(`      ${cyan("Gates:")}`);
-    for (const gate of fanOut.gates) lines.push(...gateLines(gate));
+    for (const gate of fanOut.gates) {
+      for (const line of gateLines(gate)) lines.push(line);
+    }
   }
   if (fanOut.halts.length > 0) {
     lines.push(`      ${cyan("Halts:")}`);

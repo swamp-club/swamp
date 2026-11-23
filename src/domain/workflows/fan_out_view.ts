@@ -91,7 +91,7 @@ export interface FanOutJobView {
   policy?: { offline: string; minWorkers: number };
   plannedLanes: number;
   batches: string[][];
-  /** used counts the lanes failing now; a halt counts its own attempt */
+  /** used counts only lanes failing now; each halt keeps its own attempt's failures */
   budget: { allowed: number | null; used: number };
   members: FanOutMemberView[];
   /** one per halted attempt, in order, then a gate rejection, which is final */
@@ -101,7 +101,6 @@ export interface FanOutJobView {
 }
 
 export interface FanOutViewOptions {
-  /** the run's resumedAt */
   resumedAt?: string;
   policy?: Pick<FanOutPolicy, "offline" | "minWorkers">;
   mask?: (text: string) => string;
@@ -204,8 +203,8 @@ export function fanOutJobView(
   ) => ({ kind, step: step.stepName, ...gateStatus(step, now) }));
   const rejected = gates.find((gate) => gate.status === "rejected");
 
-  // job_skipped also settles a cancelled lane, so only a halt or a rejected
-  // gate that named the lane makes it held
+  // job_skipped also settles a cancelled lane, so only a halt that named the
+  // lane, or a rejected gate, makes it held
   const heldByHalt = new Set(halts.flatMap((halt) => halt.held));
   const isHeld = (worker: string) => {
     const steps = records.get(worker) ?? [];

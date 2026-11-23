@@ -125,13 +125,11 @@ Deno.test("fanOutJobView: every planned lane gets exactly one result, and the la
         const kept = view.resume!.kept;
         assertEquals([...rerun, ...kept].sort(), [...workers].sort());
         assertEquals(new Set([...rerun, ...kept]).size, workers.length);
-        // a lane with a step started since the resume was never kept
         lanes.forEach((steps, index) => {
           if (steps.some((step) => (step.startedOffset ?? -1) >= 0)) {
             assert(rerun.includes(workers[index]));
           }
         });
-        // budget used counts exactly the lanes reading failed
         assertEquals(
           view.budget.used,
           view.members.filter((member) => member.lane === "failed").length,
