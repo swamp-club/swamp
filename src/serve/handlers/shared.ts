@@ -2472,8 +2472,7 @@ const OUTCOME_EVENT_KINDS: ReadonlySet<string> = new Set([
   "suspended",
 ]);
 
-// a reply sent inside a diagnostic phase is attributed to it; outside one the
-// tally is silent and costs nothing
+// outside a diagnostic phase the tally is silent
 function sendNow(socket: WebSocket, message: ServerMessage): void {
   const tally = currentDiagnosticTally();
   const json = tally.measureSync("serialize", () => JSON.stringify(message));

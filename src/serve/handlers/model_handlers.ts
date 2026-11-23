@@ -3461,7 +3461,6 @@ export async function handleModelTypeSearch(
   }
 }
 
-/** bounds the workflow owner lookups one redaction has open at once */
 const WORKFLOW_LINK_DECISION_CONCURRENCY = 8;
 
 /**

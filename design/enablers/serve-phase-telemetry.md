@@ -306,7 +306,8 @@ Redaction first collects the distinct workflows the results link and decides
 them 8 at a time (lab #4147), then keeps or drops each result's links, so its
 wall time follows the slowest lookups rather than their sum. `workflows_decided`
 counts those distinct workflows (none when the server has no authorization), and
-`redact_work_ms` is the whole redaction, its owner lookups included. The reply
+`redact_work_ms` is the whole redaction, its owner lookups included. A
+`model.usage.summary` `response` records both as well. The reply
 then records `serialize_work_ms` (encoding it as JSON), `reply_bytes` (its UTF-8
 size before any gzip) and `send_work_ms`: the synchronous `WebSocket.send`, with
 compression and the frame-size check, not delivery to the client. A
