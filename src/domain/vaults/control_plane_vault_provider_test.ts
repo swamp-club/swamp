@@ -105,6 +105,41 @@ Deno.test("ControlPlaneVaultProvider: get throws for missing secret", async () =
   assertEquals(error.key, "nonexistent");
 });
 
+Deno.test("ControlPlaneVaultProvider.holdsSecret: true for a stored secret, false for a missing one", async () => {
+  const provider = new ControlPlaneVaultProvider(createMockStore());
+  await provider.initialize();
+
+  await provider.put("present", "value");
+  assertEquals(await provider.holdsSecret("present"), true);
+  assertEquals(await provider.holdsSecret("absent"), false);
+});
+
+Deno.test("ControlPlaneVaultProvider.holdsSecret: an entry that no longer decrypts still counts", async () => {
+  const store = createMockStore();
+  const provider = new ControlPlaneVaultProvider(store);
+  await provider.initialize();
+
+  await store.put(
+    "token-secrets/values/undecryptable",
+    new TextEncoder().encode("not an encrypted blob"),
+  );
+  await assertRejects(() => provider.get("undecryptable"));
+  assertEquals(await provider.holdsSecret("undecryptable"), true);
+});
+
+Deno.test("ControlPlaneVaultProvider.holdsSecret: a store failure rejects rather than reading as absent", async () => {
+  const failing: ControlPlaneStore = {
+    ...createMockStore(),
+    get: () => Promise.reject(new Error("store unreachable")),
+  };
+  const unreachable = new ControlPlaneVaultProvider(failing);
+  await assertRejects(
+    () => unreachable.holdsSecret("any"),
+    Error,
+    "store unreachable",
+  );
+});
+
 Deno.test("ControlPlaneVaultProvider: delete removes a secret", async () => {
   const provider = new ControlPlaneVaultProvider(createMockStore());
   await provider.initialize();

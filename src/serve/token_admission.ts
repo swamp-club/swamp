@@ -28,9 +28,20 @@ import type { LinkedPerson } from "../domain/models/access/delegation_model.ts";
 
 const logger = getSwampLogger(["serve", "token-admission"]);
 
-const OUTSIDE_ADMISSION: AdmissionResult = {
+export interface TokenAdmissionResult extends AdmissionResult {
+  /** serve could not tell whether a login issued the credential, so it refuses */
+  readonly unavailable?: true;
+}
+
+const OUTSIDE_ADMISSION: TokenAdmissionResult = {
   admitted: true,
   reason: "credential was not issued by a login",
+};
+
+const UNAVAILABLE: TokenAdmissionResult = {
+  admitted: false,
+  unavailable: true,
+  reason: "could not tell whether the credential was issued by a login",
 };
 
 export interface TokenAdmissionChecker {
@@ -41,7 +52,7 @@ export interface TokenAdmissionChecker {
         "name" | "principalId" | "collectives" | "createdAt" | "vaultName"
       >
       & { readonly oauthIdentity?: unknown },
-  ): Promise<AdmissionResult>;
+  ): Promise<TokenAdmissionResult>;
   delegation(
     person: {
       readonly sub: LinkedPerson["sub"];
@@ -68,9 +79,10 @@ export function createTokenAdmissionChecker(
   // keyed by mint: rotation changes createdAt, and a mint's origin never changes
   const loginIssued = new Map<string, boolean>();
 
+  /** undefined when the lookup could not answer */
   async function isLoginIssued(
     token: Parameters<TokenAdmissionChecker["serverToken"]>[0],
-  ): Promise<boolean> {
+  ): Promise<boolean | undefined> {
     if (token.oauthIdentity !== undefined) return true;
     if (!token.principalId.startsWith("user:")) return false;
     const key = `${token.name}\u0000${token.createdAt}`;
@@ -81,18 +93,20 @@ export function createTokenAdmissionChecker(
       loginIssued.set(key, stored);
       return stored;
     } catch (error) {
-      // not cached: an outage must not exempt the token for good
+      // fails closed, and not cached, so the token works again once the lookup does
       logger
-        .warn`Could not tell whether token ${token.name} came from a login; treating it as outside admission: ${
+        .warn`Could not tell whether token ${token.name} came from a login; refusing it until serve can: ${
         error instanceof Error ? error.message : String(error)
       }`;
-      return false;
+      return undefined;
     }
   }
 
   return {
     async serverToken(token) {
-      if (!await isLoginIssued(token)) return OUTSIDE_ADMISSION;
+      const issued = await isLoginIssued(token);
+      if (issued === undefined) return UNAVAILABLE;
+      if (!issued) return OUTSIDE_ADMISSION;
       return checkPrincipalAdmission(
         token.principalId,
         token.collectives,

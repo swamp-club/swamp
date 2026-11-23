@@ -18,7 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { VaultService } from "../domain/vaults/vault_service.ts";
-import { TOKEN_SECRETS_VAULT_NAME } from "../domain/vaults/control_plane_vault_provider.ts";
+import {
+  type ControlPlaneVaultProvider,
+  TOKEN_SECRETS_VAULT_NAME,
+} from "../domain/vaults/control_plane_vault_provider.ts";
 import { oauthAccessTokenKey } from "./device_auth_handler.ts";
 
 /**
@@ -53,14 +56,26 @@ export async function lookupOAuthAccessToken(
  * vaults the lookup reads; throws when a vault cannot answer.
  */
 export async function hasOAuthAccessToken(
-  vaultService: Pick<VaultService, "has" | "getVaultNames">,
+  sources: {
+    readonly tokenSecrets: Pick<ControlPlaneVaultProvider, "holdsSecret">;
+    /** built only for a record still naming a user vault */
+    readonly vaults: () => Promise<
+      Pick<
+        VaultService,
+        "has" | "list" | "supportsExistenceCheck" | "getVaultNames"
+      >
+    >;
+  },
   token: { readonly name: string; readonly vaultName: string },
 ): Promise<boolean> {
   const key = oauthAccessTokenKey(token.name);
-  const configured = new Set(vaultService.getVaultNames());
-  for (const vault of new Set([TOKEN_SECRETS_VAULT_NAME, token.vaultName])) {
-    if (!configured.has(vault)) continue;
-    if (await vaultService.has(vault, key)) return true;
+  if (await sources.tokenSecrets.holdsSecret(key)) return true;
+  if (token.vaultName === TOKEN_SECRETS_VAULT_NAME) return false;
+  const vaults = await sources.vaults();
+  if (!vaults.getVaultNames().includes(token.vaultName)) return false;
+  if (vaults.supportsExistenceCheck(token.vaultName)) {
+    return await vaults.has(token.vaultName, key);
   }
-  return false;
+  // a listing, not a get: it reads no value and runs no refresh hook
+  return (await vaults.list(token.vaultName)).includes(key);
 }

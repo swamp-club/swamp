@@ -424,6 +424,34 @@ Deno.test("runOnce: closes a valid token's sessions once its person is no longer
   assertEquals(h.closes[1].options.code, 4003);
 });
 
+Deno.test("runOnce: keeps a token's sessions while admission cannot tell, and still closes a rotated mint", async () => {
+  const h = harness(
+    [
+      { name: "tok", createdAt: MINT_1 },
+      { name: "tok", createdAt: MINT_2 },
+    ],
+    () => Promise.resolve(token({ createdAt: MINT_2 })),
+  );
+  const unavailable = {
+    admitted: false,
+    unavailable: true as const,
+    reason: "test",
+  };
+  const service = new TokenSessionRevalidationService({
+    ...h.deps,
+    admission: {
+      serverToken: () => Promise.resolve(unavailable),
+      delegation: () => unavailable,
+    },
+  });
+
+  await service.runOnce();
+  assertEquals(
+    h.closes.map((c) => [c.options.onlyCreatedAt, c.options.cause]),
+    [[MINT_1, "rotated"]],
+  );
+});
+
 Deno.test("runOnce: closes a standing delegation's sessions once its person is no longer admitted", async () => {
   let admitted = true;
   const h = harness(

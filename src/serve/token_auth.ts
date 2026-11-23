@@ -676,6 +676,14 @@ async function admissionRefusal(
   if (admission === null) return undefined;
   const result = await admission.serverToken(token);
   if (result.admitted) return undefined;
+  if (result.unavailable) {
+    // nobody was denied on the lists, so this is a transient refusal, not an audited denial
+    logger.warn(
+      "Token authentication refused for {name} (vault-error): {reason}",
+      { name: tokenName, reason: result.reason },
+    );
+    return { ok: false, error: "Authentication failed", reason: "vault-error" };
+  }
   return refuseNotAdmitted(
     auditContext,
     tokenName,

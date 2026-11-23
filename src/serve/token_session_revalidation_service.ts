@@ -257,8 +257,13 @@ export class TokenSessionRevalidationService {
       }
 
       const nowMs = this.#deps.now?.() ?? Date.now();
-      const admitted = token === null || !this.#deps.admission ||
-        (await this.#deps.admission.serverToken(token)).admitted;
+      const admission = token === null || !this.#deps.admission
+        ? undefined
+        : await this.#deps.admission.serverToken(token);
+      // a lookup that cannot answer keeps sessions: nobody was denied, and the
+      // next pass retries
+      const admitted = admission === undefined || admission.admitted ||
+        admission.unavailable === true;
       for (const createdAt of mints) {
         const verdict = tokenSessionVerdict(token, createdAt, nowMs);
         if (verdict.keep) {

@@ -577,7 +577,10 @@ person is used:
   every 30 s, which closes it with code 4003 and cause `not-admitted`.
 
 A credential that fails is refused with reason `not-admitted` and audited as
-`auth.token.not_admitted`. This is a denial, not a revocation: nothing is
+`auth.token.not_admitted`. When serve cannot read whether an older token came
+from a login, it refuses that use with reason `vault-error` until it can; a
+token with an OAuth identity, or one not issued to a person, never needs the
+read. This is a denial, not a revocation: nothing is
 written, each serve instance applies its own lists, and adding the person back
 restores the same credential without a new login or consent. Tokens minted with
 `swamp access token create` are outside admission. A delegation's collectives

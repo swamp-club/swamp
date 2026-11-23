@@ -107,17 +107,40 @@ Deno.test("TokenAdmissionChecker: the stored-login answer is cached per mint", a
   assertEquals(lookups(), 2);
 });
 
-Deno.test("TokenAdmissionChecker: a lookup that fails is not cached and leaves the token outside admission", async () => {
+Deno.test("TokenAdmissionChecker: a lookup that fails refuses the token, uncached, until it answers", async () => {
   let fail = true;
+  let stored = false;
   const { checker, lookups } = harness(
-    BOB_ONLY,
+    ALICE_ONLY,
     () =>
-      fail ? Promise.reject(new Error("vault offline")) : Promise.resolve(true),
+      fail
+        ? Promise.reject(new Error("vault offline"))
+        : Promise.resolve(stored),
   );
-  assertEquals((await checker.serverToken(token())).admitted, true);
+  const refused = await checker.serverToken(token());
+  assertEquals(refused.admitted, false);
+  assertEquals(refused.unavailable, true);
+  assertEquals((await checker.serverToken(token())).unavailable, true);
   fail = false;
-  assertEquals((await checker.serverToken(token())).admitted, false);
-  assertEquals(lookups(), 2);
+  const answered = await checker.serverToken(token());
+  assertEquals(answered.admitted, true);
+  assertEquals(answered.unavailable, undefined);
+  assertEquals(lookups(), 3);
+  stored = true;
+  assertEquals((await checker.serverToken(token())).admitted, true);
+  assertEquals(lookups(), 3);
+});
+
+Deno.test("TokenAdmissionChecker: a failing lookup never touches a token with an OAuth identity", async () => {
+  const { checker, lookups } = harness(
+    ALICE_ONLY,
+    () => Promise.reject(new Error("vault offline")),
+  );
+  const login = token({ oauthIdentity: { email: "a@example.com" } });
+  const result = await checker.serverToken(login);
+  assertEquals(result.admitted, true);
+  assertEquals(result.unavailable, undefined);
+  assertEquals(lookups(), 0);
 });
 
 Deno.test("TokenAdmissionChecker: a token that is not a person's never needs a lookup", async () => {

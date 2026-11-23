@@ -88,7 +88,7 @@ export interface ControlPlaneVaultProviderOptions {
 /**
  * does not implement VaultExistenceProvider: the store offers no read-free
  * answer, a listing is rejected by the has contract, and a load refuses this
- * reserved vault, so nothing is expected to ask
+ * reserved vault; serve asks whether a record exists through holdsSecret
  */
 export class ControlPlaneVaultProvider
   implements VaultProvider, VaultDeleteProvider {
@@ -127,6 +127,15 @@ export class ControlPlaneVaultProvider
     }
     const blob: EncryptedBlob = JSON.parse(new TextDecoder().decode(data));
     return await aesGcmDecrypt(blob, key);
+  }
+
+  /**
+   * whether a record was written under the key, without decrypting it: an
+   * entry a key migration left undecryptable still counts; a store failure
+   * rejects, never reads as absent
+   */
+  async holdsSecret(secretKey: string): Promise<boolean> {
+    return (await this.#store.get(`${SECRET_PREFIX}${secretKey}`)) !== null;
   }
 
   async put(

@@ -1115,12 +1115,14 @@ Deno.test("authenticateDashboardSession: returns the client its token records, a
   );
 });
 
-function admissionOf(lists: () => AdmissionLists) {
-  return createTokenAdmissionChecker({
-    lists,
-    hasStoredLogin: () => Promise.resolve(false),
-  });
+function admissionOf(
+  lists: () => AdmissionLists,
+  hasStoredLogin: () => Promise<boolean> = () => Promise.resolve(false),
+) {
+  return createTokenAdmissionChecker({ lists, hasStoredLogin });
 }
+
+const lookupDown = () => Promise.reject(new Error("store unreachable"));
 
 const ADMITS_ALICE = { allowedCollectives: [], allowedUsers: ["sub-alice"] };
 const ADMITS_NOBODY_LISTED = {
@@ -1188,5 +1190,52 @@ Deno.test("authenticateDashboardSession: a removed person's session is refused w
   assertEquals(result.ok, false);
   if (result.ok) return;
   assertEquals(result.reason, "not-admitted");
+  assertEquals(shouldInvalidateDashboardSession(result.reason), false);
+});
+
+Deno.test("authenticateServerToken: a token serve cannot classify is refused as vault-error, unaudited, until the lookup answers", async () => {
+  let lookup: () => Promise<boolean> = lookupDown;
+  const events: AuditEvent[] = [];
+  const admission = admissionOf(() => ADMITS_ALICE, () => lookup());
+  const authenticate = () =>
+    authenticateServerToken(
+      "test-token.secret-value",
+      "/tmp/nonexistent",
+      unusedRepoContext,
+      admission,
+      { emitter: { emit: (event) => events.push(event) } },
+      makeAuthDeps({
+        readToken: () =>
+          Promise.resolve(activeToken({ principalId: "user:sub-alice" })),
+      }),
+    );
+
+  assertEquals(await authenticate(), {
+    ok: false,
+    error: "Authentication failed",
+    reason: "vault-error",
+  });
+  assertEquals(
+    events.some((e) => e.action === "auth.token.not_admitted"),
+    false,
+  );
+
+  lookup = () => Promise.resolve(false);
+  assertEquals((await authenticate()).ok, true);
+});
+
+Deno.test("authenticateDashboardSession: a session serve cannot classify is refused without being invalidated", async () => {
+  const minted = activeToken({ principalId: "user:sub-alice" });
+  const result = await authenticateDashboardSession(
+    { tokenName: minted.name, tokenCreatedAt: minted.createdAt },
+    fakeTokenRepoContext(
+      { id: "token-id" },
+      new TextEncoder().encode(JSON.stringify(minted)),
+    ),
+    admissionOf(() => ADMITS_ALICE, lookupDown),
+  );
+  assertEquals(result.ok, false);
+  if (result.ok) return;
+  assertEquals(result.reason, "vault-error");
   assertEquals(shouldInvalidateDashboardSession(result.reason), false);
 });
