@@ -799,6 +799,7 @@ import {
   RetentionGcService,
 } from "../../serve/retention_gc_service.ts";
 import { runRepoRetention } from "../../libswamp/retention/run.ts";
+import type { DeclaredLimitScan } from "../../domain/data/data_lifecycle_service.ts";
 import { serveAutoDefinitionRetentionSources } from "../../serve/deps.ts";
 import { withSharedSyncGate, withSyncGate } from "../../serve/sync_gate.ts";
 import { GcMutex } from "../../serve/gc_mutex.ts";
@@ -9815,6 +9816,7 @@ export const serveCommand = new Command()
     // applies garbageCollection hourly when automatic is on, and declared version
     // limits even when it is off; the policy is read every tick so toggling it
     // needs no restart
+    const declaredLimitScan: DeclaredLimitScan = {};
     retentionGcService = new RetentionGcService({
       intervalMs: DEFAULT_RETENTION_GC_INTERVAL_MS,
       initialDelayMs: DEFAULT_RETENTION_GC_INITIAL_DELAY_MS,
@@ -9841,6 +9843,7 @@ export const serveCommand = new Command()
               workflowRunRepo: repoContext.workflowRunRepo,
             },
             watermarks: repoContext.retentionWatermarks,
+            declaredLimitScan,
             autoDefinitions: serveAutoDefinitionRetentionSources(
               repoContext,
               datastoreConfig,
@@ -9860,6 +9863,7 @@ export const serveCommand = new Command()
             afterPass: async () => {
               repoContext.catalogStore.checkpoint();
               if (
+                policy.appliesCutoffs &&
                 v3Maintenance && v3Location !== undefined &&
                 !control.isStopping()
               ) {

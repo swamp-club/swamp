@@ -70,10 +70,9 @@ export interface RetentionGcDeps {
 }
 
 /**
- * runs every kind when garbageCollection.automatic is true, and only declared
- * version limits when it is not (unless versionLimits is false); of serves sharing a
- * datastore the one claiming the hour runs its pass. A pass stops at a batch
- * boundary on shutdown, spent budget or a waiting manual gc.
+ * runs the kinds policy.enforcedKinds() names; of serves sharing a datastore
+ * the one claiming the hour runs its pass. A pass stops at a batch boundary on
+ * shutdown, spent budget or a waiting manual gc.
  */
 export class RetentionGcService {
   readonly #deps: RetentionGcDeps;

@@ -1244,7 +1244,6 @@ export class CatalogStore {
     }));
   }
 
-  /** published versions of one name with their creation time and size */
   versionTimes(
     namespace: string,
     typeNormalized: string,

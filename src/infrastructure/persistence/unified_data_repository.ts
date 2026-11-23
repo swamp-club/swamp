@@ -3087,13 +3087,13 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           return { ...result, cursor: resumeAt() };
         }
         examined++;
-        const type = ModelType.create(row.type_normalized);
         const key: NameKey = {
           typeNormalized: row.type_normalized,
           modelId: row.model_id,
           dataName: row.data_name,
         };
         try {
+          const type = ModelType.create(row.type_normalized);
           const gc = declaredPolicy(row.garbage_collection);
           if (gc !== undefined) {
             const times = new Map(

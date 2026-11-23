@@ -288,6 +288,14 @@ export class RetentionPolicy {
     return Number.isFinite(cutoff.getTime()) ? cutoff : undefined;
   }
 
+  /**
+   * true only when a pass applies an age cutoff; compacting history before a
+   * cutoff drops the newest-commits floor, which declared limits never imply
+   */
+  get appliesCutoffs(): boolean {
+    return this.automatic && this.hasAnyRetention;
+  }
+
   get hasAnyRetention(): boolean {
     return DURATION_KINDS.some((kind) => this.durationFor(kind) !== undefined);
   }

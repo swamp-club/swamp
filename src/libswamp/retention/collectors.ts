@@ -60,6 +60,11 @@ export interface RetentionCollectorSources {
     workflowRunRepo: YamlWorkflowRunRepository;
   };
   auditRepo?: AuditRepository;
+  /**
+   * kept by a caller that runs passes repeatedly, so a pass cut short resumes
+   * the declared-limit scan where the last stopped instead of at the first name
+   */
+  declaredLimitScan?: DeclaredLimitScan;
   /** without it the autoDefinitions kind is left alone */
   autoDefinitions?: AutoDefinitionRetentionSources;
   now?: () => number;
@@ -102,7 +107,7 @@ export function createRetentionCollectors(
     settledNames: new Set(),
     countedVersions: new Set(),
   };
-  const declaredScan: DeclaredLimitScan = {};
+  const declaredScan: DeclaredLimitScan = sources.declaredLimitScan ?? {};
   const daysBefore = (cutoff: Date): number =>
     Math.max(0, (now() - cutoff.getTime()) / DAY_MS);
 

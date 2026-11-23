@@ -287,6 +287,9 @@ garbageCollection:
   alone (`RetentionPolicy.enforcedKinds`). The CLI end-of-command pass runs
   it only with `automatic` on. It is not a duration, so it never makes
   `hasAnyRetention` true, and doctor's retention scan leaves it to the pass.
+  A pass that applies only declared limits never compacts v3 history before a
+  cutoff (`appliesCutoffs`): that would drop the newest-commits floor, which a
+  declared limit does not imply; the maintenance timer folds the removals.
 
 - **Units**: as `--older-than`: `m` is minutes and `mo` months, so
   `data: 6m` keeps six minutes of data, not six months. Leave a key unset
@@ -375,7 +378,9 @@ garbageCollection:
   last stopped, so a name retention keeps is read once per pass. Declared
   version limits page the catalog for names above their limit
   (`namesOverDeclaredLimit`, in key order), remove at most a batch of versions
-  (a name cut off resumes in the next batch) and examine at most a batch of
+  (a name cut off resumes in the next batch, and serve keeps the scan across
+  its passes so a pass cut short resumes where the last stopped) and examine
+  at most a batch of
   names; removals take the `data.gc` path, so on v3 they are ordinary
   commits. Each batch is traced (`swamp.retention.batch`, with
   `retention.names` for declared limits); an outputs batch also exports its listing, scan, orphan-log sweep, commit and gate wait as phases ([serve phase telemetry](../enablers/serve-phase-telemetry.md)).

@@ -42,6 +42,7 @@ import { resolveDatastoreForRepo } from "../src/cli/repo_context.ts";
 import { VERSION } from "../src/infrastructure/runtime/build_info.ts";
 import { runRepoRetention } from "../src/libswamp/retention/run.ts";
 import type { RetentionBatchResult } from "../src/libswamp/retention/pass.ts";
+import type { DeclaredLimitScan } from "../src/domain/data/data_lifecycle_service.ts";
 import {
   DAY_MS,
   saveAgedDataVersions,
@@ -110,6 +111,7 @@ async function pass(
   repo: Repo,
   config: RetentionConfig,
   batchSize: number,
+  expectComplete = true,
 ): Promise<{ batches: RetentionBatchResult[]; deleted: number }> {
   const policy = RetentionPolicy.fromConfig(config);
   const batches: RetentionBatchResult[] = [];
@@ -130,7 +132,7 @@ async function pass(
     },
     { policy, batchSize, kinds: policy.enforcedKinds() },
   );
-  assert(result.complete, "the pass finished");
+  assertEquals(result.complete, expectComplete, "the pass finished");
   return {
     batches,
     deleted: result.kinds.reduce((sum, kind) => sum + kind.deleted, 0),
@@ -331,5 +333,71 @@ Deno.test("versionLimits retention: batched passes leave the same versions as co
       },
     ),
     { numRuns: 15 },
+  );
+});
+
+Deno.test("versionLimits retention: a pass cut short resumes where the last stopped when the caller keeps the scan", async () => {
+  await withTempDir((dir) =>
+    withRepo(dir, async (repo) => {
+      // duration names first in key order, with nothing past their limit:
+      // each is examined and kept
+      for (const name of ["a1", "a2", "a3"]) {
+        await save(repo, "m1", name, 2, "30d");
+      }
+      const late = await save(repo, "m1", "z", 6, 1);
+      const policy = RetentionPolicy.fromConfig({});
+      const scan: DeclaredLimitScan = {};
+      // one batch per pass, as a serve whose budget runs out each hour
+      const onePass = async () => {
+        let checks = 0;
+        await runRepoRetention(
+          {
+            repoDir: repo.repoDir,
+            datastoreResolver: repo.resolver,
+            dataRepos: {
+              catalogStore: repo.catalog,
+              unifiedDataRepo: repo.data,
+              workflowRunRepo: repo.runs,
+            },
+            declaredLimitScan: scan,
+            runBatch: (fn) => fn(),
+          },
+          {
+            policy,
+            batchSize: 2,
+            kinds: policy.enforcedKinds(),
+            isStopping: () => ++checks > 1,
+          },
+        );
+      };
+
+      await onePass();
+      assertEquals(await versionsOnDisk(repo, "m1", "z"), late);
+      await onePass();
+      assertEquals(await versionsOnDisk(repo, "m1", "z"), late.slice(2));
+    })
+  );
+});
+
+Deno.test("versionLimits retention: a catalog row whose type cannot be read is skipped, and later names are still collected", async () => {
+  await withTempDir((dir) =>
+    withRepo(dir, async (repo) => {
+      const later = await save(repo, "m1", "z", 5, 2);
+      const template = [...repo.catalog.iterate()][0];
+      for (let version = 1; version <= 3; version++) {
+        repo.catalog.upsert({
+          ...template,
+          type_normalized: "",
+          data_name: "broken",
+          version,
+          garbage_collection: "1",
+        });
+      }
+
+      // the skipped name leaves the kind incomplete
+      await pass(repo, {}, 100, false);
+
+      assertEquals(await versionsOnDisk(repo, "m1", "z"), later.slice(-2));
+    })
   );
 });

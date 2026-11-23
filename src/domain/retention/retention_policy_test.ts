@@ -299,3 +299,20 @@ Deno.test("checkRetentionConfig: a non-boolean versionLimits is ignored, never r
   assertEquals(ignored.map((p) => p.field), ["versionLimits"]);
   assertEquals(RetentionPolicy.fromConfig(raw).versionLimits, true);
 });
+
+Deno.test("RetentionPolicy.appliesCutoffs: only automatic retention with a duration, never declared limits alone", () => {
+  assertEquals(RetentionPolicy.fromConfig(undefined).appliesCutoffs, false);
+  assertEquals(
+    RetentionPolicy.fromConfig({ retention: "30d" }).appliesCutoffs,
+    false,
+  );
+  assertEquals(
+    RetentionPolicy.fromConfig({ automatic: true }).appliesCutoffs,
+    false,
+  );
+  assertEquals(
+    RetentionPolicy.fromConfig({ automatic: true, outputs: "7d" })
+      .appliesCutoffs,
+    true,
+  );
+});
