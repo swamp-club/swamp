@@ -3402,7 +3402,7 @@ layout installed before this change; remove one of the two to install the
 other. `apps/` is the exception: a nested entry there (`@a/b/apps`) is refused
 only while the parent ships apps (its manifest lists any, its archive or
 lockfile entry has files under `apps/`, or, with no entry, its `apps/` holds
-files). Nothing else of the parent's lives there and no loader scans it for
+files outside the entries nested there). Nothing else of the parent's lives there and no loader scans it for
 code. The installed-extension digest (`filesChecksum`) leaves nested entry
 roots out, so installing `@a/b/c` does not make `@a/b` look locally edited. A
 digest stored before this rule covered the nested root too. While a root has
