@@ -83,7 +83,10 @@ import {
   MAX_EXTENSION_ARCHIVE_DECOMPRESSED_BYTES,
 } from "../../domain/extensions/extension_archive_limits.ts";
 import { readInstalledExtensionDigest } from "../../infrastructure/persistence/installed_extension_digest_reader.ts";
-import { readManifestIdentityAt } from "../../infrastructure/persistence/local_manifest_reader.ts";
+import {
+  readManifestAppsAt,
+  readManifestIdentityAt,
+} from "../../infrastructure/persistence/local_manifest_reader.ts";
 import {
   type ExtensionIdentity,
   ExtensionReplacement,
@@ -1873,10 +1876,13 @@ const EXTENSION_ROOT_ENTRIES = new Set([
   "datastores",
   "reports",
   "webhooks",
-  "apps",
   "files",
   "manifest.yaml",
 ]);
+
+// a nested entry may sit at apps/ when the parent ships no apps: nothing of
+// the parent's lives there and no loader scans it for code
+const APPS_ROOT_ENTRY = "apps";
 
 /**
  * a journal written first lets a crash at any point be put right. The swap
@@ -2045,7 +2051,10 @@ export async function applyInstall(
   // them.
   for (const ancestor of await installedAncestors(ref.name, ctx)) {
     const first = ref.name.slice(ancestor.length + 1).split("/")[0];
-    if (EXTENSION_ROOT_ENTRIES.has(first)) {
+    if (
+      EXTENSION_ROOT_ENTRIES.has(first) ||
+      (first === APPS_ROOT_ENTRY && await ancestorKeepsApps(ancestor, ctx))
+    ) {
       throw new UserError(
         `Cannot install ${ref.name}: its files would go to ` +
           `${ancestor}/${first}/, where the installed extension ` +
@@ -2053,7 +2062,10 @@ export async function applyInstall(
           `\`swamp extension rm ${ancestor}\` first.`,
       );
     }
-    if (await ancestorKeepsSourcesAt(ancestor, first, ctx)) {
+    if (
+      first !== APPS_ROOT_ENTRY &&
+      await ancestorKeepsSourcesAt(ancestor, first, ctx)
+    ) {
       throw new UserError(
         `Cannot install ${ref.name}: its files would go to ` +
           `${ancestor}/${first}/, where the installed extension ` +
@@ -2063,9 +2075,14 @@ export async function applyInstall(
     }
   }
   const rootSourceDirs = new Set(archiveRootSourceDirs(prepared.rootSources));
+  const shipsApps = manifest.apps.length > 0 ||
+    (await listFiles(join(extractDir, APPS_ROOT_ENTRY))).length > 0;
   for (const relDir of nestedRelDirs) {
     const first = relDir.split("/")[0];
-    if (EXTENSION_ROOT_ENTRIES.has(first)) {
+    if (
+      EXTENSION_ROOT_ENTRIES.has(first) ||
+      (first === APPS_ROOT_ENTRY && shipsApps)
+    ) {
       throw new UserError(
         `Cannot install ${ref.name}: the installed extension ` +
           `${ref.name}/${relDir} lives at ${first}/ inside its root, where ` +
@@ -2760,6 +2777,26 @@ async function ancestorKeepsSourcesAt(
   }
   return await isPlainDir(dir) &&
     !await pathExistsNoFollow(join(dir, "manifest.yaml"));
+}
+
+/**
+ * an entry recorded without files cannot rule apps out, so the manifest is read
+ * first and the tree is the last word
+ */
+async function ancestorKeepsApps(
+  ancestor: string,
+  ctx: InstallContext,
+): Promise<boolean> {
+  const root = join(resolvePulledExtensionsRoot(ctx.repoDir), ancestor);
+  if (readManifestAppsAt(join(root, "manifest.yaml")).length > 0) return true;
+  const dir = join(root, APPS_ROOT_ENTRY);
+  const files = ctx.lockfileRepository.getEntry(ancestor)?.files ?? [];
+  if (files.length > 0) {
+    return claimsPath(files, relative(ctx.repoDir, dir));
+  }
+  return await isPlainDir(dir) &&
+    !await pathExistsNoFollow(join(dir, "manifest.yaml")) &&
+    (await listFiles(dir)).length > 0;
 }
 
 async function isPlainDir(path: string): Promise<boolean> {

@@ -18,6 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { FilesystemAppCatalog } from "../../infrastructure/persistence/filesystem_app_catalog.ts";
+import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
+import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
+import { RemoveExtensionService } from "./remove_extension_service.ts";
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import type { Logger } from "@logtape/logtape";
 import { assertStringIncludes } from "@std/assert/string-includes";
@@ -2644,6 +2647,326 @@ Deno.test(
       assertStringIncludes(error.message, `swamp extension rm ${parent}`);
       assertEquals(await installedTree(repoDir), tree);
       assertEquals(lockfile.getEntry(child), null);
+    });
+  },
+);
+
+const APPS_CHILD_FILES = {
+  "models/c.ts": "export const c = 1;\n",
+  "bundles/c.js": "// child bundle\n",
+};
+
+function appFiles(appName: string, folder = "apps/cost") {
+  return {
+    [`${folder}/app.yaml`]:
+      `name: "${appName}"\ntitle: Cost\nbridge: 1\ncapabilities: [runs:read]\n`,
+    [`${folder}/dist/index.html`]: "<html>app",
+  };
+}
+
+function appsArchiveSpec(
+  name: string,
+  files: Record<string, string>,
+  version?: string,
+): SkillArchiveSpec {
+  const appName = `${name.slice(0, name.indexOf("/"))}/cost`;
+  return {
+    ...swapSpec(name, { ...files, ...appFiles(appName) }),
+    apps: ["apps/cost"],
+    version,
+  };
+}
+
+Deno.test(
+  "installExtension: a nested apps entry installs under a parent that ships no apps",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const parent = uniqueExtName();
+      const child = `${parent}/apps`;
+      const archives = {
+        [parent]: await buildSkillArchive(swapSpec(parent, V1_FILES)),
+        [child]: await buildSkillArchive(swapSpec(child, APPS_CHILD_FILES)),
+      };
+      await installArchive(repoDir, lockfile, archives, parent);
+      const parentEntry = lockfile.getEntry(parent);
+
+      await installArchive(repoDir, lockfile, archives, child);
+
+      assertEquals(lockfile.getEntry(parent), parentEntry);
+      assertEquals(
+        await Deno.readTextFile(
+          join(extRootOf(repoDir, parent), "models/a.ts"),
+        ),
+        V1_FILES["models/a.ts"],
+      );
+      assertEquals(
+        await Deno.readTextFile(join(extRootOf(repoDir, child), "models/c.ts")),
+        APPS_CHILD_FILES["models/c.ts"],
+      );
+      assertEquals(lockfile.getEntry(child)?.version, SKILL_VERSION);
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: a parent that ships no apps installs over its nested apps entry",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const parent = uniqueExtName();
+      const child = `${parent}/apps`;
+      const archives = {
+        [parent]: await buildSkillArchive(swapSpec(parent, V1_FILES)),
+        [child]: await buildSkillArchive(swapSpec(child, APPS_CHILD_FILES)),
+      };
+      await installArchive(repoDir, lockfile, archives, child);
+      const childRoot = extRootOf(repoDir, child);
+      const childTree = await readTree(childRoot);
+      const childEntry = lockfile.getEntry(child);
+
+      await installArchive(repoDir, lockfile, archives, parent);
+      assertEquals(await readTree(childRoot), childTree);
+      assertEquals(lockfile.getEntry(child), childEntry);
+      assertEquals(lockfile.getEntry(parent)?.version, SKILL_VERSION);
+
+      const v2 = {
+        ...archives,
+        [parent]: await buildSkillArchive(swapSpec(parent, V2_FILES)),
+      };
+      await installArchive(repoDir, lockfile, v2, parent, { force: true });
+      assertEquals(await readTree(childRoot), childTree);
+      assertEquals(lockfile.getEntry(child), childEntry);
+      assertEquals(
+        await Deno.readTextFile(
+          join(extRootOf(repoDir, parent), "models/a.ts"),
+        ),
+        V2_FILES["models/a.ts"],
+      );
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: a parent that ships apps refuses a nested apps entry in either order",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const parent = uniqueExtName();
+      const child = `${parent}/apps`;
+      const archives = {
+        [parent]: await buildSkillArchive(appsArchiveSpec(parent, V1_FILES)),
+        [child]: await buildSkillArchive(swapSpec(child, APPS_CHILD_FILES)),
+      };
+      await installArchive(repoDir, lockfile, archives, parent);
+      const tree = await installedTree(repoDir);
+      const error = await assertRejects(
+        () => installArchive(repoDir, lockfile, archives, child),
+        UserError,
+      );
+      assertStringIncludes(error.message, `swamp extension rm ${parent}`);
+      assertEquals(await installedTree(repoDir), tree);
+      assertEquals(lockfile.getEntry(child), null);
+    });
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const parent = uniqueExtName();
+      const child = `${parent}/apps`;
+      const archives = {
+        [parent]: await buildSkillArchive(appsArchiveSpec(parent, V1_FILES)),
+        [child]: await buildSkillArchive(swapSpec(child, APPS_CHILD_FILES)),
+      };
+      await installArchive(repoDir, lockfile, archives, child);
+      const tree = await installedTree(repoDir);
+      const error = await assertRejects(
+        () => installArchive(repoDir, lockfile, archives, parent),
+        UserError,
+      );
+      assertStringIncludes(error.message, `swamp extension rm ${child}`);
+      assertEquals(await installedTree(repoDir), tree);
+      assertEquals(lockfile.getEntry(parent), null);
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: a parent upgrade that adds apps is refused while its nested apps entry is installed",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const parent = uniqueExtName();
+      const child = `${parent}/apps`;
+      const archives = {
+        [parent]: await buildSkillArchive(swapSpec(parent, V1_FILES)),
+        [child]: await buildSkillArchive(swapSpec(child, APPS_CHILD_FILES)),
+      };
+      await installArchive(repoDir, lockfile, archives, parent);
+      await installArchive(repoDir, lockfile, archives, child);
+      const tree = await installedTree(repoDir);
+      const parentEntry = lockfile.getEntry(parent);
+
+      const v2 = {
+        ...archives,
+        [parent]: await buildSkillArchive(
+          appsArchiveSpec(parent, V2_FILES, "2026.01.02.1"),
+        ),
+      };
+      await assertRejects(
+        () => installArchive(repoDir, lockfile, v2, parent, { force: true }),
+        UserError,
+      );
+      assertEquals(await installedTree(repoDir), tree);
+      assertEquals(lockfile.getEntry(parent), parentEntry);
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: an installed parent whose manifest lists apps refuses a nested apps entry without a files list",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const parent = uniqueExtName();
+      const child = `${parent}/apps`;
+      const archives = {
+        [parent]: await buildSkillArchive(appsArchiveSpec(parent, V1_FILES)),
+        [child]: await buildSkillArchive(swapSpec(child, APPS_CHILD_FILES)),
+      };
+      await installArchive(repoDir, lockfile, archives, parent);
+      await lockfile.writeEntry(parent, SKILL_VERSION, [], { checksum: "x" });
+      await assertRejects(
+        () => installArchive(repoDir, lockfile, archives, child),
+        UserError,
+      );
+      assertEquals(lockfile.getEntry(child), null);
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: a parent on disk with no lockfile entry refuses a nested apps entry only when its apps dir holds files",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const parent = uniqueExtName();
+      const child = `${parent}/apps`;
+      const archives = {
+        [parent]: await buildSkillArchive(swapSpec(parent, V1_FILES)),
+        [child]: await buildSkillArchive(swapSpec(child, APPS_CHILD_FILES)),
+      };
+      await installArchive(repoDir, lockfile, archives, parent);
+      await lockfile.removeEntry(parent);
+      const appsDir = join(extRootOf(repoDir, parent), "apps");
+      await ensureDir(join(appsDir, "cost"));
+      await Deno.writeTextFile(join(appsDir, "cost", "app.yaml"), "x");
+      await assertRejects(
+        () => installArchive(repoDir, lockfile, archives, child),
+        UserError,
+      );
+      assertEquals(lockfile.getEntry(child), null);
+
+      await Deno.remove(join(appsDir, "cost"), { recursive: true });
+      await installArchive(repoDir, lockfile, archives, child);
+      assertEquals(lockfile.getEntry(child)?.version, SKILL_VERSION);
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: with a nested apps entry installed, the catalog lists only the child's own app",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const parent = uniqueExtName();
+      const child = `${parent}/apps`;
+      const appName = `${parent.slice(0, parent.indexOf("/"))}/cost`;
+      const stray = `${parent.slice(0, parent.indexOf("/"))}/stray`;
+      const archives = {
+        [parent]: await buildSkillArchive(swapSpec(parent, V1_FILES)),
+        [child]: await buildSkillArchive({
+          ...appsArchiveSpec(child, {
+            // files/ lands at <parent>/apps/files/, the shape of an app the
+            // parent would keep
+            ...appFiles(stray, "files"),
+          }),
+        }),
+      };
+      await installArchive(repoDir, lockfile, archives, parent);
+      await installArchive(repoDir, lockfile, archives, child);
+
+      const { apps, problems } = await new FilesystemAppCatalog({ repoDir })
+        .list();
+      assertEquals(apps.map((app) => app.descriptor.name), [appName]);
+      assertEquals(problems.length, 1);
+      assertStringIncludes(
+        problems[0].path.replaceAll("\\", "/"),
+        `${parent}/apps/files/app.yaml`,
+      );
+    });
+  },
+);
+
+async function removeInstalled(
+  repoDir: string,
+  lockfile: LockfileRepository,
+  name: string,
+): Promise<void> {
+  const catalog = new ExtensionCatalogStore(
+    join(repoDir, ".swamp", "_extension_catalog.db"),
+  );
+  try {
+    const repository = new ExtensionRepository({
+      catalog,
+      lockfileRepository: lockfile,
+      repoRoot: repoDir,
+    });
+    await new RemoveExtensionService({
+      repository,
+      lockfileRepository: lockfile,
+      repoDir,
+    }).execute(name);
+  } finally {
+    catalog.close();
+  }
+}
+
+Deno.test(
+  "extension rm: removing a parent keeps its nested apps entry, and removing that entry keeps the parent",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const parent = uniqueExtName();
+      const child = `${parent}/apps`;
+      const archives = {
+        [parent]: await buildSkillArchive(swapSpec(parent, V1_FILES)),
+        [child]: await buildSkillArchive(swapSpec(child, APPS_CHILD_FILES)),
+      };
+      await installArchive(repoDir, lockfile, archives, parent);
+      await installArchive(repoDir, lockfile, archives, child);
+      const childRoot = extRootOf(repoDir, child);
+      const childTree = await readTree(childRoot);
+      const childEntry = lockfile.getEntry(child);
+
+      await removeInstalled(repoDir, lockfile, parent);
+      assertEquals(lockfile.getEntry(parent), null);
+      assertEquals(lockfile.getEntry(child), childEntry);
+      assertEquals(await readTree(childRoot), childTree);
+      assertEquals(
+        await exists(join(extRootOf(repoDir, parent), "models/a.ts")),
+        false,
+      );
+
+      await installArchive(repoDir, lockfile, archives, parent);
+      const parentRoot = extRootOf(repoDir, parent);
+      const parentOwn = async () =>
+        Object.fromEntries(
+          Object.entries(await readTree(parentRoot)).filter(([rel]) =>
+            rel.split(/[\\/]/)[0] !== "apps"
+          ),
+        );
+      const parentTree = await parentOwn();
+      await removeInstalled(repoDir, lockfile, child);
+      assertEquals(lockfile.getEntry(child), null);
+      assertEquals(await exists(join(childRoot, "models/c.ts")), false);
+      assertEquals(await readTree(parentRoot), parentTree);
+
+      await installArchive(repoDir, lockfile, archives, parent, {
+        force: true,
+      });
+      assertEquals(await exists(join(parentRoot, "apps")), true);
+      await installArchive(repoDir, lockfile, archives, child);
+      assertEquals(await readTree(childRoot), childTree);
     });
   },
 );
