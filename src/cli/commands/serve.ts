@@ -2769,14 +2769,16 @@ export const serveCommand = new Command()
         const pass = gatePassKeeper?.current();
         return pass ? formatOrchestratorGatePass(pass) : undefined;
       },
-      readTokenSecret: async (vaultName, secretKey) =>
+      readTokenSecret: async (vaultName, secretKey, purpose) =>
         await (await VaultService.fromRepository(resolvedRepoDir, {
           vaultsDir,
         }))
           .get(
             vaultName,
             secretKey,
-            "serve:worker-token-rotate",
+            purpose === "verify"
+              ? "serve:worker-token-verify"
+              : "serve:worker-token-rotate",
           ),
       verifyWorker: async (workerName) => {
         const probe = await dispatchFleetProbe(

@@ -28,6 +28,7 @@ import {
 } from "../infrastructure/tracing/execution_observer.ts";
 import {
   findSpan,
+  isChildOf,
   withCapturedSpans,
   withObservedSpans,
 } from "../infrastructure/tracing/span_test_helpers.ts";
@@ -41,6 +42,7 @@ import { UNREADABLE_CONTENT_CODE } from "../domain/datastore/unreadable_content.
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import {
   fleetMemberSuffix,
+  MAX_ENROLLMENT_PRECHECKS,
   splitEnrollmentToken,
   WorkerGateway,
   type WorkerGatewayOptions,
@@ -55,6 +57,7 @@ import {
 import type { EnrollmentToken } from "../domain/models/worker/enrollment_token_model.ts";
 import {
   WORKER_MODEL_TYPE,
+  workerDefinitionName,
   workerModel,
 } from "../domain/models/worker/worker_model.ts";
 import { createInMemoryWorkerContext } from "../domain/models/worker/worker_test_helpers.ts";
@@ -234,9 +237,17 @@ Deno.test("WorkerGateway: enrollment runs in a gateway-tail span (swamp-club#375
     const { workerChannel } = connectWorkerSocket(h.gateway);
     await enroll(workerChannel);
 
-    const span = findSpan(spans, "swamp.serve.transition");
-    assertEquals(span.attributes["swamp.transition.tail"], "gateway");
-    assertEquals(span.attributes["swamp.transition.operation"], "enroll");
+    const byOperation = new Map(
+      spans.filter((s) => s.name === "swamp.serve.transition").map((s) => [
+        s.attributes["swamp.transition.operation"],
+        s,
+      ]),
+    );
+    const turn = byOperation.get("enroll");
+    const write = byOperation.get("worker_enroll");
+    assertEquals(turn?.attributes["swamp.transition.tail"], "gateway");
+    assertEquals(write?.attributes["swamp.transition.tail"], "gateway");
+    assertEquals(isChildOf(write!, turn!), true);
   });
 });
 
@@ -3881,4 +3892,415 @@ Deno.test("WorkerGateway: deliverCurrentMint skips a worker a --server rotation 
   assertEquals(background, null);
   assertEquals(calls, 1);
   assertEquals(report.rotated, [{ worker: "ci-runner-3", persisted: true }]);
+});
+
+// The harness stubs never leave the microtask queue, so a zero-delay timer is
+// not a wait: it is a boundary after which everything they queued has run.
+function macrotaskBoundary(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+function workerStatuses(h: Harness, worker: string): unknown[] {
+  return h.transitions.filter((t) =>
+    t.methodName === "set_status" &&
+    t.definitionName === workerDefinitionName(worker)
+  ).map((t) => t.inputs.status);
+}
+
+type RecordedInput = Parameters<
+  NonNullable<WorkerGatewayOptions["runModelMethod"]>
+>[0];
+
+function createGatedHarness(
+  overrides?: Partial<WorkerGatewayOptions>,
+): Harness & {
+  hold: (match: (input: RecordedInput) => boolean) => void;
+  release: () => void;
+  reached: () => number;
+} {
+  let gate:
+    | { match: (input: RecordedInput) => boolean; promise: Promise<void> }
+    | null = null;
+  let open = () => {};
+  let reached = 0;
+  const h: Harness = createHarness({
+    ...overrides,
+    runModelMethod: async (input) => {
+      const held = gate;
+      if (held !== null && held.match(input)) {
+        reached++;
+        await held.promise;
+      }
+      h.transitions.push(input);
+    },
+  });
+  return {
+    ...h,
+    hold: (match) => {
+      const promise = new Promise<void>((resolve) => {
+        open = () => {
+          gate = null;
+          resolve();
+        };
+      });
+      gate = { match, promise };
+    },
+    release: () => open(),
+    reached: () => reached,
+  };
+}
+
+const heldStatus = (worker: string, status: string) =>
+(
+  input: RecordedInput,
+) =>
+  input.methodName === "set_status" &&
+  input.definitionName === workerDefinitionName(worker) &&
+  input.inputs.status === status;
+
+const otherRunner = {
+  ...enrollParams,
+  token: "other-runner.s3cret",
+  instanceUuid: "uuid-2",
+  machineId: "machine-2",
+};
+
+function answerDispatches(channel: RpcChannel): string[] {
+  const received: string[] = [];
+  channel.register(WorkerMethod.dispatch, (params) => {
+    received.push((params as { dispatchId: string }).dispatchId);
+    return Promise.resolve({
+      status: "success",
+      outputs: [],
+      logs: [],
+      durationMs: 1,
+    });
+  });
+  return received;
+}
+
+Deno.test("WorkerGateway: a dispatch to an idle worker is sent while another worker's enrollment holds the tail (swamp-club#3988)", async () => {
+  const h = createGatedHarness();
+  const a = connectWorkerSocket(h.gateway);
+  await enroll(a.workerChannel);
+  const received = answerDispatches(a.workerChannel);
+
+  h.hold((input) => input.methodName === "enroll");
+  const b = connectWorkerSocket(h.gateway);
+  const pendingEnroll = enroll(b.workerChannel, otherRunner);
+  await waitFor(() => h.reached() === 1, "the other worker's enroll held");
+
+  const dispatched = h.gateway.dispatch("ci-runner-3", dispatchParams());
+  await waitFor(
+    () => received.length === 1,
+    "the dispatch sent with the tail held",
+  );
+  assertEquals(workerStatuses(h, "ci-runner-3")[0], "busy");
+
+  h.release();
+  assertEquals((await dispatched).status, "success");
+  await pendingEnroll;
+});
+
+Deno.test("WorkerGateway: a drain during a held busy write lands after it", async () => {
+  const h = createGatedHarness();
+  const a = connectWorkerSocket(h.gateway);
+  await enroll(a.workerChannel);
+  answerDispatches(a.workerChannel);
+
+  h.hold(heldStatus("ci-runner-3", "busy"));
+  const dispatched = h.gateway.dispatch("ci-runner-3", dispatchParams());
+  await waitFor(() => h.reached() === 1, "the busy write held");
+  const drained = a.workerChannel.call(RemoteMethod.drain, {});
+  await waitFor(
+    () => h.gateway.worker("ci-runner-3")?.status === "draining",
+    "the worker draining in memory",
+  );
+  await macrotaskBoundary();
+
+  h.release();
+  await drained;
+  await dispatched;
+  assertEquals(workerStatuses(h, "ci-runner-3"), ["busy", "draining"]);
+});
+
+Deno.test("WorkerGateway: a revoke during a held busy write records the disconnect after it", async () => {
+  const h = createGatedHarness();
+  const a = connectWorkerSocket(h.gateway);
+  await enroll(a.workerChannel);
+  answerDispatches(a.workerChannel);
+
+  h.hold(heldStatus("ci-runner-3", "busy"));
+  const dispatched = h.gateway.dispatch("ci-runner-3", dispatchParams());
+  await waitFor(() => h.reached() === 1, "the busy write held");
+  const revoked = h.gateway.revokeToken("ci-runner-3", "revoked");
+  await waitFor(
+    () => h.gateway.worker("ci-runner-3") === null,
+    "the worker removed from the pool",
+  );
+  await macrotaskBoundary();
+
+  h.release();
+  assertEquals(await revoked, ["ci-runner-3"]);
+  await assertRejects(() => dispatched, ChannelClosedError);
+  assertEquals(workerStatuses(h, "ci-runner-3"), ["busy", "disconnected"]);
+});
+
+Deno.test("WorkerGateway: a socket close during a held busy write records the disconnect after it", async () => {
+  const h = createGatedHarness();
+  const a = connectWorkerSocket(h.gateway);
+  await enroll(a.workerChannel);
+  answerDispatches(a.workerChannel);
+
+  h.hold(heldStatus("ci-runner-3", "busy"));
+  const dispatched = h.gateway.dispatch("ci-runner-3", dispatchParams());
+  await waitFor(() => h.reached() === 1, "the busy write held");
+  a.dropSocket();
+  await macrotaskBoundary();
+
+  h.release();
+  await assertRejects(() => dispatched, ChannelClosedError);
+  await waitFor(
+    () => workerStatuses(h, "ci-runner-3").length === 2,
+    "the disconnect recorded",
+  );
+  assertEquals(workerStatuses(h, "ci-runner-3"), ["busy", "disconnected"]);
+  await waitFor(() => h.graceExpired.length === 1, "the grace window ended");
+});
+
+Deno.test("WorkerGateway: a worker's disconnect is recorded while another worker's enrollment holds the tail", async () => {
+  const h = createGatedHarness();
+  const a = connectWorkerSocket(h.gateway);
+  await enroll(a.workerChannel);
+
+  h.hold((input) => input.methodName === "enroll");
+  const b = connectWorkerSocket(h.gateway);
+  const pendingEnroll = enroll(b.workerChannel, otherRunner);
+  await waitFor(() => h.reached() === 1, "the other worker's enroll held");
+
+  a.dropSocket();
+  await waitFor(
+    () => workerStatuses(h, "ci-runner-3").includes("disconnected"),
+    "the disconnect recorded with the tail held",
+  );
+
+  h.release();
+  await pendingEnroll;
+  await waitFor(() => h.graceExpired.length === 1, "the grace window ended");
+});
+
+Deno.test("WorkerGateway: a reconnect's status write lands after the worker's held disconnect", async () => {
+  let maxEnrollmentReads = 0;
+  const h = createGatedHarness({
+    graceWindowMs: 60_000,
+    readTokenMaxEnrollments: (_name, record) => {
+      maxEnrollmentReads++;
+      return Promise.resolve(record.maxEnrollments);
+    },
+  });
+  const a = connectWorkerSocket(h.gateway);
+  await enroll(a.workerChannel);
+
+  h.hold(heldStatus("ci-runner-3", "disconnected"));
+  a.dropSocket();
+  await waitFor(() => h.reached() === 1, "the disconnect write held");
+  const again = connectWorkerSocket(h.gateway);
+  const reconnected = enroll(again.workerChannel);
+  await waitFor(
+    () => maxEnrollmentReads === 2,
+    "the reconnect reached its status write",
+  );
+  await macrotaskBoundary();
+
+  h.release();
+  await reconnected;
+  assertEquals(workerStatuses(h, "ci-runner-3"), ["disconnected", "idle"]);
+});
+
+interface PrecheckHarness extends Harness {
+  ensured: { name: string; transitionsBefore: number }[];
+  secretReads: () => number;
+  secretPurposes: string[];
+}
+
+function createPrecheckHarness(options?: {
+  holdEnsureFor?: string;
+  holdSecrets?: Promise<void>;
+  overrides?: Partial<WorkerGatewayOptions>;
+}): PrecheckHarness & {
+  releaseEnsure: () => void;
+  ensureReached: () => number;
+} {
+  const ensured: { name: string; transitionsBefore: number }[] = [];
+  let secretReads = 0;
+  const secretPurposes: string[] = [];
+  let ensureReached = 0;
+  let releaseEnsure = () => {};
+  const ensureGate = new Promise<void>((resolve) => {
+    releaseEnsure = resolve;
+  });
+  const h = createHarness({
+    readTokenSecret: async (_vaultName, _secretKey, purpose) => {
+      secretReads++;
+      secretPurposes.push(purpose);
+      await options?.holdSecrets;
+      return "s3cret";
+    },
+    ensureWorkerDefinition: async (name) => {
+      if (name === options?.holdEnsureFor) {
+        ensureReached++;
+        await ensureGate;
+      }
+      ensured.push({ name, transitionsBefore: h.transitions.length });
+    },
+    ...options?.overrides,
+  });
+  return {
+    ...h,
+    ensured,
+    secretReads: () => secretReads,
+    secretPurposes,
+    releaseEnsure,
+    ensureReached: () => ensureReached,
+  };
+}
+
+Deno.test("WorkerGateway: an enrollment presenting its token's secret creates its worker definition before its turn (swamp-club#3987)", async () => {
+  const h = createPrecheckHarness();
+  const a = connectWorkerSocket(h.gateway);
+  await enroll(a.workerChannel);
+  assertEquals(h.ensured, [{ name: "ci-runner-3", transitionsBefore: 0 }]);
+  assertEquals(h.secretPurposes, ["verify"]);
+
+  // a reconnect has its definition already
+  a.dropSocket();
+  const again = connectWorkerSocket(h.gateway);
+  await enroll(again.workerChannel);
+  assertEquals(h.ensured.length, 1);
+  assertEquals(h.secretPurposes, ["verify"]);
+  await waitFor(
+    () => workerStatuses(h, "ci-runner-3").includes("idle"),
+    "the reconnect recorded",
+  );
+});
+
+Deno.test("WorkerGateway: a held worker definition does not hold another enrollment's turn (swamp-club#3987)", async () => {
+  const h = createPrecheckHarness({ holdEnsureFor: "other-runner" });
+  const b = connectWorkerSocket(h.gateway);
+  const pendingB = enroll(b.workerChannel, otherRunner);
+  await waitFor(() => h.ensureReached() === 1, "the definition held");
+
+  const c = connectWorkerSocket(h.gateway);
+  const pendingC = enroll(c.workerChannel);
+  await waitFor(
+    () => h.gateway.worker("ci-runner-3") !== null,
+    "another enrollment admitted with the definition held",
+  );
+  assertEquals(h.gateway.worker("other-runner"), null);
+
+  h.releaseEnsure();
+  assertEquals((await pendingC).workerId, "ci-runner-3");
+  assertEquals((await pendingB).workerId, "other-runner");
+});
+
+Deno.test("WorkerGateway: a request the token would refuse creates no worker definition before its turn", async () => {
+  const cases: {
+    label: string;
+    params?: Record<string, unknown>;
+    overrides: Partial<WorkerGatewayOptions>;
+  }[] = [
+    {
+      label: "wrong secret",
+      params: { ...enrollParams, token: "ci-runner-3.guess" },
+      overrides: {},
+    },
+    {
+      label: "revoked",
+      overrides: {
+        readTokenRecord: (name) =>
+          Promise.resolve({ ...mintRecord(name, BASE_MINT), state: "revoked" }),
+      },
+    },
+    {
+      label: "expired",
+      overrides: {
+        readTokenRecord: (name) =>
+          Promise.resolve({
+            ...mintRecord(name, BASE_MINT),
+            expiresAt: "2026-01-01T00:00:01.000Z",
+          }),
+      },
+    },
+    {
+      label: "allowance exhausted",
+      overrides: {
+        readTokenRecord: (name) =>
+          Promise.resolve({
+            ...mintRecord(name, BASE_MINT),
+            bindings: [{ machineId: "machine-9", enrolledAt: BASE_MINT }],
+          }),
+      },
+    },
+    {
+      label: "no token definition on this node",
+      overrides: { findTokenDefinitionId: () => Promise.resolve(null) },
+    },
+    { label: "no secret reader", overrides: { readTokenSecret: undefined } },
+  ];
+  for (const { label, params, overrides } of cases) {
+    const h = createPrecheckHarness({ overrides });
+    const a = connectWorkerSocket(h.gateway);
+    await enroll(a.workerChannel, params).catch(() => {});
+    assertEquals(h.ensured, [], label);
+  }
+});
+
+Deno.test("WorkerGateway: a socket closed during the pre-check creates no worker definition", async () => {
+  let releaseSecrets = () => {};
+  const holdSecrets = new Promise<void>((resolve) => {
+    releaseSecrets = resolve;
+  });
+  const h = createPrecheckHarness({ holdSecrets });
+  const a = connectWorkerSocket(h.gateway);
+  const pending = enroll(a.workerChannel).catch(() => {});
+  await waitFor(() => h.secretReads() === 1, "the secret read held");
+  a.dropSocket();
+  a.workerChannel.close("worker gave up");
+  releaseSecrets();
+  await pending;
+  await macrotaskBoundary();
+  await h.gateway.settled();
+  assertEquals(h.ensured, []);
+  assertEquals(h.gateway.worker("ci-runner-3"), null);
+});
+
+Deno.test("WorkerGateway: enrollment pre-checks are bounded, and one beyond the bound enrolls without one", async () => {
+  let releaseSecrets = () => {};
+  const holdSecrets = new Promise<void>((resolve) => {
+    releaseSecrets = resolve;
+  });
+  const h = createPrecheckHarness({ holdSecrets });
+  const names = ["t1", "t2", "t3", "t4", "t5"];
+  const pending = names.map((name, i) =>
+    enroll(connectWorkerSocket(h.gateway).workerChannel, {
+      ...enrollParams,
+      token: `${name}.s3cret`,
+      instanceUuid: `uuid-${i}`,
+      machineId: `machine-${i}`,
+    })
+  );
+  await waitFor(
+    () => names.some((name) => h.gateway.worker(name) !== null),
+    "an enrollment past the bound admitted",
+  );
+  assertEquals(h.secretReads(), MAX_ENROLLMENT_PRECHECKS);
+  const admitted = names.filter((name) => h.gateway.worker(name) !== null);
+  assertEquals(admitted.length, 1);
+
+  releaseSecrets();
+  await Promise.all(pending);
+  assertEquals(
+    h.ensured.map((e) => e.name).sort(),
+    names.filter((name) => name !== admitted[0]),
+  );
 });

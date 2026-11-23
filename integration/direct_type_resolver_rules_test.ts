@@ -31,10 +31,12 @@ const DEFINING_FILE = "src/libswamp/models/direct_execution.ts";
 // the run path passes, so the CLI composes createDirectTypeResolver instead
 const PINNED_CALLERS: readonly string[] = [
   "src/cli/direct_type_resolver.ts",
+  // creates the worker definition the enroll run would, with no inputs to drop
+  "src/libswamp/worker/ensure_definition.ts",
   "src/serve/deps.ts",
 ];
 
-Deno.test("resolveOrCreateDefinition is called only by the shared CLI resolver and serve", async () => {
+Deno.test("resolveOrCreateDefinition is called only by the shared CLI resolver, serve and ensureWorkerDefinition", async () => {
   const callers: string[] = [];
   for await (const filePath of productionSourceFiles(SRC_DIR)) {
     const rel = repoRelative(filePath);
