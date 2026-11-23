@@ -79,7 +79,7 @@ function installerWaitingOn(dir: string): ExtensionInstallerPort {
     hotLoadVaults: () => Promise.resolve(),
     hotLoadDatastores: () => Promise.resolve(),
     hotLoadWebhooks: () => Promise.resolve(),
-    failedLocalSourceMatchesType: () => false,
+    findFailedLocalSource: () => null,
     providesType: () => Promise.resolve(false),
     async withInstallLock<T>(fn: () => Promise<T>): Promise<T> {
       const lock = new FileLock(dir, {

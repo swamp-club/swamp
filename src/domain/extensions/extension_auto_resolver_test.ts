@@ -24,6 +24,7 @@ import {
   type ExtensionInstallerPort,
   type ExtensionLookupInfo,
   type ExtensionLookupPort,
+  type FailedLocalSource,
   type InstallationInspection,
   resolveDatastoreType,
   resolveModelType,
@@ -88,8 +89,8 @@ function createMockOutput(): AutoResolveOutputPort & { calls: string[] } {
     collectiveNotTrusted(collective: string, type: string) {
       calls.push(`collectiveNotTrusted:${collective}:${type}`);
     },
-    localSourceFailed(type: string) {
-      calls.push(`localSourceFailed:${type}`);
+    localSourceFailed(type: string, failure: FailedLocalSource) {
+      calls.push(`localSourceFailed:${type}:${failure.file}:${failure.error}`);
     },
     noStableVersion(extension: string) {
       calls.push(`noStableVersion:${extension}`);
@@ -187,10 +188,13 @@ function createMockInstaller(
     hotLoadWebhooks() {
       return Promise.resolve();
     },
-    failedLocalSourceMatchesType(typeNormalized: string) {
-      return failedLocalSourceTypes.some((t) =>
+    findFailedLocalSource(typeNormalized: string) {
+      const match = failedLocalSourceTypes.find((t) =>
         typeNormalized.includes(t) || t.includes(typeNormalized)
       );
+      return match === undefined
+        ? null
+        : { file: `extensions/models/${match}.ts`, error: `broken ${match}` };
     },
   };
 }
@@ -993,7 +997,9 @@ Deno.test("ExtensionAutoResolver - untrusted collective with matching failed loc
 
   const result = await resolver.resolve("@myorg/tools/widget");
   assertEquals(result, false);
-  assertEquals(output.calls, ["localSourceFailed:@myorg/tools/widget"]);
+  assertEquals(output.calls, [
+    "localSourceFailed:@myorg/tools/widget:extensions/models/myorg/tools.ts:broken myorg/tools",
+  ]);
 });
 
 Deno.test("ExtensionAutoResolver - untrusted collective with non-matching failed local source emits collectiveNotTrusted", async () => {
@@ -1328,7 +1334,7 @@ Deno.test("ExtensionAutoResolver - installs once when two types from one extensi
     hotLoadVaults: () => Promise.resolve(),
     hotLoadDatastores: () => Promise.resolve(),
     hotLoadWebhooks: () => Promise.resolve(),
-    failedLocalSourceMatchesType: () => false,
+    findFailedLocalSource: () => null,
   };
   const output = createMockOutput();
   const resolver = new ExtensionAutoResolver({

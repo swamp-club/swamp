@@ -5075,7 +5075,7 @@ async function withRecordingAutoResolver(
         hotLoadVaults: () => Promise.resolve(),
         hotLoadDatastores: () => Promise.resolve(),
         hotLoadWebhooks: () => Promise.resolve(),
-        failedLocalSourceMatchesType: () => false,
+        findFailedLocalSource: () => null,
         withInstallLock: (fn) => fn(),
         providesType: () => Promise.resolve(false),
       },

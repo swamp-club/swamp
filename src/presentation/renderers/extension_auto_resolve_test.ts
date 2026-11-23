@@ -461,27 +461,53 @@ Deno.test("renderAutoResolveLegacyInstallation: json mode emits legacy paths", (
   }
 });
 
-Deno.test("renderAutoResolveLocalSourceFailed: log mode shows Error with doctor suggestion", () => {
+const widgetFailure = {
+  file: "extensions/models/widget.ts",
+  error: "deno bundle failed\nerror: SyntaxError: Unexpected token\n",
+};
+
+Deno.test("renderAutoResolveLocalSourceFailed: log mode shows Error, file, indexing error and doctor suggestion", () => {
   const lines = captureOutput(() => {
-    renderAutoResolveLocalSourceFailed("@acme/widget", "log");
+    renderAutoResolveLocalSourceFailed("@acme/widget", widgetFailure, "log");
   });
   const output = lines.join("\n");
   assertStringIncludes(output, "Error");
   assertStringIncludes(output, "local source extension failed to index");
+  assertStringIncludes(output, "extensions/models/widget.ts");
+  assertStringIncludes(output, "deno bundle failed");
+  assertStringIncludes(output, "error: SyntaxError: Unexpected token");
   assertStringIncludes(output, "swamp doctor extensions");
 });
 
-Deno.test("renderAutoResolveLocalSourceFailed: json mode emits local_source_failed reason", () => {
+Deno.test("renderAutoResolveLocalSourceFailed: log mode omits the error line when no error was recorded", () => {
+  const lines = captureOutput(() => {
+    renderAutoResolveLocalSourceFailed(
+      "@acme/widget",
+      { file: "extensions/models/widget.ts", error: "" },
+      "log",
+    );
+  });
+  const output = lines.join("\n");
+  assertStringIncludes(output, "extensions/models/widget.ts");
+  assertStringIncludes(output, "swamp doctor extensions");
+  assertEquals(lines.length, 3);
+});
+
+Deno.test("renderAutoResolveLocalSourceFailed: json mode emits local_source_failed with file and error", () => {
   const logs: string[] = [];
   const origLog = console.log;
   console.log = (msg: string) => logs.push(msg);
   try {
-    renderAutoResolveLocalSourceFailed("@acme/widget", "json");
+    renderAutoResolveLocalSourceFailed("@acme/widget", widgetFailure, "json");
     assertEquals(logs.length, 1);
-    const parsed = JSON.parse(logs[0]);
-    assertEquals(parsed.status, "failed");
-    assertEquals(parsed.reason, "local_source_failed");
-    assertEquals(parsed.type, "@acme/widget");
+    assertEquals(JSON.parse(logs[0]), {
+      event: "auto_resolve",
+      status: "failed",
+      type: "@acme/widget",
+      reason: "local_source_failed",
+      file: "extensions/models/widget.ts",
+      error: widgetFailure.error,
+    });
   } finally {
     console.log = origLog;
   }

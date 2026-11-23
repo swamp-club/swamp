@@ -90,6 +90,12 @@ export type InstallationInspection =
   | { state: "truncated"; path: string; missing: string[] }
   | { state: "legacy"; paths: string[] };
 
+/** a local source that failed to index; error is empty when none was recorded */
+export interface FailedLocalSource {
+  file: string;
+  error: string;
+}
+
 export interface ExtensionInstallerPort {
   inspectInstallation(
     extensionName: string,
@@ -107,7 +113,7 @@ export interface ExtensionInstallerPort {
    * distinguishes a local indexing failure from an untrusted registry
    * collective
    */
-  failedLocalSourceMatchesType(typeNormalized: string): boolean;
+  findFailedLocalSource(typeNormalized: string): FailedLocalSource | null;
   /** serializes auto-installs across processes sharing the repository */
   withInstallLock<T>(fn: () => Promise<T>): Promise<T>;
   providesType(normalizedType: string): Promise<boolean>;
@@ -167,7 +173,7 @@ export interface AutoResolveOutputPort {
    * surfaces the real local failure with swamp doctor extensions guidance
    * instead of the misleading collectiveNotTrusted hint
    */
-  localSourceFailed(type: string): void;
+  localSourceFailed(type: string, failure: FailedLocalSource): void;
   noStableVersion(extension: string): void;
   /**
    * another process held the install lock longer than this one would wait;
@@ -286,12 +292,11 @@ export class ExtensionAutoResolver {
         !this.warnedUntrusted.has(collective)
       ) {
         this.warnedUntrusted.add(collective);
-        if (
-          this.config.extensionInstaller.failedLocalSourceMatchesType(
-            normalizedType,
-          )
-        ) {
-          this.config.output.localSourceFailed(normalizedType);
+        const failure = this.config.extensionInstaller.findFailedLocalSource(
+          normalizedType,
+        );
+        if (failure) {
+          this.config.output.localSourceFailed(normalizedType, failure);
         } else {
           this.config.output.collectiveNotTrusted(collective, normalizedType);
         }
