@@ -4172,7 +4172,6 @@ Deno.test("WorkerGateway: an enrollment presenting its token's secret creates it
   assertEquals(h.ensured, [{ name: "ci-runner-3", transitionsBefore: 0 }]);
   assertEquals(h.secretPurposes, ["verify"]);
 
-  // a reconnect has its definition already
   a.dropSocket();
   const again = connectWorkerSocket(h.gateway);
   await enroll(again.workerChannel);
@@ -4326,4 +4325,79 @@ Deno.test("WorkerGateway: a failed pre-check warns and the enrollment's turn sti
     h.transitions.map((t) => t.methodName),
     ["redeem", "enroll"],
   );
+});
+
+function createAdmissionHeldHarness(): Harness & {
+  holdAdmission: () => void;
+  releaseAdmission: () => void;
+  admissionsHeld: () => number;
+} {
+  let gate: Promise<void> | null = null;
+  let open = () => {};
+  let held = 0;
+  const h = createHarness({
+    graceWindowMs: 60_000,
+    readTokenExpiresAt: async () => {
+      if (gate !== null) {
+        held++;
+        await gate;
+      }
+      return null;
+    },
+  });
+  return {
+    ...h,
+    holdAdmission: () => {
+      gate = new Promise<void>((resolve) => {
+        open = () => {
+          gate = null;
+          resolve();
+        };
+      });
+    },
+    releaseAdmission: () => open(),
+    admissionsHeld: () => held,
+  };
+}
+
+Deno.test("WorkerGateway: a dispatch to a reconnecting worker is sent only once the reconnect has wired its channel", async () => {
+  const h = createAdmissionHeldHarness();
+  const a = connectWorkerSocket(h.gateway);
+  await enroll(a.workerChannel);
+  a.dropSocket();
+
+  h.holdAdmission();
+  const again = connectWorkerSocket(h.gateway);
+  const received = answerDispatches(again.workerChannel);
+  const reconnected = enroll(again.workerChannel);
+  await waitFor(() => h.admissionsHeld() === 1, "the reconnect mid-admission");
+  assertEquals(h.gateway.worker("ci-runner-3")?.connected, true);
+
+  const dispatched = h.gateway.dispatch("ci-runner-3", dispatchParams());
+  await macrotaskBoundary();
+  assertEquals(received, []);
+
+  h.releaseAdmission();
+  await reconnected;
+  assertEquals((await dispatched).status, "success");
+  assertEquals(received, ["d-1"]);
+});
+
+Deno.test("WorkerGateway: a dispatch to a worker still being admitted is sent only once it is wired", async () => {
+  const h = createAdmissionHeldHarness();
+  h.holdAdmission();
+  const a = connectWorkerSocket(h.gateway);
+  const received = answerDispatches(a.workerChannel);
+  const enrolled = enroll(a.workerChannel);
+  await waitFor(() => h.admissionsHeld() === 1, "the worker mid-admission");
+  assertEquals(h.gateway.worker("ci-runner-3")?.status, "idle");
+
+  const dispatched = h.gateway.dispatch("ci-runner-3", dispatchParams());
+  await macrotaskBoundary();
+  assertEquals(received, []);
+
+  h.releaseAdmission();
+  await enrolled;
+  assertEquals((await dispatched).status, "success");
+  assertEquals(received, ["d-1"]);
 });

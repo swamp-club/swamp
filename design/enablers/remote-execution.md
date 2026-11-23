@@ -538,10 +538,12 @@ shared chain that orders token records and pool admission. Each write is queued
 at the in-memory change it records, so a worker's records land in the order its
 state changed, and a dispatch waits only for its own worker's earlier writes,
 never behind another worker's enrollment (swamp-club#3988). A write that is part
-of a shared-chain turn (an enrollment's worker record, a revoke's disconnects, a
-rotation's re-stamp) queues on the worker's key from inside that turn. A
-dispatch still records busy before it sends the work, and is refused unsent if
-that write fails.
+of a shared-chain turn (a revoke's disconnects, a rotation's re-stamp) queues on
+the worker's key from inside that turn. An enrollment holds its worker's key
+from its `already_connected` check until the channel's handlers are registered,
+so a dispatch to a worker being admitted or reconnecting sends nothing until
+the worker is wired. A dispatch still records busy before it sends the work,
+and is refused unsent if that write fails.
 
 Serve's control-plane runs (token redeem, worker enroll and status) look up
 their definitions by type, in `models/<type>` and then the auto-definitions
