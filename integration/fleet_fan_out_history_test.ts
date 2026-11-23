@@ -371,7 +371,7 @@ Deno.test({
     await using fleet = await Fleet.start();
     const w = await workers(fleet, 3);
     w[1].behavior = { kind: "fail", error: "w-2 broke" };
-    await fleet.saveWorkflow({
+    const workflow = await fleet.saveWorkflow({
       name: "continued",
       inputs: {},
       jobs: [fanOutJob(fleet, {
@@ -388,8 +388,9 @@ Deno.test({
     const ctx = fleet.serveContext(true);
     const reply = await approveThroughServe(ctx, "continued", run.id, CANARY);
     assertEquals(reply.autoResumed, true);
+    // the record alone: inspect compares two reads, which differ mid-write
     await waitFor(
-      async () => (await inspect(fleet, run.id)).view.status === "failed",
+      async () => (await fleet.runRecord(workflow, run.id)).status === "failed",
       "serve's continuation to halt the rollout",
     );
     await waitFor(
