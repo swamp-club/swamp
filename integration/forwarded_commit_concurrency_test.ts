@@ -87,7 +87,6 @@ Deno.test({
           firstSettled = true;
           return response;
         });
-        // inside its section, waiting on the held partition
         await waitFor(() => gate.state.shared === 1, "the first section");
         const second = await post(
           partitionPath(server, other),
@@ -380,6 +379,106 @@ Deno.test({
           releaseCommit.open();
           const refused = await commit;
           assertEquals(refused.status, 403, JSON.stringify(refused));
+        } finally {
+          setCommitStageBarrierForTesting(undefined);
+          server.v3.catchUp = catchUp;
+        }
+      },
+      undefined,
+      { managedConfig: true },
+    );
+  },
+});
+
+function firstRunRecord(workflowId: string, runId: string): Uint8Array {
+  const record = {
+    id: runId,
+    workflowId,
+    workflowName: "deploy",
+    status: "running",
+    tags: {},
+    jobs: [],
+    initiatedBy: "user:caller",
+  };
+  const bytes = new TextEncoder().encode(stringifyYaml(record));
+  return commitBody({
+    expectedSeq: 0,
+    txnId: crypto.randomUUID(),
+    ops: [{
+      kind: "put",
+      intent: { kind: "run.create", run: { workflowId, runId } },
+      key: `workflow-runs/${workflowId}/workflow-run-${runId}.yaml`,
+      inline: btoa(String.fromCharCode(...bytes)),
+    }],
+    chunks: [],
+  });
+}
+
+Deno.test({
+  name:
+    "forwarded commits: a run id claimed by another workflow while a first record waited is refused once serve catches up",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const runs = [
+      grant({
+        actions: ["read", "run"],
+        resource: { kind: "workflow", pattern: "*" },
+      }),
+    ];
+    await withServer(
+      runs,
+      async (server) => {
+        const runId = crypto.randomUUID();
+        const [firstWorkflow, secondWorkflow] = [
+          crypto.randomUUID(),
+          crypto.randomUUID(),
+        ];
+        const runPath = (workflowId: string) =>
+          `${server.url}/partitions/${
+            encodeURIComponent(
+              partitionOf({ kind: "run", workflowId, runId }).toString(),
+            )
+          }/commits`;
+        let skipping = false;
+        const catchUp = server.v3.catchUp.bind(server.v3);
+        server.v3.catchUp = (...args) =>
+          skipping ? Promise.resolve() : catchUp(...args);
+        const firstAtAppend = latch();
+        const releaseFirst = latch();
+        let firstSeen = false;
+        let first: Promise<{ status: number }> | undefined;
+        setCommitStageBarrierForTesting(async (stage) => {
+          if (stage === "append" && !firstSeen) {
+            firstSeen = true;
+            firstAtAppend.open();
+            await releaseFirst.opened;
+          } else if (stage === "locked_catch_up" && firstSeen) {
+            // the second claimant: the first landed and serve has not applied it
+            await first;
+            skipping = false;
+          }
+        });
+        try {
+          first = post(
+            runPath(firstWorkflow),
+            "alice-token",
+            firstRunRecord(firstWorkflow, runId),
+          );
+          await firstAtAppend.opened;
+          // judged while the first has not landed, then waits on the run id
+          const second = post(
+            runPath(secondWorkflow),
+            "alice-token",
+            firstRunRecord(secondWorkflow, runId),
+          );
+          const gate = forwardedCommitGateOf(server.v3);
+          await waitFor(() => gate.state.shared === 2, "both sections");
+          skipping = true;
+          releaseFirst.open();
+          assertEquals((await first).status, 200);
+          const refused = await second;
+          assertEquals(refused.status, 409, JSON.stringify(refused));
         } finally {
           setCommitStageBarrierForTesting(undefined);
           server.v3.catchUp = catchUp;

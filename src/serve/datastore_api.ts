@@ -160,6 +160,7 @@ import {
 } from "../infrastructure/datastore_v3/forwarded_commit.ts";
 import {
   type HeldPartitionLocks,
+  isRunIdLockKey,
   partitionLockKey,
   runIdLockKey,
   runIdLockKeysOf,
@@ -1495,11 +1496,11 @@ class DatastoreApi {
           "swamp.serve.datastore.lock_keys": lockKeys.length,
         });
         await commitStage("locked_catch_up", async () => {
-          // A shared section's partitions move only by its own append once
-          // held, and what an exclusive commit writes cannot move while it
-          // runs: once the read model holds both, a catch-up changes nothing
-          // this judgment reads.
+          // Held partitions move only by this append, and exclusive writes not
+          // while it runs. A run id is looked up across every workflow's runs,
+          // which no partition check covers.
           const fresh = commitClass === "shared" &&
+            !lockKeys.some(isRunIdLockKey) &&
             this.#freshFor([partition, ...(content?.partitionsRead() ?? [])]);
           setActiveSpanAttributes({ "swamp.serve.datastore.fresh": fresh });
           if (!fresh) await this.#catchUp();
@@ -1541,7 +1542,7 @@ class DatastoreApi {
         }
         // Proof of possession under the lock too, so a read grant revoked
         // during the upload no longer vouches for a chunk. Its own budget
-        // bounds the work done under the lock (swamp-club#4260); a chunk it
+        // bounds the work done under the lock; a chunk it
         // cannot decide is not provided, and the client sends its bytes.
         const underLock = this.#commitVouchBudget(
           referenced.filter((hash) => !carried.has(hash)).length,
@@ -3238,7 +3239,7 @@ class DatastoreApi {
         if (!recheck.ok) return recheck;
         if (!(await content.unchanged())) return "content-changed" as const;
         // A kept lease on the partition not adopted yet covers it, as a live
-        // one does (swamp-club#4258).
+        // one does.
         if (this.#adoptionPendingOn(partition)) return "lease-lost" as const;
         const lease = this.#leaseOpFor(partition, undefined);
         if (lease === "lost") return "lease-lost" as const;
@@ -3461,11 +3462,11 @@ class DatastoreApi {
     mode: "acquire" | "renew",
   ): Promise<Response | undefined> {
     // A lease lets nothing land: every commit under it is authorized in its
-    // own section. So a renewal judges the read model as it stands, and an
-    // acquire waits for a catch-up only when its partition is behind.
-    if (mode === "acquire" && !this.#lockTargetFresh(target)) {
-      await this.#catchUp();
-    }
+    // own section. So a renewal waits only for a change of access to apply.
+    const fresh = mode === "renew"
+      ? this.#v3.readModel.cursor() >= this.#v3.commitStore.authorityCursor()
+      : this.#lockTargetFresh(target);
+    if (!fresh) await this.#catchUp();
     const required = await this.#lockAccessOf(target);
     if (this.#writeAuthority().allows(required.action, required.resource)) {
       return undefined;
@@ -3477,7 +3478,6 @@ class DatastoreApi {
     );
   }
 
-  /** What holding `target`'s lock needs: what a write to its partition does. */
   /** a run's claim looks its run up across every workflow, so only a full read model will do */
   #lockTargetFresh(target: LockTarget): boolean {
     if (target.kind !== "model") return false;
@@ -3490,6 +3490,7 @@ class DatastoreApi {
     ]);
   }
 
+  /** What holding `target`'s lock needs: what a write to its partition does. */
   async #lockAccessOf(target: LockTarget): Promise<RequiredAccess> {
     let required: RequiredAccess;
     if (target.kind === "model") {
@@ -3998,10 +3999,8 @@ class DatastoreApi {
 }
 
 /**
- * A shared section holds the partitions its judgment read under the gate's
- * shared side; an exclusive one holds the gate alone, as every section once
- * did. Serve's own units take the same partition locks, so a held partition
- * moves only by this section's append.
+ * an exclusive section holds the gate alone; a shared one holds its partition
+ * locks, which serve's own units also take, under the gate's shared side
  */
 async function withForwardedSection<T>(
   v3: V3Datastore,

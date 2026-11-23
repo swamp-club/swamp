@@ -26,6 +26,7 @@ import { putOp } from "../domain/datastore_v3/op.ts";
 import { partitionOf } from "../domain/datastore_v3/partition_key.ts";
 import { ReadModelIncompleteError } from "../domain/datastore_v3/read_model.ts";
 import { RecordKey } from "../domain/datastore_v3/record_key.ts";
+import { ModelType } from "../domain/models/model_type.ts";
 import type { V3Datastore } from "../infrastructure/datastore_v3/v3_datastore.ts";
 import {
   ForwardedContentAuthority,
@@ -284,4 +285,45 @@ Deno.test("ForwardedContentAuthority: a rename finds its definition under the ol
   }, { read }).catch((error) => String(error));
   assertEquals(read, [`config/models/acme/web/${RENAMED_ID}.yaml`]);
   assert(!(message ?? "").includes("cannot be read"), message);
+});
+
+Deno.test("ForwardedContentAuthority.partitionsRead: names each partition a check read once, with no predicate or run id", async () => {
+  const id = "0b6c4bb4-9d61-4f0c-9a43-6f0c1f7b2a01";
+  const partition = partitionOf({
+    kind: "model",
+    type: ModelType.create("aws/ec2"),
+    id,
+  });
+  const stored = (text: string) => ({
+    record: { sha256: "x".repeat(64) },
+    bytes: new TextEncoder().encode(text),
+  });
+  const { deps: base } = deps(true);
+  const v3 = {
+    ...base.v3,
+    namespace: "",
+    readModel: {
+      liveRecord: () => Promise.resolve({ sha256: "x".repeat(64) }),
+      recordBytes: (_ns: string, _p: unknown, key: string) =>
+        Promise.resolve(stored(key.endsWith("latest") ? "2" : "name: vpc\n")),
+      holdsRecordsUnder: () => Promise.resolve(false),
+    },
+  } as unknown as V3Datastore;
+  const authority = new ForwardedContentAuthority({ ...base, v3, partition });
+  const op = await putOp({
+    intent: createIntent({
+      kind: "data.delete",
+      model: { type: "aws/ec2", id },
+      name: "vpc",
+    }),
+    key: RecordKey.create(`data/aws/ec2/${id}/vpc/latest`),
+    inline: btoa("1"),
+  });
+  assertEquals(await authority.check(op, [op]), undefined);
+  assertEquals(
+    authority.partitionsRead().map((read) => read.toString()),
+    [partition.toString()],
+  );
+  assertEquals(authority.usedPredicate(), false);
+  assertEquals(authority.runIdsJudged(), []);
 });

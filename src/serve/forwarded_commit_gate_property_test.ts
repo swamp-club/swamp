@@ -25,11 +25,9 @@ import { ForwardedCommitGate } from "./forwarded_commit_gate.ts";
 const PARTITIONS = ["p0", "p1", "p2", "p3"];
 
 type Writer =
-  /** a forwarded commit judged against its own partition and others */
   | { kind: "shared"; write: string; reads: string[]; pauses: number }
-  /** a forwarded commit that changes what every other commit is judged against */
   | { kind: "exclusive"; write: string; pauses: number }
-  /** serve's own unit of work appending to one partition */
+  // serve's own unit of work
   | { kind: "own"; write: string; pauses: number };
 
 const partition = fc.constantFrom(...PARTITIONS);
@@ -53,11 +51,7 @@ async function yieldTimes(times: number): Promise<void> {
   for (let i = 0; i < times; i++) await Promise.resolve();
 }
 
-/**
- * Each writer runs as serve runs it, and a shared one records what it judged
- * against. Isolated when nothing it judged against moved before it wrote:
- * then the run equals some serial order of the same writers.
- */
+/** isolated: nothing a writer judged against moved before it wrote */
 async function run(writers: readonly Writer[]): Promise<string[]> {
   const gate = new ForwardedCommitGate();
   const locks = new PartitionLocks();

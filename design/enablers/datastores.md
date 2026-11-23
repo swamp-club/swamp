@@ -7529,7 +7529,9 @@ Why this is the old global order where it matters:
 read model has applied every commit to its locked partitions and every
 commit up to the commit store's `authorityCursor()`: the newest commit
 that changes what others are judged against, from a forwarded section or
-from serve's own unit. Otherwise it catches up first. An exclusive section
+from serve's own unit. Otherwise it catches up first, as a section holding a
+run-id lock always does: the run id is looked up across every workflow's
+runs, which no partition check covers. An exclusive section
 always catches up. So a revoke applies to every commit whose section starts
 after the revoke lands. A serve-own write of access that lands while a
 section is already judging is not seen by that section, as before: serve's
@@ -8343,8 +8345,9 @@ below describes them.
 - **Catch-up.** An acquire catches serve's read model up only when it is
   behind on the target's partition or on a commit that changes access (a
   run's claim, looked up across every workflow, always catches up). A
-  renewal never waits on a catch-up: a lease lets nothing land, since every
-  commit under it is authorised in its own section.
+  renewal catches up only while serve has not applied a change of access: a
+  lease lets nothing land, since every commit under it is authorised in its
+  own section.
 - **What a refusal tells.** `409 lock_held` says `heldBy`: `caller`
   (another command of the same principal), `other` (another principal) or
   `serve` (serve's own work), and, for a lease, `holder`: its principal,

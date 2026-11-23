@@ -53,7 +53,6 @@ export class HeldPartitionLocks {
 export class PartitionLocks {
   readonly #tails = new Map<string, Promise<void>>();
 
-  /** `fn` runs once every earlier holder of any of `keys` has finished */
   async hold<T>(
     keys: Iterable<string>,
     fn: (held: HeldPartitionLocks) => Promise<T>,
@@ -121,7 +120,13 @@ export function partitionLockKey(
  * snapshot under it are judged against all of them
  */
 export function runIdLockKey(namespace: string, runId: string): string {
-  return `run-id\u0000${namespace}\u0000${runId.toLowerCase()}`;
+  return `${RUN_ID_PREFIX}${namespace}\u0000${runId.toLowerCase()}`;
+}
+
+const RUN_ID_PREFIX = "run-id\u0000";
+
+export function isRunIdLockKey(key: string): boolean {
+  return key.startsWith(RUN_ID_PREFIX);
 }
 
 /**
