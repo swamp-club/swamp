@@ -260,8 +260,8 @@ export class TokenSessionRevalidationService {
       const admission = token === null || !this.#deps.admission
         ? undefined
         : await this.#deps.admission.serverToken(token);
-      // an admission lookup that cannot answer keeps sessions until the next
-      // pass, as an unreadable token record does
+      // a lookup that cannot answer keeps sessions: nobody was denied, and the
+      // next pass retries
       const admitted = admission === undefined || admission.admitted ||
         admission.unavailable === true;
       for (const createdAt of mints) {

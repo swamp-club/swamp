@@ -22,7 +22,6 @@ import {
   type ControlPlaneVaultProvider,
   TOKEN_SECRETS_VAULT_NAME,
 } from "../domain/vaults/control_plane_vault_provider.ts";
-import { SecretNotFoundError } from "../domain/vaults/secret_not_found_error.ts";
 import { oauthAccessTokenKey } from "./device_auth_handler.ts";
 
 /**
@@ -63,7 +62,7 @@ export async function hasOAuthAccessToken(
     readonly vaults: () => Promise<
       Pick<
         VaultService,
-        "has" | "get" | "supportsExistenceCheck" | "getVaultNames"
+        "has" | "list" | "supportsExistenceCheck" | "getVaultNames"
       >
     >;
   },
@@ -77,11 +76,6 @@ export async function hasOAuthAccessToken(
   if (vaults.supportsExistenceCheck(token.vaultName)) {
     return await vaults.has(token.vaultName, key);
   }
-  try {
-    await vaults.get(token.vaultName, key, "serve:token-admission");
-    return true;
-  } catch (error) {
-    if (error instanceof SecretNotFoundError) return false;
-    throw error;
-  }
+  // a listing, not a get: it reads no value and runs no refresh hook
+  return (await vaults.list(token.vaultName)).includes(key);
 }

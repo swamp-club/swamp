@@ -24,7 +24,6 @@ import {
   lookupOAuthAccessToken,
 } from "./oauth_access_token_lookup.ts";
 import { oauthAccessTokenKey } from "./device_auth_handler.ts";
-import { SecretNotFoundError } from "../domain/vaults/secret_not_found_error.ts";
 
 const USER_VAULT = "default";
 
@@ -121,7 +120,7 @@ function lazy<T>(value: T): () => Promise<T> {
 
 type FakeVault =
   | { readonly kind: "presence"; readonly keys: readonly string[] | "down" }
-  | { readonly kind: "read-only"; readonly keys: readonly string[] | "down" };
+  | { readonly kind: "listing"; readonly keys: readonly string[] | "down" };
 
 function userVaults(vaults: Record<string, FakeVault>) {
   const reads: string[] = [];
@@ -140,14 +139,11 @@ function userVaults(vaults: Record<string, FakeVault>) {
       }
       return Promise.resolve(vault.keys.includes(key));
     },
-    get(vaultName: string, key: string): Promise<string> {
-      reads.push(`${vaultName}/${key}`);
+    list(vaultName: string): Promise<string[]> {
+      reads.push(vaultName);
       const keys = vaults[vaultName]?.keys;
       if (keys === "down") return Promise.reject(new Error("vault offline"));
-      if (!keys?.includes(key)) {
-        return Promise.reject(new SecretNotFoundError(vaultName, key));
-      }
-      return Promise.resolve("access");
+      return Promise.resolve([...(keys ?? [])]);
     },
   };
 }
@@ -165,7 +161,7 @@ Deno.test("hasOAuthAccessToken: finds a login's token in the token-secrets vault
 
 Deno.test("hasOAuthAccessToken: a token with none in token-secrets reads no other vault", async () => {
   const vaults = userVaults({
-    [USER_VAULT]: { kind: "read-only", keys: [oauthAccessTokenKey("tok-1")] },
+    [USER_VAULT]: { kind: "listing", keys: [oauthAccessTokenKey("tok-1")] },
   });
   assertEquals(
     await hasOAuthAccessToken({
@@ -180,7 +176,7 @@ Deno.test("hasOAuthAccessToken: a token with none in token-secrets reads no othe
   assertEquals(vaults.reads, []);
 });
 
-Deno.test("hasOAuthAccessToken: a token in token-secrets never builds the user vaults", async () => {
+Deno.test("hasOAuthAccessToken: a record naming the token-secrets vault never builds the user vaults", async () => {
   const unbuildable = () => Promise.reject(new Error("vault config broken"));
   assertEquals(
     await hasOAuthAccessToken({
@@ -211,10 +207,10 @@ Deno.test("hasOAuthAccessToken: falls back to the token's own vault through its 
   assertEquals(vaults.reads, []);
 });
 
-Deno.test("hasOAuthAccessToken: reads a token vault without an existence check, a missing secret meaning none", async () => {
+Deno.test("hasOAuthAccessToken: lists a token vault without an existence check", async () => {
   const key = oauthAccessTokenKey("tok-1");
   const holding = userVaults({
-    [USER_VAULT]: { kind: "read-only", keys: [key] },
+    [USER_VAULT]: { kind: "listing", keys: [key] },
   });
   assertEquals(
     await hasOAuthAccessToken({
@@ -223,7 +219,7 @@ Deno.test("hasOAuthAccessToken: reads a token vault without an existence check, 
     }, { name: "tok-1", vaultName: USER_VAULT }),
     true,
   );
-  const empty = userVaults({ [USER_VAULT]: { kind: "read-only", keys: [] } });
+  const empty = userVaults({ [USER_VAULT]: { kind: "listing", keys: [] } });
   assertEquals(
     await hasOAuthAccessToken({
       tokenSecrets: tokenSecrets([]),
@@ -258,8 +254,8 @@ Deno.test("hasOAuthAccessToken: throws when token-secrets cannot answer", async 
   );
 });
 
-Deno.test("hasOAuthAccessToken: throws when the token's own vault fails other than not found", async () => {
-  for (const kind of ["presence", "read-only"] as const) {
+Deno.test("hasOAuthAccessToken: throws when the token's own vault cannot answer", async () => {
+  for (const kind of ["presence", "listing"] as const) {
     await assertRejects(
       () =>
         hasOAuthAccessToken({
