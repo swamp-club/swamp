@@ -1669,3 +1669,60 @@ Deno.test("DatastoreLockLeases.acquire: a waiter that takes the lock and gives i
   await subject.release("user:bob", other.lease.leaseId);
   await subject.dispose();
 });
+
+Deno.test("DatastoreLockLeases.acquire: a lease that ends while the longest waiter is trying the lock is not missed", async () => {
+  const gate = () => {
+    let open!: () => void;
+    const opened = new Promise<void>((resolve) => open = resolve);
+    return { open, opened };
+  };
+  const releaseHeld = gate();
+  const tryHeld = gate();
+  let held = false;
+  let tries = 0;
+  let releases = 0;
+  const createLock = (): Promise<TryLock> =>
+    Promise.resolve({
+      tryAcquire: async () => {
+        if (!held) {
+          held = true;
+          return true;
+        }
+        tries++;
+        if (tries === 1) await tryHeld.opened;
+        return false;
+      },
+      release: async () => {
+        if (++releases === 1) await releaseHeld.opened;
+        held = false;
+      },
+    });
+  const subject = new DatastoreLockLeases({
+    createLock,
+    minTtlMs: 10,
+    retryIntervalMs: 1_000,
+  });
+  const alice = await subject.acquire(request("user:alice"));
+  assert(alice.kind === "acquired");
+  const bob = subject.acquire(request("user:bob", { waitMs: 30_000 }));
+  await waitFor(
+    () => subject.waitingForTesting(lockKeyOf(model)) === 1,
+    "bob waiting",
+  );
+  // alice's lease ends, but her lock is not free yet
+  const released = subject.release("user:alice", alice.lease.leaseId);
+  // bob's retry finds no lease and tries the lock, which is still held
+  await waitFor(() => tries === 1, "bob trying");
+  releaseHeld.open();
+  await released;
+  tryHeld.open();
+  // only microtasks run here: a retry waiting on its timer cannot happen
+  for (let turn = 0; turn < 100 && held === false; turn++) {
+    await Promise.resolve();
+  }
+  assertEquals(held, true, "bob took the lock on the wake he missed");
+  const outcome = await bob;
+  assert(outcome.kind === "acquired");
+  await subject.release("user:bob", outcome.lease.leaseId);
+  await subject.dispose();
+});

@@ -1370,7 +1370,8 @@ class DatastoreApi {
     }
     const referenced = referencedChunks(ops);
     // Every chunk named and not carried is checked again in the commit's
-    // forwarded section: bound that work, before any carried chunk is read. The envelope lists what the body carries.
+    // forwarded section: bound that work, before any carried chunk is read.
+    // The envelope lists what the body carries.
     const declared = new Set(envelope.chunks.map((chunk) => chunk.sha256));
     if (
       referenced.filter((hash) => !declared.has(hash)).length >

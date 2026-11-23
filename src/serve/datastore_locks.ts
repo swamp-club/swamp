@@ -483,7 +483,7 @@ export class DatastoreLockLeases {
       this.#maxWaitMs,
     );
     const lock = await this.#createLock(target);
-    const waiter: Waiter = { wake: () => {} };
+    const waiter = idleWaiter();
     let queued = false;
     let taken = false;
     try {
@@ -1155,6 +1155,13 @@ export class DatastoreLockLeases {
 
 interface Waiter {
   wake: () => void;
+  /** woken while not waiting, as during a tryAcquire: the next wait ends at once */
+  woken: boolean;
+}
+
+function idleWaiter(): Waiter {
+  const waiter: Waiter = { wake: () => waiter.woken = true, woken: false };
+  return waiter;
 }
 
 /** resolves when woken, after `ms`, or on abort, whichever comes first */
@@ -1164,14 +1171,15 @@ function waitTurn(
   signal: AbortSignal,
 ): Promise<void> {
   return new Promise((resolve) => {
-    if (signal.aborted) {
+    if (signal.aborted || waiter.woken) {
+      waiter.woken = false;
       resolve();
       return;
     }
     const done = () => {
       clearTimeout(timer);
       signal.removeEventListener("abort", done);
-      waiter.wake = () => {};
+      waiter.wake = () => waiter.woken = true;
       resolve();
     };
     const timer = setTimeout(done, ms);
