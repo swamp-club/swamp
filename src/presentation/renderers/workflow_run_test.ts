@@ -416,6 +416,20 @@ Deno.test("ConsoleWorkflowRunRenderer: failed run shows Failed with error", asyn
   assertStringIncludes(output, "connection refused");
 });
 
+Deno.test("ConsoleWorkflowRunRenderer: a failed run's step error cannot drive the terminal, and keeps its line breaks", async () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "test-pipeline",
+  });
+  const runView = makeRunView("failed");
+  runView.jobs[0].steps[0].error = "worker said \u001b[2Jcleared\nsecond line";
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(simpleEvents(runView)), renderer.handlers());
+  });
+  const output = lines.join("\n");
+  assertEquals(output.includes("\u001b[2J"), false);
+  assertStringIncludes(output, "worker said \\x1b[2Jcleared\nsecond line");
+});
+
 Deno.test("ConsoleWorkflowRunRenderer: failed run with a cert-store error shows the remedy hint", async () => {
   const renderer = createWorkflowRunRenderer("log", {
     workflowName: "test-pipeline",

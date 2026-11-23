@@ -683,3 +683,38 @@ Deno.test("renderWorkflowRunDisplay: a run without a fan-out view prints exactly
     plain,
   );
 });
+
+Deno.test("renderWorkflowRunDisplay: a step error and a rejection reason cannot drive the terminal, and the error keeps its line breaks", () => {
+  const output = captureOutput(() =>
+    renderWorkflowRunDisplay({
+      id: "run-1",
+      workflowId: "wf-1",
+      workflowName: "fleet",
+      status: "failed",
+      jobs: [{
+        name: "main",
+        status: "failed",
+        steps: [
+          {
+            name: "apply",
+            status: "failed",
+            error: "worker said \u001b[2Jcleared\nsecond line",
+          },
+          {
+            name: "gate",
+            status: "failed",
+            approval: {
+              status: "rejected",
+              rejectedBy: "user-2",
+              rejectedAt: "2026-01-01T00:02:00.000Z",
+              reason: "no\u001b[31m\nforged",
+            },
+          },
+        ],
+      }],
+    }, "log")
+  );
+  assertEquals(output.includes("\u001b"), false);
+  assertStringIncludes(output, "-> worker said \\x1b[2Jcleared\nsecond line");
+  assertStringIncludes(output, "Reason: no\\x1b[31m\\x0aforged");
+});

@@ -21,7 +21,10 @@ import { cyan, dim, green, red, yellow } from "@std/fmt/colors";
 import type { OutputMode } from "../output/output.ts";
 import { prettyJson } from "../output/json_stream.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
-import { escapeControlCharacters } from "../../domain/control_characters.ts";
+import {
+  escapeControlCharacters,
+  escapeControlCharactersInMessage,
+} from "../../domain/control_characters.ts";
 import { principalLabel } from "../../domain/access/principal.ts";
 import type {
   ApprovalView,
@@ -124,7 +127,9 @@ function renderLogWorkflowRun(data: WorkflowRunView): void {
       }
 
       if (step.error) {
-        writeOutput(`      -> ${red(step.error)}`);
+        writeOutput(
+          `      -> ${red(escapeControlCharactersInMessage(step.error))}`,
+        );
       }
 
       if (step.status === "skipped" && step.skipReason) {
@@ -162,7 +167,7 @@ function renderLogWorkflowRun(data: WorkflowRunView): void {
             }${viaClient(a.client)} at ${formatTimestamp(a.rejectedAt)}`,
           );
           if (a.reason) {
-            writeOutput(`      Reason: ${a.reason}`);
+            writeOutput(`      Reason: ${escapeControlCharacters(a.reason)}`);
           }
         } else if (a.status === "timed_out") {
           const timeoutSuffix = a.timeoutAt
