@@ -22,17 +22,14 @@ import { SharedIndexRead } from "./shared_index_read.ts";
 import { type Span, withSpan } from "../tracing/mod.ts";
 import {
   fingerprintMatches,
+  isRacyStat,
   type RecordFingerprint,
+  RUN_INDEX_RACY_WINDOW_MS,
 } from "./workflow_run_index.ts";
 
-export const RUN_INDEX_CACHE_MAX_RUNS = 250_000;
+export { RUN_INDEX_RACY_WINDOW_MS };
 
-/**
- * snapshots stamped this recently are not trusted: a change within one clock
- * tick could leave both stats unchanged, and Deno reports ctime in whole
- * seconds
- */
-export const RUN_INDEX_RACY_WINDOW_MS = 2_000;
+export const RUN_INDEX_CACHE_MAX_RUNS = 250_000;
 
 /**
  * creating, removing or renaming a record moves the directory's mtime, so an
@@ -216,11 +213,11 @@ export class RunIndexCache {
    * in-place rewrite that sets mtime back moves only ctime
    */
   #racy(stamp: RunIndexStamp): boolean {
-    const threshold = this.#now() - this.#racyWindowMs;
+    const now = this.#now();
+    const threshold = now - this.#racyWindowMs;
     if (stamp.dirMtimeMs !== null && stamp.dirMtimeMs > threshold) return true;
     if (stamp.index === null) return false;
-    return stamp.index.mtimeMs > threshold ||
-      (stamp.index.ctimeMs !== undefined && stamp.index.ctimeMs > threshold);
+    return isRacyStat(stamp.index, now, this.#racyWindowMs);
   }
 
   #evict(): void {

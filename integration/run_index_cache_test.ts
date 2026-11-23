@@ -533,12 +533,16 @@ for (
           const stats = repairs.map((s) =>
             statsBySpan.get(s.spanContext().spanId) ?? 0
           ).sort((a, b) => a - b);
+          // On the real clock the rebuild's entries are still racy, so the
+          // later repair reads each of its four records once.
           assertEquals(
             stats,
             scenario === "queued"
               ? [0]
               : scenario === "writer"
               ? [0, 7]
+              : scenario === "recent-stamp"
+              ? [0, 16]
               : [0, 4],
           );
           assertEquals(
@@ -547,7 +551,7 @@ for (
                 sum + Number(s.attributes["workflow_runs.records_read"]),
               0,
             ),
-            scenario === "writer" ? 1 : 0,
+            scenario === "writer" ? 1 : scenario === "recent-stamp" ? 4 : 0,
           );
           if (scenario === "writer") {
             assert(writerApplied);

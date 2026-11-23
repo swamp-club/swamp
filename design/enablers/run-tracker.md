@@ -242,7 +242,12 @@ to settle it keeps it forever. `swamp run gc` removes older records on demand:
    differs or that have no entry, and writes an index only when an entry was
    wrong or a line was torn (swamp-club#3051). A save fingerprints its entry only when the file
    still holds what it wrote, so a record another writer replaced in between
-   is left to be read by the next verification.
+   is left to be read by the next verification. A fingerprint is also left off while
+   the record's mtime or ctime is less than two seconds old (or in the future):
+   Deno reports ctime in whole seconds, so a same-size rewrite in place with its
+   mtime set back, in the second the entry was written, would not move it
+   (swamp-club#3470). The next verification reads such a record once and
+   fingerprints it then. The run index snapshot cache uses the same window.
 
    A server cancel also clears a `running` record whose owner is gone, as
    `cancelled` rather than `interrupted`; see "Running runs whose owner is
