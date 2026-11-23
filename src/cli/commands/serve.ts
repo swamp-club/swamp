@@ -4791,8 +4791,8 @@ export const serveCommand = new Command()
     // queued and parked runs only: serve beats before it queues or parks any
     const bootRunOwnerAlive = ownerLiveness("gone", true);
     const sweepRunOwnerAlive = ownerLiveness("alive", true);
-    // the sweep can run while workers enroll: worker records go through the
-    // gateway's write ordering, and one the gateway holds is never settled
+    // the sweep can run while workers enroll: it is ordered with enrollments,
+    // and a worker the gateway holds is never settled
     const workerWrites = {
       serialize: <T>(fn: () => Promise<T>) =>
         workerGateway.serializeWorkerWrites(fn),

@@ -21,6 +21,7 @@ import {
   WORKER_MODEL_TYPE,
   workerDefinitionName,
 } from "../../domain/models/worker/worker_model.ts";
+import { runInRootUnitOfWork } from "../../infrastructure/persistence/repo_unit_of_work.ts";
 import type { RepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
 import { resolveOrCreateDefinition } from "../models/direct_execution.ts";
 import { createWorkerModelRunDeps } from "./run_deps.ts";
@@ -38,27 +39,35 @@ export async function ensureWorkerDefinition(
     definitionType: WORKER_MODEL_TYPE,
   });
   const modelDef = await deps.getModelDef(WORKER_MODEL_TYPE);
+  const saveDefinition = deps.createAndSaveDefinition;
+  const getDefinitionPath = deps.getDefinitionPath;
   if (
-    modelDef === undefined || deps.createAndSaveDefinition === undefined ||
-    deps.getDefinitionPath === undefined
+    modelDef === undefined || saveDefinition === undefined ||
+    getDefinitionPath === undefined
   ) {
     throw new Error("The worker model is not available to create a definition");
   }
-  const result = await resolveOrCreateDefinition(
-    {
-      lookupDefinition: deps.lookupDefinition,
-      getModelDef: deps.getModelDef,
-      saveDefinition: deps.createAndSaveDefinition,
-      getDefinitionPath: deps.getDefinitionPath,
-    },
-    WORKER_MODEL_TYPE.normalized,
-    workerDefinitionName(workerName),
-    "enroll",
-    {},
-    WORKER_MODEL_TYPE,
-    modelDef,
-    undefined,
-    deps.autoDefinitionsDir,
+  // no push of its own, matching the enroll run's unit; v3 refuses a save outside one
+  const result = await runInRootUnitOfWork(
+    repoContext,
+    { flush: undefined },
+    () =>
+      resolveOrCreateDefinition(
+        {
+          lookupDefinition: deps.lookupDefinition,
+          getModelDef: deps.getModelDef,
+          saveDefinition,
+          getDefinitionPath,
+        },
+        WORKER_MODEL_TYPE.normalized,
+        workerDefinitionName(workerName),
+        "enroll",
+        {},
+        WORKER_MODEL_TYPE,
+        modelDef,
+        undefined,
+        deps.autoDefinitionsDir,
+      ),
   );
   if (!result.ok) throw new Error(result.error.message);
 }

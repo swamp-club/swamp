@@ -4304,3 +4304,26 @@ Deno.test("WorkerGateway: enrollment pre-checks are bounded, and one beyond the 
     names.filter((name) => name !== admitted[0]),
   );
 });
+
+Deno.test("WorkerGateway: a failed pre-check warns and the enrollment's turn still admits the worker", async () => {
+  const h = createPrecheckHarness({
+    overrides: {
+      ensureWorkerDefinition: () =>
+        Promise.reject(new Error("unit refused the save")),
+    },
+  });
+  const a = connectWorkerSocket(h.gateway);
+  const logs = await capturingGatewayLogs(async () => {
+    const result = await enroll(a.workerChannel);
+    assertEquals(result.workerId, "ci-runner-3");
+  });
+  const warnings = logs.filter((l) =>
+    l.level === "warning" && l.message.includes("pre-check")
+  );
+  assertEquals(warnings.length, 1);
+  assertStringIncludes(warnings[0].message, "unit refused the save");
+  assertEquals(
+    h.transitions.map((t) => t.methodName),
+    ["redeem", "enroll"],
+  );
+});

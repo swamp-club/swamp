@@ -188,10 +188,8 @@ export function enrollmentTokenClosed(
 }
 
 /**
- * the mint a presented secret opens: the current one, else a live
- * predecessor's; null when neither matches. Only a predecessor key a
- * concurrent rotation deleted counts as no match: no match is a permanent
- * refusal, so any other read failure propagates and stays retryable
+ * only a predecessor key a concurrent rotation deleted is no match: no match is
+ * a permanent refusal, so any other read failure must stay retryable
  */
 export async function presentedTokenMint(
   token: EnrollmentToken,

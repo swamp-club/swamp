@@ -568,7 +568,8 @@ and `presentedTokenMint` in
 Then `ensureWorkerDefinition` creates the worker's definition under the
 auto-definition lock, and the turn reads it at its name-derived path. The check
 is advisory: anything it refuses or cannot read leaves the definition to the
-turn as before, and redeem still decides the enrollment. It runs before the
+turn as before, with a failure (not a refusal) logged as a warning, and redeem
+still decides the enrollment. It runs before the
 caller is authenticated, so at most `MAX_ENROLLMENT_PRECHECKS` run at once and
 an enrollment beyond that takes the turn's own lookup. Its secret reads are
 audited as `serve:worker-token-verify`. A token revoked between the check and

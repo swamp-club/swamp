@@ -550,7 +550,7 @@ export class WorkerGateway {
     return [...this.#workers.values()].map((entry) => this.#snapshot(entry));
   }
 
-  /** runs fn in the order of this gateway's worker writes, so no enrollment interleaves */
+  /** runs fn in order with token and pool-admission turns, so no enrollment interleaves */
   serializeWorkerWrites<T>(fn: () => Promise<T>): Promise<T> {
     return this.#recordTransition("settle_left_workers", fn);
   }
@@ -1942,8 +1942,9 @@ export class WorkerGateway {
       if (state.channel.closed || signal.aborted) return;
       await ensure(workerName);
     } catch (error) {
-      logger.debug(
-        "Enrollment pre-check for {token} prepared no worker definition: {error}",
+      // a refusal returns above, so a throw is a fault worth seeing
+      logger.warn(
+        "Enrollment pre-check for {token} failed, so its turn creates the worker definition: {error}",
         {
           token: tokenName,
           error: error instanceof Error ? error.message : String(error),
