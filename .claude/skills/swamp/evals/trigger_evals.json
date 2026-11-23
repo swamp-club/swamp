@@ -323,5 +323,15 @@
     "query": "swamp said a new message from Swamp Club is waiting, what does it say?",
     "should_trigger": true,
     "note": "inbox — agent reads the announced message"
+  },
+  {
+    "query": "Push this nginx config to every web host that's running a swamp worker and check each one is healthy afterwards",
+    "should_trigger": true,
+    "note": "workflow domain — fanOut across a fleet of workers"
+  },
+  {
+    "query": "Roll an openssl update out to our fleet with one canary host first, stop if more than 10% fail, and let me approve the plan",
+    "should_trigger": true,
+    "note": "workflow domain — fanOut rollout, budget and approval gates"
   }
 ]

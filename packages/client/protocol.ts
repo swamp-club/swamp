@@ -2019,6 +2019,56 @@ export interface JobRunView {
   startedAt?: string;
   completedAt?: string;
   duration?: number;
+  /** Set by history get on a job that holds a fan-out plan. */
+  fanOut?: {
+    selector: { labels?: Record<string, string>; platform?: string };
+    /** Absent when the run's evaluated workflow is gone. */
+    policy?: { offline: string; minWorkers: number };
+    plannedLanes: number;
+    batches: string[][];
+    budget: { allowed: number | null; used: number };
+    members: {
+      worker: string;
+      disposition: string;
+      reason?: string;
+      batch?: number;
+      lane?:
+        | "succeeded"
+        | "failed"
+        | "held"
+        | "running"
+        | "unknown"
+        | "not_run";
+      failedSteps?: { step: string; error?: string }[];
+      assertions?: { step: string; severity: string; message: string }[];
+    }[];
+    halts: (
+      | {
+        reason: "budget";
+        batch: number;
+        maxFailures: number;
+        failed: string[];
+        held: string[];
+      }
+      | { reason: "gate_rejected"; gate: "plan" | "canary"; held: string[] }
+    )[];
+    gates: {
+      kind: "plan" | "canary";
+      step: string;
+      status:
+        | "pending"
+        | "waiting"
+        | "expired"
+        | "approved"
+        | "rejected"
+        | "held"
+        | "failed";
+      expiredAt?: string;
+      approval?: StepRunView["approval"];
+    }[];
+    /** The latest resume only. */
+    resume?: { at: string; rerun: string[]; kept: string[] };
+  };
 }
 
 export interface ReportResultView {

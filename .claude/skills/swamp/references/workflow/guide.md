@@ -73,6 +73,10 @@ in place of the run id.
 `tags.*`, `duration`, `startedAt`, `workflowName`, etc.). See
 [reference.md](reference.md) for the full field list.
 
+To run a job on every host that runs a matching swamp worker (a config push, a
+package update across a fleet, a staged rollout with a canary), use a `fanOut`
+job, not `forEach`; see "Fan-out Jobs" in [reference.md](reference.md).
+
 ## Repository Structure
 
 Workflow files are stored directly in the `workflows/` directory:

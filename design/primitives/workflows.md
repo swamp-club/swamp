@@ -3501,6 +3501,20 @@ record each. Serve sends these kinds only to a subscriber that lists them in
 (`withheldEventKinds`, applied per subscriber as events leave the shared
 buffer), since a released client has no handler for them; the CLI lists them.
 
+**History.** `workflow history get` and serve's `workflow.history.get` add
+`fanOut` to each job that holds a plan. `fanOutJobView`
+(`src/domain/workflows/fan_out_view.ts`) builds it from the record on every
+read, as `fanOutGatePrompt` builds the gate prompt, and nothing is stored. It
+holds the selector, the batches, the budget allowed and used, every member with
+its disposition, batch and lane result (failing steps and assertion messages
+masked), each recorded halt, a gate rejection as a final halt, each gate with
+its `ApprovalView` or `expired` past its `approveTimeout`, and the latest
+resume's re-run and kept lanes. The record keeps only the latest `resumedAt`,
+so earlier resumes are not shown. `offline` and `minWorkers` are not in the
+record: they come from the run's evaluated workflow and are left out when it is
+gone, never read from the current definition. Instance UUIDs stay out. A run
+with no fan-out job renders as before.
+
 A binary from before fan-out lanes reads an unknown job-run key and drops it on
 its next save, so a run that an older swamp resumes, cancels or approves loses
 its plan and snapshot; the resume refusals above catch it. An older swamp

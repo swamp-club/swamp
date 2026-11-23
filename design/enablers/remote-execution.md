@@ -1750,11 +1750,13 @@ the placement and affinity key of the step that called it, unless that step
 says `placement: own` or the child places itself. The rules are in "Placement
 of a nested run" in `design/primitives/workflows.md`.
 
-**`forEach` is the fan-out construct.** It already expands one step template
-into N parallel instances (`ForEachExpansionService`), so `forEach` over a list
-plus a label selector is "fan out across the fleet". The existing step-level
-`concurrency` field now caps in-flight dispatches rather than in-process method
-runs.
+**`forEach` spreads a list across workers.** It expands one step template
+into N parallel instances (`ForEachExpansionService`), and each instance
+dispatches to any matching worker. It does not run once per worker: an offline
+worker is missed and a resume re-runs passed instances. Running a job once on
+every matching worker is `fanOut` ("Fan-out jobs and lanes" below). The
+step-level `concurrency` field caps in-flight dispatches rather than in-process
+method runs.
 
 v1 dispatch fits the existing execution loop. Jobs and steps already run
 concurrently within each topological level (`mergeWithConcurrency` from

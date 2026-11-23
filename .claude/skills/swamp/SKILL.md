@@ -41,7 +41,7 @@ Route to the right guide based on what the user needs.
 | User intent                                                                                 | Guide                                                                          |
 | ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
 | Behaviors — create, run, edit, delete, search types                                         | [references/behavior/guide.md](references/behavior/guide.md)                   |
-| Workflows — create, run, validate, DAG, history                                             | [references/workflow/guide.md](references/workflow/guide.md)                   |
+| Workflows — create, run, validate, DAG, history, fan out a job to every matching worker     | [references/workflow/guide.md](references/workflow/guide.md)                   |
 | Data — list, query, versions, GC, delete                                                    | [references/data/guide.md](references/data/guide.md)                           |
 | Vaults — create, store/read secrets, expressions                                            | [references/vault/guide.md](references/vault/guide.md)                         |
 | Reports — run, configure, view, filter                                                      | [references/report/guide.md](references/report/guide.md)                       |

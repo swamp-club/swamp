@@ -1102,3 +1102,174 @@ Deno.test("createWorkflowHistoryGetDeps: a run recorded with its step pending re
     }
   }
 });
+
+function fanOutRun(options: { evaluated?: boolean } = {}): {
+  run: WorkflowRun;
+  workflow: Workflow;
+} {
+  const workflow = RealWorkflow.create({
+    name: "fleet",
+    jobs: [
+      Job.create({
+        name: "patch",
+        fanOut: { offline: "skip", minWorkers: 2 },
+        labels: { role: "web" },
+        steps: [
+          Step.create({
+            name: "apply",
+            task: StepTask.directExecution("command/shell", "host", "run"),
+          }),
+        ],
+      }),
+    ],
+  });
+  const data = RealWorkflowRun.create(workflow).toData();
+  data.status = "failed";
+  data.jobs = [{
+    jobName: "patch",
+    status: "failed",
+    steps: [
+      {
+        stepName: "patch[approve-plan]",
+        status: "succeeded",
+        startedAt: "2026-01-01T00:00:00.000Z",
+        approvalDecision: {
+          approved: true,
+          decidedAt: "2026-01-01T00:00:30.000Z",
+          decidedBy: "user-1",
+          decidedByUsername: "ops",
+        },
+      },
+      {
+        stepName: "apply[a]",
+        status: "failed",
+        startedAt: "2026-01-01T00:01:00.000Z",
+        error: "boom",
+      },
+      {
+        stepName: "apply[b]",
+        status: "skipped",
+        skipReason: { kind: "job_skipped" },
+      },
+    ],
+    fanOutPlan: {
+      members: [
+        {
+          worker: "a",
+          instanceUuid: "uuid-a",
+          disposition: "dispatch",
+          batch: 0,
+        },
+        {
+          worker: "b",
+          instanceUuid: "uuid-b",
+          disposition: "dispatch",
+          batch: 1,
+        },
+      ],
+      plannedLanes: 2,
+      maxFailures: 0,
+      batches: [["a"], ["b"]],
+      lanes: ["a", "b"].map((worker) => ({
+        name: `patch[${worker}]`,
+        worker,
+        instanceUuid: `uuid-${worker}`,
+        steps: [],
+      })),
+    },
+    fanOutSnapshot: { selector: { labels: { role: "web" } }, workers: [] },
+    fanOutHalts: [{ batch: 1, maxFailures: 0, failed: ["a"], held: ["b"] }],
+  }];
+  if (options.evaluated !== false) {
+    data.runPlan = { fingerprint: "fp", evaluatedWorkflowId: data.id };
+  }
+  return { run: RealWorkflowRun.fromData(data), workflow };
+}
+
+Deno.test("workflowHistoryGet: a fan-out job shows its plan, lanes, halt and gate, with the policy from the run's evaluated workflow", async () => {
+  const { run, workflow } = fanOutRun();
+  const looked: string[] = [];
+  const events = await collect<WorkflowHistoryGetEvent>(
+    workflowHistoryGet(
+      createLibSwampContext(),
+      makeDeps({
+        findLatestRun: () => Promise.resolve(run),
+        findEvaluatedWorkflow: (id) => {
+          looked.push(id);
+          return Promise.resolve(workflow);
+        },
+      }),
+      "fleet",
+    ),
+  );
+  const completed = events.find((e) => e.kind === "completed");
+  if (completed?.kind !== "completed") throw new Error("not completed");
+  const fanOut = completed.data.jobs[0].fanOut!;
+  assertEquals(looked, [run.id]);
+  assertEquals(fanOut.policy, { offline: "skip", minWorkers: 2 });
+  assertEquals(fanOut.selector, { labels: { role: "web" } });
+  assertEquals(fanOut.budget, { allowed: 0, used: 1 });
+  assertEquals(
+    fanOut.members.map((member) => [member.worker, member.lane]),
+    [["a", "failed"], ["b", "held"]],
+  );
+  assertEquals(fanOut.halts, [{
+    reason: "budget",
+    batch: 1,
+    maxFailures: 0,
+    failed: ["a"],
+    held: ["b"],
+  }]);
+  assertEquals(fanOut.gates.length, 1);
+  assertEquals(fanOut.gates[0].status, "approved");
+  assertEquals(fanOut.gates[0].approval?.approvedByUsername, "ops");
+  assertEquals(JSON.stringify(completed.data).includes("uuid-"), false);
+});
+
+Deno.test("workflowHistoryGet: a fan-out run whose evaluated workflow is gone or unreadable shows no policy and still completes", async () => {
+  for (
+    const lookup of [
+      () => Promise.resolve(null),
+      () => Promise.reject(new Error("unreadable")),
+    ]
+  ) {
+    const { run } = fanOutRun();
+    const events = await collect<WorkflowHistoryGetEvent>(
+      workflowHistoryGet(
+        createLibSwampContext(),
+        makeDeps({
+          findLatestRun: () => Promise.resolve(run),
+          findEvaluatedWorkflow: lookup,
+        }),
+        "fleet",
+      ),
+    );
+    const completed = events.find((e) => e.kind === "completed");
+    if (completed?.kind !== "completed") throw new Error("not completed");
+    assertEquals(completed.data.jobs[0].fanOut?.policy, undefined);
+    assertEquals(completed.data.jobs[0].fanOut?.plannedLanes, 2);
+  }
+});
+
+Deno.test("workflowHistoryGet: a run with no fan-out job gets no fanOut and reads no evaluated workflow", async () => {
+  const run = runWithOneStep();
+  run.captureRunPlan("fp", run.id);
+  let looked = 0;
+  const events = await collect<WorkflowHistoryGetEvent>(
+    workflowHistoryGet(
+      createLibSwampContext(),
+      makeDeps({
+        findLatestRun: () => Promise.resolve(run),
+        findEvaluatedWorkflow: () => {
+          looked++;
+          return Promise.resolve(null);
+        },
+      }),
+      "my-workflow",
+    ),
+  );
+  const completed = events.find((e) => e.kind === "completed");
+  if (completed?.kind !== "completed") throw new Error("not completed");
+  assertEquals(looked, 0);
+  assertEquals("fanOut" in completed.data.jobs[0], false);
+});

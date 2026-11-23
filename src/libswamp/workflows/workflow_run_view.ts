@@ -133,6 +133,56 @@ export interface SignalWaitView {
   };
 }
 
+export interface FanOutMemberRunView {
+  worker: string;
+  disposition: string;
+  reason?: string;
+  batch?: number;
+  lane?: "succeeded" | "failed" | "held" | "running" | "unknown" | "not_run";
+  failedSteps?: { step: string; error?: string }[];
+  assertions?: { step: string; severity: string; message: string }[];
+}
+
+export type FanOutHaltRunView =
+  | {
+    reason: "budget";
+    batch: number;
+    maxFailures: number;
+    failed: string[];
+    held: string[];
+  }
+  | { reason: "gate_rejected"; gate: "plan" | "canary"; held: string[] };
+
+export interface FanOutGateRunView {
+  kind: "plan" | "canary";
+  step: string;
+  status:
+    | "pending"
+    | "waiting"
+    | "expired"
+    | "approved"
+    | "rejected"
+    | "held"
+    | "failed";
+  expiredAt?: string;
+  approval?: ApprovalView;
+}
+
+/** a fan-out job rebuilt from the run record; no instance UUIDs */
+export interface FanOutRunView {
+  selector: { labels?: Record<string, string>; platform?: string };
+  /** absent when the run's evaluated workflow is gone */
+  policy?: { offline: string; minWorkers: number };
+  plannedLanes: number;
+  batches: string[][];
+  budget: { allowed: number | null; used: number };
+  members: FanOutMemberRunView[];
+  halts: FanOutHaltRunView[];
+  gates: FanOutGateRunView[];
+  /** the latest resume only; the record holds no earlier ones */
+  resume?: { at: string; rerun: string[]; kept: string[] };
+}
+
 export interface JobRunView {
   name: string;
   status:
@@ -148,6 +198,8 @@ export interface JobRunView {
   startedAt?: string;
   completedAt?: string;
   duration?: number;
+  /** set by history get on a job that holds a fan-out plan */
+  fanOut?: FanOutRunView;
 }
 
 export interface WorkflowRunView {

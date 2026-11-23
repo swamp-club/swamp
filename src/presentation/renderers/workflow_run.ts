@@ -35,7 +35,10 @@ import {
   writeOutput,
 } from "../../infrastructure/logging/logger.ts";
 import { containsExpression } from "../../domain/expressions/expression_parser.ts";
-import { escapeControlCharacters } from "../../domain/control_characters.ts";
+import {
+  escapeControlCharacters,
+  escapeControlCharactersInMessage,
+} from "../../domain/control_characters.ts";
 import { quoteShellWord } from "../../domain/shell_word.ts";
 import { signalByKeyCommand } from "../../domain/workflows/signal_wait.ts";
 import {
@@ -815,7 +818,12 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
             ),
           );
           writeBlankLine();
-          writeOutput(this.pipe.line("system", STATUS_COLORS.error(stepError)));
+          writeOutput(
+            this.pipe.line(
+              "system",
+              STATUS_COLORS.error(escapeControlCharactersInMessage(stepError)),
+            ),
+          );
           // This renderer prints the run's error itself instead of throwing
           // it to renderError, so it carries the cert-store hint too.
           const certStoreHint = platformCertStoreHint(stepError);
