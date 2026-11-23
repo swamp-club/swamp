@@ -22,6 +22,7 @@ import { normalizeServerUrl } from "../../domain/auth/server_url.ts";
 import { openBrowser } from "../../infrastructure/process/browser.ts";
 import { FileServerCredentialRepository } from "../../infrastructure/persistence/server_credential_repository.ts";
 import { describeCauses, UserError } from "../../domain/errors.ts";
+import { resolveExtraHeaders } from "../../domain/auth/extra_headers.ts";
 
 export interface ServerLoginData {
   readonly token: string;
@@ -116,10 +117,20 @@ async function fetchFromServer(
   serverUrl: string,
   method: string,
   path: string,
+  extraHeaders: Record<string, string>,
   init: RequestInit & { signal: AbortSignal },
 ): Promise<Response> {
+  // set() so a pass-through header of any casing cannot join a protocol header
+  const headers = new Headers(extraHeaders);
+  new Headers(init.headers).forEach((value, name) => headers.set(name, value));
   try {
-    return await fetch(`${serverUrl}${path}`, { ...init, method });
+    return await fetch(`${serverUrl}${path}`, {
+      ...init,
+      method,
+      headers,
+      // a redirect would carry the pass-through headers and device code elsewhere
+      redirect: "manual",
+    });
   } catch (err) {
     if (init.signal.aborted) throw err;
     throw new UserError(
@@ -149,9 +160,13 @@ async function readServerJson<T>(
 }
 
 export function createServerLoginDeps(
-  options?: { httpClient?: Deno.HttpClient },
+  options?: {
+    httpClient?: Deno.HttpClient;
+    extraHeaders?: Record<string, string>;
+  },
 ): ServerLoginDeps {
   const repo = new FileServerCredentialRepository();
+  const extraHeaders = options?.extraHeaders ?? resolveExtraHeaders();
   const clientOpts: Record<string, unknown> = {};
   if (options?.httpClient) clientOpts.client = options.httpClient;
   return {
@@ -160,10 +175,16 @@ export function createServerLoginDeps(
       signal: AbortSignal,
     ): Promise<AuthDiscovery> => {
       const httpUrl = wsToHttp(serverUrl);
-      const resp = await fetchFromServer(httpUrl, "GET", "/auth/info", {
-        signal,
-        ...clientOpts,
-      });
+      const resp = await fetchFromServer(
+        httpUrl,
+        "GET",
+        "/auth/info",
+        extraHeaders,
+        {
+          signal,
+          ...clientOpts,
+        },
+      );
       if (!resp.ok) {
         throw new UserError(
           `Failed to discover auth mode: ${resp.status} ${resp.statusText}`,
@@ -183,10 +204,16 @@ export function createServerLoginDeps(
       signal: AbortSignal,
     ): Promise<DeviceAuthResponse> => {
       const httpUrl = wsToHttp(serverUrl);
-      const resp = await fetchFromServer(httpUrl, "POST", "/auth/device", {
-        signal,
-        ...clientOpts,
-      });
+      const resp = await fetchFromServer(
+        httpUrl,
+        "POST",
+        "/auth/device",
+        extraHeaders,
+        {
+          signal,
+          ...clientOpts,
+        },
+      );
       if (!resp.ok) {
         throw new UserError(
           `Failed to start device authorization: ${resp.status} ${resp.statusText}`,
@@ -211,6 +238,7 @@ export function createServerLoginDeps(
         httpUrl,
         "POST",
         "/auth/device/token",
+        extraHeaders,
         {
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ deviceCode }),
