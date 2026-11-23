@@ -4930,7 +4930,10 @@ export const serveCommand = new Command()
         lists: () => authConfig,
         hasStoredLogin: (token) =>
           withoutVaultAccess(async () =>
-            await hasOAuthAccessToken(await admissionVaults(), token)
+            await hasOAuthAccessToken({
+              tokenSecrets: tokenSecretsProvider,
+              vaults: admissionVaults,
+            }, token)
           ),
       })
       : null;

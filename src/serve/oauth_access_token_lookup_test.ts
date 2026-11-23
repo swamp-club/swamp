@@ -17,13 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { TOKEN_SECRETS_VAULT_NAME } from "../domain/vaults/control_plane_vault_provider.ts";
 import {
   hasOAuthAccessToken,
   lookupOAuthAccessToken,
 } from "./oauth_access_token_lookup.ts";
 import { oauthAccessTokenKey } from "./device_auth_handler.ts";
+import { SecretNotFoundError } from "../domain/vaults/secret_not_found_error.ts";
 
 const USER_VAULT = "default";
 
@@ -105,55 +106,168 @@ Deno.test("lookupOAuthAccessToken: returns null when an unmigrated token has no 
   assertEquals(result, null);
 });
 
-function presenceVault(
-  vaults: Record<string, readonly string[] | "down">,
-) {
+function tokenSecrets(keys: readonly string[] | "down") {
   return {
-    getVaultNames: () => Object.keys(vaults),
-    has(vaultName: string, key: string): Promise<boolean> {
-      const keys = vaults[vaultName];
-      if (keys === "down") return Promise.reject(new Error("vault offline"));
+    holdsSecret(key: string): Promise<boolean> {
+      if (keys === "down") return Promise.reject(new Error("store offline"));
       return Promise.resolve(keys.includes(key));
+    },
+  };
+}
+
+function lazy<T>(value: T): () => Promise<T> {
+  return () => Promise.resolve(value);
+}
+
+type FakeVault =
+  | { readonly kind: "presence"; readonly keys: readonly string[] | "down" }
+  | { readonly kind: "read-only"; readonly keys: readonly string[] | "down" };
+
+function userVaults(vaults: Record<string, FakeVault>) {
+  const reads: string[] = [];
+  return {
+    reads,
+    getVaultNames: () => [TOKEN_SECRETS_VAULT_NAME, ...Object.keys(vaults)],
+    supportsExistenceCheck: (vaultName: string) =>
+      vaults[vaultName]?.kind === "presence",
+    has(vaultName: string, key: string): Promise<boolean> {
+      const vault = vaults[vaultName];
+      if (vault?.kind !== "presence") {
+        return Promise.reject(new Error("does not support existence checks"));
+      }
+      if (vault.keys === "down") {
+        return Promise.reject(new Error("vault offline"));
+      }
+      return Promise.resolve(vault.keys.includes(key));
+    },
+    get(vaultName: string, key: string): Promise<string> {
+      reads.push(`${vaultName}/${key}`);
+      const keys = vaults[vaultName]?.keys;
+      if (keys === "down") return Promise.reject(new Error("vault offline"));
+      if (!keys?.includes(key)) {
+        return Promise.reject(new SecretNotFoundError(vaultName, key));
+      }
+      return Promise.resolve("access");
     },
   };
 }
 
 Deno.test("hasOAuthAccessToken: finds a login's token in the token-secrets vault", async () => {
   const key = oauthAccessTokenKey("tok-1");
-  const vault = presenceVault({ [TOKEN_SECRETS_VAULT_NAME]: [key] });
   assertEquals(
-    await hasOAuthAccessToken(vault, { name: "tok-1", vaultName: USER_VAULT }),
+    await hasOAuthAccessToken({
+      tokenSecrets: tokenSecrets([key]),
+      vaults: lazy(userVaults({})),
+    }, { name: "tok-1", vaultName: TOKEN_SECRETS_VAULT_NAME }),
     true,
   );
 });
 
-Deno.test("hasOAuthAccessToken: falls back to the token's own vault", async () => {
-  const key = oauthAccessTokenKey("tok-1");
-  const vault = presenceVault({
-    [TOKEN_SECRETS_VAULT_NAME]: [],
-    [USER_VAULT]: [key],
+Deno.test("hasOAuthAccessToken: a token with none in token-secrets reads no other vault", async () => {
+  const vaults = userVaults({
+    [USER_VAULT]: { kind: "read-only", keys: [oauthAccessTokenKey("tok-1")] },
   });
   assertEquals(
-    await hasOAuthAccessToken(vault, { name: "tok-1", vaultName: USER_VAULT }),
-    true,
+    await hasOAuthAccessToken({
+      tokenSecrets: tokenSecrets([]),
+      vaults: lazy(vaults),
+    }, {
+      name: "tok-1",
+      vaultName: TOKEN_SECRETS_VAULT_NAME,
+    }),
+    false,
   );
+  assertEquals(vaults.reads, []);
 });
 
-Deno.test("hasOAuthAccessToken: a manual token has none, and a missing vault is not an error", async () => {
-  const vault = presenceVault({ [USER_VAULT]: [] });
+Deno.test("hasOAuthAccessToken: a token in token-secrets never builds the user vaults", async () => {
+  const unbuildable = () => Promise.reject(new Error("vault config broken"));
   assertEquals(
-    await hasOAuthAccessToken(vault, { name: "tok-1", vaultName: USER_VAULT }),
+    await hasOAuthAccessToken({
+      tokenSecrets: tokenSecrets([]),
+      vaults: unbuildable,
+    }, {
+      name: "tok-1",
+      vaultName: TOKEN_SECRETS_VAULT_NAME,
+    }),
     false,
   );
 });
 
-Deno.test("hasOAuthAccessToken: a vault that cannot answer throws", async () => {
-  const vault = presenceVault({ [TOKEN_SECRETS_VAULT_NAME]: "down" });
-  let threw = false;
-  try {
-    await hasOAuthAccessToken(vault, { name: "tok-1", vaultName: USER_VAULT });
-  } catch {
-    threw = true;
+Deno.test("hasOAuthAccessToken: falls back to the token's own vault through its existence check", async () => {
+  const vaults = userVaults({
+    [USER_VAULT]: { kind: "presence", keys: [oauthAccessTokenKey("tok-1")] },
+  });
+  assertEquals(
+    await hasOAuthAccessToken({
+      tokenSecrets: tokenSecrets([]),
+      vaults: lazy(vaults),
+    }, {
+      name: "tok-1",
+      vaultName: USER_VAULT,
+    }),
+    true,
+  );
+  assertEquals(vaults.reads, []);
+});
+
+Deno.test("hasOAuthAccessToken: reads a token vault without an existence check, a missing secret meaning none", async () => {
+  const key = oauthAccessTokenKey("tok-1");
+  const holding = userVaults({
+    [USER_VAULT]: { kind: "read-only", keys: [key] },
+  });
+  assertEquals(
+    await hasOAuthAccessToken({
+      tokenSecrets: tokenSecrets([]),
+      vaults: lazy(holding),
+    }, { name: "tok-1", vaultName: USER_VAULT }),
+    true,
+  );
+  const empty = userVaults({ [USER_VAULT]: { kind: "read-only", keys: [] } });
+  assertEquals(
+    await hasOAuthAccessToken({
+      tokenSecrets: tokenSecrets([]),
+      vaults: lazy(empty),
+    }, {
+      name: "tok-1",
+      vaultName: USER_VAULT,
+    }),
+    false,
+  );
+});
+
+Deno.test("hasOAuthAccessToken: a token vault that is not configured is not an error", async () => {
+  assertEquals(
+    await hasOAuthAccessToken({
+      tokenSecrets: tokenSecrets([]),
+      vaults: lazy(userVaults({})),
+    }, { name: "tok-1", vaultName: USER_VAULT }),
+    false,
+  );
+});
+
+Deno.test("hasOAuthAccessToken: throws when token-secrets cannot answer", async () => {
+  await assertRejects(
+    () =>
+      hasOAuthAccessToken({
+        tokenSecrets: tokenSecrets("down"),
+        vaults: lazy(userVaults({})),
+      }, { name: "tok-1", vaultName: TOKEN_SECRETS_VAULT_NAME }),
+    Error,
+    "store offline",
+  );
+});
+
+Deno.test("hasOAuthAccessToken: throws when the token's own vault fails other than not found", async () => {
+  for (const kind of ["presence", "read-only"] as const) {
+    await assertRejects(
+      () =>
+        hasOAuthAccessToken({
+          tokenSecrets: tokenSecrets([]),
+          vaults: lazy(userVaults({ [USER_VAULT]: { kind, keys: "down" } })),
+        }, { name: "tok-1", vaultName: USER_VAULT }),
+      Error,
+      "vault offline",
+    );
   }
-  assertEquals(threw, true);
 });
