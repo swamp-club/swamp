@@ -2324,6 +2324,10 @@ export class WorkflowRun implements TriggerEvaluationContext {
     return this._resumedAt ?? this._startedAt;
   }
 
+  get resumedAt(): Date | undefined {
+    return this._resumedAt;
+  }
+
   /** stamped only by serve, and only on a run it drove */
   markContinuable(at: Date): void {
     if (this._status !== "interrupted" || !isServeDrivenRun(this)) return;

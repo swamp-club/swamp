@@ -46,7 +46,11 @@ import type { UnreadableContentLookup } from "../../domain/datastore/datastore_s
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { notFound, validationFailed } from "../errors.ts";
-import type { SignalWaitView, WorkflowRunView } from "./workflow_run_view.ts";
+import type {
+  FanOutRunView,
+  SignalWaitView,
+  WorkflowRunView,
+} from "./workflow_run_view.ts";
 import {
   resolveRunStepOutputs,
   RunAttributeBudget,
@@ -77,6 +81,10 @@ import {
   type NestedRunLinkDeps,
 } from "../../domain/workflows/nested_run_link.ts";
 import type { SignalWaitSupport } from "../../domain/workflows/signal_wait_store.ts";
+import type { EvaluatedWorkflowLookup } from "../../domain/workflows/abort_settlement.ts";
+import { fanOutJobView } from "../../domain/workflows/fan_out_view.ts";
+import type { Workflow } from "../../domain/workflows/workflow.ts";
+import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 
 /**
  * a missing nested run or broken link does not hold the run back (its resume
@@ -209,6 +217,51 @@ export function receiptsOfRunView(
   return receipts;
 }
 
+/**
+ * the policy comes from the run's own evaluated workflow, never the current
+ * definition, which an edit may have changed; without it the policy is left out
+ */
+export async function showFanOutJobs(
+  run: WorkflowRun,
+  view: WorkflowRunView,
+  findEvaluatedWorkflow?: EvaluatedWorkflowLookup,
+): Promise<void> {
+  const planned = run.jobs.filter((job) => job.fanOutPlan !== undefined);
+  if (planned.length === 0) return;
+  let evaluated: Workflow | null = null;
+  const evaluatedId = run.runPlan?.evaluatedWorkflowId;
+  if (findEvaluatedWorkflow && evaluatedId) {
+    try {
+      evaluated = await findEvaluatedWorkflow(evaluatedId);
+    } catch {
+      // Shown without the policy.
+    }
+  }
+  const resumedAt = run.resumedAt?.toISOString();
+  for (const job of planned) {
+    const jobView = view.jobs.find((candidate) =>
+      candidate.name === job.jobName
+    );
+    if (jobView === undefined) continue;
+    const policy = evaluated?.getJob(job.jobName)?.fanOutPolicy;
+    const built = fanOutJobView(job.toData(), {
+      resumedAt,
+      policy,
+      mask: (text) => run.mask(text),
+    });
+    if (built === undefined) continue;
+    const fanOut: FanOutRunView = {
+      ...built,
+      gates: built.gates.map((gate) => {
+        const approval = jobView.steps.find((step) => step.name === gate.step)
+          ?.approval;
+        return approval !== undefined ? { ...gate, approval } : gate;
+      }),
+    };
+    jobView.fanOut = fanOut;
+  }
+}
+
 export type WorkflowHistoryGetEvent =
   | { kind: "resolving" }
   | { kind: "completed"; data: WorkflowRunView }
@@ -233,6 +286,8 @@ export interface WorkflowHistoryGetDeps extends RunReferenceDeps {
     allAttributes?: boolean,
   ) => Promise<RunStepOutputs>;
   retentionWatermarks?: RetentionWatermarkRepository;
+  /** the run's evaluated workflow, for a fan-out job's policy */
+  findEvaluatedWorkflow?: EvaluatedWorkflowLookup;
   /** a running run's start journal, so a step it shows started reads running */
   findStepStarts?: (
     workflowId: WorkflowId,
@@ -295,7 +350,14 @@ export function createWorkflowHistoryGetDeps(
     unreadableContent,
   );
   runRepo.recordsAreForwarded = recordsAreForwarded === true;
+  const evaluatedRepo = new YamlEvaluatedWorkflowRepository(
+    repoDir,
+    dsPath(SWAMP_SUBDIRS.workflowsEvaluated),
+    undefined,
+    unreadableContent,
+  );
   return {
+    findEvaluatedWorkflow: (runId) => evaluatedRepo.findByRunId(runId),
     isPartialId,
     nestedLink: { runRepo, workflowRepo },
     signalWaits,
@@ -540,6 +602,7 @@ export async function* workflowHistoryGet(
             : await view(),
         );
       }
+      await showFanOutJobs(run, data, deps.findEvaluatedWorkflow);
       const signalWaits = deps.signalWaits;
       if (signalWaits?.supported && data.status === "suspended") {
         await withSpan(

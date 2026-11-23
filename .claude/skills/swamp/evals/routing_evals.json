@@ -222,5 +222,13 @@
   {
     "query": "My swamp app shows app_capability_denied when it calls data.query",
     "expected_guide": "app"
+  },
+  {
+    "query": "Run this job on every host that matches the role=web label",
+    "expected_guide": "workflow"
+  },
+  {
+    "query": "Stage a package update across all my swamp workers with a canary batch and a failure budget",
+    "expected_guide": "workflow"
   }
 ]

@@ -340,5 +340,17 @@
     "guide": "app",
     "answerable_from_guide": false,
     "note": "Chart recipes and the gallery template are in references/patterns.md"
+  },
+  {
+    "query": "Which workflow construct runs a job once on every host that runs a matching swamp worker?",
+    "guide": "workflow",
+    "answerable_from_guide": true,
+    "note": "guide.md names fanOut over forEach for fleets and points to reference.md"
+  },
+  {
+    "query": "How do I set a canary batch, a failure budget and a plan approval on a fan-out rollout?",
+    "guide": "workflow",
+    "answerable_from_guide": false,
+    "note": "rollout fields live in reference.md and remote-execution.md"
   }
 ]

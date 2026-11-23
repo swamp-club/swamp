@@ -17,13 +17,18 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { dim, green, red, yellow } from "@std/fmt/colors";
+import { cyan, dim, green, red, yellow } from "@std/fmt/colors";
 import type { OutputMode } from "../output/output.ts";
 import { prettyJson } from "../output/json_stream.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { escapeControlCharacters } from "../../domain/control_characters.ts";
 import { principalLabel } from "../../domain/access/principal.ts";
 import type {
+  ApprovalView,
+  FanOutGateRunView,
+  FanOutHaltRunView,
+  FanOutMemberRunView,
+  FanOutRunView,
   StepSkipReasonView,
   WorkflowRunView,
 } from "../../libswamp/workflows/workflow_run_view.ts";
@@ -167,6 +172,10 @@ function renderLogWorkflowRun(data: WorkflowRunView): void {
         }
       }
     }
+
+    if (job.fanOut) {
+      writeOutput(fanOutLines(job.fanOut).join("\n"));
+    }
   }
 
   if (data.parked === true) {
@@ -276,4 +285,153 @@ function statusIcon(
     interrupted: "\u26A0",
   };
   return icons[status] ?? "?";
+}
+
+const esc = escapeControlCharacters;
+
+function workerList(workers: readonly string[]): string {
+  return workers.length > 0 ? workers.map(esc).join(", ") : "none";
+}
+
+function allowedText(allowed: number | null): string {
+  return allowed === null ? "no budget" : `${allowed} failed lane(s) allowed`;
+}
+
+function laneText(lane: NonNullable<FanOutMemberRunView["lane"]>): string {
+  switch (lane) {
+    case "succeeded":
+      return green("succeeded");
+    case "failed":
+      return red("failed");
+    case "held":
+      return yellow("held");
+    case "running":
+      return "running";
+    case "unknown":
+      return yellow("unknown");
+    case "not_run":
+      return dim("not run");
+  }
+}
+
+function memberLines(member: FanOutMemberRunView): string[] {
+  const reason = member.reason !== undefined ? ` (${esc(member.reason)})` : "";
+  const batch = member.batch !== undefined
+    ? `batch ${member.batch + 1}`
+    : "no lane";
+  const lane = member.lane !== undefined ? `, ${laneText(member.lane)}` : "";
+  const lines = [
+    `        ${esc(member.worker)}: ${
+      esc(member.disposition)
+    }${reason}, ${batch}${lane}`,
+  ];
+  for (const failed of member.failedSteps ?? []) {
+    lines.push(
+      `          failed ${esc(failed.step)}${
+        failed.error !== undefined ? `: ${esc(failed.error)}` : ""
+      }`,
+    );
+  }
+  for (const assertion of member.assertions ?? []) {
+    lines.push(
+      `          assertion ${esc(assertion.step)} (${
+        esc(assertion.severity)
+      }): ${esc(assertion.message)}`,
+    );
+  }
+  return lines;
+}
+
+function decisionText(approval: ApprovalView): string {
+  if (approval.status === "approved") {
+    return `${green("approved")} by ${
+      approval.approvedBy === undefined
+        ? "unknown"
+        : esc(principalLabel(approval.approvedBy, approval.approvedByUsername))
+    }${viaClient(approval.client)} at ${formatTimestamp(approval.approvedAt)}`;
+  }
+  if (approval.status === "rejected") {
+    return `${red("rejected")} by ${
+      approval.rejectedBy === undefined
+        ? "unknown"
+        : esc(principalLabel(approval.rejectedBy, approval.rejectedByUsername))
+    }${viaClient(approval.client)} at ${formatTimestamp(approval.rejectedAt)}`;
+  }
+  return yellow("timed out");
+}
+
+function gateLines(gate: FanOutGateRunView): string[] {
+  let text: string;
+  if (gate.approval !== undefined) {
+    text = decisionText(gate.approval);
+  } else if (gate.status === "expired") {
+    text = `${yellow("expired")} at ${formatTimestamp(gate.expiredAt)}`;
+  } else if (gate.status === "held") {
+    text = dim("not reached");
+  } else {
+    text = gate.status === "failed" ? red("failed") : gate.status;
+  }
+  const lines = [`        ${gate.kind}: ${text}`];
+  if (gate.approval?.reason) {
+    lines.push(`          Reason: ${esc(gate.approval.reason)}`);
+  }
+  return lines;
+}
+
+function haltLine(halt: FanOutHaltRunView, attempt: number): string {
+  if (halt.reason === "gate_rejected") {
+    return `        ${halt.gate} gate rejected: held ${workerList(halt.held)}`;
+  }
+  return `        attempt ${attempt}: ${red("budget spent")} in batch ${
+    halt.batch + 1
+  } (${allowedText(halt.maxFailures)}); failed ${
+    workerList(halt.failed)
+  }; held ${workerList(halt.held)}`;
+}
+
+function fanOutLines(fanOut: FanOutRunView): string[] {
+  const selector = Object.entries(fanOut.selector.labels ?? {}).map((
+    [key, value],
+  ) => `${esc(key)}=${esc(value)}`);
+  if (fanOut.selector.platform !== undefined) {
+    selector.push(`platform=${esc(fanOut.selector.platform)}`);
+  }
+  const policy = fanOut.policy !== undefined
+    ? `offline ${
+      esc(fanOut.policy.offline)
+    }, minWorkers ${fanOut.policy.minWorkers}`
+    : dim("policy not recorded");
+  const lines = [
+    `    ${cyan("Fan-out:")} ${
+      selector.length > 0 ? selector.join(", ") : dim("selector not recorded")
+    }; ${policy}`,
+    `      Planned lanes: ${fanOut.plannedLanes}; budget: ${fanOut.budget.used} used, ${
+      allowedText(fanOut.budget.allowed)
+    }`,
+  ];
+  fanOut.batches.forEach((batch, index) => {
+    lines.push(`      Batch ${index + 1}: ${workerList(batch)}`);
+  });
+  lines.push(`      ${cyan("Members:")}`);
+  for (const member of fanOut.members) lines.push(...memberLines(member));
+  if (fanOut.gates.length > 0) {
+    lines.push(`      ${cyan("Gates:")}`);
+    for (const gate of fanOut.gates) lines.push(...gateLines(gate));
+  }
+  if (fanOut.halts.length > 0) {
+    lines.push(`      ${cyan("Halts:")}`);
+    let attempt = 0;
+    for (const halt of fanOut.halts) {
+      if (halt.reason === "budget") attempt++;
+      lines.push(haltLine(halt, attempt));
+    }
+  }
+  if (fanOut.resume !== undefined) {
+    lines.push(
+      `      Latest resume at ${formatTimestamp(fanOut.resume.at)}: rerun ${
+        workerList(fanOut.resume.rerun)
+      }; kept ${workerList(fanOut.resume.kept)}`,
+    );
+  }
+  return lines;
 }

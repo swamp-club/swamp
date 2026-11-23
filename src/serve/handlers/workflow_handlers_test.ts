@@ -63,6 +63,7 @@ import { cancelAndSettle } from "../../domain/workflows/abort_settlement.ts";
 import { nestedChain } from "../../domain/workflows/nested_run_test_helpers.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
+import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import {
   SEARCH_SCAN_SHARE,
   withScanPermit,
@@ -792,6 +793,80 @@ Deno.test("handleWorkflowHistoryGet: returns step outputs read from the datastor
       stdout: "hello",
       apiKey: "not-for-you",
     });
+  });
+});
+
+Deno.test("handleWorkflowHistoryGet: a fan-out job's reply carries its plan, lanes and halt, with the policy from the run's evaluated workflow and no instance ids", async () => {
+  await withHistoryRepo(async (dir) => {
+    const workflow = Workflow.create({
+      name: "history-wf",
+      jobs: [
+        Job.create({
+          name: "patch",
+          fanOut: { offline: "fail", minWorkers: 1 },
+          labels: { role: "web" },
+          steps: [
+            Step.create({
+              name: "apply",
+              task: StepTask.directExecution("command/shell", "host", "run"),
+            }),
+          ],
+        }),
+      ],
+    });
+    const data = WorkflowRun.create(workflow).toData();
+    data.status = "failed";
+    data.runPlan = { fingerprint: "fp", evaluatedWorkflowId: data.id };
+    data.jobs = [{
+      jobName: "patch",
+      status: "failed",
+      steps: [
+        { stepName: "apply[a]", status: "failed", error: "boom" },
+        {
+          stepName: "apply[b]",
+          status: "skipped",
+          skipReason: { kind: "job_skipped" },
+        },
+      ],
+      fanOutPlan: {
+        members: ["a", "b"].map((worker, batch) => ({
+          worker,
+          instanceUuid: `uuid-${worker}`,
+          disposition: "dispatch" as const,
+          batch,
+        })),
+        plannedLanes: 2,
+        maxFailures: 0,
+        batches: [["a"], ["b"]],
+        lanes: ["a", "b"].map((worker) => ({
+          name: `patch[${worker}]`,
+          worker,
+          instanceUuid: `uuid-${worker}`,
+          steps: [],
+        })),
+      },
+      fanOutHalts: [{ batch: 1, maxFailures: 0, failed: ["a"], held: ["b"] }],
+    }];
+    const run = WorkflowRun.fromData(data);
+    await new YamlWorkflowRunRepository(dir).save(workflow.id, run);
+    await new YamlEvaluatedWorkflowRepository(dir).saveForRun(run.id, workflow);
+
+    const frame = await historyGet(makeHistoryCtx(dir, workflow), null);
+
+    const fanOut = (frame.payload?.data.jobs[0] as {
+      fanOut?: {
+        policy?: unknown;
+        members: Array<{ worker: string; lane?: string }>;
+        halts: unknown[];
+      };
+    }).fanOut;
+    assertEquals(fanOut?.policy, { offline: "fail", minWorkers: 1 });
+    assertEquals(
+      fanOut?.members.map((member) => [member.worker, member.lane]),
+      [["a", "failed"], ["b", "held"]],
+    );
+    assertEquals(fanOut?.halts.length, 1);
+    assertEquals(JSON.stringify(frame).includes("uuid-"), false);
   });
 });
 

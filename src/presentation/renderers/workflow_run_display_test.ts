@@ -527,3 +527,159 @@ Deno.test("renderWorkflowRunDisplay: json mode carries the inherited placement",
   );
   assertEquals(JSON.parse(output).inheritedPlacement, inherited);
 });
+
+function fanOutView(
+  fanOut?: NonNullable<WorkflowRunView["jobs"][number]["fanOut"]>,
+): WorkflowRunView {
+  return {
+    id: "run-1",
+    workflowId: "wf-1",
+    workflowName: "fleet",
+    status: "failed",
+    jobs: [{
+      name: "patch",
+      status: "failed",
+      steps: [{ name: "apply[a]", status: "failed", error: "boom" }],
+      ...(fanOut !== undefined ? { fanOut } : {}),
+    }],
+  };
+}
+
+const FAN_OUT = {
+  selector: { labels: { role: "web" } },
+  policy: { offline: "wait", minWorkers: 1 },
+  plannedLanes: 3,
+  batches: [["a"], ["b", "c"]],
+  budget: { allowed: 0, used: 1 },
+  members: [
+    {
+      worker: "a",
+      disposition: "dispatch",
+      batch: 0,
+      lane: "failed" as const,
+      failedSteps: [{ step: "apply[a]", error: "boom" }],
+      assertions: [{
+        step: "verify[a]",
+        severity: "high",
+        message: "health was red",
+      }],
+    },
+    {
+      worker: "b",
+      disposition: "waiting",
+      reason: "disconnected",
+      batch: 1,
+      lane: "held" as const,
+    },
+    { worker: "c", disposition: "dispatch", batch: 1, lane: "held" as const },
+    { worker: "d", disposition: "excluded", reason: "draining" },
+  ],
+  halts: [
+    {
+      reason: "budget" as const,
+      batch: 0,
+      maxFailures: 0,
+      failed: ["a"],
+      held: ["b", "c"],
+    },
+    { reason: "gate_rejected" as const, gate: "canary" as const, held: ["b"] },
+  ],
+  gates: [
+    {
+      kind: "plan" as const,
+      step: "patch[approve-plan]",
+      status: "approved" as const,
+      approval: {
+        status: "approved" as const,
+        approvedBy: "user:u-1",
+        approvedByUsername: "ops",
+        approvedAt: "2026-01-01T00:00:30.000Z",
+      },
+    },
+    {
+      kind: "canary" as const,
+      step: "patch[approve-canary]",
+      status: "rejected" as const,
+      approval: {
+        status: "rejected" as const,
+        rejectedBy: "user-2",
+        rejectedAt: "2026-01-01T00:02:00.000Z",
+        reason: "canary red",
+      },
+    },
+  ],
+  resume: {
+    at: "2026-01-01T00:01:00.000Z",
+    rerun: ["b", "c"],
+    kept: ["a"],
+  },
+};
+
+Deno.test("renderWorkflowRunDisplay: a fan-out job shows its selector, policy, batches, members, gates, halts and latest resume", () => {
+  const output = captureOutput(() =>
+    renderWorkflowRunDisplay(fanOutView(FAN_OUT), "log")
+  );
+  for (
+    const line of [
+      "    Fan-out: role=web; offline wait, minWorkers 1",
+      "      Planned lanes: 3; budget: 1 used, 0 failed lane(s) allowed",
+      "      Batch 1: a",
+      "      Batch 2: b, c",
+      "        a: dispatch, batch 1, failed",
+      "          failed apply[a]: boom",
+      "          assertion verify[a] (high): health was red",
+      "        b: waiting (disconnected), batch 2, held",
+      "        d: excluded (draining), no lane",
+      "        plan: approved by user:ops at 2026-01-01 00:00:30 UTC",
+      "        canary: rejected by user-2 at 2026-01-01 00:02:00 UTC",
+      "          Reason: canary red",
+      "        attempt 1: budget spent in batch 1 (0 failed lane(s) allowed); failed a; held b, c",
+      "        canary gate rejected: held b",
+      "      Latest resume at 2026-01-01 00:01:00 UTC: rerun b, c; kept a",
+    ]
+  ) assertStringIncludes(output, line);
+});
+
+Deno.test("renderWorkflowRunDisplay: a fan-out view escapes worker names, labels and errors, and says what the record lacks", () => {
+  const output = captureOutput(() =>
+    renderWorkflowRunDisplay(
+      fanOutView({
+        ...FAN_OUT,
+        selector: { labels: { "ro\u001b[2Jle": "w\neb" } },
+        policy: undefined,
+        members: [{
+          worker: "a\u001b[31m",
+          disposition: "dispatch",
+          batch: 0,
+          lane: "failed",
+          failedSteps: [{ step: "apply[a]", error: "line1\nforged line" }],
+        }],
+        halts: [],
+        gates: [],
+        resume: undefined,
+      }),
+      "log",
+    )
+  );
+  assertEquals(output.includes("\u001b"), false);
+  assertEquals(output.includes("\nforged line"), false);
+  assertStringIncludes(output, "policy not recorded");
+});
+
+Deno.test("renderWorkflowRunDisplay: a run without a fan-out view prints exactly as before, in log and json", () => {
+  const plain = fanOutView();
+  assertEquals(
+    captureOutput(() => renderWorkflowRunDisplay(plain, "log")),
+    [
+      "Workflow: fleet (Run ID: run-1)",
+      "  ✗ patch",
+      "    ✗ apply[a]",
+      "      -> boom",
+      "Result: FAILED",
+    ].join("\n"),
+  );
+  assertEquals(
+    JSON.parse(captureOutput(() => renderWorkflowRunDisplay(plain, "json"))),
+    plain,
+  );
+});

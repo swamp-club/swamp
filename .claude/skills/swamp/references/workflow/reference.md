@@ -695,6 +695,32 @@ Placement requires running under `swamp serve`. See
 [references/remote-execution.md](references/remote-execution.md) for worker
 provisioning, matching semantics, and full examples.
 
+## Fan-out Jobs (`fanOut`)
+
+`fanOut` on a job runs the job once on every connected worker that the job's
+`labels` / `platform` select, each run a lane pinned to its worker (lane steps
+are recorded as `step[worker]`). Use it to run work across a fleet; keep
+`forEach` for loops over data.
+
+```yaml
+jobs:
+  - name: patch
+    labels: { role: web }
+    fanOut: # or: fanOut: all
+      offline: wait # wait | skip | fail
+      minWorkers: 1
+      rollout: # optional staged rollout
+        batches: [1, "100%"]
+        maxFailures: 0
+        approve: [canary]
+    steps: ... # behaviorType + behaviorName steps and assert steps only
+```
+
+It runs only through `swamp serve` (`--server`). Selector rules, `self.worker`,
+rollout, approval gates, resume, the validation refusals and how to read a run
+with `swamp workflow history get`:
+[references/remote-execution.md](references/remote-execution.md#fan-out-jobs-fanout-one-lane-per-matching-worker).
+
 ## Affinity (Worker Co-location)
 
 Add `affinity: true` at the **workflow** or **job** level to guarantee all
@@ -1658,4 +1684,5 @@ End-to-end workflow creation:
   scheduled workflow guards
 - **Remote execution**: See
   [references/remote-execution.md](references/remote-execution.md) for worker
-  provisioning and step placement (target/labels/platform)
+  provisioning and step placement (target/labels/platform), and fan-out jobs
+  that run on every matching worker (`fanOut`, rollouts, approval gates)

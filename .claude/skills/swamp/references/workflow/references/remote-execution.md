@@ -8,6 +8,14 @@ to the orchestrator. It replaces the removed execution-driver abstraction
 containerized worker and select it with labels. Full design:
 `design/enablers/remote-execution.md`.
 
+Contents: [Provisioning a worker](#provisioning-a-worker) ·
+[Placing steps on workers](#placing-steps-on-workers) ·
+[Fan-out jobs](#fan-out-jobs-fanout-one-lane-per-matching-worker) ·
+[Affinity](#affinity-worker-co-location) · [Remote-only mode](#remote-only-mode)
+·
+[Running through the orchestrator](#running-workflows-through-the-orchestrator)
+· [Semantics](#semantics-worth-knowing)
+
 ## Provisioning a worker
 
 On or near the orchestrator (an initialized swamp repo with a vault):
@@ -114,9 +122,249 @@ steps:
 ```
 
 Matching order: `target` → `labels` → `platform`; idle eligible workers win,
-all-busy queues the step, and no eligible worker fails the step fast. `forEach`
-is the fan-out construct — expand a step over a list and the instances spread
-across matching workers (each worker runs one dispatch at a time).
+all-busy queues the step, and no eligible worker fails the step fast. To run a
+job once on **every** matching host (a fleet), use a `fanOut` job (next
+section), not `forEach` over the worker list: `fanOut` plans the hosts once,
+waits for offline ones, and a resume keeps the hosts that passed. Keep `forEach`
+for loops over data (environments, regions, files); its instances spread across
+matching workers, each worker running one dispatch at a time.
+
+## Fan-out jobs (`fanOut`): one lane per matching worker
+
+A job with `fanOut` runs once on every connected worker its `labels` /
+`platform` select, as a **lane** pinned to that worker. Use it for fleet work:
+push a config, rotate a certificate, update a package on every web host.
+
+| Goal                                       | Use                            |
+| ------------------------------------------ | ------------------------------ |
+| Run steps on one matching worker           | placement (`labels`, `target`) |
+| Run a job on **every** matching worker     | `fanOut` on the job            |
+| Loop over data (envs, regions, files)      | `forEach` on a step            |
+| Stage hosts, stop on failures, ask a human | `fanOut` with `rollout`        |
+
+### Fields
+
+```yaml
+jobs:
+  - name: patch
+    labels: { role: web } # the selector: job (or workflow) labels/platform
+    fanOut: # or the short form: fanOut: all (every default)
+      offline: wait # wait (default) | skip | fail, for hosts not connected
+      minWorkers: 2 # default 1; fewer live members refuses the plan
+      rollout: # optional; without it every lane runs at once
+        batches: [1, "25%", "100%"] # count or whole %; the last must be "100%"
+        maxFailures: 1 # count, or "10%" of planned lanes (rounds down)
+        approve: [plan, canary] # optional gates
+        approveTimeout: 3600 # seconds; needs approve
+    steps: ...
+```
+
+- **Selector.** The job's `labels` / `platform` after inheritance from the
+  workflow. `fanOut` is job-level only and needs one of them: to reach every
+  worker, give them a shared label and select it.
+- **Lanes.** Each lane walks the job's steps on its own. A lane step is recorded
+  as `step[worker]`, e.g. `apply[web-01]`. `dependsOn`, guards and
+  `steps.<name>` inside a lane read only that lane. A later job cannot read a
+  fan-out job's `steps.<name>`; read lane results through data.
+- **`self.worker`** (`name`, `labels`, `platform`, `arch`) is in scope in every
+  step's guard, inputs and global arguments.
+- **Per-worker instances.** Use `behaviorType` + `behaviorName`. The name gets a
+  `-<worker>` suffix (`nginx-config` → `nginx-config-web-01`), unless its
+  authored text uses `self.worker.name`, so locks and data are per host.
+- **Per-host checks.** Put `assert` steps inside the lane; they run on the
+  orchestrator against what that lane's host wrote. A failed assertion of the
+  default `high` severity fails the lane.
+- **Outcome.** A lane fails when a step fails without `allowFailure`. The job
+  succeeds only if every lane does and no member failed at plan time.
+- **Rollout.** Batch N+1 starts only once every lane of earlier batches has
+  finished. Once failed lanes exceed `maxFailures`, no new lane starts (running
+  lanes finish), the rest are **held**, and the job fails. There is no bake time
+  between batches; use `approve: [canary]` to pause after the first batch.
+- **Gates.** `approve: [plan]` asks before any lane starts; `approve: [canary]`
+  asks after the first batch (needs a second batch). Gates are approval steps
+  named `job[approve-plan]` / `job[approve-canary]`; approve or reject them like
+  any gate (`swamp workflow approve <workflow> patch[approve-canary]`). The
+  `swamp workflow approvals` listing shows the approver the plan or the canary
+  results. Reject is final for the run.
+- **Resume.** A resume never re-plans: it reuses the stored members and batches,
+  keeps every lane that passed, and re-runs the rest, starting with the lanes
+  the last halt failed. The budget is fresh for the resumed attempt. To re-run a
+  passed host, start a new run.
+- **Needs serve.** Run fan-out workflows with `--server` (see "Running workflows
+  through the orchestrator").
+
+### Example: config push with a per-host health check
+
+```yaml
+name: push-nginx-config
+jobs:
+  - name: push
+    labels: { role: web }
+    fanOut: all
+    steps:
+      - name: write-config
+        task:
+          type: behavior
+          behaviorType: command/shell
+          behaviorName: nginx-config
+          methodName: execute
+          inputs:
+            run: "install -m 644 /srv/config/nginx.conf /etc/nginx/nginx.conf && nginx -s reload"
+      - name: health
+        dependsOn:
+          - step: write-config
+            condition: { type: succeeded }
+        task:
+          type: behavior
+          behaviorType: command/shell
+          behaviorName: nginx-health
+          methodName: execute
+          inputs:
+            run: "curl -fsS http://localhost/healthz"
+      - name: healthy
+        dependsOn:
+          - step: health
+            condition: { type: succeeded }
+        task:
+          type: assert
+          expr: 'steps.health.outputs.stdout.contains("ok")'
+          message: "health check failed on this host"
+```
+
+### Example: staged package update with plan approval, canary and budget
+
+```yaml
+name: update-openssl
+jobs:
+  - name: update
+    labels: { role: web }
+    queueTimeout: 600 # how long a lane waits for its worker
+    fanOut:
+      offline: wait
+      minWorkers: 3
+      rollout:
+        batches: [1, "50%", "100%"] # one canary host, half, then the rest
+        maxFailures: "10%"
+        approve: [plan, canary]
+        approveTimeout: 86400
+    steps:
+      - name: upgrade
+        task:
+          type: behavior
+          behaviorType: command/shell
+          behaviorName: openssl-upgrade
+          methodName: execute
+          inputs:
+            run: "apt-get install -y --only-upgrade openssl"
+      - name: version
+        dependsOn:
+          - step: upgrade
+            condition: { type: succeeded }
+        task:
+          type: behavior
+          behaviorType: command/shell
+          behaviorName: openssl-version
+          methodName: execute
+          inputs:
+            run: "openssl version"
+      - name: patched
+        dependsOn:
+          - step: version
+            condition: { type: succeeded }
+        task:
+          type: assert
+          expr: 'steps.version.outputs.stdout.contains("3.0.13")'
+          message: "openssl is not at 3.0.13"
+```
+
+Run it: `swamp workflow run update-openssl --server <url>`. It suspends at
+`update[approve-plan]`; after approval the canary host runs and the run suspends
+at `update[approve-canary]`.
+
+### Restarting the host from a lane
+
+A step that restarts its own host schedules the restart and returns (e.g.
+`shutdown -r +1`), so the step finishes before the worker goes down. Run the
+worker as a daemon with a stable `--cache-dir`
+(`swamp worker daemon enable <url> --token-file <path> --cache-dir <dir>`) so it
+comes back under the same identity, and give the next step a `queueTimeout` long
+enough to cover the reboot: a lane waits for its own worker by name.
+
+### Before fanning out: environment and workspaces
+
+- **Workers get serve's environment unless `dispatch-env-allow` is set.** Unset,
+  every dispatch ships serve's whole environment minus the denylist (`HOME`,
+  `PATH`, `USER`, `SHELL`, `SWAMP_*`, `DENO_*`, `OTEL_*`, `XDG_*` and similar),
+  and fan-out sends it to every matching host. Set the allow list to the
+  variables the steps need:
+  `swamp serve --dispatch-env-allow AWS_REGION,APP_ENV`, `dispatch-env-allow:`
+  in `serve.yaml`, or `SWAMP_DISPATCH_ENV_ALLOW`. An empty list
+  (`dispatch-env-allow: []`) ships nothing. Each hosted workspace sets its own.
+- **Fan-out is per workspace.** Under `swamp serve host`, each workspace is its
+  own serve at `<host>/w/<name>`, and a worker belongs to the workspace whose
+  address it connects to. A `fanOut` job reaches only that workspace's workers;
+  a machine serving two workspaces runs two workers, each with its own token,
+  `--cache-dir` and address.
+
+### Refusals and fixes
+
+`swamp workflow validate` reports these (`<job>` / `<step>` stand for names):
+
+| Message (start)                                                                               | Fix                                                                                  |
+| --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `Fan-out job '<job>' sets target, which names one worker.`                                    | Remove `target`; select with `labels` / `platform`                                   |
+| `The workflow sets target, which fan-out job '<job>' would inherit`                           | Move `target` off the workflow onto the jobs that need it                            |
+| `Fan-out job '<job>' has no labels or platform in effect.`                                    | Add `labels` or `platform` to the job or workflow (`labels: {}` counts as none)      |
+| `Fan-out job '<job>' sets affinity: true`                                                     | Remove `affinity` from the job                                                       |
+| `The workflow sets affinity: true, which would pin fan-out job '<job>' to one worker.`        | Set `affinity: false` on the fan-out job, or drop workflow affinity                  |
+| `Step '<step>' in fan-out job '<job>' sets labels, but each lane runs on one worker.`         | Remove step `target` / `labels` / `platform`; place the job (`queueTimeout` is fine) |
+| `... uses forEach, which fan-out jobs do not support yet.`                                    | Move the loop into a job without `fanOut`                                            |
+| `... runs the named definition '<name>', which every lane would share.`                       | Use `behaviorType` + `behaviorName`                                                  |
+| `... is a manual_approval step` / `a wait_for_signal` / `a nested workflow`                   | Move it to another job; ask for approval with `rollout.approve`                      |
+| `... has the name of the job's plan approval gate.`                                           | Rename the step                                                                      |
+| `approve: canary needs a batch after the canary; add batches, for example [1, 100%]`          | Add a batch after the canary                                                         |
+| `approveTimeout needs approve: plan, canary, or both`                                         | Add `approve` or drop `approveTimeout`                                               |
+| `The last batch must be "100%" (the rest of the lanes)` / `Only the last batch may be "100%"` | End `batches` with `"100%"`, and only there                                          |
+| `Expected a whole percentage from 1% to 100%` (0% for `maxFailures`)                          | Use a count or a whole percentage string such as `"25%"`                             |
+
+At run time:
+
+| Message (start)                                                                                                          | Fix                                                         |
+| ------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------- |
+| `Workflow '<wf>' has fan-out job '<job>': fanOut needs the worker pool of swamp serve; run it with --server.`            | Run, resume or recover with `--server <url>`                |
+| `Fan-out job '<job>' needs at least N workers matching ... that are connected or waiting, and M are; nothing was sent.`  | Connect workers with matching labels, or lower `minWorkers` |
+| `Fan-out job '<job>' cannot name its lanes: worker 'approve-plan' has the name its plan approval gate takes.`            | Rename the worker or remove that gate from `approve`        |
+| `Fan-out job '<job>' cannot name its lanes: step '<step>' on worker '<w>' gives '<name>' ...`                            | Rename the step or the worker                               |
+| `Fan-out job '<job>' would run behavior '<a>' on worker '<w1>' and behavior '<b>' on worker '<w2>' as the same instance` | Rename one of the behaviors                                 |
+| `Worker '<w>' of fan-out job '<job>' is not connected, and the job's offline policy is skip; nothing was sent.`          | On resume: reconnect the worker, or start a new run         |
+| `Fan-out job "<job>" selects different workers than when the run began: its labels or platform changed.`                 | Resume refused: restore the selector, or start a new run    |
+| `Job "<job>" ran as a fan-out job, and the workflow no longer sets fanOut on it.`                                        | Restore `fanOut`, or start a new run                        |
+| `Job "<job>" has fanOut but its run holds no fan-out plan: ...`                                                          | A fan-out job is never re-planned: start a new run          |
+| `Approval gate "<job>[approve-canary]" of fan-out job "<job>" was rejected; neither a retry nor --from asks it again.`   | Start a new run                                             |
+
+### Reading a fan-out run
+
+`swamp workflow history get <workflow-or-run> [--server <url>]` rebuilds every
+fan-out job from the run record, including runs serve continued after an
+approval. Log mode prints a **Fan-out** block under the job: selector and
+policy, batches, budget, one line per member, halts, gates and the latest
+resume. With `--json`, each fan-out job carries a `fanOut` object:
+
+| Field          | Holds                                                                                                                                             |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `selector`     | `labels` / `platform` as authored                                                                                                                 |
+| `policy`       | `offline`, `minWorkers`; absent when the run's evaluated workflow is gone                                                                         |
+| `plannedLanes` | lanes the plan made                                                                                                                               |
+| `batches`      | worker names per batch                                                                                                                            |
+| `budget`       | `allowed` (null = no budget) and `used` (lanes failing now)                                                                                       |
+| `members[]`    | `worker`, `disposition` (`dispatch`, `waiting`, `skipped`, `failed`, `excluded`), `reason`, `batch`, `lane`                                       |
+|                | `lane`: `succeeded`, `failed`, `held`, `running`, `unknown`, `not_run`; plus `failedSteps`, `assertions`                                          |
+| `halts[]`      | `reason: budget` with `batch` (index), `maxFailures`, `failed`, `held`; or `reason: gate_rejected`, `gate`, `held`                                |
+| `gates[]`      | `kind`, `step`, `status` (`pending`, `waiting`, `expired`, `approved`, `rejected`, `held`, `failed`), `expiredAt`, `approval` (who, when, reason) |
+| `resume`       | latest resume only: `at`, `rerun`, `kept` lanes; earlier resumes are not recorded                                                                 |
+
+A job without `fanOut` has no `fanOut` key. Members carry worker names only,
+never instance ids.
 
 ## Affinity (worker co-location)
 
