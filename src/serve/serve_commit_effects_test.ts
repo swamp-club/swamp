@@ -23,6 +23,7 @@ import { ModelType } from "../domain/models/model_type.ts";
 import { partitionOf } from "../domain/datastore_v3/partition_key.ts";
 import type { PartitionKey } from "../domain/datastore_v3/partition_key.ts";
 import { CommitsCompactedError } from "../domain/datastore_v3/commit_store.ts";
+import type { Commit } from "../domain/datastore_v3/commit.ts";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import {
   ServeCommitEffects,
@@ -39,7 +40,12 @@ const GRANT = partitionOf({
 });
 
 function fakeSource() {
-  const rows: { cursor: number; partition: PartitionKey }[] = [];
+  const rows: {
+    cursor: number;
+    partition: PartitionKey;
+    principal?: string;
+    fence?: number;
+  }[] = [];
   let compactedTo = 0;
   let unappliedFrom: number | undefined;
   const listeners = new Set<(replaced: boolean) => void>();
@@ -59,7 +65,11 @@ function fakeSource() {
               row,
             ) => ({
               cursor: row.cursor,
-              commit: { partition: row.partition },
+              commit: {
+                partition: row.partition,
+                principal: row.principal,
+                fence: row.fence,
+              },
             })),
           );
         },
@@ -86,11 +96,22 @@ function fakeSource() {
     restored() {
       for (const listener of listeners) listener(true);
     },
-    landQuietly(partition: PartitionKey) {
+    landQuietly(
+      partition: PartitionKey,
+      stamp: { principal?: string; fence?: number } = {},
+    ) {
       rows.push({
         cursor: (rows.at(-1)?.cursor ?? compactedTo) + 1,
         partition,
+        ...stamp,
       });
+    },
+    landStamped(
+      partition: PartitionKey,
+      stamp: { principal?: string; fence?: number },
+    ) {
+      this.landQuietly(partition, stamp);
+      for (const listener of listeners) listener(false);
     },
     replace(cursor: number) {
       rows.length = 0;
@@ -501,5 +522,221 @@ Deno.test("ServeCommitEffects: a delegation commit reloads the delegation direct
     } finally {
       await effects.stop();
     }
+  }
+});
+
+const RELEASE = partitionOf({
+  kind: "model",
+  type: ModelType.create("swamp/policy-release"),
+  id: ID,
+});
+
+function releaseSetup(
+  options: {
+    unreadable?: boolean;
+    head?: { principal?: string; fence?: number };
+  } = {},
+) {
+  const store = fakeSource();
+  const calls = { policy: 0, applied: 0, narrowed: 0 };
+  let leaderFence: number | undefined = 7;
+  const effects = new ServeCommitEffects({
+    source: store.source,
+    reloadPolicy: () => {
+      calls.policy++;
+      return Promise.resolve();
+    },
+    checkConfig: () => {},
+    isFollower: () => true,
+    releases: {
+      leaderFence: () => leaderFence,
+      headReleaseCommit: () =>
+        Promise.resolve(
+          options.head === undefined ? undefined : {
+            partition: RELEASE,
+            ...options.head,
+          } as unknown as Commit,
+        ),
+      applyRelease: () => {
+        if (options.unreadable) {
+          return Promise.reject(new Error("not a policy release"));
+        }
+        calls.applied++;
+        return Promise.resolve();
+      },
+      narrowRelease: () => {
+        calls.narrowed++;
+        return Promise.resolve();
+      },
+    },
+  });
+  effects.start();
+  return {
+    store,
+    calls,
+    effects,
+    takeover(fence: number) {
+      leaderFence = fence;
+    },
+  };
+}
+
+async function pass(
+  store: ReturnType<typeof fakeSource>,
+  effects: ServeCommitEffects,
+) {
+  effects.poke();
+  await effects.settled();
+  store.applied();
+}
+
+const STEP_LEASE = partitionOf({
+  kind: "model",
+  type: ModelType.create("swamp/step-lease"),
+  id: ID,
+});
+
+Deno.test("ServeCommitEffects: a follower enforcing the leader's release only narrows for a grant commit the leader may be holding", async () => {
+  const { store, calls, effects } = releaseSetup();
+  try {
+    store.landStamped(RELEASE, { fence: 7 });
+    await pass(store, effects);
+    // applied, then narrowed against the latest grants
+    assertEquals(calls, { policy: 0, applied: 1, narrowed: 1 });
+    assertEquals(effects.followsLeaderRelease(), true);
+    store.landStamped(GRANT, { fence: 7 });
+    await pass(store, effects);
+    assertEquals(calls, { policy: 0, applied: 1, narrowed: 2 });
+  } finally {
+    await effects.stop();
+  }
+});
+
+Deno.test("ServeCommitEffects: a step lease or worker commit never rebuilds a follower's policy", async () => {
+  const { store, calls, effects } = setup();
+  try {
+    store.land(STEP_LEASE);
+    store.land(partitionOf({
+      kind: "model",
+      type: ModelType.create("swamp/worker"),
+      id: ID,
+    }));
+    await pass(store, effects);
+    assertEquals(calls.policy, 0);
+  } finally {
+    await effects.stop();
+  }
+});
+
+Deno.test("ServeCommitEffects: until the current leader has released, a follower rebuilds for grant commits so revokes reach it", async () => {
+  const { store, calls, effects, takeover } = releaseSetup();
+  try {
+    store.landStamped(GRANT, { fence: 7 });
+    await pass(store, effects);
+    assertEquals(calls.policy, 1);
+    store.landStamped(RELEASE, { fence: 7 });
+    await pass(store, effects);
+    assertEquals(effects.followsLeaderRelease(), true);
+    takeover(8);
+    assertEquals(effects.followsLeaderRelease(), false);
+    store.landStamped(GRANT, { fence: 8 });
+    await pass(store, effects);
+    assertEquals(calls.policy, 2);
+  } finally {
+    await effects.stop();
+  }
+});
+
+Deno.test("ServeCommitEffects: a release with a principal, or under another fence, is not enforced", async () => {
+  const { store, calls, effects } = releaseSetup();
+  try {
+    store.landStamped(RELEASE, { fence: 7, principal: "user:mallory" });
+    store.landStamped(RELEASE, { fence: 6 });
+    await pass(store, effects);
+    assertEquals(calls.applied, 0);
+    assertEquals(effects.followsLeaderRelease(), false);
+  } finally {
+    await effects.stop();
+  }
+});
+
+Deno.test("ServeCommitEffects: a release that cannot be read rebuilds the policy at once instead of refusing reads", async () => {
+  const { store, calls, effects } = releaseSetup({ unreadable: true });
+  try {
+    store.landStamped(RELEASE, { fence: 7 });
+    await pass(store, effects);
+    assertEquals(calls, { policy: 1, applied: 0, narrowed: 0 });
+    assertEquals(effects.policyKnown(), true);
+    assertEquals(effects.followsLeaderRelease(), false);
+  } finally {
+    await effects.stop();
+  }
+});
+
+Deno.test("ServeCommitEffects.adoptLeaderRelease: a starting follower enforces the head release only when the current leader wrote it", async () => {
+  const matching = releaseSetup({ head: { fence: 7 } });
+  const stale = releaseSetup({ head: { fence: 5 } });
+  try {
+    assertEquals(await matching.effects.adoptLeaderRelease(), true);
+    assertEquals(matching.calls.applied, 1);
+    assertEquals(await stale.effects.adoptLeaderRelease(), false);
+    assertEquals(stale.calls.applied, 0);
+  } finally {
+    await matching.effects.stop();
+    await stale.effects.stop();
+  }
+});
+
+Deno.test("ServeCommitEffects: a release is narrowed as it is applied, and a head that moved meanwhile is checked before it is kept", async () => {
+  const store = fakeSource();
+  const order: string[] = [];
+  const heads = [
+    { partition: RELEASE, fence: 7, seq: 1 },
+    { partition: RELEASE, fence: 7, seq: 2 },
+    { partition: RELEASE, fence: 7, seq: 2 },
+  ];
+  const effects = new ServeCommitEffects({
+    source: store.source,
+    reloadPolicy: () => Promise.resolve(),
+    checkConfig: () => {},
+    isFollower: () => true,
+    releases: {
+      leaderFence: () => 7,
+      headReleaseCommit: () =>
+        Promise.resolve(heads.shift() as unknown as Commit),
+      applyRelease: () => {
+        order.push("apply");
+        return Promise.resolve();
+      },
+      narrowRelease: () => {
+        order.push("narrow");
+        return Promise.resolve();
+      },
+    },
+  });
+  try {
+    assertEquals(await effects.adoptLeaderRelease(), true);
+    assertEquals(order, ["apply", "narrow", "apply", "narrow"]);
+  } finally {
+    await effects.stop();
+  }
+});
+
+Deno.test("ServeCommitEffects: a release refused before the follower knew its leader's fence is adopted at the next grant commit, not rebuilt past", async () => {
+  const { store, calls, effects, takeover } = releaseSetup({
+    head: { fence: 8 },
+  });
+  try {
+    store.landStamped(RELEASE, { fence: 8 });
+    await pass(store, effects);
+    assertEquals(calls.applied, 0);
+    // now it learns the new leader's fence; the leader then writes a held grant
+    takeover(8);
+    store.landStamped(GRANT, { fence: 8 });
+    await pass(store, effects);
+    assertEquals(calls, { policy: 0, applied: 1, narrowed: 1 });
+    assertEquals(effects.followsLeaderRelease(), true);
+  } finally {
+    await effects.stop();
   }
 });

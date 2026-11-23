@@ -57,6 +57,7 @@ import type { Data } from "../data/data.ts";
 import type { PrincipalContext } from "./principal_context.ts";
 import type { ConditionEvaluator } from "./policy_snapshot.ts";
 import { PolicySnapshot } from "./policy_snapshot.ts";
+import { narrowedPolicy, PolicyRelease } from "./policy_release.ts";
 import type { ResourceKind } from "./resource_selector.ts";
 import {
   CONDITION_FIELDS,
@@ -296,6 +297,8 @@ export class PolicySnapshotLoader {
   #rebuildTimer: ReturnType<typeof setTimeout> | null = null;
   #cachedDecisionService: GrantBasedAccessDecisionService | null = null;
   #decisionOptions: GrantBasedAccessDecisionServiceOptions;
+  /** this process's own settings; a release overrides them only until its next build */
+  #ownDecisionOptions: GrantBasedAccessDecisionServiceOptions;
   readonly #eventBus: EventBus;
   #disposed = false;
   /**
@@ -312,6 +315,10 @@ export class PolicySnapshotLoader {
   #reportedUnreadable = new Map<string, string>();
   #built = false;
   #loadedSignature = "";
+  #enforcedGrants: readonly Grant[] = [];
+  #enforcedGroups: readonly Group[] = [];
+  #onBuilt: ((release: PolicyRelease) => void) | undefined;
+  #appliedRelease: PolicyRelease | undefined;
   /**
    * each active grant already checked for spellings, with the effect, selector
    * and condition it was checked as, so a reload neither repeats findings nor
@@ -333,6 +340,7 @@ export class PolicySnapshotLoader {
     this.#readTypeLiterals = readTypeLiterals;
     this.#readConditionFindings = readConditionFindings;
     this.#decisionOptions = decisionOptions;
+    this.#ownDecisionOptions = decisionOptions;
     this.#conditionEvaluator = createConditionEvaluator();
 
     this.#eventBus = eventBus;
@@ -362,8 +370,107 @@ export class PolicySnapshotLoader {
       "runImpliesApprove" | "runImpliesSignal" | "writeImpliesTag"
     >,
   ): void {
+    this.#ownDecisionOptions = { ...this.#ownDecisionOptions, ...options };
     this.#decisionOptions = { ...this.#decisionOptions, ...options };
     this.#cachedDecisionService = null;
+    if (this.#built) this.#offerRelease();
+  }
+
+  /**
+   * told the enforced policy after every build (inside the build queue) and
+   * decision-setting change; it must not wait on anything a build waits for
+   */
+  onBuilt(listener: (release: PolicyRelease) => void): void {
+    this.#onBuilt = listener;
+  }
+
+  /** what this process enforces now, for a follower to enforce in its place */
+  release(): PolicyRelease {
+    return PolicyRelease.of({
+      grants: this.#enforcedGrants,
+      groups: this.#enforcedGroups,
+      knownGrants: this.#lastKnownGrants,
+      knownGroups: this.#lastKnownGroups,
+      decisions: {
+        runImpliesApprove: this.#decisionOptions.runImpliesApprove ?? true,
+        runImpliesSignal: this.#decisionOptions.runImpliesSignal ?? true,
+        writeImpliesTag: this.#decisionOptions.writeImpliesTag ?? true,
+      },
+    });
+  }
+
+  /**
+   * enforces a leader's release in place of a build; its last-known records
+   * seed this process, so a later build keeps their retained denies
+   */
+  applyRelease(release: PolicyRelease): Promise<void> {
+    const apply = () => {
+      this.#decisionOptions = {
+        ...this.#decisionOptions,
+        ...release.decisions,
+      };
+      this.#snapshot = new PolicySnapshot(
+        release.grants,
+        release.groups,
+        this.#conditionEvaluator,
+      );
+      this.#enforcedGrants = release.grants;
+      this.#enforcedGroups = release.groups;
+      this.#lastKnownGrants = new Map(release.knownGrants);
+      this.#lastKnownGroups = new Map(release.knownGroups);
+      this.#unreadable = [];
+      this.#loadedSignature = snapshotSignature(release.grants, release.groups);
+      this.#built = true;
+      this.#cachedDecisionService = null;
+      this.#appliedRelease = release;
+    };
+    const result = this.#builds.then(apply);
+    this.#builds = result.catch(() => {});
+    return result;
+  }
+
+  /**
+   * a follower's grant commit before the leader releases it: a revoke or new
+   * deny applies now, a widening waits, so a stuck publisher never keeps a
+   * revoked grant live here
+   */
+  narrowRelease(): Promise<void> {
+    const release = this.#appliedRelease;
+    if (release === undefined) return this.load().then(() => {});
+    const narrow = async () => {
+      await observeDiagnosticPhase("snapshot_build", {}, async (phase) => {
+        await this.#buildSnapshotWithCounts(phase);
+        const policy = narrowedPolicy(release, {
+          grants: this.#enforcedGrants,
+          groups: this.#enforcedGroups,
+        });
+        this.#decisionOptions = {
+          ...this.#ownDecisionOptions,
+          ...release.decisions,
+        };
+        this.#snapshot = new PolicySnapshot(
+          policy.grants,
+          policy.groups,
+          this.#conditionEvaluator,
+        );
+        this.#enforcedGrants = policy.grants;
+        this.#enforcedGroups = policy.groups;
+        this.#cachedDecisionService = null;
+      });
+    };
+    const result = this.#builds.then(narrow);
+    this.#builds = result.catch(() => {});
+    return result;
+  }
+
+  #offerRelease(): void {
+    const listener = this.#onBuilt;
+    if (listener === undefined) return;
+    try {
+      listener(this.release());
+    } catch (error) {
+      logger.warn`Publishing the policy to followers failed: ${error}`;
+    }
   }
 
   #subscribe(): void {
@@ -446,8 +553,11 @@ export class PolicySnapshotLoader {
         {},
         async (phase) => {
           const result = await this.#buildSnapshotWithCounts(phase);
+          this.#decisionOptions = this.#ownDecisionOptions;
+          this.#appliedRelease = undefined;
           this.#snapshot = result.snapshot;
           this.#cachedDecisionService = null;
+          this.#offerRelease();
           return result;
         },
       );
@@ -655,6 +765,8 @@ export class PolicySnapshotLoader {
     this.#reportUnreadable(unreadable, lastKnownGrants, lastKnownGroups);
     this.#lastKnownGrants = lastKnownGrants;
     this.#lastKnownGroups = lastKnownGroups;
+    this.#enforcedGrants = grants;
+    this.#enforcedGroups = groups;
     this.#unreadable = unreadable;
     this.#loadedSignature = loaded;
     this.#built = true;

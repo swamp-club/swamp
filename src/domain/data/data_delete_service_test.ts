@@ -474,3 +474,30 @@ Deno.test("DataDeleteService: an ordinary behavior's data named like the record 
     "integration-main",
   ]);
 });
+
+Deno.test("DataDeleteService: refuses every delete and preview of the policy release", async () => {
+  const dataRepo = new FakeDataRepository();
+  dataRepo.versionsByName.set("release-main", [1, 2]);
+  const definitionRepo = new FakeDefinitionRepository();
+  definitionRepo.findByNameGlobal = (name: string) =>
+    Promise.resolve({
+      definition: { id: "def-1", name },
+      type: ModelType.create("swamp/policy-release"),
+    });
+  const service = new DataDeleteService(
+    dataRepo as never,
+    definitionRepo as never,
+  );
+  for (
+    const operation of [
+      () => service.delete("rec", "release-main"),
+      () => service.delete("rec", "release-main", 1),
+      () => service.previewDelete("rec", "release-main"),
+      () => service.batchDelete("rec", { kind: "all" }),
+      () => service.batchPreviewDelete("rec", { kind: "all" }),
+    ]
+  ) {
+    await assertRejects(operation, Error, "only a leading serve writes it");
+  }
+  assertEquals(dataRepo.deleteCalls, []);
+});

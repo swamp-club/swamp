@@ -35,6 +35,7 @@ export const CONTROL_PLANE_MODEL_TYPES: readonly string[] = [
   "swamp/group",
   "swamp/integration",
   "swamp/delegation",
+  "swamp/policy-release",
 ];
 
 /**
@@ -78,4 +79,17 @@ export function isDelegationModelType(type: string): boolean {
 export function isControlPlaneModelType(type: string): boolean {
   const normalized = normalizeModelTypeName(type);
   return normalized !== null && CONTROL_PLANE_MODEL_TYPES.includes(normalized);
+}
+
+export const POLICY_RELEASE_SERVE_ONLY =
+  "The policy release is serve's own record of the policy it enforces; only a leading serve writes it, and it can't be deleted or renamed";
+
+export function isPolicyReleaseModelType(type: string): boolean {
+  return normalizeModelTypeName(type) === "swamp/policy-release";
+}
+
+/** the records a policy snapshot is built from */
+export function isPolicyModelType(type: string): boolean {
+  const normalized = normalizeModelTypeName(type);
+  return normalized === "swamp/grant" || normalized === "swamp/group";
 }

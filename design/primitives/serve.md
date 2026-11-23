@@ -2261,7 +2261,9 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   new source the reconcile held back (an unresolvable username, an empty read)
   is reported as partly applied. Removing an admin revokes their
   `grant-config-*` grant through `materializeAdmins` and reloads the policy
-  before the report says applied; it also re-plans a closed allowed-users
+  before the report says applied; on a team, each such build is published to
+  the followers as a policy release (see the PolicySnapshot lifecycle in the
+  access-control design); it also re-plans a closed allowed-users
   list, which admits only the admins. Adding an admin needs a restart; a swap
   applies the removal and reports the addition, and may leave no admin in
   force until the restart. A node that does not lead grant writes reports the

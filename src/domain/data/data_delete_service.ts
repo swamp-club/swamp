@@ -20,7 +20,11 @@
 import type { Data } from "./data.ts";
 import type { UnifiedDataRepository } from "./repositories.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
-import { isIntegrationModelType } from "../models/control_plane_types.ts";
+import {
+  isIntegrationModelType,
+  isPolicyReleaseModelType,
+  POLICY_RELEASE_SERVE_ONLY,
+} from "../models/control_plane_types.ts";
 import type { ModelType } from "../models/model_type.ts";
 import {
   findDefinitionByIdGlobal,
@@ -106,6 +110,9 @@ function refuseIntegrationRecord(modelType: ModelType): void {
     throw new Error(
       "An integration's record can't be deleted, because its id must stay reserved: tokens issued to it would come back to life. To stop it being used, revoke it with swamp access integration revoke",
     );
+  }
+  if (isPolicyReleaseModelType(modelType.normalized)) {
+    throw new Error(POLICY_RELEASE_SERVE_ONLY);
   }
 }
 

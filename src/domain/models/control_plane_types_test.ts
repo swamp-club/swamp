@@ -27,7 +27,7 @@ import {
 } from "./control_plane_types.ts";
 import { modelRegistry } from "./models.ts";
 
-Deno.test("CONTROL_PLANE_MODEL_TYPES: pins the ten control-plane types", () => {
+Deno.test("CONTROL_PLANE_MODEL_TYPES: pins the eleven control-plane types", () => {
   assertEquals([...CONTROL_PLANE_MODEL_TYPES].sort(), [
     "swamp/delegation",
     "swamp/enrollment-token",
@@ -36,6 +36,7 @@ Deno.test("CONTROL_PLANE_MODEL_TYPES: pins the ten control-plane types", () => {
     "swamp/group",
     "swamp/integration",
     "swamp/pending-dispatch",
+    "swamp/policy-release",
     "swamp/server-token",
     "swamp/step-lease",
     "swamp/worker",

@@ -1646,13 +1646,44 @@ changes.
    poller watches (`DataQueryService.refreshTypes`), never the whole data
    catalog; a refresh that fails falls back to invalidating the catalog. A v3
    datastore has one writer at a time and runs no poller.
-4. **OAuth group refresh**: a `CollectiveRefreshService` re-fetches each
+4. **Team followers** (swamp-club#4496): a follower enforces the policy its
+   leader enforces, not one it builds from the latest grants. After every
+   build, and after a reload changes `run-implies-approve`,
+   `run-implies-signal` or `write-implies-tag`, a v3 leader's
+   `PolicyReleasePublisher` writes the grants and groups it enforces, with
+   those settings, to the serve-only `swamp/policy-release` record, once per
+   change of lease fence or content (`src/serve/policy_release_publisher.ts`).
+   A follower enforces a release only from a commit with no principal under
+   the current leader's fence, so a forged one is never applied; until it has
+   one from the current leader (an older leader in a rolling upgrade, or a new
+   leader's first release not landed yet) it rebuilds on each grant or group
+   commit as before, after first adopting the head release if it now matches
+   (one refused before the follower knew its leader's fence). While it follows releases, a grant or group commit is
+   applied fail-safe (`narrowedPolicy` in `src/domain/access/policy_release.ts`):
+   an allow holds only if it is unchanged in both the release and the latest
+   grants, every deny from either holds, and group members narrow for the
+   allows naming the group while its denies follow every member either side
+   had (a worker, which no grant can name, keeps the release's membership). A
+   release is itself narrowed against the latest grants when it is applied, so
+   one built before a revoke never brings the revoked grant back. So a revoke, a new deny or a removed member applies at once even if the
+   leader's release write is stuck, and a widening waits for the release; a
+   held narrowing makes a follower stricter than its leader until then. Other
+   control-plane commits (workers, leases, tokens) never rebuild a policy.
+   What follows from this:
+   - under `--grant-reload manual` only the grant and group writes serve runs
+     itself are held; a forwarded member commit rebuilds the leader's policy
+     at once, which also releases its own held writes;
+   - a follower lags its leader by the time to apply the release commit, and a
+     follower's own `--grant-reload` has no effect on what it enforces;
+   - a takeover releases held changes, as a leader restart does: the new
+     leader reconciles grant files and builds from the latest grants.
+5. **OAuth group refresh**: a `CollectiveRefreshService` re-fetches each
    logged-in user's collectives every `--group-refresh-interval`
    (`src/serve/collective_refresh_service.ts`); the next session revalidation
    pass closes connections whose admission lapsed (see [Admission](#admission)). It applies a userinfo answer
    only when its subject matches the token's principal; otherwise it keeps the
    token's snapshot and logs a warning.
-5. **Unreadable records** (swamp-club#3386): a grant or group record that exists
+6. **Unreadable records** (swamp-club#3386): a grant or group record that exists
    but cannot be read (a directory or file this process may not read, such as
    one a peer wrote with a restrictive umask or another uid) or whose JSON does
    not parse never vanishes silently. `findAllForType` reports each data name it

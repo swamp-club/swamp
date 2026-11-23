@@ -20,11 +20,20 @@
 /** decided from the commit's partition alone, so it needs nothing but the commit */
 
 import {
-  isControlPlaneModelType,
   isDelegationModelType,
   isIntegrationModelType,
+  isPolicyModelType,
+  isPolicyReleaseModelType,
 } from "../models/control_plane_types.ts";
-import type { PartitionKey } from "./partition_key.ts";
+import { type PartitionKey, partitionOf } from "./partition_key.ts";
+import { ModelType } from "../models/model_type.ts";
+import { POLICY_RELEASE_ID } from "../models/access/policy_release_model.ts";
+
+export const POLICY_RELEASE_PARTITION: PartitionKey = partitionOf({
+  kind: "model",
+  type: ModelType.create("swamp/policy-release"),
+  id: POLICY_RELEASE_ID,
+});
 
 export type CommitEffect =
   | "config"
@@ -32,6 +41,7 @@ export type CommitEffect =
   | "access"
   | "integrations"
   | "delegations"
+  | "policyRelease"
   | "runtime";
 
 export function commitEffectOf(partition: PartitionKey): CommitEffect {
@@ -44,7 +54,9 @@ export function commitEffectOf(partition: PartitionKey): CommitEffect {
     case "model":
       if (isIntegrationModelType(identity.type)) return "integrations";
       if (isDelegationModelType(identity.type)) return "delegations";
-      return isControlPlaneModelType(identity.type) ? "access" : "runtime";
+      if (isPolicyReleaseModelType(identity.type)) return "policyRelease";
+      // workers, leases and tokens are control-plane records the policy never reads
+      return isPolicyModelType(identity.type) ? "access" : "runtime";
     case "run":
     case "definition":
       return "runtime";

@@ -55,6 +55,7 @@ import {
   withoutAllowsToGroups,
 } from "./policy_snapshot_loader.ts";
 import { UnreadableAccessRecordsError } from "./unreadable_access_records.ts";
+import type { PolicyRelease } from "./policy_release.ts";
 import { MissingConditionFieldError } from "./condition_fields.ts";
 import { UserError } from "../errors.ts";
 import type { PrincipalContext } from "./principal_context.ts";
@@ -2227,4 +2228,152 @@ Deno.test("PolicySnapshotLoader.load: a record the listing could not read is lis
     assertEquals(build.attributes["swamp.diagnostic.records_read"], 1);
     assertEquals(build.attributes["swamp.diagnostic.unreadable"], 1);
   });
+});
+
+Deno.test("PolicySnapshotLoader.onBuilt: told the enforced policy after every build, revoked grants left out", async () => {
+  const active = makeGrant({ state: "active" });
+  const dataRepo = createMockDataRepo(
+    [
+      { attrs: active, modelId: "g1", dataName: "grant-main" },
+      {
+        attrs: makeGrant({ state: "revoked" }),
+        modelId: "g2",
+        dataName: "grant-main",
+      },
+    ],
+    [{
+      attrs: makeGroup("devs", ["adam"]),
+      modelId: "grp1",
+      dataName: "group-main",
+    }],
+  );
+  const loader = new PolicySnapshotLoader(dataRepo, new EventBus(), "manual", {
+    runImpliesApprove: false,
+  });
+  const told: PolicyRelease[] = [];
+  loader.onBuilt((release) => told.push(release));
+  await loader.load();
+  await loader.load();
+  assertEquals(told.length, 2);
+  assertEquals(told[0].grants.map((grant) => grant.id), [active.id]);
+  assertEquals(told[0].groups.map((group) => group.name), ["devs"]);
+  assertEquals(told[0].knownGrants.size, 2);
+  assertEquals(told[0].decisions, {
+    runImpliesApprove: false,
+    runImpliesSignal: true,
+    writeImpliesTag: true,
+  });
+  assertEquals(told[0].digest(), told[1].digest());
+  loader.setDecisionOptions({ writeImpliesTag: false });
+  assertEquals(told.length, 3);
+  assertEquals(told[2].decisions.writeImpliesTag, false);
+  await loader.dispose();
+});
+
+Deno.test("PolicySnapshotLoader.applyRelease: enforces the leader's policy, not the latest data, and seeds what a later build keeps", async () => {
+  const held = makeGrant({ subject: { kind: "user", name: "eve" } });
+  const released = makeGrant();
+  const dataRepo = createMockDataRepo(
+    [
+      { attrs: released, modelId: "g1", dataName: "grant-main" },
+      { attrs: held, modelId: "g2", dataName: "grant-main" },
+    ],
+    [],
+  );
+  const leader = new PolicySnapshotLoader(
+    createMockDataRepo(
+      [{ attrs: released, modelId: "g1", dataName: "grant-main" }],
+      [],
+    ),
+    new EventBus(),
+    "manual",
+  );
+  await leader.load();
+  const follower = new PolicySnapshotLoader(dataRepo, new EventBus(), "manual");
+  await follower.applyRelease(leader.release());
+  assertEquals(follower.snapshot.grantsForSubjects(["user:eve"]).length, 0);
+  assertEquals(follower.snapshot.grantsForSubjects(["user:adam"]).length, 1);
+  assertEquals(follower.release().digest(), leader.release().digest());
+  // its own build afterwards is a whole one: the release seeded it as built
+  await follower.load();
+  assertEquals(follower.snapshot.grantsForSubjects(["user:eve"]).length, 1);
+  await leader.dispose();
+  await follower.dispose();
+});
+
+Deno.test("PolicySnapshotLoader: a promoted follower's first build enforces the latest grants and its own decision settings, not the old leader's release", async () => {
+  const held = makeGrant({ subject: { kind: "user", name: "eve" } });
+  const released = makeGrant();
+  const oldLeader = new PolicySnapshotLoader(
+    createMockDataRepo(
+      [{ attrs: released, modelId: "g1", dataName: "grant-main" }],
+      [],
+    ),
+    new EventBus(),
+    "manual",
+    { writeImpliesTag: false },
+  );
+  await oldLeader.load();
+  const promoted = new PolicySnapshotLoader(
+    createMockDataRepo(
+      [
+        { attrs: released, modelId: "g1", dataName: "grant-main" },
+        { attrs: held, modelId: "g2", dataName: "grant-main" },
+      ],
+      [],
+    ),
+    new EventBus(),
+    "manual",
+    { writeImpliesTag: true },
+  );
+  const told: PolicyRelease[] = [];
+  promoted.onBuilt((release) => told.push(release));
+  await promoted.applyRelease(oldLeader.release());
+  assertEquals(promoted.release().decisions.writeImpliesTag, false);
+  assertEquals(promoted.snapshot.grantsForSubjects(["user:eve"]).length, 0);
+  await promoted.load();
+  assertEquals(promoted.snapshot.grantsForSubjects(["user:eve"]).length, 1);
+  assertEquals(told.at(-1)?.decisions.writeImpliesTag, true);
+  assertEquals(told.at(-1)?.grants.length, 2);
+  await oldLeader.dispose();
+  await promoted.dispose();
+});
+
+Deno.test("PolicySnapshotLoader.narrowRelease: with no new release, a revoke applies at once and a new allow waits", async () => {
+  const kept = makeGrant();
+  const revoked = makeGrant({ subject: { kind: "user", name: "eve" } });
+  const added = makeGrant({ subject: { kind: "user", name: "mallory" } });
+  const leader = new PolicySnapshotLoader(
+    createMockDataRepo([
+      { attrs: kept, modelId: "g1", dataName: "grant-main" },
+      { attrs: revoked, modelId: "g2", dataName: "grant-main" },
+    ], []),
+    new EventBus(),
+    "manual",
+  );
+  await leader.load();
+  const follower = new PolicySnapshotLoader(
+    createMockDataRepo([
+      { attrs: kept, modelId: "g1", dataName: "grant-main" },
+      {
+        attrs: { ...revoked, state: "revoked" },
+        modelId: "g2",
+        dataName: "grant-main",
+      },
+      { attrs: added, modelId: "g3", dataName: "grant-main" },
+    ], []),
+    new EventBus(),
+    "manual",
+  );
+  const told: PolicyRelease[] = [];
+  follower.onBuilt((release) => told.push(release));
+  await follower.applyRelease(leader.release());
+  assertEquals(follower.snapshot.grantsForSubjects(["user:eve"]).length, 1);
+  await follower.narrowRelease();
+  assertEquals(follower.snapshot.grantsForSubjects(["user:eve"]).length, 0);
+  assertEquals(follower.snapshot.grantsForSubjects(["user:mallory"]).length, 0);
+  assertEquals(follower.snapshot.grantsForSubjects(["user:adam"]).length, 1);
+  assertEquals(told, []);
+  await leader.dispose();
+  await follower.dispose();
 });

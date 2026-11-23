@@ -256,6 +256,8 @@ const PINNED_SERVE_ROOT_ENTRY_POINTS: readonly string[] = [
   // the link service, routes and operator end call it from a request handler or
   // a timer, never from inside a run's root
   "src/serve/delegation_store.ts: DelegationStore",
+  // the release publisher's own loop, started at boot, never inside a run's root
+  "src/serve/policy_release_publisher.ts: createPolicyReleaseWriter",
   // hand marks re-staged just before their push via stageWritesThenPush; each
   // root covers only the marks and the push, and the writes before them run in
   // a root of their own with no push
