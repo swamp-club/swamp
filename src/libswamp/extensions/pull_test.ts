@@ -2866,6 +2866,62 @@ Deno.test(
 );
 
 Deno.test(
+  "installExtension: a parent on disk with no lockfile entry takes a second entry nested under its apps dir",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const parent = uniqueExtName();
+      const first = `${parent}/apps/x`;
+      const second = `${parent}/apps/y`;
+      const archives = {
+        [parent]: await buildSkillArchive(swapSpec(parent, V1_FILES)),
+        [first]: await buildSkillArchive(swapSpec(first, APPS_CHILD_FILES)),
+        [second]: await buildSkillArchive(swapSpec(second, APPS_CHILD_FILES)),
+      };
+      await installArchive(repoDir, lockfile, archives, parent);
+      await lockfile.removeEntry(parent);
+      await installArchive(repoDir, lockfile, archives, first);
+      const firstTree = await readTree(extRootOf(repoDir, first));
+
+      await installArchive(repoDir, lockfile, archives, second);
+      assertEquals(lockfile.getEntry(second)?.version, SKILL_VERSION);
+      assertEquals(await readTree(extRootOf(repoDir, first)), firstTree);
+
+      await installArchive(repoDir, lockfile, archives, first, { force: true });
+      assertEquals(await readTree(extRootOf(repoDir, first)), firstTree);
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: a parent on disk with no lockfile entry refuses a nested apps entry over its own files beside another nested entry",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const parent = uniqueExtName();
+      const first = `${parent}/apps/x`;
+      const second = `${parent}/apps/y`;
+      const archives = {
+        [parent]: await buildSkillArchive(swapSpec(parent, V1_FILES)),
+        [first]: await buildSkillArchive(swapSpec(first, APPS_CHILD_FILES)),
+        [second]: await buildSkillArchive(swapSpec(second, APPS_CHILD_FILES)),
+      };
+      await installArchive(repoDir, lockfile, archives, parent);
+      await lockfile.removeEntry(parent);
+      await installArchive(repoDir, lockfile, archives, first);
+      // apps/xy shares apps/x as a string prefix, never as a folder
+      const own = join(extRootOf(repoDir, parent), "apps", "xy", "app.yaml");
+      await ensureDir(dirname(own));
+      await Deno.writeTextFile(own, "x");
+
+      await assertRejects(
+        () => installArchive(repoDir, lockfile, archives, second),
+        UserError,
+      );
+      assertEquals(lockfile.getEntry(second), null);
+    });
+  },
+);
+
+Deno.test(
   "installExtension: with a nested apps entry installed, the catalog lists only the child's own app",
   async () => {
     await withSkillRepo(async (repoDir, lockfile) => {

@@ -2794,9 +2794,22 @@ async function ancestorKeepsApps(
   if (files.length > 0) {
     return claimsPath(files, relative(ctx.repoDir, dir));
   }
-  return await isPlainDir(dir) &&
-    !await pathExistsNoFollow(join(dir, "manifest.yaml")) &&
-    (await listFiles(dir)).length > 0;
+  if (
+    !await isPlainDir(dir) ||
+    await pathExistsNoFollow(join(dir, "manifest.yaml"))
+  ) {
+    return false;
+  }
+  const nestedRoots = nestedEntryRelDirs(
+    ancestor,
+    Object.keys(ctx.lockfileRepository.getAllEntries()),
+  );
+  return (await listFiles(dir)).some((file) => {
+    const rel = relative(root, file).replaceAll("\\", "/");
+    return !nestedRoots.some((nested) =>
+      rel === nested || rel.startsWith(`${nested}/`)
+    );
+  });
 }
 
 async function isPlainDir(path: string): Promise<boolean> {
