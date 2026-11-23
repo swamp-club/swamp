@@ -721,3 +721,22 @@ Deno.test("ServeCommitEffects: a release is narrowed as it is applied, and a hea
     await effects.stop();
   }
 });
+
+Deno.test("ServeCommitEffects: a release refused before the follower knew its leader's fence is adopted at the next grant commit, not rebuilt past", async () => {
+  const { store, calls, effects, takeover } = releaseSetup({
+    head: { fence: 8 },
+  });
+  try {
+    store.landStamped(RELEASE, { fence: 8 });
+    await pass(store, effects);
+    assertEquals(calls.applied, 0);
+    // now it learns the new leader's fence; the leader then writes a held grant
+    takeover(8);
+    store.landStamped(GRANT, { fence: 8 });
+    await pass(store, effects);
+    assertEquals(calls, { policy: 0, applied: 1, narrowed: 1 });
+    assertEquals(effects.followsLeaderRelease(), true);
+  } finally {
+    await effects.stop();
+  }
+});

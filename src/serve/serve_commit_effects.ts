@@ -253,9 +253,17 @@ export class ServeCommitEffects {
     // a grant commit the leader may be holding: only its narrowing applies
     // while this follower enforces the current leader's release
     if (effects.has("access")) {
-      if (this.followsLeaderRelease()) {
+      let adopted = false;
+      // a release refused before this follower knew its leader's fence is
+      // adopted now, rather than rebuilding past a change the leader holds
+      if (this.#deps.releases !== undefined && !this.followsLeaderRelease()) {
+        await this.#followRelease();
+        adopted = this.followsLeaderRelease();
+      }
+      // an adopted release was narrowed against these commits as it was applied
+      if (!adopted && this.followsLeaderRelease()) {
         await this.#deps.releases!.narrowRelease();
-      } else {
+      } else if (!adopted) {
         await this.#deps.reloadPolicy();
       }
       this.#policyKnown = true;

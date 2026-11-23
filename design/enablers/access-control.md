@@ -1654,7 +1654,8 @@ changes.
    the current leader's fence, so a forged one is never applied; until it has
    one from the current leader (an older leader in a rolling upgrade, or a new
    leader's first release not landed yet) it rebuilds on each grant or group
-   commit as before. While it follows releases, a grant or group commit is
+   commit as before, after first adopting the head release if it now matches
+   (one refused before the follower knew its leader's fence). While it follows releases, a grant or group commit is
    applied fail-safe (`narrowedPolicy` in `src/domain/access/policy_release.ts`):
    an allow holds only if it is unchanged in both the release and the latest
    grants, every deny from either holds, and group members narrow for the
