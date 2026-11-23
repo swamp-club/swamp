@@ -41,6 +41,10 @@ import {
 } from "../../infrastructure/tracing/mod.ts";
 import { gzipSync } from "node:zlib";
 import {
+  currentDiagnosticTally,
+  utf8ByteLength,
+} from "../../domain/diagnostics/diagnostic_phase.ts";
+import {
   FRAME_TOO_LARGE,
   MAX_RPC_FRAME_BYTES,
 } from "../../domain/remote/rpc_channel.ts";
@@ -2468,12 +2472,17 @@ const OUTCOME_EVENT_KINDS: ReadonlySet<string> = new Set([
   "suspended",
 ]);
 
+// outside a diagnostic phase the tally is silent
 function sendNow(socket: WebSocket, message: ServerMessage): void {
-  sendSerialized(socket, JSON.stringify(message), {
-    type: message.type,
-    id: message.id,
-    ...(message.type === "event" && { eventKind: message.event.kind }),
-  });
+  const tally = currentDiagnosticTally();
+  const json = tally.measureSync("serialize", () => JSON.stringify(message));
+  if (tally.recording) tally.add("reply_bytes", utf8ByteLength(json));
+  tally.measureSync("send", () =>
+    sendSerialized(socket, json, {
+      type: message.type,
+      id: message.id,
+      ...(message.type === "event" && { eventKind: message.event.kind }),
+    }));
 }
 
 /** what a refused oversize frame is reported as; never its payload */

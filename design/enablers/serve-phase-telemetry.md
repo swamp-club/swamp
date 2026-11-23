@@ -287,7 +287,7 @@ these phases.
 | `definition_names`        | `swamp.model.output.search`, `candidate_scan` | `definitions` named, `owner_lookups`, `owner_lookups_reused`, `files_read`     |
 | `workflow_names`          | `swamp.model.output.search`                   | `workflow_ids`: the workflows named in one lookup; absent when none is named; `extension_workflow_walks`, the request's one scan of the extension workflows' listings |
 | `authorization`           | `swamp.serve.request`                         | `items` considered, `readable` kept, `owner_lookups`, `owner_lookups_reused`   |
-| `response`                | `swamp.serve.request`                         | `results` sent: the limit, then workflow-link redaction, then the reply itself; `extension_workflow_walks`, exported as `0` when redaction read none |
+| `response`                | `swamp.serve.request`                         | `results` sent: the limit, then workflow-link redaction, then the reply itself; `extension_workflow_walks`, exported as `0` when redaction read none; `workflows_decided`, `redact_work_ms`, `serialize_work_ms`, `send_work_ms`, `reply_bytes` (below) |
 
 Workflow-link redaction in `response` resolves each linked workflow through the
 request's own owner lookups and its one scan of the extension workflows, the
@@ -301,6 +301,18 @@ redact their run links the same way, and a run search's lookups there count as
 `owner_lookups_reused` where its authorization made them. A run stream's
 redaction keeps scanning the live extension workflows, since a stream outlasts a
 request.
+
+Redaction first collects the distinct workflows the results link and decides
+them 8 at a time (lab #4147), then keeps or drops each result's links, so its
+wall time follows the slowest lookups rather than their sum. `workflows_decided`
+counts those distinct workflows (none when the server has no authorization), and
+`redact_work_ms` is the whole redaction, its owner lookups included. A
+`model.usage.summary` `response` records both as well. The reply
+then records `serialize_work_ms` (encoding it as JSON), `reply_bytes` (its UTF-8
+size before any gzip) and `send_work_ms`: the synchronous `WebSocket.send`, with
+compression and the frame-size check, not delivery to the client. A
+`model.method.history.search` `response` records the same three reply
+attributes. A reply held for a commit, or dropped after an error, records none.
 
 `definition_names` names the outputs from the request's owner lookups
 (lab #4141): it looks up each definition owning an output that is not already
