@@ -202,6 +202,10 @@ import {
 import { dataNameOfKey } from "../../domain/datastore_v3/recovery_scope.ts";
 import { commandStopSignal } from "../process/shutdown_handlers.ts";
 import { recordLastChange } from "./record_last_change.ts";
+import {
+  type HeldPartitionLocks,
+  partitionLocksOf,
+} from "./partition_locks.ts";
 import { readModelStateDir, v3CatalogPath } from "./record_path_guard.ts";
 import { reconcileRefusedRuns } from "./refused_run_records.ts";
 import {
@@ -699,7 +703,18 @@ export interface V3Datastore {
    * queues behind this process's own commits to the partition; the content must
    * already be stored
    */
-  appendForwarded(forwarded: ForwardedCommit): Promise<void>;
+  appendForwarded(
+    forwarded: ForwardedCommit,
+    held?: HeldPartitionLocks,
+  ): Promise<void>;
+  /**
+   * the locks every writer through this handle appends under: a forwarded
+   * section holds its partitions here, so serve's own units queue behind it
+   */
+  holdPartitions<T>(
+    keys: Iterable<string>,
+    fn: (held: HeldPartitionLocks) => Promise<T>,
+  ): Promise<T>;
   /** run only while this process holds the writer lock */
   collectChunks(
     signal: AbortSignal,
@@ -1745,7 +1760,7 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
       units.droppedSince = undefined;
       units.droppedDirs.clear();
     },
-    appendForwarded(forwarded) {
+    appendForwarded(forwarded, held) {
       const fence = options.writerFence?.();
       return appendForwardedCommit({
         sink,
@@ -1754,7 +1769,11 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
         writer,
         signal: lifetime.signal,
         ...(fence === undefined ? {} : { fence }),
+        ...(held === undefined ? {} : { held }),
       }, forwarded);
+    },
+    holdPartitions(keys, fn) {
+      return partitionLocksOf(sink).hold(keys, fn);
     },
     engineFor(markDirty, runRepo, engineOptions = {}) {
       const fenced = () => {

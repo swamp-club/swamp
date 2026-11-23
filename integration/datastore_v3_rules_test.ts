@@ -500,6 +500,10 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   // stable, retryable code serve answers with and the CLI maps to exit 75.
   "src/presentation/output/error_output.ts -> src/domain/datastore_v3/persisted_lease.ts",
   "src/serve/datastore_api.ts -> src/domain/datastore_v3/persisted_lease.ts",
+  // forwarded commits compete only on the partitions they are judged against
+  "src/serve/datastore_api.ts -> src/domain/datastore_v3/forwarded_commit_class.ts",
+  "src/serve/datastore_api.ts -> src/infrastructure/datastore_v3/partition_locks.ts",
+  "src/serve/forwarded_commit_gate.ts -> src/domain/datastore_v3/forwarded_commit_class.ts",
   // swamp-club#4253: another command setting up a serve-mode checkout's copy
   // is a stable, retryable code the CLI maps to exit 75.
   "src/presentation/output/error_output.ts -> src/domain/datastore_v3/copy_setup_raced_error.ts",
@@ -573,9 +577,9 @@ const CHECKPOINT = /wal_(?:auto)?checkpoint/i;
 const PINNED_V3_CHECKPOINTS: readonly string[] = [
   // Off on every open connection before this node's sidecar starts on a copy
   // a serve follower opened with the default.
-  "src/infrastructure/datastore_v3/sqlite_commit_store.ts:4163",
+  "src/infrastructure/datastore_v3/sqlite_commit_store.ts:4219",
   // Auto-checkpoint off on a copy Litestream replicates (swamp-club#3935).
-  "src/infrastructure/datastore_v3/sqlite_commit_store.ts:4190",
+  "src/infrastructure/datastore_v3/sqlite_commit_store.ts:4246",
 ];
 
 Deno.test("datastore v3: no v3 code forces or tunes a WAL checkpoint", async () => {

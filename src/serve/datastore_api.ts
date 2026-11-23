@@ -158,6 +158,17 @@ import {
   StaleSeqError,
   TxnIdReusedError,
 } from "../infrastructure/datastore_v3/forwarded_commit.ts";
+import {
+  type HeldPartitionLocks,
+  partitionLockKey,
+  runIdLockKey,
+  runIdLockKeysOf,
+} from "../infrastructure/datastore_v3/partition_locks.ts";
+import {
+  type ForwardedCommitClass,
+  forwardedCommitClass,
+} from "../domain/datastore_v3/forwarded_commit_class.ts";
+import { forwardedCommitGateOf } from "./forwarded_commit_gate.ts";
 import type {
   UploadLedger,
   UploadReservation,
@@ -1461,88 +1472,122 @@ class DatastoreApi {
     // Authorised again under the datastore's forwarded-commit lock, once the
     // content is in: key ownership cannot change between the check and the
     // append, and a grant revoked during the upload applies.
+    const commitClass = content?.usedPredicate() === true
+      ? "exclusive"
+      : forwardedCommitClass(partition, ops);
+    const lockKeys = forwardedLockKeys(
+      this.#v3.namespace,
+      partition,
+      ops,
+      content,
+    );
     const lockWaitFrom = performance.now();
-    const landed = await withForwardedLock(this.#v3, async () => {
-      setActiveSpanAttributes({
-        "swamp.serve.datastore.lock_wait_ms": Math.round(
-          performance.now() - lockWaitFrom,
-        ),
-      });
-      await commitStage("locked_catch_up", () => this.#catchUp());
-      // A retry of a commit that landed is answered before proof of
-      // possession: its chunks may since have left the upload ledger.
-      const duplicate = await commitStage(
-        "locked_landed_lookup",
-        () => landedForwardedCommit(this.#v3, request),
-      );
-      if (duplicate !== undefined) return { result: duplicate };
-      if (content === undefined) return { contentChanged: true as const };
-      // Looked up afresh: a definition retagged during the upload is judged
-      // as it is now.
-      const resolver = memoized(serveResolver(this.#deps.ctx, this.#v3));
-      const recheck = await commitStage(
-        "locked_authorize",
-        () =>
-          authorizeCommit(
-            partition,
-            ops,
-            resolver,
-            this.#writeAuthority(),
-            "deferred",
+    const landed = await withForwardedSection(
+      this.#v3,
+      commitClass,
+      lockKeys,
+      async (held) => {
+        setActiveSpanAttributes({
+          "swamp.serve.datastore.lock_wait_ms": Math.round(
+            performance.now() - lockWaitFrom,
           ),
-      );
-      if (!recheck.ok) return recheck;
-      // The records the content was judged against must not have moved.
-      const judged = content;
-      if (!(await commitStage("locked_unchanged", () => judged.unchanged()))) {
-        return { contentChanged: true as const };
-      }
-      // Proof of possession under the lock too, so a read grant revoked
-      // during the upload no longer vouches for a chunk. Its own budget
-      // bounds the work done under the lock (swamp-club#4260); a chunk it
-      // cannot decide is not provided, and the client sends its bytes.
-      const underLock = this.#commitVouchBudget(
-        referenced.filter((hash) => !carried.has(hash)).length,
-      );
-      const notProvided = await commitStage("locked_possession", async () => {
-        for (const hash of referenced) {
-          if (
-            carried.has(hash) ||
-            (await this.#mayReference(hash, underLock, resolver) === "vouched")
-          ) {
-            continue;
-          }
-          return hash;
-        }
-        return undefined;
-      });
-      if (notProvided !== undefined) return { notProvided };
-      // Judged under the forwarded lock, as leases change hands between
-      // commits: the live fenced lease covering the partition decides, once
-      // any kept lease on it is adopted.
-      if (this.#adoptionPendingOn(partition)) {
-        return { adoptionPending: true as const };
-      }
-      const lease = this.#leaseOpFor(partition, envelope.lease);
-      if (lease === "lost") return { leaseLost: true as const };
-      const result = await commitStage("append", async () => {
-        // a request that passed the entry gate before this process stopped
-        // appends only while its lease is confirmed by time; a follower takes
-        // over no sooner than TTL plus the clock skew after that confirmation
-        if (this.#leadUnconfirmed()) return undefined;
-        return await commitForwarded(
-          this.#v3,
-          {
-            ...request,
-            ...(lease === undefined ? {} : { lease }),
-            stored: carried,
-          },
-          signal,
+          "swamp.serve.datastore.commit_class": commitClass,
+          "swamp.serve.datastore.lock_keys": lockKeys.length,
+        });
+        await commitStage("locked_catch_up", async () => {
+          // A shared section's partitions move only by its own append once
+          // held, and what an exclusive commit writes cannot move while it
+          // runs: once the read model holds both, a catch-up changes nothing
+          // this judgment reads.
+          const fresh = commitClass === "shared" &&
+            this.#freshFor([partition, ...(content?.partitionsRead() ?? [])]);
+          setActiveSpanAttributes({ "swamp.serve.datastore.fresh": fresh });
+          if (!fresh) await this.#catchUp();
+        });
+        // A retry of a commit that landed is answered before proof of
+        // possession: its chunks may since have left the upload ledger.
+        const duplicate = await commitStage(
+          "locked_landed_lookup",
+          () => landedForwardedCommit(this.#v3, request),
         );
-      });
-      if (result === undefined) return { leadUnconfirmed: true as const };
-      return { result };
-    });
+        if (duplicate !== undefined) return { result: duplicate };
+        if (content === undefined) return { contentChanged: true as const };
+        // Looked up afresh: a definition retagged during the upload is judged
+        // as it is now.
+        const resolver = memoized(serveResolver(this.#deps.ctx, this.#v3));
+        const recheck = await commitStage(
+          "locked_authorize",
+          () =>
+            authorizeCommit(
+              partition,
+              ops,
+              resolver,
+              this.#writeAuthority(),
+              "deferred",
+            ),
+        );
+        if (!recheck.ok) return recheck;
+        // The records the content was judged against must not have moved.
+        const judged = content;
+        if (
+          !(await commitStage("locked_unchanged", () => judged.unchanged()))
+        ) {
+          return { contentChanged: true as const };
+        }
+        // A recheck that read a partition this section does not hold was judged
+        // against something another writer may be moving: judge it again.
+        if (!coveredBy(lockKeys, this.#v3.namespace, judged)) {
+          return { contentChanged: true as const };
+        }
+        // Proof of possession under the lock too, so a read grant revoked
+        // during the upload no longer vouches for a chunk. Its own budget
+        // bounds the work done under the lock (swamp-club#4260); a chunk it
+        // cannot decide is not provided, and the client sends its bytes.
+        const underLock = this.#commitVouchBudget(
+          referenced.filter((hash) => !carried.has(hash)).length,
+        );
+        const notProvided = await commitStage("locked_possession", async () => {
+          for (const hash of referenced) {
+            if (
+              carried.has(hash) ||
+              (await this.#mayReference(hash, underLock, resolver) ===
+                "vouched")
+            ) {
+              continue;
+            }
+            return hash;
+          }
+          return undefined;
+        });
+        if (notProvided !== undefined) return { notProvided };
+        // Judged under the forwarded lock, as leases change hands between
+        // commits: the live fenced lease covering the partition decides, once
+        // any kept lease on it is adopted.
+        if (this.#adoptionPendingOn(partition)) {
+          return { adoptionPending: true as const };
+        }
+        const lease = this.#leaseOpFor(partition, envelope.lease);
+        if (lease === "lost") return { leaseLost: true as const };
+        const result = await commitStage("append", async () => {
+          // a request that passed the entry gate before this process stopped
+          // appends only while its lease is confirmed by time; a follower takes
+          // over no sooner than TTL plus the clock skew after that confirmation
+          if (this.#leadUnconfirmed()) return undefined;
+          return await commitForwarded(
+            this.#v3,
+            {
+              ...request,
+              ...(lease === undefined ? {} : { lease }),
+              stored: carried,
+            },
+            signal,
+            held,
+          );
+        });
+        if (result === undefined) return { leadUnconfirmed: true as const };
+        return { result };
+      },
+    );
     if ("leadUnconfirmed" in landed) {
       return notLeaderResponse(new ServeNotLeaderError(undefined), false);
     }
@@ -1589,6 +1634,21 @@ class DatastoreApi {
     ) {
       this.#deps.ctx.commitHealth?.recordSuccess();
     }
+  }
+
+  /**
+   * the read model has applied every commit to `partitions` and every commit
+   * that changes what others are judged against; a revoke applies to each
+   * section that starts after it lands
+   */
+  #freshFor(partitions: readonly PartitionKey[]): boolean {
+    const store = this.#v3.commitStore;
+    const applied = this.#v3.readModel.cursor();
+    if (applied < store.authorityCursor()) return false;
+    return partitions.every((partition) => {
+      const head = store.partitionHeadCursor(this.#namespace, partition);
+      return head === "none" || (head !== "compacted" && applied >= head);
+    });
   }
 
   /** a loss the renewal already saw keeps its own fenced refusal */
@@ -2282,7 +2342,7 @@ class DatastoreApi {
         "catchUp must be {cursor, anchor?}",
       );
     }
-    const refused = await this.#authorizeLock(target);
+    const refused = await this.#authorizeLock(target, "acquire");
     if (refused !== undefined) return refused;
     // A kept lease on this key not adopted yet holds it (swamp-club#4258).
     if (this.#deps.locks.adoptionPendingFor(target)) {
@@ -2420,7 +2480,7 @@ class DatastoreApi {
     const ttlMs = (holdMs as number | undefined) ?? held.view.holdMs ??
       this.#ttlOf(fields.ttlMs);
     if (ttlMs instanceof Response) return ttlMs;
-    const refused = await this.#authorizeLock(held.target);
+    const refused = await this.#authorizeLock(held.target, "renew");
     if (refused !== undefined) {
       await this.#deps.locks.release(principal, leaseId);
       return refused;
@@ -3162,29 +3222,34 @@ class DatastoreApi {
       principal: record.principal,
       ops,
     };
-    const landed = await withForwardedLock(this.#v3, async () => {
-      await this.#catchUp();
-      const recheck = await authorizeCommit(
-        partition,
-        ops,
-        memoized(serveResolver(this.#deps.ctx, this.#v3)),
-        this.#writeAuthority(),
-        "deferred",
-      );
-      if (!recheck.ok) return recheck;
-      if (!(await content.unchanged())) return "content-changed" as const;
-      // A kept lease on the partition not adopted yet covers it, as a live
-      // one does (swamp-club#4258).
-      if (this.#adoptionPendingOn(partition)) return "lease-lost" as const;
-      const lease = this.#leaseOpFor(partition, undefined);
-      if (lease === "lost") return "lease-lost" as const;
-      try {
-        return await commitForwarded(this.#v3, request, signal);
-      } catch (error) {
-        if (error instanceof StaleSeqError) return "seq-gap" as const;
-        throw error;
-      }
-    });
+    const landed = await withForwardedSection(
+      this.#v3,
+      "exclusive",
+      [],
+      async () => {
+        await this.#catchUp();
+        const recheck = await authorizeCommit(
+          partition,
+          ops,
+          memoized(serveResolver(this.#deps.ctx, this.#v3)),
+          this.#writeAuthority(),
+          "deferred",
+        );
+        if (!recheck.ok) return recheck;
+        if (!(await content.unchanged())) return "content-changed" as const;
+        // A kept lease on the partition not adopted yet covers it, as a live
+        // one does (swamp-club#4258).
+        if (this.#adoptionPendingOn(partition)) return "lease-lost" as const;
+        const lease = this.#leaseOpFor(partition, undefined);
+        if (lease === "lost") return "lease-lost" as const;
+        try {
+          return await commitForwarded(this.#v3, request, signal);
+        } catch (error) {
+          if (error instanceof StaleSeqError) return "seq-gap" as const;
+          throw error;
+        }
+      },
+    );
     if (landed === "seq-gap" || landed === "content-changed") {
       throw new CommitRejectedError(
         "seq-gap",
@@ -3391,8 +3456,16 @@ class DatastoreApi {
    * a run `run` on its workflow. A behavior or run serve does not know is
    * decided on its id, so only a wildcard grant matches it.
    */
-  async #authorizeLock(target: LockTarget): Promise<Response | undefined> {
-    await this.#catchUp();
+  async #authorizeLock(
+    target: LockTarget,
+    mode: "acquire" | "renew",
+  ): Promise<Response | undefined> {
+    // A lease lets nothing land: every commit under it is authorized in its
+    // own section. So a renewal judges the read model as it stands, and an
+    // acquire waits for a catch-up only when its partition is behind.
+    if (mode === "acquire" && !this.#lockTargetFresh(target)) {
+      await this.#catchUp();
+    }
     const required = await this.#lockAccessOf(target);
     if (this.#writeAuthority().allows(required.action, required.resource)) {
       return undefined;
@@ -3405,6 +3478,18 @@ class DatastoreApi {
   }
 
   /** What holding `target`'s lock needs: what a write to its partition does. */
+  /** a run's claim looks its run up across every workflow, so only a full read model will do */
+  #lockTargetFresh(target: LockTarget): boolean {
+    if (target.kind !== "model") return false;
+    return this.#freshFor([
+      partitionOf({
+        kind: "model",
+        type: ModelType.create(target.modelType),
+        id: target.modelId,
+      }),
+    ]);
+  }
+
   async #lockAccessOf(target: LockTarget): Promise<RequiredAccess> {
     let required: RequiredAccess;
     if (target.kind === "model") {
@@ -3912,27 +3997,64 @@ class DatastoreApi {
   }
 }
 
-/** Forwarded commits of each datastore, one at a time. */
-const forwardedLocks = new WeakMap<V3Datastore, Promise<unknown>>();
+/**
+ * A shared section holds the partitions its judgment read under the gate's
+ * shared side; an exclusive one holds the gate alone, as every section once
+ * did. Serve's own units take the same partition locks, so a held partition
+ * moves only by this section's append.
+ */
+async function withForwardedSection<T>(
+  v3: V3Datastore,
+  kind: ForwardedCommitClass,
+  keys: readonly string[],
+  fn: (held: HeldPartitionLocks | undefined) => Promise<T>,
+): Promise<T> {
+  return await forwardedCommitGateOf(v3).run(
+    kind,
+    () => keys.length === 0 ? fn(undefined) : v3.holdPartitions(keys, fn),
+  );
+}
 
 /**
- * Runs `fn` once every forwarded commit to `v3` before it has finished:
- * the check of a key's owner and the append that relies on it are not
- * interleaved with another forwarded commit's.
+ * the write partition, every partition the content check read, and each run
+ * id the commit is judged against across every workflow (a first record's id,
+ * a snapshot's key, which names the run id alone)
  */
-async function withForwardedLock<T>(
-  v3: V3Datastore,
-  fn: () => Promise<T>,
-): Promise<T> {
-  const before = forwardedLocks.get(v3) ?? Promise.resolve();
-  const run = before.then(fn);
-  const tail = run.catch(() => {});
-  forwardedLocks.set(v3, tail);
-  try {
-    return await run;
-  } finally {
-    if (forwardedLocks.get(v3) === tail) forwardedLocks.delete(v3);
+function forwardedLockKeys(
+  namespace: string,
+  partition: PartitionKey,
+  ops: readonly Op[],
+  content: ForwardedContentAuthority | undefined,
+): string[] {
+  const keys = new Set([partitionLockKey(namespace, partition)]);
+  for (const read of content?.partitionsRead() ?? []) {
+    keys.add(partitionLockKey(namespace, read));
   }
+  for (const runId of content?.runIdsJudged() ?? []) {
+    keys.add(runIdLockKey(namespace, runId));
+  }
+  for (
+    const key of runIdLockKeysOf(
+      namespace,
+      ops.flatMap((op) =>
+        op.kind === "put" || op.kind === "tombstone" ? [op.intent] : []
+      ),
+    )
+  ) {
+    keys.add(key);
+  }
+  return [...keys];
+}
+
+function coveredBy(
+  keys: readonly string[],
+  namespace: string,
+  content: ForwardedContentAuthority,
+): boolean {
+  const held = new Set(keys);
+  return content.partitionsRead().every((read) =>
+    held.has(partitionLockKey(namespace, read))
+  );
 }
 
 /** Deposits to each quarantine store, one at a time. */

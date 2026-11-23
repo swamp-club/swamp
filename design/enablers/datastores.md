@@ -7372,8 +7372,9 @@ and every intent must belong to it.
    `ChunkBatch`, whose barrier makes it durable before the commit.
 5. Unless the txnId already landed, check content
    (`ForwardedContentAuthority`, `src/serve/forwarded_content_authorization.ts`),
-   outside the forwarded lock: "Content checks" below. Then, under the lock,
-   answer a txnId that landed as its duplicate, authorise access again, check
+   outside the forwarded lock: "Content checks" below. Then, in the commit's
+   forwarded section ("Forwarded sections" below), answer a txnId that landed
+   as its duplicate, authorise access again, check
    that no record the content was judged against moved (`409
    content_changed` otherwise: check again and retry), and prove possession:
    see below.
@@ -7383,8 +7384,8 @@ and every intent must belong to it.
    units, and serve's writer, fence and namespace. Under the lock it checks
    the head against `expectedSeq` and refuses a moved head rather than
    rebuilding the commit. It lands at `expectedSeq + 1` under the client's
-   txnId. Serve's own units and forwarded commits queue on one lock, so they
-   never race on a head.
+   txnId. Serve's own units and forwarded commits queue on one set of
+   partition locks, so they never race on a head.
 7. Stamp: `principal` is the authenticated caller, and `writer` is serve's
    `CommitWriter` (host, pid, instance), because serve is the process that
    appends.
@@ -7483,6 +7484,62 @@ the forwarded path differs it is stricter: the lockfile needs `admin` on
 `access:*` where extension commands check `admin` on `model:*`, and run
 records need `run` where approve, reject and signal check their own
 actions.
+
+**Forwarded sections.** Writers compete only on what they are judged
+against. Each forwarded commit is classed by
+`forwardedCommitClass` (`src/domain/datastore_v3/forwarded_commit_class.ts`):
+
+- **Shared**: data, outputs, evaluated definitions and workflows, run
+  records, starts and snapshots, outside access-control partitions. Almost
+  every commit a team writes is shared.
+- **Exclusive**: any other intent (definitions, auto-definitions, vault
+  configs, the lockfile, access-control records: grants, groups,
+  delegations, server and enrollment tokens, integrations, the policy
+  release), an intent not yet classed, or a content check that read a
+  prefix or listing (`holdsRecordsUnder`, `keysIn`).
+
+The section runs behind `ForwardedCommitGate`
+(`src/serve/forwarded_commit_gate.ts`). Shared sections run together and an
+exclusive one alone, first come first served, so a shared stream cannot
+starve an exclusive commit. A shared section then holds the partition locks
+(`PartitionLocks`, `src/infrastructure/datastore_v3/partition_locks.ts`) of
+its own partition, of every partition its content check read, and of each
+run id it is judged against across every workflow. Those are a first
+record's id and a snapshot's, whose key names the run id alone. Serve's own
+units take the same locks to append, a run's first record and snapshot
+included, and an append inside a section runs under the locks it already
+holds. Keys are taken in sorted order, so two holders never wait on each
+other in a cycle.
+
+Why this is the old global order where it matters:
+
+- A held partition moves only by the section's own append, so per-partition
+  order, `expectedSeq`, the landed lookup and idempotent retries are as
+  before.
+- Every fact a shared judgment reads beyond its locked partitions
+  (definitions, grants, tokens, policy) is written only by an exclusive
+  commit, which cannot run while a shared section holds the gate. A test
+  pins that no shared intent can write a record a resolver reads.
+- The fence is checked in the commit store's transaction, so a deposed
+  leader's commit is refused whatever else is in flight.
+- A recheck that reads a partition the section does not hold answers
+  `content_changed`, and the client judges again.
+
+**Catch-up in a section.** A shared section skips the catch-up when serve's
+read model has applied every commit to its locked partitions and every
+commit up to the commit store's `authorityCursor()`: the newest commit
+that changes what others are judged against, from a forwarded section or
+from serve's own unit. Otherwise it catches up first. An exclusive section
+always catches up. So a revoke applies to every commit whose section starts
+after the revoke lands. A serve-own write of access that lands while a
+section is already judging is not seen by that section, as before: serve's
+own units never took the forwarded lock.
+
+**Spans.** The commit's request span carries the section's class, its lock
+count and its lock wait; `swamp.serve.datastore.commit.locked_catch_up` says
+whether the section was fresh. `swamp.datastore.v3.commit_store.fsync` and
+`swamp.datastore.v3.outbox.prepare_fsync` count the commits and prepares each
+fsync covered.
 
 **Content checks** (`ForwardedContentAuthority`, swamp-club#3922). Serve
 reads a checked put's bytes only once the caller is shown to possess every
@@ -7781,7 +7838,7 @@ other limits are constants, with no flags:
 - an envelope of at most 4 MiB, read before anything else;
 - `MAX_COMMIT_OPS` ops and 1,024 carried chunks per commit, and a body of
   at most 1 GiB; at most 1,024 named chunks it does not carry, since each is
-  checked under the forwarded-commit lock every caller shares. That cap is
+  checked again in the commit's forwarded section. That cap is
   checked against the envelope's `chunks` before any carried chunk is read;
 - pages of at most 1,000 commits;
 - at most 10,000 feed rows scanned per changes request. The returned cursor
@@ -8277,6 +8334,17 @@ below describes them.
   waits at serve at most 10 s (`waitMs`), so a waiting client asks again
   rather than polls; at most 256 leases per principal (`429
   too_many_leases`). The routes are rate-limited like the others.
+- **Waiting order.** Callers waiting for one lock queue in arrival order:
+  only the longest waiter tries the lock, a newcomer behind a queue is
+  answered `lock_held` when its own wait ends rather than taking a freed lock
+  first, and a lease ending wakes the next waiter at once. The retry
+  interval still bounds each wait, for a lock that frees without a lease at
+  serve ending.
+- **Catch-up.** An acquire catches serve's read model up only when it is
+  behind on the target's partition or on a commit that changes access (a
+  run's claim, looked up across every workflow, always catches up). A
+  renewal never waits on a catch-up: a lease lets nothing land, since every
+  commit under it is authorised in its own section.
 - **What a refusal tells.** `409 lock_held` says `heldBy`: `caller`
   (another command of the same principal), `other` (another principal) or
   `serve` (serve's own work), and, for a lease, `holder`: its principal,

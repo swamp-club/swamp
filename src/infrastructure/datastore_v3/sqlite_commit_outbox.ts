@@ -51,6 +51,7 @@ import {
   type ProcessIdentity,
 } from "../../domain/datastore_v3/process_liveness.ts";
 import { useWalJournal } from "./sqlite_wal.ts";
+import { withSyncSpan } from "../tracing/tracer.ts";
 
 export const COMMIT_OUTBOX_SCHEMA_NEWER_CODE =
   "datastore_v3_outbox_schema_newer";
@@ -274,7 +275,10 @@ export class SqliteCommitOutbox implements CommitOutbox {
       if (group.length === 1) {
         const [{ preparation, process, resolve, reject }] = group;
         try {
-          this.#writeSync((db) => this.#insertEntry(db, preparation, process));
+          this.#preparedSync(
+            1,
+            (db) => this.#insertEntry(db, preparation, process),
+          );
           resolve();
         } catch (error) {
           reject(error);
@@ -283,7 +287,7 @@ export class SqliteCommitOutbox implements CommitOutbox {
       }
       const failed = new Map<PendingPrepare, unknown>();
       try {
-        this.#writeSync((db) => {
+        this.#preparedSync(group.length, (db) => {
           for (const pending of group) {
             db.exec(`SAVEPOINT ${PREPARE_SAVEPOINT}`);
             try {
@@ -829,6 +833,15 @@ export class SqliteCommitOutbox implements CommitOutbox {
     } catch (error) {
       return Promise.reject(error);
     }
+  }
+
+  /** one fsync for the prepares it writes; the span counts them */
+  #preparedSync<T>(prepares: number, body: (db: DatabaseSync) => T): T {
+    return withSyncSpan(
+      "swamp.datastore.v3.outbox.prepare_fsync",
+      { "swamp.datastore.v3.prepares": prepares },
+      () => this.#writeSync(body),
+    );
   }
 
   #writeSync<T>(

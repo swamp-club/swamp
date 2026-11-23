@@ -303,6 +303,7 @@ export class DatastoreLockLeases {
   readonly #retryIntervalMs: number;
   readonly #leases = new Map<string, Lease>();
   readonly #byKey = new Map<string, string>();
+  readonly #waiters = new Map<string, Waiter[]>();
   /**
    * by principal and request id, oldest first: the lease granted for it, or
    * none once its caller cancelled it
@@ -482,18 +483,41 @@ export class DatastoreLockLeases {
       this.#maxWaitMs,
     );
     const lock = await this.#createLock(target);
-    while (true) {
-      if (!this.#byKey.has(key) && await lock.tryAcquire()) break;
-      // waiting helps only for a lease that may end within the caller's
-      // whole wait: an explicit lease that outlasts it is answered now
-      const outlasts = request.budgetMs !== undefined &&
-        this.#explicitUntil(key) > this.#now() + request.budgetMs;
-      if (
-        signal.aborted || cancelled() || outlasts || this.#now() >= deadline
-      ) {
-        return this.#held(key, principal);
+    const waiter: Waiter = { wake: () => {} };
+    let queued = false;
+    let taken = false;
+    try {
+      while (true) {
+        // Only the longest waiter tries, so a newcomer cannot take the lock
+        // from under it; the retry interval still bounds each wait in case
+        // the lock frees without a lease here ending.
+        const first = this.#waiters.get(key)?.[0];
+        if (
+          (first === undefined || first === waiter) &&
+          !this.#byKey.has(key) && await lock.tryAcquire()
+        ) {
+          taken = true;
+          break;
+        }
+        // waiting helps only for a lease that may end within the caller's
+        // whole wait: an explicit lease that outlasts it is answered now
+        const outlasts = request.budgetMs !== undefined &&
+          this.#explicitUntil(key) > this.#now() + request.budgetMs;
+        if (
+          signal.aborted || cancelled() || outlasts || this.#now() >= deadline
+        ) {
+          return this.#held(key, principal);
+        }
+        if (!queued) {
+          const queue = this.#waiters.get(key) ?? [];
+          queue.push(waiter);
+          this.#waiters.set(key, queue);
+          queued = true;
+        }
+        await waitTurn(waiter, this.#retryIntervalMs, signal);
       }
-      await delay(this.#retryIntervalMs, signal);
+    } finally {
+      if (queued) this.#leaveQueue(key, waiter, !taken);
     }
     // Taken for a caller that hung up or cancelled, or during shutdown:
     // nobody will renew or release it, so it goes now.
@@ -1097,8 +1121,54 @@ export class DatastoreLockLeases {
       // The lock's own TTL frees it if the release did not.
       logger.warn`Releasing the lock on ${lease.key} failed: ${error}`;
     }
+    this.#waiters.get(lease.key)?.[0]?.wake();
     return failure;
   }
+
+  /** a waiter that gave up hands its turn to the next one */
+  #leaveQueue(key: string, waiter: Waiter, handOn: boolean): void {
+    const queue = this.#waiters.get(key);
+    if (queue === undefined) return;
+    const at = queue.indexOf(waiter);
+    if (at >= 0) queue.splice(at, 1);
+    if (queue.length === 0) {
+      this.#waiters.delete(key);
+      return;
+    }
+    if (handOn && at === 0) queue[0].wake();
+  }
+
+  /** callers waiting for each key, longest first */
+  waitingForTesting(key: string): number {
+    return this.#waiters.get(key)?.length ?? 0;
+  }
+}
+
+interface Waiter {
+  wake: () => void;
+}
+
+/** resolves when woken, after `ms`, or on abort, whichever comes first */
+function waitTurn(
+  waiter: Waiter,
+  ms: number,
+  signal: AbortSignal,
+): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) {
+      resolve();
+      return;
+    }
+    const done = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", done);
+      waiter.wake = () => {};
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal.addEventListener("abort", done, { once: true });
+    waiter.wake = done;
+  });
 }
 
 function view(lease: Lease): LeaseView {

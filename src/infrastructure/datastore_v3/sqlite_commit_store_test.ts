@@ -26,6 +26,7 @@ import {
   assertThrows,
 } from "@std/assert";
 import { join } from "@std/path";
+import { ModelType } from "../../domain/models/model_type.ts";
 import { DatabaseSync } from "node:sqlite";
 import { BlobRef } from "../../domain/datastore_v3/blob_ref.ts";
 import type { Commit } from "../../domain/datastore_v3/commit.ts";
@@ -2546,5 +2547,65 @@ Deno.test("SqliteCommitStore.compactHistory: pruning removals raises each partit
     });
     assertEquals(removed(), 0);
     assertEquals(horizon(), [3]);
+  });
+});
+
+function grantLeaseCommit(seq: number): Commit {
+  return modelCommit(seq, [leaseOp({ holder: "serve", fence: 1 })], {
+    partition: partitionOf({
+      kind: "model",
+      type: ModelType.create("@swamp/grant"),
+      id: "2e3d4c5b-6a79-4888-9b7c-6d5e4f3a2b1c",
+    }),
+    fence: 1,
+    txnId: `grant-${seq}`,
+  });
+}
+
+Deno.test("SqliteCommitStore.authorityCursor: moves with a commit that changes what others are judged against, not with any other", async () => {
+  await withStore(async (store) => {
+    assertEquals(store.authorityCursor(), 0);
+    await store.append(await save(1));
+    assertEquals(store.authorityCursor(), 0);
+    await store.append(grantLeaseCommit(1));
+    const granted = store.lastCursor();
+    assertEquals(store.authorityCursor(), granted);
+    await store.append(await save(2));
+    assert(store.lastCursor() > granted);
+    assertEquals(store.authorityCursor(), granted);
+  });
+});
+
+Deno.test("SqliteCommitStore.authorityCursor: a store opened on history counts all of it", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "commits.db");
+    const first = SqliteCommitStore.open(path);
+    await first.append(await save(1));
+    await first.append(await save(2));
+    await first.close();
+    const reopened = SqliteCommitStore.open(path);
+    try {
+      assertEquals(reopened.authorityCursor(), reopened.lastCursor());
+      assert(reopened.lastCursor() > 0);
+    } finally {
+      await reopened.close();
+    }
+  });
+});
+
+Deno.test("SqliteCommitStore.partitionHeadCursor: names its last commit, or says it was never written", async () => {
+  await withStore(async (store) => {
+    assertEquals(store.partitionHeadCursor("", otherPartition()), "none");
+    await store.append(await save(1));
+    const [{ commit }] = await store.readPartition(
+      "",
+      (await save(1)).partition,
+      1,
+      1,
+    );
+    assertEquals(
+      store.partitionHeadCursor("", commit.partition),
+      store.lastCursor(),
+    );
   });
 });

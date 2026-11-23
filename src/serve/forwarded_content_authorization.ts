@@ -131,6 +131,11 @@ export interface ContentCheckContext {
    * cover
    */
   recheckUnderLock(check: () => Promise<boolean>): void;
+  /**
+   * the check read every workflow's runs for this id, so commits naming it
+   * are judged one at a time
+   */
+  judgedAcrossRuns(runId: string): void;
   now(): Date;
 }
 
@@ -142,6 +147,8 @@ export class ForwardedContentAuthority implements ContentAuthority {
     { partition: PartitionKey; key: string; sha256: string | null }
   >();
   readonly #rechecks: (() => Promise<boolean>)[] = [];
+  readonly #runIds = new Set<string>();
+  #predicate = false;
 
   constructor(deps: ForwardedContentDeps) {
     this.#deps = deps;
@@ -200,6 +207,24 @@ export class ForwardedContentAuthority implements ContentAuthority {
     return true;
   }
 
+  /** every partition a record was read from, the section's locks */
+  partitionsRead(): readonly PartitionKey[] {
+    const seen = new Map<string, PartitionKey>();
+    for (const { partition } of this.#read.values()) {
+      seen.set(partition.toString(), partition);
+    }
+    return [...seen.values()];
+  }
+
+  /** a prefix or listing read: no partition lock covers what it saw */
+  usedPredicate(): boolean {
+    return this.#predicate;
+  }
+
+  runIdsJudged(): readonly string[] {
+    return [...this.#runIds];
+  }
+
   #context(): ContentCheckContext {
     const deps = this.#deps;
     const read = this.#read;
@@ -248,9 +273,12 @@ export class ForwardedContentAuthority implements ContentAuthority {
         });
         return sha256;
       },
-      holdsRecordsUnder: (prefix) =>
-        deps.v3.readModel.holdsRecordsUnder(deps.v3.namespace, prefix),
+      holdsRecordsUnder: (prefix) => {
+        this.#predicate = true;
+        return deps.v3.readModel.holdsRecordsUnder(deps.v3.namespace, prefix);
+      },
       keysIn: async (partition) => {
+        this.#predicate = true;
         try {
           const records = await deps.v3.readModel.liveRecords(
             deps.v3.namespace,
@@ -264,6 +292,9 @@ export class ForwardedContentAuthority implements ContentAuthority {
       },
       recheckUnderLock: (check) => {
         this.#rechecks.push(check);
+      },
+      judgedAcrossRuns: (runId) => {
+        this.#runIds.add(runId);
       },
       now: () => deps.now?.() ?? new Date(),
     };
