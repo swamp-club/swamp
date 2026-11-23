@@ -1598,11 +1598,15 @@ export class ExtensionCatalogStore {
     return cleared;
   }
 
-  getFailedLocalSourcePaths(): string[] {
+  getFailedLocalSources(): { source_path: string; last_error: string }[] {
     const stmt = this.db.prepare(
-      "SELECT source_path FROM bundle_types WHERE state IN ('BundleBuildFailed', 'ValidationFailed') AND extension_name LIKE '@local/%'",
+      "SELECT source_path, last_error FROM bundle_types WHERE state IN ('BundleBuildFailed', 'ValidationFailed') AND extension_name LIKE '@local/%' ORDER BY source_path",
     );
-    return (stmt.all() as { source_path: string }[]).map((r) => r.source_path);
+    return (stmt.all() as { source_path: string; last_error: string | null }[])
+      .map((r) => ({
+        source_path: r.source_path,
+        last_error: r.last_error ?? "",
+      }));
   }
 
   findAll(): ExtensionTypeRow[] {

@@ -454,7 +454,7 @@ Deno.test("configureStartupExtensions: a failed datastore resolution is remember
           hotLoadVaults: () => Promise.resolve(),
           hotLoadDatastores: () => Promise.resolve(),
           hotLoadWebhooks: () => Promise.resolve(),
-          failedLocalSourceMatchesType: () => false,
+          findFailedLocalSource: () => null,
           withInstallLock: (fn) => fn(),
           providesType: () => Promise.resolve(false),
         },

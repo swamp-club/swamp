@@ -3351,3 +3351,36 @@ Deno.test("ExtensionCatalogStore: a module list over the cap is refused, not sto
     store.close();
   }
 });
+
+Deno.test("getFailedLocalSources: returns failed local rows with their error, ordered by path", () => {
+  withStore((store) => {
+    const failed = (
+      source_path: string,
+      state: string,
+      last_error: string,
+      extension_name = "@local/repo",
+    ) =>
+      store.upsertWithIdentity({
+        ...makeRow({
+          source_path,
+          type_normalized: "",
+          bundle_path: "",
+          state,
+          last_error,
+        }),
+        extension_name,
+        extension_version: "0.0.0",
+      });
+    failed("/repo/extensions/models/z.ts", "BundleBuildFailed", "bundle z");
+    failed("/repo/extensions/models/a.ts", "ValidationFailed", "schema a");
+    failed("/repo/extensions/models/legacy.ts", "BundleBuildFailed", "");
+    failed("/pulled/@acme/x/models/x.ts", "BundleBuildFailed", "x", "@acme/x");
+    store.upsert(makeRow({ source_path: "/repo/extensions/models/ok.ts" }));
+
+    assertEquals(store.getFailedLocalSources(), [
+      { source_path: "/repo/extensions/models/a.ts", last_error: "schema a" },
+      { source_path: "/repo/extensions/models/legacy.ts", last_error: "" },
+      { source_path: "/repo/extensions/models/z.ts", last_error: "bundle z" },
+    ]);
+  });
+});

@@ -24,7 +24,10 @@ import {
   createAutoResolveInstallerAdapter,
   createAutoResolveOutputAdapter,
 } from "../src/cli/auto_resolver_adapters.ts";
-import { ExtensionAutoResolver } from "../src/domain/extensions/extension_auto_resolver.ts";
+import {
+  ExtensionAutoResolver,
+  type FailedLocalSource,
+} from "../src/domain/extensions/extension_auto_resolver.ts";
 import { ExtensionCatalogStore } from "../src/infrastructure/persistence/extension_catalog_store.ts";
 import { ExtensionRepository } from "../src/infrastructure/persistence/extension_repository.ts";
 import { LockfileRepository } from "../src/infrastructure/persistence/lockfile_repository.ts";
@@ -87,9 +90,11 @@ Deno.test("integration: auto-resolver emits localSourceFailed when failed local 
     const output = createAutoResolveOutputAdapter("json");
     const wrappedOutput = {
       ...output,
-      localSourceFailed(type: string) {
-        outputCalls.push(`localSourceFailed:${type}`);
-        output.localSourceFailed(type);
+      localSourceFailed(type: string, failure: FailedLocalSource) {
+        outputCalls.push(
+          `localSourceFailed:${type}:${failure.file}:${failure.error}`,
+        );
+        output.localSourceFailed(type, failure);
       },
       collectiveNotTrusted(collective: string, type: string) {
         outputCalls.push(`collectiveNotTrusted:${collective}:${type}`);
@@ -117,11 +122,29 @@ Deno.test("integration: auto-resolver emits localSourceFailed when failed local 
       output: wrappedOutput,
     });
 
-    const result = await resolver.resolve("@repro/broken-model");
+    const jsonLines: string[] = [];
+    const origLog = console.log;
+    console.log = (msg: string) => jsonLines.push(msg);
+    let result: boolean;
+    try {
+      result = await resolver.resolve("@repro/broken-model");
+    } finally {
+      console.log = origLog;
+    }
+    const relativeFile = join("extensions", "models", "broken_model.ts");
     assertEquals(result, false);
     assertEquals(outputCalls, [
-      "localSourceFailed:@repro/broken-model",
+      `localSourceFailed:@repro/broken-model:${relativeFile}:deno bundle failed: npm dep not found`,
     ]);
+    assertEquals(jsonLines.length, 1);
+    assertEquals(JSON.parse(jsonLines[0]), {
+      event: "auto_resolve",
+      status: "failed",
+      type: "@repro/broken-model",
+      reason: "local_source_failed",
+      file: relativeFile,
+      error: "deno bundle failed: npm dep not found",
+    });
   } finally {
     await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
   }
@@ -179,9 +202,11 @@ Deno.test("integration: auto-resolver emits collectiveNotTrusted when failed loc
     const output = createAutoResolveOutputAdapter("json");
     const wrappedOutput = {
       ...output,
-      localSourceFailed(type: string) {
-        outputCalls.push(`localSourceFailed:${type}`);
-        output.localSourceFailed(type);
+      localSourceFailed(type: string, failure: FailedLocalSource) {
+        outputCalls.push(
+          `localSourceFailed:${type}:${failure.file}:${failure.error}`,
+        );
+        output.localSourceFailed(type, failure);
       },
       collectiveNotTrusted(collective: string, type: string) {
         outputCalls.push(`collectiveNotTrusted:${collective}:${type}`);
@@ -271,9 +296,11 @@ Deno.test("integration: auto-resolver emits localSourceFailed for ValidationFail
     const output = createAutoResolveOutputAdapter("json");
     const wrappedOutput = {
       ...output,
-      localSourceFailed(type: string) {
-        outputCalls.push(`localSourceFailed:${type}`);
-        output.localSourceFailed(type);
+      localSourceFailed(type: string, failure: FailedLocalSource) {
+        outputCalls.push(
+          `localSourceFailed:${type}:${failure.file}:${failure.error}`,
+        );
+        output.localSourceFailed(type, failure);
       },
       collectiveNotTrusted(collective: string, type: string) {
         outputCalls.push(`collectiveNotTrusted:${collective}:${type}`);
@@ -304,7 +331,9 @@ Deno.test("integration: auto-resolver emits localSourceFailed for ValidationFail
     const result = await resolver.resolve("@myns/bad-schema");
     assertEquals(result, false);
     assertEquals(outputCalls, [
-      "localSourceFailed:@myns/bad-schema",
+      `localSourceFailed:@myns/bad-schema:${
+        join("extensions", "models", "bad_schema.ts")
+      }:missing required export`,
     ]);
   } finally {
     await Deno.remove(tmpDir, { recursive: true }).catch(() => {});

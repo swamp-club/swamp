@@ -18,7 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { OutputMode } from "../output/output.ts";
-import type { InstallLockHolder } from "../../domain/extensions/extension_auto_resolver.ts";
+import type {
+  FailedLocalSource,
+  InstallLockHolder,
+} from "../../domain/extensions/extension_auto_resolver.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import {
   gutterLine,
@@ -311,6 +314,7 @@ export function renderAutoResolveCollectiveNotTrusted(
 
 export function renderAutoResolveLocalSourceFailed(
   type: string,
+  failure: FailedLocalSource,
   mode: OutputMode,
 ): void {
   if (mode === "json") {
@@ -320,6 +324,8 @@ export function renderAutoResolveLocalSourceFailed(
         status: "failed",
         type,
         reason: "local_source_failed",
+        file: failure.file,
+        error: failure.error,
       }),
     );
   } else {
@@ -330,6 +336,12 @@ export function renderAutoResolveLocalSourceFailed(
         `${type} could not be loaded — a local source extension failed to index`,
       ),
     );
+    writeContentLine(`File: ${failure.file}`);
+    if (failure.error !== "") {
+      for (const line of failure.error.trimEnd().split(/\r?\n/)) {
+        writeContentLine(line);
+      }
+    }
     writeContentLine(
       `Run: swamp doctor extensions — to diagnose and re-index`,
     );

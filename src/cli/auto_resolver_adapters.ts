@@ -32,7 +32,7 @@ import {
 } from "../infrastructure/persistence/canonicalize_path.ts";
 import { recordedSkillsDirs } from "../domain/repo/skill_dirs.ts";
 import type { DenoRuntime } from "../domain/runtime/deno_runtime.ts";
-import { join, resolve } from "@std/path";
+import { isAbsolute, join, relative, resolve, SEPARATOR } from "@std/path";
 import { readInstalledEntries } from "../infrastructure/persistence/installed_entries.ts";
 import {
   readUpstreamExtensions,
@@ -42,6 +42,7 @@ import type {
   AutoResolveOutputPort,
   ExtensionInstallerPort,
   ExtensionLookupInfo,
+  FailedLocalSource,
   InstallationInspection,
   InstallLockHolder,
 } from "../domain/extensions/extension_auto_resolver.ts";
@@ -542,18 +543,23 @@ export function createAutoResolveInstallerAdapter(
       return types.size;
     },
 
-    failedLocalSourceMatchesType(typeNormalized: string): boolean {
-      if (!repository) return false;
-      const paths = repository.getCatalogStore().getFailedLocalSourcePaths();
-      for (const sourcePath of paths) {
+    findFailedLocalSource(typeNormalized: string): FailedLocalSource | null {
+      if (!repository) return null;
+      const failed = repository.getCatalogStore().getFailedLocalSources();
+      for (const row of failed) {
         try {
-          const source = Deno.readTextFileSync(sourcePath);
-          if (source.includes(typeNormalized)) return true;
+          const source = Deno.readTextFileSync(row.source_path);
+          if (!source.includes(typeNormalized)) continue;
         } catch {
           // Source unreadable — skip this file
+          continue;
         }
+        return {
+          file: repoRelativeOrAbsolute(repoDir, row.source_path),
+          error: row.last_error,
+        };
       }
-      return false;
+      return null;
     },
   };
 }
@@ -576,6 +582,20 @@ const FAILED_SOURCE_STATES: ReadonlySet<string> = new Set([
   "ValidationFailed",
   "EntryPointUnreadable",
 ]);
+
+// rows hold the symlink-resolved path, so also try the repo's real path
+function repoRelativeOrAbsolute(repoDir: string, sourcePath: string): string {
+  for (const root of [repoDir, realCanonicalPath(repoDir)]) {
+    const fromRoot = relative(root, sourcePath);
+    if (
+      fromRoot !== "" && fromRoot.split(SEPARATOR)[0] !== ".." &&
+      !isAbsolute(fromRoot)
+    ) {
+      return fromRoot;
+    }
+  }
+  return sourcePath;
+}
 
 /**
  * matches by path, not extension_name, since failed pulled sources can sit
@@ -647,8 +667,8 @@ export function createAutoResolveOutputAdapter(
     collectiveNotTrusted(collective: string, type: string) {
       renderAutoResolveCollectiveNotTrusted(collective, type, mode);
     },
-    localSourceFailed(type: string) {
-      renderAutoResolveLocalSourceFailed(type, mode);
+    localSourceFailed(type: string, failure: FailedLocalSource) {
+      renderAutoResolveLocalSourceFailed(type, failure, mode);
     },
     noStableVersion(extension: string) {
       renderAutoResolveNoStableVersion(extension, mode);
