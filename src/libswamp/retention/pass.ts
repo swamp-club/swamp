@@ -151,6 +151,8 @@ export interface RetentionKindResult {
   retention: string;
   deleted: number;
   bytesReclaimed: number;
+  /** data names that lost versions, for kinds whose batches report names */
+  names?: number;
   complete: boolean;
 }
 
@@ -246,6 +248,9 @@ export async function runRetentionPass(
               },
             );
             kindResult.deleted += batch.deleted;
+            if (batch.names !== undefined) {
+              kindResult.names = (kindResult.names ?? 0) + batch.names;
+            }
             kindResult.bytesReclaimed += batch.bytesReclaimed;
             if (batch.incomplete) skipped = true;
             if (!batch.more) {
@@ -298,6 +303,10 @@ export async function runRetentionPass(
       }
 
       for (const kind of result.kinds) {
+        if (kind.kind === "versionLimits") {
+          logDeclaredLimits(kind, options.quiet === true);
+          continue;
+        }
         // Interpolated strings render quoted, so the two endings are two
         // messages rather than one template with an optional suffix.
         if (options.quiet && kind.complete) {
@@ -317,4 +326,22 @@ export async function runRetentionPass(
       return result;
     },
   );
+}
+
+/** declared limits have no age cutoff, so their summary names none */
+function logDeclaredLimits(kind: RetentionKindResult, quiet: boolean): void {
+  const names = kind.names ?? 0;
+  if (quiet && kind.complete) {
+    logger
+      .debug`Retention versionLimits: removed ${kind.deleted} versions beyond their declared limits from ${names} data names`;
+  } else if (quiet) {
+    logger
+      .debug`Retention versionLimits: removed ${kind.deleted} versions beyond their declared limits from ${names} data names; more remain for the next pass`;
+  } else if (kind.complete) {
+    logger
+      .info`Retention versionLimits: removed ${kind.deleted} versions beyond their declared limits from ${names} data names`;
+  } else {
+    logger
+      .info`Retention versionLimits: removed ${kind.deleted} versions beyond their declared limits from ${names} data names; more remain for the next pass`;
+  }
 }
