@@ -103,6 +103,7 @@ import {
 import {
   fingerprintMatches,
   fingerprintOf,
+  isRacyStat,
   type RecordFingerprint,
   statRecord,
 } from "./workflow_run_index.ts";
@@ -399,6 +400,7 @@ export class YamlOutputRepository implements OutputRepository {
     baseDir?: string,
     private readonly markDirty?: MarkDirtyHook,
     readonly unreadableContent?: UnreadableContentLookup,
+    private readonly now: () => number = Date.now,
   ) {
     this.localOutputsDir = swampPath(repoDir, SWAMP_SUBDIRS.outputs);
     this.baseDir = baseDir ?? this.localOutputsDir;
@@ -1514,6 +1516,7 @@ export class YamlOutputRepository implements OutputRepository {
       const fingerprints = await this.recordFingerprints(
         batch.filter(([, , mayHaveRow]) => !mayHaveRow).map(([path]) => path),
         signal,
+        true,
       );
       const read = await this.readListed(
         new Map(batch.map(([path, file]) => [path, file])),
@@ -1562,6 +1565,8 @@ export class YamlOutputRepository implements OutputRepository {
   private async recordFingerprints(
     paths: readonly string[],
     signal: AbortSignal,
+    // a stat inside the racy window is left out of fingerprints to be stored
+    settled = false,
   ): Promise<Map<string, RecordFingerprint>> {
     const tally = currentDiagnosticTally();
     const fingerprints = new Map<string, RecordFingerprint>();
@@ -1579,8 +1584,12 @@ export class YamlOutputRepository implements OutputRepository {
             do {
               const path = paths[next++];
               try {
+                const statAt = this.now();
                 const fingerprint = fingerprintOf(Deno.statSync(path));
-                if (fingerprint !== undefined) {
+                if (
+                  fingerprint !== undefined &&
+                  !(settled && isRacyStat(fingerprint, statAt))
+                ) {
                   fingerprints.set(path, fingerprint);
                 }
               } catch {
@@ -1596,13 +1605,23 @@ export class YamlOutputRepository implements OutputRepository {
         SCAN_CONCURRENCY,
         async (path) => {
           try {
+            let statAt = this.now();
             const info = await withScanPermit(
               "bulk",
-              () => tally.measure("summary_stat", () => Deno.stat(path)),
+              () =>
+                tally.measure("summary_stat", () => {
+                  statAt = this.now();
+                  return Deno.stat(path);
+                }),
               signal,
             );
             const fingerprint = fingerprintOf(info);
-            if (fingerprint !== undefined) fingerprints.set(path, fingerprint);
+            if (
+              fingerprint !== undefined &&
+              !(settled && isRacyStat(fingerprint, statAt))
+            ) {
+              fingerprints.set(path, fingerprint);
+            }
           } catch {
             signal.throwIfAborted();
           }
@@ -1701,8 +1720,12 @@ export class YamlOutputRepository implements OutputRepository {
     if (method === output.methodName && isSettledStatus(output.status)) {
       // Not this save's size: another writer has replaced the record since, so
       // it gets no row and the next read reads whichever is there.
+      const statAt = this.now();
       const record = await statRecord(path).catch(() => undefined);
-      if (record && record.size === utf8ByteLength(content)) {
+      if (
+        record && record.size === utf8ByteLength(content) &&
+        !isRacyStat(record, statAt)
+      ) {
         await this.summaries.append(type.normalized, [
           { summary: outputSummaryOf(output), record },
         ]);

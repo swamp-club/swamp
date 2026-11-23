@@ -40,6 +40,7 @@ import {
 } from "../../domain/workflows/workflow_listing.ts";
 import {
   fingerprintMatches,
+  isRacyStat,
   type RecordFingerprint,
   statRecord,
 } from "./workflow_run_index.ts";
@@ -48,9 +49,6 @@ import { currentDiagnosticTally } from "../../domain/diagnostics/diagnostic_phas
 const logger = getLogger(["extension-workflow-repo"]);
 
 const WORKFLOW_FILE_PATTERN = /\.ya?ml$/;
-
-// an edit within one tick of a coarse file clock could leave its stat unchanged
-const LISTING_RACY_WINDOW_MS = 2_000;
 
 /**
  * visits each level in name order for the same sequence on every filesystem;
@@ -98,6 +96,7 @@ export class ExtensionWorkflowRepository implements WorkflowRepository {
   constructor(
     workflowsDir: string,
     additionalDirs?: string[],
+    private readonly now: () => number = Date.now,
   ) {
     this.baseDir = workflowsDir;
     this.workflowsDirs = [workflowsDir, ...(additionalDirs ?? [])];
@@ -207,6 +206,7 @@ export class ExtensionWorkflowRepository implements WorkflowRepository {
     // Stat before reading: a change after the stat makes the next stat
     // differ, so the entry read here is never kept past it.
     let fingerprint: RecordFingerprint | undefined | null;
+    const statAt = this.now();
     try {
       fingerprint = await statRecord(path);
     } catch (error) {
@@ -226,7 +226,7 @@ export class ExtensionWorkflowRepository implements WorkflowRepository {
     const listing = await this.readListing(path);
     if (
       fingerprint &&
-      fingerprint.mtimeMs <= Date.now() - LISTING_RACY_WINDOW_MS
+      !isRacyStat(fingerprint, statAt)
     ) {
       this.listingsByPath.set(path, { fingerprint, listing });
     }

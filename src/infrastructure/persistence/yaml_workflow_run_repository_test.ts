@@ -2688,6 +2688,49 @@ Deno.test("findGlobalById: repairs an index entry that disagrees with the record
   });
 });
 
+Deno.test("findGlobalById: a repaired entry is judged by the clock at its stat, not after a slow read (swamp-club#5016)", async () => {
+  await withTempDir(async (dir) => {
+    let past = false;
+    const repo = new YamlWorkflowRunRepository(
+      dir,
+      undefined,
+      undefined,
+      undefined,
+      () => past ? Date.now() + 60_000 : Date.now(),
+    );
+    const workflow = createTestWorkflow();
+    const run = WorkflowRun.create(workflow);
+    run.start();
+    await repo.save(workflow.id, run);
+    const path = repo.getPath(workflow.id, run.id);
+    const runningRecord = await Deno.readTextFile(path);
+    run.interruptOrphaned("test", []);
+    await repo.save(workflow.id, run);
+    await replaceRecord(repo, workflow.id, run, runningRecord);
+
+    // The second read of the record is the repair's own, after its first stat:
+    // the clock leaves the window there, as a slow read would.
+    const original = Deno.readTextFile;
+    let reads = 0;
+    Deno.readTextFile = (...args: Parameters<typeof original>) => {
+      if (String(args[0]) === path && ++reads === 2) past = true;
+      return original(...args);
+    };
+    try {
+      await repo.findGlobalById(run.id);
+    } finally {
+      Deno.readTextFile = original;
+    }
+
+    assert(past, "the repair read the record");
+    const index = await readRunIndex(
+      join(dir, ".swamp", "workflow-runs", workflow.id),
+    );
+    assertEquals(index?.entries[run.id]?.status, "running");
+    assertEquals(index?.entries[run.id]?.record, undefined);
+  });
+});
+
 Deno.test("findGlobalByStatus: repairs an entry the index lists under a status its record left", async () => {
   await withTempDir(async (dir) => {
     const repo = new YamlWorkflowRunRepository(dir);

@@ -247,7 +247,9 @@ to settle it keeps it forever. `swamp run gc` removes older records on demand:
    Deno reports ctime in whole seconds, so a same-size rewrite in place with its
    mtime set back, in the second the entry was written, would not move it
    (swamp-club#3470). The next verification reads such a record once and
-   fingerprints it then. The run index snapshot cache uses the same window.
+   fingerprints it then. The clock is read before the stat, so a slow read
+   between the two cannot admit a racy one. The run index snapshot cache, the
+   output summary rows and the workflow listing caches use the same window.
 
    A server cancel also clears a `running` record whose owner is gone, as
    `cancelled` rather than `interrupted`; see "Running runs whose owner is

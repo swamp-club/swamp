@@ -592,6 +592,9 @@ Deno.test({
   },
 });
 
+/** a clock past the racy window, so a file written by the test is trusted */
+const settledClock = () => Date.now() + 60_000;
+
 class CountingExtensionWorkflowRepository extends ExtensionWorkflowRepository {
   scans = 0;
   fullReads = 0;
@@ -746,7 +749,11 @@ Deno.test("ExtensionWorkflowRepository.memoizedView: a lookup reads only the mat
       );
     }
     await settleFiles(dir);
-    const repo = new CountingExtensionWorkflowRepository(dir);
+    const repo = new CountingExtensionWorkflowRepository(
+      dir,
+      undefined,
+      settledClock,
+    );
     await repo.findAllListings();
 
     const view = repo.memoizedView();
@@ -770,7 +777,11 @@ Deno.test("ExtensionWorkflowRepository: with listings kept, findByName and findB
       );
     }
     await settleFiles(dir);
-    const repo = new CountingExtensionWorkflowRepository(dir);
+    const repo = new CountingExtensionWorkflowRepository(
+      dir,
+      undefined,
+      settledClock,
+    );
 
     const [warm, warmReads] = await repo.readsDuring(() =>
       repo.findAllListings()
@@ -902,7 +913,12 @@ Deno.test("ExtensionWorkflowRepository: a file modified inside the racy window i
     // stamped ahead, so no delay before the scans can age it out of the window
     const ahead = new Date(Date.now() + 60_000);
     await Deno.utime(join(dir, "fresh.yaml"), ahead, ahead);
-    const repo = new CountingExtensionWorkflowRepository(dir);
+    // ahead of every ctime here, and still behind fresh.yaml's mtime
+    const repo = new CountingExtensionWorkflowRepository(
+      dir,
+      undefined,
+      () => Date.now() + 30_000,
+    );
     await repo.findAllListings();
 
     const [, reads] = await repo.readsDuring(() => repo.findAllListings());
@@ -992,7 +1008,11 @@ Deno.test("ExtensionWorkflowRepository: a broken file is not read again until it
     await writeWorkflow(join(dir, "ok.yaml"), createWorkflowYaml("ok"));
     await Deno.writeTextFile(brokenPath, "jobs: [\n");
     await settleFiles(dir);
-    const repo = new CountingExtensionWorkflowRepository(dir);
+    const repo = new CountingExtensionWorkflowRepository(
+      dir,
+      undefined,
+      settledClock,
+    );
 
     await captureWarnings(async () => {
       await repo.findAllListings();
@@ -1019,7 +1039,11 @@ Deno.test("ExtensionWorkflowRepository: a symlinked workflow file is followed, a
       const path = join(dir, "linked.yaml");
       await Deno.symlink(target, path, { type: "file" });
       await settleFiles(dir);
-      const repo = new CountingExtensionWorkflowRepository(dir);
+      const repo = new CountingExtensionWorkflowRepository(
+        dir,
+        undefined,
+        settledClock,
+      );
       assertEquals((await repo.findAll()).map((w) => w.id), [linked.id]);
       await repo.findAllListings();
 
@@ -1273,5 +1297,31 @@ Deno.test("ExtensionWorkflowRepository findAllOutside: the first dir wins a name
 
     assertEquals(outside.length, 1);
     assertEquals(outside[0].id, "11111111-1111-4111-8111-111111111111");
+  });
+});
+
+Deno.test("ExtensionWorkflowRepository: a file rewritten in place at the same size with its mtime set back, in the second its listing was kept, is read again (swamp-club#5016)", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "wf.yaml");
+    await writeWorkflow(path, createWorkflowYaml("wf-a"));
+    await settleFiles(dir);
+    const original = await Deno.stat(path);
+    if (original.mtime === null) return;
+    const repo = new ExtensionWorkflowRepository(dir);
+    assertEquals((await repo.findAllListings()).map((l) => l.name), ["wf-a"]);
+
+    const content = await Deno.readTextFile(path);
+    const renamed = content.replace(/^name: wf-a$/m, "name: wf-b");
+    // Through the same inode, as cp -p or rsync --inplace -t would.
+    const file = await Deno.open(path, { write: true, truncate: true });
+    try {
+      await file.write(new TextEncoder().encode(renamed));
+    } finally {
+      file.close();
+    }
+    await Deno.utime(path, original.mtime, original.mtime);
+    assertEquals((await Deno.stat(path)).size, original.size);
+
+    assertEquals((await repo.findAllListings()).map((l) => l.name), ["wf-b"]);
   });
 });

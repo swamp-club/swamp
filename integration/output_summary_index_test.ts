@@ -52,12 +52,24 @@ const PROVENANCE = {
   triggeredBy: "manual" as const,
 };
 
+/** a clock past the racy window, so a record written by the test gets a row */
+const settledClock = () => Date.now() + 60_000;
+
 async function withRepo(
   fn: (repo: YamlOutputRepository, dir: string) => Promise<void>,
 ): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-output-summary-" });
   try {
-    await fn(new YamlOutputRepository(dir), dir);
+    await fn(
+      new YamlOutputRepository(
+        dir,
+        undefined,
+        undefined,
+        undefined,
+        settledClock,
+      ),
+      dir,
+    );
   } finally {
     if (Deno.build.os === "windows") {
       // Best-effort: EBUSY can fire when V8 hasn't GC'd native
@@ -349,7 +361,13 @@ Deno.test("output summaries: a record whose stat moved with the same content is 
 
 Deno.test("output summaries: readers racing on a cold index leave a shard the next read rewrites without their duplicates", async () => {
   await withRepo(async (_repo, dir) => {
-    const writer = new YamlOutputRepository(dir);
+    const writer = new YamlOutputRepository(
+      dir,
+      undefined,
+      undefined,
+      undefined,
+      settledClock,
+    );
     const total = 40;
     for (let i = 0; i < total; i++) {
       const output = running(new Date(STARTED.getTime() + i));
@@ -360,7 +378,14 @@ Deno.test("output summaries: readers racing on a cold index leave a shard the ne
     await Promise.all(
       Array.from(
         { length: 8 },
-        () => new YamlOutputRepository(dir).findAllGlobalSummaries(),
+        () =>
+          new YamlOutputRepository(
+            dir,
+            undefined,
+            undefined,
+            undefined,
+            settledClock,
+          ).findAllGlobalSummaries(),
       ),
     );
 
@@ -491,6 +516,47 @@ Deno.test("output summaries: a newest-first read does not answer from shards it 
     assertEquals(next.output.id, older.id);
     assertEquals(next.output.status, "running");
   });
+});
+
+Deno.test("output summaries: a record rewritten in place at the same size with its mtime set back, in the second it was saved, is read again (swamp-club#5016)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-output-summary-" });
+  try {
+    const repo = new YamlOutputRepository(dir);
+    const output = await saveFinished(repo);
+    const path = repo.getPath(TYPE, "run", output);
+    const original = await Deno.stat(path);
+    if (original.mtime === null) return;
+    assertEquals(
+      (await repo.findAllGlobalSummaries()).map((r) => r.output.status),
+      ["succeeded"],
+    );
+
+    const content = await Deno.readTextFile(path);
+    const swapped = content.replace(
+      /^status: succeeded$/m,
+      "status: cancelled",
+    );
+    // Through the same inode, as cp -p or rsync --inplace -t would.
+    const file = await Deno.open(path, { write: true, truncate: true });
+    try {
+      await file.write(new TextEncoder().encode(swapped));
+    } finally {
+      file.close();
+    }
+    await Deno.utime(path, original.mtime, original.mtime);
+    assertEquals((await Deno.stat(path)).size, original.size);
+
+    assertEquals(
+      (await repo.findAllGlobalSummaries()).map((r) => r.output.status),
+      ["cancelled"],
+    );
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
 });
 
 Deno.test("output summaries: candidate_scan counts rows added on a cold read and used on a warm one", async () => {
@@ -643,6 +709,24 @@ Deno.test("output summaries: on a v3 datastore a committed save keeps its row th
       () =>
         repos.a.repoContext.outputRepo.save(repos.modelType, "noop", output),
     );
+    // A save is inside the racy window and leaves no row, so one is backfilled
+    // past it, on the same outputs directory.
+    const record = repos.a.repoContext.outputRepo.getPath(
+      repos.modelType,
+      "noop",
+      output,
+    );
+    let outputsDir = dirname(dirname(record));
+    for (const _ of repos.modelType.normalized.split("/")) {
+      outputsDir = dirname(outputsDir);
+    }
+    await new YamlOutputRepository(
+      repos.repoA,
+      outputsDir,
+      undefined,
+      undefined,
+      settledClock,
+    ).findAllGlobalSummaries();
 
     const reopened = await requireInitializedRepoUnlocked({
       repoDir: repos.repoA,
@@ -720,6 +804,9 @@ Deno.test("output summaries: records outside the checkout may be on a network mo
     const repo = new YamlOutputRepository(
       dir,
       join(dir, "datastore", "outputs"),
+      undefined,
+      undefined,
+      settledClock,
     );
     await warmRecords(repo, 8);
     const reads = await countRecordReads(() =>
@@ -745,7 +832,13 @@ Deno.test({
       await ensureDir(mount);
       await ensureDir(swampPath(dir));
       await Deno.symlink(mount, swampPath(dir, "outputs"), { type: "dir" });
-      const repo = new YamlOutputRepository(dir);
+      const repo = new YamlOutputRepository(
+        dir,
+        undefined,
+        undefined,
+        undefined,
+        settledClock,
+      );
       await warmRecords(repo, 2);
       const { sync, awaited } = await countRecordStats(() =>
         repo.findAllGlobalSummaries()
@@ -761,6 +854,9 @@ Deno.test("output summaries: outside the checkout, a damaged record is still lef
     const repo = new YamlOutputRepository(
       dir,
       join(dir, "datastore", "outputs"),
+      undefined,
+      undefined,
+      settledClock,
     );
     const [kept, damaged] = await warmRecords(repo, 2);
     await Deno.writeTextFile(repo.getPath(TYPE, "run", damaged), "");

@@ -56,6 +56,7 @@ import {
 } from "../../domain/workflows/workflow_listing.ts";
 import {
   fingerprintMatches,
+  isRacyStat,
   type RecordFingerprint,
   statRecord,
 } from "./workflow_run_index.ts";
@@ -69,12 +70,6 @@ import {
 } from "../../domain/events/types.ts";
 
 const logger = getLogger(["workflow-repo"]);
-
-/**
- * a listing for a file modified this recently is not kept: an edit within one
- * tick of a coarse file clock could leave its stat unchanged
- */
-const LISTING_RACY_WINDOW_MS = 2_000;
 
 interface CachedListing {
   fingerprint: RecordFingerprint;
@@ -117,6 +112,7 @@ export class YamlWorkflowRepository implements WorkflowRepository {
     private readonly eventBus?: EventBus,
     baseDir?: string,
     private readonly markDirtyHook?: MarkDirtyHook,
+    private readonly now: () => number = Date.now,
   ) {
     this.baseDir = baseDir ?? resolveEffectiveWorkflowsDir(repoDir);
   }
@@ -286,6 +282,7 @@ export class YamlWorkflowRepository implements WorkflowRepository {
       // Stat before reading: a change after the stat makes the next stat
       // differ, so the listing read here is never kept past it.
       let fingerprint: RecordFingerprint | undefined | null;
+      const statAt = this.now();
       try {
         fingerprint = await statRecord(path);
       } catch (error) {
@@ -319,7 +316,7 @@ export class YamlWorkflowRepository implements WorkflowRepository {
       listed.push({ path, listing });
       if (
         fingerprint &&
-        fingerprint.mtimeMs <= Date.now() - LISTING_RACY_WINDOW_MS
+        !isRacyStat(fingerprint, statAt)
       ) {
         this.listingsByPath.set(path, { fingerprint, listing });
       }

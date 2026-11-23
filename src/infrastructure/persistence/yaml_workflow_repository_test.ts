@@ -900,6 +900,9 @@ Deno.test("YamlWorkflowRepository.findAllById: finds an ID written with an escap
   });
 });
 
+/** a clock past the racy window, so a file written by the test is trusted */
+const settledClock = () => Date.now() + 60_000;
+
 async function settleWorkflowFiles(dir: string): Promise<void> {
   const when = new Date(Date.now() - 60_000);
   for await (const entry of Deno.readDir(join(dir, "workflows"))) {
@@ -946,7 +949,13 @@ Deno.test("YamlWorkflowRepository.findAllListings: lists what findAll returns, i
 
 Deno.test("YamlWorkflowRepository.findAllListings: reads again only the files that changed", async () => {
   await withTempDir(async (dir) => {
-    const repo = new YamlWorkflowRepository(dir);
+    const repo = new YamlWorkflowRepository(
+      dir,
+      undefined,
+      undefined,
+      undefined,
+      settledClock,
+    );
     for (let i = 0; i < 4; i++) await repo.save(createTestWorkflow(`wf-${i}`));
     await settleWorkflowFiles(dir);
 
@@ -986,7 +995,13 @@ Deno.test("YamlWorkflowRepository.findAllListings: reads again only the files th
 
 Deno.test("YamlWorkflowRepository.findAllListings: a broken file is skipped with a warning on every listing", async () => {
   await withTempDir(async (dir) => {
-    const repo = new YamlWorkflowRepository(dir);
+    const repo = new YamlWorkflowRepository(
+      dir,
+      undefined,
+      undefined,
+      undefined,
+      settledClock,
+    );
     await repo.save(createTestWorkflow("ok"));
     await writeSchemaBrokenWorkflow(
       dir,
@@ -1007,7 +1022,13 @@ Deno.test("YamlWorkflowRepository.findAllListings: a broken file is skipped with
 
 Deno.test("YamlWorkflowRepository.findByName: with listings kept, a name no workflow declares builds nothing", async () => {
   await withTempDir(async (dir) => {
-    const repo = new YamlWorkflowRepository(dir);
+    const repo = new YamlWorkflowRepository(
+      dir,
+      undefined,
+      undefined,
+      undefined,
+      settledClock,
+    );
     for (let i = 0; i < 5; i++) {
       await writeLegacyWorkflowFile(dir, createTestWorkflow(`noise-${i}`));
     }
@@ -1024,7 +1045,13 @@ Deno.test("YamlWorkflowRepository.findByName: with listings kept, a name no work
 
 Deno.test("YamlWorkflowRepository.findByName and findById: with listings kept, only the workflow's own file is read", async () => {
   await withTempDir(async (dir) => {
-    const writer = new YamlWorkflowRepository(dir);
+    const writer = new YamlWorkflowRepository(
+      dir,
+      undefined,
+      undefined,
+      undefined,
+      settledClock,
+    );
     const target = createTestWorkflow("legacy-target");
     await writeLegacyWorkflowFile(dir, target);
     for (let i = 0; i < 5; i++) {
@@ -1033,7 +1060,13 @@ Deno.test("YamlWorkflowRepository.findByName and findById: with listings kept, o
     await settleWorkflowFiles(dir);
     assertEquals((await writer.findByName("legacy-target"))?.id, target.id);
 
-    const reader = new YamlWorkflowRepository(dir);
+    const reader = new YamlWorkflowRepository(
+      dir,
+      undefined,
+      undefined,
+      undefined,
+      settledClock,
+    );
     await reader.findAllListings();
     const [byName, nameBuilds] = await countingBuilds(() =>
       reader.findByName("legacy-target")
@@ -1044,12 +1077,44 @@ Deno.test("YamlWorkflowRepository.findByName and findById: with listings kept, o
     const nameBased = createTestWorkflow("name-based");
     await writer.save(nameBased);
     await settleWorkflowFiles(dir);
-    const fresh = new YamlWorkflowRepository(dir);
+    const fresh = new YamlWorkflowRepository(
+      dir,
+      undefined,
+      undefined,
+      undefined,
+      settledClock,
+    );
     await fresh.findAllListings();
     const [byId, idBuilds] = await countingBuilds(() =>
       fresh.findById(nameBased.id)
     );
     assertEquals(byId?.name, "name-based");
     assertEquals(idBuilds, 1);
+  });
+});
+
+Deno.test("YamlWorkflowRepository.findAllListings: a file rewritten in place at the same size with its mtime set back, in the second its listing was kept, is read again (swamp-club#5016)", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRepository(dir);
+    await repo.save(createTestWorkflow("wf-a"));
+    await settleWorkflowFiles(dir);
+    const path = join(dir, "workflows", "workflow-wf-a.yaml");
+    const original = await Deno.stat(path);
+    if (original.mtime === null) return;
+    assertEquals((await repo.findAllListings()).map((l) => l.name), ["wf-a"]);
+
+    const content = await Deno.readTextFile(path);
+    const renamed = content.replace(/^name: wf-a$/m, "name: wf-b");
+    // Through the same inode, as cp -p or rsync --inplace -t would.
+    const file = await Deno.open(path, { write: true, truncate: true });
+    try {
+      await file.write(new TextEncoder().encode(renamed));
+    } finally {
+      file.close();
+    }
+    await Deno.utime(path, original.mtime, original.mtime);
+    assertEquals((await Deno.stat(path)).size, original.size);
+
+    assertEquals((await repo.findAllListings()).map((l) => l.name), ["wf-b"]);
   });
 });
