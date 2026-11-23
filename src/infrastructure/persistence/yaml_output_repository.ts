@@ -1560,12 +1560,12 @@ export class YamlOutputRepository implements OutputRepository {
   /**
    * records under the checkout's .swamp are stat'ed synchronously in slices,
    * since an awaited stat waits a turn of a busy loop; others may be on a
-   * network mount, so they are awaited on scan permits; settled leaves out a
-   * stat inside the racy window, for a fingerprint about to be stored
+   * network mount, so they are awaited on scan permits
    */
   private async recordFingerprints(
     paths: readonly string[],
     signal: AbortSignal,
+    // a stat inside the racy window is left out of fingerprints to be stored
     settled = false,
   ): Promise<Map<string, RecordFingerprint>> {
     const tally = currentDiagnosticTally();
