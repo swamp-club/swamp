@@ -538,6 +538,8 @@ export class SqliteReadModel implements ReadModel {
   #replaying = false;
   #atRiskRefused = false;
   #pageInFlight: Promise<void> | undefined;
+  /** what opening the current exclusive section cost, for recovery's span */
+  #sectionOpen: { lockWaitMs: number; checksMs: number } | undefined;
   #boot: string | undefined;
   #stats: CatchUpStats | undefined;
   #outsideReset = false;
@@ -751,6 +753,12 @@ export class SqliteReadModel implements ReadModel {
             "swamp.datastore.v3.readmodel.recover.entry": options.entry ??
               "unknown",
             "swamp.datastore.v3.readmodel.boot_named": this.#boot !== undefined,
+            ...(this.#sectionOpen === undefined ? {} : {
+              "swamp.datastore.v3.readmodel.recover.lock_wait_ms":
+                this.#sectionOpen.lockWaitMs,
+              "swamp.datastore.v3.readmodel.recover.open_checks_ms":
+                this.#sectionOpen.checksMs,
+            }),
           });
           let fallback: RecoveryFallback | undefined = rebuild !== undefined
             ? (options.targeted === true ? "rebuild_in_progress" : undefined)
@@ -2313,6 +2321,7 @@ export class SqliteReadModel implements ReadModel {
   ): Promise<T> {
     if (this.#closed) return Promise.reject(closedError());
     const run = this.#queue.then(async () => {
+      const sectionStarted = performance.now();
       await Deno.mkdir(this.#stateDir, { recursive: true });
       const lock = await Deno.open(join(this.#stateDir, READ_MODEL_LOCK_FILE), {
         read: true,
@@ -2342,6 +2351,7 @@ export class SqliteReadModel implements ReadModel {
             await new Promise((done) => setTimeout(done, 50));
           }
         }
+        const locked = performance.now();
         // Another process may have changed the tree since the last section.
         this.#paths.clear();
         this.#state.forgetFoldedKeys();
@@ -2367,6 +2377,10 @@ export class SqliteReadModel implements ReadModel {
           this.#catalog.markPopulated(generation);
         }
         this.#ensureDirtyTracking();
+        this.#sectionOpen = {
+          lockWaitMs: Math.round(locked - sectionStarted),
+          checksMs: Math.round(performance.now() - locked),
+        };
         return await body();
       } finally {
         lock.close();

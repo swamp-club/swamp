@@ -179,6 +179,26 @@ export function withSpan<T>(
   return runInSpan(name, { attributes }, fn);
 }
 
+/** for synchronous work, such as opening a SQLite file, that no promise wraps */
+export function withSyncSpan<T>(
+  name: string,
+  attributes: Attributes,
+  fn: (span: Span) => T,
+): T {
+  return getTracer().startActiveSpan(name, { attributes }, (span) => {
+    try {
+      const result = fn(span);
+      span.setStatus({ code: SpanStatusCode.OK });
+      return result;
+    } catch (error) {
+      recordSpanError(span, error);
+      throw error;
+    } finally {
+      span.end();
+    }
+  });
+}
+
 /**
  * serve runs inside the never-ending swamp.cli span, so work a long-running
  * process starts on its own, such as a poll cycle, must root a new trace

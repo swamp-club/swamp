@@ -748,6 +748,11 @@ Deno.test("SqliteReadModel.recover: its span names what asked for it, the path i
             span.attributes["swamp.datastore.v3.readmodel.boot_named"],
             c.boot !== undefined,
           );
+          for (const open of ["lock_wait_ms", "open_checks_ms"]) {
+            const ms =
+              span.attributes[`swamp.datastore.v3.readmodel.recover.${open}`];
+            assert(typeof ms === "number" && ms >= 0, `${open}: ${ms}`);
+          }
         });
       } finally {
         await readModel.close();

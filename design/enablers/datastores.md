@@ -6341,6 +6341,31 @@ leave every checkout with the same records.
   writer changed. A targeted recovery that finishes forgets the touched
   scopes it read; a full rebuild forgets them all.
 
+  **Before replaying, recovery warms the files it will read at random
+  (swamp-club#4899).** The history read and the re-projection walk the
+  checkout's `commits.db`, the read-model state and the catalog B-tree by
+  B-tree; on a cold page cache every page is a separate disk read, which on a
+  558 MB datastore made both phases roughly twice their warm time. So whenever
+  an interrupted writer is recovered (serve's boot after a crash, a follower's
+  own predecessor, or a command after a crash), `prewarmForRecovery` first
+  reads those files sequentially, in that order, in awaited 1 MiB chunks. It
+  is bounded three ways: a byte budget of a quarter of the host's available
+  memory (none at all when that cannot be read), stopping partway through a
+  file once spent; a 10 s deadline; and the recovery's abort signal. Files are
+  opened read-only, never locked, read only as far as their size when opened,
+  and skipped when missing; any failure is logged at debug and recovery goes
+  on. It never runs on a clean writer hold. Its span
+  (`swamp.datastore.v3.recover.prewarm`) records the bytes read, files,
+  budget, and whether the budget or the deadline stopped it.
+
+  Opening the stores is traced too (`swamp.datastore.v3.open.commit_store`,
+  `.catalog`, `.read_model`, and `swamp.datastore.v3.recover_and_mark` with
+  its steps), because the open itself can be slow: the commit store's
+  schema 13 → 14 migration adds a column to five STRICT base tables, and
+  SQLite verifies a STRICT table's rows when a column is added. On a large
+  cold store that check reads the base tables once, tens of seconds on the
+  main thread, on the first open after upgrading past that migration.
+
   The full rebuild: under the read model's lock, recovery deletes the
   catalog rows of the data commits carry, keeping the rows of data the
   datastore's `directories` or `exclude` keep local, which no replay could

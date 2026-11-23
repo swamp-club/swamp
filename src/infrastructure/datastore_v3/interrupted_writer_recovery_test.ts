@@ -44,6 +44,7 @@ import { putOp } from "../../domain/datastore_v3/op.ts";
 import { partitionOf } from "../../domain/datastore_v3/partition_key.ts";
 import { RecordKey } from "../../domain/datastore_v3/record_key.ts";
 import { swampPath } from "../persistence/paths.ts";
+import { withCapturedSpans } from "../tracing/span_test_helpers.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-writer-marker-" });
@@ -567,5 +568,88 @@ Deno.test("recoverOwnPredecessor: recoveries of one checkout run one at a time, 
     assertEquals(overlapped, false);
     assertEquals(calls, [5_000]);
     assertEquals(results.filter((r) => r !== undefined).length, 1);
+  });
+});
+
+const PREWARM_SPAN = "swamp.datastore.v3.recover.prewarm";
+
+/** a handle that notes whether the prewarm had finished when recovery began */
+function prewarmWatchingHandle(
+  dir: string,
+  spans: readonly { name: string }[],
+  seen: boolean[],
+): V3Datastore {
+  return {
+    datastorePath: dir,
+    commitsDbPath: join(dir, "commits.db"),
+    recoverInterruptedWriter: () => {
+      seen.push(spans.some((span) => span.name === PREWARM_SPAN));
+      return Promise.resolve([]);
+    },
+  } as unknown as V3Datastore;
+}
+
+Deno.test("recoverInterruptedWriter: prewarms the recovery's files before a recovery runs, and never when it returns early", async () => {
+  await withTempDir(async (dir) => {
+    await withCapturedSpans(async (spans) => {
+      const prewarms = () =>
+        spans.filter((span) => span.name === PREWARM_SPAN).length;
+      const seen: boolean[] = [];
+      const handle = prewarmWatchingHandle(dir, spans, seen);
+
+      assertEquals(
+        await recoverInterruptedWriter(handle, dir, { holdsWriterLock: true }),
+        undefined,
+      );
+      assertEquals(prewarms(), 0, "no marker");
+
+      await writeWriterMarker(dir);
+      assertEquals(
+        await recoverInterruptedWriter(handle, dir, { holdsWriterLock: true }),
+        undefined,
+      );
+      assertEquals(prewarms(), 0, "this process's own marker");
+
+      await writeRaw(
+        dir,
+        JSON.stringify({ hostname: "elsewhere", pid: 4242, since: 0 }),
+      );
+      await recoverInterruptedWriter(handle, dir, { holdsWriterLock: true });
+      assertEquals(prewarms(), 1, "a marker it recovers");
+      assertEquals(seen, [true]);
+    });
+  });
+});
+
+Deno.test("recoverOwnPredecessor: prewarms before recovering a gone predecessor, and never for one it leaves to the lease", async () => {
+  const kernel = { host: "host#pid:[1]", bootId: "boot-id:a" };
+  const local = (present: boolean): LocalProcess => ({
+    pid: Deno.pid,
+    identity: { ...kernel, startTime: "t-self" },
+    probe: () => ({ present, zombie: false, startTime: "t1" }),
+    bootIdRequired: true,
+  });
+  const marker = JSON.stringify({
+    hostname: "host",
+    pid: 4242,
+    since: 5_000,
+    process: { ...kernel, startTime: "t1" },
+  });
+  await withTempDir(async (dir) => {
+    await withCapturedSpans(async (spans) => {
+      const prewarms = () =>
+        spans.filter((span) => span.name === PREWARM_SPAN).length;
+      const seen: boolean[] = [];
+      const handle = prewarmWatchingHandle(dir, spans, seen);
+      for (const text of [marker, "not json"]) {
+        await writeRaw(dir, text);
+        await recoverOwnPredecessor(handle, dir, { local: local(true) });
+      }
+      assertEquals(prewarms(), 0, "live or unreadable");
+      await writeRaw(dir, marker);
+      await recoverOwnPredecessor(handle, dir, { local: local(false) });
+      assertEquals(prewarms(), 1, "gone");
+      assertEquals(seen, [true]);
+    });
   });
 });

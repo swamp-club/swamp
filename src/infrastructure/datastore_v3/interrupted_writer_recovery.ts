@@ -39,7 +39,9 @@ import {
   type ProcessIdentity,
 } from "../../domain/datastore_v3/process_liveness.ts";
 import { localProcess } from "./process_identity.ts";
-import { readModelStateDir } from "./record_path_guard.ts";
+import { readModelStateDir, v3CatalogPath } from "./record_path_guard.ts";
+import { prewarmForRecovery } from "./recovery_prewarm.ts";
+import { READ_MODEL_STATE_FILE } from "./sqlite_read_model.ts";
 import { v3CacheRoot, type V3Datastore } from "./v3_datastore.ts";
 import {
   tryAcquireV3WriterLock,
@@ -414,6 +416,15 @@ async function recoverLocked(
   recoveryProgress?.(
     "Recovering work an interrupted command left in this checkout…",
   );
+  // the replay reads these at random, so cold it waits on every page
+  await prewarmForRecovery({
+    paths: [
+      handle.commitsDbPath,
+      join(readModelStateDir(repoDir), READ_MODEL_STATE_FILE),
+      v3CatalogPath(repoDir),
+    ],
+    ...(signal === undefined ? {} : { signal }),
+  });
   let removed: string[];
   try {
     removed = await handle.recoverInterruptedWriter(since, signal, {
