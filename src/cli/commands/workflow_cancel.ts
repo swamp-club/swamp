@@ -35,6 +35,7 @@ import { runCommandInRootUnit } from "../command_root_unit.ts";
 import type { WorkflowRunClaims } from "../../domain/workflows/run_claim.ts";
 import { renderNestedCascade } from "./nested_run_hints.ts";
 import { describeCauses, UserError } from "../../domain/errors.ts";
+import { resolveExtraHeaders } from "../../domain/auth/extra_headers.ts";
 import {
   normalizeServerUrl,
   redactServerUrl,
@@ -144,14 +145,17 @@ export function buildServerCancelRequest(
   cancelUrl: string,
   token: string | undefined,
   reason: string | undefined,
+  extraHeaders: Record<string, string> = resolveExtraHeaders(),
 ): Request {
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-  };
-  if (token) headers["Authorization"] = `Bearer ${token}`;
+  // set() so a pass-through header of any casing cannot join a protocol header
+  const headers = new Headers(extraHeaders);
+  headers.set("Content-Type", "application/json");
+  if (token) headers.set("Authorization", `Bearer ${token}`);
   return new Request(cancelUrl, {
     method: "POST",
     headers,
+    // a redirect would carry the token and pass-through headers elsewhere
+    redirect: "manual",
     ...(reason === undefined ? {} : { body: JSON.stringify({ reason }) }),
   });
 }
