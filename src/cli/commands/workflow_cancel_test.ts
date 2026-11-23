@@ -25,6 +25,7 @@ import {
 } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
+import { withMockedEnv } from "../../infrastructure/persistence/path_test_helpers.ts";
 import {
   OWNER_STOPPED_STEP_ERROR,
   WorkflowRun,
@@ -222,6 +223,64 @@ Deno.test("buildServerCancelRequest: includes a bearer token and JSON reason", a
   );
   assertEquals(request.headers.get("authorization"), "Bearer token.secret");
   assertEquals(await request.json(), { reason: "deploy window closed" });
+});
+
+Deno.test("buildServerCancelRequest: sends the pass-through headers", () => {
+  const request = buildServerCancelRequest(
+    "http://127.0.0.1:9000/api/v1/cancel/workflow-run/run-1",
+    "token.secret",
+    undefined,
+    { "Tunnel-Token": "abc123", "X-Proxy-Auth": "def456" },
+  );
+  assertEquals(request.headers.get("tunnel-token"), "abc123");
+  assertEquals(request.headers.get("x-proxy-auth"), "def456");
+  assertEquals(request.headers.get("authorization"), "Bearer token.secret");
+});
+
+Deno.test("buildServerCancelRequest: a pass-through content-type of any casing cannot replace or join JSON", () => {
+  const request = buildServerCancelRequest(
+    "http://127.0.0.1:9000/api/v1/cancel/workflow-run/run-1",
+    undefined,
+    undefined,
+    { "content-TYPE": "text/plain" },
+  );
+  assertEquals(request.headers.get("content-type"), "application/json");
+});
+
+Deno.test("buildServerCancelRequest: refuses to follow a redirect", () => {
+  const request = buildServerCancelRequest(
+    "http://127.0.0.1:9000/api/v1/cancel/workflow-run/run-1",
+    "token.secret",
+    undefined,
+    {},
+  );
+  assertEquals(request.redirect, "manual");
+});
+
+Deno.test("buildServerCancelRequest: reads SWAMP_SERVE_EXTRA_HEADERS by default", () => {
+  withMockedEnv(
+    { SWAMP_SERVE_EXTRA_HEADERS: "Tunnel-Token: abc123\nX-Proxy-Auth: def456" },
+    () => {
+      const request = buildServerCancelRequest(
+        "http://127.0.0.1:9000/api/v1/cancel/workflow-run/run-1",
+        undefined,
+        undefined,
+      );
+      assertEquals(request.headers.get("tunnel-token"), "abc123");
+      assertEquals(request.headers.get("x-proxy-auth"), "def456");
+    },
+  );
+});
+
+Deno.test("buildServerCancelRequest: sends no pass-through headers when SWAMP_SERVE_EXTRA_HEADERS is unset", () => {
+  withMockedEnv({ SWAMP_SERVE_EXTRA_HEADERS: undefined }, () => {
+    const request = buildServerCancelRequest(
+      "http://127.0.0.1:9000/api/v1/cancel/workflow-run/run-1",
+      undefined,
+      undefined,
+    );
+    assertEquals([...request.headers.keys()], ["content-type"]);
+  });
 });
 
 Deno.test("buildCancelUrl: drops userinfo, token query and fragment", () => {
