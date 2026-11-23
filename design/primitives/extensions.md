@@ -3399,7 +3399,11 @@ whose first path segment is a kind dir or `manifest.yaml` (`@a/b/models`) is
 refused, whichever of the two is installed second: the parent's own files live
 there, and the swap would move them aside and commit would delete them. Such a
 layout installed before this change; remove one of the two to install the
-other. The installed-extension digest (`filesChecksum`) leaves nested entry
+other. `apps/` is the exception: a nested entry there (`@a/b/apps`) is refused
+only while the parent ships apps (its manifest lists any, its archive or
+lockfile entry has files under `apps/`, or, with no entry, its `apps/` holds
+files). Nothing else of the parent's lives there and no loader scans it for
+code. The installed-extension digest (`filesChecksum`) leaves nested entry
 roots out, so installing `@a/b/c` does not make `@a/b` look locally edited. A
 digest stored before this rule covered the nested root too. While a root has
 nested entries, the local-edits check and the `extension install` content check

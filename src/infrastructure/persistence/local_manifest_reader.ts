@@ -76,6 +76,12 @@ export function readManifestDependenciesAt(manifestPath: string): string[] {
   );
 }
 
+export function readManifestAppsAt(manifestPath: string): string[] {
+  const obj = readManifestObjectAt(manifestPath);
+  if (obj === null || !Array.isArray(obj.apps)) return [];
+  return obj.apps.filter((app): app is string => typeof app === "string");
+}
+
 function readManifestObjectAt(
   manifestPath: string,
 ): Record<string, unknown> | null {

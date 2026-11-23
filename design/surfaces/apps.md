@@ -79,6 +79,9 @@ extensions (`FilesystemAppCatalog`). The first one found wins, in that order. An
 approval follows the name, so a pulled app must sit at
 `<extension>/apps/<folder>/`, its extension must be at the path its manifest's name
 gives, the manifest must list it, and the name must use that collective. An
+extension nested at `<extension>/apps/` installs only while its parent ships no
+apps, so a folder of its with an `app.yaml` resolves to a parent that lists none
+and is refused. An
 extension's `files/` is written verbatim, so at most it can pass as another
 extension of its own collective. It never reaches another collective's names.
 
