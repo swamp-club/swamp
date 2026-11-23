@@ -57,7 +57,7 @@ export interface RetentionConfig {
   autoDefinitions?: string;
   /**
    * Each data name's own declared garbageCollection, applied by serve's hourly
-   * pass whether or not `automatic` is on. On unless false.
+   * pass whether or not `automatic` is on.
    */
   versionLimits?: boolean;
 }
@@ -227,10 +227,6 @@ export class RetentionPolicy {
     return this.config.versionLimits !== false;
   }
 
-  /**
-   * the kinds an automatic pass applies: with automatic on, every kind with a
-   * retention; with it off, only the declared version limits
-   */
   enforcedKinds(): RetentionKind[] {
     if (this.automatic) {
       return RETENTION_KINDS.filter((kind) =>

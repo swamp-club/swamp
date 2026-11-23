@@ -160,9 +160,7 @@ export interface DeclaredGarbageBatchOptions {
 export interface DeclaredGarbageBatchResult {
   versionsRemoved: number;
   bytesReclaimed: number;
-  /** names that lost versions */
   names: number;
-  /** names whose collection failed and were skipped */
   failed: number;
   /** absent once every name has been examined */
   cursor?: string;

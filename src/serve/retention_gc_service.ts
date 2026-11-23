@@ -49,7 +49,6 @@ export interface RetentionPassControl {
   /** aborted by dispose, so storage work a pass waits on stops with it */
   readonly signal: AbortSignal;
   manualGcWaiting(): boolean;
-  /** the kinds this pass applies: policy.enforcedKinds() */
   readonly kinds: readonly RetentionKind[];
 }
 

@@ -199,7 +199,6 @@ Deno.test("versionLimits retention: a name declaring 3 keeps its newest 3; a nam
 Deno.test("versionLimits retention: a duration declaration removes older versions and keeps the latest", async () => {
   await withTempDir((dir) =>
     withRepo(dir, async (repo) => {
-      // oldest first: 5d, 4d, 3d, 2h, 1h
       const ages = [5 * DAY_MS, 4 * DAY_MS, 3 * DAY_MS, 2 * HOUR_MS, HOUR_MS];
       const recent = await save(repo, "m1", "recent", 5, "1d", (i) => ages[i]);
       // every version is past the limit, the latest included
