@@ -34,6 +34,7 @@ import {
 } from "./server_login.ts";
 import { UserError } from "../../domain/errors.ts";
 import { normalizeServerUrl } from "../../domain/auth/server_url.ts";
+import { withMockedEnv } from "../../infrastructure/persistence/path_test_helpers.ts";
 
 function makeDeps(overrides: Partial<ServerLoginDeps> = {}): ServerLoginDeps {
   return {
@@ -486,4 +487,102 @@ Deno.test("createServerLoginDeps: an aborted request is not wrapped", async () =
     );
     assertEquals(err.name, "TimeoutError");
   });
+});
+
+function callEndpointWith(
+  deps: ServerLoginDeps,
+  endpoint: "info" | "device" | "token",
+): Promise<unknown> {
+  const signal = new AbortController().signal;
+  switch (endpoint) {
+    case "info":
+      return deps.discoverAuthMode(SERVE_URL, signal);
+    case "device":
+      return deps.startDeviceAuth(SERVE_URL, signal);
+    case "token":
+      return deps.pollDeviceToken(SERVE_URL, "device-abc-123", signal);
+  }
+}
+
+async function captureRequest(
+  deps: ServerLoginDeps,
+  endpoint: "info" | "device" | "token",
+): Promise<Request> {
+  const seen: Request[] = [];
+  await withMockedFetch((request) => {
+    seen.push(request);
+    return Response.json({});
+  }, () => callEndpointWith(deps, endpoint));
+  assertEquals(seen.length, 1);
+  return seen[0];
+}
+
+Deno.test("createServerLoginDeps: every request sends the pass-through headers", async () => {
+  const deps = createServerLoginDeps({
+    extraHeaders: { "Tunnel-Token": "abc123", "X-Proxy-Auth": "def456" },
+  });
+  for (const { endpoint } of ENDPOINTS) {
+    const request = await captureRequest(deps, endpoint);
+    assertEquals(request.headers.get("tunnel-token"), "abc123");
+    assertEquals(request.headers.get("x-proxy-auth"), "def456");
+  }
+});
+
+Deno.test("createServerLoginDeps: every request refuses to follow a redirect", async () => {
+  const deps = createServerLoginDeps({ extraHeaders: {} });
+  for (const { endpoint } of ENDPOINTS) {
+    const request = await captureRequest(deps, endpoint);
+    assertEquals(request.redirect, "manual");
+  }
+});
+
+Deno.test("createServerLoginDeps: a pass-through content-type of any casing cannot replace or join JSON on the token poll", async () => {
+  const deps = createServerLoginDeps({
+    extraHeaders: { "content-TYPE": "text/plain" },
+  });
+  const request = await captureRequest(deps, "token");
+  assertEquals(request.headers.get("content-type"), "application/json");
+});
+
+Deno.test("createServerLoginDeps: a redirect answer fails with its status", async () => {
+  const deps = createServerLoginDeps({ extraHeaders: {} });
+  for (const { endpoint } of ENDPOINTS) {
+    const { calls } = await withMockedFetch(
+      () =>
+        new Response(null, {
+          status: 308,
+          headers: { location: "https://elsewhere.test/auth" },
+        }),
+      async () => {
+        const err = await assertRejects(
+          () => callEndpointWith(deps, endpoint),
+          UserError,
+        );
+        assertStringIncludes(err.message, "308");
+      },
+    );
+    assertEquals(calls.length, 1);
+  }
+});
+
+Deno.test("createServerLoginDeps: reads SWAMP_SERVE_EXTRA_HEADERS by default", async () => {
+  const deps = withMockedEnv(
+    { SWAMP_SERVE_EXTRA_HEADERS: "Tunnel-Token: abc123" },
+    () => createServerLoginDeps(),
+  );
+  for (const { endpoint } of ENDPOINTS) {
+    const request = await captureRequest(deps, endpoint);
+    assertEquals(request.headers.get("tunnel-token"), "abc123");
+  }
+});
+
+Deno.test("createServerLoginDeps: sends no pass-through headers when SWAMP_SERVE_EXTRA_HEADERS is unset", async () => {
+  const deps = withMockedEnv(
+    { SWAMP_SERVE_EXTRA_HEADERS: undefined },
+    () => createServerLoginDeps(),
+  );
+  for (const { endpoint } of ENDPOINTS) {
+    const request = await captureRequest(deps, endpoint);
+    assertEquals(request.headers.get("tunnel-token"), null);
+  }
 });
