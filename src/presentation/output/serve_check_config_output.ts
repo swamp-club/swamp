@@ -24,7 +24,10 @@ import type {
   PersonalCollective,
 } from "../../serve/oauth_access_list_resolution.ts";
 import type { OutputMode } from "./output.ts";
-import type { IneffectiveRestriction } from "../../domain/access/serve_auth_config.ts";
+import type {
+  IneffectiveAdmin,
+  IneffectiveRestriction,
+} from "../../domain/access/serve_auth_config.ts";
 import type { GrantFileCheckIssue } from "../../domain/access/grant_file_loader.ts";
 
 export interface ServeCheckConfigData {
@@ -46,6 +49,8 @@ export interface ServeCheckConfigData {
    * fail the check.
    */
   readonly restrictionWarnings?: readonly IneffectiveRestriction[];
+  /** advisory: admins entries that can match no principal; they do not fail the check */
+  readonly adminWarnings?: readonly IneffectiveAdmin[];
   /**
    * Grant-file problems that would stop serve starting; any one fails the
    * check. Only grant files are read — stored grants are reported by serve
@@ -163,6 +168,15 @@ export function renderServeCheckConfig(
     lines.push("");
     lines.push(`${red(CROSS)} ${red("swamp serve would refuse to start:")}`);
     lines.push(`  ${data.refusal}`);
+  }
+
+  const adminWarnings = data.adminWarnings ?? [];
+  if (adminWarnings.length > 0) {
+    lines.push("");
+    lines.push(cyan("Admin warnings:"));
+    for (const warning of adminWarnings) {
+      lines.push(`  ${yellow("!")} ${warning.message}`);
+    }
   }
 
   const warnings = data.restrictionWarnings ?? [];

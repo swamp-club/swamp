@@ -283,3 +283,41 @@ export function findIneffectiveRestrictions(
   }
   return found;
 }
+
+export interface IneffectiveAdmin {
+  readonly entry: string;
+  readonly message: string;
+}
+
+export interface IneffectiveAdminInput {
+  readonly mode: AuthMode;
+  readonly admins: readonly string[];
+  /**
+   * a hosted workspace's sign-in exchange copies its root token's IdP groups,
+   * the only way a token-mode token comes to carry them
+   */
+  readonly offersSignInExchange: boolean;
+}
+
+/** advisory: validateAdmins still accepts these entries, so a serve that lists one keeps starting */
+export function findIneffectiveAdmins(
+  input: IneffectiveAdminInput,
+): IneffectiveAdmin[] {
+  if (input.mode !== "token" || input.offersSignInExchange) return [];
+  const found: IneffectiveAdmin[] = [];
+  for (const entry of input.admins) {
+    let kind;
+    try {
+      kind = parseSubject(entry).kind;
+    } catch {
+      continue;
+    }
+    if (kind !== "idp-group") continue;
+    found.push({
+      entry,
+      message:
+        `--admins entry "${entry}" matches no one in token mode: token-mode tokens carry IdP groups only on a hosted workspace whose root signs users in with OAuth; list these admins as user:<id> or group:<name>`,
+    });
+  }
+  return found;
+}

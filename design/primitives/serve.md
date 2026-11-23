@@ -568,7 +568,11 @@ mode in force is reported as `authMode` on the `--json` listening line
   makes them non-simple browser requests, so a cross-origin browser must pass
   the same origin check before sending one.
 - `token`: clients present `<name>.<secret>`. `--admins` is required, and each
-  entry must parse as `user:<id>`, `group:<name>` or `idp-group:<name>`.
+  entry must parse as `user:<id>`, `group:<name>` or `idp-group:<name>`. An
+  `idp-group:` admin is accepted with a warning from serve and
+  `serve check-config`: token-mode tokens carry IdP groups only on a hosted
+  workspace whose root signs users in with OAuth, so serve stays silent there
+  and check-config, which cannot see a root address, always warns.
 - `oauth`: clients log in through the swamp-club device grant. Requires
   `--admins` and at least one of `--allowed-collectives` / `--allowed-users`
   (otherwise "any swamp-club user can connect"). At startup a username the

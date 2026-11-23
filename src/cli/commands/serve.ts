@@ -131,6 +131,7 @@ import {
 } from "../../domain/workflows/workflow_id.ts";
 import { errorPaths, markErrorPaths, UserError } from "../../domain/errors.ts";
 import {
+  findIneffectiveAdmins,
   findIneffectiveRestrictions,
   type ServeAuthConfig,
 } from "../../domain/access/serve_auth_config.ts";
@@ -2439,6 +2440,16 @@ export const serveCommand = new Command()
         "--admins is set but --auth-mode is {mode} — admins will have no effect",
         { mode: authConfig.mode },
       );
+    }
+
+    for (
+      const finding of findIneffectiveAdmins({
+        mode: authConfig.mode,
+        admins: authConfig.admins,
+        offersSignInExchange: exchangeOffered(signInExchange, authConfig.mode),
+      })
+    ) {
+      logger.warn("{warning}", { warning: finding.message });
     }
 
     if (

@@ -20,6 +20,7 @@
 import { assertEquals, assertThrows } from "@std/assert";
 import {
   buildServeAuthConfig,
+  findIneffectiveAdmins,
   findIneffectiveRestrictions,
 } from "./serve_auth_config.ts";
 import { UserError } from "../errors.ts";
@@ -490,4 +491,64 @@ Deno.test("findIneffectiveRestrictions: reports a restricted command that is not
     ["restricted-commands", "vault.putt", "unknown-command"],
     ["restricted-commands", "Extension.Install", "unknown-command"],
   ]);
+});
+
+Deno.test("findIneffectiveAdmins: reports an idp-group admin in token mode", () => {
+  const found = findIneffectiveAdmins({
+    mode: "token",
+    admins: ["idp-group:platform-admins"],
+    offersSignInExchange: false,
+  });
+  assertEquals(found.map((f) => f.entry), ["idp-group:platform-admins"]);
+  assertEquals(
+    found[0].message,
+    '--admins entry "idp-group:platform-admins" matches no one in token mode: token-mode tokens carry IdP groups only on a hosted workspace whose root signs users in with OAuth; list these admins as user:<id> or group:<name>',
+  );
+});
+
+Deno.test("findIneffectiveAdmins: reports only the idp-group entries of a mixed list, in order", () => {
+  const found = findIneffectiveAdmins({
+    mode: "token",
+    admins: ["user:alice", "idp-group:ops", "group:admins", "idp-group:sre"],
+    offersSignInExchange: false,
+  });
+  assertEquals(found.map((f) => f.entry), ["idp-group:ops", "idp-group:sre"]);
+});
+
+Deno.test("findIneffectiveAdmins: reports nothing for user and group admins", () => {
+  const found = findIneffectiveAdmins({
+    mode: "token",
+    admins: ["user:alice", "group:admins"],
+    offersSignInExchange: false,
+  });
+  assertEquals(found, []);
+});
+
+Deno.test("findIneffectiveAdmins: reports nothing when the serve offers the sign-in exchange", () => {
+  const found = findIneffectiveAdmins({
+    mode: "token",
+    admins: ["idp-group:platform-admins"],
+    offersSignInExchange: true,
+  });
+  assertEquals(found, []);
+});
+
+Deno.test("findIneffectiveAdmins: reports nothing outside token mode", () => {
+  for (const mode of ["none", "oauth"] as const) {
+    const found = findIneffectiveAdmins({
+      mode,
+      admins: ["idp-group:platform-admins"],
+      offersSignInExchange: false,
+    });
+    assertEquals(found, [], mode);
+  }
+});
+
+Deno.test("findIneffectiveAdmins: skips an entry that is not a subject", () => {
+  const found = findIneffectiveAdmins({
+    mode: "token",
+    admins: ["not-a-subject", "idp-group:ops"],
+    offersSignInExchange: false,
+  });
+  assertEquals(found.map((f) => f.entry), ["idp-group:ops"]);
 });
