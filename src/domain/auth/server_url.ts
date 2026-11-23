@@ -66,6 +66,68 @@ export function redactServerUrl(url: string): string | undefined {
   return `${parsed.protocol}//${parsed.host}${pathname}`;
 }
 
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
+export function isRedirectStatus(status: number): boolean {
+  return REDIRECT_STATUSES.has(status);
+}
+
+function trimTrailingSlashes(path: string): string {
+  return path.replace(/\/+$/, "");
+}
+
+function withoutSuffix(path: string, suffix: string): string | undefined {
+  const trimmed = trimTrailingSlashes(path);
+  const end = trimTrailingSlashes(suffix);
+  if (end === "") return trimmed;
+  return trimmed.endsWith(end) ? trimmed.slice(0, -end.length) : undefined;
+}
+
+function httpScheme(url: URL): URL {
+  const copy = new URL(url.href);
+  if (copy.protocol === "ws:") copy.protocol = "http:";
+  else if (copy.protocol === "wss:") copy.protocol = "https:";
+  return copy;
+}
+
+const POINT_DIRECTLY =
+  "swamp does not follow redirects, so point --server at the address that serves swamp directly";
+
+/**
+ * the error for a refused redirect; an address to pass instead is offered only
+ * when the redirect kept the path, since a path change is not a moved serve
+ */
+export function describeRefusedRedirect(
+  requestUrl: string,
+  endpointPath: string,
+  status: number,
+  location: string | null,
+): string {
+  const request = new URL(requestUrl);
+  const basePath = withoutSuffix(request.pathname, endpointPath) ??
+    trimTrailingSlashes(request.pathname);
+  const baseUrl = new URL(request.href);
+  baseUrl.pathname = basePath === "" ? "/" : basePath;
+  const base = redactServerUrl(baseUrl.href) ?? "the server";
+  let target: URL | undefined;
+  try {
+    target = location ? new URL(location, httpScheme(request)) : undefined;
+  } catch {
+    target = undefined;
+  }
+  const shownTarget = target ? redactServerUrl(target.href) : undefined;
+  if (!target || shownTarget === undefined) {
+    return `${base} answered with a redirect (HTTP ${status}) that names no usable target; ${POINT_DIRECTLY}`;
+  }
+  const targetBase = withoutSuffix(target.pathname, endpointPath);
+  const movedOnly = targetBase === basePath &&
+    target.origin !== httpScheme(baseUrl).origin;
+  if (!movedOnly) {
+    return `${base} redirected to ${shownTarget} (HTTP ${status}); ${POINT_DIRECTLY}`;
+  }
+  return `${base} redirected to ${shownTarget} (HTTP ${status}); swamp does not follow redirects, so pass --server ${target.protocol}//${target.host}${basePath}`;
+}
+
 export type EnvServerTokenBinding =
   | { readonly kind: "bound" }
   | { readonly kind: "unnamed" }

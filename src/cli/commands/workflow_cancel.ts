@@ -37,6 +37,8 @@ import { renderNestedCascade } from "./nested_run_hints.ts";
 import { describeCauses, UserError } from "../../domain/errors.ts";
 import { resolveExtraHeaders } from "../../domain/auth/extra_headers.ts";
 import {
+  describeRefusedRedirect,
+  isRedirectStatus,
   normalizeServerUrl,
   redactServerUrl,
 } from "../../domain/auth/server_url.ts";
@@ -215,6 +217,17 @@ export async function sendServerCancel(
       ...(client ? { client } : {}),
       signal: AbortSignal.timeout(SERVER_CANCEL_TIMEOUT_MS),
     });
+    if (isRedirectStatus(response.status)) {
+      await response.body?.cancel();
+      throw new UserError(
+        describeRefusedRedirect(
+          request.url,
+          `/api/v1/cancel/workflow-run/${encodeURIComponent(runId)}`,
+          response.status,
+          response.headers.get("location"),
+        ),
+      );
+    }
     if (!response.ok) {
       throw serverCancelRejection(
         response.status,

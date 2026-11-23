@@ -426,9 +426,11 @@ The headers go on the WebSocket upgrade request (via Deno 2.x's non-standard
 `WebSocket({ headers })` extension), on the HTTP requests the CLI sends to serve
 (`workflow cancel --server` and `auth server-login` among them) and, for
 workers, on every HTTP data-plane request. Those HTTP requests never follow a
-redirect, so the headers and the token cannot reach another host. They are pure
-pass-through: `swamp serve` does not read or require them. Values may contain
-secrets and are never logged.
+redirect, so the headers and the token cannot reach another host; the error
+names the redirect target and, when the redirect only moved the scheme, host or
+port, the address to pass to `--server` instead. They are pure pass-through:
+`swamp serve` does not read or require them. Values may contain secrets and are
+never logged.
 
 `swamp worker daemon enable` copies the variable from the shell that runs it
 into the service definition. sudo's default `env_reset` drops it, so a system

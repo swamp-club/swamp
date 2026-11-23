@@ -51,7 +51,9 @@ import {
   workspaceTokenFor,
 } from "./workspace_sign_in.ts";
 import {
+  describeRefusedRedirect,
   envServerTokenBinding,
+  isRedirectStatus,
   normalizeServerUrl as normalizeServerUrlForCredentials,
   redactServerUrl,
 } from "../domain/auth/server_url.ts";
@@ -1658,6 +1660,7 @@ export async function probeHandshakeStatus(
 
 interface HandshakeProbe {
   status?: number;
+  location?: string;
   refused: boolean;
 }
 
@@ -1725,7 +1728,12 @@ async function probeHandshake(
       signal: AbortSignal.timeout(HANDSHAKE_PROBE_TIMEOUT_MS),
     });
     await response.body?.cancel();
-    return { status: response.status, refused: false };
+    const location = response.headers.get("location");
+    return {
+      status: response.status,
+      ...(location !== null && { location }),
+      refused: false,
+    };
   } catch (error) {
     return { refused: isConnectionRefused(error) };
   } finally {
@@ -1745,7 +1753,11 @@ function describeHandshakeStatus(
   wsUrl: string,
   statusCode: number,
   originalMessage: string,
+  location?: string,
 ): string {
+  if (isRedirectStatus(statusCode)) {
+    return describeRefusedRedirect(wsUrl, "", statusCode, location ?? null);
+  }
   if (statusCode === 429) {
     return "Rate-limited by server — try again later";
   }
@@ -1775,6 +1787,7 @@ export function describeStatuslessFailure(
   originalMessage: string,
   probedStatus: number | undefined,
   sentToken: boolean,
+  probedLocation?: string,
 ): string {
   if (probedStatus === undefined) return originalMessage;
   if (probedStatus === 401 || probedStatus === 403) {
@@ -1787,7 +1800,12 @@ export function describeStatuslessFailure(
     }
     return originalMessage;
   }
-  return describeHandshakeStatus(wsUrl, probedStatus, originalMessage);
+  return describeHandshakeStatus(
+    wsUrl,
+    probedStatus,
+    originalMessage,
+    probedLocation,
+  );
 }
 
 /**
@@ -1828,8 +1846,17 @@ async function diagnoseConnectFailure(
     // the server answered with a status of its own; the probe below only covers
     // connections that never got one
     const status = parseInt(statusMatch[1], 10);
+    // the WebSocket error carries no Location; the tokenless probe reads it
+    const location = isRedirectStatus(status)
+      ? (await probeHandshake(wsUrl, headers, caCerts)).location
+      : undefined;
     return {
-      message: describeHandshakeStatus(wsUrl, status, originalMessage),
+      message: describeHandshakeStatus(
+        wsUrl,
+        status,
+        originalMessage,
+        location,
+      ),
       ...(RESTART_STATUSES.has(status) && { unreachable: `HTTP ${status}` }),
     };
   }
@@ -1845,6 +1872,7 @@ async function diagnoseConnectFailure(
     originalMessage,
     probed,
     sentToken,
+    probe.location,
   );
   if (!message.includes(originalMessage)) {
     logger.debug`Connect failure reported as ${message}: ${originalMessage}`;

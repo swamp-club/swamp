@@ -1925,7 +1925,13 @@ Deno.test("describeStatuslessFailure: classifies from what the tokenless probe g
     ["401, token sent over wss", wss, 401, true, `${auth(wss)} (${original})`],
     ["401, token sent over ws", ws, 401, true, original],
     ["101 (no auth required)", wss, 101, true, original],
-    ["302 redirect", wss, 302, true, original],
+    [
+      "302 redirect without a Location",
+      wss,
+      302,
+      true,
+      "wss://serve.test answered with a redirect (HTTP 302) that names no usable target; swamp does not follow redirects, so point --server at the address that serves swamp directly",
+    ],
     ["404", ws, 404, false, original],
   ];
   for (const [label, url, status, sentToken, expected] of cases) {
@@ -3488,6 +3494,60 @@ Deno.test({
       await server.shutdown();
     }
   },
+});
+
+Deno.test({
+  name:
+    "requestServerResponse: a redirected handshake names the target and the address to pass",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = Deno.serve(
+      { port: 0, hostname: "127.0.0.1", onListen: () => {} },
+      (req) => {
+        if (req.headers.get("upgrade") === "websocket") {
+          return new Response(null, {
+            status: 308,
+            headers: { location: "https://serve.example.test/" },
+          });
+        }
+        return new Response("Not found", { status: 404 });
+      },
+    );
+    try {
+      const error = await assertRejects(
+        () =>
+          requestServerResponse(
+            { server: `ws://127.0.0.1:${server.addr.port}` },
+            { type: "access.grant.list" },
+          ),
+        UserError,
+      );
+      assertStringIncludes(
+        error.message,
+        "redirected to https://serve.example.test (HTTP 308)",
+      );
+      assertStringIncludes(
+        error.message,
+        "pass --server https://serve.example.test",
+      );
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test("describeStatuslessFailure: a probed redirect names its target", () => {
+  assertEquals(
+    describeStatuslessFailure(
+      "wss://serve.test/",
+      "NoApplicationProtocol",
+      301,
+      true,
+      "https://other.test/",
+    ),
+    "wss://serve.test redirected to https://other.test (HTTP 301); swamp does not follow redirects, so pass --server https://other.test",
+  );
 });
 
 Deno.test("formatCommandTarget: is empty without explicit target flags", () => {
