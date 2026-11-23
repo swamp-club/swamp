@@ -1414,10 +1414,8 @@ class DatastoreApi {
       principal: this.#caller.principal,
       ops,
     };
-    // Content is checked before the commit's forwarded section: the checks
-    // read definitions and the catalog. Every
-    // record they read is guarded below. A retry of a commit that already
-    // landed is answered as it, without judging its content again.
+    // Content is checked before the section, which guards every record it
+    // read; a retry of a commit that landed is answered as it, unjudged.
     let content: ForwardedContentAuthority | undefined;
     const landedBefore = await commitStage(
       "landed_lookup",
@@ -1540,10 +1538,9 @@ class DatastoreApi {
         if (!coveredBy(lockKeys, this.#v3.namespace, judged)) {
           return { contentChanged: true as const };
         }
-        // Proof of possession under the lock too, so a read grant revoked
-        // during the upload no longer vouches for a chunk. Its own budget
-        // bounds the work done under the lock; a chunk it
-        // cannot decide is not provided, and the client sends its bytes.
+        // Possession again, so a read grant revoked during the upload vouches
+        // for nothing; its own budget bounds the work, and a chunk it cannot
+        // decide is not provided, so the client sends its bytes.
         const underLock = this.#commitVouchBudget(
           referenced.filter((hash) => !carried.has(hash)).length,
         );
