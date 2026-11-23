@@ -245,6 +245,36 @@ Deno.test("renderServeCheckConfig: restriction warnings are shown in every mode 
   assertEquals(json.restrictionWarnings, [warning]);
 });
 
+Deno.test("renderServeCheckConfig: admin warnings are shown and do not fail the check", () => {
+  const warning = {
+    entry: "idp-group:ops",
+    message:
+      '--admins entry "idp-group:ops" matches no one in token mode: token-mode tokens carry IdP groups only on a hosted workspace whose root signs users in with OAuth; list these admins as user:<id> or group:<name>',
+  };
+  const output = stripAnsiCode(
+    captureLogs(() =>
+      renderServeCheckConfig({ ...tokenMode, adminWarnings: [warning] }, "log")
+    ),
+  );
+  assertStringIncludes(output, "Admin warnings:");
+  assertStringIncludes(output, `! ${warning.message}`);
+  assertStringIncludes(output, "Result: PASSED");
+  const json = JSON.parse(
+    captureLogs(() =>
+      renderServeCheckConfig({ ...tokenMode, adminWarnings: [warning] }, "json")
+    ),
+  );
+  assertEquals(json.adminWarnings, [warning]);
+  assertEquals(json.passed, true);
+});
+
+Deno.test("renderServeCheckConfig: no admin warnings heading without admin warnings", () => {
+  const output = stripAnsiCode(
+    captureLogs(() => renderServeCheckConfig(tokenMode, "log")),
+  );
+  assertEquals(output.includes("Admin warnings:"), false);
+});
+
 Deno.test("renderServeCheckConfig: log mode lists grant-file errors and warnings (swamp-club#3130)", () => {
   const output = stripAnsiCode(
     captureLogs(() =>

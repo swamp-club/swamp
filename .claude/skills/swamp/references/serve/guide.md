@@ -524,9 +524,12 @@ an `idp-group:<collective-slug>` grant does not match a collective's members,
 and a `collective:<name>` grant does not match an IdP group of that name.
 
 A collective cannot be an `--admins` entry; name the admins as users or a local
-group. Upgrade every host on the datastore before creating a `collective:`
-grant: an older build cannot read the subject and leaves the grant out, so a
-`collective:` deny is not enforced on that host until it is upgraded.
+group. In token mode an `idp-group:` admin matches only on a hosted workspace
+whose root signs users in with OAuth, so serve and `serve check-config` warn
+about it elsewhere; name token-mode admins as users or a local group. Upgrade
+every host on the datastore before creating a `collective:` grant: an older
+build cannot read the subject and leaves the grant out, so a `collective:` deny
+is not enforced on that host until it is upgraded.
 
 ### Background refresh
 

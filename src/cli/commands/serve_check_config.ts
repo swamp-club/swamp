@@ -26,6 +26,7 @@ import {
 import { UserError } from "../../domain/errors.ts";
 import {
   buildServeAuthConfig,
+  findIneffectiveAdmins,
   findIneffectiveRestrictions,
 } from "../../domain/access/serve_auth_config.ts";
 import { serverRequestPayloadFields } from "../../serve/connection.ts";
@@ -204,7 +205,9 @@ export const checkConfigCommand = new Command()
       "that match no type as written are warnings, and stored grants are reported " +
       "by serve at startup. A restricted-model-types entry without a leading " +
       "'@' that is not a built-in type is a warning, since extension types are " +
-      "not loaded here: write an extension type with its '@'. Apart from a " +
+      "not loaded here: write an extension type with its '@'. In token mode an " +
+      "idp-group admin is a warning, since token-mode tokens carry IdP groups " +
+      "only on a hosted workspace whose root signs users in with OAuth. Apart from a " +
       "--grants-file or --grants-dir outside the repository, it reads only this " +
       "repository's files and never contacts the " +
       "datastore, so it cannot tell whether a control plane was already moved to a " +
@@ -396,6 +399,12 @@ export const checkConfigCommand = new Command()
 
     if (authConfig.mode !== "oauth") {
       const starts = keyUsable && grantsLoad;
+      // check-config runs outside any host, so it cannot see a root address
+      const adminWarnings = findIneffectiveAdmins({
+        mode: authConfig.mode,
+        admins: authConfig.admins,
+        offersSignInExchange: false,
+      });
       renderServeCheckConfig({
         passed: starts && routeFilesLoad,
         authMode: authConfig.mode,
@@ -403,6 +412,7 @@ export const checkConfigCommand = new Command()
         allowedCollectives: [],
         wouldStart: starts,
         restrictionWarnings,
+        ...(adminWarnings.length > 0 ? { adminWarnings } : {}),
         ...grantReport,
         ...webhookReport,
         ...(tokenSecretsKey ? { tokenSecretsKey } : {}),
