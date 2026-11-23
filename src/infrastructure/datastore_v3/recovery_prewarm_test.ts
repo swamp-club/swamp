@@ -123,7 +123,7 @@ Deno.test("prewarmForRecovery: stops at the deadline", async () => {
       availableMemory: memoryFor(1_000_000),
       chunkBytes: 1024,
       deadlineMs: 2,
-      // each look at the clock is one tick: the deadline passes after two chunks
+      // each look at the clock is one tick, so one chunk is read before the deadline
       now: () => clock++,
     });
     assertEquals(report.timedOut, true);

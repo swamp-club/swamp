@@ -191,17 +191,7 @@ export function withSyncSpan<T>(
       span.setStatus({ code: SpanStatusCode.OK });
       return result;
     } catch (error) {
-      span.setStatus({
-        code: SpanStatusCode.ERROR,
-        message: error instanceof Error ? error.message : String(error),
-      });
-      if (error instanceof Error) {
-        span.addEvent("exception", {
-          "exception.type": error.name,
-          "exception.message": error.message,
-          "exception.stacktrace": error.stack ?? "",
-        });
-      }
+      recordSpanError(span, error);
       throw error;
     } finally {
       span.end();

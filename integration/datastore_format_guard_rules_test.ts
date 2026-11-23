@@ -102,7 +102,7 @@ const GUARDED_PINNED = [
   "src/infrastructure/datastore_v3/serve_compaction_follow.ts:ServeCompactionFollower",
   "src/infrastructure/datastore_v3/v3_repo_context.ts:ensureV3CopyCurrentNow",
   "src/infrastructure/datastore_v3/v3_repo_context.ts:startV3ReplicationUpkeep",
-  "src/infrastructure/datastore_v3/v3_repo_context.ts:recoverAndMark",
+  "src/infrastructure/datastore_v3/v3_repo_context.ts:recoverAndMarkTraced",
   "src/infrastructure/datastore_v3/v3_repo_context.ts:refuseUnlessOwner",
   "src/infrastructure/datastore_v3/v3_repo_context.ts:v3ClaimCommitLog",
   "src/infrastructure/datastore_v3/v3_repo_context.ts:followV3Datastore",

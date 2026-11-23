@@ -17,9 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// A targeted recovery shaped like the dogfood v3-13 datastore: few models,
-// every touched name with thousands of live versions. Prints the reproject's
-// own split; run it with --cpu-prof to see where that time goes.
+// shaped like a datastore with few models and thousands of live versions per name
 
 import { join } from "@std/path";
 import { walk } from "@std/fs";
@@ -47,8 +45,7 @@ import { FileSystemStorage } from "../src/infrastructure/persistence/fs_datastor
 import { swampPath } from "../src/infrastructure/persistence/paths.ts";
 import { withCapturedSpans } from "../src/infrastructure/tracing/span_test_helpers.ts";
 
-// v3-13: 4 touched partitions, 17 names, about 4,300 live versions each, about
-// 1,850 commits since the last compaction; SCALE shrinks it for a quick look
+// SCALE shrinks the dataset for a quick run
 const SCALE = Number(Deno.env.get("SCALE") ?? "1");
 const NAMES_PER_MODEL = [4, 4, 4, 5];
 const VERSIONS = Math.round(4_300 * SCALE);
