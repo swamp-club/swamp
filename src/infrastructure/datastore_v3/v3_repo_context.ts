@@ -1391,20 +1391,46 @@ async function recordWriterCheckout(
  * a recovery that fails names the marker, so a user can clear it when the
  * failure persists
  */
-async function recoverAndMark(
+function recoverAndMark(
+  config: V3DatastoreConfig,
+  repoDir: string,
+): Promise<void> {
+  return withSpan(
+    "swamp.datastore.v3.recover_and_mark",
+    {},
+    () => recoverAndMarkTraced(config, repoDir),
+  );
+}
+
+async function recoverAndMarkTraced(
   config: V3DatastoreConfig,
   repoDir: string,
 ): Promise<void> {
   // what a writer that died left in the outbox lands first, so the
   // interrupted-writer recovery keeps the files its commits own; failures name
   // the outbox, not the marker
-  const handle = v3DatastoreFor(repoDir, config);
+  const handle = await withSpan(
+    "swamp.datastore.v3.recover_and_mark.open",
+    {},
+    () => Promise.resolve(v3DatastoreFor(repoDir, config)),
+  );
   const fence = v3WriterFence(config.path);
-  if (fence !== undefined) await recoverV3Outbox(handle, fence);
+  if (fence !== undefined) {
+    await withSpan(
+      "swamp.datastore.v3.recover_and_mark.outbox",
+      {},
+      () => recoverV3Outbox(handle, fence),
+    );
+  }
   try {
-    await recoverInterruptedWriter(handle, repoDir, {
-      holdsWriterLock: true,
-    });
+    await withSpan(
+      "swamp.datastore.v3.recover_and_mark.interrupted_writer",
+      {},
+      () =>
+        recoverInterruptedWriter(handle, repoDir, {
+          holdsWriterLock: true,
+        }),
+    );
   } catch (error) {
     // cut off from the storage, the recovery is retried by the next command;
     // the hold gives the failure its code

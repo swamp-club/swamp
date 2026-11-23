@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { withSpan } from "../tracing/tracer.ts";
+import { withSpan, withSyncSpan } from "../tracing/tracer.ts";
 import {
   type FollowCompactionReport,
   ServeCompactionFollower,
@@ -876,10 +876,17 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
       join(dirname(commitsDbPath), SERVE_UPSTREAM_STATE_FILE),
     )
     : undefined;
-  const commitStore = SqliteCommitStore.open(commitsDbPath, {
-    replicated: v3ReplicatesAt(datastorePath) && options.serveFollower !== true,
-    ...(serve !== undefined ? { follower: true } : {}),
-  });
+  // a schema migration runs here, synchronously
+  const commitStore = withSyncSpan(
+    "swamp.datastore.v3.open.commit_store",
+    {},
+    () =>
+      SqliteCommitStore.open(commitsDbPath, {
+        replicated: v3ReplicatesAt(datastorePath) &&
+          options.serveFollower !== true,
+        ...(serve !== undefined ? { follower: true } : {}),
+      }),
+  );
   const outbox = new SqliteCommitOutbox(v3OutboxPath(commitsDbPath), {
     // recovery judges whether this process still runs by it
     writerProcess: async () => (await localProcess()).identity,
@@ -910,34 +917,46 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
   const stateDir = readModelStateDir(repoDir);
   ensureDirSync(stateDir);
   const units = checkoutUnitsFor(stateDir);
-  const catalogStore = new CatalogStore(v3CatalogPath(repoDir));
-  const readModel = SqliteReadModel.open({
-    commitStore,
-    chunkStore,
-    cacheRoot: (ns) => v3CacheRoot(repoDir, ns),
-    stateDir,
-    catalog: new V3Catalog(catalogStore),
-    // never written onto this checkout's local tier
-    checkout: { namespace, admits },
-    // the checkout-copy guard stores again the chunks that stored commits, the
-    // compacted base or pending commits name, never released ones
-    referencedChunks: (ns, hashes) =>
-      referencedChunksOf(commitStore, outbox, ns, hashes),
-    ...(serve !== undefined ? { follower: true } : {}),
-    // a run record another writer changed leaves a stale entry in its
-    // workflow's run index; the entry is dropped and the next read repairs it.
-    // Only the own namespace is indexed
-    recordsChanged: (ns, keys) =>
-      ns === namespace ? dropRunIndexEntries(repoDir, keys) : Promise.resolve(),
-    writerInstance: writer.instance,
-    // a commit this process sent, met while one of its units is open; a unit
-    // that drops its work forgets the commits it sent, and a recovery's replay
-    // never asks
-    holdsOwnWork: (commit) => units.open > 0 && units.sent.has(commit.txnId),
-    ownWorkApplied: (commit) => {
-      units.sent.delete(commit.txnId);
-    },
-  });
+  const catalogStore = withSyncSpan(
+    "swamp.datastore.v3.open.catalog",
+    {},
+    () => new CatalogStore(v3CatalogPath(repoDir)),
+  );
+  const readModel = withSyncSpan(
+    "swamp.datastore.v3.open.read_model",
+    {},
+    () =>
+      SqliteReadModel.open({
+        commitStore,
+        chunkStore,
+        cacheRoot: (ns) => v3CacheRoot(repoDir, ns),
+        stateDir,
+        catalog: new V3Catalog(catalogStore),
+        // never written onto this checkout's local tier
+        checkout: { namespace, admits },
+        // the checkout-copy guard stores again the chunks that stored commits, the
+        // compacted base or pending commits name, never released ones
+        referencedChunks: (ns, hashes) =>
+          referencedChunksOf(commitStore, outbox, ns, hashes),
+        ...(serve !== undefined ? { follower: true } : {}),
+        // a run record another writer changed leaves a stale entry in its
+        // workflow's run index; the entry is dropped and the next read repairs it.
+        // Only the own namespace is indexed
+        recordsChanged: (ns, keys) =>
+          ns === namespace
+            ? dropRunIndexEntries(repoDir, keys)
+            : Promise.resolve(),
+        writerInstance: writer.instance,
+        // a commit this process sent, met while one of its units is open; a unit
+        // that drops its work forgets the commits it sent, and a recovery's replay
+        // never asks
+        holdsOwnWork: (commit) =>
+          units.open > 0 && units.sent.has(commit.txnId),
+        ownWorkApplied: (commit) => {
+          units.sent.delete(commit.txnId);
+        },
+      }),
+  );
   // one sink for every engine on this handle, so contexts sharing it queue
   // appends behind each other; it refuses commits once the writer lease is lost
   // and keeps each in the outbox until landed

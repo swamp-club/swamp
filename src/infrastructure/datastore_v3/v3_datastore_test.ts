@@ -180,6 +180,29 @@ Deno.test("openV3Datastore: a root commits typed changes the read model of anoth
   });
 });
 
+Deno.test("openV3Datastore: opening the commit store, catalog and read model each records a span, so a slow open is never unattributed", async () => {
+  await withTempDir(async (dir) => {
+    const datastorePath = join(dir, "datastore");
+    await initializeV3Datastore(datastorePath, "test");
+    await withCapturedSpans(async (spans) => {
+      const v3 = openV3Datastore({ repoDir: join(dir, "a"), datastorePath });
+      try {
+        for (
+          const name of [
+            "swamp.datastore.v3.open.commit_store",
+            "swamp.datastore.v3.open.catalog",
+            "swamp.datastore.v3.open.read_model",
+          ]
+        ) {
+          findSpan(spans, name);
+        }
+      } finally {
+        await v3.close();
+      }
+    });
+  });
+});
+
 Deno.test("openV3Datastore: a serve follower's replicated copy keeps SQLite's default auto-checkpoint until a sidecar is to start; a writer's opens with it off (swamp-club#4679)", async () => {
   await withTempDir(async (dir) => {
     const datastorePath = join(dir, "datastore");

@@ -94,7 +94,11 @@ import {
   setLocalProcessForTesting,
 } from "./process_identity.ts";
 import { DEFAULT_LOCK_TTL_MS, FileLock } from "../persistence/file_lock.ts";
-import { withCapturedSpans } from "../tracing/span_test_helpers.ts";
+import {
+  findSpan,
+  isChildOf,
+  withCapturedSpans,
+} from "../tracing/span_test_helpers.ts";
 import { withMockedEnv } from "../persistence/path_test_helpers.ts";
 import { LOCK_TIMEOUT_ENV_VAR } from "../../domain/datastore/datastore_config.ts";
 import {
@@ -1314,6 +1318,26 @@ Deno.test("holdV3Writer: serve's retake of a lost hold records its checkout unde
     } finally {
       await release();
     }
+  });
+});
+
+Deno.test("holdV3Writer: a first hold's recovery records a span per step, so the window before the read model's recovery is never unattributed", async () => {
+  await withUncaughtCheckout(async ({ datastorePath, repoDir }) => {
+    await withCapturedSpans(async (spans) => {
+      await holdV3Writer(config(datastorePath), repoDir);
+      const parent = findSpan(spans, "swamp.datastore.v3.recover_and_mark");
+      for (
+        const step of ["open", "outbox", "interrupted_writer"]
+      ) {
+        assert(
+          isChildOf(
+            findSpan(spans, `swamp.datastore.v3.recover_and_mark.${step}`),
+            parent,
+          ),
+          step,
+        );
+      }
+    });
   });
 });
 

@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals, assertRejects } from "@std/assert";
+import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { type Span, SpanKind, trace } from "@opentelemetry/api";
 import {
   activeSpanAttributeSetter,
@@ -32,6 +32,7 @@ import {
   withRootSpan,
   withServerSpan,
   withSpan,
+  withSyncSpan,
 } from "./tracer.ts";
 import {
   findSpan,
@@ -73,6 +74,50 @@ Deno.test("withSpan: handles non-Error throws", async () => {
     () =>
       withSpan("test.string.throw", {}, () => Promise.reject("string error")),
   );
+});
+
+Deno.test("withSyncSpan: returns the result and ends an OK span", async () => {
+  await withCapturedSpans((spans) => {
+    const result = withSyncSpan("test.sync", { "test.key": "v" }, () => 7);
+    assertEquals(result, 7);
+    const span = findSpan(spans, "test.sync");
+    assertEquals(span.status.code, SpanStatusCode.OK);
+    assertEquals(span.attributes["test.key"], "v");
+    return Promise.resolve();
+  });
+});
+
+Deno.test("withSyncSpan: rethrows and ends an ERROR span with the exception", async () => {
+  await withCapturedSpans((spans) => {
+    assertThrows(
+      () =>
+        withSyncSpan("test.sync.error", {}, () => {
+          throw new Error("sync boom");
+        }),
+      Error,
+      "sync boom",
+    );
+    const span = findSpan(spans, "test.sync.error");
+    assertEquals(span.status.code, SpanStatusCode.ERROR);
+    assertEquals(span.status.message, "sync boom");
+    assertEquals(span.events.map((e) => e.name), ["exception"]);
+    return Promise.resolve();
+  });
+});
+
+Deno.test("withSyncSpan: work inside runs with the span active", async () => {
+  await withCapturedSpans((spans) => {
+    withSyncSpan("test.sync.parent", {}, () => {
+      withSyncSpan("test.sync.child", {}, () => undefined);
+    });
+    assert(
+      isChildOf(
+        findSpan(spans, "test.sync.child"),
+        findSpan(spans, "test.sync.parent"),
+      ),
+    );
+    return Promise.resolve();
+  });
 });
 
 async function collectEvents<T extends { kind: string }>(
