@@ -33,12 +33,14 @@ import {
   INDEX_SCHEMA_VERSION,
   indexQueueGeneration,
   isIndexStale,
+  isRacyStat,
   needsCompaction,
   readRunIndex,
   readRunIndexHeader,
   removeRunIndexes,
   removeRunIndexFiles,
   removeStaleRunIndexes,
+  RUN_INDEX_RACY_WINDOW_MS,
   RUNS_INDEX_FILENAME,
   RUNS_INDEX_LOCK_FILENAME,
   statRecord,
@@ -798,4 +800,39 @@ Deno.test("appendRunIndexLines: a line appended after a torn tail still reads", 
     assertEquals(result?.entries, { "run-2": SAMPLE_INDEX["run-2"] });
     assertEquals(result?.damaged, true);
   });
+});
+
+Deno.test("isRacyStat: a ctime inside the window is racy even when mtime was set back", () => {
+  const now = 1_700_000_000_000;
+  assertEquals(
+    isRacyStat({ mtimeMs: now - 60_000, ctimeMs: now - 1_000, size: 1 }, now),
+    true,
+  );
+});
+
+Deno.test("isRacyStat: a stat exactly the window old is not racy", () => {
+  const now = 1_700_000_000_000;
+  const edge = now - RUN_INDEX_RACY_WINDOW_MS;
+  assertEquals(
+    isRacyStat({ mtimeMs: edge, ctimeMs: edge, size: 1 }, now),
+    false,
+  );
+});
+
+Deno.test("isRacyStat: a future mtime or ctime is racy", () => {
+  const now = 1_700_000_000_000;
+  assertEquals(
+    isRacyStat({ mtimeMs: now + 60_000, ctimeMs: now - 60_000, size: 1 }, now),
+    true,
+  );
+  assertEquals(
+    isRacyStat({ mtimeMs: now - 60_000, ctimeMs: now + 60_000, size: 1 }, now),
+    true,
+  );
+});
+
+Deno.test("isRacyStat: without a ctime (Windows) only mtime decides", () => {
+  const now = 1_700_000_000_000;
+  assertEquals(isRacyStat({ mtimeMs: now - 60_000, size: 1 }, now), false);
+  assertEquals(isRacyStat({ mtimeMs: now - 500, size: 1 }, now), true);
 });

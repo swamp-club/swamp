@@ -88,6 +88,23 @@ export interface RecordFingerprint {
   ino?: number;
 }
 
+/**
+ * a change within one clock tick of a stat can leave it unchanged, and Deno
+ * reports ctime in whole seconds
+ */
+export const RUN_INDEX_RACY_WINDOW_MS = 2_000;
+
+/** a future time is never trusted */
+export function isRacyStat(
+  stat: RecordFingerprint,
+  nowMs: number,
+  windowMs: number = RUN_INDEX_RACY_WINDOW_MS,
+): boolean {
+  const threshold = nowMs - windowMs;
+  return stat.mtimeMs > threshold ||
+    (stat.ctimeMs !== undefined && stat.ctimeMs > threshold);
+}
+
 export type WorkflowRunIndex = Record<string, WorkflowRunIndexEntry>;
 
 export function getIndexPath(workflowRunsDir: string): string {

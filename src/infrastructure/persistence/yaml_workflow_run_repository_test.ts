@@ -2830,6 +2830,17 @@ Deno.test("verifyIndexes: a workflow with an unreadable record does not stop the
   });
 });
 
+/** a clock past the racy window, so a record saved by the test is fingerprinted */
+function settledRepo(dir: string): YamlWorkflowRunRepository {
+  return new YamlWorkflowRunRepository(
+    dir,
+    undefined,
+    undefined,
+    undefined,
+    () => Date.now() + 60_000,
+  );
+}
+
 async function saveRunningRuns(
   repo: YamlWorkflowRunRepository,
   workflow: Workflow,
@@ -2869,7 +2880,7 @@ Deno.test("verifyIndexes: writes no index whose entries all match their records 
 
 Deno.test("verifyIndexes: reads and fingerprints entries written without a fingerprint", async () => {
   await withTempDir(async (dir) => {
-    const repo = new YamlWorkflowRunRepository(dir);
+    const repo = settledRepo(dir);
     const workflow = createTestWorkflow();
     const runs = await saveRunningRuns(repo, workflow, 2);
     const indexDir = join(dir, ".swamp", "workflow-runs", workflow.id);
@@ -2936,6 +2947,66 @@ Deno.test("verifyIndexes: catches a record replaced with one of the same size an
       join(dir, ".swamp", "workflow-runs", workflow.id),
     );
     assertEquals(index?.entries[run.id]?.status, "pending");
+  });
+});
+
+Deno.test("verifyIndexes: catches a record rewritten in place with the same size and mtime in the second it was saved (swamp-club#3470)", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const [run] = await saveRunningRuns(repo, workflow, 1);
+    const path = repo.getPath(workflow.id, run.id);
+    const original = await Deno.stat(path);
+    if (original.mtime === null) return;
+    const content = await Deno.readTextFile(path);
+    const swapped = content.replace(/^status: running$/m, "status: pending");
+    assertNotEquals(swapped, content);
+    // Rewritten through the same inode, as cp -p or rsync --inplace -t would.
+    const file = await Deno.open(path, { write: true, truncate: true });
+    try {
+      await file.write(new TextEncoder().encode(swapped));
+    } finally {
+      file.close();
+    }
+    await Deno.utime(path, original.mtime, original.mtime);
+    const rewritten = await Deno.stat(path);
+    assertEquals(rewritten.size, original.size);
+    assertEquals(rewritten.ino, original.ino);
+
+    await repo.verifyIndexes();
+
+    const index = await readRunIndex(
+      join(dir, ".swamp", "workflow-runs", workflow.id),
+    );
+    assertEquals(index?.entries[run.id]?.status, "pending");
+  });
+});
+
+Deno.test("verifyIndexes: fingerprints an entry saved inside the racy window once the window has passed", async () => {
+  await withTempDir(async (dir) => {
+    const workflow = createTestWorkflow();
+    const indexDir = join(dir, ".swamp", "workflow-runs", workflow.id);
+    const [run] = await saveRunningRuns(
+      new YamlWorkflowRunRepository(dir),
+      workflow,
+      1,
+    );
+    const saved = await readRunIndex(indexDir);
+    // Windows reports no ctime, but a just-written mtime is racy as well.
+    assertEquals(saved?.entries[run.id]?.record, undefined);
+
+    const later = settledRepo(dir);
+    await later.verifyIndexes();
+    const healed = await readRunIndex(indexDir);
+    assert(healed?.entries[run.id]?.record, "entry has a fingerprint");
+
+    const indexPath = getIndexPath(indexDir);
+    const past = new Date("2020-01-01T00:00:00Z");
+    await Deno.utime(indexPath, past, past);
+    const before = await Deno.readTextFile(indexPath);
+    await later.verifyIndexes();
+    assertEquals((await Deno.stat(indexPath)).mtime?.getTime(), past.getTime());
+    assertEquals(await Deno.readTextFile(indexPath), before);
   });
 });
 
@@ -3468,8 +3539,8 @@ Deno.test("YamlWorkflowRunRepository.deleteAllByWorkflowId: removes the repo-loc
 for (const missing of [true, false]) {
   Deno.test(`repairIndex: queued readers share one ${missing ? "rebuild" : "validation"} across repository instances (swamp-club#3857)`, async () => {
     await withTempDir(async (dir) => {
-      const repo = new YamlWorkflowRunRepository(dir);
-      const other = new YamlWorkflowRunRepository(dir);
+      const repo = settledRepo(dir);
+      const other = settledRepo(dir);
       const workflow = createTestWorkflow();
       const indexDir = localRunsDir(dir, workflow.id);
       const indexPath = getIndexPath(indexDir);
@@ -3884,7 +3955,7 @@ Deno.test("repairIndex: a shared parse failure reaches every reader and the next
 
 Deno.test("getValidatedIndex: a count mismatch reads only the records the index does not list", async () => {
   await withTempDir(async (dir) => {
-    const repo = new YamlWorkflowRunRepository(dir);
+    const repo = settledRepo(dir);
     const workflow = createTestWorkflow();
     const indexDir = join(dir, ".swamp", "workflow-runs", workflow.id);
     const runs = await saveRunningRuns(repo, workflow, 3);
@@ -3954,7 +4025,7 @@ Deno.test("getValidatedIndex: a count mismatch drops the entries of records that
 
 Deno.test("getValidatedIndex: a reader that counted before a save's entry landed reads no record and writes no index", async () => {
   await withTempDir(async (dir) => {
-    const repo = new YamlWorkflowRunRepository(dir);
+    const repo = settledRepo(dir);
     const workflow = createTestWorkflow();
     const indexDir = join(dir, ".swamp", "workflow-runs", workflow.id);
     const indexPath = getIndexPath(indexDir);
@@ -4413,7 +4484,7 @@ Deno.test("findAllSummariesByWorkflowId: a read_summaries span records the recor
 
 Deno.test("getValidatedIndex: a repair span records the records it reads and its queue wait", async () => {
   await withTempDir(async (dir) => {
-    const repo = new YamlWorkflowRunRepository(dir);
+    const repo = settledRepo(dir);
     const workflow = createWorkflowWithId(crypto.randomUUID(), "repair");
     const indexDir = runsDirOf(dir, workflow.id);
     const runs = await saveRunningRuns(repo, workflow, 3);
@@ -4729,7 +4800,7 @@ Deno.test("YamlWorkflowRunRepository.deleteOlderThan: keeps the index entry of a
 
 Deno.test("YamlWorkflowRunRepository.findAllSummariesFromIndex: records removed by an interrupted cleanup are dropped from the index without reading a record (swamp-club#3856)", async () => {
   await withTempDir(async (dir) => {
-    const repo = new YamlWorkflowRunRepository(dir);
+    const repo = settledRepo(dir);
     const workflow = createWorkflowWithId(crypto.randomUUID(), "interrupted");
     const indexDir = runsDirOf(dir, workflow.id);
     const { old, kept } = await saveRetentionHistory(dir, repo, workflow, 3, 5);

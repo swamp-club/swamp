@@ -61,6 +61,7 @@ import {
   INDEX_SCHEMA_VERSION,
   indexQueueGeneration,
   isIndexStale,
+  isRacyStat,
   isYamlRunFile,
   listDirEntries,
   needsCompaction,
@@ -258,6 +259,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   beforeSave?: (run: WorkflowRun) => Promise<void>;
 
   private readonly runIndexCache: RunIndexCache;
+  private readonly now: () => number;
 
   // the status each run object's last landed save wrote, so save need not read the record back
   private readonly lastSavedStatus = new WeakMap<WorkflowRun, string>();
@@ -275,6 +277,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     readonly unreadableContent?: UnreadableContentLookup,
   ) {
     this.baseDir = baseDir ?? swampPath(repoDir, SWAMP_SUBDIRS.workflowRuns);
+    this.now = runIndexClock ?? Date.now;
     this.runIndexCache = new RunIndexCache({
       stamp: (workflowId) => this.stampRunIndex(workflowId as WorkflowId),
       now: runIndexClock,
@@ -2250,7 +2253,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
       if (current && fingerprintMatches(entries[runId]?.record, current)) {
         continue;
       }
-      const read = await readIndexedRecord(path, tally);
+      const read = await readIndexedRecord(path, this.now(), tally);
       if (read === null) {
         if (runId in entries) {
           delete entries[runId];
@@ -2359,7 +2362,11 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
           continue;
         }
         count++;
-        const read = await readIndexedRecord(join(runsDir, entry.name), tally);
+        const read = await readIndexedRecord(
+          join(runsDir, entry.name),
+          this.now(),
+          tally,
+        );
         if (!read) continue;
         index[read.summary.id] = indexEntryOf(read.summary, read.record);
       }
@@ -2406,7 +2413,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
         // Fingerprinted only while the file still holds what this save
         // wrote: another writer may have replaced it since, and an entry
         // with no fingerprint is read and corrected by verifyIndexes.
-        const record = await fingerprintIfContent(path, written);
+        const record = await fingerprintIfContent(path, written, this.now());
         await this.appendIndexLines(
           this.getRunsDir(workflowId),
           indexDir,
@@ -2530,7 +2537,10 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
         const summary = parseWorkflowRunSummary(current.toPersistedData());
         await this.appendIndexLines(this.getRunsDir(workflowId), indexDir, [{
           id: current.id,
-          entry: indexEntryOf(summary, sameFingerprint(before, after)),
+          entry: indexEntryOf(
+            summary,
+            sameFingerprint(before, after, this.now()),
+          ),
         }], false);
       });
     } catch (error) {
@@ -2643,6 +2653,7 @@ function skipUnreadable(error: unknown): boolean {
  */
 async function readIndexedRecord(
   path: string,
+  nowMs: number,
   tally?: RecordReadTally,
 ): Promise<{ summary: WorkflowRunSummary; record?: RecordFingerprint } | null> {
   const before = await statRecord(path);
@@ -2658,28 +2669,37 @@ async function readIndexedRecord(
   const after = await statRecord(path);
   const summary = summaryFromRecord(path, content);
   if (!summary) return null;
-  return { summary, record: sameFingerprint(before, after) };
+  return { summary, record: sameFingerprint(before, after, nowMs) };
 }
 
 async function fingerprintIfContent(
   path: string,
   expected: string,
+  nowMs: number,
 ): Promise<RecordFingerprint | undefined> {
   try {
     const before = await statRecord(path);
     const content = await Deno.readTextFile(path);
     const after = await statRecord(path);
-    return content === expected ? sameFingerprint(before, after) : undefined;
+    return content === expected
+      ? sameFingerprint(before, after, nowMs)
+      : undefined;
   } catch {
     return undefined;
   }
 }
 
+/**
+ * a racy stat is left unfingerprinted, as git leaves racily clean entries: a
+ * same-size rewrite later in the same ctime second would not move it
+ */
 function sameFingerprint(
   before: RecordFingerprint | undefined | null,
   after: RecordFingerprint | undefined | null,
+  nowMs: number,
 ): RecordFingerprint | undefined {
-  return before && after && fingerprintMatches(before, after)
+  return before && after && fingerprintMatches(before, after) &&
+      !isRacyStat(after, nowMs)
     ? after
     : undefined;
 }

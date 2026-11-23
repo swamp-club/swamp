@@ -22,6 +22,7 @@ import fc from "fast-check";
 import {
   appendRunIndexLines,
   compactRunIndex,
+  isRacyStat,
   readRunIndex,
   type WorkflowRunIndexEntry,
   writeRunIndex,
@@ -92,4 +93,33 @@ Deno.test("appendRunIndexLines: appends, removals and compactions read back as a
       await Deno.remove(dir, { recursive: true });
     }
   }
+});
+
+Deno.test("isRacyStat: a stat whose mtime and ctime are both older than the window is never racy, and one inside it always is", () => {
+  fc.assert(
+    fc.property(
+      fc.integer({ min: 0, max: 2 ** 40 }),
+      fc.integer({ min: 1, max: 10_000 }),
+      fc.nat({ max: 10_000_000 }),
+      fc.nat({ max: 10_000_000 }),
+      fc.integer({ min: 0, max: 10_000 }),
+      (now, window, mtimeAge, ctimeAge, insideAge) => {
+        const old = {
+          mtimeMs: now - window - mtimeAge,
+          ctimeMs: now - window - ctimeAge,
+          size: 1,
+        };
+        assertEquals(isRacyStat(old, now, window), false);
+        const inside = insideAge % window;
+        assertEquals(
+          isRacyStat({ ...old, ctimeMs: now - inside }, now, window),
+          true,
+        );
+        assertEquals(
+          isRacyStat({ ...old, mtimeMs: now - inside }, now, window),
+          true,
+        );
+      },
+    ),
+  );
 });
