@@ -292,12 +292,16 @@ Deno.test("RetentionPolicy: version limits are not a duration retention", () => 
   );
 });
 
-Deno.test("checkRetentionConfig: a non-boolean versionLimits is ignored, never refused", () => {
-  const raw = { versionLimits: "7d" } as unknown as RetentionConfig;
-  const { errors, ignored } = checkRetentionConfig(raw);
-  assertEquals(errors, []);
-  assertEquals(ignored.map((p) => p.field), ["versionLimits"]);
-  assertEquals(RetentionPolicy.fromConfig(raw).versionLimits, true);
+Deno.test("checkRetentionConfig: a malformed versionLimits is warned about, never refused, and turns declared limits off", () => {
+  for (const value of ["no", "false", "off", 0]) {
+    const raw = { versionLimits: value } as unknown as RetentionConfig;
+    const { errors, ignored } = checkRetentionConfig(raw);
+    assertEquals(errors, []);
+    assertEquals(ignored.map((p) => p.field), ["versionLimits"]);
+    const policy = RetentionPolicy.fromConfig(raw);
+    assertEquals(policy.versionLimits, false, String(value));
+    assertEquals(policy.enforcedKinds(), [], String(value));
+  }
 });
 
 Deno.test("RetentionPolicy.appliesCutoffs: only automatic retention with a duration, never declared limits alone", () => {

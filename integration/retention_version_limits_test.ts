@@ -479,3 +479,39 @@ Deno.test("versionLimits retention: a batch signals the latest marker it rewrite
     })
   );
 });
+
+Deno.test("versionLimits retention: a staging error partway through a name leaves the catalog matching the disk", async () => {
+  await withTempDir((dir) =>
+    withRepo(dir, async (repo) => {
+      await save(repo, "m1", "log", 10, 2);
+      let staged = 0;
+      // the second staged removal fails, as a v3 staging error would
+      const original = Reflect.get(repo.data, "stageRemovedVersion") as (
+        ...args: unknown[]
+      ) => Promise<void>;
+      Reflect.set(
+        repo.data,
+        "stageRemovedVersion",
+        function (this: unknown, ...args: unknown[]) {
+          if (++staged === 2) {
+            return Promise.reject(new Error("staging refused"));
+          }
+          return original.apply(this, args);
+        },
+      );
+
+      const batch = await repo.data.collectDeclaredGarbageBatch({
+        limit: 100,
+        now: Date.now(),
+      });
+
+      assertEquals(batch.failed, 1);
+      const onDisk = await versionsOnDisk(repo, "m1", "log");
+      const inCatalog = [...repo.catalog.iterate()]
+        .filter((row) => row.data_name === "log")
+        .map((row) => row.version)
+        .sort((a, b) => a - b);
+      assertEquals(inCatalog, onDisk);
+    })
+  );
+});

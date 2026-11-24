@@ -3284,6 +3284,19 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         }
       }
     }
+    // the catalog follows the disk before staging, so a staging error never
+    // leaves rows for versions already gone
+    if (!dryRun && removed.length > 0) {
+      this.catalogStore.bulkRemoveVersions(
+        this.namespace,
+        type.normalized,
+        modelId,
+        dataName,
+        removed,
+        computeLatestFlags,
+      );
+      this.catalogStore.recordLocalWrite();
+    }
     // staged after the parallel removals, outside allSettled, so a v3 staging
     // error surfaces; one batch per version
     for (const version of removed) {
@@ -3299,16 +3312,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     // re-scan actual versions after the parallel deletions to avoid a stale
     // marker
     if (!dryRun && versionsToRemove.length > 0) {
-      this.catalogStore.bulkRemoveVersions(
-        this.namespace,
-        type.normalized,
-        modelId,
-        dataName,
-        versionsToRemove,
-        computeLatestFlags,
-      );
-      this.catalogStore.recordLocalWrite();
-
       const { onDisk, promoted } = await this.listPromotedVersions(
         type,
         modelId,

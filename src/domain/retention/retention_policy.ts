@@ -71,7 +71,7 @@ export const RETENTION_CONFIG_KEYS: readonly string[] = [
 export interface RetentionConfigProblem {
   field?: string;
   message: string;
-  replacement?: string;
+  replacement?: string | boolean;
 }
 
 /**
@@ -155,9 +155,12 @@ export function checkRetentionConfig(
     config.versionLimits !== undefined &&
     typeof config.versionLimits !== "boolean"
   ) {
+    // a malformed switch fails safe: declared limits delete data
     ignored.push({
       field: "versionLimits",
-      message: "garbageCollection.versionLimits must be true or false",
+      message:
+        "garbageCollection.versionLimits must be true or false; declared version limits stay off until it is",
+      replacement: false,
     });
   }
 
