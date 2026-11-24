@@ -133,6 +133,24 @@ Deno.test("authOAuthClientRegister: refuses a non-HTTPS provider as serve does",
     events[0].kind === "error" && events[0].error.code,
     "validation_failed",
   );
+  assertEquals(
+    events[0].kind === "error" &&
+      events[0].error.message.startsWith("--oauth-provider must use HTTPS"),
+    true,
+  );
+});
+
+Deno.test("authOAuthClientRegister: a non-HTTPS SWAMP_CLUB_URL is refused under its own name", async () => {
+  const { deps, calls } = makeDeps({
+    keyServerUrl: () => "http://club.example.com",
+  });
+  const events = await run(deps, { name: "x" });
+  assertEquals(calls, []);
+  assertEquals(events.length, 1);
+  assertEquals(
+    events[0].kind === "error" && events[0].error.message,
+    "SWAMP_CLUB_URL must use HTTPS (got http://club.example.com). HTTP is only allowed for localhost development.",
+  );
 });
 
 Deno.test("authOAuthClientRegister: refuses without a collective API key", async () => {

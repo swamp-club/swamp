@@ -42,12 +42,12 @@ import {
   ADVERTISE_ADDRESS_DESCRIPTION,
   CLUB_API_KEY_FILE_DESCRIPTION,
   DISPATCH_ENV_ALLOW_HELP,
-  OAUTH_CLIENT_SECRET_FILE_DESCRIPTION,
   SERVE_CA_CERT_DESCRIPTION,
 } from "./serve_options.ts";
 import {
   buildServeDaemonEnv,
   collectServeExtraArgs,
+  daemonOAuthEnvWarnings,
   validateServeDaemonArgs,
 } from "./serve_startup_settings.ts";
 
@@ -56,7 +56,12 @@ type AnyOptions = any;
 
 const daemonEnableCommand = new Command()
   .name("enable")
-  .description("Enable swamp serve as a system daemon (launchd/systemd)")
+  .description(
+    "Enable swamp serve as a system daemon (launchd/systemd). The service " +
+      "receives the flags given here and serve.yaml; the env: forms in the " +
+      "option help are read by swamp serve itself and are not carried from " +
+      "this shell.",
+  )
   .option(
     "--user",
     "Install as a per-user service (systemd --user / launchd agent)",
@@ -147,14 +152,18 @@ const daemonEnableCommand = new Command()
   )
   .option(
     "--oauth-client-id <id:string>",
-    "OAuth client ID (env: SWAMP_OAUTH_CLIENT_ID). When set, serve never " +
+    "OAuth client ID, taken from this flag or serve.yaml (SWAMP_OAUTH_CLIENT_ID " +
+      "in this shell is not passed to the service). When set, serve never " +
       "registers and needs the client's secret from --oauth-client-secret-file " +
       "or its stored copy; when omitted, a client is registered on first start " +
       "(headless with a collective key holding oauth:manage).",
   )
   .option(
     `${OAUTH_CLIENT_SECRET_FILE_FLAG} <path:string>`,
-    OAUTH_CLIENT_SECRET_FILE_DESCRIPTION,
+    "Path to a file containing the secret of the OAuth client named by " +
+      "--oauth-client-id; the service reads it on every start and never " +
+      "stores it. SWAMP_OAUTH_CLIENT_SECRET_FILE and SWAMP_OAUTH_CLIENT_SECRET " +
+      "in this shell are not passed to the service.",
   )
   .option(
     `${CLUB_API_KEY_FILE_FLAG} <path:string>`,
@@ -359,6 +368,11 @@ const daemonEnableCommand = new Command()
     const repoDir = resolveRepoDir(options.repoDir as string | undefined);
     const env = buildServeDaemonEnv();
     const { authConfig } = validateServeDaemonArgs(options, repoDir, env);
+    const warnings = daemonOAuthEnvWarnings(
+      (name) => Deno.env.get(name),
+      options,
+      authConfig,
+    );
     if (authConfig.mode === "oauth" || authConfig.mode === "token") {
       requireAuthenticated("swamp serve is a team feature", "serve:*");
       requireScope("serve:*");
@@ -386,7 +400,7 @@ const daemonEnableCommand = new Command()
       env,
     });
 
-    renderDaemonEnabled(ctx.outputMode, toServiceMode(mode));
+    renderDaemonEnabled(ctx.outputMode, toServiceMode(mode), warnings);
   });
 
 const daemonDisableCommand = new Command()

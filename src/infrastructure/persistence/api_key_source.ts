@@ -18,8 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
+import { API_KEY_ENV } from "../../domain/auth/auth_credentials.ts";
 
-export const API_KEY_ENV = "SWAMP_API_KEY";
+export { API_KEY_ENV };
 export const API_KEY_FILE_ENV = "SWAMP_API_KEY_FILE";
 export const CLUB_API_KEY_FILE_FLAG = "--club-api-key-file";
 

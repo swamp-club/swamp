@@ -94,7 +94,9 @@ export async function* authOAuthClientRegister(
   let provider: string;
   try {
     provider = canonicalServerUrl(
-      resolveOAuthProviderUrl(input.provider ?? deps.keyServerUrl()),
+      input.provider === undefined
+        ? resolveOAuthProviderUrl(deps.keyServerUrl(), "SWAMP_CLUB_URL")
+        : resolveOAuthProviderUrl(input.provider),
     );
   } catch (error) {
     if (error instanceof UserError) {

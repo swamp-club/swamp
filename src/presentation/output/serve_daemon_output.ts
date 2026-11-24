@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { bold, dim, green, red } from "@std/fmt/colors";
+import { bold, dim, green, red, yellow } from "@std/fmt/colors";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type { ServiceStatus } from "../../domain/serve/service_scheduler.ts";
 import type { OutputMode } from "./output.ts";
@@ -35,12 +35,13 @@ export function toServiceMode(launchdMode: "agent" | "daemon"): ServiceMode {
 export function renderDaemonEnabled(
   mode: OutputMode,
   serviceMode: ServiceMode,
+  warnings: readonly string[] = [],
 ): void {
   if (mode === "json") {
     // deno-lint-ignore no-console
     console.log(
       JSON.stringify(
-        { enabled: true, serviceMode },
+        { enabled: true, serviceMode, warnings },
         null,
         2,
       ),
@@ -64,6 +65,9 @@ export function renderDaemonEnabled(
           "  To start at boot: loginctl enable-linger $USER (Linux) or re-run with sudo (macOS)",
         ),
       );
+    }
+    for (const warning of warnings) {
+      writeOutput(`${yellow("⚠")} ${warning}`);
     }
   }
 }

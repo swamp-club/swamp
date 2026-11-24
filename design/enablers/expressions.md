@@ -646,6 +646,14 @@ The CLI and workflow paths share one pass over a behavior definition
 (`evaluateDefinitionExpressions`, `src/domain/expressions/`). Vault, `env`, and
 deferred references are left for the runtime pass.
 
+`env` is the process environment minus `SWAMP_OAUTH_CLIENT_SECRET` and
+`SWAMP_API_KEY`, matched case-insensitively (`buildEnvContext`,
+`src/domain/expressions/model_resolver.ts`), because `env.*` values land in
+persisted model output. Method subprocesses never inherit either, since
+`createSafeMethodEnv` strips every `SWAMP_*` variable a nested swamp does not
+need; extension code runs in-process and can still read the process
+environment.
+
 **Global arguments are evaluated first.** Everything else is then evaluated with
 `self.globalArguments` bound to the result, so a method argument that reads
 `self.globalArguments.X` gets X's value, not its source text. A global argument
