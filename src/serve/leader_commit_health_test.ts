@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { waitFor } from "@swamp-club/swamp-testing";
 import { DatabaseSync } from "node:sqlite";
 import { join } from "@std/path";
 import {
@@ -25,6 +26,7 @@ import {
   type CommitOutcomeEvent,
   LeaderCommitHealth,
   leaderUnreadyReason,
+  probeStorage,
   storageFailureCause,
   wireLeaderCommitHealth,
 } from "./leader_commit_health.ts";
@@ -410,5 +412,94 @@ Deno.test("wireLeaderCommitHealth: a renewal stop that fails still steps down", 
     assertEquals(calls, ["step-down"]);
   } finally {
     wiring.stop();
+  }
+});
+
+function probed(probe: () => Promise<void>) {
+  const calls: string[] = [];
+  let probes = 0;
+  const listeners = new Set<
+    (path: string, outcome: CommitOutcomeEvent) => void
+  >();
+  const health = new LeaderCommitHealth({ windowMs: 100 });
+  const wiring = wireLeaderCommitHealth({
+    datastorePath: "/ds",
+    leads: () => true,
+    onCommitOutcome: (listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    stopRenewal: () => Promise.resolve(),
+    stepDown: () => {
+      calls.push("step-down");
+      return Promise.resolve();
+    },
+    probe: () => {
+      probes++;
+      return probe();
+    },
+    probeIntervalMs: 10,
+    health,
+  });
+  const tell = (outcome: CommitOutcomeEvent) => {
+    for (const listener of listeners) listener("/ds", outcome);
+  };
+  return { calls, health, wiring, tell, probes: () => probes };
+}
+
+const enospc = () =>
+  Promise.reject(
+    Object.assign(new Error("No space left on device (os error 28)"), {
+      code: "ENOSPC",
+    }),
+  );
+
+Deno.test("wireLeaderCommitHealth: once a storage failure begins a run, failing probes trip it within the window, with no further commit", async () => {
+  const { calls, health, wiring, tell } = probed(enospc);
+  try {
+    tell({ kind: "failed", error: full() });
+    await waitFor(() => health.cannotCommit() !== undefined, "the trip");
+    await wiring.steppedDown();
+    assertEquals(calls, ["step-down"]);
+  } finally {
+    wiring.stop();
+  }
+});
+
+Deno.test("wireLeaderCommitHealth: a probe that succeeds neither trips nor resets the run", async () => {
+  const { health, wiring, tell, probes } = probed(() => Promise.resolve());
+  try {
+    tell({ kind: "failed", error: full() });
+    await waitFor(() => probes() >= 5, "several probes");
+    assertEquals(health.cannotCommit(), undefined);
+    assert(health.failing(), "the run is still open");
+    tell({ kind: "applied" });
+    const after = probes();
+    await new Promise((done) => setTimeout(done, 50));
+    assertEquals(health.failing(), false);
+    assert(probes() <= after + 1, "probing ends with the run");
+  } finally {
+    wiring.stop();
+  }
+});
+
+Deno.test("wireLeaderCommitHealth: nothing is probed before a storage failure, or after stop", async () => {
+  const { wiring, tell, probes } = probed(enospc);
+  tell({ kind: "failed", error: new Error("database is locked") });
+  await new Promise((done) => setTimeout(done, 50));
+  assertEquals(probes(), 0);
+  wiring.stop();
+  tell({ kind: "failed", error: full() });
+  await new Promise((done) => setTimeout(done, 50));
+  assertEquals(probes(), 0);
+});
+
+Deno.test("probeStorage: writes and removes its file", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    await probeStorage(dir);
+    assertEquals([...Deno.readDirSync(dir)].length, 0);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
   }
 });

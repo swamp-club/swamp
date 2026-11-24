@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { MAX_OUTAGE_CAUSE_DEPTH } from "../infrastructure/datastore_v3/datastore_outage.ts";
+import { join } from "@std/path";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import { LitestreamControlError } from "../infrastructure/datastore_v3/litestream/litestream_control_client.ts";
 
@@ -158,6 +159,11 @@ export class LeaderCommitHealth implements CommitHealthPort {
     return this.#tripped;
   }
 
+  /** a run of storage failures has begun and not yet tripped or reset */
+  failing(): boolean {
+    return this.#tripped === undefined && this.#run !== undefined;
+  }
+
   recordSuccess(): void {
     if (this.#tripped === undefined) this.#run = undefined;
   }
@@ -233,7 +239,35 @@ export interface LeaderCommitHealthWiring {
   stopRenewal(): Promise<void>;
   /** as a lost lead does: shut down, release the lease, restart as a follower */
   stepDown(): Promise<void>;
+  /**
+   * writes to the storage the leader commits on; once a run of failures has
+   * begun it runs every probeIntervalMs and its failures count too, so the
+   * trip comes within the window whatever the commit rate
+   */
+  probe?(): Promise<void>;
+  readonly probeIntervalMs?: number;
   readonly health?: LeaderCommitHealth;
+}
+
+export const STORAGE_PROBE_INTERVAL_MS = 1_000;
+
+const PROBE_FILE = ".swamp-commit-health-probe";
+
+/** a small durable write on the volume dir is on, removed after */
+export async function probeStorage(dir: string): Promise<void> {
+  const path = join(dir, PROBE_FILE);
+  const file = await Deno.open(path, {
+    write: true,
+    create: true,
+    truncate: true,
+  });
+  try {
+    await file.write(new Uint8Array(4096));
+    await file.syncData();
+  } finally {
+    file.close();
+  }
+  await Deno.remove(path);
 }
 
 export interface WiredLeaderCommitHealth {
@@ -253,10 +287,36 @@ export function wireLeaderCommitHealth(
       if (wiring.leads()) health.recordSuccess();
     },
     recordFailure: (error) => {
-      if (wiring.leads()) health.recordFailure(error);
+      if (!wiring.leads()) return;
+      health.recordFailure(error);
+      startProbing();
     },
     cannotCommit: () => health.cannotCommit(),
   };
+  // a probe success counts for nothing: only a commit that worked resets the run
+  let probeTimer: ReturnType<typeof setTimeout> | undefined;
+  let probing: Promise<void> | undefined;
+  let stopped = false;
+  const probe = wiring.probe;
+  const probeIntervalMs = wiring.probeIntervalMs ?? STORAGE_PROBE_INTERVAL_MS;
+  function startProbing(): void {
+    if (
+      probe === undefined || stopped || probeTimer !== undefined ||
+      probing !== undefined || !health.failing()
+    ) return;
+    probeTimer = setTimeout(() => {
+      probeTimer = undefined;
+      probing = probe().then(
+        () => {},
+        (error) => {
+          if (wiring.leads()) health.recordFailure(error);
+        },
+      ).finally(() => {
+        probing = undefined;
+        startProbing();
+      });
+    }, probeIntervalMs);
+  }
   const stopOutcomes = wiring.onCommitOutcome((path, outcome) => {
     if (path !== wiring.datastorePath) return;
     if (outcome.kind === "applied") port.recordSuccess();
@@ -282,6 +342,9 @@ export function wireLeaderCommitHealth(
     port,
     steppedDown: () => steppingDown ?? Promise.resolve(),
     stop: () => {
+      stopped = true;
+      if (probeTimer !== undefined) clearTimeout(probeTimer);
+      probeTimer = undefined;
       stopOutcomes();
       stopTrip();
     },

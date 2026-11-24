@@ -363,6 +363,7 @@ import {
 import { LeaderSteppingDown } from "../../serve/leader_stepping_down.ts";
 import {
   leaderUnreadyReason,
+  probeStorage,
   wireLeaderCommitHealth,
 } from "../../serve/leader_commit_health.ts";
 import { executeWorkflowWithLocks } from "../../serve/deps.ts";
@@ -679,7 +680,7 @@ import { DefinitionIdIndex } from "../../infrastructure/persistence/definition_i
 import { GRANT_MODEL_TYPE } from "../../domain/models/access/grant_model.ts";
 import { GROUP_MODEL_TYPE } from "../../domain/models/access/group_model.ts";
 import { cleanupEmptyParentDirs } from "../../infrastructure/persistence/directory_cleanup.ts";
-import { basename, join, resolve } from "@std/path";
+import { basename, dirname, join, resolve } from "@std/path";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import {
@@ -9596,6 +9597,11 @@ export const serveCommand = new Command()
         leads: () => leadership.role === "leader",
         onCommitOutcome: onV3CommitOutcome,
         stopRenewal: () => stopV3WriterRenewal(location.path),
+        // the volume the leader's copy, and its sidecar's files, are written on
+        probe: () =>
+          probeStorage(
+            dirname(v3DatastoreFor(resolvedRepoDir, location).commitsDbPath),
+          ),
         stepDown: async () => {
           Deno.exitCode = 75;
           await startShutdown();
