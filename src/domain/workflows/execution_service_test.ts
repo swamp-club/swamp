@@ -28713,13 +28713,14 @@ Deno.test("run(): a computed steps key keeps every step's outputs", async () => 
 });
 
 Deno.test("run(): a model's data map is only merged into, and so loaded, when an expression reads it", async () => {
-  // an entry the context never built, or one whose loader has not run
+  // no entry, an entry with no data map, or one whose loader has not run
   const pendingResource = (ctx: StepExecutionContext) => {
     const entry = ctx.expressionContext!.model["writer"];
-    return entry === undefined ||
-      typeof Object.getOwnPropertyDescriptor(entry, "resource")?.get ===
-        "function";
+    if (entry === undefined || !Object.hasOwn(entry, "resource")) return true;
+    return typeof Object.getOwnPropertyDescriptor(entry, "resource")?.get ===
+      "function";
   };
+
   await withRetentionService(
     [retentionWrite("w1"), retentionRead("plain", ["w1"])],
     async (service, executor, workflow) => {
@@ -28784,30 +28785,85 @@ Deno.test("WorkflowReportRunner.readsHandleAttributes: only a selected report th
     scope: "workflow",
     execute: () => Promise.resolve({ markdown: "", json: {} }),
   });
-  {
-    const runner = new WorkflowReportRunner();
-    const workflowOf = (reports: { require?: string[]; skip?: string[] }) =>
-      Workflow.create({
-        name: "reports",
-        reports,
-        jobs: [Job.create({
-          name: "main",
-          steps: [retentionWrite("w1")],
-        })],
-      });
-    assertEquals(
-      await runner.readsHandleAttributes(
-        workflowOf({ require: [reportName] }),
-        {},
-      ),
-      true,
+  const runner = new WorkflowReportRunner();
+  const workflowOf = (reports: { require?: string[]; skip?: string[] }) =>
+    Workflow.create({
+      name: "reports",
+      reports,
+      jobs: [Job.create({
+        name: "main",
+        steps: [retentionWrite("w1")],
+      })],
+    });
+  assertEquals(
+    await runner.readsHandleAttributes(
+      workflowOf({ require: [reportName] }),
+      {},
+    ),
+    true,
+  );
+  assertEquals(
+    await runner.readsHandleAttributes(
+      workflowOf({ skip: [reportName] }),
+      {},
+    ),
+    false,
+  );
+});
+
+Deno.test("run(): --last-evaluated keeps the outputs its cached workflow names, though the source no longer names them", async () => {
+  await withTempDir(async (tempDir) => {
+    const modelType = ModelType.create(
+      `test/retention-${crypto.randomUUID()}`,
     );
-    assertEquals(
-      await runner.readsHandleAttributes(
-        workflowOf({ skip: [reportName] }),
-        {},
+    const definitions = new YamlDefinitionRepository(tempDir);
+    for (const name of ["writer", "reader"]) {
+      await definitions.save(
+        modelType,
+        Definition.create({ name, type: modelType.normalized }),
+      );
+    }
+    const source = Workflow.create({
+      name: `retention-${crypto.randomUUID()}`,
+      jobs: [Job.create({
+        name: "main",
+        steps: [retentionWrite("w1"), retentionRead("plain", ["w1"])],
+      })],
+    });
+    const cachedRead = "${{ steps.w1.outputs.v }}";
+    const cached = Workflow.fromData(
+      JSON.parse(
+        JSON.stringify(source.toData()).replace('"plain"', `"${cachedRead}"`),
       ),
-      false,
     );
-  }
+    const workflowRepo = new InMemoryWorkflowRepository();
+    await workflowRepo.save(source);
+    await new YamlEvaluatedWorkflowRepository(tempDir).save(
+      cached,
+      undefined,
+      new Set([cachedRead]),
+      undefined,
+      [],
+      { inputs: {} },
+    );
+    const executor = new RetentionProbeExecutor();
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    try {
+      const service = new WorkflowExecutionService(
+        workflowRepo,
+        new InMemoryWorkflowRunRepository(),
+        tempDir,
+        executor,
+        undefined,
+        catalogStore,
+      );
+      for await (
+        const _ of service.run(source.name, { lastEvaluated: true })
+      ) { /* drain */ }
+      const steps = executor.contexts.get("read")!.expressionContext!.steps!;
+      assertEquals(steps.w1.outputs, { v: "w1" });
+    } finally {
+      catalogStore.close();
+    }
+  });
 });

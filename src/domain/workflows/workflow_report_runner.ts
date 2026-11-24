@@ -88,8 +88,8 @@ export class WorkflowReportRunner {
   }
 
   /**
-   * a built-in workflow report only counts a step's handles; a new built-in
-   * that reads their attributes must leave this set
+   * a built-in workflow report only counts a step's handles; a built-in that
+   * reads their attributes must not be registered with registerBuiltIn
    */
   async readsHandleAttributes(
     workflow: Workflow,

@@ -23,10 +23,17 @@ import { Job } from "./job.ts";
 import { Step } from "./step.ts";
 import { StepTask } from "./step_task.ts";
 import {
+  type RetentionDefinitionFinder,
   StepOutputRetention,
   stepOutputRetentionFor,
 } from "./step_output_retention.ts";
 import { Workflow } from "./workflow.ts";
+
+const retentionOf = (
+  workflow: Workflow,
+  find: RetentionDefinitionFinder,
+  inherited?: Iterable<string>,
+) => stepOutputRetentionFor([workflow], find, inherited);
 
 const expr = (cel: string) => "${{ " + cel + " }}";
 
@@ -71,7 +78,7 @@ const keeps = (retention: StepOutputRetention, ...keys: string[]) =>
   keys.map((key) => retention.keepsStepOutputs(key));
 
 Deno.test("stepOutputRetentionFor: keeps only the steps an expression names, by dot or literal key", async () => {
-  const retention = await stepOutputRetentionFor(
+  const retention = await retentionOf(
     workflowOf([
       writer(),
       reader(
@@ -91,7 +98,7 @@ Deno.test("stepOutputRetentionFor: keeps only the steps an expression names, by 
 });
 
 Deno.test("stepOutputRetentionFor: a computed steps key keeps every step", async () => {
-  const retention = await stepOutputRetentionFor(
+  const retention = await retentionOf(
     workflowOf([writer(), reader(expr("steps['write-' + self.k].status"))]),
     finder(blobs, sink),
   );
@@ -99,7 +106,7 @@ Deno.test("stepOutputRetentionFor: a computed steps key keeps every step", async
 });
 
 Deno.test("stepOutputRetentionFor: the steps namespace used whole keeps every step", async () => {
-  const retention = await stepOutputRetentionFor(
+  const retention = await retentionOf(
     workflowOf([writer(), reader(expr("size(steps)"))]),
     finder(blobs, sink),
   );
@@ -107,7 +114,7 @@ Deno.test("stepOutputRetentionFor: the steps namespace used whole keeps every st
 });
 
 Deno.test("stepOutputRetentionFor: reads guards and bare assert predicates", async () => {
-  const retention = await stepOutputRetentionFor(
+  const retention = await retentionOf(
     workflowOf([
       writer(),
       reader("plain", { guard: expr("steps.g.status == 'succeeded'") }),
@@ -133,7 +140,7 @@ Deno.test("stepOutputRetentionFor: reads the definitions of the models steps run
     name: "helper",
     globalArguments: { from: expr("steps.h.outputs.value") },
   });
-  const retention = await stepOutputRetentionFor(
+  const retention = await retentionOf(
     workflowOf([writer(), reader("plain", { target: "consumer" })]),
     finder(blobs, consumer, helper),
   );
@@ -141,17 +148,17 @@ Deno.test("stepOutputRetentionFor: reads the definitions of the models steps run
 });
 
 Deno.test("stepOutputRetentionFor: a model chosen at run time, a missing definition or an unparsable expression keeps every step", async () => {
-  const dynamic = await stepOutputRetentionFor(
+  const dynamic = await retentionOf(
     workflowOf([writer(), reader("plain", { target: expr("inputs.model") })]),
     finder(blobs, sink),
   );
   assertEquals(dynamic, StepOutputRetention.ALL);
-  const missing = await stepOutputRetentionFor(
+  const missing = await retentionOf(
     workflowOf([writer(), reader("plain", { target: "absent" })]),
     finder(blobs, sink),
   );
   assertEquals(missing, StepOutputRetention.ALL);
-  const unparsable = await stepOutputRetentionFor(
+  const unparsable = await retentionOf(
     workflowOf([writer(), reader(expr("steps.a.outputs.(("))]),
     finder(blobs, sink),
   );
@@ -159,7 +166,7 @@ Deno.test("stepOutputRetentionFor: a model chosen at run time, a missing definit
 });
 
 Deno.test("stepOutputRetentionFor: an inherited expression is read as the run's own", async () => {
-  const retention = await stepOutputRetentionFor(
+  const retention = await retentionOf(
     workflowOf([writer(), reader("plain")]),
     finder(blobs, sink),
     [expr("steps.parentNamed.outputs.v")],
@@ -168,7 +175,7 @@ Deno.test("stepOutputRetentionFor: an inherited expression is read as the run's 
 });
 
 Deno.test("stepOutputRetentionFor: a model's data is read by name or id when an expression reads either", async () => {
-  const retention = await stepOutputRetentionFor(
+  const retention = await retentionOf(
     workflowOf([
       writer(),
       reader(expr("model.blobs.resource.out.r.attributes.x")),
@@ -186,10 +193,21 @@ Deno.test("stepOutputRetentionFor: a model's data is read by name or id when an 
 });
 
 Deno.test("stepOutputRetentionFor: a computed model key reads every model's data but keeps steps selective", async () => {
-  const retention = await stepOutputRetentionFor(
+  const retention = await retentionOf(
     workflowOf([writer(), reader(expr("model[inputs.m].resource"))]),
     finder(blobs, sink),
   );
   assertEquals(retention.readsModelData("sink"), true);
   assertEquals(retention.keepsStepOutputs("write-x"), false);
+});
+
+Deno.test("stepOutputRetentionFor: a step named by either of two workflows is kept, as --last-evaluated reads its cache and the source", async () => {
+  const retention = await stepOutputRetentionFor(
+    [
+      workflowOf([writer(), reader("plain")]),
+      workflowOf([writer(), reader(expr("steps.cached.outputs.v"))]),
+    ],
+    finder(blobs, sink),
+  );
+  assertEquals(keeps(retention, "cached", "write-x"), [true, false]);
 });

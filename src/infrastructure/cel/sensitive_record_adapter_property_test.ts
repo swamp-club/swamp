@@ -374,6 +374,6 @@ Deno.test("StepOutputAccumulator: for any records, the pruned sources give the s
         assertEquals(observe(pruned), observe(records));
       },
     ),
-    { numRuns: 300 },
+    { numRuns: 1000 },
   );
 });

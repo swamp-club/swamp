@@ -4187,8 +4187,10 @@ export class WorkflowExecutionService {
       const stepOpts: StepOptions = {
         inheritedPlacement: options?.inheritedPlacement,
         authoredExpressions,
+        // --last-evaluated runs a cached workflow the source may have drifted
+        // from, so both are read
         stepOutputRetention: await this.stepOutputRetention(
-          authoredWorkflow ?? workflow,
+          authoredWorkflow ? [authoredWorkflow, workflow] : [workflow],
           inheritedExpressions,
         ),
         authoredWorkflow,
@@ -5053,7 +5055,7 @@ export class WorkflowExecutionService {
       };
       expressionContext.steps = {};
       const stepOutputRetention = await this.stepOutputRetention(
-        workflow,
+        [workflow],
         existingRun.inheritedExpressions,
       );
       const stepOutputResolver = this.createStepOutputResolver();
@@ -7619,10 +7621,7 @@ export class WorkflowExecutionService {
           }
         }
 
-        if (
-          stepExprContext && taskOutput.model && !abandoned &&
-          retention.readsModelData(taskOutput.model)
-        ) {
+        if (stepExprContext && taskOutput.model && !abandoned) {
           if (!stepExprContext.model[taskOutput.model]) {
             stepExprContext.model[taskOutput.model] = {
               input: {
@@ -7635,8 +7634,11 @@ export class WorkflowExecutionService {
             };
           }
           const modelData = stepExprContext.model[taskOutput.model];
+          // reading the maps fires their loader, which reads every stored
+          // resource of the model
+          const readsData = retention.readsModelData(taskOutput.model);
 
-          if (taskOutput.resources) {
+          if (readsData && taskOutput.resources) {
             if (!modelData.resource) modelData.resource = {};
             for (
               const [specName, instances] of Object.entries(
@@ -7649,7 +7651,7 @@ export class WorkflowExecutionService {
               Object.assign(modelData.resource[specName], instances);
             }
           }
-          if (taskOutput.files) {
+          if (readsData && taskOutput.files) {
             if (!modelData.file) modelData.file = {};
             for (
               const [specName, instances] of Object.entries(taskOutput.files)
@@ -8721,13 +8723,26 @@ export class WorkflowExecutionService {
    * vault-resolved to match a live run, but in a typed run they are read as
    * stored, a tagged field being a Secret loaded at delivery
    */
+  private createStepOutputResolver(): StepOutputResolver {
+    const readAttributes = createDataRepositoryAttributeReader(this.dataRepo);
+    return new StepOutputResolver({
+      readAttributes,
+      findChildRun: (workflowId, runId) =>
+        this.runRepo.findById(
+          createWorkflowId(workflowId),
+          createWorkflowRunId(runId),
+        ),
+      namespace: this.dataRepo.namespace,
+    });
+  }
+
   private async stepOutputRetention(
-    workflow: Workflow,
+    workflows: readonly Workflow[],
     inherited: Iterable<string>,
   ): Promise<StepOutputRetention> {
     try {
       return await stepOutputRetentionFor(
-        workflow,
+        workflows,
         async (idOrName) =>
           (await findDefinitionByIdOrName(this.definitionRepo, idOrName))
             ?.definition ?? null,
@@ -8765,19 +8780,6 @@ export class WorkflowExecutionService {
           ? handle
           : withoutAttributes(handle)
       );
-  }
-
-  private createStepOutputResolver(): StepOutputResolver {
-    const readAttributes = createDataRepositoryAttributeReader(this.dataRepo);
-    return new StepOutputResolver({
-      readAttributes,
-      findChildRun: (workflowId, runId) =>
-        this.runRepo.findById(
-          createWorkflowId(workflowId),
-          createWorkflowRunId(runId),
-        ),
-      namespace: this.dataRepo.namespace,
-    });
   }
 
   private enterJobLevel(

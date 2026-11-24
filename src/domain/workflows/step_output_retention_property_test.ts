@@ -23,8 +23,17 @@ import { Definition } from "../definitions/definition.ts";
 import { Job } from "./job.ts";
 import { Step } from "./step.ts";
 import { StepTask } from "./step_task.ts";
-import { stepOutputRetentionFor } from "./step_output_retention.ts";
+import {
+  type RetentionDefinitionFinder,
+  stepOutputRetentionFor,
+} from "./step_output_retention.ts";
 import { Workflow } from "./workflow.ts";
+
+const retentionOf = (
+  workflow: Workflow,
+  find: RetentionDefinitionFinder,
+  inherited?: Iterable<string>,
+) => stepOutputRetentionFor([workflow], find, inherited);
 
 const stepName = fc.stringMatching(/^[a-z][a-z0-9_-]{0,10}$/);
 
@@ -68,7 +77,7 @@ Deno.test("stepOutputRetentionFor: for any references in any place, every step n
           });
         });
         const target = Definition.create({ name: "target", globalArguments });
-        const retention = await stepOutputRetentionFor(
+        const retention = await retentionOf(
           Workflow.create({
             name: "wf",
             jobs: [Job.create({ name: "main", steps })],

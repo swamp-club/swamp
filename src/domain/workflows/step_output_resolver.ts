@@ -173,13 +173,8 @@ function isInertRecord(tags: Record<string, string>): boolean {
   }
 }
 
-/**
- * merges one step's records as they are read, so a step that writes many
- * resources holds only what its outputs still need: a later record wins a key,
- * as mergeStepOutputs decides, and an inert record whose every key a later
- * record now defines is dropped from the sources, since the merged view takes
- * nothing from it
- */
+// an inert record whose every key a later one defines is dropped from the
+// sources: the merged view takes nothing from it
 export class StepOutputAccumulator {
   readonly #merged: Record<string, unknown> = {};
   #records: (StepOutputRecord | undefined)[] = [];
@@ -203,6 +198,9 @@ export class StepOutputAccumulator {
       this.#dropIfSuperseded(previous);
     }
     this.#dropIfSuperseded(index);
+    // compacted once half are holes, so the slots stay bounded by the kept;
+    // only between adds, as compacting renumbers the records
+    if (this.#dropped * 2 > this.#records.length) this.#compact();
   }
 
   #dropIfSuperseded(index: number): void {
@@ -212,8 +210,6 @@ export class StepOutputAccumulator {
     ) return;
     this.#records[index] = undefined;
     this.#dropped++;
-    // compacted once half are holes, so the slots stay bounded by the kept
-    if (this.#dropped * 2 > this.#records.length) this.#compact();
   }
 
   #compact(): void {

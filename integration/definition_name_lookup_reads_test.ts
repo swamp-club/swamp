@@ -57,6 +57,9 @@ const DEFINITIONS = 60;
 const STEPS = 20;
 // each lookup re-reads its hinted file, and a run looks a step up several times
 const READS_PER_LOOKUP = 8;
+// a run reads each step target's definition once more to learn which step
+// outputs its expressions read
+const RETENTION_READS_PER_STEP = 1;
 
 interface Harness {
   dir: string;
@@ -409,7 +412,8 @@ for (
         `${primaryWalks} definition walks for ${workflows.length} workflows`,
       );
       assert(
-        filesRead <= workflows.length * DEFINITIONS + steps * READS_PER_LOOKUP,
+        filesRead <= workflows.length * DEFINITIONS +
+            steps * (READS_PER_LOOKUP + RETENTION_READS_PER_STEP),
         `read ${filesRead} definition files for ${steps} nested steps`,
       );
     });

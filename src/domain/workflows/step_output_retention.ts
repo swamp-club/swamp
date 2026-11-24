@@ -78,20 +78,18 @@ function assertsOf(workflow: Workflow) {
   return asserts;
 }
 
-/**
- * reads the workflow's own expressions and those of every definition its
- * steps run or call through model.method, since a definition's expressions
- * are evaluated in the step's context; another model's definition reaches the
- * context unevaluated, so its text reads nothing
- */
+// definitions a step runs or calls through model.method evaluate in the step's
+// context; any other model's reaches the context unevaluated
 export async function stepOutputRetentionFor(
-  workflow: Workflow,
+  workflows: readonly Workflow[],
   findDefinition: RetentionDefinitionFinder,
   inherited: Iterable<string> = [],
 ): Promise<StepOutputRetention> {
   // a parent's expressions passed down in inputs are evaluated in this run
   const references: ExpressionReferences[] = [
-    ...analyzeContentExpressions(workflow.toData(), assertsOf(workflow)),
+    ...workflows.flatMap((workflow) =>
+      analyzeContentExpressions(workflow.toData(), assertsOf(workflow))
+    ),
     ...analyzeContentExpressions([...inherited]),
   ].map((analysed) => analysed.references);
   const definitions = new Map<string, Definition | null>();
@@ -104,7 +102,7 @@ export async function stepOutputRetentionFor(
   const pending = references.flatMap((read) =>
     read.runTargets.map((run) => run.model)
   );
-  for (const job of workflow.jobs) {
+  for (const job of workflows.flatMap((workflow) => workflow.jobs)) {
     for (const step of job.steps) {
       const task = step.task.data;
       if (task.type !== "model_method") continue;

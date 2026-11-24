@@ -174,5 +174,6 @@ Deno.test("liveStepOutputs and StepOutputResolver: for any records, the sources 
         assertEquals(resolved.sources, expected);
       },
     ),
+    { numRuns: 1000 },
   );
 });
