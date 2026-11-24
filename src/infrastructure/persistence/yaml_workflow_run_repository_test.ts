@@ -40,6 +40,7 @@ import {
   markRunIndexesForRepair,
   readRunIndex,
   RUNS_INDEX_REPAIR_FILENAME,
+  statRecord,
   withIndexQueue,
   writeRunIndex,
 } from "./workflow_run_index.ts";
@@ -3131,6 +3132,107 @@ Deno.test("save: an entry is not fingerprinted against a record another writer r
       "running",
     );
   });
+});
+
+Deno.test("save: fingerprints the entry with the record it wrote", async () => {
+  await withTempDir(async (dir) => {
+    const repo = settledRepo(dir);
+    const workflow = createTestWorkflow();
+    const [run] = await saveRunningRuns(repo, workflow, 1);
+    run.complete();
+    await repo.save(workflow.id, run);
+
+    const entry = (await readRunIndex(localRunsDir(dir, workflow.id)))
+      ?.entries[run.id];
+    assertEquals(entry?.status, "failed");
+    assert(entry?.record, "entry has a fingerprint");
+    assertEquals(
+      entry.record,
+      await statRecord(repo.getPath(workflow.id, run.id)),
+    );
+  });
+});
+
+/**
+ * holds the index queue while the save of a completed run writes, then renames
+ * the file `replace` returns over the record, as another writer would
+ */
+async function saveAgainstRenamedRecord(
+  dir: string,
+  replace: (path: string, runningRecord: string) => Promise<string>,
+): Promise<
+  { repo: YamlWorkflowRunRepository; run: WorkflowRun; indexDir: string }
+> {
+  const repo = settledRepo(dir);
+  const workflow = createTestWorkflow();
+  const indexDir = localRunsDir(dir, workflow.id);
+  const [run] = await saveRunningRuns(repo, workflow, 1);
+  const path = repo.getPath(workflow.id, run.id);
+  const runningRecord = await Deno.readTextFile(path);
+  run.complete();
+
+  const release = Promise.withResolvers<void>();
+  const held = withIndexQueue(indexDir, () => release.promise);
+  const saving = repo.save(workflow.id, run);
+  try {
+    await waitFor(
+      async () => (await Deno.readTextFile(path)).includes("status: failed"),
+      "the save to write its record",
+    );
+    await Deno.rename(await replace(path, runningRecord), path);
+  } finally {
+    release.resolve();
+    await Promise.all([held, saving]);
+  }
+  return { repo, run, indexDir };
+}
+
+Deno.test("save: an entry is not fingerprinted against a record another writer renamed over it", async () => {
+  await withTempDir(async (dir) => {
+    const { repo, run, indexDir } = await saveAgainstRenamedRecord(
+      dir,
+      async (path, runningRecord) => {
+        const replacement = join(dirname(path), "replacement.tmp");
+        await Deno.writeTextFile(replacement, runningRecord);
+        return replacement;
+      },
+    );
+
+    assertEquals(
+      (await readRunIndex(indexDir))?.entries[run.id]?.record,
+      undefined,
+    );
+    await repo.verifyIndexes();
+    assertEquals(
+      (await readRunIndex(indexDir))?.entries[run.id]?.status,
+      "running",
+    );
+  });
+});
+
+Deno.test({
+  name:
+    "save: an entry is not fingerprinted against another file renamed over the record with its bytes and mtime",
+  // Windows reports no inode, so the save compares content there instead.
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withTempDir(async (dir) => {
+      const { run, indexDir } = await saveAgainstRenamedRecord(
+        dir,
+        async (path) => {
+          const written = await Deno.stat(path);
+          const replacement = join(dirname(path), "replacement.tmp");
+          await Deno.writeFile(replacement, await Deno.readFile(path));
+          await Deno.utime(replacement, written.atime!, written.mtime!);
+          return replacement;
+        },
+      );
+
+      const entry = (await readRunIndex(indexDir))?.entries[run.id];
+      assertEquals(entry?.status, "failed");
+      assertEquals(entry?.record, undefined);
+    });
+  },
 });
 
 Deno.test("verifyIndexes: a record whose body names another run is not rewritten each time", async () => {

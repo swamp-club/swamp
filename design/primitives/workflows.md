@@ -3881,6 +3881,15 @@ a newline. Every reader parses records with `@std/yaml`, so a record written
 by the general dumper (older binaries) and one written by the specialised writer
 decode to the same data, in both directions.
 
+Because the record grows with every step, a save never makes an allocation the
+size of the whole record: it encodes and writes through one fixed 64 KiB buffer
+(`atomicWriteTextFileChunked`), and the run index fingerprints the entry by
+checking that the path still names the file the save wrote (same inode, device,
+size and mtime) instead of reading the record back. A platform with no inode
+(Windows) compares the content as before. Allocations the size of the record,
+made and freed on every step, were held by the allocator's cache of large
+blocks, so a long run's memory grew with the record (swamp-club#4477).
+
 The record is first saved before the run's `started` event is yielded
 (`WorkflowExecutionService.run`), so a consumer that sees `started` can read
 the run by the id the event carries. `swamp workflow run --server --detach`
@@ -3896,6 +3905,36 @@ removed too. Run GC also sweeps repo-local run logs whose record is gone, once
 they have gone unwritten for longer than both the cutoff and seven days: a run
 writes its log before it first saves its record (`YamlWorkflowRunRepository`,
 swamp-club#3266).
+
+### Run Memory
+
+A run keeps in memory only what its expressions can read, so memory grows with
+what later steps use rather than with the data every step writes
+(`StepOutputRetention`, `src/domain/workflows/step_output_retention.ts`):
+
+- At run start, and again on resume, the run analyses every expression it can
+  evaluate: the workflow's own (guards, inputs and bare assert predicates
+  included), expressions inherited from a parent run, and the definitions of
+  every model a step runs or calls through `model.method`. A step key named by
+  `steps.<name>` or `steps['<name>']` keeps its outputs; every other step keeps
+  only its `status` in `steps.*`, and its resources are not read back. Any
+  computed `steps` key, the `steps` map used whole, a model chosen at run time,
+  a definition that cannot be found, or an expression that does not parse keeps
+  every step's outputs.
+- A step's `outputs` are merged as each resource is read
+  (`StepOutputAccumulator`). An untagged record whose every key a later record
+  defines is dropped from the step's sources, since the merged view takes
+  nothing from it; a record with a sensitive-fields tag is always kept, because
+  the accessor adapter validates every source record and could refuse it.
+- The deprecated `model.<name>.resource` and `.file` maps are merged into after
+  a step only when an expression reads that model's data, by name or id, or
+  reads the model map by a computed key. Otherwise the merge would fire the
+  map's lazy loader, which reads every stored resource of the model.
+- The handles kept for workflow-scope reports keep no `attributes` when no
+  selected report reads them (the built-in reports only count handles).
+  Otherwise the run's handles share one 16 MiB `ResourceAttributeBudget`, so a
+  handle past it reaches the report without `attributes`; a report reads that
+  content through `dataRepository.getContent`.
 
 ### Run Index and Run Search
 

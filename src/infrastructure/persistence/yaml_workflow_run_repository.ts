@@ -44,7 +44,10 @@ import {
   STEP_STARTS_DIR,
   StepStart,
 } from "../../domain/workflows/step_start.ts";
-import { atomicWriteTextFile } from "./atomic_write.ts";
+import {
+  atomicWriteTextFile,
+  atomicWriteTextFileChunked,
+} from "./atomic_write.ts";
 import {
   type UnreadableRun,
   UnreadableRunRecordError,
@@ -1038,8 +1041,9 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
       const unchanged = options.alreadyStaged === true &&
         typedStagingActive(this.markDirty) && !created &&
         await readTextIfExists(path) === content;
+      let writtenFile: Deno.FileInfo | undefined;
       if (!unchanged) {
-        await atomicWriteTextFile(path, content);
+        writtenFile = await atomicWriteTextFileChunked(path, content);
         // A stream of the file just written: a later save of the run in the
         // same unit supersedes it before it is read.
         await stageTyped(this.markDirty, () => [
@@ -1053,7 +1057,13 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
       }
       if (this.eventBus) this.lastSavedStatus.set(run, writtenStatus);
 
-      await this.updateIndexEntry(workflowId, run, path, content);
+      await this.updateIndexEntry(
+        workflowId,
+        run,
+        path,
+        content,
+        writtenFile,
+      );
 
       if (this.eventBus) {
         const currentStatus = run.status;
@@ -2404,6 +2414,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     run: WorkflowRun,
     path: string,
     written: string,
+    writtenFile?: Deno.FileInfo,
   ): Promise<void> {
     const indexDir = this.getLocalIndexDir(workflowId);
     await withIndexQueue(indexDir, async () => {
@@ -2413,7 +2424,12 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
         // Fingerprinted only while the file still holds what this save
         // wrote: another writer may have replaced it since, and an entry
         // with no fingerprint is read and corrected by verifyIndexes.
-        const record = await fingerprintIfContent(path, written, this.now());
+        const record = await fingerprintIfContent(
+          path,
+          written,
+          writtenFile,
+          this.now(),
+        );
         await this.appendIndexLines(
           this.getRunsDir(workflowId),
           indexDir,
@@ -2673,21 +2689,34 @@ async function readIndexedRecord(
   return { summary, record: sameFingerprint(before, after, nowMs) };
 }
 
+/**
+ * a save that knows the file it wrote checks the path still names that file
+ * rather than reading the record back; a platform with no inode reads it
+ */
 async function fingerprintIfContent(
   path: string,
   expected: string,
+  writtenFile: Deno.FileInfo | undefined,
   nowMs: number,
 ): Promise<RecordFingerprint | undefined> {
   try {
     const before = await statRecord(path);
-    const content = await Deno.readTextFile(path);
+    const holdsWritten = writtenFile !== undefined && writtenFile.ino !== null
+      ? sameFile(writtenFile, await Deno.stat(path))
+      : await Deno.readTextFile(path) === expected;
     const after = await statRecord(path);
-    return content === expected
-      ? sameFingerprint(before, after, nowMs)
-      : undefined;
+    return holdsWritten ? sameFingerprint(before, after, nowMs) : undefined;
   } catch {
     return undefined;
   }
+}
+
+/** ctime is left out: the rename after the write moves it on some platforms */
+function sameFile(written: Deno.FileInfo, current: Deno.FileInfo): boolean {
+  return written.ino !== null && current.ino === written.ino &&
+    current.dev === written.dev && current.size === written.size &&
+    current.mtime !== null &&
+    current.mtime.getTime() === written.mtime?.getTime();
 }
 
 /**

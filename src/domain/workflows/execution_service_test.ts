@@ -132,6 +132,8 @@ import { Job } from "./job.ts";
 import { Step } from "./step.ts";
 import { StepTask } from "./step_task.ts";
 import { TriggerCondition } from "./trigger_condition.ts";
+import { WorkflowReportRunner } from "./workflow_report_runner.ts";
+import type { WorkflowReportContext } from "../reports/report_context.ts";
 import {
   createWorkflowId,
   createWorkflowRunId,
@@ -28547,6 +28549,319 @@ Deno.test("run(): a model-method step inside a child workflow publishes ModelDat
       await runToCompletion(service, parent.name);
 
       assertEquals(published, [modelType.normalized]);
+    } finally {
+      catalogStore.close();
+    }
+  });
+});
+
+class RetentionProbeExecutor implements StepExecutor {
+  readonly contexts = new Map<string, StepExecutionContext>();
+  constructor(private readonly handleBytes = 64) {}
+
+  execute(step: Step, ctx: StepExecutionContext): Promise<unknown> {
+    this.contexts.set(ctx.stepName, ctx);
+    const task = step.task.data;
+    if (task.type !== "model_method" || task.methodName !== "write") {
+      return Promise.resolve({ type: "model_method", model: "reader" });
+    }
+    ctx.emitEvent?.({
+      kind: "model_resolved",
+      jobId: ctx.jobName,
+      stepId: ctx.stepName,
+      runId: ctx.workflowRunId,
+      modelName: "writer",
+      modelType: "test/retention",
+      modelId: "writer-id",
+      methodName: "write",
+    });
+    const attributes = { v: ctx.stepName };
+    return Promise.resolve({
+      type: "model_method",
+      model: "writer",
+      method: "write",
+      resources: {
+        result: {
+          [ctx.stepName]: {
+            id: `id-${ctx.stepName}`,
+            name: ctx.stepName,
+            version: 1,
+            modelType: "test/retention",
+            modelId: "writer-id",
+            modelName: "writer",
+            specName: "result",
+            contentType: "application/json",
+            tags: {},
+            attributes,
+            content: attributes,
+          },
+        },
+      },
+      dataHandles: [{
+        kind: "resource",
+        specName: "result",
+        name: ctx.stepName,
+        dataId: `id-${ctx.stepName}`,
+        version: 1,
+        size: this.handleBytes,
+        tags: {},
+        attributes,
+      }],
+    });
+  }
+}
+
+async function withRetentionService(
+  steps: Step[],
+  fn: (
+    service: WorkflowExecutionService,
+    executor: RetentionProbeExecutor,
+    workflow: Workflow,
+  ) => Promise<void>,
+  options: { handleBytes?: number; reports?: { require: string[] } } = {},
+): Promise<void> {
+  await withTempDir(async (tempDir) => {
+    const modelType = ModelType.create(
+      `test/retention-${crypto.randomUUID()}`,
+    );
+    const definitions = new YamlDefinitionRepository(tempDir);
+    for (const name of ["writer", "reader"]) {
+      await definitions.save(
+        modelType,
+        Definition.create({ name, type: modelType.normalized }),
+      );
+    }
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const workflow = Workflow.create({
+      name: `retention-${crypto.randomUUID()}`,
+      ...(options.reports ? { reports: options.reports } : {}),
+      jobs: [Job.create({ name: "main", steps })],
+    });
+    await workflowRepo.save(workflow);
+    const executor = new RetentionProbeExecutor(options.handleBytes);
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    try {
+      await fn(
+        new WorkflowExecutionService(
+          workflowRepo,
+          new InMemoryWorkflowRunRepository(),
+          tempDir,
+          executor,
+          undefined,
+          catalogStore,
+        ),
+        executor,
+        workflow,
+      );
+    } finally {
+      catalogStore.close();
+    }
+  });
+}
+
+const retentionWrite = (name: string) =>
+  Step.create({ name, task: StepTask.model("writer", "write") });
+
+const retentionRead = (value: string, after: string[]) =>
+  Step.create({
+    name: "read",
+    task: StepTask.model("reader", "consume", { value }),
+    dependsOn: after.map((step) => ({
+      step,
+      condition: TriggerCondition.succeeded(),
+    })),
+  });
+
+Deno.test("run(): a step's outputs stay in the context only when an expression names the step, and only its resources are read back", async () => {
+  await withRetentionService(
+    [
+      retentionWrite("w1"),
+      retentionWrite("w2"),
+      retentionRead("${{ steps.w2.outputs.v }}", ["w1", "w2"]),
+    ],
+    async (service, executor, workflow) => {
+      for await (const _ of service.run(workflow.name, {})) { /* drain */ }
+      const steps = executor.contexts.get("read")!.expressionContext!.steps!;
+      assertEquals(steps.w1, { status: "succeeded", outputs: undefined });
+      assertEquals(steps.w2.outputs, { v: "w2" });
+      assertEquals(
+        executor.contexts.get("w1")!.readsResourceContent?.("writer"),
+        false,
+      );
+      assertEquals(
+        executor.contexts.get("w2")!.readsResourceContent?.("writer"),
+        true,
+      );
+    },
+  );
+});
+
+Deno.test("run(): a computed steps key keeps every step's outputs", async () => {
+  await withRetentionService(
+    [
+      retentionWrite("w1"),
+      retentionWrite("w2"),
+      retentionRead("${{ steps['w' + string(1)].outputs.v }}", ["w1", "w2"]),
+    ],
+    async (service, executor, workflow) => {
+      for await (const _ of service.run(workflow.name, {})) { /* drain */ }
+      const steps = executor.contexts.get("read")!.expressionContext!.steps!;
+      assertEquals(steps.w1.outputs, { v: "w1" });
+      assertEquals(steps.w2.outputs, { v: "w2" });
+    },
+  );
+});
+
+Deno.test("run(): a model's data map is only merged into, and so loaded, when an expression reads it", async () => {
+  // no entry, an entry with no data map, or one whose loader has not run
+  const pendingResource = (ctx: StepExecutionContext) => {
+    const entry = ctx.expressionContext!.model["writer"];
+    if (entry === undefined || !Object.hasOwn(entry, "resource")) return true;
+    return typeof Object.getOwnPropertyDescriptor(entry, "resource")?.get ===
+      "function";
+  };
+
+  await withRetentionService(
+    [retentionWrite("w1"), retentionRead("plain", ["w1"])],
+    async (service, executor, workflow) => {
+      for await (const _ of service.run(workflow.name, {})) { /* drain */ }
+      assertEquals(pendingResource(executor.contexts.get("read")!), true);
+    },
+  );
+  await withRetentionService(
+    [
+      retentionWrite("w1"),
+      retentionRead(
+        "${{ model.writer.resource.result.w1.attributes.v }}",
+        ["w1"],
+      ),
+    ],
+    async (service, executor, workflow) => {
+      for await (const _ of service.run(workflow.name, {})) { /* drain */ }
+      const ctx = executor.contexts.get("read")!;
+      assertEquals(pendingResource(ctx), false);
+      const model = ctx.expressionContext!.model["writer"] as {
+        resource?: Record<string, Record<string, { attributes: unknown }>>;
+      };
+      assertEquals(model.resource?.result?.w1?.attributes, { v: "w1" });
+    },
+  );
+});
+
+Deno.test("run(): a workflow report reads handle attributes until the run's handles pass one shared budget", async () => {
+  const seen: unknown[] = [];
+  const reportName = `@test4477/handles-${crypto.randomUUID()}`;
+  reportRegistry.register(reportName, {
+    description: "records the handle attributes a workflow report receives",
+    scope: "workflow",
+    execute: (context) => {
+      for (const step of (context as WorkflowReportContext).stepExecutions) {
+        for (const handle of step.dataHandles) seen.push(handle.attributes);
+      }
+      return Promise.resolve({ markdown: "", json: {} });
+    },
+  });
+  await withRetentionService(
+    [
+      retentionWrite("w1"),
+      Step.create({
+        name: "w2",
+        task: StepTask.model("writer", "write"),
+        dependsOn: [{ step: "w1", condition: TriggerCondition.succeeded() }],
+      }),
+    ],
+    async (service, _executor, workflow) => {
+      for await (const _ of service.run(workflow.name, {})) { /* drain */ }
+    },
+    { handleBytes: 10 * 1024 * 1024, reports: { require: [reportName] } },
+  );
+  assertEquals(seen, [{ v: "w1" }, undefined]);
+});
+
+Deno.test("WorkflowReportRunner.readsHandleAttributes: only a selected report that is not built in reads them", async () => {
+  const reportName = `@test4477/reader-${crypto.randomUUID()}`;
+  reportRegistry.register(reportName, {
+    description: "a workflow report outside the built-ins",
+    scope: "workflow",
+    execute: () => Promise.resolve({ markdown: "", json: {} }),
+  });
+  const runner = new WorkflowReportRunner();
+  const workflowOf = (reports: { require?: string[]; skip?: string[] }) =>
+    Workflow.create({
+      name: "reports",
+      reports,
+      jobs: [Job.create({
+        name: "main",
+        steps: [retentionWrite("w1")],
+      })],
+    });
+  assertEquals(
+    await runner.readsHandleAttributes(
+      workflowOf({ require: [reportName] }),
+      {},
+    ),
+    true,
+  );
+  assertEquals(
+    await runner.readsHandleAttributes(
+      workflowOf({ skip: [reportName] }),
+      {},
+    ),
+    false,
+  );
+});
+
+Deno.test("run(): --last-evaluated keeps the outputs its cached workflow names, though the source no longer names them", async () => {
+  await withTempDir(async (tempDir) => {
+    const modelType = ModelType.create(
+      `test/retention-${crypto.randomUUID()}`,
+    );
+    const definitions = new YamlDefinitionRepository(tempDir);
+    for (const name of ["writer", "reader"]) {
+      await definitions.save(
+        modelType,
+        Definition.create({ name, type: modelType.normalized }),
+      );
+    }
+    const source = Workflow.create({
+      name: `retention-${crypto.randomUUID()}`,
+      jobs: [Job.create({
+        name: "main",
+        steps: [retentionWrite("w1"), retentionRead("plain", ["w1"])],
+      })],
+    });
+    const cachedRead = "${{ steps.w1.outputs.v }}";
+    const cached = Workflow.fromData(
+      JSON.parse(
+        JSON.stringify(source.toData()).replace('"plain"', `"${cachedRead}"`),
+      ),
+    );
+    const workflowRepo = new InMemoryWorkflowRepository();
+    await workflowRepo.save(source);
+    await new YamlEvaluatedWorkflowRepository(tempDir).save(
+      cached,
+      undefined,
+      new Set([cachedRead]),
+      undefined,
+      [],
+      { inputs: {} },
+    );
+    const executor = new RetentionProbeExecutor();
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    try {
+      const service = new WorkflowExecutionService(
+        workflowRepo,
+        new InMemoryWorkflowRunRepository(),
+        tempDir,
+        executor,
+        undefined,
+        catalogStore,
+      );
+      for await (
+        const _ of service.run(source.name, { lastEvaluated: true })
+      ) { /* drain */ }
+      const steps = executor.contexts.get("read")!.expressionContext!.steps!;
+      assertEquals(steps.w1.outputs, { v: "w1" });
     } finally {
       catalogStore.close();
     }

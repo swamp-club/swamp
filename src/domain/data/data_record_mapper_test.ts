@@ -1201,3 +1201,75 @@ Deno.test("fromResourceHandle: a guard refusal is raised, not swallowed as unpar
     ResourceTooLargeToLoadError,
   );
 });
+
+function unreadHandle(size: number): DataHandle {
+  return {
+    name: "instance-1",
+    specName: "blob",
+    kind: "resource",
+    dataId: "data-id-1" as DataId,
+    version: 1,
+    size,
+    tags: { type: "resource", modelName: "test-model" },
+    metadata: {
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      streaming: false,
+      tags: {},
+      ownerDefinition: { ownerType: "model-method", ownerRef: "ref-1" },
+    },
+  };
+}
+
+function countingGuardedRepo(): UnifiedDataRepository & { reads: number } {
+  const repo = {
+    namespace: "",
+    reads: 0,
+    loadGuard: new ResourceLoadGuard({
+      heapLimitBytes: () => 1000,
+      heapUsedBytes: () => 0,
+    }, 10),
+    getContent: () => {
+      repo.reads++;
+      return Promise.resolve(encoder.encode('{"a":1}'));
+    },
+  };
+  return repo as unknown as UnifiedDataRepository & { reads: number };
+}
+
+Deno.test("fromResourceHandle: unread, it reads no content and keeps the record's metadata", async () => {
+  const repo = countingGuardedRepo();
+  const record = await fromResourceHandle(
+    unreadHandle(7),
+    ModelType.create("test/model"),
+    "model-123",
+    "test-model",
+    repo,
+    false,
+  );
+  assertEquals(repo.reads, 0);
+  assertEquals(record.attributes, {});
+  assertEquals([record.id, record.name, record.size], [
+    "data-id-1",
+    "instance-1",
+    7,
+  ]);
+});
+
+Deno.test("fromResourceHandle: unread, it still refuses a recorded size the guard rejects", async () => {
+  const repo = countingGuardedRepo();
+  await assertRejects(
+    () =>
+      fromResourceHandle(
+        unreadHandle(1_000_000),
+        ModelType.create("test/model"),
+        "model-123",
+        "test-model",
+        repo,
+        false,
+      ),
+    ResourceTooLargeToLoadError,
+  );
+  assertEquals(repo.reads, 0);
+});

@@ -322,7 +322,9 @@ JSON; the data is still written. Read content through
 `context.dataRepository.getContent` rather than relying on `attributes` in a
 method or report that may write or read many resources. The `--json` result of a
 method run or workflow run applies its own 16 MiB budget and marks artifacts
-past it `attributesOmitted: true`.
+past it `attributesOmitted: true`. A workflow-scope report's `step.dataHandles`
+share one 16 MiB budget across the whole workflow run, so read their content
+through `getContent` too.
 
 **`metadata` sub-fields:**
 

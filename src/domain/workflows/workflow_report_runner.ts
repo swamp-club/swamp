@@ -87,6 +87,18 @@ export class WorkflowReportRunner {
     );
   }
 
+  /**
+   * a built-in workflow report only counts a step's handles; a built-in that
+   * reads their attributes must not be registered with registerBuiltIn
+   */
+  async readsHandleAttributes(
+    workflow: Workflow,
+    reportFilterOptions: ReportFilterOptions,
+  ): Promise<boolean> {
+    const selected = await this.selectedReports(workflow, reportFilterOptions);
+    return selected.some((name) => !reportRegistry.isBuiltIn(name));
+  }
+
   async runFor(args: WorkflowReportArgs): Promise<DataArtifactRef[]> {
     if (reportRegistry.getAll().length === 0) {
       return [];

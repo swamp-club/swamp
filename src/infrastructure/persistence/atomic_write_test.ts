@@ -28,6 +28,7 @@ import {
   atomicWriteFile,
   type AtomicWriteSync,
   atomicWriteTextFile,
+  atomicWriteTextFileChunked,
   syncExistingFile,
   writeSyncedTempFile,
 } from "./atomic_write.ts";
@@ -295,4 +296,104 @@ Deno.test({
       assertEquals(events, [`file ${path} exists=true`]);
     });
   },
+});
+
+const CHUNKED_CASES: ReadonlyArray<readonly [string, string]> = [
+  ["ascii", "hello: world\nfoo: bar\n"],
+  ["multi-byte", "caf\u00e9 \u20ac \u4e2d\u6587"],
+  ["astral", "rocket \u{1f680} and \u{10ffff}"],
+  ["lone surrogates", "a\ud800b\udc00c\udbff"],
+  ["empty", ""],
+  // a 64 KiB chunk takes 21845 UTF-16 units, so each case below crosses one
+  ["euro across the chunk boundary", "a".repeat(21_844) + "\u20ac".repeat(4)],
+  ["pair across the chunk boundary", "a".repeat(21_844) + "\u{1f680}x"],
+  ["lone high surrogate at the chunk boundary", "a".repeat(21_844) + "\ud800a"],
+  [
+    "lone high before a pair at the chunk boundary",
+    "a".repeat(21_843) + "\ud800" + "\u{1f680}",
+  ],
+  ["several chunks", "\u{1f680}\u00e9z".repeat(40_000)],
+];
+
+for (const [name, content] of CHUNKED_CASES) {
+  Deno.test(`atomicWriteTextFileChunked: writes the bytes Deno.writeTextFile writes (${name})`, async () => {
+    await withTempDir(async (dir) => {
+      const chunked = join(dir, "chunked.txt");
+      const whole = join(dir, "whole.txt");
+
+      await atomicWriteTextFileChunked(chunked, content);
+      await Deno.writeTextFile(whole, content);
+
+      assertEquals(await Deno.readFile(chunked), await Deno.readFile(whole));
+    });
+  });
+}
+
+Deno.test("atomicWriteTextFileChunked: overwrites the target and leaves no temp file", async () => {
+  await withTempDir(async (dir) => {
+    const filePath = join(dir, "test.yaml");
+    await Deno.writeTextFile(filePath, "original content");
+
+    await atomicWriteTextFileChunked(filePath, "new content");
+
+    assertEquals(await Deno.readTextFile(filePath), "new content");
+    assertEquals(await listTmpFiles(dir), []);
+  });
+});
+
+Deno.test("atomicWriteTextFileChunked: resolves the identity of the file at the target", async () => {
+  await withTempDir(async (dir) => {
+    const filePath = join(dir, "test.yaml");
+    const content = "\u{1f680}".repeat(50_000);
+
+    const written = await atomicWriteTextFileChunked(filePath, content);
+
+    const current = await Deno.stat(filePath);
+    assert(written.isFile);
+    assertEquals(written.ino, current.ino);
+    assertEquals(written.dev, current.dev);
+    assertEquals(written.size, current.size);
+    assertEquals(written.size, new TextEncoder().encode(content).length);
+    assertEquals(written.mtime?.getTime(), current.mtime?.getTime());
+  });
+});
+
+Deno.test("atomicWriteTextFileChunked: a failed rename removes the temp file and leaves the target", async () => {
+  await withTempDir(async (dir) => {
+    const target = join(dir, "occupied");
+    await Deno.mkdir(target);
+    await Deno.writeTextFile(join(target, "kept.txt"), "kept");
+
+    await assertRejects(() => atomicWriteTextFileChunked(target, "content"));
+
+    assertEquals(await listTmpFiles(dir), []);
+    assertEquals(await Deno.readTextFile(join(target, "kept.txt")), "kept");
+  });
+});
+
+Deno.test("atomicWriteTextFileChunked: a missing directory rejects and leaves no temp file", async () => {
+  await withTempDir(async (dir) => {
+    await assertRejects(
+      () =>
+        atomicWriteTextFileChunked(
+          join(dir, "nonexistent", "test.yaml"),
+          "content",
+        ),
+      Deno.errors.NotFound,
+    );
+    assertEquals(await listTmpFiles(dir), []);
+  });
+});
+
+Deno.test("atomicWriteTextFileChunked: refuses a chunk too small for a code point", async () => {
+  await withTempDir(async (dir) => {
+    await assertRejects(
+      () =>
+        atomicWriteTextFileChunked(join(dir, "test.yaml"), "x", {
+          chunkSize: 3,
+        }),
+      RangeError,
+    );
+    assertEquals(await listTmpFiles(dir), []);
+  });
 });

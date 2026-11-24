@@ -26,7 +26,10 @@ import {
 import { SENSITIVE_FIELDS_TAG } from "../../domain/models/data_writer.ts";
 import { SecretBagRegistry } from "../../domain/vaults/secret_bag_registry.ts";
 import { VaultSecretBag } from "../../domain/vaults/vault_secret_bag.ts";
-import { mergeStepOutputs } from "../../domain/workflows/step_output_resolver.ts";
+import {
+  mergeStepOutputs,
+  StepOutputAccumulator,
+} from "../../domain/workflows/step_output_resolver.ts";
 import { SecretBoundary } from "./secret_boundary.ts";
 import { runInFaultScope } from "./secret_fault_context.ts";
 import { isSecret, secretParts } from "./secret_value.ts";
@@ -298,5 +301,79 @@ Deno.test("stepsView: for any records, the merged view has the keys of mergeStep
         }
       });
     }),
+  );
+});
+
+const tagArb = fc.constantFrom<
+  "plain" | "tagged" | "all-plain" | "invalid"
+>("plain", "plain", "tagged", "all-plain", "invalid");
+
+function prunableRecordOf(
+  index: number,
+  fields: readonly Field[],
+  tag: "plain" | "tagged" | "all-plain" | "invalid",
+): StepOutputRecord {
+  if (tag === "tagged") return recordOf(index, fields);
+  const plain = recordOf(index, fields.map((f) => ({ ...f, tagged: false })));
+  if (tag === "plain") return plain;
+  // a star tag over plain values and an unparsable tag are both refused
+  return {
+    ...plain,
+    tags: { [SENSITIVE_FIELDS_TAG]: tag === "all-plain" ? "*" : "[not json" },
+  };
+}
+
+function observe(records: readonly StepOutputRecord[]): unknown {
+  const expected = mergeStepOutputs(records.map((r) => r.attributes));
+  const step = attachStepOutputSources(
+    { status: "succeeded", outputs: expected },
+    [{ path: [], records }],
+  );
+  return runInFaultScope((scope) => {
+    try {
+      const view = stepsView({ s: step }, SOLO_READER) as Record<
+        string,
+        Record<string, Record<string, unknown>>
+      >;
+      const outputs = view.s.outputs;
+      const seen: Record<string, unknown> = {};
+      for (const key of Object.keys(outputs).sort()) {
+        const value = outputs[key];
+        seen[key] = isSecret(value)
+          ? {
+            secret: secretParts(value)!.map((p) =>
+              (p as { location: string }).location
+            ),
+          }
+          : value;
+      }
+      return { seen, references: scope.sensitiveReferences.size };
+    } catch (error) {
+      return {
+        refused: error instanceof Error ? error.message : String(error),
+      };
+    }
+  });
+}
+
+Deno.test("StepOutputAccumulator: for any records, the pruned sources give the same merged view, the same recorded references and the same refusal as every record", () => {
+  fc.assert(
+    fc.property(
+      fc.array(fc.tuple(fieldsArb, tagArb), { minLength: 1, maxLength: 8 }),
+      (entries) => {
+        const records = entries.map(([fields, tag], index) =>
+          prunableRecordOf(index, fields, tag)
+        );
+        const accumulator = new StepOutputAccumulator();
+        for (const record of records) accumulator.add(record);
+        const pruned = accumulator.sources?.[0].records ?? [];
+        assertEquals(
+          accumulator.outputs,
+          mergeStepOutputs(records.map((r) => r.attributes)),
+        );
+        assertEquals(observe(pruned), observe(records));
+      },
+    ),
+    { numRuns: 1000 },
   );
 });

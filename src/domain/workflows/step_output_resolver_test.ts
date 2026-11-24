@@ -23,6 +23,7 @@ import {
   createDataRepositoryAttributeReader,
   liveStepOutputs,
   mergeStepOutputs,
+  StepOutputAccumulator,
   StepOutputResolver,
   type StepResourceRef,
   stepResourceRefs,
@@ -818,4 +819,50 @@ Deno.test("StepOutputResolver.resolve: inside a diagnostic phase, times the merg
     );
     assertEquals(resolved.outputs, { stdout: "hi" });
   });
+});
+
+Deno.test("StepOutputAccumulator: a record that covers two earlier ones at once keeps every later record", () => {
+  const record = (name: string, attributes: Record<string, unknown>) => ({
+    id: `id-${name}`,
+    name,
+    version: 1,
+    namespace: "",
+    modelName: "writer",
+    tags: {},
+    attributes,
+  });
+  const accumulator = new StepOutputAccumulator();
+  accumulator.add(record("a", { c: "" }));
+  accumulator.add(record("aa", { b: "" }));
+  accumulator.add(record("ab", { c: "", b: "", a: "" }));
+  accumulator.add(record("b", { a: "" }));
+  assertEquals(
+    accumulator.sources?.[0].records.map((r) => r.name),
+    ["ab", "b"],
+  );
+  assertEquals(accumulator.outputs, { a: "", b: "", c: "" });
+});
+
+Deno.test("StepOutputAccumulator: a record covering two earlier ones before its own new key keeps that key and every later record", () => {
+  const record = (name: string, attributes: Record<string, unknown>) => ({
+    id: `id-${name}`,
+    name,
+    version: 1,
+    namespace: "",
+    modelName: "writer",
+    tags: {},
+    attributes,
+  });
+  for (const last of [{ c: "new" }, { d: 1 }]) {
+    const accumulator = new StepOutputAccumulator();
+    accumulator.add(record("r0", { a: 1 }));
+    accumulator.add(record("r1", { b: 1 }));
+    accumulator.add(record("r2", { a: 2, b: 2, c: "old" }));
+    accumulator.add(record("r3", last));
+    assertEquals(
+      accumulator.sources?.[0].records.map((r) => r.name),
+      ["r2", "r3"],
+    );
+    assertEquals(accumulator.outputs, { a: 2, b: 2, c: "old", ...last });
+  }
 });

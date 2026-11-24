@@ -76,6 +76,80 @@ export async function atomicWriteTextFile(
   }
 }
 
+export const ATOMIC_WRITE_CHUNK_BYTES = 64 * 1024;
+
+export interface ChunkedWriteOptions {
+  readonly mode?: number;
+  /** at least 4, so every code point fits */
+  readonly chunkSize?: number;
+}
+
+/**
+ * writes as atomicWriteTextFile does without encoding the whole string, so no
+ * allocation grows with the content; resolves the identity of the file written
+ */
+export async function atomicWriteTextFileChunked(
+  path: string,
+  content: string,
+  options: ChunkedWriteOptions = {},
+): Promise<Deno.FileInfo> {
+  const chunkSize = options.chunkSize ?? ATOMIC_WRITE_CHUNK_BYTES;
+  if (!Number.isInteger(chunkSize) || chunkSize < 4) {
+    throw new RangeError(`Chunk size ${chunkSize} is below 4 bytes`);
+  }
+  const tmpPath = join(dirname(path), `.${crypto.randomUUID()}.tmp`);
+  try {
+    const file = await Deno.open(tmpPath, {
+      write: true,
+      createNew: true,
+      ...(options.mode !== undefined ? { mode: options.mode } : {}),
+    });
+    let info: Deno.FileInfo;
+    try {
+      await writeEncodedChunks(file, content, new Uint8Array(chunkSize));
+      info = await file.stat();
+    } finally {
+      file.close();
+    }
+    await Deno.rename(tmpPath, path);
+    return info;
+  } catch (error) {
+    await Deno.remove(tmpPath).catch(() => {});
+    throw error;
+  }
+}
+
+async function writeEncodedChunks(
+  file: Deno.FsFile,
+  content: string,
+  buffer: Uint8Array,
+): Promise<void> {
+  const encoder = new TextEncoder();
+  // a UTF-16 unit never encodes to more than 3 bytes; two keep the loop moving
+  const unitsPerChunk = Math.max(2, Math.floor(buffer.length / 3));
+  let offset = 0;
+  while (offset < content.length) {
+    let end = Math.min(content.length, offset + unitsPerChunk);
+    // a pair split across slices would encode as two U+FFFD
+    if (end < content.length && isHighSurrogate(content.charCodeAt(end - 1))) {
+      end--;
+    }
+    const { read, written } = encoder.encodeInto(
+      content.slice(offset, end),
+      buffer,
+    );
+    let flushed = 0;
+    while (flushed < written) {
+      flushed += await file.write(buffer.subarray(flushed, written));
+    }
+    offset += read;
+  }
+}
+
+function isHighSurrogate(unit: number): boolean {
+  return unit >= 0xd800 && unit <= 0xdbff;
+}
+
 export async function atomicWriteFile(
   path: string,
   content: Uint8Array,
