@@ -142,6 +142,7 @@ Deno.test({
           "database not found",
         );
         assertEquals(error.timedOut, false);
+        assertEquals(error.sidecarError, "database not found");
       },
     );
   },

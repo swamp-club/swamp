@@ -371,7 +371,9 @@ Deno.test("storageFailureCause: the bucket, the network, a timeout and an abando
 Deno.test("storageFailureCause: SQLite I/O codes for memory, locking or a file already gone are not storage failures", () => {
   const sqlite = (errcode: number) =>
     Object.assign(new Error("x"), { errcode });
-  for (const errcode of [3082, 3850, 5898]) {
+  for (
+    const errcode of [3082, 3850, 2314, 2058, 3594, 5130, 5898, 264, 520, 1032]
+  ) {
     assertEquals(storageFailureCause(sqlite(errcode)), undefined, `${errcode}`);
   }
   assertEquals(storageFailureCause(sqlite(10)), "storage_io_error");

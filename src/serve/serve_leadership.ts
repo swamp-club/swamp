@@ -167,8 +167,11 @@ export class ServeLeadership {
   #scheduled: Promise<void> | undefined;
   #ticking: Promise<void> | undefined;
   #refreshing: AbortController | undefined;
-  /** a refresh a tick stopped waiting for, which may still install its restore */
-  #leftRefresh: Promise<unknown> | undefined;
+  /**
+   * copy work a tick stopped waiting for, a restore or a feed stop, which may
+   * still change the copy: no lease is tried while any of it runs
+   */
+  readonly #leftWork = new Set<Promise<unknown>>();
   /**
    * This node took the lease but could not write its leader record: the
    * next tick retries the record, not the lease.
@@ -321,12 +324,11 @@ export class ServeLeadership {
     if (this.#timer !== undefined) clearTimeout(this.#timer);
     this.#refreshing?.abort(new Error("serve is stopping"));
     await this.#ticking;
-    const left = this.#leftRefresh;
-    if (left !== undefined) {
+    if (this.#leftWork.size > 0) {
       await this.#within(
         this.#now() + PROMOTION_FEED_STOP_MS,
-        "a copy restore left running",
-        left,
+        "copy work left running",
+        Promise.all(this.#leftWork),
       );
     }
     await this.#leadCheck;
@@ -482,10 +484,19 @@ export class ServeLeadership {
         });
       return;
     }
+    const deadline = await this.#followerDeadline();
+    // a winner would wait on it holding the lease, and no other node could lead
+    if (
+      this.#leftWork.size > 0 &&
+      !(await this.#within(
+        deadline,
+        "copy work left running",
+        Promise.all(this.#leftWork),
+      )).done
+    ) return;
     // A lease already taken, whose record write failed, is not taken again:
     // only the record is retried.
     this.#lastTakeAt = this.#now();
-    const deadline = await this.#followerDeadline();
     const follow = new AbortController();
     const followTimer = setTimeout(
       () => follow.abort(new Error("the leadership check ran out of time")),
@@ -502,24 +513,19 @@ export class ServeLeadership {
     if (this.#stopped) return;
     if (taken === "writer") {
       this.#deps.abortForwards?.();
+      // the old leader's commits must not apply after this node leads; one
+      // that cannot stop them gives the lease up rather than hold it unled
       const feed = this.#deps.feed;
       if (feed !== undefined) {
-        await this.#within(
+        const stopping = feed.stop();
+        const stopped = await this.#within(
           this.#now() + PROMOTION_FEED_STOP_MS,
           "stopping the old leader's commit feed",
-          feed.stop(),
+          stopping,
         );
-      }
-      // a restore installed after the lead would replace the leader's copy, so
-      // the lead waits for it, a tick at a time, holding the lease meanwhile
-      if (this.#leftRefresh !== undefined) {
-        const settled = await this.#within(
-          this.#now() + PROMOTION_FEED_STOP_MS,
-          "a copy restore left running",
-          this.#leftRefresh,
-        );
-        if (!settled.done) {
-          this.#leadPending = true;
+        if (!stopped.done) {
+          this.#leave(stopping);
+          this.#abandonLead("the old leader's commit feed did not stop");
           return;
         }
       }
@@ -561,10 +567,14 @@ export class ServeLeadership {
       }`;
       // stopped before the restore so nothing the old socket delivers is queued
       // to apply after it
+      const stopping = feed.stop();
       if (
-        !(await this.#within(deadline, "stopping the commit feed", feed.stop()))
+        !(await this.#within(deadline, "stopping the commit feed", stopping))
           .done
-      ) return;
+      ) {
+        this.#leave(stopping);
+        return;
+      }
     }
     if (this.#stopped) return;
     if (!await this.#refresh()) return;
@@ -579,6 +589,27 @@ export class ServeLeadership {
     ) return;
     if (this.#stopped || this.#role !== "follower") return;
     feed?.follow(this.#leader);
+  }
+
+  #leave(work: Promise<unknown>): void {
+    const left = work.catch(() => {}).finally(() => {
+      this.#leftWork.delete(left);
+    });
+    this.#leftWork.add(left);
+  }
+
+  /** as a lost lead: serve shuts down and the lease goes with the release at exit */
+  #abandonLead(why: string): void {
+    logger
+      .error`This serve node took the writer lease but cannot lead: ${why}; it stops, to start again as a follower`;
+    this.#stopped = true;
+    if (this.#timer !== undefined) clearTimeout(this.#timer);
+    this.#role = "follower";
+    this.#since = undefined;
+    this.#lostLead = Promise.resolve().then(() => this.#deps.onLostLead())
+      .catch((error) => {
+        logger.error`Stopping after giving up the lead failed: ${error}`;
+      });
   }
 
   /** slow copy work earlier in the tick never leaves the record no time to be read */
@@ -614,10 +645,7 @@ export class ServeLeadership {
             this.#leader?.fence ?? "unknown"
           } lapsed; it is aborted so the lease can be tried`;
           refresh.abort(new Error("the restore ran past the lease's lapse"));
-          const left = work.catch(() => {}).finally(() => {
-            if (this.#leftRefresh === left) this.#leftRefresh = undefined;
-          });
-          this.#leftRefresh = left;
+          this.#leave(work);
           return false;
         }
         const outcome = await this.#waitUntil(cap, work);

@@ -1074,12 +1074,12 @@ class DatastoreApi {
     const landed = await this.#commitOne(reader, partition, req.signal, true);
     if (landed instanceof Response) return landed;
     const unconfirmed = await this.#confirmLanded([landed]);
-    if (unconfirmed === undefined) this.#noteLanded([landed]);
     if (unconfirmed !== undefined) {
       return Response.json({ ...unconfirmed, seq: landed.result.seq }, {
         status: 503,
       });
     }
+    this.#noteLanded([landed]);
     return Response.json(await this.#landedReply(req, landed));
   }
 

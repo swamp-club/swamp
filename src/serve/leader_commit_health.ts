@@ -37,11 +37,18 @@ const SQLITE_READONLY = 8;
 const SQLITE_IOERR = 10;
 const SQLITE_FULL = 13;
 
-/** I/O codes that name memory, locking or a file already gone, not the disk */
-const SQLITE_IOERR_NOT_STORAGE: ReadonlySet<number> = new Set([
+/** extended codes that name memory, locking, recovery or a moved file, not the storage */
+const SQLITE_NOT_STORAGE: ReadonlySet<number> = new Set([
   3082, // SQLITE_IOERR_NOMEM
   3850, // SQLITE_IOERR_LOCK
+  2314, // SQLITE_IOERR_RDLOCK
+  2058, // SQLITE_IOERR_UNLOCK
+  3594, // SQLITE_IOERR_CHECKRESERVEDLOCK
+  5130, // SQLITE_IOERR_SHMLOCK
   5898, // SQLITE_IOERR_DELETE_NOENT
+  264, // SQLITE_READONLY_RECOVERY
+  520, // SQLITE_READONLY_CANTLOCK
+  1032, // SQLITE_READONLY_DBMOVED
 ]);
 
 const CODE_CAUSES: ReadonlyMap<string, CannotCommitCause> = new Map([
@@ -72,14 +79,13 @@ function causeOfOne(error: object): CannotCommitCause | undefined {
   }
   const e = error as Record<string, unknown>;
   if (typeof e.errcode === "number") {
+    if (SQLITE_NOT_STORAGE.has(e.errcode)) return undefined;
     // extended result codes keep the primary code in the low byte
     switch (e.errcode & 0xff) {
       case SQLITE_FULL:
         return "storage_full";
       case SQLITE_IOERR:
-        return SQLITE_IOERR_NOT_STORAGE.has(e.errcode)
-          ? undefined
-          : "storage_io_error";
+        return "storage_io_error";
       case SQLITE_READONLY:
         return "storage_read_only";
     }
@@ -212,7 +218,6 @@ export function leaderUnreadyReason(state: CannotCommit): string {
   }s: ${CAUSE_PHRASES[state.cause]}`;
 }
 
-/** V3CommitOutcome's shape, restated so serve's tracker needs no infrastructure type */
 export type CommitOutcomeEvent =
   | { readonly kind: "applied" }
   | { readonly kind: "failed"; readonly error: unknown };

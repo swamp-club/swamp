@@ -326,6 +326,7 @@ interface RepoContextState {
   readonly commitOutcomeListeners: Set<V3CommitOutcomeListener>;
   /** a follower's copy work in flight, by handle key */
   readonly follows: Map<string, V3FollowInFlight>;
+  followWorkForTesting: ((signal: AbortSignal) => Promise<void>) | undefined;
   teardownTiming: { probeGraceMs: number; releaseBoundMs: number };
 }
 
@@ -360,6 +361,7 @@ const repoState = processRuntimeSlot<RepoContextState>(() => ({
   feedWatches: [],
   commitOutcomeListeners: new Set(),
   follows: new Map(),
+  followWorkForTesting: undefined,
   teardownTiming: {
     probeGraceMs: STORAGE_PROBE_GRACE_MS,
     releaseBoundMs: UNREACHABLE_RELEASE_BOUND_MS,
@@ -370,6 +372,12 @@ interface V3FollowInFlight {
   readonly done: Promise<void>;
   readonly abort: AbortController;
   readonly startedAt: number;
+}
+
+export function setV3FollowWorkForTesting(
+  work: ((signal: AbortSignal) => Promise<void>) | undefined,
+): void {
+  repoState().followWorkForTesting = work;
 }
 
 export type V3CommitOutcomeListener = (
@@ -1321,7 +1329,10 @@ async function followBounded(
   let follow = repoState().follows.get(key);
   if (follow === undefined) {
     const abort = new AbortController();
-    const done = followV3Datastore(config, repoDir, ownerCheck, abort.signal)
+    const forTesting = repoState().followWorkForTesting;
+    const done = (forTesting !== undefined
+      ? forTesting(abort.signal)
+      : followV3Datastore(config, repoDir, ownerCheck, abort.signal))
       .finally(() => {
         if (repoState().follows.get(key)?.done === done) {
           repoState().follows.delete(key);
@@ -1329,7 +1340,7 @@ async function followBounded(
       });
     // its failure reaches whoever waits on it, or is logged once nobody does
     done.catch((error) => {
-      logger.debug`Making this follower's copy current failed: ${error}`;
+      logger.warn`Making this follower's copy current failed: ${error}`;
     });
     follow = { done, abort, startedAt: Date.now() };
     repoState().follows.set(key, follow);

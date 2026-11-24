@@ -114,6 +114,8 @@ interface Held {
   confirmedAt?: number;
   ttlMs?: number;
   renewNow?: () => void;
+  /** set once the hold is left to lapse: nothing writes it a fresh lease again */
+  renewalStopped?: boolean;
   retaking?: Promise<void>;
   advancing?: Promise<number | undefined>;
   take?: {
@@ -285,7 +287,10 @@ export function advanceV3WriterLease(
   datastorePath: string,
 ): Promise<number | undefined> {
   const entry = writerLockState().held.get(resolve(datastorePath));
-  if (entry === undefined || entry.take === undefined) {
+  if (
+    entry === undefined || entry.take === undefined ||
+    entry.renewalStopped === true
+  ) {
     return Promise.resolve(undefined);
   }
   // Callers at once share one move: two would each move the same hold.
@@ -716,10 +721,12 @@ export async function stopV3WriterRenewal(
 ): Promise<void> {
   const entry = writerLockState().held.get(resolve(datastorePath));
   if (entry === undefined) return;
+  entry.renewalStopped = true;
   if (entry.renewal !== undefined) clearInterval(entry.renewal);
   entry.renewal = undefined;
   entry.renewNow = undefined;
   await entry.renewing;
+  await entry.advancing;
 }
 
 /**

@@ -1308,7 +1308,7 @@ function stalledFeed(): FakeFeed {
   return feed;
 }
 
-Deno.test("ServeLeadership: a follower whose feed stop never returns still tries the lease each tick and takes it once free", async () => {
+Deno.test("ServeLeadership: a follower whose feed stop never returns tries no lease while it runs, since an apply may still change its copy", async () => {
   const lease = new FakeLease();
   const feed = stalledFeed();
   const leadership = new ServeLeadership({
@@ -1323,11 +1323,13 @@ Deno.test("ServeLeadership: a follower whose feed stop never returns still tries
   });
   await leadership.start("follower");
   try {
-    await waitFor(() => lease.takes >= 3, "the lease to be tried again");
+    await waitFor(() => feed.stops >= 1, "the feed to be stopped");
+    const takes = lease.takes;
     lease.free = 4;
-    await waitFor(() => leadership.role === "leader", "the lead to be taken", {
-      timeoutMs: 15_000,
-    });
+    await leadership.tick();
+    await leadership.tick();
+    assertEquals(lease.takes, takes);
+    assertEquals(leadership.role, "follower");
   } finally {
     await leadership.stop().catch(() => {});
   }
@@ -1508,7 +1510,7 @@ Deno.test("ServeLeadership.stop: a restore that was cut and ignores its abort do
   await leadership.stop();
 });
 
-Deno.test("ServeLeadership: a node that wins the lease while a cut restore has not settled waits to lead until it has", async () => {
+Deno.test("ServeLeadership: no lease is tried while a cut restore has not settled; once it has, the lease is taken and led", async () => {
   const lease = new FakeLease();
   const settle = Promise.withResolvers<void>();
   const leadership = new ServeLeadership({
@@ -1520,22 +1522,60 @@ Deno.test("ServeLeadership: a node that wins the lease while a cut restore has n
     refreshCopy: () => settle.promise,
     onLead: () => Promise.resolve(),
     onLostLead: () => Promise.resolve(),
-    tickMs: 3_600_000,
+    tickMs: 300,
     refreshPastLapseMs: 100,
   });
   await leadership.start("follower");
   try {
     lease.expiry = Date.now() + 50;
     await leadership.tick();
+    const takes = lease.takes;
     lease.free = 6;
     await leadership.tick();
-    assertEquals(leadership.role, "follower");
-    assert(lease.holdsCurrent(), "the lease is held meanwhile");
+    assertEquals(lease.takes, takes);
+    assertEquals(lease.holdsCurrent(), false);
     settle.resolve();
     await leadership.tick();
     assertEquals(leadership.role, "leader");
   } finally {
     settle.resolve();
     await leadership.stop();
+  }
+});
+
+Deno.test("ServeLeadership: a node that wins the lease but cannot stop the old leader's feed gives the lead up as a lost lead does", async () => {
+  const lease = new FakeLease();
+  const feed = new FakeFeed();
+  feed.current_ = true;
+  feed.stop = () => {
+    feed.stops++;
+    return new Promise<void>(() => {});
+  };
+  const events: string[] = [];
+  const leadership = new ServeLeadership({
+    instanceId: "me",
+    lease,
+    store: memoryStore(),
+    feed,
+    refreshCopy: () => Promise.resolve(),
+    onLead: () => {
+      events.push("lead");
+      return Promise.resolve();
+    },
+    onLostLead: () => {
+      events.push("lost");
+      return Promise.resolve();
+    },
+    tickMs: 3_600_000,
+  });
+  await leadership.start("follower");
+  try {
+    lease.free = 7;
+    await leadership.tick();
+    await leadership.lostLeadHandled();
+    assertEquals(events, ["lost"]);
+    assertEquals(leadership.role, "follower");
+  } finally {
+    await leadership.stop().catch(() => {});
   }
 });
