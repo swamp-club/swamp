@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { WHOLE_CHECKOUT_SCOPE } from "./touched_scope_journal.ts";
+import { DefaultDataLifecycleService } from "../../domain/data/data_lifecycle_service.ts";
 import { RunStartChanges } from "../../domain/datastore_v3/repository_changes.ts";
 import {
   AppendUnrecordedError,
@@ -2235,6 +2237,7 @@ async function trackedCheckout(
     handle,
     engine,
     catalog,
+    data,
     save: (name: string) =>
       data.save(
         MODEL_TYPE,
@@ -2319,5 +2322,86 @@ Deno.test("openV3Datastore: a unit that dropped its work keeps what it touched f
       () => checkout.save("dropped"),
     );
     assertEquals(checkout.scopes(), [dataPrefix("dropped")]);
+  });
+});
+
+/** every scope a unit records while it runs, the whole checkout included */
+async function scopesDuring(
+  checkout: Awaited<ReturnType<typeof trackedCheckout>>,
+  work: () => Promise<unknown>,
+): Promise<string[]> {
+  let during: string[] = [];
+  await checkout.engine.runRoot({}, async () => {
+    await work();
+    during = checkout.scopes();
+  });
+  return during;
+}
+
+Deno.test("openV3Datastore: deleting one version records that name, never the whole checkout (swamp-club#5022)", async () => {
+  await withTempDir(async (dir) => {
+    await using checkout = await trackedCheckout(dir);
+    for (let i = 0; i < 3; i++) {
+      await checkout.engine.runRoot({}, () => checkout.save("one"));
+    }
+    const scopes = await scopesDuring(
+      checkout,
+      () => checkout.data.delete(MODEL_TYPE, MODEL_ID, "one", 1),
+    );
+    assertEquals(scopes.includes(WHOLE_CHECKOUT_SCOPE), false, `${scopes}`);
+    assertEquals(
+      scopes.every((scope) => scope.startsWith(dataPrefix("one"))),
+      true,
+      `${scopes}`,
+    );
+  });
+});
+
+Deno.test("openV3Datastore: age-based data retention records the names it trims, never the whole checkout (swamp-club#5022)", async () => {
+  await withTempDir(async (dir) => {
+    await using checkout = await trackedCheckout(dir);
+    for (let i = 0; i < 3; i++) {
+      await checkout.engine.runRoot({}, () => checkout.save("aged"));
+    }
+    const service = new DefaultDataLifecycleService(
+      checkout.data,
+      {} as never,
+    );
+    const scopes = await scopesDuring(
+      checkout,
+      () =>
+        service.deleteDataOlderThan(new Date(Date.now() + 60_000), {
+          dryRun: false,
+          isExempt: () => false,
+        }),
+    );
+    assertEquals(scopes.includes(WHOLE_CHECKOUT_SCOPE), false, `${scopes}`);
+    assertEquals(scopes.length > 0, true);
+  });
+});
+
+Deno.test("openV3Datastore: a declared-limit batch records the names it trims, never the whole checkout (swamp-club#5022)", async () => {
+  await withTempDir(async (dir) => {
+    await using checkout = await trackedCheckout(dir);
+    for (let i = 0; i < 4; i++) {
+      await checkout.engine.runRoot({}, () => checkout.save("capped"));
+    }
+    // the newest declaration is what the batch applies
+    checkout.catalog.upsert({
+      ...[...checkout.catalog.iterate()].filter((row) =>
+        row.data_name === "capped"
+      ).sort((a, b) => b.version - a.version)[0],
+      garbage_collection: "1",
+    });
+    let removed = 0;
+    const scopes = await scopesDuring(checkout, async () => {
+      const batch = await checkout.data.collectDeclaredGarbageBatch({
+        limit: 100,
+        now: Date.now(),
+      });
+      removed = batch.versionsRemoved;
+    });
+    assertEquals(removed > 0, true);
+    assertEquals(scopes.includes(WHOLE_CHECKOUT_SCOPE), false, `${scopes}`);
   });
 });

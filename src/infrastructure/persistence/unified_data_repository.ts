@@ -1800,7 +1800,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
 
         const newLatest = maxOf(promoted);
         if (newLatest !== undefined) {
-          await this.updateLatestMarker(type, modelId, dataName, newLatest);
+          await this.writeLatestMarker(type, modelId, dataName, newLatest);
           const latestData = await this.findByName(
             type,
             modelId,
@@ -1825,7 +1825,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           // only in-flight deferred writes remain: point at NO_PROMOTED_VERSION
           // so reads find nothing instead of the highest version on disk;
           // promotion moves the marker forward again
-          await this.updateLatestMarker(
+          await this.writeLatestMarker(
             type,
             modelId,
             dataName,
@@ -3287,17 +3287,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         dataName,
       );
       const latestVersion = maxOf(promoted);
-      // signalled before it lands: an unsignalled marker write makes the next
-      // v3 recovery walk the whole checkout
-      const latestMarker = {
-        kind: "write" as const,
-        path: join(this.getDataNameDir(type, modelId, dataName), "latest"),
-      };
       if (latestVersion !== undefined) {
-        await this.staged(
-          latestMarker,
-          () => this.updateLatestMarker(type, modelId, dataName, latestVersion),
-        );
+        await this.writeLatestMarker(type, modelId, dataName, latestVersion);
         const latestData = await this.findByName(
           type,
           modelId,
@@ -3308,15 +3299,11 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           this.catalogUpsert(type, modelId, latestData);
         }
       } else if (onDisk.length > 0) {
-        await this.staged(
-          latestMarker,
-          () =>
-            this.updateLatestMarker(
-              type,
-              modelId,
-              dataName,
-              NO_PROMOTED_VERSION,
-            ),
+        await this.writeLatestMarker(
+          type,
+          modelId,
+          dataName,
+          NO_PROMOTED_VERSION,
         );
       } else {
         const dataNameDir = this.getDataNameDir(type, modelId, dataName);
@@ -4454,6 +4441,25 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       await this.stageLatestAfterRemoval("data.gc", type, modelId, name);
     }
     return { versionsRemoved, bytesReclaimed };
+  }
+
+  /**
+   * signalled before it lands: an unsignalled marker write makes the next v3
+   * recovery walk the whole checkout
+   */
+  private writeLatestMarker(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+    version: number,
+  ): Promise<void> {
+    return this.staged(
+      {
+        kind: "write",
+        path: join(this.getDataNameDir(type, modelId, dataName), "latest"),
+      },
+      () => this.updateLatestMarker(type, modelId, dataName, version),
+    );
   }
 
   private async updateLatestMarker(

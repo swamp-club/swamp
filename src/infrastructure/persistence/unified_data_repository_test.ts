@@ -1253,12 +1253,14 @@ Deno.test("delete: deleting the last version also signals the latest marker's re
     calls.length = 0;
 
     await repo.delete(testType, "m1", "last-ver", 1);
-    // An older version leaves the marker in place.
+    // An older version rewrites the marker in place, signalled like any write:
+    // unsignalled, v3 recovery would walk the whole checkout.
     const latest = join(
       repo.getDataNameDir(testType, "m1", "last-ver"),
       "latest",
     );
-    assertEquals(calls.includes(latest), false);
+    assertEquals(calls.includes(latest), true);
+    calls.length = 0;
 
     await repo.delete(testType, "m1", "last-ver", 2);
     // The last one removes it, and a synced datastore must hear of it.
