@@ -130,6 +130,7 @@ import {
   partitionOf,
 } from "../domain/datastore_v3/partition_key.ts";
 import { ReadModelIncompleteError } from "../domain/datastore_v3/read_model.ts";
+import { storageFailureCause } from "./leader_commit_health.ts";
 import { RecordKey } from "../domain/datastore_v3/record_key.ts";
 import {
   isDelegationModelType,
@@ -814,11 +815,25 @@ async function answerDatastoreRequest(
           : methodNotAllowed("GET");
     }
   } catch (error) {
-    if (req.method !== "GET" && route.kind !== "has") {
-      ctx.commitHealth?.recordFailure(error);
-    }
-    return datastoreErrorResponse(error);
+    const writes = req.method !== "GET" && route.kind !== "has";
+    if (writes) ctx.commitHealth?.recordFailure(error);
+    return (writes ? storageFailureResponse(error, ctx) : undefined) ??
+      datastoreErrorResponse(error);
   }
+}
+
+/**
+ * a write that failed on this leader's own storage is refused as not the
+ * leader: nothing is acknowledged, and a retry reaches the leader that takes
+ * over, or finds the commit by its txnId if it landed
+ */
+function storageFailureResponse(
+  error: unknown,
+  ctx: Pick<ConnectionContext, "commitHealth">,
+): Response | undefined {
+  if (ctx.commitHealth === undefined) return undefined;
+  if (storageFailureCause(error) === undefined) return undefined;
+  return notLeaderResponse(new ServeNotLeaderError(undefined), false);
 }
 
 /** One request's view of the datastore, as one caller. */
@@ -1136,7 +1151,8 @@ class DatastoreApi {
           );
       } catch (error) {
         this.#deps.ctx.commitHealth?.recordFailure(error);
-        outcome = datastoreErrorResponse(error);
+        outcome = storageFailureResponse(error, this.#deps.ctx) ??
+          datastoreErrorResponse(error);
       }
       if (outcome instanceof Response) {
         await reader.cancel();

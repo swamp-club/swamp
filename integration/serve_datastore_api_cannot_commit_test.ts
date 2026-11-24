@@ -107,7 +107,9 @@ Deno.test({
         disk.full = true;
         for (let attempt = 1; attempt <= 3; attempt++) {
           const failed = await save(server, "alice-token", 2, 1);
-          assertEquals(failed.status, 500, JSON.stringify(failed.json));
+          // refused as retryable, never a bare internal error
+          assertEquals(failed.status, 503, JSON.stringify(failed.json));
+          assertEquals(failed.json.code, "serve_not_leader");
           assertEquals(
             leading.health.cannotCommit() !== undefined,
             attempt === 3,
@@ -151,13 +153,13 @@ Deno.test({
       const leading = lead(server);
       try {
         disk.full = true;
-        assertEquals((await save(server, "alice-token", 1, 0)).status, 500);
-        assertEquals((await save(server, "alice-token", 1, 0)).status, 500);
+        assertEquals((await save(server, "alice-token", 1, 0)).status, 503);
+        assertEquals((await save(server, "alice-token", 1, 0)).status, 503);
         disk.full = false;
         assertEquals((await save(server, "alice-token", 1, 0)).status, 200);
         disk.full = true;
-        assertEquals((await save(server, "alice-token", 2, 1)).status, 500);
-        assertEquals((await save(server, "alice-token", 2, 1)).status, 500);
+        assertEquals((await save(server, "alice-token", 2, 1)).status, 503);
+        assertEquals((await save(server, "alice-token", 2, 1)).status, 503);
         assertEquals(leading.health.cannotCommit(), undefined);
         assertEquals(leading.steps, []);
       } finally {
@@ -177,13 +179,13 @@ Deno.test({
       const leading = lead(server);
       try {
         disk.full = true;
-        assertEquals((await save(server, "alice-token", 1, 0)).status, 500);
-        assertEquals((await save(server, "alice-token", 1, 0)).status, 500);
+        assertEquals((await save(server, "alice-token", 1, 0)).status, 503);
+        assertEquals((await save(server, "alice-token", 1, 0)).status, 503);
         assert(
           leading.health.cannotCommit() === undefined,
           "two failed requests are two failures, not four",
         );
-        assertEquals((await save(server, "alice-token", 1, 0)).status, 500);
+        assertEquals((await save(server, "alice-token", 1, 0)).status, 503);
         assert(leading.health.cannotCommit() !== undefined);
       } finally {
         leading.wired.stop();
@@ -205,12 +207,12 @@ Deno.test({
         const landed = await post(partitionPath(server), "alice-token", body);
         assertEquals(landed.status, 200, JSON.stringify(landed.json));
         disk.full = true;
-        assertEquals((await save(server, "alice-token", 2, 1)).status, 500);
-        assertEquals((await save(server, "alice-token", 2, 1)).status, 500);
+        assertEquals((await save(server, "alice-token", 2, 1)).status, 503);
+        assertEquals((await save(server, "alice-token", 2, 1)).status, 503);
         const retried = await post(partitionPath(server), "alice-token", body);
         assertEquals(retried.status, 200, JSON.stringify(retried.json));
         assertEquals(retried.json.duplicate, true);
-        assertEquals((await save(server, "alice-token", 2, 1)).status, 500);
+        assertEquals((await save(server, "alice-token", 2, 1)).status, 503);
         assert(leading.health.cannotCommit() !== undefined);
       } finally {
         leading.wired.stop();
@@ -229,15 +231,15 @@ Deno.test({
       const leading = lead(server, { replicating: true });
       try {
         disk.full = true;
-        assertEquals((await save(server, "alice-token", 1, 0)).status, 500);
-        assertEquals((await save(server, "alice-token", 1, 0)).status, 500);
+        assertEquals((await save(server, "alice-token", 1, 0)).status, 503);
+        assertEquals((await save(server, "alice-token", 1, 0)).status, 503);
         disk.full = false;
         server.ctx.confirmReplicated = () =>
           Promise.reject(new Error("the replica could not be reached"));
         assertEquals((await save(server, "alice-token", 1, 0)).status, 503);
         server.ctx.confirmReplicated = undefined;
         disk.full = true;
-        assertEquals((await save(server, "alice-token", 2, 1)).status, 500);
+        assertEquals((await save(server, "alice-token", 2, 1)).status, 503);
         assert(leading.health.cannotCommit() !== undefined);
       } finally {
         leading.wired.stop();

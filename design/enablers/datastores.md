@@ -9274,7 +9274,11 @@ recovered, marked or replicated by a follower.
   small probe file beside its copy every second (`probeStorage`); a probe that
   fails counts like a commit, so the trip comes about 10 s after the first
   failure whatever the commit rate, and a probe that succeeds counts for
-  nothing, since a small write can land while replication still cannot. On the trip the leader logs the cause,
+  nothing, since a small write can land while replication still cannot. A
+  datastore API write that fails on the leader's own storage, before or after
+  the trip, is refused as `serve_not_leader` rather than an internal error:
+  nothing was acknowledged, and the retry reaches the next leader, or finds a
+  commit that did land by its txnId. On the trip the leader logs the cause,
   answers `/ready` 503 `cannot_commit`, refuses datastore API writes as
   `serve_not_leader` (naming no leader, so clients retry and reach the next
   one), stops renewing its writer lease (`stopV3WriterRenewal`) and stops as a
