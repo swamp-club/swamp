@@ -2305,10 +2305,15 @@ Deno.test("ExtensionApiClient.getVersion: an answer without the version throws r
     { name: "@test/ext", version: "2026.11.24.1" },
     { version: { version: "2026.11.23.1", channel: "beta" } },
     { version: { version: "2026.11.24.1" } },
+    "<html>proxy page</html>",
   ];
   for (const answer of answers) {
     const client = clientAnswering(() =>
-      Promise.resolve(Response.json(answer))
+      Promise.resolve(
+        typeof answer === "string"
+          ? new Response(answer, { status: 200 })
+          : Response.json(answer),
+      )
     );
     await assertRejects(
       () => client.getVersion("@test/ext", "2026.11.24.1"),

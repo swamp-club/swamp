@@ -872,7 +872,7 @@ export class ExtensionApiClient {
     }
 
     await this.checkResponse(res);
-    const data = await res.json();
+    const data = await res.json().catch(() => null);
     const entry = data?.version;
     // a missing answer must never read as not published
     if (
