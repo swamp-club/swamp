@@ -269,6 +269,27 @@ Deno.test("AppBroker: an app's data.query never asks for its reply in parts", as
   assertEquals(framesFor("q").map((frame) => frame.payload), [{ data: {} }]);
 });
 
+Deno.test("AppBroker: an app's data.get never asks for its content in parts", async () => {
+  const requested: unknown[] = [];
+  const { post, framesFor } = setup(
+    { capabilities: ["data:read"], run: [] },
+    {
+      isHttpRead: () => true,
+      request: (_type, payload) => {
+        requested.push(payload);
+        return Promise.resolve({ data: {} });
+      },
+    },
+  );
+  await post({
+    type: "data.get",
+    id: "g",
+    payload: { modelIdOrName: "m", dataName: "d", inParts: true },
+  });
+  assertEquals(requested, [{ modelIdOrName: "m", dataName: "d" }]);
+  assertEquals(framesFor("g").map((frame) => frame.payload), [{ data: {} }]);
+});
+
 Deno.test("AppBroker: a late reply never settles a reused id", async () => {
   const replies: ((value: unknown) => void)[] = [];
   const { broker, post, framesFor } = setup(

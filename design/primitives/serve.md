@@ -357,6 +357,20 @@ app broker drops the key from an app's query, and the published client library
 does not carry it. A serve that predates it drops the unknown key and replies
 whole, which the CLI reads as before.
 
+`data.get` with `inParts: true` does the same for one record's content, which
+otherwise crosses the wire as one JSON string escaped a second time: serve
+sends the content string in `data.get.part` frames (`{content}`, slices of
+about 4 Mi characters cut by `src/serve/data_get_parts.ts`, never between the
+halves of a surrogate pair), then the `data.get` reply with `content` emptied
+in place and `contentParts` and `contentLength` (UTF-16 code units) beside
+`data`. Only `swamp data get --server` sends it; the client joins the parts
+back into `content` and refuses a reply whose parts do not match those counts.
+The same rules hold as for `data.query`: a request without the key gets the
+single reply byte for byte, the app broker drops it, the published client
+library's `DataGetPayload` does not carry it, and an older serve drops it and
+replies whole. The reassembled content is still one string, so a remote read
+reaches what a local one does, no more.
+
 The dashboard sends the same types there first and falls back to the socket on
 the same rules (`packages/dashboard/src/client/http_request.ts`, whose copy of
 `HTTP_REQUEST_TYPES` a test pins to core's). It holds no token, only its

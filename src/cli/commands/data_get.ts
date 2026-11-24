@@ -37,15 +37,41 @@ import {
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import {
   formatCommandTarget,
-  requestServerResponse,
+  type RequestResponseOptions,
+  requestServerParts,
   resolveServerTokenFromOptions,
   resolveServeUrl,
   withRemoteOptions,
 } from "../remote_run.ts";
-import type { DataGetResponse } from "../../serve/protocol.ts";
+import type {
+  DataGetInPartsPayload,
+  DataGetPayload,
+  DataGetResponse,
+} from "../../serve/protocol.ts";
+import { assembleDataGetContent } from "../../serve/data_get_parts.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
+
+/** content in parts, so no reply is one string; a serve that predates them replies whole */
+export async function requestRemoteDataGet(
+  target: RequestResponseOptions,
+  payload: DataGetPayload,
+): Promise<DataGetData> {
+  const inParts: DataGetInPartsPayload = { ...payload, inParts: true };
+  const { payload: reply, parts } = await requestServerParts<DataGetResponse>(
+    target,
+    { type: "data.get", payload: inParts },
+  );
+  const data = reply.data as unknown as DataGetData;
+  if (reply.contentParts === undefined) return data;
+  data.content = assembleDataGetContent(
+    parts,
+    reply.contentParts,
+    reply.contentLength,
+  );
+  return data;
+}
 
 export const dataGetCommand = withRemoteOptions(
   new Command()
@@ -126,22 +152,16 @@ export const dataGetCommand = withRemoteOptions(
         server,
         options,
       );
-      const response = await requestServerResponse<DataGetResponse>(
-        { server, token },
-        {
-          type: "data.get",
-          payload: {
-            modelIdOrName,
-            dataName,
-            workflowName: options.workflow as string | undefined,
-            runId: options.run as string | undefined,
-            version: options.version as number | undefined,
-            includeContent: options.content !== false,
-          },
-        },
-      );
+      const data = await requestRemoteDataGet({ server, token }, {
+        modelIdOrName,
+        dataName,
+        workflowName: options.workflow as string | undefined,
+        runId: options.run as string | undefined,
+        version: options.version as number | undefined,
+        includeContent: options.content !== false,
+      });
       await renderDataGet(
-        response.data as unknown as DataGetData,
+        data,
         cliCtx.outputMode,
         {
           commandTarget: formatCommandTarget({

@@ -259,7 +259,9 @@ export class AppBroker {
   /** Only what an app may choose about a run; checks and locks stay as set. */
   #outboundPayload(frame: BridgeFrame): unknown {
     if (frame.type === METHOD_REQUEST) return this.#methodPayload(frame);
-    if (frame.type === "data.query") return withoutInParts(frame.payload);
+    if (frame.type === "data.query" || frame.type === "data.get") {
+      return withoutInParts(frame.payload);
+    }
     if (frame.type !== RUN_REQUEST) return frame.payload;
     const { workflowIdOrName, inputs, runtimeTags } = frame.payload as Record<
       string,
