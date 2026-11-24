@@ -1824,24 +1824,31 @@ export class WorkerGateway {
       if (!entry || entry.channel === null) return;
       if (probeResult.ok) {
         if (entry.status !== "draining") {
-          await this.#recordWorkerWrite(
+          const promoted = await this.#recordWorkerWrite(
             "verify_passed",
             workerName,
             async () => {
+              // a drain may have landed while this write was queued
+              if (entry.status === "draining") return false;
               entry.status = "idle";
               entry.verifyFailureReason = undefined;
               await this.#workerStatus.recordStatus(workerName, {
                 status: "idle",
               });
+              return true;
             },
           );
-          const snap = this.#snapshot(entry);
-          this.#options.onWorkerEnrolled?.(snap);
-          this.#options.onWorkerIdle?.(snap);
+          if (promoted) {
+            const snap = this.#snapshot(entry);
+            this.#options.onWorkerEnrolled?.(snap);
+            this.#options.onWorkerIdle?.(snap);
+          }
         }
       } else {
         await this.#recordWorkerWrite("verify_failed", workerName, async () => {
           entry.verifyFailureReason = probeResult.failureReason;
+          // the drain's record stands: a stored reason goes only with unverified
+          if (entry.status === "draining") return;
           await this.#workerStatus.recordStatus(workerName, {
             status: "unverified",
             activeDispatchIds: [...entry.activeDispatchIds],
@@ -1859,6 +1866,7 @@ export class WorkerGateway {
       const reason = error instanceof Error ? error.message : String(error);
       await this.#recordWorkerWrite("verify_failed", workerName, async () => {
         entry.verifyFailureReason = reason;
+        if (entry.status === "draining") return;
         await this.#workerStatus.recordStatus(workerName, {
           status: "unverified",
           activeDispatchIds: [...entry.activeDispatchIds],
