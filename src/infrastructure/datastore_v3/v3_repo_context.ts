@@ -48,6 +48,7 @@ import {
   type CatchUpOptions,
   datastoreKeyFilter,
   openV3Datastore,
+  type V3CommitOutcome,
   v3CommitsDbPath,
   type V3Datastore,
   v3OutboxPath,
@@ -322,6 +323,7 @@ interface RepoContextState {
   readonly deferredCollections: Set<string>;
   /** stopped all at once by closeV3Datastores */
   readonly feedWatches: ServeFeedWatch[];
+  readonly commitOutcomeListeners: Set<V3CommitOutcomeListener>;
   teardownTiming: { probeGraceMs: number; releaseBoundMs: number };
 }
 
@@ -354,11 +356,26 @@ const repoState = processRuntimeSlot<RepoContextState>(() => ({
   publishListeners: new Map(),
   deferredCollections: new Set(),
   feedWatches: [],
+  commitOutcomeListeners: new Set(),
   teardownTiming: {
     probeGraceMs: STORAGE_PROBE_GRACE_MS,
     releaseBoundMs: UNREACHABLE_RELEASE_BOUND_MS,
   },
 }));
+
+export type V3CommitOutcomeListener = (
+  datastorePath: string,
+  outcome: V3CommitOutcome,
+) => void;
+
+/** serve's leader judges from these whether it can still commit */
+export function onV3CommitOutcome(
+  listener: V3CommitOutcomeListener,
+): () => void {
+  const listeners = repoState().commitOutcomeListeners;
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
 
 export type V3CommandCommits =
   | { readonly committed: true }
@@ -537,6 +554,11 @@ export function v3DatastoreFor(
         ? { serveFollower: true }
         : {}),
       writerFence: () => v3WriterFence(config.path),
+      onCommitOutcome: (outcome) => {
+        for (const listener of repoState().commitOutcomeListeners) {
+          listener(resolve(config.path), outcome);
+        }
+      },
       replicatedMark: () =>
         v3ReplicatesAt(config.path)
           ? repoState().publishedMarks.get(resolve(config.path)) ?? -1

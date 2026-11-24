@@ -708,6 +708,22 @@ function startRenewal(
 }
 
 /**
+ * the hold stays, unrenewed: it lapses at its TTL for another writer to take,
+ * and a release still ends it sooner; a stale confirmation check no longer
+ * renews it either
+ */
+export async function stopV3WriterRenewal(
+  datastorePath: string,
+): Promise<void> {
+  const entry = writerLockState().held.get(resolve(datastorePath));
+  if (entry === undefined) return;
+  if (entry.renewal !== undefined) clearInterval(entry.renewal);
+  entry.renewal = undefined;
+  entry.renewNow = undefined;
+  await entry.renewing;
+}
+
+/**
  * confirmed within its TTL, the earliest another writer could take it over; a
  * process stopped past that is not, and a renewal is asked for at once
  */

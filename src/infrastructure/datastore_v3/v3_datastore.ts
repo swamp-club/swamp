@@ -394,7 +394,16 @@ export interface OpenV3DatastoreOptions {
    * the copy keeps SQLite's auto-checkpoint until this node starts one
    */
   readonly serveFollower?: boolean;
+  /**
+   * told of each append that failed and each read-model catch-up that failed
+   * or applied a commit; never told of a catch-up that had nothing to apply
+   */
+  readonly onCommitOutcome?: (outcome: V3CommitOutcome) => void;
 }
+
+export type V3CommitOutcome =
+  | { readonly kind: "applied" }
+  | { readonly kind: "failed"; readonly error: unknown };
 
 export interface CutoffCompaction {
   /** the earlier of the cutoff and the policy's safety window */
@@ -1229,8 +1238,36 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
       forwarded.delete(forwarded.values().next().value!);
     }
   };
+  const tellOutcome = (outcome: V3CommitOutcome): void => {
+    try {
+      options.onCommitOutcome?.(outcome);
+    } catch (error) {
+      logger.debug`Reporting a v3 commit outcome failed: ${error}`;
+    }
+  };
+  const failedAppend = <T>(append: () => Promise<T>): Promise<T> =>
+    append().catch((error: unknown) => {
+      tellOutcome({ kind: "failed", error });
+      throw error;
+    });
   const batchOf = faultedSink.beginBatch;
-  const sink: OutboxCommitSink = serveSink === undefined ? faultedSink : {
+  const ownSink: OutboxCommitSink = options.onCommitOutcome === undefined
+    ? faultedSink
+    : {
+      ...faultedSink,
+      append: (commit) => failedAppend(() => faultedSink.append(commit)),
+      ...(batchOf === undefined ? {} : {
+        beginBatch: async (slots, batchOptions) => {
+          const batch = await batchOf(slots, batchOptions);
+          return batch === undefined ? undefined : {
+            append: (slot, commit) =>
+              failedAppend(() => batch.append(slot, commit)),
+            skip: (slot) => batch.skip(slot),
+          };
+        },
+      }),
+    };
+  const sink: OutboxCommitSink = serveSink === undefined ? ownSink : {
     ...faultedSink,
     append: (commit) => {
       noteSending(commit);
@@ -1248,6 +1285,20 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
         };
       },
     }),
+  };
+  // a catch-up with nothing to apply says nothing of whether this node can commit
+  const observedCatchUp = async <T>(catchUp: () => Promise<T>): Promise<T> => {
+    if (options.onCommitOutcome === undefined) return await catchUp();
+    const before = readModel.cursor();
+    let result: T;
+    try {
+      result = await catchUp();
+    } catch (error) {
+      tellOutcome({ kind: "failed", error });
+      throw error;
+    }
+    if (readModel.cursor() > before) tellOutcome({ kind: "applied" });
+    return result;
   };
   /**
    * a read that cannot reach serve goes on with what the copy holds and says
@@ -1546,8 +1597,10 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
       : {}),
     async catchUp(signal, catchUpOptions) {
       await catchUpFromServe(catchUpSignal(signal, catchUpOptions), "read");
-      await unreachableAsCatchUpError(() =>
-        readModel.catchUp(catchUpSignal(signal, catchUpOptions))
+      await observedCatchUp(() =>
+        unreachableAsCatchUpError(() =>
+          readModel.catchUp(catchUpSignal(signal, catchUpOptions))
+        )
       );
     },
     async replayEveryCommit(signal) {
@@ -1603,16 +1656,24 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
           signal?: AbortSignal,
           catchUpOptions?: CatchUpOptions,
         ) {
-          await unreachableAsCatchUpError(() =>
-            readModel.catchUp(catchUpSignal(signal, catchUpOptions))
+          await observedCatchUp(() =>
+            unreachableAsCatchUpError(() =>
+              readModel.catchUp(catchUpSignal(signal, catchUpOptions))
+            )
           );
         },
       }
       : {}),
     async catchUpUnlessComplete(lockWaitMs, writerPid) {
       await catchUpFromServe(catchUpSignal(), "read");
-      await unreachableAsCatchUpError(() =>
-        readModel.catchUpUnlessComplete(catchUpSignal(), lockWaitMs, writerPid)
+      await observedCatchUp(() =>
+        unreachableAsCatchUpError(() =>
+          readModel.catchUpUnlessComplete(
+            catchUpSignal(),
+            lockWaitMs,
+            writerPid,
+          )
+        )
       );
     },
     async raiseWriterFence(fence) {

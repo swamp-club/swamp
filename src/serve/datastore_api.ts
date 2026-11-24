@@ -618,19 +618,21 @@ function followerDatastoreRefusal(
 ): Promise<Response> | undefined {
   const gate = ctx.followerGate;
   if (gate === undefined) return undefined;
+  // Leases live on the leader, so listing them is the leader's to answer
+  // (swamp-club#4121).
+  const reads = (req.method === "GET" && route.kind !== "locks") ||
+    route.kind === "has";
   if (gate.role === "leader") {
     // never sent on: a leader that may have been taken over neither answers
-    // from its copy nor changes it
-    return gate.leadUnconfirmed?.() === true
+    // from its copy nor changes it; one that cannot commit sends writers on to
+    // the leader that takes over
+    return gate.leadUnconfirmed?.() === true ||
+        (!reads && ctx.commitHealth?.cannotCommit() !== undefined)
       ? Promise.resolve(
         notLeaderResponse(new ServeNotLeaderError(undefined), false),
       )
       : undefined;
   }
-  // Leases live on the leader, so listing them is the leader's to answer
-  // (swamp-club#4121).
-  const reads = (req.method === "GET" && route.kind !== "locks") ||
-    route.kind === "has";
   if (reads && !gate.isStale()) return undefined;
   if (!reads && ctx.leaderLink !== undefined) {
     return ctx.leaderLink.forward(req, { clientIp: sourceIp });
@@ -812,6 +814,7 @@ async function answerDatastoreRequest(
           : methodNotAllowed("GET");
     }
   } catch (error) {
+    if (req.method !== "GET") ctx.commitHealth?.recordFailure(error);
     return datastoreErrorResponse(error);
   }
 }
@@ -1069,6 +1072,7 @@ class DatastoreApi {
     });
     const landed = await this.#commitOne(reader, partition, req.signal, true);
     if (landed instanceof Response) return landed;
+    this.#noteLanded([landed]);
     const unconfirmed = await this.#confirmLanded([landed]);
     if (unconfirmed !== undefined) {
       return Response.json({ ...unconfirmed, seq: landed.result.seq }, {
@@ -1129,6 +1133,7 @@ class DatastoreApi {
             index === header.items.length - 1,
           );
       } catch (error) {
+        this.#deps.ctx.commitHealth?.recordFailure(error);
         outcome = datastoreErrorResponse(error);
       }
       if (outcome instanceof Response) {
@@ -1138,6 +1143,7 @@ class DatastoreApi {
       }
       landed.push(outcome);
     }
+    this.#noteLanded(landed);
     const unconfirmed = landed.length === 0
       ? undefined
       : await this.#confirmLanded(landed);
@@ -1550,6 +1556,13 @@ class DatastoreApi {
       () => this.#afterCommit(partition),
     );
     return { partition, result, ...(warning === undefined ? {} : { warning }) };
+  }
+
+  /** a commit whose catch-up failed after it landed says the read model cannot */
+  #noteLanded(landed: readonly LandedCommit[]): void {
+    if (landed.some((commit) => commit.warning === undefined)) {
+      this.#deps.ctx.commitHealth?.recordSuccess();
+    }
   }
 
   /** a loss the renewal already saw keeps its own fenced refusal */

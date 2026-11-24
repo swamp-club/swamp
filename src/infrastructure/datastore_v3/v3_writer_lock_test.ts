@@ -45,6 +45,7 @@ import {
   onV3HoldRetaken,
   onV3LeaseLost,
   onV3LeaseTaken,
+  stopV3WriterRenewal,
   tryAcquireV3WriterLock,
   V3_LEGACY_WRITER_LOCK_KEY,
   V3_WRITER_LEASE_DIR,
@@ -763,6 +764,29 @@ Deno.test("v3WriterLeaseExpiresAt: 0 with no lease or a released one; a held lea
       `${expiresAt} within [${before + lapse}, ${after + lapse}]`,
     );
     await release();
+    assertEquals(await v3WriterLeaseExpiresAt(dir), 0);
+  });
+});
+
+Deno.test("stopV3WriterRenewal: the hold lapses unrenewed, and a release still ends it", async () => {
+  await withTempDir(async (dir) => {
+    const ttlMs = 300;
+    const release = await acquireV3WriterLock(dir, { ttlMs });
+    try {
+      await stopV3WriterRenewal(dir);
+      const expiresAt = await v3WriterLeaseExpiresAt(dir);
+      assert(expiresAt !== undefined && expiresAt > 0);
+      // a stale check asked for a renewal before; now nothing renews it
+      await waitFor(
+        () => !v3WriterLeaseConfirmed(dir),
+        "the unrenewed lease to pass its TTL",
+      );
+      assertEquals(v3WriterLeaseConfirmed(dir), false);
+      assertEquals(await v3WriterLeaseExpiresAt(dir), expiresAt);
+      assert(holdsCurrentV3WriterLease(dir));
+    } finally {
+      await release();
+    }
     assertEquals(await v3WriterLeaseExpiresAt(dir), 0);
   });
 });

@@ -361,6 +361,10 @@ import {
   ServeHandover,
 } from "../../serve/serve_handover.ts";
 import { LeaderSteppingDown } from "../../serve/leader_stepping_down.ts";
+import {
+  leaderUnreadyReason,
+  wireLeaderCommitHealth,
+} from "../../serve/leader_commit_health.ts";
 import { executeWorkflowWithLocks } from "../../serve/deps.ts";
 import { DaemonTelemetryFlushService } from "../../serve/telemetry_flush.ts";
 import { runDetached } from "../../infrastructure/tracing/mod.ts";
@@ -772,6 +776,7 @@ import {
   enableV3ServeTeamMode,
   holdV3Writer,
   keepV3WriterMarkers,
+  onV3CommitOutcome,
   refreshV3FollowerCopy,
   startV3ReplicationUpkeep,
   v3CommitFeedSource,
@@ -786,6 +791,7 @@ import {
 import {
   holdsCurrentV3WriterLease,
   onV3LeaseLost,
+  stopV3WriterRenewal,
   v3WriterFence,
   v3WriterLeaseConfirmed,
   v3WriterLeaseExpiresAt,
@@ -2613,6 +2619,7 @@ export const serveCommand = new Command()
     // only the leader writes, so only the leader maintains
     const v3Follows = v3Role === "follower";
     let serveLeadership: ServeLeadership | undefined;
+    let stopCommitHealth: (() => void) | undefined;
     let serveFollowerFeed: FollowerFeed | undefined;
     let serveFollowerEffectsReachNow: (() => () => boolean) | undefined;
     // the leader's timers a follower starts once it first leads; a leader that
@@ -8444,6 +8451,18 @@ export const serveCommand = new Command()
         // Readiness endpoint — returns 200 only after full startup and
         // before shutdown begins, and never for a follower broken on its own
         if (req.method === "GET" && new URL(req.url).pathname === "/ready") {
+          // ahead of shutting_down: the step-down it starts is a shutdown
+          const cannotCommit = connectionCtx.commitHealth?.cannotCommit();
+          if (cannotCommit !== undefined) {
+            return Response.json(
+              {
+                status: "cannot_commit",
+                reason: leaderUnreadyReason(cannotCommit),
+                instanceId,
+              },
+              { status: 503 },
+            );
+          }
           if (shuttingDown) {
             return Response.json(
               { status: "shutting_down", instanceId },
@@ -8763,6 +8782,7 @@ export const serveCommand = new Command()
       // No promotion during teardown: the lease is released below. stop() ends
       // a promotion in flight between its steps and aborts a follower refresh
       // before its restore is installed.
+      stopCommitHealth?.();
       if (serveLeadership) {
         const leadership = serveLeadership;
         await stages.run("leadership", () => leadership.stop(), "awaited");
@@ -9565,6 +9585,20 @@ export const serveCommand = new Command()
         },
       });
       serveLeadership = leadership;
+      // A leader that persistently cannot commit stops renewing the lease
+      // and steps down as a lost lead does, so a standby takes over.
+      const commitHealth = wireLeaderCommitHealth({
+        datastorePath: resolve(location.path),
+        leads: () => leadership.role === "leader",
+        onCommitOutcome: onV3CommitOutcome,
+        stopRenewal: () => stopV3WriterRenewal(location.path),
+        stepDown: async () => {
+          Deno.exitCode = 75;
+          await startShutdown();
+        },
+      });
+      connectionCtx.commitHealth = commitHealth.port;
+      stopCommitHealth = () => commitHealth.stop();
       markRefreshed = () => leadership.markRefreshed();
       connectionCtx.followerGate = followerPolicy.gate(leadership);
       enableV3ServeTeamMode(
