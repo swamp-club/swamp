@@ -1459,7 +1459,8 @@ through the `checkBundle` scan, only when:
 
 Workers still build their own self-contained bundle, with zod inlined, from the
 registered source (`createBundleSourceFactory`), since no host provides zod
-there. Its top-level versions are the pinned ones; transitive versions resolve
+there. The same holds for each attached behavior add-on file, which ships beside
+the type it extends (see `design/enablers/remote-execution.md`). Its top-level versions are the pinned ones; transitive versions resolve
 fresh.
 
 ### Pull scans the bundles that run

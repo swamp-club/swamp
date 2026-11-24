@@ -297,3 +297,49 @@ Deno.test("WorkerBundleCache: refuses a bundle that exports both model and behav
     assertStringIncludes(error.message, "both 'model' and 'behavior'");
   });
 });
+
+const FAKE_ADDON_BUNDLE = `
+export const extension = {
+  type: "swamp/bundled-test",
+  methods: [{
+    extra: {
+      description: "add-on method",
+      execute: () => Promise.resolve({ dataHandles: [] }),
+    },
+  }],
+};
+`;
+
+Deno.test("WorkerBundleCache: loadExtension fetches, persists and memoizes an add-on bundle apart from load", async () => {
+  await withCacheDir(async (dir) => {
+    const { client, bundleFetches } = stubClient(FAKE_ADDON_BUNDLE);
+    const cache = new WorkerBundleCache(dir, client);
+    const first = await cache.loadExtension("fp-addon");
+    assertEquals(first.type, "swamp/bundled-test");
+    assertEquals(Object.keys(first.methods[0]), ["extra"]);
+    assertEquals(await cache.loadExtension("fp-addon"), first);
+    assertEquals(bundleFetches, ["fp-addon"]);
+    assertEquals(
+      await Deno.readTextFile(join(dir, "fp-addon", "bundle.js")),
+      FAKE_ADDON_BUNDLE,
+    );
+    // the memo for add-ons is its own: load reads the cached file as a type
+    await assertRejects(
+      () => cache.load("fp-addon"),
+      Error,
+      "does not export",
+    );
+  });
+});
+
+Deno.test("WorkerBundleCache: loadExtension refuses a bundle with no add-on export", async () => {
+  await withCacheDir(async (dir) => {
+    const { client } = stubClient();
+    const cache = new WorkerBundleCache(dir, client);
+    await assertRejects(
+      () => cache.loadExtension("fp-model"),
+      Error,
+      "does not export",
+    );
+  });
+});

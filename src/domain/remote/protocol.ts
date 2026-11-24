@@ -332,6 +332,16 @@ export type DispatchReferenceEntry = z.infer<
  */
 export const ARGUMENTS_VALIDATED_EVENT = "arguments_validated";
 
+export const DispatchExtensionBundleSchema = z.object({
+  fingerprint: z.string().min(1),
+  methods: z.array(z.string().min(1)),
+  resources: z.array(z.string().min(1)),
+});
+
+export type DispatchExtensionBundle = z.infer<
+  typeof DispatchExtensionBundleSchema
+>;
+
 export const DispatchParamsSchema = z.object({
   dispatchId: z.string().min(1),
   leaseId: z.string().min(1),
@@ -343,6 +353,11 @@ export const DispatchParamsSchema = z.object({
    */
   bundleFingerprint: z.string().min(1),
   reportBundleFingerprints: z.array(z.string()).default([]),
+  /**
+   * add-on bundles for the type with the members serve resolved each one to
+   * win; the worker applies exactly these names and never re-resolves
+   */
+  extensionBundles: z.array(DispatchExtensionBundleSchema).default([]),
   environmentSnapshot: z.record(z.string(), z.string()),
   /**
    * omitted in single-listener deployments; the worker derives it from its

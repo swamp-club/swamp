@@ -70,9 +70,15 @@ async function signFiles(files: readonly string[]): Promise<string> {
  * remote clients
  */
 export class StaleExtensionSourceError extends Error {
-  constructor(typeNormalized: string, extensionName?: string) {
+  constructor(
+    typeNormalized: string,
+    extensionName?: string,
+    options?: { readonly addOn?: boolean },
+  ) {
     super(
-      `Behavior type ${typeNormalized}${
+      `${
+        options?.addOn ? "An add-on to behavior type" : "Behavior type"
+      } ${typeNormalized}${
         extensionName ? ` (extension ${extensionName})` : ""
       } changed on disk after swamp serve loaded it, so serve will not send ` +
         `workers code it does not run itself. ` +

@@ -24,10 +24,12 @@ import {
   assertThrows,
 } from "@std/assert";
 import { withMockedFetch } from "@swamp-club/swamp-testing";
+import { join } from "@std/path";
 import { z } from "zod";
 import { UserError } from "../domain/errors.ts";
 import "../domain/models/models.ts";
 import { defineModel, modelRegistry } from "../domain/models/model.ts";
+import { installZodGlobal } from "../domain/models/bundle.ts";
 import { ModelType } from "../domain/models/model_type.ts";
 import { runFileSink } from "../infrastructure/logging/run_file_sink.ts";
 import {
@@ -534,6 +536,48 @@ Deno.test("runDispatchRunner: a references-only dispatch that carries a plaintex
     );
     assertEquals(calls, []);
   } finally {
+    await Deno.remove(cacheDirPath, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("runDispatchRunner: a method an add-on bundle provides runs on the worker, and the built-in's registry entry stays as it was", async () => {
+  installZodGlobal();
+  const type = throwingRunModel(new Error("the base method ran"));
+  const cacheDirPath = await Deno.makeTempDir({ prefix: "swamp-runner-test-" });
+  const fingerprint = `addon-${crypto.randomUUID()}`;
+  try {
+    await Deno.mkdir(join(cacheDirPath, fingerprint));
+    await Deno.writeTextFile(
+      join(cacheDirPath, fingerprint, "bundle.js"),
+      `const { z } = globalThis.__swamp_zod;
+export const extension = {
+  type: "${type.normalized}",
+  methods: [{
+    extra: {
+      description: "added by an add-on",
+      kind: "action",
+      arguments: z.object({}),
+      execute: () => { throw new Error("the add-on method ran"); },
+    },
+  }],
+};
+`,
+    );
+    const bootstrap = bootstrapFor(cacheDirPath, type.normalized, "unrelated");
+    const result = await runRunner({
+      ...bootstrap,
+      dispatch: {
+        ...bootstrap.dispatch,
+        execution: { ...bootstrap.dispatch.execution, methodName: "extra" },
+        extensionBundles: [{ fingerprint, methods: ["extra"], resources: [] }],
+      },
+    });
+
+    assertEquals(result?.status, "error");
+    assertEquals(result?.error, "the add-on method ran");
+    assertEquals(Object.keys(modelRegistry.get(type)!.methods), ["run"]);
+  } finally {
+    modelRegistry.invalidateType(type);
     await Deno.remove(cacheDirPath, { recursive: true }).catch(() => {});
   }
 });

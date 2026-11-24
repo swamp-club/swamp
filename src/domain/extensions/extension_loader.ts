@@ -77,6 +77,7 @@ import {
 import { evictRemovedBundles } from "./bundle_eviction.ts";
 import type { DatastorePathResolver } from "../datastore/datastore_path_resolver.ts";
 import {
+  type AddOnSource,
   type BundleIndexResult,
   type ExtensionLoadResult,
   type KindAdapter,
@@ -387,6 +388,23 @@ export class ExtensionLoader {
   }
 
   /**
+   * take it before importing the add-on, as for a type's own source; it
+   * resolves no Deno and cannot throw, so attaching costs what it did
+   */
+  private async addOnSource(
+    absolutePath: string,
+    snapshot?: SourceSnapshot,
+  ): Promise<AddOnSource> {
+    return {
+      absolutePath,
+      denoRuntime: this.denoRuntime,
+      pulled: this.isPulledBoundary(absolutePath),
+      extensionName: this.owningExtension(absolutePath),
+      sourceSnapshot: snapshot ?? await this.sourceSnapshot(absolutePath),
+    };
+  }
+
+  /**
    * an unreadable graph is retried once (the fallback marks the source stale
    * for the next warm scan unless this bundle was the retry); a catalog error
    * forgets the recorded list instead of failing the good bundle
@@ -691,6 +709,7 @@ export class ExtensionLoader {
       file: string;
       module: Record<string, unknown>;
       baseDir: string;
+      snapshot: SourceSnapshot | undefined;
     }> = [];
 
     for (const { file, baseDir } of allFiles) {
@@ -724,7 +743,7 @@ export class ExtensionLoader {
           this.adapter.secondaryExportKey &&
           module[this.adapter.secondaryExportKey]
         ) {
-          secondaryFiles.push({ file, module, baseDir });
+          secondaryFiles.push({ file, module, baseDir, snapshot });
         }
       } catch (error) {
         result.failed.push({
@@ -836,7 +855,9 @@ export class ExtensionLoader {
           compareExtensionPrecedence(a.contributor, b.contributor)
         );
       const fingerprintCache = createFreshnessCache();
-      for (const { file, module, baseDir, contributor } of ranked) {
+      for (
+        const { file, module, baseDir, contributor, snapshot } of ranked
+      ) {
         let fingerprint: string | undefined;
         try {
           fingerprint = await computeSourceFingerprint(
@@ -859,6 +880,7 @@ export class ExtensionLoader {
               sourcePath: canonicalizePath(resolve(baseDir, file)),
               fingerprint,
             },
+            await this.addOnSource(resolve(baseDir, file), snapshot),
           );
         } catch (error) {
           result.failed.push({ file, error: String(error), baseDir });
@@ -1382,6 +1404,7 @@ export class ExtensionLoader {
           catalog,
           (paths) => this.importBundleByPath(paths),
           (sourcePath) => this.contributorFor(sourcePath),
+          (sourcePath) => this.addOnSource(sourcePath),
         );
       }
     }
@@ -1470,6 +1493,7 @@ export class ExtensionLoader {
               (paths) => this.importBundleByPath(paths),
               { loaded: [], extended: [], failed: [] },
               contributor,
+              await this.addOnSource(ext.source_path),
             );
           } catch (error) {
             this.logger
@@ -1491,6 +1515,7 @@ export class ExtensionLoader {
       catalog,
       (paths) => this.importBundleByPath(paths),
       (sourcePath) => this.contributorFor(sourcePath),
+      (sourcePath) => this.addOnSource(sourcePath),
     );
   }
 

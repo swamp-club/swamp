@@ -1464,6 +1464,27 @@ Orchestrator and worker are expected to run the same version (enrollment checks
 only `protocolVersion`), so a sentinel for a type the worker does not know is a
 loud error that the binaries disagree.
 
+Behavior add-ons (`export const extension`) ship beside the type, for extension
+and built-in types alike (swamp-club#4985). Serve attaches an add-on's methods,
+checks and resource specs to the type in its own registry only, and decides
+there which source wins each member. Only a dispatch of a method an add-on
+provides carries add-ons: its `extensionBundles` lists one self-contained bundle
+for the file that wins the method, plus one for each file that wins a resource
+spec, since the method may write any spec of the type, each with the method and
+resource-spec names that file currently wins (`shippableExtensionMembers` in
+`src/domain/extensions/model_kind_adapter.ts`). A dispatch of a method the type
+defines itself carries none, builds none, and runs as it did before add-ons
+shipped. Checks are left out, since a placed step skips pre-flight checks. The
+worker fetches each bundle like a type's, and merges exactly the listed names
+into a copy of the type's definition for that dispatch
+(`src/worker/extension_merge.ts`). It never re-resolves a collision and never
+changes its own registry, so a placed step runs the same members an unplaced
+one does. An add-on bundle is built once from the source serve attached, and
+refuses with `StaleExtensionSourceError` once that source changed on disk.
+Attaching an add-on records only its source snapshot; Deno is resolved and the
+bundle built when a dispatch first needs it. A worker from before this field
+drops it and fails an add-on method with `Method '<name>' not found`.
+
 Co-located extension assets (files resolved through
 `context.extensionFile(relPath)`) are not inlined into the single-file JS
 bundle. `extensionFile()` is synchronous and must resolve a local path, so

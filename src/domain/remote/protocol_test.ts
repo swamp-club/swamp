@@ -138,6 +138,48 @@ Deno.test("DispatchParamsSchema: round-trips a dispatch through JSON", () => {
   assertEquals(parsed.reportBundleFingerprints, ["fp-rep"]);
 });
 
+Deno.test("DispatchParamsSchema: a frame without extensionBundles parses with none", () => {
+  const parsed = DispatchParamsSchema.parse({
+    dispatchId: "d-1",
+    leaseId: "l-1",
+    execution: {
+      protocolVersion: 1,
+      modelType: "@acme/widget",
+      modelId: "m-1",
+      methodName: "create",
+      globalArgs: {},
+      methodArgs: {},
+      definitionMeta: { id: "m-1", name: "widget", version: 2, tags: {} },
+    },
+    bundleFingerprint: "fp-abc",
+    environmentSnapshot: {},
+  });
+  assertEquals(parsed.extensionBundles, []);
+});
+
+Deno.test("DispatchParamsSchema: extensionBundles keep each fingerprint with its member names", () => {
+  const extensionBundles = [
+    { fingerprint: "fp-addon", methods: ["extra"], resources: ["audit"] },
+  ];
+  const parsed = DispatchParamsSchema.parse({
+    dispatchId: "d-1",
+    leaseId: "l-1",
+    execution: {
+      protocolVersion: 1,
+      modelType: "@acme/widget",
+      modelId: "m-1",
+      methodName: "extra",
+      globalArgs: {},
+      methodArgs: {},
+      definitionMeta: { id: "m-1", name: "widget", version: 2, tags: {} },
+    },
+    bundleFingerprint: "fp-abc",
+    extensionBundles,
+    environmentSnapshot: {},
+  });
+  assertEquals(parsed.extensionBundles, extensionBundles);
+});
+
 function dispatchWithSecretBag(sentinel: string) {
   return {
     dispatchId: "d-1",

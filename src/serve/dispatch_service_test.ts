@@ -56,6 +56,11 @@ import type { OrchestratorOwner } from "../domain/models/worker/orchestrator_own
 import { errorPaths, UserError } from "../domain/errors.ts";
 import { ModelType } from "../domain/models/model_type.ts";
 import type { ModelDefinition } from "../domain/models/model.ts";
+import { modelRegistry } from "../domain/models/model.ts";
+import {
+  modelKindAdapter,
+  removeAttachedExtensionsForType,
+} from "../domain/extensions/model_kind_adapter.ts";
 import type { WrittenVersion } from "../domain/datastore/datastore_sync_service.ts";
 import { writtenVersionsOf } from "../domain/models/method_execution_service.ts";
 import {
@@ -4006,4 +4011,100 @@ Deno.test("DispatchService: a step refused for its own cause during a planned re
       ),
     WorkerIneligibleError,
   );
+});
+
+async function withAddOnType(
+  fn: (ctx: {
+    type: ModelType;
+    attachAddOn: (
+      sourcePath: string,
+      methods: string[],
+      snapshot?: { files: string[]; signature: string },
+    ) => void;
+    denoResolutions: () => number;
+  }) => Promise<void>,
+): Promise<void> {
+  const type = ModelType.create(
+    `@test/dispatch-addon-${crypto.randomUUID().slice(0, 8)}`,
+  );
+  modelRegistry.register({ ...builtinModelDef, type, methods: {} });
+  let denoResolutions = 0;
+  const attachAddOn = (
+    sourcePath: string,
+    methods: string[],
+    snapshot?: { files: string[]; signature: string },
+  ) => {
+    modelKindAdapter.processSecondaryExport!(
+      sourcePath,
+      {
+        type: type.normalized,
+        methods: methods.map((name) => ({
+          [name]: {
+            description: name,
+            arguments: z.object({}),
+            execute: () => Promise.resolve({ dataHandles: [] }),
+          },
+        })),
+      },
+      { loaded: [], extended: [], failed: [] },
+      { sourcePath, pulled: false },
+      undefined,
+      {
+        absolutePath: sourcePath,
+        denoRuntime: {
+          ensureDeno: () => {
+            denoResolutions++;
+            return Promise.reject(new Error("no deno in this test"));
+          },
+          getDenoEnv: () => ({}),
+        },
+        sourceSnapshot: snapshot,
+      },
+    );
+  };
+  try {
+    await fn({ type, attachAddOn, denoResolutions: () => denoResolutions });
+  } finally {
+    modelRegistry.invalidateType(type.normalized);
+    removeAttachedExtensionsForType(type.normalized);
+  }
+}
+
+const STALE = { files: ["/nonexistent/addon.ts"], signature: "as-loaded" };
+
+Deno.test("DispatchService: an add-on that cannot be bundled fails a dispatch of a method it provides, before any dispatch", async () => {
+  await withAddOnType(async ({ type, attachAddOn }) => {
+    attachAddOn("/repo/extensions/models/addon.ts", ["extra"], STALE);
+    const h = createHarness();
+    const error = await assertRejects(() =>
+      h.service.executeRemote(stepRequest({
+        modelDef: modelRegistry.get(type.normalized)!,
+        modelType: type,
+        methodName: "extra",
+      }))
+    );
+    assertEquals((error as Error).name, "StaleExtensionSourceError");
+    assertEquals(h.dispatchCalls.length, 0);
+  });
+});
+
+Deno.test("DispatchService: a dispatch of the type's own method builds no add-on bundle and ships none", async () => {
+  await withAddOnType(async ({ type, attachAddOn, denoResolutions }) => {
+    attachAddOn("/repo/extensions/models/addon.ts", ["extra"]);
+    const h = createHarness();
+    await h.service.executeRemote(stepRequest({
+      modelDef: modelRegistry.get(type.normalized)!,
+      modelType: type,
+      methodName: "run",
+    }));
+    assertEquals(h.dispatchCalls.length, 1);
+    assertEquals(h.dispatchCalls[0].params.extensionBundles, []);
+    assertEquals(denoResolutions(), 0);
+  });
+});
+
+Deno.test("DispatchService: a type without add-ons dispatches with no extension bundles", async () => {
+  const h = createHarness();
+  await h.service.executeRemote(stepRequest());
+  assertEquals(h.dispatchCalls[0].params.extensionBundles, []);
 });

@@ -46,6 +46,7 @@ import {
 } from "../domain/remote/stdio_transport.ts";
 import { createDataPlaneFetch, DataPlaneClient } from "./data_plane_client.ts";
 import { WorkerBundleCache } from "./bundle_cache.ts";
+import { mergeExtensionMembers } from "./extension_merge.ts";
 import {
   createRemoteMethodContext,
   dispatchMethodArgs,
@@ -206,11 +207,29 @@ export async function runDispatchRunner(
       {
         "swamp.dispatch.id": dispatch.dispatchId,
       },
-      () =>
-        bundleCache.load(
+      async () => {
+        const loaded = await bundleCache.load(
           dispatch.bundleFingerprint,
           signal,
-        ),
+        );
+        const shipped = await Promise.all(
+          dispatch.extensionBundles.map(async (bundle) => ({
+            bundle,
+            extension: await bundleCache.loadExtension(
+              bundle.fingerprint,
+              signal,
+            ),
+          })),
+        );
+        return {
+          ...loaded,
+          modelDef: mergeExtensionMembers(
+            loaded.modelDef,
+            execution.modelType,
+            shipped,
+          ),
+        };
+      },
     );
     const method = modelDef.methods[execution.methodName];
     if (!method) {

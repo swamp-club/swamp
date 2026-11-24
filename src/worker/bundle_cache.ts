@@ -40,10 +40,18 @@ export interface LoadedBundle {
   withheldAssets?: readonly WithheldAsset[];
 }
 
+/** an add-on bundle's `extension` export, as its author wrote it */
+export interface LoadedExtension {
+  type: string;
+  methods: Record<string, unknown>[];
+  resources?: Record<string, unknown>;
+}
+
 export class WorkerBundleCache {
   readonly #cacheDir: string;
   readonly #client: DataPlaneClient;
   readonly #loaded = new Map<string, Promise<LoadedBundle>>();
+  readonly #loadedExtensions = new Map<string, Promise<LoadedExtension>>();
 
   constructor(cacheDir: string, client: DataPlaneClient) {
     this.#cacheDir = cacheDir;
@@ -59,6 +67,66 @@ export class WorkerBundleCache {
     this.#loaded.set(fingerprint, loading);
     loading.catch(() => this.#loaded.delete(fingerprint));
     return loading;
+  }
+
+  loadExtension(
+    fingerprint: string,
+    signal?: AbortSignal,
+  ): Promise<LoadedExtension> {
+    const cached = this.#loadedExtensions.get(fingerprint);
+    if (cached !== undefined) {
+      return cached;
+    }
+    const loading = this.#loadExtensionUncached(fingerprint, signal);
+    this.#loadedExtensions.set(fingerprint, loading);
+    loading.catch(() => this.#loadedExtensions.delete(fingerprint));
+    return loading;
+  }
+
+  async #loadExtensionUncached(
+    fingerprint: string,
+    signal?: AbortSignal,
+  ): Promise<LoadedExtension> {
+    const { bundlePath } = await this.#fetchBundle(fingerprint, signal);
+    const module = await import(toFileUrl(bundlePath).href) as Record<
+      string,
+      unknown
+    >;
+    const extension = module.extension as Partial<LoadedExtension> | undefined;
+    if (
+      !extension || typeof extension !== "object" ||
+      typeof extension.type !== "string" || !Array.isArray(extension.methods)
+    ) {
+      throw wordedError(
+        wordedText((w) =>
+          `Bundle '${fingerprint}' does not export a ${w.noun} add-on`
+        ),
+      );
+    }
+    return extension as LoadedExtension;
+  }
+
+  async #fetchBundle(
+    fingerprint: string,
+    signal?: AbortSignal,
+  ): Promise<{ bundleDir: string; bundlePath: string }> {
+    const bundleDir = join(this.#cacheDir, fingerprint);
+    const bundlePath = join(bundleDir, "bundle.js");
+    let js: string | null = null;
+    try {
+      js = await Deno.readTextFile(bundlePath);
+      logger.debug("Bundle {fingerprint} served from disk cache", {
+        fingerprint,
+      });
+    } catch {
+      js = null;
+    }
+    if (js === null) {
+      js = await this.#client.fetchBundle(fingerprint, signal);
+      await Deno.mkdir(bundleDir, { recursive: true });
+      await writeAtomically(bundlePath, new TextEncoder().encode(js), false);
+    }
+    return { bundleDir, bundlePath };
   }
 
   async #loadUncached(
@@ -79,22 +147,10 @@ export class WorkerBundleCache {
       return { modelDef };
     }
 
-    const bundleDir = join(this.#cacheDir, fingerprint);
-    const bundlePath = join(bundleDir, "bundle.js");
-    let js: string | null = null;
-    try {
-      js = await Deno.readTextFile(bundlePath);
-      logger.debug("Bundle {fingerprint} served from disk cache", {
-        fingerprint,
-      });
-    } catch {
-      js = null;
-    }
-    if (js === null) {
-      js = await this.#client.fetchBundle(fingerprint, signal);
-      await Deno.mkdir(bundleDir, { recursive: true });
-      await writeAtomically(bundlePath, new TextEncoder().encode(js), false);
-    }
+    const { bundleDir, bundlePath } = await this.#fetchBundle(
+      fingerprint,
+      signal,
+    );
 
     const { filesDir, withheld } = await this.#prefetchAssets(
       fingerprint,

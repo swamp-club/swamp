@@ -215,6 +215,7 @@ async function withFixture(
         },
         bundleFingerprint: "builtin:baseline",
         reportBundleFingerprints: [],
+        extensionBundles: [],
         environmentSnapshot: {},
       };
       const { context } = createRemoteMethodContext({

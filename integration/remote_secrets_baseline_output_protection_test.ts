@@ -111,6 +111,7 @@ function failDispatch(secret: string): DispatchParams {
     },
     bundleFingerprint: `builtin:${OUTPUT_BASELINE_TYPE.normalized}`,
     reportBundleFingerprints: [],
+    extensionBundles: [],
     environmentSnapshot: {},
     secretValues: [secret],
   };
