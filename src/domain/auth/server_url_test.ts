@@ -342,3 +342,39 @@ Deno.test("describeRefusedRedirect: a missing or unparseable Location names no t
     expected,
   );
 });
+
+Deno.test("describeRefusedRedirect: never suggests dropping TLS", () => {
+  assertEquals(
+    describeRefusedRedirect("wss://serve.test/", "", 301, "http://serve.test/"),
+    "wss://serve.test redirected to http://serve.test (HTTP 301); swamp does not follow redirects, so point --server at the address that serves swamp directly",
+  );
+});
+
+Deno.test("describeRefusedRedirect: never suggests a scheme --server refuses", () => {
+  for (const location of ["ftp://other.test/auth/info"]) {
+    assertEquals(
+      describeRefusedRedirect(
+        "http://serve.test/auth/info",
+        "/auth/info",
+        302,
+        location,
+      ),
+      `http://serve.test redirected to ${location} (HTTP 302); swamp does not follow redirects, so point --server at the address that serves swamp directly`,
+    );
+  }
+});
+
+Deno.test("describeRefusedRedirect: a ws or wss target is suggested as it was given", () => {
+  assertEquals(
+    describeRefusedRedirect("http://serve.test/", "", 308, "wss://serve.test/"),
+    "http://serve.test redirected to wss://serve.test (HTTP 308); swamp does not follow redirects, so pass --server wss://serve.test",
+  );
+  assertEquals(
+    describeRefusedRedirect("wss://serve.test/", "", 301, "ws://serve.test/"),
+    "wss://serve.test redirected to ws://serve.test (HTTP 301); swamp does not follow redirects, so point --server at the address that serves swamp directly",
+  );
+  assertEquals(
+    describeRefusedRedirect("http://serve.test/", "", 301, "ws://serve.test/"),
+    "http://serve.test redirected to ws://serve.test (HTTP 301); swamp does not follow redirects, so point --server at the address that serves swamp directly",
+  );
+});

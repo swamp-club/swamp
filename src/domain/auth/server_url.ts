@@ -120,8 +120,13 @@ export function describeRefusedRedirect(
     return `${base} answered with a redirect (HTTP ${status}) that names no usable target; ${POINT_DIRECTLY}`;
   }
   const targetBase = withoutSuffix(target.pathname, endpointPath);
-  const movedOnly = targetBase === basePath &&
-    target.origin !== httpScheme(baseUrl).origin;
+  // never suggest an address --server refuses or one that drops TLS
+  const targetHttp = httpScheme(target);
+  const suggestable = targetHttp.protocol === "https:" ||
+    (targetHttp.protocol === "http:" &&
+      httpScheme(request).protocol === "http:");
+  const movedOnly = suggestable && targetBase === basePath &&
+    targetHttp.origin !== httpScheme(baseUrl).origin;
   if (!movedOnly) {
     return `${base} redirected to ${shownTarget} (HTTP ${status}); ${POINT_DIRECTLY}`;
   }
