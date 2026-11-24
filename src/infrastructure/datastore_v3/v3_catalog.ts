@@ -116,11 +116,20 @@ export interface ReadModelCatalog {
    */
   beginBatch(): void;
   commitBatch(): void;
+  /**
+   * commitBatch in several transactions, awaiting between before each after
+   * the first; each name's rows change in one of them, and a crash part way
+   * leaves the names dirty for the next recovery
+   */
+  commitBatchInSlices?(between: () => Promise<void>): Promise<void>;
   rollbackBatch(): void;
   close(): void;
   /** undefined for a catalog that keeps no record of uncommitted rows */
   dirtyTracking?(): CatalogDirtyTracking | undefined;
 }
+
+/** past this many version rows a reconcile is split by name across transactions */
+export const RECONCILE_ROWS_PER_TRANSACTION = 5_000;
 
 type HeldStep =
   | {
@@ -141,14 +150,23 @@ type HeldStep =
 
 export class V3Catalog implements ReadModelCatalog, CatalogDirtyTracking {
   readonly #store: CatalogStore;
+  readonly #rowsPerTransaction: number;
   #held: HeldStep[] | undefined;
 
-  constructor(store: CatalogStore) {
+  constructor(
+    store: CatalogStore,
+    options: { readonly reconcileRowsPerTransaction?: number } = {},
+  ) {
     this.#store = store;
+    this.#rowsPerTransaction = options.reconcileRowsPerTransaction ??
+      RECONCILE_ROWS_PER_TRANSACTION;
   }
 
-  static open(path: string): V3Catalog {
-    return new V3Catalog(new CatalogStore(path));
+  static open(
+    path: string,
+    options: { readonly reconcileRowsPerTransaction?: number } = {},
+  ): V3Catalog {
+    return new V3Catalog(new CatalogStore(path), options);
   }
 
   get store(): CatalogStore {
@@ -333,6 +351,106 @@ export class V3Catalog implements ReadModelCatalog, CatalogDirtyTracking {
     this.#applySteps(held);
   }
 
+  async commitBatchInSlices(between: () => Promise<void>): Promise<void> {
+    const held = this.#held;
+    if (held === undefined) throw new Error("No catalog batch is open");
+    this.#held = undefined;
+    if (held.length === 0) return;
+    const slices = this.#slices(held);
+    for (const [index, slice] of slices.entries()) {
+      if (index > 0) await between();
+      this.#store.applyInTransaction((writer) => {
+        for (const write of slice) write(writer);
+      }, { committed: true });
+    }
+  }
+
+  /** the steps in order, a reconcile split into bounded groups of names */
+  #slices(
+    steps: readonly HeldStep[],
+  ): ((writer: CatalogWriter) => void)[][] {
+    const slices: ((writer: CatalogWriter) => void)[][] = [[]];
+    let rows = 0;
+    const push = (write: (writer: CatalogWriter) => void, weight: number) => {
+      if (rows > 0 && rows + weight > this.#rowsPerTransaction) {
+        slices.push([]);
+        rows = 0;
+      }
+      slices[slices.length - 1].push(write);
+      rows += weight;
+    };
+    for (let index = 0; index < steps.length; index++) {
+      const step = steps[index];
+      if (step.kind === "clear-names") {
+        const replays = replaysOf(steps, index + 1, step.names);
+        if (replays.length > 0) {
+          const admits = (row: CatalogRowKey) =>
+            step.admits(catalogRowRecordKey(row));
+          const counts = this.#store.versionRowCounts(
+            step.names.map(catalogDataName),
+          );
+          for (
+            const group of groupsOf(
+              step.names,
+              counts,
+              this.#rowsPerTransaction,
+            )
+          ) {
+            const kept = new Set(group.names.map(nameIdentity));
+            push((writer) =>
+              writer.reconcileNames(
+                group.names.map(catalogDataName),
+                admits,
+                (scratch) => {
+                  for (const replay of replays) {
+                    applyActions(
+                      scratch,
+                      replay.namespace,
+                      replay.partition,
+                      actionsOf(replay, kept),
+                    );
+                  }
+                },
+              ), group.rows);
+          }
+          index += replays.length;
+          continue;
+        }
+      }
+      switch (step.kind) {
+        case "actions":
+          push(
+            (writer) =>
+              applyActions(
+                writer,
+                step.namespace,
+                step.partition,
+                step.actions,
+              ),
+            step.actions.length,
+          );
+          break;
+        case "clear-names":
+          push(
+            (writer) =>
+              writer.clearNames(
+                step.names.map(catalogDataName),
+                (row) => step.admits(catalogRowRecordKey(row)),
+              ),
+            step.names.length,
+          );
+          break;
+        case "forget-dirty":
+          push(
+            (writer) => writer.forgetDirty(step.names.map(catalogDataName)),
+            step.names.length,
+          );
+          break;
+      }
+    }
+    return slices;
+  }
+
   rollbackBatch(): void {
     this.#held = undefined;
   }
@@ -340,6 +458,48 @@ export class V3Catalog implements ReadModelCatalog, CatalogDirtyTracking {
   close(): void {
     this.#store.close();
   }
+}
+
+/** names in order, grouped up to the row bound; a bigger name stands alone */
+function groupsOf(
+  names: readonly CatalogNameKey[],
+  counts: readonly number[],
+  bound: number,
+): { names: CatalogNameKey[]; rows: number }[] {
+  const groups: { names: CatalogNameKey[]; rows: number }[] = [];
+  let current: { names: CatalogNameKey[]; rows: number } | undefined;
+  for (const [index, name] of names.entries()) {
+    const rows = Math.max(1, counts[index]);
+    if (
+      current === undefined ||
+      current.rows + rows > bound
+    ) {
+      current = { names: [], rows: 0 };
+      groups.push(current);
+    }
+    current.names.push(name);
+    current.rows += rows;
+  }
+  return groups;
+}
+
+/** a replay's actions for the kept names only */
+function actionsOf(
+  replay: ActionsStep,
+  kept: ReadonlySet<string>,
+): CatalogAction[] {
+  const identity = replay.partition.identity;
+  if (identity.kind !== "model") return [];
+  return replay.actions.filter((action) =>
+    kept.has(nameIdentity({
+      namespace: replay.namespace,
+      type: identity.type,
+      modelId: identity.id,
+      name: action.kind === "upsert-version"
+        ? action.metadata.name
+        : action.name,
+    }))
+  );
 }
 
 function catalogDataName(name: CatalogNameKey): CatalogDataName {
@@ -510,6 +670,14 @@ export class ProjectedCatalog implements ReadModelCatalog {
 
   commitBatch(): void {
     this.#inner.commitBatch();
+  }
+
+  commitBatchInSlices(between: () => Promise<void>): Promise<void> {
+    if (this.#inner.commitBatchInSlices === undefined) {
+      this.#inner.commitBatch();
+      return Promise.resolve();
+    }
+    return this.#inner.commitBatchInSlices(between);
   }
 
   rollbackBatch(): void {

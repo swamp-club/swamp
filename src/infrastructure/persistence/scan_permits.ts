@@ -208,9 +208,16 @@ export function inTimeSlicesFromNow(
  * first keeps a loop that fits in its slice free of extra microtask turns
  */
 export class TimeSlice {
-  #end = performance.now() + SCAN_SLICE_MS;
+  readonly #sliceMs: number;
+  #end: number;
 
-  constructor(private readonly signal?: AbortSignal) {}
+  constructor(
+    private readonly signal?: AbortSignal,
+    sliceMs: number = SCAN_SLICE_MS,
+  ) {
+    this.#sliceMs = sliceMs;
+    this.#end = performance.now() + sliceMs;
+  }
 
   get over(): boolean {
     return performance.now() >= this.#end;
@@ -219,7 +226,7 @@ export class TimeSlice {
   async next(): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 0));
     this.signal?.throwIfAborted();
-    this.#end = performance.now() + SCAN_SLICE_MS;
+    this.#end = performance.now() + this.#sliceMs;
   }
 }
 

@@ -1185,6 +1185,10 @@ Deno.test("SqliteReadModel.recover: a targeted recovery stopped between partitio
         inner.commitBatch();
         stop.abort();
       },
+      commitBatchInSlices: async (between: () => Promise<void>) => {
+        await inner.commitBatchInSlices(between);
+        stop.abort();
+      },
     });
     readModel = env.open({ catalog, clock, pageSize: 5 });
     try {
@@ -3854,6 +3858,100 @@ Deno.test("SqliteReadModel.catchUp: a write under a directory a pooled write is 
       assertEquals(await readOrAbsent(under), "n@2");
     } finally {
       batch.gate.resolve();
+      await readModel.close();
+    }
+  });
+});
+
+function msOf(time: readonly [number, number]): number {
+  return time[0] * 1000 + time[1] / 1e6;
+}
+
+Deno.test("SqliteReadModel.recover: a targeted recovery gives the event loop turns while it reprojects, and a read issued then waits for the reproject to end", async () => {
+  await withEnv(async (env) => {
+    const { since, clock } = await interruptedCheckout(env);
+    await writeUncommittedRow(env, "r12", 2);
+    recordWholeCheckout(env);
+    const readModel = env.open({ clock, pageSize: 5, recoverySliceMs: 0 });
+    const ticks: number[] = [];
+    const reads: { issued: number; resolved: Promise<number> }[] = [];
+    // a renewal timer and an HTTP read, as serve would have them
+    const timer = setInterval(() => {
+      const issued = performance.timeOrigin + performance.now();
+      ticks.push(issued);
+      reads.push({
+        issued,
+        resolved: readModel.chunksInUse("").then(() =>
+          performance.timeOrigin + performance.now()
+        ),
+      });
+    }, 0);
+    try {
+      await withCapturedSpans(async (spans) => {
+        await readModel.recover("", targetedOptions(since));
+        const reproject = findSpan(
+          spans,
+          "swamp.datastore.v3.readmodel.recover.reproject",
+        );
+        const start = msOf(reproject.startTime);
+        const end = msOf(reproject.endTime);
+        const inside = ticks.filter((at) => at >= start && at <= end);
+        assert(inside.length > 0, "a timer ran while the reproject ran");
+        for (const read of reads) {
+          if (read.issued < start || read.issued > end) continue;
+          assert(
+            await read.resolved >= end - 1,
+            "a read issued mid-reproject resolved before it ended",
+          );
+        }
+      });
+    } finally {
+      clearInterval(timer);
+      await Promise.allSettled(reads.map((read) => read.resolved));
+      await readModel.close();
+    }
+  });
+});
+
+Deno.test("SqliteReadModel.recover: a catch-up a timer starts while a recovery reprojects queues behind the recovery", async () => {
+  await withEnv(async (env) => {
+    const { since, clock } = await interruptedCheckout(env);
+    await writeUncommittedRow(env, "r12", 2);
+    recordWholeCheckout(env);
+    const readModel = env.open({ clock, pageSize: 5, recoverySliceMs: 0 });
+    const catchUps: { issued: number; done: Promise<number> }[] = [];
+    const timer = setInterval(() => {
+      catchUps.push({
+        issued: performance.timeOrigin + performance.now(),
+        done: readModel.catchUp(signal()).then(() =>
+          performance.timeOrigin + performance.now()
+        ),
+      });
+    }, 0);
+    try {
+      await withCapturedSpans(async (spans) => {
+        await readModel.recover("", targetedOptions(since));
+        clearInterval(timer);
+        const recover = findSpan(spans, "swamp.datastore.v3.readmodel.recover");
+        const reproject = findSpan(
+          spans,
+          "swamp.datastore.v3.readmodel.recover.reproject",
+        );
+        const during = catchUps.filter((c) =>
+          c.issued >= msOf(reproject.startTime) &&
+          c.issued <= msOf(reproject.endTime)
+        );
+        assert(during.length > 0, "a catch-up was started mid-reproject");
+        for (const c of during) {
+          assert(
+            await c.done >= msOf(recover.endTime) - 1,
+            "a catch-up ran inside the recovery",
+          );
+        }
+      });
+    } finally {
+      clearInterval(timer);
+      await Promise.allSettled(catchUps.map((c) => c.done));
       await readModel.close();
     }
   });

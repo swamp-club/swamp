@@ -1997,6 +1997,16 @@ export class CatalogStore {
     }
   }
 
+  /** each name's version rows, by its position in names */
+  versionRowCounts(names: readonly CatalogDataName[]): number[] {
+    const count = this.#prepareCached(
+      `SELECT COUNT(*) AS n FROM catalog WHERE ${DIRTY_NAME_WHERE}`,
+    );
+    return names.map((name) =>
+      (count.get(...dataNameArgs(name)) as { n: number }).n
+    );
+  }
+
   #nameContents(
     name: CatalogDataName,
   ): { rows: CatalogRow[]; rename: RenameForwardRow | undefined } {

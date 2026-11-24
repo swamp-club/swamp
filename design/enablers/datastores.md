@@ -4103,6 +4103,33 @@ ahead, and the page is applied again. A removed version recomputes its
 group's latest flags in one SQL statement, from the group's maxima, rather
 than reading the group's rows.
 
+**Turns for the event loop during long work (swamp-club#4980).** A boot's
+recovery and catch-up run on serve's main event loop, with the writer
+lease's renewal timer armed, so no synchronous stretch may outlast a slice
+(`RECOVERY_SLICE_MS`, 100 ms; `recoverySliceMs` in tests). The page loop and
+each commit within a page, the tail-net plan, the scan's key loops, the
+history's partitions, the restore and the reproject's partitions yield with a
+`TimeSlice` between units of work; every one of them stays inside the read
+model's exclusive section, so a catch-up a timer starts queues behind it, and
+a reader waits out a reproject in progress (`#pageInFlight`) as it did when
+the loop never yielded. A page's catalog changes commit in bounded slices
+(`V3Catalog.commitBatchInSlices`): steps are applied in order, one commit's
+actions never split, and a reconcile of cleared names runs in groups of at
+most `RECONCILE_ROWS_PER_TRANSACTION` (5,000) version rows, each group its
+own transaction with a turn between; a single name above the bound stands
+alone and can still exceed it. Dirty names are forgotten only by the step
+after their reconcile, so a crash between groups leaves them dirty and the
+next recovery converges. A reader between slices sees whole commits and
+internally consistent names. Serve also brings its own copy's commits.db to
+this swamp's schema before taking the writer lease (`migrateV3CopySchema`),
+under the copy's restore lock and only when no sidecar's presence names the
+copy, so a schema migration that scans the store never runs while the lease
+must renew; a copy then restored from an older lineage is migrated again
+when the restored file opens, under the lease, and the shared filesystem
+commits.db keeps its migration where it was, at the fence read before the
+lease. The first lineage a node writes after such a migration may start
+with a full snapshot.
+
 **Net replay (swamp-club#3803).** A catch-up from the start of the feed (a
 first clone, a restore, a rebuild after a reset) reads the feed once first, up
 to a bound fixed then, and runs `decideFile` over each key's changes to find

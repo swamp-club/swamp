@@ -97,6 +97,7 @@ import {
   assertV3ChunksCollectable,
   collectV3Lineages,
   makeV3CopyCurrent,
+  migrateV3CopySchema,
   prepareV3WriterLineage,
   pruneV3Heads,
   publishV3Head,
@@ -1081,13 +1082,15 @@ async function takeV3WriterHold(
 ): Promise<"writer" | "follower"> {
   // before the lease and the recovery of an interrupted writer, which would
   // meet the same checkout
-  await refuseUnsafeV3Checkout(repoDir, config);
-  // a checkout that holds records never joins: refused before the lease, which
-  // records this checkout in the datastore
-  await assertV3CheckoutJoinable(repoDir, config.namespace);
-  // Before the handle opens: opening migrates commits.db, which a swamp from
-  // before the lease, still writing, could not open again.
-  await refuseLiveV3LegacyWriter(config.path);
+  await withSpan("swamp.datastore.v3.hold.checkout_checks", {}, async () => {
+    await refuseUnsafeV3Checkout(repoDir, config);
+    // a checkout that holds records never joins: refused before the lease,
+    // which records this checkout in the datastore
+    await assertV3CheckoutJoinable(repoDir, config.namespace);
+    // Before the handle opens: opening migrates commits.db, which a swamp from
+    // before the lease, still writing, could not open again.
+    await refuseLiveV3LegacyWriter(config.path);
+  });
   const key = handleKey(repoDir, config);
   // a claim this writer may not write under, as the file showed before the
   // lease, so it need not wait on a lease serve holds; only the check under the
@@ -1110,31 +1113,41 @@ async function takeV3WriterHold(
   ) {
     return "follower";
   }
+  // never while the lease must renew: a migration scans the whole store
+  if (options.ownerCheck?.as === "serve") {
+    await migrateV3CopySchema(copyOf(repoDir, config));
+  }
   let release: () => Promise<void>;
   try {
-    release = await acquireV3WriterLock(config.path, {
-      maxWaitMs: claimHint === undefined && !follows
-        ? resolveLockTimeoutMs()
-        : 0,
-      // records the lease's fence in commits.db, so a writer that loses the
-      // lease can commit nothing; while replicating the copy opens only once
-      // current and the first fence is raised then; a retake raises it here
-      fenceStore: {
-        writerFence: () =>
-          !v3ReplicatesAt(config.path) || repoState().currentCopies.has(key)
-            ? v3DatastoreFor(repoDir, config).commitStore.writerFence()
-            : undefined,
-        raiseWriterFence: async (fence: number) => {
-          if (
-            !v3ReplicatesAt(config.path) || repoState().currentCopies.has(key)
-          ) {
-            await v3DatastoreFor(repoDir, config).raiseWriterFence(fence);
-          }
-        },
-      },
-      ...(options.retakeLost === true ? { retakeLost: true } : {}),
-      ...(options.ttlMs !== undefined ? { ttlMs: options.ttlMs } : {}),
-    });
+    release = await withSpan(
+      "swamp.datastore.v3.hold.lease",
+      {},
+      () =>
+        acquireV3WriterLock(config.path, {
+          maxWaitMs: claimHint === undefined && !follows
+            ? resolveLockTimeoutMs()
+            : 0,
+          // records the lease's fence in commits.db, so a writer that loses the
+          // lease can commit nothing; while replicating the copy opens only once
+          // current and the first fence is raised then; a retake raises it here
+          fenceStore: {
+            writerFence: () =>
+              !v3ReplicatesAt(config.path) || repoState().currentCopies.has(key)
+                ? v3DatastoreFor(repoDir, config).commitStore.writerFence()
+                : undefined,
+            raiseWriterFence: async (fence: number) => {
+              if (
+                !v3ReplicatesAt(config.path) ||
+                repoState().currentCopies.has(key)
+              ) {
+                await v3DatastoreFor(repoDir, config).raiseWriterFence(fence);
+              }
+            },
+          },
+          ...(options.retakeLost === true ? { retakeLost: true } : {}),
+          ...(options.ttlMs !== undefined ? { ttlMs: options.ttlMs } : {}),
+        }),
+    );
   } catch (error) {
     if (follows && error instanceof V3WriterBusyError) {
       await followBounded(
@@ -1224,18 +1237,26 @@ async function takeV3WriterHold(
     // marked, when replication is on
     const fence = v3WriterFence(config.path);
     if (fence !== undefined && v3ReplicatesAt(config.path)) {
-      await prepareV3WriterLineage(copyOf(repoDir, config), fence, {
-        restored: repoState().restoredCopies.has(key),
-      });
+      await withSpan(
+        "swamp.datastore.v3.hold.lineage",
+        {},
+        () =>
+          prepareV3WriterLineage(copyOf(repoDir, config), fence, {
+            restored: repoState().restoredCopies.has(key),
+          }),
+      );
       repoState().restoredCopies.delete(key);
     }
-    const replication = fence === undefined
-      ? undefined
-      : await acquireV3Replication(
-        v3DatastoreFor(repoDir, config).commitsDbPath,
-        config.path,
-        fence,
-      );
+    const replication = fence === undefined ? undefined : await withSpan(
+      "swamp.datastore.v3.hold.replication",
+      {},
+      () =>
+        acquireV3Replication(
+          v3DatastoreFor(repoDir, config).commitsDbPath,
+          config.path,
+          fence,
+        ),
+    );
     if (replication !== undefined) {
       const datastore = resolve(config.path);
       repoState().replications.set(datastore, [
@@ -1928,17 +1949,22 @@ export async function v3RepositoryFactoryConfig(
   // before the recovery and catch-up: a projection another view built (a serve
   // copy of another token, address or namespace, or the solo log) is rebuilt
   // from this one first
-  await alignCheckoutView(
-    repoDir,
-    handle,
-    checkoutViewOf(
-      config.path,
-      config.namespace ?? "",
-      handle.serveCopyId,
-      handle.servePrincipal,
-      { repoDir, repoId: options.repoId },
-    ),
-    { holdsWriterLock: writer },
+  await withSpan(
+    "swamp.datastore.v3.open.align_view",
+    {},
+    () =>
+      alignCheckoutView(
+        repoDir,
+        handle,
+        checkoutViewOf(
+          config.path,
+          config.namespace ?? "",
+          handle.serveCopyId,
+          handle.servePrincipal,
+          { repoDir, repoId: options.repoId },
+        ),
+        { holdsWriterLock: writer },
+      ),
   );
   // in a checkout another process writes its files are already newest, so
   // catching up would replay older commits over them; a writer catches up once,

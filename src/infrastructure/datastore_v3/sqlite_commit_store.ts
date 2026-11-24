@@ -4252,6 +4252,14 @@ export function openCommitsDatabase(
   }
 }
 
+/** brings a commits.db to this swamp's schema and closes it again */
+export function migrateCommitsDatabase(
+  path: string,
+  options: { readonly replicated?: boolean } = {},
+): void {
+  openCommitsDatabase(path, options).close();
+}
+
 /**
  * Brings the schema to {@link COMMIT_STORE_SCHEMA_VERSION}, in one
  * transaction. A database from a newer schema is refused rather than read
