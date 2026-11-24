@@ -3136,7 +3136,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
               type,
               row.model_id,
               row.data_name,
-              gc,
+              "latest-on-disk",
               {
                 dryRun: false,
                 maxRemove: remaining,
@@ -3185,7 +3185,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     type: ModelType,
     modelId: string,
     dataName: string,
-    gc: GarbageCollectionPolicy,
+    gc: GarbageCollectionPolicy | "latest-on-disk",
     options: {
       dryRun: boolean;
       maxRemove?: number;
@@ -3208,18 +3208,34 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     );
     if (versions.length <= 1) return { ...nothing, finished: true };
 
+    let policy: GarbageCollectionPolicy;
+    if (gc === "latest-on-disk") {
+      // a catalog behind the disk may hold a stale, smaller limit; deletion is
+      // decided by the newest version's own declaration
+      const latest = await this.findByName(
+        type,
+        modelId,
+        dataName,
+        maxOf(versions)!,
+      );
+      if (latest === null) return { ...nothing, finished: true };
+      policy = latest.garbageCollection;
+    } else {
+      policy = gc;
+    }
+
     let versionsToRemove: number[] = [];
 
-    if (typeof gc === "number") {
-      if (versions.length > gc) {
+    if (typeof policy === "number") {
+      if (versions.length > policy) {
         versionsToRemove = await versionsBeyondKeep(
           versions,
-          gc,
+          policy,
           this.restatesIn(type, modelId, dataName),
         );
       }
     } else {
-      const duration = parseDataDuration(gc);
+      const duration = parseDataDuration(policy);
       const cutoff = (options.now ?? Date.now()) - duration;
       const latestVersion = maxOf(versions);
 

@@ -515,3 +515,44 @@ Deno.test("versionLimits retention: a staging error partway through a name leave
     })
   );
 });
+
+Deno.test("versionLimits retention: a catalog behind the disk never applies its stale, smaller limit", async () => {
+  await withTempDir((dir) =>
+    withRepo(dir, async (repo) => {
+      // the newest version on disk declares 50; the catalog still says 2
+      const saved = await save(repo, "m1", "log", 10, 50);
+      const newest = [...repo.catalog.iterate()]
+        .filter((row) => row.data_name === "log")
+        .sort((a, b) => b.version - a.version)[0];
+      repo.catalog.upsert({ ...newest, garbage_collection: "2" });
+
+      const batch = await repo.data.collectDeclaredGarbageBatch({
+        limit: 100,
+        now: Date.now(),
+      });
+
+      assertEquals(batch.versionsRemoved, 0);
+      assertEquals(await versionsOnDisk(repo, "m1", "log"), saved);
+    })
+  );
+});
+
+Deno.test("versionLimits retention: a catalog behind the disk still trims to the newest declaration", async () => {
+  await withTempDir((dir) =>
+    withRepo(dir, async (repo) => {
+      // the newest version on disk declares 3; the catalog still says 8
+      const saved = await save(repo, "m1", "log", 10, 3);
+      const newest = [...repo.catalog.iterate()]
+        .filter((row) => row.data_name === "log")
+        .sort((a, b) => b.version - a.version)[0];
+      repo.catalog.upsert({ ...newest, garbage_collection: "8" });
+
+      await repo.data.collectDeclaredGarbageBatch({
+        limit: 100,
+        now: Date.now(),
+      });
+
+      assertEquals(await versionsOnDisk(repo, "m1", "log"), saved.slice(-3));
+    })
+  );
+});
