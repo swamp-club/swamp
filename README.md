@@ -135,6 +135,92 @@ the shell you run it in — your AWS credentials, SSH keys, kubeconfig, whatever
 the task needs. No credentials leave your laptop unless a behavior explicitly
 calls an external API.
 
+### Running Jobs Across Hosts
+
+To run a job on many machines, one `swamp serve` is the orchestrator and each
+host runs a `swamp worker` that connects out to it. Hosts open no inbound port.
+A host holds no repo, swamp data or vault secrets: runs and their data live on
+serve, and a worker keeps only its enrollment token and a cache directory. A
+`fanOut` job runs once on every worker whose labels match, as one lane per host.
+
+1. On the serve machine, start serve (TLS and an auth mode are required off
+   loopback) and mint a worker enrollment token for the fleet:
+
+   ```bash
+   swamp serve --host 0.0.0.0 --port 9090 --cert-file server.crt --key-file server.key --auth-mode token
+   swamp worker token create web-fleet --duration 7d --max-enrollments 20
+   ```
+
+2. On each host, install the worker as a daemon with its labels and a stable
+   cache directory, so it re-enrolls as the same machine after a restart. In
+   token mode it also needs a server access token:
+
+   ```bash
+   sudo mkdir -p /var/lib/swamp-worker
+   sudo swamp worker daemon enable wss://swamp.example.com:9090 \
+     --token <enrollment-token> --server-token <server-token> \
+     --label role=web --cache-dir /var/lib/swamp-worker
+   ```
+
+3. In serve's repo, run `swamp workflow create push-web-config` and give the
+   workflow a fan-out job. This one installs a config file already staged on
+   each host, reloads the service, and checks the host's health:
+
+   ```yaml
+   id: 9b2f1c7e-4d3a-4e8b-a1f0-6c5d2e7b8a90 # written by swamp workflow create
+   name: push-web-config
+   jobs:
+     - name: push
+       labels: { role: web } # every worker enrolled with --label role=web
+       fanOut: all # one lane per matching worker
+       steps:
+         - name: write-config
+           task:
+             type: behavior
+             behaviorType: command/shell
+             behaviorName: web-config # becomes web-config-<worker>, one per host
+             methodName: execute
+             inputs:
+               run: install -m 644 /srv/config/app.conf /etc/app/app.conf && systemctl reload app
+         - name: health
+           dependsOn:
+             - step: write-config
+               condition: { type: succeeded }
+           task:
+             type: behavior
+             behaviorType: command/shell
+             behaviorName: web-health
+             methodName: execute
+             inputs:
+               run: curl -fsS http://localhost/healthz
+         - name: healthy
+           dependsOn:
+             - step: health
+               condition: { type: succeeded }
+           task:
+             type: assert
+             expr: 'steps.health.outputs.stdout.contains("ok")'
+             message: health check failed on this host
+   ```
+
+4. Run it through serve:
+
+   ```bash
+   swamp workflow run push-web-config --server wss://swamp.example.com:9090
+   ```
+
+A dispatched step gets serve's environment, cloud credentials included, so a
+fan-out sends it to every matching host. Set serve's `dispatch-env-allow` to the
+names the hosts need before fanning out. A hosted serve workspace has its own
+workers, which connect to its `/w/<name>` address.
+
+`fanOut` also takes rollout batches, an error budget, approval gates, and an
+offline policy for hosts that are down. See "Fan-out Jobs" in
+[design/primitives/workflows.md](design/primitives/workflows.md), the scheduling
+side in
+[design/enablers/remote-execution.md](design/enablers/remote-execution.md), and
+the `swamp` skill.
+
 ---
 
 ### Update

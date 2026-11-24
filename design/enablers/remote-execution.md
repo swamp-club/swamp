@@ -1813,9 +1813,12 @@ work.
 ### Fan-out jobs and lanes
 
 A job with `fanOut` runs once per matching worker, as a lane pinned to that
-worker (swamp-club#3824; the job field and its rules are in "Fan-out Jobs" in
-`design/primitives/workflows.md`). Planning is pure domain code apart from one
-port, and the lane engine in `execution_service.ts` uses it at job start.
+worker (swamp-club#3824). "Fan-out Jobs" in `design/primitives/workflows.md`
+holds the job field and its validation, lanes in the run record, rollouts,
+gates, resume, the glossary of fan-out terms used here, and the operational
+notes on the environment, workspaces and hosts that restart. This section is
+the scheduling side. Planning is pure domain code apart from one port, and the
+lane engine in `execution_service.ts` uses it at job start.
 
 - **`WorkerPoolReader`** (`src/domain/remote/worker_pool.ts`) returns the pool
   a plan is made from. Serve's implementation
@@ -1892,13 +1895,10 @@ serve's (`WorkerPoolReader.queueTimeoutMs`). Under `offline: skip` or `fail`,
 `resumedLaneVerdict` fails such a lane before anything is sent. A lane whose
 worker left the pool binds `self.worker` from the scope the plan recorded.
 
-**Run-record integrity.** Lane steps are ordinary steps of the job, so the
-v3 run-record judge (`judgeRunRecord` in
-`src/domain/datastore_v3/content_bindings.ts`) checks their outputs and data
-like any step. It also freezes the plan: a run's first record holds none, a
-plan may be added only while every step of its job is pending, its lanes carry
-no steps of their own, and once present it never changes and its job is never
-dropped.
+**Run-record integrity.** Lane steps are ordinary steps of the job, and the
+v3 run-record judge freezes the plan, its snapshot, halts and gates; see
+"Run-record fields and what the judge freezes" in
+`design/primitives/workflows.md`.
 
 ### Host launching is a swamp workflow
 
@@ -2330,9 +2330,10 @@ Non-goals for v1:
 - **Level-bounded dispatch.** Fan-out breadth at any moment is bounded by the
   steps ready in the current topological level and their concurrency caps, not
   by fleet size. A cross-level ready-step queue is future work.
-- **Whole-environment dispatch.** Every dispatched step gets the full
-  orchestrator environment snapshot; per-token or per-label scoping is a later
-  refinement.
+- **Serve-wide dispatch environment.** Every dispatched step gets the
+  orchestrator's environment snapshot, minus the denylist. A serve-wide
+  allowlist (`dispatch-env-allow`) narrows it; per-label or per-token scoping
+  does not exist. A fan-out job sends the snapshot to every matching host.
 - **Bookkeeping method outputs are not reaped by serve.** `WorkerGcService`
   reaps ended lease and dispatch records (see "Worker, token and bookkeeping
   reaping"), but each lease or dispatch transition also writes a method output

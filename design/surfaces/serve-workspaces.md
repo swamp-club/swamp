@@ -1282,6 +1282,10 @@ separately.
   its loopback port, not only the router.
 - **One host.** A workspace's folder is on one machine, and its serve listens
   on that machine's loopback.
+- **One worker pool per workspace.** A workspace's workers connect to its
+  `<host>/w/<name>` address with a token it minted, and its fan-out jobs reach
+  only them; workspaces share no pool. See "Fan-out and serve workspaces" in
+  `design/primitives/workflows.md`.
 - **Lifecycle and sign-in need the root.** While the root is down no workspace
   can be created, suspended or deleted through the API, and no sign-in code is
   issued. Running workspaces and tokens already minted are not affected.
