@@ -358,10 +358,8 @@ export function exitCodeForError(
  * SSL_CERT_FILE workaround.
  */
 export function tlsErrorHint(message: string): string | undefined {
-  if (
-    !message.includes("UnknownIssuer") &&
-    !message.includes("invalid peer certificate")
-  ) {
+  // only an untrusted issuer means a missing root; other failures need other remedies
+  if (!message.includes("UnknownIssuer")) {
     return undefined;
   }
   return [
@@ -371,6 +369,9 @@ export function tlsErrorHint(message: string): string | undefined {
     "",
     "Workaround: set SSL_CERT_FILE to a PEM file containing the missing root CA:",
     "  export SSL_CERT_FILE=/path/to/root-ca.pem",
+    "",
+    "For a swamp serve signed by a private or self-signed CA, pass that CA with",
+    "--ca-cert /path/to/ca.pem or SWAMP_CA_CERT=/path/to/ca.pem instead.",
     "",
     "This is a known Deno limitation — see https://github.com/denoland/deno/issues/36402",
   ].join("\n");

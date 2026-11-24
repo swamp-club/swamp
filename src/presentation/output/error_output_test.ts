@@ -853,10 +853,48 @@ Deno.test("tlsErrorHint: returns hint for UnknownIssuer error", () => {
   assertStringIncludes(hint!, "root CA");
 });
 
-Deno.test("tlsErrorHint: returns hint for invalid peer certificate error", () => {
-  const hint = tlsErrorHint("invalid peer certificate: something");
-  assertEquals(hint !== undefined, true);
-  assertStringIncludes(hint!, "SSL_CERT_FILE");
+Deno.test("tlsErrorHint: points a swamp serve with a private CA at --ca-cert", () => {
+  const hint = tlsErrorHint("invalid peer certificate: UnknownIssuer");
+  assertStringIncludes(hint!, "For a swamp serve signed by a private");
+  assertStringIncludes(hint!, "--ca-cert /path/to/ca.pem");
+  assertStringIncludes(hint!, "SWAMP_CA_CERT=/path/to/ca.pem");
+});
+
+Deno.test("tlsErrorHint: returns undefined for certificate failures other than an untrusted issuer", () => {
+  for (
+    const message of [
+      "invalid peer certificate: BadSignature",
+      "invalid peer certificate: BadEncoding",
+      "invalid peer certificate: Expired",
+      "invalid peer certificate: certificate expired: verification time 1700000000 (UNIX), but certificate is not valid after 1600000000 (100000000 seconds ago)",
+      "invalid peer certificate: NotValidForName",
+      "invalid peer certificate: Other(OtherError(CaUsedAsEndEntity))",
+      "TLS certificate rejected: invalid peer certificate: BadSignature",
+    ]
+  ) {
+    assertEquals(tlsErrorHint(message), undefined, message);
+  }
+});
+
+Deno.test("renderError: a bad signature gets no root-CA hint in log or json mode", () => {
+  const logs: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => logs.push(args.join(" "));
+  const error = new UserError(
+    "TLS certificate rejected: invalid peer certificate: BadSignature",
+  );
+  try {
+    renderError(error);
+    assertEquals(logs.length, 1);
+    assertEquals(logs[0].includes("Hint:"), false);
+
+    logs.length = 0;
+    renderError(error, "json");
+    assertEquals(logs.length, 1);
+    assertEquals(JSON.parse(logs[0]).hint, undefined);
+  } finally {
+    console.error = originalError;
+  }
 });
 
 Deno.test("tlsErrorHint: returns undefined for unrelated errors", () => {

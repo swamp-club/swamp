@@ -24,7 +24,7 @@ import {
   assertStringIncludes,
   assertThrows,
 } from "@std/assert";
-import { UserError } from "../domain/errors.ts";
+import { errorPaths, UserError } from "../domain/errors.ts";
 import {
   buildErrorJson,
   exitCodeForError,
@@ -40,6 +40,7 @@ import {
   describeStatuslessFailure,
   diagnoseTlsMessage,
   formatCommandTarget,
+  getEnvCaCerts,
   implicitServeUrl,
   probeHandshakeStatus,
   probeServeRestarting,
@@ -48,6 +49,7 @@ import {
   requestNewerServerResponse,
   requestServerResponse,
   requireGateAttemptCheck,
+  resetEnvCaCertsForTesting,
   resetImplicitServeRouting,
   resetMarkerServerAddress,
   resetRemoteIndicatorMode,
@@ -3028,6 +3030,115 @@ Deno.test("createTlsHttpClient: its guidance renders without a duplicate hint", 
 Deno.test("createTlsHttpClient: returns the client when the store loads", () => {
   using client = createTlsHttpClient();
   assertEquals(typeof client.close, "function");
+});
+
+const NOT_BASE64_PEM =
+  "-----BEGIN CERTIFICATE-----\nnot base64 !!!\n-----END CERTIFICATE-----\n";
+const NOT_A_CERTIFICATE_PEM =
+  "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n";
+
+function fakeClient(onClose: () => void): Deno.HttpClient {
+  return { close: onClose, [Symbol.dispose]: onClose } as Deno.HttpClient;
+}
+
+Deno.test("createTlsHttpClient: blames the CA certificates when the store loads without them", () => {
+  const attempts: Deno.CreateHttpClientOptions[] = [];
+  let closed = 0;
+  const error = assertThrows(
+    () =>
+      createTlsHttpClient(
+        { caCerts: ["bad"], proxy: { url: "http://proxy:3128" } },
+        (options) => {
+          attempts.push(options);
+          if (options.caCerts) {
+            throw new Error("Unable to add pem file to certificate store");
+          }
+          return fakeClient(() => closed++);
+        },
+      ),
+    UserError,
+  );
+  assertStringIncludes(
+    error.message,
+    "given by --ca-cert or SWAMP_CA_CERT is not a valid PEM certificate",
+  );
+  assertStringIncludes(error.message, "Unable to add pem file");
+  assertEquals(error.message.includes("OS certificate store"), false);
+  assertEquals(attempts[1], { proxy: { url: "http://proxy:3128" } });
+  assertEquals(closed, 1);
+});
+
+Deno.test("createTlsHttpClient: keeps the store guidance when the store fails without the CA certificates too", () => {
+  let calls = 0;
+  const error = assertThrows(
+    () =>
+      createTlsHttpClient({ caCerts: ["pem"] }, () => {
+        calls++;
+        throw new Error("Failed to load platform certificates");
+      }),
+    UserError,
+  );
+  assertEquals(calls, 2);
+  assertStringIncludes(
+    error.message,
+    "Could not read the OS certificate store",
+  );
+  assertStringIncludes(error.message, "DENO_TLS_CA_STORE=mozilla");
+});
+
+Deno.test("createTlsHttpClient: does not retry when no CA certificates were supplied", () => {
+  let calls = 0;
+  assertThrows(
+    () =>
+      createTlsHttpClient({}, () => {
+        calls++;
+        throw new Error("Failed to load platform certificates");
+      }),
+    UserError,
+    "Could not read the OS certificate store",
+  );
+  assertEquals(calls, 1);
+});
+
+Deno.test("createTlsHttpClient: Deno's refusal of a malformed CA file is reported as that file", () => {
+  for (const pem of [NOT_BASE64_PEM, NOT_A_CERTIFICATE_PEM]) {
+    const error = assertThrows(
+      () => createTlsHttpClient({ caCerts: [pem] }),
+      UserError,
+    );
+    assertStringIncludes(error.message, "is not a valid PEM certificate");
+    assertEquals(
+      error.message.includes("OS certificate store"),
+      false,
+      error.message,
+    );
+  }
+});
+
+Deno.test("createTlsHttpClient: names the SWAMP_CA_CERT file that holds the malformed certificate", () => {
+  const dir = Deno.makeTempDirSync();
+  try {
+    const caPath = join(dir, "ca.pem");
+    Deno.writeTextFileSync(caPath, NOT_BASE64_PEM);
+    resetEnvCaCertsForTesting();
+    const error = withMockedEnv({ SWAMP_CA_CERT: caPath }, () =>
+      assertThrows(
+        () => createTlsHttpClient({ caCerts: [...getEnvCaCerts()!] }),
+        UserError,
+      ));
+    assertStringIncludes(error.message, `'${caPath}'`);
+    assertEquals(errorPaths(error), [caPath]);
+  } finally {
+    resetEnvCaCertsForTesting();
+    Deno.removeSync(dir, { recursive: true });
+  }
+});
+
+Deno.test("diagnoseTlsMessage: sends a bad signature to the CA file", () => {
+  const result = diagnoseTlsMessage("invalid peer certificate: BadSignature");
+  assertStringIncludes(result!, "invalid peer certificate: BadSignature");
+  assertStringIncludes(result!, "--ca-cert or SWAMP_CA_CERT");
+  assertStringIncludes(result!, "the CA that signed the server's certificate");
 });
 
 Deno.test("diagnoseTlsMessage: returns guidance for CaUsedAsEndEntity", () => {
