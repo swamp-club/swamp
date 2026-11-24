@@ -1,5 +1,14 @@
 # syntax=docker/dockerfile:1.7
 
+# The swamp-club golden base image: Ubuntu 24.04 + Deno + tini, the lowest
+# layer every swamp-club image is built FROM (platform-swamp images/golden,
+# swamp-club lab #4476). It is public, pinned here by digest, and replaces
+# denoland/deno with the same layout: deno at /usr/bin/deno, tini at /tini,
+# DENO_DIR=/deno-dir, uid 1000 free. GOLDEN_DENO must match .tool-versions
+# (integration/toolchain_pins_rules_test.ts), and the build fails if the base's
+# deno is any other version.
+ARG GOLDEN_DENO=2.9.8
+
 # Litestream for v3 datastore replication (swamp-club#3358), pinned to
 # LITESTREAM_PIN in src/infrastructure/datastore_v3/litestream/litestream_pin.ts.
 # `deno run litestream-pin --version <version>` rewrites the two ADD lines, and
@@ -14,7 +23,8 @@ ADD --checksum=sha256:f8ca4a050095c1efbda2c4365172e61bf9d955ea0d9ac42f448b52e518
 
 FROM litestream-${TARGETARCH} AS litestream
 
-FROM denoland/deno:2.9.8
+FROM us-west1-docker.pkg.dev/swamp-club-archive/golden/base@sha256:477d1f4adb81ba3d8b2cb8cdd3b398d20e542ec6196624e6c7583c46336cb8c5
+ARG GOLDEN_DENO
 
 ARG SWAMP_VERSION="dev"
 ARG VCS_REF=""
@@ -35,7 +45,8 @@ RUN groupadd --gid 1000 swamp \
     && chown swamp:swamp /workspace
 
 COPY swamp /usr/local/bin/swamp
-RUN chmod +x /usr/local/bin/swamp && test -x /tini
+RUN chmod +x /usr/local/bin/swamp && test -x /tini \
+    && deno --version | grep -q "^deno ${GOLDEN_DENO} "
 
 # The image redistributes Litestream, so its Apache-2.0 licence travels with it.
 # swamp hashes the binary against the pin before every start, and the override
