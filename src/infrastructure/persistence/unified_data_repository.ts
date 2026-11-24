@@ -90,6 +90,8 @@ import { type Namespace, SOLO_NAMESPACE } from "../../domain/data/namespace.ts";
 import {
   type AgedDataVersionPage,
   type ContentAvailability,
+  type DeclaredGarbageBatchOptions,
+  type DeclaredGarbageBatchResult,
   type DeferredWriteReceipt,
   type FindAllForTypeOptions,
   type FindAllGlobalOptions,
@@ -107,7 +109,11 @@ import {
   RepoMarkerRepository,
   resourceSizePolicyFromMarker,
 } from "./repo_marker_repository.ts";
-import { garbageCollectionToColumn } from "../../domain/data/data_metadata.ts";
+import {
+  garbageCollectionFromColumn,
+  type GarbageCollectionPolicy,
+  garbageCollectionToColumn,
+} from "../../domain/data/data_metadata.ts";
 import { assertKindContinues } from "../../domain/data/data_kind.ts";
 import { computeLatestFlags } from "../../domain/data/data_query_service.ts";
 import {
@@ -1794,7 +1800,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
 
         const newLatest = maxOf(promoted);
         if (newLatest !== undefined) {
-          await this.updateLatestMarker(type, modelId, dataName, newLatest);
+          await this.writeLatestMarker(type, modelId, dataName, newLatest);
           const latestData = await this.findByName(
             type,
             modelId,
@@ -1819,7 +1825,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           // only in-flight deferred writes remain: point at NO_PROMOTED_VERSION
           // so reads find nothing instead of the highest version on disk;
           // promotion moves the marker forward again
-          await this.updateLatestMarker(
+          await this.writeLatestMarker(
             type,
             modelId,
             dataName,
@@ -2302,12 +2308,17 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         await this.syncVersionReach(sync, type, modelId, data.name);
       }
 
-      await this.advanceLatestMarker(
-        type,
-        modelId,
-        data.name,
-        version,
-        () => this.catalogUpsert(type, modelId, dataToSave),
+      // the allocating unit's name signal may belong to another unit
+      await this.staged(
+        { kind: "write", path: this.latestPathOf(type, modelId, data.name) },
+        () =>
+          this.advanceLatestMarker(
+            type,
+            modelId,
+            data.name,
+            version,
+            () => this.catalogUpsert(type, modelId, dataToSave),
+          ),
       );
 
       const why: DataWrite = { kind: "data.save" };
@@ -2490,17 +2501,27 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         // a refused signal outside a unit must not stop the promotion; its
         // staging below reports the refusal
         if (typedStagingActive(this.markDirty)) {
-          await this.staged({
-            kind: "write",
-            path: join(
-              this.getDataNameDir(
+          // the version's own files too: the promoting unit stages them even
+          // when another unit wrote them
+          await this.staged([
+            {
+              kind: "write",
+              path: this.latestPathOf(
                 receipt.type,
                 receipt.modelId,
                 receipt.dataName,
               ),
-              "latest",
-            ),
-          }, advance);
+            },
+            {
+              kind: "write",
+              path: this.getPath(
+                receipt.type,
+                receipt.modelId,
+                receipt.dataName,
+                receipt.version,
+              ),
+            },
+          ], advance);
         } else {
           await advance();
         }
@@ -2615,6 +2636,19 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
             receipt.dataName,
             receipt.version,
           );
+          const latestPath = this.latestPathOf(
+            receipt.type,
+            receipt.modelId,
+            receipt.dataName,
+          );
+          // the marker is restated below; a removed name's directory signal
+          // already covers it
+          if (existsSync(latestPath)) {
+            await this.staged(
+              { kind: "write", path: latestPath },
+              () => Promise.resolve(),
+            );
+          }
           await this.stageLatestAfterRemoval(
             "data.delete",
             receipt.type,
@@ -3032,157 +3066,304 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     const allData = await this.findAllForModel(type, modelId);
 
     for (const data of allData) {
-      // Only promoted versions are counted, kept or pruned.
-      const { promoted: versions } = await this.listPromotedVersions(
+      const result = await this.collectNameGarbage(
         type,
         modelId,
         data.name,
+        data.garbageCollection,
+        { dryRun },
       );
-      if (versions.length <= 1) continue;
-
-      const gc = data.garbageCollection;
-      let versionsToRemove: number[] = [];
-
-      if (typeof gc === "number") {
-        if (versions.length > gc) {
-          versionsToRemove = await versionsBeyondKeep(
-            versions,
-            gc,
-            this.restatesIn(type, modelId, data.name),
-          );
-        }
-      } else {
-        const duration = parseDataDuration(gc);
-        const cutoff = Date.now() - duration;
-        const latestVersion = maxOf(versions);
-
-        for (const version of versions) {
-          const versionData = await this.findByName(
-            type,
-            modelId,
-            data.name,
-            version,
-          );
-          if (versionData && versionData.createdAt.getTime() < cutoff) {
-            if (version !== latestVersion) {
-              versionsToRemove.push(version);
-            }
-          }
-        }
-      }
-
-      const removalTasks = versionsToRemove.map((version) => ({
-        version,
-        contentPath: this.getContentPath(type, modelId, data.name, version),
-        versionDir: this.getPath(type, modelId, data.name, version),
-      }));
-      const removed: number[] = [];
-
-      const GC_BATCH_CONCURRENCY = 20;
-      for (let i = 0; i < removalTasks.length; i += GC_BATCH_CONCURRENCY) {
-        const batch = removalTasks.slice(i, i + GC_BATCH_CONCURRENCY);
-        const results = await Promise.allSettled(
-          batch.map(async ({ contentPath, versionDir }) => {
-            let bytes = 0;
-            try {
-              const stat = await Deno.stat(contentPath);
-              bytes = stat.size;
-            } catch {
-              // Ignore stat errors
-            }
-            if (!dryRun) {
-              await this.staged(
-                { kind: "remove", path: versionDir },
-                async () => {
-                  try {
-                    await Deno.remove(versionDir, { recursive: true });
-                  } catch (error) {
-                    if (!(error instanceof Deno.errors.NotFound)) throw error;
-                  }
-                },
-              );
-            }
-            return bytes;
-          }),
-        );
-        for (const [index, result] of results.entries()) {
-          if (result.status === "fulfilled") {
-            bytesReclaimed += result.value;
-            versionsRemoved++;
-            if (!dryRun) removed.push(batch[index].version);
-          } else {
-            logger
-              .error`GC failed to remove version directory: ${result.reason}`;
-          }
-        }
-      }
-      // staged after the parallel removals, outside allSettled, so a v3 staging
-      // error surfaces; one batch per version
-      for (const version of removed) {
-        await this.stageRemovedVersion(
-          "data.gc",
-          type,
-          modelId,
-          data.name,
-          version,
-        );
-      }
-
-      // re-scan actual versions after the parallel deletions to avoid a stale
-      // marker
-      if (!dryRun && versionsToRemove.length > 0) {
-        this.catalogStore.bulkRemoveVersions(
-          this.namespace,
-          type.normalized,
-          modelId,
-          data.name,
-          versionsToRemove,
-          computeLatestFlags,
-        );
-        this.catalogStore.recordLocalWrite();
-
-        const { onDisk, promoted } = await this.listPromotedVersions(
-          type,
-          modelId,
-          data.name,
-        );
-        const latestVersion = maxOf(promoted);
-        if (latestVersion !== undefined) {
-          await this.updateLatestMarker(
-            type,
-            modelId,
-            data.name,
-            latestVersion,
-          );
-          const latestData = await this.findByName(
-            type,
-            modelId,
-            data.name,
-            latestVersion,
-          );
-          if (latestData) {
-            this.catalogUpsert(type, modelId, latestData);
-          }
-        } else if (onDisk.length > 0) {
-          await this.updateLatestMarker(
-            type,
-            modelId,
-            data.name,
-            NO_PROMOTED_VERSION,
-          );
-        } else {
-          const dataNameDir = this.getDataNameDir(type, modelId, data.name);
-          await this.staged(
-            { kind: "remove", path: dataNameDir },
-            () => Deno.remove(dataNameDir, { recursive: true }).catch(() => {}),
-          );
-          this.catalogRemove(type, modelId, data.name);
-        }
-        await this.stageLatestAfterRemoval("data.gc", type, modelId, data.name);
-      }
+      versionsRemoved += result.versionsRemoved;
+      bytesReclaimed += result.bytesReclaimed;
     }
 
     return { versionsRemoved, bytesReclaimed };
+  }
+
+  async collectDeclaredGarbageBatch(
+    options: DeclaredGarbageBatchOptions,
+  ): Promise<DeclaredGarbageBatchResult> {
+    const result: DeclaredGarbageBatchResult = {
+      versionsRemoved: 0,
+      bytesReclaimed: 0,
+      touched: [],
+      failed: 0,
+    };
+    type NameKey = {
+      typeNormalized: string;
+      modelId: string;
+      dataName: string;
+    };
+    // The cursor names the last name fully examined; a name cut off by the
+    // limit is examined again from its first remaining version.
+    let after: NameKey | undefined = options.cursor === undefined
+      ? undefined
+      : (JSON.parse(options.cursor) as { after: NameKey | null }).after ??
+        undefined;
+    const resumeAt = () => JSON.stringify({ after: after ?? null });
+    let examined = 0;
+
+    while (true) {
+      const page = this.catalogStore.namesOverDeclaredLimit(
+        this.namespace,
+        DECLARED_LIMIT_PAGE_SIZE,
+        after,
+      );
+      for (const row of page) {
+        const remaining = options.limit - result.versionsRemoved;
+        if (remaining <= 0 || examined >= options.limit) {
+          return { ...result, cursor: resumeAt() };
+        }
+        examined++;
+        const key: NameKey = {
+          typeNormalized: row.type_normalized,
+          modelId: row.model_id,
+          dataName: row.data_name,
+        };
+        try {
+          const type = ModelType.create(row.type_normalized);
+          const gc = declaredPolicy(row.garbage_collection);
+          if (gc !== undefined) {
+            const times = new Map(
+              this.catalogStore.versionTimes(
+                this.namespace,
+                row.type_normalized,
+                row.model_id,
+                row.data_name,
+              ).map((v) => [v.version, new Date(v.created_at)]),
+            );
+            const named = await this.collectNameGarbage(
+              type,
+              row.model_id,
+              row.data_name,
+              "latest-on-disk",
+              {
+                dryRun: false,
+                maxRemove: remaining,
+                now: options.now,
+                createdAt: async (version) =>
+                  times.get(version) ??
+                    (await this.findByName(
+                      type,
+                      row.model_id,
+                      row.data_name,
+                      version,
+                    ))?.createdAt,
+              },
+            );
+            result.versionsRemoved += named.versionsRemoved;
+            result.bytesReclaimed += named.bytesReclaimed;
+            if (named.versionsRemoved > 0) {
+              result.touched.push(
+                [row.type_normalized, row.model_id, row.data_name].join("\0"),
+              );
+            }
+            // A name with versions left that removed none this time is
+            // failing; it is passed over rather than retried every batch.
+            if (!named.finished && named.versionsRemoved > 0) {
+              return { ...result, cursor: resumeAt() };
+            }
+            if (!named.finished) result.failed++;
+          }
+        } catch (error) {
+          logger.error`Declared garbage collection failed for ${
+            [row.type_normalized, row.model_id, row.data_name].join("/")
+          }: ${error instanceof Error ? error.message : String(error)}`;
+          result.failed++;
+        }
+        after = key;
+      }
+      if (page.length < DECLARED_LIMIT_PAGE_SIZE) return result;
+    }
+  }
+
+  /**
+   * applies one name's declared policy; maxRemove caps the oldest removed, and
+   * finished is false when more remain beyond it
+   */
+  private async collectNameGarbage(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+    gc: GarbageCollectionPolicy | "latest-on-disk",
+    options: {
+      dryRun: boolean;
+      maxRemove?: number;
+      createdAt?: (version: number) => Promise<Date | undefined>;
+      now?: number;
+    },
+  ): Promise<GarbageCollectionResult & { finished: boolean }> {
+    const dryRun = options.dryRun;
+    const nothing = { versionsRemoved: 0, bytesReclaimed: 0 };
+    let versionsRemoved = 0;
+    let bytesReclaimed = 0;
+    const createdAtOf = options.createdAt ??
+      (async (version: number) =>
+        (await this.findByName(type, modelId, dataName, version))?.createdAt);
+    // Only promoted versions are counted, kept or pruned.
+    const { promoted: versions } = await this.listPromotedVersions(
+      type,
+      modelId,
+      dataName,
+    );
+    if (versions.length <= 1) return { ...nothing, finished: true };
+
+    let policy: GarbageCollectionPolicy;
+    if (gc === "latest-on-disk") {
+      // a catalog behind the disk may hold a stale, smaller limit; deletion is
+      // decided by the newest version's own declaration
+      const latest = await this.findByName(
+        type,
+        modelId,
+        dataName,
+        maxOf(versions)!,
+      );
+      if (latest === null) return { ...nothing, finished: true };
+      policy = latest.garbageCollection;
+    } else {
+      policy = gc;
+    }
+
+    let versionsToRemove: number[] = [];
+
+    if (typeof policy === "number") {
+      if (versions.length > policy) {
+        versionsToRemove = await versionsBeyondKeep(
+          versions,
+          policy,
+          this.restatesIn(type, modelId, dataName),
+        );
+      }
+    } else {
+      const duration = parseDataDuration(policy);
+      const cutoff = (options.now ?? Date.now()) - duration;
+      const latestVersion = maxOf(versions);
+
+      for (const version of versions) {
+        if (version === latestVersion) continue;
+        const createdAt = await createdAtOf(version);
+        if (createdAt !== undefined && createdAt.getTime() < cutoff) {
+          versionsToRemove.push(version);
+        }
+      }
+    }
+
+    versionsToRemove.sort((a, b) => a - b);
+    const finished = options.maxRemove === undefined ||
+      versionsToRemove.length <= options.maxRemove;
+    if (!finished) {
+      versionsToRemove = versionsToRemove.slice(0, options.maxRemove);
+    }
+
+    const removalTasks = versionsToRemove.map((version) => ({
+      version,
+      contentPath: this.getContentPath(type, modelId, dataName, version),
+      versionDir: this.getPath(type, modelId, dataName, version),
+    }));
+    const removed: number[] = [];
+
+    const GC_BATCH_CONCURRENCY = 20;
+    for (let i = 0; i < removalTasks.length; i += GC_BATCH_CONCURRENCY) {
+      const batch = removalTasks.slice(i, i + GC_BATCH_CONCURRENCY);
+      const results = await Promise.allSettled(
+        batch.map(async ({ contentPath, versionDir }) => {
+          let bytes = 0;
+          try {
+            const stat = await Deno.stat(contentPath);
+            bytes = stat.size;
+          } catch {
+            // Ignore stat errors
+          }
+          if (!dryRun) {
+            await this.staged(
+              { kind: "remove", path: versionDir },
+              async () => {
+                try {
+                  await Deno.remove(versionDir, { recursive: true });
+                } catch (error) {
+                  if (!(error instanceof Deno.errors.NotFound)) throw error;
+                }
+              },
+            );
+          }
+          return bytes;
+        }),
+      );
+      for (const [index, result] of results.entries()) {
+        if (result.status === "fulfilled") {
+          bytesReclaimed += result.value;
+          versionsRemoved++;
+          if (!dryRun) removed.push(batch[index].version);
+        } else {
+          logger
+            .error`GC failed to remove version directory: ${result.reason}`;
+        }
+      }
+    }
+    // the catalog follows the disk before staging, so a staging error never
+    // leaves rows for versions already gone
+    if (!dryRun && removed.length > 0) {
+      this.catalogStore.bulkRemoveVersions(
+        this.namespace,
+        type.normalized,
+        modelId,
+        dataName,
+        removed,
+        computeLatestFlags,
+      );
+      this.catalogStore.recordLocalWrite();
+    }
+    // staged after the parallel removals, outside allSettled, so a v3 staging
+    // error surfaces; one batch per version
+    for (const version of removed) {
+      await this.stageRemovedVersion(
+        "data.gc",
+        type,
+        modelId,
+        dataName,
+        version,
+      );
+    }
+
+    // re-scan actual versions after the parallel deletions to avoid a stale
+    // marker
+    if (!dryRun && versionsToRemove.length > 0) {
+      const { onDisk, promoted } = await this.listPromotedVersions(
+        type,
+        modelId,
+        dataName,
+      );
+      const latestVersion = maxOf(promoted);
+      if (latestVersion !== undefined) {
+        await this.writeLatestMarker(type, modelId, dataName, latestVersion);
+        const latestData = await this.findByName(
+          type,
+          modelId,
+          dataName,
+          latestVersion,
+        );
+        if (latestData) {
+          this.catalogUpsert(type, modelId, latestData);
+        }
+      } else if (onDisk.length > 0) {
+        await this.writeLatestMarker(
+          type,
+          modelId,
+          dataName,
+          NO_PROMOTED_VERSION,
+        );
+      } else {
+        const dataNameDir = this.getDataNameDir(type, modelId, dataName);
+        await this.staged(
+          { kind: "remove", path: dataNameDir },
+          () => Deno.remove(dataNameDir, { recursive: true }).catch(() => {}),
+        );
+        this.catalogRemove(type, modelId, dataName);
+      }
+      await this.stageLatestAfterRemoval("data.gc", type, modelId, dataName);
+    }
+
+    return { versionsRemoved, bytesReclaimed, finished };
   }
 
   private getBaseDir(): string {
@@ -4309,6 +4490,30 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     return { versionsRemoved, bytesReclaimed };
   }
 
+  /**
+   * signalled before it lands: an unsignalled marker write makes the next v3
+   * recovery walk the whole checkout
+   */
+  private writeLatestMarker(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+    version: number,
+  ): Promise<void> {
+    return this.staged(
+      { kind: "write", path: this.latestPathOf(type, modelId, dataName) },
+      () => this.updateLatestMarker(type, modelId, dataName, version),
+    );
+  }
+
+  private latestPathOf(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+  ): string {
+    return join(this.getDataNameDir(type, modelId, dataName), "latest");
+  }
+
   private async updateLatestMarker(
     type: ModelType,
     modelId: string,
@@ -4400,4 +4605,19 @@ export function createManualOwner(
     ownerType: "manual",
     ownerRef: description,
   };
+}
+
+const DECLARED_LIMIT_PAGE_SIZE = 100;
+
+/** a column this build cannot read as a limit is left alone */
+function declaredPolicy(column: string): GarbageCollectionPolicy | undefined {
+  const policy = garbageCollectionFromColumn(column);
+  if (typeof policy === "number") {
+    return Number.isSafeInteger(policy) && policy > 0 ? policy : undefined;
+  }
+  try {
+    return parseDataDuration(policy) > 0 ? policy : undefined;
+  } catch {
+    return undefined;
+  }
 }

@@ -106,6 +106,20 @@ export interface CatalogVersionKind {
   record_kind: string;
 }
 
+export interface CatalogDeclaredLimitCandidate {
+  type_normalized: string;
+  model_id: string;
+  data_name: string;
+  garbage_collection: string;
+  versions: number;
+}
+
+export interface CatalogVersionTime {
+  version: number;
+  created_at: string;
+  size: number;
+}
+
 export interface CatalogAgedRow {
   row_id: number;
   type_normalized: string;
@@ -1183,6 +1197,70 @@ export class CatalogStore {
        ORDER BY created_at, rowid
        LIMIT ?`,
     ).all(...params) as unknown as CatalogAgedRow[];
+  }
+
+  /**
+   * names that may hold more published versions than their latest declares: a
+   * count above an integer limit, or more than one version under a duration.
+   * Paged in key order after `after`; an empty column (unknown) is never listed.
+   */
+  namesOverDeclaredLimit(
+    namespace: string,
+    limit: number,
+    after?: { typeNormalized: string; modelId: string; dataName: string },
+  ): CatalogDeclaredLimitCandidate[] {
+    const clauses = ["c.namespace = ?", "c.is_pending = 0"];
+    const params: (string | number)[] = [namespace];
+    if (after) {
+      clauses.push("(c.type_normalized, c.model_id, c.data_name) > (?, ?, ?)");
+      params.push(after.typeNormalized, after.modelId, after.dataName);
+    }
+    params.push(limit);
+    return (this.db.prepare(
+      `SELECT c.type_normalized, c.model_id, c.data_name,
+              COUNT(*) AS versions,
+              (SELECT l.garbage_collection FROM catalog l
+                WHERE l.namespace = c.namespace
+                  AND l.type_normalized = c.type_normalized
+                  AND l.model_id = c.model_id
+                  AND l.data_name = c.data_name
+                  AND l.is_pending = 0
+                ORDER BY l.version DESC LIMIT 1) AS declared
+       FROM catalog c
+       WHERE ${clauses.join(" AND ")}
+       GROUP BY c.type_normalized, c.model_id, c.data_name
+       HAVING versions > 1 AND declared != ''
+         AND (declared GLOB '*[^0-9]*'
+              OR versions > CAST(declared AS INTEGER))
+       ORDER BY c.type_normalized, c.model_id, c.data_name
+       LIMIT ?`,
+    ).all(...params) as unknown as Array<
+      Omit<CatalogDeclaredLimitCandidate, "garbage_collection"> & {
+        declared: string;
+      }
+    >).map(({ declared, ...row }) => ({
+      ...row,
+      garbage_collection: declared,
+    }));
+  }
+
+  versionTimes(
+    namespace: string,
+    typeNormalized: string,
+    modelId: string,
+    dataName: string,
+  ): CatalogVersionTime[] {
+    return this.db.prepare(
+      `SELECT version, created_at, size FROM catalog
+       WHERE namespace = ? AND type_normalized = ? AND model_id = ?
+         AND data_name = ? AND is_pending = 0
+       ORDER BY version`,
+    ).all(
+      namespace,
+      typeNormalized,
+      modelId,
+      dataName,
+    ) as unknown as CatalogVersionTime[];
   }
 
   /**

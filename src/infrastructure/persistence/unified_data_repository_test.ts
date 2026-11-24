@@ -1101,7 +1101,17 @@ Deno.test("mutations call markDirty before and after writing", async () => {
       "mark-dirty-alloc",
       version,
     );
-    assertEquals(calls.slice(4), [finalDir, finalDir]);
+    const finalLatest = join(
+      repo.getDataNameDir(testType, "model-1", "mark-dirty-alloc"),
+      "latest",
+    );
+    // the marker is signalled inside the version's own before and after
+    assertEquals(calls.slice(4, 8), [
+      finalDir,
+      finalLatest,
+      finalLatest,
+      finalDir,
+    ]);
 
     // append marks before the streaming-configured check throws, so the signal
     // lands even though the operation aborts; the throw is tolerated
@@ -1115,7 +1125,7 @@ Deno.test("mutations call markDirty before and after writing", async () => {
     } catch {
       // Expected — mark-dirty-save isn't streaming-configured.
     }
-    assertEquals(calls.slice(6), [saveDir, saveDir]);
+    assertEquals(calls.slice(8), [saveDir, saveDir]);
     const afterAppend = calls.length;
 
     await repo.rename(testType, "model-1", "mark-dirty-save", "mark-dirty-ren");
@@ -1253,12 +1263,14 @@ Deno.test("delete: deleting the last version also signals the latest marker's re
     calls.length = 0;
 
     await repo.delete(testType, "m1", "last-ver", 1);
-    // An older version leaves the marker in place.
+    // An older version rewrites the marker in place, signalled like any write:
+    // unsignalled, v3 recovery would walk the whole checkout.
     const latest = join(
       repo.getDataNameDir(testType, "m1", "last-ver"),
       "latest",
     );
-    assertEquals(calls.includes(latest), false);
+    assertEquals(calls.includes(latest), true);
+    calls.length = 0;
 
     await repo.delete(testType, "m1", "last-ver", 2);
     // The last one removes it, and a synced datastore must hear of it.

@@ -17,6 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { WHOLE_CHECKOUT_SCOPE } from "./touched_scope_journal.ts";
+import type { DeferredWriteReceipt } from "../../domain/data/repositories.ts";
+import { DefaultDataLifecycleService } from "../../domain/data/data_lifecycle_service.ts";
 import { RunStartChanges } from "../../domain/datastore_v3/repository_changes.ts";
 import {
   AppendUnrecordedError,
@@ -2230,11 +2233,36 @@ async function trackedCheckout(
     SOLO_NAMESPACE,
     true,
   );
+  // without write-time pruning, so a name can hold more than it declares
+  const unpruned = new FileSystemUnifiedDataRepository(
+    repoDir,
+    swampPath(repoDir, "data"),
+    catalog,
+    hook,
+    undefined,
+    SOLO_NAMESPACE,
+    false,
+  );
   await handle.catchUp();
   return {
     handle,
     engine,
     catalog,
+    data,
+    saveDeclaring: (name: string, garbageCollection: number) =>
+      unpruned.save(
+        MODEL_TYPE,
+        MODEL_ID,
+        Data.create({
+          name,
+          contentType: "text/plain",
+          lifetime: "infinite",
+          garbageCollection,
+          tags: { type: "resource" },
+          ownerDefinition: { ownerType: "manual", ownerRef: "test" },
+        }),
+        new TextEncoder().encode("v"),
+      ),
     save: (name: string) =>
       data.save(
         MODEL_TYPE,
@@ -2319,5 +2347,168 @@ Deno.test("openV3Datastore: a unit that dropped its work keeps what it touched f
       () => checkout.save("dropped"),
     );
     assertEquals(checkout.scopes(), [dataPrefix("dropped")]);
+  });
+});
+
+/** every scope a unit records while it runs, the whole checkout included */
+async function scopesDuring(
+  checkout: Awaited<ReturnType<typeof trackedCheckout>>,
+  work: () => Promise<unknown>,
+): Promise<string[]> {
+  let during: string[] = [];
+  await checkout.engine.runRoot({}, async () => {
+    await work();
+    during = checkout.scopes();
+  });
+  return during;
+}
+
+Deno.test("openV3Datastore: deleting one version records that name, never the whole checkout (swamp-club#5022)", async () => {
+  await withTempDir(async (dir) => {
+    await using checkout = await trackedCheckout(dir);
+    for (let i = 0; i < 3; i++) {
+      await checkout.engine.runRoot({}, () => checkout.save("one"));
+    }
+    const scopes = await scopesDuring(
+      checkout,
+      () => checkout.data.delete(MODEL_TYPE, MODEL_ID, "one", 1),
+    );
+    assertEquals(scopes.includes(WHOLE_CHECKOUT_SCOPE), false, `${scopes}`);
+    assertEquals(
+      scopes.every((scope) => scope.startsWith(dataPrefix("one"))),
+      true,
+      `${scopes}`,
+    );
+  });
+});
+
+Deno.test("openV3Datastore: age-based data retention records the names it trims, never the whole checkout (swamp-club#5022)", async () => {
+  await withTempDir(async (dir) => {
+    await using checkout = await trackedCheckout(dir);
+    for (let i = 0; i < 3; i++) {
+      await checkout.engine.runRoot({}, () => checkout.save("aged"));
+    }
+    const service = new DefaultDataLifecycleService(
+      checkout.data,
+      {} as never,
+    );
+    const scopes = await scopesDuring(
+      checkout,
+      () =>
+        service.deleteDataOlderThan(new Date(Date.now() + 60_000), {
+          dryRun: false,
+          isExempt: () => false,
+        }),
+    );
+    assertEquals(scopes.includes(WHOLE_CHECKOUT_SCOPE), false, `${scopes}`);
+    assertEquals(scopes.length > 0, true);
+  });
+});
+
+Deno.test("openV3Datastore: a declared-limit batch records the names it trims, never the whole checkout (swamp-club#5022)", async () => {
+  await withTempDir(async (dir) => {
+    await using checkout = await trackedCheckout(dir);
+    for (let i = 0; i < 4; i++) {
+      await checkout.engine.runRoot(
+        {},
+        () => checkout.saveDeclaring("capped", 1),
+      );
+    }
+    let removed = 0;
+    const scopes = await scopesDuring(checkout, async () => {
+      const batch = await checkout.data.collectDeclaredGarbageBatch({
+        limit: 100,
+        now: Date.now(),
+      });
+      removed = batch.versionsRemoved;
+    });
+    assertEquals(removed > 0, true);
+    assertEquals(scopes.includes(WHOLE_CHECKOUT_SCOPE), false, `${scopes}`);
+  });
+});
+
+async function allocated(
+  checkout: Awaited<ReturnType<typeof trackedCheckout>>,
+  name: string,
+) {
+  const slot = await checkout.data.allocateVersion(
+    MODEL_TYPE,
+    MODEL_ID,
+    dataNamed(name),
+  );
+  await Deno.writeFile(slot.contentPath, new TextEncoder().encode("v"));
+  return slot;
+}
+
+/** allocated, and deferred-finalized when asked, in a unit of its own */
+async function allocatedInEarlierUnit(
+  checkout: Awaited<ReturnType<typeof trackedCheckout>>,
+  name: string,
+  deferred: boolean,
+) {
+  let slot!: Awaited<ReturnType<typeof allocated>>;
+  let receipt: DeferredWriteReceipt | undefined;
+  await checkout.engine.runRoot({}, async () => {
+    slot = await allocated(checkout, name);
+    if (deferred) {
+      receipt = (await checkout.data.finalizeVersionDeferred(
+        MODEL_TYPE,
+        MODEL_ID,
+        dataNamed(name),
+        slot.version,
+        slot.priorVersions,
+      )).receipt;
+    }
+  });
+  return { slot, receipt };
+}
+
+Deno.test("openV3Datastore: finalizeVersion in a unit other than the allocating one records its name, never the whole checkout (swamp-club#5022)", async () => {
+  await withTempDir(async (dir) => {
+    await using checkout = await trackedCheckout(dir);
+    await checkout.engine.runRoot({}, () => checkout.save("streamed"));
+    const { slot } = await allocatedInEarlierUnit(checkout, "streamed", false);
+    const scopes = await scopesDuring(
+      checkout,
+      () =>
+        checkout.data.finalizeVersion(
+          MODEL_TYPE,
+          MODEL_ID,
+          dataNamed("streamed"),
+          slot.version,
+          slot.priorVersions,
+        ),
+    );
+    assertEquals(scopes.includes(WHOLE_CHECKOUT_SCOPE), false, `${scopes}`);
+  });
+});
+
+Deno.test("openV3Datastore: promoting a deferred write in a later unit records its name, never the whole checkout (swamp-club#5022)", async () => {
+  await withTempDir(async (dir) => {
+    await using checkout = await trackedCheckout(dir);
+    await checkout.engine.runRoot({}, () => checkout.save("deferred"));
+    const { receipt } = await allocatedInEarlierUnit(
+      checkout,
+      "deferred",
+      true,
+    );
+    const scopes = await scopesDuring(
+      checkout,
+      () => checkout.data.advanceLatestMarkers([receipt!]),
+    );
+    assertEquals(scopes.includes(WHOLE_CHECKOUT_SCOPE), false, `${scopes}`);
+  });
+});
+
+Deno.test("openV3Datastore: rolling back a deferred write in a later unit records its name, never the whole checkout (swamp-club#5022)", async () => {
+  await withTempDir(async (dir) => {
+    await using checkout = await trackedCheckout(dir);
+    await checkout.engine.runRoot({}, () => checkout.save("rolled"));
+    const { receipt } = await allocatedInEarlierUnit(checkout, "rolled", true);
+    const scopes = await scopesDuring(
+      checkout,
+      () => checkout.data.rollbackVersions([receipt!]),
+    );
+    assertEquals(scopes.includes(WHOLE_CHECKOUT_SCOPE), false, `${scopes}`);
   });
 });

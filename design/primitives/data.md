@@ -407,6 +407,7 @@ collected just because restatements sit above it. These remove versions:
 | `swamp data delete`             | One version, one name, `--prefix` many names, or `--all` for a behavior                                                                                | `src/domain/data/data_delete_service.ts`; `src/libswamp/data/delete.ts`        |
 | `swamp data prune`              | Every name under a `(type, modelId)` whose definition no longer resolves                                                                               | `data_lifecycle_service.ts` `deleteOrphanedData`; `src/libswamp/data/prune.ts` |
 | `swamp run gc`                  | Old `outputs/` and `workflow-runs/` records and their run snapshots; never `data/`                                                                     | `src/domain/data/run_lifecycle_service.ts`                                     |
+| Declared limits (serve retention) | Hourly in serve, automatic or not (`.swamp.yaml` `garbageCollection.versionLimits: false` turns it off): versions beyond each name's count or duration, in bounded batches | `unified_data_repository.ts` `collectDeclaredGarbageBatch`; `src/libswamp/retention/` |
 | Retention (`garbageCollection.data`) | Every version older than the cutoff, the latest included, except built-in access/serve types and names with an unpromoted write | `data_lifecycle_service.ts` `deleteDataOlderThan`; `src/libswamp/retention/`   |
 
 Post-run GC applies both count and duration caps; its failures warn and never

@@ -3145,3 +3145,96 @@ Deno.test("CatalogStore.releaseDirty: keeps the touched scopes of units whose co
     store.close();
   }
 });
+
+function seedVersions(
+  store: CatalogStore,
+  dataName: string,
+  count: number,
+  gc: string,
+  overrides: Partial<CatalogRow> = {},
+): void {
+  for (let version = 1; version <= count; version++) {
+    store.upsert(makeRow({
+      data_name: dataName,
+      version,
+      garbage_collection: gc,
+      is_latest: version === count ? 1 : 0,
+      ...overrides,
+    }));
+  }
+}
+
+Deno.test("CatalogStore.namesOverDeclaredLimit: lists names above an integer limit or with a duration, never an unknown one", () => {
+  using tempDb = makeTempDb();
+  const store = new CatalogStore(tempDb.path);
+  seedVersions(store, "over", 5, "3");
+  seedVersions(store, "at", 3, "3");
+  seedVersions(store, "duration", 2, "1d");
+  seedVersions(store, "single", 1, "1d");
+  seedVersions(store, "unknown", 9, "");
+  seedVersions(store, "other-ns", 9, "1", { namespace: "team" });
+  assertEquals(
+    store.namesOverDeclaredLimit("", 10).map((r) => [
+      r.data_name,
+      r.garbage_collection,
+      r.versions,
+    ]),
+    [["duration", "1d", 2], ["over", "3", 5]],
+  );
+  store.close();
+});
+
+Deno.test("CatalogStore.namesOverDeclaredLimit: judges a name by its newest version's declaration and skips pending rows", () => {
+  using tempDb = makeTempDb();
+  const store = new CatalogStore(tempDb.path);
+  seedVersions(store, "raised", 5, "2");
+  store.upsert(makeRow({
+    data_name: "raised",
+    version: 6,
+    garbage_collection: "10",
+  }));
+  seedVersions(store, "pending", 2, "1");
+  store.upsert(makeRow({
+    data_name: "pending",
+    version: 3,
+    garbage_collection: "1",
+    is_pending: 1,
+  }));
+  assertEquals(
+    store.namesOverDeclaredLimit("", 10).map((r) => [r.data_name, r.versions]),
+    [["pending", 2]],
+  );
+  store.close();
+});
+
+Deno.test("CatalogStore.namesOverDeclaredLimit: pages in key order after a name", () => {
+  using tempDb = makeTempDb();
+  const store = new CatalogStore(tempDb.path);
+  for (const name of ["a", "b", "c", "d"]) seedVersions(store, name, 3, "1");
+  const first = store.namesOverDeclaredLimit("", 2);
+  assertEquals(first.map((r) => r.data_name), ["a", "b"]);
+  const last = first[first.length - 1];
+  assertEquals(
+    store.namesOverDeclaredLimit("", 2, {
+      typeNormalized: last.type_normalized,
+      modelId: last.model_id,
+      dataName: last.data_name,
+    }).map((r) => r.data_name),
+    ["c", "d"],
+  );
+  store.close();
+});
+
+Deno.test("CatalogStore.versionTimes: lists one name's published versions with time and size", () => {
+  using tempDb = makeTempDb();
+  const store = new CatalogStore(tempDb.path);
+  seedVersions(store, "log", 2, "1d");
+  store.upsert(makeRow({ data_name: "log", version: 3, is_pending: 1 }));
+  assertEquals(
+    store.versionTimes("", "test-model", "model-001", "log").map((v) =>
+      v.version
+    ),
+    [1, 2],
+  );
+  store.close();
+});

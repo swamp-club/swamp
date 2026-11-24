@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assert, assertEquals } from "@std/assert";
+import { configure, type LogRecord, reset } from "@logtape/logtape";
 import {
   diagnosticPhases,
   findSpan,
@@ -492,4 +493,100 @@ Deno.test("runRetentionPass: a runBatch that retries after a failed collect ends
     );
     assertEquals(commitsEndedBeforeRetry, 1);
   });
+});
+
+Deno.test("runRetentionPass: kinds limits the pass to those kinds", async () => {
+  const calls: string[] = [];
+  const result = await runRetentionPass(
+    deps([
+      countingCollector("workflowRuns", 2, calls),
+      countingCollector("versionLimits", 2, calls),
+    ]),
+    {
+      policy: RetentionPolicy.fromConfig({ retention: "1d" }),
+      kinds: ["versionLimits"],
+    },
+  );
+  assertEquals(result.kinds.map((k) => k.kind), ["versionLimits"]);
+  assertEquals(calls, [`versionLimits@${NOW.toISOString()}`]);
+});
+
+Deno.test("runRetentionPass: a batch that reports names sets retention.names on its span", async () => {
+  await withObservedSpans(async (spans) => {
+    await runRetentionPass(
+      deps([{
+        kind: "versionLimits",
+        collectBatch: () =>
+          Promise.resolve({
+            deleted: 7,
+            bytesReclaimed: 70,
+            names: 2,
+            more: false,
+          }),
+      }, countingCollector("workflowRuns", 1, [])]),
+      { policy: RetentionPolicy.fromConfig({ retention: "1d" }) },
+    );
+    const batches = named(spans, "swamp.retention.batch");
+    const declared = batches.find((s) =>
+      s.attributes["retention.kind"] === "versionLimits"
+    );
+    assertEquals(declared?.attributes["retention.names"], 2);
+    assertEquals(declared?.attributes["retention.deleted"], 7);
+    const runs = batches.find((s) =>
+      s.attributes["retention.kind"] === "workflowRuns"
+    );
+    assertEquals(runs?.attributes["retention.names"], undefined);
+  });
+});
+
+async function capturingRetentionLogs(
+  fn: () => Promise<void>,
+): Promise<string[]> {
+  const records: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => records.push(record) },
+    loggers: [
+      {
+        category: ["swamp", "retention"],
+        lowestLevel: "info",
+        sinks: ["capture"],
+      },
+      { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+    ],
+    reset: true,
+  });
+  try {
+    await fn();
+  } finally {
+    await reset();
+  }
+  return records.map((record) => record.message.map(String).join(""));
+}
+
+Deno.test("runRetentionPass: the declared-limit summary counts versions and names, never an age cutoff", async () => {
+  const lines = await capturingRetentionLogs(async () => {
+    await runRetentionPass(
+      deps([{
+        kind: "versionLimits",
+        collectBatch: () =>
+          Promise.resolve({
+            deleted: 7,
+            bytesReclaimed: 70,
+            names: 2,
+            more: false,
+          }),
+      }, countingCollector("workflowRuns", 1, [])]),
+      { policy: RetentionPolicy.fromConfig({ retention: "1d" }) },
+    );
+  });
+  const declared = lines.filter((line) => line.includes("versionLimits"));
+  assertEquals(declared, [
+    "Retention versionLimits: removed 7 versions beyond their declared limits from 2 data names",
+  ]);
+  assert(
+    lines.some((line) =>
+      line.includes("workflowRuns") && line.includes("older than")
+    ),
+    "other kinds keep their age summary",
+  );
 });
