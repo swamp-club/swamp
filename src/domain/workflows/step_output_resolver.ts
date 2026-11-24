@@ -22,6 +22,7 @@ import { currentDiagnosticTally } from "../diagnostics/diagnostic_phase.ts";
 
 import { isUnreadableContentError } from "../datastore/unreadable_content.ts";
 import { resourceLoadGuardOf } from "../data/resource_load_guard.ts";
+import { readSensitiveFieldPlaces } from "../models/data_writer.ts";
 import type {
   StepOutputGroup,
   StepOutputRecord,
@@ -157,27 +158,105 @@ function outputRecordOf(
   };
 }
 
-function ownSources(
-  records: readonly StepOutputRecord[],
-): StepOutputSources | undefined {
-  return records.length > 0 ? [{ path: [], records }] : undefined;
+/**
+ * the accessor adapter validates every source record on a merged read and can
+ * refuse a tagged one, or one whose tag does not parse, even when later records
+ * cover all its keys; only an untagged record is inert
+ */
+function isInertRecord(tags: Record<string, string>): boolean {
+  try {
+    const tag = readSensitiveFieldPlaces(tags);
+    return tag.kind === "none" ||
+      (tag.kind === "paths" && tag.paths.length === 0);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * merges one step's records as they are read, so a step that writes many
+ * resources holds only what its outputs still need: a later record wins a key,
+ * as mergeStepOutputs decides, and an inert record whose every key a later
+ * record now defines is dropped from the sources, since the merged view takes
+ * nothing from it
+ */
+export class StepOutputAccumulator {
+  readonly #merged: Record<string, unknown> = {};
+  #records: (StepOutputRecord | undefined)[] = [];
+  #ownedKeys: number[] = [];
+  #inert: boolean[] = [];
+  readonly #ownerOf = new Map<string, number>();
+  #dropped = 0;
+
+  add(record: StepOutputRecord): void {
+    Object.assign(this.#merged, record.attributes);
+    const index = this.#records.length;
+    this.#records.push(record);
+    this.#inert.push(isInertRecord(record.tags));
+    this.#ownedKeys.push(0);
+    for (const key of Object.keys(record.attributes)) {
+      const previous = this.#ownerOf.get(key);
+      this.#ownerOf.set(key, index);
+      this.#ownedKeys[index]++;
+      if (previous === undefined) continue;
+      this.#ownedKeys[previous]--;
+      this.#dropIfSuperseded(previous);
+    }
+    this.#dropIfSuperseded(index);
+  }
+
+  #dropIfSuperseded(index: number): void {
+    if (
+      this.#ownedKeys[index] > 0 || !this.#inert[index] ||
+      this.#records[index] === undefined
+    ) return;
+    this.#records[index] = undefined;
+    this.#dropped++;
+    // compacted once half are holes, so the slots stay bounded by the kept
+    if (this.#dropped * 2 > this.#records.length) this.#compact();
+  }
+
+  #compact(): void {
+    const remap = new Map<number, number>();
+    const records: StepOutputRecord[] = [];
+    const owned: number[] = [];
+    const inert: boolean[] = [];
+    this.#records.forEach((record, index) => {
+      if (record === undefined) return;
+      remap.set(index, records.length);
+      records.push(record);
+      owned.push(this.#ownedKeys[index]);
+      inert.push(this.#inert[index]);
+    });
+    for (const [key, owner] of this.#ownerOf) {
+      this.#ownerOf.set(key, remap.get(owner)!);
+    }
+    this.#records = records;
+    this.#ownedKeys = owned;
+    this.#inert = inert;
+    this.#dropped = 0;
+  }
+
+  get outputs(): Record<string, unknown> | undefined {
+    return Object.keys(this.#merged).length > 0 ? this.#merged : undefined;
+  }
+
+  get sources(): StepOutputSources | undefined {
+    const records = this.#records.filter((record) => record !== undefined);
+    return records.length > 0 ? [{ path: [], records }] : undefined;
+  }
 }
 
 export function liveStepOutputs(
   output: unknown,
   readerNamespace = "",
 ): Pick<ResolvedStepOutputs, "outputs" | "sources"> {
-  const attributeSets: Record<string, unknown>[] = [];
-  const records: StepOutputRecord[] = [];
+  const accumulator = new StepOutputAccumulator();
   for (const { ref, record } of jsonResourceRecords(output)) {
     if (!isRecord(record.attributes)) continue;
-    attributeSets.push(record.attributes);
-    records.push(outputRecordOf(ref, record.attributes, readerNamespace));
+    accumulator.add(outputRecordOf(ref, record.attributes, readerNamespace));
   }
-  return {
-    outputs: mergeStepOutputs(attributeSets),
-    sources: ownSources(records),
-  };
+  return { outputs: accumulator.outputs, sources: accumulator.sources };
 }
 
 /**
@@ -282,8 +361,7 @@ export class StepOutputResolver {
     output: unknown,
   ): Promise<ResolvedStepOutputs> {
     const attributesByDataId: Record<string, Record<string, unknown>> = {};
-    const attributeSets: Record<string, unknown>[] = [];
-    const records: StepOutputRecord[] = [];
+    const accumulator = new StepOutputAccumulator();
     for (const ref of stepResourceRefs(output)) {
       this.signal?.throwIfAborted();
       if (this.canRead && !(await this.canRead(ref))) continue;
@@ -299,14 +377,16 @@ export class StepOutputResolver {
         continue;
       }
       if (!attributes) continue;
-      attributeSets.push(attributes);
-      records.push(outputRecordOf(ref, attributes, this.namespace));
+      currentDiagnosticTally().measureSync(
+        "assemble",
+        () => accumulator.add(outputRecordOf(ref, attributes, this.namespace)),
+      );
       if (ref.dataId) attributesByDataId[ref.dataId] = attributes;
     }
     return currentDiagnosticTally().measureSync("assemble", () => ({
-      outputs: mergeStepOutputs(attributeSets),
+      outputs: accumulator.outputs,
       attributesByDataId,
-      sources: ownSources(records),
+      sources: accumulator.sources,
     }));
   }
 }

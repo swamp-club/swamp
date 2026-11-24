@@ -1012,7 +1012,10 @@ Lightweight reference to data already persisted:
 
 A run keeps at most 16 MiB of resource content, counted in stored bytes, as
 parsed attributes (`ResourceAttributeBudget`). Once a run's resources pass that
-cap, their handles carry no `attributes`; separately, the result of a method
+cap, their handles carry no `attributes`. A workflow run applies one such budget
+across all its steps to the handles it keeps for workflow-scope reports, and
+keeps none when no selected report reads them (see
+[workflows](workflows.md#run-memory)); separately, the result of a method
 run, and of a workflow run or resume, lists the artifacts past its own 16 MiB
 budget with `attributesOmitted: true` instead of their content. A run that
 writes thousands of resources therefore keeps bounded memory and a `--json`

@@ -304,7 +304,11 @@ import {
 } from "../models/model_output.ts";
 import { Definition } from "../definitions/definition.ts";
 import { ModelType } from "../models/model_type.ts";
-import type { MethodResult, ModelDefinition } from "../models/model.ts";
+import type {
+  DataHandle,
+  MethodResult,
+  ModelDefinition,
+} from "../models/model.ts";
 import {
   authoredConstantsProducing,
   type AuthoredExpressions,
@@ -425,6 +429,11 @@ import {
   type ResolvedStepOutputs,
   StepOutputResolver,
 } from "./step_output_resolver.ts";
+import {
+  StepOutputRetention,
+  stepOutputRetentionFor,
+} from "./step_output_retention.ts";
+import { ResourceAttributeBudget } from "../models/resource_attribute_budget.ts";
 import {
   merge,
   mergeGated,
@@ -979,6 +988,11 @@ export interface StepExecutionContext {
   /** resolves once the step's start is recorded; rejects with StepStartUnrecordedError */
   startRecorded?: () => Promise<void>;
   authoredExpressions: ReadonlySet<string>;
+  /**
+   * whether the step's resources are read back for its outputs or the model's
+   * data map; absent reads them all
+   */
+  readsResourceContent?: (modelRef: string) => boolean;
   /**
    * a direct-execution step validates the definition built from evaluated
    * arguments, so the template-syntax scan reads the authored arguments from
@@ -3108,6 +3122,9 @@ export class DefaultStepExecutor implements StepExecutor {
             evaluatedDefinition.id,
             evaluatedDefinition.name,
             unifiedDataRepo,
+            ctx.readsResourceContent?.(
+              task.modelIdOrName ?? task.modelName ?? "",
+            ) ?? true,
           );
         } else if (handle.kind === "file") {
           const fileRecord = await fromFileHandle(
@@ -3341,6 +3358,8 @@ interface StepOptions {
    * never evaluated as if the author had written it.
    */
   authoredExpressions: ReadonlySet<string>;
+  /** absent keeps every step's outputs and model data */
+  stepOutputRetention?: StepOutputRetention;
   authoredWorkflow?: Workflow;
   lastEvaluated?: boolean;
   workflowNestingDepth?: number;
@@ -4168,6 +4187,10 @@ export class WorkflowExecutionService {
       const stepOpts: StepOptions = {
         inheritedPlacement: options?.inheritedPlacement,
         authoredExpressions,
+        stepOutputRetention: await this.stepOutputRetention(
+          authoredWorkflow ?? workflow,
+          inheritedExpressions,
+        ),
         authoredWorkflow,
         lastEvaluated: options?.lastEvaluated,
         workflowNestingDepth: options?.workflowNestingDepth,
@@ -4225,6 +4248,10 @@ export class WorkflowExecutionService {
         string,
         import("../models/model.ts").DataHandle[]
       >();
+      const keepReportHandles = await this.reportHandleKeeper(
+        workflow,
+        options?.reportFilterOptions,
+      );
 
       let anyJobFailed = false;
       let afterAbort = false;
@@ -4286,14 +4313,14 @@ export class WorkflowExecutionService {
             const key = `${event.jobId}:${event.stepId}`;
             stepStatuses.set(key, "succeeded");
             if (event.dataHandles) {
-              dataHandlesByStep.set(key, event.dataHandles);
+              dataHandlesByStep.set(key, keepReportHandles(event.dataHandles));
             }
             await this.saveRunForEvent(workflow.id, run, event);
           } else if (event.kind === "step_failed") {
             const key = `${event.jobId}:${event.stepId}`;
             stepStatuses.set(key, "failed");
             if (event.dataHandles) {
-              dataHandlesByStep.set(key, event.dataHandles);
+              dataHandlesByStep.set(key, keepReportHandles(event.dataHandles));
             }
             await this.saveRunForEvent(workflow.id, run, event);
           } else if (event.kind === "step_skipped") {
@@ -4963,6 +4990,7 @@ export class WorkflowExecutionService {
       resolvedWorkflow,
       workflowLogPath,
       workflowLogHandle,
+      stepOutputRetention,
     } = await this.restoreRunOnFailure(restore, async () => {
       const expressionContext = await this.buildRunContext(
         workflow,
@@ -5024,6 +5052,10 @@ export class WorkflowExecutionService {
         inputs: existingRun.inputs,
       };
       expressionContext.steps = {};
+      const stepOutputRetention = await this.stepOutputRetention(
+        workflow,
+        existingRun.inheritedExpressions,
+      );
       const stepOutputResolver = this.createStepOutputResolver();
       for (const job of existingRun.jobs) {
         for (const step of job.steps) {
@@ -5031,10 +5063,12 @@ export class WorkflowExecutionService {
             step.status === "succeeded" || step.status === "failed" ||
             step.status === "skipped" || step.status === "unknown"
           ) {
-            const resolved = await stepOutputResolver.resolve(step);
+            const resolved = stepOutputRetention.keepsStepOutputs(step.stepName)
+              ? await stepOutputResolver.resolve(step)
+              : undefined;
             expressionContext.steps[step.stepName] = attachStepOutputSources(
-              { status: step.status, outputs: resolved.outputs },
-              resolved.sources,
+              { status: step.status, outputs: resolved?.outputs },
+              resolved?.sources,
             );
           }
         }
@@ -5105,6 +5139,7 @@ export class WorkflowExecutionService {
         resolvedWorkflow,
         workflowLogPath,
         workflowLogHandle,
+        stepOutputRetention,
       };
     });
 
@@ -5134,6 +5169,7 @@ export class WorkflowExecutionService {
       const stepOpts: StepOptions = {
         inheritedPlacement: existingRun.inheritedPlacement,
         authoredExpressions,
+        stepOutputRetention,
         authoredWorkflow: workflow,
         workflowNestingDepth: parentLink?.nestingDepth,
         ancestorWorkflowIds: parentLink
@@ -5193,6 +5229,10 @@ export class WorkflowExecutionService {
         string,
         import("../models/model.ts").DataHandle[]
       >();
+      const keepReportHandles = await this.reportHandleKeeper(
+        resolvedWorkflow,
+        options?.reportFilterOptions,
+      );
 
       let anyJobFailed = false;
       let afterAbort = false;
@@ -5263,14 +5303,14 @@ export class WorkflowExecutionService {
             const key = `${event.jobId}:${event.stepId}`;
             stepStatuses.set(key, "succeeded");
             if (event.dataHandles) {
-              dataHandlesByStep.set(key, event.dataHandles);
+              dataHandlesByStep.set(key, keepReportHandles(event.dataHandles));
             }
             await this.saveRunForEvent(workflow.id, existingRun, event);
           } else if (event.kind === "step_failed") {
             const key = `${event.jobId}:${event.stepId}`;
             stepStatuses.set(key, "failed");
             if (event.dataHandles) {
-              dataHandlesByStep.set(key, event.dataHandles);
+              dataHandlesByStep.set(key, keepReportHandles(event.dataHandles));
             }
             await this.saveRunForEvent(workflow.id, existingRun, event);
           } else if (event.kind === "step_skipped") {
@@ -6631,6 +6671,9 @@ export class WorkflowExecutionService {
       throw new Error(`Step not found: ${stepName}`);
     }
     stepSpan.setAttribute("step.task.type", step.task.data.type);
+    const retention = options.stepOutputRetention ?? StepOutputRetention.ALL;
+    // a lane reads its own steps by their authored names
+    const stepKey = options.lane ? step.name : stepName;
 
     let stepRun = jobRun.getStep(stepName);
     if (!stepRun && forEachVar && forEachVar.name) {
@@ -6660,15 +6703,16 @@ export class WorkflowExecutionService {
       }
       // resume() already resolved completed steps into the context; only
       // read the datastore when this step is missing or its status moved.
-      const finishedKey = options.lane ? step.name : stepName;
       if (
         expressionContext?.steps &&
-        expressionContext.steps[finishedKey]?.status !== stepRun.status
+        expressionContext.steps[stepKey]?.status !== stepRun.status
       ) {
-        const resolved = await this.createStepOutputResolver().resolve(stepRun);
-        expressionContext.steps[finishedKey] = attachStepOutputSources(
-          { status: stepRun.status, outputs: resolved.outputs },
-          resolved.sources,
+        const resolved = retention.keepsStepOutputs(stepKey)
+          ? await this.createStepOutputResolver().resolve(stepRun)
+          : undefined;
+        expressionContext.steps[stepKey] = attachStepOutputSources(
+          { status: stepRun.status, outputs: resolved?.outputs },
+          resolved?.sources,
         );
       }
       stepSpan.end();
@@ -7481,6 +7525,9 @@ export class WorkflowExecutionService {
           step,
           forEachVariable: forEachVar,
           forEachIndex,
+          readsResourceContent: (modelRef) =>
+            retention.keepsStepOutputs(stepKey) ||
+            retention.readsModelData(modelRef),
           startRecorded: () =>
             this.#awaitStart(run.id, job.name, stepName, forEachIndex),
           workflowTags: options.workflowTags,
@@ -7572,7 +7619,10 @@ export class WorkflowExecutionService {
           }
         }
 
-        if (stepExprContext && taskOutput.model && !abandoned) {
+        if (
+          stepExprContext && taskOutput.model && !abandoned &&
+          retention.readsModelData(taskOutput.model)
+        ) {
           if (!stepExprContext.model[taskOutput.model]) {
             stepExprContext.model[taskOutput.model] = {
               input: {
@@ -7617,7 +7667,9 @@ export class WorkflowExecutionService {
 
       // Strip heavy payload from the run record (see stripResourceContent).
       // Outputs are taken first: the stripped record keeps no attributes.
-      liveOutputs = liveStepOutputs(output, this.dataRepo.namespace);
+      if (retention.keepsStepOutputs(stepKey)) {
+        liveOutputs = liveStepOutputs(output, this.dataRepo.namespace);
+      }
       const lightOutput = step.task.isModelMethod() && output &&
           typeof output === "object"
         ? stripResourceContent(output as Record<string, unknown>)
@@ -7738,12 +7790,14 @@ export class WorkflowExecutionService {
         (stepRun.status === "succeeded" || stepRun.status === "failed" ||
           stepRun.status === "skipped" || stepRun.status === "unknown")
       ) {
-        // a lane reads its own steps by their authored names
-        stepExprContext.steps[options.lane ? step.name : stepName] =
-          attachStepOutputSources(
-            { status: stepRun.status, outputs: liveOutputs?.outputs },
-            liveOutputs?.sources,
-          );
+        const kept = retention.keepsStepOutputs(stepKey);
+        stepExprContext.steps[stepKey] = attachStepOutputSources(
+          {
+            status: stepRun.status,
+            outputs: kept ? liveOutputs?.outputs : undefined,
+          },
+          kept ? liveOutputs?.sources : undefined,
+        );
       }
       stepSpan.end();
     }
@@ -8667,6 +8721,52 @@ export class WorkflowExecutionService {
    * vault-resolved to match a live run, but in a typed run they are read as
    * stored, a tagged field being a Secret loaded at delivery
    */
+  private async stepOutputRetention(
+    workflow: Workflow,
+    inherited: Iterable<string>,
+  ): Promise<StepOutputRetention> {
+    try {
+      return await stepOutputRetentionFor(
+        workflow,
+        async (idOrName) =>
+          (await findDefinitionByIdOrName(this.definitionRepo, idOrName))
+            ?.definition ?? null,
+        inherited,
+      );
+    } catch {
+      // a lookup that fails cannot say what the run reads
+      return StepOutputRetention.ALL;
+    }
+  }
+
+  /**
+   * handles are kept only for workflow-scope reports: when none selected reads
+   * their attributes they keep none, otherwise the run's handles share one
+   * budget
+   */
+  private async reportHandleKeeper(
+    workflow: Workflow,
+    reportFilterOptions: ReportFilterOptions | undefined,
+  ): Promise<(handles: DataHandle[]) => DataHandle[]> {
+    let reads = true;
+    try {
+      reads = await this.workflowReportRunner.readsHandleAttributes(
+        workflow,
+        reportFilterOptions ?? {},
+      );
+    } catch {
+      // runWorkflowReports meets and reports the same failure
+    }
+    if (!reads) return (handles) => handles.map(withoutAttributes);
+    const budget = new ResourceAttributeBudget();
+    return (handles) =>
+      handles.map((handle) =>
+        handle.attributes === undefined || budget.admit(handle.size)
+          ? handle
+          : withoutAttributes(handle)
+      );
+  }
+
   private createStepOutputResolver(): StepOutputResolver {
     const readAttributes = createDataRepositoryAttributeReader(this.dataRepo);
     return new StepOutputResolver({
@@ -9746,6 +9846,12 @@ export class WorkflowExecutionService {
       evalSpan.end();
     }
   }
+}
+
+function withoutAttributes(handle: DataHandle): DataHandle {
+  if (handle.attributes === undefined) return handle;
+  const { attributes: _attributes, ...rest } = handle;
+  return rest;
 }
 
 /**

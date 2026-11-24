@@ -374,6 +374,7 @@ export async function fromResourceHandle(
   modelId: string,
   fallbackModelName: string,
   dataRepo: UnifiedDataRepository,
+  readContent = true,
 ): Promise<DataRecord> {
   let attributes: Record<string, unknown> = {};
   if (isJsonMediaType(handle.metadata.contentType)) {
@@ -384,22 +385,25 @@ export async function fromResourceHandle(
       dataName: handle.name,
       version: handle.version,
     };
+    // checked unread too, so whether a step fails never turns on who reads it
     loadGuard.assertLoadable(item, handle.size);
-    try {
-      const content = await dataRepo.getContent(
-        modelType,
-        modelId,
-        handle.name,
-        handle.version,
-      );
-      if (content) {
-        loadGuard.assertLoadable(item, content.length);
-        const text = new TextDecoder().decode(content);
-        attributes = JSON.parse(text) as Record<string, unknown>;
+    if (readContent) {
+      try {
+        const content = await dataRepo.getContent(
+          modelType,
+          modelId,
+          handle.name,
+          handle.version,
+        );
+        if (content) {
+          loadGuard.assertLoadable(item, content.length);
+          const text = new TextDecoder().decode(content);
+          attributes = JSON.parse(text) as Record<string, unknown>;
+        }
+      } catch (error) {
+        if (error instanceof ResourceTooLargeToLoadError) throw error;
+        // Not valid JSON, skip attributes
       }
-    } catch (error) {
-      if (error instanceof ResourceTooLargeToLoadError) throw error;
-      // Not valid JSON, skip attributes
     }
   }
 

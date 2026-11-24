@@ -103,12 +103,21 @@ function outputOf(
   };
 }
 
+// an untagged record is dropped once later records define every key it has
+const contributes = (resources: readonly Resource[], index: number) =>
+  resources[index].tagged ||
+  Object.keys(resources[index].attributes).some((key) =>
+    !resources.slice(index + 1).some((later) => key in later.attributes)
+  );
+
 const expectedSources = (
   resources: readonly Resource[],
   readerNamespace: string,
 ) => [{
   path: [] as string[],
-  records: resources.map((r): StepOutputRecord => ({
+  records: resources.filter((_, index) => contributes(resources, index)).map((
+    r,
+  ): StepOutputRecord => ({
     id: `id-${r.name}-${r.version}`,
     name: r.name,
     version: r.version,
@@ -119,7 +128,7 @@ const expectedSources = (
   })),
 }];
 
-Deno.test("liveStepOutputs and StepOutputResolver: for any records, the sources keep write order and each record's identity, namespace (the reader's when it names none), tags and attributes, and the flat outputs are their merge", async () => {
+Deno.test("liveStepOutputs and StepOutputResolver: for any records, the sources keep, in write order, each tagged record and each record a later one does not wholly cover, with its identity, namespace (the reader's when it names none), tags and attributes, and the flat outputs are their merge", async () => {
   await fc.assert(
     fc.asyncProperty(
       resourcesArb,

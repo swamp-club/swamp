@@ -180,7 +180,8 @@ execution data:
 | `version`  | `handle.version` from `context.dataHandles` (omit for latest) |
 
 For workflow-scope reports, use `step.modelType`, `step.modelId`, and
-`step.dataHandles` from `context.stepExecutions`.
+`step.dataHandles` from `context.stepExecutions`. A handle's `attributes` are
+absent once the run's handles pass 16 MiB, so read content with `getContent`.
 
 **Note:** `findByName` returns metadata only — use `getContent` to read the
 actual data bytes, then parse as needed (e.g.
