@@ -1429,9 +1429,9 @@ export class DispatchService {
   }
 
   /**
-   * ships add-ons only for a method one provides, so a dispatch of the type's
-   * own method stays as it was before add-ons shipped; resource-spec add-ons
-   * ride along since the method may write any spec of the type
+   * ships add-ons only for a method one provides, so a type's own method
+   * builds and carries no add-on bundle; resource-spec add-ons ride along
+   * since the method may write any spec of the type
    */
   async #ensureExtensionBundles(
     modelDef: ModelDefinition,

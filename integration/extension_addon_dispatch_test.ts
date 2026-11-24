@@ -17,9 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// an add-on's members exist only in serve's registry, so a placed step can call
-// them only if serve ships the add-on and the worker merges what serve resolved
-
 import { assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
@@ -341,7 +338,6 @@ Deno.test("add-on dispatch: a local type's add-on methods and resource specs rea
     );
     assertEquals(fromTwice.merged.methods.twice.description, "twice from a");
 
-    // a method the type defines itself dispatches as it did before
     const own = await dispatch(h, type, "base");
     assertEquals(own.extensionBundles, []);
   });

@@ -256,10 +256,7 @@ export function getExtensionMemberCollisions(): ExtensionMemberCollision[] {
   );
 }
 
-/**
- * One add-on file's part of a type that a worker needs: the members it
- * currently wins and how to bundle it.
- */
+/** members are the ones the file wins now, not every one it declares */
 export interface ShippableExtension {
   readonly sourcePath: string;
   readonly bundleSource: () => Promise<string>;
