@@ -211,3 +211,49 @@ Deno.test("stepOutputRetentionFor: a step named by either of two workflows is ke
   );
   assertEquals(keeps(retention, "cached", "write-x"), [true, false]);
 });
+
+Deno.test("stepOutputRetentionFor: a direct execution reads the stored definition it adopts, and needs none to stay selective", async () => {
+  const direct = Step.create({
+    name: "deploy",
+    task: StepTask.directExecution("x/y", "deployer", "run", {}),
+  });
+  const deployer = Definition.create({
+    name: "deployer",
+    globalArguments: { token: expr("steps.prep.outputs.token") },
+  });
+  const adopted = await retentionOf(
+    workflowOf([writer(), direct]),
+    finder(blobs, deployer),
+  );
+  assertEquals(keeps(adopted, "prep", "write-x"), [true, false]);
+  const built = await retentionOf(
+    workflowOf([writer(), direct]),
+    finder(blobs),
+  );
+  assertEquals(keeps(built, "prep", "write-x"), [false, false]);
+});
+
+Deno.test("stepOutputRetentionFor: a fan-out job keeps every step, as its lanes run per-worker definitions", async () => {
+  const fleet = Workflow.fromData(
+    {
+      id: crypto.randomUUID(),
+      name: "fleet",
+      jobs: [{
+        name: "patch",
+        fanOut: "all",
+        labels: { role: "web" },
+        steps: [{
+          name: "apply",
+          task: {
+            type: "behavior",
+            behaviorType: "command/shell",
+            behaviorName: "patch",
+            methodName: "execute",
+          },
+        }],
+      }],
+    } as unknown as Parameters<typeof Workflow.fromData>[0],
+  );
+  const retention = await stepOutputRetentionFor([fleet], finder(blobs));
+  assertEquals(retention, StepOutputRetention.ALL);
+});

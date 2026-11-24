@@ -102,7 +102,12 @@ export async function stepOutputRetentionFor(
   const pending = references.flatMap((read) =>
     read.runTargets.map((run) => run.model)
   );
+  // a direct execution adopts a stored definition of its name, and builds one
+  // from the step's own arguments, already analysed, only when there is none
+  const adoptable = new Set<string>();
   for (const job of workflows.flatMap((workflow) => workflow.jobs)) {
+    // a lane runs a per-worker definition name this analysis never sees
+    if (job.fanOut !== undefined) return StepOutputRetention.ALL;
     for (const step of job.steps) {
       const task = step.task.data;
       if (task.type !== "model_method") continue;
@@ -110,9 +115,8 @@ export async function stepOutputRetentionFor(
       if (target === undefined || containsExpression(target)) {
         return StepOutputRetention.ALL;
       }
-      // a direct execution's definition is built from the step's own
-      // arguments, which the workflow's expressions already cover
-      if (task.modelIdOrName !== undefined) pending.push(target);
+      if (task.modelIdOrName === undefined) adoptable.add(target);
+      pending.push(target);
     }
   }
   const analysed = new Set<string>();
@@ -121,6 +125,7 @@ export async function stepOutputRetentionFor(
     if (analysed.has(ref)) continue;
     analysed.add(ref);
     const definition = await find(ref);
+    if (!definition && adoptable.has(ref)) continue;
     // created by an earlier step, or gone: nothing says what it reads
     if (!definition) return StepOutputRetention.ALL;
     for (
