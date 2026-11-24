@@ -3516,8 +3516,7 @@ adds a worker that enrolled since.
   worker has left the pool. Dispatch still pins it by worker name, so a
   restarted process with a new instance UUID is the planned member, and an
   absent or disconnected worker waits up to the queue timeout. Under
-  `offline:
-  skip` or `offline: fail`, a resumed lane whose worker is not
+  `offline: skip` or `offline: fail`, a resumed lane whose worker is not
   connected fails at once and sends nothing (`resumedLaneVerdict`); a planned
   lane is never silently skipped.
 - Recover keeps the interrupt rules unchanged: they touch only pending steps, so
@@ -3594,7 +3593,7 @@ fanOutPlan:
     - {
         worker: host-c,
         instanceUuid: …,
-        disposition: skipped,
+        disposition: excluded,
         reason: draining,
       }
   plannedLanes: 2

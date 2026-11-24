@@ -156,15 +156,15 @@ serve, and a worker keeps only its enrollment token and a cache directory. A
    token mode it also needs a server access token:
 
    ```bash
+   sudo mkdir -p /var/lib/swamp-worker
    sudo swamp worker daemon enable wss://swamp.example.com:9090 \
      --token <enrollment-token> --server-token <server-token> \
      --label role=web --cache-dir /var/lib/swamp-worker
    ```
 
-3. In serve's repo, create a workflow with
-   `swamp workflow create
-   push-web-config` and give it a fan-out job that
-   pushes a config file and checks each host's health:
+3. In serve's repo, run `swamp workflow create push-web-config` and give the
+   workflow a fan-out job. This one installs a config file already staged on
+   each host, reloads the service, and checks the host's health:
 
    ```yaml
    id: 9b2f1c7e-4d3a-4e8b-a1f0-6c5d2e7b8a90 # written by swamp workflow create
