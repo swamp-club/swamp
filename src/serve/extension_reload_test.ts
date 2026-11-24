@@ -2449,7 +2449,7 @@ Deno.test("performServeReload: explicitly refreshes local source types before ac
   modelRegistry.setSourceRefresher((options) => {
     refreshed++;
     forced = options?.force;
-    return Promise.resolve();
+    return Promise.resolve(0);
   });
   try {
     await Deno.mkdir(join(tmpDir, ".swamp"), { recursive: true });
@@ -2460,6 +2460,24 @@ Deno.test("performServeReload: explicitly refreshes local source types before ac
     assertEquals(result.success, true);
     assertEquals(refreshed, 1);
     assertEquals(forced, true);
+  } finally {
+    modelRegistry.setSourceRefresher(null);
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("performServeReload: counts the local types the refresh reloaded with the discovered extensions", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  modelRegistry.setSourceRefresher(() => Promise.resolve(2));
+  try {
+    await Deno.mkdir(join(tmpDir, ".swamp"), { recursive: true });
+    const result = await performServeReload(
+      tmpDir,
+      join(tmpDir, "missing.json"),
+      { extensionDiscoverer: () => Promise.resolve(1) },
+    );
+    assertEquals(result.success, true);
+    assertEquals(result.reloadedCount, 3);
   } finally {
     modelRegistry.setSourceRefresher(null);
     await Deno.remove(tmpDir, { recursive: true }).catch(() => {});

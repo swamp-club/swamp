@@ -105,8 +105,8 @@ interface Fixture {
   behaviorsDir: string;
   pulledModelsDir: string;
   loader: ExtensionLoader;
-  refresh: () => Promise<void>;
-  refreshWith: (loader: ExtensionLoader) => Promise<void>;
+  refresh: () => Promise<number>;
+  refreshWith: (loader: ExtensionLoader) => Promise<number>;
   createRefresher: () => ExtensionLoader;
   reindexElsewhere: () => Promise<void>;
   type: (suffix: string) => string;
@@ -248,7 +248,7 @@ Deno.test("refreshLocalModels: an edited local model runs its new code, and its 
       join(modelsDir, "a.ts"),
       modelCode(type("a"), "v2"),
     );
-    await refresh();
+    assertEquals(await refresh(), 1);
 
     const after = modelRegistry.get(type("a"));
     assertEquals(after?.methods.run.description, "v2");
@@ -264,12 +264,36 @@ Deno.test("refreshLocalModels: an edited local model runs its new code, and its 
   });
 });
 
+Deno.test("refreshLocalModels: counts only the type whose source was edited", async () => {
+  await withRepo(async ({ modelsDir, refresh, type }) => {
+    await loaded(type("a"));
+    const untouched = await loaded(type("new"));
+
+    await Deno.writeTextFile(
+      join(modelsDir, "a.ts"),
+      modelCode(type("a"), "v2"),
+    );
+
+    assertEquals(await refresh(), 1);
+    assertStrictEquals(modelRegistry.get(type("new")), untouched);
+  }, async ({ modelsDir, type }) => {
+    await Deno.writeTextFile(
+      join(modelsDir, "a.ts"),
+      modelCode(type("a"), "v1"),
+    );
+    await Deno.writeTextFile(
+      join(modelsDir, "new.ts"),
+      modelCode(type("new"), "v1"),
+    );
+  });
+});
+
 Deno.test("refreshLocalModels: an unchanged model keeps its definition and is not rebundled", async () => {
   await withRepo(async ({ refresh, type }) => {
     const before = await loaded(type("a"));
     const calls = bundleCalls;
 
-    await refresh();
+    assertEquals(await refresh(), 0);
 
     assertStrictEquals(modelRegistry.get(type("a")), before);
     assertEquals(bundleCalls, calls);
@@ -289,7 +313,7 @@ Deno.test("refreshLocalModels: an edited pulled model is left to hot-reload", as
       join(pulledModelsDir, "p.ts"),
       modelCode(type("pulled"), "v2"),
     );
-    await refresh();
+    assertEquals(await refresh(), 0);
 
     assertStrictEquals(modelRegistry.get(type("pulled")), before);
   }, async ({ pulledModelsDir, type }) => {
@@ -354,11 +378,11 @@ Deno.test("refreshLocalModels: an edit that no longer validates unregisters the 
       source,
       `export const model = { type: "${type("a")}" };\n`,
     );
-    await refresh();
+    assertEquals(await refresh(), 0);
     assertEquals(await loaded(type("a")), undefined);
 
     await Deno.writeTextFile(source, modelCode(type("a"), "v3"));
-    await refresh();
+    assertEquals(await refresh(), 1);
     assertEquals((await loaded(type("a")))?.methods.run.description, "v3");
   }, async ({ modelsDir, type }) => {
     await Deno.writeTextFile(
@@ -377,7 +401,7 @@ Deno.test("refreshLocalModels: a failed deno bundle keeps the previous code, as 
       modelCode(type("a"), "v2"),
     );
     bundleFails = true;
-    await refresh();
+    assertEquals(await refresh(), 0);
     assertEquals((await loaded(type("a")))?.methods.run.description, "v1");
 
     await refresh();
@@ -399,7 +423,8 @@ Deno.test("refreshLocalModels: a model file added or deleted after startup appea
       modelCode(type("new"), "fresh"),
     );
     await Deno.remove(join(modelsDir, "a.ts"));
-    await refresh();
+    // the new type counts; the deleted one is gone, not reloaded
+    assertEquals(await refresh(), 1);
 
     assertEquals(
       (await loaded(type("new")))?.methods.run.description,
@@ -423,7 +448,8 @@ Deno.test("refreshLocalModels: an edited local add-on replaces the members it at
       join(modelsDir, "b_extra.ts"),
       addOnCode(type("b"), "a2"),
     );
-    await refresh();
+    // the add-on reloads the type it extends
+    assertEquals(await refresh(), 1);
 
     assertEquals(
       (await loaded(type("b")))?.methods.extra?.description,
@@ -474,9 +500,13 @@ Deno.test("refreshLocalModels: a local add-on that no longer loads leaves its ba
       join(modelsDir, "b_extra.ts"),
       `export const extension = { type: "${type("b")}", methods: [\n`,
     );
-    await refresh();
+    const reloaded = await refresh();
 
-    assertEquals((await loaded(type("b")))?.methods.run.description, "base");
+    const after = await loaded(type("b"));
+    assertEquals(after?.methods.run.description, "base");
+    // the base reloads without the broken add-on's members
+    assertEquals(after?.methods.extra, undefined);
+    assertEquals(reloaded, 1);
   }, async ({ modelsDir, type }) => {
     await Deno.writeTextFile(
       join(modelsDir, "b.ts"),
@@ -541,8 +571,8 @@ Deno.test("createLocalModelRefresher: runs no pass while nothing under the local
     const calls = bundleCalls;
 
     await refresh();
-    await refresh();
-    await refresh();
+    assertEquals(await refresh(), 0);
+    assertEquals(await refresh(), 0);
 
     assertEquals(passes, 1);
     assertEquals(bundleCalls, calls);
@@ -633,7 +663,7 @@ Deno.test("createLocalModelRefresher: a forced call runs a pass while nothing ch
     });
 
     await refresh();
-    await refresh({ force: true });
+    assertEquals(await refresh({ force: true }), 0);
     await refresh();
 
     assertEquals(passes, 2);

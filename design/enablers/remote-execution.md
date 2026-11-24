@@ -2398,6 +2398,10 @@ helper changed (swamp-club#4214). It is forced past the unchanged-files check
 the per-run refresh makes, so it runs even when serve's last pass saw the same
 files (swamp-club#4309). A failed local refresh is reported only after
 the rest of the reload has refreshed pulled extensions and serve configuration.
+`reloadedCount` counts the repo-local behavior types this refresh replaced with
+changed code, as well as the pulled and newly discovered extension types
+(swamp-club#4306). A type that only kept its previous bundle, because the edit
+failed to bundle, is not counted.
 
 The reload after an extension change made through serve is narrower. The
 admin extension handlers call `ConnectionContext.extensionChangeReloader`, which

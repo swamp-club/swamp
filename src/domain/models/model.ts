@@ -727,33 +727,35 @@ export class ModelRegistry {
   private extensionsAttached = new Set<string>();
   private extensionAttachWarned = new Set<string>();
   private sourceRefresher:
-    | ((options?: SourceRefreshOptions) => Promise<void>)
+    | ((options?: SourceRefreshOptions) => Promise<number>)
     | null = null;
-  private sourceRefreshRunning: Promise<void> | null = null;
-  private sourceRefreshQueued: Promise<void> | null = null;
+  private sourceRefreshRunning: Promise<number> | null = null;
+  private sourceRefreshQueued: Promise<number> | null = null;
   private sourceRefreshForceQueued = false;
 
   setSourceRefresher(
-    refresher: ((options?: SourceRefreshOptions) => Promise<void>) | null,
+    refresher: ((options?: SourceRefreshOptions) => Promise<number>) | null,
   ): void {
     this.sourceRefresher = refresher;
   }
 
   /**
-   * swaps changed types for long-lived processes. Passes never overlap: calls
-   * during one pass share the next one, which is forced if any caller forced.
+   * swaps changed types for long-lived processes and resolves to how many it
+   * reloaded. Passes never overlap: calls during one pass share the next one,
+   * and its count, which is forced if any caller forced.
    */
   refreshSources(
-    schedule: (pass: () => Promise<void>) => Promise<void> = (pass) => pass(),
+    schedule: (pass: () => Promise<number>) => Promise<number> = (pass) =>
+      pass(),
     options?: SourceRefreshOptions,
-  ): Promise<void> {
+  ): Promise<number> {
     const refresher = this.sourceRefresher;
-    if (!refresher) return Promise.resolve();
+    if (!refresher) return Promise.resolve(0);
     if (this.sourceRefreshQueued) {
       if (options?.force) this.sourceRefreshForceQueued = true;
       return this.sourceRefreshQueued;
     }
-    const run = (force: boolean): Promise<void> => {
+    const run = (force: boolean): Promise<number> => {
       const pass = schedule(() => refresher(force ? { force } : undefined))
         .finally(() => {
           if (this.sourceRefreshRunning === pass) {

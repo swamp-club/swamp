@@ -35,6 +35,8 @@ import {
   createModelMethodRunDeps,
   createWorkflowRunDeps,
 } from "../src/serve/deps.ts";
+import { performServeReload } from "../src/serve/extension_reload.ts";
+import { refreshLocalModelsForRun } from "../src/serve/local_model_refresh.ts";
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 
@@ -155,6 +157,79 @@ Deno.test("serve run deps resolve an edited local model to its new code and a ne
     });
   } finally {
     modelRegistry.invalidateType(type);
+    modelRegistry.clearLoadersForTesting();
+    catalog.close();
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("performServeReload: counts the edited local model it replaced, not every local model", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-4306-reload-" });
+  const id = crypto.randomUUID().slice(0, 8);
+  const edited = `@test/edited-${id}`;
+  const untouched = `@test/untouched-${id}`;
+  const modelsDir = join(dir, "extensions", "models");
+  const source = join(modelsDir, "edited.ts");
+  const lockfilePath = join(modelsDir, "upstream_extensions.json");
+  await Deno.mkdir(modelsDir, { recursive: true });
+  await Deno.writeTextFile(lockfilePath, "{}");
+  await Deno.writeTextFile(source, modelCode(edited, "v1"));
+  await Deno.writeTextFile(
+    join(modelsDir, "untouched.ts"),
+    modelCode(untouched, "v1"),
+  );
+  const catalog = new ExtensionCatalogStore(
+    join(dir, ".swamp", "_extension_catalog.db"),
+  );
+  try {
+    await withMockedCommand(copyingBundler, async () => {
+      const loader = new ExtensionLoader(
+        stubDenoRuntime,
+        modelKindAdapter,
+        dir,
+        undefined,
+        new ExtensionRepository({
+          catalog,
+          lockfileRepository: await LockfileRepository.create(lockfilePath),
+          repoRoot: dir,
+        }),
+      );
+      modelRegistry.setTypeLoader((t, entry) =>
+        loader.loadSingleType(t, entry)
+      );
+      await loader.buildIndex(modelsDir, { indexOnly: true });
+      await loader.buildIndex(modelsDir, { indexOnly: true });
+      modelRegistry.setSourceRefresher(
+        createLocalModelRefresher(
+          loader,
+          modelsDir,
+          [],
+          () => Promise.resolve({ localDirs: [], additionalDirs: [] }),
+        ),
+      );
+      // serve takes its first snapshot at startup
+      await refreshLocalModelsForRun();
+      await modelRegistry.ensureTypeLoaded(edited);
+      await modelRegistry.ensureTypeLoaded(untouched);
+
+      await Deno.writeTextFile(source, modelCode(edited, "v2"));
+      await touch(source, 1);
+      const reload = await performServeReload(dir, lockfilePath);
+      assertEquals(reload.success, true);
+      assertEquals(reload.reloadedCount, 1);
+      assertEquals(
+        modelRegistry.get(edited)?.methods.plan.description,
+        "v2",
+      );
+
+      const again = await performServeReload(dir, lockfilePath);
+      assertEquals(again.success, true);
+      assertEquals(again.reloadedCount, 0);
+    });
+  } finally {
+    modelRegistry.setSourceRefresher(null);
+    modelRegistry.invalidateType(edited);
+    modelRegistry.invalidateType(untouched);
     modelRegistry.clearLoadersForTesting();
     catalog.close();
     await Deno.remove(dir, { recursive: true }).catch(() => {});
