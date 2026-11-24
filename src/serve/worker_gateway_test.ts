@@ -1936,6 +1936,170 @@ Deno.test("WorkerGateway: verifyOnEnroll — a reconnect records the worker unve
   );
 });
 
+Deno.test("WorkerGateway: verificationPending — an unverified worker is pending while its probe runs, and no longer pending when the failure is announced", async () => {
+  const failed: WorkerSnapshot[] = [];
+  const pendingWhenAnnounced: boolean[] = [];
+  const probe = Promise.withResolvers<void>();
+  const h: Harness = createHarness({
+    verifyOnEnroll: true,
+    verifyWorker: async () => {
+      await probe.promise;
+      return { ok: false, failureReason: "data plane broken" };
+    },
+    onWorkerVerifyFailed: (w) => {
+      failed.push(w);
+      pendingWhenAnnounced.push(h.gateway.verificationPending(w.name));
+    },
+  });
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel);
+  assertEquals(h.gateway.worker("ci-runner-3")?.status, "unverified");
+  assertEquals(h.gateway.verificationPending("ci-runner-3"), true);
+  assertEquals(failed.length, 0);
+
+  probe.resolve();
+  await waitFor(() => failed.length === 1, "the failure to be announced");
+  assertEquals(failed[0].name, "ci-runner-3");
+  assertEquals(failed[0].verifyFailureReason, "data plane broken");
+  assertEquals(pendingWhenAnnounced, [false]);
+  assertEquals(h.gateway.verificationPending("no-such-worker"), false);
+});
+
+Deno.test("WorkerGateway: verificationPending — a passed probe leaves the worker not pending and announces no failure", async () => {
+  const failed: WorkerSnapshot[] = [];
+  const h = createHarness({
+    verifyOnEnroll: true,
+    verifyWorker: () => Promise.resolve({ ok: true }),
+    onWorkerVerifyFailed: (w) => failed.push(w),
+  });
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel);
+  await waitFor(
+    () => h.gateway.worker("ci-runner-3")?.status === "idle",
+    "the worker to be verified",
+  );
+  assertEquals(h.gateway.verificationPending("ci-runner-3"), false);
+  assertEquals(failed.length, 0);
+});
+
+Deno.test("WorkerGateway: verificationPending — a probe that errors announces the failure", async () => {
+  const failed: WorkerSnapshot[] = [];
+  const h = createHarness({
+    verifyOnEnroll: true,
+    verifyWorker: () => Promise.reject(new Error("probe exploded")),
+    onWorkerVerifyFailed: (w) => failed.push(w),
+  });
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel);
+  await waitFor(() => failed.length === 1, "the failure to be announced");
+  assertEquals(failed[0].verifyFailureReason, "probe exploded");
+  assertEquals(h.gateway.verificationPending("ci-runner-3"), false);
+});
+
+Deno.test("WorkerGateway: verificationPending — a reconnect after a failed probe clears the old reason and is pending until its own probe ends", async () => {
+  let answer: { ok: boolean; failureReason?: string } = {
+    ok: false,
+    failureReason: "data plane broken",
+  };
+  let probe = Promise.resolve();
+  const failed: WorkerSnapshot[] = [];
+  const h = createHarness({
+    graceWindowMs: 200,
+    verifyOnEnroll: true,
+    verifyWorker: async () => {
+      await probe;
+      return answer;
+    },
+    onWorkerVerifyFailed: (w) => failed.push(w),
+  });
+  const first = connectWorkerSocket(h.gateway);
+  await enroll(first.workerChannel);
+  await waitFor(() => failed.length === 1, "the first probe to fail");
+  assertEquals(h.gateway.verificationPending("ci-runner-3"), false);
+  first.dropSocket();
+  await waitFor(
+    () => setStatusWrites(h).at(-1) === "disconnected",
+    "the disconnect to be recorded",
+  );
+
+  const held = Promise.withResolvers<void>();
+  probe = held.promise;
+  answer = { ok: true };
+  const second = connectWorkerSocket(h.gateway);
+  await enroll(second.workerChannel);
+  const worker = h.gateway.worker("ci-runner-3");
+  assertEquals(worker?.status, "unverified");
+  assertEquals(worker?.verifyFailureReason, undefined);
+  assertEquals(h.gateway.verificationPending("ci-runner-3"), true);
+  const record = h.transitions.filter((t) => t.methodName === "set_status")
+    .at(-1);
+  assertEquals(record?.inputs.status, "unverified");
+  assertEquals(record?.inputs.verifyFailureReason, undefined);
+
+  held.resolve();
+  await waitFor(
+    () => h.gateway.worker("ci-runner-3")?.status === "idle",
+    "the reconnect's probe to pass",
+  );
+  assertEquals(h.gateway.verificationPending("ci-runner-3"), false);
+  assertEquals(failed.length, 1);
+  second.dropSocket();
+  await waitFor(
+    () => h.gateway.workers().length === 0,
+    "the grace window to expire",
+  );
+});
+
+Deno.test("WorkerGateway: verificationPending — a probe failing after the worker dropped announces nothing", async () => {
+  const failed: WorkerSnapshot[] = [];
+  const probe = Promise.withResolvers<void>();
+  const h = createHarness({
+    graceWindowMs: 200,
+    verifyOnEnroll: true,
+    verifyWorker: async () => {
+      await probe.promise;
+      return { ok: false, failureReason: "data plane broken" };
+    },
+    onWorkerVerifyFailed: (w) => failed.push(w),
+  });
+  const { workerChannel, dropSocket } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel);
+  dropSocket();
+  await waitFor(
+    () => h.gateway.worker("ci-runner-3")?.connected === false,
+    "the worker to drop",
+  );
+  probe.resolve();
+  // the probe settles long before the grace window ends
+  await waitFor(
+    () => h.gateway.workers().length === 0,
+    "the grace window to expire",
+  );
+  assertEquals(failed, []);
+});
+
+Deno.test("WorkerGateway: verificationPending — an enrollment probe refused for capacity stays pending, as it is sent again", async () => {
+  const h = createSlotRaceHarness();
+  const { manual } = await refuseEnrollmentProbeForCapacity(h);
+  assertEquals(h.gateway.worker("ci-runner-3")?.status, "unverified");
+  assertEquals(h.gateway.verificationPending("ci-runner-3"), true);
+  h.release("manual-probe");
+  await manual;
+  await waitFor(
+    () => h.gateway.worker("ci-runner-3")?.status === "idle",
+    "the worker to be probed again and promoted",
+  );
+  assertEquals(h.gateway.verificationPending("ci-runner-3"), false);
+});
+
+Deno.test("WorkerGateway: verificationPending — no worker is pending without a verifier to run its probe", async () => {
+  const h = createHarness({ verifyOnEnroll: true });
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel);
+  assertEquals(h.gateway.worker("ci-runner-3")?.status, "unverified");
+  assertEquals(h.gateway.verificationPending("ci-runner-3"), false);
+});
+
 Deno.test("WorkerGateway: without verifyOnEnroll — a reconnect records the worker idle", async () => {
   const h = createHarness({ graceWindowMs: 200 });
   const first = connectWorkerSocket(h.gateway);

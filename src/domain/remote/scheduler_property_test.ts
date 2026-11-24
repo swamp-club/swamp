@@ -209,6 +209,7 @@ Deno.test("laneDispatchVerdict: a lane is only ever sent to a connected worker t
             "draining" as const,
           ),
           connected: fc.boolean(),
+          verificationPending: fc.option(fc.boolean(), { nil: undefined }),
         }),
         { nil: null },
       ),
@@ -221,6 +222,8 @@ Deno.test("laneDispatchVerdict: a lane is only ever sent to a connected worker t
         if (verdict.kind === "wait") {
           assert(
             worker === null ||
+              (worker.status === "unverified" &&
+                worker.verificationPending === true) ||
               (!worker.connected &&
                 (worker.status === "idle" || worker.status === "busy")),
           );
@@ -228,7 +231,9 @@ Deno.test("laneDispatchVerdict: a lane is only ever sent to a connected worker t
         if (verdict.kind === "ineligible") {
           assert(
             worker !== null &&
-              (worker.status === "unverified" || worker.status === "draining"),
+              (worker.status === "draining" ||
+                (worker.status === "unverified" &&
+                  worker.verificationPending !== true)),
           );
         }
       },

@@ -342,6 +342,7 @@ export interface WorkerGatewayOptions {
   onGraceExpired?: (worker: WorkerSnapshot) => void;
   onWorkerEnrolled?: (worker: WorkerSnapshot) => void;
   onWorkerDraining?: (worker: WorkerSnapshot) => void;
+  onWorkerVerifyFailed?: (worker: WorkerSnapshot) => void;
   /**
    * A worker was removed from the pool because its enrollment token lost
    * its authority (revoked, expired, re-minted, or deleted). Unlike a
@@ -1492,9 +1493,10 @@ export class WorkerGateway {
           };
           if (reconnecting && verifyOnEnroll) {
             entry.status = "unverified";
-            // A refusal from before the reconnect is answered by the probe this
-            // enrollment starts.
+            // A refusal or failure from before the reconnect is answered by the
+            // probe this enrollment starts.
             entry.probeRefusedForCapacity = false;
+            entry.verifyFailureReason = undefined;
           }
           entry.channel = state.channel;
           entry.closeSocket = state.closeSocket;
@@ -1790,7 +1792,10 @@ export class WorkerGateway {
       return;
     }
     entry.verifying = true;
-    this.#runEnrollmentVerify(workerName).catch((e: unknown) => {
+    let failed = false;
+    this.#runEnrollmentVerify(workerName).then((result) => {
+      failed = result;
+    }).catch((e: unknown) => {
       logger.error(
         "Enrollment verify failed unexpectedly for {worker}: {error}",
         {
@@ -1800,7 +1805,11 @@ export class WorkerGateway {
       );
     }).finally(() => {
       entry.verifying = false;
-      if (!entry.verifyAgain) return;
+      if (!entry.verifyAgain) {
+        // only now does the worker read as failed rather than pending
+        if (failed) this.#announceVerifyFailed(workerName, entry);
+        return;
+      }
       entry.verifyAgain = false;
       if (
         this.#workers.get(workerName) === entry &&
@@ -1812,7 +1821,8 @@ export class WorkerGateway {
     });
   }
 
-  async #runEnrollmentVerify(workerName: string): Promise<void> {
+  // true when the probe failed and the failure was recorded on the worker
+  async #runEnrollmentVerify(workerName: string): Promise<boolean> {
     const verifyWorker = this.#options.verifyWorker!;
     // This run answers any refusal seen before it; only one it meets itself
     // calls for another.
@@ -1821,7 +1831,7 @@ export class WorkerGateway {
     try {
       const probeResult = await verifyWorker(workerName);
       const entry = this.#workers.get(workerName);
-      if (!entry || entry.channel === null) return;
+      if (!entry || entry.channel === null) return false;
       if (probeResult.ok) {
         if (entry.status !== "draining") {
           const promoted = await this.#recordWorkerWrite(
@@ -1861,10 +1871,11 @@ export class WorkerGateway {
           "Worker {worker} failed enrollment verification: {reason}",
           { worker: workerName, reason: probeResult.failureReason ?? "" },
         );
+        return true;
       }
     } catch (error) {
       const entry = this.#workers.get(workerName);
-      if (!entry || entry.channel === null) return;
+      if (!entry || entry.channel === null) return false;
       const reason = error instanceof Error ? error.message : String(error);
       await this.#recordWorkerWrite("verify_failed", workerName, async () => {
         entry.verifyFailureReason = reason;
@@ -1889,7 +1900,29 @@ export class WorkerGateway {
         "Worker {worker} verification probe errored: {reason}",
         { worker: workerName, reason },
       );
+      return true;
     }
+    return false;
+  }
+
+  #announceVerifyFailed(workerName: string, entry: WorkerEntry): void {
+    if (
+      this.#workers.get(workerName) !== entry ||
+      this.#probeOutcomeSuperseded(entry)
+    ) {
+      return;
+    }
+    this.#options.onWorkerVerifyFailed?.(this.#snapshot(entry));
+  }
+
+  // unverified with a probe running or owed, not one that failed
+  verificationPending(name: string): boolean {
+    const entry = this.#workers.get(name);
+    if (!entry || entry.status !== "unverified") return false;
+    if (!this.#options.verifyWorker) return false;
+    return entry.verifyFailureReason === undefined ||
+      entry.verifying === true ||
+      entry.probeRefusedForCapacity === true;
   }
 
   // a drain or disconnect can land while a probe's outcome waits on the

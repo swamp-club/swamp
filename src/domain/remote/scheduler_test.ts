@@ -776,10 +776,46 @@ Deno.test("laneDispatchVerdict: a worker absent from the pool or disconnected ma
 Deno.test("laneDispatchVerdict: an unverified or draining worker is ineligible, connected or not", () => {
   for (const status of ["unverified", "draining"] as const) {
     for (const connected of [true, false]) {
-      assertEquals(laneDispatchVerdict({ status, connected }), {
-        kind: "ineligible",
-        reason: status,
-      });
+      for (const verificationPending of [undefined, false]) {
+        assertEquals(
+          laneDispatchVerdict({ status, connected, verificationPending }),
+          { kind: "ineligible", reason: status },
+        );
+      }
     }
   }
+});
+
+Deno.test("laneDispatchVerdict: an unverified worker whose verification is pending makes the lane wait, connected or not", () => {
+  for (const connected of [true, false]) {
+    assertEquals(
+      laneDispatchVerdict({
+        status: "unverified",
+        connected,
+        verificationPending: true,
+      }),
+      { kind: "wait" },
+    );
+  }
+});
+
+Deno.test("laneDispatchVerdict: pending verification never holds back a draining worker or changes a verified one", () => {
+  for (const connected of [true, false]) {
+    assertEquals(
+      laneDispatchVerdict({
+        status: "draining",
+        connected,
+        verificationPending: true,
+      }),
+      { kind: "ineligible", reason: "draining" },
+    );
+  }
+  assertEquals(
+    laneDispatchVerdict({
+      status: "idle",
+      connected: true,
+      verificationPending: true,
+    }),
+    { kind: "dispatch" },
+  );
 });
