@@ -36,11 +36,12 @@ export function checkReusePortListen(options: {
       reusePort: true,
     }).close();
   } catch (error) {
-    const hint = !(error instanceof Deno.errors.AddrInUse)
-      ? ""
-      : os === "linux"
-      ? "; a process listening there without --reuse-port blocks an overlapping start"
-      : `; only Linux lets two processes share a port, so on ${os} a second serve cannot start beside one already listening`;
+    let hint = "";
+    if (error instanceof Deno.errors.AddrInUse) {
+      hint = os === "linux"
+        ? "; a process listening there without --reuse-port blocks an overlapping start"
+        : `; only Linux lets two processes share a port, and on ${os} another process already listens there`;
+    }
     throw new UserError(
       `--reuse-port: cannot listen on ${options.hostname}:${options.port} (${
         error instanceof Error ? error.message : String(error)

@@ -62,7 +62,7 @@ Deno.test({
       );
       assertStringIncludes(
         error.message,
-        "only Linux lets two processes share a port, so on darwin",
+        "only Linux lets two processes share a port, and on darwin another process already listens there",
       );
       assert(!error.message.includes("without --reuse-port"));
     } finally {
