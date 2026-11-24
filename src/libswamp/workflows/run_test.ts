@@ -55,6 +55,7 @@ import { RunSensitiveValues } from "../../domain/secrets/run_sensitive_values.ts
 import { SecretBagRegistry } from "../../domain/vaults/secret_bag_registry.ts";
 import { VaultSecretBag } from "../../domain/vaults/vault_secret_bag.ts";
 import { StepOutputResolver } from "../../domain/workflows/step_output_resolver.ts";
+import { ResourceTooLargeToLoadError } from "../../domain/data/resource_load_guard.ts";
 import type { WorkflowExecutionEvent } from "../../domain/workflows/execution_service.ts";
 import type { DataHandle } from "../../domain/models/model.ts";
 import {
@@ -983,6 +984,32 @@ Deno.test("resolveRunStepOutputs: resolves every step keyed by job and step", as
   assertEquals(resolved.job1.step1.outputs, { audienceId: "aud_123" });
   assertEquals(resolved.job1.step1.attributesByDataId, {
     "data-audience": { audienceId: "aud_123" },
+  });
+});
+
+Deno.test("resolveRunStepOutputs: under the display budget, a resource too large to load leaves the rendered outputs and omissions unchanged, its marker kept in the sources only", async () => {
+  const run = createModelMethodRun();
+  const budget = new RunAttributeBudget();
+  const resolver = new StepOutputResolver({
+    readAttributes: budget.wrap(() =>
+      Promise.reject(
+        new ResourceTooLargeToLoadError(
+          { modelType: "test/model", dataName: "audience" },
+          600_000_000,
+          "text-length",
+        ),
+      )
+    ),
+  });
+
+  const resolved = await resolveRunStepOutputs(run, resolver, budget);
+
+  assertEquals(resolved.job1.step1.outputs, undefined);
+  assertEquals(resolved.job1.step1.attributesByDataId, {});
+  assertEquals(resolved.job1.step1.attributesOmitted, undefined);
+  assertEquals(resolved.job1.step1.sources?.[0].records[0].tooLargeToLoad, {
+    bytes: 600_000_000,
+    reason: "text-length",
   });
 });
 

@@ -23,6 +23,7 @@ import {
   assertInstanceOf,
   assertRejects,
   assertStringIncludes,
+  assertThrows,
 } from "@std/assert";
 import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
@@ -36,6 +37,7 @@ import { CatalogStore } from "../src/infrastructure/persistence/catalog_store.ts
 import { DataQueryService } from "../src/domain/data/data_query_service.ts";
 import { ExpressionEvaluationService } from "../src/domain/expressions/expression_evaluation_service.ts";
 import {
+  InvalidExpressionError,
   MissingModelDataError,
   UnboundExpressionError,
 } from "../src/domain/expressions/errors.ts";
@@ -44,7 +46,16 @@ import {
   repoResourceSizePolicy,
 } from "../src/domain/models/data_writer.ts";
 import type { ResourceOutputSpec } from "../src/domain/models/model.ts";
-import { createDataRepositoryAttributeReader } from "../src/domain/workflows/step_output_resolver.ts";
+import {
+  createDataRepositoryAttributeReader,
+  liveStepOutputs,
+  StepOutputResolver,
+} from "../src/domain/workflows/step_output_resolver.ts";
+import type { StepRun } from "../src/domain/workflows/workflow_run.ts";
+import { fromResourceHandle } from "../src/domain/data/data_record_mapper.ts";
+import type { DataHandle } from "../src/domain/models/model.ts";
+import { attachStepOutputSources } from "../src/domain/expressions/step_output_sources.ts";
+import { CelEvaluator } from "../src/infrastructure/cel/cel_evaluator.ts";
 import {
   ResourceLoadGuard,
   ResourceTooLargeToLoadError,
@@ -72,7 +83,13 @@ interface Fixture {
 }
 
 // a heap of 1000 bytes refuses any item past a third of it
-async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
+async function withFixture(
+  fn: (f: Fixture) => Promise<void>,
+  loadGuard = new ResourceLoadGuard({
+    heapLimitBytes: () => 1000,
+    heapUsedBytes: () => 0,
+  }, 50),
+): Promise<void> {
   const repoDir = await Deno.makeTempDir({ prefix: "swamp-resource-size-" });
   const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
   try {
@@ -100,10 +117,7 @@ resourceSize:
       undefined,
       false,
       {},
-      new ResourceLoadGuard({
-        heapLimitBytes: () => 1000,
-        heapUsedBytes: () => 0,
-      }, 50),
+      loadGuard,
     );
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const big = Definition.create({ name: "big", globalArguments: {} });
@@ -269,4 +283,106 @@ Deno.test("resource size: a refusal for a row the caller may not read is dropped
       "big/secret@v1",
     );
   });
+});
+
+Deno.test("resource size: a step that wrote a resource past the text-length limit keeps a marker, and reading its outputs or its model resource fails by name, live and on resume", async () => {
+  await withFixture(
+    async (f) => {
+      const evaluator = new CelEvaluator();
+      const message =
+        "Cannot load big/blob-0@v1: it is 314 bytes, more than swamp can load as text";
+      const big = await f.write("blob-0", 300) as DataHandle;
+      const small = await f.write("small", 10) as DataHandle;
+      const bigRecord = await fromResourceHandle(
+        big,
+        type,
+        f.big.id,
+        "big",
+        f.dataRepo,
+      );
+      const smallRecord = await fromResourceHandle(
+        small,
+        type,
+        f.big.id,
+        "big",
+        f.dataRepo,
+      );
+      assertEquals(bigRecord.tooLargeToLoad, {
+        bytes: 314,
+        reason: "text-length",
+      });
+      assertEquals(smallRecord.attributes, { items: ["x".repeat(10)] });
+      const output = {
+        type: "model_method",
+        resources: { blob: { "blob-0": bigRecord, small: smallRecord } },
+      };
+
+      const live = liveStepOutputs(output, f.dataRepo.namespace);
+      const liveContext = {
+        steps: {
+          write: attachStepOutputSources(
+            { status: "succeeded", outputs: live.outputs },
+            live.sources,
+          ),
+        },
+      };
+      assertThrows(
+        () => evaluator.evaluate("steps.write.outputs.items", liveContext),
+        InvalidExpressionError,
+        message,
+      );
+
+      const modelContext = {
+        model: { big: { resource: { blob: { "blob-0": bigRecord } } } },
+      };
+      assertThrows(
+        () =>
+          evaluator.evaluate(
+            'model.big.resource.blob["blob-0"].attributes.items',
+            modelContext,
+          ),
+        InvalidExpressionError,
+        message,
+      );
+
+      // without the marker too, so the resumed read must find it from storage
+      const stripped = JSON.parse(JSON.stringify(output));
+      for (const record of Object.values(stripped.resources.blob)) {
+        const r = record as Record<string, unknown>;
+        r.attributes = null;
+        r.content = null;
+        delete r.tooLargeToLoad;
+      }
+      const resolver = new StepOutputResolver({
+        readAttributes: createDataRepositoryAttributeReader(f.dataRepo),
+        namespace: f.dataRepo.namespace,
+      });
+      const resumed = await resolver.resolve(
+        { output: stripped } as unknown as StepRun,
+      );
+      assertEquals(resumed.outputs, { items: ["x".repeat(10)] });
+      const resumedContext = {
+        steps: {
+          write: attachStepOutputSources(
+            { status: "succeeded", outputs: resumed.outputs },
+            resumed.sources,
+          ),
+        },
+      };
+      await assertRejects(
+        () =>
+          evaluator.evaluateAsync("steps.write.outputs.items", resumedContext),
+        InvalidExpressionError,
+        message,
+      );
+    },
+    new ResourceLoadGuard(
+      {
+        heapLimitBytes: () => 1_000_000,
+        heapUsedBytes: () => 0,
+      },
+      50,
+      200,
+    ),
+  );
 });

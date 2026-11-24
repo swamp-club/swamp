@@ -26,6 +26,7 @@ import {
   assertThrows,
 } from "@std/assert";
 import type { NamespaceReader } from "../../domain/data/namespace.ts";
+import { ResourceTooLargeToLoadError } from "../../domain/data/resource_load_guard.ts";
 import { SECRET_REFERENCE_INVALID } from "../../domain/expressions/errors.ts";
 import {
   attachStepOutputSources,
@@ -1180,4 +1181,78 @@ Deno.test("adaptDataRecord: a place the JSON tag lists reads as a Secret marked 
     }),
   );
   assertEquals(markOf(attributesOf(star.view).port), undefined);
+});
+
+const TOO_LARGE = { bytes: 570_000_048, reason: "text-length" as const };
+
+Deno.test("adaptDataRecord: a record marked too large to load refuses by name and size, in any namespace, before any tag is read", () => {
+  for (const namespace of ["", "security"]) {
+    const marked = record({}, { [SENSITIVE_FIELDS_TAG]: "not json" }, {
+      namespace,
+      name: "blob",
+      modelName: "big",
+      version: 4,
+      tooLargeToLoad: TOO_LARGE,
+    });
+    runInFaultScope((scope) => {
+      const error = assertThrows(
+        () => adaptDataRecord(marked, SOLO, "data.latest"),
+        ResourceTooLargeToLoadError,
+        "Cannot load big/blob@v4: it is 543.6 MiB (570000048 bytes), more than swamp can load as text",
+      );
+      assertEquals(error.reason, "text-length");
+      assertEquals(scope.faults, []);
+    });
+  }
+  const malformed = record({ user: "u" }, {}, {
+    tooLargeToLoad: { bytes: 1, reason: "nope" },
+  });
+  assertStrictEquals(adapt(malformed).view, malformed);
+});
+
+Deno.test("modelMapView: a record marked too large to load refuses when it is read, and its neighbours still read", () => {
+  const big = record({}, {}, { name: "blob", tooLargeToLoad: TOO_LARGE });
+  const main = record({ user: "u" });
+  const { model } = modelMap({ big, main });
+  runInFaultScope(() => {
+    const view = modelMapView(model, SOLO) as Record<
+      string,
+      Record<string, Record<string, Record<string, Record<string, unknown>>>>
+    >;
+    const creds = view.web.resource.creds;
+    assertEquals(attributesOf(creds.main).user, "u");
+    assertThrows(
+      () => creds.big,
+      ResourceTooLargeToLoadError,
+      "Cannot load db/blob@v2",
+    );
+  });
+});
+
+Deno.test("stepsView: a step whose records include one marked too large to load refuses any read of its outputs, its own or a child's", () => {
+  const marked: StepOutputRecord = {
+    ...source("big", {}),
+    tooLargeToLoad: TOO_LARGE,
+  };
+  const own = sourced({ n: 1 }, [{
+    path: [],
+    records: [marked, source("small", { n: 1 })],
+  }]);
+  const child = sourced({ write: {} }, [{
+    path: ["write"],
+    records: [marked],
+  }]);
+  runInFaultScope(() => {
+    const view = stepsView({ own, child }, SOLO) as Record<
+      string,
+      Record<string, unknown>
+    >;
+    assertEquals(view.own.status, "succeeded");
+    assertThrows(
+      () => view.own.outputs,
+      ResourceTooLargeToLoadError,
+      "Cannot load writer/big-vary-s3cret@v1: it is 543.6 MiB",
+    );
+    assertThrows(() => view.child.outputs, ResourceTooLargeToLoadError);
+  });
 });

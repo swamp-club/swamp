@@ -866,3 +866,163 @@ Deno.test("StepOutputAccumulator: a record covering two earlier ones before its 
     assertEquals(accumulator.outputs, { a: 2, b: 2, c: "old", ...last });
   }
 });
+
+const MARKER = { bytes: 570_000_048, reason: "text-length" as const };
+
+Deno.test("liveStepOutputs: a record marked too large to load is kept in the sources, with empty attributes, and contributes no outputs", () => {
+  const output = modelMethodOutput({
+    result: {
+      big: resourceRecord("big", 2, { attributes: {}, tooLargeToLoad: MARKER }),
+    },
+  });
+  const live = liveStepOutputs(output, "acme");
+  assertEquals(live.outputs, undefined);
+  assertEquals(live.sources, [{
+    path: [],
+    records: [{
+      tooLargeToLoad: MARKER,
+      id: "data-big-2",
+      name: "big",
+      version: 2,
+      namespace: "acme",
+      modelName: "writer",
+      tags: { specName: "result" },
+      attributes: {},
+    }],
+  }]);
+});
+
+Deno.test("liveStepOutputs: a malformed marker is no marker", () => {
+  const output = modelMethodOutput({
+    result: {
+      a: resourceRecord("a", 1, {
+        attributes: { n: 1 },
+        tooLargeToLoad: { bytes: "lots" },
+      }),
+    },
+  });
+  const live = liveStepOutputs(output);
+  assertEquals(live.outputs, { n: 1 });
+  assertEquals("tooLargeToLoad" in live.sources![0].records[0], false);
+});
+
+Deno.test("StepOutputAccumulator: a marked record owning no keys is never dropped as superseded", () => {
+  const accumulator = new StepOutputAccumulator();
+  const record = (name: string, attributes: Record<string, unknown>) => ({
+    id: name,
+    name,
+    version: 1,
+    namespace: "",
+    modelName: "writer",
+    tags: {},
+    attributes,
+  });
+  accumulator.add({ ...record("big", {}), tooLargeToLoad: MARKER });
+  accumulator.add(record("small", { n: 1 }));
+  accumulator.add(record("later", { n: 2 }));
+  assertEquals(
+    accumulator.sources?.[0].records.map((r) => r.name),
+    ["big", "later"],
+  );
+});
+
+Deno.test("StepOutputResolver.resolve: a reader's too-large refusal is a marked record, not a dropped resource", async () => {
+  const run = runWithSteps([{
+    name: "write",
+    output: modelMethodOutput({
+      result: { big: resourceRecord("big", 2), a: resourceRecord("a", 1) },
+    }),
+  }]);
+  const resolver = new StepOutputResolver({
+    readAttributes: (ref) =>
+      ref.name === "big"
+        ? Promise.reject(
+          new ResourceTooLargeToLoadError(
+            { modelType: "command/shell", dataName: "big" },
+            MARKER.bytes,
+            "text-length",
+          ),
+        )
+        : Promise.resolve({ n: 1 }),
+  });
+
+  const resolved = await resolver.resolve(stepOf(run, "write"));
+
+  assertEquals(resolved.outputs, { n: 1 });
+  assertEquals(resolved.attributesByDataId, { "data-a-1": { n: 1 } });
+  const [big, a] = resolved.sources![0].records;
+  assertEquals(big.name, "big");
+  assertEquals(big.tooLargeToLoad, MARKER);
+  assertEquals(big.attributes, {});
+  assertEquals(a.tooLargeToLoad, undefined);
+});
+
+Deno.test("StepOutputResolver.resolveChildOutputs: a child step whose only record is marked still carries it under its name", async () => {
+  const child = runWithSteps([{
+    name: "write",
+    output: modelMethodOutput({ result: { big: resourceRecord("big", 2) } }),
+  }]);
+  const resolver = new StepOutputResolver({
+    readAttributes: () =>
+      Promise.reject(
+        new ResourceTooLargeToLoadError(
+          { modelType: "command/shell", dataName: "big" },
+          MARKER.bytes,
+          "text-length",
+        ),
+      ),
+  });
+
+  const resolved = await resolver.resolveChildOutputs(child);
+
+  assertEquals(resolved.outputs, { write: {} });
+  assertEquals(resolved.sources?.[0].path, ["write"]);
+  assertEquals(resolved.sources?.[0].records[0].tooLargeToLoad, MARKER);
+});
+
+Deno.test("createDataRepositoryAttributeReader: refuses content past the text-length limit by name, by recorded size or by byte length, never decoding it", async () => {
+  let reads = 0;
+  const dataRepo = {
+    loadGuard: new ResourceLoadGuard(
+      {
+        heapLimitBytes: () => 1_000_000,
+        heapUsedBytes: () => 0,
+      },
+      10,
+      20,
+    ),
+    getContent: () => {
+      reads++;
+      return Promise.resolve(
+        new TextEncoder().encode('{"marker":"hello","pad":"xxxx"}'),
+      );
+    },
+  } as unknown as UnifiedDataRepository;
+  const ref: StepResourceRef = {
+    dataId: "data-1",
+    modelType: "@repro/bigjson",
+    modelId: "model-1",
+    modelName: "big",
+    specName: "blob",
+    contentType: "application/json",
+    name: "blob",
+    version: 2,
+    tags: {},
+  };
+  const read = createDataRepositoryAttributeReader(dataRepo);
+
+  const bySize = await assertRejects(
+    () => read({ ...ref, size: 31 }),
+    ResourceTooLargeToLoadError,
+    "big/blob@v2",
+  );
+  assertEquals(bySize.reason, "text-length");
+  assertEquals(reads, 0);
+  const byLength = await assertRejects(
+    () => read(ref),
+    ResourceTooLargeToLoadError,
+    "more than swamp can load as text",
+  );
+  assertEquals(byLength.bytes, 31);
+  assertEquals(reads, 1);
+});

@@ -46,6 +46,7 @@ import {
   withRemoteOutputs,
 } from "../remote/remote_dispatch.ts";
 import { fromResourceHandle } from "../data/data_record_mapper.ts";
+import { ResourceLoadGuard } from "../data/resource_load_guard.ts";
 import { ENROLLMENT_TOKEN_MODEL_TYPE } from "./worker/enrollment_token_model.ts";
 import { setEnrollmentTokenWriteOrdering } from "./worker/enrollment_token_write_ordering.ts";
 import { createExtensionCelEnvironment } from "../../infrastructure/cel/cel_evaluator.ts";
@@ -76,7 +77,7 @@ import { type DataId, generateDataId } from "../data/data_id.ts";
 import { Data } from "../data/data.ts";
 import { errorPaths, markErrorPaths, UserError } from "../errors.ts";
 import { MALFORMED_TYPE_VERSION_CODE } from "./definition_upgrade_service.ts";
-import { getLogger } from "@logtape/logtape";
+import { configure, getLogger, type LogRecord, reset } from "@logtape/logtape";
 import { createModelOutputId, type ModelOutput } from "./model_output.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
@@ -1581,6 +1582,108 @@ Deno.test("executeWorkflow - delete marker gracefully handles missing active con
   assertEquals(typeof content.deletedAt, "string");
   assertEquals(content.deletedByMethod, "delete");
   assertEquals(Object.keys(content).length, 2);
+});
+
+Deno.test("executeWorkflow - delete marker of a resource too large to load warns and carries no state, by recorded size before reading or by byte length", async () => {
+  for (const size of [40, undefined]) {
+    const service = new DefaultMethodExecutionService();
+    const existingData = Data.create({
+      name: "my-resource",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "resource", specName: "my-resource", modelName: "big" },
+      ownerDefinition: {
+        ownerType: "model-method",
+        ownerRef: "test/model:create",
+      },
+      version: 3,
+      size,
+    });
+    const activeContent = new TextEncoder().encode(
+      JSON.stringify({ id: "vol-abc123", pad: "x".repeat(20) }),
+    );
+    let reads = 0;
+    const mockRepo = createMockDataRepoWithData([existingData], {
+      "my-resource": activeContent,
+    });
+    const repo = Object.assign(mockRepo, {
+      loadGuard: new ResourceLoadGuard(
+        {
+          heapLimitBytes: () => 1_000_000,
+          heapUsedBytes: () => 0,
+        },
+        10,
+        20,
+      ),
+      getContent: () => {
+        reads++;
+        return Promise.resolve(activeContent);
+      },
+    });
+    const model: ModelDefinition = {
+      type: ModelType.create("test/delete-too-large"),
+      version: "1",
+      resources: {
+        "my-resource": {
+          description: "A resource",
+          schema: z.object({}),
+          lifetime: "infinite",
+          garbageCollection: 10,
+        },
+      },
+      methods: {
+        delete: {
+          description: "Delete the resource",
+          arguments: z.object({}),
+          execute: () => Promise.resolve({}),
+        },
+      },
+    };
+    const definition = Definition.create({
+      name: "test-definition",
+      globalArguments: {},
+    });
+    const { context } = createTestContext({ modelType: model.type });
+    const warnings: LogRecord[] = [];
+    await configure({
+      sinks: { capture: (record: LogRecord) => warnings.push(record) },
+      loggers: [
+        {
+          category: ["swamp", "data", "resource-size"],
+          lowestLevel: "warning",
+          sinks: ["capture"],
+        },
+        { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+      ],
+      reset: true,
+    });
+    try {
+      await service.executeWorkflow(definition, model, "delete", {
+        ...context,
+        dataRepository: repo,
+      });
+    } finally {
+      await reset();
+    }
+
+    assertEquals(reads, size === undefined ? 1 : 0);
+    assertEquals(mockRepo.savedData.length, 1);
+    const content = JSON.parse(
+      new TextDecoder().decode(mockRepo.savedData[0].content),
+    );
+    assertEquals(Object.keys(content).sort(), ["deletedAt", "deletedByMethod"]);
+    const tooLarge = warnings
+      .map((record) => record.message.map(String).join(""))
+      .filter((message) =>
+        message.includes("does not carry its last known state")
+      );
+    assertEquals(tooLarge, [
+      `The deletion marker of big/my-resource@v3 does not carry its last known state: it is ${
+        size ?? activeContent.length
+      } bytes, too large to load`,
+    ]);
+  }
 });
 
 Deno.test("executeWorkflow - read after delete throws UserError", async () => {

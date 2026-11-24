@@ -32,7 +32,7 @@ import type { DataHandle } from "../models/model.ts";
 import { isJsonMediaType, isTextContentType } from "./content_type.ts";
 import {
   resourceLoadGuardOf,
-  ResourceTooLargeToLoadError,
+  type TooLargeToLoad,
 } from "./resource_load_guard.ts";
 import {
   garbageCollectionFromColumn,
@@ -365,6 +365,14 @@ export async function fromData(
 }
 
 /**
+ * a step's own record: the marker is set when its content was left unloaded,
+ * and is not a field CEL addresses, as an adapted read refuses the record
+ */
+export type StepResourceRecord = DataRecord & {
+  tooLargeToLoad?: TooLargeToLoad;
+};
+
+/**
  * attributes parse only for application/json since downstream CEL reads
  * attributes.<field>; raw text content is intentionally not eagerly loaded
  */
@@ -375,9 +383,11 @@ export async function fromResourceHandle(
   fallbackModelName: string,
   dataRepo: UnifiedDataRepository,
   readContent = true,
-): Promise<DataRecord> {
+): Promise<StepResourceRecord> {
   let attributes: Record<string, unknown> = {};
-  if (isJsonMediaType(handle.metadata.contentType)) {
+  let tooLargeToLoad: TooLargeToLoad | undefined;
+  // a step never fails on what it wrote; the expression that reads it does
+  if (isJsonMediaType(handle.metadata.contentType) && readContent) {
     const loadGuard = resourceLoadGuardOf(dataRepo);
     const item = {
       modelType: modelType.normalized,
@@ -385,25 +395,33 @@ export async function fromResourceHandle(
       dataName: handle.name,
       version: handle.version,
     };
-    // checked unread too, so whether a step fails never turns on who reads it
-    loadGuard.assertLoadable(item, handle.size);
-    if (readContent) {
+    let refusal = loadGuard.refusalFor(item, handle.size);
+    if (!refusal) {
+      let content: Uint8Array | null = null;
       try {
-        const content = await dataRepo.getContent(
+        content = await dataRepo.getContent(
           modelType,
           modelId,
           handle.name,
           handle.version,
         );
-        if (content) {
-          loadGuard.assertLoadable(item, content.length);
-          const text = new TextDecoder().decode(content);
-          attributes = JSON.parse(text) as Record<string, unknown>;
-        }
-      } catch (error) {
-        if (error instanceof ResourceTooLargeToLoadError) throw error;
-        // Not valid JSON, skip attributes
+      } catch {
+        // unreadable content leaves the attributes empty
       }
+      if (content) refusal = loadGuard.refusalFor(item, content.length);
+      if (content && !refusal) {
+        try {
+          attributes = JSON.parse(new TextDecoder().decode(content)) as Record<
+            string,
+            unknown
+          >;
+        } catch {
+          // Not valid JSON, skip attributes
+        }
+      }
+    }
+    if (refusal) {
+      tooLargeToLoad = { bytes: refusal.bytes, reason: refusal.reason };
     }
   }
 
@@ -436,6 +454,7 @@ export async function fromResourceHandle(
     jobName: handle.metadata.ownerDefinition.jobName ?? "",
     stepName: handle.metadata.ownerDefinition.stepName ?? "",
     source: handle.metadata.ownerDefinition.source ?? "",
+    ...(tooLargeToLoad ? { tooLargeToLoad } : {}),
   };
 }
 
