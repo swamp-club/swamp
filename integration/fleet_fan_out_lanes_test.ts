@@ -322,10 +322,7 @@ Deno.test({
   },
 });
 
-/**
- * w-b is offline at plan time and reconnects with its enrollment probe held;
- * w-a's lane then finishes, waking the pool while w-b is still being probed
- */
+// the pool wake from w-a's lane must land while w-b's probe is still held
 async function reconnectWhileProbing(
   fleet: Fleet,
   name: string,

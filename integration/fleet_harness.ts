@@ -494,10 +494,7 @@ export class Fleet implements AsyncDisposable {
     }
   }
 
-  /**
-   * Holds `name`'s next enrollment probe until the returned function settles
-   * it, so a test can act while the worker is unverified and being probed.
-   */
+  /** Holds `name`'s next enrollment probe until the returned function settles it. */
   holdProbe(name: string): (outcome: "pass" | "fail") => void {
     const held = Promise.withResolvers<ProbeOutcome>();
     this.#heldProbes.set(name, held.promise);

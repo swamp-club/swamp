@@ -1582,7 +1582,12 @@ export class WorkerGateway {
               : { forwardedPrefix: state.forwardedPrefix }),
           };
         },
-      );
+      ).catch((error: unknown) => {
+        // an enrollment that failed before its probe started owes none
+        const entry = this.#workers.get(workerName);
+        if (entry) entry.probeOwed = false;
+        throw error;
+      });
     });
   }
 
@@ -1822,6 +1827,8 @@ export class WorkerGateway {
         !entry.channel.closed
       ) {
         this.#startEnrollmentVerify(workerName);
+      } else {
+        entry.probeOwed = false;
       }
     });
   }
