@@ -204,6 +204,7 @@ export function leaderUnreadyReason(state: CannotCommit): string {
   }s: ${CAUSE_PHRASES[state.cause]}`;
 }
 
+/** V3CommitOutcome's shape, restated so serve's tracker needs no infrastructure type */
 export type CommitOutcomeEvent =
   | { readonly kind: "applied" }
   | { readonly kind: "failed"; readonly error: unknown };
@@ -211,7 +212,7 @@ export type CommitOutcomeEvent =
 export interface LeaderCommitHealthWiring {
   readonly datastorePath: string;
   leads(): boolean;
-  /** subscribes to every v3 commit outcome in the process; returns an unsubscribe */
+  /** every v3 commit outcome in the process, any datastore's */
   onCommitOutcome(
     listener: (datastorePath: string, outcome: CommitOutcomeEvent) => void,
   ): () => void;

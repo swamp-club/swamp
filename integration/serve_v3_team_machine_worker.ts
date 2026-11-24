@@ -43,7 +43,6 @@ import {
   v3WriterFence,
 } from "../src/infrastructure/datastore_v3/v3_writer_lock.ts";
 import { setV3DatastoreFaultsForTesting } from "../src/infrastructure/datastore_v3/v3_datastore.ts";
-import type { OutboxCommitSink } from "../src/infrastructure/datastore_v3/outbox_commit_sink.ts";
 import {
   LeaderCommitHealth,
   leaderUnreadyReason,
@@ -68,8 +67,8 @@ import {
 import { ControlPlaneLeaseStore } from "../src/infrastructure/datastore_v3/control_plane_lease_store.ts";
 import { commitIn } from "./datastore_v3_litestream_helpers.ts";
 import { LOADED } from "./graph_worker.ts";
-import { DatabaseSync } from "node:sqlite";
-import { join, resolve } from "@std/path";
+import { resolve } from "@std/path";
+import { fullWhen } from "./leader_cannot_commit_helpers.ts";
 
 export type TeamNodeRequest =
   | {
@@ -168,39 +167,6 @@ const nodeLocks = new Set<string>();
 let diskFull = false;
 let commitHealth: WiredLeaderCommitHealth | undefined;
 
-function sqliteFull(): Error {
-  const dir = Deno.makeTempDirSync();
-  const db = new DatabaseSync(join(dir, "full.db"));
-  try {
-    db.exec("PRAGMA page_size=4096; CREATE TABLE t(v BLOB);");
-    db.exec("PRAGMA max_page_count=4");
-    const insert = db.prepare("INSERT INTO t VALUES (?)");
-    for (let i = 0; i < 100; i++) insert.run(new Uint8Array(4000));
-  } catch (error) {
-    return error as Error;
-  } finally {
-    db.close();
-    Deno.removeSync(dir, { recursive: true });
-  }
-  throw new Error("the capped database never filled");
-}
-
-function fullWhenAsked(sink: OutboxCommitSink): OutboxCommitSink {
-  return new Proxy(sink, {
-    get(target, property) {
-      const value = Reflect.get(target, property, target);
-      if (typeof value !== "function") return value;
-      if (property === "beginBatch") {
-        return (...args: unknown[]) =>
-          diskFull ? Promise.resolve(undefined) : value.apply(target, args);
-      }
-      if (property !== "append") return value.bind(target);
-      return (...args: unknown[]) =>
-        diskFull ? Promise.reject(sqliteFull()) : value.apply(target, args);
-    },
-  });
-}
-
 function nodeLock(target: LockTarget) {
   const key = lockKeyOf(target);
   let mine = false;
@@ -230,7 +196,7 @@ async function handle(request: TeamNodeRequest): Promise<unknown> {
       init = request;
       await initializeLogging({});
       // before the datastore opens, which reads it once
-      setV3DatastoreFaultsForTesting({ wrapSink: fullWhenAsked });
+      setV3DatastoreFaultsForTesting({ wrapSink: fullWhen(() => diskFull) });
       const realGet = Deno.env.get.bind(Deno.env);
       Object.defineProperty(Deno.env, "get", {
         configurable: true,

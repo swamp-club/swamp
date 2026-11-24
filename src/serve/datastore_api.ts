@@ -619,7 +619,6 @@ function followerDatastoreRefusal(
   const gate = ctx.followerGate;
   if (gate === undefined) return undefined;
   // Leases live on the leader, so listing them is the leader's to answer
-  // (swamp-club#4121).
   const reads = (req.method === "GET" && route.kind !== "locks") ||
     route.kind === "has";
   if (gate.role === "leader") {

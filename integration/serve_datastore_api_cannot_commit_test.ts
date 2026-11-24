@@ -18,11 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assert, assertEquals } from "@std/assert";
-import { DatabaseSync } from "node:sqlite";
-import { join, resolve } from "@std/path";
+import { resolve } from "@std/path";
 import { setV3DatastoreFaultsForTesting } from "../src/infrastructure/datastore_v3/v3_datastore.ts";
 import { onV3CommitOutcome } from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
-import type { OutboxCommitSink } from "../src/infrastructure/datastore_v3/outbox_commit_sink.ts";
 import {
   LeaderCommitHealth,
   wireLeaderCommitHealth,
@@ -35,42 +33,9 @@ import {
   withServer,
   writer,
 } from "./serve_datastore_api_harness.ts";
-
-/** what node:sqlite throws when the database cannot grow */
-function sqliteFull(): Error {
-  const dir = Deno.makeTempDirSync();
-  const db = new DatabaseSync(join(dir, "full.db"));
-  try {
-    db.exec("PRAGMA page_size=4096; CREATE TABLE t(v BLOB);");
-    db.exec("PRAGMA max_page_count=4");
-    const insert = db.prepare("INSERT INTO t VALUES (?)");
-    for (let i = 0; i < 100; i++) insert.run(new Uint8Array(4000));
-  } catch (error) {
-    return error as Error;
-  } finally {
-    db.close();
-    Deno.removeSync(dir, { recursive: true });
-  }
-  throw new Error("the capped database never filled");
-}
+import { fullWhen } from "./leader_cannot_commit_helpers.ts";
 
 const disk = { full: false };
-
-function fullWhenAsked(sink: OutboxCommitSink): OutboxCommitSink {
-  return new Proxy(sink, {
-    get(target, property) {
-      const value = Reflect.get(target, property, target);
-      if (typeof value !== "function") return value;
-      if (property === "beginBatch") {
-        return (...args: unknown[]) =>
-          disk.full ? Promise.resolve(undefined) : value.apply(target, args);
-      }
-      if (property !== "append") return value.bind(target);
-      return (...args: unknown[]) =>
-        disk.full ? Promise.reject(sqliteFull()) : value.apply(target, args);
-    },
-  });
-}
 
 interface Leading {
   readonly health: LeaderCommitHealth;
@@ -108,7 +73,7 @@ function lead(server: Server): Leading {
 
 async function withFullDisk(fn: (server: Server) => Promise<void>) {
   disk.full = false;
-  setV3DatastoreFaultsForTesting({ wrapSink: fullWhenAsked });
+  setV3DatastoreFaultsForTesting({ wrapSink: fullWhen(() => disk.full) });
   try {
     await withServer(writer(), fn);
   } finally {

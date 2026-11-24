@@ -9585,8 +9585,7 @@ export const serveCommand = new Command()
         },
       });
       serveLeadership = leadership;
-      // A leader that persistently cannot commit stops renewing the lease
-      // and steps down as a lost lead does, so a standby takes over.
+      // a leader that cannot commit steps down as a lost lead does
       const commitHealth = wireLeaderCommitHealth({
         datastorePath: resolve(location.path),
         leads: () => leadership.role === "leader",
