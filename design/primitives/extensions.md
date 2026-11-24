@@ -160,9 +160,13 @@ the archive bytes and checksum stay the same.
 Before uploading, push runs the registry checks: authentication, collective
 membership, reserved collective (`@swamp`, `@si` need the registry's own word
 on membership), private entitlement when the intent is private, and version
-exists. The version check asks the versions endpoint for every channel, because
-a version is unique across them. A rejected key fails authentication; it never
-falls back to the username.
+exists. The version check, and promote's lookup of where a version lives, ask
+the registry for that one version (`GET /api/v1/extensions/{name}@{version}`),
+which answers on whatever channel the version is published, yanked or not,
+because a version is unique across channels; a 404 means it is not published.
+Pull still pages the versions listing across every channel to find several
+versions at once. A rejected key fails authentication; it never falls back to
+the username.
 
 Private entitlement is decided from the `collectiveEntitlements` the same
 whoami call returns (Lab #1544), never from a cached plan. The entry read is
@@ -484,7 +488,9 @@ read makes an initial attempt plus at most five retries, waiting 1s, 2s, 4s, 8s
 and 16s with up to 25% jitter (or the Retry-After when longer), with a 15s
 timeout per attempt and 150s in total (room for two capped Retry-After waits); an
 archive download gets 120s per attempt
-and 300s in total, and its fetch and body read are retried together. One loop,
+and 300s in total, and its fetch and body read are retried together. Every
+other registry read buffers its body inside the attempt too, so a connection
+lost mid-body is retried as a connection failure. One loop,
 one retry count and one total budget cover every kind of failure, so rate-limit
 and transient retries never multiply. Writes — push, upload, confirm, yank,
 deprecate, promote — are never retried, nor are other statuses or a caller's

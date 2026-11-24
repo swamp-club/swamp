@@ -2153,3 +2153,182 @@ Deno.test("ExtensionApiClient.setExtensionVisibility turns a non-JSON 200 into t
     await server.shutdown();
   }
 });
+
+function bodyLostMidway(prefix: string): Response {
+  const encoded = new TextEncoder().encode(prefix);
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoded);
+        controller.error(
+          new TypeError("error reading a body from connection"),
+        );
+      },
+    }),
+    { status: 200, headers: { "content-type": "application/json" } },
+  );
+}
+
+Deno.test("ExtensionApiClient: a body lost mid-read is retried and the next attempt answers", async () => {
+  let attempts = 0;
+  const client = clientAnswering(() => {
+    attempts++;
+    return Promise.resolve(
+      attempts === 1 ? bodyLostMidway('{"versions":[{"vers') : Response.json({
+        versions: [{
+          version: "2026.11.24.1",
+          channel: "beta",
+          publishedAt: "",
+        }],
+        meta: { total: 1, page: 1, perPage: 100 },
+      }),
+    );
+  });
+  const listed = await client.listVersions("@test/ext", { page: 1 });
+  assertEquals(listed.versions[0].version, "2026.11.24.1");
+  assertEquals(attempts, 2);
+});
+
+Deno.test("ExtensionApiClient: a body lost on every attempt names the request and keeps the cause", async () => {
+  let attempts = 0;
+  const client = clientAnswering(() => {
+    attempts++;
+    return Promise.resolve(bodyLostMidway('{"versions":['));
+  });
+  const err = await assertRejects(
+    () => client.listVersions("@test/ext", { page: 1 }),
+    RegistryUnavailableError,
+    "Could not connect to http://registry.test (GET /api/v1/extensions/%40test%2Fext/versions after 6 attempts over",
+  );
+  assertStringIncludes(err.message, "): error reading a body from connection");
+  assertEquals(attempts, 6);
+});
+
+Deno.test("ExtensionApiClient: a buffered GET keeps a 302's location and a 204's empty body", async () => {
+  const redirecting = clientAnswering(() =>
+    Promise.resolve(
+      new Response("moved", {
+        status: 302,
+        headers: { location: "https://storage.test/archive.tgz" },
+      }),
+    )
+  );
+  assertEquals(
+    await redirecting.getDownloadUrl("@test/ext", "2026.11.24.1"),
+    "https://storage.test/archive.tgz",
+  );
+  const empty = clientAnswering(() =>
+    Promise.resolve(new Response(null, { status: 204 }))
+  );
+  assertEquals(await empty.getDownloadUrl("@test/ext", "2026.11.24.1"), null);
+});
+
+for (const status of [500, 400]) {
+  Deno.test(`ExtensionApiClient: an HTTP ${status} from a buffered GET still names the endpoint`, async () => {
+    const server = Deno.serve(
+      { port: 0, onListen: () => {} },
+      () => Response.json({ error: "refused" }, { status }),
+    );
+    try {
+      const base = `http://localhost:${server.addr.port}`;
+      const client = new ExtensionApiClient(base, {}, { sleep: noSleep });
+      const err = await assertRejects(
+        () => client.getExtension("@test/ext"),
+        UserError,
+      );
+      assertStringIncludes(
+        err.message,
+        `${base}/api/v1/extensions/%40test%2Fext`,
+      );
+    } finally {
+      await server.shutdown();
+    }
+  });
+}
+
+Deno.test("ExtensionApiClient.getVersion: asks for the one version and reads its channel and yank", async () => {
+  const seen: Array<{ path: string; apiKey: string | null }> = [];
+  const server = Deno.serve({ port: 0, onListen: () => {} }, (req) => {
+    seen.push({
+      path: new URL(req.url).pathname,
+      apiKey: req.headers.get("x-api-key"),
+    });
+    return Response.json({
+      name: "@test/ext",
+      latestVersion: "2026.11.24.2",
+      version: {
+        version: "2026.11.24.1",
+        channel: "beta",
+        publishedAt: "2026-11-24T11:02:00.000Z",
+        yankedAt: "2026-11-24T12:00:00.000Z",
+        yankReason: "broken\u0007build",
+      },
+    });
+  });
+  try {
+    const client = new ExtensionApiClient(
+      `http://localhost:${server.addr.port}`,
+      {},
+      { sleep: noSleep },
+    );
+    assertEquals(
+      await client.getVersion("@test/ext", "2026.11.24.1", "test-key"),
+      {
+        version: "2026.11.24.1",
+        channel: "beta",
+        publishedAt: "2026-11-24T11:02:00.000Z",
+        yankedAt: "2026-11-24T12:00:00.000Z",
+        yankReason: "broken build",
+      },
+    );
+    assertEquals(seen, [{
+      path: "/api/v1/extensions/%40test%2Fext@2026.11.24.1",
+      apiKey: "test-key",
+    }]);
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("ExtensionApiClient.getVersion: a version the registry does not hold resolves null", async () => {
+  for (const error of ["Version not found", "Extension not found"]) {
+    const client = clientAnswering(() =>
+      Promise.resolve(Response.json({ error }, { status: 404 }))
+    );
+    assertEquals(await client.getVersion("@test/ext", "2026.11.24.1"), null);
+  }
+});
+
+Deno.test("ExtensionApiClient.getVersion: an answer without the version throws rather than reading as unpublished", async () => {
+  const answers: unknown[] = [
+    { name: "@test/ext" },
+    { name: "@test/ext", version: "2026.11.24.1" },
+    { version: { version: "2026.11.23.1", channel: "beta" } },
+    { version: { version: "2026.11.24.1" } },
+    "<html>proxy page</html>",
+  ];
+  for (const answer of answers) {
+    const client = clientAnswering(() =>
+      Promise.resolve(
+        typeof answer === "string"
+          ? new Response(answer, { status: 200 })
+          : Response.json(answer),
+      )
+    );
+    await assertRejects(
+      () => client.getVersion("@test/ext", "2026.11.24.1"),
+      RegistryUnavailableError,
+      "did not describe version 2026.11.24.1 of @test/ext. A proxy or an older registry may be answering; retry, or check the registry URL.",
+    );
+  }
+});
+
+Deno.test("ExtensionApiClient.getVersion: a publishedAt that is not a string reads as empty", async () => {
+  const client = clientAnswering(() =>
+    Promise.resolve(Response.json({
+      version: { version: "2026.11.24.1", channel: "beta", publishedAt: 42 },
+    }))
+  );
+  const entry = await client.getVersion("@test/ext", "2026.11.24.1");
+  assertEquals(entry?.publishedAt, "");
+});

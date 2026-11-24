@@ -298,6 +298,8 @@ export class ExtensionApiClient {
   ) {}
 
   private readonly retryOutcomes = new WeakMap<Response, RetryOutcome>();
+  // a buffered response is rebuilt and loses its url, which errors still name
+  private readonly responseUrls = new WeakMap<Response, string>();
 
   async getLatestVersion(
     name: string,
@@ -853,6 +855,48 @@ export class ExtensionApiClient {
     return listed;
   }
 
+  async getVersion(
+    name: string,
+    version: string,
+    apiKey?: string,
+  ): Promise<VersionEntry | null> {
+    const encodedName = encodeURIComponent(name);
+    const encodedVersion = encodeURIComponent(version);
+    const path = `/api/v1/extensions/${encodedName}@${encodedVersion}`;
+    const headers = apiKey ? this.authHeaders(apiKey) : {};
+    const res = await this.fetch(path, { method: "GET", headers });
+
+    if (res.status === 404) {
+      await res.body?.cancel();
+      return null;
+    }
+
+    await this.checkResponse(res);
+    const data = await res.json().catch(() => null);
+    const entry = data?.version;
+    // a missing answer must never read as not published
+    if (
+      typeof entry !== "object" || entry === null ||
+      entry.version !== version || typeof entry.channel !== "string"
+    ) {
+      throw new RegistryUnavailableError(
+        `The answer from ${this.serverUrl} (GET ${
+          describeRequestTarget(path)
+        }) did not describe version ${version} of ${name}. A proxy or an older registry may be answering; retry, or check the registry URL.`,
+      );
+    }
+    return {
+      version: entry.version,
+      channel: entry.channel,
+      publishedAt: typeof entry.publishedAt === "string"
+        ? entry.publishedAt
+        : "",
+      yankedAt: entry.yankedAt ?? null,
+      // printed by push and promote, so cleaned where it enters
+      yankReason: registryReason(entry.yankReason),
+    };
+  }
+
   private authHeaders(apiKey: string): Record<string, string> {
     return { "x-api-key": apiKey };
   }
@@ -913,15 +957,16 @@ export class ExtensionApiClient {
     }
 
     const retried = retriedSuffix(this.retryOutcomes.get(res));
+    const responseUrl = this.responseUrls.get(res) ?? res.url;
     if (res.status >= 500) {
       throw new RegistryServerError({
         status: res.status,
         retried,
         serverMessage,
-        url: res.url || undefined,
+        url: responseUrl || undefined,
       });
     }
-    const endpoint = res.url ? ` [${res.url}]` : "";
+    const endpoint = responseUrl ? ` [${responseUrl}]` : "";
     throw new UserError(
       `Extension API error (HTTP ${res.status}${retried}): ${serverMessage}${endpoint}`,
     );
@@ -933,11 +978,19 @@ export class ExtensionApiClient {
     // per-call x-api-key or Authorization override the constructor identity
     const headers = mergeIdentityHeaders(this.identity, init.headers);
     const doFetch = this.options.fetch ?? globalThis.fetch;
+    const buffered = (init.method ?? "GET").toUpperCase() === "GET";
+    let responseUrl = "";
     try {
       // Each attempt gets its own timeout, combined with the caller's
       // signal, so a retry wait never eats into the next request's budget.
       const { response: res, outcome } = await fetchWithTransientRetry(
-        (signal) => doFetch(url, { ...init, headers, signal }),
+        async (signal) => {
+          const res = await doFetch(url, { ...init, headers, signal });
+          responseUrl = res.url;
+          if (!buffered) return res;
+          // read inside the attempt so a connection lost mid-body is retried
+          return await bufferResponse(res);
+        },
         {
           method: init.method,
           target: describeRequestTarget(path),
@@ -954,6 +1007,7 @@ export class ExtensionApiClient {
         );
       }
       this.retryOutcomes.set(res, outcome);
+      if (responseUrl) this.responseUrls.set(res, responseUrl);
       return res;
     } catch (error) {
       if (error instanceof UserError) throw error;
@@ -993,6 +1047,21 @@ export class ExtensionApiClient {
         );
     }
   }
+}
+
+const NULL_BODY_STATUSES = new Set([204, 205, 304]);
+
+async function bufferResponse(res: Response): Promise<Response> {
+  const init = {
+    status: res.status,
+    statusText: res.statusText,
+    headers: res.headers,
+  };
+  if (NULL_BODY_STATUSES.has(res.status)) {
+    await res.body?.cancel();
+    return new Response(null, init);
+  }
+  return new Response(await res.arrayBuffer(), init);
 }
 
 async function readArchiveBody(

@@ -18,7 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import type { ListVersionsResponse } from "../../infrastructure/http/extension_api_client.ts";
+import type {
+  ListVersionsResponse,
+  VersionEntry,
+} from "../../infrastructure/http/extension_api_client.ts";
 import {
   findPublishedVersion,
   findPublishedVersions,
@@ -38,26 +41,37 @@ function fakeClient(pages: ListVersionsResponse[]) {
   };
 }
 
-Deno.test("findPublishedVersion: answers with the channel the version is on", async () => {
-  const client = fakeClient([{
-    versions: [
-      { version: "2026.10.01.1", channel: "stable", publishedAt: "" },
-      { version: "2026.10.06.1", channel: "beta", publishedAt: "" },
-    ],
-    meta: { total: 2, page: 1, perPage: 100 },
-  }]);
+function fakeVersionClient(entries: VersionEntry[]) {
+  const asked: Array<{ name: string; version: string; apiKey?: string }> = [];
+  return {
+    asked,
+    getVersion: (name: string, version: string, apiKey?: string) => {
+      asked.push({ name, version, apiKey });
+      return Promise.resolve(
+        entries.find((entry) => entry.version === version) ?? null,
+      );
+    },
+    listVersions: (): Promise<ListVersionsResponse> => {
+      throw new Error("findPublishedVersion must not page the listing");
+    },
+  };
+}
+
+Deno.test("findPublishedVersion: asks for the one version and answers with its channel", async () => {
+  const client = fakeVersionClient([
+    { version: "2026.10.06.1", channel: "beta", publishedAt: "" },
+  ]);
   assertEquals(
     await findPublishedVersion(client, "@a/b", "2026.10.06.1", "k"),
     { version: "2026.10.06.1", channel: "beta" },
   );
-  assertEquals(client.asked, [{ channel: ["stable", "rc", "beta"], page: 1 }]);
+  assertEquals(client.asked, [
+    { name: "@a/b", version: "2026.10.06.1", apiKey: "k" },
+  ]);
 });
 
-Deno.test("findPublishedVersion: resolves null when no channel carries the version", async () => {
-  const client = fakeClient([{
-    versions: [{ version: "2026.10.01.1", channel: "stable", publishedAt: "" }],
-    meta: { total: 1, page: 1, perPage: 100 },
-  }]);
+Deno.test("findPublishedVersion: resolves null when the registry does not hold the version", async () => {
+  const client = fakeVersionClient([]);
   assertEquals(
     await findPublishedVersion(client, "@a/b", "2026.10.06.1", "k"),
     null,
@@ -65,15 +79,12 @@ Deno.test("findPublishedVersion: resolves null when no channel carries the versi
 });
 
 Deno.test("findPublishedVersion: a yanked version still answers, with its yank and reason", async () => {
-  const client = fakeClient([{
-    versions: [{
-      version: "2026.10.06.1",
-      channel: "beta",
-      publishedAt: "",
-      yankedAt: "2026-10-07T00:00:00.000Z",
-      yankReason: "broken build",
-    }],
-    meta: { total: 1, page: 1, perPage: 100 },
+  const client = fakeVersionClient([{
+    version: "2026.10.06.1",
+    channel: "beta",
+    publishedAt: "",
+    yankedAt: "2026-10-07T00:00:00.000Z",
+    yankReason: "broken build",
   }]);
   assertEquals(
     await findPublishedVersion(client, "@a/b", "2026.10.06.1", "k"),
@@ -86,14 +97,11 @@ Deno.test("findPublishedVersion: a yanked version still answers, with its yank a
 });
 
 Deno.test("findPublishedVersion: a yank without a reason has a null reason", async () => {
-  const client = fakeClient([{
-    versions: [{
-      version: "2026.10.06.1",
-      channel: "beta",
-      publishedAt: "",
-      yankedAt: "2026-10-07T00:00:00.000Z",
-    }],
-    meta: { total: 1, page: 1, perPage: 100 },
+  const client = fakeVersionClient([{
+    version: "2026.10.06.1",
+    channel: "beta",
+    publishedAt: "",
+    yankedAt: "2026-10-07T00:00:00.000Z",
   }]);
   assertEquals(
     await findPublishedVersion(client, "@a/b", "2026.10.06.1", "k"),
@@ -102,20 +110,36 @@ Deno.test("findPublishedVersion: a yank without a reason has a null reason", asy
 });
 
 Deno.test("findPublishedVersion: a null yankedAt is not a yank", async () => {
-  const client = fakeClient([{
-    versions: [{
-      version: "2026.10.06.1",
-      channel: "beta",
-      publishedAt: "",
-      yankedAt: null,
-      yankReason: null,
-    }],
-    meta: { total: 1, page: 1, perPage: 100 },
+  const client = fakeVersionClient([{
+    version: "2026.10.06.1",
+    channel: "beta",
+    publishedAt: "",
+    yankedAt: null,
+    yankReason: null,
   }]);
   assertEquals(
     await findPublishedVersion(client, "@a/b", "2026.10.06.1", "k"),
     { version: "2026.10.06.1", channel: "beta" },
   );
+});
+
+Deno.test("findPublishedVersions: a yanked version in the listing answers with its yank", async () => {
+  const client = fakeClient([{
+    versions: [{
+      version: "2026.10.06.1",
+      channel: "beta",
+      publishedAt: "",
+      yankedAt: "2026-10-07T00:00:00.000Z",
+      yankReason: "broken build",
+    }],
+    meta: { total: 1, page: 1, perPage: 100 },
+  }]);
+  const found = await findPublishedVersions(client, "@a/b", ["2026.10.06.1"]);
+  assertEquals(found.get("2026.10.06.1"), {
+    version: "2026.10.06.1",
+    channel: "beta",
+    yank: { reason: "broken build" },
+  });
 });
 
 Deno.test("findPublishedVersions: answers several versions in one scan and stops once all are found", async () => {
@@ -157,4 +181,27 @@ Deno.test("findPublishedVersions: a version no channel carries is absent", async
   ]);
   assertEquals(found.get("2026.10.01.1")?.channel, "stable");
   assertEquals(found.has("2026.10.06.1"), false);
+});
+
+Deno.test("findPublishedVersions: stops at a short page", async () => {
+  const client = fakeClient([{
+    versions: [{ version: "2026.01.01.1", channel: "stable", publishedAt: "" }],
+    meta: { total: 1, page: 1, perPage: 100 },
+  }]);
+  const found = await findPublishedVersions(client, "@a/b", ["2026.03.22.1"]);
+  assertEquals(found.size, 0);
+  assertEquals(client.asked.length, 1);
+});
+
+Deno.test("findPublishedVersions: does not page a response without paging metadata", async () => {
+  const client = fakeClient([{
+    versions: Array.from({ length: 100 }, (_, i) => ({
+      version: `2026.01.01.${i}`,
+      channel: "stable",
+      publishedAt: "",
+    })),
+  } as unknown as ListVersionsResponse]);
+  const found = await findPublishedVersions(client, "@a/b", ["2026.03.22.1"]);
+  assertEquals(found.size, 0);
+  assertEquals(client.asked.length, 1);
 });

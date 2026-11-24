@@ -1444,25 +1444,22 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
-Deno.test("createExtensionPushPrepareDeps: findPublishedVersion asks every channel and pages until the version is found", async () => {
+Deno.test("createExtensionPushPrepareDeps: findPublishedVersion asks the registry for the one version", async () => {
   const recorder = createApiCallRecorder();
   const requested: URL[] = [];
   const deps = createExtensionPushPrepareDeps(undefined, {
     recorder,
     fetch: (url) => {
-      const u = new URL(String(url));
-      requested.push(u);
-      const page = Number(u.searchParams.get("page"));
-      const versions = page === 1
-        ? Array.from({ length: 100 }, (_, i) => ({
-          version: `2026.01.01.${i}`,
-          channel: "stable",
-          publishedAt: "",
-        }))
-        : [{ version: "2026.03.22.1", channel: "beta", publishedAt: "" }];
+      requested.push(new URL(String(url)));
       return Promise.resolve(jsonResponse({
-        versions,
-        meta: { total: 101, page, perPage: 100 },
+        name: "@testuser/test-ext",
+        version: {
+          version: "2026.03.22.1",
+          channel: "beta",
+          publishedAt: "",
+          yankedAt: null,
+          yankReason: null,
+        },
       }));
     },
   });
@@ -1474,63 +1471,13 @@ Deno.test("createExtensionPushPrepareDeps: findPublishedVersion asks every chann
     "swamp_test",
   );
   assertEquals(found, { version: "2026.03.22.1", channel: "beta" });
-  assertEquals(requested.length, 2);
   assertEquals(
-    requested[0].pathname,
-    "/api/v1/extensions/%40testuser%2Ftest-ext/versions",
+    requested.map((u) => u.pathname),
+    ["/api/v1/extensions/%40testuser%2Ftest-ext@2026.03.22.1"],
   );
-  assertEquals(requested[0].searchParams.getAll("channel"), [
-    "stable",
-    "rc",
-    "beta",
-  ]);
   assertEquals(recorder.calls.map((c) => [c.service, c.method, c.outcome]), [
     ["registry", "GET", "ok"],
-    ["registry", "GET", "ok"],
   ]);
-});
-
-Deno.test("createExtensionPushPrepareDeps: findPublishedVersion stops at a short page", async () => {
-  let pages = 0;
-  const deps = createExtensionPushPrepareDeps(undefined, {
-    fetch: () => {
-      pages++;
-      return Promise.resolve(jsonResponse({
-        versions: [{
-          version: "2026.01.01.1",
-          channel: "stable",
-          publishedAt: "",
-        }],
-        meta: { total: 1, page: 1, perPage: 100 },
-      }));
-    },
-  });
-  assertEquals(
-    await deps.findPublishedVersion(REGISTRY, "@t/e", "2026.03.22.1", "k"),
-    null,
-  );
-  assertEquals(pages, 1);
-});
-
-Deno.test("createExtensionPushPrepareDeps: findPublishedVersion does not page a response without paging metadata", async () => {
-  let pages = 0;
-  const deps = createExtensionPushPrepareDeps(undefined, {
-    fetch: () => {
-      pages++;
-      return Promise.resolve(jsonResponse({
-        versions: Array.from({ length: 100 }, (_, i) => ({
-          version: `2026.01.01.${i}`,
-          channel: "stable",
-          publishedAt: "",
-        })),
-      }));
-    },
-  });
-  assertEquals(
-    await deps.findPublishedVersion(REGISTRY, "@t/e", "2026.03.22.1", "k"),
-    null,
-  );
-  assertEquals(pages, 1);
 });
 
 Deno.test("createExtensionPushPrepareDeps: findPublishedVersion resolves null for an unpublished extension", async () => {
