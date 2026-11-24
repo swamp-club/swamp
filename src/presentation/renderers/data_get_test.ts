@@ -17,19 +17,29 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import { stripAnsiCode } from "@std/fmt/colors";
 import { consumeStream } from "../../libswamp/stream.ts";
 import type { DataGetEvent } from "../../libswamp/data/get.ts";
 import { UserError } from "../../domain/errors.ts";
-import { createDataGetRenderer, withCommandTarget } from "./data_get.ts";
+import {
+  createDataGetRenderer,
+  type DataGetRenderOptions,
+  renderDataGet,
+  withCommandTarget,
+} from "./data_get.ts";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 
 // noColor: true selects LogTape's text formatter, so a captured record is
 // one pre-rendered string.
 await initializeLogging({ noColor: true });
 
-function captureLog(fn: () => void): string {
+async function captureLog(fn: () => unknown): Promise<string> {
   const lines: string[] = [];
   const methods = ["log", "info", "warn", "error", "debug"] as const;
   const originals = methods.map((m) => [m, console[m]] as const);
@@ -41,7 +51,7 @@ function captureLog(fn: () => void): string {
     };
   }
   try {
-    fn();
+    await fn();
   } finally {
     for (const [m, orig] of originals) {
       console[m] = orig;
@@ -84,25 +94,17 @@ Deno.test("LogDataGetRenderer - completed event runs without error", async () =>
 });
 
 Deno.test("JsonDataGetRenderer - completed serializes correct JSON", async () => {
-  const logs: string[] = [];
-  const originalLog = console.log;
-  console.log = (msg: string) => logs.push(msg);
-
-  try {
-    const renderer = createDataGetRenderer("json");
-    const events: DataGetEvent[] = [
-      { kind: "resolving" },
-      { kind: "completed", data: testData },
-    ];
-    await consumeStream(toStream(events), renderer.handlers());
-    assertEquals(logs.length, 1);
-    const parsed = JSON.parse(logs[0]);
-    assertEquals(parsed.id, "data-1");
-    assertEquals(parsed.name, "output");
-    assertEquals(parsed.modelName, "my-model");
-  } finally {
-    console.log = originalLog;
-  }
+  const out = collectingSink();
+  const renderer = createDataGetRenderer("json", { sink: out.sink });
+  const events: DataGetEvent[] = [
+    { kind: "resolving" },
+    { kind: "completed", data: testData },
+  ];
+  await consumeStream(toStream(events), renderer.handlers());
+  const parsed = JSON.parse(out.text());
+  assertEquals(parsed.id, "data-1");
+  assertEquals(parsed.name, "output");
+  assertEquals(parsed.modelName, "my-model");
 });
 
 Deno.test("LogDataGetRenderer - error event throws UserError", () => {
@@ -140,20 +142,49 @@ Deno.test("createDataGetRenderer - factory returns correct type per mode", () =>
   assertEquals(typeof jsonRenderer.handlers, "function");
 });
 
+function collectingSink() {
+  const parts: Uint8Array[] = [];
+  return {
+    writes: () => parts.map((p) => p.length),
+    sink: (bytes: Uint8Array) => {
+      parts.push(bytes.slice());
+      return Promise.resolve(bytes.length);
+    },
+    text: () => {
+      const all = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+      let offset = 0;
+      for (const p of parts) {
+        all.set(p, offset);
+        offset += p.length;
+      }
+      return new TextDecoder().decode(all);
+    },
+  };
+}
+
+// both channels land in one ordered stream
 async function captureRender(
   mode: "log" | "json",
   data: DataGetEvent & { kind: "completed" },
+  options: DataGetRenderOptions = {},
 ): Promise<string> {
-  const logs: string[] = [];
+  const pieces: string[] = [];
+  const decoder = new TextDecoder();
   const originalLog = console.log;
-  console.log = (msg: string) => logs.push(msg);
+  console.log = (msg: string) => pieces.push(msg + "\n");
   try {
-    const renderer = createDataGetRenderer(mode);
+    const renderer = createDataGetRenderer(mode, {
+      ...options,
+      sink: (bytes) => {
+        pieces.push(decoder.decode(bytes));
+        return Promise.resolve(bytes.length);
+      },
+    });
     await consumeStream(toStream([data]), renderer.handlers());
   } finally {
     console.log = originalLog;
   }
-  return stripAnsiCode(logs.join("\n"));
+  return stripAnsiCode(pieces.join(""));
 }
 
 const binaryData = {
@@ -238,36 +269,24 @@ Deno.test("JsonDataGetRenderer - base64 application/json content is not parsed",
 });
 
 Deno.test("JsonDataGetRenderer: carries the deprecation warnings and replacement query", async () => {
-  const logs: string[] = [];
-  const originalLog = console.log;
-  console.log = (msg: string) => logs.push(msg);
-
-  try {
-    const renderer = createDataGetRenderer("json");
-    const replacementQuery =
-      `swamp data query 'modelName == "my-model" && name == "output" && version == 1'`;
-    const events: DataGetEvent[] = [
-      {
-        kind: "completed",
-        data: {
-          ...testData,
-          replacementQuery,
-          warnings: ["swamp data get is deprecated"],
-        },
-      },
-    ];
-    await consumeStream(toStream(events), renderer.handlers());
-    const parsed = JSON.parse(logs[0]);
-    assertEquals(parsed.replacementQuery, replacementQuery);
-    assertEquals(parsed.warnings, ["swamp data get is deprecated"]);
-  } finally {
-    console.log = originalLog;
-  }
+  const replacementQuery =
+    `swamp data query 'modelName == "my-model" && name == "output" && version == 1'`;
+  const output = await captureRender("json", {
+    kind: "completed",
+    data: {
+      ...testData,
+      replacementQuery,
+      warnings: ["swamp data get is deprecated"],
+    },
+  });
+  const parsed = JSON.parse(output);
+  assertEquals(parsed.replacementQuery, replacementQuery);
+  assertEquals(parsed.warnings, ["swamp data get is deprecated"]);
 });
 
-Deno.test("LogDataGetRenderer: logs each warning verbatim, braces included", () => {
+Deno.test("LogDataGetRenderer: logs each warning verbatim, braces included", async () => {
   const warning = "swamp data get is deprecated; model {name} wrote it";
-  const output = captureLog(() =>
+  const output = await captureLog(() =>
     createDataGetRenderer("log").handlers().completed({
       kind: "completed",
       data: { ...testData, warnings: [warning] },
@@ -351,27 +370,14 @@ Deno.test("withCommandTarget: leaves the read unchanged without a target", () =>
 });
 
 Deno.test("JsonDataGetRenderer: prints queries with the command target", async () => {
-  const logs: string[] = [];
-  const originalLog = console.log;
-  console.log = (msg: string) => logs.push(msg);
-  try {
-    const renderer = createDataGetRenderer("json", {
-      commandTarget: " --repo-dir /srv/repo",
-    });
-    await consumeStream(
-      toStream([{
-        kind: "completed",
-        data: { ...testData, replacementQuery: "swamp data query 'x'" },
-      }]),
-      renderer.handlers(),
-    );
-    assertEquals(
-      JSON.parse(logs[0]).replacementQuery,
-      "swamp data query 'x' --repo-dir /srv/repo",
-    );
-  } finally {
-    console.log = originalLog;
-  }
+  const output = await captureRender("json", {
+    kind: "completed",
+    data: { ...testData, replacementQuery: "swamp data query 'x'" },
+  }, { commandTarget: " --repo-dir /srv/repo" });
+  assertEquals(
+    JSON.parse(output).replacementQuery,
+    "swamp data query 'x' --repo-dir /srv/repo",
+  );
 });
 
 Deno.test("createDataGetRenderer: the JSON error keeps the not_found code", () => {
@@ -395,4 +401,120 @@ Deno.test("createDataGetRenderer: the JSON error keeps the not_found code", () =
   );
   assertEquals(error.message, message);
   assertEquals(error.code, "not_found");
+});
+
+const nestedContent = {
+  items: Array.from({ length: 3 }, (_, i) => ({
+    id: i,
+    tags: ["a", "b"],
+    empty: {},
+    none: [],
+  })),
+  text: 'quote " and newline \n',
+};
+
+Deno.test("JsonDataGetRenderer: writes the bytes of JSON.stringify(value, null, 2) and a newline", async () => {
+  const data = {
+    ...testData,
+    content: JSON.stringify(nestedContent),
+    contentEncoding: "utf-8" as const,
+    warnings: ["swamp data get is deprecated"],
+    replacementQuery: undefined,
+  };
+  const out = collectingSink();
+  await createDataGetRenderer("json", { sink: out.sink }).handlers()
+    .completed({ kind: "completed", data });
+
+  const expected: Record<string, unknown> = { ...data };
+  expected.content = nestedContent;
+  assertEquals(out.text(), JSON.stringify(expected, null, 2) + "\n");
+});
+
+const largeContent = Array.from({ length: 120_000 }, (_, i) => ({
+  id: i,
+  value: `row-${i}`,
+}));
+
+Deno.test("JsonDataGetRenderer: a multi-megabyte record reaches the sink as many bounded writes", async () => {
+  const out = collectingSink();
+  await createDataGetRenderer("json", { sink: out.sink }).handlers()
+    .completed({
+      kind: "completed",
+      data: {
+        ...testData,
+        content: JSON.stringify(largeContent),
+        contentEncoding: "utf-8",
+      },
+    });
+
+  const text = out.text();
+  assertEquals(text.length > 4 * 1024 * 1024, true);
+  assertEquals(out.writes().length > 50, true);
+  assertEquals(out.writes().every((n) => n < 1024 * 1024), true);
+  assertEquals(JSON.parse(text).content, largeContent);
+});
+
+Deno.test("LogDataGetRenderer: prints JSON content indented, in bounded writes", async () => {
+  const out = collectingSink();
+  const header = await captureLog(() =>
+    createDataGetRenderer("log", { sink: out.sink }).handlers().completed({
+      kind: "completed",
+      data: {
+        ...testData,
+        content: JSON.stringify(largeContent),
+        contentEncoding: "utf-8",
+      },
+    })
+  );
+
+  assertStringIncludes(header, "Data: output (v1)");
+  // assertEquals would diff multi-megabyte strings; compare, then report
+  const text = out.text();
+  const expected = JSON.stringify(largeContent, null, 2) + "\n";
+  assert(
+    text === expected,
+    `printed ${text.length} chars, not the indented ${expected.length}`,
+  );
+  assertEquals(out.writes().length > 50, true);
+  assertEquals(out.writes().every((n) => n < 1024 * 1024), true);
+});
+
+Deno.test("LogDataGetRenderer: prints the header before JSON content", async () => {
+  const output = await captureRender("log", {
+    kind: "completed",
+    data: { ...testData, content: '{"a":1}', contentEncoding: "utf-8" },
+  });
+  assertStringIncludes(output, 'Path: .swamp/data/output\n\n{\n  "a": 1\n}\n');
+});
+
+Deno.test("LogDataGetRenderer: prints unparseable JSON content once, as is", async () => {
+  const content = '{"a": 1, oops';
+  const output = await captureRender("log", {
+    kind: "completed",
+    data: { ...testData, content, contentEncoding: "utf-8" },
+  });
+  assertEquals(output.split(content).length - 1, 1);
+});
+
+Deno.test("renderDataGet: resolves only after the whole document is written", async () => {
+  const parts: string[] = [];
+  const decoder = new TextDecoder();
+  await renderDataGet(
+    {
+      ...testData,
+      content: JSON.stringify(largeContent),
+      contentEncoding: "utf-8",
+    },
+    "json",
+    {
+      sink: async (bytes) => {
+        await Promise.resolve();
+        const taken = Math.min(bytes.length, 4096);
+        parts.push(decoder.decode(bytes.subarray(0, taken), { stream: true }));
+        return taken;
+      },
+    },
+  );
+  parts.push(decoder.decode());
+  assertEquals(JSON.parse(parts.join("")).content, largeContent);
 });
