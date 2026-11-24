@@ -42,16 +42,19 @@ import { UserError } from "../../domain/errors.ts";
 import { createLatestRunResolver } from "../../domain/workflows/workflow_lookup.ts";
 import { createModelReferenceResolver } from "../../domain/models/model_lookup.ts";
 import {
-  requestServerResponse,
+  type RequestResponseOptions,
+  requestServerParts,
   resolveServerTokenFromOptions,
   resolveServeUrl,
   withRemoteOptions,
 } from "../remote_run.ts";
 import type {
+  DataQueryInPartsPayload,
   DataQueryPayload,
   DataQueryResponse,
 } from "../../serve/protocol.ts";
 import type { OutputMode } from "../../presentation/output/output.ts";
+import { assembleQueryReply } from "../../serve/data_query_parts.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -78,6 +81,21 @@ export function remoteQueryPayload(
     ...(options.sort && { sort: options.sort }),
     ...(options.cursor !== undefined && { cursor: options.cursor }),
   };
+}
+
+/** in parts, so no reply is one string; a serve that predates them replies whole */
+export async function requestRemoteQuery(
+  target: RequestResponseOptions,
+  payload: DataQueryPayload,
+): Promise<DataQueryData> {
+  const inParts: DataQueryInPartsPayload = { ...payload, inParts: true };
+  const { payload: reply, parts } = await requestServerParts<
+    DataQueryResponse
+  >(target, { type: "data.query", payload: inParts });
+  const data = reply.data as unknown as DataQueryData;
+  return reply.partItems === undefined
+    ? data
+    : assembleQueryReply(data, parts, reply.partItems);
 }
 
 /**
@@ -201,25 +219,17 @@ export const dataQueryCommand = withRemoteOptions(
       server,
       options,
     );
-    const response = await requestServerResponse<DataQueryResponse>(
+    const data = await requestRemoteQuery(
       { server, token },
-      {
-        type: "data.query",
-        payload: remoteQueryPayload(predicate, {
-          limit: options.limit as number | undefined,
-          select: options.select as string | undefined,
-          single,
-          sort,
-          cursor,
-        }),
-      },
+      remoteQueryPayload(predicate, {
+        limit: options.limit as number | undefined,
+        select: options.select as string | undefined,
+        single,
+        sort,
+        cursor,
+      }),
     );
-    await renderRemoteQueryResponse(
-      predicate,
-      response.data as unknown as DataQueryData,
-      ctx.outputMode,
-      single,
-    );
+    await renderRemoteQueryResponse(predicate, data, ctx.outputMode, single);
     return;
   }
 

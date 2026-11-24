@@ -229,3 +229,86 @@ Deno.test("renderRemoteQueryResponse: --single carries the server's spec-name hi
   );
   assertEquals(error.code, "QUERY_NO_MATCH");
 });
+
+function serveAnswering(
+  frames: (id: string) => Record<string, unknown>[],
+): {
+  server: string;
+  remoteIndicator: false;
+  fetch: typeof fetch;
+  sent: unknown[];
+} {
+  const sent: unknown[] = [];
+  return {
+    server: "ws://serve.test:9090",
+    remoteIndicator: false,
+    sent,
+    fetch: ((_input: string | URL | Request, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body));
+      sent.push(request.payload);
+      return Promise.resolve(
+        new Response(
+          frames(request.id).map((f) => JSON.stringify(f) + "\n").join(""),
+          { status: 200, headers: { "content-type": "application/x-ndjson" } },
+        ),
+      );
+    }) as typeof fetch,
+  };
+}
+
+const summary = {
+  predicate: "true",
+  select: "name",
+  results: [],
+  projected: { shape: "scalar", values: [] },
+  total: 3,
+  limited: false,
+};
+
+Deno.test("requestRemoteQuery: asks for parts and rebuilds the reply from them", async () => {
+  const { requestRemoteQuery } = await import("./data_query.ts");
+  const serve = serveAnswering((id) => [
+    { type: "data.query.part", id, payload: { items: ["a", "b"] } },
+    { type: "data.query.part", id, payload: { items: ["c"] } },
+    { type: "data.query", id, payload: { data: summary, partItems: 3 } },
+  ]);
+  const data = await requestRemoteQuery(serve, {
+    predicate: "true",
+    select: "name",
+  });
+  assertEquals(serve.sent, [{
+    predicate: "true",
+    select: "name",
+    inParts: true,
+  }]);
+  assertEquals(data.projected, { shape: "scalar", values: ["a", "b", "c"] });
+  assertEquals(data.total, 3);
+});
+
+Deno.test("requestRemoteQuery: a serve that predates parts is read from its single reply", async () => {
+  const { requestRemoteQuery } = await import("./data_query.ts");
+  const whole = { ...summary, projected: { shape: "scalar", values: ["a"] } };
+  const data = await requestRemoteQuery(
+    serveAnswering((
+      id,
+    ) => [{ type: "data.query", id, payload: { data: whole } }]),
+    { predicate: "true", select: "name" },
+  );
+  assertEquals(data, whole as unknown as DataQueryData);
+});
+
+Deno.test("requestRemoteQuery: a reply missing parts is refused, never shown short", async () => {
+  const { requestRemoteQuery } = await import("./data_query.ts");
+  await assertRejects(
+    () =>
+      requestRemoteQuery(
+        serveAnswering((id) => [
+          { type: "data.query.part", id, payload: { items: ["a"] } },
+          { type: "data.query", id, payload: { data: summary, partItems: 3 } },
+        ]),
+        { predicate: "true", select: "name" },
+      ),
+    UserError,
+    "sent 1 of the 3 query results",
+  );
+});

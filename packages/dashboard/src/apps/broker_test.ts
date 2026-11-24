@@ -248,6 +248,27 @@ Deno.test("AppBroker: a cancel of an HTTP read sends nothing", async () => {
   assertEquals(framesFor("r").length, 0);
 });
 
+Deno.test("AppBroker: an app's data.query never asks for its reply in parts", async () => {
+  const requested: unknown[] = [];
+  const { post, framesFor } = setup(
+    { capabilities: ["data:read"], run: [] },
+    {
+      isHttpRead: () => true,
+      request: (_type, payload) => {
+        requested.push(payload);
+        return Promise.resolve({ data: {} });
+      },
+    },
+  );
+  await post({
+    type: "data.query",
+    id: "q",
+    payload: { predicate: "true", limit: 5, inParts: true },
+  });
+  assertEquals(requested, [{ predicate: "true", limit: 5 }]);
+  assertEquals(framesFor("q").map((frame) => frame.payload), [{ data: {} }]);
+});
+
 Deno.test("AppBroker: a late reply never settles a reused id", async () => {
   const replies: ((value: unknown) => void)[] = [];
   const { broker, post, framesFor } = setup(

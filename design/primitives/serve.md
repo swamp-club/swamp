@@ -344,6 +344,19 @@ that predates the route, or a proxy that does not pass it), and on any refusal
 that is not a serve `{code, message}` body; serve's own refusals map to the
 socket path's errors. Run streams stay on the socket under the cap.
 
+`data.query` with `inParts: true` answers its matches in `data.query.part`
+frames (`{items}`, cut at about 4 MiB each by `src/serve/data_query_parts.ts`)
+before the `data.query` reply, which carries the rest of the result with its
+matches emptied and `partItems` beside `data`; no frame on either end then
+holds the whole result as one string. Only the CLI's `swamp data query
+--server` sends it (`requestServerParts`, which reads the NDJSON body line by
+line and keeps the parts of the attempt that answered), and the client refuses
+a reply whose parts do not add up to `partItems`. A request without it, which
+is every other client, gets the single reply it always did: the dashboard's
+app broker drops the key from an app's query, and the published client library
+does not carry it. A serve that predates it drops the unknown key and replies
+whole, which the CLI reads as before.
+
 The dashboard sends the same types there first and falls back to the socket on
 the same rules (`packages/dashboard/src/client/http_request.ts`, whose copy of
 `HTTP_REQUEST_TYPES` a test pins to core's). It holds no token, only its

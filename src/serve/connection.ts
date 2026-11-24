@@ -478,6 +478,7 @@ const DataQueryRequestSchema = z.object({
       direction: z.enum(["asc", "desc"]),
     }).optional(),
     cursor: z.string().max(MAX_QUERY_CURSOR_LENGTH).optional(),
+    inParts: z.boolean().optional(),
   }),
 });
 

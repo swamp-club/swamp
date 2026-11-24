@@ -796,3 +796,82 @@ Deno.test("createDataQueryRenderer: log mode writes plain values in pieces, matc
     .completed({ kind: "completed", data: nested });
   assertEquals(out.writes() > 1, true);
 });
+
+Deno.test("renderQueryResultsTerminal: a string row among map rows prints every value, not a table that drops it (swamp-club#5054)", () => {
+  const output = renderQueryResultsTerminal({
+    predicate: "true",
+    select: "content",
+    results: [],
+    projected: {
+      shape: "map",
+      columns: ["exitCode"],
+      rows: [{ exitCode: 0 }, "log text" as unknown as Record<string, unknown>],
+    },
+    total: 2,
+    limited: false,
+  });
+  assertEquals(output, '{\n  "exitCode": 0\n}\n\nlog text');
+});
+
+Deno.test("renderQueryResultsTerminal: a list row longer than V8 can enumerate prints the rows as values (swamp-club#5054)", () => {
+  // past V8's 2^27 array limit, so listing its characters would throw
+  const long = "y".repeat(135_000_000);
+  const output = renderQueryResultsTerminal({
+    predicate: "true",
+    select: "[name]",
+    results: [],
+    projected: { shape: "list", rows: [["a"], long as unknown as unknown[]] },
+    total: 2,
+    limited: false,
+  });
+  const values = '[\n  "a"\n]\n\n';
+  assertEquals(output.slice(0, values.length + 3), values + "yyy");
+  assertEquals(output.length, values.length + long.length);
+});
+
+Deno.test("renderQueryResultsTerminal: a cell over 1 MiB prints the rows as values, one at 1 MiB stays a table", () => {
+  const limit = 1024 * 1024;
+  const table = (cell: string) =>
+    renderQueryResultsTerminal({
+      predicate: "true",
+      select: "content",
+      results: [],
+      projected: {
+        shape: "map",
+        columns: ["exitCode", "stdout"],
+        rows: [{ exitCode: 0, stdout: cell }],
+      },
+      total: 1,
+      limited: false,
+    });
+  assertStringIncludes(stripAnsiCode(table("z".repeat(limit))), "│ exitCode");
+  const over = "z".repeat(limit + 1);
+  assertEquals(
+    table(over),
+    `{\n  "exitCode": 0,\n  "stdout": "${over}"\n}`,
+  );
+});
+
+Deno.test("createDataQueryRenderer: a string row longer than V8 can enumerate prints after a flat row (swamp-club#5054)", async () => {
+  // past V8's 2^27 array limit, so listing its characters would throw
+  const log = "x".repeat(135_000_000);
+  const data: DataQueryData = {
+    predicate: "true",
+    select: "content",
+    results: [],
+    projected: {
+      shape: "map",
+      columns: ["exitCode"],
+      rows: [{ exitCode: 0 }, log as unknown as Record<string, unknown>],
+    },
+    total: 2,
+    limited: false,
+  };
+  const out = collectingSink();
+  await createDataQueryRenderer("log", false, { sink: out.sink }).handlers()
+    .completed({ kind: "completed", data });
+  const text = out.text();
+  const flat = '{\n  "exitCode": 0\n}\n\n';
+  assertEquals(text.slice(0, flat.length + 3), flat + "xxx");
+  assertEquals(text.length, flat.length + log.length + 1);
+});

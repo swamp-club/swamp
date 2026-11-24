@@ -47,6 +47,7 @@ import {
   readTokenFile,
   remoteGateRefusalUserError,
   requestNewerServerResponse,
+  requestServerParts,
   requestServerResponse,
   requireGateAttemptCheck,
   resetEnvCaCertsForTesting,
@@ -5454,4 +5455,248 @@ Deno.test("remote run: once the run has started, a follower losing its leader re
     payload: { runId: string; afterSeq: number };
   };
   assertEquals([attach.payload.runId, attach.payload.afterSeq], ["run-f", 1]);
+});
+
+function partFrame(id: string, items: unknown[]): Record<string, unknown> {
+  return { type: "data.query.part", id, payload: { items } };
+}
+
+function streamedResponse(text: string, chunkBytes: number): Response {
+  const bytes = new TextEncoder().encode(text);
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (let i = 0; i < bytes.length; i += chunkBytes) {
+          controller.enqueue(bytes.slice(i, i + chunkBytes));
+        }
+        controller.close();
+      },
+    }),
+    { status: 200, headers: { "content-type": "application/x-ndjson" } },
+  );
+}
+
+function framesSocket(
+  frames: (request: { type: string; id: string }) => (string | ArrayBuffer)[],
+): () => WebSocket {
+  return () => {
+    let onopen: (() => void) | null = null;
+    const socket = {
+      binaryType: "blob",
+      onmessage: null as ((event: { data: unknown }) => void) | null,
+      onerror: null,
+      onclose: null,
+      get onopen() {
+        return onopen;
+      },
+      set onopen(handler: (() => void) | null) {
+        onopen = handler;
+        if (handler) queueMicrotask(handler);
+      },
+      send(data: string) {
+        for (const frame of frames(JSON.parse(data))) {
+          queueMicrotask(() => socket.onmessage?.({ data: frame }));
+        }
+      },
+      close() {},
+    };
+    return socket as unknown as WebSocket;
+  };
+}
+
+function gzipFrameOf(frame: Record<string, unknown>): ArrayBuffer {
+  const zipped = gzipSync(new TextEncoder().encode(JSON.stringify(frame)));
+  return zipped.buffer.slice(
+    zipped.byteOffset,
+    zipped.byteOffset + zipped.byteLength,
+  ) as ArrayBuffer;
+}
+
+Deno.test("requestServerParts: parts before the reply are returned in order beside it", async () => {
+  const reply = await requestServerParts<{ partItems: number }>(
+    {
+      server: "ws://serve.test:9090",
+      remoteIndicator: false,
+      createSocket: socketNeverUsed(),
+      fetch: fetchAnswering((request) =>
+        ndjson(
+          partFrame(request.id, [1, 2]),
+          { type: "event", id: request.id, event: { kind: "resolving" } },
+          partFrame("someone-else", [99]),
+          partFrame(request.id, [3]),
+          { type: "data.query", id: request.id, payload: { partItems: 3 } },
+        )
+      ),
+    },
+    { type: "data.query", payload: { predicate: "true", inParts: true } },
+  );
+  assertEquals(reply.payload.partItems, 3);
+  assertEquals(reply.parts, [{ items: [1, 2] }, { items: [3] }]);
+});
+
+Deno.test("requestServerParts: a serve that replies whole gives the reply and no parts", async () => {
+  const reply = await requestServerParts<{ data: { total: number } }>(
+    {
+      server: "ws://serve.test:9090",
+      remoteIndicator: false,
+      createSocket: socketNeverUsed(),
+      fetch: fetchAnswering((request) =>
+        ndjson({
+          type: "data.query",
+          id: request.id,
+          payload: { data: { total: 2 } },
+        })
+      ),
+    },
+    { type: "data.query", payload: { predicate: "true", inParts: true } },
+  );
+  assertEquals(reply, { payload: { data: { total: 2 } }, parts: [] });
+});
+
+Deno.test("requestServerParts: lines and characters split across body chunks read whole", async () => {
+  const text = "é😀".repeat(50);
+  for (const chunkBytes of [1, 2, 3, 7, 64]) {
+    const reply = await requestServerParts<{ data: string }>(
+      {
+        server: "ws://serve.test:9090",
+        remoteIndicator: false,
+        createSocket: socketNeverUsed(),
+        fetch: fetchAnswering((request) =>
+          streamedResponse(
+            [
+              JSON.stringify(partFrame(request.id, [text])),
+              JSON.stringify({
+                type: "data.query",
+                id: request.id,
+                payload: { data: text },
+              }),
+            ].join("\n"),
+            chunkBytes,
+          )
+        ),
+      },
+      { type: "data.query", payload: { predicate: "true", inParts: true } },
+    );
+    assertEquals(reply.payload.data, text);
+    assertEquals(reply.parts, [{ items: [text] }]);
+  }
+});
+
+Deno.test("requestServerParts: an error after some parts rejects with ServerResponseError", async () => {
+  const error = await assertRejects(
+    () =>
+      requestServerParts(
+        {
+          server: "ws://serve.test:9090",
+          remoteIndicator: false,
+          createSocket: socketNeverUsed(),
+          fetch: fetchAnswering((request) =>
+            ndjson(partFrame(request.id, [1]), {
+              type: "error",
+              id: request.id,
+              error: { code: "data_query_failed", message: "too large" },
+            })
+          ),
+        },
+        { type: "data.query", payload: { predicate: "true", inParts: true } },
+      ),
+    ServerResponseError,
+  );
+  assertEquals(error.code, "data_query_failed");
+});
+
+Deno.test("requestServerParts: a body that ends after parts but before the reply rejects", async () => {
+  await assertRejects(
+    () =>
+      requestServerParts(
+        {
+          server: "ws://serve.test:9090",
+          remoteIndicator: false,
+          createSocket: socketNeverUsed(),
+          fetch: fetchAnswering((request) =>
+            ndjson(partFrame(request.id, [1]), partFrame(request.id, [2]))
+          ),
+        },
+        { type: "data.query", payload: { predicate: "true", inParts: true } },
+      ),
+    UserError,
+    "closed before a response was received",
+  );
+});
+
+Deno.test("requestServerParts: a retried request keeps only the parts of the attempt that answered", async () => {
+  let attempts = 0;
+  const clock = fakeRetryClock();
+  const reply = await requestServerParts<{ partItems: number }>(
+    {
+      server: "ws://serve.test:9090",
+      remoteIndicator: false,
+      createSocket: socketNeverUsed(),
+      ...clock.options,
+      fetch: fetchAnswering((request) => {
+        attempts++;
+        if (attempts === 1) {
+          return ndjson(partFrame(request.id, ["stale"]), {
+            type: "error",
+            id: request.id,
+            error: {
+              code: "shutting_down",
+              message: "serve is restarting",
+              retryAfterSeconds: 1,
+            },
+          });
+        }
+        return ndjson(partFrame(request.id, ["fresh"]), {
+          type: "data.query",
+          id: request.id,
+          payload: { partItems: 1 },
+        });
+      }),
+    },
+    { type: "data.query", payload: { predicate: "true", inParts: true } },
+  );
+  assertEquals(attempts, 2);
+  assertEquals(reply.parts, [{ items: ["fresh"] }]);
+});
+
+Deno.test("requestServerParts: over the WebSocket, a compressed part is never overtaken by the reply after it", async () => {
+  const reply = await requestServerParts<{ partItems: number }>(
+    {
+      server: "ws://serve.test:9090",
+      remoteIndicator: false,
+      fetch: fetchAnswering(() => new Response("Not found", { status: 404 })),
+      createSocket: framesSocket((request) => [
+        JSON.stringify(partFrame(request.id, ["a"])),
+        gzipFrameOf(partFrame(request.id, ["b".repeat(10_000)])),
+        JSON.stringify({
+          type: "data.query",
+          id: request.id,
+          payload: { partItems: 2 },
+        }),
+      ]),
+    },
+    { type: "data.query", payload: { predicate: "true", inParts: true } },
+  );
+  assertEquals(reply.payload.partItems, 2);
+  assertEquals(reply.parts, [{ items: ["a"] }, {
+    items: ["b".repeat(10_000)],
+  }]);
+});
+
+Deno.test("requestServerResponse: sends the request as given, without asking for parts", async () => {
+  const calls: { url: string; headers: Headers; body: string }[] = [];
+  await requestServerResponse(
+    {
+      server: "ws://serve.test:9090",
+      remoteIndicator: false,
+      createSocket: socketNeverUsed(),
+      fetch: fetchAnswering(
+        (request) =>
+          ndjson({ type: "data.query", id: request.id, payload: { data: {} } }),
+        calls,
+      ),
+    },
+    { type: "data.query", payload: { predicate: "true" } },
+  );
+  assertEquals(JSON.parse(calls[0].body).payload, { predicate: "true" });
 });
