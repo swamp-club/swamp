@@ -4137,7 +4137,7 @@ Deno.test("ConsoleWorkflowRunRenderer: a local run without stamps times steps on
   assertStringIncludes(lines.join("\n"), "completed in 4.0s · 17:53:45 UTC");
 });
 
-Deno.test("ConsoleWorkflowRunRenderer: a job resumed at a gate reports its duration from the recorded start", async () => {
+Deno.test("ConsoleWorkflowRunRenderer: a run resumed at a gate prints its start lines at the resume and the job's duration from the recorded start", async () => {
   const clock = new FakeRenderClock();
   const resumed = T0 + 3_600_000;
   const lines = await renderAt(clock, [
@@ -4163,6 +4163,9 @@ Deno.test("ConsoleWorkflowRunRenderer: a job resumed at a gate reports its durat
 
   assertStringIncludes(lines.join("\n"), "done after-gate in 2.0s");
   assertStringIncludes(lines.join("\n"), "completed in 60m2s");
+  const starting = lines.find((l) => l.includes("Starting"));
+  assertStringIncludes(starting ?? "", "18:53:41 UTC");
+  assertStringIncludes(lines.join("\n"), "│ start 18:53:41 UTC");
 });
 
 Deno.test("ConsoleWorkflowRunRenderer: a nested run's job of the same name still prints its own start", async () => {

@@ -1916,8 +1916,9 @@ event seq in its tags, and it is stamped `continuableSince`. A run suspended
 on a gate, signal or nested run is left suspended. A parked run's stream gets
 no terminal frame, so an attached `--server` client reattaches when the
 listener closes (and times what it shows from the record's `startedAt` and
-serve's `at` stamps, not from when the replay arrived), and a `parked/<runId>` marker in the control-plane store
-lists it for a process that booted before this one exits. The next process
+serve's `at` stamps, not from when the replay arrived), and a
+`parked/<runId>` marker in the control-plane store lists it for a process
+that booted before this one exits. The next process
 continues it under the same id once the parker is gone, judged as queued-run
 replay judges an owner (pid on the same host, else heartbeat), at boot, on
 promotion, or on the continuation sweep that reads the markers. Until then

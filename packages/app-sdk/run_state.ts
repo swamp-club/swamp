@@ -226,15 +226,23 @@ function foldEvent(
         { at, kind: "started", text: `run ${event.runId}`, tone: "info" },
       );
     }
-    case "job_started":
+    case "job_started": {
+      const start = recordedStart(event);
+      const held = state.jobs[event.jobId];
+      // a continued run starts its running job again with the recorded start
+      if (
+        start !== undefined && held?.status === "running" &&
+        held.startedAt === start
+      ) return state;
       return withLog(
         updateJob(state, event.jobId, (job) => ({
           ...job,
           status: "running",
-          startedAt: recordedStart(event) ?? at,
+          startedAt: start ?? at,
         })),
         { at, kind: "job", text: `${event.jobId} started`, tone: "info" },
       );
+    }
     case "job_completed":
       return withLog(
         updateJob(state, event.jobId, (job) => ({
@@ -261,12 +269,19 @@ function foldEvent(
     case "step_started": {
       const template = (event as { forEachTemplate?: string })
         .forEachTemplate;
+      const start = recordedStart(event);
+      const held = state.steps[stepKey(event.jobId, event.stepId)];
+      // a re-entered wait starts its step again with the recorded start
+      if (
+        start !== undefined && held?.status === "running" &&
+        held.startedAt === start
+      ) return state;
       return withLog(
         updateStep(state, event.jobId, event.stepId, (step) => ({
           ...step,
           ...(template ? { template } : {}),
           status: "running",
-          startedAt: recordedStart(event) ?? at,
+          startedAt: start ?? at,
         })),
         {
           at,

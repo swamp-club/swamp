@@ -410,7 +410,8 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
         // a run continued after a serve restart sends started again
         if (this.runsStarted.has(e.runId)) return;
         this.runsStarted.add(e.runId);
-        const ts = formatTimestamp(new Date(this.startTime(e)));
+        // when this stream began the run; a resumed run's record start is older
+        const ts = formatTimestamp(new Date(this.eventTime(e)));
         const wfName = e.workflowName;
         this.pendingStartLine = () => {
           if (!this.pipe) return;
@@ -432,7 +433,10 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
         // a continued run starts its running job again with the recorded start
         if (this.jobStartTimes.get(e.jobId) === start) return;
         this.jobStartTimes.set(e.jobId, start);
-        this.pendingJobStarts.set(e.jobId, formatTimestamp(new Date(start)));
+        this.pendingJobStarts.set(
+          e.jobId,
+          formatTimestamp(new Date(this.eventTime(e))),
+        );
       },
       job_completed: (e) => {
         if (!this.pipe) return;
