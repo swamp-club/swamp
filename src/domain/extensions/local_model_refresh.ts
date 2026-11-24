@@ -44,14 +44,15 @@ export function createLocalModelRefresher(
   dir: string,
   watchDirs: string[],
   passDirs: () => Promise<LocalModelDirs>,
-): (options?: SourceRefreshOptions) => Promise<void> {
+): (options?: SourceRefreshOptions) => Promise<number> {
   let lastSnapshot: string | undefined;
   return async (options) => {
     // Taken before the pass, so an edit made while it runs is seen next time.
     const snapshot = await snapshotSourceFiles([dir, ...watchDirs]);
-    if (!options?.force && snapshot === lastSnapshot) return;
-    await refreshLocalModels(loader, dir, await passDirs());
+    if (!options?.force && snapshot === lastSnapshot) return 0;
+    const reloaded = await refreshLocalModels(loader, dir, await passDirs());
     lastSnapshot = snapshot;
+    return reloaded;
   };
 }
 
@@ -106,24 +107,28 @@ async function snapshotSourceFiles(dirs: string[]): Promise<string> {
 
 /**
  * failures follow a fresh local process: a source that fails to import or
- * validate leaves its type unregistered rather than running old code
+ * validate leaves its type unregistered rather than running old code; resolves
+ * to the number of types the pass reloaded with changed code
  */
 export async function refreshLocalModels(
   loader: ExtensionLoader,
   dir: string,
   dirs: LocalModelDirs,
-): Promise<void> {
+): Promise<number> {
   const changes = await loader.refreshStaleSources(dir, dirs);
-  if (changes === null) return;
-  await applyLocalModelChanges(loader, changes);
+  if (changes === null) return 0;
+  return await applyLocalModelChanges(loader, changes);
 }
 
 async function applyLocalModelChanges(
   loader: ExtensionLoader,
   changes: SourceRefreshChanges,
-): Promise<void> {
+): Promise<number> {
   const isLocal = (path: string) => !loader.isPulledSourcePath(path);
   const affected = new Set<string>();
+  // a type reloaded from a kept bundle runs the code it ran before, so it is
+  // not counted as reloaded
+  const changed = new Set<string>();
 
   for (const change of changes.rebundled) {
     if (!isLocal(change.sourcePath)) continue;
@@ -133,6 +138,10 @@ async function applyLocalModelChanges(
     // Reloading the type an edited add-on extends re-attaches all its
     // add-ons, dropping members the add-on no longer declares.
     if (change.extendsType) affected.add(change.extendsType);
+    if (change.bundleKept) continue;
+    for (const type of [change.type, change.extendsType]) {
+      if (type) changed.add(type);
+    }
   }
   for (const change of changes.failed) {
     if (!isLocal(change.sourcePath)) continue;
@@ -141,12 +150,19 @@ async function applyLocalModelChanges(
       logger
         .warn`Edited behavior ${change.sourcePath} no longer loads, so ${change.previousType} is unavailable until it is fixed: ${change.error}`;
     }
-    if (change.extendsType) affected.add(change.extendsType);
+    if (change.extendsType) {
+      affected.add(change.extendsType);
+      // reloads without the broken add-on's members
+      changed.add(change.extendsType);
+    }
   }
   for (const row of changes.removed) {
     // A deleted model's type goes; a deleted add-on's row names the type it
     // extended, which reloads without the add-on's members.
-    if (isLocal(row.sourcePath) && row.type) affected.add(row.type);
+    if (isLocal(row.sourcePath) && row.type) {
+      affected.add(row.type);
+      changed.add(row.type);
+    }
   }
 
   for (const type of affected) {
@@ -158,16 +174,18 @@ async function applyLocalModelChanges(
     modelRegistry.invalidateType(type);
     removeAttachedExtensionsForType(type);
   }
-  if (affected.size === 0) return;
+  if (affected.size === 0) return 0;
 
   // Every type the catalog still holds a loadable row for comes back as
   // lazy; a type whose source failed or was deleted has none, so it stays
   // unregistered.
   loader.registerFromCatalog();
+  let reloaded = 0;
   for (const type of affected) {
     if (!modelRegistry.has(type)) continue;
     try {
       await modelRegistry.ensureTypeLoaded(type);
+      if (changed.has(type)) reloaded++;
       logger.info`Reloaded edited behavior ${type}`;
     } catch (error) {
       logger.warn`Edited behavior ${type} failed to load: ${
@@ -175,4 +193,5 @@ async function applyLocalModelChanges(
       }`;
     }
   }
+  return reloaded;
 }

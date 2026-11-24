@@ -144,7 +144,7 @@ Deno.test("integration: serve requests for one uninstalled type share an install
     resolver.setInstallScheduler(withExtensionMutation);
     modelRegistry.setSourceRefresher(() => {
       events.push(modelRegistry.has(type) ? "refresh:loaded" : "refresh");
-      return Promise.resolve();
+      return Promise.resolve(0);
     });
 
     const first = resolver.resolve(`@${type.slice(1)}`);

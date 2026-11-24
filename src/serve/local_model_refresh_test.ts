@@ -31,7 +31,7 @@ Deno.test("refreshLocalModelsForRun: waits for a hot-reload in progress before c
   let releaseReload!: () => void;
   modelRegistry.setSourceRefresher((options) => {
     order.push(options?.force ? "forced refresh" : "refresh");
-    return Promise.resolve();
+    return Promise.resolve(0);
   });
   try {
     const reload = withExtensionMutation(() => {

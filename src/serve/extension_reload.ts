@@ -894,14 +894,16 @@ async function runServeReload(
   let webhooksReloaded = 0;
   const warnings: string[] = [];
   let localRefreshFailed = false;
+  let localReloaded = 0;
 
   try {
     // forced: an unchanged file listing proves nothing when a separate CLI
     // indexed the source into SQLite or serve's last pass failed to bundle it
     try {
-      await modelRegistry.refreshSources(withExtensionMutation, {
-        force: true,
-      });
+      localReloaded = await modelRegistry.refreshSources(
+        withExtensionMutation,
+        { force: true },
+      );
     } catch (err) {
       localRefreshFailed = true;
       errors.push(
@@ -909,13 +911,14 @@ async function runServeReload(
           (err instanceof Error ? err.message : String(err)),
       );
     }
-    reloadedCount = await withExtensionMutation(() =>
-      reloadPulledExtensions(
-        repoDir,
-        lockfilePath,
-        pulledExtensionsRoot,
-      )
-    );
+    reloadedCount = localReloaded +
+      await withExtensionMutation(() =>
+        reloadPulledExtensions(
+          repoDir,
+          lockfilePath,
+          pulledExtensionsRoot,
+        )
+      );
 
     if (options?.extensionDiscoverer) {
       const discover = options.extensionDiscoverer;

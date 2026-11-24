@@ -283,6 +283,8 @@ export interface RefreshedSource {
   previousType?: string;
   type?: string;
   extendsType?: string;
+  /** the rebundle failed, so the type kept the bundle it already had */
+  bundleKept?: boolean;
 }
 
 export interface FailedRefreshSource {
@@ -1265,8 +1267,8 @@ export class ExtensionLoader {
         : undefined;
       const previousExtendsType = prior?.extends_type || undefined;
       try {
-        const { registeredType, extensionTarget, outranked } = await this
-          .rebundleAndUpdateCatalog(
+        const { registeredType, extensionTarget, outranked, bundleKept } =
+          await this.rebundleAndUpdateCatalog(
             absolutePath,
             relativePath,
             denoPath,
@@ -1286,6 +1288,7 @@ export class ExtensionLoader {
           previousType,
           type: registeredType,
           extendsType: extensionTarget ?? previousExtendsType,
+          ...(bundleKept ? { bundleKept } : {}),
         });
       } catch (error) {
         result.failed.push({ file: relativePath, error: String(error) });
@@ -2155,6 +2158,7 @@ export class ExtensionLoader {
       registeredType?: string;
       extensionTarget?: string;
       outranked?: TypelessRow;
+      bundleKept?: boolean;
     }
   > {
     // a graph-pending source is stale for its one retry; use the retry up
@@ -2202,6 +2206,8 @@ export class ExtensionLoader {
       { graphRetry },
     );
     const { js } = bundled;
+    const bundleKept = bundled.fromCache &&
+      bundled.cacheReason === "rebundle-failed";
 
     const stat = await Deno.stat(absolutePath);
     const sourceMtime = stat.mtime?.toISOString() ?? "";
@@ -2238,16 +2244,21 @@ export class ExtensionLoader {
     }
 
     if (this.bundleProber) {
-      return await this.probeAndUpdateCatalog(this.bundleProber, catalog, {
-        absolutePath,
-        relativePath,
-        baseDir,
-        js,
-        sourceMtime,
-        sourceFingerprint,
-        effectiveFingerprint,
-        fromCache: bundled.fromCache,
-      });
+      const probed = await this.probeAndUpdateCatalog(
+        this.bundleProber,
+        catalog,
+        {
+          absolutePath,
+          relativePath,
+          baseDir,
+          js,
+          sourceMtime,
+          sourceFingerprint,
+          effectiveFingerprint,
+          fromCache: bundled.fromCache,
+        },
+      );
+      return { ...probed, bundleKept };
     }
 
     const module = await this.importBundle(
@@ -2332,7 +2343,7 @@ export class ExtensionLoader {
         );
       }
 
-      return { registeredType: typeNormalized };
+      return { registeredType: typeNormalized, bundleKept };
     }
 
     if (
@@ -2367,7 +2378,7 @@ export class ExtensionLoader {
         state: "Indexed",
       });
 
-      return { extensionTarget: typeNormalized };
+      return { extensionTarget: typeNormalized, bundleKept };
     }
 
     // Only a bundle built from the current source speaks for this

@@ -1775,7 +1775,7 @@ Deno.test("ModelRegistry.invalidateType: re-register and reload after invalidati
 });
 
 Deno.test("ModelRegistry.refreshSources: does nothing without a refresher", async () => {
-  await new ModelRegistry().refreshSources();
+  assertEquals(await new ModelRegistry().refreshSources(), 0);
 });
 
 Deno.test("ModelRegistry.refreshSources: a call during a pass waits for a new pass, shared by its peers", async () => {
@@ -1783,8 +1783,9 @@ Deno.test("ModelRegistry.refreshSources: a call during a pass waits for a new pa
   const starts: number[] = [];
   const releases: Array<() => void> = [];
   registry.setSourceRefresher(() => {
-    starts.push(starts.length + 1);
-    return new Promise<void>((resolve) => releases.push(resolve));
+    const pass = starts.length + 1;
+    starts.push(pass);
+    return new Promise<number>((resolve) => releases.push(() => resolve(pass)));
   });
 
   const first = registry.refreshSources();
@@ -1795,10 +1796,11 @@ Deno.test("ModelRegistry.refreshSources: a call during a pass waits for a new pa
   assertEquals(starts.length, 1);
 
   releases[0]();
-  await first;
+  assertEquals(await first, 1);
   await waitFor(() => starts.length === 2, "the second pass");
   releases[1]();
-  await Promise.all([second, third]);
+  // callers sharing a pass get that pass's count
+  assertEquals(await Promise.all([second, third]), [2, 2]);
   assertEquals(starts.length, 2);
 });
 
@@ -1809,7 +1811,7 @@ Deno.test("ModelRegistry.refreshSources: a failed pass rejects its callers and d
     calls++;
     return calls === 1
       ? Promise.reject(new Error("scan failed"))
-      : Promise.resolve();
+      : Promise.resolve(0);
   });
 
   await assertRejects(() => registry.refreshSources(), Error, "scan failed");
@@ -1822,7 +1824,7 @@ Deno.test("ModelRegistry.refreshSources: force reaches the refresher, and an unf
   const seen: Array<boolean | undefined> = [];
   registry.setSourceRefresher((options) => {
     seen.push(options?.force);
-    return Promise.resolve();
+    return Promise.resolve(0);
   });
 
   await registry.refreshSources(undefined, { force: true });
@@ -1838,7 +1840,7 @@ for (const order of [["unforced", "forced"], ["forced", "unforced"]]) {
     const releases: Array<() => void> = [];
     registry.setSourceRefresher((options) => {
       seen.push(options?.force);
-      return new Promise<void>((resolve) => releases.push(resolve));
+      return new Promise<number>((resolve) => releases.push(() => resolve(0)));
     });
 
     const first = registry.refreshSources();
@@ -1867,16 +1869,18 @@ Deno.test("ModelRegistry.refreshSources: each pass runs through the given schedu
   const order: string[] = [];
   registry.setSourceRefresher(() => {
     order.push("pass");
-    return Promise.resolve();
+    return Promise.resolve(4);
   });
 
-  await registry.refreshSources(async (pass) => {
+  const reloaded = await registry.refreshSources(async (pass) => {
     order.push("lock");
-    await pass();
+    const count = await pass();
     order.push("unlock");
+    return count;
   });
 
   assertEquals(order, ["lock", "pass", "unlock"]);
+  assertEquals(reloaded, 4);
 });
 
 Deno.test("ResourceWriteOverridesSchema: accepts every override and strips unknown keys", () => {
