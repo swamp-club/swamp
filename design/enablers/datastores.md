@@ -9261,8 +9261,9 @@ recovered, marked or replicated by a follower.
   commit path counts once: an append or read-model catch-up that fails
   (`onV3CommitOutcome`), and a forwarded commit or other datastore API
   write that fails. A storage failure is a full disk, an I/O error or
-  read-only storage, in the error or its causes; locks, refusals and the
-  network never count. A landed commit, or a catch-up that applied one,
+  read-only storage, read from SQLite's and the OS's error codes in the
+  error or its causes, never from a message, which a refusal can fill with a
+  client's record key; locks, refusals and the network never count. A landed commit, or a catch-up that applied one,
   starts the run again. Three failures in a row spanning at least 10 s
   trip it, so neither one failure nor a burst of commits failing together
   does. On the trip the leader logs the cause, answers `/ready` 503

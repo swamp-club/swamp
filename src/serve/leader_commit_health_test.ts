@@ -29,6 +29,7 @@ import {
   wireLeaderCommitHealth,
 } from "./leader_commit_health.ts";
 import { ReadModelApplyError } from "../domain/datastore_v3/read_model.ts";
+import { PreconditionConflictError } from "../infrastructure/datastore_v3/forwarded_commit.ts";
 
 function realSqliteFull(): Error {
   const dir = Deno.makeTempDirSync();
@@ -52,7 +53,8 @@ function clock(start = 0) {
   return { now: () => now, advance: (ms: number) => (now += ms) };
 }
 
-const full = () => new Error("database or disk is full");
+const full = () =>
+  Object.assign(new Error("database or disk is full"), { errcode: 13 });
 
 Deno.test("storageFailureCause: a real SQLITE_FULL is storage_full", () => {
   assertEquals(storageFailureCause(realSqliteFull()), "storage_full");
@@ -264,4 +266,44 @@ Deno.test("wireLeaderCommitHealth: an applied commit resets the run, and stop un
   assertEquals(wiring.port.cannotCommit(), undefined);
   wiring.stop();
   assertEquals(listeners.size, 0);
+});
+
+Deno.test("storageFailureCause: storage-error text a client put in a refusal is never a storage failure", () => {
+  for (
+    const key of [
+      "No space left on device",
+      "database or disk is full",
+      "disk I/O error/os error 5",
+      "Read-only file system (os error 30)",
+    ]
+  ) {
+    assertEquals(
+      storageFailureCause(
+        new PreconditionConflictError(key, 3, "user:x", undefined),
+      ),
+      undefined,
+      key,
+    );
+  }
+  assertEquals(
+    storageFailureCause(new Error("No space left on device (os error 28)")),
+    undefined,
+  );
+});
+
+Deno.test("LeaderCommitHealth: refusals naming storage errors, spread across the window, never trip", () => {
+  const time = clock();
+  const health = new LeaderCommitHealth({ now: time.now });
+  for (let i = 0; i < 5; i++) {
+    health.recordFailure(
+      new PreconditionConflictError(
+        "No space left on device",
+        i,
+        undefined,
+        undefined,
+      ),
+    );
+    time.advance(CANNOT_COMMIT_WINDOW_MS);
+  }
+  assertEquals(health.cannotCommit(), undefined);
 });

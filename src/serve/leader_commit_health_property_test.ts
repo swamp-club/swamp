@@ -25,6 +25,9 @@ import {
   LeaderCommitHealth,
 } from "./leader_commit_health.ts";
 
+const SQLITE_BUSY = 5;
+const SQLITE_FULL = 13;
+
 type Event =
   | { readonly kind: "full"; readonly afterMs: number }
   | { readonly kind: "locked"; readonly afterMs: number }
@@ -69,11 +72,9 @@ Deno.test("LeaderCommitHealth: trips exactly when an unbroken run spans count an
         if (event.kind === "success") health.recordSuccess();
         else {
           health.recordFailure(
-            new Error(
-              event.kind === "full"
-                ? "database or disk is full"
-                : "database is locked",
-            ),
+            Object.assign(new Error("x"), {
+              errcode: event.kind === "full" ? SQLITE_FULL : SQLITE_BUSY,
+            }),
           );
         }
       }
@@ -94,7 +95,9 @@ Deno.test("LeaderCommitHealth: failures all inside one window never trip", () =>
         const start = 0;
         for (const offset of [...offsets].sort((a, b) => a - b)) {
           now = start + offset;
-          health.recordFailure(new Error("database or disk is full"));
+          health.recordFailure(
+            Object.assign(new Error("x"), { errcode: SQLITE_FULL }),
+          );
         }
         assertEquals(health.cannotCommit(), undefined);
       },

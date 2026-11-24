@@ -43,18 +43,6 @@ const CODE_CAUSES: ReadonlyMap<string, CannotCommitCause> = new Map([
   ["EROFS", "storage_read_only"],
 ]);
 
-const MESSAGE_CAUSES: readonly [RegExp, CannotCommitCause][] = [
-  [
-    /database or disk is full|No space left on device|os error 28\b/i,
-    "storage_full",
-  ],
-  [/disk I\/O error|Input\/output error|os error 5\b/i, "storage_io_error"],
-  [
-    /attempt to write a readonly database|Read-only file system|os error 30\b/i,
-    "storage_read_only",
-  ],
-];
-
 function causeOfOne(error: object): CannotCommitCause | undefined {
   const e = error as Record<string, unknown>;
   if (typeof e.errcode === "number") {
@@ -72,17 +60,14 @@ function causeOfOne(error: object): CannotCommitCause | undefined {
     const cause = CODE_CAUSES.get(e.code);
     if (cause !== undefined) return cause;
   }
-  if (typeof e.message === "string") {
-    for (const [pattern, cause] of MESSAGE_CAUSES) {
-      if (pattern.test(e.message)) return cause;
-    }
-  }
   return undefined;
 }
 
 /**
  * the storage under this node, not a lock, a refusal or the network: only
- * this kind of failure says the node itself cannot commit
+ * this kind of failure says the node itself cannot commit. Read from SQLite's
+ * and the OS's own codes, never a message: a refusal's message can carry a
+ * record key the client chose.
  */
 export function storageFailureCause(
   error: unknown,
