@@ -28,7 +28,9 @@ import {
 import {
   getJson,
   partitionPath,
+  post,
   save,
+  saveBody,
   type Server,
   withServer,
   writer,
@@ -173,6 +175,33 @@ Deno.test({
           "two failed requests are two failures, not four",
         );
         assertEquals((await save(server, "alice-token", 1, 0)).status, 500);
+        assert(leading.health.cannotCommit() !== undefined);
+      } finally {
+        leading.wired.stop();
+      }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "leader commit health: a retry answered from the store wrote nothing, so it does not start the run again",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withFullDisk(async (server) => {
+      const leading = lead(server);
+      try {
+        const body = await saveBody(server, 1, 0);
+        const landed = await post(partitionPath(server), "alice-token", body);
+        assertEquals(landed.status, 200, JSON.stringify(landed.json));
+        disk.full = true;
+        assertEquals((await save(server, "alice-token", 2, 1)).status, 500);
+        assertEquals((await save(server, "alice-token", 2, 1)).status, 500);
+        const retried = await post(partitionPath(server), "alice-token", body);
+        assertEquals(retried.status, 200, JSON.stringify(retried.json));
+        assertEquals(retried.json.duplicate, true);
+        assertEquals((await save(server, "alice-token", 2, 1)).status, 500);
         assert(leading.health.cannotCommit() !== undefined);
       } finally {
         leading.wired.stop();

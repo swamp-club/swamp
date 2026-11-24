@@ -1559,9 +1559,16 @@ class DatastoreApi {
     return { partition, result, ...(warning === undefined ? {} : { warning }) };
   }
 
-  /** a commit whose catch-up failed after it landed says the read model cannot */
+  /**
+   * a commit whose catch-up failed after it landed says the read model cannot,
+   * and a retry answered from the store wrote nothing
+   */
   #noteLanded(landed: readonly LandedCommit[]): void {
-    if (landed.some((commit) => commit.warning === undefined)) {
+    if (
+      landed.some((commit) =>
+        commit.warning === undefined && !commit.result.duplicate
+      )
+    ) {
       this.#deps.ctx.commitHealth?.recordSuccess();
     }
   }
