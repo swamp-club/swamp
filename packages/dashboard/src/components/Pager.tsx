@@ -32,28 +32,17 @@ export function Pager({ page, pageSize, total, onPageChange }: PagerProps) {
   if (totalPages <= 1) return null;
 
   return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        padding: "10px 18px",
-        borderTop: "1px solid var(--border)",
-        fontSize: "0.78rem",
-        color: "var(--text-3)",
-      }}
-    >
+    <div className="pager">
       <span>
         Showing {page * pageSize + 1}–
         {Math.min((page + 1) * pageSize, total)} of {total}
       </span>
-      <div style={{ display: "flex", gap: 4 }}>
+      <div className="pager-pages">
         <button
           type="button"
-          className="btn-sm"
+          className="btn-sm pager-step"
           disabled={page === 0}
           onClick={() => onPageChange(page - 1)}
-          style={{ opacity: page === 0 ? 0.4 : 1 }}
         >
           Previous
         </button>
@@ -69,16 +58,7 @@ export function Pager({ page, pageSize, total, onPageChange }: PagerProps) {
               type="button"
               key={p}
               onClick={() => onPageChange(p)}
-              style={{
-                fontFamily: "'JetBrains Mono', monospace",
-                fontSize: "0.72rem",
-                padding: "4px 8px",
-                border: "1px solid var(--border)",
-                borderRadius: 4,
-                background: p === page ? "var(--accent-subtle)" : "transparent",
-                color: p === page ? "var(--accent)" : "var(--text-3)",
-                cursor: "pointer",
-              }}
+              className={`pager-page${p === page ? " is-current" : ""}`}
             >
               {p + 1}
             </button>
@@ -86,10 +66,9 @@ export function Pager({ page, pageSize, total, onPageChange }: PagerProps) {
         })}
         <button
           type="button"
-          className="btn-sm"
+          className="btn-sm pager-step"
           disabled={page >= totalPages - 1}
           onClick={() => onPageChange(page + 1)}
-          style={{ opacity: page >= totalPages - 1 ? 0.4 : 1 }}
         >
           Next
         </button>

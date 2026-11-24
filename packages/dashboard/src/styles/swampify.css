@@ -56,7 +56,7 @@
 .sw-card {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: calc(10px * var(--radius-scale));
 }
 
 .sw-pad {
@@ -118,7 +118,7 @@
   gap: 10px;
   padding: 16px 18px;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: calc(10px * var(--radius-scale));
   background: var(--surface);
   color: var(--text-1);
   text-align: left;
@@ -164,7 +164,7 @@
   font-size: 0.72rem;
   font-weight: 600;
   padding: 2px 8px;
-  border-radius: 10px;
+  border-radius: calc(10px * var(--radius-scale));
   white-space: nowrap;
   color: var(--accent);
   background: var(--accent-subtle);
@@ -275,7 +275,7 @@
   align-self: flex-start;
   padding: 3px;
   gap: 2px;
-  border-radius: 8px;
+  border-radius: calc(8px * var(--radius-scale));
   background: var(--surface-inset);
   border: 1px solid var(--border-subtle);
 }
@@ -286,7 +286,7 @@
   gap: 6px;
   padding: 6px 14px;
   border: none;
-  border-radius: 6px;
+  border-radius: calc(6px * var(--radius-scale));
   background: transparent;
   color: var(--text-2);
   font: inherit;
@@ -313,7 +313,7 @@
 .sw-tab-count {
   min-width: 18px;
   padding: 0 6px;
-  border-radius: 9px;
+  border-radius: calc(9px * var(--radius-scale));
   font-size: 0.7rem;
   line-height: 18px;
   text-align: center;
@@ -488,7 +488,7 @@
   flex: 0 0 auto;
   width: 34px;
   height: 34px;
-  border-radius: 8px;
+  border-radius: calc(8px * var(--radius-scale));
   cursor: pointer;
 }
 
@@ -530,7 +530,7 @@ button.sw-icon-btn:hover,
   margin: 0;
   padding: 8px 10px;
   border: 1px solid var(--border-subtle);
-  border-radius: 6px;
+  border-radius: calc(6px * var(--radius-scale));
   background: var(--surface);
   font-family: var(--sw-mono, "JetBrains Mono", monospace);
   font-size: 0.75rem;
@@ -592,7 +592,7 @@ button.sw-icon-btn:hover,
   justify-content: center;
   min-height: 40px;
   padding: 0 16px;
-  border-radius: 8px;
+  border-radius: calc(8px * var(--radius-scale));
   border: 1px solid var(--border);
   background: var(--surface);
   color: var(--text-1);

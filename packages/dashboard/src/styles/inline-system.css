@@ -1,0 +1,257 @@
+/* Classes for styles that were inline in the components below; loaded after styles.css so a moved rule wins ties as the inline style did. */
+
+/* System */
+.system-section {
+  margin-bottom: 14px;
+}
+
+.system-cluster-host {
+  font-weight: 500;
+}
+
+.system-cluster-muted {
+  font-size: 0.78rem;
+  color: var(--text-2);
+}
+
+.system-cluster-count {
+  font-size: 0.75rem;
+}
+
+.system-kv-list {
+  padding: 0;
+}
+
+.sys-row.system-kv-row {
+  padding: 8px 18px;
+}
+
+.sys-row.system-kv-row.system-kv-list-head {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.sys-val.system-kv-list-count {
+  color: var(--text-3);
+}
+
+.system-kv-list-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 2px 18px 8px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.sys-val.system-deploy-mode {
+  color: var(--warning);
+}
+
+.sys-val.system-deploy-mode.is-durable {
+  color: var(--success);
+}
+
+.sys-val.system-deploy-mode.is-local {
+  color: var(--text-3);
+}
+
+.system-component-latency {
+  color: var(--text-3);
+  font-weight: 400;
+  margin-left: 6px;
+}
+
+/* Extensions and Vaults header count */
+.health-pill.page-count-pill {
+  background: var(--surface);
+  color: var(--text-2);
+  border: 1px solid var(--border);
+}
+
+/* Extensions */
+.extensions-name {
+  font-weight: 500;
+}
+
+.extensions-channel {
+  font-size: 0.82rem;
+  color: var(--text-3);
+}
+
+/* Vaults */
+.vaults-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.vault-chevron {
+  font-size: 0.7rem;
+  color: var(--text-3);
+  transition: transform 0.15s;
+  display: inline-block;
+  transform: rotate(0deg);
+}
+
+.vault-chevron.is-expanded {
+  transform: rotate(90deg);
+}
+
+.vault-expanded {
+  border-top: 1px solid var(--border);
+}
+
+.vault-section-header {
+  padding: 10px 18px 6px;
+  font-size: 0.7rem;
+  font-family: var(--font-mono);
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.vault-section-header.has-border {
+  border-top: 1px solid var(--border-subtle);
+}
+
+.sys-row.vault-config-row {
+  padding: 4px 18px;
+}
+
+.sys-key.vault-config-key {
+  font-size: 0.78rem;
+}
+
+.sys-val.vault-config-val {
+  font-size: 0.75rem;
+}
+
+.vault-section-empty {
+  padding: 8px 18px 14px;
+  font-size: 0.82rem;
+  color: var(--text-3);
+}
+
+.vault-keys {
+  padding: 0 0 4px;
+}
+
+.vault-key-row {
+  padding: 6px 18px;
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.82rem;
+}
+
+.vault-key-name {
+  font-weight: 500;
+}
+
+.vault-key-labels {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.vault-audit-row {
+  padding: 4px 18px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.78rem;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.vault-audit-row.is-last {
+  border-bottom: none;
+}
+
+.vault-audit-key {
+  font-weight: 500;
+}
+
+.vault-audit-time {
+  margin-left: auto;
+  color: var(--text-3);
+  font-size: 0.72rem;
+}
+
+.vault-expanded-end {
+  height: 8px;
+}
+
+/* Workers */
+.workers-toolbar-panel {
+  margin-bottom: 14px;
+  padding: 12px 16px;
+}
+
+.workers-status-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.fleet-key.workers-key {
+  margin-top: 10px;
+}
+
+.workers-skeleton-panel {
+  padding: 16px;
+  margin-bottom: 14px;
+  display: block;
+}
+
+.workers-empty-panel {
+  margin-bottom: 14px;
+}
+
+.workers-fleet-layout {
+  margin-bottom: 14px;
+}
+
+.workers-map-panel {
+  padding: 8px;
+}
+
+.workers-table-panel {
+  padding: 10px 16px;
+}
+
+.workers-table-summary {
+  cursor: pointer;
+}
+
+.workers-table-wrap {
+  margin-top: 8px;
+}
+
+.worker-detail {
+  padding: 16px;
+}
+
+.worker-detail-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.worker-detail-name {
+  font-weight: 600;
+}
+
+.worker-detail-meta {
+  font-size: 0.75rem;
+  color: var(--text-3);
+}
+
+.worker-detail-slots {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 8px;
+}

@@ -56,6 +56,7 @@ import { useCoalescedRefetch } from "../client/useFleetData.ts";
 import { useRunSummary } from "../client/run_summary.ts";
 import { useTimeBounds } from "../client/time_range.ts";
 import { chartAxis, type ChartBar, chartBars } from "./overview_chart.ts";
+import { watchAppTheme } from "../apps/theme.ts";
 import {
   formatCount,
   formatDuration,
@@ -253,8 +254,9 @@ export function Overview(
         <div className="stat-card">
           <div className="stat-label">Success Rate</div>
           <div
-            className="stat-value"
-            style={finishedRuns > 0 ? { color: "var(--success)" } : undefined}
+            className={finishedRuns > 0
+              ? "stat-value stat-value-success"
+              : "stat-value"}
             title="Succeeded out of finished runs in the selected time range"
           >
             {summaryState === "loading"
@@ -268,7 +270,7 @@ export function Overview(
             {healthLoading ? <StatValueSkeleton width={72} /> : (
               <>
                 {health?.metrics?.throughputPerMinute?.toFixed(1) ?? "—"}
-                <span style={{ fontSize: "0.9rem", color: "var(--text-3)" }}>
+                <span className="overview-stat-unit">
                   /min
                 </span>
               </>
@@ -381,18 +383,9 @@ export function Overview(
         <div className="panel">
           <div className="panel-header">
             <div className="panel-title">
-              Pending Approvals {approvals.length > 0 && (
-                <span
-                  style={{
-                    fontFamily: "'JetBrains Mono', monospace",
-                    fontSize: "0.65rem",
-                    fontWeight: 500,
-                    padding: "1px 7px",
-                    borderRadius: 10,
-                    background: "var(--warning)",
-                    color: "#000",
-                  }}
-                >
+              Pending Approvals{" "}
+              {approvals.length > 0 && (
+                <span className="overview-approvals-count">
                   {approvals.length}
                 </span>
               )}
@@ -400,7 +393,7 @@ export function Overview(
           </div>
           <div>
             {decisionError && (
-              <div className="resume-error" style={{ padding: "8px 18px" }}>
+              <div className="resume-error overview-decision-error">
                 {decisionError}
               </div>
             )}
@@ -424,26 +417,12 @@ export function Overview(
             {approvals.map((a) => (
               <div className="approval-row" key={`${a.runId}-${a.stepName}`}>
                 <div>
-                  <div
-                    style={{
-                      fontWeight: 500,
-                      fontSize: "0.85rem",
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 6,
-                    }}
-                  >
+                  <div className="overview-approval-title">
                     {a.workflowName}
                     <StatusPill status="suspended" />
                   </div>
                   {a.prompt && (
-                    <div
-                      style={{
-                        fontSize: "0.75rem",
-                        color: "var(--text-3)",
-                        marginTop: 2,
-                      }}
-                    >
+                    <div className="overview-approval-prompt">
                       {a.prompt}
                     </div>
                   )}
@@ -492,7 +471,7 @@ export function Overview(
         </div>
       </div>
 
-      <div className="panels-grid" style={{ marginTop: 14 }}>
+      <div className="panels-grid overview-panels-secondary">
         <div className="panel">
           <div className="panel-header">
             <div className="panel-title">
@@ -612,6 +591,10 @@ function ExecutionChart({ bars }: { bars: ChartBar[] }) {
     } | null
   >(null);
 
+  // the canvas reads tokens when it draws, so a theme change must redraw it
+  const [themeVersion, setThemeVersion] = useState(0);
+  useEffect(() => watchAppTheme(() => setThemeVersion((v) => v + 1)), []);
+
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas || bars.length === 0) return;
@@ -637,6 +620,10 @@ function ExecutionChart({ bars }: { bars: ChartBar[] }) {
       other: style.getPropertyValue("--chart-bar-4").trim(),
     };
     const gridColor = style.getPropertyValue("--chart-grid").trim();
+    const radiusScale = parseFloat(style.getPropertyValue("--radius-scale"));
+    const barRadius = 2 * (Number.isFinite(radiusScale) ? radiusScale : 1);
+    const barGlow = parseFloat(style.getPropertyValue("--chart-bar-glow")) || 0;
+    const axisFont = `10px ${style.getPropertyValue("--chart-font").trim()}`;
     const labelColor = style.getPropertyValue("--chart-label").trim();
     const surfaceColor = style.getPropertyValue("--surface").trim();
 
@@ -664,7 +651,7 @@ function ExecutionChart({ bars }: { bars: ChartBar[] }) {
       ctx.lineTo(W - pad.right, y);
       ctx.stroke();
       ctx.fillStyle = labelColor;
-      ctx.font = '10px "JetBrains Mono", monospace';
+      ctx.font = axisFont;
       ctx.textAlign = "right";
       ctx.fillText(
         String(axis.ticks[i]),
@@ -685,8 +672,10 @@ function ExecutionChart({ bars }: { bars: ChartBar[] }) {
         if (h > 0) {
           y -= h;
           ctx.fillStyle = colors[k];
+          ctx.shadowColor = colors[k];
+          ctx.shadowBlur = barGlow;
           const isTop = keys.slice(ki + 1).every((kk) => (d[kk] ?? 0) === 0);
-          const r = 2;
+          const r = Math.min(barRadius, barW / 2);
           ctx.beginPath();
           if (isTop) {
             ctx.moveTo(x, y + r);
@@ -698,6 +687,7 @@ function ExecutionChart({ bars }: { bars: ChartBar[] }) {
             ctx.rect(x, y, barW, h);
           }
           ctx.fill();
+          ctx.shadowBlur = 0;
           if (ki > 0) {
             ctx.fillStyle = surfaceColor;
             ctx.fillRect(x, y + h - 1, barW, 2);
@@ -706,7 +696,7 @@ function ExecutionChart({ bars }: { bars: ChartBar[] }) {
       });
 
       ctx.fillStyle = labelColor;
-      ctx.font = '10px "JetBrains Mono", monospace';
+      ctx.font = axisFont;
       ctx.textAlign = "center";
       // Thin the labels out so long ranges don't overprint.
       const every = Math.ceil(days.length / Math.max(1, chartW / 48));
@@ -716,7 +706,7 @@ function ExecutionChart({ bars }: { bars: ChartBar[] }) {
     });
 
     barsRef.current = hits;
-  }, [bars]);
+  }, [bars, themeVersion]);
 
   const handleMouseMove = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -748,7 +738,7 @@ function ExecutionChart({ bars }: { bars: ChartBar[] }) {
 
   return (
     <ExecutionChartFrame>
-      <div className="chart-area" style={{ position: "relative" }}>
+      <div className="chart-area">
         <canvas
           ref={canvasRef}
           className="chart-canvas"
@@ -758,43 +748,29 @@ function ExecutionChart({ bars }: { bars: ChartBar[] }) {
         {tooltip && (
           <div
             ref={tooltipRef}
-            style={{
-              position: "absolute",
-              left: tooltip.x,
-              top: 4,
-              transform: "translateX(-50%)",
-              background: "var(--sidebar-bg)",
-              color: "var(--sidebar-text-active)",
-              borderRadius: 6,
-              padding: "8px 12px",
-              fontSize: "0.75rem",
-              fontFamily: "'JetBrains Mono', monospace",
-              pointerEvents: "none",
-              zIndex: 10,
-              whiteSpace: "nowrap",
-              boxShadow: "0 2px 8px rgba(0,0,0,0.2)",
-            }}
+            className="overview-chart-tooltip"
+            style={{ left: tooltip.x }}
           >
-            <div style={{ fontWeight: 600, marginBottom: 4 }}>
+            <div className="overview-chart-tooltip-title">
               {tooltip.day} &middot; {pluralize(total, "run")}
             </div>
             {tooltip.data.succeeded > 0 && (
-              <div style={{ color: "var(--success)" }}>
+              <div className="overview-chart-tooltip-row is-succeeded">
                 {tooltip.data.succeeded} succeeded
               </div>
             )}
             {tooltip.data.failed > 0 && (
-              <div style={{ color: "var(--danger)" }}>
+              <div className="overview-chart-tooltip-row is-failed">
                 {tooltip.data.failed} failed
               </div>
             )}
             {tooltip.data.cancelled > 0 && (
-              <div style={{ color: "var(--cancelled)" }}>
+              <div className="overview-chart-tooltip-row is-cancelled">
                 {tooltip.data.cancelled} cancelled
               </div>
             )}
             {tooltip.data.other > 0 && (
-              <div style={{ color: "var(--running)" }}>
+              <div className="overview-chart-tooltip-row is-running">
                 {tooltip.data.other} running or waiting
               </div>
             )}

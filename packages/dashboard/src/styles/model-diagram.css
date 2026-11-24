@@ -16,7 +16,7 @@
   width: 100%;
   height: auto;
   overflow: visible;
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
 }
 
 .md-svg.md-v {
@@ -136,12 +136,12 @@
 .md-kind-placeholder .md-label {
   fill: var(--text-3);
   font-weight: 400;
-  font-family: "Plus Jakarta Sans", system-ui, sans-serif;
+  font-family: var(--font-body);
 }
 
 /* Headings */
 .md-heading {
-  font-family: "Plus Jakarta Sans", system-ui, sans-serif;
+  font-family: var(--font-body);
   font-size: 10.5px;
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -200,7 +200,7 @@
 }
 
 .md-model-name {
-  font-family: "Plus Jakarta Sans", system-ui, sans-serif;
+  font-family: var(--font-body);
   font-size: 16px;
   font-weight: 700;
   fill: var(--text-1);
@@ -331,7 +331,7 @@
   height: 44px;
   padding: 10px 12px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: calc(8px * var(--radius-scale));
   background: var(--surface);
 }
 
@@ -348,7 +348,7 @@
   gap: 10px;
   padding: 12px;
   border: 1px dashed var(--border);
-  border-radius: 16px;
+  border-radius: calc(16px * var(--radius-scale));
 }
 
 .mds-card {
@@ -358,7 +358,7 @@
   height: 108px;
   padding: 18px;
   border: 1.5px solid var(--border);
-  border-radius: 12px;
+  border-radius: calc(12px * var(--radius-scale));
   background: var(--surface);
 }
 

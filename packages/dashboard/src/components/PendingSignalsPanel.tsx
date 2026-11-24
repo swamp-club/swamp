@@ -42,12 +42,6 @@ interface PendingSignalsPanelProps {
  */
 const TICK_MS = 1000;
 
-const DETAIL_STYLE = {
-  fontSize: "0.75rem",
-  color: "var(--text-3)",
-  marginTop: 2,
-};
-
 /**
  * The time to judge held signals by: re-read every {@link TICK_MS} while
  * `active` and the tab is in view, so a page counting held signals drops a
@@ -82,7 +76,7 @@ export function PendingSignalsPanel(
   const held = heldAt(rows, now);
   if (held.length === 0) return null;
   return (
-    <div className="panel" style={{ marginTop: 14 }}>
+    <div className="panel pending-signals-panel">
       <div className="panel-header">
         <div className="panel-title">
           Pending signals <span className="panel-count">{held.length}</span>
@@ -94,28 +88,17 @@ export function PendingSignalsPanel(
           key={row.receiptId}
           data-pending-signal={row.receiptId}
         >
-          <div style={{ minWidth: 0 }}>
-            <div
-              style={{
-                fontWeight: 500,
-                fontSize: "0.85rem",
-                display: "flex",
-                alignItems: "center",
-                gap: 6,
-              }}
-            >
+          <div className="signal-row-body">
+            <div className="signal-row-title">
               {row.workflowName}
-              <span className="mono" style={{ color: "var(--text-3)" }}>
+              <span className="mono signal-row-id">
                 key {row.key}
               </span>
-              <span
-                className="mono"
-                style={{ fontSize: "0.72rem", color: "var(--warning)" }}
-              >
+              <span className="mono signal-row-state is-held">
                 Held for a wait
               </span>
             </div>
-            <div style={DETAIL_STYLE}>
+            <div className="signal-row-detail">
               Signal <span className="mono">{row.receiptId}</span> from{" "}
               {row.submittedBy}
               {row.receivedAt && (
@@ -124,7 +107,7 @@ export function PendingSignalsPanel(
                 </>
               )}
             </div>
-            <div style={DETAIL_STYLE}>
+            <div className="signal-row-detail">
               Held until{" "}
               <time
                 className="mono"

@@ -43,10 +43,10 @@ Deno.test("ThemeToggle: the header placement offers the three themes on the page
   for (const theme of ["light", "system", "dark"]) {
     assert(html.includes(`aria-label="${theme} theme"`));
   }
-  assert(html.includes("var(--border)"));
+  assert(html.includes("theme-toggle--header"));
   assert(
     !renderToStaticMarkup(<ThemeToggle storage={storage} />).includes(
-      "var(--border)",
+      "theme-toggle--header",
     ),
   );
 });

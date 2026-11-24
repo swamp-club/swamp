@@ -110,6 +110,7 @@ Write in plain English:
 | [start](./surfaces/start.md)                     | Get started: workspaces, tasks, launching agents  |
 | [local-dashboard](./surfaces/local-dashboard.md) | The dashboard on local repos, no serve running    |
 | [apps](./surfaces/apps.md)                       | Sandboxed React apps inside the dashboard         |
+| [dashboard-themes](./surfaces/dashboard-themes.md) | Repo themes, the picker and white-label         |
 | [workspace](./surfaces/workspace.md)             | The workspace registry and `swamp workspace`      |
 | [serve-workspaces](./surfaces/serve-workspaces.md) | Partly built: one host, a serve per workspace   |
 

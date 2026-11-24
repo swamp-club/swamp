@@ -1,0 +1,286 @@
+/* Classes for styles that were inline in the components below; loaded after styles.css so a moved rule wins ties as the inline style did. */
+
+/* Shared by WorkflowDetail and DataDetail */
+.page-header-lead {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.stat-value-success {
+  color: var(--success);
+}
+
+.stat-value-danger {
+  color: var(--danger);
+}
+
+/* views/Overview.tsx */
+.overview-stat-unit {
+  font-size: 0.9rem;
+  color: var(--text-3);
+}
+
+.overview-approvals-count {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  font-weight: 500;
+  padding: 1px 7px;
+  border-radius: calc(10px * var(--radius-scale));
+  background: var(--warning);
+  color: #000;
+}
+
+.overview-decision-error {
+  padding: 8px 18px;
+}
+
+.overview-approval-title {
+  font-weight: 500;
+  font-size: 0.85rem;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.overview-approval-prompt {
+  font-size: 0.75rem;
+  color: var(--text-3);
+  margin-top: 2px;
+}
+
+.overview-panels-secondary {
+  margin-top: 14px;
+}
+
+.overview-chart-tooltip {
+  position: absolute;
+  top: 4px;
+  transform: translateX(-50%);
+  background: var(--sidebar-bg);
+  color: var(--sidebar-text-active);
+  border-radius: calc(6px * var(--radius-scale));
+  padding: 8px 12px;
+  font-size: 0.75rem;
+  font-family: var(--font-mono);
+  pointer-events: none;
+  z-index: 10;
+  white-space: nowrap;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.overview-chart-tooltip-title {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.overview-chart-tooltip-row.is-succeeded {
+  color: var(--success);
+}
+
+.overview-chart-tooltip-row.is-failed {
+  color: var(--danger);
+}
+
+.overview-chart-tooltip-row.is-cancelled {
+  color: var(--cancelled);
+}
+
+.overview-chart-tooltip-row.is-running {
+  color: var(--running);
+}
+
+/* views/WorkflowDetail.tsx */
+.workflow-detail-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.workflow-stats {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.workflow-job-header {
+  padding: 8px 18px;
+  background: var(--surface-inset);
+  font-size: 0.78rem;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.workflow-job-count {
+  font-size: 0.7rem;
+  color: var(--text-3);
+  font-weight: 400;
+  margin-left: auto;
+}
+
+.workflow-step-row {
+  padding: 8px 18px 8px 36px;
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.82rem;
+}
+
+.workflow-step-name {
+  font-weight: 500;
+}
+
+.workflow-step-model {
+  font-size: 0.72rem;
+  color: var(--text-3);
+}
+
+.workflow-step-type {
+  margin-left: auto;
+}
+
+.workflow-path {
+  font-size: 0.7rem;
+  color: var(--text-3);
+}
+
+/* views/Data.tsx */
+.data-count-pill {
+  background: var(--surface);
+  color: var(--text-2);
+  border: 1px solid var(--border);
+}
+
+.data-name-cell {
+  font-weight: 500;
+}
+
+.data-source-cell {
+  font-size: 0.78rem;
+}
+
+.data-model-link {
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.data-type-cell {
+  font-size: 0.82rem;
+  color: var(--text-3);
+}
+
+.data-content-type-cell {
+  font-size: 0.75rem;
+  color: var(--text-3);
+}
+
+.data-version-cell {
+  font-size: 0.78rem;
+  color: var(--text-3);
+}
+
+.data-pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 18px;
+  border-top: 1px solid var(--border);
+  font-size: 0.78rem;
+  color: var(--text-3);
+}
+
+.data-pager-buttons {
+  display: flex;
+  gap: 4px;
+}
+
+.data-pager-button {
+  opacity: 1;
+}
+
+.data-pager-button:disabled {
+  opacity: 0.4;
+}
+
+/* views/DataDetail.tsx */
+.data-content-panel {
+  margin-bottom: 16px;
+}
+
+.data-skel-heading {
+  margin-bottom: 14px;
+}
+
+.data-skel-subheading {
+  margin: 18px 0 12px;
+}
+
+/* views/WebhookDetail.tsx, views/ScheduleDetail.tsx */
+.trig-shared-link {
+  display: block;
+}
+
+.trig-runs-range {
+  font-size: 0.75rem;
+}
+
+/* components/SignalWaitsPanel.tsx, components/PendingSignalsPanel.tsx */
+.signal-waits-panel,
+.pending-signals-panel {
+  margin-top: 14px;
+}
+
+.signal-row-body {
+  min-width: 0;
+}
+
+.signal-row-title {
+  font-weight: 500;
+  font-size: 0.85rem;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.signal-row-id {
+  color: var(--text-3);
+}
+
+.signal-row-state {
+  font-size: 0.72rem;
+}
+
+.signal-row-state.is-open,
+.signal-row-state.is-held {
+  color: var(--warning);
+}
+
+.signal-row-state.is-signalled {
+  color: var(--success);
+}
+
+.signal-row-state.is-expired {
+  color: var(--danger);
+}
+
+.signal-row-detail {
+  font-size: 0.75rem;
+  color: var(--text-3);
+  margin-top: 2px;
+}
+
+/* components/StepSignalWait.tsx */
+.step-signal-wait {
+  margin-top: 6px;
+  padding: 6px 10px;
+  border-radius: calc(4px * var(--radius-scale));
+  font-size: 0.78rem;
+  background: var(--warning-bg);
+  color: var(--warning);
+}
+
+.step-signal-wait.is-received {
+  background: var(--success-bg);
+  color: var(--success);
+}

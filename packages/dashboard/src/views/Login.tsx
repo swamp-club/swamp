@@ -20,6 +20,7 @@
 import { serverPath } from "../client/workspace_path.ts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSwamp } from "../client/SwampProvider.tsx";
+import { useBrandName } from "../theme/useCustomTheme.ts";
 import { Logo } from "../components/Logo.tsx";
 import { LoginStartingSkeleton } from "./PageSkeletons.tsx";
 
@@ -229,18 +230,7 @@ function OAuthLogin(
               <button
                 type="button"
                 onClick={startLogin}
-                style={{
-                  width: "100%",
-                  padding: "10px",
-                  border: "none",
-                  borderRadius: 6,
-                  background: "var(--accent)",
-                  color: "#000",
-                  fontFamily: "inherit",
-                  fontSize: "0.88rem",
-                  fontWeight: 600,
-                  cursor: "pointer",
-                }}
+                className="login-oauth-button"
               >
                 Login with {providerHost}
               </button>
@@ -293,18 +283,7 @@ function OAuthLogin(
                   setGrant(null);
                   setError(null);
                 }}
-                style={{
-                  width: "100%",
-                  padding: "10px",
-                  border: "none",
-                  borderRadius: 6,
-                  background: "var(--accent)",
-                  color: "#000",
-                  fontFamily: "inherit",
-                  fontSize: "0.88rem",
-                  fontWeight: 600,
-                  cursor: "pointer",
-                }}
+                className="login-retry-button"
               >
                 Try again
               </button>
@@ -320,7 +299,7 @@ function LoginBrand() {
   return (
     <div className="login-brand">
       <Logo size="lg" />
-      <h1>Swamp</h1>
+      <h1>{useBrandName()}</h1>
     </div>
   );
 }

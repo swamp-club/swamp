@@ -32,7 +32,7 @@
   --popover: var(--swamp-surface);
   --popover-foreground: var(--swamp-text-1);
   --primary: var(--swamp-accent);
-  --primary-foreground: var(--swamp-surface);
+  --primary-foreground: var(--swamp-on-accent, var(--swamp-surface));
   --secondary: var(--swamp-surface-inset);
   --secondary-foreground: var(--swamp-text-1);
   --muted: var(--swamp-surface-inset);
@@ -48,7 +48,7 @@
   --sidebar: var(--swamp-surface);
   --sidebar-foreground: var(--swamp-text-1);
   --sidebar-primary: var(--swamp-accent);
-  --sidebar-primary-foreground: var(--swamp-surface);
+  --sidebar-primary-foreground: var(--swamp-on-accent, var(--swamp-surface));
   --sidebar-accent: var(--swamp-surface-inset);
   --sidebar-accent-foreground: var(--swamp-text-1);
   --sidebar-border: var(--swamp-border);
@@ -63,11 +63,11 @@
 
 /* inset is darker than the page in dark mode, so it reads as a hole, not a fill */
 .dark {
-  --primary-foreground: var(--swamp-bg);
+  --primary-foreground: var(--swamp-on-accent, var(--swamp-bg));
   --secondary: var(--swamp-surface-hover);
   --muted: var(--swamp-surface-hover);
   --accent: var(--swamp-surface-hover);
-  --sidebar-primary-foreground: var(--swamp-bg);
+  --sidebar-primary-foreground: var(--swamp-on-accent, var(--swamp-bg));
   --sidebar-accent: var(--swamp-surface-hover);
   --chart-1: #3987e5;
   --chart-2: #d95926;
@@ -112,9 +112,15 @@
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
-  --font-sans: "Plus Jakarta Sans", system-ui, -apple-system, "Segoe UI",
-    sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --font-sans: var(
+    --swamp-font-body,
+    "Plus Jakarta Sans",
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    sans-serif
+  );
+  --font-mono: var(--swamp-font-mono, "JetBrains Mono", ui-monospace, monospace);
 }
 
 @layer base {
@@ -129,8 +135,14 @@
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: "Plus Jakarta Sans", system-ui, -apple-system, "Segoe UI",
-    sans-serif;
+  font-family: var(
+    --swamp-font-body,
+    "Plus Jakarta Sans",
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    sans-serif
+  );
 }
 
 /* Tailwind's reset strips what rendered markdown needs, editors included. */

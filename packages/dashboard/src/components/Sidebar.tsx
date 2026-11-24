@@ -24,8 +24,10 @@ import { buildPath, isPlainLeftClick } from "../routes.ts";
 import { BEHAVIORS_LABEL } from "../lib/behavior_labels.ts";
 import { formatCompactCount, formatDuration } from "../lib/format.ts";
 import { Logo } from "./Logo.tsx";
+import { useBrandName } from "../theme/useCustomTheme.ts";
 import { NavIcon } from "./nav_icons.tsx";
 import { ThemeToggle } from "./ThemeToggle.tsx";
+import { ThemePicker } from "../theme/ThemePicker.tsx";
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher.tsx";
 import { HostWorkspaceSwitcher } from "./HostWorkspaceSwitcher.tsx";
 import { operationsOff, showsLogout } from "./sidebar_state.ts";
@@ -65,7 +67,7 @@ function NavItem(
   return (
     <a
       href={buildPath({ view, detail: null })}
-      className={`nav-item${active ? " active" : ""}${
+      className={`nav-item sidebar-nav-item${active ? " active" : ""}${
         off ? " nav-item-off" : ""
       }`}
       aria-current={active ? "page" : undefined}
@@ -77,68 +79,13 @@ function NavItem(
         e.preventDefault();
         onClick(view);
       }}
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 10,
-        padding: "8px 12px",
-        borderRadius: 6,
-        color: active ? "var(--sidebar-text-active)" : "var(--sidebar-text)",
-        background: active ? "var(--sidebar-active)" : "transparent",
-        cursor: "pointer",
-        textDecoration: "none",
-        fontSize: "0.88rem",
-        fontWeight: 500,
-        position: "relative",
-        userSelect: "none",
-        transition: "background 0.15s, color 0.15s",
-      }}
     >
-      {active && (
-        <span
-          style={{
-            position: "absolute",
-            left: 0,
-            top: "50%",
-            transform: "translateY(-50%)",
-            width: 3,
-            height: 16,
-            borderRadius: "0 2px 2px 0",
-            background: "var(--sidebar-accent)",
-          }}
-        />
-      )}
-      <NavIcon
-        name={view}
-        style={{
-          flexShrink: 0,
-          opacity: off ? (active ? 0.6 : 0.4) : active ? 1 : 0.7,
-        }}
-      />
-      <span
-        className="nav-label"
-        style={off ? { opacity: active ? 0.7 : 0.5 } : undefined}
-      >
-        {label}
-      </span>
+      {active && <span className="sidebar-nav-indicator" />}
+      <NavIcon name={view} className="sidebar-nav-icon" />
+      <span className="nav-label">{label}</span>
       {off && (
         <>
-          <span
-            className="nav-off"
-            aria-hidden="true"
-            style={{
-              marginLeft: "auto",
-              fontFamily: "'JetBrains Mono', monospace",
-              fontSize: "0.6rem",
-              fontWeight: 500,
-              letterSpacing: "0.06em",
-              textTransform: "uppercase",
-              padding: "1px 6px",
-              borderRadius: 4,
-              border: "1px solid currentColor",
-              opacity: 0.45,
-            }}
-          >
+          <span className="nav-off" aria-hidden="true">
             {off.hint}
           </span>
           <span id={describedBy} className="visually-hidden">
@@ -147,20 +94,7 @@ function NavItem(
         </>
       )}
       {badge !== undefined && badge > 0 && (
-        <span
-          className="nav-badge"
-          aria-hidden="true"
-          style={{
-            marginLeft: "auto",
-            fontFamily: "'JetBrains Mono', monospace",
-            fontSize: "0.65rem",
-            fontWeight: 500,
-            padding: "1px 7px",
-            borderRadius: 10,
-            background: "var(--sidebar-accent)",
-            color: "var(--sidebar-bg)",
-          }}
-        >
+        <span className="nav-badge" aria-hidden="true">
           {formatCompactCount(badge)}
         </span>
       )}
@@ -298,6 +232,7 @@ export function Sidebar({
   initialLogoutStep = "idle",
   themeStorage,
 }: SidebarProps) {
+  const brand = useBrandName();
   const [tooltip, setTooltip] = useState<RailTooltip | null>(null);
   const [logoutStep, setLogoutStep] = useState<LogoutStep>(initialLogoutStep);
   const [flyout, setFlyout] = useState<FlyoutAnchor | null>(null);
@@ -369,7 +304,7 @@ export function Sidebar({
   return (
     <nav
       id={SIDEBAR_ID}
-      className="sidebar"
+      className="sidebar sidebar-frame"
       aria-label="Main navigation"
       onMouseOver={collapsed ? (e) => setTooltip(tooltipFor(e)) : undefined}
       onMouseLeave={() => setTooltip(null)}
@@ -382,34 +317,10 @@ export function Sidebar({
           setFlyout(flyoutAnchorFor(logoutButtonRef.current));
         }
       }}
-      style={{
-        background: "var(--sidebar-bg)",
-        borderRight: "1px solid rgba(255,255,255,0.06)",
-        display: "flex",
-        flexDirection: "column",
-        overflowY: "auto",
-      }}
     >
-      <div
-        className="sidebar-header"
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 10,
-        }}
-      >
+      <div className="sidebar-header">
         <Logo size="md" />
-        <span
-          className="sidebar-brand-text"
-          style={{
-            fontWeight: 600,
-            fontSize: "0.82rem",
-            color: "var(--sidebar-text)",
-            letterSpacing: "0.02em",
-          }}
-        >
-          Swamp
-        </span>
+        <span className="sidebar-brand-text">{brand}</span>
         <button
           type="button"
           className="sidebar-icon-button sidebar-collapse-toggle"
@@ -460,7 +371,7 @@ export function Sidebar({
         <HostWorkspaceSwitcher current={PAGE_WORKSPACE} />
       )}
 
-      <div style={{ padding: "0 8px", marginBottom: 24 }}>
+      <div className="sidebar-section">
         <SectionLabel text="Overview" />
         <NavItem
           label="Dashboard"
@@ -470,7 +381,7 @@ export function Sidebar({
         />
       </div>
 
-      <div style={{ padding: "0 8px", marginBottom: 24 }}>
+      <div className="sidebar-section">
         <SectionLabel text="Automation" />
         <NavItem
           label="Workflows"
@@ -492,7 +403,7 @@ export function Sidebar({
         />
       </div>
 
-      <div style={{ padding: "0 8px", marginBottom: 24 }}>
+      <div className="sidebar-section">
         <SectionLabel text="Operations" />
         <NavItem
           label="Schedules"
@@ -550,23 +461,10 @@ export function Sidebar({
       </div>
 
       {(appCount > 0 || canManageApps) && (
-        <div style={{ padding: "0 8px", marginBottom: 24 }}>
+        <div className="sidebar-section">
           <SectionLabel text="Apps" />
           {appCount > 0 && (
-            <a
-              href={APPS_BASE}
-              className="nav-item"
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 10,
-                padding: "8px 12px",
-                borderRadius: 6,
-                color: "var(--sidebar-text)",
-                textDecoration: "none",
-                fontSize: "0.85rem",
-              }}
-            >
+            <a href={APPS_BASE} className="nav-item sidebar-apps-link">
               <span className="nav-label">Open apps</span>
             </a>
           )}
@@ -583,7 +481,7 @@ export function Sidebar({
         </div>
       )}
 
-      <div style={{ padding: "0 8px", marginBottom: 24 }}>
+      <div className="sidebar-section">
         <SectionLabel text="System" />
         <NavItem
           label="Data"
@@ -617,53 +515,26 @@ export function Sidebar({
         />
       </div>
 
+      <ThemePicker />
       <ThemeToggle storage={themeStorage} />
 
       <div
         ref={footerRef}
         className="sidebar-footer"
-        style={{
-          marginTop: "auto",
-          padding: 16,
-          borderTop: "1px solid rgba(255,255,255,0.06)",
-        }}
       >
         {health && (
           <>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                fontSize: "0.75rem",
-                color: "var(--sidebar-text)",
-              }}
-            >
+            <div className="sidebar-health">
               <span
-                style={{
-                  width: 7,
-                  height: 7,
-                  borderRadius: "50%",
-                  background: health.ready
-                    ? "var(--sidebar-accent)"
-                    : "var(--warning)",
-                  flexShrink: 0,
-                }}
+                className={`sidebar-health-dot ${
+                  health.ready ? "is-ready" : "is-degraded"
+                }`}
               />
               <span className="sidebar-health-text">
                 {health.ready ? "Instance healthy" : "Degraded"}
               </span>
             </div>
-            <div
-              className="sidebar-health-text"
-              style={{
-                fontFamily: "'JetBrains Mono', monospace",
-                fontSize: "0.65rem",
-                color: "var(--sidebar-text)",
-                opacity: 0.6,
-                marginTop: 4,
-              }}
-            >
+            <div className="sidebar-health-text sidebar-health-meta">
               {health.instanceId.slice(0, 8)} &middot;{" "}
               {formatDuration(health.uptimeMs)} uptime
             </div>
@@ -686,21 +557,6 @@ export function Sidebar({
             aria-expanded={logoutStep === "confirming"}
             title="Logout"
             data-tooltip={logoutStep === "idle" ? "Logout" : undefined}
-            style={{
-              marginTop: 12,
-              width: "100%",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: 6,
-              padding: "6px 0",
-              border: "1px solid rgba(255,255,255,0.1)",
-              borderRadius: 5,
-              background: "transparent",
-              color: "var(--sidebar-text)",
-              fontSize: "0.75rem",
-              cursor: "pointer",
-              fontFamily: "inherit",
-            }}
           >
             <svg
               width="12"
@@ -711,7 +567,7 @@ export function Sidebar({
               strokeWidth="1.6"
               strokeLinecap="round"
               strokeLinejoin="round"
-              style={{ flexShrink: 0 }}
+              className="sidebar-logout-icon"
             >
               {/* A power symbol: an arrow here read as "expand sidebar". */}
               <path d="M4.5 4.5a5 5 0 1 0 7 0M8 2v6" />
@@ -770,20 +626,5 @@ export function Sidebar({
 }
 
 function SectionLabel({ text }: { text: string }) {
-  return (
-    <div
-      className="sidebar-section-label"
-      style={{
-        fontFamily: "'JetBrains Mono', monospace",
-        fontSize: "0.6rem",
-        fontWeight: 500,
-        letterSpacing: "0.1em",
-        textTransform: "uppercase",
-        color: "var(--sidebar-text)",
-        padding: "0 12px 8px",
-      }}
-    >
-      {text}
-    </div>
-  );
+  return <div className="sidebar-section-label">{text}</div>;
 }

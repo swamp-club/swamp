@@ -452,7 +452,7 @@ export function ScheduleDetail(
                     </span>
                   )}
                 </div>
-                <span className="trig-muted" style={{ fontSize: "0.75rem" }}>
+                <span className="trig-muted trig-runs-range">
                   {rangeLabel}
                 </span>
               </div>

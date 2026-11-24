@@ -17,24 +17,37 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { useSyncExternalStore } from "react";
+import {
+  currentCustomTheme,
+  safeImage,
+  subscribeCustomTheme,
+} from "../theme/custom_theme.ts";
+
+const customLogo = () => safeImage(currentCustomTheme()?.logo);
+
 /** @jsxRuntime automatic */
 /** @jsxImportSource react */
 export function Logo({ size = "md" }: { size?: "sm" | "md" | "lg" }) {
-  const fontSize = size === "lg" ? "2rem" : size === "md" ? "1.4rem" : "1rem";
+  const logo = useSyncExternalStore(
+    subscribeCustomTheme,
+    customLogo,
+    customLogo,
+  );
+  if (logo !== undefined) {
+    return (
+      <img
+        src={logo}
+        alt=""
+        className={`custom-logo custom-logo--${size}`}
+      />
+    );
+  }
 
   return (
-    <span
-      style={{
-        fontFamily: "'Orbitron', sans-serif",
-        fontWeight: 900,
-        fontSize,
-        letterSpacing: "0.1em",
-        lineHeight: 1,
-        userSelect: "none",
-      }}
-    >
-      <span style={{ color: "#22d3ee" }}>S</span>
-      <span style={{ color: "#ec4899" }}>C</span>
+    <span className={`brand-logo brand-logo--${size}`}>
+      <span className="brand-logo-s">S</span>
+      <span className="brand-logo-c">C</span>
     </span>
   );
 }

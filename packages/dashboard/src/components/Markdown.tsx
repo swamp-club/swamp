@@ -19,7 +19,12 @@
 
 import { Fragment, type ReactNode, useMemo } from "react";
 import { CodeBlock } from "./CodeBlock.tsx";
-import { type MdBlock, type MdInline, parseMarkdown } from "./markdown_tree.ts";
+import {
+  type MdAlign,
+  type MdBlock,
+  type MdInline,
+  parseMarkdown,
+} from "./markdown_tree.ts";
 
 /**
  * Renders untrusted markdown (e.g. report output) as React elements. See
@@ -28,6 +33,10 @@ import { type MdBlock, type MdInline, parseMarkdown } from "./markdown_tree.ts";
 export function Markdown({ source }: { source: string }) {
   const tree = useMemo(() => parseMarkdown(source, location.href), [source]);
   return <div className="markdown">{renderBlocks(tree)}</div>;
+}
+
+function alignClass(align: MdAlign | undefined): string | undefined {
+  return align ? `md-align-${align}` : undefined;
 }
 
 function renderBlocks(nodes: MdBlock[]): ReactNode {
@@ -82,7 +91,7 @@ function renderBlock(node: MdBlock): ReactNode {
             <thead>
               <tr>
                 {node.header.map((cell, i) => (
-                  <th key={i} style={{ textAlign: node.align[i] ?? undefined }}>
+                  <th key={i} className={alignClass(node.align[i])}>
                     {renderInlines(cell)}
                   </th>
                 ))}
@@ -92,10 +101,7 @@ function renderBlock(node: MdBlock): ReactNode {
               {node.rows.map((row, r) => (
                 <tr key={r}>
                   {row.map((cell, i) => (
-                    <td
-                      key={i}
-                      style={{ textAlign: node.align[i] ?? undefined }}
-                    >
+                    <td key={i} className={alignClass(node.align[i])}>
                       {renderInlines(cell)}
                     </td>
                   ))}

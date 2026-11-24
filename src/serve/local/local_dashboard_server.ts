@@ -40,6 +40,10 @@ import type {
 import { createHealthStreamResponse } from "../health_stream.ts";
 import { handleHttpRequest } from "../http_request_route.ts";
 import { SERVE_REQUEST_PATH } from "../protocol.ts";
+import {
+  DashboardThemeStore,
+  serveDashboardTheme,
+} from "../dashboard_theme.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import {
   misdirectedResponse,
@@ -64,6 +68,8 @@ export interface LocalDashboardServerOptions {
    * stopping an idle child since those runs would die with it
    */
   busy?: () => boolean;
+  /** where the dashboard theme is read from */
+  repoDir?: string;
 }
 
 export function mergeActiveRuns(
@@ -120,12 +126,18 @@ export function startLocalDashboardServer(
   options: LocalDashboardServerOptions,
 ): LocalDashboardServer {
   const { ctx, healthCollector, hubToken } = options;
+  const themes = options.repoDir === undefined
+    ? undefined
+    : new DashboardThemeStore(options.repoDir);
   const collect = async (signal: AbortSignal): Promise<HealthSnapshot> => {
     const snapshot = await healthCollector.collect(signal);
     const tracked = options.trackedRuns?.() ?? [];
-    return tracked.length === 0 ? snapshot : {
+    return {
       ...snapshot,
-      activeRuns: mergeActiveRuns(snapshot.activeRuns, tracked),
+      ...(tracked.length === 0
+        ? {}
+        : { activeRuns: mergeActiveRuns(snapshot.activeRuns, tracked) }),
+      ...(themes ? { themeVersion: await themes.version() } : {}),
     };
   };
   const appRouteCatalog = ctx.appDeps && cachedAppCatalog(ctx.appDeps.catalog);
@@ -190,6 +202,10 @@ export function startLocalDashboardServer(
       }
       if (req.method === "GET" && url.pathname === "/auth/info") {
         return Response.json({ mode: "none", local: true });
+      }
+      if (themes !== undefined) {
+        const theme = await serveDashboardTheme(req, themes);
+        if (theme) return theme;
       }
       if (url.pathname === "/auth/dashboard/session") {
         return new Response(null, { status: 401 });

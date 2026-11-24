@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { AppTheme } from "../../../app-sdk/bridge.ts";
+import { subscribeCustomTheme } from "../theme/custom_theme.ts";
 
 /** The dashboard tokens an app receives; `theme.css` maps them for shadcn. */
 export const APP_THEME_TOKENS = [
@@ -33,6 +34,7 @@ export const APP_THEME_TOKENS = [
   "accent",
   "accent-hover",
   "accent-subtle",
+  "on-accent",
   "success",
   "warning",
   "danger",
@@ -41,6 +43,8 @@ export const APP_THEME_TOKENS = [
   "cancelled",
   "chart-grid",
   "chart-label",
+  "font-body",
+  "font-mono",
 ] as const;
 
 export function readAppTheme(): AppTheme {
@@ -57,7 +61,7 @@ export function readAppTheme(): AppTheme {
   return { mode: dark ? "dark" : "light", tokens };
 }
 
-/** Calls back whenever the theme toggle or the system preference changes. */
+/** Calls back whenever the theme toggle, the system preference or the repo theme changes. */
 export function watchAppTheme(onChange: (theme: AppTheme) => void): () => void {
   const notify = () => onChange(readAppTheme());
   const observer = new MutationObserver(notify);
@@ -67,7 +71,10 @@ export function watchAppTheme(onChange: (theme: AppTheme) => void): () => void {
   });
   const media = globalThis.matchMedia("(prefers-color-scheme: dark)");
   media.addEventListener("change", notify);
+  // a repo theme changes the tokens without touching data-theme
+  const unsubscribe = subscribeCustomTheme(notify);
   return () => {
+    unsubscribe();
     observer.disconnect();
     media.removeEventListener("change", notify);
   };

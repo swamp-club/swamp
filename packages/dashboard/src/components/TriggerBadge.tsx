@@ -19,30 +19,13 @@
 
 /** @jsxRuntime automatic */
 /** @jsxImportSource react */
-const TRIGGER_STYLES: Record<string, { bg: string; color: string }> = {
-  schedule: { bg: "var(--info-bg)", color: "var(--info)" },
-  webhook: { bg: "var(--running-bg)", color: "var(--running)" },
-  manual: { bg: "var(--cancelled-bg)", color: "var(--text-3)" },
-  api: { bg: "var(--accent-subtle)", color: "var(--accent)" },
-};
+const STYLED_TRIGGERS = new Set(["schedule", "webhook", "manual", "api"]);
 
 export function TriggerBadge({ trigger }: { trigger: string | undefined }) {
   const label = trigger ?? "manual";
-  const style = TRIGGER_STYLES[label] ?? TRIGGER_STYLES.manual;
+  const variant = STYLED_TRIGGERS.has(label) ? label : "manual";
   return (
-    <span
-      style={{
-        fontFamily: "'JetBrains Mono', monospace",
-        fontSize: "0.6rem",
-        fontWeight: 500,
-        letterSpacing: "0.04em",
-        textTransform: "uppercase",
-        padding: "1px 6px",
-        borderRadius: "3px",
-        background: style.bg,
-        color: style.color,
-      }}
-    >
+    <span className={`trigger-badge trigger-badge--${variant}`}>
       {label}
     </span>
   );

@@ -230,5 +230,13 @@
   {
     "query": "Stage a package update across all my swamp workers with a canary batch and a failure budget",
     "expected_guide": "workflow"
+  },
+  {
+    "query": "Customize the swamp dashboard theme for our serve with our company colours and logo",
+    "expected_guide": "serve"
+  },
+  {
+    "query": "White-label the swamp dashboard so it shows Acme Ops instead of Swamp",
+    "expected_guide": "serve"
   }
 ]

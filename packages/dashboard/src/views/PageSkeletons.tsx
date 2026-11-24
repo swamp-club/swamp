@@ -43,10 +43,10 @@ import { BEHAVIOR_COLUMN } from "../lib/behavior_labels.ts";
 // ── Overview ───────────────────────────────────────────────────────────
 
 const CHART_LEGEND: ReadonlyArray<readonly [string, string]> = [
-  ["Succeeded", "var(--chart-bar-1)"],
-  ["Failed", "var(--chart-bar-2)"],
-  ["Cancelled", "var(--chart-bar-5)"],
-  ["Running / waiting", "var(--chart-bar-4)"],
+  ["Succeeded", "skel-legend-succeeded"],
+  ["Failed", "skel-legend-failed"],
+  ["Cancelled", "skel-legend-cancelled"],
+  ["Running / waiting", "skel-legend-running"],
 ];
 
 /** The Executions chart's panel: title, legend, and the plot area. */
@@ -56,9 +56,9 @@ export function ExecutionChartFrame({ children }: { children: ReactNode }) {
       <div className="chart-header">
         <span className="chart-title">Executions</span>
         <div className="chart-legend">
-          {CHART_LEGEND.map(([label, color]) => (
+          {CHART_LEGEND.map(([label, modifier]) => (
             <span key={label}>
-              <span className="legend-dot" style={{ background: color }} />
+              <span className={`legend-dot ${modifier}`} />
               {label}
             </span>
           ))}
@@ -161,14 +161,11 @@ export function VaultListSkeleton({ count = 3 }: { count?: number }) {
   return (
     <SkeletonRegion
       label="Loading vaults"
-      style={{ display: "flex", flexDirection: "column", gap: 14 }}
+      className="skel-vault-list"
     >
       {Array.from({ length: count }, (_, i) => (
         <div className="panel" key={i}>
-          <div
-            className="panel-header"
-            style={{ justifyContent: "start", borderBottom: "none" }}
-          >
+          <div className="panel-header skel-vault-header">
             <span className="panel-title">
               <Skeleton width={8} height={8} radius={2} />
               <Skeleton width={i % 2 ? 96 : 132} height={13} />
@@ -180,15 +177,6 @@ export function VaultListSkeleton({ count = 3 }: { count?: number }) {
     </SkeletonRegion>
   );
 }
-
-// Matches the expanded vault's key and activity rows.
-const VAULT_ROW_STYLE = {
-  padding: "8px 18px",
-  display: "flex",
-  alignItems: "center",
-  gap: 10,
-  borderBottom: "1px solid var(--border-subtle)",
-} as const;
 
 /** One section of an expanded vault (configuration, keys, activity). */
 export function VaultSectionSkeleton(
@@ -204,13 +192,13 @@ export function VaultSectionSkeleton(
       {Array.from(
         { length: rows },
         (_, i) => (
-          <div style={VAULT_ROW_STYLE} key={i}>
+          <div className="skel-vault-row" key={i}>
             {badge && <Skeleton width={52} height={16} radius={4} />}
             <Skeleton width={i % 2 ? 110 : 150} height={10} />
             <Skeleton
               width={badge ? 40 : 80}
               height={badge ? 9 : 10}
-              style={{ marginLeft: "auto" }}
+              className="skel-push-end"
             />
           </div>
         ),
@@ -257,8 +245,6 @@ export const SERVE_CONFIG_KEYS = [
   "Trust Proxy",
 ];
 
-const SYS_ROW_STYLE = { padding: "8px 18px" };
-
 function PanelHeader(
   { title, right }: { title: ReactNode; right?: ReactNode },
 ) {
@@ -280,7 +266,7 @@ export function TablePanelSkeleton(
   },
 ) {
   return (
-    <div className="panel" style={{ marginBottom: 14 }}>
+    <div className="panel skel-table-panel">
       <PanelHeader
         title={
           <>
@@ -307,7 +293,7 @@ export function DeploymentPanelSkeleton() {
         skeleton={
           <SkeletonKeyValues
             keys={[...DEPLOYMENT_KEYS, "components"]}
-            rowStyle={SYS_ROW_STYLE}
+            rowClassName="sys-row skel-sys-row"
           />
         }
       />
@@ -328,7 +314,11 @@ export function KeyValuePanelSkeleton(
     <div className="panel">
       <PanelHeader title={title} />
       <SkeletonRegion label={label}>
-        <SkeletonKeyValues keys={keys} rows={rows} rowStyle={SYS_ROW_STYLE} />
+        <SkeletonKeyValues
+          keys={keys}
+          rows={rows}
+          rowClassName="sys-row skel-sys-row"
+        />
       </SkeletonRegion>
     </div>
   );
@@ -368,7 +358,7 @@ export function VersionsPanelSkeleton({ rows = 5 }: { rows?: number }) {
               <Skeleton
                 width={128}
                 height={10}
-                style={{ marginLeft: "auto" }}
+                className="skel-push-end"
               />
             </li>
           ))}
@@ -388,21 +378,13 @@ export function DataDetailSkeleton(
 ) {
   return (
     <SkeletonRegion label="Loading data">
-      <div className="panel" style={{ marginBottom: 16 }}>
+      <div className="panel skel-content-panel">
         <PanelHeader
           title="Content"
           right={<Skeleton width={74} height={24} radius={5} />}
         />
         <div className="content-body">
-          <div
-            aria-hidden="true"
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              gap: 9,
-              padding: "4px 0",
-            }}
-          >
+          <div aria-hidden="true" className="skel-code-lines">
             {CODE_LINES.map(([indent, width], i) => (
               <Skeleton
                 key={i}
@@ -445,9 +427,9 @@ export function VersionBadgeSkeleton() {
 export function LoginStartingSkeleton() {
   return (
     <SkeletonRegion label="Starting login">
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <div className="skel-login-lines">
         <Skeleton width="92%" height={11} />
-        <Skeleton width="64%" height={11} style={{ marginBottom: 20 }} />
+        <Skeleton width="64%" height={11} className="skel-login-line-last" />
       </div>
       <div className="login-code-block" aria-hidden="true">
         <div className="login-code-label">Confirmation code</div>
@@ -456,7 +438,7 @@ export function LoginStartingSkeleton() {
           width={196}
           height={34}
           radius={6}
-          style={{ backgroundColor: "var(--border)" }}
+          className="skel-login-code"
         />
       </div>
       <div className="login-waiting" aria-hidden="true">

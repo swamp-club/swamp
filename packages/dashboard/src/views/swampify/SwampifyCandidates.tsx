@@ -139,13 +139,13 @@ export function CandidatesTable(props: CandidatesProps) {
       <div className="sw-scroll">
         <table className="sw-table">
           <colgroup>
-            <col style={{ width: 44 }} />
+            <col className="sw-col-rank" />
             <col />
-            <col style={{ width: 130 }} />
-            <col style={{ width: 70 }} />
-            <col style={{ width: 84 }} />
-            <col style={{ width: 84 }} />
-            <col style={{ width: 70 }} />
+            <col className="sw-col-kind" />
+            <col className="sw-col-runs" />
+            <col className="sw-col-sessions" />
+            <col className="sw-col-tokens" />
+            <col className="sw-col-failed" />
           </colgroup>
           <thead>
             <tr>
