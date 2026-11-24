@@ -858,6 +858,11 @@ Deno.test("tlsErrorHint: points a swamp serve with a private CA at --ca-cert", (
   assertStringIncludes(hint!, "For a swamp serve signed by a private");
   assertStringIncludes(hint!, "--ca-cert /path/to/ca.pem");
   assertStringIncludes(hint!, "SWAMP_CA_CERT=/path/to/ca.pem");
+  assertEquals(
+    hint!.indexOf("--ca-cert") < hint!.indexOf("macOS"),
+    true,
+    "the serve remedy comes before the macOS explanation",
+  );
 });
 
 Deno.test("tlsErrorHint: returns undefined for certificate failures other than an untrusted issuer", () => {

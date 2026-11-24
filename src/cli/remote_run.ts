@@ -2085,17 +2085,19 @@ export function diagnoseTlsMessage(
   if (message.includes("UnknownIssuer")) {
     return (
       `TLS certificate rejected: the server's certificate issuer is ` +
-      `not trusted. If using a self-signed certificate, pass it with ` +
-      `--ca-cert /path/to/cert.pem or set SWAMP_CA_CERT=/path/to/cert.pem`
+      `not trusted. If the server uses a self-signed certificate or a ` +
+      `private CA, pass it with --ca-cert /path/to/ca.pem or set ` +
+      `SWAMP_CA_CERT=/path/to/ca.pem`
     );
   }
 
   if (message.includes("BadSignature")) {
     return (
-      `TLS certificate rejected: ${message} — the server's certificate does ` +
-      `not verify against the trusted CA that bears its issuer's name. If ` +
+      `TLS certificate rejected: ${message} — the server's certificate ` +
+      `names a trusted CA as its issuer, but that CA did not sign it. If ` +
       `you passed --ca-cert or SWAMP_CA_CERT, check that the file holds the ` +
-      `CA that signed the server's certificate`
+      `CA that signed the server's certificate; otherwise a proxy that ` +
+      `intercepts TLS may be re-signing the connection`
     );
   }
 

@@ -3139,6 +3139,7 @@ Deno.test("diagnoseTlsMessage: sends a bad signature to the CA file", () => {
   assertStringIncludes(result!, "invalid peer certificate: BadSignature");
   assertStringIncludes(result!, "--ca-cert or SWAMP_CA_CERT");
   assertStringIncludes(result!, "the CA that signed the server's certificate");
+  assertStringIncludes(result!, "a proxy that intercepts TLS");
 });
 
 Deno.test("diagnoseTlsMessage: returns guidance for CaUsedAsEndEntity", () => {
@@ -3153,8 +3154,8 @@ Deno.test("diagnoseTlsMessage: returns guidance for UnknownIssuer", () => {
   const result = diagnoseTlsMessage(
     "invalid peer certificate: UnknownIssuer",
   );
-  assertStringIncludes(result!, "--ca-cert");
-  assertStringIncludes(result!, "SWAMP_CA_CERT");
+  assertStringIncludes(result!, "--ca-cert /path/to/ca.pem");
+  assertStringIncludes(result!, "SWAMP_CA_CERT=/path/to/ca.pem");
 });
 
 Deno.test("diagnoseTlsMessage: returns guidance for hostname mismatch", () => {

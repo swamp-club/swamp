@@ -364,14 +364,15 @@ export function tlsErrorHint(message: string): string | undefined {
   }
   return [
     "The TLS certificate was rejected because its root CA is not in Deno's trust store.",
-    "On macOS, Deno does not use the operating system's full certificate trust",
-    "evaluation, so some certificates trusted by curl and browsers are not recognized.",
     "",
-    "Workaround: set SSL_CERT_FILE to a PEM file containing the missing root CA:",
+    "For a swamp serve signed by a private or self-signed CA, pass that CA:",
+    "  --ca-cert /path/to/ca.pem   (or SWAMP_CA_CERT=/path/to/ca.pem)",
+    "",
+    "For a server with a public CA on macOS: Deno does not use the operating",
+    "system's full certificate trust evaluation, so some certificates trusted by",
+    "curl and browsers are not recognized. Set SSL_CERT_FILE to a PEM file",
+    "containing the missing root CA:",
     "  export SSL_CERT_FILE=/path/to/root-ca.pem",
-    "",
-    "For a swamp serve signed by a private or self-signed CA, pass that CA with",
-    "--ca-cert /path/to/ca.pem or SWAMP_CA_CERT=/path/to/ca.pem instead.",
     "",
     "This is a known Deno limitation — see https://github.com/denoland/deno/issues/36402",
   ].join("\n");
