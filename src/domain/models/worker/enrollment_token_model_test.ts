@@ -25,15 +25,18 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import {
+  admitsMachine,
   type Binding,
   deliverablePredecessor,
   ENROLLMENT_TOKEN_MODEL_TYPE,
   enrollmentMintFor,
   type EnrollmentToken,
   enrollmentTokenBindingVerdict,
+  enrollmentTokenClosed,
   enrollmentTokenModel,
   EnrollmentTokenSchema,
   type MaxEnrollments,
+  presentedTokenMint,
   rotatedTokenSecretKey,
   rotationCarryOverCapMs,
   tokenSecretKey,
@@ -45,6 +48,7 @@ import {
   createInMemoryWorkerContext,
 } from "./worker_test_helpers.ts";
 import { resolveStaleness } from "../../definitions/definition_staleness.ts";
+import { SecretNotFoundError } from "../../vaults/secret_not_found_error.ts";
 
 const mintArgs = {
   durationMs: 60_000,
@@ -1218,4 +1222,148 @@ Deno.test("enrollmentTokenModel: a rotation close to the old deadline warns, one
       label,
     );
   }
+});
+
+const OPEN_AT = Date.parse("2026-01-01T00:30:00.000Z");
+
+function secretsReader(
+  secrets: Record<string, string>,
+): (secretKey: string) => Promise<string> {
+  return (secretKey) =>
+    secretKey in secrets
+      ? Promise.resolve(secrets[secretKey])
+      : Promise.reject(new SecretNotFoundError("local", secretKey));
+}
+
+const rotatedToken = tokenRecord({
+  createdAt: "2026-01-01T00:20:00.000Z",
+  secretKey: "worker-token-ci-runner-3-new",
+  predecessor: {
+    createdAt: "2026-01-01T00:00:00.000Z",
+    expiresAt: "2026-01-01T00:45:00.000Z",
+    secretKey: "worker-token-ci-runner-3-old",
+  },
+});
+
+Deno.test("enrollmentTokenClosed: names a revoked or expired token and leaves an open one", () => {
+  assertEquals(enrollmentTokenClosed(tokenRecord({}), OPEN_AT), null);
+  assertEquals(
+    enrollmentTokenClosed(tokenRecord({ state: "revoked" }), OPEN_AT),
+    "revoked",
+  );
+  assertEquals(
+    enrollmentTokenClosed(tokenRecord({ state: "expired" }), OPEN_AT),
+    "expired",
+  );
+  assertEquals(
+    enrollmentTokenClosed(
+      tokenRecord({}),
+      Date.parse("2026-01-01T01:00:00.000Z"),
+    ),
+    "expired",
+  );
+});
+
+Deno.test("presentedTokenMint: the current secret opens the current mint", async () => {
+  const opened = await presentedTokenMint(
+    rotatedToken,
+    "new-secret",
+    OPEN_AT,
+    secretsReader({
+      "worker-token-ci-runner-3-new": "new-secret",
+      "worker-token-ci-runner-3-old": "old-secret",
+    }),
+  );
+  assertEquals(opened, { mint: rotatedToken.createdAt, current: true });
+});
+
+Deno.test("presentedTokenMint: a live predecessor's secret opens the predecessor mint", async () => {
+  const opened = await presentedTokenMint(
+    rotatedToken,
+    "old-secret",
+    OPEN_AT,
+    secretsReader({
+      "worker-token-ci-runner-3-new": "new-secret",
+      "worker-token-ci-runner-3-old": "old-secret",
+    }),
+  );
+  assertEquals(opened, {
+    mint: rotatedToken.predecessor!.createdAt,
+    current: false,
+  });
+});
+
+Deno.test("presentedTokenMint: a lapsed predecessor, a deleted predecessor key or a wrong secret opens nothing", async () => {
+  const both = {
+    "worker-token-ci-runner-3-new": "new-secret",
+    "worker-token-ci-runner-3-old": "old-secret",
+  };
+  assertEquals(
+    await presentedTokenMint(
+      rotatedToken,
+      "old-secret",
+      Date.parse("2026-01-01T00:50:00.000Z"),
+      secretsReader(both),
+    ),
+    null,
+  );
+  assertEquals(
+    await presentedTokenMint(
+      rotatedToken,
+      "old-secret",
+      OPEN_AT,
+      secretsReader({ "worker-token-ci-runner-3-new": "new-secret" }),
+    ),
+    null,
+  );
+  assertEquals(
+    await presentedTokenMint(
+      rotatedToken,
+      "guess",
+      OPEN_AT,
+      secretsReader(both),
+    ),
+    null,
+  );
+});
+
+Deno.test("presentedTokenMint: a failed read other than a missing predecessor key propagates", async () => {
+  await assertRejects(() =>
+    presentedTokenMint(
+      rotatedToken,
+      "new-secret",
+      OPEN_AT,
+      secretsReader({}),
+    ), SecretNotFoundError);
+  await assertRejects(
+    () =>
+      presentedTokenMint(
+        rotatedToken,
+        "old-secret",
+        OPEN_AT,
+        (secretKey) =>
+          secretKey === "worker-token-ci-runner-3-new"
+            ? Promise.resolve("new-secret")
+            : Promise.reject(new Error("vault unreachable")),
+      ),
+    Error,
+    "vault unreachable",
+  );
+});
+
+Deno.test("admitsMachine: a bound machine always, a new one only while a slot is free", () => {
+  const bound = tokenRecord({
+    maxEnrollments: 1,
+    bindings: [{ machineId: "machine-1", enrolledAt: BASE_ENROLLED_AT }],
+  });
+  assertEquals(admitsMachine(bound, "machine-1"), true);
+  assertEquals(admitsMachine(bound, "machine-2"), false);
+  assertEquals(admitsMachine(tokenRecord({ maxEnrollments: 2 }), "m"), true);
+  assertEquals(
+    admitsMachine(
+      tokenRecord({ ...bound, maxEnrollments: "unlimited" }),
+      "machine-2",
+    ),
+    true,
+  );
 });

@@ -694,6 +694,7 @@ export {
   type WorkerTokenRevealEvent,
 } from "./worker/token_reveal.ts";
 export { createWorkerModelRunDeps } from "./worker/run_deps.ts";
+export { ensureWorkerDefinition } from "./worker/ensure_definition.ts";
 export {
   createWorkerQueueListDeps,
   workerQueueList,

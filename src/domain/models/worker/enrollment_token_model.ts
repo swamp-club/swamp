@@ -177,6 +177,52 @@ export function deliverablePredecessor(
   return livePredecessor(token, nowMs);
 }
 
+/** why a token admits nobody, before any secret is read; null when it is open */
+export function enrollmentTokenClosed(
+  token: EnrollmentToken,
+  nowMs: number,
+): "revoked" | "expired" | null {
+  if (token.state === "revoked") return "revoked";
+  if (token.state === "expired" || isExpired(token, nowMs)) return "expired";
+  return null;
+}
+
+/**
+ * only a predecessor key a concurrent rotation deleted is no match: no match is
+ * a permanent refusal, so any other read failure must stay retryable
+ */
+export async function presentedTokenMint(
+  token: EnrollmentToken,
+  presented: string,
+  nowMs: number,
+  readSecret: (secretKey: string) => Promise<string>,
+): Promise<{ mint: string; current: boolean } | null> {
+  const secret = await readSecret(token.secretKey);
+  if (timingSafeEqual(secret, presented)) {
+    return { mint: token.createdAt, current: true };
+  }
+  const predecessor = livePredecessor(token, nowMs);
+  if (predecessor === undefined) return null;
+  const previous = await readSecret(predecessor.secretKey).catch(
+    (error: unknown) => {
+      if (isSecretNotFoundError(error)) return null;
+      throw error;
+    },
+  );
+  if (previous === null || !timingSafeEqual(previous, presented)) return null;
+  return { mint: predecessor.createdAt, current: false };
+}
+
+/** a machine already bound re-authenticates; a new one needs a free slot */
+export function admitsMachine(
+  token: EnrollmentToken,
+  machineId: string,
+): boolean {
+  if (token.bindings.some((b) => b.machineId === machineId)) return true;
+  return token.maxEnrollments === "unlimited" ||
+    token.bindings.length < token.maxEnrollments;
+}
+
 export interface EnrollmentMint {
   readonly createdAt: string;
   readonly expiresAt: string;
@@ -354,39 +400,30 @@ async function redeem(
   const token = await readToken(context);
   const name = context.definition.name;
 
-  if (token.state === "revoked") {
+  const closed = enrollmentTokenClosed(token, Date.now());
+  if (closed === "revoked") {
     throw new Error(`Enrollment token '${name}' has been revoked`);
   }
-  if (token.state === "expired" || isExpired(token, Date.now())) {
+  if (closed === "expired") {
     throw new Error(`Enrollment token '${name}' has expired`);
   }
 
-  const secret = await context.vaultService.get(
-    token.vaultName,
-    token.secretKey,
-    "model:enrollment-token-verify",
+  const vaultService = context.vaultService;
+  const opened = await presentedTokenMint(
+    token,
+    args.presentedToken,
+    Date.now(),
+    (secretKey) =>
+      vaultService.get(
+        token.vaultName,
+        secretKey,
+        "model:enrollment-token-verify",
+      ),
   );
-  const matchesCurrent = timingSafeEqual(secret, args.presentedToken);
-  const predecessor = livePredecessor(token, Date.now());
-  let matchesPredecessor = false;
-  if (!matchesCurrent && predecessor !== undefined) {
-    // only a key a concurrent rotation deleted is no match: no match is a
-    // permanent refusal, so any other vault failure must stay retryable
-    const previous = await context.vaultService.get(
-      token.vaultName,
-      predecessor.secretKey,
-      "model:enrollment-token-verify",
-    ).catch((error: unknown) => {
-      if (isSecretNotFoundError(error)) return null;
-      throw error;
-    });
-    matchesPredecessor = previous !== null &&
-      timingSafeEqual(previous, args.presentedToken);
-  }
-  if (!matchesCurrent && !matchesPredecessor) {
+  if (opened === null) {
     throw new Error(`Enrollment token '${name}' does not match`);
   }
-  const mint = matchesCurrent ? token.createdAt : predecessor!.createdAt;
+  const { mint, current: matchesCurrent } = opened;
 
   const existingBinding = token.bindings.find(
     (b) => b.machineId === args.machineId,
@@ -409,10 +446,7 @@ async function redeem(
     return { dataHandles: [handle] };
   }
 
-  if (
-    token.maxEnrollments !== "unlimited" &&
-    token.bindings.length >= token.maxEnrollments
-  ) {
+  if (!admitsMachine(token, args.machineId)) {
     throw new Error(
       `Enrollment token '${name}': enrollment allowance exhausted`,
     );

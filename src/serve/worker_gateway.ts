@@ -26,6 +26,7 @@ import {
 } from "../infrastructure/persistence/repo_unit_of_work.ts";
 import { createLibSwampContext } from "../libswamp/context.ts";
 import { createWorkerModelRunDeps } from "../libswamp/worker/run_deps.ts";
+import { ensureWorkerDefinition } from "../libswamp/worker/ensure_definition.ts";
 import { ModelType } from "../domain/models/model_type.ts";
 import { modelMethodRun } from "../libswamp/models/run.ts";
 import {
@@ -60,13 +61,16 @@ import {
 } from "../domain/models/worker/worker_model.ts";
 import type { OrchestratorOwner } from "../domain/models/worker/orchestrator_owner.ts";
 import {
+  admitsMachine,
   deliverablePredecessor,
   ENROLLMENT_TOKEN_MODEL_TYPE,
   type EnrollmentBindingCutoffCause,
   enrollmentMintFor,
   type EnrollmentToken,
+  enrollmentTokenClosed,
   EnrollmentTokenSchema,
   type MaxEnrollments,
+  presentedTokenMint,
 } from "../domain/models/worker/enrollment_token_model.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import {
@@ -143,6 +147,9 @@ const MAX_TIMEOUT_MS = 2 ** 31 - 1;
 
 export const DEFAULT_ROTATION_DELIVERY_TIMEOUT_MS = 10_000;
 
+/** enrollment pre-checks run before the caller is authenticated, so only this many at once */
+export const MAX_ENROLLMENT_PRECHECKS = 4;
+
 const ROTATION_REFUSALS: Record<string, string> = {
   invalid_token: "refused a malformed token",
   invalid_params: "refused a malformed request",
@@ -190,6 +197,16 @@ export async function fleetMemberSuffix(machineId: string): Promise<string> {
     .slice(0, 4)
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
+}
+
+async function workerNameFor(
+  tokenName: string,
+  machineId: string,
+  maxEnrollments: MaxEnrollments,
+): Promise<string> {
+  return maxEnrollments === 1
+    ? tokenName
+    : `${tokenName}-${await fleetMemberSuffix(machineId)}`;
 }
 
 export interface WorkerSnapshot {
@@ -301,6 +318,8 @@ export class WorkerNotDispatchableError extends Error {
   }
 }
 
+export type TokenSecretPurpose = "deliver" | "verify";
+
 export interface WorkerGatewayOptions {
   /**
    * whether this serve node takes workers: false on a team-mode follower. A
@@ -334,10 +353,16 @@ export interface WorkerGatewayOptions {
     workerName: string,
   ) => Promise<{ ok: boolean; failureReason?: string }>;
   gatePass?: () => string | undefined;
-  /** reads a token's plaintext so a rotation can hand it to connected workers */
-  readTokenSecret?: (vaultName: string, secretKey: string) => Promise<string>;
+  /** reads a token's plaintext to hand a rotation to workers, or to check a presented secret */
+  readTokenSecret?: (
+    vaultName: string,
+    secretKey: string,
+    purpose: TokenSecretPurpose,
+  ) => Promise<string>;
   rotationDeliveryTimeoutMs?: number;
   runModelMethod?: ModelMethodRunner;
+  /** absent with an injected runModelMethod, which then creates definitions itself */
+  ensureWorkerDefinition?: (workerName: string) => Promise<void>;
   findTokenDefinitionId?: (tokenName: string) => Promise<string | null>;
   readTokenRecord?: (tokenName: string) => Promise<EnrollmentToken | null>;
   readTokenExpiresAt?: (
@@ -363,6 +388,10 @@ export class WorkerGateway {
   readonly #sessions: SessionCredentialService;
   readonly #graceWindowMs: number;
   readonly #runModelMethod: ModelMethodRunner;
+  readonly #ensureWorkerDefinition:
+    | ((workerName: string) => Promise<void>)
+    | undefined;
+  #prechecksInFlight = 0;
   readonly #workerStatus: WorkerStatusStore;
   readonly #findTokenDefinitionId: (
     tokenName: string,
@@ -378,7 +407,7 @@ export class WorkerGateway {
   readonly #readTokenRecord: (
     tokenName: string,
   ) => Promise<EnrollmentToken | null>;
-  /** Serializes every token/worker/lease transition (sole-writer rule). */
+  /** Serializes every token/pool/lease transition, and each worker's own writes on its key (sole-writer rule). */
   readonly #transitions = new TransitionTail("gateway");
   readonly #runningTransition = new AsyncLocalStorage<{ settled: boolean }>();
   /** counted: a --server rotation and a pass can both be delivering to one worker */
@@ -393,6 +422,15 @@ export class WorkerGateway {
     this.#graceWindowMs = options.graceWindowMs ?? DEFAULT_GRACE_WINDOW_MS;
     this.#runModelMethod = options.runModelMethod ??
       ((input) => this.#defaultRunModelMethod(input));
+    this.#ensureWorkerDefinition = options.ensureWorkerDefinition ??
+      (options.runModelMethod
+        ? undefined
+        : (workerName) =>
+          ensureWorkerDefinition(
+            options.repoDir,
+            options.repoContext,
+            workerName,
+          ));
     const workerStatus = options.runModelMethod
       ? methodRunnerWorkerStatusStore(options.runModelMethod)
       : new WorkerStatusLedger(
@@ -512,7 +550,7 @@ export class WorkerGateway {
     return [...this.#workers.values()].map((entry) => this.#snapshot(entry));
   }
 
-  /** runs fn in the order of this gateway's worker writes, so no enrollment interleaves */
+  /** runs fn in order with token and pool-admission turns, so no enrollment interleaves */
   serializeWorkerWrites<T>(fn: () => Promise<T>): Promise<T> {
     return this.#recordTransition("settle_left_workers", fn);
   }
@@ -615,8 +653,11 @@ export class WorkerGateway {
         this.#removeWorker(entry, `enrollment token ${CUTOFF_REASONS[cause]}`);
         removed.push(entry.name);
         if (wasConnected) {
-          // Already on the transition tail, so written in place.
-          await this.#recordDisconnected(entry.name);
+          await this.#recordWorkerWrite(
+            "worker_disconnected",
+            entry.name,
+            () => this.#recordDisconnected(entry.name),
+          );
         }
       }
       return removed;
@@ -663,7 +704,11 @@ export class WorkerGateway {
 
     let secret: string;
     try {
-      secret = await readTokenSecret(record.vaultName, record.secretKey);
+      secret = await readTokenSecret(
+        record.vaultName,
+        record.secretKey,
+        "deliver",
+      );
     } catch (error) {
       logger.warn("Could not read the rotated secret of {token}: {error}", {
         token: tokenName,
@@ -717,7 +762,11 @@ export class WorkerGateway {
     try {
       let secret: string;
       try {
-        secret = await readTokenSecret(record.vaultName, record.secretKey);
+        secret = await readTokenSecret(
+          record.vaultName,
+          record.secretKey,
+          "deliver",
+        );
       } catch (error) {
         logger.warn(
           "Could not read the current secret of {token} to deliver it: {error}",
@@ -906,11 +955,16 @@ export class WorkerGateway {
           this.#scheduleTokenExpiry(entry, expiresAtMs);
           restamped.push({ worker: ack.name, persisted: ack.persisted });
           try {
-            await this.#workerStatus.recordStatus(entry.name, {
-              status: entry.status,
-              activeDispatchIds: [...entry.activeDispatchIds],
-              tokenCreatedAt: record.createdAt,
-            });
+            await this.#recordWorkerWrite(
+              "worker_restamp",
+              entry.name,
+              () =>
+                this.#workerStatus.recordStatus(entry.name, {
+                  status: entry.status,
+                  activeDispatchIds: [...entry.activeDispatchIds],
+                  tokenCreatedAt: record.createdAt,
+                }),
+            );
           } catch (error) {
             logger.warn(
               "Failed to record the rotated mint for {worker}: {error}",
@@ -1078,8 +1132,9 @@ export class WorkerGateway {
       // dispatch twice.
       options?.onRegistered?.();
       if (!unverified) {
-        await this.#recordTransition(
+        await this.#recordWorkerWrite(
           "worker_busy",
+          name,
           () =>
             this.#workerStatus.recordStatus(name, {
               status: "busy",
@@ -1143,8 +1198,9 @@ export class WorkerGateway {
       } else if (!settled) {
         if (entry.activeDispatchIds.length === 0) {
           entry.status = "idle";
-          await this.#recordTransition(
+          await this.#recordWorkerWrite(
             "worker_idle",
+            name,
             () => this.#workerStatus.recordStatus(name, { status: "idle" }),
           ).catch((error: unknown) => {
             logger.warn("Failed to record idle status for {worker}: {error}", {
@@ -1153,8 +1209,9 @@ export class WorkerGateway {
             });
           });
         } else {
-          await this.#recordTransition(
+          await this.#recordWorkerWrite(
             "worker_busy",
+            name,
             () =>
               this.#workerStatus.recordStatus(name, {
                 status: "busy",
@@ -1249,6 +1306,15 @@ export class WorkerGateway {
       withDiagnosticArea("enrollment", fn, signal);
     const runPreparing = (input: Parameters<ModelMethodRunner>[0]) =>
       preparing(() => this.#runModelMethod(input));
+    await preparing(() =>
+      this.#prepareWorkerDefinition(
+        state,
+        name,
+        secret,
+        params.machineId,
+        signal,
+      )
+    );
     return await this.#recordTransition<EnrollResult>("enroll", async () => {
       // the worker gave up while waiting its turn (enroll call timed out): skip
       // rather than delay live enrollments queued behind; the channel aborts
@@ -1291,9 +1357,11 @@ export class WorkerGateway {
       const maxEnrollments = await preparing(() =>
         this.#readTokenMaxEnrollments(name, record)
       ) ?? 1;
-      const workerName = maxEnrollments === 1
-        ? name
-        : `${name}-${await fleetMemberSuffix(params.machineId)}`;
+      const workerName = await workerNameFor(
+        name,
+        params.machineId,
+        maxEnrollments,
+      );
 
       // the worker gave up during redeem: stop before the pool or definition
       // changes; redeem bound its machine, which re-authenticates next attempt
@@ -1304,203 +1372,211 @@ export class WorkerGateway {
         );
       }
 
-      const existing = this.#workers.get(workerName);
-      if (
-        existing && existing.channel !== null && !existing.channel.closed &&
-        existing.instanceUuid !== params.instanceUuid
-      ) {
-        throw new RpcError({
-          code: "already_connected",
-          message: `Worker '${workerName}' is already connected`,
-        });
-      }
+      // held on the worker's key until it is wired, so a dispatch's busy write
+      // and the work it sends wait for the channel's handlers
+      return await this.#recordWorkerWrite<EnrollResult>(
+        "worker_enroll",
+        workerName,
+        async () => {
+          const existing = this.#workers.get(workerName);
+          if (
+            existing && existing.channel !== null && !existing.channel.closed &&
+            existing.instanceUuid !== params.instanceUuid
+          ) {
+            throw new RpcError({
+              code: "already_connected",
+              message: `Worker '${workerName}' is already connected`,
+            });
+          }
 
-      const reconnecting = existing !== undefined &&
-        existing.instanceUuid === params.instanceUuid;
+          const reconnecting = existing !== undefined &&
+            existing.instanceUuid === params.instanceUuid;
 
-      // Pending timers on the prior entry would fire against this
-      // enrollment — cancel them whether the same process reconnects or a
-      // restarted process takes over. Expiry is re-armed below.
-      if (existing?.graceTimer !== undefined) {
-        clearTimeout(existing.graceTimer);
-        existing.graceTimer = undefined;
-      }
-      if (existing?.expiryTimer !== undefined) {
-        clearTimeout(existing.expiryTimer);
-        existing.expiryTimer = undefined;
-      }
+          // Pending timers on the prior entry would fire against this
+          // enrollment — cancel them whether the same process reconnects or a
+          // restarted process takes over. Expiry is re-armed below.
+          if (existing?.graceTimer !== undefined) {
+            clearTimeout(existing.graceTimer);
+            existing.graceTimer = undefined;
+          }
+          if (existing?.expiryTimer !== undefined) {
+            clearTimeout(existing.expiryTimer);
+            existing.expiryTimer = undefined;
+          }
 
-      const labels = { ...params.labels };
-      if (maxEnrollments !== 1) {
-        if (labels.fleet !== undefined) {
-          logger.warn(
-            "Worker {worker} supplies its own fleet label {fleet}; keeping it instead of auto-injecting {tokenName}",
-            { worker: workerName, fleet: labels.fleet, tokenName: name },
-          );
-        } else {
-          labels.fleet = name;
-        }
-      }
+          const labels = { ...params.labels };
+          if (maxEnrollments !== 1) {
+            if (labels.fleet !== undefined) {
+              logger.warn(
+                "Worker {worker} supplies its own fleet label {fleet}; keeping it instead of auto-injecting {tokenName}",
+                { worker: workerName, fleet: labels.fleet, tokenName: name },
+              );
+            } else {
+              labels.fleet = name;
+            }
+          }
 
-      const capacity = (params.resourceLimits?.capacity as number) ?? 1;
-      // under verify-on-enroll the worker is unverified until its probe passes,
-      // and the durable record says so too so `swamp worker list` matches the
-      // pool
-      const initialStatus = verifyOnEnroll ? "unverified" : "idle";
+          const capacity = (params.resourceLimits?.capacity as number) ?? 1;
+          // under verify-on-enroll the worker is unverified until its probe passes,
+          // and the durable record says so too so `swamp worker list` matches the
+          // pool
+          const initialStatus = verifyOnEnroll ? "unverified" : "idle";
 
-      if (reconnecting) {
-        existing.channel = state.channel;
-        existing.capacity = capacity;
-        existing.protocolVersion = params.protocolVersion;
-        existing.capabilities = params.capabilities ?? [];
-        existing.machineId = params.machineId;
-        await preparing(() =>
-          this.#workerStatus.recordStatus(
-            workerName,
-            {
-              ...(initialStatus === "unverified"
-                ? {
-                  status: "unverified",
-                  activeDispatchIds: [...existing.activeDispatchIds],
-                }
-                : existing.activeDispatchIds.length > 0
-                ? {
-                  status: "busy",
-                  activeDispatchIds: [...existing.activeDispatchIds],
-                }
-                : { status: "idle" }),
-              tokenCreatedAt,
-            },
-          )
-        );
-      } else {
-        await runPreparing({
-          typeArg: WORKER_MODEL_TYPE.normalized,
-          definitionName: workerDefinitionName(workerName),
-          methodName: "enroll",
-          inputs: {
-            instanceUuid: params.instanceUuid,
+          if (reconnecting) {
+            existing.channel = state.channel;
+            existing.capacity = capacity;
+            existing.protocolVersion = params.protocolVersion;
+            existing.capabilities = params.capabilities ?? [];
+            existing.machineId = params.machineId;
+            await preparing(() =>
+              this.#workerStatus.recordStatus(
+                workerName,
+                {
+                  ...(initialStatus === "unverified"
+                    ? {
+                      status: "unverified",
+                      activeDispatchIds: [...existing.activeDispatchIds],
+                    }
+                    : existing.activeDispatchIds.length > 0
+                    ? {
+                      status: "busy",
+                      activeDispatchIds: [...existing.activeDispatchIds],
+                    }
+                    : { status: "idle" }),
+                  tokenCreatedAt,
+                },
+              )
+            );
+          } else {
+            await runPreparing({
+              typeArg: WORKER_MODEL_TYPE.normalized,
+              definitionName: workerDefinitionName(workerName),
+              methodName: "enroll",
+              inputs: {
+                instanceUuid: params.instanceUuid,
+                tokenName: name,
+                workerName,
+                labels,
+                platform: params.platform,
+                arch: params.arch,
+                swampVersion: params.swampVersion,
+                protocolVersion: params.protocolVersion,
+                capacity,
+                status: initialStatus,
+                tokenCreatedAt,
+                ...(this.#options.owner ? { owner: this.#options.owner } : {}),
+              },
+            });
+          }
+
+          // All durable transitions succeeded — only now mutate the pool, wire
+          // the capability handlers, and issue the credential, so a failed
+          // enrollment leaves no orphaned state behind.
+          const entry: WorkerEntry = reconnecting ? existing : {
+            name: workerName,
             tokenName: name,
-            workerName,
+            tokenCreatedAt,
+            instanceUuid: params.instanceUuid,
             labels,
             platform: params.platform,
             arch: params.arch,
             swampVersion: params.swampVersion,
             protocolVersion: params.protocolVersion,
-            capacity,
+            capabilities: params.capabilities ?? [],
+            machineId: params.machineId,
+            channel: state.channel,
+            closeSocket: state.closeSocket,
             status: initialStatus,
-            tokenCreatedAt,
-            ...(this.#options.owner ? { owner: this.#options.owner } : {}),
-          },
-        });
-      }
+            capacity,
+            activeDispatchIds: [],
+          };
+          if (reconnecting && verifyOnEnroll) {
+            entry.status = "unverified";
+            // A refusal from before the reconnect is answered by the probe this
+            // enrollment starts.
+            entry.probeRefusedForCapacity = false;
+          }
+          entry.channel = state.channel;
+          entry.closeSocket = state.closeSocket;
+          entry.tokenCreatedAt = tokenCreatedAt;
+          this.#workers.set(workerName, entry);
+          state.workerName = workerName;
 
-      // All durable transitions succeeded — only now mutate the pool, wire
-      // the capability handlers, and issue the credential, so a failed
-      // enrollment leaves no orphaned state behind.
-      const entry: WorkerEntry = reconnecting ? existing : {
-        name: workerName,
-        tokenName: name,
-        tokenCreatedAt,
-        instanceUuid: params.instanceUuid,
-        labels,
-        platform: params.platform,
-        arch: params.arch,
-        swampVersion: params.swampVersion,
-        protocolVersion: params.protocolVersion,
-        capabilities: params.capabilities ?? [],
-        machineId: params.machineId,
-        channel: state.channel,
-        closeSocket: state.closeSocket,
-        status: initialStatus,
-        capacity,
-        activeDispatchIds: [],
-      };
-      if (reconnecting && verifyOnEnroll) {
-        entry.status = "unverified";
-        // A refusal from before the reconnect is answered by the probe this
-        // enrollment starts.
-        entry.probeRefusedForCapacity = false;
-      }
-      entry.channel = state.channel;
-      entry.closeSocket = state.closeSocket;
-      entry.tokenCreatedAt = tokenCreatedAt;
-      this.#workers.set(workerName, entry);
-      state.workerName = workerName;
+          // the socket closed during recording and its close handler found no
+          // worker to disconnect: disconnect now so it gets the usual grace window
+          // instead of staying a live worker on a dead socket
+          if (state.channel.closed) {
+            logger.info(
+              "Worker {worker} closed its socket before enrollment finished",
+              { worker: workerName },
+            );
+            this.#handleSocketClosed(state);
+            throw new ChannelClosedError(
+              "control socket closed during enrollment",
+            );
+          }
 
-      // the socket closed during recording and its close handler found no
-      // worker to disconnect: disconnect now so it gets the usual grace window
-      // instead of staying a live worker on a dead socket
-      if (state.channel.closed) {
-        logger.info(
-          "Worker {worker} closed its socket before enrollment finished",
-          { worker: workerName },
-        );
-        this.#handleSocketClosed(state);
-        throw new ChannelClosedError(
-          "control socket closed during enrollment",
-        );
-      }
+          // The token lifetime is a hard deadline: when it elapses, disconnect
+          // the worker. Re-enrollment is then rejected as expired, so the
+          // worker cannot return on this token.
+          const expiresAt = onPredecessor
+            ? mint.expiresAt
+            : await this.#readTokenExpiresAt(name, record);
+          if (expiresAt !== null) {
+            this.#scheduleTokenExpiry(entry, Date.parse(expiresAt));
+          }
 
-      // The token lifetime is a hard deadline: when it elapses, disconnect
-      // the worker. Re-enrollment is then rejected as expired, so the
-      // worker cannot return on this token.
-      const expiresAt = onPredecessor
-        ? mint.expiresAt
-        : await this.#readTokenExpiresAt(name, record);
-      if (expiresAt !== null) {
-        this.#scheduleTokenExpiry(entry, Date.parse(expiresAt));
-      }
+          this.#options.capabilityService.registerHandlers(
+            state.channel,
+            workerName,
+          );
+          state.channel.register(
+            RemoteMethod.sessionRefresh,
+            () => this.#handleSessionRefresh(workerName),
+          );
+          state.channel.register(
+            RemoteMethod.drain,
+            () => this.#handleDrain(workerName),
+          );
 
-      this.#options.capabilityService.registerHandlers(
-        state.channel,
-        workerName,
-      );
-      state.channel.register(
-        RemoteMethod.sessionRefresh,
-        () => this.#handleSessionRefresh(workerName),
-      );
-      state.channel.register(
-        RemoteMethod.drain,
-        () => this.#handleDrain(workerName),
-      );
-
-      const session = this.#sessions.issue(workerName);
-      logger.info("Worker {worker} enrolled ({mode})", {
-        worker: workerName,
-        mode: reconnecting ? "reconnect" : "first-connect",
-      });
-      if (!shipsReferencesOnly(params.protocolVersion)) {
-        logger.warn(
-          "Worker {worker} enrolled at deprecated protocol version {version}: its dispatches carry secret values in plaintext. Upgrade it to protocol version {current}; typed-secrets 5.3 stops enrolling version {version} workers",
-          {
+          const session = this.#sessions.issue(workerName);
+          logger.info("Worker {worker} enrolled ({mode})", {
             worker: workerName,
-            version: params.protocolVersion,
-            current: REMOTE_PROTOCOL_VERSION,
-          },
-        );
-      }
+            mode: reconnecting ? "reconnect" : "first-connect",
+          });
+          if (!shipsReferencesOnly(params.protocolVersion)) {
+            logger.warn(
+              "Worker {worker} enrolled at deprecated protocol version {version}: its dispatches carry secret values in plaintext. Upgrade it to protocol version {current}; typed-secrets 5.3 stops enrolling version {version} workers",
+              {
+                worker: workerName,
+                version: params.protocolVersion,
+                current: REMOTE_PROTOCOL_VERSION,
+              },
+            );
+          }
 
-      if (verifyOnEnroll && this.#options.verifyWorker) {
-        this.#startEnrollmentVerify(workerName);
-      } else {
-        const snap = this.#snapshot(entry);
-        this.#options.onWorkerEnrolled?.(snap);
-        if (entry.status === "idle") {
-          this.#options.onWorkerIdle?.(snap);
-        }
-      }
+          if (verifyOnEnroll && this.#options.verifyWorker) {
+            this.#startEnrollmentVerify(workerName);
+          } else {
+            const snap = this.#snapshot(entry);
+            this.#options.onWorkerEnrolled?.(snap);
+            if (entry.status === "idle") {
+              this.#options.onWorkerIdle?.(snap);
+            }
+          }
 
-      return {
-        workerId: workerName,
-        sessionCredential: session.credential,
-        sessionExpiresAtMs: session.expiresAtMs,
-        protocolVersion: params.protocolVersion,
-        ...(gatePass === undefined ? {} : { gatePass }),
-        ...(state.forwardedPrefix === undefined
-          ? {}
-          : { forwardedPrefix: state.forwardedPrefix }),
-      };
+          return {
+            workerId: workerName,
+            sessionCredential: session.credential,
+            sessionExpiresAtMs: session.expiresAtMs,
+            protocolVersion: params.protocolVersion,
+            ...(gatePass === undefined ? {} : { gatePass }),
+            ...(state.forwardedPrefix === undefined
+              ? {}
+              : { forwardedPrefix: state.forwardedPrefix }),
+          };
+        },
+      );
     });
   }
 
@@ -1519,8 +1595,9 @@ export class WorkerGateway {
     if (!entry || entry.status === "draining") return;
     logger.info("Worker {worker} is draining", { worker: workerName });
     entry.status = "draining";
-    await this.#recordTransition(
+    await this.#recordWorkerWrite(
       "worker_draining",
+      workerName,
       () => this.#workerStatus.recordStatus(workerName, { status: "draining" }),
     );
     this.#options.onWorkerDraining?.(this.#snapshot(entry));
@@ -1540,8 +1617,9 @@ export class WorkerGateway {
     entry.channel = null;
     const snapshot = this.#snapshot(entry);
 
-    const recordDisconnect = this.#recordTransition(
+    const recordDisconnect = this.#recordWorkerWrite(
       "worker_disconnected",
+      name,
       () => this.#workerStatus.recordStatus(name, { status: "disconnected" }),
     );
     recordDisconnect.catch((error: unknown) => {
@@ -1647,8 +1725,9 @@ export class WorkerGateway {
     this.#removeWorker(entry, "enrollment token expired");
     if (wasConnected) {
       // #recordDisconnected logs its own failures, so this never rejects.
-      this.#recordTransition(
+      this.#recordWorkerWrite(
         "worker_disconnected",
+        workerName,
         () => this.#recordDisconnected(workerName),
       )
         .catch(() => {});
@@ -1683,7 +1762,7 @@ export class WorkerGateway {
 
   /**
    * Durable record that a removed worker is no longer connected. Callers
-   * run it on the transition tail. Bookkeeping only: failures are logged.
+   * run it on the worker's key. Bookkeeping only: failures are logged.
    */
   async #recordDisconnected(workerName: string): Promise<void> {
     try {
@@ -1745,19 +1824,23 @@ export class WorkerGateway {
       if (!entry || entry.channel === null) return;
       if (probeResult.ok) {
         if (entry.status !== "draining") {
-          await this.#recordTransition("verify_passed", async () => {
-            entry.status = "idle";
-            entry.verifyFailureReason = undefined;
-            await this.#workerStatus.recordStatus(workerName, {
-              status: "idle",
-            });
-          });
+          await this.#recordWorkerWrite(
+            "verify_passed",
+            workerName,
+            async () => {
+              entry.status = "idle";
+              entry.verifyFailureReason = undefined;
+              await this.#workerStatus.recordStatus(workerName, {
+                status: "idle",
+              });
+            },
+          );
           const snap = this.#snapshot(entry);
           this.#options.onWorkerEnrolled?.(snap);
           this.#options.onWorkerIdle?.(snap);
         }
       } else {
-        await this.#recordTransition("verify_failed", async () => {
+        await this.#recordWorkerWrite("verify_failed", workerName, async () => {
           entry.verifyFailureReason = probeResult.failureReason;
           await this.#workerStatus.recordStatus(workerName, {
             status: "unverified",
@@ -1774,7 +1857,7 @@ export class WorkerGateway {
       const entry = this.#workers.get(workerName);
       if (!entry || entry.channel === null) return;
       const reason = error instanceof Error ? error.message : String(error);
-      await this.#recordTransition("verify_failed", async () => {
+      await this.#recordWorkerWrite("verify_failed", workerName, async () => {
         entry.verifyFailureReason = reason;
         await this.#workerStatus.recordStatus(workerName, {
           status: "unverified",
@@ -1817,8 +1900,61 @@ export class WorkerGateway {
   }
 
   /**
-   * every durable pool/token mutation flows through this serialized tail,
-   * preserving the sole-writer invariant; operation labels its span
+   * advisory: once the presented secret opens the token, creates a new
+   * worker's definition off the tail so the enroll turn reads its name file
+   * instead of listing the auto-definitions directory; redeem still decides
+   */
+  async #prepareWorkerDefinition(
+    state: SocketState,
+    tokenName: string,
+    presented: string,
+    machineId: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const ensure = this.#ensureWorkerDefinition;
+    const readTokenSecret = this.#options.readTokenSecret;
+    if (ensure === undefined || readTokenSecret === undefined) return;
+    if (this.#prechecksInFlight >= MAX_ENROLLMENT_PRECHECKS) return;
+    this.#prechecksInFlight++;
+    try {
+      if (await this.#findTokenDefinitionId(tokenName) === null) return;
+      const record = await this.#readTokenRecord(tokenName);
+      if (record === null) return;
+      const nowMs = Date.now();
+      if (enrollmentTokenClosed(record, nowMs) !== null) return;
+      if (!admitsMachine(record, machineId)) return;
+      const workerName = await workerNameFor(
+        tokenName,
+        machineId,
+        await this.#readTokenMaxEnrollments(tokenName, record) ?? 1,
+      );
+      if (this.#workers.has(workerName)) return;
+      const opened = await presentedTokenMint(
+        record,
+        presented,
+        nowMs,
+        (secretKey) => readTokenSecret(record.vaultName, secretKey, "verify"),
+      );
+      if (opened === null) return;
+      if (state.channel.closed || signal.aborted) return;
+      await ensure(workerName);
+    } catch (error) {
+      // a refusal returns above, so a throw is a fault worth seeing
+      logger.warn(
+        "Enrollment pre-check for {token} failed, so its turn creates the worker definition: {error}",
+        {
+          token: tokenName,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
+    } finally {
+      this.#prechecksInFlight--;
+    }
+  }
+
+  /**
+   * every durable token and pool-admission mutation flows through this
+   * serialized tail, preserving the sole-writer invariant; operation labels its span
    */
   #recordTransition<T>(operation: string, fn: () => Promise<T>): Promise<T> {
     return this.#transitions.run(operation, async () => {
@@ -1829,6 +1965,18 @@ export class WorkerGateway {
         running.settled = true;
       }
     });
+  }
+
+  /**
+   * a worker's own record, ordered only with that worker's other writes; fn
+   * never writes a token record or queues a transition, since a turn awaits it
+   */
+  #recordWorkerWrite<T>(
+    operation: string,
+    workerName: string,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    return this.#transitions.run(operation, fn, workerName);
   }
 
   /**

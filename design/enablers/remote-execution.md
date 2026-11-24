@@ -532,6 +532,20 @@ being recorded is not admitted as connected: it is treated as a disconnect,
 with the usual reconnection grace window. The worker's next connection then
 enrolls normally, and the scheduler never offers a worker on a dead socket.
 
+A worker's own record (busy and idle around a dispatch, draining,
+disconnected, a verification outcome, a reconnect, a re-stamped mint) is
+written on that worker's key of the gateway's transition tail, not on the
+shared chain that orders token records and pool admission. Each write is queued
+at the in-memory change it records, so a worker's records land in the order its
+state changed, and a dispatch waits only for its own worker's earlier writes,
+never behind another worker's enrollment (swamp-club#3988). A write that is part
+of a shared-chain turn (a revoke's disconnects, a rotation's re-stamp) queues on
+the worker's key from inside that turn. An enrollment holds its worker's key
+from its `already_connected` check until the channel's handlers are registered,
+so a dispatch to a worker being admitted or reconnecting sends nothing until
+the worker is wired. A dispatch still records busy before it sends the work,
+and is refused unsent if that write fails.
+
 Serve's control-plane runs (token redeem, worker enroll and status) look up
 their definitions by type, in `models/<type>` and then the auto-definitions
 directory, so enrollment does not slow down as a repository gains definitions
@@ -544,8 +558,26 @@ worker definition once. After that, a lookup lists the directory again only
 when it changed, and reads only the files new since, plus any stored under an
 id rather than a name. It is not constant time: during a burst of new workers
 the directory changes with each one, so each new name costs one or two
-directory listings on the gateway's transition tail, but no longer a read and
-parse of every worker definition.
+directory listings, but no longer a read and parse of every worker definition.
+
+A new worker that presents a valid secret does not pay those listings on the
+gateway's transition tail (swamp-club#3987). Before its enrollment turn the
+gateway checks the request off the tail: the token's definition is on this
+node, the token is neither revoked nor expired, the machine is bound or has an
+enrollment left, the worker is not already in the pool, and the secret matches
+the current or live predecessor mint (`enrollmentTokenClosed`, `admitsMachine`
+and `presentedTokenMint` in
+`src/domain/models/worker/enrollment_token_model.ts`, which redeem calls too).
+Then `ensureWorkerDefinition` creates the worker's definition under the
+auto-definition lock, and the turn reads it at its name-derived path. The check
+is advisory: anything it refuses or cannot read leaves the definition to the
+turn as before, with a failure (not a refusal) logged as a warning, and redeem
+still decides the enrollment. It runs before the
+caller is authenticated, so at most `MAX_ENROLLMENT_PRECHECKS` run at once and
+an enrollment beyond that takes the turn's own lookup. Its secret reads are
+audited as `serve:worker-token-verify`. A token revoked between the check and
+redeem leaves a definition with no state record, the same residue an enroll
+that fails after creating its definition leaves.
 
 A worker needs no swamp-club credential. `gatePass` is the serve's auth gate
 pass, and a worker without a key of its own passes the gate on it. Such a
@@ -933,7 +965,11 @@ work with no push. At boot it runs before any transition can, so it keeps the
 sole-writer invariant. The later pass runs while serve takes workers, so it
 settles worker records inside the gateway's write ordering: it re-reads each
 record there and leaves one the gateway holds or that no longer names the gone
-owner, since that worker has re-enrolled with this process. A lease or queued
+owner, since that worker has re-enrolled with this process. A worker's own
+writes run on its key of the tail rather than that ordering, which needs no
+more: a worker has such writes only once it enrolled with this process, which
+stamped this process as its owner, and the sweep settles only records naming a
+gone owner. A lease or queued
 dispatch is written only by its owner, so it needs no such ordering. An owner
 whose settling write failed stays on the list and is retried on the next pass. A failed write logs a warning and startup continues; one corrupted
 record cannot stop the orchestrator from serving.
