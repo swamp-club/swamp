@@ -744,8 +744,11 @@ Deno.test("ConsoleWorkflowRunRenderer: suspended workflow shows step ID and appr
   const output = lines.join("\n");
   assertStringIncludes(output, "Suspended");
   assertStringIncludes(output, "awaiting approval on step apply");
-  assertStringIncludes(output, "swamp workflow approve test-pipeline apply");
-  assertStringIncludes(output, "swamp workflow resume test-pipeline");
+  assertStringIncludes(
+    output,
+    "swamp workflow approve test-pipeline apply --run run-1 --resume",
+  );
+  assertEquals(output.includes("swamp workflow resume"), false);
 });
 
 Deno.test("ConsoleWorkflowRunRenderer: nested workflow started event does not corrupt parent name in suspend hints", async () => {
@@ -807,7 +810,7 @@ Deno.test("ConsoleWorkflowRunRenderer: nested workflow started event does not co
     output,
     "swamp workflow reject parent-workflow approve-the-thing",
   );
-  assertStringIncludes(output, "swamp workflow resume parent-workflow");
+  assertEquals(output.includes("swamp workflow approve child-workflow"), false);
   assertStringIncludes(
     output,
     "awaiting approval on step approve-the-thing",
@@ -1758,13 +1761,13 @@ Deno.test("ConsoleWorkflowRunRenderer: suspended hints keep the command target",
   const target = "--run run-1 --server ws://build-host:9000";
   assertStringIncludes(
     output,
-    `swamp workflow approve test-pipeline apply ${target}`,
+    `swamp workflow approve test-pipeline apply --run run-1 --resume --server ws://build-host:9000`,
   );
   assertStringIncludes(
     output,
     `swamp workflow reject test-pipeline apply ${target}`,
   );
-  assertStringIncludes(output, `swamp workflow resume test-pipeline ${target}`);
+  assertEquals(output.includes("swamp workflow resume"), false);
 });
 
 Deno.test("JsonWorkflowRunRenderer: a failed run keeps its step error code and carries no retry hint", async () => {
@@ -3670,4 +3673,294 @@ Deno.test("WorkflowRunRenderer: an error event cut off from the datastore rethro
     assertEquals(other.code, "workflow_execution_failed", mode);
     assertEquals(other.cause, undefined, mode);
   }
+});
+
+async function renderLines(
+  events: WorkflowRunEvent[],
+  opts: { workflowName: string; commandTarget?: string; overServer?: boolean },
+): Promise<string[]> {
+  const renderer = createWorkflowRunRenderer("log", opts);
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(events), renderer.handlers());
+  });
+  return lines.flatMap((line) => line.split("\n")).map((line) =>
+    line.trimEnd()
+  );
+}
+
+function gateRunEvents(
+  gates: Array<{ jobId: string; stepId: string; prompt: string }>,
+): WorkflowRunEvent[] {
+  return [
+    {
+      kind: "started",
+      runId: "run-1",
+      workflowName: "deploy",
+      jobs: [
+        { id: "plan", stepCount: 1, dependsOn: [] },
+        ...gates.map((g) => ({ id: g.jobId, stepCount: 1, dependsOn: [] })),
+      ],
+    },
+    { kind: "job_started", jobId: "plan" },
+    { kind: "step_started", jobId: "plan", stepId: "plan" },
+    { kind: "step_completed", jobId: "plan", stepId: "plan" },
+    { kind: "job_completed", jobId: "plan", status: "succeeded" },
+    ...gates.flatMap((g): WorkflowRunEvent[] => [
+      { kind: "job_started", jobId: g.jobId },
+      {
+        kind: "approval_requested",
+        runId: "run-1",
+        jobId: g.jobId,
+        stepId: g.stepId,
+        prompt: g.prompt,
+      },
+    ]),
+    {
+      kind: "suspended",
+      run: makeRunView("succeeded"),
+      jobId: gates[0].jobId,
+      stepId: gates[0].stepId,
+      prompt: gates[0].prompt,
+    },
+  ];
+}
+
+function count(lines: string[], text: string): number {
+  return lines.filter((line) => line.includes(text)).length;
+}
+
+Deno.test("ConsoleWorkflowRunRenderer: a local run suspended at a gate prints approve and reject once each, on the system pipe, with no resume line", async () => {
+  const lines = await renderLines(
+    gateRunEvents([{ jobId: "approve", stepId: "approve", prompt: "Ship?" }]),
+    { workflowName: "deploy" },
+  );
+  const block = lines.slice(lines.findIndex((l) => l.includes("Suspended")));
+  assertEquals(block.map((l) => l.replace(/ · \d\d:\d\d:\d\d UTC$/, "")), [
+    "  system │ Suspended workflow deploy — awaiting approval on step approve",
+    "",
+    "  system │ To approve:  swamp workflow approve deploy approve --run run-1 --resume",
+    "  system │ To reject:   swamp workflow reject deploy approve --run run-1",
+  ]);
+  assertEquals(count(lines, 'approve │ waiting approval required: "Ship?"'), 1);
+  assertEquals(count(lines, "To approve:"), 1);
+  assertEquals(count(lines, "To reject:"), 1);
+  assertEquals(count(lines, "workflow resume"), 0);
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: a serve run suspended at a gate prints approve and reject once each with the server, and no resume line", async () => {
+  const lines = await renderLines(
+    gateRunEvents([{ jobId: "approve", stepId: "approve", prompt: "Ship?" }]),
+    {
+      workflowName: "deploy",
+      commandTarget: " --server https://serve.example",
+      overServer: true,
+    },
+  );
+  assertEquals(
+    lines.filter((l) => l.includes("To approve:") || l.includes("To reject:")),
+    [
+      "  system │ To approve:  swamp workflow approve deploy approve --run run-1 --resume --server https://serve.example",
+      "  system │ To reject:   swamp workflow reject deploy approve --run run-1 --server https://serve.example",
+    ],
+  );
+  assertEquals(count(lines, "workflow resume"), 0);
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: a run suspended at several gates names every gate with its own approve and reject", async () => {
+  const lines = await renderLines(
+    gateRunEvents([
+      { jobId: "east", stepId: "ok-east", prompt: "Ship east?" },
+      { jobId: "west", stepId: "ok-west", prompt: "Ship west?" },
+    ]),
+    { workflowName: "deploy" },
+  );
+  const block = lines.slice(lines.findIndex((l) => l.includes("Suspended")));
+  assertEquals(block.map((l) => l.replace(/ · \d\d:\d\d:\d\d UTC$/, "")), [
+    " system │ Suspended workflow deploy — awaiting approval on steps ok-east, ok-west",
+    "",
+    " system │ To approve:  swamp workflow approve deploy ok-east --run run-1 --resume",
+    " system │ To reject:   swamp workflow reject deploy ok-east --run run-1",
+    "",
+    " system │ To approve:  swamp workflow approve deploy ok-west --run run-1 --resume",
+    " system │ To reject:   swamp workflow reject deploy ok-west --run run-1",
+  ]);
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: a fan-out gate keeps its plan on the step pipe and prints one approval block", async () => {
+  const lines = await renderLines(gateEvents(true), { workflowName: "fleet" });
+  assert(lines.some((l) => l.startsWith("  patch │ Selector: fleet=web")));
+  assertEquals(
+    lines.filter((l) => l.includes("To approve:") || l.includes("To reject:")),
+    [
+      " system │ To approve:  swamp workflow approve fleet 'patch[approve-plan]' --run run-1 --resume",
+      " system │ To reject:   swamp workflow reject fleet 'patch[approve-plan]' --run run-1",
+    ],
+  );
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: a suspension whose gate was not requested in the stream still shows the gate it names", async () => {
+  const events = gateRunEvents([
+    { jobId: "approve", stepId: "approve", prompt: "Ship?" },
+  ]).filter((e) => e.kind !== "approval_requested");
+  const lines = await renderLines(events, { workflowName: "deploy" });
+  assertEquals(
+    count(
+      lines,
+      "To approve:  swamp workflow approve deploy approve --run run-1 --resume",
+    ),
+    1,
+  );
+  assertEquals(count(lines, "To reject:"), 1);
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: a run that fails while a gate waits prints no approve or reject command", async () => {
+  const events: WorkflowRunEvent[] = [
+    ...gateRunEvents([
+      { jobId: "approve", stepId: "approve", prompt: "Ship?" },
+    ]).filter((e) => e.kind !== "suspended"),
+    { kind: "completed", run: makeRunView("failed") },
+  ];
+  const lines = await renderLines(events, { workflowName: "deploy" });
+  assertEquals(count(lines, "To approve:"), 0);
+  assertEquals(count(lines, "To reject:"), 0);
+});
+
+function nestedGateEvents(gateRunId: string): WorkflowRunEvent[] {
+  return [
+    {
+      kind: "started",
+      runId: "run-1",
+      workflowName: "parent",
+      jobs: [{ id: "main", stepCount: 1, dependsOn: [] }],
+    },
+    { kind: "job_started", jobId: "main" },
+    {
+      kind: "approval_requested",
+      runId: gateRunId,
+      workflowName: "child",
+      jobId: "main",
+      stepId: "ok",
+      prompt: "Ship child?",
+    },
+    {
+      kind: "suspended",
+      run: makeRunView("succeeded"),
+      jobId: "main",
+      stepId: "call-child",
+      prompt: "",
+      nested: { workflowName: "child", runId: "child-1" },
+    },
+  ];
+}
+
+Deno.test("ConsoleWorkflowRunRenderer: a gate in the direct nested run is approved with --resume, leaving only the parent's resume", async () => {
+  const lines = await renderLines(nestedGateEvents("child-1"), {
+    workflowName: "parent",
+  });
+  assertEquals(
+    lines.filter((l) => l.includes(" │ To ") || l.includes("Once it")),
+    [
+      " system │ To approve:  swamp workflow approve child ok --run child-1 --resume",
+      " system │ To reject:   swamp workflow reject child ok --run child-1",
+      " system │ Once it finishes:  swamp workflow resume parent --run run-1",
+    ],
+  );
+  assertEquals(count(lines, "Nested run:"), 0);
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: a serve run's nested gate says serve may resume the parent", async () => {
+  const lines = await renderLines(nestedGateEvents("child-1"), {
+    workflowName: "parent",
+    commandTarget: " --server https://serve.example",
+    overServer: true,
+  });
+  assertEquals(
+    count(
+      lines,
+      "Once it finishes, unless serve resumes it automatically:  swamp workflow resume parent --run run-1 --server https://serve.example",
+    ),
+    1,
+  );
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: a gate deeper than the direct nested run keeps the nested run's resume line", async () => {
+  const lines = await renderLines(nestedGateEvents("grandchild-1"), {
+    workflowName: "parent",
+  });
+  assertEquals(
+    count(
+      lines,
+      "To approve:  swamp workflow approve child ok --run grandchild-1 --resume",
+    ),
+    1,
+  );
+  assertEquals(
+    count(
+      lines,
+      "Nested run:  approve its gate as shown above, then  swamp workflow resume child --run child-1",
+    ),
+    1,
+  );
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: a gate with an open nested signal wait still shows the wait and its resume", async () => {
+  const events = gateRunEvents([
+    { jobId: "approve", stepId: "approve", prompt: "Ship?" },
+  ]);
+  const suspended = events.at(-1) as Extract<
+    WorkflowRunEvent,
+    { kind: "suspended" }
+  >;
+  suspended.nestedSignalWaits = [NESTED_WAIT];
+  const lines = await renderLines(events, { workflowName: "deploy" });
+  assertEquals(count(lines, "To approve:"), 1);
+  assertEquals(
+    count(lines, "signal required on step review in nested workflow child"),
+    1,
+  );
+  assertEquals(
+    count(lines, `To signal:  swamp workflow signal ${WAIT_ID}`),
+    1,
+  );
+  assertEquals(
+    count(
+      lines,
+      "After the signal:  swamp workflow resume child --run child-1",
+    ),
+    1,
+  );
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: a single-step job prints its done line and no completed line", async () => {
+  const lines = await renderLines(
+    gateRunEvents([{ jobId: "approve", stepId: "approve", prompt: "Ship?" }]),
+    { workflowName: "deploy" },
+  );
+  assertEquals(count(lines, "plan │ done plan in"), 1);
+  assertEquals(count(lines, "plan │ completed"), 0);
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: a multi-step job and a gate job resumed past its gate keep their completed line", async () => {
+  const lines = await renderLines([
+    {
+      kind: "started",
+      runId: "run-1",
+      workflowName: "deploy",
+      jobs: [
+        { id: "build", stepCount: 2, dependsOn: [] },
+        { id: "approve", stepCount: 1, dependsOn: [] },
+      ],
+    },
+    { kind: "job_started", jobId: "build" },
+    { kind: "step_started", jobId: "build", stepId: "compile" },
+    { kind: "step_completed", jobId: "build", stepId: "compile" },
+    { kind: "step_started", jobId: "build", stepId: "test" },
+    { kind: "step_completed", jobId: "build", stepId: "test" },
+    { kind: "job_completed", jobId: "build", status: "succeeded" },
+    { kind: "job_started", jobId: "approve" },
+    { kind: "job_completed", jobId: "approve", status: "succeeded" },
+    { kind: "completed", run: makeRunView("succeeded") },
+  ], { workflowName: "deploy" });
+  assertEquals(count(lines, "build │ completed in"), 1);
+  assertEquals(count(lines, "approve │ completed in"), 1);
 });

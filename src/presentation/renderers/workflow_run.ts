@@ -73,6 +73,8 @@ export interface WorkflowRunRenderOpts {
   verbose?: boolean;
   failOnSeverity?: AssertSeverity;
   commandTarget?: string;
+  /** the run is driven by serve, which may resume it once a gate is decided */
+  overServer?: boolean;
   /** with --last-evaluated: whether the stored evaluation's inputs were used */
   inputsReplayed?: boolean;
 }
@@ -90,6 +92,12 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
   private verbose: boolean;
   private failOnSeverity: AssertSeverity;
   private commandTarget: string;
+  private overServer: boolean;
+  // Every gate requested in this stream, shown together once the run suspends:
+  // the suspended event names only one of them.
+  private readonly requestedGates: GateToDecide[] = [];
+  private readonly jobStepCounts = new Map<string, number>();
+  private readonly doneLinesUnderJob = new Map<string, number>();
   private readonly runsWaitingForSignal = new Set<string>();
   private readonly waitsShown = new Set<string>();
   // Whether any gate was shown in this stream. A remote stream carries
@@ -121,6 +129,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
     this.verbose = opts.verbose ?? false;
     this.failOnSeverity = opts.failOnSeverity ?? "low";
     this.commandTarget = opts.commandTarget ?? "";
+    this.overServer = opts.overServer ?? false;
   }
 
   private getDisplayName(jobId: string, stepId: string, event?: {
@@ -326,6 +335,12 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
           this.workflowName = e.workflowName;
         }
         const jobNames = [...e.jobs.map((j) => j.id), "system"];
+        // the first run's count wins: a nested run may reuse a job name
+        for (const job of e.jobs) {
+          if (!this.jobStepCounts.has(job.id)) {
+            this.jobStepCounts.set(job.id, job.stepCount);
+          }
+        }
         this.pipe = new PipeWriter(jobNames);
         setSystemPipeWidth(this.pipe.maxWidth);
         if (this.pendingSupersededRuns) {
@@ -364,7 +379,11 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
           : "";
         if (e.status === "failed") {
           writeOutput(this.pipe.failedJobLine(name, ts));
-        } else {
+        } else if (
+          // the only step's done line already said it, with its duration
+          this.jobStepCounts.get(e.jobId) !== 1 ||
+          this.doneLinesUnderJob.get(e.jobId) !== 1
+        ) {
           writeOutput(this.pipe.completedLine(name, duration, ts));
         }
       },
@@ -447,6 +466,12 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
         const duration = startTime
           ? formatDuration(Date.now() - startTime)
           : "";
+        if (displayName === this.getJobDisplayName(e.jobId)) {
+          this.doneLinesUnderJob.set(
+            e.jobId,
+            (this.doneLinesUnderJob.get(e.jobId) ?? 0) + 1,
+          );
+        }
         writeOutput(this.pipe.doneLine(displayName, e.stepId, duration, ts));
       },
       step_skipped: (e) => {
@@ -519,11 +544,23 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
       },
       approval_requested: (e) => {
         this.gateShown = true;
-        if (!this.pipe) return;
-        const name = this.getJobDisplayName(e.jobId);
         // a nested workflow's gate is decided on the nested run, under its own
         // workflow
         const gateWorkflow = e.workflowName ?? this.workflowName;
+        if (
+          !this.requestedGates.some((g) =>
+            g.runId === e.runId && g.stepId === e.stepId &&
+            g.workflowName === gateWorkflow
+          )
+        ) {
+          this.requestedGates.push({
+            runId: e.runId,
+            workflowName: gateWorkflow,
+            stepId: e.stepId,
+          });
+        }
+        if (!this.pipe) return;
+        const name = this.getJobDisplayName(e.jobId);
         writeOutput(
           this.pipe.waitingLine(
             name,
@@ -542,27 +579,6 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
         ) {
           writeOutput(this.pipe.line(name, escapeControlCharacters(line)));
         }
-        writeBlankLine();
-        writeOutput(
-          this.pipe.line(
-            name,
-            `${yellow("To approve:")}  swamp workflow approve ${
-              quoteShellWord(gateWorkflow)
-            } ${
-              quoteShellWord(e.stepId)
-            } --run ${e.runId}${this.commandTarget}`,
-          ),
-        );
-        writeOutput(
-          this.pipe.line(
-            name,
-            `${yellow("To reject:")}   swamp workflow reject ${
-              quoteShellWord(gateWorkflow)
-            } ${
-              quoteShellWord(e.stepId)
-            } --run ${e.runId}${this.commandTarget}`,
-          ),
-        );
       },
       // only a serve-driven run parks, and serve never sends it
       parked: () => {},
@@ -904,32 +920,48 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
             ),
           );
           writeBlankLine();
+          if (this.requestedGates.length > 0) {
+            this.writeGateCommands(this.requestedGates);
+            writeBlankLine();
+          }
           const deeperWait = this.writeNestedSignalWaits(
             e.nestedSignalWaits,
             e.nested.runId,
           );
-          writeOutput(
-            this.pipe.line(
-              "system",
-              `${yellow("Nested run:")}  ${
-                this.runsWaitingForSignal.has(e.nested.runId)
-                  ? "signal its wait as shown above, then"
-                  : deeperWait && !this.gateShown
-                  ? "once the run it waits on finishes,"
-                  : this.gateShown
-                  ? "approve its gate as shown above, then"
-                  // Nothing was shown: a server that predates
-                  // nestedSignalWaits, or a nested run that neither waits
-                  // for a signal nor has a gate requested in this stream.
-                  : "approve its gate or signal its wait, then"
-              }  swamp workflow resume ${e.nested.workflowName} --run ${e.nested.runId}${this.commandTarget}`,
-            ),
-          );
+          const nestedRunId = e.nested.runId;
+          // approve --resume resumes the run holding the gate; a gate deeper
+          // down leaves the direct nested run to resume
+          const gateResumesNested =
+            !this.runsWaitingForSignal.has(nestedRunId) &&
+            this.requestedGates.some((g) => g.runId === nestedRunId);
+          if (!gateResumesNested) {
+            writeOutput(
+              this.pipe.line(
+                "system",
+                `${yellow("Nested run:")}  ${
+                  this.runsWaitingForSignal.has(nestedRunId)
+                    ? "signal its wait as shown above, then"
+                    : deeperWait && !this.gateShown
+                    ? "once the run it waits on finishes,"
+                    : this.gateShown
+                    ? "approve its gate as shown above, then"
+                    // Nothing was shown: a server that predates
+                    // nestedSignalWaits, or a nested run that neither waits
+                    // for a signal nor has a gate requested in this stream.
+                    : "approve its gate or signal its wait, then"
+                }  swamp workflow resume ${e.nested.workflowName} --run ${nestedRunId}${this.commandTarget}`,
+              ),
+            );
+          }
           writeOutput(
             this.pipe.line(
               "system",
               `${
-                dim("Once it finishes:")
+                dim(
+                  this.overServer
+                    ? "Once it finishes, unless serve resumes it automatically:"
+                    : "Once it finishes:",
+                )
               }  swamp workflow resume ${this.workflowName} --run ${e.run.id}${this.commandTarget}`,
             ),
           );
@@ -993,36 +1025,35 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
           this.writeNestedSignalWaits(e.nestedSignalWaits);
           return;
         }
+        // a stream that carried no request for the gate still shows the one
+        // the suspension names
+        const gates = this.requestedGates.length > 0 ? this.requestedGates : [{
+          runId: e.run.id,
+          workflowName: this.workflowName,
+          stepId: e.stepId,
+        }];
+        const ownGates = gates.filter((g) => g.runId === e.run.id);
         writeOutput(
           this.pipe.statusLine(
             "system",
             "Suspended",
             STATUS_COLORS.warn,
-            `workflow ${
-              escapeControlCharacters(this.workflowName)
-            } — awaiting approval on step ${escapeControlCharacters(e.stepId)}`,
+            `workflow ${escapeControlCharacters(this.workflowName)} — ${
+              ownGates.length > 1
+                ? `awaiting approval on steps ${
+                  ownGates.map((g) => escapeControlCharacters(g.stepId)).join(
+                    ", ",
+                  )
+                }`
+                : `awaiting approval on step ${
+                  escapeControlCharacters(e.stepId)
+                }`
+            }`,
             formatTimestamp(),
           ),
         );
         writeBlankLine();
-        writeOutput(
-          this.pipe.line(
-            "system",
-            `${yellow("To approve:")}  swamp workflow approve ${
-              quoteShellWord(this.workflowName)
-            } ${
-              quoteShellWord(e.stepId)
-            } --run ${e.run.id}${this.commandTarget}`,
-          ),
-        );
-        writeOutput(
-          this.pipe.line(
-            "system",
-            `${dim("After approval:")}  swamp workflow resume ${
-              quoteShellWord(this.workflowName)
-            } --run ${e.run.id}${this.commandTarget}`,
-          ),
-        );
+        this.writeGateCommands(gates);
         this.writeNestedSignalWaits(e.nestedSignalWaits);
       },
       error: (e) => {
@@ -1035,6 +1066,36 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
 
   workflowFailed(): boolean {
     return this._failed;
+  }
+
+  /**
+   * approve takes --resume: it resumes the run once no gate is left, and under
+   * serve never after serve resumed it, so no separate resume line is needed
+   */
+  private writeGateCommands(gates: readonly GateToDecide[]): void {
+    if (!this.pipe) return;
+    gates.forEach((gate, i) => {
+      if (!this.pipe) return;
+      if (i > 0) writeBlankLine();
+      const workflow = quoteShellWord(gate.workflowName);
+      const step = quoteShellWord(gate.stepId);
+      writeOutput(
+        this.pipe.line(
+          "system",
+          `${
+            yellow("To approve:")
+          }  swamp workflow approve ${workflow} ${step} --run ${gate.runId} --resume${this.commandTarget}`,
+        ),
+      );
+      writeOutput(
+        this.pipe.line(
+          "system",
+          `${
+            yellow("To reject:")
+          }   swamp workflow reject ${workflow} ${step} --run ${gate.runId}${this.commandTarget}`,
+        ),
+      );
+    });
   }
 
   private writeSignalByKey(
@@ -1216,6 +1277,12 @@ function waitsOnNestedRun(
   // without the step in the view there is nothing to go on, so it is reported
   // as a gate
   return step !== undefined && step.status !== "waiting";
+}
+
+interface GateToDecide {
+  runId: string;
+  workflowName: string;
+  stepId: string;
 }
 
 interface RequestedWait {
