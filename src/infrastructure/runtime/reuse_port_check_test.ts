@@ -17,13 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertStringIncludes, assertThrows } from "@std/assert";
+import { assert, assertStringIncludes, assertThrows } from "@std/assert";
 import { UserError } from "../../domain/errors.ts";
 import { checkReusePortListen } from "./reuse_port_check.ts";
 
 Deno.test({
   name:
-    "checkReusePortListen: refuses a port another process holds without reuse-port",
+    "checkReusePortListen: on Linux blames a holder listening without reuse-port",
   ignore: Deno.build.os === "windows",
   fn: () => {
     const holder = Deno.listen({ port: 0, hostname: "127.0.0.1" });
@@ -33,10 +33,38 @@ Deno.test({
           checkReusePortListen({
             port: (holder.addr as Deno.NetAddr).port,
             hostname: "127.0.0.1",
+            os: "linux",
           }),
         UserError,
       );
       assertStringIncludes(error.message, "without --reuse-port");
+    } finally {
+      holder.close();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "checkReusePortListen: off Linux says the OS cannot share a port, not that a flag is missing",
+  ignore: Deno.build.os === "windows",
+  fn: () => {
+    const holder = Deno.listen({ port: 0, hostname: "127.0.0.1" });
+    try {
+      const error = assertThrows(
+        () =>
+          checkReusePortListen({
+            port: (holder.addr as Deno.NetAddr).port,
+            hostname: "127.0.0.1",
+            os: "darwin",
+          }),
+        UserError,
+      );
+      assertStringIncludes(
+        error.message,
+        "only Linux lets two processes share a port, so on darwin",
+      );
+      assert(!error.message.includes("without --reuse-port"));
     } finally {
       holder.close();
     }
