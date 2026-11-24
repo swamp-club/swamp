@@ -417,6 +417,11 @@ Deno.test("serve workspace requests: the dashboard switcher reads the root's lis
         (await sendRequest(ctx, request("workspace.list"), BOB, dashboard))
           .find((f) => f.type === "workspace.list")?.payload,
       );
+    // each state comes from a status file written after the rescan returns
+    await waitFor(
+      async () => (await read())?.every((w) => w.state !== null) === true,
+      "both workspaces listed with a state",
+    );
     const first = await read();
     assertEquals(first?.map((w) => w.name), ["cost", "edge-dns"]);
     assert(first?.every((w) => w.state !== "ready"));

@@ -19,10 +19,12 @@
 
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
+import { waitFor } from "@swamp-club/swamp-testing";
 import { UserError } from "../../domain/errors.ts";
 import {
   acquireHostStateLock,
   HOST_STATE_LOCK_FILE,
+  type HostStateLock,
 } from "./host_state_lock.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
@@ -60,8 +62,29 @@ Deno.test("acquireHostStateLock: once released, the state folder can be locked a
     const first = await acquireHostStateLock(dir);
     first.release();
     first.release();
-    const second = await acquireHostStateLock(dir);
-    second.release();
+    let second: HostStateLock | undefined;
+    // a child another test spawns holds a just-released lock until its exec
+    await waitFor(
+      async () => {
+        try {
+          second = await acquireHostStateLock(dir);
+          return true;
+        } catch (error) {
+          if (
+            error instanceof UserError && error.code === "host_state_locked"
+          ) {
+            return false;
+          }
+          throw error;
+        }
+      },
+      "the state folder's lock to be free",
+      {
+        timeoutMs: 2_000,
+        intervalMs: 5,
+      },
+    );
+    second?.release();
   });
 });
 

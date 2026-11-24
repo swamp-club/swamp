@@ -320,7 +320,7 @@ async function start(
   rootWorkspace?: ServeHostOptions["rootWorkspace"],
 ): Promise<ServeHost> {
   await Deno.writeTextFile(join(h.configDir, "host.yaml"), yaml);
-  return await startServeHost({
+  const options: ServeHostOptions = {
     config: HostConfig.parse(
       yaml,
       hostLayout({ configDir: h.configDir, dataDir: h.dataDir }),
@@ -336,7 +336,26 @@ async function start(
     supervisor,
     onWorkspaceChange,
     rootWorkspace,
-  });
+  };
+  let host: ServeHost | undefined;
+  // a child another test spawns holds a just-released lock until its exec
+  await waitFor(
+    async () => {
+      try {
+        host = await startServeHost(options);
+        return true;
+      } catch (error) {
+        if (error instanceof UserError && error.code === "host_state_locked") {
+          return false;
+        }
+        throw error;
+      }
+    },
+    "the state folder's lock to be free",
+    { timeoutMs: 2_000, intervalMs: 5 },
+  );
+  if (host === undefined) throw new Error("the host did not start");
+  return host;
 }
 
 /** as the command starts it: host.yaml found through the swamp dirs */
