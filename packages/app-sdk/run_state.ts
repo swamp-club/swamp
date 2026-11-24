@@ -206,19 +206,26 @@ function foldEvent(
         { at, kind: event.kind, text, tone: "bad" },
       );
     }
-    case "started":
+    case "started": {
       if (event.parentRunId !== undefined) return state;
       // the run's own start, on the clock its other events use; a run
       // continued after a serve restart sends started again
+      const started = {
+        ...state,
+        runId: event.runId,
+        startedAt: recordedStart(event) ??
+          (state.runId === event.runId ? state.startedAt : undefined) ?? at,
+      };
+      // logged once per run, unless the first entry has aged out of the log
+      if (
+        state.runId === event.runId &&
+        state.log.some((entry) => entry.kind === "started")
+      ) return started;
       return withLog(
-        {
-          ...state,
-          runId: event.runId,
-          startedAt: recordedStart(event) ??
-            (state.runId === event.runId ? state.startedAt : undefined) ?? at,
-        },
+        started,
         { at, kind: "started", text: `run ${event.runId}`, tone: "info" },
       );
+    }
     case "job_started":
       return withLog(
         updateJob(state, event.jobId, (job) => ({

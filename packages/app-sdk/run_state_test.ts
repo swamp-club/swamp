@@ -231,6 +231,15 @@ Deno.test("runReducer: a run continued after a serve restart keeps the recorded 
   assertEquals(state.startedAt, T0);
   assertEquals(state.jobs["j"].startedAt, T0);
   assertEquals(state.steps["j/b"].startedAt, T0 + continued);
+  assertEquals(state.log.filter((e) => e.kind === "started").length, 1);
+});
+
+Deno.test("runReducer: a late attach still logs the run's started once it is replayed", () => {
+  const state = replay([
+    { kind: "attached", runId: "r", startedAt: iso(0) },
+    { kind: "started", runId: "r", workflowName: "w", startedAt: iso(0) },
+  ]);
+  assertEquals(state.log.map((e) => e.kind), ["attached", "started"]);
 });
 
 Deno.test("runReducer: an older serve's started sent again without startedAt keeps the run's first start", () => {

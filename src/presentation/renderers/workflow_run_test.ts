@@ -4099,6 +4099,13 @@ Deno.test("ConsoleWorkflowRunRenderer: after a reattach to a continued run, time
         resumedAt + 8_000,
       ),
     ],
+    [
+      replay,
+      stamped(
+        { kind: "completed", run: makeRunView("succeeded") },
+        resumedAt + 8_100,
+      ),
+    ],
   ]);
 
   assertEquals(countLines(lines, "Starting"), 1);
@@ -4107,6 +4114,8 @@ Deno.test("ConsoleWorkflowRunRenderer: after a reattach to a continued run, time
   assertStringIncludes(second ?? "", "17:53:50 UTC");
   assertStringIncludes(lines.join("\n"), "done second in 8.0s · 17:53:58 UTC");
   assertStringIncludes(lines.join("\n"), "completed in 17.5s · 17:53:58 UTC");
+  const completed = lines.find((l) => l.includes("Completed"));
+  assertStringIncludes(completed ?? "", "17:53:58 UTC");
 });
 
 Deno.test("ConsoleWorkflowRunRenderer: a local run without stamps times steps on the client clock as before", async () => {

@@ -320,6 +320,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
     return {
       validating_inputs: () => {},
       superseded_runs: (e) => {
+        const eventTs = formatTimestamp(new Date(this.eventTime(e)));
         const emitSuperseded = () => {
           if (!this.pipe) return;
           for (const runId of e.cancelledRunIds) {
@@ -329,7 +330,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
                 "Superseded",
                 STATUS_COLORS.warn,
                 `cancelled suspended run ${runId} (matching inputs)`,
-                formatTimestamp(),
+                eventTs,
               ),
             );
           }
@@ -344,7 +345,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
                     ? `: ${skipped.waitIds.join(", ")}`
                     : ""
                 }`,
-                formatTimestamp(),
+                eventTs,
               ),
             );
           }
@@ -355,7 +356,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
                 "Superseded",
                 STATUS_COLORS.warn,
                 `cancelled nested run ${cancelled.runId} of workflow ${cancelled.workflowName} with its parent`,
-                formatTimestamp(),
+                eventTs,
               ),
             );
           }
@@ -366,7 +367,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
                 "Stopping",
                 STATUS_COLORS.warn,
                 `nested run ${stopping.runId} of workflow ${stopping.workflowName} is running and was asked to stop`,
-                formatTimestamp(),
+                eventTs,
               ),
             );
           }
@@ -377,7 +378,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
                 "Detached",
                 STATUS_COLORS.warn,
                 `nested run ${detached.runId} of workflow ${detached.workflowName} left unfinished — cancel it with ${detached.cancelCommand}`,
-                formatTimestamp(),
+                eventTs,
               ),
             );
           }
@@ -836,6 +837,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
         );
       },
       completed: (e) => {
+        const eventTs = formatTimestamp(new Date(this.eventTime(e)));
         this.clearAllHeartbeats();
         endSystemPipeOutput();
         if (!this.pipe) return;
@@ -876,7 +878,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
               "Cancelled",
               STATUS_COLORS.warn,
               `workflow ${this.workflowName}`,
-              formatTimestamp(),
+              eventTs,
             ),
           );
         } else if (e.run.status === "failed") {
@@ -892,7 +894,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
               "Failed",
               STATUS_COLORS.error,
               `workflow ${this.workflowName}${duration}`,
-              formatTimestamp(),
+              eventTs,
             ),
           );
           writeBlankLine();
@@ -927,7 +929,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
               "Failed",
               STATUS_COLORS.error,
               `workflow ${this.workflowName} — assertion failures at severity ≥ ${this.failOnSeverity}${duration}`,
-              formatTimestamp(),
+              eventTs,
             ),
           );
         } else {
@@ -941,13 +943,14 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
               "Completed",
               STATUS_COLORS.success,
               `workflow ${this.workflowName} succeeded${duration}`,
-              formatTimestamp(),
+              eventTs,
             ),
           );
           this.renderDataArtifacts(e.run);
         }
       },
       cancelled: (e) => {
+        const eventTs = formatTimestamp(new Date(this.eventTime(e)));
         this._failed = true;
         this.clearAllHeartbeats();
         endSystemPipeOutput();
@@ -960,11 +963,12 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
             "Cancelled",
             STATUS_COLORS.warn,
             `workflow ${this.workflowName}${reason}`,
-            formatTimestamp(),
+            eventTs,
           ),
         );
       },
       suspended: (e) => {
+        const eventTs = formatTimestamp(new Date(this.eventTime(e)));
         this.clearAllHeartbeats();
         endSystemPipeOutput();
         if (!this.pipe) return;
@@ -978,7 +982,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
               "Suspended",
               STATUS_COLORS.warn,
               `workflow ${this.workflowName} — step ${e.stepId} waits on nested workflow ${e.nested.workflowName} run ${e.nested.runId}`,
-              formatTimestamp(),
+              eventTs,
             ),
           );
           writeBlankLine();
@@ -1041,7 +1045,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
               `workflow ${escapeControlCharacters(this.workflowName)} — step ${
                 escapeControlCharacters(e.stepId)
               } waits on a nested run`,
-              formatTimestamp(),
+              eventTs,
             ),
           );
           writeBlankLine();
@@ -1063,7 +1067,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
               "Suspended",
               STATUS_COLORS.warn,
               `workflow ${this.workflowName} — step ${e.stepId} waits for signal ${e.wait.id}`,
-              formatTimestamp(),
+              eventTs,
             ),
           );
           writeBlankLine();
@@ -1111,7 +1115,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
                   escapeControlCharacters(e.stepId)
                 }`
             }`,
-            formatTimestamp(),
+            eventTs,
           ),
         );
         writeBlankLine();
