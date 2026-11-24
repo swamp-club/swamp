@@ -23,7 +23,7 @@ import { checkReusePortListen } from "./reuse_port_check.ts";
 
 Deno.test({
   name:
-    "checkReusePortListen: on Linux blames a holder listening without reuse-port",
+    "checkReusePortListen: on Linux names a holder without reuse-port or running as another user",
   ignore: Deno.build.os === "windows",
   fn: () => {
     const holder = Deno.listen({ port: 0, hostname: "127.0.0.1" });
@@ -37,7 +37,10 @@ Deno.test({
           }),
         UserError,
       );
-      assertStringIncludes(error.message, "without --reuse-port");
+      assertStringIncludes(
+        error.message,
+        "a process listening there without --reuse-port, or as another user, blocks an overlapping start",
+      );
     } finally {
       holder.close();
     }
