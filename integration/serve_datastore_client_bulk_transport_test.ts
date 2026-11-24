@@ -20,12 +20,11 @@
 import { assert, assertEquals } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { createHash } from "node:crypto";
-import http2 from "node:http2";
-import type { TLSSocket } from "node:tls";
 import { ServeUpstreamTarget } from "../src/domain/datastore_v3/serve_upstream.ts";
 import { modelPartition } from "../src/domain/datastore_v3/v3_test_helpers.ts";
 import {
   BULK_MIN_BODY_BYTES,
+  bulkHttpClientOptions,
   ServeDatastoreClient,
   serveDatastoreClientFor,
 } from "../src/infrastructure/datastore_v3/serve_datastore_client.ts";
@@ -43,10 +42,9 @@ interface Seen {
 }
 
 type Handler = (
-  req: http2.Http2ServerRequest,
-  res: http2.Http2ServerResponse,
+  req: Request,
   body: Uint8Array,
-) => void | Promise<void>;
+) => Response | Promise<Response>;
 
 interface Server extends AsyncDisposable {
   readonly url: string;
@@ -55,59 +53,101 @@ interface Server extends AsyncDisposable {
   readonly connections: { h1: number; h2: number; open: number };
 }
 
-// node:http2 is used because it reports each request's HTTP version; it
-// offers h2 and http/1.1 over ALPN, as serve's listener does.
-async function startServer(handler: Handler): Promise<Server> {
+// a TLS front offers h2 and http/1.1 over ALPN, as serve's listener does, and
+// records each connection's protocol before piping it to a cleartext Deno.serve
+function startServer(handler: Handler): Server {
   const seen: Seen[] = [];
   const connections = { h1: 0, h2: 0, open: 0 };
-  const ids = new WeakMap<object, number>();
+  // the backend sees each front connection as its own client port
+  const fronts = new Map<number, { id: number; httpVersion: string }>();
   let next = 0;
-  const server = http2.createSecureServer({
-    key: TEST_LOCALHOST_KEY_PEM,
-    cert: TEST_LOCALHOST_CERT_PEM,
-    allowHTTP1: true,
-  }, async (req, res) => {
-    const parts: Uint8Array[] = [];
-    for await (const part of req) parts.push(part as Uint8Array);
-    const body = new Uint8Array(parts.reduce((n, p) => n + p.byteLength, 0));
-    let offset = 0;
-    for (const part of parts) {
-      body.set(part, offset);
-      offset += part.byteLength;
-    }
-    const socket = req.httpVersion === "2.0"
-      ? req.stream.session?.socket
-      : req.socket;
+  const backend = Deno.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    onListen: () => {},
+  }, async (req, info) => {
+    const body = new Uint8Array(await req.arrayBuffer());
+    const front = fronts.get(info.remoteAddr.port);
     seen.push({
       method: req.method,
-      path: new URL(req.url, "https://localhost").pathname,
-      httpVersion: req.httpVersion,
-      connection: socket === undefined ? -1 : ids.get(socket) ?? -1,
+      path: new URL(req.url).pathname,
+      httpVersion: front?.httpVersion ?? "unknown",
+      connection: front?.id ?? -1,
     });
-    await handler(req, res, body);
+    return await handler(req, body);
   });
-  server.on("secureConnection", (socket: TLSSocket) => {
-    ids.set(socket, next++);
-    if (socket.alpnProtocol === "h2") connections.h2++;
-    else connections.h1++;
+  const listener = Deno.listenTls({
+    hostname: "127.0.0.1",
+    port: 0,
+    cert: TEST_LOCALHOST_CERT_PEM,
+    key: TEST_LOCALHOST_KEY_PEM,
+    alpnProtocols: ["h2", "http/1.1"],
+  });
+  const open = new Set<Deno.Conn>();
+  const pumps = new Set<Promise<void>>();
+  const relay = async (tls: Deno.TlsConn): Promise<void> => {
     connections.open++;
-    socket.on("close", () => connections.open--);
-  });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const port = (server.address() as { port: number }).port;
+    let up: Deno.TcpConn | undefined;
+    try {
+      const { alpnProtocol } = await tls.handshake();
+      const httpVersion = alpnProtocol === "h2" ? "2.0" : "1.1";
+      if (httpVersion === "2.0") connections.h2++;
+      else connections.h1++;
+      up = await Deno.connect({
+        hostname: "127.0.0.1",
+        port: backend.addr.port,
+      });
+      fronts.set(up.localAddr.port, { id: next++, httpVersion });
+      open.add(up);
+      // either side ending ends the connection, so neither leg waits on the other
+      await Promise.race([
+        tls.readable.pipeTo(up.writable),
+        up.readable.pipeTo(tls.writable),
+      ]).catch(() => {});
+    } catch {
+      // a client that hangs up mid-handshake leaves nothing to relay
+    } finally {
+      for (const conn of [tls, up]) {
+        if (conn === undefined) continue;
+        open.delete(conn);
+        try {
+          conn.close();
+        } catch {
+          // already closed by the pipe that ended
+        }
+      }
+      connections.open--;
+    }
+  };
+  const accepting = (async () => {
+    for await (const tls of listener) {
+      open.add(tls);
+      const pump = relay(tls);
+      pumps.add(pump);
+    }
+  })().catch(() => {});
   return {
-    url: `https://localhost:${port}`,
+    url: `https://localhost:${listener.addr.port}`,
     seen,
     connections,
     async [Symbol.asyncDispose]() {
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+      listener.close();
+      await accepting;
+      for (const conn of open) {
+        try {
+          conn.close();
+        } catch {
+          // already closed by its relay
+        }
+      }
+      await Promise.allSettled([...pumps]);
+      await backend.shutdown();
     },
   };
 }
 
-function json(res: http2.Http2ServerResponse, status: number, body: unknown) {
-  res.writeHead(status, { "content-type": "application/json" });
-  res.end(JSON.stringify(body));
+function json(status: number, body: unknown): Response {
+  return Response.json(body, { status });
 }
 
 function sha(bytes: Uint8Array): string {
@@ -118,31 +158,26 @@ function signal(): AbortSignal {
   return AbortSignal.timeout(20_000);
 }
 
-function answer(
-  req: http2.Http2ServerRequest,
-  res: http2.Http2ServerResponse,
-  body: Uint8Array,
-): void {
-  const path = new URL(req.url, "https://localhost").pathname;
+function answer(req: Request, body: Uint8Array): Response {
+  const path = new URL(req.url).pathname;
   if (req.method === "PUT" && path.includes("/chunks/")) {
-    json(res, 201, { sha256: path.split("/").pop(), size: body.byteLength });
+    return json(201, { sha256: path.split("/").pop(), size: body.byteLength });
   } else if (path.endsWith("/chunks/has")) {
-    json(res, 200, { held: [] });
+    return json(200, { held: [] });
   } else if (path.endsWith("/quarantine")) {
-    json(res, 200, { duplicate: false });
+    return json(200, { duplicate: false });
   } else if (req.method === "POST" && path.includes("/partitions/")) {
-    json(res, 200, { seq: 1 });
+    return json(200, { seq: 1 });
   } else if (req.method === "POST" && path.endsWith("/commits")) {
     const header = new DataView(body.buffer, body.byteOffset).getUint32(0);
     const { items } = JSON.parse(
       new TextDecoder().decode(body.subarray(4, 4 + header)),
     ) as { items: unknown[] };
-    json(res, 200, {
+    return json(200, {
       results: items.map(() => ({ status: 200, body: { seq: 1 } })),
     });
-  } else {
-    json(res, 404, { error: { code: "not_found", message: "none" } });
   }
+  return json(404, { error: { code: "not_found", message: "none" } });
 }
 
 function clientFor(url: string): ServeDatastoreClient {
@@ -157,7 +192,7 @@ function clientFor(url: string): ServeDatastoreClient {
 }
 
 Deno.test("serveDatastoreClientFor: a body carrying BULK_MIN_BODY_BYTES of chunks goes over HTTP/1.1, every other request over HTTP/2, a small chunked commit included", async () => {
-  await using server = await startServer(answer);
+  await using server = startServer(answer);
   const client = clientFor(server.url);
   const chunk = new Uint8Array(BULK_MIN_BODY_BYTES).fill(7);
   const hash = sha(chunk);
@@ -259,9 +294,19 @@ Deno.test("serveDatastoreClientFor: a body carrying BULK_MIN_BODY_BYTES of chunk
   );
 });
 
-Deno.test("serveDatastoreClientFor: consecutive commits share one HTTP/1.1 connection, and close leaves none open", async () => {
-  await using server = await startServer(answer);
-  const client = clientFor(server.url);
+Deno.test("ServeDatastoreClient: consecutive large commits share one HTTP/1.1 client, and close leaves no connection open", async () => {
+  await using server = startServer(answer);
+  let bulkClients = 0;
+  const client = new ServeDatastoreClient({
+    baseUrl: server.url,
+    namespace: "_default",
+    token: "tok",
+    httpClient: () => Deno.createHttpClient({ caCerts: [TEST_CA_PEM] }),
+    bulkHttpClient: () => {
+      bulkClients++;
+      return Deno.createHttpClient(bulkHttpClientOptions([TEST_CA_PEM]));
+    },
+  });
   try {
     for (let i = 0; i < 3; i++) {
       const chunk = new Uint8Array(BULK_MIN_BODY_BYTES).fill(i);
@@ -277,9 +322,9 @@ Deno.test("serveDatastoreClientFor: consecutive commits share one HTTP/1.1 conne
     client.close();
   }
   const commits = server.seen.filter((s) => s.path.endsWith("/commits"));
-  assertEquals(commits.length, 3);
-  assertEquals(new Set(commits.map((s) => s.connection)).size, 1);
-  assertEquals(server.connections.h1, 1);
+  assertEquals(commits.map((s) => s.httpVersion), ["1.1", "1.1", "1.1"]);
+  // the pool may open a second connection before the first is back in it
+  assertEquals(bulkClients, 1);
   assertEquals(server.connections.h2, 1);
   // under the server's own idle close (~5 s), which would hide a leaked client
   await waitFor(
@@ -295,17 +340,18 @@ Deno.test("ServeDatastoreClient: a node refusing as not serving retires the bulk
   let release: () => void = () => {};
   const held = new Promise<void>((resolve) => release = resolve);
   let holdNext = true;
-  await using server = await startServer(async (req, res, body) => {
-    const path = new URL(req.url, "https://localhost").pathname;
+  await using server = startServer(async (req, body) => {
+    const path = new URL(req.url).pathname;
     if (path.endsWith("/chunks/has")) {
-      json(res, 503, { error: { code: "serve_unavailable", message: "x" } });
-      return;
+      return json(503, {
+        error: { code: "serve_unavailable", message: "x" },
+      });
     }
     if (req.method === "PUT" && holdNext) {
       holdNext = false;
       await held;
     }
-    answer(req, res, body);
+    return answer(req, body);
   });
   const client = new ServeDatastoreClient({
     baseUrl: server.url,

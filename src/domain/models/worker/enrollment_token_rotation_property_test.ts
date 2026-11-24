@@ -92,7 +92,8 @@ Deno.test("enrollmentTokenModel.rotate: however often it runs, a default rotatio
   const capMs = rotationCarryOverCapMs(LIFETIME_MS);
   await fc.assert(
     fc.asyncProperty(
-      fc.array(fc.integer({ min: 0, max: LIFETIME_MS - 1 }), {
+      // rotate reads the real clock, so each step leaves 5 s of real time before expiry
+      fc.array(fc.integer({ min: 0, max: LIFETIME_MS - 5_000 }), {
         minLength: 1,
         maxLength: 20,
       }),

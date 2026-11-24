@@ -382,6 +382,14 @@ async function statusOf(h: Harness, name: string): Promise<string> {
   return await Deno.readTextFile(join(h.dir, `${name}.status.yaml`));
 }
 
+// the writer folds a long reason across lines, so a phrase is searched in the parsed field
+async function reasonOf(h: Harness, name: string): Promise<string> {
+  const { reason } = parseYaml(await statusOf(h, name)) as {
+    reason: string | null;
+  };
+  return reason ?? "";
+}
+
 const id = (name: string): ServeId => workspaceServe(name);
 
 async function notStartedLines(fn: () => Promise<void>): Promise<string[]> {
@@ -1015,7 +1023,7 @@ Deno.test("createWorkspaceReconciler: a registered folder that is no repo is hel
   await want(h.dir, "mine", `wanted: active\nfolder: ${folder}\n`);
   await h.begin();
   assertEquals(h.port.of("mine").length, 0);
-  assert((await statusOf(h, "mine")).includes("is not a swamp repo"));
+  assert((await reasonOf(h, "mine")).includes("is not a swamp repo"));
 
   h.registered.set("mine", { folder });
   await h.rescan();
@@ -1036,7 +1044,7 @@ Deno.test("createWorkspaceReconciler: deleted for a registered repo stops it, re
   assert(await exists(join(folder, REPO_MARKER_FILE)), "folder untouched");
   assert(await exists(join(h.dir, "mine.wanted.yaml")), "wanted file kept");
   assertEquals(h.unregistered, []);
-  assert((await statusOf(h, "mine")).includes("nothing was removed"));
+  assert((await reasonOf(h, "mine")).includes("nothing was removed"));
 
   await want(h.dir, "mine", `wanted: active\nfolder: ${folder}\n`);
   await h.rescan();
@@ -1168,7 +1176,7 @@ Deno.test("createWorkspaceReconciler: a wanted file written for another folder s
   await want(h.dir, "mine", `wanted: active\nfolder: ${folder}\n`);
   await h.rescan();
   await waitFor(() => h.observed("mine") === "ready", "started once named");
-  assert(!(await statusOf(h, "mine")).includes("written for"));
+  assert(!(await reasonOf(h, "mine")).includes("written for"));
 });
 
 Deno.test("createWorkspaceReconciler: a wanted file that names no folder starts nothing and says to name one", async () => {
