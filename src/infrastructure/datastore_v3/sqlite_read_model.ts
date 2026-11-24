@@ -158,7 +158,7 @@ const MAX_UNSYNCED_SYNC_BATCHES = 1_000;
 const logger = getLogger(["swamp", "datastore", "read-model"]);
 
 /** long enough to cost little, short enough that the writer lease renews on time */
-const RECOVERY_SLICE_MS = 100;
+const RECOVERY_SLICE_MS = 50;
 
 export const DEFAULT_READ_MODEL_PAGE_SIZE = 500;
 
@@ -837,7 +837,10 @@ export class SqliteReadModel implements ReadModel {
     if (!resuming) {
       // Every namespace's rows are judged by this checkout's filter: the
       // replay below rebuilds every namespace, and a checkout writes one.
-      const generation = this.#catalog.clear(options.admits);
+      const generation = await this.#clearCatalog(
+        options.admits,
+        options.signal,
+      );
       this.#reset(generation);
       this.#catalog.markPopulated(generation);
       this.#state.markRebuildStarted(
@@ -983,10 +986,15 @@ export class SqliteReadModel implements ReadModel {
           const name = dataNameOfKey(dir);
           if (name !== undefined) scope.addName({ namespace, ...name });
         }
+        const listing = new TimeSlice(signal, this.#recoverySliceMs);
         for (const { key, path } of scan.unowned) {
+          if (listing.over) await listing.next();
           scope.addRemoval(namespace, key, path);
         }
-        for (const key of scan.changed) scope.addKeyToCheck(namespace, key);
+        for (const key of scan.changed) {
+          if (listing.over) await listing.next();
+          scope.addKeyToCheck(namespace, key);
+        }
         const missing = await this.#missingKeys(
           namespace,
           scan,
@@ -1371,6 +1379,27 @@ export class SqliteReadModel implements ReadModel {
     return missing;
   }
 
+  /** readers wait on #pageInFlight until the clear ends */
+  async #clearCatalog(
+    admits: (key: string) => boolean,
+    signal: AbortSignal,
+  ): Promise<number> {
+    if (this.#catalog.clearInSlices === undefined) {
+      return this.#catalog.clear(admits);
+    }
+    const clearing = Promise.withResolvers<void>();
+    this.#pageInFlight = clearing.promise;
+    try {
+      return await this.#catalog.clearInSlices(admits, async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        signal.throwIfAborted();
+      }, this.#recoverySliceMs);
+    } finally {
+      this.#pageInFlight = undefined;
+      clearing.resolve();
+    }
+  }
+
   /** a large reconcile commits in bounded transactions, the loop turning between */
   #commitCatalog(signal: AbortSignal): Promise<void> {
     if (this.#catalog.commitBatchInSlices === undefined) {
@@ -1380,7 +1409,7 @@ export class SqliteReadModel implements ReadModel {
     return this.#catalog.commitBatchInSlices(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
       signal.throwIfAborted();
-    });
+    }, this.#recoverySliceMs);
   }
 
   /**
@@ -2016,6 +2045,7 @@ export class SqliteReadModel implements ReadModel {
     from?: { readonly dir: string; readonly segments: readonly string[] },
   ): Promise<void> {
     const root = this.#cacheRoot(namespace);
+    const slice = new TimeSlice(signal, this.#recoverySliceMs);
     const visit = async (
       dir: string,
       segments: readonly string[],
@@ -2029,6 +2059,7 @@ export class SqliteReadModel implements ReadModel {
       }
       for (const entry of entries) {
         signal.throwIfAborted();
+        if (slice.over) await slice.next();
         // A symlink is never followed or removed: the read model writes none.
         if (entry.isSymlink) continue;
         const path = join(dir, entry.name);
@@ -2870,10 +2901,12 @@ export class SqliteReadModel implements ReadModel {
         throw error;
       }
       await this.#time("barrier", () => batch.barrier());
-      // the page's catalog actions in one transaction, after its files and
-      // before its state: a crash between them leaves the catalog ahead, and
-      // the page is applied again
+      // the page's catalog actions after its files and before its state: a
+      // crash between them leaves the catalog ahead, and the page is applied
+      // again
       await this.#time("catalog", () => this.#commitCatalog(signal));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      signal.throwIfAborted();
       this.#state.commitBatch();
       tellOwnWorkApplied();
       await this.#releaseFetched(signal);
@@ -3005,8 +3038,10 @@ export class SqliteReadModel implements ReadModel {
         commit.writer.instance !== this.#writerInstance;
       const ownWork = !this.#recovering &&
         this.#holdsOwnWork?.(commit) === true;
+      const slice = new TimeSlice(signal, this.#recoverySliceMs);
       for (const keyChange of finalKeyStates(commit)) {
         signal.throwIfAborted();
+        if (slice.over) await slice.next();
         const key = keyChange.key.toString();
         // only the first change of a record's bytes in a catch-up replaces what
         // the checkout held; a commit leaving the file's bytes as they are (the

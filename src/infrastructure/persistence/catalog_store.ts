@@ -391,6 +391,8 @@ const DIRTY_TRACKING_SQL = `
 }
 `;
 
+const CLEAR_PAGE_ROWS = 500;
+
 const DIRTY_NAME_WHERE =
   "namespace = ? AND type_normalized = ? AND model_id = ? AND data_name = ?";
 
@@ -1627,29 +1629,97 @@ export class CatalogStore {
           row.version,
         );
       }
-      const renames = this.db.prepare(
-        "SELECT namespace, type_normalized, model_id, data_name FROM catalog_renames",
-      ).all() as unknown as CatalogRowKey[];
-      const deleteRename = this.db.prepare(
-        "DELETE FROM catalog_renames WHERE namespace = ? AND type_normalized = ? AND model_id = ? AND data_name = ?",
-      );
-      for (const row of renames) {
-        if (!clears(row)) continue;
-        deleteRename.run(
-          row.namespace,
-          row.type_normalized,
-          row.model_id,
-          row.data_name,
-        );
-      }
-      const generation = this.generation() + 1;
-      this.writeMeta("generation", String(generation));
+      const generation = this.#clearRenamesAndAdvance(clears);
       this.db.exec("COMMIT");
       return generation;
     } catch (error) {
       this.db.exec("ROLLBACK");
       throw error;
     }
+  }
+
+  /**
+   * clearRows in several transactions of about sliceMs each, awaiting between
+   * after each but the last; generation advances in the last, so a crash part
+   * way leaves it as it was and every name a slice cleared dirty
+   */
+  async clearRowsInSlices(
+    clears: (row: CatalogRowKey) => boolean,
+    between: () => Promise<void>,
+    sliceMs: number,
+    pageRows = CLEAR_PAGE_ROWS,
+  ): Promise<number> {
+    const columns = "namespace, type_normalized, model_id, data_name, version";
+    const first = this.db.prepare(
+      `SELECT ${columns} FROM catalog ORDER BY ${columns} LIMIT ${pageRows}`,
+    );
+    const after = this.db.prepare(
+      `SELECT ${columns} FROM catalog WHERE (${columns}) > (?, ?, ?, ?, ?) ORDER BY ${columns} LIMIT ${pageRows}`,
+    );
+    const deleteRow = this.db.prepare(
+      "DELETE FROM catalog WHERE namespace = ? AND type_normalized = ? AND model_id = ? AND data_name = ? AND version = ?",
+    );
+    let last: Required<CatalogRowKey> | undefined;
+    for (;;) {
+      let done = false;
+      let generation = 0;
+      this.db.exec("BEGIN IMMEDIATE");
+      try {
+        const until = performance.now() + sliceMs;
+        do {
+          const rows = (last === undefined ? first.all() : after.all(
+            last.namespace,
+            last.type_normalized,
+            last.model_id,
+            last.data_name,
+            last.version,
+          )) as unknown as Required<CatalogRowKey>[];
+          for (const row of rows) {
+            if (!clears(row)) continue;
+            deleteRow.run(
+              row.namespace,
+              row.type_normalized,
+              row.model_id,
+              row.data_name,
+              row.version,
+            );
+          }
+          if (rows.length < pageRows) {
+            done = true;
+            break;
+          }
+          last = rows[rows.length - 1];
+        } while (performance.now() < until);
+        if (done) generation = this.#clearRenamesAndAdvance(clears);
+        this.db.exec("COMMIT");
+      } catch (error) {
+        this.db.exec("ROLLBACK");
+        throw error;
+      }
+      if (done) return generation;
+      await between();
+    }
+  }
+
+  #clearRenamesAndAdvance(clears: (row: CatalogRowKey) => boolean): number {
+    const renames = this.db.prepare(
+      "SELECT namespace, type_normalized, model_id, data_name FROM catalog_renames",
+    ).all() as unknown as CatalogRowKey[];
+    const deleteRename = this.db.prepare(
+      "DELETE FROM catalog_renames WHERE namespace = ? AND type_normalized = ? AND model_id = ? AND data_name = ?",
+    );
+    for (const row of renames) {
+      if (!clears(row)) continue;
+      deleteRename.run(
+        row.namespace,
+        row.type_normalized,
+        row.model_id,
+        row.data_name,
+      );
+    }
+    const generation = this.generation() + 1;
+    this.writeMeta("generation", String(generation));
+    return generation;
   }
 
   generation(): number {

@@ -139,7 +139,7 @@ Deno.test("V3Catalog.commitBatchInSlices: a repair committed in bounded slices l
           await sliced.commitBatchInSlices(() => {
             turns++;
             return Promise.resolve();
-          });
+          }, 0);
           assertEquals(rowsOf(sliced), rowsOf(whole));
           assertEquals(sliced.dirtyNames(), whole.dirtyNames());
           if (world.history.length > world.bound) {
@@ -168,21 +168,151 @@ Deno.test("V3Catalog.commitBatchInSlices: stopped between slices it leaves every
             const dirtyBefore = sliced.dirtyNames();
             holdRepair(sliced, world);
             await assertRejects(() =>
-              sliced.commitBatchInSlices(() =>
-                Promise.reject(new Error("crashed between slices"))
+              sliced.commitBatchInSlices(
+                () => Promise.reject(new Error("crashed between slices")),
+                0,
               )
             );
             sliced.rollbackBatch();
             // the names are forgotten only once every slice has committed
             assertEquals(sliced.dirtyNames(), dirtyBefore);
             holdRepair(sliced, world);
-            await sliced.commitBatchInSlices(() => Promise.resolve());
+            await sliced.commitBatchInSlices(() => Promise.resolve(), 0);
             holdRepair(whole, world);
             whole.commitBatch();
             assertEquals(rowsOf(sliced), rowsOf(whole));
             assertEquals(sliced.dirtyNames(), []);
           } finally {
             whole.close();
+            sliced.close();
+          }
+        }),
+    ),
+    { numRuns: 40 },
+  );
+});
+
+interface ClearWorld {
+  readonly history: readonly number[];
+  /** the names a checkout's filter admits, by index */
+  readonly admitted: readonly boolean[];
+  /** names that carry a rename forward */
+  readonly renamed: readonly boolean[];
+  readonly pageRows: number;
+}
+
+const arbClearWorld: fc.Arbitrary<ClearWorld> = fc.integer({ min: 1, max: 8 })
+  .chain((names) =>
+    fc.record({
+      history: fc.array(fc.integer({ min: 1, max: 6 }), {
+        minLength: names,
+        maxLength: names,
+      }),
+      admitted: fc.array(fc.boolean(), { minLength: names, maxLength: names }),
+      renamed: fc.array(fc.boolean(), { minLength: names, maxLength: names }),
+      pageRows: fc.integer({ min: 1, max: 7 }),
+    })
+  );
+
+function seededForClear(path: string, world: ClearWorld): V3Catalog {
+  const catalog = V3Catalog.open(path, { clearRowsPerPage: world.pageRows });
+  catalog.ensureDirtyTracking(1_000);
+  for (const [index, versions] of world.history.entries()) {
+    catalog.apply(
+      "",
+      modelPartition(),
+      Array.from({ length: versions }, (_, v) => upsert(nameOf(index), v + 1)),
+    );
+    if (world.renamed[index]) {
+      catalog.store.recordRename({
+        namespace: "",
+        type_normalized: MODEL_TYPE.normalized,
+        model_id: MODEL_ID,
+        data_name: nameOf(index),
+        renamed_to: `${nameOf(index)}-next`,
+      });
+    }
+  }
+  catalog.forgetAllDirty();
+  return catalog;
+}
+
+const admitsOf = (world: ClearWorld) => (recordKey: string) =>
+  world.history.some((_, index) =>
+    world.admitted[index] && recordKey.includes(`/${nameOf(index)}/`)
+  );
+
+function renamesOf(catalog: V3Catalog, world: ClearWorld): string[] {
+  return world.history.flatMap((_, index) =>
+    catalog.store.findRenamesFrom(nameOf(index)).map((row) =>
+      JSON.stringify(row)
+    )
+  ).sort();
+}
+
+Deno.test("V3Catalog.clearInSlices: clears the same rows and renames, and advances the generation once, as one clear", async () => {
+  await fc.assert(
+    fc.asyncProperty(arbClearWorld, (world) =>
+      withDir(async (dir) => {
+        const whole = seededForClear(join(dir, "whole.db"), world);
+        const sliced = seededForClear(join(dir, "sliced.db"), world);
+        try {
+          const before = sliced.generation();
+          const generation = whole.clear(admitsOf(world));
+          let turns = 0;
+          const slicedGeneration = await sliced.clearInSlices(
+            admitsOf(world),
+            () => {
+              turns++;
+              return Promise.resolve();
+            },
+            0,
+          );
+          assertEquals(slicedGeneration, generation);
+          assertEquals(slicedGeneration, before + 1);
+          assertEquals(rowsOf(sliced), rowsOf(whole));
+          assertEquals(renamesOf(sliced, world), renamesOf(whole, world));
+          const rows = world.history.reduce((sum, n) => sum + n, 0);
+          if (rows >= world.pageRows * 2) assertEquals(turns > 0, true);
+        } finally {
+          whole.close();
+          sliced.close();
+        }
+      })),
+    { numRuns: 60 },
+  );
+});
+
+Deno.test("V3Catalog.clearInSlices: stopped between slices it keeps the generation, and every name it cleared rows of is dirty", async () => {
+  await fc.assert(
+    fc.asyncProperty(
+      // the first page, which commits before the stop, holds admitted rows
+      arbClearWorld.filter((world) =>
+        world.admitted[0] && world.history[0] > world.pageRows
+      ),
+      (world) =>
+        withDir(async (dir) => {
+          const sliced = seededForClear(join(dir, "sliced.db"), world);
+          try {
+            const before = sliced.generation();
+            const seeded = new Set(rowsOf(sliced));
+            await assertRejects(() =>
+              sliced.clearInSlices(
+                admitsOf(world),
+                () => Promise.reject(new Error("crashed between slices")),
+                0,
+              )
+            );
+            assertEquals(sliced.generation(), before);
+            const left = new Set(rowsOf(sliced));
+            const cleared = [...seeded].filter((row) => !left.has(row))
+              .map((row) =>
+                (JSON.parse(row) as { data_name: string }).data_name
+              );
+            assertEquals(cleared.length > 0, true);
+            const dirty = new Set(sliced.dirtyNames().map((name) => name.name));
+            for (const name of cleared) assertEquals(dirty.has(name), true);
+          } finally {
             sliced.close();
           }
         }),

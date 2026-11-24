@@ -657,6 +657,16 @@ Deno.test("SqliteReadModel.recover: a full rebuild stopped part way resumes from
             return target.clear(admits);
           };
         }
+        if (property === "clearInSlices") {
+          return (
+            admits: (key: string) => boolean,
+            between: () => Promise<void>,
+            sliceMs: number,
+          ) => {
+            cleared.push(1);
+            return target.clearInSlices(admits, between, sliceMs);
+          };
+        }
         const value = Reflect.get(target, property, target);
         return typeof value === "function" ? value.bind(target) : value;
       },
@@ -853,6 +863,16 @@ Deno.test("SqliteReadModel.recover: a stopped rebuild is resumed only by an inte
             return (admits: (key: string) => boolean) => {
               cleared.push(1);
               return target.clear(admits);
+            };
+          }
+          if (property === "clearInSlices") {
+            return (
+              admits: (key: string) => boolean,
+              between: () => Promise<void>,
+              sliceMs: number,
+            ) => {
+              cleared.push(1);
+              return target.clearInSlices(admits, between, sliceMs);
             };
           }
           const value = Reflect.get(target, property, target);
@@ -1185,8 +1205,11 @@ Deno.test("SqliteReadModel.recover: a targeted recovery stopped between partitio
         inner.commitBatch();
         stop.abort();
       },
-      commitBatchInSlices: async (between: () => Promise<void>) => {
-        await inner.commitBatchInSlices(between);
+      commitBatchInSlices: async (
+        between: () => Promise<void>,
+        sliceMs: number,
+      ) => {
+        await inner.commitBatchInSlices(between, sliceMs);
         stop.abort();
       },
     });
