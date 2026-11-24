@@ -85,7 +85,6 @@ export type TeamNodeRequest =
     readonly tickMs: number;
     /** steppingDown false is a leader from before that feature */
     readonly feed?: { readonly steppingDown: boolean };
-    /** the TTL this node's serve hold takes, in place of the default */
     readonly leaseTtlMs?: number;
     /**
      * as serve wires a leader that cannot commit; release false is a

@@ -38,7 +38,7 @@ const arbEvent: fc.Arbitrary<Event> = fc.record({
   ),
 }) as fc.Arbitrary<Event>;
 
-/** the rule stated plainly: the last unbroken run of storage failures decides */
+/** the first unbroken run to span the count and the window trips it, for good */
 function expectTripped(events: readonly Event[]): boolean {
   let now = 0;
   let count = 0;

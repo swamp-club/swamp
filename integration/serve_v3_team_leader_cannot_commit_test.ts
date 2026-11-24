@@ -230,7 +230,6 @@ Deno.test({
       for (let i = 0; i < 5; i++) assert(await a.commit() !== undefined);
       await a.send({ kind: "disk-full", full: false });
       assertEquals(await a.commit(), undefined);
-      // the follower ticks against the lease a few times
       const until = Date.now() + 5 * TICK_MS;
       await waitFor(() => Date.now() >= until, "a few follower ticks");
       const state = await a.state();

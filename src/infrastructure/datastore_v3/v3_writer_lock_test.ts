@@ -776,7 +776,7 @@ Deno.test("stopV3WriterRenewal: the hold lapses unrenewed, and a release still e
       await stopV3WriterRenewal(dir);
       const expiresAt = await v3WriterLeaseExpiresAt(dir);
       assert(expiresAt !== undefined && expiresAt > 0);
-      // a stale check asked for a renewal before; now nothing renews it
+      // a stale confirmation check would otherwise ask for a renewal
       await waitFor(
         () => !v3WriterLeaseConfirmed(dir),
         "the unrenewed lease to pass its TTL",

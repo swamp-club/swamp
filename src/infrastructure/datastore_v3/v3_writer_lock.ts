@@ -708,9 +708,8 @@ function startRenewal(
 }
 
 /**
- * the hold stays, unrenewed: it lapses at its TTL for another writer to take,
- * and a release still ends it sooner; nor does a stale confirmation check
- * renew it
+ * the hold stays, unrenewed even by a stale confirmation check: it lapses at
+ * its TTL for another writer to take, and a release still ends it sooner
  */
 export async function stopV3WriterRenewal(
   datastorePath: string,
