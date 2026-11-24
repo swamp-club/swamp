@@ -904,6 +904,7 @@ async function runWorkflowViaServer(
           quiet: ctx.verbosity === "quiet",
           verbose: ctx.verbosity === "verbose",
           commandTarget,
+          overServer: true,
         });
       const detach = options.detach as boolean;
       const handlers = renderer.handlers();

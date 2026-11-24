@@ -151,6 +151,7 @@ export async function resumeRunOverServer(
     commandTarget: formatCommandTarget({
       server: connection.serverOption,
     }),
+    overServer: true,
   });
   const disarmTimeout = timeoutMs !== undefined
     ? abortOnTimeout(abort, timeoutMs)

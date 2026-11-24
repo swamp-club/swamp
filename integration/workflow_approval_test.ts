@@ -318,12 +318,13 @@ Deno.test("Workflow: a forEach-expanded approval gate is reported as a gate by w
     );
     assertStringIncludes(
       log,
-      `swamp workflow approve foreach-input-gate approve-prod --run ${runId}`,
+      `swamp workflow approve foreach-input-gate approve-prod --run ${runId} --resume`,
     );
     assertStringIncludes(
       log,
-      `swamp workflow resume foreach-input-gate --run ${runId}`,
+      `swamp workflow reject foreach-input-gate approve-prod --run ${runId}`,
     );
+    assertEquals(log.includes("swamp workflow resume"), false);
     assertEquals(log.includes("waits on a nested run"), false);
 
     const json = await renderRun("json", workflow.name, events);
