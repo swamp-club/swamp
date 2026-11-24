@@ -353,12 +353,11 @@ export function exitCodeForError(
 }
 
 /**
- * compiled binaries read only static macOS keychain entries, not full trust
- * evaluation, so OTA-distributed roots are invisible; the hint points to the
- * SSL_CERT_FILE workaround.
+ * only an untrusted issuer means a missing root: a private CA needs --ca-cert,
+ * and on macOS compiled binaries read only static keychain entries, so
+ * OTA-distributed roots need the SSL_CERT_FILE workaround
  */
 export function tlsErrorHint(message: string): string | undefined {
-  // only an untrusted issuer means a missing root; other failures need other remedies
   if (!message.includes("UnknownIssuer")) {
     return undefined;
   }
