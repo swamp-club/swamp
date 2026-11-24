@@ -77,7 +77,6 @@ const KNOWN_UNMARKED: readonly string[] = [
   "UnifiedData.advanceLatestMarkers: data/command/shell/<id>/item/latest",
   "UnifiedData.rollbackVersions: data/command/shell/<id>/item/<v>/metadata.yaml",
   "UnifiedData.rollbackVersions: data/command/shell/<id>/item/<v>/raw",
-  "UnifiedData.finalizeVersion(standalone): data/command/shell/<id>/item/latest",
   "WorkflowRun.deleteOlderThan(terminal): workflow-runs/<id>/workflow-run-<id>.log",
   "WorkflowRun.deleteOlderThan(unparseable): workflow-runs/<id>/workflow-run-<id>.log",
   "WorkflowRun.deleteOlderThan(legacy-index): workflow-runs/<id>/.runs-index.json",

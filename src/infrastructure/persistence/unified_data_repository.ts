@@ -2308,12 +2308,17 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         await this.syncVersionReach(sync, type, modelId, data.name);
       }
 
-      await this.advanceLatestMarker(
-        type,
-        modelId,
-        data.name,
-        version,
-        () => this.catalogUpsert(type, modelId, dataToSave),
+      // the allocating unit's name signal may belong to another unit
+      await this.staged(
+        { kind: "write", path: this.latestPathOf(type, modelId, data.name) },
+        () =>
+          this.advanceLatestMarker(
+            type,
+            modelId,
+            data.name,
+            version,
+            () => this.catalogUpsert(type, modelId, dataToSave),
+          ),
       );
 
       const why: DataWrite = { kind: "data.save" };
@@ -2496,17 +2501,27 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         // a refused signal outside a unit must not stop the promotion; its
         // staging below reports the refusal
         if (typedStagingActive(this.markDirty)) {
-          await this.staged({
-            kind: "write",
-            path: join(
-              this.getDataNameDir(
+          // the version's own files too: the promoting unit stages them even
+          // when another unit wrote them
+          await this.staged([
+            {
+              kind: "write",
+              path: this.latestPathOf(
                 receipt.type,
                 receipt.modelId,
                 receipt.dataName,
               ),
-              "latest",
-            ),
-          }, advance);
+            },
+            {
+              kind: "write",
+              path: this.getPath(
+                receipt.type,
+                receipt.modelId,
+                receipt.dataName,
+                receipt.version,
+              ),
+            },
+          ], advance);
         } else {
           await advance();
         }
@@ -2621,6 +2636,19 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
             receipt.dataName,
             receipt.version,
           );
+          const latestPath = this.latestPathOf(
+            receipt.type,
+            receipt.modelId,
+            receipt.dataName,
+          );
+          // the marker is restated below; a removed name's directory signal
+          // already covers it
+          if (existsSync(latestPath)) {
+            await this.staged(
+              { kind: "write", path: latestPath },
+              () => Promise.resolve(),
+            );
+          }
           await this.stageLatestAfterRemoval(
             "data.delete",
             receipt.type,
@@ -4454,12 +4482,17 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     version: number,
   ): Promise<void> {
     return this.staged(
-      {
-        kind: "write",
-        path: join(this.getDataNameDir(type, modelId, dataName), "latest"),
-      },
+      { kind: "write", path: this.latestPathOf(type, modelId, dataName) },
       () => this.updateLatestMarker(type, modelId, dataName, version),
     );
+  }
+
+  private latestPathOf(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+  ): string {
+    return join(this.getDataNameDir(type, modelId, dataName), "latest");
   }
 
   private async updateLatestMarker(

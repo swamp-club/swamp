@@ -1101,7 +1101,17 @@ Deno.test("mutations call markDirty before and after writing", async () => {
       "mark-dirty-alloc",
       version,
     );
-    assertEquals(calls.slice(4), [finalDir, finalDir]);
+    const finalLatest = join(
+      repo.getDataNameDir(testType, "model-1", "mark-dirty-alloc"),
+      "latest",
+    );
+    // the marker is signalled inside the version's own before and after
+    assertEquals(calls.slice(4, 8), [
+      finalDir,
+      finalLatest,
+      finalLatest,
+      finalDir,
+    ]);
 
     // append marks before the streaming-configured check throws, so the signal
     // lands even though the operation aborts; the throw is tolerated
@@ -1115,7 +1125,7 @@ Deno.test("mutations call markDirty before and after writing", async () => {
     } catch {
       // Expected — mark-dirty-save isn't streaming-configured.
     }
-    assertEquals(calls.slice(6), [saveDir, saveDir]);
+    assertEquals(calls.slice(8), [saveDir, saveDir]);
     const afterAppend = calls.length;
 
     await repo.rename(testType, "model-1", "mark-dirty-save", "mark-dirty-ren");
