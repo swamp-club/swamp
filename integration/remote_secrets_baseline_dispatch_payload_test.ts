@@ -236,6 +236,7 @@ Deno.test({
             "dispatchId",
             "environmentSnapshot",
             "execution",
+            "extensionBundles",
             "leaseId",
             "reportBundleFingerprints",
             "secretBag",
@@ -244,6 +245,8 @@ Deno.test({
             "unresolvedMethodArgs",
           ],
         );
+        // add-on fingerprints and member names only; this type has no add-ons
+        assertEquals(raw.extensionBundles, []);
         const execution = raw.execution as Record<string, unknown>;
         assertEquals(Object.keys(execution).sort(), [
           "definitionMeta",
@@ -436,6 +439,7 @@ function dispatchAt(protocolVersion: number): DispatchParams {
     },
     bundleFingerprint: "builtin:test/no-such-model",
     reportBundleFingerprints: [],
+    extensionBundles: [],
     environmentSnapshot: {},
   };
 }
@@ -559,12 +563,15 @@ Deno.test({
             "dispatchId",
             "environmentSnapshot",
             "execution",
+            "extensionBundles",
             "leaseId",
             "referenceBag",
             "reportBundleFingerprints",
             "step",
           ],
         );
+        // add-on fingerprints and member names only; this type has no add-ons
+        assertEquals(raw.extensionBundles, []);
         const execution = raw.execution as Record<string, unknown>;
         assertEquals(execution.protocolVersion, REMOTE_PROTOCOL_VERSION);
         assertEquals(execution.methodArgs, {

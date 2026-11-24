@@ -52,6 +52,7 @@ import {
   SWAMP_SUBDIRS,
 } from "../../infrastructure/persistence/paths.ts";
 import type {
+  AddOnSource,
   ExtensionLoadResult,
   KindAdapter,
   RegistrationContext,
@@ -123,6 +124,8 @@ export type ExtensionMemberKind = "method" | "check" | "resource";
 interface MemberProvenance {
   readonly contributor: ExtensionContributor;
   readonly definition: unknown;
+  /** absent when the attach path gave no source, so the member cannot ship */
+  readonly bundleSource?: () => Promise<string>;
 }
 
 const memberProvenance: Map<string, Map<string, MemberProvenance>> = new Map();
@@ -251,6 +254,63 @@ export function getExtensionMemberCollisions(): ExtensionMemberCollision[] {
     byCodeUnit(a.memberKind, b.memberKind) ||
     byCodeUnit(a.name, b.name)
   );
+}
+
+/** members are the ones the file wins now, not every one it declares */
+export interface ShippableExtension {
+  readonly sourcePath: string;
+  readonly bundleSource: () => Promise<string>;
+  readonly methods: readonly string[];
+  readonly resources: readonly string[];
+}
+
+/**
+ * checks are left out since a placed step skips them; a member whose attach
+ * gave no source is left out too, so a worker reports it missing
+ */
+export function shippableExtensionMembers(
+  typeNormalized: string,
+): ShippableExtension[] {
+  const provenance = memberProvenance.get(typeNormalized);
+  const current = modelRegistry.get(typeNormalized);
+  if (!provenance || !current) return [];
+  const byFile = new Map<string, {
+    contributor: ExtensionContributor;
+    bundleSource: () => Promise<string>;
+    methods: string[];
+    resources: string[];
+  }>();
+  for (const [key, prov] of provenance) {
+    if (prov.bundleSource === undefined) continue;
+    const sep = key.indexOf(":");
+    const kind = key.slice(0, sep) as ExtensionMemberKind;
+    const name = key.slice(sep + 1);
+    const live = kind === "method"
+      ? current.methods[name]
+      : kind === "resource"
+      ? current.resources?.[name]
+      : undefined;
+    if (live === undefined || live !== prov.definition) continue;
+    let entry = byFile.get(prov.contributor.sourcePath);
+    if (!entry) {
+      entry = {
+        contributor: prov.contributor,
+        bundleSource: prov.bundleSource,
+        methods: [],
+        resources: [],
+      };
+      byFile.set(prov.contributor.sourcePath, entry);
+    }
+    (kind === "method" ? entry.methods : entry.resources).push(name);
+  }
+  return [...byFile.values()]
+    .sort((a, b) => compareExtensionPrecedence(a.contributor, b.contributor))
+    .map(({ contributor, bundleSource, methods, resources }) => ({
+      sourcePath: contributor.sourcePath,
+      bundleSource,
+      methods: methods.sort(),
+      resources: resources.sort(),
+    }));
 }
 
 function collisionState(type: string, key: string): CollisionState {
@@ -747,7 +807,8 @@ function createDeclaredAssetsReader(
  */
 function createBundleSourceFactory(
   typeNormalized: string,
-  context: RegistrationContext,
+  context: AddOnSource,
+  options?: { readonly addOn?: boolean },
 ): () => Promise<string> {
   let bundlePromise: Promise<string> | undefined;
   return () => {
@@ -759,6 +820,7 @@ function createBundleSourceFactory(
         throw new StaleExtensionSourceError(
           typeNormalized,
           context.extensionName,
+          options,
         );
       }
       const denoPath = await context.denoRuntime.ensureDeno();
@@ -953,6 +1015,7 @@ export const modelKindAdapter: KindAdapter = {
     result: ExtensionLoadResult,
     contributor: ExtensionContributor,
     attach?: AttachRecord,
+    source?: AddOnSource,
   ): void {
     const parsed = UserExtensionSchema.safeParse(exported);
     if (!parsed.success) {
@@ -1168,8 +1231,23 @@ export const modelKindAdapter: KindAdapter = {
       provenance = new Map();
       memberProvenance.set(typeKey, provenance);
     }
+    // one memoised factory per attach, shared by every member this file won
+    const bundleSource = source === undefined
+      ? undefined
+      : createBundleSourceFactory(typeKey, source, { addOn: true });
     for (const { key, definition } of claimed) {
-      provenance.set(key, { contributor, definition });
+      provenance.set(key, { contributor, definition, bundleSource });
+    }
+    // a member this attach did not claim is one the edited file dropped: the
+    // old bundle is stale and the new one lacks it, so it does not ship
+    const claimedKeys = new Set(claimed.map(({ key }) => key));
+    for (const [key, prov] of provenance) {
+      if (
+        prov.contributor.sourcePath === contributor.sourcePath &&
+        !claimedKeys.has(key) && prov.bundleSource !== undefined
+      ) {
+        provenance.set(key, { ...prov, bundleSource: undefined });
+      }
     }
     for (const { key, label, name, prior } of overridden) {
       recordCollision(typeKey, key, contributor.sourcePath, prior.sourcePath);
@@ -1204,6 +1282,7 @@ export const modelKindAdapter: KindAdapter = {
     ) => Promise<Record<string, unknown>>,
     result: ExtensionLoadResult,
     contributor: ExtensionContributor,
+    source?: AddOnSource,
   ): Promise<void> {
     const module = await importFn({
       bundlePath: entry.bundle_path,
@@ -1242,6 +1321,7 @@ export const modelKindAdapter: KindAdapter = {
         sourcePath: entry.source_path,
         fingerprint: entry.source_fingerprint ?? "",
       },
+      source,
     );
 
     for (const failure of result.failed) {
@@ -1261,6 +1341,7 @@ export const modelKindAdapter: KindAdapter = {
       },
     ) => Promise<Record<string, unknown>>,
     contributorFor: (sourcePath: string) => ExtensionContributor,
+    sourceFor?: (sourcePath: string) => Promise<AddOnSource>,
   ): Promise<void> {
     const base = modelRegistry.get(typeNormalized);
     if (!base) return;
@@ -1292,6 +1373,7 @@ export const modelKindAdapter: KindAdapter = {
           importFn,
           result,
           contributor,
+          await sourceFor?.(entry.source_path),
         );
       } catch (error) {
         logger

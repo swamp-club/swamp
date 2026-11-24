@@ -45,6 +45,7 @@ import {
 import { markErrorPaths, UserError } from "../domain/errors.ts";
 import {
   ARGUMENTS_VALIDATED_EVENT,
+  type DispatchExtensionBundle,
   type DispatchParams,
   type DispatchResult,
   REMOTE_PROTOCOL_VERSION,
@@ -76,6 +77,7 @@ import {
   type DispatchRegistry,
 } from "./dispatch_registry.ts";
 import { type BundleRegistry, hashAssetBytes } from "./bundle_registry.ts";
+import { shippableExtensionMembers } from "../domain/extensions/model_kind_adapter.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { RemoteLockHolder } from "../domain/datastore/lock_holder_marker.ts";
 import {
@@ -924,9 +926,17 @@ export class DispatchService {
     const leaseId = dispatchId;
     let leaseSettled = false;
 
-    const bundleFingerprint = await observeExecutionWork("dispatch.prepare", {
-      "swamp.dispatch.id": dispatchId,
-    }, () => this.#ensureBundle(request.modelDef));
+    const { bundleFingerprint, extensionBundles } = await observeExecutionWork(
+      "dispatch.prepare",
+      { "swamp.dispatch.id": dispatchId },
+      async () => ({
+        bundleFingerprint: await this.#ensureBundle(request.modelDef),
+        extensionBundles: await this.#ensureExtensionBundles(
+          request.modelDef,
+          request.methodName,
+        ),
+      }),
+    );
 
     await this.#leaseTransition("acquire", leaseId, (leases) =>
       leases.acquire({
@@ -1000,6 +1010,7 @@ export class DispatchService {
       },
       bundleFingerprint,
       reportBundleFingerprints: [],
+      extensionBundles,
       environmentSnapshot: this.#captureEnvironment(),
       step: {
         workflowName: request.workflowName,
@@ -1415,6 +1426,34 @@ export class DispatchService {
       withheld: refused,
     });
     return fingerprint;
+  }
+
+  /**
+   * ships add-ons only for a method one provides, so a type's own method
+   * builds and carries no add-on bundle; resource-spec add-ons ride along
+   * since the method may write any spec of the type
+   */
+  async #ensureExtensionBundles(
+    modelDef: ModelDefinition,
+    methodName: string,
+  ): Promise<DispatchExtensionBundle[]> {
+    const addOns = shippableExtensionMembers(modelDef.type.normalized);
+    if (!addOns.some((addOn) => addOn.methods.includes(methodName))) return [];
+    const bundles: DispatchExtensionBundle[] = [];
+    for (const addOn of addOns) {
+      if (!addOn.methods.includes(methodName) && addOn.resources.length === 0) {
+        continue;
+      }
+      const js = await addOn.bundleSource();
+      const fingerprint = await sha256Hex(js);
+      this.#options.bundles.register(fingerprint, { js });
+      bundles.push({
+        fingerprint,
+        methods: [...addOn.methods],
+        resources: [...addOn.resources],
+      });
+    }
+    return bundles;
   }
 
   #pendingTransition(

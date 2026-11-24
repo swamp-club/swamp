@@ -26,6 +26,7 @@ import {
   getExtensionMemberCollisions,
   modelKindAdapter,
   removeAttachedExtensionsForType,
+  shippableExtensionMembers,
 } from "./model_kind_adapter.ts";
 import { basename, join } from "@std/path";
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
@@ -1479,4 +1480,183 @@ Deno.test("register: a manifest corrupted after registration declares nothing an
   } finally {
     await reset();
   }
+});
+
+function addOnSource(
+  absolutePath: string,
+  snapshot?: { files: string[]; signature: string },
+): RegistrationContext {
+  return {
+    absolutePath,
+    denoPath: "/usr/bin/false",
+    denoRuntime: {
+      ensureDeno: () => Promise.resolve("/usr/bin/false"),
+      getDenoEnv: () => ({}),
+    },
+    repoDir: null,
+    sourceSnapshot: snapshot,
+  };
+}
+
+function attachWithSource(
+  sourcePath: string,
+  exported: Record<string, unknown>,
+  source: RegistrationContext = addOnSource(sourcePath),
+) {
+  const result = newResult();
+  modelKindAdapter.processSecondaryExport!(
+    sourcePath,
+    exported,
+    result,
+    contributorAt(sourcePath),
+    undefined,
+    source,
+  );
+  return result;
+}
+
+const auditSpec = {
+  schema: z.object({}),
+  lifetime: "infinite",
+  garbageCollection: 1,
+};
+
+Deno.test("shippableExtensionMembers: lists each add-on file once with the methods and resource specs it won", () => {
+  withPrecedenceType((type) => {
+    attachWithSource(LOCAL_AA, {
+      ...makeExtension(type, ["probe", "extra"]),
+      resources: { audit: auditSpec },
+    });
+    const shipped = shippableExtensionMembers(type);
+    assertEquals(
+      shipped.map(({ sourcePath, methods, resources }) => ({
+        sourcePath,
+        methods,
+        resources,
+      })),
+      [{
+        sourcePath: LOCAL_AA,
+        methods: ["extra", "probe"],
+        resources: ["audit"],
+      }],
+    );
+  });
+});
+
+Deno.test("shippableExtensionMembers: only the winning add-on of a collision ships the member", () => {
+  withPrecedenceType((type) => {
+    attachWithSource(LOCAL_ZZ, makeExtension(type, ["probe", "zzOnly"]));
+    attachWithSource(LOCAL_AA, makeExtension(type, ["probe"]));
+    assertEquals(
+      shippableExtensionMembers(type).map(({ sourcePath, methods }) => ({
+        sourcePath,
+        methods,
+      })),
+      [
+        { sourcePath: LOCAL_AA, methods: ["probe"] },
+        { sourcePath: LOCAL_ZZ, methods: ["zzOnly"] },
+      ],
+    );
+  });
+});
+
+Deno.test("shippableExtensionMembers: a member the base type already defines never ships", () => {
+  withPrecedenceType((type) => {
+    attachWithSource(LOCAL_AA, makeExtension(type, ["get"]));
+    assertEquals(shippableExtensionMembers(type), []);
+  });
+});
+
+Deno.test("shippableExtensionMembers: checks are not shipped", () => {
+  withPrecedenceType((type) => {
+    attachWithSource(LOCAL_AA, {
+      type,
+      methods: [],
+      checks: [{
+        guard: {
+          description: "guard",
+          execute: () => Promise.resolve({ pass: true }),
+        },
+      }],
+    });
+    assertEquals(modelRegistry.get(type)?.checks?.guard !== undefined, true);
+    assertEquals(shippableExtensionMembers(type), []);
+  });
+});
+
+Deno.test("shippableExtensionMembers: an attach without a source ships nothing", () => {
+  withPrecedenceType((type) => {
+    attach(type, LOCAL_AA, "aa");
+    assertEquals(probeDescription(type), "probe from aa");
+    assertEquals(shippableExtensionMembers(type), []);
+  });
+});
+
+Deno.test("shippableExtensionMembers: a removed add-on stops shipping", () => {
+  withPrecedenceType((type) => {
+    attachWithSource(LOCAL_AA, makeExtension(type, ["probe"]));
+    detachExtensionSources(type, (path) => path === LOCAL_AA);
+    assertEquals(shippableExtensionMembers(type), []);
+  });
+});
+
+Deno.test("shippableExtensionMembers: a merge that throws leaves nothing to ship", () => {
+  withPrecedenceType((type) => {
+    const original = modelRegistry.applyExtensionMembers;
+    modelRegistry.applyExtensionMembers = () => {
+      throw new Error("merge refused");
+    };
+    try {
+      const result = attachWithSource(LOCAL_AA, makeExtension(type, ["probe"]));
+      assertEquals(result.failed.length, 1);
+    } finally {
+      modelRegistry.applyExtensionMembers = original;
+    }
+    assertEquals(shippableExtensionMembers(type), []);
+  });
+});
+
+Deno.test("shippableExtensionMembers: a re-attached file ships its new source with only the members that source still exports", () => {
+  withPrecedenceType((type) => {
+    attachWithSource(LOCAL_AA, makeExtension(type, ["keep", "probe"]));
+    const first = shippableExtensionMembers(type)[0].bundleSource;
+    attachWithSource(LOCAL_AA, makeExtension(type, ["probe"]));
+    const shipped = shippableExtensionMembers(type);
+    assertEquals(shipped.length, 1);
+    assertEquals(shipped[0].bundleSource === first, false);
+    assertEquals(shipped[0].methods, ["probe"]);
+  });
+});
+
+Deno.test("shippableExtensionMembers: an add-on edited on disk after attach refuses to bundle, naming no path", async () => {
+  const type = `@test/precedence-${crypto.randomUUID().slice(0, 8)}`;
+  registerTestModel(type, { get: true });
+  try {
+    attachWithSource(
+      LOCAL_AA,
+      makeExtension(type, ["probe"]),
+      addOnSource(LOCAL_AA, { files: [LOCAL_AA], signature: "as-loaded" }),
+    );
+    const [shipped] = shippableExtensionMembers(type);
+    const error = await assertRejects(() => shipped.bundleSource());
+    assertEquals((error as Error).name, "StaleExtensionSourceError");
+    assertStringIncludes(
+      (error as Error).message,
+      `An add-on to behavior type ${type}`,
+    );
+    assertEquals((error as Error).message.includes(LOCAL_AA), false);
+  } finally {
+    modelRegistry.invalidateType(type);
+    removeAttachedExtensionsForType(type);
+    resetExtensionLoadWarnings();
+  }
+});
+
+Deno.test("shippableExtensionMembers: a member the registry no longer holds does not ship", () => {
+  withPrecedenceType((type) => {
+    attachWithSource(LOCAL_AA, makeExtension(type, ["probe"]));
+    modelRegistry.invalidateType(type);
+    registerTestModel(type, { get: true });
+    assertEquals(shippableExtensionMembers(type), []);
+  });
 });

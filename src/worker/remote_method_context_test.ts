@@ -85,6 +85,7 @@ function dispatch(): DispatchParams {
     },
     bundleFingerprint: "builtin:x",
     reportBundleFingerprints: [],
+    extensionBundles: [],
     environmentSnapshot: {},
   };
 }

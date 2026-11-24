@@ -74,6 +74,12 @@ export interface RegistrationContext {
   sourceSnapshot?: SourceSnapshot;
 }
 
+/** an add-on's bundle is built from this only when a worker needs it */
+export type AddOnSource = Pick<
+  RegistrationContext,
+  "absolutePath" | "denoRuntime" | "pulled" | "extensionName" | "sourceSnapshot"
+>;
+
 export interface KindAdapter {
   readonly kind: LoaderKind;
   readonly bundleSubdir: string;
@@ -140,7 +146,8 @@ export interface KindAdapter {
   /**
    * contributor ranks it against other extensions adding the same member;
    * attach, when known, marks the catalog source attached so later attach
-   * passes skip it
+   * passes skip it; source, when known, lets the members it wins ship to
+   * workers
    */
   processSecondaryExport?(
     file: string,
@@ -148,6 +155,7 @@ export interface KindAdapter {
     result: ExtensionLoadResult,
     contributor: ExtensionContributor,
     attach?: { readonly sourcePath: string; readonly fingerprint: string },
+    source?: AddOnSource,
   ): void;
 
   findExtensionsForType?(
@@ -166,6 +174,7 @@ export interface KindAdapter {
     ) => Promise<Record<string, unknown>>,
     result: ExtensionLoadResult,
     contributor: ExtensionContributor,
+    source?: AddOnSource,
   ): Promise<void>;
 
   attachPendingExtensionsForType?(
@@ -179,6 +188,7 @@ export interface KindAdapter {
       },
     ) => Promise<Record<string, unknown>>,
     contributorFor: (sourcePath: string) => ExtensionContributor,
+    sourceFor?: (sourcePath: string) => Promise<AddOnSource>,
   ): Promise<void>;
 
   migrateOldFlatBundles?(repoDir: string, additionalDirs?: string[]): void;

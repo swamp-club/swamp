@@ -559,6 +559,7 @@ function dispatchParams(dispatchId = "d-1"): DispatchParams {
     },
     bundleFingerprint: "fp-1",
     reportBundleFingerprints: [],
+    extensionBundles: [],
     environmentSnapshot: {},
     dataPlaneUrl: "http://127.0.0.1:0",
   };
