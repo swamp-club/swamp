@@ -4252,7 +4252,6 @@ export function openCommitsDatabase(
   }
 }
 
-/** brings a commits.db to this swamp's schema and closes it again */
 export function migrateCommitsDatabase(
   path: string,
   options: { readonly replicated?: boolean } = {},

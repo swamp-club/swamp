@@ -232,10 +232,8 @@ export interface V3CopyRefreshOptions {
 }
 
 /**
- * Brings the copy's commits.db to this swamp's schema before the writer lease
- * is taken, so a migration that scans a large store never runs while the
- * lease must renew. A copy being restored, or with a sidecar that may still
- * replicate it, is left for its open under the lease, as before.
+ * before the lease is taken, so a scanning migration never runs while it must
+ * renew; a restoring copy or one with a sidecar is left to its open under it
  */
 export async function migrateV3CopySchema(copy: V3Copy): Promise<void> {
   if (v3ReplicaFor(copy.datastorePath) === undefined) return;

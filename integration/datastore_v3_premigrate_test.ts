@@ -81,7 +81,7 @@ async function withCopy(
   fn: (copy: V3Copy, root: string) => Promise<void>,
 ): Promise<void> {
   const root = await Deno.realPath(
-    // short, as the sidecar's socket path under it must be
+    // short: replicationPathsFor refuses a socket path over the platform's limit
     await Deno.makeTempDir({ dir: "/tmp", prefix: "swamp-pm-" }),
   );
   try {
@@ -114,75 +114,98 @@ async function withCopy(
   }
 }
 
-Deno.test("migrateV3CopySchema: a copy at schema 13 is brought to this swamp's schema, and running it again changes nothing", async () => {
-  await withCopy(async (copy) => {
-    writeSchema13(copy.commitsDb);
-    await migrateV3CopySchema(copy);
-    assertEquals(schemaOf(copy.commitsDb), {
-      version: COMMIT_STORE_SCHEMA_VERSION,
-      columns: true,
+Deno.test({
+  name:
+    "migrateV3CopySchema: a copy at schema 13 is brought to this swamp's schema, and running it again changes nothing",
+  // a short /tmp path and a uid, as the sibling replication tests need
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    await withCopy(async (copy) => {
+      writeSchema13(copy.commitsDb);
+      await migrateV3CopySchema(copy);
+      assertEquals(schemaOf(copy.commitsDb), {
+        version: COMMIT_STORE_SCHEMA_VERSION,
+        columns: true,
+      });
+      await migrateV3CopySchema(copy);
+      assertEquals(
+        schemaOf(copy.commitsDb).version,
+        COMMIT_STORE_SCHEMA_VERSION,
+      );
     });
-    await migrateV3CopySchema(copy);
-    assertEquals(schemaOf(copy.commitsDb).version, COMMIT_STORE_SCHEMA_VERSION);
-  });
+  },
 });
 
-Deno.test("migrateV3CopySchema: a copy with a sidecar's presence, or one another process is restoring, is left for its open under the lease", async () => {
-  await withCopy(async (copy, root) => {
-    writeSchema13(copy.commitsDb);
-    const paths = await replicationPathsFor(
-      copy.commitsDb,
-      join(root, "priv"),
-    );
-    await Deno.mkdir(paths.sharedDir, { recursive: true, mode: 0o700 });
-    // a sidecar that may still be replicating this copy
-    await Deno.writeTextFile(
-      paths.presence,
-      JSON.stringify({
-        supervisorPid: 1,
-        uid: Deno.uid(),
-        hostname: Deno.hostname(),
-        lineageFence: 1,
-        replicaPath: join(root, "replica"),
-      }),
-    );
-    await migrateV3CopySchema(copy);
-    assertEquals(schemaOf(copy.commitsDb).version, 13);
-    await Deno.remove(paths.presence);
-
-    const holder = await Deno.open(paths.restoreLock, {
-      read: true,
-      write: true,
-      create: true,
-    });
-    try {
-      await holder.lock(true);
+Deno.test({
+  name:
+    "migrateV3CopySchema: a copy with a sidecar's presence, or one another process is restoring, is left for its open under the lease",
+  // a short /tmp path and a uid, as the sibling replication tests need
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    await withCopy(async (copy, root) => {
+      writeSchema13(copy.commitsDb);
+      const paths = await replicationPathsFor(
+        copy.commitsDb,
+        join(root, "priv"),
+      );
+      await Deno.mkdir(paths.sharedDir, { recursive: true, mode: 0o700 });
+      // a sidecar that may still be replicating this copy
+      await Deno.writeTextFile(
+        paths.presence,
+        JSON.stringify({
+          supervisorPid: 1,
+          uid: Deno.uid(),
+          hostname: Deno.hostname(),
+          lineageFence: 1,
+          replicaPath: join(root, "replica"),
+        }),
+      );
       await migrateV3CopySchema(copy);
       assertEquals(schemaOf(copy.commitsDb).version, 13);
-    } finally {
-      await holder.unlock();
-      holder.close();
-    }
-  });
+      await Deno.remove(paths.presence);
+
+      const holder = await Deno.open(paths.restoreLock, {
+        read: true,
+        write: true,
+        create: true,
+      });
+      try {
+        await holder.lock(true);
+        await migrateV3CopySchema(copy);
+        assertEquals(schemaOf(copy.commitsDb).version, 13);
+      } finally {
+        await holder.unlock();
+        holder.close();
+      }
+    });
+  },
 });
 
-Deno.test("migrateV3CopySchema: a migrated copy then restored from a schema-13 lineage ends at this schema with the restored content", async () => {
-  await withCopy(async (copy, root) => {
-    writeSchema13(copy.commitsDb);
-    await migrateV3CopySchema(copy);
-    const restored = join(root, "restored.db");
-    writeSchema13(restored);
-    const store = SqliteCommitStore.open(copy.commitsDb, { replicated: true });
-    try {
-      await store.replaceContentFrom(restored);
-    } finally {
-      await store.close();
-    }
-    assertEquals(schemaOf(copy.commitsDb), {
-      version: COMMIT_STORE_SCHEMA_VERSION,
-      columns: true,
+Deno.test({
+  name:
+    "migrateV3CopySchema: a migrated copy then restored from a schema-13 lineage ends at this schema with the restored content",
+  // a short /tmp path and a uid, as the sibling replication tests need
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    await withCopy(async (copy, root) => {
+      writeSchema13(copy.commitsDb);
+      await migrateV3CopySchema(copy);
+      const restored = join(root, "restored.db");
+      writeSchema13(restored);
+      const store = SqliteCommitStore.open(copy.commitsDb, {
+        replicated: true,
+      });
+      try {
+        await store.replaceContentFrom(restored);
+      } finally {
+        await store.close();
+      }
+      assertEquals(schemaOf(copy.commitsDb), {
+        version: COMMIT_STORE_SCHEMA_VERSION,
+        columns: true,
+      });
+      // the restored file was opened, so migrated, under that open: the limit
+      assertEquals(schemaOf(restored).version, COMMIT_STORE_SCHEMA_VERSION);
     });
-    // the restored file was opened, so migrated, under that open: the limit
-    assertEquals(schemaOf(restored).version, COMMIT_STORE_SCHEMA_VERSION);
-  });
+  },
 });

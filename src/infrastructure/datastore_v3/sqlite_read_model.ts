@@ -1145,7 +1145,7 @@ export class SqliteReadModel implements ReadModel {
       {},
       async (reprojectSpan) => {
         const counts = newReprojectCounts();
-        // readers wait it out, as they did when it ran without yielding
+        // readers wait on #pageInFlight until the reproject ends
         const reprojecting = Promise.withResolvers<void>();
         this.#pageInFlight = reprojecting.promise;
         try {
@@ -1371,11 +1371,6 @@ export class SqliteReadModel implements ReadModel {
     return missing;
   }
 
-  /**
-   * one partition's names from its compacted base and later commits up to the
-   * applied seq, checked against the state, then cleared, re-projected and
-   * forgotten as dirty in one catalog transaction
-   */
   /** a large reconcile commits in bounded transactions, the loop turning between */
   #commitCatalog(signal: AbortSignal): Promise<void> {
     if (this.#catalog.commitBatchInSlices === undefined) {
@@ -1388,6 +1383,11 @@ export class SqliteReadModel implements ReadModel {
     });
   }
 
+  /**
+   * one partition's names from its compacted base and later commits up to the
+   * applied seq, checked against the state, then cleared, re-projected and
+   * forgotten as dirty
+   */
   async #reprojectNames(
     scoped: ScopedPartition,
     { base, commits }: NameHistory,

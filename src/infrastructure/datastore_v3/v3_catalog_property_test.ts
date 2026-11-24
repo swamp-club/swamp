@@ -142,7 +142,6 @@ Deno.test("V3Catalog.commitBatchInSlices: a repair committed in bounded slices l
           });
           assertEquals(rowsOf(sliced), rowsOf(whole));
           assertEquals(sliced.dirtyNames(), whole.dirtyNames());
-          // the bound is honoured: more names than fit one slice take more turns
           if (world.history.length > world.bound) {
             assertEquals(turns > 0, true);
           }

@@ -386,8 +386,13 @@ export class V3Catalog implements ReadModelCatalog, CatalogDirtyTracking {
         if (replays.length > 0) {
           const admits = (row: CatalogRowKey) =>
             step.admits(catalogRowRecordKey(row));
-          const counts = this.#store.versionRowCounts(
+          const held = this.#store.versionRowCounts(
             step.names.map(catalogDataName),
+          );
+          const replayed = replayedPerName(replays);
+          // a group holds the larger of what its names hold and what they replay
+          const counts = step.names.map((name, at) =>
+            Math.max(held[at], replayed.get(nameIdentity(name)) ?? 0)
           );
           for (
             const group of groupsOf(
@@ -481,6 +486,26 @@ function groupsOf(
     current.rows += rows;
   }
   return groups;
+}
+
+function replayedPerName(replays: readonly ActionsStep[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const replay of replays) {
+    const identity = replay.partition.identity;
+    if (identity.kind !== "model") continue;
+    for (const action of replay.actions) {
+      const name = nameIdentity({
+        namespace: replay.namespace,
+        type: identity.type,
+        modelId: identity.id,
+        name: action.kind === "upsert-version"
+          ? action.metadata.name
+          : action.name,
+      });
+      counts.set(name, (counts.get(name) ?? 0) + 1);
+    }
+  }
+  return counts;
 }
 
 /** a replay's actions for the kept names only */
