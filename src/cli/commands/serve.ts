@@ -2773,6 +2773,8 @@ export const serveCommand = new Command()
         dispatchService.notifyWorkerEnrolled(worker),
       onWorkerDraining: (worker) =>
         dispatchService.notifyWorkerDraining(worker),
+      onWorkerVerifyFailed: (worker) =>
+        dispatchService.notifyWorkerVerifyFailed(worker),
       // reload changes it; each enrollment reads the one in force
       get verifyOnEnroll() {
         return verifyOnEnroll;

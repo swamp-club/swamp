@@ -171,6 +171,8 @@ function isWithin(root: string, path: string): boolean {
 export interface DispatchGateway {
   workers(): WorkerSnapshot[];
   worker(name: string): WorkerSnapshot | null;
+  // absent reads as not pending: an unverified worker's lane fails at once
+  verificationPending?(name: string): boolean;
   dispatch(
     name: string,
     params: DispatchParams,
@@ -357,6 +359,10 @@ export class DispatchService {
     this.#wakePoolWaiters();
   }
 
+  notifyWorkerVerifyFailed(_worker: WorkerSnapshot): void {
+    this.#wakePoolWaiters();
+  }
+
   releaseAffinity(key: string): void {
     this.#affinityPins.delete(key);
     this.#affinityInflight.delete(key);
@@ -537,8 +543,13 @@ export class DispatchService {
       const assertPlaceable = () => {
         assertPinHeld();
         if (!lane) return;
+        const worker = this.#gateway!.worker(lane.worker);
         const verdict = laneDispatchVerdict(
-          this.#gateway!.worker(lane.worker),
+          worker === null ? null : {
+            ...worker,
+            verificationPending:
+              this.#gateway!.verificationPending?.(lane.worker) ?? false,
+          },
         );
         if (verdict.kind === "ineligible") {
           throw new WorkerIneligibleError(lane.worker, verdict.reason);

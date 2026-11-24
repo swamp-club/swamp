@@ -24,6 +24,7 @@ import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpers.ts";
 import type { WorkflowRunView } from "../src/libswamp/workflows/workflow_run_view.ts";
+import type { WorkflowRunEvent } from "../src/libswamp/workflows/run.ts";
 import {
   createWorkflowEvaluateDeps,
   workflowEvaluate,
@@ -312,6 +313,92 @@ Deno.test({
     await b.drain();
     a.behavior = { kind: "succeed" };
     a.release(true);
+    const run = await running;
+
+    assertEquals(run.status, "failed");
+    assertEquals(steps(run)["apply[w-b]"], "failed");
+    assertStringIncludes(stepError(run, "apply[w-b]"), "worker_ineligible");
+    assertEquals(fleet.dispatchCounts(), { "w-a": 2, "w-b": 0 });
+  },
+});
+
+// the pool wake from w-a's lane must land while w-b's probe is still held
+async function reconnectWhileProbing(
+  fleet: Fleet,
+  name: string,
+): Promise<{
+  running: Promise<WorkflowRunView>;
+  settleProbe: (outcome: "pass" | "fail") => void;
+}> {
+  const a = await fleet.addWorker("w-a", { labels: WEB });
+  const b = await fleet.addWorker("w-b", { labels: WEB });
+  await b.disconnect();
+  await fleet.saveWorkflow({
+    name,
+    inputs: {},
+    jobs: [laneJob(fleet, APPLY_VERIFY, { fanOut: { offline: "wait" } })],
+  });
+  a.behavior = { kind: "hold" };
+  const events: WorkflowRunEvent[] = [];
+  const running = fleet.runWorkflow(name, { events });
+  await waitFor(() => a.heldCount === 1, "lane w-a in flight");
+
+  const settleProbe = fleet.holdProbe("w-b");
+  await b.connect({ settle: false });
+  assertEquals(b.status(), "unverified");
+  assert(fleet.gateway.verificationPending("w-b"));
+
+  a.behavior = { kind: "succeed" };
+  a.release(true);
+  await waitFor(
+    () =>
+      events.some((e) =>
+        e.kind === "step_completed" && e.stepId === "verify[w-a]"
+      ),
+    "lane w-a to finish while w-b is still being probed",
+  );
+  assertEquals(b.dispatchCount, 0);
+  return { running, settleProbe };
+}
+
+Deno.test({
+  name:
+    "fan-out lanes: an offline wait lane whose worker reconnects keeps waiting through a pool change while the worker is probed, and runs once the probe passes",
+  ...SANITIZE,
+  fn: async () => {
+    await using fleet = await Fleet.start({
+      graceWindowMs: 60_000,
+      queueTimeoutMs: 60_000,
+    });
+    const { running, settleProbe } = await reconnectWhileProbing(
+      fleet,
+      "patch-reprobe-pass",
+    );
+
+    settleProbe("pass");
+    const run = await running;
+
+    assertEquals(run.status, "succeeded", stepError(run, "apply[w-b]"));
+    assertEquals(steps(run)["apply[w-b]"], "succeeded");
+    assertEquals(fleet.dispatchCounts(), { "w-a": 2, "w-b": 2 });
+  },
+});
+
+Deno.test({
+  name:
+    "fan-out lanes: an offline wait lane whose reconnected worker then fails its probe fails with worker_ineligible at once, not at queueTimeout, and is never sent",
+  ...SANITIZE,
+  fn: async () => {
+    await using fleet = await Fleet.start({
+      graceWindowMs: 60_000,
+      queueTimeoutMs: 60_000,
+    });
+    const { running, settleProbe } = await reconnectWhileProbing(
+      fleet,
+      "patch-reprobe-fail",
+    );
+
+    settleProbe("fail");
     const run = await running;
 
     assertEquals(run.status, "failed");

@@ -1900,11 +1900,19 @@ moves, with nothing to release when the job ends.
 
 **Eligibility at dispatch.** Before every attempt of a lane step,
 `laneDispatchVerdict` (`src/domain/remote/scheduler.ts`) reads the worker's
-live snapshot:
+live snapshot, and the gateway's `verificationPending` for it:
 
-- unverified or draining: the step fails with `WorkerIneligibleError` (`worker_ineligible`) and nothing
-  is sent. This holds for every lane step, not only the first, as a draining
-  pinned worker already fails an affinity group today.
+- draining, or unverified with a failed probe: the step fails with
+  `WorkerIneligibleError` (`worker_ineligible`) and nothing is sent. This holds
+  for every lane step, not only the first, as a draining pinned worker already
+  fails an affinity group today.
+- unverified with a probe running or owed (an enrollment or reconnect under
+  verify-on-enroll whose probe has not finished, or a probe refused for
+  capacity): the step queues, as the scheduler never offers an unverified
+  worker. It is sent once the probe passes, and fails `worker_ineligible` as
+  soon as it fails, since the gateway's `onWorkerVerifyFailed` wakes the
+  waiting lanes. Pending is tracked, never inferred from a missing failure
+  reason, so an unverified worker no probe is coming for stays ineligible.
 - disconnected or absent: the step queues on its target until the worker
   reconnects, or fails at `queueTimeout` with the usual "Timed out waiting for
   a worker matching target" error.

@@ -58,11 +58,20 @@ export type LaneDispatchVerdict =
   | { kind: "wait" }
   | { kind: "ineligible"; reason: "unverified" | "draining" };
 
+export interface LaneWorker
+  extends Pick<SchedulableWorker, "status" | "connected"> {
+  /** an unverified worker whose probe is running or owed, not one that failed */
+  verificationPending?: boolean;
+}
+
 /** a lane never queues behind a worker that may not take it */
 export function laneDispatchVerdict(
-  worker: Pick<SchedulableWorker, "status" | "connected"> | null,
+  worker: LaneWorker | null,
 ): LaneDispatchVerdict {
   if (worker === null) return { kind: "wait" };
+  if (worker.status === "unverified" && worker.verificationPending === true) {
+    return { kind: "wait" };
+  }
   if (worker.status === "unverified" || worker.status === "draining") {
     return { kind: "ineligible", reason: worker.status };
   }
