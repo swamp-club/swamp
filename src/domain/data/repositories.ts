@@ -160,7 +160,8 @@ export interface DeclaredGarbageBatchOptions {
 export interface DeclaredGarbageBatchResult {
   versionsRemoved: number;
   bytesReclaimed: number;
-  names: number;
+  /** names that lost versions, so a pass can count each name once */
+  touched: string[];
   failed: number;
   /** absent once every name has been examined */
   cursor?: string;

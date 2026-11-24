@@ -245,7 +245,7 @@ export class CompositeUnifiedDataRepository implements UnifiedDataRepository {
       return Promise.resolve({
         versionsRemoved: 0,
         bytesReclaimed: 0,
-        names: 0,
+        touched: [],
         failed: 0,
       });
     }

@@ -400,3 +400,82 @@ Deno.test("versionLimits retention: a catalog row whose type cannot be read is s
     })
   );
 });
+
+Deno.test("versionLimits retention: a pass stops at its cap, counts each name once, and the next pass continues", async () => {
+  await withTempDir((dir) =>
+    withRepo(dir, async (repo) => {
+      const saved = await save(repo, "m1", "log", 40, 2);
+      const policy = RetentionPolicy.fromConfig({});
+      const scan: DeclaredLimitScan = {};
+      const onePass = () =>
+        runRepoRetention(
+          {
+            repoDir: repo.repoDir,
+            datastoreResolver: repo.resolver,
+            dataRepos: {
+              catalogStore: repo.catalog,
+              unifiedDataRepo: repo.data,
+              workflowRunRepo: repo.runs,
+            },
+            declaredLimitScan: scan,
+            declaredLimitPassCap: 25,
+            runBatch: (fn) => fn(),
+          },
+          { policy, batchSize: 10, kinds: policy.enforcedKinds() },
+        );
+
+      const first = await onePass();
+      assertEquals(first.kinds[0].deleted, 25);
+      assertEquals(first.kinds[0].names, 1);
+      assertEquals(first.kinds[0].complete, false);
+      assertEquals(await versionsOnDisk(repo, "m1", "log"), saved.slice(25));
+
+      const second = await onePass();
+      assertEquals(second.kinds[0].deleted, 13);
+      assertEquals(second.kinds[0].complete, true);
+      assertEquals(await versionsOnDisk(repo, "m1", "log"), saved.slice(-2));
+    })
+  );
+});
+
+Deno.test("versionLimits retention: a batch signals the latest marker it rewrites before writing it, so v3 recovery stays scoped to the name", async () => {
+  await withTempDir((dir) =>
+    withRepo(dir, async (repo) => {
+      await save(repo, "m1", "log", 8, 2);
+      const signalled: string[] = [];
+      const latestPath = join(
+        repo.resolver.resolvePath(SWAMP_SUBDIRS.data),
+        TYPE.normalized,
+        "m1",
+        "log",
+        "latest",
+      );
+      let latestBeforeSignal: string | undefined;
+      const watched = new FileSystemUnifiedDataRepository(
+        repo.repoDir,
+        repo.resolver.resolvePath(SWAMP_SUBDIRS.data),
+        repo.catalog,
+        (path?: string) => {
+          if (path !== undefined) signalled.push(path);
+          if (path === latestPath) {
+            latestBeforeSignal = Deno.readTextFileSync(latestPath);
+          }
+          return Promise.resolve();
+        },
+      );
+
+      const batch = await watched.collectDeclaredGarbageBatch({
+        limit: 100,
+        now: Date.now(),
+      });
+
+      assertEquals(batch.versionsRemoved, 6);
+      assert(
+        signalled.includes(latestPath),
+        `the latest marker was not signalled: ${signalled.join(", ")}`,
+      );
+      // the signal lands before the write it covers
+      assertEquals(latestBeforeSignal, "8");
+    })
+  );
+});

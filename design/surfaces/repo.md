@@ -379,8 +379,10 @@ garbageCollection:
   version limits page the catalog for names above their limit
   (`namesOverDeclaredLimit`, in key order), remove at most a batch of versions
   (a name cut off resumes in the next batch, and serve keeps the scan across
-  its passes so a pass cut short resumes where the last stopped) and examine
-  at most a batch of
+  its passes so a pass cut short resumes where the last stopped), at most
+  10,000 versions a pass (`DECLARED_LIMIT_PASS_CAP`, so one pass's commits
+  through the leader stay bounded; a large backlog drains over several hourly
+  passes) and examine at most a batch of
   names; removals take the `data.gc` path, so on v3 they are ordinary
   commits. Each batch is traced (`swamp.retention.batch`, with
   `retention.names` for declared limits); an outputs batch also exports its listing, scan, orphan-log sweep, commit and gate wait as phases ([serve phase telemetry](../enablers/serve-phase-telemetry.md)).

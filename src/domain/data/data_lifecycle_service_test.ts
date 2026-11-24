@@ -1015,7 +1015,7 @@ Deno.test("deleteVersionsBeyondDeclaredLimits: threads the cursor through the sc
       return Promise.resolve({
         versionsRemoved: 4,
         bytesReclaimed: 40,
-        names: 1,
+        touched: ["k"],
         failed: 0,
         cursor: pages.shift(),
       });
@@ -1053,6 +1053,12 @@ Deno.test("deleteVersionsBeyondDeclaredLimits: a repository that cannot page del
       scan: {},
       now: 0,
     }),
-    { versionsDeleted: 0, bytesReclaimed: 0, names: 0, failed: 0, more: false },
+    {
+      versionsDeleted: 0,
+      bytesReclaimed: 0,
+      touched: [],
+      failed: 0,
+      more: false,
+    },
   );
 });

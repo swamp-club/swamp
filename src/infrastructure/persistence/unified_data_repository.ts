@@ -3058,7 +3058,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     const result: DeclaredGarbageBatchResult = {
       versionsRemoved: 0,
       bytesReclaimed: 0,
-      names: 0,
+      touched: [],
       failed: 0,
     };
     type NameKey = {
@@ -3125,7 +3125,11 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
             );
             result.versionsRemoved += named.versionsRemoved;
             result.bytesReclaimed += named.bytesReclaimed;
-            if (named.versionsRemoved > 0) result.names++;
+            if (named.versionsRemoved > 0) {
+              result.touched.push(
+                [row.type_normalized, row.model_id, row.data_name].join("\0"),
+              );
+            }
             // A name with versions left that removed none this time is
             // failing; it is passed over rather than retried every batch.
             if (!named.finished && named.versionsRemoved > 0) {
@@ -3283,12 +3287,16 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         dataName,
       );
       const latestVersion = maxOf(promoted);
+      // signalled before it lands: an unsignalled marker write makes the next
+      // v3 recovery walk the whole checkout
+      const latestMarker = {
+        kind: "write" as const,
+        path: join(this.getDataNameDir(type, modelId, dataName), "latest"),
+      };
       if (latestVersion !== undefined) {
-        await this.updateLatestMarker(
-          type,
-          modelId,
-          dataName,
-          latestVersion,
+        await this.staged(
+          latestMarker,
+          () => this.updateLatestMarker(type, modelId, dataName, latestVersion),
         );
         const latestData = await this.findByName(
           type,
@@ -3300,11 +3308,15 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           this.catalogUpsert(type, modelId, latestData);
         }
       } else if (onDisk.length > 0) {
-        await this.updateLatestMarker(
-          type,
-          modelId,
-          dataName,
-          NO_PROMOTED_VERSION,
+        await this.staged(
+          latestMarker,
+          () =>
+            this.updateLatestMarker(
+              type,
+              modelId,
+              dataName,
+              NO_PROMOTED_VERSION,
+            ),
         );
       } else {
         const dataNameDir = this.getDataNameDir(type, modelId, dataName);

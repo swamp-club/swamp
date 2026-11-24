@@ -43,6 +43,8 @@ const DAY_MS = 86_400_000;
 
 const OUTPUT_BATCH_MULTIPLIER = 10;
 
+export const DECLARED_LIMIT_PASS_CAP = 10_000;
+
 export interface RetentionCollectorSources {
   repoDir: string;
   datastoreResolver?: DatastorePathResolver;
@@ -65,6 +67,8 @@ export interface RetentionCollectorSources {
    * the declared-limit scan where the last stopped instead of at the first name
    */
   declaredLimitScan?: DeclaredLimitScan;
+  /** versions one pass removes for declared limits, at most */
+  declaredLimitPassCap?: number;
   /** without it the autoDefinitions kind is left alone */
   autoDefinitions?: AutoDefinitionRetentionSources;
   now?: () => number;
@@ -108,6 +112,8 @@ export function createRetentionCollectors(
     countedVersions: new Set(),
   };
   const declaredScan: DeclaredLimitScan = sources.declaredLimitScan ?? {};
+  const declaredTouched = new Set<string>();
+  let declaredRemoved = 0;
   const daysBefore = (cutoff: Date): number =>
     Math.max(0, (now() - cutoff.getTime()) / DAY_MS);
 
@@ -180,15 +186,30 @@ export function createRetentionCollectors(
         if (!data.deleteVersionsBeyondDeclaredLimits) {
           return { deleted: 0, bytesReclaimed: 0, more: false };
         }
+        // The cap bounds the commits one pass sends through the leader; the
+        // scan keeps its place, so the next pass continues the backlog.
+        const room = (sources.declaredLimitPassCap ?? DECLARED_LIMIT_PASS_CAP) -
+          declaredRemoved;
+        if (room <= 0) {
+          return {
+            deleted: 0,
+            bytesReclaimed: 0,
+            more: false,
+            incomplete: true,
+          };
+        }
         const result = await data.deleteVersionsBeyondDeclaredLimits({
-          limit,
+          limit: Math.min(limit, room),
           scan: declaredScan,
           now: now(),
         });
+        declaredRemoved += result.versionsDeleted;
+        const before = declaredTouched.size;
+        for (const key of result.touched) declaredTouched.add(key);
         return {
           deleted: result.versionsDeleted,
           bytesReclaimed: result.bytesReclaimed,
-          names: result.names,
+          names: declaredTouched.size - before,
           more: result.more,
           incomplete: result.failed > 0,
         };

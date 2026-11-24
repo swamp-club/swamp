@@ -633,7 +633,7 @@ const PINNED_STAGED_CHANGES: readonly string[] = [
   "src/infrastructure/persistence/unified_data_repository.ts: FileSystemUnifiedDataRepository remove (x12)",
   // reassertLatestVersion writes the version directory and latest marker;
   // deleting a name's newest version writes its version floor (v2 only)
-  "src/infrastructure/persistence/unified_data_repository.ts: FileSystemUnifiedDataRepository write (x14)",
+  "src/infrastructure/persistence/unified_data_repository.ts: FileSystemUnifiedDataRepository write (x15)",
   "src/infrastructure/persistence/yaml_output_repository.ts: YamlOutputRepository remove (x3)",
   "src/infrastructure/persistence/yaml_output_repository.ts: YamlOutputRepository write",
   // "write|remove" is a delete whose resolved path is kept when it holds

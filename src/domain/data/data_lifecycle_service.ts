@@ -115,7 +115,7 @@ export interface DeclaredLimitScan {
 export interface DeclaredLimitBatchResult {
   versionsDeleted: number;
   bytesReclaimed: number;
-  names: number;
+  touched: string[];
   failed: number;
   more: boolean;
 }
@@ -637,7 +637,7 @@ export class DefaultDataLifecycleService implements DataLifecycleService {
       return {
         versionsDeleted: 0,
         bytesReclaimed: 0,
-        names: 0,
+        touched: [],
         failed: 0,
         more: false,
       };
@@ -651,7 +651,7 @@ export class DefaultDataLifecycleService implements DataLifecycleService {
     return {
       versionsDeleted: batch.versionsRemoved,
       bytesReclaimed: batch.bytesReclaimed,
-      names: batch.names,
+      touched: batch.touched,
       failed: batch.failed,
       more: batch.cursor !== undefined,
     };
