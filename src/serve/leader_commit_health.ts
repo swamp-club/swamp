@@ -19,6 +19,7 @@
 
 import { MAX_OUTAGE_CAUSE_DEPTH } from "../infrastructure/datastore_v3/datastore_outage.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
+import { LitestreamControlError } from "../infrastructure/datastore_v3/litestream/litestream_control_client.ts";
 
 const logger = getSwampLogger(["serve", "leadership"]);
 
@@ -43,7 +44,25 @@ const CODE_CAUSES: ReadonlyMap<string, CannotCommitCause> = new Map([
   ["EROFS", "storage_read_only"],
 ]);
 
+/**
+ * The sidecar's own failure, writing its files on this node; a bucket or
+ * network failure names none of these, and every node shares it.
+ */
+const SIDECAR_STORAGE_CAUSES: readonly [RegExp, CannotCommitCause][] = [
+  [/no space left on device|disk quota exceeded/i, "storage_full"],
+  [/input\/output error/i, "storage_io_error"],
+  [/read-only file system/i, "storage_read_only"],
+];
+
 function causeOfOne(error: object): CannotCommitCause | undefined {
+  if (error instanceof LitestreamControlError) {
+    const reported = error.sidecarError;
+    if (reported === undefined) return undefined;
+    for (const [pattern, cause] of SIDECAR_STORAGE_CAUSES) {
+      if (pattern.test(reported)) return cause;
+    }
+    return undefined;
+  }
   const e = error as Record<string, unknown>;
   if (typeof e.errcode === "number") {
     // extended result codes keep the primary code in the low byte

@@ -26,14 +26,18 @@
 import type { LitestreamSyncResponse } from "../../../domain/datastore_v3/litestream_replication.ts";
 
 export class LitestreamControlError extends Error {
+  /** the sidecar's own account of a failed sync, as it reported it */
+  readonly sidecarError: string | undefined;
+
   constructor(
     message: string,
     readonly timedOut: boolean,
-    options: { readonly cause?: unknown } = {},
+    options: { readonly cause?: unknown; readonly sidecarError?: string } = {},
   ) {
     super(message);
     this.name = "LitestreamControlError";
     if (options.cause !== undefined) this.cause = options.cause;
+    this.sidecarError = options.sidecarError;
   }
 }
 
@@ -95,12 +99,15 @@ export const unixLitestreamControl: LitestreamControl = {
       },
     });
     if (response.status !== 200) {
-      const detail = typeof response.body.error === "string"
-        ? `: ${response.body.error}`
-        : "";
+      const sidecarError = typeof response.body.error === "string"
+        ? response.body.error
+        : undefined;
       throw new LitestreamControlError(
-        `POST /sync answered ${response.status}${detail}`,
+        `POST /sync answered ${response.status}${
+          sidecarError === undefined ? "" : `: ${sidecarError}`
+        }`,
         false,
+        sidecarError === undefined ? {} : { sidecarError },
       );
     }
     return response.body;

@@ -46,13 +46,22 @@ interface Leading {
 }
 
 /** as serve wires its leader, with a window short enough to cross in a test */
-function lead(server: Server): Leading {
+function lead(
+  server: Server,
+  options: { readonly replicating?: boolean } = {},
+): Leading {
   const health = new LeaderCommitHealth({ windowMs: 0 });
   const steps: string[] = [];
   const wired = wireLeaderCommitHealth({
     datastorePath: resolve(server.v3.datastorePath),
     leads: () => true,
-    onCommitOutcome: onV3CommitOutcome,
+    // a replicating datastore reports no local apply as a success
+    onCommitOutcome: options.replicating === true
+      ? (listener) =>
+        onV3CommitOutcome((path, outcome) => {
+          if (outcome.kind !== "applied") listener(path, outcome);
+        })
+      : onV3CommitOutcome,
     stopRenewal: () => {
       steps.push("stop-renewal");
       return Promise.resolve();
@@ -201,6 +210,33 @@ Deno.test({
         const retried = await post(partitionPath(server), "alice-token", body);
         assertEquals(retried.status, 200, JSON.stringify(retried.json));
         assertEquals(retried.json.duplicate, true);
+        assertEquals((await save(server, "alice-token", 2, 1)).status, 500);
+        assert(leading.health.cannotCommit() !== undefined);
+      } finally {
+        leading.wired.stop();
+      }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "leader commit health: a commit that landed but was not confirmed replicated does not start the run again",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withFullDisk(async (server) => {
+      const leading = lead(server, { replicating: true });
+      try {
+        disk.full = true;
+        assertEquals((await save(server, "alice-token", 1, 0)).status, 500);
+        assertEquals((await save(server, "alice-token", 1, 0)).status, 500);
+        disk.full = false;
+        server.ctx.confirmReplicated = () =>
+          Promise.reject(new Error("the replica could not be reached"));
+        assertEquals((await save(server, "alice-token", 1, 0)).status, 503);
+        server.ctx.confirmReplicated = undefined;
+        disk.full = true;
         assertEquals((await save(server, "alice-token", 2, 1)).status, 500);
         assert(leading.health.cannotCommit() !== undefined);
       } finally {

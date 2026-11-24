@@ -1073,8 +1073,8 @@ class DatastoreApi {
     });
     const landed = await this.#commitOne(reader, partition, req.signal, true);
     if (landed instanceof Response) return landed;
-    this.#noteLanded([landed]);
     const unconfirmed = await this.#confirmLanded([landed]);
+    if (unconfirmed === undefined) this.#noteLanded([landed]);
     if (unconfirmed !== undefined) {
       return Response.json({ ...unconfirmed, seq: landed.result.seq }, {
         status: 503,
@@ -1144,10 +1144,10 @@ class DatastoreApi {
       }
       landed.push(outcome);
     }
-    this.#noteLanded(landed);
     const unconfirmed = landed.length === 0
       ? undefined
       : await this.#confirmLanded(landed);
+    if (unconfirmed === undefined) this.#noteLanded(landed);
     const results: BatchItemReply[] = [];
     for (const commit of landed) {
       results.push(
@@ -1560,8 +1560,9 @@ class DatastoreApi {
   }
 
   /**
-   * a commit whose catch-up failed after it landed says the read model cannot,
-   * and a retry answered from the store wrote nothing
+   * only once confirmed replicated; a commit whose catch-up failed after it
+   * landed says the read model cannot, and a retry answered from the store
+   * wrote nothing
    */
   #noteLanded(landed: readonly LandedCommit[]): void {
     if (

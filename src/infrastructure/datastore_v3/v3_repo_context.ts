@@ -368,6 +368,16 @@ export type V3CommitOutcomeListener = (
   outcome: V3CommitOutcome,
 ) => void;
 
+function tellCommitOutcome(datastore: string, outcome: V3CommitOutcome): void {
+  for (const listener of repoState().commitOutcomeListeners) {
+    try {
+      listener(datastore, outcome);
+    } catch {
+      // A listener's failure is its own.
+    }
+  }
+}
+
 /** serve's leader judges from these whether it can still commit */
 export function onV3CommitOutcome(
   listener: V3CommitOutcomeListener,
@@ -555,9 +565,9 @@ export function v3DatastoreFor(
         : {}),
       writerFence: () => v3WriterFence(config.path),
       onCommitOutcome: (outcome) => {
-        for (const listener of repoState().commitOutcomeListeners) {
-          listener(resolve(config.path), outcome);
-        }
+        // while replicating, a commit counts once replicated, not once applied
+        if (outcome.kind === "applied" && v3ReplicatesAt(config.path)) return;
+        tellCommitOutcome(resolve(config.path), outcome);
       },
       replicatedMark: () =>
         v3ReplicatesAt(config.path)
@@ -2561,18 +2571,26 @@ async function syncAndPublishNow(
       }
     },
   };
-  await withBucketWriteScope(scope, async () => {
-    if (via === "replica") {
-      await use.confirmFromReplica(
-        peekHighWaterCursor,
-        mark.cursor,
-        left,
-        confirmOptions,
-      );
-    } else {
-      await use.sync(left, confirmOptions);
-    }
-  });
+  try {
+    await withBucketWriteScope(scope, async () => {
+      if (via === "replica") {
+        await use.confirmFromReplica(
+          peekHighWaterCursor,
+          mark.cursor,
+          left,
+          confirmOptions,
+        );
+      } else {
+        await use.sync(left, confirmOptions);
+      }
+    });
+  } catch (error) {
+    tellCommitOutcome(datastore, { kind: "failed", error });
+    throw error;
+  }
+  if (mark.cursor > (repoState().publishedMarks.get(datastore) ?? -1)) {
+    tellCommitOutcome(datastore, { kind: "applied" });
+  }
   repoState().publishedMarks.set(
     datastore,
     Math.max(repoState().publishedMarks.get(datastore) ?? 0, mark.cursor),

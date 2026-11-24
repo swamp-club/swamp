@@ -30,6 +30,8 @@ import {
 } from "./leader_commit_health.ts";
 import { ReadModelApplyError } from "../domain/datastore_v3/read_model.ts";
 import { PreconditionConflictError } from "../infrastructure/datastore_v3/forwarded_commit.ts";
+import { LitestreamControlError } from "../infrastructure/datastore_v3/litestream/litestream_control_client.ts";
+import { V3ReplicationError } from "../domain/datastore_v3/litestream_replication.ts";
 
 function realSqliteFull(): Error {
   const dir = Deno.makeTempDirSync();
@@ -306,4 +308,62 @@ Deno.test("LeaderCommitHealth: refusals naming storage errors, spread across the
     time.advance(CANNOT_COMMIT_WINDOW_MS);
   }
   assertEquals(health.cannotCommit(), undefined);
+});
+
+function sidecarFailed(sidecarError: string | undefined, timedOut = false) {
+  return new V3ReplicationError("the Litestream sidecar failed", {
+    cause: new LitestreamControlError(
+      `POST /sync answered 500${sidecarError ? `: ${sidecarError}` : ""}`,
+      timedOut,
+      sidecarError === undefined ? {} : { sidecarError },
+    ),
+  });
+}
+
+Deno.test("storageFailureCause: the sidecar failing to write on this node is a storage failure", () => {
+  assertEquals(
+    storageFailureCause(
+      sidecarFailed(
+        "sync database: db sync: sync: stage-write ltx file /x/0020.ltx.tmp: disk full: write page index: write page index element: write /x/0020.ltx.tmp: no space left on device",
+      ),
+    ),
+    "storage_full",
+  );
+  assertEquals(
+    storageFailureCause(sidecarFailed("write /x.ltx.tmp: input/output error")),
+    "storage_io_error",
+  );
+  assertEquals(
+    storageFailureCause(
+      sidecarFailed("open /x.ltx.tmp: read-only file system"),
+    ),
+    "storage_read_only",
+  );
+});
+
+Deno.test("storageFailureCause: the bucket, the network, a timeout and an abandoned sync are never storage failures", () => {
+  for (
+    const reported of [
+      "sync database: replica sync: googleapi: Error 503: backendError",
+      "replica sync: RequestError: send request failed: dial tcp: i/o timeout",
+      "replica sync: AccessDenied: Access Denied",
+    ]
+  ) {
+    assertEquals(
+      storageFailureCause(sidecarFailed(reported)),
+      undefined,
+      reported,
+    );
+  }
+  assertEquals(storageFailureCause(sidecarFailed(undefined, true)), undefined);
+  // the client's own wording, not the sidecar's, names no storage failure
+  assertEquals(
+    storageFailureCause(
+      new LitestreamControlError(
+        "POST /sync was given up: no space left on device",
+        false,
+      ),
+    ),
+    undefined,
+  );
 });
