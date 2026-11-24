@@ -159,7 +159,7 @@ async function displayDataDetail(
     output.contentEncoding = contentEncoding;
   }
 
-  renderDataGet(output, outputMode);
+  await renderDataGet(output, outputMode);
 }
 
 export const dataSearchCommand = withRemoteOptions(

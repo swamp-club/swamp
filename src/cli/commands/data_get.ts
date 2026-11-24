@@ -140,7 +140,7 @@ export const dataGetCommand = withRemoteOptions(
           },
         },
       );
-      renderDataGet(
+      await renderDataGet(
         response.data as unknown as DataGetData,
         cliCtx.outputMode,
         {

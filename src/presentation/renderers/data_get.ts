@@ -22,6 +22,13 @@ import type { DataGetData, DataGetEvent } from "../../libswamp/data/get.ts";
 import type { EventHandlers } from "../../libswamp/stream.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
+import {
+  prettyJsonChunks,
+  type Sink,
+  withNewline,
+  writeJsonValue,
+  writeTextChunks,
+} from "../output/json_stream.ts";
 import { userErrorFromSwampError } from "../../libswamp/errors.ts";
 import {
   getSwampLogger,
@@ -42,6 +49,8 @@ export interface DataGetRenderOptions {
    * as the read; see `formatCommandTarget`.
    */
   commandTarget?: string;
+  /** receives the JSON document, or in log mode only JSON content; stdout when unset */
+  sink?: Sink;
 }
 
 export function withCommandTarget(
@@ -85,7 +94,7 @@ class LogDataGetRenderer implements Renderer<DataGetEvent> {
     const logger = getSwampLogger(["data", "get"]);
     return {
       resolving: () => {},
-      completed: (e) => {
+      completed: async (e) => {
         const data = withCommandTarget(e.data, this.options.commandTarget);
         for (const warning of data.warnings ?? []) {
           // Braces escaped so a name containing {…} is printed, not read as
@@ -123,12 +132,18 @@ class LogDataGetRenderer implements Renderer<DataGetEvent> {
               ),
             );
           } else if (data.contentType === "application/json") {
+            let parsed: unknown;
             try {
-              const parsed = JSON.parse(data.content);
-              writeOutput(JSON.stringify(parsed, null, 2));
+              parsed = JSON.parse(data.content);
             } catch {
               writeOutput(data.content);
+              return;
             }
+            // in pieces: indented, the document can pass V8's string limit
+            await writeTextChunks(
+              withNewline(prettyJsonChunks(parsed)),
+              this.options.sink,
+            );
           } else {
             writeOutput(data.content);
           }
@@ -147,7 +162,7 @@ class JsonDataGetRenderer implements Renderer<DataGetEvent> {
   handlers(): EventHandlers<DataGetEvent> {
     return {
       resolving: () => {},
-      completed: (e) => {
+      completed: async (e) => {
         const data = withCommandTarget(e.data, this.options.commandTarget);
         const jsonOutput: Record<string, unknown> = { ...data };
         if (
@@ -160,7 +175,7 @@ class JsonDataGetRenderer implements Renderer<DataGetEvent> {
             // Leave as string if not valid JSON
           }
         }
-        console.log(JSON.stringify(jsonOutput, null, 2));
+        await writeJsonValue(jsonOutput, this.options.sink);
       },
       error: (e) => {
         throw userErrorFromSwampError(e.error);
@@ -181,12 +196,12 @@ export function createDataGetRenderer(
   }
 }
 
-export function renderDataGet(
+export async function renderDataGet(
   data: DataGetData,
   mode: OutputMode,
   options: DataGetRenderOptions = {},
-): void {
+): Promise<void> {
   const renderer = createDataGetRenderer(mode, options);
   const handlers = renderer.handlers();
-  handlers.completed({ kind: "completed", data });
+  await handlers.completed({ kind: "completed", data });
 }
