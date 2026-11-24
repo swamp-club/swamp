@@ -882,13 +882,15 @@ export class ExtensionApiClient {
       throw new RegistryUnavailableError(
         `The answer from ${this.serverUrl} (GET ${
           describeRequestTarget(path)
-        }) did not describe version ${version} of ${name}.`,
+        }) did not describe version ${version} of ${name}. A proxy or an older registry may be answering; retry, or check the registry URL.`,
       );
     }
     return {
       version: entry.version,
       channel: entry.channel,
-      publishedAt: entry.publishedAt ?? "",
+      publishedAt: typeof entry.publishedAt === "string"
+        ? entry.publishedAt
+        : "",
       yankedAt: entry.yankedAt ?? null,
       // printed by push and promote, so cleaned where it enters
       yankReason: registryReason(entry.yankReason),
@@ -976,7 +978,7 @@ export class ExtensionApiClient {
     // per-call x-api-key or Authorization override the constructor identity
     const headers = mergeIdentityHeaders(this.identity, init.headers);
     const doFetch = this.options.fetch ?? globalThis.fetch;
-    const buffered = BUFFERED_METHODS.has((init.method ?? "GET").toUpperCase());
+    const buffered = (init.method ?? "GET").toUpperCase() === "GET";
     let responseUrl = "";
     try {
       // Each attempt gets its own timeout, combined with the caller's
@@ -1047,7 +1049,6 @@ export class ExtensionApiClient {
   }
 }
 
-const BUFFERED_METHODS = new Set(["GET", "HEAD"]);
 const NULL_BODY_STATUSES = new Set([204, 205, 304]);
 
 async function bufferResponse(res: Response): Promise<Response> {

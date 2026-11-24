@@ -2318,7 +2318,17 @@ Deno.test("ExtensionApiClient.getVersion: an answer without the version throws r
     await assertRejects(
       () => client.getVersion("@test/ext", "2026.11.24.1"),
       RegistryUnavailableError,
-      "did not describe version 2026.11.24.1 of @test/ext",
+      "did not describe version 2026.11.24.1 of @test/ext. A proxy or an older registry may be answering; retry, or check the registry URL.",
     );
   }
+});
+
+Deno.test("ExtensionApiClient.getVersion: a publishedAt that is not a string reads as empty", async () => {
+  const client = clientAnswering(() =>
+    Promise.resolve(Response.json({
+      version: { version: "2026.11.24.1", channel: "beta", publishedAt: 42 },
+    }))
+  );
+  const entry = await client.getVersion("@test/ext", "2026.11.24.1");
+  assertEquals(entry?.publishedAt, "");
 });
