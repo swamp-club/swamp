@@ -197,7 +197,7 @@ Deno.test("JUnitWorkflowRunRenderer: -q silences the stdout notice (swamp-club#2
   assertEquals(quiet, []);
 });
 
-Deno.test("JUnitWorkflowRunRenderer: an assert replayed after a reattach is timed from the recorded start to serve's stamp", async () => {
+Deno.test("JUnitWorkflowRunRenderer: an assert after a reattach is timed between serve's stamps, from the start first seen", async () => {
   const outFile = await Deno.makeTempFile({ suffix: ".xml" });
   try {
     const renderer = new JUnitWorkflowRunRenderer({ outFile });
@@ -218,6 +218,12 @@ Deno.test("JUnitWorkflowRunRenderer: an assert replayed after a reattach is time
       stepId: "check",
       startedAt: new Date(t0).toISOString(),
     }, t0));
+    h.step_started(stamp({
+      kind: "step_started",
+      jobId: "verify",
+      stepId: "check",
+      startedAt: new Date(t0).toISOString(),
+    }, t0 + 5_000));
     h.assert_result(stamp({
       kind: "assert_result",
       jobId: "verify",

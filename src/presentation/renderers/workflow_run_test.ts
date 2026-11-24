@@ -4137,7 +4137,7 @@ Deno.test("ConsoleWorkflowRunRenderer: a local run without stamps times steps on
   assertStringIncludes(lines.join("\n"), "completed in 4.0s · 17:53:45 UTC");
 });
 
-Deno.test("ConsoleWorkflowRunRenderer: a run resumed at a gate prints its start lines at the resume and the job's duration from the recorded start", async () => {
+Deno.test("ConsoleWorkflowRunRenderer: a run resumed at a gate prints its start lines and times its job from the resume, as before", async () => {
   const clock = new FakeRenderClock();
   const resumed = T0 + 3_600_000;
   const lines = await renderAt(clock, [
@@ -4162,7 +4162,7 @@ Deno.test("ConsoleWorkflowRunRenderer: a run resumed at a gate prints its start 
   ]);
 
   assertStringIncludes(lines.join("\n"), "done after-gate in 2.0s");
-  assertStringIncludes(lines.join("\n"), "completed in 60m2s");
+  assertStringIncludes(lines.join("\n"), "completed in 2.0s");
   const starting = lines.find((l) => l.includes("Starting"));
   assertStringIncludes(starting ?? "", "18:53:41 UTC");
   assertStringIncludes(lines.join("\n"), "│ start 18:53:41 UTC");
@@ -4327,4 +4327,65 @@ Deno.test("ConsoleWorkflowRunRenderer: a local heartbeat starts from 0 as before
   });
 
   assertStringIncludes(silence[0] ?? "", "Still running... [10s elapsed]");
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: a step a continued run starts again keeps the start this stream first saw", async () => {
+  const clock = new FakeRenderClock();
+  const lines = await renderAt(clock, [
+    [T0, stamped(startedEvent("run-1", T0), T0)],
+    [
+      T0,
+      stamped(
+        {
+          kind: "step_started",
+          jobId: "main",
+          stepId: "wait",
+          startedAt: iso(T0),
+        },
+        T0,
+      ),
+    ],
+    [
+      T0 + 20_000,
+      stamped(
+        {
+          kind: "step_started",
+          jobId: "main",
+          stepId: "wait",
+          startedAt: iso(T0),
+        },
+        T0 + 15_000,
+      ),
+    ],
+    [
+      T0 + 20_000,
+      stamped(
+        { kind: "step_completed", jobId: "main", stepId: "wait" },
+        T0 + 18_000,
+      ),
+    ],
+  ]);
+
+  assertStringIncludes(lines.join("\n"), "done wait in 18.0s");
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: a step resumed from a wait in a new client is timed from the resume", async () => {
+  const clock = new FakeRenderClock();
+  const resumed = T0 + 3 * 3_600_000;
+  const lines = await renderAt(clock, [
+    [resumed, startedEvent("run-1", T0)],
+    [resumed, {
+      kind: "step_started",
+      jobId: "main",
+      stepId: "wait",
+      startedAt: iso(T0),
+    }],
+    [resumed + 1_500, {
+      kind: "step_completed",
+      jobId: "main",
+      stepId: "wait",
+    }],
+  ]);
+
+  assertStringIncludes(lines.join("\n"), "done wait in 1.5s");
 });

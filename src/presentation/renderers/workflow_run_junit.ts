@@ -56,6 +56,7 @@ export class JUnitWorkflowRunRenderer implements WorkflowRunRenderer {
   private outFile: string | undefined;
   private asserts: AssertRecord[] = [];
   private stepStartTimes = new Map<string, number>();
+  private recordedStarts = new Map<string, number>();
   private _failed = false;
   private totalDuration = 0;
   private quiet: boolean;
@@ -96,10 +97,18 @@ export class JUnitWorkflowRunRenderer implements WorkflowRunRenderer {
       job_fanout_batch_started: () => {},
       job_fanout_halted: () => {},
       step_started: (e) => {
-        const at = parseEventTime((e as { at?: unknown }).at);
+        const key = `${e.jobId}:${e.stepId}`;
+        const recorded = parseEventTime(e.startedAt);
+        // a continued run sends the start again; keep the one first seen
+        if (
+          recorded !== undefined && this.recordedStarts.get(key) === recorded
+        ) {
+          return;
+        }
+        if (recorded !== undefined) this.recordedStarts.set(key, recorded);
         this.stepStartTimes.set(
-          `${e.jobId}:${e.stepId}`,
-          parseEventTime(e.startedAt) ?? at ?? Date.now(),
+          key,
+          parseEventTime((e as { at?: unknown }).at) ?? Date.now(),
         );
       },
       step_completed: () => {},

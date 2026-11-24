@@ -132,6 +132,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
   private stepStartTimes = new Map<string, number>();
   private jobStartTimes = new Map<string, number>();
   private readonly runsStarted = new Set<string>();
+  private readonly recordedStarts = new Map<string, number>();
   private readonly clock: RenderClock;
   // arrival minus serve's emit stamp, smallest seen: skew plus the least latency
   private clockOffsetMs: number | undefined;
@@ -173,10 +174,13 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
     return this.stampOf(event) ?? this.clock.now();
   }
 
-  /** the run record's start, which a continued run sends again unchanged */
-  private startTime(event: { startedAt?: string }): number {
-    const stamp = this.stampOf(event);
-    return parseEventTime(event.startedAt) ?? stamp ?? this.clock.now();
+  /** a continued run sends a start again with the record's unchanged start */
+  private seenStart(key: string, event: { startedAt?: string }): boolean {
+    const recorded = parseEventTime(event.startedAt);
+    if (recorded === undefined) return false;
+    if (this.recordedStarts.get(key) === recorded) return true;
+    this.recordedStarts.set(key, recorded);
+    return false;
   }
 
   /** time since a serve-clock instant; 0 until a serve stamp has been seen */
@@ -429,14 +433,11 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
       },
       job_started: (e) => {
         if (!this.pipe) return;
-        const start = this.startTime(e);
-        // a continued run starts its running job again with the recorded start
-        if (this.jobStartTimes.get(e.jobId) === start) return;
+        if (this.seenStart(`job:${e.jobId}`, e)) return;
+        // timed from when this stream saw it start: a resume counts from the resume
+        const start = this.eventTime(e);
         this.jobStartTimes.set(e.jobId, start);
-        this.pendingJobStarts.set(
-          e.jobId,
-          formatTimestamp(new Date(this.eventTime(e))),
-        );
+        this.pendingJobStarts.set(e.jobId, formatTimestamp(new Date(start)));
       },
       job_completed: (e) => {
         if (!this.pipe) return;
@@ -512,8 +513,11 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
       },
       step_started: (e) => {
         if (!this.pipe) return;
-        const start = this.startTime(e);
-        this.stepStartTimes.set(this.stepKey(e.jobId, e.stepId), start);
+        const key = this.stepKey(e.jobId, e.stepId);
+        if (!this.seenStart(`step:${key}`, e)) {
+          this.stepStartTimes.set(key, this.eventTime(e));
+        }
+        const start = this.stepStartTimes.get(key) ?? this.eventTime(e);
         const displayName = this.getDisplayName(e.jobId, e.stepId, e);
         if (displayName !== e.jobId) {
           this.pipe.updateWidth([displayName]);
