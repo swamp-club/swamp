@@ -371,6 +371,18 @@ library's `DataGetPayload` does not carry it, and an older serve drops it and
 replies whole. The reassembled content is still one string, so a remote read
 reaches what a local one does, no more.
 
+`model.output.data` (`swamp behavior output data --server`) takes the same
+opt-in `inParts`. Its value travels as parsed JSON rather than one string, so
+serve serializes it to compact JSON text once and sends that text in
+`model.output.data.part` frames cut by the same module, then the reply with
+`data` emptied in place (`null`) and `dataParts` and `dataLength` beside it; the
+CLI joins the parts and parses the value back. The compatibility rules are the
+same as for `data.get`: a request without the key gets the single reply byte for
+byte, an older serve drops it, and the published client library's
+`ModelOutputDataPayload` does not carry it. A value whose compact JSON passes
+V8's maximum string length still cannot be sent, as it could not be decoded
+locally either.
+
 The dashboard sends the same types there first and falls back to the socket on
 the same rules (`packages/dashboard/src/client/http_request.ts`, whose copy of
 `HTTP_REQUEST_TYPES` a test pins to core's). It holds no token, only its

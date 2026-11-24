@@ -24,12 +24,26 @@ import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
 import { carryModelWording } from "../../domain/behavior_wording.ts";
+import {
+  prettyJsonChunks,
+  type Sink,
+  withNewline,
+  writeJsonValue,
+  writeTextChunks,
+} from "../output/json_stream.ts";
+
+export interface ModelOutputDataRenderOptions {
+  /** receives the JSON document, or in log mode only a JSON value; stdout when unset */
+  sink?: Sink;
+}
 
 class LogModelOutputDataRenderer implements Renderer<ModelOutputDataEvent> {
+  constructor(private readonly options: ModelOutputDataRenderOptions = {}) {}
+
   handlers(): EventHandlers<ModelOutputDataEvent> {
     return {
       resolving: () => {},
-      completed: (e) => {
+      completed: async (e) => {
         if (e.data.contentEncoding === "base64") {
           console.log(
             dim("(binary data — use --json to get it base64-encoded)"),
@@ -37,7 +51,11 @@ class LogModelOutputDataRenderer implements Renderer<ModelOutputDataEvent> {
         } else if (typeof e.data.data === "string") {
           console.log(e.data.data);
         } else {
-          console.log(JSON.stringify(e.data.data, null, 2));
+          // in pieces: indented, the value can pass V8's string limit
+          await writeTextChunks(
+            withNewline(prettyJsonChunks(e.data.data)),
+            this.options.sink,
+          );
         }
       },
       error: (e) => {
@@ -48,11 +66,13 @@ class LogModelOutputDataRenderer implements Renderer<ModelOutputDataEvent> {
 }
 
 class JsonModelOutputDataRenderer implements Renderer<ModelOutputDataEvent> {
+  constructor(private readonly options: ModelOutputDataRenderOptions = {}) {}
+
   handlers(): EventHandlers<ModelOutputDataEvent> {
     return {
       resolving: () => {},
-      completed: (e) => {
-        console.log(JSON.stringify(e.data, null, 2));
+      completed: async (e) => {
+        await writeJsonValue(e.data, this.options.sink);
       },
       error: (e) => {
         throw carryModelWording(e.error, new UserError(e.error.message));
@@ -63,11 +83,12 @@ class JsonModelOutputDataRenderer implements Renderer<ModelOutputDataEvent> {
 
 export function createModelOutputDataRenderer(
   mode: OutputMode,
+  options: ModelOutputDataRenderOptions = {},
 ): Renderer<ModelOutputDataEvent> {
   switch (mode) {
     case "json":
-      return new JsonModelOutputDataRenderer();
+      return new JsonModelOutputDataRenderer(options);
     case "log":
-      return new LogModelOutputDataRenderer();
+      return new LogModelOutputDataRenderer(options);
   }
 }

@@ -394,12 +394,15 @@ text when the bytes are valid UTF-8, otherwise base64. `contentEncoding`
 (`utf-8` or `base64`) says which, and exists only in a projection — naming it
 in a predicate is an unknown-field error, since answering it would read every
 candidate's bytes. JSON items keep `content` as the parsed attributes, with
-`contentEncoding` `utf-8`. An item whose bytes are not on this host (any item
-from another namespace in a shared datastore, or a non-JSON item whose file is
-missing) projects `content` and `contentEncoding` as `null`, never as empty
-content. A leading UTF-8 byte-order mark is dropped from `utf-8` content, as
-`data get` drops it. The same rules apply
-to `data.query()` in CEL expressions.
+`contentEncoding` `utf-8`; the projection's result is coerced with
+`coerceBigIntsShared`, which hands back a plain object or array untouched when
+nothing in it needs converting, so a large `--select content` holds the parsed
+content once rather than beside a rebuilt copy. An item whose bytes are not on
+this host (any item from another namespace in a shared datastore, or a non-JSON
+item whose file is missing) projects `content` and `contentEncoding` as `null`,
+never as empty content. A leading UTF-8 byte-order mark is dropped from `utf-8`
+content, as `data get` drops it. The same rules apply to `data.query()` in CEL
+expressions.
 
 ```bash
 # Download a binary item

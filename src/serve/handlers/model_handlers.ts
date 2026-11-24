@@ -128,7 +128,7 @@ import type {
   ModelMethodHistoryLogsPayload,
   ModelMethodHistorySearchPayload,
   ModelMethodRunPayload,
-  ModelOutputDataPayload,
+  ModelOutputDataInPartsPayload,
   ModelOutputGetPayload,
   ModelOutputLogsPayload,
   ModelOutputSearchPayload,
@@ -138,6 +138,7 @@ import type {
   ModelUsageSummaryPayload,
   ModelValidatePayload,
 } from "../protocol.ts";
+import { contentPieces } from "../data_get_parts.ts";
 import {
   type DefinitionLookupResult,
   findDefinitionByIdGlobal,
@@ -2153,7 +2154,7 @@ export async function handleModelOutputData(
   socket: WebSocket,
   ctx: ConnectionContext,
   requestId: string,
-  payload: ModelOutputDataPayload,
+  payload: ModelOutputDataInPartsPayload,
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
@@ -2225,15 +2226,46 @@ export async function handleModelOutputData(
       return;
     }
 
-    send(socket, {
-      type: "model.output.data",
-      id: requestId,
-      payload: { data: result },
-    });
+    if (payload.inParts !== true) {
+      send(socket, {
+        type: "model.output.data",
+        id: requestId,
+        payload: { data: result },
+      });
+      return;
+    }
+    sendOutputDataInParts(socket, requestId, result);
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "model_output_data_failed", message);
   }
+}
+
+function sendOutputDataInParts(
+  socket: WebSocket,
+  requestId: string,
+  result: Record<string, unknown>,
+): void {
+  const text = JSON.stringify(result.data) ?? "null";
+  let dataParts = 0;
+  for (const piece of contentPieces(text)) {
+    send(socket, {
+      type: "model.output.data.part",
+      id: requestId,
+      payload: { content: piece },
+    });
+    dataParts++;
+  }
+  // emptied, not removed, so the key keeps its place in the printed reply
+  send(socket, {
+    type: "model.output.data",
+    id: requestId,
+    payload: {
+      data: { ...result, data: null },
+      dataParts,
+      dataLength: text.length,
+    },
+  });
 }
 
 export async function handleModelOutputLogs(

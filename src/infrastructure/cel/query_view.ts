@@ -32,7 +32,7 @@ import {
   QueryViewRefusal,
 } from "../../domain/data/query_view.ts";
 import { SECRET_OPERATION_UNSUPPORTED } from "../../domain/expressions/errors.ts";
-import { coerceBigInts } from "./cel_coercion.ts";
+import { coerceBigIntsShared } from "./cel_coercion.ts";
 import { QUERY_VIEW_FUNCTION_SIGNATURES } from "./cel_js_secret_refusal_inventory.ts";
 import { hasContainerComparison } from "./container_comparison.ts";
 import {
@@ -201,7 +201,7 @@ export function expressionQueryView(
       }
       if (threw) throw thrown;
       refusePromise(result, "query projection", expression);
-      return coerceBigInts(result, keepOpaque);
+      return coerceBigIntsShared(result, keepOpaque);
     },
   };
 }

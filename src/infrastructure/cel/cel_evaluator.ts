@@ -41,7 +41,7 @@ import {
   prepareCheckedVaultCalls,
   type VaultEvaluationScope,
 } from "./cel_vault_namespace.ts";
-import { coerceBigInts } from "./cel_coercion.ts";
+import { coerceBigInts, coerceBigIntsShared } from "./cel_coercion.ts";
 import { composeDataName } from "../../domain/data/mod.ts";
 import type { NamespaceReader } from "../../domain/data/namespace.ts";
 import {
@@ -779,7 +779,7 @@ function registerArithmeticOverloads(env: Environment): void {
 }
 
 export { registerArithmeticOverloads };
-export { coerceBigInts };
+export { coerceBigInts, coerceBigIntsShared };
 
 export function createExtensionCelEnvironment(): Environment {
   const env = new Environment({

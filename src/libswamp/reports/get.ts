@@ -26,6 +26,14 @@ import { behaviorNotFound, notFound, validationFailed } from "../errors.ts";
 import type { ReportGetEvent, StoredReportDetail } from "./report_views.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+import {
+  type ResourceLoadGuard,
+  resourceLoadGuardOf,
+} from "../../domain/data/resource_load_guard.ts";
+import { getLogger } from "@logtape/logtape";
+import { escapeLogTemplate } from "../../infrastructure/logging/logger.ts";
+
+const logger = getLogger(["swamp", "reports", "get"]);
 export interface ReportGetInput {
   reportName: string;
   model?: string;
@@ -57,6 +65,7 @@ export interface ReportGetDeps {
     dataName: string,
     version?: number,
   ) => Promise<Uint8Array | null>;
+  loadGuard?: ResourceLoadGuard;
   lookupDefinition: (
     idOrName: string,
   ) => Promise<{ definition: Definition; type: ModelType } | null>;
@@ -241,12 +250,31 @@ export async function* reportGet(
         if (wf) workflowName = wf.name;
       }
 
+      const loadGuard = resourceLoadGuardOf(deps);
+      const reportItem = (dataName: string) => ({
+        modelType: modelType.normalized,
+        modelName,
+        dataName,
+        version: data.version,
+      });
+      const sizeRefusal = loadGuard.refusalFor(
+        reportItem(data.name),
+        data.size ?? 0,
+      );
+      if (sizeRefusal) throw sizeRefusal;
       const rawMd = await deps.getContent(
         modelType,
         modelId,
         data.name,
         data.version,
       );
+      if (rawMd) {
+        const refusal = loadGuard.refusalFor(
+          reportItem(data.name),
+          rawMd.length,
+        );
+        if (refusal) throw refusal;
+      }
       const markdown = rawMd ? new TextDecoder().decode(rawMd) : "";
 
       const jsonDataName = `${data.name}-json`;
@@ -258,10 +286,21 @@ export async function* reportGet(
       );
       let json: Record<string, unknown> = {};
       if (rawJson) {
-        try {
-          json = JSON.parse(new TextDecoder().decode(rawJson));
-        } catch {
-          // Leave as empty if JSON parse fails
+        const refusal = loadGuard.parseRefusalFor(
+          reportItem(jsonDataName),
+          rawJson,
+        );
+        // a companion past the text limit reads as empty, so the markdown still shows
+        if (refusal?.reason === "text-length") {
+          logger.warn(escapeLogTemplate(refusal.message));
+        } else if (refusal) {
+          throw refusal;
+        } else {
+          try {
+            json = JSON.parse(new TextDecoder().decode(rawJson));
+          } catch {
+            // Leave as empty if JSON parse fails
+          }
         }
       }
 

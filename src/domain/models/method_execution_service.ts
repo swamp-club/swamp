@@ -2320,9 +2320,9 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
                         data.name,
                       );
                     if (activeContent) {
-                      refusal = loadGuard.refusalFor(
+                      refusal = loadGuard.parseRefusalFor(
                         item,
-                        activeContent.length,
+                        activeContent,
                       );
                     }
                     if (activeContent && !refusal) {

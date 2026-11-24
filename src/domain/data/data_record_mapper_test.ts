@@ -1230,6 +1230,36 @@ Deno.test("fromResourceHandle: a heap refusal marks the record instead of failin
   assertEquals(byLength.content, {});
 });
 
+Deno.test("fromResourceHandle: dense JSON is marked on its parsed structure though its bytes fit, and sparse JSON of its size loads", async () => {
+  const dense = encoder.encode(JSON.stringify({ items: Array(100).fill("") }));
+  assertEquals(dense.length * 3 <= 1000, true);
+  const marked = await fromResourceHandle(
+    blobHandle(0),
+    ModelType.create("test/model"),
+    "m",
+    "big",
+    asyncGuardedRepo(dense),
+  );
+  assertEquals(marked.tooLargeToLoad, {
+    bytes: dense.length,
+    reason: "memory",
+  });
+  assertEquals(marked.attributes, {});
+
+  const sparse = encoder.encode(
+    JSON.stringify({ items: ["x".repeat(dense.length - 14)] }),
+  );
+  assertEquals(sparse.length, dense.length);
+  const loaded = await fromResourceHandle(
+    blobHandle(0),
+    ModelType.create("test/model"),
+    "m",
+    "big",
+    asyncGuardedRepo(sparse),
+  );
+  assertEquals("tooLargeToLoad" in loaded, false);
+});
+
 Deno.test("fromResourceHandle: content past the text-length limit is marked, never decoded into empty attributes", async () => {
   const content = encoder.encode('{"marker":"hello","pad":"xxxx"}');
   const sized = textLimitedRepo(content);

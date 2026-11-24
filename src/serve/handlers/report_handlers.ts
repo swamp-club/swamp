@@ -121,6 +121,7 @@ export async function handleReportGet(
           dataName,
           version,
         ),
+      loadGuard: ctx.repoContext.unifiedDataRepo.loadGuard,
       lookupDefinition: (idOrName) =>
         findDefinitionByIdOrName(ctx.repoContext.definitionRepo, idOrName),
       lookupDefinitionById: (type, id) =>

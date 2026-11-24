@@ -41,6 +41,98 @@ export const v8HeapProbe: HeapProbe = {
 // decoding holds one copy of the text and JSON.parse builds one to two more
 export const DECODED_HEAP_FACTOR = 3;
 
+// V8's sizes: an object with four in-object slots, an array, a slot per element or extra member
+const PARSED_OBJECT_BYTES = 56;
+const PARSED_OBJECT_INLINE_MEMBERS = 4;
+const PARSED_ARRAY_BYTES = 48;
+const PARSED_SLOT_BYTES = 8;
+
+const QUOTE = 0x22;
+const BACKSLASH = 0x5c;
+const OPEN_OBJECT = 0x7b;
+const CLOSE_OBJECT = 0x7d;
+const OPEN_ARRAY = 0x5b;
+const CLOSE_ARRAY = 0x5d;
+const COMMA = 0x2c;
+const COLON = 0x3a;
+
+const IS_ARRAY = 1;
+const HOLDS = 2;
+
+function isJsonWhitespace(byte: number): boolean {
+  return byte === 0x20 || byte === 0x0a || byte === 0x0d || byte === 0x09;
+}
+
+/**
+ * the parse's heap from containers alone; strings are skipped, as V8 shares
+ * keys and repeated values; past cap it stops and returns a figure over cap
+ */
+export function estimateParsedJsonBytes(
+  content: Uint8Array,
+  cap: number = Number.POSITIVE_INFINITY,
+): number {
+  let total = 0;
+  let inString = false;
+  let escaped = false;
+  // per open container, in typed arrays so deep nesting grows no V8 heap:
+  // bit 0 marks an array, bit 1 a container holding anything
+  let flags = new Uint8Array(64);
+  let commas = new Uint32Array(64);
+  let depth = 0;
+  // JSON.parse builds at most the first value before failing on what follows
+  // TextDecoder drops a leading byte-order mark before the parse sees the text
+  let start = content[0] === 0xef && content[1] === 0xbb && content[2] === 0xbf
+    ? 3
+    : 0;
+  while (start < content.length && isJsonWhitespace(content[start])) start++;
+  if (content[start] !== OPEN_OBJECT && content[start] !== OPEN_ARRAY) return 0;
+  for (let i = start; i < content.length; i++) {
+    const byte = content[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (byte === BACKSLASH) escaped = true;
+      else if (byte === QUOTE) inString = false;
+      continue;
+    }
+    if (byte === OPEN_OBJECT || byte === OPEN_ARRAY) {
+      if (depth > 0) flags[depth - 1] |= HOLDS;
+      if (depth === flags.length) {
+        const grownFlags = new Uint8Array(depth * 2);
+        grownFlags.set(flags);
+        flags = grownFlags;
+        const grownCommas = new Uint32Array(depth * 2);
+        grownCommas.set(commas);
+        commas = grownCommas;
+      }
+      flags[depth] = byte === OPEN_ARRAY ? IS_ARRAY : 0;
+      commas[depth] = 0;
+      depth++;
+      // every open container costs at least an array once closed
+      if (total + depth * PARSED_ARRAY_BYTES > cap) {
+        return total + depth * PARSED_ARRAY_BYTES;
+      }
+    } else if (byte === CLOSE_OBJECT || byte === CLOSE_ARRAY) {
+      if (depth === 0) continue;
+      depth--;
+      const items = flags[depth] & HOLDS ? commas[depth] + 1 : 0;
+      total += flags[depth] & IS_ARRAY
+        ? PARSED_ARRAY_BYTES + PARSED_SLOT_BYTES * items
+        : PARSED_OBJECT_BYTES +
+          PARSED_SLOT_BYTES *
+            Math.max(0, items - PARSED_OBJECT_INLINE_MEMBERS);
+      if (total > cap || depth === 0) return total;
+    } else if (byte === COMMA) {
+      if (depth > 0) commas[depth - 1]++;
+    } else if (byte === QUOTE) {
+      inString = true;
+      if (depth > 0) flags[depth - 1] |= HOLDS;
+    } else if (byte !== COLON && !isJsonWhitespace(byte) && depth > 0) {
+      flags[depth - 1] |= HOLDS;
+    }
+  }
+  return total;
+}
+
 export interface LoadedItemRef {
   readonly modelType: string;
   readonly modelName?: string;
@@ -118,6 +210,12 @@ export class ResourceLoadGuard {
     if (refusal) throw refusal;
   }
 
+  /** assertLoadable for content in hand that will be parsed as JSON */
+  assertParsable(item: LoadedItemRef, content: Uint8Array): void {
+    const refusal = this.#memoryRefusal(item, content.length, content);
+    if (refusal) throw refusal;
+  }
+
   /** the heap check plus the text-length limit, for callers that record a refusal */
   refusalFor(
     item: LoadedItemRef,
@@ -129,14 +227,37 @@ export class ResourceLoadGuard {
     return this.#memoryRefusal(item, bytes);
   }
 
+  /** refusalFor for content in hand that will be parsed as JSON */
+  parseRefusalFor(
+    item: LoadedItemRef,
+    content: Uint8Array,
+  ): ResourceTooLargeToLoadError | undefined {
+    if (content.length > this.maxDecodableBytes) {
+      return new ResourceTooLargeToLoadError(
+        item,
+        content.length,
+        "text-length",
+      );
+    }
+    return this.#memoryRefusal(item, content.length, content);
+  }
+
   #memoryRefusal(
     item: LoadedItemRef,
     bytes: number,
+    parsed?: Uint8Array,
   ): ResourceTooLargeToLoadError | undefined {
     if (!(bytes >= this.floorBytes)) return undefined;
     const limit = this.probe.heapLimitBytes();
     const used = this.probe.heapUsedBytes();
-    const needed = bytes * DECODED_HEAP_FACTOR;
+    let needed = bytes * DECODED_HEAP_FACTOR;
+    // the scan runs only when the cheaper byte estimate would admit the item
+    if (parsed !== undefined && used + needed <= limit) {
+      needed = Math.max(
+        needed,
+        bytes + estimateParsedJsonBytes(parsed, limit - used - bytes),
+      );
+    }
     if (used + needed <= limit) return undefined;
     logger.warn(escapeLogTemplate(
       `Refused to load ${

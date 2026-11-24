@@ -6721,6 +6721,20 @@ function guardedRepo(
   return repo;
 }
 
+Deno.test("createResourceReader: refuses dense JSON on its parsed structure, though its bytes fit", async () => {
+  const dense = new TextEncoder().encode(
+    JSON.stringify({ items: Array(100).fill("") }),
+  );
+  assertEquals(dense.length * 3 <= 1000, true);
+  const repo = guardedRepo(dense.length, dense);
+  const readResource = createResourceReader(repo, modelType, modelId);
+  await assertRejects(
+    () => readResource("blob"),
+    ResourceTooLargeToLoadError,
+  );
+  assertEquals(repo.contentReads, 1);
+});
+
 Deno.test("createResourceReader: refuses an item whose recorded size the guard rejects, without reading it", async () => {
   const repo = guardedRepo(500, new TextEncoder().encode("{}"));
   const readResource = createResourceReader(repo, modelType, modelId);

@@ -25,6 +25,7 @@ import {
 } from "@std/assert";
 import {
   defaultResourceLoadGuard,
+  estimateParsedJsonBytes,
   type HeapProbe,
   MAX_DECODABLE_BYTES,
   parseTooLargeToLoad,
@@ -150,4 +151,164 @@ Deno.test("parseTooLargeToLoad: reads a stored marker and rejects any malformed 
     parseTooLargeToLoad({ bytes: Infinity, reason: "memory" }),
     undefined,
   );
+});
+
+const encode = (text: string) => new TextEncoder().encode(text);
+
+Deno.test("estimateParsedJsonBytes: prices each object, array and array element", () => {
+  assertEquals(estimateParsedJsonBytes(encode("{}")), 56);
+  assertEquals(estimateParsedJsonBytes(encode("[]")), 48);
+  assertEquals(estimateParsedJsonBytes(encode("[1, 2, 3]")), 48 + 3 * 8);
+  assertEquals(estimateParsedJsonBytes(encode('[{"a":1},{}]')), 48 + 16 + 112);
+});
+
+Deno.test("estimateParsedJsonBytes: an object's first four members are in the object, the rest cost a slot each", () => {
+  const four = '{"a":1,"b":2,"c":3,"d":4}';
+  const six = '{"a":1,"b":2,"c":3,"d":4,"e":5,"f":6}';
+  assertEquals(estimateParsedJsonBytes(encode(four)), 56);
+  assertEquals(estimateParsedJsonBytes(encode(six)), 56 + 2 * 8);
+});
+
+Deno.test("estimateParsedJsonBytes: braces, brackets and commas inside strings cost nothing", () => {
+  const text = JSON.stringify({ log: 'a,b:{c}[d],\\"[{,'.repeat(1000) });
+  assertEquals(estimateParsedJsonBytes(encode(text)), 56);
+});
+
+Deno.test("estimateParsedJsonBytes: an escaped quote does not end a string", () => {
+  const text = JSON.stringify(['say "[1,2]"', "{"]);
+  assertEquals(estimateParsedJsonBytes(encode(text)), 48 + 2 * 8);
+});
+
+Deno.test("estimateParsedJsonBytes: an array of strings holds one slot per string", () => {
+  assertEquals(
+    estimateParsedJsonBytes(encode(JSON.stringify(["", "x", "yy"]))),
+    48 + 3 * 8,
+  );
+});
+
+Deno.test("estimateParsedJsonBytes: whitespace and pretty-printing change nothing", () => {
+  const value = { a: [1, { b: [] }], c: {} };
+  assertEquals(
+    estimateParsedJsonBytes(encode(JSON.stringify(value, null, 2))),
+    estimateParsedJsonBytes(encode(JSON.stringify(value))),
+  );
+});
+
+Deno.test("estimateParsedJsonBytes: nesting thousands deep is counted without recursion", () => {
+  const depth = 100_000;
+  const text = "[".repeat(depth) + "]".repeat(depth);
+  assertEquals(
+    estimateParsedJsonBytes(encode(text)),
+    48 * depth + 8 * (depth - 1),
+  );
+});
+
+Deno.test("estimateParsedJsonBytes: text that is not JSON never costs more than its balanced containers", () => {
+  assertEquals(estimateParsedJsonBytes(encode("a, b, c\n1, 2, 3")), 0);
+  assertEquals(estimateParsedJsonBytes(encode("[[[, , ,")), 0);
+  assertEquals(estimateParsedJsonBytes(encode("]]}} plain")), 0);
+});
+
+// a heap of 1000 and a floor of 50: three times 300 bytes fits, the parse of
+// 100 empty strings does not
+const dense = encode(JSON.stringify(Array(100).fill("")));
+const sparse = encode(JSON.stringify(["x".repeat(dense.length - 4)]));
+
+Deno.test("ResourceLoadGuard.assertParsable: refuses dense JSON the byte factor passes", () => {
+  const guard = new ResourceLoadGuard(probe(1000, 0), 50);
+  guard.assertLoadable(item, dense.length);
+  const error = assertThrows(
+    () => guard.assertParsable(item, dense),
+    ResourceTooLargeToLoadError,
+  );
+  assertEquals(error.bytes, dense.length);
+  assertEquals(error.reason, "memory");
+});
+
+Deno.test("ResourceLoadGuard.assertParsable: loads sparse JSON of the same size", () => {
+  assertEquals(sparse.length, dense.length);
+  new ResourceLoadGuard(probe(1000, 0), 50).assertParsable(item, sparse);
+});
+
+Deno.test("ResourceLoadGuard.assertParsable: content below the floor is never scanned or refused", () => {
+  const p = probe(10, 9);
+  new ResourceLoadGuard(p, dense.length + 1).assertParsable(item, dense);
+  assertEquals(p.reads, 0);
+});
+
+Deno.test("ResourceLoadGuard.assertParsable: never estimates below the byte factor", () => {
+  const text = encode(JSON.stringify("x".repeat(400)));
+  assertThrows(
+    () => new ResourceLoadGuard(probe(1000, 0), 50).assertParsable(item, text),
+    ResourceTooLargeToLoadError,
+  );
+});
+
+Deno.test("ResourceLoadGuard.parseRefusalFor: returns the structure refusal, and the text-length one first", () => {
+  const guard = new ResourceLoadGuard(probe(1000, 0), 50, dense.length + 10);
+  assertInstanceOf(
+    guard.parseRefusalFor(item, dense),
+    ResourceTooLargeToLoadError,
+  );
+  assertEquals(guard.parseRefusalFor(item, sparse), undefined);
+  const long = new Uint8Array(dense.length + 11);
+  assertEquals(guard.parseRefusalFor(item, long)?.reason, "text-length");
+});
+
+Deno.test("estimateParsedJsonBytes: stops once the count passes cap, returning a figure over it", () => {
+  const deep = encode("[".repeat(1_000_000));
+  const estimate = estimateParsedJsonBytes(deep, 4800);
+  assertEquals(estimate > 4800, true);
+  assertEquals(estimate <= 4800 + 48, true);
+  const wide = encode(JSON.stringify(Array(10_000).fill([])));
+  assertEquals(estimateParsedJsonBytes(wide, 1000) > 1000, true);
+  assertEquals(estimateParsedJsonBytes(wide, 1000) < 2000, true);
+  // the inner array alone passes the cap when it closes, so the outer is not counted
+  const nested = encode(JSON.stringify([Array(200).fill(1)]));
+  assertEquals(estimateParsedJsonBytes(nested), 48 + 8 * 200 + 48 + 8);
+  assertEquals(estimateParsedJsonBytes(nested, 1000), 48 + 8 * 200);
+});
+
+Deno.test("estimateParsedJsonBytes: ordinary log text with bracketed tags stays under the byte factor", () => {
+  const log = encode(
+    "2026-11-24T22:00:00Z [INFO] request served in 12 ms for /api/data\n"
+      .repeat(1000),
+  );
+  assertEquals(
+    log.length + estimateParsedJsonBytes(log) < log.length * 3,
+    true,
+  );
+});
+
+Deno.test("estimateParsedJsonBytes: prices only the first top-level value, as JSON.parse builds no more before failing", () => {
+  const ndjson = encode('{"id":1}\n'.repeat(10_000));
+  assertEquals(estimateParsedJsonBytes(ndjson), 56);
+  const tagged = encode("[INFO] served\n[INFO] served\n".repeat(10_000));
+  assertEquals(estimateParsedJsonBytes(tagged), 48 + 8);
+});
+
+Deno.test("estimateParsedJsonBytes: content that does not open with an object or array costs nothing", () => {
+  for (
+    const text of [
+      "2026-11-24T22:00:00Z [INFO] {a} [b]\n".repeat(1000),
+      '"a string with [brackets] and {braces}"',
+      "42",
+      "",
+      "   ",
+    ]
+  ) {
+    assertEquals(estimateParsedJsonBytes(encode(text)), 0);
+  }
+  assertEquals(estimateParsedJsonBytes(encode("  \n [1, 2]")), 48 + 16);
+});
+
+Deno.test("estimateParsedJsonBytes: a leading byte-order mark is skipped, as TextDecoder drops it before the parse", () => {
+  const bom = new Uint8Array([0xef, 0xbb, 0xbf]);
+  const body = encode(JSON.stringify(Array(100).fill({})));
+  const withBom = new Uint8Array(bom.length + body.length);
+  withBom.set(bom);
+  withBom.set(body, bom.length);
+  assertEquals(estimateParsedJsonBytes(withBom), estimateParsedJsonBytes(body));
+  assertEquals(estimateParsedJsonBytes(body) > 0, true);
+  assertEquals(JSON.parse(new TextDecoder().decode(withBom)).length, 100);
 });
