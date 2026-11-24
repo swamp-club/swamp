@@ -1241,14 +1241,15 @@ export const modelKindAdapter: KindAdapter = {
     for (const { key, definition } of claimed) {
       provenance.set(key, { contributor, definition, bundleSource });
     }
-    // a re-attach of an edited file must not leave its other members shipping
-    // the bundle of the source it replaced
+    // a member this attach did not claim is one the edited file dropped: the
+    // old bundle is stale and the new one lacks it, so it does not ship
+    const claimedKeys = new Set(claimed.map(({ key }) => key));
     for (const [key, prov] of provenance) {
       if (
         prov.contributor.sourcePath === contributor.sourcePath &&
-        prov.bundleSource !== bundleSource
+        !claimedKeys.has(key) && prov.bundleSource !== undefined
       ) {
-        provenance.set(key, { ...prov, bundleSource });
+        provenance.set(key, { ...prov, bundleSource: undefined });
       }
     }
     for (const { key, label, name, prior } of overridden) {

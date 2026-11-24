@@ -4027,7 +4027,17 @@ async function withAddOnType(
   const type = ModelType.create(
     `@test/dispatch-addon-${crypto.randomUUID().slice(0, 8)}`,
   );
-  modelRegistry.register({ ...builtinModelDef, type, methods: {} });
+  modelRegistry.register({
+    ...builtinModelDef,
+    type,
+    methods: {
+      run: {
+        description: "the type's own method",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({ dataHandles: [] }),
+      },
+    },
+  });
   let denoResolutions = 0;
   const attachAddOn = (
     sourcePath: string,

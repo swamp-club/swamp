@@ -131,7 +131,10 @@ interface Repo {
   hello: string;
 }
 
-async function withRepo(fn: (repo: Repo) => Promise<void>): Promise<void> {
+async function withRepo(
+  fn: (repo: Repo) => Promise<void>,
+  options: { eager?: boolean } = {},
+): Promise<void> {
   const repoDir = await Deno.realPath(
     await Deno.makeTempDir({ prefix: "swamp_addon_dispatch_" }),
   );
@@ -178,7 +181,11 @@ async function withRepo(fn: (repo: Repo) => Promise<void>): Promise<void> {
           repoRoot: repoDir,
         }),
       );
-      await loader.buildIndex(modelsDir, { indexOnly: true });
+      if (options.eager) {
+        await loader.load(modelsDir);
+      } else {
+        await loader.buildIndex(modelsDir, { indexOnly: true });
+      }
       modelRegistry.setTypeLoader((t, entry) =>
         loader.loadSingleType(t, entry)
       );
@@ -378,4 +385,26 @@ Deno.test("add-on dispatch: an add-on edited after serve loaded it fails a dispa
     await dispatch(h, type, "base");
     assertEquals(h.frames[0].extensionBundles, []);
   });
+});
+
+Deno.test("add-on dispatch: add-ons a full load attaches ship too, and an edit after the load is caught", async () => {
+  await withRepo(async ({ repoDir, modelsDir, type, hello }) => {
+    const h = harness();
+    const shell = await dispatch(h, SHELL, hello);
+    assertEquals(shell.extensionBundles.map((b) => b.methods), [[hello]]);
+    const extra = await dispatch(h, type, "extra");
+    const { merged } = await workerDefinition(
+      h.bundles,
+      extra,
+      join(repoDir, "worker-cache"),
+    );
+    assertEquals(merged.methods.extra.description, "extra from the add-on");
+
+    await Deno.writeTextFile(
+      join(modelsDir, "thing_twice_a.ts"),
+      addOnSource(type, { twice: "edited" }),
+    );
+    const error = await assertRejects(() => dispatch(h, type, "twice"));
+    assertEquals((error as Error).name, "StaleExtensionSourceError");
+  }, { eager: true });
 });

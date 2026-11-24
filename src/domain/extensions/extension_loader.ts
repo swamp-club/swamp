@@ -389,7 +389,7 @@ export class ExtensionLoader {
 
   /**
    * take it before importing the add-on, as for a type's own source; it
-   * resolves no Deno and cannot throw, so attaching costs what it did
+   * resolves no Deno, which only a dispatch that ships the add-on needs
    */
   private async addOnSource(
     absolutePath: string,

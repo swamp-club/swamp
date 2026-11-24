@@ -1616,7 +1616,7 @@ Deno.test("shippableExtensionMembers: a merge that throws leaves nothing to ship
   });
 });
 
-Deno.test("shippableExtensionMembers: a re-attached file ships its new source for every member it still wins", () => {
+Deno.test("shippableExtensionMembers: a re-attached file ships its new source with only the members that source still exports", () => {
   withPrecedenceType((type) => {
     attachWithSource(LOCAL_AA, makeExtension(type, ["keep", "probe"]));
     const first = shippableExtensionMembers(type)[0].bundleSource;
@@ -1624,7 +1624,7 @@ Deno.test("shippableExtensionMembers: a re-attached file ships its new source fo
     const shipped = shippableExtensionMembers(type);
     assertEquals(shipped.length, 1);
     assertEquals(shipped[0].bundleSource === first, false);
-    assertEquals(shipped[0].methods, ["keep", "probe"]);
+    assertEquals(shipped[0].methods, ["probe"]);
   });
 });
 
