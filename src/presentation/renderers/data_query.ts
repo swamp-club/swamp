@@ -256,17 +256,31 @@ function isNested(value: unknown): boolean {
   return value !== null && typeof value === "object";
 }
 
-function hasNestedCell(
+// longer than a table can lay out; marked overflows its stack on such a line
+const MAX_TABLE_CELL_CHARS = 1024 * 1024;
+
+function fitsTable(cell: unknown): boolean {
+  return !isNested(cell) &&
+    !(typeof cell === "string" && cell.length > MAX_TABLE_CELL_CHARS);
+}
+
+function rowsFitTable(
   projected: Extract<ProjectedData, { shape: "map" | "list" }>,
 ): boolean {
   for (const row of projected.rows) {
     if (row == null) continue;
+    // a list row that is not an array is one cell, but a map row that is not a
+    // record fits no column; Object.values would list a string's characters
+    if (typeof row !== "object") {
+      if (projected.shape === "map" || !fitsTable(row)) return false;
+      continue;
+    }
     const cells = Array.isArray(row) ? row : Object.values(row);
     for (const cell of cells) {
-      if (isNested(cell)) return true;
+      if (!fitsTable(cell)) return false;
     }
   }
-  return false;
+  return true;
 }
 
 /**
@@ -302,9 +316,9 @@ function* queryResultsTerminalChunks(
     yield* valuesPlainChunks(data.projected.values, data);
     return;
   }
-  // one nested cell makes the whole result JSON: a table is as wide as its
-  // widest cell, and a half-table listing reads worse than either form
-  if (data.projected && hasNestedCell(data.projected)) {
+  // one cell a table cannot hold makes the whole result plain values: a table is
+  // as wide as its widest cell, and a half-table listing reads worse than either
+  if (data.projected && !rowsFitTable(data.projected)) {
     yield* valuesPlainChunks(data.projected.rows, data, "\n\n");
     return;
   }

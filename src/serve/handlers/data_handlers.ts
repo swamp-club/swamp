@@ -56,7 +56,17 @@ import {
   createSummariseDeps,
   summarise,
 } from "../../libswamp/summary/summarise.ts";
-import { dataQuery, type DataQueryDeps } from "../../libswamp/data/query.ts";
+import {
+  dataQuery,
+  type DataQueryData,
+  type DataQueryDeps,
+} from "../../libswamp/data/query.ts";
+import {
+  describeQueryItem,
+  queryItems,
+  queryPartBatches,
+  withQueryItems,
+} from "../data_query_parts.ts";
 import type { DataRecord } from "../../domain/data/data_record.ts";
 import {
   dataSearch,
@@ -71,7 +81,7 @@ import type {
   DataGetPayload,
   DataListPayload,
   DataPrunePayload,
-  DataQueryPayload,
+  DataQueryInPartsPayload,
   DataRenamePayload,
   DataSearchPayload,
   DataVersionsPayload,
@@ -582,7 +592,7 @@ export async function handleDataQuery(
   socket: WebSocket,
   ctx: ConnectionContext,
   requestId: string,
-  payload: DataQueryPayload,
+  payload: DataQueryInPartsPayload,
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
@@ -670,15 +680,56 @@ export async function handleDataQuery(
 
     const data = result ?? {};
 
-    send(socket, {
-      type: "data.query",
-      id: requestId,
-      payload: { data },
-    });
+    if (payload.inParts !== true || result === undefined) {
+      send(socket, {
+        type: "data.query",
+        id: requestId,
+        payload: { data },
+      });
+      return;
+    }
+    sendQueryInParts(socket, requestId, result as unknown as DataQueryData);
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "data_query_failed", message);
   }
+}
+
+function sendQueryInParts(
+  socket: WebSocket,
+  requestId: string,
+  data: DataQueryData,
+): void {
+  let sent = 0;
+  for (const items of queryPartBatches(queryItems(data))) {
+    try {
+      send(socket, {
+        type: "data.query.part",
+        id: requestId,
+        payload: { items },
+      });
+    } catch (error) {
+      if (!(error instanceof RangeError) || items.length !== 1) throw error;
+      sendError(
+        socket,
+        requestId,
+        "data_query_failed",
+        `Query result ${
+          describeQueryItem(items[0], sent)
+        } is too large to send as JSON`,
+      );
+      return;
+    }
+    sent += items.length;
+  }
+  send(socket, {
+    type: "data.query",
+    id: requestId,
+    payload: {
+      data: withQueryItems(data, []) as unknown as Record<string, unknown>,
+      partItems: sent,
+    },
+  });
 }
 
 export async function handleDataList(

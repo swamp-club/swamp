@@ -259,6 +259,7 @@ export class AppBroker {
   /** Only what an app may choose about a run; checks and locks stay as set. */
   #outboundPayload(frame: BridgeFrame): unknown {
     if (frame.type === METHOD_REQUEST) return this.#methodPayload(frame);
+    if (frame.type === "data.query") return withoutInParts(frame.payload);
     if (frame.type !== RUN_REQUEST) return frame.payload;
     const { workflowIdOrName, inputs, runtimeTags } = frame.payload as Record<
       string,
@@ -309,4 +310,15 @@ export class AppBroker {
     this.#lastNavigation = now;
     return true;
   }
+}
+
+// the dashboard reads one reply; a reply in parts is for swamp's own CLI
+function withoutInParts(payload: unknown): unknown {
+  if (
+    payload === null || typeof payload !== "object" || !("inParts" in payload)
+  ) {
+    return payload;
+  }
+  const { inParts: _inParts, ...rest } = payload as Record<string, unknown>;
+  return rest;
 }

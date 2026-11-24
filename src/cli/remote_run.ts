@@ -973,6 +973,23 @@ export async function requestServerResponse<T>(
   options: RequestResponseOptions,
   request: { type: string; id?: string; payload?: unknown },
 ): Promise<T> {
+  return (await requestServerParts<T>(options, request)).payload;
+}
+
+export interface ServerReplyInParts<T> {
+  payload: T;
+  /** the payloads of the request's `<type>.part` frames, in order */
+  parts: unknown[];
+}
+
+/**
+ * requestServerResponse for a request that asked for its reply in parts; parts
+ * belong to one attempt, so a retried request never keeps a failed attempt's
+ */
+export async function requestServerParts<T>(
+  options: RequestResponseOptions,
+  request: { type: string; id?: string; payload?: unknown },
+): Promise<ServerReplyInParts<T>> {
   if (options.remoteIndicator !== false) writeRemoteIndicator(options.server);
   const window = new RetryWindow(
     options.restartRetryBudgetMs ?? RESTART_RETRY_BUDGET_MS,
@@ -984,11 +1001,16 @@ export async function requestServerResponse<T>(
     try {
       if (HTTP_REQUEST_TYPES.has(request.type)) {
         overHttp = true;
-        const outcome = await requestOverHttp<T>(options, request);
-        if (outcome.kind === "payload") return outcome.payload;
+        const parts: unknown[] = [];
+        const outcome = await requestOverHttp<T>(options, request, parts);
+        if (outcome.kind === "payload") {
+          return { payload: outcome.payload, parts };
+        }
       }
       overHttp = false;
-      return await requestOverSocket<T>(options, request);
+      const parts: unknown[] = [];
+      const payload = await requestOverSocket<T>(options, request, parts);
+      return { payload, parts };
     } catch (err) {
       // over HTTP only a refusal that names when to come back is retried
       const refusal = restartRefusal(
@@ -1009,6 +1031,77 @@ export async function requestServerResponse<T>(
   }
 }
 
+type ReplyFrame<T> =
+  | { kind: "other" }
+  | { kind: "part"; payload: unknown }
+  | { kind: "error"; error: ServerResponseError }
+  | { kind: "payload"; payload: T };
+
+/** what a frame means for this request; a part frame is never its reply */
+function readReplyFrame<T>(
+  text: string,
+  requestId: string,
+  requestType: string,
+): ReplyFrame<T> {
+  let message: unknown;
+  try {
+    message = JSON.parse(text);
+  } catch {
+    return { kind: "other" };
+  }
+  if (
+    typeof message !== "object" || message === null ||
+    !("type" in message) || typeof message.type !== "string" ||
+    !("id" in message) || message.id !== requestId
+  ) {
+    return { kind: "other" };
+  }
+  if (message.type === "error") {
+    if (!("error" in message)) return { kind: "other" };
+    return {
+      kind: "error",
+      error: new ServerResponseError(
+        message.error as { code: string; message: string; details?: unknown },
+      ),
+    };
+  }
+  if (!("payload" in message)) return { kind: "other" };
+  if (message.type === `${requestType}.part`) {
+    return { kind: "part", payload: message.payload };
+  }
+  return { kind: "payload", payload: message.payload as T };
+}
+
+/**
+ * an NDJSON body line by line, so no reply is ever held as one string; a line
+ * is joined only from the pieces it spans
+ */
+async function* ndjsonLines(
+  body: ReadableStream<Uint8Array>,
+): AsyncGenerator<string> {
+  const reader = body.pipeThrough(new TextDecoderStream()).getReader();
+  const pieces: string[] = [];
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      let start = 0;
+      let end = value.indexOf("\n");
+      while (end !== -1) {
+        pieces.push(value.slice(start, end));
+        yield pieces.join("");
+        pieces.length = 0;
+        start = end + 1;
+        end = value.indexOf("\n", start);
+      }
+      if (start < value.length) pieces.push(value.slice(start));
+    }
+    if (pieces.length > 0) yield pieces.join("");
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+}
+
 type HttpRequestOutcome<T> =
   | { kind: "payload"; payload: T }
   | { kind: "route_missing" };
@@ -1016,6 +1109,7 @@ type HttpRequestOutcome<T> =
 async function requestOverHttp<T>(
   options: RequestResponseOptions,
   request: { type: string; id?: string; payload?: unknown },
+  parts: unknown[],
 ): Promise<HttpRequestOutcome<T>> {
   const baseUrl = toWebSocketUrl(options.server);
   const headers: Record<string, string> = {
@@ -1085,39 +1179,32 @@ async function requestOverHttp<T>(
       }
       throw httpRefusal(baseUrl, response.status, refusal);
     }
-    let body: string;
+    const lines = ndjsonLines(response.body ?? new Blob().stream());
     try {
-      body = await response.text();
-    } catch (err) {
-      const failed = failure(err);
-      if (failed instanceof UserError || failed instanceof DOMException) {
-        throw failed;
+      while (true) {
+        let next: IteratorResult<string>;
+        try {
+          next = await lines.next();
+        } catch (err) {
+          const failed = failure(err);
+          if (failed instanceof UserError || failed instanceof DOMException) {
+            throw failed;
+          }
+          throw new UserError(
+            `Connection to ${baseUrl} closed before a response was received: ${failed.message}`,
+          );
+        }
+        if (next.done) break;
+        if (next.value === "") continue;
+        const frame = readReplyFrame<T>(next.value, requestId, request.type);
+        if (frame.kind === "part") parts.push(frame.payload);
+        else if (frame.kind === "error") throw frame.error;
+        else if (frame.kind === "payload") {
+          return { kind: "payload", payload: frame.payload };
+        }
       }
-      throw new UserError(
-        `Connection to ${baseUrl} closed before a response was received: ${failed.message}`,
-      );
-    }
-    for (const line of body.split("\n")) {
-      if (line === "") continue;
-      let message: unknown;
-      try {
-        message = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      if (
-        typeof message !== "object" || message === null ||
-        !("id" in message) || message.id !== requestId ||
-        !("type" in message)
-      ) continue;
-      if (message.type === "error" && "error" in message) {
-        throw new ServerResponseError(
-          message.error as { code: string; message: string; details?: unknown },
-        );
-      }
-      if ("payload" in message) {
-        return { kind: "payload", payload: message.payload as T };
-      }
+    } finally {
+      await lines.return(undefined);
     }
     throw new UserError(
       `Connection to ${baseUrl} closed before a response was received`,
@@ -1181,6 +1268,7 @@ function httpRefusal(
 function requestOverSocket<T>(
   options: RequestResponseOptions,
   request: { type: string; id?: string; payload?: unknown },
+  parts: unknown[],
 ): Promise<T> {
   const baseUrl = toWebSocketUrl(options.server);
   const extraHeaders = options.headers ?? resolveExtraHeaders();
@@ -1272,42 +1360,30 @@ function requestOverSocket<T>(
     };
 
     const handleFrame = (text: string) => {
-      try {
-        const message = JSON.parse(text);
-        if (
-          typeof message !== "object" || message === null ||
-          !("type" in message) || typeof message.type !== "string" ||
-          !("id" in message) || message.id !== requestId
-        ) {
-          return;
-        }
-        if (message.type === "error") {
-          settled = true;
-          cleanup();
-          try {
-            socket.close();
-          } catch { /* already closed */ }
-          reject(new ServerResponseError(message.error));
-          return;
-        }
-        if ("payload" in message) {
-          settled = true;
-          cleanup();
-          try {
-            socket.close();
-          } catch { /* already closed */ }
-          resolve(message.payload as T);
-        }
-      } catch { /* not a protocol frame */ }
-    };
-
-    socket.onmessage = (event) => {
-      if (typeof event.data === "string") {
-        handleFrame(event.data);
+      if (settled) return;
+      const frame = readReplyFrame<T>(text, requestId, request.type);
+      if (frame.kind === "other") return;
+      if (frame.kind === "part") {
+        parts.push(frame.payload);
         return;
       }
-      if (!(event.data instanceof ArrayBuffer)) return;
-      gunzipFrame(event.data).then(handleFrame).catch((err: unknown) => {
+      settled = true;
+      cleanup();
+      try {
+        socket.close();
+      } catch { /* already closed */ }
+      if (frame.kind === "error") reject(frame.error);
+      else resolve(frame.payload);
+    };
+
+    // compressed frames decode asynchronously; one at a time keeps parts in order
+    let frames: Promise<void> = Promise.resolve();
+    socket.onmessage = (event) => {
+      const data: unknown = event.data;
+      if (typeof data !== "string" && !(data instanceof ArrayBuffer)) return;
+      frames = frames.then(async () => {
+        handleFrame(typeof data === "string" ? data : await gunzipFrame(data));
+      }).catch((err: unknown) => {
         if (settled) return;
         settled = true;
         cleanup();

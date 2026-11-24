@@ -1201,8 +1201,12 @@ output shape, and yields typed events. On the `--select` path the renderer
 writes scalar projections verbatim, one per line (objects as indented JSON), so
 content such as base64 file data reaches stdout unchanged at any size; map and
 list projections become a markdown table passed through
-`renderMarkdownToTerminal()`. The default path (no `--select`) builds a Cliffy
-`Table` directly.
+`renderMarkdownToTerminal()`, unless a cell is nested or longer than 1 MiB, or
+a map row is not a record: then every row prints as a value, objects as
+indented JSON, since no table holds it. The default path (no `--select`) builds
+a Cliffy `Table` directly. Over `--server` the CLI asks for the reply in parts
+(see `data.query` in parts in [serve](../primitives/serve.md)), so a remote
+result is no more bounded by V8's maximum string length than a local one.
 
 ## Usage
 

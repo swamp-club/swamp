@@ -305,6 +305,15 @@ export interface DataQueryPayload {
   cursor?: string;
 }
 
+/** the CLI's own data.query; apps and the published client never send inParts */
+export interface DataQueryInPartsPayload extends DataQueryPayload {
+  /**
+   * answer with the matches in data.query.part frames before the reply, so no
+   * frame holds them all; a serve that predates it drops the key and replies whole
+   */
+  inParts?: boolean;
+}
+
 export interface DataListPayload {
   modelIdOrName?: string;
   workflowName?: string;
@@ -1615,6 +1624,12 @@ export interface DataGetResponse {
 
 export interface DataQueryResponse {
   data: Record<string, unknown>;
+  /** set only for inParts: how many matches the parts carried, absent from data */
+  partItems?: number;
+}
+
+export interface DataQueryPartPayload {
+  items: unknown[];
 }
 
 export interface DataListResponse {
@@ -2487,6 +2502,7 @@ export type ServerMessage =
   | { type: "serve.reload"; id: string; payload: ServeReloadResponse }
   | { type: "data.get"; id: string; payload: DataGetResponse }
   | { type: "data.query"; id: string; payload: DataQueryResponse }
+  | { type: "data.query.part"; id: string; payload: DataQueryPartPayload }
   | { type: "data.list"; id: string; payload: DataListResponse }
   | { type: "data.search"; id: string; payload: DataSearchResponse }
   | { type: "data.versions"; id: string; payload: DataVersionsResponse }
