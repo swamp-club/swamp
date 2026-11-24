@@ -41,17 +41,23 @@ const arbEvent: fc.Arbitrary<Event> = fc.record({
   ),
 }) as fc.Arbitrary<Event>;
 
-/** the first unbroken run to span the count and the window trips it, for good */
+/**
+ * the first unbroken run to span the count and the window trips it, for good;
+ * a gap of more than the window between failures ends a run
+ */
 function expectTripped(events: readonly Event[]): boolean {
   let now = 0;
   let count = 0;
   let firstAt = 0;
+  let lastAt = 0;
   for (const event of events) {
     now += event.afterMs;
     if (event.kind === "success") count = 0;
     if (event.kind !== "full") continue;
+    if (count > 0 && now - lastAt > CANNOT_COMMIT_WINDOW_MS) count = 0;
     if (count === 0) firstAt = now;
     count++;
+    lastAt = now;
     if (
       count >= CANNOT_COMMIT_FAILURES &&
       now - firstAt >= CANNOT_COMMIT_WINDOW_MS

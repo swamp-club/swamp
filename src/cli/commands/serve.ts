@@ -680,7 +680,7 @@ import { DefinitionIdIndex } from "../../infrastructure/persistence/definition_i
 import { GRANT_MODEL_TYPE } from "../../domain/models/access/grant_model.ts";
 import { GROUP_MODEL_TYPE } from "../../domain/models/access/group_model.ts";
 import { cleanupEmptyParentDirs } from "../../infrastructure/persistence/directory_cleanup.ts";
-import { basename, dirname, join, resolve } from "@std/path";
+import { basename, join, resolve } from "@std/path";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import {
@@ -785,6 +785,7 @@ import {
   startV3ReplicationUpkeep,
   v3CommitFeedSource,
   v3CommitMark,
+  v3CopyDirAt,
   type V3DatastoreConfig,
   v3DatastoreConfigOf,
   v3DatastoreFor,
@@ -9598,10 +9599,7 @@ export const serveCommand = new Command()
         onCommitOutcome: onV3CommitOutcome,
         stopRenewal: () => stopV3WriterRenewal(location.path),
         // the volume the leader's copy, and its sidecar's files, are written on
-        probe: () =>
-          probeStorage(
-            dirname(v3DatastoreFor(resolvedRepoDir, location).commitsDbPath),
-          ),
+        probe: () => probeStorage(v3CopyDirAt(resolvedRepoDir, location)),
         stepDown: async () => {
           Deno.exitCode = 75;
           await startShutdown();

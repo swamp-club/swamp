@@ -503,3 +503,19 @@ Deno.test("probeStorage: writes and removes its file", async () => {
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+Deno.test("LeaderCommitHealth: failures more than a window apart are separate runs, and a quiet run is no longer failing", () => {
+  const time = clock();
+  const health = new LeaderCommitHealth({ now: time.now });
+  health.recordFailure(full());
+  health.recordFailure(full());
+  health.recordFailure(full());
+  assert(health.failing());
+  time.advance(CANNOT_COMMIT_WINDOW_MS + 1);
+  assertEquals(health.failing(), false);
+  // hours later, one more failure starts a run of its own
+  time.advance(8 * 3_600_000);
+  health.recordFailure(full());
+  assertEquals(health.cannotCommit(), undefined);
+  assert(health.failing());
+});

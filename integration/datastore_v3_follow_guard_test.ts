@@ -133,3 +133,34 @@ Deno.test({
     });
   },
 });
+
+Deno.test({
+  name:
+    "closeV3Datastores: copy work a take left running is aborted, so nothing it does outlives the close",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    await withDatastore(async (env) => {
+      const follow = hangingFollow();
+      const leader = await plantV3WriterLease(env.datastorePath, {
+        pid: Deno.ppid,
+      });
+      try {
+        assertEquals(
+          await holdV3Writer(env.config, env.repoDir, {
+            retakeLost: true,
+            follow: true,
+            ownerCheck: { as: "serve", address: undefined },
+            followSignal: abortedAfter(50),
+          }),
+          "follower",
+        );
+        assertEquals([follow.starts, follow.aborted], [1, 0]);
+        await closeV3Datastores();
+        assertEquals(follow.aborted, 1);
+      } finally {
+        await leader.release();
+      }
+    });
+  },
+});

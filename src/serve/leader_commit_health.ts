@@ -98,7 +98,10 @@ function causeOfOne(error: object): CannotCommitCause | undefined {
   return undefined;
 }
 
-/** read from SQLite's and the OS's codes, never a message: a refusal's message can carry a client's record key */
+/**
+ * codes, not messages, but for the sidecar's own report: a refusal's message
+ * can carry a client's record key
+ */
 export function storageFailureCause(
   error: unknown,
 ): CannotCommitCause | undefined {
@@ -130,28 +133,38 @@ export interface CommitHealthPort {
 export interface LeaderCommitHealthOptions {
   readonly failures?: number;
   readonly windowMs?: number;
+  /** a run with no failure for this long is over */
+  readonly quietMs?: number;
   readonly now?: () => number;
 }
 
 /**
  * Trips once storage failures run unbroken for the count and the window, so
- * one incident, or a burst of commits failing together, never does. A trip
+ * one incident, or a burst of commits failing together, never does; failures
+ * a window or more apart are separate runs. A trip
  * lasts for the process: the node steps down and restarts.
  */
 export class LeaderCommitHealth implements CommitHealthPort {
   readonly #failures: number;
   readonly #windowMs: number;
+  readonly #quietMs: number;
   readonly #now: () => number;
   readonly #counted = new WeakSet<object>();
   readonly #listeners = new Set<(state: CannotCommit) => void>();
   #run:
-    | { count: number; firstAt: number; cause: CannotCommitCause }
+    | {
+      count: number;
+      firstAt: number;
+      lastAt: number;
+      cause: CannotCommitCause;
+    }
     | undefined;
   #tripped: CannotCommit | undefined;
 
   constructor(options: LeaderCommitHealthOptions = {}) {
     this.#failures = options.failures ?? CANNOT_COMMIT_FAILURES;
     this.#windowMs = options.windowMs ?? CANNOT_COMMIT_WINDOW_MS;
+    this.#quietMs = options.quietMs ?? CANNOT_COMMIT_WINDOW_MS;
     this.#now = options.now ?? Date.now;
   }
 
@@ -161,7 +174,7 @@ export class LeaderCommitHealth implements CommitHealthPort {
 
   /** a run of storage failures has begun and not yet tripped or reset */
   failing(): boolean {
-    return this.#tripped === undefined && this.#run !== undefined;
+    return this.#tripped === undefined && this.#live() !== undefined;
   }
 
   recordSuccess(): void {
@@ -176,8 +189,9 @@ export class LeaderCommitHealth implements CommitHealthPort {
     // one failure seen by both the datastore and the request that carried it
     if (this.#seen(error)) return;
     const now = this.#now();
-    const run = this.#run ?? { count: 0, firstAt: now, cause };
+    const run = this.#live() ?? { count: 0, firstAt: now, lastAt: now, cause };
     run.count++;
+    run.lastAt = now;
     this.#run = run;
     if (run.count < this.#failures || now - run.firstAt < this.#windowMs) {
       return;
@@ -190,6 +204,17 @@ export class LeaderCommitHealth implements CommitHealthPort {
     };
     this.#tripped = tripped;
     for (const listener of [...this.#listeners]) listener(tripped);
+  }
+
+  /** a run with no failure for the quiet bound is over: quiet is not failing */
+  #live() {
+    const run = this.#run;
+    if (run === undefined) return undefined;
+    if (this.#now() - run.lastAt > this.#quietMs) {
+      this.#run = undefined;
+      return undefined;
+    }
+    return run;
   }
 
   onCannotCommit(listener: (state: CannotCommit) => void): () => void {

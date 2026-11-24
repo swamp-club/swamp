@@ -368,10 +368,21 @@ const repoState = processRuntimeSlot<RepoContextState>(() => ({
   },
 }));
 
+/** a follow aborted at close honours it before its install; past this it is left */
+const FOLLOW_CLOSE_WAIT_MS = 5_000;
+
 interface V3FollowInFlight {
   readonly done: Promise<void>;
   readonly abort: AbortController;
   readonly startedAt: number;
+}
+
+/** the directory this checkout's copy of the datastore, and its sidecar's files, live in */
+export function v3CopyDirAt(
+  repoDir: string,
+  config: V3DatastoreConfig,
+): string {
+  return dirname(v3CommitsDbPath(config.path, repoDir));
 }
 
 export function setV3FollowWorkForTesting(
@@ -2288,6 +2299,19 @@ export async function followServeCompactionAtCommandEnd(
 export async function closeV3Datastores(
   options: { readonly storageUnreachable?: boolean } = {},
 ): Promise<void> {
+  // copy work a take left running must not reopen a handle after the close
+  const follows = [...repoState().follows.values()];
+  repoState().follows.clear();
+  for (const follow of follows) {
+    follow.abort.abort(new Error("the datastore is closing"));
+  }
+  await Promise.race([
+    Promise.all(follows.map((follow) => follow.done.catch(() => {}))),
+    new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, FOLLOW_CLOSE_WAIT_MS);
+      Deno.unrefTimer(timer);
+    }),
+  ]);
   await withSpan(
     "swamp.datastore.v3.close.feed_stop",
     {},
