@@ -721,7 +721,10 @@ import {
   InstanceHeartbeatService,
   STOPPED_HEARTBEAT_WRITE_TIMEOUT_MS,
 } from "../../serve/instance_heartbeat.ts";
-import { ServeLeadership } from "../../serve/serve_leadership.ts";
+import {
+  FOLLOW_HUNG_AFTER_MS,
+  ServeLeadership,
+} from "../../serve/serve_leadership.ts";
 import { FileSystemControlPlaneStore } from "../../infrastructure/persistence/fs_control_plane_store.ts";
 import { ControlPlaneSchedulePauseRepository } from "../../infrastructure/persistence/control_plane_schedule_pause_repository.ts";
 import { ControlPlaneScheduleStateRepository } from "../../infrastructure/persistence/control_plane_schedule_state_repository.ts";
@@ -9503,6 +9506,7 @@ export const serveCommand = new Command()
               retakeLost: true,
               follow: true,
               ...(followSignal === undefined ? {} : { followSignal }),
+              abandonFollowAfterMs: FOLLOW_HUNG_AFTER_MS,
               ownerCheck: { as: "serve", address: ownerAddress },
               ttlMs: SERVE_WRITER_LEASE_TTL_MS,
             }),

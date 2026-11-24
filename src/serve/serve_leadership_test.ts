@@ -1507,3 +1507,35 @@ Deno.test("ServeLeadership.stop: a restore that was cut and ignores its abort do
   assertEquals(calls, 1);
   await leadership.stop();
 });
+
+Deno.test("ServeLeadership: a node that wins the lease while a cut restore has not settled waits to lead until it has", async () => {
+  const lease = new FakeLease();
+  const settle = Promise.withResolvers<void>();
+  const leadership = new ServeLeadership({
+    instanceId: "me",
+    lease,
+    store: memoryStore(),
+    feed: new FakeFeed(),
+    // past its install, so the abort does not stop it
+    refreshCopy: () => settle.promise,
+    onLead: () => Promise.resolve(),
+    onLostLead: () => Promise.resolve(),
+    tickMs: 3_600_000,
+    refreshPastLapseMs: 100,
+  });
+  await leadership.start("follower");
+  try {
+    lease.expiry = Date.now() + 50;
+    await leadership.tick();
+    lease.free = 6;
+    await leadership.tick();
+    assertEquals(leadership.role, "follower");
+    assert(lease.holdsCurrent(), "the lease is held meanwhile");
+    settle.resolve();
+    await leadership.tick();
+    assertEquals(leadership.role, "leader");
+  } finally {
+    settle.resolve();
+    await leadership.stop();
+  }
+});

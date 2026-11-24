@@ -37,6 +37,13 @@ const SQLITE_READONLY = 8;
 const SQLITE_IOERR = 10;
 const SQLITE_FULL = 13;
 
+/** I/O codes that name memory, locking or a file already gone, not the disk */
+const SQLITE_IOERR_NOT_STORAGE: ReadonlySet<number> = new Set([
+  3082, // SQLITE_IOERR_NOMEM
+  3850, // SQLITE_IOERR_LOCK
+  5898, // SQLITE_IOERR_DELETE_NOENT
+]);
+
 const CODE_CAUSES: ReadonlyMap<string, CannotCommitCause> = new Map([
   ["ENOSPC", "storage_full"],
   ["EDQUOT", "storage_full"],
@@ -70,7 +77,9 @@ function causeOfOne(error: object): CannotCommitCause | undefined {
       case SQLITE_FULL:
         return "storage_full";
       case SQLITE_IOERR:
-        return "storage_io_error";
+        return SQLITE_IOERR_NOT_STORAGE.has(e.errcode)
+          ? undefined
+          : "storage_io_error";
       case SQLITE_READONLY:
         return "storage_read_only";
     }

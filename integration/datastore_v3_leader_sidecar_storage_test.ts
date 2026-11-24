@@ -45,7 +45,7 @@ await initializeLogging({});
 
 const ignore = SIDECAR_TESTS_IGNORED;
 
-/** the sidecar's reply on dogfood when the leader's volume was full */
+/** the sidecar's reply when the leader's volume is full */
 const SIDECAR_DISK_FULL =
   "sync database: db sync: sync: stage-write ltx file /home/swamp/team/.swamp/_datastore_v3_copies/d7e8ab35878e173a/.commits.db-litestream/ltx/0/0000000000000020-0000000000000020.ltx.tmp: disk full: write page index: write page index element: write /home/swamp/team/.swamp/_datastore_v3_copies/d7e8ab35878e173a/.commits.db-litestream/ltx/0/0000000000000020-0000000000000020.ltx.tmp: no space left on device";
 

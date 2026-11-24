@@ -56,6 +56,9 @@ const PROMOTION_FEED_STOP_MS = 5_000;
  */
 export const REFRESH_PAST_LAPSE_MS = 60_000;
 
+/** a busy take's copy work begins before any lapse, so its hang bound is longer */
+export const FOLLOW_HUNG_AFTER_MS = 2 * REFRESH_PAST_LAPSE_MS;
+
 /**
  * How long a follower's copy may go without a refresh before it stops
  * answering reads: three ticks, so a revoked grant stops allowing reads on a
@@ -507,13 +510,18 @@ export class ServeLeadership {
           feed.stop(),
         );
       }
-      // a restore installed after the lead would replace the leader's copy
+      // a restore installed after the lead would replace the leader's copy, so
+      // the lead waits for it, a tick at a time, holding the lease meanwhile
       if (this.#leftRefresh !== undefined) {
-        await this.#within(
+        const settled = await this.#within(
           this.#now() + PROMOTION_FEED_STOP_MS,
           "a copy restore left running",
           this.#leftRefresh,
         );
+        if (!settled.done) {
+          this.#leadPending = true;
+          return;
+        }
       }
       await this.#lead();
       return;
