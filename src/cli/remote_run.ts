@@ -1901,6 +1901,9 @@ export function createTlsHttpClient(
     return create(options);
   } catch (e: unknown) {
     const detail = e instanceof Error ? e.message : String(e);
+    if (options.caCerts?.length && storeLoadsWithout(options, create)) {
+      throw caCertRejection(options.caCerts, detail);
+    }
     throw new UserError(
       `Could not read the OS certificate store: ${detail} — swamp defaults ` +
         `DENO_TLS_CA_STORE to "system,mozilla"; re-run with ` +
@@ -1911,13 +1914,50 @@ export function createTlsHttpClient(
   }
 }
 
+/** a client built from the same options minus the CA certificates tells which input failed */
+function storeLoadsWithout(
+  options: Deno.CreateHttpClientOptions,
+  create: typeof Deno.createHttpClient,
+): boolean {
+  const { caCerts: _caCerts, ...rest } = options;
+  try {
+    using _client = create(rest);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function caCertRejection(caCerts: string[], detail: string): UserError {
+  const state = httpClientState();
+  const path = state.resolvedEnvCaCertPath !== undefined &&
+      state.resolvedEnvCaCerts?.some((pem) => caCerts.includes(pem))
+    ? state.resolvedEnvCaCertPath
+    : undefined;
+  const reason = `is not a valid PEM certificate: ${detail} — it must hold ` +
+    `one or more "-----BEGIN CERTIFICATE-----" blocks of base64 DER`;
+  if (path === undefined) {
+    return new UserError(
+      `The CA certificate file given by --ca-cert or SWAMP_CA_CERT ${reason}`,
+    );
+  }
+  return markErrorPaths(
+    new UserError(
+      `The CA certificate file '${path}' given by --ca-cert or SWAMP_CA_CERT ${reason}`,
+    ),
+    [path],
+  );
+}
+
 const httpClientState = processRuntimeSlot<{
   wsHttpClient: Deno.HttpClient | undefined;
   resolvedEnvCaCerts: string[] | undefined;
+  resolvedEnvCaCertPath: string | undefined;
   cachedCaCertClient: Deno.HttpClient | undefined;
 }>(() => ({
   wsHttpClient: undefined,
   resolvedEnvCaCerts: undefined,
+  resolvedEnvCaCertPath: undefined,
   cachedCaCertClient: undefined,
 }));
 
@@ -1964,7 +2004,9 @@ export function getEnvCaCerts(): string[] | undefined {
     return undefined;
   }
   try {
-    state.resolvedEnvCaCerts = [Deno.readTextFileSync(certPath)];
+    const pem = Deno.readTextFileSync(certPath);
+    state.resolvedEnvCaCerts = [pem];
+    state.resolvedEnvCaCertPath = certPath;
   } catch (e: unknown) {
     const detail = e instanceof Error ? e.message : String(e);
     throw markErrorPaths(
@@ -1982,7 +2024,9 @@ export function getEnvCaCerts(): string[] | undefined {
  * CA reads it on every repeat
  */
 export function resetEnvCaCertsForTesting(): void {
-  httpClientState().resolvedEnvCaCerts = undefined;
+  const state = httpClientState();
+  state.resolvedEnvCaCerts = undefined;
+  state.resolvedEnvCaCertPath = undefined;
 }
 
 function createSocket(
@@ -2041,8 +2085,19 @@ export function diagnoseTlsMessage(
   if (message.includes("UnknownIssuer")) {
     return (
       `TLS certificate rejected: the server's certificate issuer is ` +
-      `not trusted. If using a self-signed certificate, pass it with ` +
-      `--ca-cert /path/to/cert.pem or set SWAMP_CA_CERT=/path/to/cert.pem`
+      `not trusted. If the server uses a self-signed certificate or a ` +
+      `private CA, pass it with --ca-cert /path/to/ca.pem or set ` +
+      `SWAMP_CA_CERT=/path/to/ca.pem`
+    );
+  }
+
+  if (message.includes("BadSignature")) {
+    return (
+      `TLS certificate rejected: ${message} — the server's certificate ` +
+      `names a trusted CA as its issuer, but that CA did not sign it. If ` +
+      `you passed --ca-cert or SWAMP_CA_CERT, check that the file holds the ` +
+      `CA that signed the server's certificate; otherwise a proxy that ` +
+      `intercepts TLS may be re-signing the connection`
     );
   }
 

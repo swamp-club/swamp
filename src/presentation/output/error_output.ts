@@ -353,23 +353,24 @@ export function exitCodeForError(
 }
 
 /**
- * compiled binaries read only static macOS keychain entries, not full trust
- * evaluation, so OTA-distributed roots are invisible; the hint points to the
- * SSL_CERT_FILE workaround.
+ * only an untrusted issuer means a missing root: a private CA needs --ca-cert,
+ * and on macOS compiled binaries read only static keychain entries, so
+ * OTA-distributed roots need the SSL_CERT_FILE workaround
  */
 export function tlsErrorHint(message: string): string | undefined {
-  if (
-    !message.includes("UnknownIssuer") &&
-    !message.includes("invalid peer certificate")
-  ) {
+  if (!message.includes("UnknownIssuer")) {
     return undefined;
   }
   return [
     "The TLS certificate was rejected because its root CA is not in Deno's trust store.",
-    "On macOS, Deno does not use the operating system's full certificate trust",
-    "evaluation, so some certificates trusted by curl and browsers are not recognized.",
     "",
-    "Workaround: set SSL_CERT_FILE to a PEM file containing the missing root CA:",
+    "For a swamp serve signed by a private or self-signed CA, pass that CA:",
+    "  --ca-cert /path/to/ca.pem   (or SWAMP_CA_CERT=/path/to/ca.pem)",
+    "",
+    "For a server with a public CA on macOS: Deno does not use the operating",
+    "system's full certificate trust evaluation, so some certificates trusted by",
+    "curl and browsers are not recognized. Set SSL_CERT_FILE to a PEM file",
+    "containing the missing root CA:",
     "  export SSL_CERT_FILE=/path/to/root-ca.pem",
     "",
     "This is a known Deno limitation — see https://github.com/denoland/deno/issues/36402",

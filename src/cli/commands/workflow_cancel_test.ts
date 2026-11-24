@@ -1384,7 +1384,11 @@ Deno.test("serverCancelFailure: a run id cannot steer a certificate failure's di
 
   assertEquals(
     error.message,
-    "TLS certificate rejected: invalid peer certificate: BadSignature",
+    "TLS certificate rejected: invalid peer certificate: BadSignature — " +
+      "the server's certificate names a trusted CA as its issuer, but that " +
+      "CA did not sign it. If you passed --ca-cert or SWAMP_CA_CERT, check " +
+      "that the file holds the CA that signed the server's certificate; " +
+      "otherwise a proxy that intercepts TLS may be re-signing the connection",
   );
 });
 
