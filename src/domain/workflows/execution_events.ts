@@ -67,10 +67,12 @@ export type WorkflowExecutionEvent =
      */
     parentRunId?: string;
     workflowName: string;
+    /** from the run record, so a continued run's started keeps the first start */
+    startedAt: string;
     logPath: string;
     jobs: WorkflowJobInfo[];
   }
-  | { kind: "job_started"; jobId: string }
+  | { kind: "job_started"; jobId: string; startedAt: string }
   | { kind: "job_completed"; jobId: string; status: string }
   | { kind: "job_skipped"; jobId: string }
   | {
@@ -132,6 +134,7 @@ export type WorkflowExecutionEvent =
     kind: "step_started";
     jobId: string;
     stepId: string;
+    startedAt: string;
     forEachTemplate?: string;
     forEachIndex?: number;
   }

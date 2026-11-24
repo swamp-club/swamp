@@ -178,3 +178,97 @@ Deno.test("runReducer: a browser clock ahead of serve's still grows live bars to
   // three seconds later by the browser's clock is three seconds into the run
   assertEquals(runClock(state, T0 + ahead + 50 + 3000), T0 + 3000);
 });
+
+Deno.test("runReducer: a run continued after a serve restart keeps the recorded starts its started and job_started send again", () => {
+  const continued = 9_500;
+  let state = runReducer(IDLE_RUN, { kind: "begin", at: T0 });
+  for (
+    const event of [
+      {
+        kind: "started",
+        runId: "r",
+        workflowName: "w",
+        startedAt: iso(0),
+        at: iso(0),
+      },
+      { kind: "job_started", jobId: "j", startedAt: iso(0), at: iso(0) },
+      {
+        kind: "step_started",
+        jobId: "j",
+        stepId: "a",
+        startedAt: iso(0),
+        at: iso(0),
+      },
+      { kind: "step_completed", jobId: "j", stepId: "a", at: iso(8000) },
+      {
+        kind: "started",
+        runId: "r",
+        workflowName: "w",
+        startedAt: iso(0),
+        at: iso(continued),
+      },
+      {
+        kind: "job_started",
+        jobId: "j",
+        startedAt: iso(0),
+        at: iso(continued),
+      },
+      {
+        kind: "step_started",
+        jobId: "j",
+        stepId: "b",
+        startedAt: iso(continued),
+        at: iso(continued),
+      },
+    ]
+  ) {
+    state = runReducer(state, {
+      kind: "event",
+      at: T0 + 60_000,
+      event: event as RunStreamEvent,
+    });
+  }
+  assertEquals(state.startedAt, T0);
+  assertEquals(state.jobs["j"].startedAt, T0);
+  assertEquals(state.steps["j/b"].startedAt, T0 + continued);
+  assertEquals(state.log.filter((e) => e.kind === "started").length, 1);
+  assertEquals(
+    state.log.filter((e) => e.text === "j started").length,
+    1,
+  );
+});
+
+Deno.test("runReducer: a late attach still logs the run's started once it is replayed", () => {
+  const state = replay([
+    { kind: "attached", runId: "r", startedAt: iso(0) },
+    { kind: "started", runId: "r", workflowName: "w", startedAt: iso(0) },
+  ]);
+  assertEquals(state.log.map((e) => e.kind), ["attached", "started"]);
+});
+
+Deno.test("runReducer: an older serve's started sent again without startedAt keeps the run's first start", () => {
+  let state = runReducer(IDLE_RUN, { kind: "begin", at: T0 });
+  for (
+    const event of [
+      { kind: "started", runId: "r", workflowName: "w", at: iso(0) },
+      { kind: "started", runId: "r", workflowName: "w", at: iso(9_500) },
+    ]
+  ) {
+    state = runReducer(state, {
+      kind: "event",
+      at: T0 + 60_000,
+      event: event as RunStreamEvent,
+    });
+  }
+  assertEquals(state.startedAt, T0);
+});
+
+Deno.test("runReducer: a step started again with its recorded start is logged once", () => {
+  const state = replay([
+    { kind: "started", runId: "r", workflowName: "w", startedAt: iso(0) },
+    { kind: "step_started", jobId: "j", stepId: "wait", startedAt: iso(0) },
+    { kind: "step_started", jobId: "j", stepId: "wait", startedAt: iso(0) },
+  ]);
+  assertEquals(state.log.filter((e) => e.kind === "step").length, 1);
+  assertEquals(state.steps["j/wait"].startedAt, T0);
+});

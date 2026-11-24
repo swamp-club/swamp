@@ -196,3 +196,51 @@ Deno.test("JUnitWorkflowRunRenderer: -q silences the stdout notice (swamp-club#2
   }).handlers().started(started);
   assertEquals(quiet, []);
 });
+
+Deno.test("JUnitWorkflowRunRenderer: an assert after a reattach is timed between serve's stamps, from the start first seen", async () => {
+  const outFile = await Deno.makeTempFile({ suffix: ".xml" });
+  try {
+    const renderer = new JUnitWorkflowRunRenderer({ outFile });
+    const h = renderer.handlers();
+    const t0 = Date.parse("2026-11-24T17:53:50.000Z");
+    const stamp = <E extends object>(event: E, at: number): E =>
+      Object.assign({}, event, { at: new Date(at).toISOString() });
+
+    h.started({
+      kind: "started",
+      runId: "run-1",
+      workflowName: "test-workflow",
+      jobs: [{ id: "verify", stepCount: 1, dependsOn: [] }],
+    });
+    h.step_started(stamp({
+      kind: "step_started",
+      jobId: "verify",
+      stepId: "check",
+      startedAt: new Date(t0).toISOString(),
+    }, t0));
+    h.step_started(stamp({
+      kind: "step_started",
+      jobId: "verify",
+      stepId: "check",
+      startedAt: new Date(t0).toISOString(),
+    }, t0 + 5_000));
+    h.assert_result(stamp({
+      kind: "assert_result",
+      jobId: "verify",
+      stepId: "check",
+      passed: true,
+      message: "ok",
+      severity: "high",
+      expr: "1 == 1",
+    }, t0 + 8_000));
+    await h.completed({ kind: "completed", run: makeRunView("succeeded") });
+
+    const xml = await Deno.readTextFile(outFile);
+    assertStringIncludes(
+      xml,
+      'name="check" classname="test-workflow.verify" time="8.0"',
+    );
+  } finally {
+    await Deno.remove(outFile);
+  }
+});

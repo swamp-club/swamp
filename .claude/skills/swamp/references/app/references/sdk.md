@@ -170,9 +170,10 @@ for await (
 For `workflow.run`, script the events `runReducer` folds: `started`
 (`{ runId }`), `job_started`/`job_completed`/`job_skipped` (`{ jobId }`),
 `step_started`/`step_completed`/`step_failed`/`step_skipped`
-(`{ jobId, stepId }`), `method_output`, `suspended`, then `completed` or
-`cancelled` (`{ run }`) or `error`. Other kinds are ignored, so a misspelt kind
-fails silently: assert on the folded `RunState`, e.g.
+(`{ jobId, stepId }`; the start events may carry `startedAt`, the recorded
+start, which the reducer prefers to `at`), `method_output`, `suspended`, then
+`completed` or `cancelled` (`{ run }`) or `error`. Other kinds are ignored, so a
+misspelt kind fails silently: assert on the folded `RunState`, e.g.
 `events.reduce((s, e) => runReducer(s, { kind: "event", at: 0, event: e }), IDLE_RUN)`.
 For `run.attach` the mock sends `run.attached` first, then the scripted events.
 For `data.subscribe`, each entry is a page

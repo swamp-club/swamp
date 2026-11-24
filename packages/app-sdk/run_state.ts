@@ -138,6 +138,14 @@ function stampOf(event: RunStreamEvent): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+/** The run record's start, which a continued run sends again unchanged. */
+function recordedStart(event: { startedAt?: string }): number | undefined {
+  const parsed = typeof event.startedAt === "string"
+    ? Date.parse(event.startedAt)
+    : NaN;
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
 /** An unknown kind changes nothing, so newer servers never break it. */
 export function runReducer(state: RunState, action: RunAction): RunState {
   if (action.kind === "begin") {
@@ -198,22 +206,43 @@ function foldEvent(
         { at, kind: event.kind, text, tone: "bad" },
       );
     }
-    case "started":
+    case "started": {
       if (event.parentRunId !== undefined) return state;
-      // the run's own start, on the clock its other events use
+      // the run's own start, on the clock its other events use; a run
+      // continued after a serve restart sends started again
+      const started = {
+        ...state,
+        runId: event.runId,
+        startedAt: recordedStart(event) ??
+          (state.runId === event.runId ? state.startedAt : undefined) ?? at,
+      };
+      // logged once per run, unless the first entry has aged out of the log
+      if (
+        state.runId === event.runId &&
+        state.log.some((entry) => entry.kind === "started")
+      ) return started;
       return withLog(
-        { ...state, runId: event.runId, startedAt: at },
+        started,
         { at, kind: "started", text: `run ${event.runId}`, tone: "info" },
       );
-    case "job_started":
+    }
+    case "job_started": {
+      const start = recordedStart(event);
+      const held = state.jobs[event.jobId];
+      // a continued run starts its running job again with the recorded start
+      if (
+        start !== undefined && held?.status === "running" &&
+        held.startedAt === start
+      ) return state;
       return withLog(
         updateJob(state, event.jobId, (job) => ({
           ...job,
           status: "running",
-          startedAt: at,
+          startedAt: start ?? at,
         })),
         { at, kind: "job", text: `${event.jobId} started`, tone: "info" },
       );
+    }
     case "job_completed":
       return withLog(
         updateJob(state, event.jobId, (job) => ({
@@ -240,12 +269,19 @@ function foldEvent(
     case "step_started": {
       const template = (event as { forEachTemplate?: string })
         .forEachTemplate;
+      const start = recordedStart(event);
+      const held = state.steps[stepKey(event.jobId, event.stepId)];
+      // a re-entered wait starts its step again with the recorded start
+      if (
+        start !== undefined && held?.status === "running" &&
+        held.startedAt === start
+      ) return state;
       return withLog(
         updateStep(state, event.jobId, event.stepId, (step) => ({
           ...step,
           ...(template ? { template } : {}),
           status: "running",
-          startedAt: at,
+          startedAt: start ?? at,
         })),
         {
           at,

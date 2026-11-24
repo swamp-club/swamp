@@ -62,6 +62,7 @@ const STARTED_EVENT: WorkflowExecutionEvent = {
   kind: "started",
   runId: "run-1",
   workflowName: "deploy",
+  startedAt: "2026-01-01T00:00:00.000Z",
   logPath: "/tmp/log",
   jobs: [],
 };
@@ -286,6 +287,7 @@ Deno.test("bridge handles two sequential workflows independently (no state leak)
     kind: "started",
     runId: "run-2",
     workflowName: "etl",
+    startedAt: "2026-01-01T00:00:00.000Z",
     logPath: "/tmp/log",
     jobs: [],
   });
@@ -412,6 +414,7 @@ const NESTED_STARTED_EVENT: WorkflowExecutionEvent = {
   runId: "child-run",
   parentRunId: "run-1",
   workflowName: "provision",
+  startedAt: "2026-01-01T00:00:00.000Z",
   logPath: "/tmp/log",
   jobs: [],
 };
@@ -421,6 +424,7 @@ const GRANDCHILD_STARTED_EVENT: WorkflowExecutionEvent = {
   runId: "grandchild-run",
   parentRunId: "child-run",
   workflowName: "network",
+  startedAt: "2026-01-01T00:00:00.000Z",
   logPath: "/tmp/log",
   jobs: [],
 };
@@ -587,6 +591,7 @@ function nestedStarted(
     runId,
     parentRunId,
     workflowName: "child",
+    startedAt: "2026-01-01T00:00:00.000Z",
     logPath: "/tmp/log",
     jobs: [],
   };

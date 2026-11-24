@@ -248,6 +248,7 @@ Deno.test("workflowRun yields validating_inputs and evaluating_workflow prefix e
       kind: "started",
       runId: run.id,
       workflowName: "test-workflow",
+      startedAt: "2026-01-01T00:00:00.000Z",
       logPath: "/tmp/log",
       jobs: [],
     },
@@ -439,11 +440,21 @@ Deno.test("workflowRun forwards job and step events", async () => {
       kind: "started",
       runId: run.id,
       workflowName: "test-workflow",
+      startedAt: "2026-01-01T00:00:00.000Z",
       logPath: "/tmp/log",
       jobs: [],
     },
-    { kind: "job_started", jobId: "job1" },
-    { kind: "step_started", jobId: "job1", stepId: "step1" },
+    {
+      kind: "job_started",
+      jobId: "job1",
+      startedAt: "2026-01-01T00:00:00.000Z",
+    },
+    {
+      kind: "step_started",
+      jobId: "job1",
+      stepId: "step1",
+      startedAt: "2026-01-01T00:00:00.000Z",
+    },
     {
       kind: "step_completed",
       jobId: "job1",
@@ -478,6 +489,7 @@ Deno.test("workflowRun started event includes jobs array from domain event", asy
       kind: "started",
       runId: run.id,
       workflowName: "test-workflow",
+      startedAt: "2026-01-01T00:00:00.000Z",
       logPath: "/tmp/log",
       jobs: [
         { id: "job1", stepCount: 2, dependsOn: [] },
@@ -515,11 +527,21 @@ Deno.test("workflowRun passes through report event jobId and stepId", async () =
       kind: "started",
       runId: run.id,
       workflowName: "test-workflow",
+      startedAt: "2026-01-01T00:00:00.000Z",
       logPath: "/tmp/log",
       jobs: [],
     },
-    { kind: "job_started", jobId: "job1" },
-    { kind: "step_started", jobId: "job1", stepId: "step1" },
+    {
+      kind: "job_started",
+      jobId: "job1",
+      startedAt: "2026-01-01T00:00:00.000Z",
+    },
+    {
+      kind: "step_started",
+      jobId: "job1",
+      stepId: "step1",
+      startedAt: "2026-01-01T00:00:00.000Z",
+    },
     {
       kind: "report_completed",
       reportName: "@swamp/method-summary",
@@ -563,6 +585,7 @@ Deno.test("workflowRun completed event contains WorkflowRunData", async () => {
       kind: "started",
       runId: run.id,
       workflowName: "test-workflow",
+      startedAt: "2026-01-01T00:00:00.000Z",
       logPath: "/tmp/log",
       jobs: [],
     },
@@ -1129,6 +1152,7 @@ Deno.test("workflowRun coerces string inputs to match schema types", async () =>
       kind: "started",
       runId: run.id,
       workflowName: "coerce-wf",
+      startedAt: "2026-01-01T00:00:00.000Z",
       logPath: "/tmp/log",
       jobs: [],
     },
@@ -1207,6 +1231,7 @@ Deno.test("workflowRun applies default values from schema", async () => {
       kind: "started",
       runId: run.id,
       workflowName: "defaults-wf",
+      startedAt: "2026-01-01T00:00:00.000Z",
       logPath: "/tmp/log",
       jobs: [],
     },
@@ -1251,6 +1276,7 @@ Deno.test("workflowRun with lastEvaluated skips validation but still coerces", a
       kind: "started",
       runId: run.id,
       workflowName: "last-eval-wf",
+      startedAt: "2026-01-01T00:00:00.000Z",
       logPath: "/tmp/log",
       jobs: [],
     },
@@ -1281,11 +1307,21 @@ Deno.test("workflowRun forwards model_resolved, method_executing, and method_out
       kind: "started",
       runId: run.id,
       workflowName: "test-workflow",
+      startedAt: "2026-01-01T00:00:00.000Z",
       logPath: "/tmp/log",
       jobs: [],
     },
-    { kind: "job_started", jobId: "job1" },
-    { kind: "step_started", jobId: "job1", stepId: "step1" },
+    {
+      kind: "job_started",
+      jobId: "job1",
+      startedAt: "2026-01-01T00:00:00.000Z",
+    },
+    {
+      kind: "step_started",
+      jobId: "job1",
+      stepId: "step1",
+      startedAt: "2026-01-01T00:00:00.000Z",
+    },
     {
       kind: "model_resolved",
       jobId: "job1",
@@ -1352,11 +1388,21 @@ Deno.test("workflowRun forwards method_event events", async () => {
       kind: "started",
       runId: run.id,
       workflowName: "test-workflow",
+      startedAt: "2026-01-01T00:00:00.000Z",
       logPath: "/tmp/log",
       jobs: [],
     },
-    { kind: "job_started", jobId: "job1" },
-    { kind: "step_started", jobId: "job1", stepId: "step1" },
+    {
+      kind: "job_started",
+      jobId: "job1",
+      startedAt: "2026-01-01T00:00:00.000Z",
+    },
+    {
+      kind: "step_started",
+      jobId: "job1",
+      stepId: "step1",
+      startedAt: "2026-01-01T00:00:00.000Z",
+    },
     {
       kind: "method_event",
       jobId: "job1",
@@ -1418,11 +1464,21 @@ Deno.test("workflowRun collects report_completed events from execution service",
       kind: "started",
       runId: run.id,
       workflowName: "test-workflow",
+      startedAt: "2026-01-01T00:00:00.000Z",
       logPath: "/tmp/log",
       jobs: [],
     },
-    { kind: "job_started", jobId: "job1" },
-    { kind: "step_started", jobId: "job1", stepId: "step1" },
+    {
+      kind: "job_started",
+      jobId: "job1",
+      startedAt: "2026-01-01T00:00:00.000Z",
+    },
+    {
+      kind: "step_started",
+      jobId: "job1",
+      stepId: "step1",
+      startedAt: "2026-01-01T00:00:00.000Z",
+    },
     {
       kind: "model_resolved",
       jobId: "job1",
@@ -1492,11 +1548,21 @@ Deno.test("workflowRun collects report_failed events from execution service", as
       kind: "started",
       runId: run.id,
       workflowName: "test-workflow",
+      startedAt: "2026-01-01T00:00:00.000Z",
       logPath: "/tmp/log",
       jobs: [],
     },
-    { kind: "job_started", jobId: "job1" },
-    { kind: "step_started", jobId: "job1", stepId: "step1" },
+    {
+      kind: "job_started",
+      jobId: "job1",
+      startedAt: "2026-01-01T00:00:00.000Z",
+    },
+    {
+      kind: "step_started",
+      jobId: "job1",
+      stepId: "step1",
+      startedAt: "2026-01-01T00:00:00.000Z",
+    },
     {
       kind: "report_failed",
       reportName: "broken-report",
@@ -1545,11 +1611,21 @@ Deno.test("workflowRun keeps an empty-markdown report in the completed run's rep
       kind: "started",
       runId: run.id,
       workflowName: "test-workflow",
+      startedAt: "2026-01-01T00:00:00.000Z",
       logPath: "/tmp/log",
       jobs: [],
     },
-    { kind: "job_started", jobId: "job1" },
-    { kind: "step_started", jobId: "job1", stepId: "step1" },
+    {
+      kind: "job_started",
+      jobId: "job1",
+      startedAt: "2026-01-01T00:00:00.000Z",
+    },
+    {
+      kind: "step_started",
+      jobId: "job1",
+      stepId: "step1",
+      startedAt: "2026-01-01T00:00:00.000Z",
+    },
     { kind: "report_started", reportName: "quiet-report", scope: "method" },
     {
       kind: "report_completed",
@@ -1671,6 +1747,7 @@ Deno.test("workflowRun bridge finalizes in-flight invocations when execution ser
             kind: "started",
             runId: "run-throw",
             workflowName: "test-workflow",
+            startedAt: "2026-01-01T00:00:00.000Z",
             logPath: "/tmp/log",
             jobs: [],
           };
@@ -1908,6 +1985,7 @@ Deno.test("mapWorkflowExecutionEvent: carries a nested run's parentRunId on star
     runId: "run-1",
     ...(parentRunId !== undefined ? { parentRunId } : {}),
     workflowName: "wf",
+    startedAt: "2026-01-01T00:00:00.000Z",
     logPath: "/tmp/wf.log",
     jobs: [{ id: "main", stepCount: 1, dependsOn: [] }],
   });
@@ -1918,14 +1996,52 @@ Deno.test("mapWorkflowExecutionEvent: carries a nested run's parentRunId on star
     runId: "run-1",
     parentRunId: "parent-1",
     workflowName: "wf",
+    startedAt: "2026-01-01T00:00:00.000Z",
     jobs: [{ id: "main", stepCount: 1, dependsOn: [] }],
   });
   assertEquals(mapWorkflowExecutionEvent(started(), repo), {
     kind: "started",
     runId: "run-1",
     workflowName: "wf",
+    startedAt: "2026-01-01T00:00:00.000Z",
     jobs: [{ id: "main", stepCount: 1, dependsOn: [] }],
   });
+});
+
+Deno.test("mapWorkflowExecutionEvent: keeps the recorded startedAt on started, job_started and step_started", () => {
+  const repo = new InMemoryWorkflowRunRepository();
+  const started = mapWorkflowExecutionEvent({
+    kind: "started",
+    runId: "run-1",
+    workflowName: "wf",
+    startedAt: "2026-03-04T05:06:07.000Z",
+    logPath: "/tmp/wf.log",
+    jobs: [],
+  }, repo);
+  const job = mapWorkflowExecutionEvent({
+    kind: "job_started",
+    jobId: "main",
+    startedAt: "2026-03-04T05:06:08.000Z",
+  }, repo);
+  const step = mapWorkflowExecutionEvent({
+    kind: "step_started",
+    jobId: "main",
+    stepId: "first",
+    startedAt: "2026-03-04T05:06:09.000Z",
+  }, repo);
+
+  assertEquals(
+    started.kind === "started" ? started.startedAt : undefined,
+    "2026-03-04T05:06:07.000Z",
+  );
+  assertEquals(
+    job.kind === "job_started" ? job.startedAt : undefined,
+    "2026-03-04T05:06:08.000Z",
+  );
+  assertEquals(
+    step.kind === "step_started" ? step.startedAt : undefined,
+    "2026-03-04T05:06:09.000Z",
+  );
 });
 
 Deno.test("workflowRun: byId looks the workflow up by id only and passes byId to the execution service", async () => {
@@ -1946,6 +2062,7 @@ Deno.test("workflowRun: byId looks the workflow up by id only and passes byId to
       kind: "started",
       runId: run.id,
       workflowName: target.name,
+      startedAt: "2026-01-01T00:00:00.000Z",
       logPath: "/tmp/log",
       jobs: [],
     },
@@ -2087,6 +2204,7 @@ Deno.test("workflowRun records a parent step and a concurrent same-named nested 
             kind: "started",
             runId: "parent-run",
             workflowName: "parent",
+            startedAt: "2026-01-01T00:00:00.000Z",
             logPath: "/tmp/log",
             jobs: [],
           };
@@ -2103,6 +2221,7 @@ Deno.test("workflowRun records a parent step and a concurrent same-named nested 
             runId: "child-run",
             parentRunId: "parent-run",
             workflowName: "child",
+            startedAt: "2026-01-01T00:00:00.000Z",
             logPath: "/tmp/log",
             jobs: [],
           };
@@ -2348,7 +2467,11 @@ Deno.test("deferCompletedForOutputs: resolves the completed run only after the s
   let saved = false;
   const savedWhenResolved: boolean[] = [];
   async function* source(): AsyncGenerator<WorkflowExecutionEvent> {
-    yield { kind: "job_started", jobId: "job1" };
+    yield {
+      kind: "job_started",
+      jobId: "job1",
+      startedAt: "2026-01-01T00:00:00.000Z",
+    };
     yield { kind: "completed", run };
     saved = true;
   }
@@ -2425,7 +2548,11 @@ Deno.test("deferCompletedForOutputs: without a resolver the events pass through 
   const run = createModelMethodRun();
   async function* source(): AsyncGenerator<WorkflowExecutionEvent> {
     yield { kind: "completed", run };
-    yield { kind: "job_started", jobId: "late" };
+    yield {
+      kind: "job_started",
+      jobId: "late",
+      startedAt: "2026-01-01T00:00:00.000Z",
+    };
   }
 
   const seen = await Array.fromAsync(deferCompletedForOutputs(source()));
@@ -2583,7 +2710,11 @@ Deno.test("workflowRun: onCompletedRun is handed the live run before the complet
   const order: string[] = [];
   const deps = createTestDeps(createTestWorkflow(), [
     { kind: "completed", run },
-    { kind: "job_started", jobId: "after" },
+    {
+      kind: "job_started",
+      jobId: "after",
+      startedAt: "2026-01-01T00:00:00.000Z",
+    },
   ]);
   deps.onCompletedRun = (live) => {
     order.push(live === run ? "hook:live" : "hook:other");

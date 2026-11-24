@@ -1171,14 +1171,16 @@ export type WorkflowRunEvent =
     /** set on a nested run's started event; track a run by the one without it */
     parentRunId?: string;
     workflowName: string;
+    /** the run record's start, kept when a continued run sends started again */
+    startedAt?: string;
     jobs?: WorkflowRunJobInfo[];
     /** an idempotent retry answered with the first start's run */
     replayed?: boolean;
   }
-  | { kind: "job_started"; jobId: string }
+  | { kind: "job_started"; jobId: string; startedAt?: string }
   | { kind: "job_completed"; jobId: string; status: string }
   | { kind: "job_skipped"; jobId: string }
-  | { kind: "step_started"; jobId: string; stepId: string }
+  | { kind: "step_started"; jobId: string; stepId: string; startedAt?: string }
   | { kind: "step_completed"; jobId: string; stepId: string }
   | { kind: "step_skipped"; jobId: string; stepId: string }
   | {
