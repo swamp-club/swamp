@@ -144,6 +144,7 @@ import type { FollowerGate } from "../follower_requests.ts";
 import type { LeaderLink } from "../leader_link.ts";
 import type { V3CommitFeedSource } from "../../infrastructure/datastore_v3/v3_repo_context.ts";
 import type { LeaderSteppingDown } from "../leader_stepping_down.ts";
+import type { CommitHealthPort } from "../leader_commit_health.ts";
 import type { QuarantineStore } from "../../domain/datastore_v3/quarantine.ts";
 
 const pushLogger = getSwampLogger(["serve", "sync"]);
@@ -385,6 +386,8 @@ export interface ConnectionContext {
   followerCatchUp?: () => Promise<FollowerCatchUp>;
   commitFeed?: V3CommitFeedSource;
   steppingDown?: LeaderSteppingDown;
+  /** the leader's: once it cannot commit, the datastore API takes no writes */
+  commitHealth?: CommitHealthPort;
   quarantine?: QuarantineStore;
   explicitLeases?: () => readonly {
     readonly lockKey: string;

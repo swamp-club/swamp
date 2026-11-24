@@ -9236,7 +9236,10 @@ recovered, marked or replicated by a follower.
   (`refreshV3FollowerCopy`) and reads the leader record. A refresh still
   running when the holder's lease expires runs to its end, and the next tick
   tries the lease (swamp-club#4679, "Phase 4D2" in
-  `datastore-litestream.md`). A follower whose leader says it is stepping
+  `datastore-litestream.md`), unless it runs 60 s past that lapse, when it
+  is taken for hung and aborted. No other wait in a follower's tick outlasts
+  the tick, so a leader that stalls with its feed socket open is replaced
+  once its lease lapses (swamp-club#5040). A follower whose leader says it is stepping
   down (a `steppingDown` frame on the commit feed, for a subscriber that
   named the `leader-stepping-down` feature) or whose feed the leader's end
   closes is awaiting a new leader (`leaderGoing()`): it tries the lease every
@@ -9256,6 +9259,40 @@ recovered, marked or replicated by a follower.
   instance id) carries into following. Team mode needs a supervisor that
   restarts serve: the Docker image's restart policy, systemd, launchd or
   Kubernetes.
+- A leader that cannot commit steps down (`wireLeaderCommitHealth`,
+  `src/serve/leader_commit_health.ts`). Every storage failure on its own
+  commit path counts once: an append or read-model catch-up that fails
+  (`onV3CommitOutcome`), and a forwarded commit or other datastore API write
+  that fails. A storage failure is a full disk, an I/O error or read-only
+  storage, read from SQLite's and the OS's error codes in the error or its
+  causes, and from no message but two fixed ones: SQLite's own text on an
+  `exec()` error, which `node:sqlite` throws without an errcode, and the
+  Litestream sidecar's own report of its writes, since a refusal can fill a
+  message with a client's record key;
+  locks, refusals and the network never count. A landed commit, or
+  a catch-up that applied one, starts the run again. Three failures in a row
+  spanning at least 10 s trip it, so neither one failure nor a burst of
+  commits failing together does. Once a run has begun the leader also writes a
+  small probe file beside its copy every second (`probeStorage`); a probe that
+  fails counts like a commit, so the trip comes about 10 s after the first
+  failure whatever the commit rate, and a probe that succeeds counts for
+  nothing, since a small write can land while replication still cannot. A
+  datastore API write that fails on the leader's own storage, before or after
+  the trip, is refused as `serve_not_leader` rather than an internal error:
+  nothing was acknowledged, and the retry reaches the next leader, or finds a
+  commit that did land by its txnId. On the trip the leader logs the cause,
+  answers `/ready` 503 `cannot_commit`, refuses datastore API writes as
+  `serve_not_leader` (naming no leader, so clients retry and reach the next
+  one), stops renewing its writer lease (`stopV3WriterRenewal`) and stops as a
+  lost lead does, exiting 75 and releasing the lease at exit. Followers, told
+  it is stepping down, try the lease every second, so one leads within about
+  25 to 35 s of the trip whatever the shutdown drain: the unrenewed lease
+  lapses at its TTL plus the skew allowance, and the fence at the append
+  refuses anything the draining node commits after that. The restarted node
+  follows once it boots. Two limits are accepted: a node whose storage is
+  still full can win a released lease back before the standby takes it and
+  trip again, and a team of one restarts on every trip instead of staying up
+  for reads.
 - The lease and its fence alone decide who commits. The leader record
   (`leader/current` in the control plane: instance, fence, node address,
   since) only names the leader to followers, so a stale record can name the

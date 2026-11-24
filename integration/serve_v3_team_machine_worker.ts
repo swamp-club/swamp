@@ -29,6 +29,7 @@ import {
   closeV3Datastores,
   enableV3ServeTeamMode,
   holdV3Writer,
+  onV3CommitOutcome,
   refreshV3FollowerCopy,
   v3ClaimCommitLog,
   v3CommitFeedSource,
@@ -38,8 +39,16 @@ import {
 import {
   acquireV3WriterLock,
   holdsCurrentV3WriterLease,
+  stopV3WriterRenewal,
   v3WriterFence,
 } from "../src/infrastructure/datastore_v3/v3_writer_lock.ts";
+import { setV3DatastoreFaultsForTesting } from "../src/infrastructure/datastore_v3/v3_datastore.ts";
+import {
+  LeaderCommitHealth,
+  leaderUnreadyReason,
+  type WiredLeaderCommitHealth,
+  wireLeaderCommitHealth,
+} from "../src/serve/leader_commit_health.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { ServeLeadership } from "../src/serve/serve_leadership.ts";
 import { FollowerFeed } from "../src/serve/follower_feed.ts";
@@ -58,6 +67,8 @@ import {
 import { ControlPlaneLeaseStore } from "../src/infrastructure/datastore_v3/control_plane_lease_store.ts";
 import { commitIn } from "./datastore_v3_litestream_helpers.ts";
 import { LOADED } from "./graph_worker.ts";
+import { resolve } from "@std/path";
+import { fullWhen } from "./leader_cannot_commit_helpers.ts";
 
 export type TeamNodeRequest =
   | {
@@ -74,7 +85,18 @@ export type TeamNodeRequest =
     readonly tickMs: number;
     /** steppingDown false is a leader from before that feature */
     readonly feed?: { readonly steppingDown: boolean };
+    readonly leaseTtlMs?: number;
+    /**
+     * as serve wires a leader that cannot commit; release false is a
+     * step-down whose drain never ends, so its lease only lapses
+     */
+    readonly commitHealth?: {
+      readonly windowMs: number;
+      readonly release: boolean;
+    };
   }
+  /** every append on this node fails as a full disk makes SQLite fail */
+  | { readonly kind: "disk-full"; readonly full: boolean }
   | { readonly kind: "stepDown" }
   | { readonly kind: "head" }
   | { readonly kind: "cursors" }
@@ -122,6 +144,8 @@ export interface TeamNodeState {
   readonly feedLive?: boolean;
   readonly feedApplied?: number;
   readonly takes?: number;
+  /** the /ready reason serve gives once this node cannot commit */
+  readonly cannotCommit?: string;
 }
 
 declare const self: Worker;
@@ -139,6 +163,8 @@ const goings: string[] = [];
 let feedApplied = 0;
 let takes = 0;
 const nodeLocks = new Set<string>();
+let diskFull = false;
+let commitHealth: WiredLeaderCommitHealth | undefined;
 
 function nodeLock(target: LockTarget) {
   const key = lockKeyOf(target);
@@ -168,6 +194,8 @@ async function handle(request: TeamNodeRequest): Promise<unknown> {
     case "init": {
       init = request;
       await initializeLogging({});
+      // before the datastore opens, which reads it once
+      setV3DatastoreFaultsForTesting({ wrapSink: fullWhen(() => diskFull) });
       const realGet = Deno.env.get.bind(Deno.env);
       Object.defineProperty(Deno.env, "get", {
         configurable: true,
@@ -200,12 +228,16 @@ async function handle(request: TeamNodeRequest): Promise<unknown> {
         as: "serve" as const,
         address: init!.ownerAddress,
       };
-      const take = () => {
+      const take = (followSignal?: AbortSignal) => {
         takes++;
         return holdV3Writer(config(), init!.repoDir, {
           retakeLost: true,
           follow: true,
           ownerCheck,
+          ...(followSignal === undefined ? {} : { followSignal }),
+          ...(request.leaseTtlMs !== undefined
+            ? { ttlMs: request.leaseTtlMs }
+            : {}),
         });
       };
       const role = await take();
@@ -308,6 +340,23 @@ async function handle(request: TeamNodeRequest): Promise<unknown> {
         tickMs: request.tickMs,
       });
       leadership = node;
+      const healthOptions = request.commitHealth;
+      if (healthOptions !== undefined) {
+        commitHealth = wireLeaderCommitHealth({
+          datastorePath: resolve(datastorePath),
+          leads: () => node.role === "leader",
+          onCommitOutcome: onV3CommitOutcome,
+          stopRenewal: () => stopV3WriterRenewal(datastorePath),
+          // serve's shutdown: its leadership stops and its hold is released
+          stepDown: async () => {
+            events.push("stepped-down");
+            if (!healthOptions.release) return;
+            await node.stop();
+            await closeV3Datastores();
+          },
+          health: new LeaderCommitHealth({ windowMs: healthOptions.windowMs }),
+        });
+      }
       enableV3ServeTeamMode(datastorePath, () => node.leader());
       await node.start(role);
       return role;
@@ -356,8 +405,18 @@ async function handle(request: TeamNodeRequest): Promise<unknown> {
             takes,
           }
           : {}),
+        ...(commitHealth?.port.cannotCommit() !== undefined
+          ? {
+            cannotCommit: leaderUnreadyReason(
+              commitHealth.port.cannotCommit()!,
+            ),
+          }
+          : {}),
       } satisfies TeamNodeState;
     }
+    case "disk-full":
+      diskFull = request.full;
+      return undefined;
     case "stepDown":
       // serve begins it only on a leader
       if (leadership?.role === "leader") steppingDown?.begin();
@@ -424,6 +483,8 @@ async function handle(request: TeamNodeRequest): Promise<unknown> {
     case "lease-records":
       return await v3ServeControlPlaneAt(config()).list("leases/");
     case "close":
+      commitHealth?.stop();
+      await commitHealth?.steppedDown();
       // a follower takes this close as the leader's end of its feed
       for (const socket of peerSockets) socket.close();
       await http?.shutdown();

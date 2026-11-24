@@ -130,6 +130,7 @@ import {
   partitionOf,
 } from "../domain/datastore_v3/partition_key.ts";
 import { ReadModelIncompleteError } from "../domain/datastore_v3/read_model.ts";
+import { storageFailureCause } from "./leader_commit_health.ts";
 import { RecordKey } from "../domain/datastore_v3/record_key.ts";
 import {
   isDelegationModelType,
@@ -618,19 +619,21 @@ function followerDatastoreRefusal(
 ): Promise<Response> | undefined {
   const gate = ctx.followerGate;
   if (gate === undefined) return undefined;
+  // Leases live on the leader, so listing them is the leader's to answer
+  const reads = (req.method === "GET" && route.kind !== "locks") ||
+    route.kind === "has";
   if (gate.role === "leader") {
     // never sent on: a leader that may have been taken over neither answers
-    // from its copy nor changes it
-    return gate.leadUnconfirmed?.() === true
+    // from its copy nor changes it; one that cannot commit sends writers on to
+    // the leader that takes over
+    return gate.leadUnconfirmed?.() === true ||
+        (req.method !== "GET" && route.kind !== "has" &&
+          ctx.commitHealth?.cannotCommit() !== undefined)
       ? Promise.resolve(
         notLeaderResponse(new ServeNotLeaderError(undefined), false),
       )
       : undefined;
   }
-  // Leases live on the leader, so listing them is the leader's to answer
-  // (swamp-club#4121).
-  const reads = (req.method === "GET" && route.kind !== "locks") ||
-    route.kind === "has";
   if (reads && !gate.isStale()) return undefined;
   if (!reads && ctx.leaderLink !== undefined) {
     return ctx.leaderLink.forward(req, { clientIp: sourceIp });
@@ -812,8 +815,25 @@ async function answerDatastoreRequest(
           : methodNotAllowed("GET");
     }
   } catch (error) {
-    return datastoreErrorResponse(error);
+    const writes = req.method !== "GET" && route.kind !== "has";
+    if (writes) ctx.commitHealth?.recordFailure(error);
+    return (writes ? storageFailureResponse(error, ctx) : undefined) ??
+      datastoreErrorResponse(error);
   }
+}
+
+/**
+ * a write that failed on this leader's own storage is refused as not the
+ * leader: nothing is acknowledged, and a retry reaches the leader that takes
+ * over, or finds the commit by its txnId if it landed
+ */
+function storageFailureResponse(
+  error: unknown,
+  ctx: Pick<ConnectionContext, "commitHealth">,
+): Response | undefined {
+  if (ctx.commitHealth === undefined) return undefined;
+  if (storageFailureCause(error) === undefined) return undefined;
+  return notLeaderResponse(new ServeNotLeaderError(undefined), false);
 }
 
 /** One request's view of the datastore, as one caller. */
@@ -1075,6 +1095,7 @@ class DatastoreApi {
         status: 503,
       });
     }
+    this.#noteLanded([landed]);
     return Response.json(await this.#landedReply(req, landed));
   }
 
@@ -1129,7 +1150,9 @@ class DatastoreApi {
             index === header.items.length - 1,
           );
       } catch (error) {
-        outcome = datastoreErrorResponse(error);
+        this.#deps.ctx.commitHealth?.recordFailure(error);
+        outcome = storageFailureResponse(error, this.#deps.ctx) ??
+          datastoreErrorResponse(error);
       }
       if (outcome instanceof Response) {
         await reader.cancel();
@@ -1141,6 +1164,7 @@ class DatastoreApi {
     const unconfirmed = landed.length === 0
       ? undefined
       : await this.#confirmLanded(landed);
+    if (unconfirmed === undefined) this.#noteLanded(landed);
     const results: BatchItemReply[] = [];
     for (const commit of landed) {
       results.push(
@@ -1550,6 +1574,21 @@ class DatastoreApi {
       () => this.#afterCommit(partition),
     );
     return { partition, result, ...(warning === undefined ? {} : { warning }) };
+  }
+
+  /**
+   * only once confirmed replicated; a commit whose catch-up failed after it
+   * landed says the read model cannot, and a retry answered from the store
+   * wrote nothing
+   */
+  #noteLanded(landed: readonly LandedCommit[]): void {
+    if (
+      landed.some((commit) =>
+        commit.warning === undefined && !commit.result.duplicate
+      )
+    ) {
+      this.#deps.ctx.commitHealth?.recordSuccess();
+    }
   }
 
   /** a loss the renewal already saw keeps its own fenced refusal */

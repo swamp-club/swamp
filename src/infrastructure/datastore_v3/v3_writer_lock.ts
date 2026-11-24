@@ -114,6 +114,8 @@ interface Held {
   confirmedAt?: number;
   ttlMs?: number;
   renewNow?: () => void;
+  /** set once the hold is left to lapse: nothing writes it a fresh lease again */
+  renewalStopped?: boolean;
   retaking?: Promise<void>;
   advancing?: Promise<number | undefined>;
   take?: {
@@ -285,7 +287,10 @@ export function advanceV3WriterLease(
   datastorePath: string,
 ): Promise<number | undefined> {
   const entry = writerLockState().held.get(resolve(datastorePath));
-  if (entry === undefined || entry.take === undefined) {
+  if (
+    entry === undefined || entry.take === undefined ||
+    entry.renewalStopped === true
+  ) {
     return Promise.resolve(undefined);
   }
   // Callers at once share one move: two would each move the same hold.
@@ -705,6 +710,24 @@ function startRenewal(
     entry.renewNow,
     Math.max(1, Math.floor(ttlMs / 3)),
   );
+}
+
+/**
+ * the hold stays, unrenewed even by a stale confirmation check: it lapses at
+ * its TTL for another writer to take, and a release still ends it sooner
+ */
+export async function stopV3WriterRenewal(
+  datastorePath: string,
+): Promise<void> {
+  const entry = writerLockState().held.get(resolve(datastorePath));
+  if (entry === undefined) return;
+  entry.renewalStopped = true;
+  if (entry.renewal !== undefined) clearInterval(entry.renewal);
+  entry.renewal = undefined;
+  entry.renewNow = undefined;
+  await entry.renewing;
+  // a move that failed leaves the hold as it was, still unrenewed
+  await entry.advancing?.catch(() => {});
 }
 
 /**

@@ -376,6 +376,10 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   // follower broken.
   "src/serve/follower_feed.ts -> src/infrastructure/datastore_v3/network_failure.ts",
   "src/serve/follower_feed.ts -> src/infrastructure/datastore_v3/datastore_outage.ts",
+  // the leader's storage failures are judged along the same bounded cause chain
+  "src/serve/leader_commit_health.ts -> src/infrastructure/datastore_v3/datastore_outage.ts",
+  // the sidecar's own report of failing to write on this node
+  "src/serve/leader_commit_health.ts -> src/infrastructure/datastore_v3/litestream/litestream_control_client.ts",
   "src/serve/handlers/shared.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
   "src/serve/serve_commit_effects.ts -> src/domain/datastore_v3/commit_effects.ts",
   "src/serve/serve_commit_effects.ts -> src/domain/datastore_v3/commit_store.ts",

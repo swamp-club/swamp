@@ -361,6 +361,11 @@ import {
   ServeHandover,
 } from "../../serve/serve_handover.ts";
 import { LeaderSteppingDown } from "../../serve/leader_stepping_down.ts";
+import {
+  leaderUnreadyReason,
+  probeStorage,
+  wireLeaderCommitHealth,
+} from "../../serve/leader_commit_health.ts";
 import { executeWorkflowWithLocks } from "../../serve/deps.ts";
 import { DaemonTelemetryFlushService } from "../../serve/telemetry_flush.ts";
 import { runDetached } from "../../infrastructure/tracing/mod.ts";
@@ -717,7 +722,10 @@ import {
   InstanceHeartbeatService,
   STOPPED_HEARTBEAT_WRITE_TIMEOUT_MS,
 } from "../../serve/instance_heartbeat.ts";
-import { ServeLeadership } from "../../serve/serve_leadership.ts";
+import {
+  FOLLOW_HUNG_AFTER_MS,
+  ServeLeadership,
+} from "../../serve/serve_leadership.ts";
 import { FileSystemControlPlaneStore } from "../../infrastructure/persistence/fs_control_plane_store.ts";
 import { ControlPlaneSchedulePauseRepository } from "../../infrastructure/persistence/control_plane_schedule_pause_repository.ts";
 import { ControlPlaneScheduleStateRepository } from "../../infrastructure/persistence/control_plane_schedule_state_repository.ts";
@@ -772,10 +780,12 @@ import {
   enableV3ServeTeamMode,
   holdV3Writer,
   keepV3WriterMarkers,
+  onV3CommitOutcome,
   refreshV3FollowerCopy,
   startV3ReplicationUpkeep,
   v3CommitFeedSource,
   v3CommitMark,
+  v3CopyDirAt,
   type V3DatastoreConfig,
   v3DatastoreConfigOf,
   v3DatastoreFor,
@@ -786,6 +796,7 @@ import {
 import {
   holdsCurrentV3WriterLease,
   onV3LeaseLost,
+  stopV3WriterRenewal,
   v3WriterFence,
   v3WriterLeaseConfirmed,
   v3WriterLeaseExpiresAt,
@@ -2613,6 +2624,7 @@ export const serveCommand = new Command()
     // only the leader writes, so only the leader maintains
     const v3Follows = v3Role === "follower";
     let serveLeadership: ServeLeadership | undefined;
+    let stopCommitHealth: (() => void) | undefined;
     let serveFollowerFeed: FollowerFeed | undefined;
     let serveFollowerEffectsReachNow: (() => () => boolean) | undefined;
     // the leader's timers a follower starts once it first leads; a leader that
@@ -8444,6 +8456,18 @@ export const serveCommand = new Command()
         // Readiness endpoint — returns 200 only after full startup and
         // before shutdown begins, and never for a follower broken on its own
         if (req.method === "GET" && new URL(req.url).pathname === "/ready") {
+          // ahead of shutting_down: the step-down it starts is a shutdown
+          const cannotCommit = connectionCtx.commitHealth?.cannotCommit();
+          if (cannotCommit !== undefined) {
+            return Response.json(
+              {
+                status: "cannot_commit",
+                reason: leaderUnreadyReason(cannotCommit),
+                instanceId,
+              },
+              { status: 503 },
+            );
+          }
           if (shuttingDown) {
             return Response.json(
               { status: "shutting_down", instanceId },
@@ -8763,6 +8787,7 @@ export const serveCommand = new Command()
       // No promotion during teardown: the lease is released below. stop() ends
       // a promotion in flight between its steps and aborts a follower refresh
       // before its restore is installed.
+      stopCommitHealth?.();
       if (serveLeadership) {
         const leadership = serveLeadership;
         await stages.run("leadership", () => leadership.stop(), "awaited");
@@ -9478,10 +9503,12 @@ export const serveCommand = new Command()
             onV3LeaseLost((path) => {
               if (path === resolve(location.path)) listener();
             }),
-          take: () =>
+          take: (followSignal) =>
             holdV3Writer(location, resolvedRepoDir, {
               retakeLost: true,
               follow: true,
+              ...(followSignal === undefined ? {} : { followSignal }),
+              abandonFollowAfterMs: FOLLOW_HUNG_AFTER_MS,
               ownerCheck: { as: "serve", address: ownerAddress },
               ttlMs: SERVE_WRITER_LEASE_TTL_MS,
             }),
@@ -9565,6 +9592,21 @@ export const serveCommand = new Command()
         },
       });
       serveLeadership = leadership;
+      // a leader that cannot commit steps down as a lost lead does
+      const commitHealth = wireLeaderCommitHealth({
+        datastorePath: resolve(location.path),
+        leads: () => leadership.role === "leader",
+        onCommitOutcome: onV3CommitOutcome,
+        stopRenewal: () => stopV3WriterRenewal(location.path),
+        // the volume the leader's copy, and its sidecar's files, are written on
+        probe: () => probeStorage(v3CopyDirAt(resolvedRepoDir, location)),
+        stepDown: async () => {
+          Deno.exitCode = 75;
+          await startShutdown();
+        },
+      });
+      connectionCtx.commitHealth = commitHealth.port;
+      stopCommitHealth = () => commitHealth.stop();
       markRefreshed = () => leadership.markRefreshed();
       connectionCtx.followerGate = followerPolicy.gate(leadership);
       enableV3ServeTeamMode(

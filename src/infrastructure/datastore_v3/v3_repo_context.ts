@@ -48,6 +48,7 @@ import {
   type CatchUpOptions,
   datastoreKeyFilter,
   openV3Datastore,
+  type V3CommitOutcome,
   v3CommitsDbPath,
   type V3Datastore,
   v3OutboxPath,
@@ -322,6 +323,10 @@ interface RepoContextState {
   readonly deferredCollections: Set<string>;
   /** stopped all at once by closeV3Datastores */
   readonly feedWatches: ServeFeedWatch[];
+  readonly commitOutcomeListeners: Set<V3CommitOutcomeListener>;
+  /** a follower's copy work in flight, by handle key */
+  readonly follows: Map<string, V3FollowInFlight>;
+  followWorkForTesting: ((signal: AbortSignal) => Promise<void>) | undefined;
   teardownTiming: { probeGraceMs: number; releaseBoundMs: number };
 }
 
@@ -354,11 +359,61 @@ const repoState = processRuntimeSlot<RepoContextState>(() => ({
   publishListeners: new Map(),
   deferredCollections: new Set(),
   feedWatches: [],
+  commitOutcomeListeners: new Set(),
+  follows: new Map(),
+  followWorkForTesting: undefined,
   teardownTiming: {
     probeGraceMs: STORAGE_PROBE_GRACE_MS,
     releaseBoundMs: UNREACHABLE_RELEASE_BOUND_MS,
   },
 }));
+
+/** a follow aborted at close honours it before its install; past this it is left */
+const FOLLOW_CLOSE_WAIT_MS = 5_000;
+
+interface V3FollowInFlight {
+  readonly done: Promise<void>;
+  readonly abort: AbortController;
+  readonly startedAt: number;
+}
+
+/** the directory this checkout's copy of the datastore, and its sidecar's files, live in */
+export function v3CopyDirAt(
+  repoDir: string,
+  config: V3DatastoreConfig,
+): string {
+  return dirname(v3CommitsDbPath(config.path, repoDir));
+}
+
+export function setV3FollowWorkForTesting(
+  work: ((signal: AbortSignal) => Promise<void>) | undefined,
+): void {
+  repoState().followWorkForTesting = work;
+}
+
+export type V3CommitOutcomeListener = (
+  datastorePath: string,
+  outcome: V3CommitOutcome,
+) => void;
+
+function tellCommitOutcome(datastore: string, outcome: V3CommitOutcome): void {
+  for (const listener of repoState().commitOutcomeListeners) {
+    try {
+      listener(datastore, outcome);
+    } catch {
+      // A listener's failure is its own.
+    }
+  }
+}
+
+/** serve's leader judges from these whether it can still commit */
+export function onV3CommitOutcome(
+  listener: V3CommitOutcomeListener,
+): () => void {
+  const listeners = repoState().commitOutcomeListeners;
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
 
 export type V3CommandCommits =
   | { readonly committed: true }
@@ -537,6 +592,11 @@ export function v3DatastoreFor(
         ? { serveFollower: true }
         : {}),
       writerFence: () => v3WriterFence(config.path),
+      onCommitOutcome: (outcome) => {
+        // while replicating, a commit counts once replicated, not once applied
+        if (outcome.kind === "applied" && v3ReplicatesAt(config.path)) return;
+        tellCommitOutcome(resolve(config.path), outcome);
+      },
       replicatedMark: () =>
         v3ReplicatesAt(config.path)
           ? repoState().publishedMarks.get(resolve(config.path)) ?? -1
@@ -755,6 +815,10 @@ export async function holdV3Writer(
      * this process reading its own current copy and holding nothing
      */
     readonly follow?: boolean;
+    /** past its abort, the copy work a busy lease leaves is not waited for */
+    readonly followSignal?: AbortSignal;
+    /** copy work still running this long is taken for hung and aborted */
+    readonly abandonFollowAfterMs?: number;
     /**
      * the command's lock catches the copy up, or catchUpDeferredAt does; only
      * for a copy that has read serve's feed, so it can go offline at the lock
@@ -1010,6 +1074,8 @@ async function takeV3WriterHold(
     readonly retakeLost?: boolean;
     readonly ownerCheck?: V3OwnerCheck;
     readonly follow?: boolean;
+    readonly followSignal?: AbortSignal;
+    readonly abandonFollowAfterMs?: number;
     readonly ttlMs?: number;
   },
 ): Promise<"writer" | "follower"> {
@@ -1036,6 +1102,14 @@ async function takeV3WriterHold(
   // follows
   const follows = options.follow === true && claimHint === undefined &&
     serveUpstreamAt(config.path) === undefined;
+  // never the lease while this copy's restore may still install: a winner
+  // would wait on it holding the lease, and no other node could take over
+  if (
+    follows &&
+    !await settleFollowInFlight(config, repoDir, options)
+  ) {
+    return "follower";
+  }
   let release: () => Promise<void>;
   try {
     release = await acquireV3WriterLock(config.path, {
@@ -1063,7 +1137,12 @@ async function takeV3WriterHold(
     });
   } catch (error) {
     if (follows && error instanceof V3WriterBusyError) {
-      await followV3Datastore(config, repoDir, options.ownerCheck);
+      await followBounded(
+        config,
+        repoDir,
+        options.ownerCheck,
+        options.followSignal,
+      );
       return "follower";
     }
     if (claimHint !== undefined && error instanceof V3WriterBusyError) {
@@ -1200,6 +1279,91 @@ async function takeV3WriterHold(
 }
 
 /**
+ * true once no follow of this copy is running; one past the hang bound is
+ * aborted first, and one still running after the take's own wait is left be
+ */
+async function settleFollowInFlight(
+  config: V3DatastoreConfig,
+  repoDir: string,
+  options: {
+    readonly followSignal?: AbortSignal;
+    readonly abandonFollowAfterMs?: number;
+  },
+): Promise<boolean> {
+  const running = repoState().follows.get(handleKey(repoDir, config));
+  if (running === undefined) return true;
+  const age = Date.now() - running.startedAt;
+  if (
+    options.abandonFollowAfterMs !== undefined &&
+    age >= options.abandonFollowAfterMs
+  ) {
+    logger
+      .warn`Making this follower's copy current has run ${age} ms; it is aborted so the writer lease can be tried`;
+    running.abort.abort(new Error("the copy work ran past its bound"));
+  }
+  return await untilSettled(running.done, options.followSignal);
+}
+
+/** true when work settled before the signal aborted */
+async function untilSettled(
+  work: Promise<unknown>,
+  signal: AbortSignal | undefined,
+): Promise<boolean> {
+  if (signal === undefined) {
+    await work.catch(() => {});
+    return true;
+  }
+  if (signal.aborted) return false;
+  let onAbort: (() => void) | undefined;
+  const aborted = new Promise<false>((resolve) => {
+    onAbort = () => resolve(false);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([work.then(() => true, () => true), aborted]);
+  } finally {
+    if (onAbort !== undefined) signal.removeEventListener("abort", onAbort);
+  }
+}
+
+/**
+ * one follow per copy at a time; one still running when the take's wait ends
+ * goes on, and the lease is tried again on a later take
+ */
+async function followBounded(
+  config: V3DatastoreConfig,
+  repoDir: string,
+  ownerCheck: V3OwnerCheck | undefined,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  const key = handleKey(repoDir, config);
+  let follow = repoState().follows.get(key);
+  if (follow === undefined) {
+    const abort = new AbortController();
+    const forTesting = repoState().followWorkForTesting;
+    const done = (forTesting !== undefined
+      ? forTesting(abort.signal)
+      : followV3Datastore(config, repoDir, ownerCheck, abort.signal))
+      .finally(() => {
+        if (repoState().follows.get(key)?.done === done) {
+          repoState().follows.delete(key);
+        }
+      });
+    // its failure reaches whoever waits on it, or is logged once nobody does
+    done.catch((error) => {
+      logger.warn`Making this follower's copy current failed: ${error}`;
+    });
+    follow = { done, abort, startedAt: Date.now() };
+    repoState().follows.set(key, follow);
+  }
+  if (signal === undefined) return await follow.done;
+  if (!await untilSettled(follow.done, signal)) {
+    logger
+      .warn`Making this follower's copy current did not finish before the writer lease is due to be tried; it goes on, and the lease is tried meanwhile`;
+  }
+}
+
+/**
  * nothing is marked or replicated: the writer does that; the claim is checked
  * as the lease's hold would, so a serve with another --address is refused here
  * too; its own gone predecessor is recovered now, off the takeover's path
@@ -1208,9 +1372,15 @@ async function followV3Datastore(
   config: V3DatastoreConfig,
   repoDir: string,
   ownerCheck: V3OwnerCheck | undefined,
+  signal?: AbortSignal,
 ): Promise<void> {
   repoState().serveFollowerCopies.add(handleKey(repoDir, config));
-  await ensureV3CopyCurrent(repoDir, config, "read");
+  await ensureV3CopyCurrent(
+    repoDir,
+    config,
+    "read",
+    signal === undefined ? {} : { signal },
+  );
   const handle = v3DatastoreFor(repoDir, config);
   const refusal = claimRefusal(
     handle.commitStore.owner(),
@@ -2129,6 +2299,19 @@ export async function followServeCompactionAtCommandEnd(
 export async function closeV3Datastores(
   options: { readonly storageUnreachable?: boolean } = {},
 ): Promise<void> {
+  // copy work a take left running must not reopen a handle after the close
+  const follows = [...repoState().follows.values()];
+  repoState().follows.clear();
+  for (const follow of follows) {
+    follow.abort.abort(new Error("the datastore is closing"));
+  }
+  await Promise.race([
+    Promise.all(follows.map((follow) => follow.done.catch(() => {}))),
+    new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, FOLLOW_CLOSE_WAIT_MS);
+      Deno.unrefTimer(timer);
+    }),
+  ]);
   await withSpan(
     "swamp.datastore.v3.close.feed_stop",
     {},
@@ -2539,18 +2722,26 @@ async function syncAndPublishNow(
       }
     },
   };
-  await withBucketWriteScope(scope, async () => {
-    if (via === "replica") {
-      await use.confirmFromReplica(
-        peekHighWaterCursor,
-        mark.cursor,
-        left,
-        confirmOptions,
-      );
-    } else {
-      await use.sync(left, confirmOptions);
-    }
-  });
+  try {
+    await withBucketWriteScope(scope, async () => {
+      if (via === "replica") {
+        await use.confirmFromReplica(
+          peekHighWaterCursor,
+          mark.cursor,
+          left,
+          confirmOptions,
+        );
+      } else {
+        await use.sync(left, confirmOptions);
+      }
+    });
+  } catch (error) {
+    tellCommitOutcome(datastore, { kind: "failed", error });
+    throw error;
+  }
+  if (mark.cursor > (repoState().publishedMarks.get(datastore) ?? -1)) {
+    tellCommitOutcome(datastore, { kind: "applied" });
+  }
   repoState().publishedMarks.set(
     datastore,
     Math.max(repoState().publishedMarks.get(datastore) ?? 0, mark.cursor),

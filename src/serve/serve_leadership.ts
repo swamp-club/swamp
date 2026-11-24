@@ -47,6 +47,18 @@ export const AWAIT_NEW_LEADER_MS = 120_000;
 
 const AWAITING_LEASE_TRY_MS = 1_000;
 
+/** a step of a promotion that waits on the old leader's feed gives way after it */
+const PROMOTION_FEED_STOP_MS = 5_000;
+
+/**
+ * A restore runs to its end, since take() would only redo it; past the
+ * holder's lapse by this much it is taken for hung and aborted.
+ */
+export const REFRESH_PAST_LAPSE_MS = 60_000;
+
+/** a busy take's copy work begins before any lapse, so its hang bound is longer */
+export const FOLLOW_HUNG_AFTER_MS = 2 * REFRESH_PAST_LAPSE_MS;
+
 /**
  * How long a follower's copy may go without a refresh before it stops
  * answering reads: three ticks, so a revoked grant stops allowing reads on a
@@ -59,7 +71,11 @@ export type ServeRole = "leader" | "follower";
 export interface LeadershipLease {
   holdsCurrent(): boolean;
   fence(): number | undefined;
-  take(): Promise<"writer" | "follower">;
+  /**
+   * `follow`, when given, bounds the copy work a busy lease leaves; the lease
+   * decision itself is never cut short
+   */
+  take(follow?: AbortSignal): Promise<"writer" | "follower">;
   /**
    * whether the store confirmed the lease within its TTL; false asks for a
    * renewal. Absent, a held lease is taken as confirmed.
@@ -130,6 +146,7 @@ export interface ServeLeadershipDeps {
    */
   onLostLead(): Promise<void>;
   readonly tickMs?: number;
+  readonly refreshPastLapseMs?: number;
   readonly staleAfterMs?: number;
   readonly now?: () => number;
 }
@@ -137,6 +154,7 @@ export interface ServeLeadershipDeps {
 export class ServeLeadership {
   readonly #deps: ServeLeadershipDeps;
   readonly #tickMs: number;
+  readonly #refreshPastLapseMs: number;
   readonly #staleAfterMs: number;
   readonly #now: () => number;
   #role: ServeRole = "follower";
@@ -149,6 +167,11 @@ export class ServeLeadership {
   #scheduled: Promise<void> | undefined;
   #ticking: Promise<void> | undefined;
   #refreshing: AbortController | undefined;
+  /**
+   * copy work a tick stopped waiting for, a restore or a feed stop, which may
+   * still change the copy: no lease is tried while any of it runs
+   */
+  readonly #leftWork = new Set<Promise<unknown>>();
   /**
    * This node took the lease but could not write its leader record: the
    * next tick retries the record, not the lease.
@@ -167,6 +190,7 @@ export class ServeLeadership {
   constructor(deps: ServeLeadershipDeps) {
     this.#deps = deps;
     this.#tickMs = deps.tickMs ?? DEFAULT_LEADERSHIP_TICK_MS;
+    this.#refreshPastLapseMs = deps.refreshPastLapseMs ?? REFRESH_PAST_LAPSE_MS;
     this.#staleAfterMs = deps.staleAfterMs ?? DEFAULT_FOLLOWER_STALE_AFTER_MS;
     this.#now = deps.now ?? Date.now;
   }
@@ -300,9 +324,23 @@ export class ServeLeadership {
     if (this.#timer !== undefined) clearTimeout(this.#timer);
     this.#refreshing?.abort(new Error("serve is stopping"));
     await this.#ticking;
+    if (this.#leftWork.size > 0) {
+      await this.#within(
+        this.#now() + PROMOTION_FEED_STOP_MS,
+        "copy work left running",
+        Promise.all(this.#leftWork),
+      );
+    }
     await this.#leadCheck;
     await this.#scheduled;
-    await this.#deps.feed?.stop();
+    const feed = this.#deps.feed;
+    if (feed !== undefined) {
+      await this.#within(
+        this.#now() + PROMOTION_FEED_STOP_MS,
+        "stopping the commit feed",
+        feed.stop(),
+      );
+    }
   }
 
   /**
@@ -325,10 +363,81 @@ export class ServeLeadership {
     this.#timer = setTimeout(() => {
       this.#timer = undefined;
       this.#scheduled = (async () => {
-        await this.tick();
-        this.#schedule(await this.#nextDelay());
+        try {
+          await this.tick();
+        } finally {
+          // the next tick is armed whatever this one or the delay did
+          this.#schedule(
+            await this.#nextDelay().catch((error) => {
+              logger.warn`Timing the next leadership check failed: ${error}`;
+              return this.#tickMs;
+            }),
+          );
+        }
       })();
     }, delay);
+  }
+
+  /**
+   * Past it a follower's tick stops waiting for anything but the lease: the
+   * next tick, at most a tick later, tries the lease again.
+   */
+  async #followerDeadline(): Promise<number> {
+    const start = this.#now();
+    const tickEnd = start + this.#tickMs;
+    const expiresAt = await this.#within(
+      tickEnd,
+      "reading when the writer lease lapses",
+      Promise.resolve().then(() => this.#deps.lease.expiresAt()).catch(() =>
+        undefined
+      ),
+    );
+    if (
+      expiresAt.done && expiresAt.value !== undefined &&
+      Number.isFinite(expiresAt.value) && expiresAt.value > start
+    ) {
+      return Math.min(tickEnd, expiresAt.value + LEASE_EXPIRY_MARGIN_MS);
+    }
+    return tickEnd;
+  }
+
+  /**
+   * waits for work only until the deadline; work that outlasts it goes on,
+   * its outcome logged, and onLate tells it to stop if it can
+   */
+  async #within<T>(
+    deadline: number,
+    what: string,
+    work: Promise<T>,
+    onLate?: () => void,
+  ): Promise<
+    { readonly done: true; readonly value: T } | { readonly done: false }
+  > {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<{ readonly done: false }>((resolve) => {
+      timer = setTimeout(
+        () => resolve({ done: false }),
+        Math.max(0, deadline - this.#now()),
+      );
+    });
+    try {
+      const outcome = await Promise.race([
+        work.then((value) => ({ done: true as const, value })),
+        late,
+      ]);
+      if (!outcome.done) {
+        logger
+          .warn`Following the leader: ${what} did not finish in time; the writer lease is tried again on the next check`;
+        onLate?.();
+        work.catch((error) => {
+          logger
+            .debug`Following the leader: ${what} failed after it was left: ${error}`;
+        });
+      }
+      return outcome;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /** capped at the tick, which also detects a lost lead and drives refreshes */
@@ -336,9 +445,9 @@ export class ServeLeadership {
     if (this.#stopped || this.#role === "leader") return this.#tickMs;
     if (this.awaitingNewLeader) return AWAITING_LEASE_TRY_MS;
     this.#endAwaiting();
-    const expiresAt = await this.#deps.lease.expiresAt().catch(
-      () => undefined,
-    );
+    const expiresAt = await Promise.resolve().then(() =>
+      this.#deps.lease.expiresAt()
+    ).catch(() => undefined);
     if (expiresAt === undefined || !Number.isFinite(expiresAt)) {
       return this.#tickMs;
     }
@@ -375,16 +484,51 @@ export class ServeLeadership {
         });
       return;
     }
+    const deadline = await this.#followerDeadline();
+    // a winner would wait on it holding the lease, and no other node could lead
+    if (
+      this.#leftWork.size > 0 &&
+      !(await this.#within(
+        deadline,
+        "copy work left running",
+        Promise.all(this.#leftWork),
+      )).done
+    ) return;
     // A lease already taken, whose record write failed, is not taken again:
     // only the record is retried.
     this.#lastTakeAt = this.#now();
-    const taken = this.#leadPending && lease.holdsCurrent()
-      ? "writer"
-      : await lease.take();
+    const follow = new AbortController();
+    const followTimer = setTimeout(
+      () => follow.abort(new Error("the leadership check ran out of time")),
+      Math.max(0, deadline - this.#now()),
+    );
+    let taken: "writer" | "follower";
+    try {
+      taken = this.#leadPending && lease.holdsCurrent()
+        ? "writer"
+        : await lease.take(follow.signal);
+    } finally {
+      clearTimeout(followTimer);
+    }
     if (this.#stopped) return;
     if (taken === "writer") {
       this.#deps.abortForwards?.();
-      await this.#deps.feed?.stop();
+      // the old leader's commits must not apply after this node leads; one
+      // that cannot stop them gives the lease up rather than hold it unled
+      const feed = this.#deps.feed;
+      if (feed !== undefined) {
+        const stopping = feed.stop();
+        const stopped = await this.#within(
+          this.#now() + PROMOTION_FEED_STOP_MS,
+          "stopping the old leader's commit feed",
+          stopping,
+        );
+        if (!stopped.done) {
+          this.#leave(stopping);
+          this.#abandonLead("the old leader's commit feed did not stop");
+          return;
+        }
+      }
       await this.#lead();
       return;
     }
@@ -393,7 +537,13 @@ export class ServeLeadership {
       // the feed keeps the copy current while following the leader the record
       // names. A new leader, or a stopped feed, restores from the lineage first
       // so no commit an old leader never published stays in the copy.
-      await this.#readLeader();
+      if (
+        !(await this.#within(
+          this.#recordDeadline(deadline),
+          "reading the leader record",
+          this.#readLeader(),
+        )).done
+      ) return;
       // a wait begun with no leader known takes the first one named as the old
       if (this.awaitingNewLeader && this.#awaitingPast === undefined) {
         this.#awaitingPast = this.#leader?.fence;
@@ -417,29 +567,134 @@ export class ServeLeadership {
       }`;
       // stopped before the restore so nothing the old socket delivers is queued
       // to apply after it
-      await feed.stop();
+      const stopping = feed.stop();
+      if (
+        !(await this.#within(deadline, "stopping the commit feed", stopping))
+          .done
+      ) {
+        this.#leave(stopping);
+        return;
+      }
     }
     if (this.#stopped) return;
     if (!await this.#refresh()) return;
     if (this.#stopped || this.#role !== "follower") return;
     this.#refreshedAt = this.#now();
-    await this.#readLeader();
+    if (
+      !(await this.#within(
+        this.#recordDeadline(deadline),
+        "reading the leader record",
+        this.#readLeader(),
+      )).done
+    ) return;
     if (this.#stopped || this.#role !== "follower") return;
     feed?.follow(this.#leader);
   }
 
-  /** false when stop() aborted the refresh */
+  #leave(work: Promise<unknown>): void {
+    const left = work.catch(() => {}).finally(() => {
+      this.#leftWork.delete(left);
+    });
+    this.#leftWork.add(left);
+  }
+
+  /** as a lost lead: serve shuts down and the lease goes with the release at exit */
+  #abandonLead(why: string): void {
+    logger
+      .error`This serve node took the writer lease but cannot lead: ${why}; it stops, to start again as a follower`;
+    this.#stopped = true;
+    if (this.#timer !== undefined) clearTimeout(this.#timer);
+    this.#role = "follower";
+    this.#since = undefined;
+    this.#lostLead = Promise.resolve().then(() => this.#deps.onLostLead())
+      .catch((error) => {
+        logger.error`Stopping after giving up the lead failed: ${error}`;
+      });
+  }
+
+  /** slow copy work earlier in the tick never leaves the record no time to be read */
+  #recordDeadline(deadline: number): number {
+    return Math.max(deadline, this.#now() + LEASE_EXPIRY_MARGIN_MS);
+  }
+
+  /**
+   * false when stop() aborted the refresh, or it ran past the holder's lapse
+   * by the cap: a refresh honours its abort until its restore is installed
+   */
   async #refresh(): Promise<boolean> {
     const refresh = new AbortController();
     this.#refreshing = refresh;
+    const started = this.#now();
     try {
-      await this.#deps.refreshCopy(refresh.signal);
-      return true;
+      const work = this.#deps.refreshCopy(refresh.signal);
+      // raced below; a rejection before the first race is not unhandled
+      work.catch(() => {});
+      for (;;) {
+        // the holder may renew while the restore runs: its lapse is read again;
+        // a released lease lapsed when the restore began
+        const read = await this.#holderLapse();
+        const lapse = read === 0 ? started : read;
+        const cap = lapse === undefined
+          ? this.#now() + this.#tickMs
+          : lapse + this.#refreshPastLapseMs;
+        if (lapse !== undefined && this.#now() >= cap) {
+          logger
+            .warn`Restoring this node's copy has run ${
+            this.#now() - started
+          } ms, past the cap after the writer lease of the leader at fence ${
+            this.#leader?.fence ?? "unknown"
+          } lapsed; it is aborted so the lease can be tried`;
+          refresh.abort(new Error("the restore ran past the lease's lapse"));
+          this.#leave(work);
+          return false;
+        }
+        const outcome = await this.#waitUntil(cap, work);
+        if (outcome.done) return true;
+        if (this.#stopped) return false;
+      }
     } catch (error) {
       if (error === refresh.signal.reason) return false;
       throw error;
     } finally {
       this.#refreshing = undefined;
+    }
+  }
+
+  /** when the holder's lease lapses, 0 once released, if it can be read now */
+  async #holderLapse(): Promise<number | undefined> {
+    const read = await this.#waitUntil(
+      this.#now() + this.#tickMs,
+      Promise.resolve().then(() => this.#deps.lease.expiresAt()).catch(() =>
+        undefined
+      ),
+    );
+    const lapse = read.done ? read.value : undefined;
+    return lapse !== undefined && Number.isFinite(lapse) && lapse >= 0
+      ? lapse
+      : undefined;
+  }
+
+  /** like #within, without giving up on the work: it may still be waited for */
+  async #waitUntil<T>(
+    deadline: number,
+    work: Promise<T>,
+  ): Promise<
+    { readonly done: true; readonly value: T } | { readonly done: false }
+  > {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<{ readonly done: false }>((resolve) => {
+      timer = setTimeout(
+        () => resolve({ done: false }),
+        Math.max(0, deadline - this.#now()),
+      );
+    });
+    try {
+      return await Promise.race([
+        work.then((value) => ({ done: true as const, value })),
+        late,
+      ]);
+    } finally {
+      clearTimeout(timer);
     }
   }
 
