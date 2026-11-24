@@ -24,6 +24,7 @@
  */
 
 import { z } from "zod";
+import type { TooLargeToLoad } from "../data/resource_load_guard.ts";
 
 /**
  * The stored form of one JSON resource a step wrote: what the accessor
@@ -38,6 +39,8 @@ export interface StepOutputRecord {
   readonly modelName: string;
   readonly tags: Record<string, string>;
   readonly attributes: Record<string, unknown>;
+  /** the content was left unloaded: attributes are empty and a read fails */
+  readonly tooLargeToLoad?: TooLargeToLoad;
 }
 
 /**
@@ -86,6 +89,10 @@ export const StepOutputRecordSchema = z.object({
   modelName: z.string(),
   tags: z.record(z.string(), z.string()),
   attributes: z.record(z.string(), z.unknown()),
+  tooLargeToLoad: z.object({
+    bytes: z.number(),
+    reason: z.enum(["memory", "text-length"]),
+  }).optional(),
 });
 
 export const StepOutputSourcesSchema = z.array(z.object({

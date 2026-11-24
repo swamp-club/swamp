@@ -38,6 +38,7 @@ import {
 import { transformHyphenatedModelRefs } from "../../domain/expressions/expression_parser.ts";
 import type { ExpressionContext } from "../../domain/expressions/model_resolver.ts";
 import type { DataRecord } from "../../domain/data/data_record.ts";
+import { attachStepOutputSources } from "../../domain/expressions/step_output_sources.ts";
 
 Deno.test("CelEvaluator: only missing top-level input and env bindings are unbound errors", async () => {
   const evaluator = new CelEvaluator();
@@ -2247,4 +2248,38 @@ Deno.test("evaluate: does not call data.prepare", () => {
     [3],
   );
   assertEquals(called, false);
+});
+
+Deno.test("CelEvaluator: reading the outputs of a step that wrote a resource too large to load fails naming it, synchronously and asynchronously", async () => {
+  const evaluator = new CelEvaluator();
+  const write = attachStepOutputSources(
+    { status: "succeeded", outputs: undefined },
+    [{
+      path: [],
+      records: [{
+        id: "r-big",
+        name: "blob",
+        version: 3,
+        namespace: "",
+        modelName: "big",
+        tags: {},
+        attributes: {},
+        tooLargeToLoad: { bytes: 570_000_048, reason: "text-length" },
+      }],
+    }],
+  );
+  const context = { steps: { write } };
+  const message =
+    "Cannot load big/blob@v3: it is 543.6 MiB (570000048 bytes), more than swamp can load as text";
+  assertThrows(
+    () => evaluator.evaluate("steps.write.outputs.marker", context),
+    InvalidExpressionError,
+    message,
+  );
+  await assertRejects(
+    () => evaluator.evaluateAsync("steps.write.outputs.marker", context),
+    InvalidExpressionError,
+    message,
+  );
+  assertEquals(evaluator.evaluate("steps.write.status", context), "succeeded");
 });

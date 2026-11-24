@@ -137,3 +137,27 @@ Deno.test("toPersistedStepContexts / fromPersistedStepContexts: a step named __p
   assertEquals(Object.keys(context), ["status", "outputs"]);
   assertEquals(stepOutputSourcesOf(context), sources);
 });
+
+Deno.test("toPersistedStepContexts / fromPersistedStepContexts: a too-large marker survives the round trip, and a malformed one is rejected", () => {
+  const marked: StepOutputSources = [{
+    path: [],
+    records: [{
+      id: "r2",
+      name: "blob",
+      version: 4,
+      namespace: "",
+      modelName: "big",
+      tags: {},
+      attributes: {},
+      tooLargeToLoad: { bytes: 570_000_048, reason: "text-length" },
+    }],
+  }];
+  const steps = {
+    write: attachStepOutputSources({ status: "succeeded" }, marked),
+  };
+  const copied = JSON.parse(JSON.stringify(toPersistedStepContexts(steps)));
+  const restored = fromPersistedStepContexts(copied)!;
+  assertEquals(stepOutputSourcesOf(restored.write), marked);
+  copied.write.sources[0].records[0].tooLargeToLoad.reason = "other";
+  assertThrows(() => fromPersistedStepContexts(copied));
+});

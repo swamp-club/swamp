@@ -82,6 +82,11 @@ import {
 } from "../expressions/expression_evaluation_service.ts";
 import type { Data } from "../data/data.ts";
 import { specNameClashRemedy } from "../data/spec_name_clash.ts";
+import {
+  describeLoadedItem,
+  resourceLoadGuardOf,
+} from "../data/resource_load_guard.ts";
+import { describeByteCount } from "../data/resource_size_policy.ts";
 import { CONTROL_PLANE_STORED_TYPES } from "./control_plane_types.ts";
 import type { ExecutionOutput } from "./execution_envelope.ts";
 import { InProcessExecutor } from "./in_process_executor.ts";
@@ -230,6 +235,9 @@ function isDeclaredResourceData(
  * this warning has to be seen where the clash was made
  */
 const specNameClashLogger = getLogger(["swamp", "data", "spec-name-clash"]);
+
+// the run's own logger reaches only its log file; this warning must be seen
+const resourceSizeLogger = getLogger(["swamp", "data", "resource-size"]);
 
 /**
  * warns on the run that first writes a data name, so the clash shows where it
@@ -2295,19 +2303,45 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
             if (!data.isDeleted) {
               let lastKnownState: Record<string, unknown> = {};
               if (data.contentType === "application/json") {
-                try {
-                  const activeContent = await context.dataRepository.getContent(
-                    context.modelType,
-                    context.modelId,
-                    data.name,
-                  );
-                  if (activeContent) {
-                    lastKnownState = JSON.parse(
-                      new TextDecoder().decode(activeContent),
-                    ) as Record<string, unknown>;
+                const loadGuard = resourceLoadGuardOf(context.dataRepository);
+                const item = {
+                  modelType: context.modelType.normalized,
+                  modelName: data.tags["modelName"] ?? definition.name,
+                  dataName: data.name,
+                  version: data.version,
+                };
+                let refusal = loadGuard.refusalFor(item, data.size ?? 0);
+                if (!refusal) {
+                  try {
+                    const activeContent = await context.dataRepository
+                      .getContent(
+                        context.modelType,
+                        context.modelId,
+                        data.name,
+                      );
+                    if (activeContent) {
+                      refusal = loadGuard.refusalFor(
+                        item,
+                        activeContent.length,
+                      );
+                    }
+                    if (activeContent && !refusal) {
+                      lastKnownState = JSON.parse(
+                        new TextDecoder().decode(activeContent),
+                      ) as Record<string, unknown>;
+                    }
+                  } catch {
+                    // Not valid JSON or read error — proceed with empty state
                   }
-                } catch {
-                  // Not valid JSON or read error — proceed with empty state
+                }
+                if (refusal) {
+                  resourceSizeLogger.warn(
+                    "The deletion marker of {item} does not carry its last known state: it is {size}, too large to load",
+                    {
+                      item: describeLoadedItem(item),
+                      size: describeByteCount(refusal.bytes),
+                    },
+                  );
                 }
               }
 

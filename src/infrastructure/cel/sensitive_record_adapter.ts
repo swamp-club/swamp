@@ -29,6 +29,10 @@ import {
 } from "../../domain/data/namespace.ts";
 import { SECRET_REFERENCE_INVALID } from "../../domain/expressions/errors.ts";
 import {
+  parseTooLargeToLoad,
+  ResourceTooLargeToLoadError,
+} from "../../domain/data/resource_load_guard.ts";
+import {
   parseStoredVaultReference,
   readSensitiveFieldJsonPlaces,
   readSensitiveFieldPlaces,
@@ -335,6 +339,20 @@ export function adaptDataRecord(
   accessor: DataAccessor,
 ): unknown {
   if (!isRecordLike(record)) return record;
+  // before the namespace check, so a marked foreign record fails too
+  const tooLargeToLoad = parseTooLargeToLoad(record.tooLargeToLoad);
+  if (tooLargeToLoad) {
+    throw new ResourceTooLargeToLoadError(
+      {
+        modelType: typeof record.modelType === "string" ? record.modelType : "",
+        modelName: record.modelName,
+        dataName: typeof record.name === "string" ? record.name : "",
+        version: record.version,
+      },
+      tooLargeToLoad.bytes,
+      tooLargeToLoad.reason,
+    );
+  }
   if (reader !== undefined && isForeignToReader(record.namespace, reader)) {
     return record;
   }

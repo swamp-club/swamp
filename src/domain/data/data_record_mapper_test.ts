@@ -1159,14 +1159,14 @@ Deno.test("fromData: refuses an item the guard rejects, by recorded size before 
   assertEquals(unsized.reads, 1);
 });
 
-Deno.test("fromResourceHandle: a guard refusal is raised, not swallowed as unparseable JSON", async () => {
-  const handle: DataHandle = {
+function blobHandle(size: number): DataHandle {
+  return {
     name: "blob",
     specName: "blob",
     kind: "resource",
     dataId: "data-id-1" as DataId,
     version: 2,
-    size: 0,
+    size,
     tags: { type: "resource" },
     metadata: {
       contentType: "application/json",
@@ -1177,29 +1177,111 @@ Deno.test("fromResourceHandle: a guard refusal is raised, not swallowed as unpar
       ownerDefinition: { ownerType: "model-method", ownerRef: "ref-1" },
     },
   };
-  await assertRejects(
-    () =>
-      fromResourceHandle(
-        handle,
-        ModelType.create("test/model"),
-        "m",
-        "big",
-        asyncGuardedRepo(encoder.encode("x".repeat(400))),
-      ),
-    ResourceTooLargeToLoadError,
-    "big/blob@v2",
+}
+
+function textLimitedRepo(
+  content: Uint8Array,
+): UnifiedDataRepository & { reads: number } {
+  const repo = {
+    namespace: "",
+    reads: 0,
+    loadGuard: new ResourceLoadGuard(
+      {
+        heapLimitBytes: () => 1_000_000,
+        heapUsedBytes: () => 0,
+      },
+      10,
+      20,
+    ),
+    getContent: () => {
+      repo.reads++;
+      return Promise.resolve(content);
+    },
+  };
+  return repo as unknown as UnifiedDataRepository & { reads: number };
+}
+
+Deno.test("fromResourceHandle: a heap refusal marks the record instead of failing, by recorded size before reading or by byte length", async () => {
+  const sized = asyncGuardedRepo(encoder.encode("{}"));
+  const bySize = await fromResourceHandle(
+    blobHandle(500),
+    ModelType.create("test/model"),
+    "m",
+    "big",
+    sized,
   );
-  await assertRejects(
-    () =>
-      fromResourceHandle(
-        { ...handle, size: 500 },
-        ModelType.create("test/model"),
-        "m",
-        "big",
-        asyncGuardedRepo(encoder.encode("{}")),
-      ),
-    ResourceTooLargeToLoadError,
+  assertEquals(sized.reads, 0);
+  assertEquals(bySize.tooLargeToLoad, { bytes: 500, reason: "memory" });
+  assertEquals(bySize.attributes, {});
+
+  const unsized = asyncGuardedRepo(
+    encoder.encode(`{"x":"${"x".repeat(400)}"}`),
   );
+  const byLength = await fromResourceHandle(
+    blobHandle(0),
+    ModelType.create("test/model"),
+    "m",
+    "big",
+    unsized,
+  );
+  assertEquals(unsized.reads, 1);
+  assertEquals(byLength.tooLargeToLoad, { bytes: 408, reason: "memory" });
+  assertEquals(byLength.attributes, {});
+  assertEquals(byLength.content, {});
+});
+
+Deno.test("fromResourceHandle: content past the text-length limit is marked, never decoded into empty attributes", async () => {
+  const content = encoder.encode('{"marker":"hello","pad":"xxxx"}');
+  const sized = textLimitedRepo(content);
+  const bySize = await fromResourceHandle(
+    blobHandle(content.length),
+    ModelType.create("test/model"),
+    "m",
+    "big",
+    sized,
+  );
+  assertEquals(sized.reads, 0);
+  assertEquals(bySize.tooLargeToLoad, {
+    bytes: content.length,
+    reason: "text-length",
+  });
+
+  const unsized = textLimitedRepo(content);
+  const byLength = await fromResourceHandle(
+    blobHandle(0),
+    ModelType.create("test/model"),
+    "m",
+    "big",
+    unsized,
+  );
+  assertEquals(unsized.reads, 1);
+  assertEquals(byLength.tooLargeToLoad, {
+    bytes: content.length,
+    reason: "text-length",
+  });
+  assertEquals(byLength.attributes, {});
+});
+
+Deno.test("fromResourceHandle: content within the limits is parsed and unmarked, and invalid JSON stays unmarked", async () => {
+  const fits = await fromResourceHandle(
+    blobHandle(0),
+    ModelType.create("test/model"),
+    "m",
+    "big",
+    textLimitedRepo(encoder.encode('{"a":1}')),
+  );
+  assertEquals(fits.attributes, { a: 1 });
+  assertEquals("tooLargeToLoad" in fits, false);
+
+  const invalid = await fromResourceHandle(
+    blobHandle(0),
+    ModelType.create("test/model"),
+    "m",
+    "big",
+    textLimitedRepo(encoder.encode("{nope")),
+  );
+  assertEquals(invalid.attributes, {});
+  assertEquals("tooLargeToLoad" in invalid, false);
 });
 
 function unreadHandle(size: number): DataHandle {
@@ -1257,19 +1339,16 @@ Deno.test("fromResourceHandle: unread, it reads no content and keeps the record'
   ]);
 });
 
-Deno.test("fromResourceHandle: unread, it still refuses a recorded size the guard rejects", async () => {
+Deno.test("fromResourceHandle: unread, it neither reads nor marks a recorded size the guard would reject", async () => {
   const repo = countingGuardedRepo();
-  await assertRejects(
-    () =>
-      fromResourceHandle(
-        unreadHandle(1_000_000),
-        ModelType.create("test/model"),
-        "model-123",
-        "test-model",
-        repo,
-        false,
-      ),
-    ResourceTooLargeToLoadError,
+  const record = await fromResourceHandle(
+    unreadHandle(1_000_000),
+    ModelType.create("test/model"),
+    "model-123",
+    "test-model",
+    repo,
+    false,
   );
   assertEquals(repo.reads, 0);
+  assertEquals("tooLargeToLoad" in record, false);
 });

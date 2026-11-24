@@ -264,6 +264,7 @@ import {
   fromFileHandle,
   fromResourceHandle,
 } from "../data/data_record_mapper.ts";
+import { describeByteCount } from "../data/resource_size_policy.ts";
 import { resolveModelType } from "../extensions/extension_auto_resolver.ts";
 import { MethodReportRunner } from "./method_report_runner.ts";
 import { modelMethodResourceResult } from "./model_method_result.ts";
@@ -473,6 +474,9 @@ import {
   runGeneratorWithVaultAccess,
   RunVaultAccess,
 } from "../vaults/run_vault_access.ts";
+
+// the run's own logger reaches only its log file; this warning must be seen
+const resourceSizeLogger = getSwampLogger(["swamp", "data", "resource-size"]);
 
 const SCOPED_REFERENCE = /\b(inputs|self|run|steps)\b/;
 const RUN_ID_PATTERN =
@@ -3116,7 +3120,7 @@ export class DefaultStepExecutor implements StepExecutor {
           // in a typed run the record keeps its stored references and tag and
           // no vault is read; the typed evaluator adapts it, so a tagged field
           // is a Secret loaded at delivery
-          resources[handle.specName][handle.name] = await fromResourceHandle(
+          const record = await fromResourceHandle(
             handle,
             modelType,
             evaluatedDefinition.id,
@@ -3126,6 +3130,17 @@ export class DefaultStepExecutor implements StepExecutor {
               task.modelIdOrName ?? task.modelName ?? "",
             ) ?? true,
           );
+          resources[handle.specName][handle.name] = record;
+          if (record.tooLargeToLoad) {
+            resourceSizeLogger.warn(
+              "Step {step} wrote {item} of {size}, too large to load: expressions that read its outputs or that resource will fail",
+              {
+                step: ctx.stepName,
+                item: `${record.modelName}/${handle.name}@v${handle.version}`,
+                size: describeByteCount(record.tooLargeToLoad.bytes),
+              },
+            );
+          }
         } else if (handle.kind === "file") {
           const fileRecord = await fromFileHandle(
             handle,

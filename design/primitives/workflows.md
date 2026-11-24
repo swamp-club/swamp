@@ -4101,6 +4101,15 @@ what later steps use rather than with the data every step writes
   defines is dropped from the step's sources, since the merged view takes
   nothing from it; a record with a sensitive-fields tag is always kept, because
   the accessor adapter validates every source record and could refuse it.
+- A resource the step-end read cannot load, because it is past the load guard
+  or past the byte length text can hold, is not parsed: the step succeeds, the
+  run logs a warning naming it, and its record carries a `tooLargeToLoad`
+  marker in place of attributes. The marker is kept in the sources on the live
+  path and re-derived from storage on resume, and the accessor adapter refuses
+  it: any read of that step's `steps.<name>.outputs`, or of the record through
+  `model.<name>.resource`, fails with `ResourceTooLargeToLoadError` naming the
+  item and its size. The whole outputs map fails, as which keys the unloaded
+  record would have defined cannot be known.
 - The deprecated `model.<name>.resource` and `.file` maps are merged into after
   a step only when an expression reads that model's data, by name or id, or
   reads the model map by a computed key. Otherwise the merge would fire the

@@ -21,7 +21,12 @@ import type { UnifiedDataRepository } from "../data/repositories.ts";
 import { currentDiagnosticTally } from "../diagnostics/diagnostic_phase.ts";
 
 import { isUnreadableContentError } from "../datastore/unreadable_content.ts";
-import { resourceLoadGuardOf } from "../data/resource_load_guard.ts";
+import {
+  parseTooLargeToLoad,
+  resourceLoadGuardOf,
+  ResourceTooLargeToLoadError,
+  type TooLargeToLoad,
+} from "../data/resource_load_guard.ts";
 import { readSensitiveFieldPlaces } from "../models/data_writer.ts";
 import type {
   StepOutputGroup,
@@ -92,12 +97,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function jsonResourceRecords(
-  output: unknown,
-): { ref: StepResourceRef; record: Record<string, unknown> }[] {
+interface JsonResourceRecord {
+  ref: StepResourceRef;
+  record: Record<string, unknown>;
+  tooLargeToLoad?: TooLargeToLoad;
+}
+
+function jsonResourceRecords(output: unknown): JsonResourceRecord[] {
   if (!isRecord(output) || output.type !== "model_method") return [];
   if (!isRecord(output.resources)) return [];
-  const found: { ref: StepResourceRef; record: Record<string, unknown> }[] = [];
+  const found: JsonResourceRecord[] = [];
   for (const instances of Object.values(output.resources)) {
     if (!isRecord(instances)) continue;
     for (const record of Object.values(instances)) {
@@ -132,6 +141,7 @@ function jsonResourceRecords(
           ...(typeof record.size === "number" ? { size: record.size } : {}),
         },
         record,
+        tooLargeToLoad: parseTooLargeToLoad(record.tooLargeToLoad),
       });
     }
   }
@@ -146,8 +156,10 @@ function outputRecordOf(
   ref: StepResourceRef,
   attributes: Record<string, unknown>,
   readerNamespace: string,
+  tooLargeToLoad?: TooLargeToLoad,
 ): StepOutputRecord {
   return {
+    ...(tooLargeToLoad ? { tooLargeToLoad } : {}),
     id: ref.dataId,
     name: ref.name,
     version: ref.version,
@@ -187,7 +199,10 @@ export class StepOutputAccumulator {
     Object.assign(this.#merged, record.attributes);
     const index = this.#records.length;
     this.#records.push(record);
-    this.#inert.push(isInertRecord(record.tags));
+    // a marked record owns no keys yet must reach the read that refuses it
+    this.#inert.push(
+      record.tooLargeToLoad === undefined && isInertRecord(record.tags),
+    );
     this.#ownedKeys.push(0);
     for (const key of Object.keys(record.attributes)) {
       const previous = this.#ownerOf.get(key);
@@ -248,7 +263,11 @@ export function liveStepOutputs(
   readerNamespace = "",
 ): Pick<ResolvedStepOutputs, "outputs" | "sources"> {
   const accumulator = new StepOutputAccumulator();
-  for (const { ref, record } of jsonResourceRecords(output)) {
+  for (const { ref, record, tooLargeToLoad } of jsonResourceRecords(output)) {
+    if (tooLargeToLoad) {
+      accumulator.add(outputRecordOf(ref, {}, readerNamespace, tooLargeToLoad));
+      continue;
+    }
     if (!isRecord(record.attributes)) continue;
     accumulator.add(outputRecordOf(ref, record.attributes, readerNamespace));
   }
@@ -329,10 +348,11 @@ export class StepOutputResolver {
       for (const step of job.steps) {
         if (step.status !== "succeeded") continue;
         const resolved = await this.resolveResources(step.output);
-        if (!resolved.outputs) continue;
+        // a step whose only records are marked has sources and no outputs
+        if (!resolved.outputs && !resolved.sources) continue;
         // An own key: a step may be named __proto__.
         Object.defineProperty(outputs, step.stepName, {
-          value: resolved.outputs,
+          value: resolved.outputs ?? {},
           writable: true,
           enumerable: true,
           configurable: true,
@@ -370,6 +390,12 @@ export class StepOutputResolver {
         // its code; other unreadable data contributes nothing, like missing
         // data
         if (isUnreadableContentError(error)) throw error;
+        if (error instanceof ResourceTooLargeToLoadError) {
+          const tooLargeToLoad = { bytes: error.bytes, reason: error.reason };
+          accumulator.add(
+            outputRecordOf(ref, {}, this.namespace, tooLargeToLoad),
+          );
+        }
         continue;
       }
       if (!attributes) continue;
@@ -403,7 +429,8 @@ export function createDataRepositoryAttributeReader(
       dataName: ref.name,
       version: ref.version,
     };
-    loadGuard.assertLoadable(item, ref.size ?? 0);
+    const sizeRefusal = loadGuard.refusalFor(item, ref.size ?? 0);
+    if (sizeRefusal) throw sizeRefusal;
     let content: Uint8Array | null;
     try {
       content = await tally.measure("content_read", () =>
@@ -423,7 +450,8 @@ export function createDataRepositoryAttributeReader(
     }
     tally.add("reads_succeeded");
     tally.add("content_bytes", content.length);
-    loadGuard.assertLoadable(item, content.length);
+    const lengthRefusal = loadGuard.refusalFor(item, content.length);
+    if (lengthRefusal) throw lengthRefusal;
     let parsed: unknown;
     try {
       parsed = tally.measureSync(
