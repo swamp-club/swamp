@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { DatabaseSync } from "node:sqlite";
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { waitFor } from "@swamp-club/swamp-testing";
@@ -176,6 +177,46 @@ Deno.test("ReadModelState.open: a new database another process is switching or m
       }
       await holder.seen((m) => "released" in m, "the other connection done");
     } finally {
+      holder.worker.terminate();
+    }
+  });
+});
+
+Deno.test("write lock holder: its commit waits out another connection's read instead of failing", async () => {
+  await withTempDir(async (dir) => {
+    const dbPath = join(dir, "holder.db");
+    const holder = await startHolder(dbPath, 0);
+    let reader: DatabaseSync | undefined;
+    let probe: DatabaseSync | undefined;
+    try {
+      await holder.seen(
+        (m) => "locked" in m,
+        "the other connection's write lock",
+      );
+      // never switched to WAL, so a commit's PENDING lock refuses new readers
+      reader = new DatabaseSync(dbPath);
+      probe = new DatabaseSync(dbPath);
+      reader.exec("BEGIN");
+      reader.prepare("SELECT count(*) FROM sqlite_master").get();
+      holder.worker.postMessage("release" satisfies WriteLockHolderRequest);
+      await holder.seen((m) => "committing" in m, "the holder to commit");
+      const probing = probe;
+      await waitFor(() => {
+        try {
+          probing.prepare("SELECT count(*) FROM sqlite_master").get();
+          return false;
+        } catch (error) {
+          if (/database is locked/i.test(String(error))) return true;
+          throw error;
+        }
+      }, "the holder waiting in COMMIT for this connection's read");
+
+      reader.exec("COMMIT");
+      await holder.seen((m) => "released" in m, "the holder's commit");
+    } finally {
+      if (reader?.isTransaction) reader.exec("ROLLBACK");
+      reader?.close();
+      probe?.close();
       holder.worker.terminate();
     }
   });

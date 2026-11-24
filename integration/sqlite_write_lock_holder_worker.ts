@@ -30,6 +30,7 @@ export type WriteLockHolderRequest =
 
 export type WriteLockHolderMessage =
   | { readonly locked: true }
+  | { readonly committing: true }
   | { readonly released: true }
   | { readonly failed: string };
 
@@ -51,15 +52,25 @@ async function hold(
   request: Exclude<WriteLockHolderRequest, "release">,
 ): Promise<void> {
   const db = new DatabaseSync(request.dbPath);
-  db.exec("BEGIN IMMEDIATE");
-  db.exec("CREATE TABLE holder (x)");
-  const released = new Promise<void>((done) => release = done);
-  self.postMessage({ locked: true } satisfies WriteLockHolderMessage);
-  await released;
-  // held a while past the request, so the other connection meets the lock
-  await new Promise((done) => setTimeout(done, request.holdMs));
-  db.exec("COMMIT");
-  db.close();
+  try {
+    // as every swamp connection: a commit waits out another connection's read
+    db.exec("PRAGMA busy_timeout=5000");
+    db.exec("BEGIN IMMEDIATE");
+    db.exec("CREATE TABLE holder (x)");
+    const released = new Promise<void>((done) => release = done);
+    self.postMessage({ locked: true } satisfies WriteLockHolderMessage);
+    await released;
+    // held a while past the request, so the other connection meets the lock
+    await new Promise((done) => setTimeout(done, request.holdMs));
+    self.postMessage({ committing: true } satisfies WriteLockHolderMessage);
+    db.exec("COMMIT");
+  } catch (error) {
+    // a failed hold lets go of its lock, so the test reports this error
+    if (db.isTransaction) db.exec("ROLLBACK");
+    throw error;
+  } finally {
+    db.close();
+  }
   self.postMessage({ released: true } satisfies WriteLockHolderMessage);
 }
 
