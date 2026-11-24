@@ -250,6 +250,8 @@ interface WorkerEntry {
   verifyFailureReason?: string;
   verifying?: boolean;
   verifyAgain?: boolean;
+  /** this enrollment's probe has not started yet; `verifying` covers it from then */
+  probeOwed?: boolean;
   /**
    * A probe was refused for want of a slot while the unverified worker's
    * enrollment verification was running. The next dispatch to end with no
@@ -1498,6 +1500,8 @@ export class WorkerGateway {
             entry.probeRefusedForCapacity = false;
             entry.verifyFailureReason = undefined;
           }
+          entry.probeOwed = verifyOnEnroll &&
+            this.#options.verifyWorker !== undefined;
           entry.channel = state.channel;
           entry.closeSocket = state.closeSocket;
           entry.tokenCreatedAt = tokenCreatedAt;
@@ -1792,6 +1796,7 @@ export class WorkerGateway {
       return;
     }
     entry.verifying = true;
+    entry.probeOwed = false;
     let failed = false;
     this.#runEnrollmentVerify(workerName).then((result) => {
       failed = result;
@@ -1915,13 +1920,11 @@ export class WorkerGateway {
     this.#options.onWorkerVerifyFailed?.(this.#snapshot(entry));
   }
 
-  // unverified with a probe running or owed, not one that failed
+  // unverified with a probe running or owed, never inferred from a missing reason
   verificationPending(name: string): boolean {
     const entry = this.#workers.get(name);
     if (!entry || entry.status !== "unverified") return false;
-    if (!this.#options.verifyWorker) return false;
-    return entry.verifyFailureReason === undefined ||
-      entry.verifying === true ||
+    return entry.probeOwed === true || entry.verifying === true ||
       entry.probeRefusedForCapacity === true;
   }
 

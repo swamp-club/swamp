@@ -1906,12 +1906,13 @@ live snapshot, and the gateway's `verificationPending` for it:
   `WorkerIneligibleError` (`worker_ineligible`) and nothing is sent. This holds
   for every lane step, not only the first, as a draining pinned worker already
   fails an affinity group today.
-- unverified with its probe still running or owed (a reconnect under
-  verify-on-enroll, or a probe refused for capacity): the step queues, as the
-  scheduler never offers an unverified worker. It is sent once the probe passes,
-  and fails `worker_ineligible` as soon as it fails, since the gateway's
-  `onWorkerVerifyFailed` wakes the waiting lanes. Without a verifier configured
-  no worker is pending.
+- unverified with a probe running or owed (an enrollment or reconnect under
+  verify-on-enroll whose probe has not finished, or a probe refused for
+  capacity): the step queues, as the scheduler never offers an unverified
+  worker. It is sent once the probe passes, and fails `worker_ineligible` as
+  soon as it fails, since the gateway's `onWorkerVerifyFailed` wakes the
+  waiting lanes. Pending is tracked, never inferred from a missing failure
+  reason, so an unverified worker no probe is coming for stays ineligible.
 - disconnected or absent: the step queues on its target until the worker
   reconnects, or fails at `queueTimeout` with the usual "Timed out waiting for
   a worker matching target" error.

@@ -100,36 +100,39 @@ function createHarness(
   const graceExpired: WorkerSnapshot[] = [];
   const removed: WorkerSnapshot[] = [];
   const failOn = new Set<string>();
-  const gateway = new WorkerGateway({
-    repoDir: "/tmp/unused",
-    repoContext: {} as RepositoryContext,
-    capabilityService: {
-      registerHandlers: (channel: RpcChannel) => {
-        channel.register(
-          RemoteMethod.getData,
-          () => Promise.resolve({ found: false }),
-        );
+  // descriptors, not a spread, so an override can be a getter a reload flips
+  const gateway = new WorkerGateway(Object.defineProperties(
+    {
+      repoDir: "/tmp/unused",
+      repoContext: {} as RepositoryContext,
+      capabilityService: {
+        registerHandlers: (channel: RpcChannel) => {
+          channel.register(
+            RemoteMethod.getData,
+            () => Promise.resolve({ found: false }),
+          );
+        },
       },
-    },
-    graceWindowMs: 30,
-    onWorkerIdle: (w) => idle.push(w),
-    onWorkerDisconnected: (w) => disconnected.push(w),
-    onGraceExpired: (w) => graceExpired.push(w),
-    onWorkerRemoved: (w) => removed.push(w),
-    runModelMethod: (input) => {
-      if (failOn.has(input.methodName)) {
-        return Promise.reject(
-          new Error(`stubbed failure: ${input.methodName}`),
-        );
-      }
-      transitions.push(input);
-      return Promise.resolve();
-    },
-    readTokenExpiresAt: () => Promise.resolve(null),
-    readTokenRecord: (name) => Promise.resolve(mintRecord(name, BASE_MINT)),
-    findTokenDefinitionId: (name) => Promise.resolve(`def-${name}`),
-    ...overrides,
-  });
+      graceWindowMs: 30,
+      onWorkerIdle: (w) => idle.push(w),
+      onWorkerDisconnected: (w) => disconnected.push(w),
+      onGraceExpired: (w) => graceExpired.push(w),
+      onWorkerRemoved: (w) => removed.push(w),
+      runModelMethod: (input) => {
+        if (failOn.has(input.methodName)) {
+          return Promise.reject(
+            new Error(`stubbed failure: ${input.methodName}`),
+          );
+        }
+        transitions.push(input);
+        return Promise.resolve();
+      },
+      readTokenExpiresAt: () => Promise.resolve(null),
+      readTokenRecord: (name) => Promise.resolve(mintRecord(name, BASE_MINT)),
+      findTokenDefinitionId: (name: string) => Promise.resolve(`def-${name}`),
+    } as WorkerGatewayOptions,
+    Object.getOwnPropertyDescriptors(overrides ?? {}),
+  ));
   return {
     gateway,
     transitions,
@@ -1982,18 +1985,108 @@ Deno.test("WorkerGateway: verificationPending — a passed probe leaves the work
   assertEquals(failed.length, 0);
 });
 
-Deno.test("WorkerGateway: verificationPending — a probe that errors announces the failure", async () => {
+Deno.test("WorkerGateway: verificationPending — a probe that errors announces the failure, no longer pending", async () => {
   const failed: WorkerSnapshot[] = [];
-  const h = createHarness({
+  const pendingWhenAnnounced: boolean[] = [];
+  const h: Harness = createHarness({
     verifyOnEnroll: true,
     verifyWorker: () => Promise.reject(new Error("probe exploded")),
-    onWorkerVerifyFailed: (w) => failed.push(w),
+    onWorkerVerifyFailed: (w) => {
+      failed.push(w);
+      pendingWhenAnnounced.push(h.gateway.verificationPending(w.name));
+    },
   });
   const { workerChannel } = connectWorkerSocket(h.gateway);
   await enroll(workerChannel);
   await waitFor(() => failed.length === 1, "the failure to be announced");
   assertEquals(failed[0].verifyFailureReason, "probe exploded");
+  assertEquals(pendingWhenAnnounced, [false]);
+});
+
+Deno.test("WorkerGateway: verificationPending — an unverified worker that reconnects after verify-on-enroll was turned off is not pending, as no probe will run", async () => {
+  let verifyOnEnroll = true;
+  const probe = Promise.withResolvers<void>();
+  const h = createHarness({
+    graceWindowMs: 200,
+    get verifyOnEnroll() {
+      return verifyOnEnroll;
+    },
+    verifyWorker: async () => {
+      await probe.promise;
+      return { ok: true };
+    },
+  });
+  const first = connectWorkerSocket(h.gateway);
+  await enroll(first.workerChannel);
+  assertEquals(h.gateway.verificationPending("ci-runner-3"), true);
+  first.dropSocket();
+  await waitFor(
+    () => h.gateway.worker("ci-runner-3")?.connected === false,
+    "the worker to drop mid-probe",
+  );
+  probe.resolve();
+  await waitFor(
+    () => !h.gateway.verificationPending("ci-runner-3"),
+    "the dropped worker's probe to end",
+  );
+
+  verifyOnEnroll = false;
+  const second = connectWorkerSocket(h.gateway);
+  await enroll(second.workerChannel);
+  assertEquals(h.gateway.worker("ci-runner-3")?.status, "unverified");
+  assertEquals(h.gateway.worker("ci-runner-3")?.verifyFailureReason, undefined);
   assertEquals(h.gateway.verificationPending("ci-runner-3"), false);
+  second.dropSocket();
+  await waitFor(
+    () => h.gateway.workers().length === 0,
+    "the grace window to expire",
+  );
+});
+
+Deno.test("WorkerGateway: verificationPending — a reconnecting worker is pending from the moment it reads unverified, before its probe starts", async () => {
+  let holdExpiry: Promise<void> | undefined;
+  const h = createHarness({
+    graceWindowMs: 200,
+    verifyOnEnroll: true,
+    verifyWorker: () => Promise.resolve({ ok: true }),
+    readTokenExpiresAt: async () => {
+      await holdExpiry;
+      return null;
+    },
+  });
+  const first = connectWorkerSocket(h.gateway);
+  await enroll(first.workerChannel);
+  await waitFor(
+    () => h.gateway.worker("ci-runner-3")?.status === "idle",
+    "the worker to be verified",
+  );
+  first.dropSocket();
+  await waitFor(
+    () => h.gateway.worker("ci-runner-3")?.connected === false,
+    "the worker to drop",
+  );
+
+  const expiry = Promise.withResolvers<void>();
+  holdExpiry = expiry.promise;
+  const second = connectWorkerSocket(h.gateway);
+  const enrolled = enroll(second.workerChannel);
+  await waitFor(
+    () => h.gateway.worker("ci-runner-3")?.status === "unverified",
+    "the reconnect to mark the worker unverified",
+  );
+  assertEquals(h.gateway.verificationPending("ci-runner-3"), true);
+
+  expiry.resolve();
+  await enrolled;
+  await waitFor(
+    () => h.gateway.worker("ci-runner-3")?.status === "idle",
+    "the reconnect's probe to pass",
+  );
+  second.dropSocket();
+  await waitFor(
+    () => h.gateway.workers().length === 0,
+    "the grace window to expire",
+  );
 });
 
 Deno.test("WorkerGateway: verificationPending — a reconnect after a failed probe clears the old reason and is pending until its own probe ends", async () => {
