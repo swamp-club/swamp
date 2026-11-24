@@ -626,7 +626,8 @@ function followerDatastoreRefusal(
     // from its copy nor changes it; one that cannot commit sends writers on to
     // the leader that takes over
     return gate.leadUnconfirmed?.() === true ||
-        (!reads && ctx.commitHealth?.cannotCommit() !== undefined)
+        (req.method !== "GET" && route.kind !== "has" &&
+          ctx.commitHealth?.cannotCommit() !== undefined)
       ? Promise.resolve(
         notLeaderResponse(new ServeNotLeaderError(undefined), false),
       )

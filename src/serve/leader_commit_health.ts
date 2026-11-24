@@ -268,8 +268,12 @@ export function wireLeaderCommitHealth(
       leaderUnreadyReason(state)
     }): it stops renewing the datastore's writer lease and steps down, to start again as a follower. Last failure: ${state.error}`;
     steppingDown ??= (async () => {
-      await wiring.stopRenewal();
-      await wiring.stepDown();
+      try {
+        await wiring.stopRenewal();
+      } finally {
+        // the lease is released at exit whatever stopping its renewal did
+        await wiring.stepDown();
+      }
     })().catch((error) => {
       logger.error`Stepping down after failing to commit failed: ${error}`;
     });

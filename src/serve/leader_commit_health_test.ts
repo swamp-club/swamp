@@ -378,3 +378,37 @@ Deno.test("storageFailureCause: SQLite I/O codes for memory, locking or a file a
   }
   assertEquals(storageFailureCause(sqlite(10)), "storage_io_error");
 });
+
+Deno.test("wireLeaderCommitHealth: a renewal stop that fails still steps down", async () => {
+  const time = clock();
+  const calls: string[] = [];
+  const listeners = new Set<
+    (path: string, outcome: CommitOutcomeEvent) => void
+  >();
+  const wiring = wireLeaderCommitHealth({
+    datastorePath: "/ds",
+    leads: () => true,
+    onCommitOutcome: (listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    stopRenewal: () => Promise.reject(new Error("the lease move failed")),
+    stepDown: () => {
+      calls.push("step-down");
+      return Promise.resolve();
+    },
+    health: new LeaderCommitHealth({ now: time.now }),
+  });
+  try {
+    for (let i = 0; i < 3; i++) {
+      for (const listener of listeners) {
+        listener("/ds", { kind: "failed", error: full() });
+      }
+      time.advance(CANNOT_COMMIT_WINDOW_MS);
+    }
+    await wiring.steppedDown();
+    assertEquals(calls, ["step-down"]);
+  } finally {
+    wiring.stop();
+  }
+});

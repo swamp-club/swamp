@@ -726,7 +726,8 @@ export async function stopV3WriterRenewal(
   entry.renewal = undefined;
   entry.renewNow = undefined;
   await entry.renewing;
-  await entry.advancing;
+  // a move that failed leaves the hold as it was, still unrenewed
+  await entry.advancing?.catch(() => {});
 }
 
 /**
