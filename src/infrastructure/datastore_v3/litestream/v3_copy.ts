@@ -239,7 +239,6 @@ export async function migrateV3CopySchema(copy: V3Copy): Promise<void> {
   if (v3ReplicaFor(copy.datastorePath) === undefined) return;
   const paths = await copyPaths(copy);
   if (!await exists(paths.commitsDb)) return;
-  if ((await readPresence(paths)).kind !== "missing") return;
   const lock = await Deno.open(paths.restoreLock, {
     read: true,
     write: true,
@@ -248,6 +247,8 @@ export async function migrateV3CopySchema(copy: V3Copy): Promise<void> {
   try {
     if (!await lock.tryLock(true)) return;
     try {
+      // a sidecar starting after this read replicates the migration as any write
+      if ((await readPresence(paths)).kind !== "missing") return;
       withSyncSpan("swamp.datastore.v3.copy.premigrate", {}, () => {
         migrateCommitsDatabase(paths.commitsDb, { replicated: true });
       });

@@ -502,3 +502,11 @@ Deno.test("inTimeSlicesFromNow: runs the first slice at once, then yields before
   assertEquals(slices, 3);
   assertEquals(turns >= 1, true);
 });
+
+Deno.test("TimeSlice: a slice of 0 ms is spent at once and after every turn, and a long one is not", async () => {
+  const spent = new TimeSlice(undefined, 0);
+  assertEquals(spent.over, true);
+  await spent.next();
+  assertEquals(spent.over, true);
+  assertEquals(new TimeSlice(undefined, 60_000).over, false);
+});

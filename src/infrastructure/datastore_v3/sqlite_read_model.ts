@@ -2904,9 +2904,13 @@ export class SqliteReadModel implements ReadModel {
       // the page's catalog actions after its files and before its state: a
       // crash between them leaves the catalog ahead, and the page is applied
       // again
+      const catalogStarted = performance.now();
       await this.#time("catalog", () => this.#commitCatalog(signal));
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      signal.throwIfAborted();
+      // a turn only when the catalog spent a slice, so a quick page pays none
+      if (performance.now() - catalogStarted >= this.#recoverySliceMs) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        signal.throwIfAborted();
+      }
       this.#state.commitBatch();
       tellOwnWorkApplied();
       await this.#releaseFetched(signal);

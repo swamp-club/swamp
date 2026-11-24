@@ -3886,8 +3886,41 @@ Deno.test("SqliteReadModel.catchUp: a write under a directory a pooled write is 
   });
 });
 
-function msOf(time: readonly [number, number]): number {
-  return time[0] * 1000 + time[1] / 1e6;
+/**
+ * a catalog that marks each reproject batch, from its clearNames to its
+ * rollbackBatch, so a test orders events without reading a clock
+ */
+function reprojectWatched(env: Env): {
+  catalog: V3Catalog;
+  reprojecting: () => boolean;
+  batchesEnded: () => number;
+} {
+  const inner = V3Catalog.open(
+    join(readModelStateDir(env.repoDir), CATALOG_V3_FILE),
+  );
+  let open = false;
+  let ended = 0;
+  const catalog: V3Catalog = new Proxy(inner, {
+    get(target, property) {
+      if (property === "dirtyTracking") return () => catalog;
+      if (property === "clearNames") {
+        return (...args: Parameters<V3Catalog["clearNames"]>) => {
+          open = true;
+          return target.clearNames(...args);
+        };
+      }
+      if (property === "rollbackBatch") {
+        return () => {
+          if (open) ended++;
+          open = false;
+          return target.rollbackBatch();
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  return { catalog, reprojecting: () => open, batchesEnded: () => ended };
 }
 
 Deno.test("SqliteReadModel.recover: a targeted recovery gives the event loop turns while it reprojects, and a read issued then waits for the reproject to end", async () => {
@@ -3895,42 +3928,38 @@ Deno.test("SqliteReadModel.recover: a targeted recovery gives the event loop tur
     const { since, clock } = await interruptedCheckout(env);
     await writeUncommittedRow(env, "r12", 2);
     recordWholeCheckout(env);
-    const readModel = env.open({ clock, pageSize: 5, recoverySliceMs: 0 });
-    const ticks: number[] = [];
-    const reads: { issued: number; resolved: Promise<number> }[] = [];
+    const watched = reprojectWatched(env);
+    const readModel = env.open({
+      catalog: watched.catalog,
+      clock,
+      pageSize: 5,
+      recoverySliceMs: 0,
+    });
     // a renewal timer and an HTTP read, as serve would have them
+    const reads: Promise<{ endedBefore: number; endedAfter: number }>[] = [];
     const timer = setInterval(() => {
-      const issued = performance.timeOrigin + performance.now();
-      ticks.push(issued);
-      reads.push({
-        issued,
-        resolved: readModel.chunksInUse("").then(() =>
-          performance.timeOrigin + performance.now()
-        ),
-      });
+      if (!watched.reprojecting()) return;
+      const endedBefore = watched.batchesEnded();
+      reads.push(
+        readModel.chunksInUse("").then(() => ({
+          endedBefore,
+          endedAfter: watched.batchesEnded(),
+        })),
+      );
     }, 0);
     try {
-      await withCapturedSpans(async (spans) => {
-        await readModel.recover("", targetedOptions(since));
-        const reproject = findSpan(
-          spans,
-          "swamp.datastore.v3.readmodel.recover.reproject",
+      await readModel.recover("", targetedOptions(since));
+      clearInterval(timer);
+      assert(reads.length > 0, "a timer ran while the reproject ran");
+      for (const read of await Promise.all(reads)) {
+        assert(
+          read.endedAfter > read.endedBefore,
+          "a read issued mid-reproject resolved before its batch ended",
         );
-        const start = msOf(reproject.startTime);
-        const end = msOf(reproject.endTime);
-        const inside = ticks.filter((at) => at >= start && at <= end);
-        assert(inside.length > 0, "a timer ran while the reproject ran");
-        for (const read of reads) {
-          if (read.issued < start || read.issued > end) continue;
-          assert(
-            await read.resolved >= end - 1,
-            "a read issued mid-reproject resolved before it ended",
-          );
-        }
-      });
+      }
     } finally {
       clearInterval(timer);
-      await Promise.allSettled(reads.map((read) => read.resolved));
+      await Promise.allSettled(reads);
       await readModel.close();
     }
   });
@@ -3941,40 +3970,34 @@ Deno.test("SqliteReadModel.recover: a catch-up a timer starts while a recovery r
     const { since, clock } = await interruptedCheckout(env);
     await writeUncommittedRow(env, "r12", 2);
     recordWholeCheckout(env);
-    const readModel = env.open({ clock, pageSize: 5, recoverySliceMs: 0 });
-    const catchUps: { issued: number; done: Promise<number> }[] = [];
+    const watched = reprojectWatched(env);
+    const readModel = env.open({
+      catalog: watched.catalog,
+      clock,
+      pageSize: 5,
+      recoverySliceMs: 0,
+    });
+    let recovered = false;
+    const catchUps: Promise<boolean>[] = [];
     const timer = setInterval(() => {
-      catchUps.push({
-        issued: performance.timeOrigin + performance.now(),
-        done: readModel.catchUp(signal()).then(() =>
-          performance.timeOrigin + performance.now()
-        ),
-      });
+      if (!watched.reprojecting()) return;
+      catchUps.push(readModel.catchUp(signal()).then(() => recovered));
     }, 0);
     try {
-      await withCapturedSpans(async (spans) => {
-        await readModel.recover("", targetedOptions(since));
-        clearInterval(timer);
-        const recover = findSpan(spans, "swamp.datastore.v3.readmodel.recover");
-        const reproject = findSpan(
-          spans,
-          "swamp.datastore.v3.readmodel.recover.reproject",
-        );
-        const during = catchUps.filter((c) =>
-          c.issued >= msOf(reproject.startTime) &&
-          c.issued <= msOf(reproject.endTime)
-        );
-        assert(during.length > 0, "a catch-up was started mid-reproject");
-        for (const c of during) {
-          assert(
-            await c.done >= msOf(recover.endTime) - 1,
-            "a catch-up ran inside the recovery",
-          );
-        }
+      const recovering = readModel.recover("", targetedOptions(since));
+      // attached first, so it runs before anything queued behind the recovery
+      const done = recovering.finally(() => {
+        recovered = true;
       });
+      await done;
+      clearInterval(timer);
+      assert(catchUps.length > 0, "a catch-up was started mid-reproject");
+      for (const afterRecovery of await Promise.all(catchUps)) {
+        assert(afterRecovery, "a catch-up ran inside the recovery");
+      }
     } finally {
       clearInterval(timer);
-      await Promise.allSettled(catchUps.map((c) => c.done));
+      await Promise.allSettled(catchUps);
       await readModel.close();
     }
   });
