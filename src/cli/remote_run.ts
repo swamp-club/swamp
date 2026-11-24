@@ -1934,14 +1934,19 @@ function caCertRejection(caCerts: string[], detail: string): UserError {
       state.resolvedEnvCaCerts?.some((pem) => caCerts.includes(pem))
     ? state.resolvedEnvCaCertPath
     : undefined;
-  const file = path === undefined
-    ? "The CA certificate file given by --ca-cert or SWAMP_CA_CERT"
-    : `The CA certificate file '${path}' given by --ca-cert or SWAMP_CA_CERT`;
-  const error = new UserError(
-    `${file} is not a valid PEM certificate: ${detail} — it must hold ` +
-      `one or more "-----BEGIN CERTIFICATE-----" blocks of base64 DER`,
+  const reason = `is not a valid PEM certificate: ${detail} — it must hold ` +
+    `one or more "-----BEGIN CERTIFICATE-----" blocks of base64 DER`;
+  if (path === undefined) {
+    return new UserError(
+      `The CA certificate file given by --ca-cert or SWAMP_CA_CERT ${reason}`,
+    );
+  }
+  return markErrorPaths(
+    new UserError(
+      `The CA certificate file '${path}' given by --ca-cert or SWAMP_CA_CERT ${reason}`,
+    ),
+    [path],
   );
-  return path === undefined ? error : markErrorPaths(error, [path]);
 }
 
 const httpClientState = processRuntimeSlot<{
