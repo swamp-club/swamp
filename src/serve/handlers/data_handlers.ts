@@ -67,6 +67,7 @@ import {
   queryPartBatches,
   withQueryItems,
 } from "../data_query_parts.ts";
+import { contentPieces } from "../data_get_parts.ts";
 import type { DataRecord } from "../../domain/data/data_record.ts";
 import {
   dataSearch,
@@ -78,6 +79,7 @@ import { workflowsDirFor } from "../../libswamp/workflows/broken_workflow.ts";
 import type {
   DataDeletePayload,
   DataGcPayload,
+  DataGetInPartsPayload,
   DataGetPayload,
   DataListPayload,
   DataPrunePayload,
@@ -273,7 +275,7 @@ export async function handleDataGet(
   socket: WebSocket,
   ctx: ConnectionContext,
   requestId: string,
-  payload: DataGetPayload,
+  payload: DataGetInPartsPayload,
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
@@ -392,11 +394,15 @@ export async function handleDataGet(
       return;
     }
 
-    send(socket, {
-      type: "data.get",
-      id: requestId,
-      payload: { data: result },
-    });
+    if (payload.inParts !== true || typeof result.content !== "string") {
+      send(socket, {
+        type: "data.get",
+        id: requestId,
+        payload: { data: result },
+      });
+      return;
+    }
+    sendContentInParts(socket, requestId, result, result.content);
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(
@@ -407,6 +413,33 @@ export async function handleDataGet(
       clientErrorDetails(error),
     );
   }
+}
+
+function sendContentInParts(
+  socket: WebSocket,
+  requestId: string,
+  data: Record<string, unknown>,
+  content: string,
+): void {
+  let contentParts = 0;
+  for (const piece of contentPieces(content)) {
+    send(socket, {
+      type: "data.get.part",
+      id: requestId,
+      payload: { content: piece },
+    });
+    contentParts++;
+  }
+  // emptied, not removed, so the key keeps its place in the printed reply
+  send(socket, {
+    type: "data.get",
+    id: requestId,
+    payload: {
+      data: { ...data, content: "" },
+      contentParts,
+      contentLength: content.length,
+    },
+  });
 }
 
 /**

@@ -463,6 +463,7 @@ const DataGetRequestSchema = z.object({
     runId: z.string().optional(),
     version: z.number().optional(),
     includeContent: z.boolean().optional(),
+    inParts: z.boolean().optional(),
   }),
 });
 

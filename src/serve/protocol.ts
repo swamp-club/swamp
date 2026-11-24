@@ -289,6 +289,15 @@ export interface DataGetPayload {
   includeContent?: boolean;
 }
 
+/** the CLI's own data.get; apps and the published client never send inParts */
+export interface DataGetInPartsPayload extends DataGetPayload {
+  /**
+   * answer with the content in data.get.part frames before the reply, so no
+   * frame holds it all; a serve that predates it drops the key and replies whole
+   */
+  inParts?: boolean;
+}
+
 export interface DataQueryPayload {
   predicate: string;
   limit?: number;
@@ -1620,6 +1629,14 @@ export interface ServeReloadSettingsReport {
 
 export interface DataGetResponse {
   data: Record<string, unknown>;
+  /** set only for inParts: how many parts carried the content, emptied in data */
+  contentParts?: number;
+  /** set only for inParts: the content's length in UTF-16 code units */
+  contentLength?: number;
+}
+
+export interface DataGetPartPayload {
+  content: string;
 }
 
 export interface DataQueryResponse {
@@ -2501,6 +2518,7 @@ export type ServerMessage =
   | { type: "access.reload"; id: string; payload: AccessReloadResponse }
   | { type: "serve.reload"; id: string; payload: ServeReloadResponse }
   | { type: "data.get"; id: string; payload: DataGetResponse }
+  | { type: "data.get.part"; id: string; payload: DataGetPartPayload }
   | { type: "data.query"; id: string; payload: DataQueryResponse }
   | { type: "data.query.part"; id: string; payload: DataQueryPartPayload }
   | { type: "data.list"; id: string; payload: DataListResponse }
