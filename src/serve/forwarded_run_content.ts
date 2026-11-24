@@ -146,6 +146,7 @@ export async function checkRunRecord(
       );
       return holder === null || holder.workflowId === intent.run.workflowId;
     };
+    context.judgedAcrossRuns(intent.run.runId);
     if (!(await isOurs())) {
       return refused(op, "its run id is another workflow's run");
     }

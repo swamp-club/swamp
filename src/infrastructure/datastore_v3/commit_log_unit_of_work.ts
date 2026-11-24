@@ -65,6 +65,7 @@ import type {
 } from "../../domain/datastore_v3/commit_store.ts";
 import {
   createIntent,
+  type Intent,
   intentPartition,
 } from "../../domain/datastore_v3/intent.ts";
 import {
@@ -100,6 +101,12 @@ import { getSwampLogger } from "../logging/logger.ts";
 import { inUserConfigEdit } from "./config_edit_scope.ts";
 import type { RecordLastChange } from "./record_last_change.ts";
 import { isNetworkFailure } from "./network_failure.ts";
+import {
+  type HeldPartitionLocks,
+  partitionLockKey,
+  partitionLocksOf,
+  runIdLockKeysOf,
+} from "./partition_locks.ts";
 
 const logger = getSwampLogger(["datastore", "v3"]);
 
@@ -261,6 +268,11 @@ export interface CommitLogUnitOptions {
   /** The writer's fence (its writer lease's or leader lease's), if any. */
   readonly fence?: number;
   /**
+   * a forwarded section's keys: its append runs under them rather than queueing
+   * behind itself on a lock it holds
+   */
+  readonly held?: HeldPartitionLocks;
+  /**
    * Bounds content uploads for the whole operation the unit serves, every
    * checkpoint and the final commit included; an abort rejects the commit
    * in progress.
@@ -338,6 +350,15 @@ export class PathOnlyChangeRefusedError extends Error {
         "refused",
     );
     this.name = "PathOnlyChangeRefusedError";
+  }
+}
+
+function* intentsOf(group: Group): Iterable<Intent> {
+  for (const change of group.changes) {
+    if ("put" in change) yield change.put.intent;
+    else if (change.op.kind === "put" || change.op.kind === "tombstone") {
+      yield change.op.intent;
+    }
   }
 }
 
@@ -1570,10 +1591,11 @@ async function appendGroupIn(
   }
   let queued = false;
   let withdrawn = false;
-  await withPartitionLock(
-    options.sink,
-    options.namespace,
-    group.partition,
+  await partitionLocksOf(options.sink).hold(
+    [
+      partitionLockKey(options.namespace, group.partition),
+      ...runIdLockKeysOf(options.namespace, intentsOf(group)),
+    ],
     async () => {
       // A seq gap means another writer moved the head between the read and
       // the append; one rebuild at the new head usually lands it.
@@ -1685,6 +1707,7 @@ async function appendGroupIn(
         }
       }
     },
+    options.held,
   );
   if (withdrawn) return true;
   if (queued) return false;
@@ -2193,35 +2216,6 @@ function toBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-/**
- * The tail of each partition's append queue, by sink. Entries are removed
- * when their queue drains, so the map holds only partitions being appended.
- */
-const partitionLocks = new WeakMap<CommitSink, Map<string, Promise<void>>>();
-
-async function withPartitionLock(
-  sink: CommitSink,
-  namespace: string,
-  partition: PartitionKey,
-  fn: () => Promise<void>,
-): Promise<void> {
-  let queues = partitionLocks.get(sink);
-  if (queues === undefined) {
-    queues = new Map();
-    partitionLocks.set(sink, queues);
-  }
-  const key = `${namespace}\u0000${partition}`;
-  const before = queues.get(key) ?? Promise.resolve();
-  const run = before.then(fn);
-  const tail = run.catch(() => {});
-  queues.set(key, tail);
-  try {
-    await run;
-  } finally {
-    if (queues.get(key) === tail) queues.delete(key);
-  }
-}
-
 export function partitionLockCountForTesting(sink: CommitSink): number {
-  return partitionLocks.get(sink)?.size ?? 0;
+  return partitionLocksOf(sink).size;
 }

@@ -1550,3 +1550,179 @@ Deno.test("DatastoreLockLeases.cancelRequest: one principal's many cancels push 
     await subject.dispose();
   }
 });
+
+Deno.test("DatastoreLockLeases.acquire: waiters for a held lock are granted in arrival order", async () => {
+  const locks = fakeLocks();
+  // a long retry interval: each grant below comes from the release waking
+  // the longest waiter, not from a poll
+  const subject = leases(locks, { retryIntervalMs: 60_000 });
+  const first = await subject.acquire(request("user:alice"));
+  assert(first.kind === "acquired");
+  const granted: string[] = [];
+  const waiting = ["user:bob", "user:carol", "user:dave"].map((principal) =>
+    subject.acquire(request(principal, { waitMs: 30_000 })).then(
+      (outcome) => {
+        granted.push(principal);
+        return outcome;
+      },
+    )
+  );
+  await waitFor(
+    () => subject.waitingForTesting(lockKeyOf(model)) === 3,
+    "3 waiting",
+  );
+  let holder: { principal: string; leaseId: string } = {
+    principal: "user:alice",
+    leaseId: first.lease.leaseId,
+  };
+  for (const [turn, outcome] of waiting.entries()) {
+    await subject.release(holder.principal, holder.leaseId);
+    // bounded well inside the retry interval: only the release's wake can
+    // grant it in time
+    await waitFor(() => granted.length === turn + 1, `grant ${turn + 1}`);
+    const next = await outcome;
+    assert(next.kind === "acquired");
+    holder = { principal: granted.at(-1)!, leaseId: next.lease.leaseId };
+  }
+  assertEquals(granted, ["user:bob", "user:carol", "user:dave"]);
+  assertEquals(subject.waitingForTesting(lockKeyOf(model)), 0);
+  await subject.release(holder.principal, holder.leaseId);
+  await subject.dispose();
+});
+
+Deno.test("DatastoreLockLeases.acquire: a newcomer does not take a freed lock from a waiter", async () => {
+  const locks = fakeLocks();
+  const subject = leases(locks, { retryIntervalMs: 60_000 });
+  const first = await subject.acquire(request("user:alice"));
+  assert(first.kind === "acquired");
+  const waiter = subject.acquire(request("user:bob", { waitMs: 30_000 }));
+  await waitFor(
+    () => subject.waitingForTesting(lockKeyOf(model)) === 1,
+    "1 waiting",
+  );
+  const released = subject.release("user:alice", first.lease.leaseId);
+  // arrives while bob is queued: refused at once rather than served first
+  const newcomer = await subject.acquire(request("user:carol"));
+  await released;
+  const granted = await waiter;
+  assertEquals(newcomer.kind, "held");
+  assert(granted.kind === "acquired");
+  await subject.release("user:bob", granted.lease.leaseId);
+  await subject.dispose();
+});
+
+Deno.test("DatastoreLockLeases.acquire: a waiter that gives up hands its turn to the next", async () => {
+  const locks = fakeLocks();
+  const subject = leases(locks, { retryIntervalMs: 60_000 });
+  const first = await subject.acquire(request("user:alice"));
+  assert(first.kind === "acquired");
+  const quitting = new AbortController();
+  const gaveUp = subject.acquire(
+    request("user:bob", { waitMs: 30_000, signal: quitting.signal }),
+  );
+  const next = subject.acquire(request("user:carol", { waitMs: 30_000 }));
+  await waitFor(
+    () => subject.waitingForTesting(lockKeyOf(model)) === 2,
+    "2 waiting",
+  );
+  quitting.abort();
+  assertEquals((await gaveUp).kind, "held");
+  await subject.release("user:alice", first.lease.leaseId);
+  const granted = await next;
+  assert(granted.kind === "acquired");
+  await subject.release("user:carol", granted.lease.leaseId);
+  await subject.dispose();
+});
+
+Deno.test("DatastoreLockLeases.acquire: a waiter that takes the lock and gives it straight back wakes the next", async () => {
+  const locks = fakeLocks();
+  const subject = leases(locks, {
+    retryIntervalMs: 60_000,
+    maxLeasesPerPrincipal: 1,
+  });
+  const first = await subject.acquire(request("user:alice"));
+  assert(first.kind === "acquired");
+  const bob = subject.acquire(request("user:bob", { waitMs: 30_000 }));
+  const carol = subject.acquire(request("user:carol", { waitMs: 30_000 }));
+  await waitFor(
+    () => subject.waitingForTesting(lockKeyOf(model)) === 2,
+    "2 waiting",
+  );
+  // bob reaches the cap while waiting, so takes the lock only to refuse it
+  const other = await subject.acquire({
+    ...request("user:bob"),
+    target: { kind: "workflow-run", runId: RUN },
+  });
+  assert(other.kind === "acquired");
+  let granted = false;
+  const carolGranted = carol.then((outcome) => {
+    granted = true;
+    return outcome;
+  });
+  await subject.release("user:alice", first.lease.leaseId);
+  assertEquals((await bob).kind, "too-many");
+  // bounded well inside the retry interval: only bob's hand-on wakes carol
+  await waitFor(() => granted, "carol granted");
+  const outcome = await carolGranted;
+  assert(outcome.kind === "acquired");
+  await subject.release("user:carol", outcome.lease.leaseId);
+  await subject.release("user:bob", other.lease.leaseId);
+  await subject.dispose();
+});
+
+Deno.test("DatastoreLockLeases.acquire: a lease that ends while the longest waiter is trying the lock is not missed", async () => {
+  const gate = () => {
+    let open!: () => void;
+    const opened = new Promise<void>((resolve) => open = resolve);
+    return { open, opened };
+  };
+  const releaseHeld = gate();
+  const tryHeld = gate();
+  let held = false;
+  let tries = 0;
+  let releases = 0;
+  const createLock = (): Promise<TryLock> =>
+    Promise.resolve({
+      tryAcquire: async () => {
+        if (!held) {
+          held = true;
+          return true;
+        }
+        tries++;
+        if (tries === 1) await tryHeld.opened;
+        return false;
+      },
+      release: async () => {
+        if (++releases === 1) await releaseHeld.opened;
+        held = false;
+      },
+    });
+  const subject = new DatastoreLockLeases({
+    createLock,
+    minTtlMs: 10,
+    retryIntervalMs: 1_000,
+  });
+  const alice = await subject.acquire(request("user:alice"));
+  assert(alice.kind === "acquired");
+  const bob = subject.acquire(request("user:bob", { waitMs: 30_000 }));
+  await waitFor(
+    () => subject.waitingForTesting(lockKeyOf(model)) === 1,
+    "bob waiting",
+  );
+  // alice's lease ends, but her lock is not free yet
+  const released = subject.release("user:alice", alice.lease.leaseId);
+  // bob's retry finds no lease and tries the lock, which is still held
+  await waitFor(() => tries === 1, "bob trying");
+  releaseHeld.open();
+  await released;
+  tryHeld.open();
+  // only microtasks run here: a retry waiting on its timer cannot happen
+  for (let turn = 0; turn < 100 && held === false; turn++) {
+    await Promise.resolve();
+  }
+  assertEquals(held, true, "bob took the lock on the wake he missed");
+  const outcome = await bob;
+  assert(outcome.kind === "acquired");
+  await subject.release("user:bob", outcome.lease.leaseId);
+  await subject.dispose();
+});

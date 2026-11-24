@@ -38,6 +38,7 @@ import type { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
 import { WriterFencedError } from "../../domain/datastore_v3/writer_lease.ts";
 import { StaleSeqError } from "./commit_log_unit_of_work.ts";
 import { recordLastChange } from "./record_last_change.ts";
+import type { HeldPartitionLocks } from "./partition_locks.ts";
 
 export { StaleSeqError };
 import type { V3Datastore } from "./v3_datastore.ts";
@@ -124,6 +125,7 @@ export async function commitForwarded(
   v3: ForwardedCommitTarget,
   request: ForwardedCommitRequest,
   signal: AbortSignal,
+  held?: HeldPartitionLocks,
 ): Promise<ForwardedCommitResult> {
   const landed = await landedResult(v3, request);
   if (landed !== undefined) return landed;
@@ -150,7 +152,7 @@ export async function commitForwarded(
       ops: request.lease === undefined
         ? request.ops
         : [...request.ops, request.lease],
-    });
+    }, held);
   } catch (error) {
     // Two attempts of one commit in flight: the second finds the head moved
     // by the first.

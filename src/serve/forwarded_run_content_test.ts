@@ -107,6 +107,7 @@ function context(
       holdsRecordsUnder: () => Promise.resolve(false),
       keysIn: () => Promise.resolve([]),
       recheckUnderLock: () => {},
+      judgedAcrossRuns: () => {},
       now: () => new Date(STARTED),
     },
   };

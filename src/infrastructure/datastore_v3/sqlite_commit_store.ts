@@ -113,6 +113,8 @@ import { WriterFencedError } from "../../domain/datastore_v3/writer_lease.ts";
 import { DatastoreOwner } from "../../domain/datastore_v3/datastore_owner.ts";
 import { UserError } from "../../domain/errors.ts";
 import { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
+import { forwardedCommitClass } from "../../domain/datastore_v3/forwarded_commit_class.ts";
+import { withSyncSpan } from "../tracing/tracer.ts";
 import type { RecordKey } from "../../domain/datastore_v3/record_key.ts";
 import type { ObservedBaseEntry } from "../../domain/datastore_v3/observed_base.ts";
 import { VersionRanges } from "../../domain/datastore_v3/version_ranges.ts";
@@ -848,6 +850,14 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
   readonly #selectTxnAtSeq: StatementSync;
   readonly #selectMaxSeq: StatementSync;
   readonly #insertCommit: StatementSync;
+  readonly #selectHeadCursor: StatementSync;
+  readonly #selectLastCursor: StatementSync;
+  /**
+   * the cursor of the newest commit that changes what other commits are judged
+   * against; set at insert, so one rolled back may leave it past the last
+   * cursor, which authorityCursor clamps
+   */
+  #authorityCursor: number;
   readonly #upsertHead: StatementSync;
   readonly #selectPartitionPage: StatementSync;
   readonly #selectNewestAfter: StatementSync;
@@ -911,6 +921,14 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
     this.#insertCommit = db.prepare(
       "INSERT INTO commits (namespace, partition, seq, txn_id, fence, at, body) VALUES (?, ?, ?, ?, ?, ?, ?)",
     );
+    this.#selectHeadCursor = db.prepare(
+      "SELECT cursor FROM commits WHERE namespace = ? AND partition = ? ORDER BY seq DESC LIMIT 1",
+    );
+    this.#selectLastCursor = db.prepare(
+      "SELECT MAX(cursor) AS cursor FROM commits",
+    );
+    // Opened with history whose kind is not known: every commit so far counts.
+    this.#authorityCursor = this.lastCursor();
     this.#upsertHead = db.prepare(
       "INSERT INTO partition_heads (namespace, partition, seq, highest_fence) VALUES (?, ?, ?, ?) " +
         "ON CONFLICT (namespace, partition) DO UPDATE SET seq = excluded.seq, highest_fence = excluded.highest_fence",
@@ -1027,6 +1045,16 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
    */
   get appendTransactions(): number {
     return this.#appendTransactions;
+  }
+
+  /** the transaction's COMMIT is its fsync; the span counts what it covered */
+  #commitAppends(commits: number): void {
+    withSyncSpan(
+      "swamp.datastore.v3.commit_store.fsync",
+      { "swamp.datastore.v3.commits": commits },
+      () => this.#db.exec("COMMIT"),
+    );
+    this.#appendTransactions++;
   }
 
   /** for tests */
@@ -2208,8 +2236,7 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
         (written) => snapshot = written,
       );
       if (outcome !== "stale" && outcome.kind === "appended") {
-        this.#db.exec("COMMIT");
-        this.#appendTransactions++;
+        this.#commitAppends(1);
       } else {
         this.#db.exec("ROLLBACK");
       }
@@ -2360,8 +2387,7 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
         const result = outcome;
         settle.push(() => entry.resolve(result));
       }
-      this.#db.exec("COMMIT");
-      this.#appendTransactions++;
+      this.#commitAppends(settle.length);
     } catch (error) {
       rollbackQuietly(this.#db);
       // Every partition the group touched may be ahead of the file.
@@ -2548,7 +2574,10 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
   ): void {
     const namespace = commit.namespace;
     const partitionKey = commit.partition.toString();
+    const authority = forwardedCommitClass(commit.partition, commit.ops) ===
+      "exclusive";
     if (this.#leaderCursor !== undefined) {
+      if (authority) this.#authorityCursor = this.#leaderCursor;
       // A team follower keeps the leader's cursor, so a cursor a client
       // read from either node means the same commit (swamp-club#4120).
       this.#db.prepare(
@@ -2564,7 +2593,7 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
         JSON.stringify(commit.toJSON()),
       );
     } else {
-      this.#insertCommit.run(
+      const inserted = this.#insertCommit.run(
         namespace,
         partitionKey,
         commit.seq,
@@ -2573,6 +2602,7 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
         commit.at,
         JSON.stringify(commit.toJSON()),
       );
+      if (authority) this.#authorityCursor = Number(inserted.lastInsertRowid);
     }
     // In the commit's own transaction, so a refused or rolled-back append
     // leaves no reference behind.
@@ -2604,8 +2634,7 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
     try {
       outcome = this.#applyUnloadedInTransaction(commit);
       if (outcome !== "load" && outcome.kind === "appended") {
-        this.#db.exec("COMMIT");
-        this.#appendTransactions++;
+        this.#commitAppends(1);
       } else {
         this.#db.exec("ROLLBACK");
       }
@@ -3029,6 +3058,33 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
       txnId,
     ) as { seq: number } | undefined;
     return Promise.resolve(row?.seq);
+  }
+
+  lastCursor(): number {
+    return (this.#selectLastCursor.get() as { cursor: number | null }).cursor ??
+      0;
+  }
+
+  /** a read model applied through it holds every fact a shared commit is judged against */
+  authorityCursor(): number {
+    return Math.min(this.#authorityCursor, this.lastCursor());
+  }
+
+  /**
+   * the cursor of the partition's last stored commit; "none" for a partition
+   * never written, "compacted" when its last commit was folded away
+   */
+  partitionHeadCursor(
+    namespace: string,
+    partition: PartitionKey,
+  ): number | "none" | "compacted" {
+    const row = this.#selectHeadCursor.get(namespace, partition.toString()) as
+      | { cursor: number }
+      | undefined;
+    if (row !== undefined) return row.cursor;
+    return this.#selectHead.get(namespace, partition.toString()) === undefined
+      ? "none"
+      : "compacted";
   }
 
   head(namespace: string, partition: PartitionKey): Promise<PartitionHead> {
