@@ -4024,6 +4024,206 @@ Deno.test("WorkerGateway: a drain during a held busy write lands after it", asyn
   assertEquals(workerStatuses(h, "ci-runner-3"), ["busy", "draining"]);
 });
 
+Deno.test("WorkerGateway: verifyOnEnroll — a drain while a passed probe's write is queued keeps the worker draining", async () => {
+  const enrolled: WorkerSnapshot[] = [];
+  const probe = Promise.withResolvers<{ ok: boolean }>();
+  let record: EnrollmentToken = mintRecord("ci-runner-3", BASE_MINT);
+  const h = createGatedHarness({
+    verifyOnEnroll: true,
+    verifyWorker: () => probe.promise,
+    onWorkerEnrolled: (w) => enrolled.push(w),
+    readTokenRecord: () => Promise.resolve(record),
+    readTokenSecret: () => Promise.resolve("s"),
+  });
+  const a = connectWorkerSocket(h.gateway);
+  a.workerChannel.register(
+    WorkerMethod.rotateToken,
+    () => Promise.resolve({ persisted: true }),
+  );
+  await enroll(a.workerChannel, rotatableParams);
+  assertEquals(h.gateway.worker("ci-runner-3")?.status, "unverified");
+
+  h.hold((input) =>
+    input.methodName === "set_status" &&
+    input.definitionName === workerDefinitionName("ci-runner-3") &&
+    input.inputs.tokenCreatedAt !== undefined
+  );
+  record = mintRecord("ci-runner-3", ROTATED_MINT);
+  const rotated = h.gateway.rotateToken("ci-runner-3");
+  await waitFor(() => h.reached() === 1, "the re-stamp held");
+  probe.resolve({ ok: true });
+  await macrotaskBoundary();
+  const drained = a.workerChannel.call(RemoteMethod.drain, {});
+  await waitFor(
+    () => h.gateway.worker("ci-runner-3")?.status === "draining",
+    "the worker draining in memory",
+  );
+  await macrotaskBoundary();
+
+  h.release();
+  await drained;
+  await rotated;
+  await h.gateway.settled();
+  assertEquals(h.gateway.worker("ci-runner-3")?.status, "draining");
+  assertEquals(enrolled.length, 0);
+  assertEquals(h.idle.length, 0);
+  const statuses = workerStatuses(h, "ci-runner-3");
+  assertEquals(statuses.includes("idle"), false);
+  assertEquals(statuses.at(-1), "draining");
+  const refused = await assertRejects(
+    () => h.gateway.dispatch("ci-runner-3", dispatchParams()),
+    WorkerNotDispatchableError,
+  );
+  assertEquals(refused.reason, "draining");
+});
+
+Deno.test("WorkerGateway: verifyOnEnroll — a disconnect while a passed probe's write is queued is not followed by an idle record", async () => {
+  const enrolled: WorkerSnapshot[] = [];
+  const probe = Promise.withResolvers<{ ok: boolean }>();
+  let record: EnrollmentToken = mintRecord("ci-runner-3", BASE_MINT);
+  const h = createGatedHarness({
+    verifyOnEnroll: true,
+    verifyWorker: () => probe.promise,
+    onWorkerEnrolled: (w) => enrolled.push(w),
+    readTokenRecord: () => Promise.resolve(record),
+    readTokenSecret: () => Promise.resolve("s"),
+  });
+  const a = connectWorkerSocket(h.gateway);
+  a.workerChannel.register(
+    WorkerMethod.rotateToken,
+    () => Promise.resolve({ persisted: true }),
+  );
+  await enroll(a.workerChannel, rotatableParams);
+
+  h.hold((input) =>
+    input.methodName === "set_status" &&
+    input.definitionName === workerDefinitionName("ci-runner-3") &&
+    input.inputs.tokenCreatedAt !== undefined
+  );
+  record = mintRecord("ci-runner-3", ROTATED_MINT);
+  const rotated = h.gateway.rotateToken("ci-runner-3");
+  await waitFor(() => h.reached() === 1, "the re-stamp held");
+  probe.resolve({ ok: true });
+  await macrotaskBoundary();
+  a.dropSocket();
+  await waitFor(
+    () => h.gateway.worker("ci-runner-3")?.connected === false,
+    "the worker disconnected in memory",
+  );
+
+  h.release();
+  await rotated;
+  await h.gateway.settled();
+  assertEquals(h.gateway.worker("ci-runner-3")?.status, "unverified");
+  assertEquals(enrolled.length, 0);
+  assertEquals(h.idle.length, 0);
+  const statuses = workerStatuses(h, "ci-runner-3");
+  assertEquals(statuses.includes("idle"), false);
+  assertEquals(statuses.at(-1), "disconnected");
+});
+
+Deno.test("WorkerGateway: verifyOnEnroll — a drain during a passed probe's idle write keeps the worker draining", async () => {
+  const enrolled: WorkerSnapshot[] = [];
+  const probe = Promise.withResolvers<{ ok: boolean }>();
+  const h = createGatedHarness({
+    verifyOnEnroll: true,
+    verifyWorker: () => probe.promise,
+    onWorkerEnrolled: (w) => enrolled.push(w),
+  });
+  const a = connectWorkerSocket(h.gateway);
+  await enroll(a.workerChannel);
+
+  h.hold(heldStatus("ci-runner-3", "idle"));
+  probe.resolve({ ok: true });
+  await waitFor(() => h.reached() === 1, "the idle write held");
+  const drained = a.workerChannel.call(RemoteMethod.drain, {});
+  await waitFor(
+    () => h.gateway.worker("ci-runner-3")?.status === "draining",
+    "the worker draining in memory",
+  );
+  await macrotaskBoundary();
+
+  h.release();
+  await drained;
+  await h.gateway.settled();
+  assertEquals(h.gateway.worker("ci-runner-3")?.status, "draining");
+  assertEquals(enrolled.length, 0);
+  assertEquals(h.idle.length, 0);
+  assertEquals(workerStatuses(h, "ci-runner-3").at(-1), "draining");
+});
+
+Deno.test("WorkerGateway: verifyOnEnroll — a passed probe whose idle write fails leaves the worker unverified", async () => {
+  const enrolled: WorkerSnapshot[] = [];
+  const h: Harness = createHarness({
+    verifyOnEnroll: true,
+    verifyWorker: () => Promise.resolve({ ok: true }),
+    onWorkerEnrolled: (w) => enrolled.push(w),
+    runModelMethod: (input) => {
+      if (input.methodName === "set_status" && input.inputs.status === "idle") {
+        return Promise.reject(new Error("datastore offline"));
+      }
+      h.transitions.push(input);
+      return Promise.resolve();
+    },
+  });
+  const a = connectWorkerSocket(h.gateway);
+  await enroll(a.workerChannel);
+  await waitFor(
+    () => h.gateway.worker("ci-runner-3")?.verifyFailureReason !== undefined,
+    "the failed idle write seen",
+  );
+  await h.gateway.settled();
+
+  const worker = h.gateway.worker("ci-runner-3");
+  assertEquals(worker?.status, "unverified");
+  assertStringIncludes(worker?.verifyFailureReason ?? "", "datastore offline");
+  assertEquals(enrolled.length, 0);
+  assertEquals(h.idle.length, 0);
+  assertEquals(workerStatuses(h, "ci-runner-3").at(-1), "unverified");
+});
+
+async function assertDrainOutlastsFailedProbe(
+  settle: (
+    probe: PromiseWithResolvers<{ ok: boolean; failureReason?: string }>,
+  ) => void,
+  reason: string,
+): Promise<void> {
+  const probe = Promise.withResolvers<
+    { ok: boolean; failureReason?: string }
+  >();
+  const h = createHarness({
+    verifyOnEnroll: true,
+    verifyWorker: () => probe.promise,
+  });
+  const a = connectWorkerSocket(h.gateway);
+  await enroll(a.workerChannel);
+  await a.workerChannel.call(RemoteMethod.drain, {});
+  assertEquals(workerStatuses(h, "ci-runner-3").at(-1), "draining");
+
+  settle(probe);
+  await waitFor(
+    () => h.gateway.worker("ci-runner-3")?.verifyFailureReason === reason,
+    "the probe failure seen",
+  );
+  await h.gateway.settled();
+  assertEquals(h.gateway.worker("ci-runner-3")?.status, "draining");
+  assertEquals(workerStatuses(h, "ci-runner-3").at(-1), "draining");
+}
+
+Deno.test("WorkerGateway: verifyOnEnroll — a probe that fails after a drain leaves the record draining", async () => {
+  await assertDrainOutlastsFailedProbe(
+    (probe) => probe.resolve({ ok: false, failureReason: "data plane broken" }),
+    "data plane broken",
+  );
+});
+
+Deno.test("WorkerGateway: verifyOnEnroll — a probe that errors after a drain leaves the record draining", async () => {
+  await assertDrainOutlastsFailedProbe(
+    (probe) => probe.reject(new Error("dispatch timeout")),
+    "dispatch timeout",
+  );
+});
+
 Deno.test("WorkerGateway: a revoke during a held busy write records the disconnect after it", async () => {
   const h = createGatedHarness();
   const a = connectWorkerSocket(h.gateway);

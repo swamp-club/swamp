@@ -69,7 +69,7 @@ Three properties drove the design:
 | **Spool file**           | The worker-local file behind `getFilePath()` on a remote executor. Uploaded to the orchestrator as one streamed `POST` on `finalize()`.                                                                                                                                                                                                      |
 | **Fleet probe**          | Built-in behavior (`swamp/fleet-probe`). Its one `verify` method tests every seam between worker and orchestrator: dispatch metadata (`probeMarker`), capability RPC (`queryData`), and the HTTP data plane (`writeResource`/`readResource`). Used by `swamp worker verify` and `--verify-on-enroll`.                                        |
 | **Probe marker**         | A dispatch-level string (`probeMarker` on `DispatchParams`) merged into the method's args. Confirms dispatch metadata arrives intact. Sent in `DispatchParams`, not the environment snapshot, which denylists `SWAMP_*` variables.                                                                                                           |
-| **Verify-on-enroll**     | Opt-in orchestrator flag (`--verify-on-enroll`). Sends the fleet probe to each enrolling worker before it can be scheduled. A worker is `unverified` from enrollment until its probe passes; one that fails stays `unverified` and is not scheduled.                                                                                         |
+| **Verify-on-enroll**     | Opt-in orchestrator flag (`--verify-on-enroll`). Sends the fleet probe to each enrolling worker before it can be scheduled. A worker is `unverified` from enrollment until its probe passes; one that fails stays `unverified` and is not scheduled. One that drains first stays `draining`.                                                 |
 | **Unverified**           | Worker status until the enrollment probe passes. Shown in `swamp worker list` and the dashboard's Workers view; excluded from label/platform scheduling. A probe dispatch never changes it: `swamp worker verify` reports its result without promoting the worker, which is probed again when it reconnects. If its enrollment probe was refused because every slot was taken, it is probed again when the last of those dispatches ends. |
 
 For an unverified worker, the failure reason is only in the `--json` record
@@ -540,7 +540,10 @@ written on that worker's key of the gateway's transition tail, not on the
 shared chain that orders token records and pool admission. Each write is queued
 at the in-memory change it records, so a worker's records land in the order its
 state changed, and a dispatch waits only for its own worker's earlier writes,
-never behind another worker's enrollment (swamp-club#3988). A write that is part
+never behind another worker's enrollment (swamp-club#3988). A verification
+outcome is the exception: it applies when its write runs, so a drain or
+disconnect that landed while it was queued keeps its record, and a passed probe
+promotes the worker only once its idle record is written. A write that is part
 of a shared-chain turn (a revoke's disconnects, a rotation's re-stamp) queues on
 the worker's key from inside that turn. An enrollment holds its worker's key
 from its `already_connected` check until the channel's handlers are registered,
