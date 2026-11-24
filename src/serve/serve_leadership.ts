@@ -318,7 +318,14 @@ export class ServeLeadership {
     if (this.#timer !== undefined) clearTimeout(this.#timer);
     this.#refreshing?.abort(new Error("serve is stopping"));
     await this.#ticking;
-    await this.#leftRefresh;
+    const left = this.#leftRefresh;
+    if (left !== undefined) {
+      await this.#within(
+        this.#now() + PROMOTION_FEED_STOP_MS,
+        "a copy restore left running",
+        left,
+      );
+    }
     await this.#leadCheck;
     await this.#scheduled;
     const feed = this.#deps.feed;
@@ -518,7 +525,7 @@ export class ServeLeadership {
       // so no commit an old leader never published stays in the copy.
       if (
         !(await this.#within(
-          deadline,
+          this.#recordDeadline(deadline),
           "reading the leader record",
           this.#readLeader(),
         )).done
@@ -557,13 +564,18 @@ export class ServeLeadership {
     this.#refreshedAt = this.#now();
     if (
       !(await this.#within(
-        deadline,
+        this.#recordDeadline(deadline),
         "reading the leader record",
         this.#readLeader(),
       )).done
     ) return;
     if (this.#stopped || this.#role !== "follower") return;
     feed?.follow(this.#leader);
+  }
+
+  /** slow copy work earlier in the tick never leaves the record no time to be read */
+  #recordDeadline(deadline: number): number {
+    return Math.max(deadline, this.#now() + LEASE_EXPIRY_MARGIN_MS);
   }
 
   /**
@@ -576,9 +588,13 @@ export class ServeLeadership {
     const started = this.#now();
     try {
       const work = this.#deps.refreshCopy(refresh.signal);
+      // raced below; a rejection before the first race is not unhandled
+      work.catch(() => {});
       for (;;) {
-        // the holder may renew while the restore runs: its lapse is read again
-        const lapse = await this.#holderLapse();
+        // the holder may renew while the restore runs: its lapse is read again;
+        // a released lease lapsed when the restore began
+        const read = await this.#holderLapse();
+        const lapse = read === 0 ? started : read;
         const cap = lapse === undefined
           ? this.#now() + this.#tickMs
           : lapse + this.#refreshPastLapseMs;
@@ -608,7 +624,7 @@ export class ServeLeadership {
     }
   }
 
-  /** when the holder's lease lapses, if it can be read now; past it nobody renewed */
+  /** when the holder's lease lapses, 0 once released, if it can be read now */
   async #holderLapse(): Promise<number | undefined> {
     const read = await this.#waitUntil(
       this.#now() + this.#tickMs,
@@ -617,7 +633,7 @@ export class ServeLeadership {
       ),
     );
     const lapse = read.done ? read.value : undefined;
-    return lapse !== undefined && Number.isFinite(lapse) && lapse > 0
+    return lapse !== undefined && Number.isFinite(lapse) && lapse >= 0
       ? lapse
       : undefined;
   }

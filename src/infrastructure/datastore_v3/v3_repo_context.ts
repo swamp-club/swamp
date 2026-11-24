@@ -1271,6 +1271,10 @@ async function followBounded(
         }
       },
     );
+    // its failure reaches whoever waits on it, or is logged once nobody does
+    started.catch((error) => {
+      logger.debug`Making this follower's copy current failed: ${error}`;
+    });
     follow = started;
     repoState().follows.set(key, started);
   }
@@ -1286,9 +1290,6 @@ async function followBounded(
     if (outcome === "aborted") {
       logger
         .warn`Making this follower's copy current did not finish before the writer lease is due to be tried; it goes on, and the lease is tried meanwhile`;
-      follow.catch((error) => {
-        logger.debug`Making this follower's copy current failed: ${error}`;
-      });
     }
   } finally {
     if (onAbort !== undefined) signal.removeEventListener("abort", onAbort);

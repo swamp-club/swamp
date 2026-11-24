@@ -1454,3 +1454,56 @@ Deno.test("ServeLeadership: a long restore while the holder keeps renewing is ne
     await leadership.stop();
   }
 });
+
+Deno.test("ServeLeadership: a restore still hanging after the holder released its lease is cut, and the lease is tried", async () => {
+  const lease = new FakeLease();
+  const refresh = hangingRefresh();
+  const leadership = new ServeLeadership({
+    instanceId: "me",
+    lease,
+    store: memoryStore(),
+    feed: new FakeFeed(),
+    refreshCopy: refresh.refreshCopy,
+    onLead: () => Promise.resolve(),
+    onLostLead: () => Promise.resolve(),
+    tickMs: 3_600_000,
+    refreshPastLapseMs: 200,
+  });
+  await leadership.start("follower");
+  try {
+    // released: expiresAt reads 0
+    lease.expiry = 0;
+    await leadership.tick();
+    assertEquals(refresh.state.aborted, 1);
+    lease.free = 5;
+    await leadership.tick();
+    assertEquals(leadership.role, "leader");
+  } finally {
+    refresh.end();
+    await leadership.stop();
+  }
+});
+
+Deno.test("ServeLeadership.stop: a restore that was cut and ignores its abort does not hold the stop", async () => {
+  const lease = new FakeLease();
+  let calls = 0;
+  const leadership = new ServeLeadership({
+    instanceId: "me",
+    lease,
+    store: memoryStore(),
+    feed: new FakeFeed(),
+    refreshCopy: () => {
+      calls++;
+      return new Promise<void>(() => {});
+    },
+    onLead: () => Promise.resolve(),
+    onLostLead: () => Promise.resolve(),
+    tickMs: 3_600_000,
+    refreshPastLapseMs: 100,
+  });
+  await leadership.start("follower");
+  lease.expiry = Date.now() + 50;
+  await leadership.tick();
+  assertEquals(calls, 1);
+  await leadership.stop();
+});
