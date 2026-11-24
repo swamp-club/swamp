@@ -22,13 +22,19 @@ import { join } from "@std/path";
 import type { OutboxCommitSink } from "../src/infrastructure/datastore_v3/outbox_commit_sink.ts";
 
 export function sqliteFull(): Error {
+  return sqliteExecFull();
+}
+
+/** the shape a COMMIT run through exec() throws: no errcode, node:sqlite's code */
+function sqliteExecFull(): Error {
   const dir = Deno.makeTempDirSync();
   const db = new DatabaseSync(join(dir, "full.db"));
   try {
     db.exec("PRAGMA page_size=4096; CREATE TABLE t(v BLOB);");
     db.exec("PRAGMA max_page_count=4");
-    const insert = db.prepare("INSERT INTO t VALUES (?)");
-    for (let i = 0; i < 100; i++) insert.run(new Uint8Array(4000));
+    for (let i = 0; i < 100; i++) {
+      db.exec("INSERT INTO t VALUES (zeroblob(4000))");
+    }
   } catch (error) {
     return error as Error;
   } finally {

@@ -52,6 +52,16 @@ const SQLITE_NOT_STORAGE: ReadonlySet<number> = new Set([
   1032, // SQLITE_READONLY_DBMOVED
 ]);
 
+/**
+ * node:sqlite's exec() errors carry no errcode, only its own code and SQLite's
+ * fixed message, which no client can set
+ */
+const SQLITE_EXEC_MESSAGES: ReadonlyMap<string, CannotCommitCause> = new Map([
+  ["database or disk is full", "storage_full"],
+  ["disk I/O error", "storage_io_error"],
+  ["attempt to write a readonly database", "storage_read_only"],
+]);
+
 const CODE_CAUSES: ReadonlyMap<string, CannotCommitCause> = new Map([
   ["ENOSPC", "storage_full"],
   ["EDQUOT", "storage_full"],
@@ -92,6 +102,9 @@ function causeOfOne(error: object): CannotCommitCause | undefined {
     }
   }
   if (typeof e.code === "string") {
+    if (e.code === "ERR_SQLITE_ERROR" && typeof e.message === "string") {
+      return SQLITE_EXEC_MESSAGES.get(e.message);
+    }
     const cause = CODE_CAUSES.get(e.code);
     if (cause !== undefined) return cause;
   }

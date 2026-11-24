@@ -519,3 +519,49 @@ Deno.test("LeaderCommitHealth: failures more than a window apart are separate ru
   assertEquals(health.cannotCommit(), undefined);
   assert(health.failing());
 });
+
+function realExecFull(): Error {
+  const dir = Deno.makeTempDirSync();
+  const db = new DatabaseSync(join(dir, "full.db"));
+  try {
+    db.exec("PRAGMA page_size=4096; CREATE TABLE t(v BLOB);");
+    db.exec("PRAGMA max_page_count=4");
+    for (let i = 0; i < 100; i++) {
+      db.exec("INSERT INTO t VALUES (zeroblob(4000))");
+    }
+  } catch (error) {
+    return error as Error;
+  } finally {
+    db.close();
+    Deno.removeSync(dir, { recursive: true });
+  }
+  throw new Error("the capped database never filled");
+}
+
+Deno.test("storageFailureCause: a SQLITE_FULL thrown by exec(), which carries no errcode, is storage_full", () => {
+  const error = realExecFull();
+  assertEquals((error as { errcode?: unknown }).errcode, undefined);
+  assertEquals(storageFailureCause(error), "storage_full");
+  assertEquals(
+    storageFailureCause(new Error("wrapped", { cause: error })),
+    "storage_full",
+  );
+});
+
+Deno.test("storageFailureCause: SQLite's other exec() errors, and the same text without node:sqlite's code, are not storage failures", () => {
+  const exec = (message: string) =>
+    Object.assign(new Error(message), { code: "ERR_SQLITE_ERROR" });
+  assertEquals(storageFailureCause(exec("database is locked")), undefined);
+  assertEquals(
+    storageFailureCause(exec("UNIQUE constraint failed: t.v")),
+    undefined,
+  );
+  assertEquals(
+    storageFailureCause(exec("database or disk is full; and more")),
+    undefined,
+  );
+  assertEquals(
+    storageFailureCause(new Error("database or disk is full")),
+    undefined,
+  );
+});

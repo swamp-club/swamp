@@ -9265,8 +9265,10 @@ recovered, marked or replicated by a follower.
   (`onV3CommitOutcome`), and a forwarded commit or other datastore API write
   that fails. A storage failure is a full disk, an I/O error or read-only
   storage, read from SQLite's and the OS's error codes in the error or its
-  causes, and from no message but the Litestream sidecar's own report of its
-  writes, since a refusal can fill a message with a client's record key;
+  causes, and from no message but two fixed ones: SQLite's own text on an
+  `exec()` error, which `node:sqlite` throws without an errcode, and the
+  Litestream sidecar's own report of its writes, since a refusal can fill a
+  message with a client's record key;
   locks, refusals and the network never count. A landed commit, or
   a catch-up that applied one, starts the run again. Three failures in a row
   spanning at least 10 s trip it, so neither one failure nor a burst of
