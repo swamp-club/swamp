@@ -74,7 +74,6 @@ await initializeLogging({});
  * gap fails the test until it is pinned here on purpose
  */
 const KNOWN_UNMARKED: readonly string[] = [
-  "UnifiedData.delete(version,latest-of-two): data/command/shell/<id>/item/latest",
   "UnifiedData.advanceLatestMarkers: data/command/shell/<id>/item/latest",
   "UnifiedData.rollbackVersions: data/command/shell/<id>/item/<v>/metadata.yaml",
   "UnifiedData.rollbackVersions: data/command/shell/<id>/item/<v>/raw",

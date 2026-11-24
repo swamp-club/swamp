@@ -253,6 +253,8 @@ const EXPECTED: Record<string, PinnedRow> = {
         "markDirty data/<type>/<id>/state/1",
         "markDirty data/<type>/<id>/state/2",
         "markDirty data/<type>/<id>/state/2",
+        "markDirty data/<type>/<id>/state/latest",
+        "markDirty data/<type>/<id>/state/latest",
         "push[0 del 4]",
       ],
       "remote": {
@@ -272,6 +274,8 @@ const EXPECTED: Record<string, PinnedRow> = {
         "markDirty data/<type>/<id>/state/1",
         "markDirty data/<type>/<id>/state/2",
         "markDirty data/<type>/<id>/state/2",
+        "markDirty data/<type>/<id>/state/latest",
+        "markDirty data/<type>/<id>/state/latest",
         "push[0 del 4]",
       ],
       "remote": {
