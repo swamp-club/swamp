@@ -39,7 +39,7 @@ export function checkReusePortListen(options: {
     let hint = "";
     if (error instanceof Deno.errors.AddrInUse) {
       hint = os === "linux"
-        ? "; a process listening there without --reuse-port blocks an overlapping start"
+        ? "; a process listening there without --reuse-port, or as another user, blocks an overlapping start"
         : `; only Linux lets two processes share a port, and on ${os} another process already listens there`;
     }
     throw new UserError(

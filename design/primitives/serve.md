@@ -110,7 +110,7 @@ without it the default file is optional.
 | `--hot-reload` | — | `false` | Makes SIGHUP reload even when serve runs on a terminal (a serve not on a terminal reloads on SIGHUP anyway), and an extension pull, update, install or rm made through serve reloads it (swamp-club#3594); `swamp serve reload --server` works without it; not supported on Windows |
 | `--enable-internal-api` | `SWAMP_ENABLE_INTERNAL_API` | `false` | Exposes `/internal/runs` (`limit` default 100, clamped 1–10 000) |
 | `--remote-only` | `SWAMP_REMOTE_ONLY` | `false` | User steps run only on workers |
-| `--reuse-port` | `SWAMP_REUSE_PORT` | `false` | Listens with `SO_REUSEPORT` and opens the port only once startup completes, so a new process can start beside the old one. Only Linux lets two processes share the port: elsewhere serve warns at startup, and a second serve beside the first fails before startup does any work. Set at startup, not on reload (see Rolling restart) |
+| `--reuse-port` | `SWAMP_REUSE_PORT` | `false` | Listens with `SO_REUSEPORT` and opens the port only once startup completes, so a new process can start beside the old one. Only Linux lets two processes share the port, and only when both run as the same user: elsewhere serve warns at startup, and a second serve beside the first fails before startup does any work. Set at startup, not on reload (see Rolling restart) |
 | `--dashboard` | `SWAMP_DASHBOARD` | `false` | Serves `/dashboard/*` when the build embeds the SPA |
 | `--auto-resume` | `SWAMP_AUTO_RESUME` | `false` | Resumes a run once every approval gate is decided and every wait for a signal is settled |
 | `--detach-runs` | — | `false` | Deprecated, no effect: runs are always detached |
