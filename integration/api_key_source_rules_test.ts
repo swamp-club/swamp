@@ -26,7 +26,10 @@ import {
   toPosixPath,
 } from "./arch_fitness_helpers.ts";
 
+// auth_credentials.ts holds the name so buildEnvContext can hide it from
+// expressions without a domain-to-infrastructure import; it reads nothing
 const PINNED_KEY_ENV_READERS = [
+  "src/domain/auth/auth_credentials.ts",
   "src/infrastructure/persistence/api_key_source.ts",
 ];
 

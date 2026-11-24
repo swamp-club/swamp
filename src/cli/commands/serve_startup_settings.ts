@@ -42,7 +42,12 @@ import {
   mergeServeOptions,
   parseExplicitFlags,
 } from "../../serve/serve_config.ts";
-import { OAUTH_CLIENT_SECRET_FILE_FLAG } from "../../serve/oauth_client_secret_source.ts";
+import {
+  OAUTH_CLIENT_SECRET_FILE_ENV,
+  OAUTH_CLIENT_SECRET_FILE_FLAG,
+} from "../../serve/oauth_client_secret_source.ts";
+import { OAUTH_CLIENT_SECRET_ENV } from "../../domain/auth/auth_credentials.ts";
+import { SERVE_ENV_MAP } from "../../serve/serve_env_map.ts";
 import { join, resolve } from "@std/path";
 import type { RepoMarkerData } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import {
@@ -360,7 +365,68 @@ export function validateServeDaemonArgs(
     parseExplicitFlags(unitArgs),
     (name) => unitEnv[name],
   );
-  return resolveServeStartupSettings(merged);
+  const settings = resolveServeStartupSettings(merged);
+  // Judged on the id alone: the secret file may not be mounted until boot.
+  if (
+    settings.authConfig.mode === "oauth" && options.oauthClientSecretFile &&
+    !settings.authConfig.oauthClientId
+  ) {
+    throw new UserError(
+      `${OAUTH_CLIENT_SECRET_FILE_FLAG} was given without a client id, so the daemon would fail on every start. ` +
+        "Set --oauth-client-id, or auth.oauth-client-id in serve.yaml, to the client the secret belongs to " +
+        `(${SERVE_ENV_MAP.oauthClientId} in this shell is not passed to the service).`,
+    );
+  }
+  return settings;
+}
+
+export interface DaemonOAuthFlagOptions {
+  readonly oauthClientId?: unknown;
+  readonly oauthClientSecretFile?: unknown;
+}
+
+const DAEMON_OAUTH_ENV_FLAGS: ReadonlyArray<{
+  readonly env: string;
+  readonly option: keyof DaemonOAuthFlagOptions;
+  readonly sources: string;
+}> = [
+  {
+    env: SERVE_ENV_MAP.oauthClientId,
+    option: "oauthClientId",
+    sources: "--oauth-client-id or auth.oauth-client-id in serve.yaml",
+  },
+  {
+    env: OAUTH_CLIENT_SECRET_FILE_ENV,
+    option: "oauthClientSecretFile",
+    sources: OAUTH_CLIENT_SECRET_FILE_FLAG,
+  },
+  {
+    env: OAUTH_CLIENT_SECRET_ENV,
+    option: "oauthClientSecretFile",
+    sources: OAUTH_CLIENT_SECRET_FILE_FLAG,
+  },
+];
+
+// a lost client id registers a stray client and a lost secret fails every start
+export function daemonOAuthEnvWarnings(
+  lookupEnv: (name: string) => string | undefined,
+  options: DaemonOAuthFlagOptions,
+  authConfig: ServeAuthConfig,
+): string[] {
+  if (authConfig.mode !== "oauth") return [];
+  const warnings: string[] = [];
+  for (const { env, option, sources } of DAEMON_OAUTH_ENV_FLAGS) {
+    const value = lookupEnv(env)?.trim();
+    if (!value || options[option]) continue;
+    // serve.yaml names the same client, so the daemon loses nothing
+    if (option === "oauthClientId" && value === authConfig.oauthClientId) {
+      continue;
+    }
+    warnings.push(
+      `${env} is set in this shell but is not passed to the daemon, which takes this setting only from ${sources}.`,
+    );
+  }
+  return warnings;
 }
 
 const DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS = 30_000;

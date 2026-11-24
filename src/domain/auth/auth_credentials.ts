@@ -23,6 +23,10 @@ export const DEFAULT_SWAMP_CLUB_URL = "https://swamp-club.com";
 // buildEnvContext hides it from expressions
 export const OAUTH_CLIENT_SECRET_ENV = "SWAMP_OAUTH_CLIENT_SECRET";
 
+// SWAMP_-prefixed so createSafeMethodEnv strips it from method subprocesses;
+// buildEnvContext hides it from expressions
+export const API_KEY_ENV = "SWAMP_API_KEY";
+
 /** retained so stored credentials carrying the old domain are migrated on load */
 export const LEGACY_SWAMP_CLUB_URL = "https://swamp.club";
 

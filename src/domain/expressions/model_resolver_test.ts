@@ -3683,3 +3683,16 @@ Deno.test("buildEnvContext: hides the OAuth client secret from expressions, in a
     assertEquals(env.KEEP_ME, "kept");
   });
 });
+
+Deno.test("buildEnvContext: hides the swamp-club API key, in any case, and keeps its file path", () => {
+  withMockedEnv({
+    SWAMP_API_KEY: "swamp_org_key",
+    swamp_api_key: "swamp_org_key",
+    SWAMP_API_KEY_FILE: "/run/secrets/swamp-api-key",
+  }, () => {
+    const env = buildEnvContext();
+    assertEquals(env.SWAMP_API_KEY, undefined);
+    assertEquals(env.swamp_api_key, undefined);
+    assertEquals(env.SWAMP_API_KEY_FILE, "/run/secrets/swamp-api-key");
+  });
+});

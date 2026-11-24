@@ -180,6 +180,7 @@ export function buildServeAuthConfig(
 /** the default and the HTTPS rule serve applies to --oauth-provider */
 export function resolveOAuthProviderUrl(
   oauthProvider: string | undefined,
+  setting = "--oauth-provider",
 ): string {
   const provider = oauthProvider ?? DEFAULT_OAUTH_PROVIDER;
   let providerUrl: URL;
@@ -187,7 +188,7 @@ export function resolveOAuthProviderUrl(
     providerUrl = new URL(provider);
   } catch {
     throw new UserError(
-      `Invalid --oauth-provider URL "${provider}": expected a valid URL`,
+      `Invalid ${setting} URL "${provider}": expected a valid URL`,
     );
   }
   const isLocalhost = providerUrl.hostname === "localhost" ||
@@ -195,7 +196,7 @@ export function resolveOAuthProviderUrl(
     providerUrl.hostname === "::1";
   if (providerUrl.protocol !== "https:" && !isLocalhost) {
     throw new UserError(
-      `--oauth-provider must use HTTPS (got ${provider}). ` +
+      `${setting} must use HTTPS (got ${provider}). ` +
         "HTTP is only allowed for localhost development.",
     );
   }

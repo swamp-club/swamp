@@ -22,6 +22,7 @@ import {
   buildServeAuthConfig,
   findIneffectiveAdmins,
   findIneffectiveRestrictions,
+  resolveOAuthProviderUrl,
 } from "./serve_auth_config.ts";
 import { UserError } from "../errors.ts";
 
@@ -551,4 +552,22 @@ Deno.test("findIneffectiveAdmins: skips an entry that is not a subject", () => {
     offersSignInExchange: false,
   });
   assertEquals(found.map((f) => f.entry), ["idp-group:ops"]);
+});
+
+Deno.test("resolveOAuthProviderUrl: names the setting the value came from in both refusals", () => {
+  assertThrows(
+    () => resolveOAuthProviderUrl("http://club.example.com", "SWAMP_CLUB_URL"),
+    UserError,
+    "SWAMP_CLUB_URL must use HTTPS (got http://club.example.com)",
+  );
+  assertThrows(
+    () => resolveOAuthProviderUrl("not a url", "SWAMP_CLUB_URL"),
+    UserError,
+    'Invalid SWAMP_CLUB_URL URL "not a url"',
+  );
+  assertThrows(
+    () => resolveOAuthProviderUrl("not a url"),
+    UserError,
+    'Invalid --oauth-provider URL "not a url"',
+  );
 });

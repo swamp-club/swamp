@@ -29,7 +29,9 @@ import {
   collectServeExtraArgs,
   validateServeDaemonArgs,
 } from "./serve.ts";
+import { daemonOAuthEnvWarnings } from "./serve_startup_settings.ts";
 import { UserError } from "../../domain/errors.ts";
+import type { ServeAuthConfig } from "../../domain/access/serve_auth_config.ts";
 import {
   getSwampConfigDir,
   getSwampDataDir,
@@ -492,4 +494,187 @@ Deno.test("validateServeDaemonArgs: accepts a valid token-mode argument set", as
     assertEquals(settings.maxConcurrentRuns, 4);
     return Promise.resolve();
   });
+});
+
+function oauthOptions(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return enableOptions({
+    authMode: "oauth",
+    admins: "user:alice",
+    allowedCollectives: "acme",
+    ...overrides,
+  });
+}
+
+Deno.test("validateServeDaemonArgs: refuses an OAuth client secret file without a client id, without reading it", async () => {
+  await withTempDir((repoDir) => {
+    assertThrows(
+      () =>
+        validateServeDaemonArgs(
+          oauthOptions({
+            oauthClientSecretFile: join(repoDir, "not-mounted-yet"),
+          }),
+          repoDir,
+          NO_UNIT_ENV,
+        ),
+      UserError,
+      "--oauth-client-secret-file was given without a client id",
+    );
+    return Promise.resolve();
+  });
+});
+
+Deno.test("validateServeDaemonArgs: refuses a secret file even when the shell sets SWAMP_OAUTH_CLIENT_ID", async () => {
+  await withTempDir((repoDir) => {
+    withMockedEnv({ SWAMP_OAUTH_CLIENT_ID: "client-1" }, () => {
+      assertThrows(
+        () =>
+          validateServeDaemonArgs(
+            oauthOptions({ oauthClientSecretFile: "secret" }),
+            repoDir,
+            NO_UNIT_ENV,
+          ),
+        UserError,
+        "(SWAMP_OAUTH_CLIENT_ID in this shell is not passed to the service)",
+      );
+    });
+    return Promise.resolve();
+  });
+});
+
+Deno.test("validateServeDaemonArgs: accepts an OAuth client secret file with a client id flag", async () => {
+  await withTempDir((repoDir) => {
+    const settings = validateServeDaemonArgs(
+      oauthOptions({
+        oauthClientId: "client-1",
+        oauthClientSecretFile: join(repoDir, "not-mounted-yet"),
+      }),
+      repoDir,
+      NO_UNIT_ENV,
+    );
+    assertEquals(settings.authConfig.oauthClientId, "client-1");
+    return Promise.resolve();
+  });
+});
+
+Deno.test("validateServeDaemonArgs: accepts an OAuth client secret file with a client id from serve.yaml", async () => {
+  await withTempDir(async (repoDir) => {
+    await Deno.mkdir(join(repoDir, ".swamp"));
+    await Deno.writeTextFile(
+      join(repoDir, ".swamp", "serve.yaml"),
+      "auth:\n  oauth-client-id: client-from-yaml\n",
+    );
+    const settings = validateServeDaemonArgs(
+      oauthOptions({ oauthClientSecretFile: "secret" }),
+      repoDir,
+      NO_UNIT_ENV,
+    );
+    assertEquals(settings.authConfig.oauthClientId, "client-from-yaml");
+  });
+});
+
+Deno.test("validateServeDaemonArgs: leaves a secret file alone outside oauth mode", async () => {
+  await withTempDir((repoDir) => {
+    const settings = validateServeDaemonArgs(
+      enableOptions({
+        authMode: "token",
+        admins: "user:alice",
+        oauthClientSecretFile: "secret",
+      }),
+      repoDir,
+      NO_UNIT_ENV,
+    );
+    assertEquals(settings.authConfig.mode, "token");
+    return Promise.resolve();
+  });
+});
+
+function oauthAuthConfig(mode: "oauth" | "token" = "oauth"): ServeAuthConfig {
+  return {
+    mode,
+    admins: ["user:alice"],
+    allowedCollectives: ["acme"],
+    allowedUsers: [],
+    oauthProvider: "https://swamp-club.com",
+    groupsField: "collectives",
+    restrictedModelTypes: [],
+    restrictedCommands: [],
+    approveRequiresExplicitGrant: false,
+    signalRequiresExplicitGrant: false,
+    tagRequiresExplicitGrant: false,
+  };
+}
+
+function lookupFrom(env: Record<string, string>) {
+  return (name: string): string | undefined => env[name];
+}
+
+Deno.test("daemonOAuthEnvWarnings: warns for each OAuth client variable the unit will not receive, naming no value", () => {
+  const warnings = daemonOAuthEnvWarnings(
+    lookupFrom({
+      SWAMP_OAUTH_CLIENT_ID: "client-value-1",
+      SWAMP_OAUTH_CLIENT_SECRET_FILE: "/run/secret-value-2",
+      SWAMP_OAUTH_CLIENT_SECRET: "secret-value-3",
+    }),
+    {},
+    oauthAuthConfig(),
+  );
+  assertEquals(warnings, [
+    "SWAMP_OAUTH_CLIENT_ID is set in this shell but is not passed to the daemon, which takes this setting only from --oauth-client-id or auth.oauth-client-id in serve.yaml.",
+    "SWAMP_OAUTH_CLIENT_SECRET_FILE is set in this shell but is not passed to the daemon, which takes this setting only from --oauth-client-secret-file.",
+    "SWAMP_OAUTH_CLIENT_SECRET is set in this shell but is not passed to the daemon, which takes this setting only from --oauth-client-secret-file.",
+  ]);
+  for (const warning of warnings) {
+    assert(!/value-\d/.test(warning), warning);
+  }
+});
+
+Deno.test("daemonOAuthEnvWarnings: no warning when the flag is given, the variable is blank, or the mode is not oauth", () => {
+  const env = lookupFrom({
+    SWAMP_OAUTH_CLIENT_ID: "client-1",
+    SWAMP_OAUTH_CLIENT_SECRET: "secret",
+  });
+  const oauth = oauthAuthConfig();
+  assertEquals(
+    daemonOAuthEnvWarnings(
+      env,
+      { oauthClientId: "client-1", oauthClientSecretFile: "secret-file" },
+      oauth,
+    ),
+    [],
+  );
+  assertEquals(
+    daemonOAuthEnvWarnings(
+      lookupFrom({
+        SWAMP_OAUTH_CLIENT_ID: "  ",
+        SWAMP_OAUTH_CLIENT_SECRET: "",
+      }),
+      {},
+      oauth,
+    ),
+    [],
+  );
+  assertEquals(
+    daemonOAuthEnvWarnings(env, {}, oauthAuthConfig("token")),
+    [],
+  );
+});
+
+Deno.test("daemonOAuthEnvWarnings: the shell's client id warns only when serve.yaml names a different one", () => {
+  const env = lookupFrom({ SWAMP_OAUTH_CLIENT_ID: "client-1" });
+  assertEquals(
+    daemonOAuthEnvWarnings(env, {}, {
+      ...oauthAuthConfig(),
+      oauthClientId: "client-1",
+    }),
+    [],
+  );
+  assertEquals(
+    daemonOAuthEnvWarnings(env, {}, {
+      ...oauthAuthConfig(),
+      oauthClientId: "client-2",
+    }).length,
+    1,
+  );
 });

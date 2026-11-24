@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { assertFalse } from "@std/assert/false";
 import { stripAnsiCode } from "@std/fmt/colors";
 import type { ServiceStatus } from "../../domain/serve/service_scheduler.ts";
@@ -42,13 +42,37 @@ function captureLogs(run: () => void): string {
 Deno.test("renderDaemonEnabled: json mode outputs enabled true with service mode", () => {
   const output = captureLogs(() => renderDaemonEnabled("json", "user"));
   const parsed = JSON.parse(output);
-  assertEquals(parsed, { enabled: true, serviceMode: "user" });
+  assertEquals(parsed, { enabled: true, serviceMode: "user", warnings: [] });
 });
 
 Deno.test("renderDaemonEnabled: json mode system service", () => {
   const output = captureLogs(() => renderDaemonEnabled("json", "system"));
   const parsed = JSON.parse(output);
-  assertEquals(parsed, { enabled: true, serviceMode: "system" });
+  assertEquals(parsed, { enabled: true, serviceMode: "system", warnings: [] });
+});
+
+Deno.test("renderDaemonEnabled: json mode carries warnings", () => {
+  const output = captureLogs(() =>
+    renderDaemonEnabled("json", "user", ["SWAMP_OAUTH_CLIENT_ID is set"])
+  );
+  assertEquals(JSON.parse(output).warnings, ["SWAMP_OAUTH_CLIENT_ID is set"]);
+});
+
+Deno.test("renderDaemonEnabled: log mode prints each warning after the enabled line", () => {
+  const output = stripAnsiCode(
+    captureLogs(() =>
+      renderDaemonEnabled("log", "system", ["first warning", "second warning"])
+    ),
+  );
+  const enabledAt = output.indexOf("Daemon enabled as system service");
+  assert(enabledAt >= 0);
+  assert(output.indexOf("⚠ first warning") > enabledAt);
+  assert(output.indexOf("⚠ second warning") > output.indexOf("first warning"));
+});
+
+Deno.test("renderDaemonEnabled: log mode prints no warning line when there are none", () => {
+  const output = captureLogs(() => renderDaemonEnabled("log", "system"));
+  assertFalse(output.includes("⚠"));
 });
 
 Deno.test("renderDaemonEnabled: log mode user service says runs while logged in", () => {
