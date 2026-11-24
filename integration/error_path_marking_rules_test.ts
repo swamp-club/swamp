@@ -99,6 +99,7 @@ const PINNED: readonly string[] = [
   'src/infrastructure/http/swamp_club_client.ts: `Request to ${this.serverUrl}${path} timed out after ${seconds}s.`, "timeout",',
   "src/libswamp/auth/server_login.ts: `${serverUrl} returned a response that is not JSON to ${method} ${path} ` + `(HTTP ${resp.status}). ",
   "src/libswamp/auth/server_login.ts: `Could not reach ${serverUrl} (${method} ${path}): ${ describeCauses(err) }`,",
+  'src/libswamp/auth/server_login.ts: describeRefusedRedirect( `${serverUrl}${path}`, path, response.status, response.headers.get("locatio',
   "src/libswamp/extensions/pull.ts: `Cannot install ${ref.name}: the installed extension ` + `${ref.name}/${relDir} lives at ${first}/ i",
   "src/libswamp/extensions/pull.ts: `Cannot install ${ref.name}: the installed extension ` + `${ref.name}/${relDir} lives at ${first}/ i #2",
   "src/worker/data_plane_client.ts: `Data plane ${method} ${path} failed (${response.status}): ${detail}`,",
