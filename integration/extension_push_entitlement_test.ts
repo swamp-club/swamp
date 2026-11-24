@@ -68,12 +68,6 @@ function serveRegistry(
         ...(entitlements ? { collectiveEntitlements: entitlements } : {}),
       });
     }
-    if (url.pathname.endsWith("/versions")) {
-      return Response.json({
-        versions: [],
-        meta: { page: 1, perPage: 100, total: 0 },
-      });
-    }
     if (url.pathname === "/api/v1/extensions/push") {
       return Response.json({ error: REFUSAL }, { status: 403 });
     }
@@ -272,7 +266,7 @@ async function assertRefusedAlike(
     assertEquals(check?.message, expected);
     assertEquals(registry.requests, [
       "GET /api/whoami",
-      "GET /api/v1/extensions/%40acme%2Finternal/versions",
+      "GET /api/v1/extensions/%40acme%2Finternal@2026.10.06.1",
     ]);
 
     registry.requests.length = 0;
@@ -327,7 +321,7 @@ Deno.test("extension push entitlement: a personal namespace the registry covers 
       );
       assertEquals(registry.requests, [
         "GET /api/whoami",
-        "GET /api/v1/extensions/%40seth%2Finternal/versions",
+        "GET /api/v1/extensions/%40seth%2Finternal@2026.10.06.1",
       ]);
     },
     "@seth/internal",

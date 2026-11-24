@@ -17,7 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { ExtensionApiClient } from "../../infrastructure/http/extension_api_client.ts";
+import type {
+  ExtensionApiClient,
+  VersionEntry,
+} from "../../infrastructure/http/extension_api_client.ts";
 import type { PublishedVersion } from "../../domain/extensions/extension_publish_checks.ts";
 
 const ALL_RELEASE_CHANNELS = ["stable", "rc", "beta"];
@@ -29,13 +32,14 @@ const VERSIONS_MAX_PAGES = 50;
  * way, so they agree on where a version lives
  */
 export async function findPublishedVersion(
-  client: Pick<ExtensionApiClient, "listVersions">,
+  client: Pick<ExtensionApiClient, "getVersion">,
   name: string,
   version: string,
   apiKey?: string,
 ): Promise<PublishedVersion | null> {
-  const found = await findPublishedVersions(client, name, [version], apiKey);
-  return found.get(version) ?? null;
+  // one version's answer stays small however long the extension's history
+  const entry = await client.getVersion(name, version, apiKey);
+  return entry ? toPublishedVersion(entry) : null;
 }
 
 export async function findPublishedVersions(
@@ -57,14 +61,7 @@ export async function findPublishedVersions(
     for (const match of listed.versions) {
       if (!wanted.has(match.version)) continue;
       wanted.delete(match.version);
-      // A yanked version still answers: its number stays taken.
-      found.set(match.version, {
-        version: match.version,
-        channel: match.channel,
-        ...(match.yankedAt
-          ? { yank: { reason: match.yankReason ?? null } }
-          : {}),
-      });
+      found.set(match.version, toPublishedVersion(match));
     }
     // A short page is the last page; so is reaching the total. A
     // response without usable paging metadata is not paged further.
@@ -79,4 +76,13 @@ export async function findPublishedVersions(
     }
   }
   return found;
+}
+
+function toPublishedVersion(entry: VersionEntry): PublishedVersion {
+  return {
+    version: entry.version,
+    channel: entry.channel,
+    // A yanked version still answers: its number stays taken.
+    ...(entry.yankedAt ? { yank: { reason: entry.yankReason ?? null } } : {}),
+  };
 }
