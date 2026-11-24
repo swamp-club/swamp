@@ -27652,6 +27652,91 @@ Deno.test("handover: a run parks after its running step and starts no step after
   });
 });
 
+Deno.test("handover: start events carry the record's starts, and the continued run's started and job_started keep the first ones", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "handover-starts-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            modelStep("a"),
+            modelStep("b", onStep("a", TriggerCondition.succeeded())),
+          ],
+        }),
+      ],
+    });
+    const executor = new HandoverAtExecutor("main/a");
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const startsOf = async (
+      stream: AsyncIterable<WorkflowExecutionEvent>,
+    ): Promise<{ starts: Map<string, string>; run: WorkflowRun }> => {
+      const starts = new Map<string, string>();
+      let run: WorkflowRun | undefined;
+      for await (const event of stream) {
+        if (event.kind === "started") starts.set("run", event.startedAt);
+        if (event.kind === "job_started") {
+          starts.set(`job:${event.jobId}`, event.startedAt);
+        }
+        if (event.kind === "step_started") {
+          starts.set(`step:${event.stepId}`, event.startedAt);
+        }
+        if (event.kind === "parked" || event.kind === "completed") {
+          run = event.run;
+        }
+      }
+      assertExists(run);
+      return { starts, run };
+    };
+
+    const first = await startsOf(
+      service.run(workflow.name, {
+        instanceId: "old",
+        handover: handoverFor(executor.handover.signal),
+      }),
+    );
+    const parkedJob = first.run.getJob("main")!;
+    assertEquals(first.starts.get("run"), first.run.startedAt!.toISOString());
+    assertEquals(
+      first.starts.get("job:main"),
+      parkedJob.startedAt!.toISOString(),
+    );
+    assertEquals(
+      first.starts.get("step:a"),
+      parkedJob.getStep("a")!.startedAt!.toISOString(),
+    );
+
+    const holder = serveHolder("new");
+    service.continuationClaims = claimsFor(
+      new InMemoryContinuationClaimStore(),
+      holder,
+    );
+    const continued = await startsOf(
+      service.recover(workflow.name, {
+        runId: first.run.id,
+        instanceId: "new",
+        automatic: { holder, continuation: AUTOMATIC },
+      }),
+    );
+
+    assertEquals(continued.run.status, "succeeded");
+    assertEquals(continued.starts.get("run"), first.starts.get("run"));
+    assertEquals(
+      continued.starts.get("job:main"),
+      first.starts.get("job:main"),
+    );
+    assertEquals(
+      continued.starts.get("step:b"),
+      continued.run.getJob("main")!.getStep("b")!.startedAt!.toISOString(),
+    );
+  });
+});
+
 Deno.test("handover: forEach iterations not yet started stay pending and each runs once after the continuation", async () => {
   await withTempDir(async (tempDir) => {
     const workflow = Workflow.create({

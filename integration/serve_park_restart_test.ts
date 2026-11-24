@@ -264,6 +264,30 @@ Deno.test({
       assertEquals(ended?.buffer.finished, true);
       assertEquals(serve.registry.get(runId), undefined);
       assertEquals(run?.autoContinuation?.resetSteps, []);
+
+      // a reattached client times the continued run from these, not arrival
+      const replayed: Record<string, unknown>[] = [];
+      const unsubscribe = ended!.buffer.subscribe({
+        onEvent: (_seq, event) => replayed.push(event),
+        onTerminal: () => {},
+        onDetach: () => {},
+      });
+      unsubscribe();
+      const startOf = (kind: string, id?: string) =>
+        replayed.find((e) =>
+          e.kind === kind &&
+          (id === undefined || e.jobId === id || e.stepId === id)
+        )?.startedAt;
+      const job = parked.getJob("main")!;
+      assertEquals(startOf("started"), parked.startedAt!.toISOString());
+      assertEquals(
+        startOf("job_started", "main"),
+        job.startedAt!.toISOString(),
+      );
+      assertEquals(
+        startOf("step_started", "second"),
+        run!.getJob("main")!.getStep("second")!.startedAt!.toISOString(),
+      );
     }),
 });
 

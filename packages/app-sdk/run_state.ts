@@ -138,6 +138,14 @@ function stampOf(event: RunStreamEvent): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+/** The run record's start, which a continued run sends again unchanged. */
+function recordedStart(event: { startedAt?: string }): number | undefined {
+  const parsed = typeof event.startedAt === "string"
+    ? Date.parse(event.startedAt)
+    : NaN;
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
 /** An unknown kind changes nothing, so newer servers never break it. */
 export function runReducer(state: RunState, action: RunAction): RunState {
   if (action.kind === "begin") {
@@ -200,9 +208,15 @@ function foldEvent(
     }
     case "started":
       if (event.parentRunId !== undefined) return state;
-      // the run's own start, on the clock its other events use
+      // the run's own start, on the clock its other events use; a run
+      // continued after a serve restart sends started again
       return withLog(
-        { ...state, runId: event.runId, startedAt: at },
+        {
+          ...state,
+          runId: event.runId,
+          startedAt: recordedStart(event) ??
+            (state.runId === event.runId ? state.startedAt : undefined) ?? at,
+        },
         { at, kind: "started", text: `run ${event.runId}`, tone: "info" },
       );
     case "job_started":
@@ -210,7 +224,7 @@ function foldEvent(
         updateJob(state, event.jobId, (job) => ({
           ...job,
           status: "running",
-          startedAt: at,
+          startedAt: recordedStart(event) ?? at,
         })),
         { at, kind: "job", text: `${event.jobId} started`, tone: "info" },
       );
@@ -245,7 +259,7 @@ function foldEvent(
           ...step,
           ...(template ? { template } : {}),
           status: "running",
-          startedAt: at,
+          startedAt: recordedStart(event) ?? at,
         })),
         {
           at,

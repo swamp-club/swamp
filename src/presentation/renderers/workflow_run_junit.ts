@@ -21,7 +21,7 @@ import type { AssertSeverity } from "../../domain/workflows/step_task.ts";
 import type { EventHandlers } from "../../libswamp/stream.ts";
 import { severityAtOrAbove } from "../../domain/workflows/assert_severity.ts";
 import type { WorkflowRunEvent } from "../../libswamp/workflows/run.ts";
-import type { WorkflowRunRenderer } from "./workflow_run.ts";
+import { parseEventTime, type WorkflowRunRenderer } from "./workflow_run.ts";
 import { UserError } from "../../domain/errors.ts";
 
 interface AssertRecord {
@@ -96,7 +96,11 @@ export class JUnitWorkflowRunRenderer implements WorkflowRunRenderer {
       job_fanout_batch_started: () => {},
       job_fanout_halted: () => {},
       step_started: (e) => {
-        this.stepStartTimes.set(`${e.jobId}:${e.stepId}`, Date.now());
+        const at = parseEventTime((e as { at?: unknown }).at);
+        this.stepStartTimes.set(
+          `${e.jobId}:${e.stepId}`,
+          parseEventTime(e.startedAt) ?? at ?? Date.now(),
+        );
       },
       step_completed: () => {},
       step_skipped: () => {},
@@ -114,7 +118,8 @@ export class JUnitWorkflowRunRenderer implements WorkflowRunRenderer {
       assert_result: (e) => {
         const key = `${e.jobId}:${e.stepId}`;
         const startTime = this.stepStartTimes.get(key);
-        const duration = startTime ? (Date.now() - startTime) / 1000 : 0;
+        const end = parseEventTime((e as { at?: unknown }).at) ?? Date.now();
+        const duration = startTime ? (end - startTime) / 1000 : 0;
         this.asserts.push({
           jobId: e.jobId,
           stepId: e.stepId,

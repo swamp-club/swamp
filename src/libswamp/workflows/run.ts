@@ -128,9 +128,11 @@ export type WorkflowRunEvent =
      */
     parentRunId?: string;
     workflowName: string;
+    /** the run record's start; absent from an older serve */
+    startedAt?: string;
     jobs: WorkflowRunJobInfo[];
   }
-  | { kind: "job_started"; jobId: string }
+  | { kind: "job_started"; jobId: string; startedAt?: string }
   | { kind: "job_completed"; jobId: string; status: string }
   | { kind: "job_skipped"; jobId: string }
   | Extract<
@@ -148,6 +150,7 @@ export type WorkflowRunEvent =
     kind: "step_started";
     jobId: string;
     stepId: string;
+    startedAt?: string;
     forEachTemplate?: string;
     forEachIndex?: number;
   }
@@ -1005,6 +1008,7 @@ export function mapWorkflowExecutionEvent(
           ? { parentRunId: event.parentRunId }
           : {}),
         workflowName: event.workflowName,
+        startedAt: event.startedAt,
         jobs: event.jobs.map((j) => ({
           id: j.id,
           stepCount: j.stepCount,

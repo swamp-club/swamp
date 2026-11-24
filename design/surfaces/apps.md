@@ -306,7 +306,10 @@ protocol type, the run reducer behind `useWorkflowRun()`, and `createMockHost`,
 which plays scripted `streams` as well as single replies. A stream that ends early
 or is aborted sends `cancel` for its request id, which stops following; the run
 goes on. Serve stamps each run event with `at` when it is emitted, so a late
-attach replays real timing; `runClock` gives "now" on serve's clock.
+attach replays real timing; `runClock` gives "now" on serve's clock. `started`,
+`job_started` and `step_started` also carry `startedAt` from the run record: a
+run continued after a restart sends `started` and `job_started` again, and the
+reducer keeps the recorded start rather than the continuation's.
 
 `useMethodRun()` runs a method listed under `methods:`. Unlike a workflow run,
 calls overlap: each returns a promise for its own result, so an app can fire

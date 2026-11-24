@@ -4179,6 +4179,7 @@ export class WorkflowExecutionService {
           ? { parentRunId: options.parentRunId }
           : {}),
         workflowName: workflow.name,
+        startedAt: run.startedAt!.toISOString(),
         logPath: workflowLogPath,
         jobs: workflow.jobs.map((job) => ({
           id: job.name,
@@ -5170,6 +5171,7 @@ export class WorkflowExecutionService {
         kind: "started",
         runId: existingRun.id,
         workflowName: resolvedWorkflow.name,
+        startedAt: existingRun.startedAt!.toISOString(),
         logPath: workflowLogPath,
         jobs: resolvedWorkflow.jobs.map((job) => ({
           id: job.name,
@@ -5538,7 +5540,11 @@ export class WorkflowExecutionService {
       if (jobRun.status !== "running") {
         jobRun.start();
       }
-      yield { kind: "job_started", jobId: jobName };
+      yield {
+        kind: "job_started",
+        jobId: jobName,
+        startedAt: jobRun.startedAt!.toISOString(),
+      };
 
       if (job.fanOutPolicy !== undefined) {
         yield* this.runFanOutJob(
@@ -6479,6 +6485,7 @@ export class WorkflowExecutionService {
       kind: "step_started",
       jobId: job.name,
       stepId: stepName,
+      startedAt: stepRun.startedAt!.toISOString(),
     };
     const data = fanOutGatePrompt(
       jobRun.toData(),
@@ -6974,6 +6981,7 @@ export class WorkflowExecutionService {
         kind: "step_started",
         jobId: job.name,
         stepId: stepName,
+        startedAt: stepRun.startedAt!.toISOString(),
         forEachTemplate,
         forEachIndex,
       };

@@ -77,6 +77,26 @@ export interface WorkflowRunRenderOpts {
   overServer?: boolean;
   /** with --last-evaluated: whether the stored evaluation's inputs were used */
   inputsReplayed?: boolean;
+  clock?: RenderClock;
+}
+
+export interface RenderClock {
+  now(): number;
+  /** calls tick every ms until the returned function is called */
+  every(ms: number, tick: () => void): () => void;
+}
+
+const SYSTEM_CLOCK: RenderClock = {
+  now: () => Date.now(),
+  every: (ms, tick) => {
+    const timer = setInterval(tick, ms);
+    return () => clearInterval(timer);
+  },
+};
+
+export function parseEventTime(value: unknown): number | undefined {
+  const ms = typeof value === "string" ? Date.parse(value) : NaN;
+  return Number.isFinite(ms) ? ms : undefined;
 }
 
 export interface WorkflowRunRenderer extends Renderer<WorkflowRunEvent> {
@@ -106,11 +126,15 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
   private _failed = false;
   private pipe: PipeWriter | null = null;
   private outputBuffers = new Map<string, string[]>();
-  private heartbeatTimers = new Map<string, ReturnType<typeof setInterval>>();
+  private heartbeatTimers = new Map<string, () => void>();
   private heartbeatCounters = new Map<string, number>();
   private forEachDisplayNames = new Map<string, string>();
   private stepStartTimes = new Map<string, number>();
   private jobStartTimes = new Map<string, number>();
+  private readonly runsStarted = new Set<string>();
+  private readonly clock: RenderClock;
+  // arrival minus serve's emit stamp, smallest seen: skew plus the least latency
+  private clockOffsetMs: number | undefined;
   private pendingJobStarts = new Map<string, string>();
   private pendingStartLine: (() => void) | null = null;
   private pendingSupersededRuns: (() => void) | null = null;
@@ -130,6 +154,35 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
     this.failOnSeverity = opts.failOnSeverity ?? "low";
     this.commandTarget = opts.commandTarget ?? "";
     this.overServer = opts.overServer ?? false;
+    this.clock = opts.clock ?? SYSTEM_CLOCK;
+  }
+
+  /** serve's emit stamp on a remote event; each one refines clockOffsetMs */
+  private stampOf(event: object): number | undefined {
+    const ms = parseEventTime((event as { at?: unknown }).at);
+    if (ms === undefined) return undefined;
+    const seen = this.clock.now() - ms;
+    if (this.clockOffsetMs === undefined || seen < this.clockOffsetMs) {
+      this.clockOffsetMs = seen;
+    }
+    return ms;
+  }
+
+  /** when the event happened: serve's stamp, else now on a local run */
+  private eventTime(event: object): number {
+    return this.stampOf(event) ?? this.clock.now();
+  }
+
+  /** the run record's start, which a continued run sends again unchanged */
+  private startTime(event: { startedAt?: string }): number {
+    const stamp = this.stampOf(event);
+    return parseEventTime(event.startedAt) ?? stamp ?? this.clock.now();
+  }
+
+  /** time since a serve-clock instant; 0 until a serve stamp has been seen */
+  private serveElapsedMs(since: number): number {
+    if (this.clockOffsetMs === undefined) return 0;
+    return Math.max(0, this.clock.now() - this.clockOffsetMs - since);
   }
 
   private getDisplayName(jobId: string, stepId: string, event?: {
@@ -158,12 +211,13 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
     return `${jobId}:${stepId}`;
   }
 
-  private startHeartbeat(jobId: string, stepId: string): void {
+  private startHeartbeat(jobId: string, stepId: string, since: number): void {
     const key = this.stepKey(jobId, stepId);
-    this.heartbeatCounters.set(key, 0);
+    this.heartbeatTimers.get(key)?.();
+    this.heartbeatCounters.set(key, this.heartbeatSeed(since));
     this.heartbeatTimers.set(
       key,
-      setInterval(() => {
+      this.clock.every(HEARTBEAT_INTERVAL_MS, () => {
         const count = (this.heartbeatCounters.get(key) ?? 0) + 1;
         this.heartbeatCounters.set(key, count);
         const elapsed = count * (HEARTBEAT_INTERVAL_MS / 1000);
@@ -176,28 +230,33 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
             ),
           );
         }
-      }, HEARTBEAT_INTERVAL_MS),
+      }),
     );
   }
 
-  private resetHeartbeat(jobId: string, stepId: string): void {
+  /** whole intervals already silent, so a reattach keeps counting */
+  private heartbeatSeed(since: number): number {
+    return Math.floor(this.serveElapsedMs(since) / HEARTBEAT_INTERVAL_MS);
+  }
+
+  private resetHeartbeat(jobId: string, stepId: string, since: number): void {
     const key = this.stepKey(jobId, stepId);
-    this.heartbeatCounters.set(key, 0);
+    this.heartbeatCounters.set(key, this.heartbeatSeed(since));
   }
 
   private clearHeartbeat(jobId: string, stepId: string): void {
     const key = this.stepKey(jobId, stepId);
-    const timer = this.heartbeatTimers.get(key);
-    if (timer) {
-      clearInterval(timer);
+    const stop = this.heartbeatTimers.get(key);
+    if (stop) {
+      stop();
       this.heartbeatTimers.delete(key);
     }
     this.heartbeatCounters.delete(key);
   }
 
   private clearAllHeartbeats(): void {
-    for (const timer of this.heartbeatTimers.values()) {
-      clearInterval(timer);
+    for (const stop of this.heartbeatTimers.values()) {
+      stop();
     }
     this.heartbeatTimers.clear();
     this.heartbeatCounters.clear();
@@ -347,7 +406,10 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
           this.pendingSupersededRuns();
           this.pendingSupersededRuns = null;
         }
-        const ts = formatTimestamp();
+        // a run continued after a serve restart sends started again
+        if (this.runsStarted.has(e.runId)) return;
+        this.runsStarted.add(e.runId);
+        const ts = formatTimestamp(new Date(this.startTime(e)));
         const wfName = e.workflowName;
         this.pendingStartLine = () => {
           if (!this.pipe) return;
@@ -365,18 +427,20 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
       },
       job_started: (e) => {
         if (!this.pipe) return;
-        this.jobStartTimes.set(e.jobId, Date.now());
-        this.pendingJobStarts.set(e.jobId, formatTimestamp());
+        const start = this.startTime(e);
+        // a continued run starts its running job again with the recorded start
+        if (this.jobStartTimes.get(e.jobId) === start) return;
+        this.jobStartTimes.set(e.jobId, start);
+        this.pendingJobStarts.set(e.jobId, formatTimestamp(new Date(start)));
       },
       job_completed: (e) => {
         if (!this.pipe) return;
         this.flushPendingJobStart(e.jobId);
-        const ts = formatTimestamp();
+        const end = this.eventTime(e);
+        const ts = formatTimestamp(new Date(end));
         const name = this.getJobDisplayName(e.jobId);
         const startTime = this.jobStartTimes.get(e.jobId);
-        const duration = startTime
-          ? formatDuration(Date.now() - startTime)
-          : "";
+        const duration = startTime ? formatDuration(end - startTime) : "";
         if (e.status === "failed") {
           writeOutput(this.pipe.failedJobLine(name, ts));
         } else if (
@@ -443,14 +507,15 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
       },
       step_started: (e) => {
         if (!this.pipe) return;
-        this.stepStartTimes.set(this.stepKey(e.jobId, e.stepId), Date.now());
+        const start = this.startTime(e);
+        this.stepStartTimes.set(this.stepKey(e.jobId, e.stepId), start);
         const displayName = this.getDisplayName(e.jobId, e.stepId, e);
         if (displayName !== e.jobId) {
           this.pipe.updateWidth([displayName]);
           setSystemPipeWidth(this.pipe.maxWidth);
         }
         this.flushPendingJobStart(e.jobId);
-        this.startHeartbeat(e.jobId, e.stepId);
+        this.startHeartbeat(e.jobId, e.stepId, start);
       },
       step_completed: (e) => {
         if (!this.pipe) return;
@@ -461,11 +526,10 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
           this.discardBuffer(e.jobId, e.stepId);
         }
         const displayName = this.getDisplayName(e.jobId, e.stepId, e);
-        const ts = formatTimestamp();
+        const end = this.eventTime(e);
+        const ts = formatTimestamp(new Date(end));
         const startTime = this.stepStartTimes.get(key);
-        const duration = startTime
-          ? formatDuration(Date.now() - startTime)
-          : "";
+        const duration = startTime ? formatDuration(end - startTime) : "";
         if (displayName === this.getJobDisplayName(e.jobId)) {
           this.doneLinesUnderJob.set(
             e.jobId,
@@ -526,11 +590,10 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
           this.replayBuffer(e.jobId, e.stepId);
         }
         const displayName = this.getDisplayName(e.jobId, e.stepId, e);
-        const ts = formatTimestamp();
+        const end = this.eventTime(e);
+        const ts = formatTimestamp(new Date(end));
         const startTime = this.stepStartTimes.get(key);
-        const duration = startTime
-          ? formatDuration(Date.now() - startTime)
-          : "";
+        const duration = startTime ? formatDuration(end - startTime) : "";
         writeOutput(
           this.pipe.failedStepLine(displayName, e.stepId, duration, ts),
         );
@@ -618,7 +681,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
             e.stepId,
             e.modelName,
             e.methodName,
-            formatTimestamp(),
+            formatTimestamp(new Date(this.eventTime(e))),
           ),
         );
       },
@@ -651,7 +714,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
         const displayName = this.forEachDisplayNames.get(
           this.stepKey(e.jobId, e.stepId),
         ) ?? e.jobId;
-        this.resetHeartbeat(e.jobId, e.stepId);
+        this.resetHeartbeat(e.jobId, e.stepId, this.eventTime(e));
         if (this.quiet) {
           this.bufferOutput(e.jobId, e.stepId, e.line);
         } else {
@@ -711,11 +774,10 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
           error: e.error,
         });
         const displayName = this.forEachDisplayNames.get(key) ?? e.jobId;
+        const end = this.eventTime(e);
         const startTime = this.stepStartTimes.get(key);
-        const duration = startTime
-          ? formatDuration(Date.now() - startTime)
-          : "";
-        const ts = formatTimestamp();
+        const duration = startTime ? formatDuration(end - startTime) : "";
+        const ts = formatTimestamp(new Date(end));
         if (e.passed) {
           writeOutput(
             this.pipe.doneLine(
