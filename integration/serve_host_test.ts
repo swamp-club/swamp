@@ -352,7 +352,7 @@ async function start(
       }
     },
     "the state folder's lock to be free",
-    { timeoutMs: 2_000, intervalMs: 5 },
+    { timeoutMs: 250, intervalMs: 5 },
   );
   if (host === undefined) throw new Error("the host did not start");
   return host;

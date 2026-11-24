@@ -80,7 +80,7 @@ Deno.test("acquireHostStateLock: once released, the state folder can be locked a
       },
       "the state folder's lock to be free",
       {
-        timeoutMs: 2_000,
+        timeoutMs: 250,
         intervalMs: 5,
       },
     );

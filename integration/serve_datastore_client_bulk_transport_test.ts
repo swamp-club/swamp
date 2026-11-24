@@ -124,7 +124,6 @@ function startServer(handler: Handler): Server {
       open.add(tls);
       const pump = relay(tls);
       pumps.add(pump);
-      pump.finally(() => pumps.delete(pump));
     }
   })().catch(() => {});
   return {
