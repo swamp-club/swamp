@@ -98,10 +98,7 @@ function causeOfOne(error: object): CannotCommitCause | undefined {
   return undefined;
 }
 
-/**
- * codes, not messages, but for the sidecar's own report: a refusal's message
- * can carry a client's record key
- */
+/** classifies by error code, not message; only the sidecar's own report is matched by text */
 export function storageFailureCause(
   error: unknown,
 ): CannotCommitCause | undefined {
@@ -138,12 +135,7 @@ export interface LeaderCommitHealthOptions {
   readonly now?: () => number;
 }
 
-/**
- * Trips once storage failures run unbroken for the count and the window, so
- * one incident, or a burst of commits failing together, never does; failures
- * a window or more apart are separate runs. A trip
- * lasts for the process: the node steps down and restarts.
- */
+/** trips on failures unbroken across the count and window; a trip lasts the process */
 export class LeaderCommitHealth implements CommitHealthPort {
   readonly #failures: number;
   readonly #windowMs: number;
