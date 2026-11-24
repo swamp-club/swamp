@@ -9236,7 +9236,10 @@ recovered, marked or replicated by a follower.
   (`refreshV3FollowerCopy`) and reads the leader record. A refresh still
   running when the holder's lease expires runs to its end, and the next tick
   tries the lease (swamp-club#4679, "Phase 4D2" in
-  `datastore-litestream.md`). A follower whose leader says it is stepping
+  `datastore-litestream.md`), unless it runs 60 s past that lapse, when it
+  is taken for hung and aborted. No other wait in a follower's tick outlasts
+  the tick, so a leader that stalls with its feed socket open is replaced
+  once its lease lapses (swamp-club#5040). A follower whose leader says it is stepping
   down (a `steppingDown` frame on the commit feed, for a subscriber that
   named the `leader-stepping-down` feature) or whose feed the leader's end
   closes is awaiting a new leader (`leaderGoing()`): it tries the lease every

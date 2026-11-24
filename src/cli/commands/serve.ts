@@ -9498,10 +9498,11 @@ export const serveCommand = new Command()
             onV3LeaseLost((path) => {
               if (path === resolve(location.path)) listener();
             }),
-          take: () =>
+          take: (followSignal) =>
             holdV3Writer(location, resolvedRepoDir, {
               retakeLost: true,
               follow: true,
+              ...(followSignal === undefined ? {} : { followSignal }),
               ownerCheck: { as: "serve", address: ownerAddress },
               ttlMs: SERVE_WRITER_LEASE_TTL_MS,
             }),

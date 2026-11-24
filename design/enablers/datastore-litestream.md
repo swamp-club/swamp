@@ -1342,7 +1342,18 @@ was tried and rejected: `take()` restores the same lineage under the lease,
 so aborting the refresh only throws its progress away (a 590 MB restore on
 GCS takes 43–56 s), and on the dogfood rounds the follower's restore of the
 old lineage finished inside the lease-lapse wait (3.5–14.9 s, starting
-6–7 s after the cut). A restore is abortable only before it is installed:
+6–7 s after the cut). That stands; only a hung restore is cut
+(swamp-club#5040). A refresh still running 60 s past the holder's lapse
+(`REFRESH_PAST_LAPSE_MS`), with the lapse read again before each cut so a
+holder that renews meanwhile never has its follower's restore cut, is
+aborted with a warning naming its elapsed time and the leader's fence, and
+the tick goes on to the lease. Every other wait in a follower's tick is
+bounded by the tick, or by the holder's lapse when that is sooner: the
+lapse read, the leader record, stopping the feed, and the copy work a busy
+`take()` does (`followSignal`; one follow per copy at a time, which a
+winning `take()` waits for before it restores). The lease decision itself
+is never cut. The next tick is armed in a `finally`, so a check that fails
+never stops the chain. A restore is abortable only before it is installed:
 `refreshV3FollowerCopy`, `ensureV3CopyCurrent` and `makeV3CopyCurrent` check
 the signal at the restore-lock wait, around quiesce, during the Litestream
 restore and before the integrity check, truncation and install. Serve's

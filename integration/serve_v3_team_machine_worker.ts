@@ -228,12 +228,13 @@ async function handle(request: TeamNodeRequest): Promise<unknown> {
         as: "serve" as const,
         address: init!.ownerAddress,
       };
-      const take = () => {
+      const take = (followSignal?: AbortSignal) => {
         takes++;
         return holdV3Writer(config(), init!.repoDir, {
           retakeLost: true,
           follow: true,
           ownerCheck,
+          ...(followSignal === undefined ? {} : { followSignal }),
           ...(request.leaseTtlMs !== undefined
             ? { ttlMs: request.leaseTtlMs }
             : {}),

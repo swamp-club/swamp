@@ -324,6 +324,8 @@ interface RepoContextState {
   /** stopped all at once by closeV3Datastores */
   readonly feedWatches: ServeFeedWatch[];
   readonly commitOutcomeListeners: Set<V3CommitOutcomeListener>;
+  /** a follower's copy work in flight, by handle key */
+  readonly follows: Map<string, Promise<void>>;
   teardownTiming: { probeGraceMs: number; releaseBoundMs: number };
 }
 
@@ -357,6 +359,7 @@ const repoState = processRuntimeSlot<RepoContextState>(() => ({
   deferredCollections: new Set(),
   feedWatches: [],
   commitOutcomeListeners: new Set(),
+  follows: new Map(),
   teardownTiming: {
     probeGraceMs: STORAGE_PROBE_GRACE_MS,
     releaseBoundMs: UNREACHABLE_RELEASE_BOUND_MS,
@@ -787,6 +790,8 @@ export async function holdV3Writer(
      * this process reading its own current copy and holding nothing
      */
     readonly follow?: boolean;
+    /** past its abort, the copy work a busy lease leaves is not waited for */
+    readonly followSignal?: AbortSignal;
     /**
      * the command's lock catches the copy up, or catchUpDeferredAt does; only
      * for a copy that has read serve's feed, so it can go offline at the lock
@@ -1042,6 +1047,7 @@ async function takeV3WriterHold(
     readonly retakeLost?: boolean;
     readonly ownerCheck?: V3OwnerCheck;
     readonly follow?: boolean;
+    readonly followSignal?: AbortSignal;
     readonly ttlMs?: number;
   },
 ): Promise<"writer" | "follower"> {
@@ -1095,7 +1101,12 @@ async function takeV3WriterHold(
     });
   } catch (error) {
     if (follows && error instanceof V3WriterBusyError) {
-      await followV3Datastore(config, repoDir, options.ownerCheck);
+      await followBounded(
+        config,
+        repoDir,
+        options.ownerCheck,
+        options.followSignal,
+      );
       return "follower";
     }
     if (claimHint !== undefined && error instanceof V3WriterBusyError) {
@@ -1122,6 +1133,10 @@ async function takeV3WriterHold(
   }
   if (v3ReplicatesAt(config.path)) {
     try {
+      // a follow left running may still install its restore over this one
+      await repoState().follows.get(handleKey(repoDir, config))?.catch(
+        () => {},
+      );
       // the lease first, then the restore: every commit the previous writer
       // acknowledged is in what this one restores
       await ensureV3CopyCurrent(repoDir, config, "write");
@@ -1236,6 +1251,50 @@ async function takeV3WriterHold(
  * as the lease's hold would, so a serve with another --address is refused here
  * too; its own gone predecessor is recovered now, off the takeover's path
  */
+/**
+ * one follow per copy at a time: a later take that finds one still running
+ * waits on it, within its own signal, rather than starting another
+ */
+async function followBounded(
+  config: V3DatastoreConfig,
+  repoDir: string,
+  ownerCheck: V3OwnerCheck | undefined,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  const key = handleKey(repoDir, config);
+  let follow = repoState().follows.get(key);
+  if (follow === undefined) {
+    const started = followV3Datastore(config, repoDir, ownerCheck).finally(
+      () => {
+        if (repoState().follows.get(key) === started) {
+          repoState().follows.delete(key);
+        }
+      },
+    );
+    follow = started;
+    repoState().follows.set(key, started);
+  }
+  if (signal === undefined) return await follow;
+  if (signal.aborted) return;
+  let onAbort: (() => void) | undefined;
+  const aborted = new Promise<"aborted">((resolve) => {
+    onAbort = () => resolve("aborted");
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    const outcome = await Promise.race([follow, aborted]);
+    if (outcome === "aborted") {
+      logger
+        .warn`Making this follower's copy current did not finish before the writer lease is due to be tried; it goes on, and the lease is tried meanwhile`;
+      follow.catch((error) => {
+        logger.debug`Making this follower's copy current failed: ${error}`;
+      });
+    }
+  } finally {
+    if (onAbort !== undefined) signal.removeEventListener("abort", onAbort);
+  }
+}
+
 async function followV3Datastore(
   config: V3DatastoreConfig,
   repoDir: string,

@@ -50,7 +50,7 @@ interface Node {
 interface Team {
   start(
     name: string,
-    options: { release: boolean; windowMs?: number },
+    options: { release: boolean; windowMs?: number; feed?: boolean },
   ): Promise<Node>;
 }
 
@@ -124,6 +124,7 @@ async function withTeam(fn: (team: Team) => Promise<void>): Promise<void> {
             windowMs: options.windowMs ?? WINDOW_MS,
             release: options.release,
           },
+          ...(options.feed === true ? { feed: { steppingDown: true } } : {}),
         });
         const node: Node = {
           name,
@@ -263,6 +264,49 @@ Deno.test({
       assertEquals(await b.cursors(), before);
       assertEquals(await b.commit(), undefined);
       assertUnique(await b.cursors());
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "stalled leader: a leader whose thread stops with its feed socket still open is replaced within TTL + skew + one tick, and its later commit is refused",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withTeam(async (team) => {
+      const a = await team.start("a", { release: true, feed: true });
+      const b = await team.start("b", { release: true, feed: true });
+      assertEquals(await a.commit(), undefined);
+      await waitFor(
+        async () => (await b.state()).feedLive === true,
+        "the standby to follow the leader's feed",
+      );
+      const before = await b.cursors();
+      const oldFence = (await a.state()).fence!;
+      // blocks the leader's thread like a stopped process; nothing closes its socket
+      const paused = a.send({
+        kind: "pause",
+        ms: LEASE_TTL_MS + WRITER_LEASE_CLOCK_SKEW_MS + 5_000,
+      });
+      await waitFor(
+        async () => {
+          const state = await b.state();
+          return state.role === "leader" && (state.fence ?? 0) > oldFence;
+        },
+        "the standby to take the stalled leader's lapsed lease",
+        {
+          timeoutMs: LEASE_TTL_MS + WRITER_LEASE_CLOCK_SKEW_MS + 10 * TICK_MS +
+            5_000,
+        },
+      );
+      await paused;
+      const refused = await a.commit();
+      assert(refused !== undefined, "the stalled leader's commit landed");
+      assertEquals(await b.commit(), undefined);
+      const after = await b.cursors();
+      assertUnique(after);
+      assertEquals(after.length, before.length + 1);
     });
   },
 });

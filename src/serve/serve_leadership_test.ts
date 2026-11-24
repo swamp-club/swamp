@@ -1297,3 +1297,160 @@ Deno.test("ServeLeadership.leaderGoing: a wait begun with no leader known ends o
     await leadership.stop();
   }
 });
+
+function stalledFeed(): FakeFeed {
+  const feed = new FakeFeed();
+  // a feed whose apply chain waits on a leader that stalled with its socket open
+  feed.stop = () => {
+    feed.stops++;
+    return new Promise<void>(() => {});
+  };
+  return feed;
+}
+
+Deno.test("ServeLeadership: a follower whose feed stop never returns still tries the lease each tick and takes it once free", async () => {
+  const lease = new FakeLease();
+  const feed = stalledFeed();
+  const leadership = new ServeLeadership({
+    instanceId: "me",
+    lease,
+    store: memoryStore(),
+    feed,
+    refreshCopy: () => Promise.resolve(),
+    onLead: () => Promise.resolve(),
+    onLostLead: () => Promise.resolve(),
+    tickMs: 200,
+  });
+  await leadership.start("follower");
+  try {
+    await waitFor(() => lease.takes >= 3, "the lease to be tried again");
+    lease.free = 4;
+    await waitFor(() => leadership.role === "leader", "the lead to be taken", {
+      timeoutMs: 15_000,
+    });
+  } finally {
+    await leadership.stop().catch(() => {});
+  }
+});
+
+Deno.test("ServeLeadership: a restore still running past the cap after the holder's lease lapsed is aborted, and the lease is tried", async () => {
+  const lease = new FakeLease();
+  const feed = new FakeFeed();
+  const refresh = hangingRefresh();
+  const leadership = new ServeLeadership({
+    instanceId: "me",
+    lease,
+    store: memoryStore(),
+    feed,
+    refreshCopy: refresh.refreshCopy,
+    onLead: () => Promise.resolve(),
+    onLostLead: () => Promise.resolve(),
+    tickMs: 3_600_000,
+    refreshPastLapseMs: 200,
+  });
+  await leadership.start("follower");
+  try {
+    const expiry = Date.now() + 100;
+    lease.expiry = expiry;
+    lease.freeFrom = { at: expiry, fence: 3 };
+    await leadership.tick();
+    assertEquals(refresh.state.aborted, 1);
+    await leadership.tick();
+    assertEquals(leadership.role, "leader");
+  } finally {
+    refresh.end();
+    await leadership.stop();
+  }
+});
+
+Deno.test("ServeLeadership: the copy work a busy lease leaves is told to stop by the end of the tick", async () => {
+  const lease = new FakeLease();
+  const signals: (AbortSignal | undefined)[] = [];
+  // a busy lease whose follow work only ends when told to
+  lease.take = (follow?: AbortSignal) => {
+    lease.takes++;
+    signals.push(follow);
+    return new Promise((resolve) =>
+      follow?.addEventListener("abort", () => resolve("follower"), {
+        once: true,
+      })
+    );
+  };
+  const leadership = new ServeLeadership({
+    instanceId: "me",
+    lease,
+    store: memoryStore(),
+    refreshCopy: () => Promise.resolve(),
+    onLead: () => Promise.resolve(),
+    onLostLead: () => Promise.resolve(),
+    tickMs: 3_600_000,
+  });
+  await leadership.start("follower");
+  try {
+    lease.expiry = Date.now() + 50;
+    await leadership.tick();
+    const signal = signals.at(-1);
+    assert(signal !== undefined, "take was given a signal");
+    assert(signal.aborted, "the tick ended because the signal aborted");
+  } finally {
+    await leadership.stop();
+  }
+});
+
+Deno.test("ServeLeadership: a check whose next delay cannot be timed still arms the next one", async () => {
+  const lease = new FakeLease();
+  const leadership = new ServeLeadership({
+    instanceId: "me",
+    lease,
+    store: memoryStore(),
+    refreshCopy: () => Promise.resolve(),
+    onLead: () => Promise.resolve(),
+    onLostLead: () => Promise.resolve(),
+    tickMs: 100,
+  });
+  await leadership.start("follower");
+  try {
+    lease.expiresAt = () => {
+      throw new Error("the lease records cannot be read");
+    };
+    const before = lease.takes;
+    await waitFor(() => lease.takes >= before + 3, "later checks to run");
+  } finally {
+    await leadership.stop();
+  }
+});
+
+Deno.test("ServeLeadership: a long restore while the holder keeps renewing is never cut", async () => {
+  const lease = new FakeLease();
+  const feed = new FakeFeed();
+  const refresh = hangingRefresh();
+  const leadership = new ServeLeadership({
+    instanceId: "me",
+    lease,
+    store: memoryStore(),
+    feed,
+    refreshCopy: refresh.refreshCopy,
+    onLead: () => Promise.resolve(),
+    onLostLead: () => Promise.resolve(),
+    tickMs: 3_600_000,
+    refreshPastLapseMs: 100,
+  });
+  await leadership.start("follower");
+  const renewing = setInterval(() => {
+    lease.expiry = Date.now() + 100;
+  }, 20);
+  try {
+    lease.expiry = Date.now() + 100;
+    const ticking = leadership.tick();
+    const until = Date.now() + 800;
+    await waitFor(() => Date.now() >= until, "the restore to outlast the cap");
+    clearInterval(renewing);
+    refresh.end();
+    await ticking;
+    assertEquals([refresh.state.calls, refresh.state.aborted], [1, 0]);
+  } finally {
+    clearInterval(renewing);
+    refresh.end();
+    await leadership.stop();
+  }
+});
