@@ -186,6 +186,10 @@ export const workflowApproveCommand = withRemoteOptions(
       "Approve only the attempt you read",
       "swamp workflow approve deploy-with-gate verify-build --run <run-id> --suspended-at 2026-11-06T10:00:00.000Z",
     )
+    .example(
+      "Approve a fan-out gate (quote the name: zsh globs the brackets)",
+      "swamp workflow approve patch-web 'patch[approve-plan]'",
+    )
     .arguments("<workflow_id_or_name:string> <step_name:string>")
     .option(
       "--repo-dir <dir:string>",

@@ -79,6 +79,10 @@ export const workflowRejectCommand = withRemoteOptions(
       "swamp workflow reject deploy-with-gate verify-build --reason 'Not ready'",
     )
     .example(
+      "Reject a fan-out gate (quote the name: zsh globs the brackets)",
+      "swamp workflow reject patch-web 'patch[approve-canary]' --reason 'Canary failed'",
+    )
+    .example(
       "Reject only the attempt you read",
       "swamp workflow reject deploy-with-gate verify-build --run <run-id> --suspended-at 2026-11-06T10:00:00.000Z",
     )
