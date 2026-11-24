@@ -2233,12 +2233,36 @@ async function trackedCheckout(
     SOLO_NAMESPACE,
     true,
   );
+  // without write-time pruning, so a name can hold more than it declares
+  const unpruned = new FileSystemUnifiedDataRepository(
+    repoDir,
+    swampPath(repoDir, "data"),
+    catalog,
+    hook,
+    undefined,
+    SOLO_NAMESPACE,
+    false,
+  );
   await handle.catchUp();
   return {
     handle,
     engine,
     catalog,
     data,
+    saveDeclaring: (name: string, garbageCollection: number) =>
+      unpruned.save(
+        MODEL_TYPE,
+        MODEL_ID,
+        Data.create({
+          name,
+          contentType: "text/plain",
+          lifetime: "infinite",
+          garbageCollection,
+          tags: { type: "resource" },
+          ownerDefinition: { ownerType: "manual", ownerRef: "test" },
+        }),
+        new TextEncoder().encode("v"),
+      ),
     save: (name: string) =>
       data.save(
         MODEL_TYPE,
@@ -2385,15 +2409,11 @@ Deno.test("openV3Datastore: a declared-limit batch records the names it trims, n
   await withTempDir(async (dir) => {
     await using checkout = await trackedCheckout(dir);
     for (let i = 0; i < 4; i++) {
-      await checkout.engine.runRoot({}, () => checkout.save("capped"));
+      await checkout.engine.runRoot(
+        {},
+        () => checkout.saveDeclaring("capped", 1),
+      );
     }
-    // the newest declaration is what the batch applies
-    checkout.catalog.upsert({
-      ...[...checkout.catalog.iterate()].filter((row) =>
-        row.data_name === "capped"
-      ).sort((a, b) => b.version - a.version)[0],
-      garbage_collection: "1",
-    });
     let removed = 0;
     const scopes = await scopesDuring(checkout, async () => {
       const batch = await checkout.data.collectDeclaredGarbageBatch({
