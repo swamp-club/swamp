@@ -19,7 +19,9 @@
 
 import { assertEquals, assertThrows } from "@std/assert";
 import {
+  describeRefusedRedirect,
   envServerTokenBinding,
+  isRedirectStatus,
   normalizeServerUrl,
   redactServerUrl,
 } from "./server_url.ts";
@@ -221,4 +223,158 @@ Deno.test("envServerTokenBinding: without SWAMP_SERVER_URL an address the user n
     { kind: "unnamed" },
   );
   assertEquals(envServerTokenBinding(key, undefined, []), { kind: "unnamed" });
+});
+
+Deno.test("isRedirectStatus: covers the redirects fetch would follow, not 304", () => {
+  for (const status of [301, 302, 303, 307, 308]) {
+    assertEquals(isRedirectStatus(status), true);
+  }
+  for (const status of [200, 300, 304, 400, 404]) {
+    assertEquals(isRedirectStatus(status), false);
+  }
+});
+
+Deno.test("describeRefusedRedirect: an http to https move suggests the https address", () => {
+  assertEquals(
+    describeRefusedRedirect(
+      "ws://serve.test:9000/",
+      "",
+      308,
+      "https://serve.test:9000/",
+    ),
+    "ws://serve.test:9000 redirected to https://serve.test:9000 (HTTP 308); swamp does not follow redirects, so pass --server https://serve.test:9000",
+  );
+});
+
+Deno.test("describeRefusedRedirect: a host move under an endpoint suggests the new base", () => {
+  assertEquals(
+    describeRefusedRedirect(
+      "http://old.test/auth/info",
+      "/auth/info",
+      301,
+      "https://new.test/auth/info",
+    ),
+    "http://old.test redirected to https://new.test/auth/info (HTTP 301); swamp does not follow redirects, so pass --server https://new.test",
+  );
+});
+
+Deno.test("describeRefusedRedirect: keeps a path-prefixed serve's prefix in the suggestion", () => {
+  assertEquals(
+    describeRefusedRedirect(
+      "http://serve.test/swamp/api/v1/cancel/workflow-run/r1",
+      "/api/v1/cancel/workflow-run/r1",
+      307,
+      "https://serve.test/swamp/api/v1/cancel/workflow-run/r1",
+    ),
+    "http://serve.test/swamp redirected to https://serve.test/swamp/api/v1/cancel/workflow-run/r1 (HTTP 307); swamp does not follow redirects, so pass --server https://serve.test/swamp",
+  );
+});
+
+Deno.test("describeRefusedRedirect: trailing slashes do not stop the suggestion", () => {
+  assertEquals(
+    describeRefusedRedirect(
+      "ws://serve.test/swamp",
+      "",
+      308,
+      "https://serve.test/swamp/",
+    ),
+    "ws://serve.test/swamp redirected to https://serve.test/swamp/ (HTTP 308); swamp does not follow redirects, so pass --server https://serve.test/swamp",
+  );
+});
+
+Deno.test("describeRefusedRedirect: a redirect that changes the path names the target without a suggestion", () => {
+  const text = describeRefusedRedirect(
+    "ws://127.0.0.1:9000",
+    "",
+    302,
+    "http://127.0.0.1:9000/dashboard/start",
+  );
+  assertEquals(
+    text,
+    "ws://127.0.0.1:9000 redirected to http://127.0.0.1:9000/dashboard/start (HTTP 302); swamp does not follow redirects, so point --server at the address that serves swamp directly",
+  );
+});
+
+Deno.test("describeRefusedRedirect: resolves a relative Location against the request", () => {
+  assertEquals(
+    describeRefusedRedirect(
+      "http://serve.test:9000/auth/info",
+      "/auth/info",
+      308,
+      "/login",
+    ),
+    "http://serve.test:9000 redirected to http://serve.test:9000/login (HTTP 308); swamp does not follow redirects, so point --server at the address that serves swamp directly",
+  );
+});
+
+Deno.test("describeRefusedRedirect: never shows the target's userinfo, query or fragment", () => {
+  const text = describeRefusedRedirect(
+    "http://serve.test/auth/info",
+    "/auth/info",
+    301,
+    "https://alice:hunter2@other.test/auth/info?token=abc.s3cret#frag",
+  );
+  assertEquals(
+    text,
+    "http://serve.test redirected to https://other.test/auth/info (HTTP 301); swamp does not follow redirects, so pass --server https://other.test",
+  );
+});
+
+Deno.test("describeRefusedRedirect: a missing or unparseable Location names no target", () => {
+  const expected =
+    "http://serve.test answered with a redirect (HTTP 301) that names no usable target; swamp does not follow redirects, so point --server at the address that serves swamp directly";
+  assertEquals(
+    describeRefusedRedirect(
+      "http://serve.test/auth/info",
+      "/auth/info",
+      301,
+      null,
+    ),
+    expected,
+  );
+  assertEquals(
+    describeRefusedRedirect(
+      "http://serve.test/auth/info",
+      "/auth/info",
+      301,
+      "http://[bad",
+    ),
+    expected,
+  );
+});
+
+Deno.test("describeRefusedRedirect: never suggests dropping TLS", () => {
+  assertEquals(
+    describeRefusedRedirect("wss://serve.test/", "", 301, "http://serve.test/"),
+    "wss://serve.test redirected to http://serve.test (HTTP 301); swamp does not follow redirects, so point --server at the address that serves swamp directly",
+  );
+});
+
+Deno.test("describeRefusedRedirect: never suggests a scheme --server refuses", () => {
+  for (const location of ["ftp://other.test/auth/info"]) {
+    assertEquals(
+      describeRefusedRedirect(
+        "http://serve.test/auth/info",
+        "/auth/info",
+        302,
+        location,
+      ),
+      `http://serve.test redirected to ${location} (HTTP 302); swamp does not follow redirects, so point --server at the address that serves swamp directly`,
+    );
+  }
+});
+
+Deno.test("describeRefusedRedirect: a ws or wss target is suggested as it was given", () => {
+  assertEquals(
+    describeRefusedRedirect("http://serve.test/", "", 308, "wss://serve.test/"),
+    "http://serve.test redirected to wss://serve.test (HTTP 308); swamp does not follow redirects, so pass --server wss://serve.test",
+  );
+  assertEquals(
+    describeRefusedRedirect("wss://serve.test/", "", 301, "ws://serve.test/"),
+    "wss://serve.test redirected to ws://serve.test (HTTP 301); swamp does not follow redirects, so point --server at the address that serves swamp directly",
+  );
+  assertEquals(
+    describeRefusedRedirect("http://serve.test/", "", 301, "ws://serve.test/"),
+    "http://serve.test redirected to ws://serve.test (HTTP 301); swamp does not follow redirects, so point --server at the address that serves swamp directly",
+  );
 });

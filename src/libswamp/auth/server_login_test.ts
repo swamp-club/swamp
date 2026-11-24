@@ -544,7 +544,7 @@ Deno.test("createServerLoginDeps: a pass-through content-type of any casing cann
   assertEquals(request.headers.get("content-type"), "application/json");
 });
 
-Deno.test("createServerLoginDeps: a redirect answer fails with its status", async () => {
+Deno.test("createServerLoginDeps: a redirect answer names its target", async () => {
   const deps = createServerLoginDeps({ extraHeaders: {} });
   for (const { endpoint } of ENDPOINTS) {
     const { calls } = await withMockedFetch(
@@ -558,7 +558,11 @@ Deno.test("createServerLoginDeps: a redirect answer fails with its status", asyn
           () => callEndpointWith(deps, endpoint),
           UserError,
         );
-        assertStringIncludes(err.message, "308");
+        assertStringIncludes(
+          err.message,
+          "redirected to https://elsewhere.test/auth (HTTP 308)",
+        );
+        assertStringIncludes(err.message, "does not follow redirects");
       },
     );
     assertEquals(calls.length, 1);

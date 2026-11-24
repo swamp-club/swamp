@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { ServerCredential } from "../../domain/auth/server_credential.ts";
-import { normalizeServerUrl } from "../../domain/auth/server_url.ts";
+import {
+  describeRefusedRedirect,
+  isRedirectStatus,
+  normalizeServerUrl,
+} from "../../domain/auth/server_url.ts";
 import { openBrowser } from "../../infrastructure/process/browser.ts";
 import { FileServerCredentialRepository } from "../../infrastructure/persistence/server_credential_repository.ts";
 import { describeCauses, UserError } from "../../domain/errors.ts";
@@ -123,8 +127,9 @@ async function fetchFromServer(
   // set() so a pass-through header of any casing cannot join a protocol header
   const headers = new Headers(extraHeaders);
   new Headers(init.headers).forEach((value, name) => headers.set(name, value));
+  let response: Response;
   try {
-    return await fetch(`${serverUrl}${path}`, {
+    response = await fetch(`${serverUrl}${path}`, {
       ...init,
       method,
       headers,
@@ -139,6 +144,18 @@ async function fetchFromServer(
       }`,
     );
   }
+  if (isRedirectStatus(response.status)) {
+    await response.body?.cancel();
+    throw new UserError(
+      describeRefusedRedirect(
+        `${serverUrl}${path}`,
+        path,
+        response.status,
+        response.headers.get("location"),
+      ),
+    );
+  }
+  return response;
 }
 
 async function readServerJson<T>(

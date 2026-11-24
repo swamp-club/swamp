@@ -19,7 +19,11 @@
 
 import { assert, assertEquals, assertThrows } from "@std/assert";
 import fc from "fast-check";
-import { normalizeServerUrl, redactServerUrl } from "./server_url.ts";
+import {
+  describeRefusedRedirect,
+  normalizeServerUrl,
+  redactServerUrl,
+} from "./server_url.ts";
 
 const arbScheme = fc.constantFrom("http", "https", "ws", "wss");
 
@@ -295,5 +299,38 @@ Deno.test("redactServerUrl: keeps the scheme as given", () => {
       assert(redacted?.startsWith(`${parts.scheme}://`));
     }),
     { numRuns: 300 },
+  );
+});
+
+Deno.test("describeRefusedRedirect: never shows the Location's userinfo, query or fragment", () => {
+  const arbSecret = fc.stringOf(
+    fc.constantFrom(..."ABCDEFGHJKMNPQRSTVWXYZ".split("")),
+    { minLength: 8, maxLength: 16 },
+  );
+  fc.assert(
+    fc.property(
+      arbScheme,
+      arbHost,
+      arbPathSegments,
+      arbSecret,
+      arbSecret,
+      arbSecret,
+      arbSecret,
+      fc.constantFrom(301, 302, 303, 307, 308),
+      (scheme, host, segments, user, password, query, fragment, status) => {
+        const path = segments.length ? `/${segments.join("/")}` : "";
+        const location =
+          `${scheme}://${user}:${password}@${host}${path}?token=${query}#${fragment}`;
+        const text = describeRefusedRedirect(
+          "http://serve.test/auth/info",
+          "/auth/info",
+          status,
+          location,
+        );
+        for (const secret of [user, password, query, fragment]) {
+          assert(!text.includes(secret), `${secret} leaked into ${text}`);
+        }
+      },
+    ),
   );
 });

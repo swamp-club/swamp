@@ -26,6 +26,7 @@ import {
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
 import { withMockedEnv } from "../../infrastructure/persistence/path_test_helpers.ts";
+import { withMockedFetch } from "@swamp-club/swamp-testing";
 import {
   OWNER_STOPPED_STEP_ERROR,
   WorkflowRun,
@@ -57,6 +58,7 @@ import {
   ownerHoldsWriterOf,
   resolveLocalCancelTarget,
   RunNotCancelledError,
+  sendServerCancel,
   SERVER_CANCEL_TIMEOUT_MS,
   serverCancelFailure,
   serverCancelRejection,
@@ -1400,6 +1402,35 @@ Deno.test("serverCancelFailure: shows the cause and no credentials from --server
   assertStringIncludes(error.message, "Connection refused");
   assertEquals(error.message.includes("hunter2"), false);
   assertEquals(error.message.includes("s3cret"), false);
+});
+
+Deno.test("sendServerCancel: a redirect answer names the target and the address to pass", async () => {
+  const server = "http://serve.test:9000";
+  const request = buildServerCancelRequest(
+    buildCancelUrl(server, "run-1"),
+    "token.secret",
+    undefined,
+    {},
+  );
+  await withMockedFetch(
+    () =>
+      new Response(null, {
+        status: 307,
+        headers: {
+          location: "https://serve.test:9000/api/v1/cancel/workflow-run/run-1",
+        },
+      }),
+    async () => {
+      const error = await assertRejects(
+        () => sendServerCancel(server, "run-1", request, undefined),
+        UserError,
+      );
+      assertEquals(
+        error.message,
+        "http://serve.test:9000 redirected to https://serve.test:9000/api/v1/cancel/workflow-run/run-1 (HTTP 307); swamp does not follow redirects, so pass --server https://serve.test:9000",
+      );
+    },
+  );
 });
 
 Deno.test("serverCancelRejection: shows the message of a JSON refusal on its own", () => {
