@@ -813,7 +813,9 @@ async function answerDatastoreRequest(
           : methodNotAllowed("GET");
     }
   } catch (error) {
-    if (req.method !== "GET") ctx.commitHealth?.recordFailure(error);
+    if (req.method !== "GET" && route.kind !== "has") {
+      ctx.commitHealth?.recordFailure(error);
+    }
     return datastoreErrorResponse(error);
   }
 }

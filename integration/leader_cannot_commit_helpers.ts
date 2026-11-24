@@ -21,7 +21,6 @@ import { DatabaseSync } from "node:sqlite";
 import { join } from "@std/path";
 import type { OutboxCommitSink } from "../src/infrastructure/datastore_v3/outbox_commit_sink.ts";
 
-/** what node:sqlite throws when the database cannot grow */
 export function sqliteFull(): Error {
   const dir = Deno.makeTempDirSync();
   const db = new DatabaseSync(join(dir, "full.db"));

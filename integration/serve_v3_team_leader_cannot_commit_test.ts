@@ -147,22 +147,17 @@ async function withTeam(fn: (team: Team) => Promise<void>): Promise<void> {
   }
 }
 
-/** commits on the leader until it trips; returns when it did */
-async function fillTheDisk(leader: Node): Promise<number> {
+async function fillTheDisk(leader: Node): Promise<void> {
   await leader.send({ kind: "disk-full", full: true });
-  let trippedAt: number | undefined;
   await waitFor(
     async () => {
       const failed = await leader.commit();
       assert(failed !== undefined, "a commit landed on a full disk");
-      if ((await leader.state()).cannotCommit === undefined) return false;
-      trippedAt = Date.now();
-      return true;
+      return (await leader.state()).cannotCommit !== undefined;
     },
     "the leader to find it cannot commit",
     { timeoutMs: 30_000 },
   );
-  return trippedAt!;
 }
 
 function assertUnique(cursors: readonly number[]): void {
@@ -171,7 +166,7 @@ function assertUnique(cursors: readonly number[]): void {
 
 Deno.test({
   name:
-    "leader that cannot commit: it steps down, the standby takes over within 2 x (TTL + skew), and every acknowledged write is there once",
+    "leader that cannot commit: it steps down, the standby takes over, and every acknowledged write is there once",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
@@ -230,8 +225,7 @@ Deno.test({
       for (let i = 0; i < 5; i++) assert(await a.commit() !== undefined);
       await a.send({ kind: "disk-full", full: false });
       assertEquals(await a.commit(), undefined);
-      const until = Date.now() + 5 * TICK_MS;
-      await waitFor(() => Date.now() >= until, "a few follower ticks");
+      for (let i = 0; i < 5; i++) await b.send({ kind: "tick" });
       const state = await a.state();
       assertEquals(state.role, "leader");
       assertEquals(state.fence, fence);

@@ -63,12 +63,7 @@ function causeOfOne(error: object): CannotCommitCause | undefined {
   return undefined;
 }
 
-/**
- * the storage under this node, not a lock, a refusal or the network: only
- * this kind of failure says the node itself cannot commit. Read from SQLite's
- * and the OS's own codes, never a message: a refusal's message can carry a
- * record key the client chose.
- */
+/** read from SQLite's and the OS's codes, never a message: a refusal's message can carry a client's record key */
 export function storageFailureCause(
   error: unknown,
 ): CannotCommitCause | undefined {
@@ -201,7 +196,7 @@ export interface LeaderCommitHealthWiring {
   onCommitOutcome(
     listener: (datastorePath: string, outcome: CommitOutcomeEvent) => void,
   ): () => void;
-  /** stops renewing the writer lease, which then lapses at its TTL */
+  /** the lease then lapses at its TTL */
   stopRenewal(): Promise<void>;
   /** as a lost lead does: shut down, release the lease, restart as a follower */
   stepDown(): Promise<void>;
