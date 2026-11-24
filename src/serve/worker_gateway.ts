@@ -1828,13 +1828,15 @@ export class WorkerGateway {
             "verify_passed",
             workerName,
             async () => {
-              // a drain may have landed while this write was queued
-              if (entry.status === "draining") return false;
-              entry.status = "idle";
-              entry.verifyFailureReason = undefined;
+              if (this.#probeOutcomeSuperseded(entry)) return false;
               await this.#workerStatus.recordStatus(workerName, {
                 status: "idle",
               });
+              // promoted only once recorded, and never over a drain or
+              // disconnect that landed during the write
+              if (this.#probeOutcomeSuperseded(entry)) return false;
+              entry.status = "idle";
+              entry.verifyFailureReason = undefined;
               return true;
             },
           );
@@ -1847,8 +1849,8 @@ export class WorkerGateway {
       } else {
         await this.#recordWorkerWrite("verify_failed", workerName, async () => {
           entry.verifyFailureReason = probeResult.failureReason;
-          // the drain's record stands: a stored reason goes only with unverified
-          if (entry.status === "draining") return;
+          // the newer record stands: a persisted reason goes only with unverified
+          if (this.#probeOutcomeSuperseded(entry)) return;
           await this.#workerStatus.recordStatus(workerName, {
             status: "unverified",
             activeDispatchIds: [...entry.activeDispatchIds],
@@ -1866,7 +1868,7 @@ export class WorkerGateway {
       const reason = error instanceof Error ? error.message : String(error);
       await this.#recordWorkerWrite("verify_failed", workerName, async () => {
         entry.verifyFailureReason = reason;
-        if (entry.status === "draining") return;
+        if (this.#probeOutcomeSuperseded(entry)) return;
         await this.#workerStatus.recordStatus(workerName, {
           status: "unverified",
           activeDispatchIds: [...entry.activeDispatchIds],
@@ -1888,6 +1890,12 @@ export class WorkerGateway {
         { worker: workerName, reason },
       );
     }
+  }
+
+  // a drain or disconnect can land while a probe's outcome waits on the
+  // worker's key; its own write follows and must not be overwritten
+  #probeOutcomeSuperseded(entry: WorkerEntry): boolean {
+    return entry.status === "draining" || entry.channel === null;
   }
 
   #snapshot(entry: WorkerEntry): WorkerSnapshot {

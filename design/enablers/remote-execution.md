@@ -541,8 +541,9 @@ shared chain that orders token records and pool admission. Each write is queued
 at the in-memory change it records, so a worker's records land in the order its
 state changed, and a dispatch waits only for its own worker's earlier writes,
 never behind another worker's enrollment (swamp-club#3988). A verification
-outcome is the exception: it applies when its write runs, so a worker that
-started draining while it was queued stays draining. A write that is part
+outcome is the exception: it applies when its write runs, so a drain or
+disconnect that landed while it was queued keeps its record, and a passed probe
+promotes the worker only once its idle record is written. A write that is part
 of a shared-chain turn (a revoke's disconnects, a rotation's re-stamp) queues on
 the worker's key from inside that turn. An enrollment holds its worker's key
 from its `already_connected` check until the channel's handlers are registered,
