@@ -319,7 +319,13 @@ function gatedRemote(
       seen.mostAtOnce = Math.max(seen.mostAtOnce, ++inFlight);
       try {
         await gate.promise;
-        if (fail.has(sha256)) throw new Error("serve unreachable");
+        if (fail.has(sha256)) {
+          throw new ServeUnreachableError(
+            "http://serve.invalid",
+            "never",
+            new Error("request timed out"),
+          );
+        }
         return chunks.get(sha256) ?? null;
       } finally {
         inFlight--;
@@ -406,7 +412,7 @@ Deno.test("CachedServeStorage.prefetch: an offline checkout fetches nothing", as
   }, true);
 });
 
-Deno.test("CachedServeStorage.prefetch: stops at the first failure, so a hung serve costs one timeout, not one per chunk", async () => {
+Deno.test("CachedServeStorage.prefetch: stops when serve is unreachable, so a hung serve costs one timeout, not one per chunk", async () => {
   const all = await Promise.all(
     Array.from({ length: 20 }, (_, i) => chunk(`chunk-${i}`)),
   );
