@@ -26,7 +26,11 @@ import type { TokenAdmissionChecker } from "./token_admission.ts";
 import { runDetached } from "../infrastructure/tracing/mod.ts";
 import { z } from "zod";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
-import type { ServerToken } from "../domain/models/access/server_token_model.ts";
+import {
+  type ServerToken,
+  ServerTokenSecretMismatchError,
+  verifyServerTokenSecret,
+} from "../domain/models/access/server_token_model.ts";
 import { ServerTokenNotFoundError } from "./token_auth.ts";
 import { delegationOfSessionName } from "./delegated_token_auth.ts";
 import {
@@ -43,6 +47,8 @@ import {
 const logger = getSwampLogger(["serve", "token-session-revalidation"]);
 
 export const DEFAULT_TOKEN_SESSION_REVALIDATION_MS = 30_000;
+/** how long a session outlives a record that does not pair with the secret */
+export const STALE_COPY_KEEP_MS = 10 * 60_000;
 
 const REVOKED_CLOSE_CODE = 4003;
 const EXPIRED_CLOSE_CODE = 4002;
@@ -58,12 +64,14 @@ export type TokenSessionVerdict =
 
 /**
  * a session is kept only while its own mint is still the active, unexpired
- * record
+ * record; a record that does not pair with the vault secret is a stale copy,
+ * not a rotation, since a rotation writes the secret before the record
  */
 export function tokenSessionVerdict(
   token: ServerToken | null,
   sessionCreatedAt: string,
   nowMs: number,
+  recordIsStaleCopy = false,
 ): TokenSessionVerdict {
   if (token === null) {
     return {
@@ -82,6 +90,12 @@ export function tokenSessionVerdict(
     };
   }
   if (token.createdAt !== sessionCreatedAt) {
+    // a stale copy is older than the live mint; an unparseable time fails closed,
+    // and expiry goes unchecked only for the bounded keep window
+    if (
+      recordIsStaleCopy &&
+      Date.parse(sessionCreatedAt) > Date.parse(token.createdAt)
+    ) return { keep: true };
     return {
       keep: false,
       cause: "rotated",
@@ -122,6 +136,8 @@ export interface TokenSessionRevalidationDeps {
   readonly intervalMs: number;
   listTokenSessions(): readonly { name: string; createdAt: string }[];
   readToken(name: string): Promise<ServerToken>;
+  /** absent, a changed mint is always a rotation */
+  readSecret?(vaultName: string, secretKey: string): Promise<string>;
   terminateSessions(name: string, options: TokenSessionCloseOptions): number;
   /** a delegation's sessions are checked against the directory, never a token record */
   delegationStanding?(id: string): string;
@@ -140,6 +156,10 @@ export class TokenSessionRevalidationService {
   #timer: ReturnType<typeof setTimeout> | null = null;
   #pending: Promise<void> = Promise.resolve();
   #disposed = false;
+  /** session key to when it was first kept over a stale copy */
+  #staleSince = new Map<string, number>();
+  /** token name to the stale record's mint already warned about */
+  readonly #warnedStale = new Map<string, string>();
 
   constructor(deps: TokenSessionRevalidationDeps) {
     this.#deps = deps;
@@ -199,6 +219,7 @@ export class TokenSessionRevalidationService {
     }
 
     let closed = 0;
+    const stillStale = new Set<string>();
     for (const [name, mints] of mintsByName) {
       if (this.#disposed) break;
       const delegationId = delegationOfSessionName(name);
@@ -252,11 +273,18 @@ export class TokenSessionRevalidationService {
             "Could not revalidate sessions for token {name}, keeping them until the next pass: {error}",
             { name, error: message },
           );
+          // a skipped read must not restart a keep window
+          for (const createdAt of mints) {
+            stillStale.add(JSON.stringify([name, createdAt]));
+          }
           continue;
         }
       }
 
       const nowMs = this.#deps.now?.() ?? Date.now();
+      const staleCopy = token !== null &&
+        mints.some((createdAt) => createdAt !== token.createdAt) &&
+        await this.#isStaleCopy(token);
       const admission = token === null || !this.#deps.admission
         ? undefined
         : await this.#deps.admission.serverToken(token);
@@ -265,7 +293,21 @@ export class TokenSessionRevalidationService {
       const admitted = admission === undefined || admission.admitted ||
         admission.unavailable === true;
       for (const createdAt of mints) {
-        const verdict = tokenSessionVerdict(token, createdAt, nowMs);
+        let verdict = tokenSessionVerdict(
+          token,
+          createdAt,
+          nowMs,
+          staleCopy,
+        );
+        if (verdict.keep && token !== null && createdAt !== token.createdAt) {
+          const key = JSON.stringify([name, createdAt]);
+          const since = this.#staleSince.get(key) ?? nowMs;
+          this.#staleSince.set(key, since);
+          stillStale.add(key);
+          if (nowMs - since >= STALE_COPY_KEEP_MS) {
+            verdict = tokenSessionVerdict(token, createdAt, nowMs);
+          }
+        }
         if (verdict.keep) {
           if (!admitted) closed += this.#closeNotAdmitted(name, [createdAt]);
           continue;
@@ -278,7 +320,32 @@ export class TokenSessionRevalidationService {
         });
       }
     }
+    for (const key of this.#staleSince.keys()) {
+      if (!stillStale.has(key)) this.#staleSince.delete(key);
+    }
     return closed;
+  }
+
+  /** any doubt reads as a real rotation, which closes the session */
+  async #isStaleCopy(token: ServerToken): Promise<boolean> {
+    const readSecret = this.#deps.readSecret;
+    if (readSecret === undefined || token.secretFingerprint === undefined) {
+      return false;
+    }
+    try {
+      const secret = await readSecret(token.vaultName, token.secretKey);
+      await verifyServerTokenSecret(token, secret);
+      return false;
+    } catch (err) {
+      if (!(err instanceof ServerTokenSecretMismatchError)) return false;
+      if (this.#warnedStale.get(token.name) === token.createdAt) return true;
+      this.#warnedStale.set(token.name, token.createdAt);
+      logger.warn(
+        "Token {name} has a record that does not pair with its secret, so it is a stale copy and its sessions stay open; rotate the token if it persists",
+        { name: token.name },
+      );
+      return true;
+    }
   }
 
   #closeNotAdmitted(name: string, mints: readonly string[]): number {

@@ -486,6 +486,8 @@ export class DispatchService {
     let affinityResolve: ((name: string | undefined) => void) | null = null;
     let affinityReject: ((err: Error) => void) | null = null;
     let attemptWorker: string | undefined;
+    // workers whose state record could not be written for this step
+    const unrecordable = new Set<string>();
     let failure: unknown;
     try {
       const affinityKey = request.placement.affinityKey;
@@ -598,6 +600,7 @@ export class DispatchService {
                 deadline,
                 emitQueued,
                 assertPlaceable,
+                unrecordable,
               ),
           )
           : effectivePlacement.target!;
@@ -694,6 +697,17 @@ export class DispatchService {
                 dispatchId: lastDispatchId ?? "unknown",
               });
               continue;
+            }
+            if (refusal === "state_unrecorded") {
+              unrecordable.add(workerName);
+              // another worker can take it now; only a sole candidate is waited on
+              if (this.#offersOtherThan(effectivePlacement, unrecordable)) {
+                endQueue({
+                  state: "dispatched",
+                  dispatchId: lastDispatchId ?? "unknown",
+                });
+                continue;
+              }
             }
             const remaining = deadline !== null
               ? deadline - Date.now()
@@ -1258,14 +1272,18 @@ export class DispatchService {
     deadline: number | null,
     onQueued?: () => void,
     assertPlaceable?: () => void,
+    avoid: ReadonlySet<string> = new Set(),
   ): Promise<string> {
     while (true) {
       signal?.throwIfAborted();
       assertPlaceable?.();
-      const decision: ScheduleDecision = scheduleStep(
-        placement,
-        this.#poolSnapshot(),
-      );
+      const pool = this.#poolSnapshot();
+      const preferred = avoid.size === 0
+        ? undefined
+        : scheduleStep(placement, pool.filter((w) => !avoid.has(w.name)));
+      const decision: ScheduleDecision = preferred?.kind === "dispatch"
+        ? preferred
+        : scheduleStep(placement, pool);
       if (decision.kind === "dispatch") {
         const current = this.#reserved.get(decision.worker.name) ?? 0;
         this.#reserved.set(decision.worker.name, current + 1);
@@ -1286,6 +1304,16 @@ export class DispatchService {
         await this.#waitForPoolChange(WAIT_FOREVER_POLL_CAP_MS, signal);
       }
     }
+  }
+
+  #offersOtherThan(
+    placement: StepPlacement,
+    avoid: ReadonlySet<string>,
+  ): boolean {
+    return scheduleStep(
+      placement,
+      this.#poolSnapshot().filter((w) => !avoid.has(w.name)),
+    ).kind === "dispatch";
   }
 
   /**

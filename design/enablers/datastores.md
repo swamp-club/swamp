@@ -2242,6 +2242,9 @@ The gate has two modes:
     step leases and pending dispatches, `bookkeeping_gc.ts`) with its push as
     its own unit, releasing the gate between batches so waiting runs are not
     held behind a large first reap;
+  - the push of worker records written outside a run (an enrollment, a
+    departure, or a record the gateway restored after a pull), in
+    `worker_gateway.ts`;
   - each poller's pull (`gatedPull`).
 - **Shared**, held by every run push and step-start pull (`withSharedSyncGate`):
   each step's behavior-lock pull and flush push (serve passes

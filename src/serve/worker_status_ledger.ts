@@ -23,20 +23,35 @@ import {
 } from "../domain/models/data_writer.ts";
 import {
   nextWorkerState,
-  parseStoredWorkerState,
+  type ReassertDecision,
+  reassertDecision,
   type SetStatusArgs,
+  statusWriteBase,
   WORKER_MODEL_TYPE,
   WORKER_STATE_DATA_NAME,
   workerDefinitionName,
+  type WorkerEnrollment,
   workerModel,
+  WorkerStateSchema,
 } from "../domain/models/worker/worker_model.ts";
+import type { OrchestratorOwner } from "../domain/models/worker/orchestrator_owner.ts";
 import { runInRootUnitOfWork } from "../infrastructure/persistence/repo_unit_of_work.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import { withSpan } from "../infrastructure/tracing/mod.ts";
 import type { ModelMethodRunner } from "./worker_gateway.ts";
 
 export interface WorkerStatusStore {
-  recordStatus(workerName: string, args: SetStatusArgs): Promise<void>;
+  /** `live` is the enrollment of the connection this serve holds, when it holds one */
+  recordStatus(
+    workerName: string,
+    args: SetStatusArgs,
+    live?: WorkerEnrollment,
+  ): Promise<void>;
+  reassert?(
+    workerName: string,
+    args: SetStatusArgs,
+    live: WorkerEnrollment,
+  ): Promise<ReassertDecision>;
 }
 
 export function methodRunnerWorkerStatusStore(
@@ -60,6 +75,8 @@ export class WorkerStatusLedger implements WorkerStatusStore {
     "definitionRepo" | "unifiedDataRepo" | "markDirty" | "commitLog"
   >;
   readonly #fallback: WorkerStatusStore;
+  readonly #ensureDefinition?: (workerName: string) => Promise<void>;
+  readonly #ownerAlive?: (owner: OrchestratorOwner) => Promise<boolean>;
 
   constructor(
     repoContext: Pick<
@@ -67,66 +84,164 @@ export class WorkerStatusLedger implements WorkerStatusStore {
       "definitionRepo" | "unifiedDataRepo" | "markDirty" | "commitLog"
     >,
     fallback: WorkerStatusStore,
+    ensureDefinition?: (workerName: string) => Promise<void>,
+    ownerAlive?: (owner: OrchestratorOwner) => Promise<boolean>,
   ) {
     this.#repoContext = repoContext;
     this.#fallback = fallback;
+    this.#ensureDefinition = ensureDefinition;
+    this.#ownerAlive = ownerAlive;
   }
 
   // read-then-write with no compare-and-swap: the gateway orders a worker's changes
-  recordStatus(workerName: string, args: SetStatusArgs): Promise<void> {
+  recordStatus(
+    workerName: string,
+    args: SetStatusArgs,
+    live?: WorkerEnrollment,
+  ): Promise<void> {
     return withSpan(
       "swamp.serve.worker_status.write",
       { "swamp.worker.status": args.status },
       async () => {
-        const definitionName = workerDefinitionName(workerName);
-        const definition = await this.#repoContext.definitionRepo.findByName(
+        await this.#write(workerName, args, live, () => true);
+      },
+    );
+  }
+
+  /** rewrites a connected worker's record only when it says the worker is gone */
+  reassert(
+    workerName: string,
+    args: SetStatusArgs,
+    live: WorkerEnrollment,
+  ): Promise<ReassertDecision> {
+    return withSpan(
+      "swamp.serve.worker_status.reassert",
+      { "swamp.worker.status": args.status },
+      async () => {
+        const decided: { value: ReassertDecision } = { value: "keep" };
+        const wrote = await this.#write(
+          workerName,
+          args,
+          live,
+          (stored, storedOwnerAlive) => {
+            const parsed = stored === null
+              ? null
+              : WorkerStateSchema.safeParse(stored);
+            // a malformed record says nothing about the worker, so it is rewritten
+            decided.value = reassertDecision(
+              parsed?.success === true ? parsed.data : null,
+              live,
+              storedOwnerAlive,
+            );
+            return decided.value === "rewrite";
+          },
+        );
+        // a departure over another instance's record is skipped, so nothing was restored
+        return decided.value === "rewrite" && !wrote ? "keep" : decided.value;
+      },
+    );
+  }
+
+  async #write(
+    workerName: string,
+    args: SetStatusArgs,
+    live: WorkerEnrollment | undefined,
+    shouldWrite: (
+      stored: Record<string, unknown> | null,
+      storedOwnerAlive: boolean,
+    ) => boolean,
+  ): Promise<boolean> {
+    const definitionName = workerDefinitionName(workerName);
+    let definition = await this.#repoContext.definitionRepo.findByName(
+      WORKER_MODEL_TYPE,
+      definitionName,
+    );
+    if (definition === null && live !== undefined) {
+      // nothing to mark departing
+      if (args.status === "disconnected" || args.status === "draining") {
+        return false;
+      }
+      if (!shouldWrite(null, true)) return false;
+      if (this.#ensureDefinition !== undefined) {
+        await this.#ensureDefinition(workerName);
+        definition = await this.#repoContext.definitionRepo.findByName(
           WORKER_MODEL_TYPE,
           definitionName,
         );
-        // the method run resolves a definition that does not exist yet
-        if (definition === null) {
-          await this.#fallback.recordStatus(workerName, args);
-          return;
-        }
-        const repo = this.#repoContext.unifiedDataRepo;
-        const resources = workerModel.resources!;
-        // no push of its own, matching the method run's unit: a dispatching
-        // run's root carries the write, and outside one it goes to the hook
-        await runInRootUnitOfWork(
-          this.#repoContext,
-          { flush: undefined },
-          async () => {
-            const read = createResourceReader(
-              repo,
-              WORKER_MODEL_TYPE,
-              definition.id,
-              undefined,
-              undefined,
-              resources,
-            );
-            const current = parseStoredWorkerState(
-              definitionName,
-              await read(WORKER_STATE_DATA_NAME),
-            );
-            const { writeResource } = createResourceWriter(
-              repo,
-              WORKER_MODEL_TYPE,
-              definition.id,
-              resources,
-              undefined,
-              undefined,
-              definition.tags,
-              undefined,
-              definition.name,
-            );
-            await writeResource(
-              "state",
-              WORKER_STATE_DATA_NAME,
-              nextWorkerState(current, args, new Date()),
-            );
-          },
+      }
+    }
+    // the method run resolves a definition that does not exist yet
+    if (definition === null) {
+      await this.#fallback.recordStatus(workerName, args, live);
+      return true;
+    }
+    const found = definition;
+    const repo = this.#repoContext.unifiedDataRepo;
+    const resources = workerModel.resources!;
+    // no push of its own, matching the method run's unit: a dispatching
+    // run's root carries the write, and outside one it goes to the hook
+    let wrote = false;
+    await runInRootUnitOfWork(
+      this.#repoContext,
+      { flush: undefined },
+      async () => {
+        const read = createResourceReader(
+          repo,
+          WORKER_MODEL_TYPE,
+          found.id,
+          undefined,
+          undefined,
+          resources,
         );
+        const stored = await read(WORKER_STATE_DATA_NAME);
+        const storedOwnerAlive = await this.#storedOwnerAlive(stored, live);
+        if (!shouldWrite(stored, storedOwnerAlive)) return;
+        const base = statusWriteBase(
+          definitionName,
+          stored,
+          args,
+          live,
+          new Date(),
+          storedOwnerAlive,
+        );
+        if (base.kind === "skip") return;
+        const { writeResource } = createResourceWriter(
+          repo,
+          WORKER_MODEL_TYPE,
+          found.id,
+          resources,
+          undefined,
+          undefined,
+          found.tags,
+          undefined,
+          found.name,
+        );
+        await writeResource(
+          "state",
+          WORKER_STATE_DATA_NAME,
+          nextWorkerState(base.base, args, new Date()),
+        );
+        wrote = true;
       },
     );
+    return wrote;
+  }
+
+  /** an owner that cannot be judged counts as alive, so its record is left alone */
+  async #storedOwnerAlive(
+    stored: Record<string, unknown> | null,
+    live: WorkerEnrollment | undefined,
+  ): Promise<boolean> {
+    const ownerAlive = this.#ownerAlive;
+    if (ownerAlive === undefined || stored === null) return true;
+    const parsed = WorkerStateSchema.safeParse(stored);
+    const owner = parsed.success ? parsed.data.owner : undefined;
+    if (owner === undefined || live?.owner === undefined) return true;
+    if (owner.instanceId === live.owner.instanceId) return true;
+    try {
+      return await ownerAlive(owner);
+    } catch {
+      return true;
+    }
   }
 }

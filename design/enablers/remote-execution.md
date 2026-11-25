@@ -907,6 +907,44 @@ stays the interface for `swamp behavior run`. Its outputs expire after a day
 behind. The `swamp/pending-dispatch` methods declare the same lifetime for
 the outputs left from before `PendingDispatchLedger`.
 
+The serve holding a worker's connection owns that worker's record. Each status
+write carries the enrollment of the live connection (`statusWriteBase` in
+`worker_model.ts`): a record that is missing, or that names another instance, is
+rebuilt from the connection rather than refused, unless that instance is live
+and another serve owns it, and a missing definition is created again first. A
+departure (`draining`, `disconnected`) is written only over the departing
+instance's own record that this serve owns (the record's `owner`), so a serve a
+worker has left never stamps the enrollment on another serve as gone, even when
+the same worker process moved there. Two serves over one remote datastore number
+versions from their own caches, so a serve the worker left can publish versions
+that collide with the new enrollment's and a pull then brings back the old
+record. After every runtime-data pull that changed files, and after a quiet one
+at most every five minutes (`QUIET_REASSERT_INTERVAL_MS`, since a step-start
+pull may already have brought the change), the gateway rewrites the record of
+each connected worker whose record says it is gone (missing, `disconnected`,
+another instance `draining`, or its own instance owned by a dead serve it left),
+numbered above what the pull brought, and
+publishes it through the sync gate (`reassertConnected`). A record naming
+another instance that is still idle, busy or unverified, owned by another serve,
+is left alone by both rules, with a warning on reassert, so two serves holding
+one worker name never take turns overwriting it. Enrollments and departures are
+also published through the sync gate as soon as they are written, on a chain of
+their own so the reply never waits on the datastore. A publish queued while
+another waits is dropped, since the one waiting carries every write made before
+it starts. Shutdown writes and publishes the departure of every worker still
+connected before it disposes the gateway, while the store is open. From then on
+the gateway refuses enrollments (`serve_stopping`, which workers retry), writes
+no other status and reasserts nothing, and the socket closes that follow when
+the listener stops write nothing more: a
+departure written after the store closes is lost, and an unpublished one is lost
+to the next model-lock pull, which replaces the cache's latest markers with the
+remote's. If the busy write before
+a dispatch still fails, the gateway refuses the dispatch unsent with
+`state_unrecorded`. The step then goes at once to another worker that can take
+it, preferring others for the rest of its scheduling; when that worker is the
+only candidate, the step waits for it until its queue timeout instead of failing
+at once.
+
 **Worker, token and bookkeeping reaping:** `WorkerGcService` runs on the serve
 side 5 minutes after serve starts and then hourly (default grace period 24 h),
 so a serve restarted more often than hourly still reaps (swamp-club#4287). A
@@ -918,7 +956,13 @@ independent parts, so a failure in one never skips the other:
 
 - **Workers and tokens.** It prunes worker records disconnected for longer than
   the grace period, then removes their stale bindings from enrollment tokens
-  with the `prune_bindings` method. `swamp worker prune` is the CLI
+  with the `prune_bindings` method. A worker this serve holds in its pool
+  (connected, or within its reconnection grace window) is never pruned, whatever
+  its record says. A worker is deleted by the definition id its record names. A
+  record whose id is not the named definition's is removed on its own: when a
+  peer's definition holds the name, that definition and its token bindings are
+  left alone; when no definition holds it, the record's token is checked for
+  stale bindings as a deleted worker's is. `swamp worker prune` is the CLI
   equivalent. Both export the prune's stages as `worker_delete` phases (see
   [serve phase telemetry](./serve-phase-telemetry.md#worker-deletion)).
 - **Step leases and pending dispatches.** It deletes every ended record — a
@@ -929,7 +973,11 @@ independent parts, so a failure in one never skips the other:
   touched. There is no CLI equivalent; only serve writes these records.
 - **Enrollment tokens.** In the same reap, it deletes enrollment token records
   that were revoked or have expired longer than the grace period ago and that
-  no worker record (connected or not) names. Fire records and dashboard
+  no worker record (connected or not) names. A worker record it cannot read
+  stops that reap, so an unknown reference never lets a token go. A catalog
+  row whose record is gone from disk (a push that removed a peer's delete
+  leaves the row) names nothing, is not counted as unreadable in any part of
+  the reap, and is dropped from the catalog. Fire records and dashboard
   sessions are not bookkeeping: they keep their own fixed lifetimes.
 
 Both parts only list records in the repository's own namespace, and both commit

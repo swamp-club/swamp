@@ -19,9 +19,12 @@
 
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
+  enrolledWorkerState,
   nextWorkerState,
   parseStoredWorkerState,
+  reassertDecision,
   SetStatusArgsSchema,
+  statusWriteBase,
   WORKER_MODEL_TYPE,
   workerModel,
   WorkerStateSchema,
@@ -306,4 +309,262 @@ Deno.test("WorkerStateSchema: a malformed owner reads as none", () => {
     owner: { instanceId: 7 },
   });
   assertEquals(parsed.owner, undefined);
+});
+
+const liveEnrollment = { ...enrollArgs, instanceUuid: "uuid-live" };
+const at = new Date("2026-11-25T12:00:00.000Z");
+
+function storedState(
+  instanceUuid: string,
+  status: "idle" | "busy" | "disconnected" | "draining" | "unverified",
+): Record<string, unknown> {
+  return {
+    ...enrolledWorkerState({ ...enrollArgs, instanceUuid }, at),
+    status,
+  };
+}
+
+Deno.test("enrolledWorkerState: builds the record the enroll method writes", async () => {
+  const { context, store } = createInMemoryWorkerContext(
+    WORKER_MODEL_TYPE,
+    "ci-runner-3",
+  );
+  await workerModel.methods.enroll.execute(enrollArgs, context);
+  const written = WorkerStateSchema.parse(store.get("state-main"));
+  const built = enrolledWorkerState(
+    enrollArgs,
+    new Date(written.enrolledAt),
+  );
+  assertEquals(built, written);
+});
+
+Deno.test("statusWriteBase: without a live enrollment a missing record still throws", () => {
+  assertThrows(
+    () => statusWriteBase("worker-w", null, { status: "busy" }, undefined, at),
+    Error,
+    "has no recorded state",
+  );
+});
+
+Deno.test("statusWriteBase: a missing record is rebuilt from the live enrollment", () => {
+  const result = statusWriteBase(
+    "worker-w",
+    null,
+    { status: "busy" },
+    liveEnrollment,
+    at,
+  );
+  assertEquals(result.kind, "write");
+  if (result.kind !== "write") return;
+  assertEquals(result.base.instanceUuid, "uuid-live");
+  assertEquals(result.base.enrolledAt, at.toISOString());
+});
+
+Deno.test("statusWriteBase: another instance's record is replaced for an in-pool status", () => {
+  const result = statusWriteBase(
+    "worker-w",
+    storedState("uuid-old", "disconnected"),
+    { status: "idle" },
+    liveEnrollment,
+    at,
+  );
+  assertEquals(result.kind, "write");
+  if (result.kind !== "write") return;
+  assertEquals(result.base.instanceUuid, "uuid-live");
+});
+
+Deno.test("statusWriteBase: the record of the same instance is kept as the base", () => {
+  const stored = storedState("uuid-live", "busy");
+  const result = statusWriteBase(
+    "worker-w",
+    stored,
+    { status: "idle" },
+    liveEnrollment,
+    at,
+  );
+  assertEquals(result, {
+    kind: "write",
+    base: WorkerStateSchema.parse(stored),
+  });
+});
+
+Deno.test("statusWriteBase: a departure never stamps another instance's record", () => {
+  for (const status of ["disconnected", "draining"] as const) {
+    assertEquals(
+      statusWriteBase(
+        "worker-w",
+        storedState("uuid-newer", "idle"),
+        { status },
+        liveEnrollment,
+        at,
+      ),
+      { kind: "skip" },
+    );
+    assertEquals(
+      statusWriteBase("worker-w", null, { status }, liveEnrollment, at),
+      { kind: "skip" },
+    );
+  }
+});
+
+Deno.test("statusWriteBase: a disconnect of the recorded instance is written", () => {
+  const result = statusWriteBase(
+    "worker-w",
+    storedState("uuid-live", "idle"),
+    { status: "disconnected" },
+    liveEnrollment,
+    at,
+  );
+  assertEquals(result.kind, "write");
+});
+
+Deno.test("reassertDecision: rewrites a record that says the worker is gone, and leaves another serve's live instance", () => {
+  const thisServe = { instanceId: "serve-a", pid: 10 };
+  const otherServe = { instanceId: "serve-b", pid: 20 };
+  const live = { ...liveEnrollment, owner: thisServe };
+  const parse = (
+    uuid: string,
+    status: Parameters<typeof storedState>[1],
+    owner?: { instanceId: string; pid: number },
+  ) =>
+    WorkerStateSchema.parse({
+      ...storedState(uuid, status),
+      ...(owner ? { owner } : {}),
+    });
+  assertEquals(reassertDecision(null, live), "rewrite");
+  assertEquals(
+    reassertDecision(parse("uuid-live", "disconnected"), live),
+    "rewrite",
+  );
+  assertEquals(reassertDecision(parse("uuid-live", "idle"), live), "keep");
+  assertEquals(
+    reassertDecision(parse("uuid-live", "idle", thisServe), live),
+    "keep",
+  );
+  assertEquals(
+    reassertDecision(parse("uuid-live", "idle", otherServe), live),
+    "keep",
+  );
+  assertEquals(
+    reassertDecision(parse("uuid-live", "idle", otherServe), live, false),
+    "rewrite",
+  );
+  assertEquals(
+    reassertDecision(parse("uuid-old", "disconnected", otherServe), live),
+    "rewrite",
+  );
+  assertEquals(
+    reassertDecision(parse("uuid-old", "draining", otherServe), live),
+    "rewrite",
+  );
+  for (const status of ["idle", "busy", "unverified"] as const) {
+    assertEquals(
+      reassertDecision(parse("uuid-other", status, otherServe), live),
+      "live_elsewhere",
+    );
+    assertEquals(
+      reassertDecision(parse("uuid-other", status, thisServe), live),
+      "rewrite",
+    );
+    assertEquals(
+      reassertDecision(parse("uuid-other", status), live),
+      "rewrite",
+    );
+  }
+});
+
+Deno.test("statusWriteBase: an in-pool write leaves another serve's live instance and rebuilds over a gone one", () => {
+  const thisServe = { instanceId: "serve-a", pid: 10 };
+  const otherServe = { instanceId: "serve-b", pid: 20 };
+  const live = { ...liveEnrollment, owner: thisServe };
+  const liveThere = { ...storedState("uuid-other", "idle"), owner: otherServe };
+  assertEquals(
+    statusWriteBase("worker-w", liveThere, { status: "busy" }, live, at),
+    { kind: "skip" },
+  );
+  const goneThere = {
+    ...storedState("uuid-other", "disconnected"),
+    owner: otherServe,
+  };
+  const rebuilt = statusWriteBase(
+    "worker-w",
+    goneThere,
+    { status: "busy" },
+    live,
+    at,
+  );
+  assertEquals(rebuilt.kind, "write");
+});
+
+Deno.test("statusWriteBase: a departure skips the same instance's record when another serve owns it", () => {
+  const thisServe = { instanceId: "serve-a", pid: 10 };
+  const otherServe = { instanceId: "serve-b", pid: 20 };
+  const live = { ...liveEnrollment, owner: thisServe };
+  const movedAway = { ...storedState("uuid-live", "idle"), owner: otherServe };
+  assertEquals(
+    statusWriteBase(
+      "worker-w",
+      movedAway,
+      { status: "disconnected" },
+      live,
+      at,
+    ),
+    { kind: "skip" },
+  );
+  const stillOurs = { ...storedState("uuid-live", "idle"), owner: thisServe };
+  assertEquals(
+    statusWriteBase("worker-w", stillOurs, { status: "disconnected" }, live, at)
+      .kind,
+    "write",
+  );
+  const unowned = storedState("uuid-live", "idle");
+  assertEquals(
+    statusWriteBase("worker-w", unowned, { status: "disconnected" }, live, at)
+      .kind,
+    "write",
+  );
+});
+
+Deno.test("statusWriteBase: a malformed stored record is rebuilt for an in-pool status and left for a departure", () => {
+  const malformed = { name: 42 };
+  const rebuilt = statusWriteBase(
+    "worker-w",
+    malformed,
+    { status: "busy" },
+    liveEnrollment,
+    at,
+  );
+  assertEquals(rebuilt.kind, "write");
+  if (rebuilt.kind === "write") {
+    assertEquals(rebuilt.base.instanceUuid, "uuid-live");
+  }
+  assertEquals(
+    statusWriteBase(
+      "worker-w",
+      malformed,
+      { status: "disconnected" },
+      liveEnrollment,
+      at,
+    ),
+    { kind: "skip" },
+  );
+});
+
+Deno.test("statusWriteBase and reassertDecision: a record a dead serve left is taken over", () => {
+  const thisServe = { instanceId: "serve-a", pid: 10 };
+  const deadServe = { instanceId: "serve-gone", pid: 30 };
+  const live = { ...liveEnrollment, owner: thisServe };
+  const left = { ...storedState("uuid-old", "idle"), owner: deadServe };
+  assertEquals(
+    statusWriteBase("worker-w", left, { status: "busy" }, live, at, false)
+      .kind,
+    "write",
+  );
+  assertEquals(
+    statusWriteBase("worker-w", left, { status: "busy" }, live, at, true),
+    { kind: "skip" },
+  );
+  const parsed = WorkerStateSchema.parse(left);
+  assertEquals(reassertDecision(parsed, live, false), "rewrite");
+  assertEquals(reassertDecision(parsed, live, true), "live_elsewhere");
 });

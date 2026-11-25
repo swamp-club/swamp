@@ -21,6 +21,7 @@ import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import type { DataRecord } from "../domain/data/data_record.ts";
 import type { Namespace } from "../domain/data/namespace.ts";
 import type { ModelType } from "../domain/models/model_type.ts";
+import type { DataQueryService } from "../domain/data/data_query_service.ts";
 import {
   type BookkeepingGcDeps,
   bookkeepingListPredicate,
@@ -118,6 +119,9 @@ function harness(opts: {
   missingOnDisk?: Set<string>;
   unreadableBody?: Set<string>;
   corruptBody?: Set<string>;
+  vanishedBody?: Set<string>;
+  markerMissing?: Set<string>;
+  dropped?: string[];
 }): Harness {
   const events: string[] = [];
   const predicates: string[] = [];
@@ -151,12 +155,21 @@ function harness(opts: {
     },
     repo: {
       namespace: "team-a" as Namespace,
-      getContent: (_type: ModelType | string, id: string, name: string) => {
+      getContent: (
+        _type: ModelType | string,
+        id: string,
+        name: string,
+        version?: number,
+      ) => {
         if (opts.unreadableBody?.has(name)) {
           return Promise.reject(new Error(`EIO reading ${name}`));
         }
         if (opts.corruptBody?.has(name)) {
           return Promise.resolve(new TextEncoder().encode("{not json"));
+        }
+        if (opts.vanishedBody?.has(name)) return Promise.resolve(null);
+        if (opts.markerMissing?.has(name) && version === undefined) {
+          return Promise.resolve(null);
         }
         const body = bodies.get(key(id, name));
         return Promise.resolve(
@@ -189,6 +202,13 @@ function harness(opts: {
     },
     syncGate: gate,
     batchSize: opts.batchSize,
+    ...(opts.dropped === undefined ? {} : {
+      dropVanishedRows: (rows) => {
+        opts.dropped!.push(
+          ...rows.map((r) => `${r.modelType.normalized}:${r.name}`),
+        );
+      },
+    }),
     ...(opts.workerTokenNames === undefined ? {} : {
       listWorkerTokenNames: () => {
         const names = opts.workerTokenNames;
@@ -443,6 +463,34 @@ Deno.test("reapEndedBookkeepingRecords: an unreadable or corrupt record is skipp
   assertEquals(result.dispatchesDeleted, 1);
 });
 
+Deno.test("reapEndedBookkeepingRecords: a row whose record is gone from disk is not unreadable and its row is dropped", async () => {
+  const dropped: string[] = [];
+  const h = harness({
+    leases: [
+      leaseRecord("gone", "completed", OLD),
+      leaseRecord("ok", "completed", OLD),
+    ],
+    vanishedBody: new Set(["lease-gone"]),
+    dropped,
+  });
+  const result = await reapEndedBookkeepingRecords(h.deps, GRACE);
+  assertEquals(result.unreadable, 0);
+  assertEquals(result.leasesDeleted, 1);
+  assertEquals(dropped, ["swamp/step-lease:lease-gone"]);
+});
+
+Deno.test("reapEndedBookkeepingRecords: a record whose latest marker is missing for a moment is not gone", async () => {
+  const dropped: string[] = [];
+  const h = harness({
+    leases: [leaseRecord("moving", "completed", OLD)],
+    markerMissing: new Set(["lease-moving"]),
+    dropped,
+  });
+  const result = await reapEndedBookkeepingRecords(h.deps, GRACE);
+  assertEquals(dropped, []);
+  assertEquals(result.unreadable, 1);
+});
+
 const FUTURE = new Date(NOW + 10 * GRACE).toISOString();
 
 Deno.test("enrollmentTokenListPredicate: scopes to token records in the own namespace", () => {
@@ -542,18 +590,140 @@ Deno.test("createWorkerTokenNameQuery: collects worker token names from the own 
   const list = createWorkerTokenNameQuery({
     query: (predicate, options) => {
       seen.push({ predicate, select: options?.select });
-      return Promise.resolve(["fleet", "solo", "fleet"]);
+      return Promise.resolve([["w1", "fleet"], ["w2", "solo"], [
+        "w3",
+        "fleet",
+      ]]);
     },
   }, "team-a");
   assertEquals([...await list()].sort(), ["fleet", "solo"]);
   assertStringIncludes(seen[0].predicate, '"swamp/worker"');
   assertStringIncludes(seen[0].predicate, 'ns == "team-a"');
-  assertEquals(seen[0].select, "attributes.tokenName");
+  assertEquals(seen[0].select, "[modelId, attributes.tokenName]");
 });
 
 Deno.test("createWorkerTokenNameQuery: a worker without a readable token name fails the lookup", async () => {
   const list = createWorkerTokenNameQuery({
-    query: () => Promise.resolve(["fleet", undefined]),
+    query: () => Promise.resolve([["w1", "fleet"], null]),
   }, "team-a");
   await assertRejects(() => list());
+});
+
+function rowsThenIds(
+  rows: unknown[],
+  ids: string[],
+): Pick<DataQueryService, "query"> {
+  return {
+    query: (_predicate, options) =>
+      Promise.resolve(options?.select === "modelId" ? ids : rows),
+  };
+}
+
+Deno.test("createWorkerTokenNameQuery: a row whose record is gone from disk is skipped and its row dropped", async () => {
+  const cleared: string[] = [];
+  const list = createWorkerTokenNameQuery(
+    rowsThenIds([["w1", "fleet"], null, ["w2", "solo"]], ["w1", "gone", "w2"]),
+    "team-a",
+    {
+      repo: {
+        listVersions: () => Promise.resolve([1]),
+        getContent: (_type, modelId) =>
+          Promise.resolve(
+            modelId === "gone" ? null : new TextEncoder().encode("{}"),
+          ),
+      },
+      onVanished: (ids) => cleared.push(...ids),
+    },
+  );
+  assertEquals([...await list()].sort(), ["fleet", "solo"]);
+  assertEquals(cleared, ["gone"]);
+});
+
+Deno.test("createWorkerTokenNameQuery: a record still on disk without a token name still fails the lookup", async () => {
+  let refreshed = 0;
+  const list = createWorkerTokenNameQuery(
+    rowsThenIds([["w1", undefined]], ["w1"]),
+    "team-a",
+    {
+      repo: {
+        listVersions: () => Promise.resolve([1]),
+        getContent: () => Promise.resolve(new TextEncoder().encode("{}")),
+      },
+      onVanished: () => refreshed++,
+    },
+  );
+  await assertRejects(() => list());
+  assertEquals(refreshed, 0);
+});
+
+Deno.test("createWorkerTokenNameQuery: an unreadable record body fails the lookup", async () => {
+  const list = createWorkerTokenNameQuery(
+    rowsThenIds([null], ["w1"]),
+    "team-a",
+    {
+      repo: {
+        listVersions: () => Promise.resolve([1]),
+        getContent: () => Promise.reject(new Error("unreadable content")),
+      },
+      onVanished: () => {},
+    },
+  );
+  await assertRejects(() => list());
+});
+
+Deno.test("createWorkerTokenNameQuery: an unresolved row the id listing does not account for fails the lookup", async () => {
+  const list = createWorkerTokenNameQuery(
+    rowsThenIds([["w1", "fleet"], null], ["w1"]),
+    "team-a",
+    {
+      repo: {
+        listVersions: () => Promise.resolve([]),
+        getContent: () => Promise.resolve(null),
+      },
+      onVanished: () => {},
+    },
+  );
+  await assertRejects(() => list());
+});
+
+Deno.test("createWorkerTokenNameQuery: a worker record whose latest marker is missing for a moment still fails the lookup", async () => {
+  let dropped = 0;
+  const list = createWorkerTokenNameQuery(
+    rowsThenIds([null], ["w1"]),
+    "team-a",
+    {
+      repo: {
+        listVersions: () => Promise.resolve([3]),
+        getContent: (_type, _id, _name, version) =>
+          Promise.resolve(
+            version === undefined ? null : new TextEncoder().encode("{}"),
+          ),
+      },
+      onVanished: () => dropped++,
+    },
+  );
+  await assertRejects(() => list());
+  assertEquals(dropped, 0);
+});
+
+Deno.test("createWorkerTokenNameQuery: a marker naming a version a peer replaced reads the token name from the newest body", async () => {
+  let dropped = 0;
+  const list = createWorkerTokenNameQuery(
+    rowsThenIds([["w1", "fleet"], null], ["w1", "w2"]),
+    "team-a",
+    {
+      repo: {
+        listVersions: () => Promise.resolve([2, 3, 5]),
+        getContent: (_type, id, _name, version) =>
+          Promise.resolve(
+            id === "w2" && version === 3
+              ? new TextEncoder().encode(JSON.stringify({ tokenName: "solo" }))
+              : null,
+          ),
+      },
+      onVanished: () => dropped++,
+    },
+  );
+  assertEquals([...await list()].sort(), ["fleet", "solo"]);
+  assertEquals(dropped, 0);
 });

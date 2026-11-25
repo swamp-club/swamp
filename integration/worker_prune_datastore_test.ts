@@ -110,14 +110,17 @@ Deno.test("integration: worker prune deletes a worker auto-definition kept in th
             Promise.resolve([{
               name: "w1",
               definitionName: "worker-w1",
+              definitionId: definition.id,
               status: "disconnected",
               tokenName: "tok",
               disconnectedAt: new Date(0).toISOString(),
             }]),
           listTokens: () => Promise.resolve([]),
-          deleteWorker: (definitionName) =>
+          deleteWorker: (definitionId, definitionName) =>
             modelDelete(ctx, deleteDeps, {
-              modelIdOrName: definitionName,
+              modelIdOrName: definitionId,
+              byId: true,
+              expectedName: definitionName,
               force: true,
             }),
           pruneBindings: () => {

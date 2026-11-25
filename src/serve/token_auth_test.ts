@@ -31,6 +31,7 @@ import {
   readServerTokenRecord,
   type ServerTokenAuthDeps,
   ServerTokenNotFoundError,
+  setServerTokenRecordRefresh,
   setTokenRefusalNodeState,
   shouldInvalidateDashboardSession,
   splitServerToken,
@@ -1238,4 +1239,65 @@ Deno.test("authenticateDashboardSession: a session serve cannot classify is refu
   if (result.ok) return;
   assertEquals(result.reason, "vault-error");
   assertEquals(shouldInvalidateDashboardSession(result.reason), false);
+});
+
+Deno.test("authenticateServerToken: a cache holding another mint's record takes the datastore's paired one and authenticates", async () => {
+  let current = activeToken({
+    principalId: "user:minter-a",
+    secretFingerprint: await serverTokenSecretFingerprint("secret-of-mint-a"),
+  });
+  const refreshed: string[] = [];
+  setServerTokenRecordRefresh(async (name, secret) => {
+    refreshed.push(name);
+    current = activeToken({
+      principalId: "user:minter-b",
+      secretFingerprint: await serverTokenSecretFingerprint(secret),
+    });
+    return true;
+  });
+  try {
+    const result = await authenticateWithDeps(
+      "test-token.secret-of-mint-b",
+      makeAuthDeps({
+        readToken: () => Promise.resolve(current),
+        readSecret: () => Promise.resolve("secret-of-mint-b"),
+      }),
+    );
+    assertEquals(result.ok, true);
+    assertEquals(refreshed, ["test-token"]);
+  } finally {
+    setServerTokenRecordRefresh(undefined);
+  }
+});
+
+Deno.test("authenticateServerToken: a refresh that finds nothing better, or fails, still refuses the mismatch", async () => {
+  for (
+    const refresh of [
+      () => Promise.resolve(false),
+      () => Promise.reject(new Error("bucket unreachable")),
+    ]
+  ) {
+    setServerTokenRecordRefresh(refresh);
+    try {
+      const result = await authenticateWithDeps(
+        "test-token.secret-of-mint-b",
+        makeAuthDeps({
+          readToken: async () =>
+            activeToken({
+              secretFingerprint: await serverTokenSecretFingerprint(
+                "secret-of-mint-a",
+              ),
+            }),
+          readSecret: () => Promise.resolve("secret-of-mint-b"),
+        }),
+      );
+      assertEquals(result.ok, false);
+      assertEquals(
+        (result as { reason?: string }).reason,
+        "mispaired-secret",
+      );
+    } finally {
+      setServerTokenRecordRefresh(undefined);
+    }
+  }
 });

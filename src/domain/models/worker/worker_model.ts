@@ -93,7 +93,7 @@ export function workerDefinitionName(workerName: string): string {
   return `worker-${workerName}`;
 }
 
-const EnrollArgsSchema = z.object({
+export const WorkerEnrollmentSchema = z.object({
   instanceUuid: z.string().min(1),
   tokenName: z.string().min(1),
   workerName: z.string().min(1).optional(),
@@ -108,12 +108,15 @@ const EnrollArgsSchema = z.object({
   owner: OrchestratorOwnerSchema.optional(),
 });
 
-async function enroll(
-  args: z.infer<typeof EnrollArgsSchema>,
-  context: MethodContext,
-): Promise<MethodResult> {
-  const now = new Date().toISOString();
-  const state: WorkerState = {
+export type WorkerEnrollment = z.input<typeof WorkerEnrollmentSchema>;
+
+export function enrolledWorkerState(
+  enrollment: WorkerEnrollment,
+  at: Date,
+): WorkerState {
+  const args = WorkerEnrollmentSchema.parse(enrollment);
+  const now = at.toISOString();
+  return {
     name: args.workerName ?? args.tokenName,
     instanceUuid: args.instanceUuid,
     tokenName: args.tokenName,
@@ -132,10 +135,16 @@ async function enroll(
     activeDispatchIds: [],
     ...(args.owner !== undefined ? { owner: args.owner } : {}),
   };
+}
+
+async function enroll(
+  args: WorkerEnrollment,
+  context: MethodContext,
+): Promise<MethodResult> {
   const handle = await context.writeResource!(
     "state",
     WORKER_STATE_DATA_NAME,
-    state,
+    enrolledWorkerState(args, new Date()),
   );
   return { dataHandles: [handle] };
 }
@@ -177,6 +186,86 @@ export function nextWorkerState(
   };
 }
 
+export type StatusWriteBase =
+  | { kind: "write"; base: WorkerState }
+  | { kind: "skip" };
+
+/**
+ * the state a status change applies to: a serve holding the connection owns the
+ * record, so it rebuilds one that is missing or another instance's, and never
+ * stamps a newer enrollment's record draining or disconnected
+ */
+export function statusWriteBase(
+  definitionName: string,
+  stored: Record<string, unknown> | null,
+  args: SetStatusArgs,
+  live: WorkerEnrollment | undefined,
+  now: Date,
+  storedOwnerAlive = true,
+): StatusWriteBase {
+  if (live === undefined) {
+    return {
+      kind: "write",
+      base: parseStoredWorkerState(definitionName, stored),
+    };
+  }
+  const parsed = stored === null ? null : WorkerStateSchema.safeParse(stored);
+  const current = parsed?.success === true ? parsed.data : null;
+  const sameInstance = current !== null &&
+    current.instanceUuid === live.instanceUuid;
+  if (args.status === "disconnected" || args.status === "draining") {
+    // a worker process that moved to another serve keeps its instance
+    const sameOwner = current?.owner === undefined ||
+      live.owner === undefined ||
+      current.owner.instanceId === live.owner.instanceId;
+    return sameInstance && sameOwner
+      ? { kind: "write", base: current }
+      : { kind: "skip" };
+  }
+  if (sameInstance) return { kind: "write", base: current };
+  // another serve's live worker of the same name keeps its record
+  if (current !== null && storedOwnerAlive && liveElsewhere(current, live)) {
+    return { kind: "skip" };
+  }
+  return { kind: "write", base: enrolledWorkerState(live, now) };
+}
+
+function ownedElsewhere(current: WorkerState, live: WorkerEnrollment): boolean {
+  return current.owner !== undefined && live.owner !== undefined &&
+    current.owner.instanceId !== live.owner.instanceId;
+}
+
+function liveElsewhere(current: WorkerState, live: WorkerEnrollment): boolean {
+  return current.status !== "disconnected" && current.status !== "draining" &&
+    ownedElsewhere(current, live);
+}
+
+export type ReassertDecision = "rewrite" | "keep" | "live_elsewhere";
+
+/**
+ * whether a serve holding a worker's connection rewrites its stored record: not
+ * when another serve owns a live instance of the name, so two serves holding
+ * one name never take turns overwriting it
+ */
+export function reassertDecision(
+  stored: WorkerState | null,
+  live: WorkerEnrollment,
+  storedOwnerAlive = true,
+): ReassertDecision {
+  if (stored === null) return "rewrite";
+  if (stored.instanceUuid === live.instanceUuid) {
+    // a dead serve the worker left can still own it; this serve's departure would skip such a record
+    return stored.status === "disconnected" ||
+        (ownedElsewhere(stored, live) && !storedOwnerAlive)
+      ? "rewrite"
+      : "keep";
+  }
+  // a record a dead serve left says nothing about a live worker
+  return storedOwnerAlive && liveElsewhere(stored, live)
+    ? "live_elsewhere"
+    : "rewrite";
+}
+
 async function setStatus(
   args: SetStatusArgs,
   context: MethodContext,
@@ -212,7 +301,7 @@ export const workerModel: ModelDefinition = defineModel({
     enroll: {
       description: "Record a worker's admission into the pool",
       kind: "create",
-      arguments: EnrollArgsSchema,
+      arguments: WorkerEnrollmentSchema,
       execute: enroll,
     },
     set_status: {

@@ -36,7 +36,10 @@ import {
   isReapableLease,
 } from "../domain/models/worker/bookkeeping_retention.ts";
 import { ENROLLMENT_TOKEN_MODEL_TYPE } from "../domain/models/worker/enrollment_token_model.ts";
-import { WORKER_MODEL_TYPE } from "../domain/models/worker/worker_model.ts";
+import {
+  WORKER_MODEL_TYPE,
+  WORKER_STATE_DATA_NAME,
+} from "../domain/models/worker/worker_model.ts";
 import {
   PENDING_DISPATCH_INSTANCE_NAME,
   PENDING_DISPATCH_MODEL_TYPE,
@@ -69,6 +72,10 @@ export interface BookkeepingRecordRef {
   readonly name: string;
 }
 
+export interface VanishedRecordRow extends BookkeepingRecordRef {
+  readonly modelType: ModelType;
+}
+
 export interface BookkeepingGcDeps {
   /**
    * lists records without reading bodies; bodies are read one by one afterwards
@@ -93,6 +100,8 @@ export interface BookkeepingGcDeps {
    * names is kept; when it throws, no token is reaped that cycle
    */
   listWorkerTokenNames?(): Promise<ReadonlySet<string>>;
+  /** the catalog keeps rows whose files a push removed for a peer's delete */
+  dropVanishedRows?(rows: readonly VanishedRecordRow[]): void;
   now?(): number;
 }
 
@@ -118,25 +127,80 @@ export function createBookkeepingRecordQuery(
 
 /**
  * throws when a worker record has no readable token name, so an unknown
- * reference never lets a token go
+ * reference never lets a token go; a row whose record is gone from disk (a
+ * push removed a peer's delete under the catalog) references nothing
  */
 export function createWorkerTokenNameQuery(
   dataQueryService: Pick<DataQueryService, "query">,
   namespace: string,
+  vanished?: {
+    repo: Pick<UnifiedDataRepository, "getContent" | "listVersions">;
+    /** the catalog keeps rows whose files are gone, so the caller drops them */
+    onVanished: (modelIds: readonly string[]) => void;
+  },
 ): () => Promise<ReadonlySet<string>> {
+  const predicate =
+    `modelType == ${JSON.stringify(WORKER_MODEL_TYPE.normalized)} && ` +
+    `name == "state-main" && ${ownNamespaceTerm(namespace)}`;
   return async () => {
-    const rows = await dataQueryService.query(
-      `modelType == ${JSON.stringify(WORKER_MODEL_TYPE.normalized)} && ` +
-        `name == "state-main" && ${ownNamespaceTerm(namespace)}`,
-      { select: "attributes.tokenName" },
-    );
+    const rows = await dataQueryService.query(predicate, {
+      select: "[modelId, attributes.tokenName]",
+    });
     const names = new Set<string>();
+    const resolved = new Set<string>();
+    let unresolved = 0;
     for (const row of rows) {
-      if (typeof row !== "string" || row.length === 0) {
+      const [modelId, tokenName] = Array.isArray(row) ? row : [];
+      if (
+        typeof modelId === "string" && typeof tokenName === "string" &&
+        tokenName.length > 0
+      ) {
+        names.add(tokenName);
+        resolved.add(modelId);
+      } else {
+        unresolved++;
+      }
+    }
+    if (unresolved === 0) return names;
+    if (vanished === undefined) {
+      throw new Error("a worker record has no readable token name");
+    }
+    // a metadata select reads no bodies, so it names every row's record
+    const ids = await dataQueryService.query(predicate, { select: "modelId" });
+    const gone: string[] = [];
+    let recovered = 0;
+    for (const id of ids) {
+      if (typeof id !== "string" || resolved.has(id)) continue;
+      const content = await vanished.repo.getContent(
+        WORKER_MODEL_TYPE,
+        id,
+        WORKER_STATE_DATA_NAME,
+      );
+      if (content !== null) {
         throw new Error("a worker record has no readable token name");
       }
-      names.add(row);
+      // a peer's lower version can leave the marker naming one that is gone
+      const older = await newestBody(
+        vanished.repo,
+        WORKER_MODEL_TYPE,
+        id,
+        WORKER_STATE_DATA_NAME,
+      );
+      if (older === null) {
+        gone.push(id);
+        continue;
+      }
+      const tokenName = workerTokenNameOf(older);
+      if (tokenName === undefined) {
+        throw new Error("a worker record has no readable token name");
+      }
+      names.add(tokenName);
+      recovered++;
     }
+    if (gone.length + recovered < unresolved) {
+      throw new Error("a worker record has no readable token name");
+    }
+    if (gone.length > 0) vanished.onVanished(gone);
     return names;
   };
 }
@@ -178,22 +242,63 @@ export function bookkeepingListPredicate(
 
 const decoder = new TextDecoder();
 
+const GONE = Symbol("gone");
+
+// a pull replacing the latest marker leaves it missing for a moment, so every version is checked
+async function newestBody(
+  repo: Pick<UnifiedDataRepository, "getContent" | "listVersions">,
+  modelType: ModelType,
+  modelId: string,
+  name: string,
+): Promise<Uint8Array | null> {
+  const versions = await repo.listVersions(modelType, modelId, name);
+  for (const version of [...versions].sort((a, b) => b - a)) {
+    const body = await repo.getContent(modelType, modelId, name, version);
+    if (body !== null) return body;
+  }
+  return null;
+}
+
+async function bodyGone(
+  repo: Pick<UnifiedDataRepository, "getContent" | "listVersions">,
+  modelType: ModelType,
+  modelId: string,
+  name: string,
+): Promise<boolean> {
+  return await newestBody(repo, modelType, modelId, name) === null;
+}
+
+function workerTokenNameOf(body: Uint8Array): string | undefined {
+  try {
+    const parsed = JSON.parse(decoder.decode(body)) as { tokenName?: unknown };
+    return typeof parsed.tokenName === "string" && parsed.tokenName.length > 0
+      ? parsed.tokenName
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
- * null when the body is missing, unreadable or not JSON, logged; the record is
- * kept and the sweep continues
+ * GONE when the body is no longer on disk; null when it is unreadable or not
+ * JSON, logged; the record is kept and the sweep continues
  */
 async function readAttributes(
   deps: BookkeepingGcDeps,
   modelType: ModelType,
   record: BookkeepingRecordRef,
-): Promise<unknown | null> {
+): Promise<unknown | null | typeof GONE> {
   try {
     const content = await deps.repo.getContent(
       modelType,
       record.modelId,
       record.name,
     );
-    if (content === null) return null;
+    if (content === null) {
+      return await bodyGone(deps.repo, modelType, record.modelId, record.name)
+        ? GONE
+        : null;
+    }
     return JSON.parse(decoder.decode(content));
   } catch (error) {
     logger.warn("Skipping unreadable {kind} record {dataName}: {error}", {
@@ -277,6 +382,7 @@ async function listCandidates(
   isStopping: () => boolean,
 ): Promise<{ candidates: ReapCandidate[]; unreadable: number }> {
   const candidates: ReapCandidate[] = [];
+  const vanished: VanishedRecordRow[] = [];
   let unreadable = 0;
 
   if (isStopping()) return { candidates, unreadable };
@@ -290,6 +396,10 @@ async function listCandidates(
     for (const record of records) {
       if (isStopping()) return { candidates: [], unreadable };
       const attrs = await readAttributes(deps, spec.modelType, record);
+      if (attrs === GONE) {
+        vanished.push({ modelType: spec.modelType, ...record });
+        continue;
+      }
       if (attrs === null) {
         unreadable++;
         continue;
@@ -304,6 +414,7 @@ async function listCandidates(
     }
   }
 
+  if (vanished.length > 0) deps.dropVanishedRows?.(vanished);
   return { candidates, unreadable };
 }
 

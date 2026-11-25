@@ -26,6 +26,7 @@ import {
 } from "@std/assert";
 import {
   SERVER_TOKEN_MODEL_TYPE,
+  ServerTokenConcurrentChangeError,
   serverTokenModel,
   ServerTokenSchema,
   serverTokenSecretFingerprint,
@@ -791,3 +792,100 @@ for (const reserved of ["swda1", "swdr1", "swdx1", "swi1"]) {
     assertEquals(harness.store.has("token-main"), false);
   });
 }
+
+type Harness = Awaited<ReturnType<typeof mintToken>>;
+
+// a writer that took the lock this one lost: it replaces the secret on the nth read
+function withConcurrentWriter(h: Harness, onRead: number) {
+  const vault = h.context.vaultService!;
+  let reads = 0;
+  return {
+    ...h.context,
+    vaultService: {
+      ...vault,
+      get: async (vaultName: string, secretKey: string) => {
+        reads++;
+        if (reads === onRead) {
+          h.vault.set(`${vaultName}/${secretKey}`, "another-writers-secret");
+        }
+        return await vault.get(vaultName, secretKey);
+      },
+    } as typeof vault,
+  };
+}
+
+Deno.test("serverTokenModel: rotate writes its record when the read-back fails, so its secret is not stranded", async () => {
+  const h = await mintToken();
+  const vault = h.context.vaultService!;
+  const context = {
+    ...h.context,
+    vaultService: {
+      ...vault,
+      get: () => Promise.reject(new Error("vault unreachable")),
+    } as unknown as typeof vault,
+  };
+  await serverTokenModel.methods.rotate.execute({}, context);
+  const record = ServerTokenSchema.parse(h.store.get("token-main"));
+  const secret = h.vault.get(`local/${serverTokenSecretKey("user-token-1")}`)!;
+  await verifyServerTokenSecret(record, secret);
+});
+
+Deno.test("serverTokenModel: rotate writes no record when another writer replaces its new secret", async () => {
+  const h = await mintToken();
+  const recordBefore = h.store.get("token-main");
+  await assertRejects(
+    () =>
+      serverTokenModel.methods.rotate.execute({}, withConcurrentWriter(h, 2)),
+    ServerTokenConcurrentChangeError,
+  );
+  assertEquals(h.store.get("token-main"), recordBefore);
+});
+
+Deno.test("serverTokenModel: rotate repairs a token whose record and secret already disagree", async () => {
+  const h = await mintToken();
+  h.vault.set(`local/${serverTokenSecretKey("user-token-1")}`, "drifted");
+  await serverTokenModel.methods.rotate.execute({}, h.context);
+  const record = ServerTokenSchema.parse(h.store.get("token-main"));
+  const secret = h.vault.get(`local/${serverTokenSecretKey("user-token-1")}`)!;
+  await verifyServerTokenSecret(record, secret);
+});
+
+Deno.test("serverTokenModel: mint writes no record when another writer replaces its secret", async () => {
+  const h = createInMemoryWorkerContext(SERVER_TOKEN_MODEL_TYPE, "racing");
+  const vault = h.context.vaultService!;
+  let reads = 0;
+  const context = {
+    ...h.context,
+    vaultService: {
+      ...vault,
+      get: async (vaultName: string, secretKey: string) => {
+        if (++reads === 2) {
+          h.vault.set(`${vaultName}/${secretKey}`, "another-writers-secret");
+        }
+        return await vault.get(vaultName, secretKey);
+      },
+    } as typeof vault,
+  };
+  await assertRejects(
+    () => serverTokenModel.methods.mint.execute(mintArgs, context),
+    ServerTokenConcurrentChangeError,
+  );
+  assertEquals(h.store.get("token-main"), undefined);
+});
+
+Deno.test("serverTokenModel: rotate is not stopped by a store that briefly serves the previous secret", async () => {
+  const h = await mintToken();
+  const key = `local/${serverTokenSecretKey("user-token-1")}`;
+  const previous = h.vault.get(key)!;
+  const vault = h.context.vaultService!;
+  const context = {
+    ...h.context,
+    vaultService: {
+      ...vault,
+      get: () => Promise.resolve(previous),
+    } as unknown as typeof vault,
+  };
+  await serverTokenModel.methods.rotate.execute({}, context);
+  const record = ServerTokenSchema.parse(h.store.get("token-main"));
+  await verifyServerTokenSecret(record, h.vault.get(key)!);
+});

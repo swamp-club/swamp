@@ -78,7 +78,7 @@ export const ServerTokenSchema = z.object({
 
 export type ServerToken = z.infer<typeof ServerTokenSchema>;
 
-const TOKEN_DATA_NAME = "token-main";
+export const TOKEN_DATA_NAME = "token-main";
 
 const DEFAULT_DURATION_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -160,6 +160,52 @@ export class ServerTokenSecretMismatchError extends Error {
 }
 
 /**
+ * another writer changed the token's secret while this one ran without its
+ * lock; this one wrote nothing further, so the token stays the other writer's
+ */
+export class ServerTokenConcurrentChangeError extends Error {
+  constructor(name: string) {
+    super(
+      `Server token '${name}' was changed by another operation while this one ` +
+        `ran, so this one kept nothing — check the token and try again`,
+    );
+    this.name = "ServerTokenConcurrentChangeError";
+  }
+}
+
+async function readSecret(
+  context: MethodContext,
+  vaultName: string,
+  secretKey: string,
+): Promise<string | undefined> {
+  try {
+    return await context.vaultService!.get(
+      vaultName,
+      secretKey,
+      "model:server-token-write",
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * true only when the vault answers with a third secret: a read that fails
+ * judges nothing, and a store that briefly serves the previous value after a
+ * write is not another writer; stopping then would strand the secret written
+ */
+async function secretReplaced(
+  context: MethodContext,
+  vaultName: string,
+  secretKey: string,
+  written: string,
+  previous: string | undefined,
+): Promise<boolean> {
+  const current = await readSecret(context, vaultName, secretKey);
+  return current !== undefined && current !== written && current !== previous;
+}
+
+/**
  * record and secret live in separate stores, so two writers of one name can
  * leave mismatched mints; a record without a fingerprint predates the check and
  * passes
@@ -230,7 +276,20 @@ async function mint(
   const name = context.definition.name;
   const secretKey = serverTokenSecretKey(name);
   const plaintext = generateOpaqueToken();
+  const previous = await readSecret(context, args.vaultName, secretKey);
   await context.vaultService.put(args.vaultName, secretKey, plaintext);
+  // a writer that took the lock this one lost has replaced the secret
+  if (
+    await secretReplaced(
+      context,
+      args.vaultName,
+      secretKey,
+      plaintext,
+      previous,
+    )
+  ) {
+    throw new ServerTokenConcurrentChangeError(name);
+  }
 
   const now = Date.now();
   const durationMs = args.durationMs ?? DEFAULT_DURATION_MS;
@@ -305,7 +364,14 @@ async function rotate(
   const secretKey = serverTokenSecretKey(name);
   const plaintext = generateOpaqueToken();
   const vaultName = args.vaultName ?? existing.vaultName;
+  const previous = await readSecret(context, vaultName, secretKey);
   await context.vaultService.put(vaultName, secretKey, plaintext);
+  // a writer that took the lock this one lost has replaced the secret
+  if (
+    await secretReplaced(context, vaultName, secretKey, plaintext, previous)
+  ) {
+    throw new ServerTokenConcurrentChangeError(name);
+  }
 
   const now = Date.now();
   const durationMs = args.durationMs ?? DEFAULT_DURATION_MS;

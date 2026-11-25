@@ -58,7 +58,9 @@ import { isSensitiveHeader } from "./webhook.ts";
 import {
   SERVER_TOKEN_MODEL_TYPE,
   SERVER_TOKEN_SECRET_KEY_PREFIX,
+  serverTokenSecretFingerprint,
 } from "../domain/models/access/server_token_model.ts";
+import { TOKEN_SECRETS_VAULT_NAME } from "../domain/vaults/control_plane_vault_provider.ts";
 import type {
   VaultDeleteProvider,
   VaultProvider,
@@ -1437,6 +1439,8 @@ export interface TokenConsistencyDeps {
     vaultName: string,
     secretKey: string,
   ) => Promise<boolean>;
+  /** takes the datastore's record when this cache holds another mint's */
+  refreshRecord?: (name: string, secret: string) => Promise<boolean>;
 }
 
 export interface TokenInconsistency {
@@ -1444,7 +1448,8 @@ export interface TokenInconsistency {
     | "orphaned-secret"
     | "orphaned-data"
     | "undecryptable-secret"
-    | "missing-secret";
+    | "missing-secret"
+    | "mispaired-secret";
   tokenName: string;
   detail: string;
 }
@@ -1466,6 +1471,19 @@ export async function sweepTokenConsistency(
       { error: err instanceof Error ? err.message : String(err) },
     );
     return { inconsistencies: [] };
+  }
+}
+
+async function refreshed(
+  deps: TokenConsistencyDeps,
+  tokenName: string,
+  secret: string,
+): Promise<boolean> {
+  if (deps.refreshRecord === undefined) return false;
+  try {
+    return await deps.refreshRecord(tokenName, secret);
+  } catch {
+    return false;
   }
 }
 
@@ -1531,7 +1549,11 @@ async function sweepTokenConsistencyInner(
       .filter((item) => item.modelName && item.data.name === "token-main")
       .map((item) => [
         item.modelName,
-        item.attrs as { vaultName?: string; secretKey?: string },
+        item.attrs as {
+          vaultName?: string;
+          secretKey?: string;
+          secretFingerprint?: string;
+        },
       ]),
   );
   for (const tokenName of definitionNames) {
@@ -1569,8 +1591,9 @@ async function sweepTokenConsistencyInner(
       });
       continue;
     }
+    let secret: string;
     try {
-      await deps.tokenSecretsProvider.get(key);
+      secret = await deps.tokenSecretsProvider.get(key);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (message.includes("not found")) continue;
@@ -1580,22 +1603,42 @@ async function sweepTokenConsistencyInner(
         detail:
           "Secret exists but cannot be decrypted — encryption key may have been lost or rotated",
       });
+      continue;
+    }
+    const attrs = dataAttrsByName.get(tokenName);
+    // a token rotated into another vault leaves its old copy here, unread
+    const fingerprint = attrs?.vaultName === TOKEN_SECRETS_VAULT_NAME &&
+        attrs.secretKey === key
+      ? attrs.secretFingerprint
+      : undefined;
+    if (
+      fingerprint !== undefined &&
+      fingerprint !== await serverTokenSecretFingerprint(secret) &&
+      !await refreshed(deps, tokenName, secret)
+    ) {
+      inconsistencies.push({
+        mode: "mispaired-secret",
+        tokenName,
+        detail:
+          "Record and secret come from different mints — the token will fail authentication until it is rotated",
+      });
     }
   }
 
   inconsistencies.sort((a, b) => {
     const order: Record<TokenInconsistency["mode"], number> = {
       "undecryptable-secret": 0,
-      "missing-secret": 1,
-      "orphaned-secret": 2,
-      "orphaned-data": 3,
+      "mispaired-secret": 1,
+      "missing-secret": 2,
+      "orphaned-secret": 3,
+      "orphaned-data": 4,
     };
     return order[a.mode] - order[b.mode];
   });
 
   for (const item of inconsistencies) {
     const level = item.mode === "undecryptable-secret" ||
-        item.mode === "missing-secret"
+        item.mode === "missing-secret" || item.mode === "mispaired-secret"
       ? "error"
       : "warn";
     if (level === "error") {

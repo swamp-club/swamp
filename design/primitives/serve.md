@@ -709,6 +709,34 @@ with another mint's secret (swamp-club#2482):
   skip the check until they are rotated or re-minted; no migration adds one,
   since hashing the current secret would bless a pairing that may already be
   wrong.
+  The boot consistency sweep reports a token whose record and secret do not
+  pair as `mispaired-secret`, comparing only a record that names the
+  `_token-secrets` copy. Session revalidation reads the vault only for a token
+  whose record names another mint than an open session. A record that pairs
+  with the vault secret is a rotation, and the session closes as `rotated`,
+  whatever the mint times say, so a rotation made on a host whose clock is
+  behind still closes old sessions. A record that does not pair is a stale copy
+  (a rotation writes the secret before the record). A session whose mint is
+  newer than that copy stays open, with a warning naming the token, for at most
+  ten minutes (`STALE_COPY_KEEP_MS`), and then closes as `rotated`; an older
+  session closes at once. A record with no fingerprint, or a secret that cannot
+  be read, closes the session as before.
+- **A writer that lost the lock.** The name lock can be lost by a writer frozen
+  past its lifetime while another rotates. `mint` and `rotate` therefore read
+  the secret back after writing it, and stop with
+  `ServerTokenConcurrentChangeError`, before writing the record, when the vault
+  answers with another writer's secret. A read that fails judges nothing and the
+  record is written, since stopping then would strand the secret just written.
+  A token whose pair already disagrees still rotates: rotation is its repair.
+- **A cache left with another mint's record.** Two writers can still publish
+  the same version of `token-main`, and the cache that published first never
+  downloads the other's, so its record disagrees with the secret every other
+  serve agrees on. On an extension datastore, authentication that finds the
+  record and the vault secret from different mints, and the boot consistency
+  sweep, fetch the datastore's latest record (`serverTokenRecordRefreshOver`)
+  and take it in place of the cache's copy, byte for byte, only when it pairs
+  with the secret; authentication then retries once. A v3 datastore has one
+  writer and never needs it.
 - **Reveal through serve.** `access.token.reveal` runs the same reveal as the
   local command on serve, for a caller with `admin` on `access:*`. A follower
   forwards it to the leader, which has applied every mint and rotate, and it is

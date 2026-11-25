@@ -169,6 +169,7 @@ import {
 } from "../../libswamp/worker/prune.ts";
 import {
   WORKER_MODEL_TYPE,
+  WORKER_STATE_DATA_NAME,
   WorkerStateSchema,
 } from "../../domain/models/worker/worker_model.ts";
 import { fleetMemberSuffix } from "../worker_gateway.ts";
@@ -3093,6 +3094,7 @@ export async function handleWorkerPrune(
               return [{
                 name: s.name,
                 definitionName: `worker-${s.name}`,
+                definitionId: r.modelId,
                 status: s.status,
                 tokenName: s.tokenName,
                 disconnectedAt: s.disconnectedAt,
@@ -3125,11 +3127,25 @@ export async function handleWorkerPrune(
             return tokens;
           },
 
-          deleteWorker: (definitionName) =>
+          deleteWorker: (definitionId, definitionName) =>
             modelDelete(libCtx, deleteDeps, {
-              modelIdOrName: definitionName,
+              modelIdOrName: definitionId,
+              byId: true,
+              expectedName: definitionName,
               force: true,
             }),
+          findDefinitionId: async (definitionName) =>
+            (await ctx.repoContext.definitionRepo.findByName(
+              WORKER_MODEL_TYPE,
+              definitionName,
+            ))?.id ?? null,
+          deleteOrphanRecord: (definitionId) =>
+            ctx.repoContext.unifiedDataRepo.delete(
+              WORKER_MODEL_TYPE,
+              definitionId,
+              WORKER_STATE_DATA_NAME,
+            ),
+          isLive: (name) => (ctx.workerGateway?.worker(name) ?? null) !== null,
 
           // control-plane bookkeeping is never held to a run's vault scope
           pruneBindings: (tokenName, machineIds) =>

@@ -22,9 +22,13 @@ import { assert, assertEquals } from "@std/assert";
 import { type Span, trace } from "@opentelemetry/api";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { z } from "zod";
-import type { ServerToken } from "../domain/models/access/server_token_model.ts";
+import {
+  type ServerToken,
+  serverTokenSecretFingerprint,
+} from "../domain/models/access/server_token_model.ts";
 import { ServerTokenNotFoundError } from "./token_auth.ts";
 import {
+  STALE_COPY_KEEP_MS,
   type TokenSessionCloseOptions,
   type TokenSessionRevalidationDeps,
   TokenSessionRevalidationService,
@@ -470,4 +474,171 @@ Deno.test("runOnce: closes a standing delegation's sessions once its person is n
   assertEquals(await service.runOnce(), 1);
   assertEquals(h.closes[0].options.cause, "not-admitted");
   assertEquals(h.reads, []);
+});
+
+Deno.test("tokenSessionVerdict: a stale copy of the record keeps a session on another mint", () => {
+  assertEquals(tokenSessionVerdict(token(), MINT_2, NOW, true), {
+    keep: true,
+  });
+  assertEquals(
+    tokenSessionVerdict(token({ state: "revoked" }), MINT_2, NOW, true).keep,
+    false,
+  );
+});
+
+async function pairedToken(
+  secret: string,
+  overrides: Partial<ServerToken> = {},
+): Promise<ServerToken> {
+  return token({
+    secretFingerprint: await serverTokenSecretFingerprint(secret),
+    ...overrides,
+  });
+}
+
+function withSecret(
+  h: Harness,
+  readSecret: () => Promise<string>,
+): { reads: number; deps: TokenSessionRevalidationDeps } {
+  const counted = { reads: 0, deps: h.deps };
+  counted.deps = {
+    ...h.deps,
+    readSecret: () => {
+      counted.reads++;
+      return readSecret();
+    },
+  };
+  return counted;
+}
+
+Deno.test("runOnce: a changed record that pairs with the vault secret closes as rotated", async () => {
+  const record = await pairedToken("new-secret", { createdAt: MINT_1 });
+  const h = harness(
+    [{ name: "tok", createdAt: MINT_2 }],
+    () => Promise.resolve(record),
+  );
+  const s = withSecret(h, () => Promise.resolve("new-secret"));
+  await new TokenSessionRevalidationService(s.deps).runOnce();
+  assertEquals(h.closes.map((c) => c.options.cause), ["rotated"]);
+});
+
+Deno.test("runOnce: a changed record that does not pair with the vault secret keeps the session", async () => {
+  const stale = await pairedToken("old-secret", { createdAt: MINT_1 });
+  const h = harness(
+    [{ name: "tok", createdAt: MINT_2 }],
+    () => Promise.resolve(stale),
+  );
+  const s = withSecret(h, () => Promise.resolve("current-secret"));
+  assertEquals(await new TokenSessionRevalidationService(s.deps).runOnce(), 0);
+  assertEquals(h.closes, []);
+});
+
+Deno.test("runOnce: an unreadable secret or a record with no fingerprint closes as rotated", async () => {
+  for (
+    const [label, record, readSecret] of [
+      [
+        "vault error",
+        await pairedToken("old-secret"),
+        () => Promise.reject(new Error("vault offline")),
+      ],
+      ["no fingerprint", token(), () => Promise.resolve("anything")],
+    ] as const
+  ) {
+    const h = harness(
+      [{ name: "tok", createdAt: MINT_2 }],
+      () => Promise.resolve(record),
+    );
+    const s = withSecret(h, readSecret);
+    await new TokenSessionRevalidationService(s.deps).runOnce();
+    assertEquals(h.closes.map((c) => c.options.cause), ["rotated"], label);
+  }
+});
+
+Deno.test("runOnce: the vault is read only when a session's mint differs from the record", async () => {
+  const record = await pairedToken("s");
+  const h = harness(
+    [{ name: "tok", createdAt: MINT_1 }],
+    () => Promise.resolve(record),
+  );
+  const s = withSecret(h, () => Promise.resolve("s"));
+  await new TokenSessionRevalidationService(s.deps).runOnce();
+  assertEquals(s.reads, 0);
+  assertEquals(h.closes, []);
+});
+
+Deno.test("tokenSessionVerdict: a stale copy keeps only a session newer than it", () => {
+  const stale = token({ createdAt: MINT_2 });
+  assertEquals(tokenSessionVerdict(stale, MINT_1, NOW, true).keep, false);
+  assertEquals(tokenSessionVerdict(stale, "not-a-time", NOW, true).keep, false);
+});
+
+Deno.test("runOnce: a session kept over a stale copy closes as rotated once the keep window runs out", async () => {
+  const stale = await pairedToken("old-secret", { createdAt: MINT_1 });
+  const h = harness(
+    [{ name: "tok", createdAt: MINT_2 }],
+    () => Promise.resolve(stale),
+  );
+  let now = NOW;
+  const s = withSecret(h, () => Promise.resolve("current-secret"));
+  const service = new TokenSessionRevalidationService({
+    ...s.deps,
+    now: () => now,
+  });
+  assertEquals(await service.runOnce(), 0);
+  now += STALE_COPY_KEEP_MS - 1;
+  assertEquals(await service.runOnce(), 0);
+  now += 1;
+  await service.runOnce();
+  assertEquals(h.closes.map((c) => c.options.cause), ["rotated"]);
+});
+
+Deno.test("runOnce: the keep window starts again after the record pairs", async () => {
+  let record = await pairedToken("old-secret", { createdAt: MINT_1 });
+  let secret = "current-secret";
+  const h = harness(
+    [{ name: "tok", createdAt: MINT_2 }],
+    () => Promise.resolve(record),
+  );
+  let now = NOW;
+  const s = withSecret(h, () => Promise.resolve(secret));
+  const service = new TokenSessionRevalidationService({
+    ...s.deps,
+    now: () => now,
+  });
+  await service.runOnce();
+  now += STALE_COPY_KEEP_MS - 1;
+  // the session's own mint comes back, so nothing is kept over a stale copy
+  record = await pairedToken("current-secret", { createdAt: MINT_2 });
+  await service.runOnce();
+  record = await pairedToken("old-secret", { createdAt: MINT_1 });
+  secret = "current-secret";
+  now += 1;
+  assertEquals(await service.runOnce(), 0);
+  assertEquals(h.closes, []);
+});
+
+Deno.test("runOnce: a transient read failure does not restart the keep window", async () => {
+  const stale = await pairedToken("old-secret", { createdAt: MINT_1 });
+  let failRead = false;
+  const h = harness(
+    [{ name: "tok", createdAt: MINT_2 }],
+    () =>
+      failRead
+        ? Promise.reject(new Error("datastore offline"))
+        : Promise.resolve(stale),
+  );
+  let now = NOW;
+  const s = withSecret(h, () => Promise.resolve("current-secret"));
+  const service = new TokenSessionRevalidationService({
+    ...s.deps,
+    now: () => now,
+  });
+  await service.runOnce();
+  now += STALE_COPY_KEEP_MS / 2;
+  failRead = true;
+  await service.runOnce();
+  failRead = false;
+  now += STALE_COPY_KEEP_MS / 2;
+  await service.runOnce();
+  assertEquals(h.closes.map((c) => c.options.cause), ["rotated"]);
 });

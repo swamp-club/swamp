@@ -46,6 +46,11 @@ export interface RuntimeDataPollerOptions {
   syncService: DatastoreSyncService;
   syncGate?: SyncGate;
   catalogInvalidate: () => void;
+  /**
+   * runs after each pull that ran and did not fail, once the gate is released;
+   * a step-start pull can bring a peer's write that this pull then sees no change in
+   */
+  onPulled?: (changedFiles: number) => Promise<void>;
   pollIntervalMs?: number;
   namespace?: string;
 }
@@ -54,6 +59,7 @@ export class RuntimeDataPoller {
   readonly #syncService: DatastoreSyncService;
   readonly #syncGate?: SyncGate;
   readonly #catalogInvalidate: () => void;
+  readonly #onPulled?: (changedFiles: number) => Promise<void>;
   #pollIntervalMs: number;
   readonly #namespace?: string;
   #gateTiming: PollerGateTiming;
@@ -67,6 +73,7 @@ export class RuntimeDataPoller {
     this.#syncService = options.syncService;
     this.#syncGate = options.syncGate;
     this.#catalogInvalidate = options.catalogInvalidate;
+    this.#onPulled = options.onPulled;
     this.#pollIntervalMs = options.pollIntervalMs ??
       DEFAULT_RUNTIME_DATA_POLL_INTERVAL_MS;
     this.#namespace = options.namespace;
@@ -120,15 +127,20 @@ export class RuntimeDataPoller {
   async #pullAndInvalidate(): Promise<void> {
     this.#pulling = true;
     try {
+      // a busy gate or a stop skips the pull, and then there is nothing to follow up
+      let pulled = false;
       const result = await gatedPull(
         this.#syncGate,
         "runtime data poller",
-        (signal) =>
-          this.#syncService.pullChanged({
+        async (signal) => {
+          const changed = await this.#syncService.pullChanged({
             signal,
             subdirs: [...RUNTIME_DATA_SUBDIRS],
             namespace: this.#namespace,
-          }),
+          });
+          pulled = true;
+          return changed;
+        },
         {
           state: this.#gateState,
           signal: this.#stopController.signal,
@@ -141,6 +153,7 @@ export class RuntimeDataPoller {
           .info`Runtime data poller: ${count} file(s) updated, invalidating catalog`;
         this.#catalogInvalidate();
       }
+      if (pulled) await this.#followUp(count);
       this.#logHeapStats();
     } catch (error) {
       logger
@@ -149,6 +162,16 @@ export class RuntimeDataPoller {
       }`;
     } finally {
       this.#pulling = false;
+    }
+  }
+
+  async #followUp(changedFiles: number): Promise<void> {
+    try {
+      await this.#onPulled?.(changedFiles);
+    } catch (error) {
+      logger.warn`Runtime data poller follow-up failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`;
     }
   }
 

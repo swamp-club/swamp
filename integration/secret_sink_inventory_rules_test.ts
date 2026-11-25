@@ -545,6 +545,10 @@ const NOT_A_SINK: Record<string, Record<string, string>> = {
     "src/serve/extension_reload.ts: reloadPulledExtensions": CONFIG_WRITE,
     "src/serve/serve_config.ts: writeServeConfigFile": CONFIG_WRITE,
     "src/serve/serve_pid_file.ts: writeServePidFiles": CONFIG_WRITE,
+    "src/serve/token_record_refresh.ts: serverTokenRecordRefreshOver":
+      "Copies the datastore's own bytes of a server-token record (name, " +
+      "principal, times, vault reference and secret fingerprint, never the " +
+      "secret) into the cache; nothing is evaluated into it.",
     "src/serve/unpushed_interrupts.ts: recordUnpushedInterrupts": CONFIG_WRITE,
     "src/worker/bundle_cache.ts: writeAtomically": CONFIG_WRITE,
     "src/worker/connect.ts: loadOrCreateMachineId": CONFIG_WRITE,

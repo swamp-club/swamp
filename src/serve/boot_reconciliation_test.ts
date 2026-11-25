@@ -26,6 +26,7 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import { UserError } from "../domain/errors.ts";
+import { serverTokenSecretFingerprint } from "../domain/models/access/server_token_model.ts";
 import { UNREADABLE_CONTENT_CODE } from "../domain/datastore/unreadable_content.ts";
 import {
   type BootReconciliationDeps,
@@ -2030,6 +2031,7 @@ function createMockConsistencyDeps(opts: {
   definitionNames?: string[];
   undecryptableKeys?: Set<string>;
   tokenVaultNames?: Record<string, string>;
+  fingerprints?: Record<string, string>;
   probeVaultSecret?: (
     vaultName: string,
     secretKey: string,
@@ -2068,6 +2070,9 @@ function createMockConsistencyDeps(opts: {
         state: "active",
         vaultName: vaultNames[name] ?? "_token-secrets",
         secretKey: `server-token-${name}`,
+        ...(opts.fingerprints?.[name] === undefined
+          ? {}
+          : { secretFingerprint: opts.fingerprints[name] }),
       },
     ]),
   );
@@ -2144,6 +2149,72 @@ Deno.test("sweepTokenConsistency: detects undecryptable secret", async () => {
   const result = await sweepTokenConsistency(deps);
   assertEquals(result.inconsistencies.length, 1);
   assertEquals(result.inconsistencies[0].mode, "undecryptable-secret");
+});
+
+Deno.test("sweepTokenConsistency: detects a record and secret from different mints", async () => {
+  const deps = createMockConsistencyDeps({
+    secretKeys: ["moved"],
+    dataTokenNames: ["moved"],
+    definitionNames: ["moved"],
+    fingerprints: {
+      moved: await serverTokenSecretFingerprint("an-older-mint"),
+    },
+  });
+  const result = await sweepTokenConsistency(deps);
+  assertEquals(
+    result.inconsistencies.map((i) => [i.mode, i.tokenName]),
+    [["mispaired-secret", "moved"]],
+  );
+});
+
+Deno.test("sweepTokenConsistency: a mispaired record the datastore holds paired is refreshed, not reported", async () => {
+  const refreshed: string[] = [];
+  const deps = {
+    ...createMockConsistencyDeps({
+      secretKeys: ["moved"],
+      dataTokenNames: ["moved"],
+      definitionNames: ["moved"],
+      fingerprints: {
+        moved: await serverTokenSecretFingerprint("an-older-mint"),
+      },
+    }),
+    refreshRecord: (name: string) => {
+      refreshed.push(name);
+      return Promise.resolve(true);
+    },
+  };
+  const result = await sweepTokenConsistency(deps);
+  assertEquals(result.inconsistencies, []);
+  assertEquals(refreshed, ["moved"]);
+});
+
+Deno.test("sweepTokenConsistency: a token rotated into another vault is not compared with its old copy", async () => {
+  const deps = createMockConsistencyDeps({
+    secretKeys: ["moved-vault"],
+    dataTokenNames: ["moved-vault"],
+    definitionNames: ["moved-vault"],
+    tokenVaultNames: { "moved-vault": "my-vault" },
+    fingerprints: {
+      "moved-vault": await serverTokenSecretFingerprint("the-new-secret"),
+    },
+  });
+  const result = await sweepTokenConsistency(deps);
+  assertEquals(result.inconsistencies, []);
+});
+
+Deno.test("sweepTokenConsistency: a record paired with its secret is consistent", async () => {
+  const deps = createMockConsistencyDeps({
+    secretKeys: ["paired"],
+    dataTokenNames: ["paired"],
+    definitionNames: ["paired"],
+    fingerprints: {
+      paired: await serverTokenSecretFingerprint(
+        "plaintext-server-token-paired",
+      ),
+    },
+  });
+  const result = await sweepTokenConsistency(deps);
+  assertEquals(result.inconsistencies, []);
 });
 
 Deno.test("sweepTokenConsistency: reports no issues for consistent tokens", async () => {

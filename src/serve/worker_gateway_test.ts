@@ -697,11 +697,11 @@ Deno.test("WorkerGateway: dispatch releases its slot when recording the busy sta
   });
 
   h.failOn.add("set_status");
-  await assertRejects(
+  const refusal = await assertRejects(
     () => h.gateway.dispatch("ci-runner-3", dispatchParams("d-1")),
-    Error,
-    "stubbed failure: set_status",
+    WorkerNotDispatchableError,
   );
+  assertEquals(refusal.reason, "state_unrecorded");
   assertEquals(received, []);
   assertEquals(h.gateway.worker("ci-runner-3")?.activeDispatchIds, []);
   assertEquals(h.gateway.worker("ci-runner-3")?.status, "idle");
@@ -738,11 +738,11 @@ Deno.test("WorkerGateway: a failed busy status releases only its own slot (swamp
   });
 
   const first = h.gateway.dispatch("ci-runner-3", dispatchParams("d-1"));
-  await assertRejects(
+  const refusal = await assertRejects(
     () => h.gateway.dispatch("ci-runner-3", dispatchParams("d-2")),
-    Error,
-    "datastore offline",
+    WorkerNotDispatchableError,
   );
+  assertEquals(refusal.reason, "state_unrecorded");
   assertEquals(h.gateway.worker("ci-runner-3")?.activeDispatchIds, ["d-1"]);
   assertEquals(h.gateway.worker("ci-runner-3")?.status, "busy");
 
@@ -4931,4 +4931,22 @@ Deno.test("WorkerGateway: a dispatch to a worker still being admitted is sent on
   await enrolled;
   assertEquals((await dispatched).status, "success");
   assertEquals(received, ["d-1"]);
+});
+
+Deno.test("WorkerGateway: a dispatch refused for an unrecorded busy write wakes no waiters and writes no idle", async () => {
+  const h = createHarness();
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel);
+  const idleBefore = h.idle.length;
+  const writesBefore = h.transitions.length;
+
+  h.failOn.add("set_status");
+  await assertRejects(
+    () => h.gateway.dispatch("ci-runner-3", dispatchParams("d-1")),
+    WorkerNotDispatchableError,
+  );
+  assertEquals(h.idle.length, idleBefore);
+  assertEquals(h.transitions.length, writesBefore);
+  assertEquals(h.gateway.worker("ci-runner-3")?.status, "idle");
+  assertEquals(h.gateway.worker("ci-runner-3")?.activeDispatchIds, []);
 });

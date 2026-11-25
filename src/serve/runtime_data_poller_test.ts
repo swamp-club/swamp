@@ -445,3 +445,109 @@ Deno.test("RuntimeDataPoller.setPollIntervalMs: a stopped poller stays stopped",
   poller.setPollIntervalMs(5);
   assertEquals(sync.pullCalls.length, 0);
 });
+
+Deno.test("RuntimeDataPoller: runs onPulled after a pull that changed files, outside the sync gate", async () => {
+  const sync = createMockSyncService({ pullResult: 2 });
+  const gate = createSyncGate();
+  const { catalogInvalidate } = createCallbackTrackers();
+  let hookRuns = 0;
+  let gateFreeDuringHook = false;
+  const poller = new RuntimeDataPoller({
+    syncService: sync,
+    syncGate: gate,
+    catalogInvalidate,
+    onPulled: async (changedFiles) => {
+      assertEquals(changedFiles, 2);
+      hookRuns++;
+      // an exclusive turn would wait forever if the hook still held the gate
+      await withSyncGate(gate, () => {
+        gateFreeDuringHook = true;
+        return Promise.resolve();
+      });
+    },
+    pollIntervalMs: 30,
+  });
+
+  poller.start();
+  await waitFor(() => hookRuns >= 1 && gateFreeDuringHook, "onPulled ran");
+  await poller.stop();
+  assert(gateFreeDuringHook);
+});
+
+Deno.test("RuntimeDataPoller: runs onPulled after a pull that changed nothing, and not after a failed one", async () => {
+  const sync = createMockSyncService({ pullResult: 0 });
+  const { state, catalogInvalidate } = createCallbackTrackers();
+  let hookRuns = 0;
+  const poller = new RuntimeDataPoller({
+    syncService: sync,
+    catalogInvalidate,
+    onPulled: () => {
+      hookRuns++;
+      return Promise.resolve();
+    },
+    pollIntervalMs: 30,
+  });
+
+  poller.start();
+  await waitFor(() => hookRuns >= 1, "onPulled after a quiet pull");
+  sync.pullError = new Error("bucket down");
+  const before = sync.pullCalls.length;
+  const runsBefore = hookRuns;
+  await waitFor(() => sync.pullCalls.length >= before + 2, "two failed pulls");
+  await poller.stop();
+  assertEquals(state.catalogInvalidateCalls, 0);
+  assert(hookRuns <= runsBefore + 1, "a failed pull runs no hook");
+});
+
+Deno.test("RuntimeDataPoller: stop waits for a running onPulled", async () => {
+  const sync = createMockSyncService({ pullResult: 1 });
+  const { catalogInvalidate } = createCallbackTrackers();
+  const release = Promise.withResolvers<void>();
+  let started = false;
+  let finished = false;
+  const poller = new RuntimeDataPoller({
+    syncService: sync,
+    catalogInvalidate,
+    onPulled: async () => {
+      started = true;
+      await release.promise;
+      finished = true;
+    },
+    pollIntervalMs: 30,
+  });
+
+  poller.start();
+  await waitFor(() => started, "onPulled started");
+  const stopping = poller.stop();
+  release.resolve();
+  await stopping;
+  assert(finished);
+});
+
+Deno.test("RuntimeDataPoller: pulls skipped for a busy gate, and one a stop ends, run no onPulled", async () => {
+  const sync = createMockSyncService({ pullResult: 0 });
+  const gate = createSyncGate();
+  const { catalogInvalidate } = createCallbackTrackers();
+  let hookRuns = 0;
+  const poller = new RuntimeDataPoller({
+    syncService: sync,
+    syncGate: gate,
+    catalogInvalidate,
+    onPulled: () => {
+      hookRuns++;
+      return Promise.resolve();
+    },
+    pollIntervalMs: 30,
+  });
+  const release = Promise.withResolvers<void>();
+  const holding = withSyncGate(gate, () => release.promise);
+
+  poller.start();
+  // a queued waiter appears only after the skipped cycles escalate
+  await waitFor(() => gate.waiters >= 1, "the poller queued after skips");
+  await poller.stop();
+  release.resolve();
+  await holding;
+  assertEquals(sync.pullCalls.length, 0);
+  assertEquals(hookRuns, 0);
+});
