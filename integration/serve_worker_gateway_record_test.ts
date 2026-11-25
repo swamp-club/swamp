@@ -534,3 +534,18 @@ Deno.test("WorkerGateway on a repo: shutdown writes each connected worker's depa
     assertEquals(versionAfter, versionBefore);
   });
 });
+
+Deno.test("WorkerGateway on a repo: after shutdown departures nothing marks a worker live again", async () => {
+  await withGateway(async (h) => {
+    const { channel } = connectWorker(h.gateway);
+    await enroll(channel, h.token, crypto.randomUUID());
+    await h.gateway.settled();
+    await h.gateway.recordShutdownDepartures();
+
+    assertEquals(await h.gateway.reassertConnected(), 0);
+    assertEquals(await h.gateway.reassertAfterPull(3), 0);
+    await channel.call(RemoteMethod.drain, {});
+    await h.gateway.settled();
+    assertEquals((await stored(h))?.status, "disconnected");
+  });
+});

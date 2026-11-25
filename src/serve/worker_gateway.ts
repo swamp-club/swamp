@@ -465,6 +465,8 @@ export class WorkerGateway {
     // a removed worker's disconnect passes the enrollment it captured before removal
     this.#workerStatus = {
       recordStatus: async (workerName, args, live) => {
+        // after shutdown wrote the departures, nothing may mark a worker live again
+        if (this.#departuresRecorded && args.status !== "disconnected") return;
         await workerStatus.recordStatus(
           workerName,
           stamp(args),
@@ -612,7 +614,7 @@ export class WorkerGateway {
    */
   async reassertConnected(): Promise<number> {
     const reassert = this.#workerStatus.reassert;
-    if (reassert === undefined) return 0;
+    if (reassert === undefined || this.#departuresRecorded) return 0;
     let rewritten = 0;
     for (const entry of [...this.#workers.values()]) {
       if (entry.channel === null) continue;
