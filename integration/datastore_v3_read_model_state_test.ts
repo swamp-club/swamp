@@ -521,7 +521,7 @@ Deno.test("ReadModelState: a schema-4 database migrates to the unreadable-record
     } finally {
       reopened.close();
     }
-    assertEquals(READ_MODEL_STATE_SCHEMA_VERSION, 9);
+    assertEquals(READ_MODEL_STATE_SCHEMA_VERSION, 10);
   });
 });
 
@@ -672,6 +672,6 @@ Deno.test("ReadModelState: a schema-6 state migrates to the access columns, its 
     rolled.exec("PRAGMA user_version=6");
     rolled.close();
     ReadModelState.open(path).close();
-    assertEquals(READ_MODEL_STATE_SCHEMA_VERSION, 9);
+    assertEquals(READ_MODEL_STATE_SCHEMA_VERSION, 10);
   });
 });

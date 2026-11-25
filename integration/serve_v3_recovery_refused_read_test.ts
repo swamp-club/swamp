@@ -107,7 +107,8 @@ async function tearRecordFile(
     if (entry.isSymlink) continue;
     const text = await Deno.readTextFile(entry.path).catch(() => "");
     if (!text.includes(LARGE)) continue;
-    const journal = new TouchedScopeJournal(v3CatalogPath(repoDir));
+    // the planted marker is an older swamp's, whose rows carry no token
+    const journal = new TouchedScopeJournal(v3CatalogPath(repoDir), "");
     try {
       const scope = touchedScopeOf(v3CacheRoot(repoDir, ""), entry.path);
       if (scope !== undefined) journal.record(crypto.randomUUID(), "", scope);

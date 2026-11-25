@@ -54,6 +54,7 @@ import {
 } from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
 import { openV3Datastore } from "../src/infrastructure/datastore_v3/v3_datastore.ts";
 import {
+  listWriterMarkerFiles,
   readWriterMarker,
   readWriterMarkerFile,
   writerMarkerPath,
@@ -656,7 +657,9 @@ Deno.test("v3 interrupted run: a close after keepV3WriterMarkers keeps the marke
     await closeV3Datastores();
     assertEquals((await readWriterMarker(repos.repoA))?.pid, Deno.pid);
 
-    await Deno.remove(writerMarkerPath(repos.repoA));
+    for (const { path } of await listWriterMarkerFiles(repos.repoA)) {
+      await Deno.remove(path);
+    }
     await holdV3Writer(config, repos.repoA);
     await closeV3Datastores();
     assertEquals(await readWriterMarker(repos.repoA), undefined);

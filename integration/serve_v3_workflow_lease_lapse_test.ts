@@ -19,7 +19,6 @@
 
 import "../src/domain/models/models.ts";
 import { assert, assertEquals } from "@std/assert";
-import { exists } from "@std/fs";
 import { Command } from "@cliffy/command";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { z } from "zod";
@@ -42,7 +41,7 @@ import {
   commandMayHaveLanded,
   resetCommandLandedForTesting,
 } from "../src/infrastructure/datastore_v3/command_landed.ts";
-import { writerMarkerPath } from "../src/infrastructure/datastore_v3/interrupted_writer_recovery.ts";
+import { listWriterMarkerFiles } from "../src/infrastructure/datastore_v3/interrupted_writer_recovery.ts";
 import { serveUpstreamLocalRoot } from "../src/infrastructure/datastore_v3/serve_upstream_binding.ts";
 import { tryAcquireV3WriterLock } from "../src/infrastructure/datastore_v3/v3_writer_lock.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
@@ -423,7 +422,7 @@ async function runCutOff(
             : renderedCode(thrown, context),
           message: thrown instanceof Error ? thrown.message : undefined,
           mayHaveLanded: context.commandMayHaveLanded,
-          markerKept: await exists(writerMarkerPath(client.repoDir)),
+          markerKept: (await listWriterMarkerFiles(client.repoDir)).length > 0,
           teardownRecoveries,
         },
         steps,
