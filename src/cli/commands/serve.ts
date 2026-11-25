@@ -8877,8 +8877,11 @@ export const serveCommand = new Command()
           return workerTokenRevalidationService.dispose();
         },
       );
-      // the departures queued so far reach the datastore before its last sync
-      await stages.run("worker records", () => workerGateway.settled());
+      // written now: the listener closes the worker sockets after the store closes
+      await stages.run(
+        "worker records",
+        () => workerGateway.recordShutdownDepartures(),
+      );
       runShutdownStep("worker gateway", () => workerGateway.dispose());
       if (collectiveRefreshService) {
         const service = collectiveRefreshService;
@@ -9006,8 +9009,6 @@ export const serveCommand = new Command()
         setRemoteOnlyMode(false);
       });
       await stages.run("listener", () => listenerClosed, "awaited");
-      // the listener's close disconnects the workers still connected, queueing their departures
-      await stages.run("worker departures", () => workerGateway.settled());
       ac.abort();
       if (pidPath) await removePidFileIfOurs(pidPath, Deno.pid);
       runShutdownStep("stopped line", () => {

@@ -430,6 +430,7 @@ export class WorkerGateway {
   /** instanceUuid to the mint it refused, so a pass never offers it again */
   readonly #rotationRefusals = new Map<string, string>();
   #publishQueued = false;
+  #departuresRecorded = false;
   /** worker name to the instance last warned about, so a busy datastore does not repeat it every pull */
   readonly #warnedLiveElsewhere = new Map<string, string>();
   #lastReassertAtMs: number | undefined;
@@ -675,6 +676,26 @@ export class WorkerGateway {
         { error: error instanceof Error ? error.message : String(error) },
       );
     }
+  }
+
+  /**
+   * at shutdown, before the store closes: the listener drops the sockets only
+   * later, when a departure written then would find the store gone
+   */
+  async recordShutdownDepartures(): Promise<void> {
+    this.#departuresRecorded = true;
+    for (const entry of [...this.#workers.values()]) {
+      if (entry.channel === null) continue;
+      const name = entry.name;
+      const live = this.#enrollmentOf(entry);
+      // #recordDisconnected logs its own failures, so this never rejects
+      this.#recordWorkerWrite(
+        "worker_disconnected",
+        name,
+        () => this.#recordDisconnected(name, live),
+      ).catch(() => {});
+    }
+    await this.settled();
   }
 
   /** runs fn in order with token and pool-admission turns, so no enrollment interleaves */
@@ -1802,25 +1823,28 @@ export class WorkerGateway {
     const snapshot = this.#snapshot(entry);
     const live = this.#enrollmentOf(entry);
 
-    const recordDisconnect = this.#recordWorkerWrite(
-      "worker_disconnected",
-      name,
-      () =>
-        this.#workerStatus.recordStatus(
-          name,
-          { status: "disconnected" },
-          live,
-        ),
-    );
-    recordDisconnect.catch((error: unknown) => {
-      logger.warn(
-        "Failed to record disconnect for {worker}: {error}",
-        {
-          worker: name,
-          error: error instanceof Error ? error.message : String(error),
-        },
+    // a stopping serve wrote this departure while its store was still open
+    if (!this.#departuresRecorded) {
+      const recordDisconnect = this.#recordWorkerWrite(
+        "worker_disconnected",
+        name,
+        () =>
+          this.#workerStatus.recordStatus(
+            name,
+            { status: "disconnected" },
+            live,
+          ),
       );
-    });
+      recordDisconnect.catch((error: unknown) => {
+        logger.warn(
+          "Failed to record disconnect for {worker}: {error}",
+          {
+            worker: name,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        );
+      });
+    }
 
     if (entry.status === "draining") {
       if (entry.expiryTimer !== undefined) {

@@ -930,10 +930,12 @@ one worker name never take turns overwriting it. Enrollments and departures are
 also published through the sync gate as soon as they are written, on a chain of
 their own so the reply never waits on the datastore. A publish queued while
 another waits is dropped, since the one waiting carries every write made before
-it starts. Shutdown waits for that chain before it disposes the gateway, and
-again after the listener closes the sockets of the workers still connected: an
-unpublished departure is otherwise lost to the next model-lock pull, which
-replaces the cache's latest markers with the remote's. If the busy write before
+it starts. Shutdown writes and publishes the departure of every worker still
+connected before it disposes the gateway, while the store is open, and the
+socket closes that follow when the listener stops write nothing more: a
+departure written after the store closes is lost, and an unpublished one is lost
+to the next model-lock pull, which replaces the cache's latest markers with the
+remote's. If the busy write before
 a dispatch still fails, the gateway refuses the dispatch unsent with
 `state_unrecorded`. The step then goes at once to another worker that can take
 it, preferring others for the rest of its scheduling; when that worker is the

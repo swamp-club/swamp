@@ -168,6 +168,7 @@ export function createWorkerTokenNameQuery(
     // a metadata select reads no bodies, so it names every row's record
     const ids = await dataQueryService.query(predicate, { select: "modelId" });
     const gone: string[] = [];
+    let recovered = 0;
     for (const id of ids) {
       if (typeof id !== "string" || resolved.has(id)) continue;
       const content = await vanished.repo.getContent(
@@ -175,23 +176,31 @@ export function createWorkerTokenNameQuery(
         id,
         WORKER_STATE_DATA_NAME,
       );
-      if (
-        content !== null ||
-        !await bodyGone(
-          vanished.repo,
-          WORKER_MODEL_TYPE,
-          id,
-          WORKER_STATE_DATA_NAME,
-        )
-      ) {
+      if (content !== null) {
         throw new Error("a worker record has no readable token name");
       }
-      gone.push(id);
+      // a peer's lower version can leave the marker naming one that is gone
+      const older = await newestBody(
+        vanished.repo,
+        WORKER_MODEL_TYPE,
+        id,
+        WORKER_STATE_DATA_NAME,
+      );
+      if (older === null) {
+        gone.push(id);
+        continue;
+      }
+      const tokenName = workerTokenNameOf(older);
+      if (tokenName === undefined) {
+        throw new Error("a worker record has no readable token name");
+      }
+      names.add(tokenName);
+      recovered++;
     }
-    if (gone.length < unresolved) {
+    if (gone.length + recovered < unresolved) {
       throw new Error("a worker record has no readable token name");
     }
-    vanished.onVanished(gone);
+    if (gone.length > 0) vanished.onVanished(gone);
     return names;
   };
 }
@@ -236,18 +245,38 @@ const decoder = new TextDecoder();
 const GONE = Symbol("gone");
 
 // a pull replacing the latest marker leaves it missing for a moment, so every version is checked
+async function newestBody(
+  repo: Pick<UnifiedDataRepository, "getContent" | "listVersions">,
+  modelType: ModelType,
+  modelId: string,
+  name: string,
+): Promise<Uint8Array | null> {
+  const versions = await repo.listVersions(modelType, modelId, name);
+  for (const version of [...versions].sort((a, b) => b - a)) {
+    const body = await repo.getContent(modelType, modelId, name, version);
+    if (body !== null) return body;
+  }
+  return null;
+}
+
 async function bodyGone(
   repo: Pick<UnifiedDataRepository, "getContent" | "listVersions">,
   modelType: ModelType,
   modelId: string,
   name: string,
 ): Promise<boolean> {
-  for (const version of await repo.listVersions(modelType, modelId, name)) {
-    if (await repo.getContent(modelType, modelId, name, version) !== null) {
-      return false;
-    }
+  return await newestBody(repo, modelType, modelId, name) === null;
+}
+
+function workerTokenNameOf(body: Uint8Array): string | undefined {
+  try {
+    const parsed = JSON.parse(decoder.decode(body)) as { tokenName?: unknown };
+    return typeof parsed.tokenName === "string" && parsed.tokenName.length > 0
+      ? parsed.tokenName
+      : undefined;
+  } catch {
+    return undefined;
   }
-  return true;
 }
 
 /**

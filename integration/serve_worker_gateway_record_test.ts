@@ -499,3 +499,38 @@ Deno.test("WorkerGateway on a repo: a malformed record of a connected worker is 
     assertEquals((await stored(h))?.instanceUuid, live);
   });
 });
+
+Deno.test("WorkerGateway on a repo: shutdown writes each connected worker's departure before the sockets close", async () => {
+  await withGateway(async (h) => {
+    const live = crypto.randomUUID();
+    const { channel, drop } = connectWorker(h.gateway);
+    await enroll(channel, h.token, live);
+    await h.gateway.settled();
+    const before = h.pushes();
+
+    await h.gateway.recordShutdownDepartures();
+    const departed = await stored(h);
+    assertEquals(departed?.instanceUuid, live);
+    assertEquals(departed?.status, "disconnected");
+    assertEquals(h.pushes(), before + 1);
+
+    const definition = await h.repoContext.definitionRepo.findByName(
+      WORKER_MODEL_TYPE,
+      workerDefinitionName(h.name),
+    );
+    assert(definition !== null);
+    const versionBefore = (await h.repoContext.unifiedDataRepo.findByName(
+      WORKER_MODEL_TYPE,
+      definition.id,
+      WORKER_STATE_DATA_NAME,
+    ))?.version;
+    drop();
+    await h.gateway.settled();
+    const versionAfter = (await h.repoContext.unifiedDataRepo.findByName(
+      WORKER_MODEL_TYPE,
+      definition.id,
+      WORKER_STATE_DATA_NAME,
+    ))?.version;
+    assertEquals(versionAfter, versionBefore);
+  });
+});

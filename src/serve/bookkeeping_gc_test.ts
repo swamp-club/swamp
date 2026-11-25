@@ -705,3 +705,25 @@ Deno.test("createWorkerTokenNameQuery: a worker record whose latest marker is mi
   await assertRejects(() => list());
   assertEquals(dropped, 0);
 });
+
+Deno.test("createWorkerTokenNameQuery: a marker naming a version a peer replaced reads the token name from the newest body", async () => {
+  let dropped = 0;
+  const list = createWorkerTokenNameQuery(
+    rowsThenIds([["w1", "fleet"], null], ["w1", "w2"]),
+    "team-a",
+    {
+      repo: {
+        listVersions: () => Promise.resolve([2, 3, 5]),
+        getContent: (_type, id, _name, version) =>
+          Promise.resolve(
+            id === "w2" && version === 3
+              ? new TextEncoder().encode(JSON.stringify({ tokenName: "solo" }))
+              : null,
+          ),
+      },
+      onVanished: () => dropped++,
+    },
+  );
+  assertEquals([...await list()].sort(), ["fleet", "solo"]);
+  assertEquals(dropped, 0);
+});
