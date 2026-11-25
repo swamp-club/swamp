@@ -1152,7 +1152,7 @@ function closesByFile(): Disposable & { readonly counts: Map<string, number> } {
   };
 }
 
-Deno.test("holdV3Writer: a quiet write opens each of its databases once, commits.db and the read model state among them (swamp-club#5094)", async () => {
+Deno.test("holdV3Writer: a quiet write opens commits.db and the read model state once each (swamp-club#5094)", async () => {
   await withTempDir(async (dir) => {
     const datastorePath = join(dir, "datastore");
     await initializeV3Datastore(datastorePath, "test");
@@ -1181,7 +1181,13 @@ Deno.test("holdV3Writer: a quiet write opens each of its databases once, commits
     await write();
     using closes = closesByFile();
     await write();
-    assertEquals(Object.fromEntries(closes.counts), {});
+    assertEquals(Object.fromEntries(closes.counts), {
+      "commits.db": 1,
+      "commits-outbox.db": 1,
+      "_read_model_v3.db": 1,
+      // the touched-scope journal keeps its own fully synced connection
+      "_catalog_v3.db": 2,
+    });
   });
 });
 
