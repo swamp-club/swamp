@@ -126,6 +126,7 @@ const PINNED_CONTENT_PATH_READERS: readonly string[] = [
   "src/infrastructure/persistence/unified_data_repository.ts#FileSystemUnifiedDataRepository.finalizeVersion",
   "src/infrastructure/persistence/unified_data_repository.ts#FileSystemUnifiedDataRepository.finalizeVersionDeferred",
   "src/infrastructure/persistence/unified_data_repository.ts#FileSystemUnifiedDataRepository.getContent",
+  "src/infrastructure/persistence/unified_data_repository.ts#FileSystemUnifiedDataRepository.getContentPrefix",
   "src/infrastructure/persistence/unified_data_repository.ts#FileSystemUnifiedDataRepository.getContentSync",
   "src/infrastructure/persistence/unified_data_repository.ts#FileSystemUnifiedDataRepository.stream",
   // v3 only: reads back a version this repository just wrote, finalized,

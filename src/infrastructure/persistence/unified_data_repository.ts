@@ -1605,6 +1605,43 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     }
   }
 
+  /**
+   * getContent bounded to the first maxBytes, behind the same containment
+   * checks and hydration, so a preview never holds the whole body
+   */
+  async getContentPrefix(
+    type: ModelTypeInput,
+    modelId: string,
+    dataName: string,
+    version: number,
+    maxBytes: number,
+  ): Promise<Uint8Array | null> {
+    type = coerceModelType(type);
+    const contentPath = this.getContentPath(type, modelId, dataName, version);
+    await this.assertModelReadPath(contentPath, type, modelId);
+    await this.ensureContentFile(type, modelId, dataName, version);
+    await this.assertModelReadPath(contentPath, type, modelId);
+    let file: Deno.FsFile;
+    try {
+      file = await Deno.open(contentPath);
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        await this.throwIfUnreadable(contentPath);
+        return null;
+      }
+      throw error;
+    }
+    using _file = file;
+    const buffer = new Uint8Array(maxBytes);
+    let filled = 0;
+    while (filled < maxBytes) {
+      const read = await file.read(buffer.subarray(filled));
+      if (read === null) break;
+      filled += read;
+    }
+    return buffer.subarray(0, filled);
+  }
+
   private async throwIfUnreadable(contentPath: string): Promise<void> {
     const error = await this.unreadableContent?.(contentPath);
     if (error !== undefined) throw error;

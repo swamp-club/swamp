@@ -32,6 +32,11 @@ import {
 import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { catalogDbPath } from "../../infrastructure/persistence/repository_factory.ts";
+import {
+  ResourceLoadGuard,
+  ResourceTooLargeToLoadError,
+} from "../../domain/data/resource_load_guard.ts";
+import { assertRejects } from "@std/assert";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-test-" });
@@ -397,4 +402,203 @@ Deno.test("createModelOutputLogsDeps: a v2 repo takes no artifact check", async 
     assertEquals(deps.checkArtifact, undefined);
     return Promise.resolve();
   });
+});
+
+function logsOf(
+  logs: Record<string, string>,
+  overrides?: Partial<ModelOutputLogsDeps>,
+): { deps: ModelOutputLogsDeps; reads: string[] } {
+  const output = makeOutput({ withLogArtifact: false });
+  for (const name of Object.keys(logs)) {
+    output.addDataArtifact({
+      dataId: crypto.randomUUID(),
+      name,
+      version: 1,
+      tags: { type: "log" },
+    });
+  }
+  const reads: string[] = [];
+  const bytes = (name: string) => new TextEncoder().encode(logs[name]);
+  return {
+    reads,
+    deps: makeDeps({
+      matchOutputByPartialId: () =>
+        Promise.resolve({
+          status: "found" as const,
+          match: { output, type: ModelType.create("aws/ec2") },
+        }),
+      findDataByName: (_type, _id, name) =>
+        Promise.resolve({ size: bytes(name).length }),
+      getContent: (_type, _id, name) => {
+        reads.push(name);
+        return Promise.resolve(bytes(name));
+      },
+      ...overrides,
+    }),
+  };
+}
+
+async function completedOf(
+  deps: ModelOutputLogsDeps,
+  tail?: number,
+): Promise<Extract<ModelOutputLogsEvent, { kind: "completed" }>["data"]> {
+  const events = await collect<ModelOutputLogsEvent>(
+    modelOutputLogs(createLibSwampContext(), deps, {
+      outputIdArg: "out-123",
+      ...(tail === undefined ? {} : { tail }),
+    }),
+  );
+  const last = events[events.length - 1];
+  if (last.kind !== "completed") throw new Error(`got ${last.kind}`);
+  return last.data;
+}
+
+// a heap of 1000 bytes refuses any item past a third of it
+function smallHeap(used = 0, floor = 50): ResourceLoadGuard {
+  return new ResourceLoadGuard({
+    heapLimitBytes: () => 1000,
+    heapUsedBytes: () => used,
+  }, floor);
+}
+
+Deno.test("modelOutputLogs: a tail across artifacts shows the lines and total the full read would", async () => {
+  const logs = {
+    "a.log": "a1\n\na2\n",
+    "b.log": "\nb1\nb2",
+    "c.log": "c1\n\n",
+  };
+  const full = await completedOf(logsOf(logs).deps);
+  for (const tail of [1, 2, 3, 4, 5, 9]) {
+    const tailed = await completedOf(logsOf(logs).deps, tail);
+    assertEquals(tailed.lines, full.lines.slice(-tail), `tail ${tail}`);
+    assertEquals(tailed.totalLines, full.totalLines, `tail ${tail}`);
+    assertEquals(tailed.showingLines, Math.min(tail, full.totalLines));
+  }
+  assertEquals(full.lines, ["a1", "a2", "b1", "b2", "c1"]);
+});
+
+Deno.test("modelOutputLogs: an artifact too large for its recorded size is refused by name before it is read", async () => {
+  const { deps, reads } = logsOf({ "big.log": "x".repeat(400) }, {
+    loadGuard: smallHeap(),
+  });
+  await assertRejects(
+    () => completedOf(deps),
+    ResourceTooLargeToLoadError,
+    "big.log@v1",
+  );
+  assertEquals(reads, []);
+});
+
+Deno.test("modelOutputLogs: a log of short lines is refused on its line count, and a tail of it still reads", async () => {
+  const shortLines = "a\n".repeat(100);
+  assertEquals(shortLines.length * 3 <= 1000, true);
+  const { deps } = logsOf({ "short.log": shortLines }, {
+    loadGuard: smallHeap(),
+  });
+  await assertRejects(
+    () => completedOf(deps),
+    ResourceTooLargeToLoadError,
+    "short.log@v1",
+  );
+  const tailed = await completedOf(deps, 2);
+  assertEquals(tailed.lines, ["a", "a"]);
+  assertEquals(tailed.totalLines, 100);
+});
+
+Deno.test("modelOutputLogs: artifacts each under the floor are refused once their running total passes it on a short heap", async () => {
+  const logs = { "a.log": "x".repeat(30), "b.log": "y".repeat(30) };
+  await completedOf(
+    logsOf({ "a.log": logs["a.log"] }, {
+      loadGuard: smallHeap(920, 120),
+    }).deps,
+  );
+  const error = await assertRejects(
+    () => completedOf(logsOf(logs, { loadGuard: smallHeap(920, 120) }).deps),
+    ResourceTooLargeToLoadError,
+    "b.log@v1",
+  );
+  assertStringIncludes(
+    error.message,
+    "Pass --tail to read only the last lines, one log at a time, or list",
+  );
+});
+
+Deno.test("modelOutputLogs: a tail too large for what it keeps is refused, with a smaller --tail as the remedy", async () => {
+  const logs = { "a.log": "a\n".repeat(100), "b.log": "b\n".repeat(100) };
+  assertEquals(
+    (await completedOf(logsOf(logs, { loadGuard: smallHeap() }).deps, 2))
+      .lines,
+    ["b", "b"],
+  );
+  const error = await assertRejects(
+    () => completedOf(logsOf(logs, { loadGuard: smallHeap() }).deps, 1_000_000),
+    ResourceTooLargeToLoadError,
+    "a.log@v1",
+  );
+  assertStringIncludes(error.message, "--tail");
+});
+
+Deno.test("modelOutputLogs: a tail counts the logs its kept lines pin as held, and stops once they are dropped", async () => {
+  const lines = (c: string) => `${c}\n`.repeat(5);
+  // each log clears the floor alone; with the first pinned the second does not
+  await completedOf(
+    logsOf({ "b.log": lines("b") }, {
+      loadGuard: smallHeap(700, 400),
+    }).deps,
+    6,
+  );
+  await assertRejects(
+    () =>
+      completedOf(
+        logsOf({ "a.log": lines("a"), "b.log": lines("b") }, {
+          loadGuard: smallHeap(700, 400),
+        }).deps,
+        6,
+      ),
+    ResourceTooLargeToLoadError,
+    "b.log@v1",
+  );
+  // a tail of one drops each earlier log, so three logs stay under the floor
+  const dropped = await completedOf(
+    logsOf({ "a.log": lines("a"), "b.log": lines("b"), "c.log": lines("c") }, {
+      loadGuard: smallHeap(950, 120),
+    }).deps,
+    1,
+  );
+  assertEquals(dropped.lines, ["c"]);
+});
+
+Deno.test("modelOutputLogs: a log starting with a byte-order mark counts the same lines with and without --tail", async () => {
+  const logs = { "bom.log": "\ufeff\nx\n\ufeffy\n" };
+  const full = await completedOf(logsOf(logs).deps);
+  const tailed = await completedOf(logsOf(logs).deps, 5);
+  assertEquals(tailed.totalLines, full.totalLines);
+  assertEquals(tailed.lines, full.lines);
+});
+
+Deno.test("modelOutputLogs: a fractional tail shows its whole part, and a tail under one reads every line", async () => {
+  const logs = { "a.log": "1\n2\n3\n" };
+  assertEquals((await completedOf(logsOf(logs).deps, 2.5)).lines, ["2", "3"]);
+  for (const tail of [0, -2]) {
+    assertEquals(
+      (await completedOf(logsOf(logs).deps, tail)).lines,
+      ["1", "2", "3"],
+      `tail ${tail}`,
+    );
+  }
+});
+
+Deno.test("modelOutputLogs: a full read counts the earlier logs' line cost toward the floor", async () => {
+  const logs = { "a.log": "a\n".repeat(5), "b.log": "b\n".repeat(5) };
+  // each log clears the floor alone; the first one's lines tip the second
+  await completedOf(
+    logsOf({ "b.log": logs["b.log"] }, {
+      loadGuard: smallHeap(700, 550),
+    }).deps,
+  );
+  await assertRejects(
+    () => completedOf(logsOf(logs, { loadGuard: smallHeap(700, 550) }).deps),
+    ResourceTooLargeToLoadError,
+    "b.log@v1",
+  );
 });

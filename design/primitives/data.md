@@ -366,7 +366,7 @@ the hard form and removes every version.
 (`fromRow`, `fromData` and `fromResourceHandle` in `data_record_mapper.ts`, CEL
 `model.<name>.resource` in `model_resolver.ts`, `readResource`, the workflow
 step output reader, typed step results, `data get`, `behavior output data`,
-report get, and in `DataQueryService` the `--select content` projection and the
+`behavior output logs`, report get, and in `DataQueryService` the `--select content` projection and the
 hydration of another namespace's content) first ask the repository's
 `ResourceLoadGuard` (`resource_load_guard.ts`) whether the item fits: it refuses
 when the heap in use plus three times the item's size (one copy decoded, one to
@@ -407,8 +407,25 @@ holds several items at once passes the bytes it already holds (`heldBytes`) to
 the heap estimate, which already sees them in the heap in use. The
 `--select content` projection holds every body of a page until it is written, so
 it passes its running total, and a page of items each under the floor is refused
-by name once the heap runs short; it also refuses a body whose UTF-8 text or
-base64 form would pass the maximum string length. The step-end record
+by name once the heap runs short. `encodeLoadableContent` (`content_encoding.ts`) is the guarded form of
+`encodeContent` that the projection and `data get` share: it also refuses a body
+whose UTF-8 text or base64 form would pass the maximum string length.
+`behavior output logs` splits each log into lines, so `splitRefusalFor` prices
+the bytes plus a cost per line (`SPLIT_LINE_BYTES`, counted from the raw bytes),
+and applies the 64 MiB floor to that estimate, so a log of short lines under the
+floor is still priced. The earlier logs, with their line cost, are its
+`heldBytes`. With `--tail N` it splits nothing: it decodes one log at a time,
+keeps at most N last lines, prices only those, and counts as held the logs whose
+lines it still keeps, since a kept line is a slice that pins its whole decoded
+log; a tail under one reads every line, and a fractional one its whole part. The
+interactive `data search` preview reads only the first 64 KiB of a body through
+`getContentPrefix`, which hydrates the body and checks its path the way
+`getContent` does, so it never holds the whole body or needs the guard, and it
+says when it is truncated. A refusal's message carries optional detail that its
+stored marker does not: the bytes the read already holds, a remedy the caller
+supplies (the projection names a smaller `--limit` for a page; `behavior output
+logs` names `--tail`, or a smaller one, for a refused log), or the base64 length
+that passed the text limit. The step-end record
 (`fromResourceHandle`) and the workflow step output reader use it, so a step's
 resource too large to load is marked on its record and refused where an
 expression reads it, never decoded into empty attributes; the `delete` method
@@ -661,8 +678,7 @@ workflow-runs/{workflow-id}/workflow-run-{run-id}.yaml
   query without `--select`, or one whose select reads attributes, hydrates each
   match, local or from another namespace, against the floor on its own size, so
   a page of many matches each under 64 MiB is not refused before the heap runs
-  out. `data search` and `behavior output logs` decode content without asking
-  the guard.
+  out.
 - The repository constructor still defaults its namespace to solo. The in-code
   note on `FileSystemUnifiedDataRepository` says every direct construction site
   must pass the configured namespace via `namespaceFromResolver`, or it will

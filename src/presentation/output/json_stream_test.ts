@@ -19,6 +19,7 @@
 
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
+  jsonStringChunks,
   prettyJson,
   prettyJsonChunks,
   writeJsonValue,
@@ -199,4 +200,64 @@ Deno.test("prettyJson: returns JSON.stringify(value, null, 2), and still does pa
     depth: 6_000,
     leaf: [0, 1, 2],
   });
+});
+
+const joinChunks = (chunks: Iterable<string>) => [...chunks].join("");
+
+Deno.test("jsonStringChunks: a string at the slice size is one JSON.stringify call", () => {
+  assertEquals([...jsonStringChunks("abcd", 4)], ['"abcd"']);
+});
+
+Deno.test("jsonStringChunks: a longer string is escaped in slices that join to JSON.stringify", () => {
+  const text = 'a"b\\c\nd\u0001e\u2028f';
+  const chunks = [...jsonStringChunks(text, 3)];
+  assertEquals(chunks.length > 3, true);
+  assertEquals(chunks.join(""), JSON.stringify(text));
+});
+
+Deno.test("jsonStringChunks: never splits a surrogate pair at a slice boundary", () => {
+  const text = "ab\u{1F600}cd\u{1F600}";
+  for (let slice = 2; slice <= text.length; slice++) {
+    const chunks = [...jsonStringChunks(text, slice)];
+    assertEquals(chunks.join(""), JSON.stringify(text), `slice ${slice}`);
+    for (const chunk of chunks) {
+      assertEquals(chunk.includes("\\ud83d"), false, `slice ${slice}`);
+    }
+  }
+});
+
+Deno.test("jsonStringChunks: a lone surrogate at either end of a slice is escaped as JSON.stringify does", () => {
+  const text = "\ud800abc\udc00de\ud800";
+  for (let slice = 2; slice <= text.length; slice++) {
+    assertEquals(
+      joinChunks(jsonStringChunks(text, slice)),
+      JSON.stringify(text),
+      `slice ${slice}`,
+    );
+  }
+});
+
+Deno.test("prettyJsonChunks: long string values and keys are sliced, joining to JSON.stringify", () => {
+  const value = {
+    long: "x".repeat(50),
+    nested: [1, null, true, { k: "y".repeat(20), when: new Date(0) }],
+    dropped: undefined,
+    ["k".repeat(30)]: ["v".repeat(50)],
+  };
+  const chunks = [...prettyJsonChunks(value, 8)];
+  assertEquals(chunks.join(""), JSON.stringify(value, null, 2));
+  for (const chunk of chunks) {
+    assertEquals(chunk.length <= 8 + 4, true, `chunk ${chunk}`);
+  }
+});
+
+Deno.test("jsonStringChunks: a slice size under two is raised to two, so slicing always advances", () => {
+  const text = "ab\u{1F600}c";
+  for (const slice of [0, -3, 1, 1.5]) {
+    assertEquals(
+      joinChunks(jsonStringChunks(text, slice)),
+      JSON.stringify(text),
+      `slice ${slice}`,
+    );
+  }
 });

@@ -49,6 +49,22 @@ const PARSED_OBJECT_BYTES = 56;
 const PARSED_OBJECT_INLINE_MEMBERS = 4;
 const PARSED_ARRAY_BYTES = 48;
 const PARSED_SLOT_BYTES = 8;
+// a line string's header plus its slots in the split array and the kept array
+export const SPLIT_LINE_BYTES = 64;
+// what a kept line still holds once the split array is gone
+export const KEPT_LINE_BYTES = 32;
+const NEWLINE = 0x0a;
+
+/** newline count plus one, from raw bytes off the V8 heap */
+export function countLines(content: Uint8Array): number {
+  let lines = 1;
+  let at = content.indexOf(NEWLINE);
+  while (at !== -1) {
+    lines++;
+    at = content.indexOf(NEWLINE, at + 1);
+  }
+  return lines;
+}
 // past this many members V8 holds an object as a dictionary, at this cost per member
 const FAST_OBJECT_MAX_MEMBERS = 64;
 const DICTIONARY_MEMBER_BYTES = 48;
@@ -481,9 +497,29 @@ export function parseTooLargeToLoad(
   return { bytes, reason };
 }
 
-function tooLargeExplanation(reason: TooLargeToLoadReason): string {
-  return reason === "text-length"
-    ? "more than swamp can load as text"
+/** message detail only; the persisted marker never carries it */
+export interface TooLargeToLoadDetail {
+  /** earlier items the read still holds when it was refused */
+  readonly heldBytes?: number;
+  /** the base64 length that passed the text limit */
+  readonly encodedChars?: number;
+  /** what the caller can do to read less, as advice opening with a verb */
+  readonly remedy?: string;
+}
+
+function tooLargeExplanation(
+  reason: TooLargeToLoadReason,
+  detail: TooLargeToLoadDetail,
+): string {
+  if (reason === "text-length") {
+    return detail.encodedChars === undefined
+      ? "more than swamp can load as text"
+      : `and its base64 form of ${detail.encodedChars} characters is more than swamp can load as text`;
+  }
+  return detail.heldBytes
+    ? `and with ${
+      describeByteCount(detail.heldBytes)
+    } of other items this read already holds, loading it would exhaust the memory left to this process`
     : "and loading it would exhaust the memory left to this process";
 }
 
@@ -493,13 +529,21 @@ export class ResourceTooLargeToLoadError extends UserError {
     readonly item: LoadedItemRef,
     readonly bytes: number,
     readonly reason: TooLargeToLoadReason = "memory",
+    readonly detail: TooLargeToLoadDetail = {},
   ) {
+    const listLargest =
+      `swamp data query 'size > ${DEFAULT_RESOURCE_WARN_BYTES}' --select '{"model": modelName, "name": name, "version": version, "size": size}' --sort size:desc --limit 20`;
+    const remedy = reason !== "memory" ? undefined : detail.remedy ??
+      (detail.heldBytes ? "read fewer items at once" : undefined);
+    const advice = remedy
+      ? `${
+        remedy[0].toUpperCase() + remedy.slice(1)
+      }, or list the largest data items without loading them with: `
+      : "List the largest data items without loading them with: ";
     super(
       `Cannot load ${describeLoadedItem(item)}: it is ${
         describeByteCount(bytes)
-      }, ${tooLargeExplanation(reason)}. ` +
-        `List the largest data items without loading them with: ` +
-        `swamp data query 'size > ${DEFAULT_RESOURCE_WARN_BYTES}' --select '{"model": modelName, "name": name, "version": version, "size": size}' --sort size:desc --limit 20`,
+      }, ${tooLargeExplanation(reason, detail)}. ${advice}${listLargest}`,
       "resource_too_large_to_load",
     );
     this.name = "ResourceTooLargeToLoadError";
@@ -524,7 +568,9 @@ export class ResourceLoadGuard {
 
   /** assertLoadable for content in hand that will be parsed as JSON */
   assertParsable(item: LoadedItemRef, content: Uint8Array): void {
-    const refusal = this.#memoryRefusal(item, content.length, content);
+    const refusal = this.#memoryRefusal(item, content.length, {
+      parsed: content,
+    });
     if (refusal) throw refusal;
   }
 
@@ -537,11 +583,12 @@ export class ResourceLoadGuard {
     item: LoadedItemRef,
     bytes: number,
     heldBytes = 0,
+    remedy?: string,
   ): ResourceTooLargeToLoadError | undefined {
     if (bytes > this.maxDecodableBytes) {
       return new ResourceTooLargeToLoadError(item, bytes, "text-length");
     }
-    return this.#memoryRefusal(item, bytes, undefined, heldBytes);
+    return this.#memoryRefusal(item, bytes, { heldBytes, remedy });
   }
 
   /** refusalFor for content in hand that will be parsed as JSON */
@@ -549,6 +596,7 @@ export class ResourceLoadGuard {
     item: LoadedItemRef,
     content: Uint8Array,
     heldBytes = 0,
+    remedy?: string,
   ): ResourceTooLargeToLoadError | undefined {
     if (content.length > this.maxDecodableBytes) {
       return new ResourceTooLargeToLoadError(
@@ -557,16 +605,55 @@ export class ResourceLoadGuard {
         "text-length",
       );
     }
-    return this.#memoryRefusal(item, content.length, content, heldBytes);
+    return this.#memoryRefusal(item, content.length, {
+      parsed: content,
+      heldBytes,
+      remedy,
+    });
   }
 
+  /**
+   * refusalFor for content in hand that will be decoded and split into lines;
+   * lines defaults to every line, and a reader keeping fewer passes its count
+   */
+  splitRefusalFor(
+    item: LoadedItemRef,
+    content: Uint8Array,
+    heldBytes = 0,
+    remedy?: string,
+    lines: number = countLines(content),
+  ): ResourceTooLargeToLoadError | undefined {
+    if (content.length > this.maxDecodableBytes) {
+      return new ResourceTooLargeToLoadError(
+        item,
+        content.length,
+        "text-length",
+      );
+    }
+    return this.#memoryRefusal(item, content.length, {
+      split: content.length + lines * SPLIT_LINE_BYTES,
+      heldBytes,
+      remedy,
+    });
+  }
+
+  /**
+   * parsed is priced by its JSON structure, split by its line estimate, which
+   * also stands in for the bytes at the floor; a split refusal names its remedy
+   * even with nothing held
+   */
   #memoryRefusal(
     item: LoadedItemRef,
     bytes: number,
-    parsed?: Uint8Array,
-    heldBytes = 0,
+    options: {
+      readonly parsed?: Uint8Array;
+      readonly split?: number;
+      readonly heldBytes?: number;
+      readonly remedy?: string;
+    } = {},
   ): ResourceTooLargeToLoadError | undefined {
-    if (!(bytes + heldBytes >= this.floorBytes)) return undefined;
+    const { parsed, split, heldBytes = 0, remedy } = options;
+    if (!((split ?? bytes) + heldBytes >= this.floorBytes)) return undefined;
     const limit = this.probe.heapLimitBytes();
     const used = this.probe.heapUsedBytes();
     let needed = bytes * DECODED_HEAP_FACTOR;
@@ -582,13 +669,23 @@ export class ResourceLoadGuard {
         bytes + Math.ceil(PARSE_ESTIMATE_MARGIN * structure),
       );
     }
+    if (split !== undefined) needed = Math.max(needed, split);
     if (!overCap && used + needed <= limit) return undefined;
     logger.warn(escapeLogTemplate(
       `Refused to load ${
         describeLoadedItem(item)
       } of ${bytes} bytes: about ${needed} bytes needed, ${used} of ${limit} heap bytes in use`,
     ));
-    return new ResourceTooLargeToLoadError(item, bytes);
+    return new ResourceTooLargeToLoadError(
+      item,
+      bytes,
+      "memory",
+      heldBytes > 0
+        ? { heldBytes, ...(remedy ? { remedy } : {}) }
+        : split !== undefined && remedy
+        ? { remedy }
+        : {},
+    );
   }
 }
 

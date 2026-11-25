@@ -112,6 +112,45 @@ Deno.test("record reads: metadata and content symlinks cannot escape the request
   });
 });
 
+Deno.test("getContentPrefix: reads only the first bytes, and a content symlink cannot escape the requested model", async () => {
+  await withTempRepo(async (repo) => {
+    for (const model of ["own", "other"]) {
+      await repo.save(
+        testType,
+        model,
+        makeJsonData("state"),
+        new TextEncoder().encode(`{"model":"${model}"}`),
+      );
+    }
+    assertEquals(
+      new TextDecoder().decode(
+        await repo.getContentPrefix(testType, "own", "state", 1, 5) ??
+          undefined,
+      ),
+      '{"mod',
+    );
+    assertEquals(
+      await repo.getContentPrefix(testType, "own", "state", 1, 1000),
+      await repo.getContent(testType, "own", "state", 1),
+    );
+    assertEquals(
+      await repo.getContentPrefix(testType, "own", "state", 9, 10),
+      null,
+    );
+    const own = join(repo.getPath(testType, "own", "state", 1), "raw");
+    await Deno.remove(own);
+    await Deno.symlink(
+      join(repo.getPath(testType, "other", "state", 1), "raw"),
+      own,
+      { type: "file" },
+    );
+    await assertRejects(
+      () => repo.getContentPrefix(testType, "own", "state", 1, 5),
+      PathTraversalError,
+    );
+  });
+});
+
 Deno.test("getPath rejects dataName with path traversal", async () => {
   await withTempRepo((repo) => {
     try {
