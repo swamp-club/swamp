@@ -526,6 +526,106 @@ Deno.test("CachedServeStorage.prefetch: an unreachable serve stops it at once (s
   });
 });
 
+/** a remote with a batch read: defers past `perCall`, answers `undecided` as such */
+function batchRemote(
+  chunks: ReadonlyMap<string, Uint8Array>,
+  options: {
+    perCall?: number;
+    undecided?: ReadonlySet<string>;
+    batch?: boolean;
+  } = {},
+) {
+  const seen = { batches: 0, singles: 0 };
+  const remote = {
+    getMany(_namespace: string, hashes: readonly string[]) {
+      if (options.batch === false) return Promise.resolve(undefined);
+      seen.batches++;
+      const cap = options.perCall ?? hashes.length;
+      const out = new Map<string, Uint8Array>();
+      const undecided: string[] = [];
+      const deferred: string[] = [];
+      for (const hash of hashes) {
+        if (options.undecided?.has(hash)) undecided.push(hash);
+        else if (out.size >= cap) deferred.push(hash);
+        else out.set(hash, chunks.get(hash)!);
+      }
+      return Promise.resolve({ chunks: out, missing: [], undecided, deferred });
+    },
+    get(_namespace: string, sha256: string): Promise<Uint8Array | null> {
+      seen.singles++;
+      return Promise.resolve(chunks.get(sha256) ?? null);
+    },
+    has: () => Promise.resolve(new Set<string>()),
+  } as unknown as DatastoreStorage;
+  return { remote, seen };
+}
+
+Deno.test("CachedServeStorage.prefetch: reads many chunks per request when serve has a batch read, and refetches deferred ones (swamp-club#5103)", async () => {
+  const all = await Promise.all(
+    Array.from({ length: 300 }, (_, i) => chunk(`chunk-${i}`)),
+  );
+  const { remote, seen } = batchRemote(
+    new Map(all.map((c) => [c.sha256, c.bytes])),
+    { perCall: 100 },
+  );
+  await withGatedCache(remote, async (cache) => {
+    const report = await cache.prefetch(
+      "_default",
+      all.map((c) => c.sha256),
+      live(),
+    );
+    assertEquals(report.fetched, 300);
+    assertEquals(report.failed, 0);
+    assertEquals(seen.singles, 0, "no chunk was read on its own");
+    assertEquals(seen.batches <= 6, true, `${seen.batches} batch requests`);
+    const held = await cache.statChunks(
+      "_default",
+      all.map((c) => c.sha256),
+      live(),
+    );
+    assertEquals(held.size, 300);
+  });
+});
+
+Deno.test("CachedServeStorage.prefetch: a chunk a batch could not decide is read on its own (swamp-club#5103)", async () => {
+  const all = await Promise.all(
+    Array.from({ length: 20 }, (_, i) => chunk(`chunk-${i}`)),
+  );
+  const undecided = new Set(all.slice(0, 3).map((c) => c.sha256));
+  const { remote, seen } = batchRemote(
+    new Map(all.map((c) => [c.sha256, c.bytes])),
+    { undecided },
+  );
+  await withGatedCache(remote, async (cache) => {
+    const report = await cache.prefetch(
+      "_default",
+      all.map((c) => c.sha256),
+      live(),
+    );
+    assertEquals(report.fetched, 20);
+    assertEquals(seen.singles, 3);
+  });
+});
+
+Deno.test("CachedServeStorage.prefetch: a serve without a batch read is read one chunk at a time (swamp-club#5103)", async () => {
+  const all = await Promise.all(
+    Array.from({ length: 12 }, (_, i) => chunk(`chunk-${i}`)),
+  );
+  const { remote, seen } = batchRemote(
+    new Map(all.map((c) => [c.sha256, c.bytes])),
+    { batch: false },
+  );
+  await withGatedCache(remote, async (cache) => {
+    const report = await cache.prefetch(
+      "_default",
+      all.map((c) => c.sha256),
+      live(),
+    );
+    assertEquals(report.fetched, 12);
+    assertEquals(seen.singles, 12);
+  });
+});
+
 async function cached(cache: CachedServeStorage, sha256: string) {
   return (await cache.statChunks("_default", [sha256], live())).has(sha256);
 }

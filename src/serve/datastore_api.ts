@@ -978,6 +978,10 @@ class DatastoreApi {
             missing.push(sha256);
             continue;
           }
+          if (bytesOut >= MAX_BATCH_CHUNK_BYTES) {
+            deferred.push(sha256);
+            continue;
+          }
           if (await sha256Hex(bytes) !== sha256) {
             logger.error`Stored chunk ${sha256} does not hold its own bytes`;
             return failure(500, "chunk_corrupt", "The stored chunk is damaged");
