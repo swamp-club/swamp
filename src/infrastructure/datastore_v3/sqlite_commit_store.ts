@@ -648,7 +648,8 @@ export const DEFAULT_CACHED_PARTITIONS = 1024;
 export const DEFAULT_SNAPSHOT_INTERVAL = 1000;
 
 /** Rows read per query while rebuilding a partition. */
-const REBUILD_PAGE = 500;
+// a page holds whole commit bodies, so a large commit's page stays short
+const REBUILD_PAGE = 50;
 
 /**
  * Commits folded per compaction transaction by default. The fold runs
@@ -2815,7 +2816,9 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
       }
     }
     let fromSeq = partition.seq + 1;
+    const slice = new TimeSlice(undefined, FOLD_SLICE_MS);
     while (true) {
+      if (slice.over) await slice.next();
       const rows = this.#selectPartitionPage.all(
         namespace,
         key.toString(),
@@ -3293,13 +3296,28 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
     const target = Math.min(through, last);
     const point = this.#point();
     if (point >= target) return false;
-    const rows = this.#db.prepare(
+    const page = this.#db.prepare(
       "SELECT cursor, namespace, partition, seq, txn_id, body FROM commits " +
         "WHERE cursor > ? AND cursor <= ? ORDER BY cursor LIMIT ?",
-    ).all(point, target, batchSize) as unknown as CommitRow[];
+    );
+    // in pages, a turn between them: each row carries a whole commit body
+    const reading = new TimeSlice(undefined, FOLD_SLICE_MS);
+    const rows: CommitRow[] = [];
+    let after = point;
+    while (rows.length < batchSize) {
+      if (reading.over) await reading.next();
+      const want = Math.min(REBUILD_PAGE, batchSize - rows.length);
+      const read = page.all(after, target, want) as unknown as CommitRow[];
+      rows.push(...read);
+      if (read.length < want) break;
+      after = read[read.length - 1].cursor;
+    }
     if (rows.length === 0) return false;
     const commits: Commit[] = [];
-    for (const row of rows) commits.push(await parseRow(row));
+    for (const row of rows) {
+      if (reading.over) await reading.next();
+      commits.push(await parseRow(row));
+    }
 
     // Each partition's last seq in the batch becomes its compacted seq. A
     // rebuild must never need a deleted commit, so a partition whose latest
