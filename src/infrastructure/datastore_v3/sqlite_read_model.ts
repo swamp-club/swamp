@@ -1031,8 +1031,16 @@ export class SqliteReadModel implements ReadModel {
           scopeKey(row.scope).startsWith(`${key}/`))
       );
     const keptScopes = keptRows(allRows);
-    const scope = new RecoveryScope((namespace, key) =>
-      covers(keptScopes, namespace, key)
+    const deadRows = allRows.filter((row) =>
+      row.namespace === namespace &&
+      (options.instance === undefined || row.instance === options.instance)
+    );
+    const deadDirs = options.droppedDirs ?? [];
+    const scope = new RecoveryScope(
+      (ns, key) => covers(keptScopes, ns, key),
+      (ns, key) =>
+        covers(deadRows, ns, key) ||
+        (ns === namespace && deadDirs.some((dir) => scopeCovers(dir, key))),
     );
     const dirty = tracking.dirtyNames();
     this.#judgeNameShare(
