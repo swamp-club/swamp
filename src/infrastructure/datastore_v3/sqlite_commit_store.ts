@@ -85,6 +85,7 @@ import {
   type PartitionLeaseMarks,
   type PartitionPageOfNames,
 } from "../../domain/datastore_v3/commit_store.ts";
+import { TimeSlice } from "../persistence/scan_permits.ts";
 import {
   catalogNamesOfCommit,
   catalogNamesOfRawCommit,
@@ -656,6 +657,8 @@ const REBUILD_PAGE = 500;
 export const COMPACTION_BATCH = 250;
 
 const FOLD_SLICE_MS = 50;
+
+const FOLD_PREFETCH_COMMITS = 16;
 
 /** Hashes looked up per query by `referencedChunks`. */
 const REF_LOOKUP_PAGE = 500;
@@ -3382,8 +3385,27 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
     // smaller batch would.
     let expected = point;
     let next = 0;
+    this.#base.begin(now);
+    const prefetched = new Set<string>();
+    const loading = new TimeSlice(undefined, sliceMs);
     while (next < rows.length) {
       if (next > 0) await turn();
+      // the names the next commits fold, each read in its own turn rather than
+      // all inside one transaction
+      for (
+        let i = next;
+        i < Math.min(rows.length, next + FOLD_PREFETCH_COMMITS);
+        i++
+      ) {
+        const partition = commits[i].partition.toString();
+        for (const name of catalogNamesOfCommit(commits[i])) {
+          const key = JSON.stringify([commits[i].namespace, partition, name]);
+          if (prefetched.has(key)) continue;
+          prefetched.add(key);
+          if (loading.over) await loading.next();
+          this.#base.prefetch(commits[i].namespace, partition, name);
+        }
+      }
       const from = next;
       this.#db.exec("BEGIN IMMEDIATE");
       try {
@@ -3395,8 +3417,7 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
         // Compaction is the writer's: one that lost its lease, or holds none
         // once the store has a fence, stops here.
         this.#checkWriterFence(options.fence);
-        if (from === 0) this.#base.begin(now);
-        else this.#base.beginSlice();
+        this.#base.beginSlice();
         const until = performance.now() + sliceMs;
         do {
           foldCommit(
@@ -4640,7 +4661,7 @@ class SqliteCompactedBase implements CompactedBaseWriter {
   readonly #deleteVersion: StatementSync;
   readonly #insertVersion: StatementSync;
   readonly #updateVersion: StatementSync;
-  readonly #selectCatalog: StatementSync;
+  readonly #selectCatalogVersions: StatementSync;
   readonly #deleteCatalogRow: StatementSync;
   readonly #insertCatalog: StatementSync;
   readonly #stampCatalogRow: StatementSync;
@@ -4714,10 +4735,8 @@ class SqliteCompactedBase implements CompactedBaseWriter {
     this.#updateVersion = db.prepare(
       "UPDATE base_versions SET metadata = ?, changed_seq = ? WHERE namespace = ? AND partition = ? AND name = ? AND version = ?",
     );
-    this.#selectCatalog = db.prepare(
-      "SELECT c.version, v.metadata FROM base_catalog AS c LEFT JOIN base_versions AS v " +
-        "USING (namespace, partition, name, version) " +
-        "WHERE c.namespace = ? AND c.partition = ? AND c.name = ? ORDER BY c.version",
+    this.#selectCatalogVersions = db.prepare(
+      "SELECT version FROM base_catalog WHERE namespace = ? AND partition = ? AND name = ? ORDER BY version",
     );
     this.#deleteCatalogRow = db.prepare(
       "DELETE FROM base_catalog WHERE namespace = ? AND partition = ? AND name = ? AND version = ?",
@@ -4884,6 +4903,11 @@ class SqliteCompactedBase implements CompactedBaseWriter {
     this.#catalog.clear();
   }
 
+  /** reads a name into the caches ahead of the transaction that folds it */
+  prefetch(namespace: string, partition: string, name: string): void {
+    this.catalogName(namespace, partition, name);
+  }
+
   /**
    * starts another of a batch's transactions; the read caches hold what the
    * last one committed, so they carry over
@@ -5030,17 +5054,25 @@ class SqliteCompactedBase implements CompactedBaseWriter {
     const key = nameKey(namespace, partition, name);
     const cached = this.#catalog.get(key);
     if (cached !== undefined) return cached;
-    const rows = (this.#selectCatalog.all(namespace, partition, name) as {
-      version: number;
-      metadata: string | null;
-    }[]).map((row) => {
-      if (row.metadata === null) {
-        throw new Error(
-          `The compacted base has a catalog row for ${name}@${row.version} that is not a live version`,
-        );
-      }
-      return parseMetadata(row.metadata);
-    });
+    // a catalog row's metadata is its live version's: the same object, parsed once
+    const live = new Map(
+      this.liveVersions(namespace, partition, name).map((v) => [
+        v.version,
+        v.metadata,
+      ]),
+    );
+    const rows =
+      (this.#selectCatalogVersions.all(namespace, partition, name) as {
+        version: number;
+      }[]).map(({ version }) => {
+        const metadata = live.get(version);
+        if (metadata === undefined) {
+          throw new Error(
+            `The compacted base has a catalog row for ${name}@${version} that is not a live version`,
+          );
+        }
+        return metadata;
+      });
     const forward = this.#selectForward.get(namespace, partition, name) as
       | { renamed_to: string }
       | undefined;
