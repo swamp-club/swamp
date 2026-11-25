@@ -2988,40 +2988,53 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
     this.#assertOpen();
     requirePositive(fromSeq, "fromSeq");
     requirePositive(limit, "limit");
-    const rows = this.#readTransaction(() => {
-      const compacted = this.#compactedSeq(namespace, partition.toString());
-      if (fromSeq <= compacted) {
-        throw new CommitsCompactedError(
-          this.#point(),
-          `Partition ${partition} is compacted through seq ${compacted}; commits from seq ${fromSeq} cannot be read`,
-          compacted,
-        );
-      }
-      return this.#selectPartitionPage.all(
-        namespace,
-        partition.toString(),
-        fromSeq,
-        limit,
-      ) as unknown as CommitRow[];
-    });
+    // in pieces, each checked from where it starts; filled to the limit, so a
+    // short page still means the partition's end
+    const slice = new TimeSlice(undefined, FOLD_SLICE_MS);
     const changes: CommitChange[] = [];
-    for (const row of rows) {
-      let touched: string[] | undefined;
-      try {
-        touched = catalogNamesOfRawCommit(JSON.parse(row.body));
-      } catch {
-        touched = undefined;
+    const seqs: number[] = [];
+    let from = fromSeq;
+    while (seqs.length < limit) {
+      if (slice.over) await slice.next();
+      const want = Math.min(REBUILD_PAGE, limit - seqs.length);
+      const rows = this.#readTransaction(() => {
+        const compacted = this.#compactedSeq(namespace, partition.toString());
+        if (from <= compacted) {
+          throw new CommitsCompactedError(
+            this.#point(),
+            `Partition ${partition} is compacted through seq ${compacted}; commits from seq ${from} cannot be read`,
+            compacted,
+          );
+        }
+        return this.#selectPartitionPage.all(
+          namespace,
+          partition.toString(),
+          from,
+          want,
+        ) as unknown as CommitRow[];
+      });
+      for (const row of rows) {
+        if (slice.over) await slice.next();
+        seqs.push(row.seq);
+        let touched: string[] | undefined;
+        try {
+          touched = catalogNamesOfRawCommit(JSON.parse(row.body));
+        } catch {
+          touched = undefined;
+        }
+        // a row the filter cannot read is decoded, so parseRow reports it
+        if (touched !== undefined && !touched.some((name) => names.has(name))) {
+          continue;
+        }
+        const commit = await parseRow(row);
+        if (catalogNamesOfCommit(commit).some((name) => names.has(name))) {
+          changes.push({ cursor: row.cursor, commit });
+        }
       }
-      // a row the filter cannot read is decoded, so parseRow reports it
-      if (touched !== undefined && !touched.some((name) => names.has(name))) {
-        continue;
-      }
-      const commit = await parseRow(row);
-      if (catalogNamesOfCommit(commit).some((name) => names.has(name))) {
-        changes.push({ cursor: row.cursor, commit });
-      }
+      if (rows.length < want) break;
+      from = rows[rows.length - 1].seq + 1;
     }
-    return { changes, seqs: rows.map((row) => row.seq) };
+    return { changes, seqs };
   }
 
   /**

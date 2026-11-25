@@ -160,6 +160,8 @@ const logger = getLogger(["swamp", "datastore", "read-model"]);
 /** long enough to cost little, short enough that the writer lease renews on time */
 const RECOVERY_SLICE_MS = 50;
 
+const PRESENT_KEYS_PAGE = 1_000;
+
 // a page of large commits commits its state in parts this size, so no one
 // transaction's commit writes the whole page
 const PAGE_OPS = 5_000;
@@ -1359,6 +1361,21 @@ export class SqliteReadModel implements ReadModel {
     }
   }
 
+  /** every present key, read a page at a time rather than in one statement */
+  async *#presentKeysPaged(namespace: string): AsyncGenerator<string> {
+    let after = "";
+    for (;;) {
+      const page = this.#state.presentKeysAfter(
+        namespace,
+        after,
+        PRESENT_KEYS_PAGE,
+      );
+      yield* page;
+      if (page.length < PRESENT_KEYS_PAGE) return;
+      after = page[page.length - 1];
+    }
+  }
+
   async #missingKeys(
     namespace: string,
     scan: ScanResult,
@@ -1368,14 +1385,14 @@ export class SqliteReadModel implements ReadModel {
     const missing: string[] = [];
     const root = this.#cacheRoot(namespace);
     const present = scopes === undefined
-      ? this.#state.presentKeys(namespace)
+      ? this.#presentKeysPaged(namespace)
       : new Set(
         outermostScopes(scopes).flatMap((scope) =>
           this.#state.presentKeysAtOrUnder(namespace, scope)
         ),
       );
     const slice = new TimeSlice(options.signal, this.#recoverySliceMs);
-    for (const key of present) {
+    for await (const key of present) {
       if (slice.over) await slice.next();
       if (scan.listed.has(key) || scan.listed.has(key.normalize("NFC"))) {
         continue;
