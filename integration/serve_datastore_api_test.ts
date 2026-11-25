@@ -2749,7 +2749,7 @@ Deno.test({
     const absent = await sha256Hex(new TextEncoder().encode("never stored"));
     await withServer(bobReads("web"), async (server) => {
       const bytes = new TextEncoder().encode("alpha");
-      const sha = await sharedChunk(server, 0, bytes);
+      const sha = await sharedChunk(server, 1, bytes);
       const reply = await chunkBatch(server, [sha, absent]);
       assertEquals(reply.status, 200);
       assertEquals(reply.contentType, CHUNK_BATCH_CONTENT_TYPE);
@@ -2764,7 +2764,7 @@ Deno.test({
     await withServer(bobReads("nothing-here"), async (server) => {
       const sha = await sharedChunk(
         server,
-        0,
+        1,
         new TextEncoder().encode("alpha"),
       );
       const batch = await decodeChunkBatch(
