@@ -956,9 +956,8 @@ export class SqliteCommitOutbox implements CommitOutbox {
   ): T {
     const db = this.#connection(options.create ?? true);
     if (db === undefined) return undefined as T;
-    // A write that need not survive a power cut skips the fsync. The level is
-    // switched only when the next write needs the other, and always before it
-    // begins, so each transaction commits at its own level.
+    // switch synchronous only when the level changes, and before BEGIN, so each
+    // transaction commits at its own level
     const relaxed = options.durable === false;
     if (relaxed !== this.#relaxed) {
       db.exec(`PRAGMA synchronous=${relaxed ? "NORMAL" : "FULL"}`);

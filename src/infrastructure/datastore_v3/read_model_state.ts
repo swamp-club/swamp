@@ -1566,7 +1566,6 @@ export class ReadModelState {
     return holds;
   }
 
-  /** one statement per chunk of rows, each of the shape's width */
   #runRows(shape: RowsStatement, rows: readonly SQLInputValue[][]): void {
     for (let start = 0; start < rows.length; start += MAX_ROWS_PER_STATEMENT) {
       const chunk = rows.slice(start, start + MAX_ROWS_PER_STATEMENT);

@@ -1133,7 +1133,6 @@ Deno.test("v3RepositoryFactoryConfig: a writing process catches up once, not aga
   });
 });
 
-/** connections closed while it is in scope, by database file name */
 function closesByFile(): Disposable & { readonly counts: Map<string, number> } {
   const close = DatabaseSync.prototype.close;
   const counts = new Map<string, number>();
@@ -1177,7 +1176,7 @@ Deno.test("holdV3Writer: a quiet write opens commits.db and the read model state
       });
       await closeV3Datastores();
     };
-    // the first write creates the checkout and its files
+    // the warm-up write creates the files, so only the second is counted
     await write();
     using closes = closesByFile();
     await write();

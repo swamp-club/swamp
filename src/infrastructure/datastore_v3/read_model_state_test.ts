@@ -371,7 +371,7 @@ function keyedCommit(
   };
 }
 
-/** every node:sqlite call `fn` makes, by kind */
+/** the total of node:sqlite exec, prepare, run, get, all and iterate calls `fn` makes */
 function sqliteCalls(fn: () => void): number {
   const db = DatabaseSync.prototype as unknown as Record<string, unknown>;
   const statement = StatementSync.prototype as unknown as Record<
