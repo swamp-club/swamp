@@ -1367,6 +1367,9 @@ async function takeV3WriterHold(
       },
       ...(options.retakeLost === true ? { retakeLost: true } : {}),
       ...(options.ttlMs !== undefined ? { ttlMs: options.ttlMs } : {}),
+      ...(ownerCheckOf(config, options.ownerCheck).as === "serve"
+        ? { role: "serve" as const }
+        : {}),
     });
   } catch (error) {
     if (follows && error instanceof V3WriterBusyError) {

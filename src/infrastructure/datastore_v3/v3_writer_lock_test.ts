@@ -17,7 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import { join } from "@std/path";
 import { hostname } from "node:os";
 import { waitFor } from "@swamp-club/swamp-testing";
@@ -45,6 +51,7 @@ import {
   onV3HoldRetaken,
   onV3LeaseLost,
   onV3LeaseTaken,
+  setV3WriterBusyServeAddress,
   stopV3WriterRenewal,
   tryAcquireV3WriterLock,
   V3_LEGACY_WRITER_LOCK_KEY,
@@ -54,6 +61,7 @@ import {
   type V3WriterFenceStore,
   v3WriterLeaseConfirmed,
   v3WriterLeaseExpiresAt,
+  v3WriterLeaseHolder,
   v3WriterLockHandle,
 } from "./v3_writer_lock.ts";
 import { ProcessRuntime } from "../runtime/process_runtime.ts";
@@ -788,5 +796,94 @@ Deno.test("stopV3WriterRenewal: the hold lapses unrenewed, and a release still e
       await release();
     }
     assertEquals(await v3WriterLeaseExpiresAt(dir), 0);
+  });
+});
+
+Deno.test("acquireV3WriterLock: a lease serve holds refuses with --server, naming the serve address when one is known", async () => {
+  await withTempDir(async (dir) => {
+    await plantV3WriterLease(dir, {
+      pid: 2147483647,
+      hostname: `other-host-${crypto.randomUUID()}`,
+      role: "serve",
+    });
+    try {
+      const unnamed = await assertRejects(
+        () => acquireV3WriterLock(dir, { maxWaitMs: 0 }),
+        V3WriterBusyError,
+      );
+      assertEquals(unnamed.code, "datastore_v3_writer_busy");
+      assertStringIncludes(unnamed.message, "swamp serve (test@other-host-");
+      assertStringIncludes(unnamed.message, "add --server <url>");
+      assertStringIncludes(unnamed.message, "Nothing was changed.");
+
+      setV3WriterBusyServeAddress("https://serve.example.com");
+      const named = await assertRejects(
+        () => acquireV3WriterLock(dir, { maxWaitMs: 0 }),
+        V3WriterBusyError,
+      );
+      assertStringIncludes(
+        named.message,
+        "add --server https://serve.example.com",
+      );
+    } finally {
+      setV3WriterBusyServeAddress(undefined);
+    }
+  });
+});
+
+Deno.test("acquireV3WriterLock: a lease another process holds refuses without --server, even with a serve address known", async () => {
+  await withTempDir(async (dir) => {
+    await plantV3WriterLease(dir, {
+      pid: 2147483647,
+      hostname: `other-host-${crypto.randomUUID()}`,
+    });
+    setV3WriterBusyServeAddress("https://serve.example.com");
+    try {
+      const error = await assertRejects(
+        () => acquireV3WriterLock(dir, { maxWaitMs: 0 }),
+        V3WriterBusyError,
+      );
+      assert(!error.message.includes("--server"), error.message);
+      assertStringIncludes(
+        error.message,
+        "Wait for it to finish, or, if it is swamp serve, run this command through serve.",
+      );
+    } finally {
+      setV3WriterBusyServeAddress(undefined);
+    }
+  });
+});
+
+Deno.test("acquireV3WriterLock: a hold taken as serve records its role, keeps it when it advances, and refuses another runtime with --server", async () => {
+  await withTempDir(async (dir) => {
+    const release = await acquireV3WriterLock(dir, {
+      retakeLost: true,
+      role: "serve",
+    });
+    try {
+      assertEquals((await v3WriterLeaseHolder(dir))?.record?.role, "serve");
+      const advanced = await advanceV3WriterLease(dir);
+      assert(advanced !== undefined);
+      const holder = await v3WriterLeaseHolder(dir);
+      assertEquals(holder?.fence, advanced);
+      assertEquals(holder?.record?.role, "serve");
+
+      const other = new ProcessRuntime(`other-${crypto.randomUUID()}`);
+      const error = await other.run(() =>
+        assertRejects(
+          () => acquireV3WriterLock(dir, { maxWaitMs: 0 }),
+          V3WriterBusyError,
+        )
+      );
+      assertStringIncludes(error.message, "add --server <url>");
+    } finally {
+      await release();
+    }
+    const plain = await acquireV3WriterLock(dir);
+    try {
+      assertEquals((await v3WriterLeaseHolder(dir))?.record?.role, undefined);
+    } finally {
+      await plain();
+    }
   });
 });

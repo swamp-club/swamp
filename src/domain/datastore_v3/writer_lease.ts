@@ -114,6 +114,8 @@ export interface WriterLeaseHolder {
    * in an older record, which is judged by its TTL alone
    */
   readonly process?: ProcessIdentity;
+  /** set by swamp serve, which holds the lease for its whole life */
+  readonly role?: "serve";
 }
 
 export interface FenceRecord extends WriterLeaseHolder {
@@ -690,6 +692,7 @@ function parseFenceRecord(
     hostname: value.hostname,
     pid: value.pid as number,
     ...(process !== undefined ? { process } : {}),
+    ...(value.role === "serve" ? { role: "serve" as const } : {}),
     nonce: value.nonce,
     ttlMs: value.ttlMs as number,
     acquiredAt: value.acquiredAt,

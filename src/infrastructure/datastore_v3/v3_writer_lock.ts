@@ -67,15 +67,28 @@ export const V3_LEGACY_WRITER_LOCK_KEY = join("_control", "writer.lock");
 export { V3_WRITER_BUSY_CODE };
 
 export class V3WriterBusyError extends UserError {
-  constructor(datastorePath: string, cause: LockTimeoutError) {
+  constructor(
+    datastorePath: string,
+    cause: LockTimeoutError,
+    options: { readonly heldByServe?: boolean } = {},
+  ) {
     const holder = cause.holder;
+    const named = holder ? ` (${holder.holder}, pid ${holder.pid})` : "";
     super(
-      `Another swamp process is writing the v3 datastore at ${datastorePath}` +
-        (holder ? ` (${holder.holder}, pid ${holder.pid})` : "") +
-        ". A v3 datastore takes one writer at a time. Wait for it to finish, " +
-        "or, if it is swamp serve, run this command through serve. If that " +
-        "process is gone, `swamp datastore lock status` shows the lock and " +
-        "`swamp datastore lock release --force` clears it. Nothing was changed.",
+      options.heldByServe === true
+        ? `swamp serve${named} holds the writer lease of the v3 datastore at ` +
+          `${datastorePath} for as long as it runs. Run this command ` +
+          `through serve: add --server ${
+            writerLockState().serveAddress ?? "<url>"
+          }. If serve is gone, \`swamp datastore lock status\` shows the ` +
+          "lock and `swamp datastore lock release --force` clears it. " +
+          "Nothing was changed."
+        : `Another swamp process is writing the v3 datastore at ${datastorePath}` +
+          named +
+          ". A v3 datastore takes one writer at a time. Wait for it to finish, " +
+          "or, if it is swamp serve, run this command through serve. If that " +
+          "process is gone, `swamp datastore lock status` shows the lock and " +
+          "`swamp datastore lock release --force` clears it. Nothing was changed.",
       V3_WRITER_BUSY_CODE,
     );
     this.name = "V3WriterBusyError";
@@ -90,6 +103,8 @@ export interface V3WriterFenceStore {
 
 interface WriterLockState {
   readonly held: Map<string, Held>;
+  /** the serve a busy error names, when this command knows one */
+  serveAddress?: string;
   readonly holdRetakenListeners: Set<V3HoldRetakenListener>;
   readonly leaseLostListeners: Set<V3LeaseLostListener>;
   readonly leaseTakenListeners: Set<V3LeaseTakenListener>;
@@ -101,6 +116,10 @@ const writerLockState = processRuntimeSlot<WriterLockState>(() => ({
   leaseLostListeners: new Set(),
   leaseTakenListeners: new Set(),
 }));
+
+export function setV3WriterBusyServeAddress(address: string | undefined): void {
+  writerLockState().serveAddress = address === "" ? undefined : address;
+}
 
 interface Held {
   /** the runtime it was taken in, so its timer and retakes never use another's */
@@ -121,6 +140,7 @@ interface Held {
   take?: {
     readonly ttlMs: number;
     readonly fenceStore?: V3WriterFenceStore;
+    readonly role?: "serve";
   };
   /**
    * a one-shot command's hold just ends: its later commits are refused too, so
@@ -146,6 +166,8 @@ export interface AcquireV3WriterLockOptions {
   readonly fenceStore?: V3WriterFenceStore;
   /** the process's first acquire decides; later ones join its hold */
   readonly retakeLost?: boolean;
+  /** recorded on the lease, so a writer it keeps out is told to go through serve */
+  readonly role?: "serve";
 }
 
 /**
@@ -172,6 +194,7 @@ export async function acquireV3WriterLock(
         ...(options.fenceStore !== undefined
           ? { fenceStore: options.fenceStore }
           : {}),
+        ...(options.role !== undefined ? { role: options.role } : {}),
       },
     };
     created.acquiring = retakeLease(created, datastorePath, maxWaitMs).then(
@@ -274,6 +297,7 @@ async function retakeLease(
     ...(retake.fenceStore !== undefined
       ? { fenceStore: retake.fenceStore }
       : {}),
+    ...(retake.role !== undefined ? { role: retake.role } : {}),
   });
   entry.hold = hold;
   entry.confirmedAt = asked;
@@ -319,7 +343,7 @@ async function advanceHold(
   const take = entry.take!;
   let advanced: number | undefined;
   const move = (async () => {
-    const lease = await writerLease(datastorePath, take.ttlMs);
+    const lease = await writerLease(datastorePath, take.ttlMs, take.role);
     const asked = performance.now();
     const next = await lease.advance(hold);
     if (next === undefined) return;
@@ -597,6 +621,7 @@ async function takeLease(
     readonly maxWaitMs: number;
     readonly ttlMs: number;
     readonly fenceStore?: V3WriterFenceStore;
+    readonly role?: "serve";
   },
 ): Promise<WriterLeaseHold> {
   // a bucket datastore is known to be v3 before its lease is written: every
@@ -606,10 +631,11 @@ async function takeLease(
   let hold: WriterLeaseHold;
   try {
     const floor = options.fenceStore?.writerFence();
-    hold = await (await writerLease(datastorePath, options.ttlMs)).acquire({
-      maxWaitMs: options.maxWaitMs,
-      ...(floor !== undefined ? { floor } : {}),
-    });
+    hold = await (await writerLease(datastorePath, options.ttlMs, options.role))
+      .acquire({
+        maxWaitMs: options.maxWaitMs,
+        ...(floor !== undefined ? { floor } : {}),
+      });
   } catch (error) {
     if (error instanceof WriterLeaseBusyError) {
       throw new V3WriterBusyError(
@@ -619,6 +645,7 @@ async function takeLease(
           lockInfoOf(error.inspection),
           error.waitedMs,
         ),
+        { heldByServe: error.inspection.record?.role === "serve" },
       );
     }
     throw error;
@@ -772,8 +799,9 @@ export function v3WriterLeaseConfirmed(datastorePath: string): boolean {
 function writerLease(
   datastorePath: string,
   ttlMs: number,
+  role?: "serve",
 ): Promise<WriterLease> {
-  return v3WriterLease(v3ControlPlaneAt(datastorePath), ttlMs);
+  return v3WriterLease(v3ControlPlaneAt(datastorePath), ttlMs, role);
 }
 
 /**
@@ -784,6 +812,7 @@ function writerLease(
 export async function v3WriterLease(
   store: WriterLeaseStore,
   ttlMs: number,
+  role?: "serve",
 ): Promise<WriterLease> {
   const host = Deno.hostname();
   const local = await localProcess();
@@ -794,6 +823,7 @@ export async function v3WriterLease(
       hostname: host,
       pid: local.pid,
       process: local.identity,
+      ...(role !== undefined ? { role } : {}),
     },
     ttlMs,
     now: () => Date.now(),
