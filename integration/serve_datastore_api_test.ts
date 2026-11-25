@@ -20,6 +20,17 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
+import {
+  checkPrincipalRate,
+  PrincipalRateLimiter,
+} from "../src/serve/rate_limiter.ts";
+import {
+  commitIngestsForTesting,
+  commitsInFlightForTesting,
+  MAX_COMMITS_IN_FLIGHT,
+  MAX_CONCURRENT_CHUNK_REQUESTS,
+  MAX_QUEUED_COMMIT_INGESTS,
+} from "../src/serve/datastore_api.ts";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { join } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
@@ -2380,5 +2391,276 @@ Deno.test({
       await reset();
       await initializeLogging({});
     }
+  },
+});
+
+Deno.test({
+  name:
+    "datastore API: a 32-step fan-out's 300 requests from one principal, past the general burst, see no 429 (swamp-club#5062)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(member(), async (server) => {
+      const statuses: number[] = [];
+      let next = 0;
+      await Promise.all(
+        Array.from({ length: 32 }, async () => {
+          while (next < 300) {
+            next++;
+            const read = await getJson(
+              `${partitionPath(server)}?after=0`,
+              "alice-token",
+            );
+            statuses.push(read.status);
+          }
+        }),
+      );
+      assertEquals(statuses.length, 300);
+      assertEquals(statuses.filter((s) => s === 429).length, 0);
+      assertEquals(statuses.every((s) => s === 200), true);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "datastore API: a principal flooding past its data-plane burst is refused 429 with a retry hint (swamp-club#5062)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const small = new PrincipalRateLimiter({ burst: 5, perMinute: 60 });
+    await withServer(
+      member(),
+      async (server) => {
+        const replies = [];
+        for (let i = 0; i < 8; i++) {
+          const response = await fetch(`${partitionPath(server)}?after=0`, {
+            headers: { authorization: "Bearer alice-token" },
+          });
+          await response.body?.cancel();
+          replies.push({
+            status: response.status,
+            retryAfter: response.headers.get("retry-after"),
+          });
+        }
+        assertEquals(replies.slice(0, 5).every((r) => r.status === 200), true);
+        assertEquals(replies.slice(5).every((r) => r.status === 429), true);
+        assert(Number(replies[5].retryAfter) >= 1);
+      },
+      undefined,
+      { dataPlaneRate: (id, now) => small.check(id, now) },
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "datastore API: a principal that spent its general bucket still reaches the data plane (swamp-club#5062)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(member(), async (server) => {
+      while (checkPrincipalRate("user:caller").allowed) {
+        // spend the general bucket, as other routes' traffic would
+      }
+      const read = await getJson(
+        `${partitionPath(server)}?after=0`,
+        "alice-token",
+      );
+      assertEquals(read.status, 200);
+    });
+  },
+});
+
+/** each body held one byte short, so its commit waits in or for an ingest slot */
+async function stalledCommits(
+  server: Server,
+  count: number,
+  held: number,
+): Promise<number[]> {
+  const content = new TextEncoder().encode("sixteen bytes!!!");
+  const sha = await sha256Hex(content);
+  const { promise: release, resolve: open } = Promise.withResolvers<void>();
+  // on a refusal they never all get there, and the bodies are released anyway
+  const watcher = waitFor(
+    () => commitIngestsForTesting("user:caller") >= held,
+    `${held} commits holding or queued for an ingest slot`,
+  ).then(() => open(), () => open());
+  const replies = await Promise.all(
+    Array.from({ length: count }, async (_, i) => {
+      const body = commitBody({
+        expectedSeq: 0,
+        txnId: crypto.randomUUID(),
+        ops: await blobSaveOps(server, `n${i}`, 1, content),
+        chunks: [{ sha256: sha, size: content.length }],
+      }, [content]);
+      const stream = new ReadableStream<Uint8Array>({
+        async start(controller) {
+          controller.enqueue(body.slice(0, -1));
+          await release;
+          controller.enqueue(body.slice(-1));
+          controller.close();
+        },
+      });
+      const response = await fetch(partitionPath(server), {
+        method: "POST",
+        headers: {
+          authorization: "Bearer alice-token",
+          "content-type": "application/vnd.swamp.commit+v1",
+        },
+        body: stream,
+      });
+      await response.body?.cancel();
+      return response.status;
+    }),
+  );
+  await watcher;
+  return replies;
+}
+
+Deno.test({
+  name:
+    "datastore API: 32 commits one principal sends at once, a fan-out's worth, queue for ingest and none is refused 429 (swamp-club#5062)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(writer(), async (server) => {
+      const replies = await stalledCommits(server, 32, 32);
+      assertEquals(replies.filter((s) => s === 429).length, 0, `${replies}`);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "datastore API: commits past a principal's ingest slots and queue are refused 429, so its held bodies stay bounded (swamp-club#5062)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(writer(), async (server) => {
+      const room = MAX_CONCURRENT_CHUNK_REQUESTS + MAX_QUEUED_COMMIT_INGESTS;
+      const replies = await stalledCommits(server, room + 8, room);
+      assertEquals(replies.filter((s) => s === 429).length, 8, `${replies}`);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "datastore API: a queued commit whose client goes away never keeps a slot: the queue drains once the slots free (swamp-club#5062)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(writer(), async (server) => {
+      const content = new TextEncoder().encode("sixteen bytes!!!");
+      const sha = await sha256Hex(content);
+      const { promise: release, resolve: open } = Promise.withResolvers<
+        void
+      >();
+      const send = async (i: number, abort?: AbortSignal) => {
+        const body = commitBody({
+          expectedSeq: 0,
+          txnId: crypto.randomUUID(),
+          ops: await blobSaveOps(server, `n${i}`, 1, content),
+          chunks: [{ sha256: sha, size: content.length }],
+        }, [content]);
+        const stream = new ReadableStream<Uint8Array>({
+          async start(controller) {
+            controller.enqueue(body.slice(0, -1));
+            await release;
+            controller.enqueue(body.slice(-1));
+            controller.close();
+          },
+        });
+        try {
+          const response = await fetch(partitionPath(server), {
+            method: "POST",
+            headers: {
+              authorization: "Bearer alice-token",
+              "content-type": "application/vnd.swamp.commit+v1",
+            },
+            body: stream,
+            signal: abort,
+          });
+          await response.body?.cancel();
+          return response.status;
+        } catch {
+          return 0;
+        }
+      };
+      const held = Array.from(
+        { length: MAX_CONCURRENT_CHUNK_REQUESTS },
+        (_, i) => send(i),
+      );
+      await waitFor(
+        () =>
+          commitIngestsForTesting("user:caller") ===
+            MAX_CONCURRENT_CHUNK_REQUESTS,
+        "every ingest slot held",
+      );
+      const gone = new AbortController();
+      const queued = send(99, gone.signal);
+      await waitFor(
+        () =>
+          commitIngestsForTesting("user:caller") ===
+            MAX_CONCURRENT_CHUNK_REQUESTS + 1,
+        "one commit queued",
+      );
+      // the server may not see the client leave while its body is unread;
+      // the commit then fails on that body once a slot reaches it
+      gone.abort();
+      open();
+      await Promise.all([...held, queued]);
+      await waitFor(
+        () => commitIngestsForTesting("user:caller") === 0,
+        "every slot freed",
+      );
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "datastore API: commit requests one principal opens past its in-flight cap are refused 429 before their envelopes are read (swamp-club#5062)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(writer(), async (server) => {
+      const { promise: release, resolve: open } = Promise.withResolvers<
+        void
+      >();
+      const watcher = waitFor(
+        () => commitsInFlightForTesting("user:caller") >= MAX_COMMITS_IN_FLIGHT,
+        "every in-flight commit admitted",
+      ).then(() => open(), () => open());
+      const replies = await Promise.all(
+        Array.from({ length: MAX_COMMITS_IN_FLIGHT + 8 }, async () => {
+          // half of the envelope's length prefix, then nothing until released
+          const stream = new ReadableStream<Uint8Array>({
+            async start(controller) {
+              controller.enqueue(new Uint8Array([0, 0]));
+              await release;
+              controller.close();
+            },
+          });
+          const response = await fetch(partitionPath(server), {
+            method: "POST",
+            headers: {
+              authorization: "Bearer alice-token",
+              "content-type": "application/vnd.swamp.commit+v1",
+            },
+            body: stream,
+          });
+          await response.body?.cancel();
+          return response.status;
+        }),
+      );
+      await watcher;
+      assertEquals(replies.filter((s) => s === 429).length, 8, `${replies}`);
+      await waitFor(
+        () => commitsInFlightForTesting("user:caller") === 0,
+        "every commit released",
+      );
+    });
   },
 });

@@ -50,7 +50,10 @@ import {
   createModelLock,
   createWorkflowRunLock,
 } from "../src/cli/repo_context.ts";
-import { resetRateLimitState } from "../src/serve/rate_limiter.ts";
+import {
+  type RateCheck,
+  resetRateLimitState,
+} from "../src/serve/rate_limiter.ts";
 import { encodeCommitBody } from "../src/infrastructure/datastore_v3/chunk_ingest.ts";
 import { UploadLedger } from "../src/infrastructure/datastore_v3/upload_ledger.ts";
 import type {
@@ -113,6 +116,8 @@ export async function withServer(
     vouchBudget?: () => VouchBudget;
     /** Serve's vouch limits, in place of its defaults (swamp-club#4260). */
     vouchLimits?: { partitions: number; commits: number };
+    /** the data plane's per-principal bucket, in place of serve's */
+    dataPlaneRate?: RateCheck;
   } = {},
 ): Promise<void> {
   resetRateLimitState();
@@ -187,6 +192,7 @@ export async function withServer(
         quarantine,
         vouchBudget: options.vouchBudget,
         vouchLimits: options.vouchLimits,
+        dataPlaneRate: options.dataPlaneRate,
         authenticate: (token) => {
           const principalId = TOKENS[token];
           return Promise.resolve(

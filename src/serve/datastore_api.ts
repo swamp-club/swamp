@@ -49,6 +49,8 @@
  * @module
  */
 
+import { processRuntimeSlot } from "../infrastructure/runtime/process_runtime.ts";
+import { checkPrincipalDataPlaneRate, type RateCheck } from "./rate_limiter.ts";
 import type { AccessResource } from "../domain/access/access_decision_service.ts";
 import { unresolvedAccessResource } from "../domain/access/access_resources.ts";
 import type { Action } from "../domain/access/action.ts";
@@ -342,6 +344,21 @@ export class VouchBudget {
 /** The most chunk requests one principal has in flight. */
 export const MAX_CONCURRENT_CHUNK_REQUESTS = 8;
 
+/**
+ * Commits one principal may have waiting for an ingest slot beyond its
+ * MAX_CONCURRENT_CHUNK_REQUESTS: a member's fan-out queues, unread, instead of
+ * being refused, so the memory bound stays the slots'.
+ */
+export const MAX_QUEUED_COMMIT_INGESTS = 64;
+
+/**
+ * Commit requests one principal may have open at once, counted before the
+ * envelope is read: each may hold an envelope of up to MAX_ENVELOPE_BYTES, so
+ * this, not the rate bucket, bounds what one principal's commits pin.
+ */
+export const MAX_COMMITS_IN_FLIGHT = MAX_CONCURRENT_CHUNK_REQUESTS +
+  MAX_QUEUED_COMMIT_INGESTS;
+
 export const CARRIED_PUT_CONCURRENCY = 4;
 
 /** read chunks waiting on storage, across every request: a slow bucket stalls reads */
@@ -383,6 +400,8 @@ export interface DatastoreApiDeps {
    * admin (swamp-club#4195); absent when serve keeps none.
    */
   readonly quarantine?: QuarantineStore;
+  /** the data plane's per-principal rate; tests inject a small bucket */
+  readonly dataPlaneRate?: RateCheck;
   readonly now?: () => number;
   /**
    * The budget each decision of which chunks a caller may reference gets
@@ -403,8 +422,28 @@ export interface DatastoreApiDeps {
 
 type ApiCaller = HttpCaller;
 
-/** Chunk requests in flight, by principal. */
-const chunkRequestsInFlight = new Map<string, number>();
+interface IngestQueue {
+  waiting: (() => void)[];
+}
+
+/** one slot, so a handed-on slot and its queue always move together */
+const chunkSlots = processRuntimeSlot(() => ({
+  inFlight: new Map<string, number>(),
+  queues: new Map<string, IngestQueue>(),
+}));
+
+const commitsInFlight = processRuntimeSlot(() => new Map<string, number>());
+
+export function commitsInFlightForTesting(principal: string): number {
+  return commitsInFlight().get(principal) ?? 0;
+}
+
+/** commits of a principal holding or waiting for an ingest slot */
+export function commitIngestsForTesting(principal: string): number {
+  const slots = chunkSlots();
+  return (slots.inFlight.get(principal) ?? 0) +
+    (slots.queues.get(principal)?.waiting.length ?? 0);
+}
 
 /** Catches serve's checkout up once per batch of commits that landed. */
 const catchUps = new WeakMap<V3Datastore, CatchUpCoalescer>();
@@ -441,6 +480,7 @@ export async function handleDatastoreRequest(
         authMode: deps.ctx.authConfig.mode,
         authenticate: deps.authenticate,
         now: deps.now,
+        principalRate: deps.dataPlaneRate ?? checkPrincipalDataPlaneRate,
       });
     },
   );
@@ -1091,7 +1131,11 @@ class DatastoreApi {
   }
 
   /** `POST partitions/{p}/commits`. */
-  async commit(req: Request, partitionSegment: string): Promise<Response> {
+  commit(req: Request, partitionSegment: string): Promise<Response> {
+    return this.#admitCommit(req, () => this.#commit(req, partitionSegment));
+  }
+
+  async #commit(req: Request, partitionSegment: string): Promise<Response> {
     const partition = parsePartition(partitionSegment);
     if (partition === undefined) {
       return failure(400, "invalid_request", "Not a partition key");
@@ -1116,7 +1160,11 @@ class DatastoreApi {
    * order through the single route's own checks, stopping at the first that
    * does not land, and confirmed as replicated once for all of them
    */
-  async commitBatch(req: Request): Promise<Response> {
+  commitBatch(req: Request): Promise<Response> {
+    return this.#admitCommit(req, () => this.#commitBatch(req));
+  }
+
+  async #commitBatch(req: Request): Promise<Response> {
     const reader = new FramedReader(req.body ?? ReadableStream.from([]), {
       maxBytes: MAX_COMMIT_BODY_BYTES,
     });
@@ -1393,8 +1441,9 @@ class DatastoreApi {
       provided = await commitStage(
         "ingest",
         () =>
-          this.#withChunkSlot(() =>
-            this.#ingestCarried(reader, envelope.chunks, signal, last)
+          this.#withQueuedChunkSlot(
+            signal,
+            () => this.#ingestCarried(reader, envelope.chunks, signal, last),
           ),
       );
     } catch (error) {
@@ -3970,19 +4019,107 @@ class DatastoreApi {
     }
   }
 
-  async #withChunkSlot<T>(fn: () => Promise<T>): Promise<T | Response> {
+  /** refused before its body is read once the principal has its most open */
+  async #admitCommit(
+    req: Request,
+    fn: () => Promise<Response>,
+  ): Promise<Response> {
     const principal = this.#caller.principal;
-    const inFlight = chunkRequestsInFlight.get(principal) ?? 0;
-    if (inFlight >= MAX_CONCURRENT_CHUNK_REQUESTS) {
+    const open = commitsInFlight();
+    const inFlight = open.get(principal) ?? 0;
+    if (inFlight >= MAX_COMMITS_IN_FLIGHT) {
+      await req.body?.cancel().catch(() => {});
       return tooManyRequests(1);
     }
-    chunkRequestsInFlight.set(principal, inFlight + 1);
+    open.set(principal, inFlight + 1);
     try {
       return await fn();
     } finally {
-      const left = (chunkRequestsInFlight.get(principal) ?? 1) - 1;
-      if (left <= 0) chunkRequestsInFlight.delete(principal);
-      else chunkRequestsInFlight.set(principal, left);
+      const left = (open.get(principal) ?? 1) - 1;
+      if (left <= 0) open.delete(principal);
+      else open.set(principal, left);
+    }
+  }
+
+  async #withChunkSlot<T>(fn: () => Promise<T>): Promise<T | Response> {
+    const principal = this.#caller.principal;
+    const inFlight = chunkSlots().inFlight.get(principal) ?? 0;
+    if (inFlight >= MAX_CONCURRENT_CHUNK_REQUESTS) {
+      return tooManyRequests(1);
+    }
+    chunkSlots().inFlight.set(principal, inFlight + 1);
+    return await this.#holdingChunkSlot(principal, fn);
+  }
+
+  /**
+   * a commit waits for one of its principal's chunk slots instead of being
+   * refused, up to MAX_QUEUED_COMMIT_INGESTS waiting; its body stays unread
+   * while it waits, so the slots still bound what serve holds
+   */
+  async #withQueuedChunkSlot<T>(
+    signal: AbortSignal,
+    fn: () => Promise<T>,
+  ): Promise<T | Response> {
+    const principal = this.#caller.principal;
+    if (
+      (chunkSlots().inFlight.get(principal) ?? 0) >=
+        MAX_CONCURRENT_CHUNK_REQUESTS
+    ) {
+      const queues = chunkSlots().queues;
+      let queue = queues.get(principal);
+      if ((queue?.waiting.length ?? 0) >= MAX_QUEUED_COMMIT_INGESTS) {
+        return tooManyRequests(1);
+      }
+      // an abort listener added now would never fire
+      signal.throwIfAborted();
+      if (queue === undefined) {
+        queue = { waiting: [] };
+        queues.set(principal, queue);
+      }
+      const waiting = queue;
+      await new Promise<void>((resolve, reject) => {
+        const wake = () => {
+          signal.removeEventListener("abort", onAbort);
+          resolve();
+        };
+        const onAbort = () => {
+          const at = waiting.waiting.indexOf(wake);
+          if (at !== -1) waiting.waiting.splice(at, 1);
+          if (waiting.waiting.length === 0) queues.delete(principal);
+          reject(signal.reason);
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+        waiting.waiting.push(wake);
+      });
+      // woken holding the slot its releaser handed over
+    } else {
+      chunkSlots().inFlight.set(
+        principal,
+        (chunkSlots().inFlight.get(principal) ?? 0) + 1,
+      );
+    }
+    return await this.#holdingChunkSlot(principal, fn);
+  }
+
+  /** runs fn in a slot already counted, and hands it on or frees it after */
+  async #holdingChunkSlot<T>(principal: string, fn: () => Promise<T>) {
+    try {
+      return await fn();
+    } finally {
+      const queues = chunkSlots().queues;
+      const queue = queues.get(principal);
+      const next = queue?.waiting.shift();
+      if (queue !== undefined && queue.waiting.length === 0) {
+        queues.delete(principal);
+      }
+      if (next !== undefined) {
+        // handed straight to the longest-waiting commit: the count stays
+        next();
+      } else {
+        const left = (chunkSlots().inFlight.get(principal) ?? 1) - 1;
+        if (left <= 0) chunkSlots().inFlight.delete(principal);
+        else chunkSlots().inFlight.set(principal, left);
+      }
     }
   }
 
