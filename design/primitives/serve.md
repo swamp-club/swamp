@@ -723,10 +723,11 @@ with another mint's secret (swamp-club#2482):
   be read, closes the session as before.
 - **A writer that lost the lock.** The name lock can be lost by a writer frozen
   past its lifetime while another rotates. `mint` and `rotate` therefore read
-  the secret before writing it and again before writing the record, and stop
-  with `ServerTokenConcurrentChangeError` if another writer changed it in
-  between, so a record is written only next to its own secret. A token whose
-  pair already disagrees still rotates: rotation is its repair.
+  the secret back after writing it, and stop with
+  `ServerTokenConcurrentChangeError`, before writing the record, when the vault
+  answers with another writer's secret. A read that fails judges nothing and the
+  record is written, since stopping then would strand the secret just written.
+  A token whose pair already disagrees still rotates: rotation is its repair.
 - **A cache left with another mint's record.** Two writers can still publish
   the same version of `token-main`, and the cache that published first never
   downloads the other's, so its record disagrees with the secret every other

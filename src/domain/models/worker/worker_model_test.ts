@@ -443,6 +443,10 @@ Deno.test("reassertDecision: rewrites a record that says the worker is gone, and
   );
   assertEquals(
     reassertDecision(parse("uuid-live", "idle", otherServe), live),
+    "keep",
+  );
+  assertEquals(
+    reassertDecision(parse("uuid-live", "idle", otherServe), live, false),
     "rewrite",
   );
   assertEquals(

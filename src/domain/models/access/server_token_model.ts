@@ -173,20 +173,27 @@ export class ServerTokenConcurrentChangeError extends Error {
   }
 }
 
-async function readSecretOrNull(
+/**
+ * true only when the vault answers with another secret; a read that fails
+ * judges nothing, since stopping then would strand the secret just written
+ */
+async function secretReplaced(
   context: MethodContext,
   vaultName: string,
   secretKey: string,
-): Promise<string | null> {
+  written: string,
+): Promise<boolean> {
+  let current: string;
   try {
-    return await context.vaultService!.get(
+    current = await context.vaultService!.get(
       vaultName,
       secretKey,
       "model:server-token-write",
     );
   } catch {
-    return null;
+    return false;
   }
+  return current !== written;
 }
 
 /**
@@ -262,9 +269,7 @@ async function mint(
   const plaintext = generateOpaqueToken();
   await context.vaultService.put(args.vaultName, secretKey, plaintext);
   // a writer that took the lock this one lost has replaced the secret
-  if (
-    await readSecretOrNull(context, args.vaultName, secretKey) !== plaintext
-  ) {
+  if (await secretReplaced(context, args.vaultName, secretKey, plaintext)) {
     throw new ServerTokenConcurrentChangeError(name);
   }
 
@@ -337,25 +342,13 @@ async function rotate(
     throw new Error("Rotating a server token requires a vault service");
   }
   const existing = await readToken(context);
-  // read with the record, so a secret another writer moved on is seen below;
-  // a pair already mismatched still rotates, since rotation is its repair
-  const before = await readSecretOrNull(
-    context,
-    existing.vaultName,
-    existing.secretKey,
-  );
   const name = context.definition.name;
   const secretKey = serverTokenSecretKey(name);
   const plaintext = generateOpaqueToken();
   const vaultName = args.vaultName ?? existing.vaultName;
-  if (
-    await readSecretOrNull(context, existing.vaultName, existing.secretKey) !==
-      before
-  ) {
-    throw new ServerTokenConcurrentChangeError(name);
-  }
   await context.vaultService.put(vaultName, secretKey, plaintext);
-  if (await readSecretOrNull(context, vaultName, secretKey) !== plaintext) {
+  // a writer that took the lock this one lost has replaced the secret
+  if (await secretReplaced(context, vaultName, secretKey, plaintext)) {
     throw new ServerTokenConcurrentChangeError(name);
   }
 

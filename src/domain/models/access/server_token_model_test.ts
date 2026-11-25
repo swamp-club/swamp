@@ -814,19 +814,20 @@ function withConcurrentWriter(h: Harness, onRead: number) {
   };
 }
 
-Deno.test("serverTokenModel: rotate writes nothing when another writer moves the secret before its put", async () => {
+Deno.test("serverTokenModel: rotate writes its record when the read-back fails, so its secret is not stranded", async () => {
   const h = await mintToken();
-  const recordBefore = h.store.get("token-main");
-  await assertRejects(
-    () =>
-      serverTokenModel.methods.rotate.execute({}, withConcurrentWriter(h, 2)),
-    ServerTokenConcurrentChangeError,
-  );
-  assertEquals(h.store.get("token-main"), recordBefore);
-  assertEquals(
-    h.vault.get(`local/${serverTokenSecretKey("user-token-1")}`),
-    "another-writers-secret",
-  );
+  const vault = h.context.vaultService!;
+  const context = {
+    ...h.context,
+    vaultService: {
+      ...vault,
+      get: () => Promise.reject(new Error("vault unreachable")),
+    } as unknown as typeof vault,
+  };
+  await serverTokenModel.methods.rotate.execute({}, context);
+  const record = ServerTokenSchema.parse(h.store.get("token-main"));
+  const secret = h.vault.get(`local/${serverTokenSecretKey("user-token-1")}`)!;
+  await verifyServerTokenSecret(record, secret);
 });
 
 Deno.test("serverTokenModel: rotate writes no record when another writer replaces its new secret", async () => {
@@ -834,7 +835,7 @@ Deno.test("serverTokenModel: rotate writes no record when another writer replace
   const recordBefore = h.store.get("token-main");
   await assertRejects(
     () =>
-      serverTokenModel.methods.rotate.execute({}, withConcurrentWriter(h, 3)),
+      serverTokenModel.methods.rotate.execute({}, withConcurrentWriter(h, 1)),
     ServerTokenConcurrentChangeError,
   );
   assertEquals(h.store.get("token-main"), recordBefore);

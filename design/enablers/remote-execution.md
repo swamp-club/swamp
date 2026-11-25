@@ -922,7 +922,7 @@ record. After every runtime-data pull that changed files, and after a quiet one
 at most every five minutes (`QUIET_REASSERT_INTERVAL_MS`, since a step-start
 pull may already have brought the change), the gateway rewrites the record of
 each connected worker whose record says it is gone (missing, `disconnected`,
-another instance `draining`, or its own instance owned by a serve it left),
+another instance `draining`, or its own instance owned by a dead serve it left),
 numbered above what the pull brought, and
 publishes it through the sync gate (`reassertConnected`). A record naming
 another instance that is still idle, busy or unverified, owned by another serve,

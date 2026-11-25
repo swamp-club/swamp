@@ -254,8 +254,9 @@ export function reassertDecision(
 ): ReassertDecision {
   if (stored === null) return "rewrite";
   if (stored.instanceUuid === live.instanceUuid) {
-    // a serve the worker left can still own it; this serve's departure would skip such a record
-    return stored.status === "disconnected" || ownedElsewhere(stored, live)
+    // a dead serve the worker left can still own it; this serve's departure would skip such a record
+    return stored.status === "disconnected" ||
+        (ownedElsewhere(stored, live) && !storedOwnerAlive)
       ? "rewrite"
       : "keep";
   }
