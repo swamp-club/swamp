@@ -89,26 +89,30 @@ export const localWriterHost: ProcessHost<
   let context: Awaited<ReturnType<typeof requireInitializedRepoUnlocked>>;
   let type: ModelType;
   const resumes = new Map<string, () => void>();
-  const definitions = new Map<string, Definition>();
+  const definitions = new Map<string, Promise<Definition>>();
 
-  async function definitionOf(name: string): Promise<Definition> {
-    const known = definitions.get(name);
-    if (known !== undefined) return known;
+  // one lookup per name, shared, so concurrent writes never create it twice
+  function definitionOf(name: string): Promise<Definition> {
+    let known = definitions.get(name);
+    if (known === undefined) {
+      known = findOrCreate(name);
+      definitions.set(name, known);
+    }
+    return known;
+  }
+
+  async function findOrCreate(name: string): Promise<Definition> {
     const found = await context.repoContext.definitionRepo.findByName(
       type,
       name,
     );
-    if (found !== null) {
-      definitions.set(name, found);
-      return found;
-    }
+    if (found !== null) return found;
     const created = Definition.create({ name, globalArguments: {} });
     await runInRootUnitOfWork(
       context.repoContext,
       { flush: undefined },
       () => context.repoContext.definitionRepo.save(type, created),
     );
-    definitions.set(name, created);
     return created;
   }
 
