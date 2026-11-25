@@ -591,6 +591,7 @@ async function recoverLocked(
       instance: journalInstanceOf(marker),
       liveInstances: live.filter((token) => token !== ""),
     });
+    await restoreQueuedStepStarts(handle, repoDir);
   } catch (error) {
     if (!(error instanceof RecoveryDeferredError)) throw error;
     logger
@@ -598,7 +599,6 @@ async function recoverLocked(
       describeMarker(file)
     }, and another writer is still writing this checkout: ${error.message}`;
     return undefined;
-    await restoreQueuedStepStarts(handle, repoDir);
   } finally {
     // The replay may have rewritten run records before any failure.
     await markRunIndexesForRepair(repoDir);
