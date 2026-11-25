@@ -3462,19 +3462,18 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
     if (cached?.point === point) return cached.entries;
     const running = this.#indexBuilds.get(namespace);
     if (running?.point === point) return await running.build;
-    const build = (async () => {
-      try {
-        const built = await this.#buildBaseIndex(namespace, slice);
-        this.#indexCache.set(namespace, built);
-        return built.entries;
-      } finally {
-        if (this.#indexBuilds.get(namespace)?.build === build) {
-          this.#indexBuilds.delete(namespace);
-        }
-      }
-    })();
+    const build = this.#buildBaseIndex(namespace, slice).then((built) => {
+      this.#indexCache.set(namespace, built);
+      return built.entries;
+    });
     this.#indexBuilds.set(namespace, { point, build });
-    return await build;
+    try {
+      return await build;
+    } finally {
+      if (this.#indexBuilds.get(namespace)?.build === build) {
+        this.#indexBuilds.delete(namespace);
+      }
+    }
   }
 
   /**
