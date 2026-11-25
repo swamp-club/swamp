@@ -24,7 +24,10 @@ import { DatabaseSync } from "node:sqlite";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import type { ModelType } from "../src/domain/models/model_type.ts";
 import { serveUpstreamLocalRoot } from "../src/infrastructure/datastore_v3/serve_upstream_binding.ts";
-import { OBSERVED_BASE_STAGING_PREFIX } from "../src/infrastructure/datastore_v3/serve_catch_up.ts";
+import {
+  OBSERVED_BASE_STAGING_PREFIX,
+  RESUMABLE_STAGING_FILE,
+} from "../src/infrastructure/datastore_v3/serve_catch_up.ts";
 import { ServeUpstreamDivergedError } from "../src/infrastructure/datastore_v3/serve_upstream_errors.ts";
 import { swampPath } from "../src/infrastructure/persistence/paths.ts";
 import { datastoreRecords } from "./usecase_v3_fixtures.ts";
@@ -256,7 +259,7 @@ Deno.test({
 
 Deno.test({
   name:
-    "compacted base: a load cut off part-way leaves the copy as it was, and the next command loads it whole",
+    "compacted base: a load cut off part-way leaves the copy as it was, and the next command resumes it",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
@@ -319,9 +322,15 @@ Deno.test({
         assertEquals(copyRows(root, "SELECT COUNT(*) AS n FROM base_records"), [
           { n: 0 },
         ]);
-        assertEquals(stagingFiles(root), []);
+        assertEquals(
+          stagingFiles(root).every((name) =>
+            name.startsWith(RESUMABLE_STAGING_FILE)
+          ),
+          true,
+        );
 
         assertEquals(await latest(), { version: 3, content: "3" });
+        assertEquals(stagingFiles(root), []);
         assert(pages > 3, "the base was paged");
       } finally {
         await proxy.close();

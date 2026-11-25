@@ -201,13 +201,20 @@ export function storageNamespaceOf(namespace: Namespace): string {
     : namespace;
 }
 
+export interface PrefetchReport {
+  requested: number;
+  fetched: number;
+  retries: number;
+  failed: number;
+}
+
 // prefetch keeps what it fetches; ChunkStore asks only a storage that does
 export interface PrefetchingStorage {
   prefetch(
     namespace: string,
     hashes: readonly string[],
     signal: AbortSignal,
-  ): Promise<void>;
+  ): Promise<PrefetchReport>;
 }
 
 // drops what it fetched once the files made from it are durable; serve keeps it
@@ -441,9 +448,9 @@ export class ChunkStore {
     namespace: Namespace,
     refs: readonly BlobRef[],
     signal: AbortSignal,
-  ): Promise<void> {
+  ): Promise<PrefetchReport | undefined> {
     const storage = this.#storage as Partial<PrefetchingStorage>;
-    if (storage.prefetch === undefined) return;
+    if (storage.prefetch === undefined) return undefined;
     const hashes = [
       ...new Set(
         refs.flatMap((ref) =>
@@ -451,8 +458,12 @@ export class ChunkStore {
         ),
       ),
     ];
-    if (hashes.length < 2) return;
-    await storage.prefetch(storageNamespaceOf(namespace), hashes, signal);
+    if (hashes.length < 2) return undefined;
+    return await storage.prefetch(
+      storageNamespaceOf(namespace),
+      hashes,
+      signal,
+    );
   }
 
   /**

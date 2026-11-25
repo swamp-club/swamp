@@ -523,6 +523,41 @@ Deno.test("SqliteCommitStore.readBaseIndex: answers from one read per compaction
   });
 });
 
+Deno.test("SqliteCommitStore.readBaseIndex: builds in slices with the event loop free between them, and matches a one-slice build (swamp-club#5083)", async () => {
+  await withStores(async (serve, _copy, paths) => {
+    for (let s = 1; s <= 6; s++) await serve.append(await save(`n${s}`, 1, s));
+    await serve.compactHistory(6);
+    let ticks = 0;
+    const timer = setInterval(() => ticks++, 0);
+    let sliced;
+    try {
+      sliced = await serve.readBaseIndex("", { partitions: 1, files: 1 });
+    } finally {
+      clearInterval(timer);
+    }
+    assertEquals(ticks > 0, true, "timers ran while the index was built");
+    const fresh = SqliteCommitStore.open(paths.serve);
+    try {
+      assertEquals(sliced, await fresh.readBaseIndex(""));
+    } finally {
+      fresh.close();
+    }
+  });
+});
+
+Deno.test("SqliteCommitStore.readBaseIndex: a fold that moves the point mid-build is answered at the new point (swamp-club#5083)", async () => {
+  await withStores(async (serve) => {
+    for (let s = 1; s <= 6; s++) await serve.append(await save(`n${s}`, 1, s));
+    await serve.compactHistory(6);
+    const building = serve.readBaseIndex("", { partitions: 1, files: 1 });
+    await serve.append(await save("n7", 1, 7));
+    await serve.compactHistory(7);
+    const entries = await building;
+    assertEquals(entries[0].seq, 7);
+    assertEquals(await serve.readBaseIndex(""), entries);
+  });
+});
+
 Deno.test("SqliteCommitStore.installPartitionBase: a whole install below the copy's newest snapshot keeps that snapshot, never rebuilding from commits a base already took", async () => {
   await withStores(async (serve, copy, paths) => {
     for (let seq = 1; seq <= 3; seq++) {

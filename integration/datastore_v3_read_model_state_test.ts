@@ -521,7 +521,7 @@ Deno.test("ReadModelState: a schema-4 database migrates to the unreadable-record
     } finally {
       reopened.close();
     }
-    assertEquals(READ_MODEL_STATE_SCHEMA_VERSION, 10);
+    assertEquals(READ_MODEL_STATE_SCHEMA_VERSION, 11);
   });
 });
 
@@ -672,6 +672,49 @@ Deno.test("ReadModelState: a schema-6 state migrates to the access columns, its 
     rolled.exec("PRAGMA user_version=6");
     rolled.close();
     ReadModelState.open(path).close();
-    assertEquals(READ_MODEL_STATE_SCHEMA_VERSION, 10);
+    assertEquals(READ_MODEL_STATE_SCHEMA_VERSION, 11);
+  });
+});
+
+Deno.test("ReadModelState: a schema-9 state migrates through the version gate (10) and the base load's done files (11), keeping its progress (swamp-club#5083)", async () => {
+  await withState((state, path) => {
+    state.recordApplied(applied({
+      cursor: 7,
+      records: new Map([["data/a", { sha256: A }]]),
+      files: new Map([["data/a", { owner: "p", mark: 1, present: true }]]),
+    }));
+    const cursor = state.cursor();
+    state.close();
+    const db = new DatabaseSync(path);
+    db.exec("DROP TABLE load_done; PRAGMA user_version=9");
+    db.close();
+    const reopened = ReadModelState.open(path);
+    try {
+      assertEquals(reopened.cursor(), cursor);
+      reopened.markLoadDone([{ namespace: "", record_key: "data/a" }], {
+        point: 1,
+        boot: "boot-1",
+      });
+    } finally {
+      reopened.close();
+    }
+    const after = new DatabaseSync(path);
+    try {
+      assertEquals(
+        (after.prepare("PRAGMA user_version").get() as {
+          user_version: number;
+        }).user_version,
+        11,
+      );
+      assertEquals(
+        after.prepare(
+          "SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'load_done'",
+        )
+          .get(),
+        { n: 1 },
+      );
+    } finally {
+      after.close();
+    }
   });
 });

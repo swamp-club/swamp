@@ -126,7 +126,7 @@ Deno.test("ReadModelState: a schema-5 state migrates to the checkout filter tabl
     } finally {
       check.close();
     }
-    assertEquals(READ_MODEL_STATE_SCHEMA_VERSION, 10);
+    assertEquals(READ_MODEL_STATE_SCHEMA_VERSION, 11);
   });
 });
 

@@ -853,6 +853,11 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
     string,
     { point: number; entries: readonly BaseIndexEntry[] }
   >();
+  /** base index builds under way, one per namespace, joined by every request for that point */
+  readonly #indexBuilds = new Map<
+    string,
+    { point: number; build: Promise<readonly BaseIndexEntry[]> }
+  >();
   #connectionKey: string | undefined;
   /** Append transactions committed; see {@link appendTransactions}. */
   #appendTransactions = 0;
@@ -3566,23 +3571,112 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
     }
   }
 
-  readBaseIndex(namespace: string): Promise<readonly BaseIndexEntry[]> {
-    if (this.#closed) return Promise.reject(closedError());
+  async readBaseIndex(
+    namespace: string,
+    slice: BaseIndexSlice = BASE_INDEX_SLICE,
+  ): Promise<readonly BaseIndexEntry[]> {
+    if (this.#closed) throw closedError();
+    // the base changes only when a fold moves the point, so one build per point
+    const point = this.#readTransaction(() => this.#point());
+    const cached = this.#indexCache.get(namespace);
+    if (cached?.point === point) return cached.entries;
+    const running = this.#indexBuilds.get(namespace);
+    if (running?.point === point) return await running.build;
+    const build = this.#buildBaseIndex(namespace, slice).then((built) => {
+      this.#indexCache.set(namespace, built);
+      return built.entries;
+    });
+    this.#indexBuilds.set(namespace, { point, build });
     try {
-      return Promise.resolve(
-        this.#readTransaction(() => {
-          // the base changes only when a fold moves the point, so one read per point
-          const point = this.#point();
-          const cached = this.#indexCache.get(namespace);
-          if (cached?.point === point) return cached.entries;
-          const entries = this.#base.readIndex(namespace);
-          this.#indexCache.set(namespace, { point, entries });
-          return entries;
-        }),
-      );
-    } catch (error) {
-      return Promise.reject(error);
+      return await build;
+    } finally {
+      if (this.#indexBuilds.get(namespace)?.build === build) {
+        this.#indexBuilds.delete(namespace);
+      }
     }
+  }
+
+  /**
+   * builds the index in slices, each its own read transaction with the event
+   * loop free between them; a fold moving the point mid-build starts it again
+   */
+  async #buildBaseIndex(
+    namespace: string,
+    slice: BaseIndexSlice,
+  ): Promise<{ point: number; entries: readonly BaseIndexEntry[] }> {
+    for (let attempt = 1; attempt <= BASE_INDEX_BUILD_ATTEMPTS; attempt++) {
+      const built = await this.#buildBaseIndexAt(namespace, slice);
+      if (built !== undefined) return built;
+    }
+    // folds outran every sliced build: one blocking read is still correct
+    return this.#readTransaction(() => ({
+      point: this.#point(),
+      entries: this.#base.readIndex(namespace),
+    }));
+  }
+
+  async #buildBaseIndexAt(
+    namespace: string,
+    slice: BaseIndexSlice,
+  ): Promise<
+    { point: number; entries: readonly BaseIndexEntry[] } | undefined
+  > {
+    let point = 0;
+    const sliceAt = async <T>(body: () => T): Promise<T | undefined> => {
+      await yieldToLoop();
+      if (this.#closed) throw closedError();
+      return this.#readTransaction(() =>
+        this.#point() === point ? body() : undefined
+      );
+    };
+    const first = this.#readTransaction(() => {
+      point = this.#point();
+      return {
+        partitions: this.#base.indexPartitions(namespace),
+        horizons: this.#base.indexHorizons(namespace),
+      };
+    });
+    const counts = new Map<string, number>();
+    const add = (from: ReadonlyMap<string, number>) => {
+      for (const [partition, n] of from) {
+        counts.set(partition, (counts.get(partition) ?? 0) + n);
+      }
+    };
+    const contested = new Set<string>();
+    const { partitions } = first;
+    for (let i = 0; i < partitions.length; i += slice.partitions) {
+      const range = partitions.slice(i, i + slice.partitions);
+      const part = await sliceAt(() =>
+        this.#base.indexPartitionCounts(
+          namespace,
+          range[0].partition,
+          range[range.length - 1].partition,
+        )
+      );
+      if (part === undefined) return undefined;
+      add(part.counts);
+      for (const partition of part.contested) contested.add(partition);
+    }
+    let after: string | undefined;
+    for (;;) {
+      const page = await sliceAt(() =>
+        this.#base.indexFileOwners(namespace, after, slice.files)
+      );
+      if (page === undefined) return undefined;
+      add(page.owners);
+      if (page.last === undefined) break;
+      after = page.last;
+    }
+    return {
+      point,
+      entries: partitions.map((row) => ({
+        partition: row.partition,
+        seq: row.seq,
+        rows: counts.get(row.partition) ?? 0,
+        horizon: first.horizons.get(row.partition) ?? 0,
+        contested: contested.has(row.partition),
+      })),
+    };
   }
 
   /** when this copy last asked serve's index, and whether it found nothing to do */
@@ -4440,6 +4534,22 @@ function selectRefsSql(count: number): string {
   const list = Array.from({ length: count }, () => "?").join(", ");
   return `SELECT sha256 FROM chunk_refs WHERE namespace = ? AND sha256 IN (${list}) ` +
     `UNION SELECT sha256 FROM released_chunks WHERE namespace = ? AND sha256 IN (${list}) AND released_at >= ?`;
+}
+
+export interface BaseIndexSlice {
+  readonly partitions: number;
+  readonly files: number;
+}
+
+export const BASE_INDEX_SLICE: BaseIndexSlice = {
+  partitions: 256,
+  files: 5_000,
+};
+
+const BASE_INDEX_BUILD_ATTEMPTS = 3;
+
+function yieldToLoop(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 function closedError(): Error {
@@ -5326,6 +5436,79 @@ class SqliteCompactedBase implements CompactedBaseWriter {
     return this.#released;
   }
 
+  indexPartitions(namespace: string): { partition: string; seq: number }[] {
+    return this.#db.prepare(
+      "SELECT partition, seq FROM compacted_partitions WHERE namespace = ? ORDER BY partition",
+    ).all(namespace) as { partition: string; seq: number }[];
+  }
+
+  indexHorizons(namespace: string): Map<string, number> {
+    return new Map(
+      (this.#db.prepare(
+        "SELECT partition, seq FROM difference_horizons WHERE namespace = ?",
+      ).all(namespace) as { partition: string; seq: number }[]).map((
+        row,
+      ) => [row.partition, row.seq]),
+    );
+  }
+
+  indexPartitionCounts(
+    namespace: string,
+    first: string,
+    last: string,
+  ): { counts: Map<string, number>; contested: Set<string> } {
+    const counts = new Map<string, number>();
+    for (
+      const table of [
+        "base_records",
+        "base_versions",
+        "base_catalog",
+        "base_forwards",
+      ]
+    ) {
+      for (
+        const row of this.#db.prepare(
+          `SELECT partition, COUNT(*) AS n FROM ${table} ` +
+            "WHERE namespace = ? AND partition >= ? AND partition <= ? GROUP BY partition",
+        ).all(namespace, first, last) as { partition: string; n: number }[]
+      ) {
+        counts.set(row.partition, (counts.get(row.partition) ?? 0) + row.n);
+      }
+    }
+    const contested = new Set(
+      (this.#db.prepare(
+        "SELECT DISTINCT r.partition AS partition FROM base_records AS r JOIN base_files AS f " +
+          "ON f.namespace = r.namespace AND f.record_key = r.record_key " +
+          "WHERE r.namespace = ? AND r.partition >= ? AND r.partition <= ? AND f.owner != r.partition",
+      ).all(namespace, first, last) as { partition: string }[]).map((row) =>
+        row.partition
+      ),
+    );
+    return { counts, contested };
+  }
+
+  indexFileOwners(
+    namespace: string,
+    after: string | undefined,
+    limit: number,
+  ): { owners: Map<string, number>; last: string | undefined } {
+    const rows = this.#db.prepare(
+      "SELECT record_key, owner FROM base_files WHERE namespace = ? AND record_key > ? " +
+        "ORDER BY record_key LIMIT ?",
+    ).all(namespace, after ?? "", limit) as {
+      record_key: string;
+      owner: string;
+    }[];
+    const owners = new Map<string, number>();
+    for (const row of rows) {
+      owners.set(row.owner, (owners.get(row.owner) ?? 0) + 1);
+    }
+    return {
+      owners,
+      last: rows.length < limit ? undefined : rows[rows.length - 1].record_key,
+    };
+  }
+
   readIndex(namespace: string): BaseIndexEntry[] {
     const counts = new Map<string, number>();
     const add = (sql: string) => {
@@ -5629,7 +5812,84 @@ export class ObservedBaseStaging {
   /** A fresh staging file at `path`, removing whatever a cut-off load left. */
   static create(path: string, namespace: string): ObservedBaseStaging {
     removeDatabaseFiles(path);
-    return new ObservedBaseStaging(path, openCommitsDatabase(path), namespace);
+    const db = openCommitsDatabase(path);
+    db.exec(STAGING_PROGRESS_SCHEMA);
+    return new ObservedBaseStaging(path, db, namespace);
+  }
+
+  /**
+   * The staging file a cut-off load left at `path`, to page on from where it
+   * stopped; undefined, with the file removed, unless it staged part of the
+   * same serve's base of the same namespace and reads back whole
+   */
+  static resume(
+    path: string,
+    namespace: string,
+    serve: string,
+  ): { staging: ObservedBaseStaging; progress: StagingProgress } | undefined {
+    try {
+      Deno.statSync(path);
+    } catch {
+      return undefined;
+    }
+    let db: DatabaseSync | undefined;
+    try {
+      db = openCommitsDatabase(path);
+      const check = db.prepare("PRAGMA quick_check").get() as
+        | { quick_check: string }
+        | undefined;
+      const row = check?.quick_check === "ok"
+        ? db.prepare(
+          "SELECT namespace, serve, point, next, pages FROM staging_progress WHERE id = 1",
+        ).get() as
+          | {
+            namespace: string;
+            serve: string;
+            point: number;
+            next: string;
+            pages: number;
+          }
+          | undefined
+        : undefined;
+      if (
+        row === undefined || row.namespace !== namespace ||
+        row.serve !== serve
+      ) {
+        db.close();
+        removeDatabaseFiles(path);
+        return undefined;
+      }
+      const staging = new ObservedBaseStaging(path, db, namespace);
+      for (
+        const partition of db.prepare(
+          "SELECT partition, seq, names FROM staging_partitions",
+        ).all() as { partition: string; seq: number; names: string }[]
+      ) {
+        staging.#partitions.set(partition.partition, {
+          seq: partition.seq,
+          names: JSON.parse(partition.names) as DataNameMarks[],
+        });
+      }
+      return {
+        staging,
+        progress: { point: row.point, next: row.next, pages: row.pages },
+      };
+    } catch {
+      // unreadable: the load starts over
+      try {
+        db?.close();
+      } catch { /* already closed */ }
+      removeDatabaseFiles(path);
+      return undefined;
+    }
+  }
+
+  heads(): { namespace: string; partition: string; seq: number }[] {
+    return [...this.#partitions].map(([partition, { seq }]) => ({
+      namespace: this.#namespace,
+      partition,
+      seq,
+    }));
   }
 
   /** Removes the staging file at `path` and its WAL, if there. */
@@ -5641,8 +5901,14 @@ export class ObservedBaseStaging {
    * Adds one page of serve's entries. A partition named twice with another
    * seq is refused: one point has one seq per partition.
    */
-  add(entries: readonly ObservedBaseEntry[]): void {
+  add(
+    entries: readonly ObservedBaseEntry[],
+    progress?: { readonly serve: string } & StagingProgress,
+  ): void {
     this.#assertOpen();
+    const insertPartition = this.#db.prepare(
+      "INSERT OR REPLACE INTO staging_partitions (partition, seq, names) VALUES (?, ?, ?)",
+    );
     const base = new SqliteCompactedBase(this.#db);
     const insertVersion = this.#db.prepare(
       "INSERT OR REPLACE INTO base_versions (namespace, partition, name, version, metadata) VALUES (?, ?, ?, ?, ?)",
@@ -5675,6 +5941,11 @@ export class ObservedBaseStaging {
               names: entry.names,
             });
             base.setCompactedSeq(entry.namespace, entry.partition, entry.seq);
+            insertPartition.run(
+              entry.partition,
+              entry.seq,
+              JSON.stringify(entry.names),
+            );
             break;
           }
           case "record":
@@ -5714,6 +5985,19 @@ export class ObservedBaseStaging {
             base.setFileOwnership(entry.namespace, entry.key, entry.ownership);
             break;
         }
+      }
+      // in the page's own transaction: a cut-off load resumes at a page boundary
+      if (progress !== undefined) {
+        this.#db.prepare(
+          "INSERT OR REPLACE INTO staging_progress (id, namespace, serve, point, next, pages) " +
+            "VALUES (1, ?, ?, ?, ?, ?)",
+        ).run(
+          this.#namespace,
+          progress.serve,
+          progress.point,
+          progress.next,
+          progress.pages,
+        );
       }
       this.#db.exec("COMMIT");
     } catch (error) {
@@ -5828,6 +6112,30 @@ export class ObservedBaseStaging {
     if (this.#closed) throw new Error("The base staging file is closed");
   }
 }
+
+/** where a staging file's load stopped: the next page of serve's base at `point` */
+export interface StagingProgress {
+  readonly point: number;
+  readonly next: string;
+  readonly pages: number;
+}
+
+// staging-only tables: an install copies the store's own tables, never these
+const STAGING_PROGRESS_SCHEMA = `
+  CREATE TABLE IF NOT EXISTS staging_progress (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    namespace TEXT NOT NULL,
+    serve TEXT NOT NULL,
+    point INTEGER NOT NULL,
+    next TEXT NOT NULL,
+    pages INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS staging_partitions (
+    partition TEXT PRIMARY KEY,
+    seq INTEGER NOT NULL,
+    names TEXT NOT NULL
+  );
+`;
 
 /** Replaces every row of `table` with `rows`. */
 function copyRows(

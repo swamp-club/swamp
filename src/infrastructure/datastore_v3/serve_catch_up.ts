@@ -42,7 +42,9 @@ import {
   type ServeDivergedCommit,
   type ServeDivergence,
   type ServeLostCommit,
+  ServeRateLimitedError,
   ServeReplyTooLargeError,
+  ServeUnreachableError,
   ServeUpstreamDivergedError,
   ServeUpstreamError,
   ServeUpstreamUpgradeRequiredError,
@@ -62,6 +64,7 @@ import {
 import {
   ObservedBaseStaging,
   type SqliteCommitStore,
+  type StagingProgress,
 } from "./sqlite_commit_store.ts";
 import { withSpan } from "../tracing/tracer.ts";
 import { acquireV3WriterLock } from "./v3_writer_lock.ts";
@@ -168,6 +171,9 @@ export const SERVE_BASE_PAGE = 1000;
 export const BASE_LOAD_ATTEMPTS = 3;
 
 export const OBSERVED_BASE_STAGING_PREFIX = "base_staging";
+/** the one staging file a cut-off base load leaves for the next to resume */
+export const RESUMABLE_STAGING_FILE =
+  `${OBSERVED_BASE_STAGING_PREFIX}-resumable.db`;
 
 const loadsInProcess = new Map<string, Promise<void>>();
 
@@ -513,15 +519,32 @@ export class ServeCatchUp {
     compacted: ServeCommitsCompactedError,
     signal: AbortSignal,
   ): Promise<void> {
-    removeStagingFiles(this.#copyDir);
+    const resumable = join(this.#copyDir, RESUMABLE_STAGING_FILE);
+    removeStagingFiles(this.#copyDir, RESUMABLE_STAGING_FILE);
     for (let attempt = 1;; attempt++) {
-      const path = join(
-        this.#copyDir,
-        `${OBSERVED_BASE_STAGING_PREFIX}-${crypto.randomUUID()}.db`,
+      const resumed = ObservedBaseStaging.resume(
+        resumable,
+        this.#namespace,
+        this.#client.baseUrl,
       );
-      const staging = ObservedBaseStaging.create(path, this.#namespace);
+      const staging = resumed?.staging ??
+        ObservedBaseStaging.create(resumable, this.#namespace);
+      // kept only when the load was cut off by something that passes, so the
+      // next command pages on from it; a refusal that would repeat starts over
+      let keep = false;
       try {
-        const loaded = await this.#stageBase(staging, compacted, signal);
+        let loaded;
+        try {
+          loaded = await this.#stageBase(
+            staging,
+            compacted,
+            resumed?.progress,
+            signal,
+          );
+        } catch (error) {
+          keep = signal.aborted || isTransientBaseLoadError(error);
+          throw error;
+        }
         if (loaded !== undefined) {
           await this.#commitStore.installObservedBase(staging, loaded.point);
           this.#state.recordBaseLoaded(loaded.point, loaded.heads);
@@ -531,7 +554,7 @@ export class ServeCatchUp {
         }
       } finally {
         staging.close();
-        ObservedBaseStaging.remove(path);
+        if (!keep) ObservedBaseStaging.remove(resumable);
       }
       if (attempt >= BASE_LOAD_ATTEMPTS) {
         throw new ServeUpstreamError(
@@ -545,12 +568,14 @@ export class ServeCatchUp {
   }
 
   /**
-   * Pages serve's base into `staging`. Undefined when serve's point moved
-   * between pages: they are parts of two bases.
+   * Pages serve's base into `staging`, from `resumed`'s page when a cut-off
+   * load left one. Undefined when serve's point moved between pages: they are
+   * parts of two bases.
    */
   async #stageBase(
     staging: ObservedBaseStaging,
     compacted: ServeCommitsCompactedError,
+    resumed: StagingProgress | undefined,
     signal: AbortSignal,
   ): Promise<
     | {
@@ -559,51 +584,74 @@ export class ServeCatchUp {
     }
     | undefined
   > {
-    let point: number | undefined;
-    const heads: { namespace: string; partition: string; seq: number }[] = [];
-    let after: string | undefined;
+    let point: number | undefined = resumed?.point;
+    let after: string | undefined = resumed?.next;
+    let pages = resumed?.pages ?? 0;
     let limit = SERVE_BASE_PAGE;
-    do {
-      signal.throwIfAborted();
-      const at = after;
-      let read;
-      try {
-        read = await pageAtMost(
-          "base",
-          at,
-          limit,
-          (size) =>
-            this.#client.compactedBase(at, this.#namespace, signal, size),
-        );
-      } catch (error) {
-        // A serve too old to send its base.
-        if (
-          error instanceof ServeUpstreamError && error.status === 404 &&
-          point === undefined
-        ) {
-          throw compacted;
-        }
-        throw error;
-      }
-      limit = read.limit;
-      const page = read.page;
-      if (point !== undefined && page.point !== point) return undefined;
-      point = page.point;
-      staging.add(page.entries);
-      for (const entry of page.entries) {
-        if (entry.kind === "partition") {
-          heads.push({
-            namespace: entry.namespace,
-            partition: entry.partition,
-            seq: entry.seq,
+    await withSpan(
+      "swamp.datastore.v3.serve.load_base",
+      {},
+      async (span) => {
+        let entries = 0;
+        try {
+          do {
+            signal.throwIfAborted();
+            const at = after;
+            let read;
+            try {
+              read = await pageAtMost(
+                "base",
+                at,
+                limit,
+                (size) =>
+                  this.#client.compactedBase(at, this.#namespace, signal, size),
+              );
+            } catch (error) {
+              // A serve too old to send its base.
+              if (
+                error instanceof ServeUpstreamError && error.status === 404 &&
+                point === undefined
+              ) {
+                throw compacted;
+              }
+              throw error;
+            }
+            limit = read.limit;
+            const page = read.page;
+            if (point !== undefined && page.point !== point) {
+              point = undefined;
+              return;
+            }
+            point = page.point;
+            pages++;
+            entries += page.entries.length;
+            staging.add(
+              page.entries,
+              page.next === undefined ? undefined : {
+                serve: this.#client.baseUrl,
+                point,
+                next: page.next,
+                pages,
+              },
+            );
+            after = page.next;
+          } while (after !== undefined);
+        } finally {
+          span.setAttributes({
+            "swamp.datastore.v3.serve.load_base.resumed": resumed !== undefined,
+            "swamp.datastore.v3.serve.load_base.resumed_pages":
+              resumed?.pages ??
+                0,
+            "swamp.datastore.v3.serve.load_base.pages": pages,
+            "swamp.datastore.v3.serve.load_base.entries": entries,
           });
         }
-      }
-      after = page.next;
-    } while (after !== undefined);
+      },
+    );
+    if (after !== undefined || point === undefined) return undefined;
     // Serve refused the feed as compacted, so it has a base to send.
-    if (point === undefined || point === 0) throw compacted;
-    return { point, heads };
+    if (point === 0) throw compacted;
+    return { point, heads: staging.heads() };
   }
 
   /**
@@ -1371,7 +1419,13 @@ export class ServeCatchUp {
   }
 }
 
-function removeStagingFiles(copyDir: string): void {
+function isTransientBaseLoadError(error: unknown): boolean {
+  if (error instanceof ServeUnreachableError) return true;
+  if (error instanceof ServeRateLimitedError) return true;
+  return error instanceof ServeUpstreamError && error.status >= 500;
+}
+
+function removeStagingFiles(copyDir: string, keep: string): void {
   let entries: Deno.DirEntry[];
   try {
     entries = [...Deno.readDirSync(copyDir)];
@@ -1380,7 +1434,10 @@ function removeStagingFiles(copyDir: string): void {
     throw error;
   }
   for (const entry of entries) {
-    if (entry.isFile && entry.name.startsWith(OBSERVED_BASE_STAGING_PREFIX)) {
+    if (
+      entry.isFile && entry.name.startsWith(OBSERVED_BASE_STAGING_PREFIX) &&
+      !entry.name.startsWith(keep)
+    ) {
       Deno.removeSync(join(copyDir, entry.name));
     }
   }
