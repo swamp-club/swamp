@@ -35,6 +35,7 @@ import {
   isCheckoutLocalKey,
   MATERIALISED_SUBDIRS,
 } from "./record_path_guard.ts";
+import { writerInstance } from "./writer_instance.ts";
 
 /** a scope standing for every materialised path: recovery walks them all */
 export const WHOLE_CHECKOUT_SCOPE = "*";
@@ -119,7 +120,7 @@ export class TouchedScopeJournal {
   #insert: StatementSync | undefined;
   readonly #recorded = new Map<string, Set<string>>();
 
-  constructor(catalogPath: string, instance: string) {
+  constructor(catalogPath: string, instance: string = writerInstance()) {
     this.#path = catalogPath;
     this.#instance = instance;
   }
