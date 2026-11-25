@@ -670,3 +670,54 @@ Deno.test("resource size: select content refuses a body on its recorded size, wi
     );
   });
 });
+
+Deno.test("resource size: a resource of unique short strings the byte factor would load is refused on their distinct count, one of repeated strings loads", async () => {
+  await withFixture(async (f) => {
+    const { writeResource } = createResourceWriter(
+      f.dataRepo,
+      type,
+      f.big.id,
+      resources,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "big",
+      undefined,
+      "write",
+      undefined,
+      undefined,
+      false,
+      Deno.build.os,
+      undefined,
+      undefined,
+      repoResourceSizePolicy(f.dataRepo),
+    );
+    // the same size and shape, so only distinctness differs
+    await writeResource("blob", "unique", {
+      items: Array.from(
+        { length: 20 },
+        (_, i) => "u" + String(i).padStart(9, "0"),
+      ),
+    });
+    await writeResource("blob", "repeated", {
+      items: Array(20).fill("abcdefghij"),
+    });
+    const dqs = new DataQueryService(f.catalog, f.dataRepo);
+    await assertRejects(
+      () =>
+        dqs.query('modelName == "big" && name == "unique"', {
+          select: "content",
+        }),
+      ResourceTooLargeToLoadError,
+      "big/unique",
+    );
+    const repeated = await dqs.query(
+      'modelName == "big" && name == "repeated"',
+      {
+        select: "content",
+      },
+    ) as { items: string[] }[];
+    assertEquals(repeated[0].items.length, 20);
+  });
+});

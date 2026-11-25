@@ -368,43 +368,54 @@ the hard form and removes every version.
 step output reader, typed step results, `data get`, `behavior output data`,
 report get, and in `DataQueryService` the `--select content` projection and the
 hydration of another namespace's content) first ask the repository's
-`ResourceLoadGuard`
-(`resource_load_guard.ts`) whether the item fits: it refuses when the heap in
-use plus three times the item's size (one copy decoded, one to two parsed) would
-pass V8's heap limit. It checks the recorded `size` before reading, and the byte
-length after reading when the size is unrecorded; the raw bytes live outside the
-V8 heap. After the read, content the path will parse as JSON is also priced by
-its structure (`assertParsable`, `parseRefusalFor`): the bytes plus V8's cost of
-each object, array and array element, counted in one pass that skips string
-contents, and the larger of that and the three-times estimate decides. JSON
-dense in small objects or arrays, which parses to many times its size, is then
-refused rather than aborting V8. Only what `JSON.parse` can build is priced:
-content that does not start with an object or array costs nothing, and the scan
-ends with the first top-level value, since the parse fails on whatever follows
-it, so NDJSON or log text is not charged for every brace in it. Braces and
-commas inside strings cost nothing, and strings are not priced, so content of
-many unique short strings can still exceed the estimate. Items under 64 MiB are
-never refused or scanned. A refusal is `ResourceTooLargeToLoadError`, a user
-error naming the item and its size and pointing at
-`swamp data query ... --sort size:desc`, so a run ends with a diagnosis instead
-of a V8 abort. The heap figures go to the log only, as serve relays the error to
-remote callers. `refusalFor` also refuses an item past `maxDecodableBytes` (V8's
-maximum string length; `TextDecoder` refuses more bytes than that) and returns
-the refusal rather than throwing it. A read that holds several items at once
-passes the bytes it already holds (`heldBytes`) to `refusalFor` and
-`parseRefusalFor`: they count toward the 64 MiB floor but not the heap estimate,
-which already sees them in the heap in use. The `--select content` projection
-holds every body of a page until it is written, so it passes its running total,
-and a page of items each under the floor is refused by name once the heap runs
-short; it also refuses a body whose UTF-8 text or base64 form would pass the
-maximum string length. The step-end record (`fromResourceHandle`)
-and the workflow step output reader use it, so a step's resource too large to
-load is marked on its record and refused where an expression reads it, never
-decoded into empty attributes; the `delete` method warns and writes its deletion
-marker without the last known state. A query records a refusal against its row,
-as it does a binary-content violation, and raises it only if the caller's
-`include` accepts that row; a row the caller may not read is dropped without
-being named.
+`ResourceLoadGuard` (`resource_load_guard.ts`) whether the item fits: it refuses
+when the heap in use plus three times the item's size (one copy decoded, one to
+two parsed) would pass V8's heap limit. It checks the recorded `size` before
+reading, and the byte length after reading when the size is unrecorded; the raw
+bytes live outside the V8 heap. After the read, content the path will parse as
+JSON is also priced by its structure (`assertParsable`, `parseRefusalFor`): the
+bytes plus V8's cost of what the parse builds, counted in one pass, with a tenth
+added for measurement noise, and the larger of that and the three-times estimate
+decides. The pass prices each object (as a dictionary, per member, once it is
+wider than V8 keeps in fast mode), array and array element; each value string of
+more than 10 bytes in the JSON text, which V8 never shares, at its length in
+UTF-16 units, doubled for a string holding a character past Latin-1, which V8
+holds at two bytes each (the decoded text then too); distinct keys and distinct
+short values once each, at the average length of the distinct ones, counted
+exactly up to 4096 and past that by linear counting over a bitmap off the V8
+heap, sized to the content and allocated only then, so repeated keys and values
+add nothing beyond their slots; and each fraction or wide integer in an object
+field, or in an array that also holds a non-number, as its own heap number.
+Escapes count as their bytes, which errs high. JSON dense in small objects or
+arrays, or in unique keys or strings, which parses to many times its size, is
+then refused rather than aborting V8. Only what `JSON.parse` can build is
+priced: content that does not start with an object or array costs nothing, the
+scan ends with the first top-level value, since the parse fails on whatever
+follows it, so NDJSON or log text is not charged for every brace in it, and
+containers still open at the end are priced as if they closed there. Braces and
+commas inside strings cost only the string's length. The costs are measured on
+the Deno and V8 build swamp ships and would need re-measuring if V8 changed its
+layouts. Items under 64 MiB are never refused or scanned. A refusal is
+`ResourceTooLargeToLoadError`, a user error naming the item and its size and
+pointing at `swamp data query ... --sort size:desc`, so a run ends with a
+diagnosis instead of a V8 abort. The heap figures go to the log only, as serve
+relays the error to remote callers. `refusalFor` also refuses an item past
+`maxDecodableBytes` (V8's maximum string length; `TextDecoder` refuses more
+bytes than that) and returns the refusal rather than throwing it. A read that
+holds several items at once passes the bytes it already holds (`heldBytes`) to
+`refusalFor` and `parseRefusalFor`: they count toward the 64 MiB floor but not
+the heap estimate, which already sees them in the heap in use. The
+`--select content` projection holds every body of a page until it is written, so
+it passes its running total, and a page of items each under the floor is refused
+by name once the heap runs short; it also refuses a body whose UTF-8 text or
+base64 form would pass the maximum string length. The step-end record
+(`fromResourceHandle`) and the workflow step output reader use it, so a step's
+resource too large to load is marked on its record and refused where an
+expression reads it, never decoded into empty attributes; the `delete` method
+warns and writes its deletion marker without the last known state. A query
+records a refusal against its row, as it does a binary-content violation, and
+raises it only if the caller's `include` accepts that row; a row the caller may
+not read is dropped without being named.
 
 ## Versioning and lifecycle
 
