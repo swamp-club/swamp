@@ -49,6 +49,15 @@ export type LocalWriterRequest =
     readonly lock?: boolean;
     /** saved, committed by a checkpoint, then saved again in the same unit */
     readonly checkpointed?: boolean;
+    /** padding past the inline limit, so the content is stored as chunks */
+    readonly pad?: string;
+  }
+  | {
+    readonly kind: "read";
+    readonly id: string;
+    /** by id: a definition lives in its own checkout, the data in the datastore */
+    readonly modelId: string;
+    readonly data: string;
   }
   | { readonly kind: "resume"; readonly id: string }
   /** catches every handle of the checkout up, as a reader's command does */
@@ -65,7 +74,9 @@ export type LocalWriterMessage =
     readonly version: number;
     /** the count this write stored: one more than the latest it read */
     readonly count: number;
+    readonly modelId: string;
   }
+  | { readonly read: string; readonly content: string | null }
   | { readonly closed: true }
   | { readonly caughtUp: true }
   | { readonly failed: string; readonly id?: string };
@@ -103,15 +114,17 @@ export const localWriterHost: ProcessHost<
 
   async function write(
     request: Extract<LocalWriterRequest, { kind: "write" }>,
-  ): Promise<{ version: number; count: number }> {
+  ): Promise<{ version: number; count: number; modelId: string }> {
     let version = 0;
     let count = 0;
+    let modelId = "";
     const body = async () => {
       await runInRootUnitOfWork(
         context.repoContext,
         { flush: undefined },
         async () => {
           const model = await definitionOf(request.model);
+          modelId = model.id;
           const saveOnce = async () => {
             const latest = await context.repoContext.unifiedDataRepo.getContent(
               type,
@@ -138,7 +151,11 @@ export const localWriterHost: ProcessHost<
               model.id,
               data,
               new TextEncoder().encode(
-                JSON.stringify({ by: request.id, count }),
+                JSON.stringify({
+                  by: request.id,
+                  count,
+                  ...(request.pad === undefined ? {} : { pad: request.pad }),
+                }),
               ),
             );
             version = saved.version;
@@ -160,7 +177,7 @@ export const localWriterHost: ProcessHost<
     };
     if (request.lock !== true) {
       await body();
-      return { version, count };
+      return { version, count, modelId };
     }
     const model = await definitionOf(request.model);
     const lock = await createModelLock(
@@ -174,7 +191,18 @@ export const localWriterHost: ProcessHost<
     } finally {
       await lock.release();
     }
-    return { version, count };
+    return { version, count, modelId };
+  }
+
+  async function read(
+    request: Extract<LocalWriterRequest, { kind: "read" }>,
+  ): Promise<string | null> {
+    const content = await context.repoContext.unifiedDataRepo.getContent(
+      type,
+      request.modelId,
+      request.data,
+    );
+    return content === null ? null : new TextDecoder().decode(content);
   }
 
   return (request) => {
@@ -194,7 +222,14 @@ export const localWriterHost: ProcessHost<
         return;
       case "write":
         write(request).then(
-          ({ version, count }) => post({ written: request.id, version, count }),
+          ({ version, count, modelId }) =>
+            post({ written: request.id, version, count, modelId }),
+          (error) => post({ failed: String(error), id: request.id }),
+        );
+        return;
+      case "read":
+        read(request).then(
+          (content) => post({ read: request.id, content }),
           (error) => post({ failed: String(error), id: request.id }),
         );
         return;

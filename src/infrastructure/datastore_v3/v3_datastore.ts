@@ -72,6 +72,7 @@ import { RecordKey } from "../../domain/datastore_v3/record_key.ts";
 import {
   type CommitOutbox,
   COMPACTED_TXN_RETENTION_MS,
+  OUTBOX_RETRY_BOUND_MS,
 } from "../../domain/datastore_v3/commit_outbox.ts";
 import type {
   CommitStore,
@@ -1573,7 +1574,20 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
   let closed = false;
   const clock = options.clock ?? (() => new Date());
 
-  const compact = async (
+  // a local writer between commits holds no lease, so compaction takes its own
+  // section, as the writer-only work it is
+  const compact = (
+    signal: AbortSignal,
+    now: Date,
+    before?: Date,
+  ): Promise<CompactionReport | undefined> => {
+    const section = options.commitSection?.();
+    return section === undefined
+      ? compactHeld(signal, now, before)
+      : section(() => compactHeld(signal, now, before));
+  };
+
+  const compactHeld = async (
     signal: AbortSignal,
     now: Date,
     before?: Date,
@@ -2014,9 +2028,13 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
       options.assertCopyCurrent?.();
       await options.assertCollectable?.();
       const sweeper = crypto.randomUUID();
+      // a staged name older than any unit may retry for names nothing to land
+      const stagedSince = clock().getTime() - OUTBOX_RETRY_BOUND_MS;
+      await outbox.pruneStagedChunks(stagedSince);
       return await new ChunkCollector({
         // a chunk an outbox entry names is about to be committed, or was by a
-        // writer that died before its check
+        // writer that died before its check; a staged one, by a writer in
+        // another process that has not prepared yet
         commitStore: {
           async referencedChunks(ns, hashes, releasedSince) {
             const names = await commitStore.referencedChunks(
@@ -2024,8 +2042,14 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
               hashes,
               releasedSince,
             );
-            const rest = hashes.filter((hash) => !names.has(hash));
+            let rest = hashes.filter((hash) => !names.has(hash));
             for (const hash of await outbox.referencedChunks(ns, rest)) {
+              names.add(hash);
+            }
+            rest = rest.filter((hash) => !names.has(hash));
+            for (
+              const hash of await outbox.stagedChunks(ns, rest, stagedSince)
+            ) {
               names.add(hash);
             }
             return names;
@@ -2037,9 +2061,12 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
           begin: () => outbox.beginSweep(sweeper, Date.now()),
           heartbeat: () => outbox.heartbeatSweep(sweeper, Date.now()),
           end: () => outbox.endSweep(sweeper),
-          // writers that may overlap a batch wait for it
+          // writers in this process that may overlap a batch wait for it; a
+          // local writer's batch runs in a lease section, which a writer in
+          // another process waits for to prepare
           async batch(run) {
-            const done = run();
+            const section = options.commitSection?.();
+            const done = section === undefined ? run() : section(run);
             const settled = done.then(() => {}, () => {});
             datastoreProcessState().sweepBatches.set(outbox.path, settled);
             try {
