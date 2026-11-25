@@ -72,6 +72,7 @@ import { RecordKey } from "../../domain/datastore_v3/record_key.ts";
 import {
   type CommitOutbox,
   COMPACTED_TXN_RETENTION_MS,
+  OUTBOX_RETRY_BOUND_MS,
 } from "../../domain/datastore_v3/commit_outbox.ts";
 import type {
   CommitStore,
@@ -199,6 +200,7 @@ import {
   touchedScopeOf,
   WHOLE_CHECKOUT_SCOPE,
 } from "./touched_scope_journal.ts";
+import { writerInstance } from "./writer_instance.ts";
 import { dataNameOfKey } from "../../domain/datastore_v3/recovery_scope.ts";
 import { commandStopSignal } from "../process/shutdown_handlers.ts";
 import { recordLastChange } from "./record_last_change.ts";
@@ -372,6 +374,19 @@ export interface OpenV3DatastoreOptions {
    * opened
    */
   readonly writerFence?: () => number | undefined;
+  /**
+   * defined while this process writes a filesystem datastore locally: the lease
+   * is taken only around each commit, so a unit opened then lands inside the
+   * returned section and reads its fence there
+   */
+  readonly commitSection?: () =>
+    | (<T>(land: () => Promise<T>) => Promise<T>)
+    | undefined;
+  /**
+   * the other processes writing this checkout: each token with the writer
+   * instance its commits carry
+   */
+  readonly liveWriters?: () => Promise<ReadonlyMap<string, string>>;
   /**
    * throws when the writer lease was taken over or released; checked before
    * each commit is appended
@@ -670,6 +685,8 @@ export interface V3Datastore {
    */
   raiseWriterFence(fence: number): Promise<void>;
   writerFence(): number | undefined;
+  /** the writer instance this handle's commits carry */
+  readonly commitWriterInstance: string;
   /** run only while this process holds the writer lock */
   recoverInterruptedWriter(
     since: number,
@@ -678,6 +695,12 @@ export interface V3Datastore {
       readonly entry?: RecoveryEntry;
       /** the interrupted writer recorded where it wrote before writing */
       readonly journaled?: boolean;
+      /** the token its journaled scopes carry; every writer's when undefined */
+      readonly instance?: string;
+      /** writers still writing the checkout, whose scopes are kept */
+      readonly liveInstances?: readonly string[];
+      /** every writer judged gone; any other writer's scopes are kept */
+      readonly deadInstances?: readonly string[];
     },
   ): Promise<string[]>;
   droppedWork():
@@ -979,6 +1002,9 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
         ownWorkApplied: (commit) => {
           units.sent.delete(commit.txnId);
         },
+        ...(options.liveWriters !== undefined
+          ? { liveWriters: options.liveWriters }
+          : {}),
       }),
   );
   // one sink for every engine on this handle, so contexts sharing it queue
@@ -1415,7 +1441,10 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
       throw error;
     }
   };
-  const journal = new TouchedScopeJournal(v3CatalogPath(repoDir));
+  const journal = new TouchedScopeJournal(
+    v3CatalogPath(repoDir),
+    writerInstance(),
+  );
   const cacheRoot = v3CacheRoot(repoDir, namespace);
   let canonicalRoot: string | undefined;
   const canonicalCacheRoot = () => canonicalRoot ??= canonicalPath(cacheRoot);
@@ -1552,7 +1581,20 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
   let closed = false;
   const clock = options.clock ?? (() => new Date());
 
-  const compact = async (
+  // a local writer between commits holds no lease, so compaction takes its own
+  // section, as the writer-only work it is
+  const compact = (
+    signal: AbortSignal,
+    now: Date,
+    before?: Date,
+  ): Promise<CompactionReport | undefined> => {
+    const section = options.commitSection?.();
+    return section === undefined
+      ? compactHeld(signal, now, before)
+      : section(() => compactHeld(signal, now, before));
+  };
+
+  const compactHeld = async (
     signal: AbortSignal,
     now: Date,
     before?: Date,
@@ -1703,6 +1745,7 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
           v3ReplicaFor(datastorePath) !== undefined,
       });
     },
+    commitWriterInstance: writer.instance,
     writerFence() {
       return commitStore.writerFence();
     },
@@ -1718,6 +1761,15 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
           ? { entry: recoverOptions.entry }
           : {}),
         ...(recoverOptions?.journaled === true ? { journaled: true } : {}),
+        ...(recoverOptions?.instance !== undefined
+          ? { instance: recoverOptions.instance }
+          : {}),
+        ...(recoverOptions?.liveInstances !== undefined
+          ? { liveInstances: recoverOptions.liveInstances }
+          : {}),
+        ...(recoverOptions?.deadInstances !== undefined
+          ? { deadInstances: recoverOptions.deadInstances }
+          : {}),
         targeted: true,
       });
     },
@@ -1777,6 +1829,13 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
     },
     engineFor(markDirty, runRepo, engineOptions = {}) {
       const fenced = () => {
+        const commitSection = options.commitSection?.();
+        if (commitSection !== undefined) {
+          return {
+            commitSection,
+            fenceNow: () => options.writerFence?.(),
+          };
+        }
         const fence = options.writerFence?.();
         return fence === undefined ? {} : { fence };
       };
@@ -1980,9 +2039,13 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
       options.assertCopyCurrent?.();
       await options.assertCollectable?.();
       const sweeper = crypto.randomUUID();
+      // a staged name past the longest a unit retries names no chunk still to land
+      const stagedSince = clock().getTime() - OUTBOX_RETRY_BOUND_MS;
+      await outbox.pruneStagedChunks(stagedSince);
       return await new ChunkCollector({
         // a chunk an outbox entry names is about to be committed, or was by a
-        // writer that died before its check
+        // writer that died before its check; a staged one, by a writer in
+        // another process that has not prepared yet
         commitStore: {
           async referencedChunks(ns, hashes, releasedSince) {
             const names = await commitStore.referencedChunks(
@@ -1990,8 +2053,14 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
               hashes,
               releasedSince,
             );
-            const rest = hashes.filter((hash) => !names.has(hash));
+            let rest = hashes.filter((hash) => !names.has(hash));
             for (const hash of await outbox.referencedChunks(ns, rest)) {
+              names.add(hash);
+            }
+            rest = rest.filter((hash) => !names.has(hash));
+            for (
+              const hash of await outbox.stagedChunks(ns, rest, stagedSince)
+            ) {
               names.add(hash);
             }
             return names;
@@ -2003,9 +2072,12 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
           begin: () => outbox.beginSweep(sweeper, Date.now()),
           heartbeat: () => outbox.heartbeatSweep(sweeper, Date.now()),
           end: () => outbox.endSweep(sweeper),
-          // writers that may overlap a batch wait for it
+          // writers in this process that may overlap a batch wait for it; a
+          // local writer's batch runs in a lease section, which a writer in
+          // another process waits for to prepare
           async batch(run) {
-            const done = run();
+            const section = options.commitSection?.();
+            const done = section === undefined ? run() : section(run);
             const settled = done.then(() => {}, () => {});
             datastoreProcessState().sweepBatches.set(outbox.path, settled);
             try {

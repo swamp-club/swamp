@@ -439,6 +439,24 @@ export interface CommitOutbox {
     namespace: string,
     hashes: readonly string[],
   ): Promise<Set<string>>;
+  /**
+   * names chunks a writer stored before its entry is prepared, which a sweep in
+   * another process keeps until the stager removes them
+   */
+  stageChunks(
+    stager: string,
+    namespace: string,
+    hashes: readonly string[],
+  ): Promise<void>;
+  unstageChunks(stager: string): Promise<void>;
+  /** of the hashes, those staged at or after `since` */
+  stagedChunks(
+    namespace: string,
+    hashes: readonly string[],
+    since: number,
+  ): Promise<Set<string>>;
+  /** drops staged names older than `before`, which no sweep honours */
+  pruneStagedChunks(before: number): Promise<void>;
   sweepState(now: number): Promise<SweepState>;
   beginSweep(instance: string, now: number): Promise<void>;
   heartbeatSweep(instance: string, now: number): Promise<void>;

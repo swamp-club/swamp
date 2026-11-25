@@ -252,6 +252,9 @@ const MIGRATIONS: readonly SqliteMigration[] = [
     PRIMARY KEY (namespace, partition, record_key)
   ) STRICT, WITHOUT ROWID;
   `,
+  // several processes write one checkout, each recovering only its own scopes;
+  // an older swamp takes every touched scope for its own, so must not open it
+  `SELECT 1;`,
 ];
 
 export type { FileOwnership };

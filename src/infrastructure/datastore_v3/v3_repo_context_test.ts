@@ -59,6 +59,7 @@ import {
   V3MaintenanceTimer,
   v3RepositoryFactoryConfig,
   v3RetentionHistory,
+  wholeCommandHoldForTesting,
 } from "./v3_repo_context.ts";
 import type { V3OwnerCheck } from "./v3_repo_context.ts";
 import { V3_CACHE_ROOT_ESCAPE_CODE } from "./cache_root_containment.ts";
@@ -71,6 +72,7 @@ import {
   V3WriterBusyError,
   v3WriterFence,
   v3WriterLeaseExpiresAt,
+  v3WriterLeaseHolder,
   v3WriterLockHandle,
 } from "./v3_writer_lock.ts";
 import type { ProcessIdentity } from "../../domain/datastore_v3/process_liveness.ts";
@@ -586,6 +588,8 @@ Deno.test("v3RetentionHistory: an empty history and the 1-day bound retention co
 });
 
 Deno.test("holdV3Writer: records the writer's checkout, and closeV3Datastores removes it and releases the lock", async () => {
+  // the whole-command hold a bucket writer takes
+  using _wholeCommand = wholeCommandHoldForTesting();
   await withTempDir(async (dir) => {
     const datastorePath = join(dir, "datastore");
     await initializeV3Datastore(datastorePath, "test");
@@ -603,6 +607,8 @@ Deno.test("holdV3Writer: records the writer's checkout, and closeV3Datastores re
 });
 
 Deno.test("holdV3Writer: a TTL asked for is the lease's, and a writer asking for none keeps the default", async () => {
+  // the whole-command hold a bucket writer takes
+  using _wholeCommand = wholeCommandHoldForTesting();
   for (const ttlMs of [SERVE_WRITER_LEASE_TTL_MS, undefined]) {
     await withTempDir(async (dir) => {
       const datastorePath = join(dir, "datastore");
@@ -624,6 +630,36 @@ Deno.test("holdV3Writer: a TTL asked for is the lease's, and a writer asking for
           expiresAt !== undefined && expiresAt >= before + lapse &&
             expiresAt <= after + lapse,
           `${expiresAt} within [${before + lapse}, ${after + lapse}]`,
+        );
+      } finally {
+        await closeV3Datastores();
+      }
+    });
+  }
+});
+
+Deno.test("holdV3Writer: serve's hold records serve on the lease, and a writer's does not", async () => {
+  // the whole-command hold a bucket writer takes
+  using _wholeCommand = wholeCommandHoldForTesting();
+  for (
+    const [ownerCheck, role] of [
+      [{ as: "serve", address: undefined }, "serve"],
+      [undefined, undefined],
+    ] as const
+  ) {
+    await withTempDir(async (dir) => {
+      const datastorePath = join(dir, "datastore");
+      await initializeV3Datastore(datastorePath, "test");
+      const config = { type: "filesystem" as const, path: datastorePath };
+      await holdV3Writer(
+        config,
+        join(dir, "repo"),
+        ownerCheck === undefined ? {} : { ownerCheck, retakeLost: true },
+      );
+      try {
+        assertEquals(
+          (await v3WriterLeaseHolder(datastorePath))?.record?.role,
+          role,
         );
       } finally {
         await closeV3Datastores();
@@ -660,6 +696,8 @@ Deno.test("closeV3Datastores: each teardown step between stopping the feeds and 
 });
 
 Deno.test("holdV3Writer: a hostname change while the writer runs still removes its own checkout record (swamp-club#3801)", async () => {
+  // the whole-command hold a bucket writer takes
+  using _wholeCommand = wholeCommandHoldForTesting();
   await withTempDir(async (dir) => {
     const datastorePath = join(dir, "datastore");
     await initializeV3Datastore(datastorePath, "test");
@@ -1073,6 +1111,8 @@ Deno.test("holdV3Writer: a live Phase 3 writer refuses the lease before commits.
 });
 
 Deno.test("v3RepositoryFactoryConfig: a writing process catches up once, not again for a later context", async () => {
+  // the whole-command hold a bucket writer takes
+  using _wholeCommand = wholeCommandHoldForTesting();
   await withTempDir(async (dir) => {
     const datastorePath = join(dir, "datastore");
     await initializeV3Datastore(datastorePath, "test");
@@ -1354,6 +1394,8 @@ Deno.test("tryAcquireV3WriterLock: a read-only recovery's hold records no writer
 });
 
 Deno.test("holdV3Writer: a fenced command's retention pass does not join its lost hold, and its close leaves the new writer's checkout record (swamp-club#3564)", async () => {
+  // the whole-command hold a bucket writer takes
+  using _wholeCommand = wholeCommandHoldForTesting();
   await withUncaughtCheckout(async ({ dir, datastorePath, repoDir }) => {
     const sidecar = join(datastorePath, "_control", "writer.checkout.json");
     await holdV3Writer(config(datastorePath), repoDir);

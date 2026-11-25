@@ -95,6 +95,11 @@ const GUARDED_PINNED = [
   "src/infrastructure/datastore_v3/v3_bucket_setup.ts:holdsV2RootData",
   "src/infrastructure/datastore_v3/v3_repo_context.ts:takeV3WriterHold (x5)",
   "src/infrastructure/datastore_v3/v3_repo_context.ts:holdV3Writer",
+  // reached only through holdV3Writer, whose callers ran the format guard
+  "src/infrastructure/datastore_v3/v3_repo_context.ts:takeCommitSection (x3)",
+  "src/infrastructure/datastore_v3/v3_repo_context.ts:outboxClean",
+  // teardown of a writer that holdV3Writer let in
+  "src/infrastructure/datastore_v3/v3_repo_context.ts:takeTeardownSections",
   "src/infrastructure/datastore_v3/serve_upstream_binding.ts:resetCopyForCaller",
   "src/infrastructure/datastore_v3/checkout_view.ts:leaseUnlessAligned",
   "src/infrastructure/datastore_v3/serve_catch_up.ts:ServeCatchUp",

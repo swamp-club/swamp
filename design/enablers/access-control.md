@@ -1644,8 +1644,9 @@ changes.
    version a peer wrote. Anything else, including a local CLI write, is a
    peer change. A peer change refreshes only the catalog rows of the types the
    poller watches (`DataQueryService.refreshTypes`), never the whole data
-   catalog; a refresh that fails falls back to invalidating the catalog. A v3
-   datastore has one writer at a time and runs no poller.
+   catalog; a refresh that fails falls back to invalidating the catalog. Serve
+   holds a v3 datastore's writer lease for its whole life, so no other process
+   writes it, and it runs no poller.
 4. **Team followers** (swamp-club#4496): a follower enforces the policy its
    leader enforces, not one it builds from the latest grants. After every
    build, and after a reload changes `run-implies-approve`,

@@ -19,6 +19,7 @@
 
 import { processRuntimeSlot } from "../infrastructure/runtime/process_runtime.ts";
 import { nameLockHolder } from "./auth_context.ts";
+import type { TryBehaviorLock } from "../domain/workflows/orphaned_run_reaper.ts";
 import { CommitLeaseLostError } from "../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { serveUpstreamAt } from "../infrastructure/datastore_v3/serve_upstream_registry.ts";
 import type { ServeUpstreamTarget } from "../domain/datastore_v3/serve_upstream.ts";
@@ -32,6 +33,7 @@ import {
   serveUpstreamCommandPath,
 } from "./serve_upstream.ts";
 import { noteRetentionCandidate } from "./retention_candidate.ts";
+import { implicitServeUrl } from "./remote_run.ts";
 import type { RetentionWatermarkRepository } from "../domain/retention/retention_watermark.ts";
 import { ControlPlaneRetentionWatermarkRepository } from "../infrastructure/persistence/control_plane_retention_watermark_repository.ts";
 import { withRunPhase } from "../domain/remote/run_progress.ts";
@@ -313,12 +315,15 @@ import {
   catchUpBeforeLockAt,
   catchUpDeferredAt,
   catchUpDeferredTo,
+  catchUpV3AfterBehaviorLock,
+  catchUpV3AfterRunLock,
   catchUpV3HandlesAt,
   endDeferralsAt,
   goServeOfflineAt,
   goServeOfflineAtLock,
   holdV3Writer,
   serveCatchUpRequestAt,
+  setV3WriterBusyServeAddress,
   v3BucketNamespacedStoreAt,
   type V3DatastoreConfig,
   v3DatastoreConfigOf,
@@ -1323,6 +1328,7 @@ export function requireInitializedRepo(
     // root
     const v3 = engine === "v3" ? await v3LocationOf(resolution) : undefined;
     if (v3 !== undefined) {
+      setV3WriterBusyServeAddress(implicitServeUrl(marker?.serverAddress));
       await holdV3Writer(v3, repoDir, {
         ...(options.v3OwnerCheck !== undefined
           ? { ownerCheck: options.v3OwnerCheck }
@@ -1444,6 +1450,7 @@ export function requireInitializedRepo(
           maxWaitMs: resolveLockTimeoutMs(options.lockWaitMs),
         },
       );
+      // a v3 checkout catches up as the repository opens below, under this lock
       await registerDatastoreSync({
         lock,
         namespace: lockConfig.namespace,
@@ -1606,6 +1613,7 @@ export async function requireInitializedRepoUnlocked(
   const v3 = engine === "v3" ? await v3LocationOf(resolution) : undefined;
   let v3Role: "writer" | "follower" | undefined;
   if (v3 !== undefined) {
+    setV3WriterBusyServeAddress(implicitServeUrl(marker?.serverAddress));
     v3Role = await holdV3Writer(v3, repoDir, {
       ...(options.retakeLostV3Lease === true ? { retakeLost: true } : {}),
       ...(options.followV3Lease === true ? { follow: true } : {}),
@@ -1969,23 +1977,65 @@ export async function tryModelLock(
   modelType: string,
   modelId: string,
   waitMs: number,
+  options: { readonly reclaimsGone?: boolean } = {},
 ): Promise<DistributedLock | null> {
   return await tryAcquireWithin(
     await createModelLock(datastoreConfig, modelType, modelId),
     waitMs,
+    options,
   );
+}
+
+/** as retention waits, so a cancel leaves an output whose behavior a run holds */
+export const CANCEL_BEHAVIOR_LOCK_WAIT_MS = 250;
+
+export function tryBehaviorLockOf(
+  datastoreConfig: DatastoreConfig,
+  repoContext: Pick<RepositoryContext, "markDirty" | "commitLog">,
+): TryBehaviorLock {
+  return async (type, modelId) => {
+    // a killed owner leaves its lock behind: the acquire takes over a holder
+    // whose process is gone, where a held file alone would defer for good
+    const lock = await tryModelLock(
+      datastoreConfig,
+      type.normalized,
+      modelId,
+      CANCEL_BEHAVIOR_LOCK_WAIT_MS,
+      { reclaimsGone: true },
+    );
+    if (lock === null) return null;
+    return {
+      // the settle commits before the lock goes: landing after it, the next
+      // holder could read the output unsettled and the settle overwrite it
+      release: async () => {
+        try {
+          await checkpointOpenUnitOfWork(repoContext);
+        } finally {
+          await lock.release();
+        }
+      },
+    };
+  };
 }
 
 export async function tryAcquireWithin(
   lock: DistributedLock,
   waitMs: number,
+  options: { readonly reclaimsGone?: boolean } = {},
 ): Promise<DistributedLock | null> {
-  if (await lock.inspect()) return null;
+  if (options.reclaimsGone !== true && await lock.inspect()) return null;
   const signal = AbortSignal.timeout(waitMs);
   try {
     await lock.acquire(signal);
   } catch (error) {
-    if (signal.aborted || error instanceof LockTimeoutError) return null;
+    // only a wait that ran out is a held lock; a failed catch-up is an error
+    if (
+      error instanceof LockTimeoutError || error === signal.reason ||
+      (signal.aborted && error instanceof DOMException &&
+        (error.name === "AbortError" || error.name === "TimeoutError"))
+    ) {
+      return null;
+    }
     throw error;
   }
   return lock;
@@ -2012,7 +2062,7 @@ export async function createModelLock(
     const provider = await resolveCustomProvider(config);
     return provider.createLock(config.datastorePath, { lockKey, maxWaitMs });
   }
-  return new FileLock(config.path, {
+  const lock = new FileLock(config.path, {
     lockKey,
     maxWaitMs,
     retryIntervalMs: MODEL_LOCK_RETRY_INTERVAL_MS,
@@ -2020,6 +2070,32 @@ export async function createModelLock(
     syncCreatedDirectories: resolveDurableWrites(datastoreConfig) &&
       (config.format !== 3 || mayKeepDataLocal(config)),
   });
+  if (config.format !== 3) return lock;
+  return catchingUpOnAcquire(
+    lock,
+    () => catchUpV3AfterBehaviorLock(config.path, modelType, modelId),
+  );
+}
+
+/**
+ * a v3 writer holds the lease only to commit, so others commit between its
+ * sections: under the lock it must first see what they committed
+ */
+function catchingUpOnAcquire(
+  lock: FileLock,
+  catchUp: () => Promise<void>,
+): FileLock {
+  const acquire = lock.acquire.bind(lock);
+  lock.acquire = async (signal?: AbortSignal) => {
+    await acquire(signal);
+    try {
+      await catchUp();
+    } catch (error) {
+      await lock.release().catch(() => {});
+      throw error;
+    }
+  };
+  return lock;
 }
 
 /**
@@ -2061,12 +2137,17 @@ export async function createWorkflowRunLock(
     const provider = await resolveCustomProvider(config);
     return provider.createLock(config.datastorePath, { lockKey, maxWaitMs });
   }
-  return new FileLock(config.path, {
+  const lock = new FileLock(config.path, {
     lockKey,
     maxWaitMs,
     retryIntervalMs: MODEL_LOCK_RETRY_INTERVAL_MS,
     maxBackoffMs: MODEL_LOCK_MAX_BACKOFF_MS,
   });
+  if (config.format !== 3) return lock;
+  return catchingUpOnAcquire(
+    lock,
+    () => catchUpV3AfterRunLock(config.path, runId),
+  );
 }
 
 export function createWorkflowRunClaims(

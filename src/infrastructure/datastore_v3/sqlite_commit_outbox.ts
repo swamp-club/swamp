@@ -159,6 +159,18 @@ const MIGRATIONS: readonly string[] = [
 
 export const COMMIT_OUTBOX_SCHEMA_VERSION = MIGRATIONS.length;
 
+const STAGED_CHUNKS_TABLE = `
+  CREATE TABLE IF NOT EXISTS outbox_staged (
+    stager TEXT NOT NULL,
+    namespace TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    staged_at INTEGER NOT NULL,
+    PRIMARY KEY (stager, sha256)
+  ) STRICT, WITHOUT ROWID;
+  CREATE INDEX IF NOT EXISTS outbox_staged_by_hash
+    ON outbox_staged (namespace, sha256);
+`;
+
 const REF_LOOKUP_PAGE = 500;
 
 export interface SqliteCommitOutboxOptions {
@@ -768,6 +780,56 @@ export class SqliteCommitOutbox implements CommitOutbox {
     return found;
   }
 
+  stageChunks(
+    stager: string,
+    namespace: string,
+    hashes: readonly string[],
+  ): Promise<void> {
+    if (hashes.length === 0) return Promise.resolve();
+    const at = this.#clock().getTime();
+    // a power cut also ends the stager, whose chunks then need no keeping
+    return this.#write((db) => {
+      const insert = db.prepare(
+        "INSERT OR IGNORE INTO outbox_staged (stager, namespace, sha256, staged_at) VALUES (?, ?, ?, ?)",
+      );
+      for (const sha256 of hashes) insert.run(stager, namespace, sha256, at);
+    }, { durable: false });
+  }
+
+  unstageChunks(stager: string): Promise<void> {
+    return this.#write((db) => {
+      db.prepare("DELETE FROM outbox_staged WHERE stager = ?").run(stager);
+    }, { create: false, durable: false });
+  }
+
+  // deno-lint-ignore require-await
+  async stagedChunks(
+    namespace: string,
+    hashes: readonly string[],
+    since: number,
+  ): Promise<Set<string>> {
+    const found = new Set<string>();
+    if (hashes.length === 0) return found;
+    this.#read((db) => {
+      for (let at = 0; at < hashes.length; at += REF_LOOKUP_PAGE) {
+        const page = hashes.slice(at, at + REF_LOOKUP_PAGE);
+        const rows = db.prepare(
+          `SELECT DISTINCT sha256 FROM outbox_staged WHERE namespace = ? AND staged_at >= ? AND sha256 IN (${
+            page.map(() => "?").join(", ")
+          })`,
+        ).all(namespace, since, ...page) as { sha256: string }[];
+        for (const row of rows) found.add(row.sha256);
+      }
+    });
+    return found;
+  }
+
+  pruneStagedChunks(before: number): Promise<void> {
+    return this.#write((db) => {
+      db.prepare("DELETE FROM outbox_staged WHERE staged_at < ?").run(before);
+    }, { create: false, durable: false });
+  }
+
   // deno-lint-ignore require-await
   async sweepState(now: number): Promise<SweepState> {
     const row = this.#read((db) =>
@@ -933,6 +995,9 @@ function openOutboxDatabase(path: string): DatabaseSync {
     useWalJournal(db);
     db.exec("PRAGMA synchronous=FULL");
     migrate(db, path);
+    // outside the migrations, so an older swamp still opens the outbox: one
+    // that ignores staged names leaves the writer's own re-store after a sweep
+    db.exec(STAGED_CHUNKS_TABLE);
     return db;
   } catch (error) {
     db.close();

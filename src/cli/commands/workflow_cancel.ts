@@ -29,6 +29,7 @@ import {
   requireInitializedRepoReadOnly,
   requireInitializedRepoUnlocked,
   resolveDatastoreForRepo,
+  tryBehaviorLockOf,
 } from "../repo_context.ts";
 import { V3_WRITER_BUSY_CODE } from "../../domain/datastore_v3/writer_lease.ts";
 import { runCommandInRootUnit } from "../command_root_unit.ts";
@@ -81,6 +82,8 @@ import {
   cancelOrphanedMethodRuns,
   type MethodRunOutputs,
   type OwnerLiveness,
+  type TryBehaviorLock,
+  warnDeferredMethodRuns,
   warnUnsettledMethodRuns,
 } from "../../domain/workflows/orphaned_run_reaper.ts";
 import {
@@ -346,6 +349,8 @@ export interface CancelLocalRunDeps {
   runClaims: WorkflowRunClaims;
   /** The method-run records of the stopped owner's steps. */
   outputRepo: MethodRunOutputs;
+  /** A stopped owner's outputs are settled only under their behavior's lock. */
+  tryBehaviorLock?: TryBehaviorLock;
   killProcess?: (
     pid: number,
     options: { maxWaitMs: number },
@@ -504,9 +509,14 @@ async function closeStoppedOwnerRuns(
   pid: number,
   cancelled: ReadonlySet<string>,
   reason: string,
-  { runTracker, outputRepo, liveness = localOwnerLiveness() }: Pick<
+  {
+    runTracker,
+    outputRepo,
+    tryBehaviorLock,
+    liveness = localOwnerLiveness(),
+  }: Pick<
     CancelLocalRunDeps,
-    "runTracker" | "outputRepo" | "liveness"
+    "runTracker" | "outputRepo" | "tryBehaviorLock" | "liveness"
   >,
 ): Promise<void> {
   if (!liveness.isDead(pid)) return;
@@ -515,14 +525,19 @@ async function closeStoppedOwnerRuns(
     row.isLocalTo(liveness.hostname, liveness.instanceId) &&
     (row.runKind === "model_method" || cancelled.has(row.id))
   );
-  const { failed, errors } = await cancelOrphanedMethodRuns(
+  const { failed, errors, deferred } = await cancelOrphanedMethodRuns(
     outputRepo,
     rows.filter((row) => row.runKind === "model_method"),
     OWNER_STOPPED_STEP_ERROR,
+    tryBehaviorLock,
   );
   warnUnsettledMethodRuns(failed.length, errors);
+  warnDeferredMethodRuns(deferred);
   const unsettled = new Set(failed.map((row) => row.id));
+  const left = new Set(deferred.map((row) => row.id));
   for (const row of rows) {
+    // its row stays running, so the next cancel finds it again
+    if (left.has(row.id)) continue;
     if (unsettled.has(row.id)) {
       runTracker.complete(row.id, "interrupted");
     } else {
@@ -736,8 +751,8 @@ export async function cancelLocalRun(
 
 /**
  * Stops, together and each once, the owners this checkout's run tracker
- * vouches for, and returns their pids. Needs no datastore writer: on a v3
- * datastore the owner holds it for the whole run, so cancel stops it first.
+ * vouches for, and returns their pids. Needs no datastore writer, so it can
+ * stop an owner that holds one for its whole run.
  */
 export async function stopLocalRunOwners(
   runs: readonly WorkflowRun[],
@@ -760,9 +775,9 @@ export async function stopLocalRunOwners(
 }
 
 /**
- * Whether cancel must stop a run's owner before it takes the datastore's
- * writer: on v3 the owner holds the writer for the whole run, in a team
- * member's checkout of serve's datastore as on one bound directly.
+ * Whether cancel stops a run's owner before it takes the writer: on v3 an owner
+ * may hold it for its whole run (bucket, team checkout, older swamp). The settle
+ * never relies on that: it reads each run under its claim, which catches it up.
  */
 export function ownerHoldsWriterOf(
   resolution: Pick<DatastoreResolutionResult, "engine">,
@@ -1304,7 +1319,7 @@ async function cancelOnServe(
 
 type CancelContext = ReturnType<typeof createContext>;
 
-/** What a cancel did before it took the writer, on a datastore whose owner holds it. */
+/** What a cancel did before it took the writer, on a datastore whose owner may hold it. */
 export type PreStop =
   | {
     kind: "all";
@@ -1351,7 +1366,7 @@ function refuseLocalCancel(run: WorkflowRun): void {
 
 /**
  * Finds the runs to cancel through a read-only open and stops their owners,
- * so the writer the owners held is free for the settle that follows.
+ * so a writer an owner held for its whole run is free for the settle.
  */
 export async function stopOwnersBeforeWriter(
   cliCtx: CancelContext,
@@ -1611,6 +1626,10 @@ export const workflowCancelCommand = withRemoteOptions(
                   runTracker,
                   runClaims,
                   outputRepo: repoContext.outputRepo,
+                  tryBehaviorLock: tryBehaviorLockOf(
+                    datastoreConfig,
+                    repoContext,
+                  ),
                   preStopped,
                 });
                 // A nested run that was itself active is in the list and
@@ -1788,6 +1807,7 @@ export const workflowCancelCommand = withRemoteOptions(
               runTracker,
               runClaims,
               outputRepo: repoContext.outputRepo,
+              tryBehaviorLock: tryBehaviorLockOf(datastoreConfig, repoContext),
               preStopped,
             });
             // The suspended nested runs a cancelled run waited on are

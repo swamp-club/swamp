@@ -774,7 +774,8 @@ const ROWS: AnyRow[] = [
   row({
     name: "model cancel",
     rootUnit: { cli: true },
-    syncOrder: { cli: [] },
+    // the dead owner's output is settled under its behavior's lock
+    syncOrder: { cli: ["release"] },
     outsideUseCase: {
       cli: [
         "markDirty outputs/<type>/noop/<id>-<time>.yaml",

@@ -116,7 +116,10 @@ import {
 import { WriterFencedError } from "../../domain/datastore_v3/writer_lease.ts";
 import { DatastoreOwner } from "../../domain/datastore_v3/datastore_owner.ts";
 import { UserError } from "../../domain/errors.ts";
-import { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
+import {
+  PartitionKey,
+  RUN_PARTITION_RANGE,
+} from "../../domain/datastore_v3/partition_key.ts";
 import { forwardedCommitClass } from "../../domain/datastore_v3/forwarded_commit_class.ts";
 import { withSyncSpan } from "../tracing/tracer.ts";
 import type { RecordKey } from "../../domain/datastore_v3/record_key.ts";
@@ -569,6 +572,16 @@ const MIGRATIONS: readonly SqliteMigration[] = [
   },
 ];
 
+/**
+ * a run lock knows only the run id, the tail of its partition key. Outside the
+ * migrations: every checkout shares a filesystem datastore's commits.db, and a
+ * schema bump would lock an older swamp out of all of them
+ */
+const RUN_TAIL_INDEX = `
+  CREATE INDEX IF NOT EXISTS partition_heads_by_tail
+    ON partition_heads (namespace, substr(partition, -36));
+`;
+
 /** The owner row of `db` (swamp-club#4063), undefined when it holds none. */
 function readOwner(db: DatabaseSync): DatastoreOwner | undefined {
   const row = db.prepare(
@@ -643,6 +656,11 @@ export const COMMIT_STORE_SCHEMA_NEWER_CODE = "datastore_v3_schema_newer";
 
 /** The schema version this store writes. */
 export const COMMIT_STORE_SCHEMA_VERSION = MIGRATIONS.length;
+
+/** by partition_heads_by_tail, so a lookup reads only the run's own rows */
+export const RUN_PARTITIONS_SQL =
+  "SELECT partition FROM partition_heads WHERE namespace = ? " +
+  "AND substr(partition, -36) = ? AND partition >= ? AND partition < ?";
 
 /** How many rebuilt partitions a store keeps by default. */
 export const DEFAULT_CACHED_PARTITIONS = 1024;
@@ -2933,6 +2951,20 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
     return Promise.resolve(keys);
   }
 
+  /** a run's partition names its workflow too, which a lock on the run lacks */
+  runPartitionsOf(namespace: string, runId: string): readonly PartitionKey[] {
+    this.#assertOpen();
+    const rows = this.#db.prepare(
+      RUN_PARTITIONS_SQL,
+    ).all(
+      namespace,
+      runId.toLowerCase(),
+      RUN_PARTITION_RANGE.from,
+      RUN_PARTITION_RANGE.to,
+    ) as { partition: string }[];
+    return rows.map((row) => PartitionKey.parse(row.partition));
+  }
+
   baseRecordKeysNaming(
     namespace: string,
     partition: PartitionKey,
@@ -4333,6 +4365,7 @@ export function openCommitsDatabase(
     db.exec("PRAGMA synchronous=FULL");
     if (options.replicated === true) db.exec("PRAGMA wal_autocheckpoint=0");
     migrate(db);
+    db.exec(RUN_TAIL_INDEX);
     return db;
   } catch (error) {
     db.close();

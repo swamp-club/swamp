@@ -3146,7 +3146,8 @@ inside one.
 **Change cursor.** `commits.cursor` is an `AUTOINCREMENT` key, so a value is
 never reused even after a later prune deletes rows. `changesSince(cursor)`
 returns rows above it in cursor order. Rows appear in cursor order only
-because one writer serializes appends: no reader can see cursor `n + 1`
+because the writer lease serializes appends, one commit section at a time
+(see **One commit section at a time**): no reader can see cursor `n + 1`
 committed before `n`. The read model and the Phase 5 commit feed rely on
 that.
 
@@ -5919,36 +5920,117 @@ direct `createCatalogStore` caller reads it, the query service never backfills
 it from disk, and repositories still write through to it, so an operation
 reads what it saved before its root commits.
 
-**One writer per datastore.** The writer lease (`v3_writer_lock.ts`, over
-`writer_lease.ts`; see **v3 writer lease**) is taken once per process and
-reference-counted across that process's roots. It replaced Phase 3's
-`FileLock` at `<datastore>/_control/writer.lock` (swamp-club#3359). A writing
-CLI command (`requireInitializedRepo`, `requireInitializedRepoUnlocked`) joins
-the hold before it takes any other lock and keeps it until teardown; serve
-holds it from start-up to shutdown. Another process that cannot take it within
+**One commit section at a time.** The writer lease (`v3_writer_lock.ts`, over
+`writer_lease.ts`; see **v3 writer lease**) admits one holder at a time, and
+within a process it is reference-counted across that process's roots and
+sections. It replaced Phase 3's `FileLock` at `<datastore>/_control/writer.lock`
+(swamp-club#3359). Another process that cannot take it within
 `SWAMP_LOCK_TIMEOUT_MS` is refused with `V3WriterBusyError`, which names the
-holder and, when that is serve, says to run the command through serve. So a
-CLI write against a repository whose serve is running is refused on v3, unlike
-v2. Read-only commands take it only to recover a checkout whose writer
-ended without tearing down, without waiting, and release it before they read
-(see **Interrupted runs**); a root that stages nothing (a dry-run `data gc`)
-commits nothing and needs no lease. The writer also records
-which checkout it writes (`_control/writer.checkout.json`), with its process
-identity and its fence; a reader in that same checkout does not catch up
-while the writer runs, because the writer's files there are newer than its
-last commit and replaying older commits over them would undo its work. The
+holder and, when that is serve, says to run the command through serve
+(`--server <url>`). So a CLI write against a repository whose serve is running
+is refused on v3, unlike v2. How long a writer holds the lease depends on who
+it is:
+
+- *A local filesystem writer holds it only to commit.* A writing CLI command
+  (`requireInitializedRepo`, `requireInitializedRepoUnlocked`) on a
+  filesystem v3 datastore does not hold the lease across the command. Its
+  per-behavior and global locks are file locks at the shared datastore path,
+  so they already
+  order every writer of that datastore, in every checkout, as on v2; the
+  lease only has to serialise appends. Each commit-log append runs in a
+  **commit section**: take the lease, check the datastore's owner, read the
+  fence (the unit stamps the fence the section holds, not one it captured
+  when it opened), prepare the commit in the outbox, append, settle and apply
+  it to the read model, release. Staging (chunks stored, files written into
+  the checkout) happens outside the lease, so a slow method or a slow step
+  holds no lease and an unrelated command commits between its sections.
+  Lock order is the behavior and global locks, then the lease; nothing waits
+  on a behavior or global lock inside a section, so the two cannot deadlock.
+  Concurrent sections of one process join one hold, and its renewal runs only
+  while a section is open. A parent and the child process it runs need no
+  lease hand-off: the parent holds no lease while the child runs, and the
+  child joins the parent's behavior locks as before
+  (`SWAMP_LOCK_HOLDER_TOKENS`).
+- *Everyone else keeps the whole-command hold.* Serve holds the lease from
+  start-up to shutdown. A writer of a bucket datastore (S3, GCS), a
+  replicating copy, a team follower, a serve-upstream copy and a claim of the
+  datastore join the hold before they take any other lock and keep it until
+  teardown, as before. A bucket datastore's per-behavior locks live under
+  each machine's local root, so they order only that machine's processes;
+  only the lease spans machines, and it must therefore cover the whole
+  command. Concurrent writers of a bucket datastore go through serve.
+
+The first section of a process recovers what an interrupted writer left (the
+outbox, then the checkout; see **Interrupted runs**) and writes this process's
+writer marker before anything is staged. A live writer of a swamp from before
+the lease (Phase 3's lock) refuses a sectioned writer outright.
+
+**Clean release.** A section releases the lease *clean* only when the outbox
+holds no unsettled entry once its commit is settled or discarded; a section
+that throws, or leaves an entry, releases it unclean, and so does a joined
+hold one of whose sections did. The release record carries the flag
+(`released-<n>` with `clean`), and a release from a swamp before it, a forced
+release, an expiry or a crash counts as unclean. A take after a clean release
+runs no outbox recovery, since the outbox has nothing of its predecessor's to
+land; a take after an unclean, expired or forced one recovers the outbox as
+before (**v3 commit outbox**). This keeps recovery off the per-commit path
+without leaving a dead section's entry unrecovered.
+
+**Teardown section.** A sectioned writer's teardown work that needs the lease
+(compaction, the recovery of work the command dropped) runs in one more
+section. It waits for the lease, up to the lock timeout, only when this
+process dropped work to recover; otherwise it only tries the lease to
+compact, and skips compaction when another writer holds it, since that
+writer's exit compacts as well. Dropped work the busy lease kept it from
+recovering stays for the next command (**Dropped work**).
+
+**Catch-up under a lock.** Between this writer's sections other processes
+commit. A local writer therefore catches up once it holds a lock, before the
+work under that lock reads anything: a behavior lock catches up that
+behavior's partition (a lock named for a behavior rather than its id guards
+no partition and catches nothing up), and the workflow run lock and the
+datastore's global lock catch the checkout up, so a read-modify-write under
+any of them (a run's resume and cancel, a structural command) sees every
+commit made before the lock was granted.
+
+**Checkout protection.** A writer's files in its checkout are newer than its
+last commit, so a catch-up in that checkout must not replay older commits over
+them. A whole-command hold records which checkout it writes
+(`_control/writer.checkout.json`), with its process identity and its fence; a
+reader in that same checkout does not catch up while that writer runs. The
 sidecar is written when a hold takes its fence (the first hold, and serve's
-retake of a lost one), never by a join for the same checkout, and removed
-at close only while it
-still names this process's fence. It protects its writer while the
-sidecar's fence is the lease's highest (a force-released one included,
-since `commits.db` takes the released holder's commits until a new writer
-raises its fence), judged by **Writer liveness** below: a writer judged gone
-writes nothing, whatever its TTL says; one judged alive is protected
+retake of a lost one), never by a join for the same checkout, and removed at
+close only while it still names this process's fence. It protects its writer
+while the sidecar's fence is the lease's highest (a force-released one
+included, since `commits.db` takes the released holder's commits until a new
+writer raises its fence), judged by **Writer liveness** below: a writer judged
+gone writes nothing, whatever its TTL says; one judged alive is protected
 whatever its TTL says; one this process cannot judge is protected until a
-higher fence fences it. `swamp datastore lock
+higher fence fences it. A sectioned writer, which holds the lease only
+briefly, writes no sidecar and does not stop a catch-up in its checkout.
+It is protected by its own marker and touched-scope journal instead (see
+**Interrupted runs**): a catch-up materialises every committed change except
+the files and catalog rows under a scope a live other writer has journaled,
+whose read-model index it still updates. That writer's own commit, or its
+recovery if it dies, settles those files. Its behavior locks guarantee that
+only it writes under its behaviors, so a skipped key is its own.
+
+One checkout shared by concurrent writers in different containers, pid
+namespaces or hosts is not supported without serve. A writer cannot judge
+whether a marker from another namespace or host names a live process, so
+recovery judges it by the lease alone, and with sections the lease is free
+between a live writer's commits: such a recovery may repair a live writer's
+journaled scopes. Writers in separate checkouts of one filesystem datastore
+are unaffected; for writers sharing one checkout across namespaces or hosts,
+run swamp serve and send their commands through it.
+
+`swamp datastore lock
 status|release --force` act on the writer lease on v3, and on Phase 3's lock
-while a swamp from before the lease still holds it. A read-only context stages nothing: any change
+while a swamp from before the lease still holds it. Read-only commands take
+the lease only to recover a checkout whose writer ended without tearing down,
+without waiting, and release it before they read (see **Interrupted runs**);
+a root that stages nothing (a dry-run `data gc`) commits nothing and needs no
+lease. A read-only context stages nothing: any change
 staged through it is refused (`ReadOnlyV3WriteError`), so a read-only command
 that writes fails in tests rather than committing without the lock.
 
@@ -6226,10 +6308,15 @@ leave every checkout with the same records.
 - *No teardown.* A SIGKILL, a crash, or a second signal (which exits at once
   with 130, `registerShutdownHandler`'s `forceExitOnRepeat`) ends the process
   with units that never commit, so the checkout keeps files and catalog rows
-  no commit names. The first writing context of a process writes
-  `_read_model_v3/writer.json` (host, pid, a per-process token, and a start floored to the second
-  less two seconds), and teardown removes it after every unit has ended, so a
-  marker that outlives its process means the process ended without teardown.
+  no commit names. The first writing context of a process writes its own
+  marker, `_read_model_v3/writers/<token>.json` (host, pid, the per-process
+  writer token, and a start floored to the second less two seconds), and
+  teardown removes it after every unit has ended, so a marker that outlives
+  its process means the process ended without teardown. Since writers in one
+  checkout now run side by side (**One commit section at a time**), there is
+  one marker per writing process; the older single marker,
+  `_read_model_v3/writer.json`, is still read, so a marker an older swamp left
+  is judged and recovered by the same rules.
   A signal that arrives after a command disposed its shutdown handler, and
   the hook-mode and worker exec-dispatch paths, which skip teardown, take this
   path too. The marker is written durably (swamp-club#3617: file and
@@ -6262,7 +6349,10 @@ leave every checkout with the same records.
   under another token, as a restarted container's predecessor does), or a
   writer this process cannot judge (another host, pid namespace or boot, or
   a marker from before swamp-club#3564) once the lease is free, expired, or
-  held by this process: a writer writes only while it holds the lease. A
+  held by this process: a whole-command writer writes only while it holds
+  the lease. A sectioned writer stages between its sections, so this rule
+  cannot protect one in another namespace or on another host, which is why
+  such a shared checkout needs serve (**One commit section at a time**). A
   team follower recovers before it follows when the marker names a process
   this host judges gone, its own killed predecessor
   (`recoverOwnPredecessor`): only serve writes a claimed checkout and that
@@ -6451,10 +6541,32 @@ leave every checkout with the same records.
   cannot remove, say) fails each writing command with a `UserError` naming
   the marker, which a user deletes to keep the checkout's files as they are.
   A marker from another host, or one naming a process that is still
-  running, is left in place: a writing command keeps it rather than writing
-  its own, since its start already covers that command's writes. Serve keeps
+  running, is left in place; a writing command writes its own beside it.
+  Serve keeps
   its marker when its shutdown drain leaves runs past the abort grace
   (`keepV3WriterMarkers`).
+- *Recovery is per writer.* Each `catalog_touched` row carries the token of
+  the writer that journaled it, so a unit's scopes are keyed by writer, unit,
+  namespace and scope, and a clean teardown forgets only its own writer's
+  rows. Under `recovery.lock`, recovery judges each marker by **Writer
+  liveness** and repairs only the scopes of writers judged gone; the
+  journaled scopes of a live writer, and of one it cannot judge, are kept
+  and never restored over. While a live writer is in the checkout, recovery
+  never runs the full rebuild or a whole-checkout walk, either of which
+  would touch that writer's uncommitted files: where the targeted recovery
+  would fall back to one (a dead marker with no journal, an older swamp's
+  marker, a fallback reason below), it waits for the live writers to end
+  and runs then. A read-only command that finds this leaves the recovery to
+  a later command.
+- *An older swamp cannot open a newer checkout.* The read-model state's
+  schema version (`_read_model_v3.db`) is raised with the per-writer
+  journal, and an older swamp refuses a newer version ("upgrade swamp"). An
+  older swamp's recovery assumes one writer per checkout and would repair a
+  live sectioned writer's scopes, so mixed versions never share a checkout.
+  Across checkouts they stay safe: an older swamp's whole-command hold keeps
+  the newer swamp's sections out, and a clean section leaves the outbox
+  empty for the older swamp's recovery at take. The step is one-way; the
+  way back is a read-model rebuild.
 - The commit outbox (swamp-club#3490, **v3 commit outbox**) now makes a
   commit that was being appended when the process died durable, and lands it
   before this recovery runs, which then keeps its files. This recovery still
@@ -6487,7 +6599,9 @@ ever replaced it.
   while the lease and copy state are there, whether this process still
   writes the datastore: it holds the writer lease, the lease is current, the
   commit store's fence is not above its own (a takeover the renewal has not
-  noticed yet), and while replicating its copy is current. After compaction
+  noticed yet), and while replicating its copy is current; a sectioned
+  writer decides this inside its teardown section (**One commit section at a
+  time**). After compaction
   and the closing sync, and before the stores close, such a checkout runs
   the **Interrupted runs** recovery from that open time (floored as the
   marker's start is) once no unit of it is open; roots wait while it runs.
@@ -6847,8 +6961,11 @@ and again after), so a restore never names a chunk it deleted.
 ### v3 writer lease (datastore rework Phase 4)
 
 swamp-club#3359 replaced Phase 3's writer lock with a fenced writer lease.
-One process writes a v3 datastore at a time, as before, and every commit it
-makes names the **fence** its lease holds. A writer that lost the lease (a
+One process holds it at a time, and every commit names the **fence** its
+lease held when it was appended. Serve and whole-command holders keep it for
+their life or command; a local filesystem writer holds it only around each
+commit, so processes take turns at commit granularity (**One commit section
+at a time**). A writer that lost the lease (a
 **zombie**: paused past its expiry, then woken after another writer took
 over) lands nothing.
 
@@ -6895,8 +7012,8 @@ so a fence is not reused even if `_control/writer/` is lost.
   hold) keeps the default 30 s and is taken over after 40 s. A holder judged alive is taken over after its TTL too: the takeover
   fences it, so it can land nothing more, and a stopped or hung writer does
   not keep every writer out until someone runs `lock release --force`. Its
-  checkout stays protected until a higher fence exists (see **One writer
-  per datastore**).
+  checkout stays protected until a higher fence exists (see **One commit
+  section at a time**).
 
 **Writer liveness (swamp-club#3564).** The fence record, the writer marker,
 the checkout sidecar and each outbox entry name their writer by pid and by
@@ -7149,8 +7266,12 @@ either way.
 
 **Recovery** (`recoverCommitOutbox`) runs under a writer hold: when a
 writing command or serve first holds the lease (`recoverAndMark`, before
-the interrupted-writer recovery), and again when serve retakes a lost
-lease. A read-only command never recovers the outbox: it holds no
+the interrupted-writer recovery), again when serve retakes a lost
+lease, and when a commit section takes the lease from a holder that did not
+release it clean (an unclean release, an expiry or a forced release). A
+section that takes a cleanly released lease skips it: a clean release
+means the outbox held no unsettled entry (**One commit section at a
+time**). A read-only command never recovers the outbox: it holds no
 Litestream sidecar, and commits nothing. For each entry, in preparation
 order, run entries of a unit last:
 
@@ -7192,8 +7313,9 @@ by a power loss after landing. That is the documented legacy gap (see
 "For extension authors" under "v3 chunk storage"); the size check before the
 barrier catches a chunk already torn.
 
-**Fences.** Every CLI write takes a new fence, so an entry's fence is always
-below its recoverer's. The copy records each fence it takes as a **chain**
+**Fences.** Every lease take (each commit section of a local writer, each
+whole-command hold) takes a new fence, so an entry's fence is always below
+its recoverer's. The copy records each fence it takes as a **chain**
 (`decideFenceChain`): one above the last fence continues it. Every lease
 take on the copy goes through `V3Datastore.raiseWriterFence`, which notes the
 fence in the outbox (`pending_fence`, fsynced), raises `commits.db`'s
@@ -7224,8 +7346,9 @@ abandoned mark makes survive a failed removal. A writer this process cannot
 judge (another
 host or namespace, or an entry from before schema 2) counts as gone: the
 recovery runs under a newer lease, so that writer is fenced already. In shared (non-replicated) mode every
-writer start recovers before it writes, so no writer can come between a
-dead writer and its recovery; the stale-fence drop applies across copies.
+take that follows an unclean release recovers before it writes, and a clean
+release leaves no entry, so no writer can come between a dead writer and its
+recovery; the stale-fence drop applies across copies.
 Turning replication on drops and reports what the shared `commits.db`'s
 outbox holds when a copy is first seeded from it.
 
@@ -8032,7 +8155,8 @@ on a refused page (never on a 401 or 403: a refused token vouches for no
 principal), and a match restamps the fingerprint and keeps the copy;
 no principal cached, no header, or no answer resets as before. The reset
 runs under the root's writer lease,
-which every writer of the checkout holds for its whole command; a read-only
+which every writer of a serve-upstream checkout holds for its whole command
+(such a copy never takes commit sections); a read-only
 command takes it too, waiting up to the lock timeout and otherwise failing as
 writer-busy:
 

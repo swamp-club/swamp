@@ -91,6 +91,9 @@ export function createOutboxCommitSink(
       landedSeq: (namespace, partition, txnId) =>
         commitStore.landedSeq(namespace, partition, txnId),
       sweepState: () => outbox.sweepState(clock().getTime()),
+      stageChunks: (stager, namespace, hashes) =>
+        outbox.stageChunks(stager, namespace, hashes),
+      unstageChunks: (stager) => outbox.unstageChunks(stager),
       sweepBatch: () => options.sweepBatch?.() ?? Promise.resolve(),
     },
     async retryOwedRemovals() {

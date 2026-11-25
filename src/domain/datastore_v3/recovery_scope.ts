@@ -70,6 +70,10 @@ export interface ScopedPartition {
  * commit owns that are removed
  */
 export class RecoveryScope {
+  /** true for a record key a live writer may be writing, left as it is */
+  readonly #kept: (namespace: string, key: string) => boolean;
+  /** true for a key the interrupted writer itself recorded writing under */
+  readonly #ownedByDead: (namespace: string, key: string) => boolean;
   readonly #partitions = new Map<
     string,
     { namespace: string; partition: PartitionKey; names: Set<string> }
@@ -80,9 +84,31 @@ export class RecoveryScope {
     { namespace: string; key: string; path: string }
   >();
   #unscopable: string | undefined;
+  #left = false;
 
-  /** false, and the scope unusable, for a name of no valid model partition */
-  addName(name: CatalogNameKey): boolean {
+  constructor(
+    kept: (namespace: string, key: string) => boolean = () => false,
+    ownedByDead: (namespace: string, key: string) => boolean = () => true,
+  ) {
+    this.#kept = kept;
+    this.#ownedByDead = ownedByDead;
+  }
+
+  /**
+   * false, and the scope unusable, for a name of no valid model partition;
+   * `others` is a name any writer may have changed, so one a live writer keeps
+   * is its own rather than one left to it
+   */
+  addName(name: CatalogNameKey, options: { others?: boolean } = {}): boolean {
+    const prefix = dataNamePrefix(name);
+    if (this.#kept(name.namespace, prefix)) {
+      if (
+        options.others !== true && this.#ownedByDead(name.namespace, prefix)
+      ) {
+        this.#left = true;
+      }
+      return true;
+    }
     let partition: PartitionKey;
     try {
       partition = PartitionKey.forModel(name.type, name.modelId);
@@ -111,6 +137,10 @@ export class RecoveryScope {
 
   /** a file of `namespace` to check; its data name, if any, is touched */
   addKeyToCheck(namespace: string, key: string): void {
+    if (this.#kept(namespace, key)) {
+      if (this.#ownedByDead(namespace, key)) this.#left = true;
+      return;
+    }
     let keys = this.#check.get(namespace);
     if (keys === undefined) this.#check.set(namespace, keys = new Set());
     keys.add(key);
@@ -119,6 +149,10 @@ export class RecoveryScope {
 
   /** a file no commit owns; its data name, if any, is touched */
   addRemoval(namespace: string, key: string, path: string): void {
+    if (this.#kept(namespace, key)) {
+      if (this.#ownedByDead(namespace, key)) this.#left = true;
+      return;
+    }
     this.#remove.set(JSON.stringify([namespace, key]), {
       namespace,
       key,
@@ -144,6 +178,11 @@ export class RecoveryScope {
       return;
     }
     this.addName({ namespace, ...name });
+  }
+
+  /** something the dead writer touched was left to a live writer */
+  get leftToLiveWriters(): boolean {
+    return this.#left;
   }
 
   /** why a name could not be scoped, once one could not */

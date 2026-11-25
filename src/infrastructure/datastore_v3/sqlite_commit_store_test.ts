@@ -40,6 +40,7 @@ import {
 import {
   type PartitionKey,
   partitionOf,
+  RUN_PARTITION_RANGE,
 } from "../../domain/datastore_v3/partition_key.ts";
 import { CommitRejectedError } from "../../domain/datastore_v3/partition.ts";
 import { RecordKey } from "../../domain/datastore_v3/record_key.ts";
@@ -69,6 +70,7 @@ import {
   COMMIT_STORE_SCHEMA_VERSION,
   CommitStoreTruncateRefusedError,
   ObservedBaseStaging,
+  RUN_PARTITIONS_SQL,
   SqliteCommitStore,
   type SqliteCommitStoreOptions,
   stopAutoCheckpointAt,
@@ -2645,5 +2647,113 @@ Deno.test("SqliteCommitStore.partitionHeadCursor: names its last commit, or says
       store.partitionHeadCursor("", commit.partition),
       store.lastCursor(),
     );
+  });
+});
+
+Deno.test("SqliteCommitStore.runPartitionsOf: finds a run's partition by its id alone, per namespace", async () => {
+  await withStore(async (store) => {
+    const workflowId = "0b6c4bb4-9d61-4f0c-9a43-6f0c1f7b2a82";
+    const runId = "0b6c4bb4-9d61-4f0c-9a43-6f0c1f7b2a83";
+    const otherRunId = "0b6c4bb4-9d61-4f0c-9a43-6f0c1f7b2a84";
+    const run = partitionOf({ kind: "run", workflowId, runId });
+    const otherRun = partitionOf({
+      kind: "run",
+      workflowId,
+      runId: otherRunId,
+    });
+    const commits: ReadonlyArray<readonly [PartitionKey, string]> = [
+      [run, ""],
+      [otherRun, "acme"],
+    ];
+    for (const [partition, namespace] of commits) {
+      const identity = partition.identity;
+      if (identity.kind !== "run") throw new Error("not a run partition");
+      const start = await putOp({
+        intent: createIntent({
+          kind: "run-start.save",
+          run: { workflowId: identity.workflowId, runId: identity.runId },
+        }),
+        key: RecordKey.create(
+          `workflow-runs/${identity.workflowId}/starts/${identity.runId}/a`,
+        ),
+        inline: btoa("a"),
+      });
+      await store.append(
+        modelCommit(1, [start], { partition, namespace, fence: 1 }),
+      );
+    }
+    await store.append(await save(1));
+    assertEquals(
+      store.runPartitionsOf("", runId.toUpperCase()).map(String),
+      [run.toString()],
+    );
+    assertEquals(store.runPartitionsOf("acme", runId), []);
+    assertEquals(store.runPartitionsOf("", otherRunId), []);
+    assertEquals(
+      store.runPartitionsOf("acme", otherRunId).map(String),
+      [otherRun.toString()],
+    );
+  });
+});
+
+Deno.test("SqliteCommitStore.runPartitionsOf: reads a run's rows through the run-tail index, not every run's head", async () => {
+  await withStore(async (store, path) => {
+    const workflowId = "0b6c4bb4-9d61-4f0c-9a43-6f0c1f7b2a82";
+    let last = "";
+    for (let i = 0; i < 200; i++) {
+      const runId = crypto.randomUUID();
+      last = runId;
+      const start = await putOp({
+        intent: createIntent({
+          kind: "run-start.save",
+          run: { workflowId, runId },
+        }),
+        key: RecordKey.create(`workflow-runs/${workflowId}/starts/${runId}/a`),
+        inline: btoa("a"),
+      });
+      await store.append(
+        modelCommit(1, [start], {
+          partition: partitionOf({ kind: "run", workflowId, runId }),
+          fence: 1,
+          txnId: `run-${i}`,
+        }),
+      );
+    }
+    assertEquals(store.runPartitionsOf("", last).length, 1);
+    const db = new DatabaseSync(path, { readOnly: true });
+    try {
+      const plan = db.prepare(`EXPLAIN QUERY PLAN ${RUN_PARTITIONS_SQL}`).all(
+        "",
+        last,
+        RUN_PARTITION_RANGE.from,
+        RUN_PARTITION_RANGE.to,
+      ) as { detail: string }[];
+      // a search keyed on the run id's tail, never a range over every run
+      assertEquals(plan.length, 1);
+      assertStringIncludes(
+        plan[0].detail,
+        "partition_heads_by_tail (namespace=? AND <expr>=?",
+      );
+    } finally {
+      db.close();
+    }
+  });
+});
+
+Deno.test("SqliteCommitStore.open: the run-tail index is made without raising the schema, so an older swamp still opens a shared commits.db", async () => {
+  await withStore((_store, path) => {
+    const indexes = rawRows(
+      path,
+      "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'partition_heads_by_tail'",
+    );
+    assertEquals(indexes.length, 1);
+    // the version main's swamp writes: every checkout of a filesystem
+    // datastore shares this file, so no checkout may move it on alone
+    assertEquals(COMMIT_STORE_SCHEMA_VERSION, 14);
+    assertEquals(
+      rawRows(path, "PRAGMA user_version")[0].user_version,
+      14,
+    );
+    return Promise.resolve();
   });
 });

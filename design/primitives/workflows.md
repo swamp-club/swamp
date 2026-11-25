@@ -4340,10 +4340,12 @@ method-run record it left `running` with the same error its step gets
 on this host as `cancelled` with the reason (`closeStoppedOwnerRuns`,
 `src/cli/commands/workflow_cancel.ts`). An owner still alive is left alone.
 
-**Cancel on a v3 datastore.** A run's owner holds a v3 datastore's writer for
-the whole run, bound directly or as a team member's checkout of serve's
-datastore, so a cancel that took the writer first would wait for the run to
-end (swamp-club#4377 for the member's checkout). Cancel therefore finds its
+**Cancel on a v3 datastore.** A run's owner may hold a v3 datastore's writer for
+the whole run: on a bucket datastore, as a team member's checkout of serve's
+datastore, or as an older swamp. A cancel that took the writer first would wait
+for that run to end (swamp-club#4377 for the member's checkout). A local
+filesystem owner holds the writer only while it commits, but cancel treats
+every owner the same way. Cancel therefore finds its
 runs through a read-only open, stops their owners (`stopLocalRunOwners`), and only then takes
 the writer to settle the records, with the stopped owners passed on so none is
 stopped twice. An owner that stopped on SIGTERM saved its own outcome and
@@ -4351,6 +4353,11 @@ released the writer; one killed after its grace left a lease the writer's open
 takes over on this host. A cancel never answers with
 `datastore_v3_writer_busy`: when another process holds the writer after the
 owners stopped, it says what it stopped and what to do next (swamp-club#4295).
+A dead owner's method output is settled only under its behavior's lock, taken
+without waiting, and the settle commits before that lock is released, so the
+next holder reads it settled. An output whose behavior another process holds is
+left for that process, or the next cancel, and the cancel reports it as
+deferred.
 
 **Which process cancel stops.** A run record is data: a v2 S3 or GCS datastore
 syncs it between members' checkouts, and a serve-mode checkout takes it from

@@ -49,6 +49,7 @@ import {
   v3ClaimCommitLog,
   v3DatastoreConfigOf,
   v3DatastoreFor,
+  wholeCommandHoldForTesting,
 } from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
 import {
   DatastoreClaimedError,
@@ -532,6 +533,8 @@ Deno.test("v3 outbox: a production handle's units prepare each commit", async ()
 });
 
 Deno.test("v3 outbox: every lease taken on the copy is in its fence chain", async () => {
+  // the whole-command hold a bucket writer takes
+  using _wholeCommand = wholeCommandHoldForTesting();
   await withV3RowRepos({}, async (repos, datastorePath) => {
     const config = repos.a.datastoreConfig as FilesystemDatastoreConfig;
     const chain = async () => {

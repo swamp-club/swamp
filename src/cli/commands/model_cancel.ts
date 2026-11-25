@@ -42,6 +42,7 @@ import {
   requireInitializedRepoReadOnly,
   requireInitializedRepoUnlocked,
   resolveDatastoreForRepo,
+  tryBehaviorLockOf,
 } from "../repo_context.ts";
 import { runCommandInRootUnit } from "../command_root_unit.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -73,6 +74,7 @@ import {
   cancelOrphanedMethodRuns,
   type MethodRunOutputs,
   type OwnerLiveness,
+  type TryBehaviorLock,
   warnUnsettledMethodRuns,
 } from "../../domain/workflows/orphaned_run_reaper.ts";
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
@@ -98,6 +100,8 @@ export interface CancelModelMethodRunsDeps {
     "findAllRunning" | "findById" | "complete" | "recordCancelReason"
   >;
   outputRepo: MethodRunOutputs;
+  /** a dead owner's output is settled only under its behavior's lock */
+  tryBehaviorLock?: TryBehaviorLock;
   liveness?: OwnerLiveness;
   killProcess?: (
     pid: number,
@@ -122,6 +126,8 @@ export function ownerStopGraceMs(
 export interface MethodRunCancelOutcome {
   run: ActiveRun;
   status: ActiveRunStatus;
+  /** its behavior's lock was held, so its output was left for the holder */
+  deferred?: boolean;
 }
 
 /**
@@ -212,21 +218,30 @@ export async function settleStoppedMethodRuns(
   {
     tracker,
     outputRepo,
+    tryBehaviorLock,
     liveness = localOwnerLiveness(),
-  }: Pick<CancelModelMethodRunsDeps, "tracker" | "outputRepo" | "liveness">,
+  }: Pick<
+    CancelModelMethodRunsDeps,
+    "tracker" | "outputRepo" | "tryBehaviorLock" | "liveness"
+  >,
 ): Promise<MethodRunCancelOutcome[]> {
   const abandoned = abandonedMethodRuns(stopped, { tracker, liveness });
   // A record that cannot be read or saved does not stop the cancel: its row
   // is marked interrupted, so run doctor --fix settles it later.
-  const { failed, errors: outputErrors } = await cancelOrphanedMethodRuns(
-    outputRepo,
-    abandoned,
-    OWNER_STOPPED_STEP_ERROR,
-  );
+  const { failed, errors: outputErrors, deferred } =
+    await cancelOrphanedMethodRuns(
+      outputRepo,
+      abandoned,
+      OWNER_STOPPED_STEP_ERROR,
+      tryBehaviorLock,
+    );
   warnUnsettledMethodRuns(failed.length, outputErrors);
   for (const run of failed) tracker.complete(run.id, "interrupted");
+  const left = new Set(deferred.map((run) => run.id));
 
-  const outcomes = stopped.map((run) => {
+  const outcomes = stopped.map((run): MethodRunCancelOutcome => {
+    // its row stays running, so the next cancel finds it again
+    if (left.has(run.id)) return { run, status: "running", deferred: true };
     tracker.complete(run.id, "cancelled", reason);
     if (reason !== undefined) tracker.recordCancelReason(run.id, reason);
     // Rows are purged only days after they complete, so the row is still
@@ -235,6 +250,15 @@ export async function settleStoppedMethodRuns(
   });
   if (errors.length > 0) throw errors[0];
   return outcomes;
+}
+
+function warnDeferred(
+  logger: ReturnType<typeof createContext>["logger"],
+  count: number,
+): void {
+  if (count === 0) return;
+  logger
+    .warn`Stopped ${count} method run(s), but another process holds their behavior's lock, so their output was left for it; cancel again once it finishes`;
 }
 
 export interface ServeOwnedMethodRun {
@@ -549,6 +573,10 @@ export function createModelCancelCommand(syntax: CommandSyntax) {
               cancelModelMethodRuns(runs, reason, {
                 tracker: runTracker,
                 outputRepo: repoContext.outputRepo,
+                tryBehaviorLock: tryBehaviorLockOf(
+                  datastoreConfig,
+                  repoContext,
+                ),
                 onStopping,
               }),
           );
@@ -585,6 +613,10 @@ export function createModelCancelCommand(syntax: CommandSyntax) {
             settleStoppedMethodRuns(stopped, reason, {
               tracker: runTracker,
               outputRepo: writer.repoContext.outputRepo,
+              tryBehaviorLock: tryBehaviorLockOf(
+                datastoreConfig,
+                writer.repoContext,
+              ),
             }),
         );
       };
@@ -626,17 +658,22 @@ export function createModelCancelCommand(syntax: CommandSyntax) {
           });
           const cancelled = outcomes.filter((o) => o.status === "cancelled")
             .map(({ run }) => methodRunFields(run));
-          const finished = outcomes.filter((o) => o.status !== "cancelled")
-            .map(({ run, status }) => ({ ...methodRunFields(run), status }));
+          const finished = outcomes.filter((o) =>
+            o.status !== "cancelled" && o.deferred !== true
+          ).map(({ run, status }) => ({ ...methodRunFields(run), status }));
+          const deferred = outcomes.filter((o) => o.deferred === true)
+            .map(({ run }) => methodRunFields(run));
 
           if (cliCtx.outputMode === "json") {
             console.log(JSON.stringify({
               cancelled,
               finished,
               skipped,
+              deferred,
               reason: reason ?? null,
             }));
           } else {
+            warnDeferred(cliCtx.logger, deferred.length);
             if (cancelled.length > 0) {
               // Tagged templates, so a count renders as before; the noun is
               // literal text, not an interpolated (quoted) value.
@@ -717,7 +754,7 @@ export function createModelCancelCommand(syntax: CommandSyntax) {
           );
         }
 
-        const [{ status }] = await cancelRuns([latest], (stops) => {
+        const [{ status, deferred }] = await cancelRuns([latest], (stops) => {
           const waiting = liveStops(stops);
           if (!waiting || cliCtx.outputMode === "json") return;
           cliCtx.logger
@@ -731,9 +768,12 @@ export function createModelCancelCommand(syntax: CommandSyntax) {
             type: type.normalized,
             method: latest.methodName ?? "unknown",
             status,
+            deferred: deferred === true,
             reason: status === "cancelled" ? reason ?? null : null,
             skipped: skipped.map(skippedFields),
           }));
+        } else if (deferred === true) {
+          warnDeferred(cliCtx.logger, 1);
         } else if (status === "cancelled" && syntax.surface === "model") {
           cliCtx.logger
             .info`Cancelled method run ${

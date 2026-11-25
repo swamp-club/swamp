@@ -29,6 +29,7 @@ import {
   closeV3Datastores,
   keepV3WriterMarkers,
   v3RepositoryFactoryConfig,
+  wholeCommandHoldForTesting,
 } from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
 import {
   readWriterMarker,
@@ -139,6 +140,8 @@ async function assertNotReplayed(
 }
 
 Deno.test("v3 dropped work: a writer refused after another process took its lease keeps its marker, and the next command removes the refused version", async () => {
+  // the whole-command hold a bucket writer takes
+  using _wholeCommand = wholeCommandHoldForTesting();
   await withV3RowRepos({}, async (repos, datastorePath) => {
     const model = await committedModel(repos, "glass");
     assertEquals(await localVersions(repos, "glass"), [1]);

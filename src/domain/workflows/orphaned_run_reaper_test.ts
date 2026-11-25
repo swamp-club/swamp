@@ -1625,3 +1625,45 @@ Deno.test("goneInstanceIds: a row whose pid a later process holds marks its inst
     0,
   );
 });
+
+Deno.test("cancelOrphanedMethodRuns: a run whose behavior lock another process holds is deferred, unsaved; one settled meanwhile is left as it is", async () => {
+  const held = methodRow();
+  const settledMeanwhile = methodRow();
+  const outputs = [runningOutput(held), runningOutput(settledMeanwhile)];
+  const saved: string[] = [];
+  const outputRepo: MethodRunOutputs = {
+    findByIds: (_type, _method, ids) =>
+      Promise.resolve(
+        new Map(outputs.filter((o) => ids.has(o.id)).map((o) => [o.id, o])),
+      ),
+    save: (_type, _method, output) => {
+      saved.push(output.id);
+      return Promise.resolve();
+    },
+  };
+  let calls = 0;
+  let released = 0;
+  const { closed, deferred, failed } = await cancelOrphanedMethodRuns(
+    outputRepo,
+    [held, settledMeanwhile],
+    "stopped",
+    () => {
+      // the first run's behavior is held elsewhere
+      if (calls++ === 0) return Promise.resolve(null);
+      // another checkout settled the second after the canceller first read it
+      outputs[1].markSucceeded();
+      return Promise.resolve({
+        release: () => {
+          released++;
+          return Promise.resolve();
+        },
+      });
+    },
+  );
+  assertEquals(deferred.map((r) => r.id), [held.id]);
+  assertEquals(failed, []);
+  assertEquals(saved, [], "nothing is overwritten");
+  assertEquals(outputs[0].status, "running", "the deferred run stays running");
+  assertEquals(closed.map((r) => r.id), [settledMeanwhile.id]);
+  assertEquals(released, 1);
+});

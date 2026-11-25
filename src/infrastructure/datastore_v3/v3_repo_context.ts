@@ -62,16 +62,19 @@ import {
   acquireV3WriterLock,
   advanceV3WriterLease,
   assertV3WriterCurrent,
+  COMMIT_SECTION_LEASE_POLL,
   holdsCurrentV3WriterLease,
   holdsV3WriterLock,
   onV3HoldRetaken,
   onV3LeaseTaken,
   refuseLiveV3LegacyWriter,
+  setV3WriterBusyServeAddress,
   tryAcquireV3WriterLock,
   V3WriterBusyError,
   v3WriterFence,
   type V3WriterLeaseHolder,
   v3WriterLeaseHolder,
+  type V3WriterLockRelease,
 } from "./v3_writer_lock.ts";
 import {
   peekDatastoreOwner,
@@ -115,10 +118,12 @@ import { isLineageBroken } from "../../domain/datastore_v3/replica_verification.
 import { atomicWriteTextFile } from "../persistence/atomic_write.ts";
 import { catalogNamesOfCommit } from "../../domain/datastore_v3/name_history_replay.ts";
 import { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
+import { isUuid } from "../../domain/models/model_lookup.ts";
 import type { DirtyNamePin } from "./v3_catalog.ts";
 import {
   holdsOwnWriterMarker,
-  readWriterMarkerFile,
+  markerPathOfRecoveryError,
+  otherLiveWriters,
   recoverInterruptedWriter,
   recoverOwnPredecessor,
   removeOwnWriterMarker,
@@ -199,7 +204,7 @@ import { processRuntimeSlot } from "../runtime/process_runtime.ts";
 
 const logger = getSwampLogger(["datastore", "v3"]);
 
-export { v3ReplicatesAt };
+export { setV3WriterBusyServeAddress, v3ReplicatesAt };
 
 export type V3DatastoreConfig = V3DatastoreLocation | FilesystemDatastoreConfig;
 
@@ -231,6 +236,13 @@ export function v3ServeControlPlaneAt(
 /** this process runtime's handles, holds and serve registrations */
 interface RepoContextState {
   readonly opened: Map<string, V3Datastore>;
+  /**
+   * checkouts this process writes locally on a filesystem datastore: the lease
+   * is taken only around each commit
+   */
+  readonly sectionedWriters: Map<string, SectionedWriter>;
+  /** tests of the whole-command hold a bucket writer still takes */
+  wholeCommandHoldForTesting: boolean;
   /** synced once each at teardown, then released; empty unless replication is on */
   readonly replications: Map<string, ReplicationHandle[]>;
   /**
@@ -336,6 +348,8 @@ interface RepoContextState {
 
 const repoState = processRuntimeSlot<RepoContextState>(() => ({
   opened: new Map(),
+  sectionedWriters: new Map(),
+  wholeCommandHoldForTesting: false,
   replications: new Map(),
   owedReplications: new Set(),
   commandConfirmed: false,
@@ -549,7 +563,7 @@ export function v3DatastoreFor(
     // retake) continues the copy's lineage when it may; a writer prepares its
     // own once its copy is current
     repoState().lineageListening = true;
-    onV3LeaseTaken(async (path, fence) => {
+    onV3LeaseTaken(async (path, fence, predecessorClean) => {
       // Safe before the copy is current: a lineage continues only while
       // no other writer started one since.
       for (
@@ -557,10 +571,13 @@ export function v3DatastoreFor(
       ) {
         await recordV3LeaseFence(copy, fence);
       }
-      // serve's retake of a lost hold recovers what a writer between its two
-      // holds left; a first hold recovers in recoverAndMark and a read-only
-      // hold never recovers
-      if (v3ReplicatesAt(path) || !holdsV3WriterLock(path)) return;
+      // serve's retake of a lost hold, and a commit section taking over from a
+      // holder that left entries, recovers what that holder left; a first hold
+      // recovers in recoverAndMark and a read-only hold never recovers
+      if (
+        v3ReplicatesAt(path) || !holdsV3WriterLock(path) ||
+        predecessorClean === true
+      ) return;
       for (const [key, handle] of repoState().opened) {
         if (
           resolve(handle.datastorePath) === resolve(path) &&
@@ -596,6 +613,13 @@ export function v3DatastoreFor(
         ? { serveFollower: true }
         : {}),
       writerFence: () => v3WriterFence(config.path),
+      liveWriters: () => otherLiveWriters(repoDir),
+      commitSection: () => {
+        const writer = repoState().sectionedWriters.get(key);
+        return writer === undefined
+          ? undefined
+          : <T>(land: () => Promise<T>) => runCommitSection(writer, land);
+      },
       onCommitOutcome: (outcome) => {
         // while replicating, a commit counts once replicated, not once applied
         if (outcome.kind === "applied" && v3ReplicatesAt(config.path)) return;
@@ -834,7 +858,9 @@ export async function holdV3Writer(
 ): Promise<"writer" | "follower"> {
   let role: "writer" | "follower";
   try {
-    role = await takeV3WriterHold(config, repoDir, options);
+    role = takesCommitSections(config, options)
+      ? await enterCommitSections(config, repoDir, options.ownerCheck)
+      : await takeV3WriterHold(config, repoDir, options);
   } catch (error) {
     if (!(error instanceof UserError) && isNetworkFailure(error)) {
       throw new V3StorageUnreachableError(config.path, error);
@@ -856,6 +882,238 @@ export async function holdV3Writer(
     caughtUpFromServe.add(handle);
   }
   return role;
+}
+
+interface SectionedWriter {
+  readonly config: V3DatastoreConfig;
+  readonly repoDir: string;
+  readonly ownerCheck?: V3OwnerCheck;
+}
+
+// bucket locks are per machine, so only a filesystem writer holds the lease
+// just to commit
+function takesCommitSections(
+  config: V3DatastoreConfig,
+  options: {
+    readonly retakeLost?: boolean;
+    readonly ownerCheck?: V3OwnerCheck;
+    readonly follow?: boolean;
+  },
+): boolean {
+  return !repoState().wholeCommandHoldForTesting &&
+    options.retakeLost !== true && options.follow !== true &&
+    serveUpstreamAt(config.path) === undefined &&
+    !v3ReplicatesAt(config.path) &&
+    v3BucketBindingAt(config.path) === undefined &&
+    ownerCheckOf(config, options.ownerCheck).as === "writer";
+}
+
+async function enterCommitSections(
+  config: V3DatastoreConfig,
+  repoDir: string,
+  ownerCheck: V3OwnerCheck | undefined,
+): Promise<"writer"> {
+  const key = handleKey(repoDir, config);
+  if (repoState().sectionedWriters.has(key)) return "writer";
+  await refuseUnsafeV3Checkout(repoDir, config);
+  await assertV3CheckoutJoinable(repoDir, config.namespace);
+  await refuseLiveV3LegacyWriter(config.path);
+  const writer: SectionedWriter = {
+    config,
+    repoDir,
+    ...(ownerCheck === undefined ? {} : { ownerCheck }),
+  };
+  // a claim this writer may not write under, as the file showed before the
+  // lease: refused at once rather than after waiting on a lease serve holds;
+  // only the check under the lease decides
+  const claimHint = claimRefusal(
+    peekDatastoreOwner(v3CommitsDbPath(config.path, repoDir)),
+    ownerCheckOf(config, ownerCheck),
+  );
+  // the first section recovers what an interrupted writer left and marks the
+  // checkout before this process stages anything into it
+  await runCommitSection(writer, async () => {
+    if (repoState().markedCheckouts.has(key)) {
+      await repoState().markedCheckouts.get(key);
+      return;
+    }
+    const marking = recoverAndMark(config, repoDir, { sections: true });
+    repoState().markedCheckouts.set(key, marking);
+    try {
+      await marking;
+    } catch (error) {
+      repoState().markedCheckouts.delete(key);
+      throw error;
+    }
+    repoState().releases.push(async () => {
+      if (keepsMarker(repoDir)) return;
+      try {
+        await removeOwnWriterMarker(repoDir);
+      } catch (error) {
+        logger
+          .warn`Removing the v3 writer marker of ${repoDir} failed; the next command will run an unnecessary recovery: ${error}`;
+      }
+    });
+  }, claimHint);
+  repoState().sectionedWriters.set(key, writer);
+  return "writer";
+}
+
+/**
+ * the lease around one commit: released clean only when the outbox holds no
+ * unsettled entry, so a section that left one makes the next taker recover it
+ */
+async function runCommitSection<T>(
+  writer: SectionedWriter,
+  land: () => Promise<T>,
+  claimHint?: Error,
+): Promise<T> {
+  const { config, repoDir } = writer;
+  let release;
+  try {
+    release = await takeCommitSection(writer, claimHint === undefined);
+  } catch (error) {
+    if (claimHint !== undefined && error instanceof V3WriterBusyError) {
+      throw claimHint;
+    }
+    throw error;
+  }
+  let result: T;
+  try {
+    refuseUnlessOwner(config, repoDir, writer.ownerCheck);
+    result = await land();
+  } catch (error) {
+    await release({ clean: await outboxClean(writer) }).catch(() => {});
+    throw error;
+  }
+  await release({ clean: await outboxClean(writer) });
+  return result;
+}
+
+function takeCommitSection(
+  writer: SectionedWriter,
+  wait: boolean,
+): Promise<V3WriterLockRelease> {
+  const { config, repoDir } = writer;
+  return acquireV3WriterLock(config.path, {
+    poll: COMMIT_SECTION_LEASE_POLL,
+    maxWaitMs: wait ? resolveLockTimeoutMs() : 0,
+    fenceStore: {
+      writerFence: () =>
+        v3DatastoreFor(repoDir, config).commitStore.writerFence(),
+      raiseWriterFence: (fence: number) =>
+        v3DatastoreFor(repoDir, config).raiseWriterFence(fence),
+    },
+  });
+}
+
+/**
+ * a sectioned writer tears down inside one more section: it waits for the
+ * lease to recover work it dropped, and only tries it to compact, which another
+ * writer's exit does as well; the release goes with the command's other ones
+ */
+async function takeTeardownSections(): Promise<
+  { readonly handle: V3Datastore; readonly release: V3WriterLockRelease }[]
+> {
+  const sections: {
+    readonly handle: V3Datastore;
+    readonly release: V3WriterLockRelease;
+  }[] = [];
+  for (const [key, writer] of repoState().sectionedWriters) {
+    const handle = repoState().opened.get(key);
+    if (handle === undefined) continue;
+    const dropped = handle.droppedWork() !== undefined;
+    let release;
+    try {
+      release = await acquireV3WriterLock(writer.config.path, {
+        poll: COMMIT_SECTION_LEASE_POLL,
+        maxWaitMs: dropped ? resolveLockTimeoutMs() : 0,
+        fenceStore: {
+          writerFence: () => handle.commitStore.writerFence(),
+          raiseWriterFence: (fence: number) => handle.raiseWriterFence(fence),
+        },
+      });
+    } catch (error) {
+      // the close goes on without this section: its releases must still run
+      if (dropped) {
+        logger
+          .info`Work this command dropped stays in ${writer.repoDir} until the next command recovers it: ${error}`;
+      } else if (!(error instanceof V3WriterBusyError)) {
+        logger.debug`No teardown section for ${writer.repoDir}: ${error}`;
+      }
+      continue;
+    }
+    sections.push({ handle, release });
+  }
+  return sections;
+}
+
+/**
+ * another process may have committed to the behavior between this writer's
+ * sections; its lock orders this writer after them, so the behavior's own
+ * partition catches up before work under the lock reads it
+ */
+export async function catchUpV3AfterBehaviorLock(
+  datastorePath: string,
+  modelType: string,
+  modelId: string,
+): Promise<void> {
+  // a lock named for a behavior, not its id, guards no partition
+  if (!isUuid(modelId)) return;
+  const partition = PartitionKey.forModel(modelType, modelId);
+  await catchUpSectionedPartitions(datastorePath, () => [partition]);
+}
+
+/**
+ * as for a behavior's lock, but for the run's record: only its partition, since
+ * the process holding the claim may have other work in flight
+ */
+export async function catchUpV3AfterRunLock(
+  datastorePath: string,
+  runId: string,
+): Promise<void> {
+  await catchUpSectionedPartitions(
+    datastorePath,
+    (handle) => handle.commitStore.runPartitionsOf(handle.namespace, runId),
+  );
+}
+
+async function catchUpSectionedPartitions(
+  datastorePath: string,
+  partitionsOf: (handle: V3Datastore) => readonly PartitionKey[],
+): Promise<void> {
+  for (const [key, writer] of repoState().sectionedWriters) {
+    if (resolve(writer.config.path) !== resolve(datastorePath)) continue;
+    const handle = repoState().opened.get(key);
+    if (handle === undefined) continue;
+    for (const partition of partitionsOf(handle)) {
+      await handle.readModel.catchUpPartition(
+        handle.namespace,
+        partition,
+        new AbortController().signal,
+      );
+    }
+  }
+}
+
+async function outboxClean(writer: SectionedWriter): Promise<boolean> {
+  try {
+    return !await v3DatastoreFor(writer.repoDir, writer.config).outbox
+      .hasUnsettledEntries();
+  } catch {
+    return false;
+  }
+}
+
+/** a filesystem writer in this runtime takes the whole-command hold, as a bucket writer does */
+export function wholeCommandHoldForTesting(): Disposable {
+  const state = repoState();
+  state.wholeCommandHoldForTesting = true;
+  return {
+    [Symbol.dispose]: () => {
+      state.wholeCommandHoldForTesting = false;
+    },
+  };
 }
 
 function deferTo(handle: V3Datastore): void {
@@ -1149,6 +1407,9 @@ async function takeV3WriterHold(
           },
           ...(options.retakeLost === true ? { retakeLost: true } : {}),
           ...(options.ttlMs !== undefined ? { ttlMs: options.ttlMs } : {}),
+          ...(ownerCheckOf(config, options.ownerCheck).as === "serve"
+            ? { role: "serve" as const }
+            : {}),
         }),
     );
   } catch (error) {
@@ -1588,17 +1849,19 @@ async function recordWriterCheckout(
 function recoverAndMark(
   config: V3DatastoreConfig,
   repoDir: string,
+  options: { readonly sections?: boolean } = {},
 ): Promise<void> {
   return withSpan(
     "swamp.datastore.v3.recover_and_mark",
     {},
-    () => recoverAndMarkTraced(config, repoDir),
+    () => recoverAndMarkTraced(config, repoDir, options),
   );
 }
 
 async function recoverAndMarkTraced(
   config: V3DatastoreConfig,
   repoDir: string,
+  options: { readonly sections?: boolean },
 ): Promise<void> {
   // what a writer that died left in the outbox lands first, so the
   // interrupted-writer recovery keeps the files its commits own; failures name
@@ -1636,7 +1899,8 @@ async function recoverAndMarkTraced(
     }
     // a stopped command: the marker stays, so the next command resumes
     if (commandStopSignal().aborted) throw error;
-    const markerPath = writerMarkerPath(repoDir);
+    const markerPath = markerPathOfRecoveryError(error) ??
+      writerMarkerPath(repoDir);
     const recoveryError = markErrorPaths(
       new UserError(
         `Recovering ${repoDir} after a swamp process ended without finishing ` +
@@ -1651,11 +1915,13 @@ async function recoverAndMarkTraced(
     recoveryError.cause = error;
     throw recoveryError;
   }
-  // a marker left stays: another host's or live process's, whose writer may yet
-  // leave uncommitted files, or this process's own from before a kept close. An
-  // unreadable one was recovered above
-  if ((await readWriterMarkerFile(repoDir)).kind === "absent") {
-    await writeWriterMarker(repoDir);
+  // other processes' markers stay: their writers may yet leave uncommitted
+  // files; an unreadable one was recovered above
+  if (!await holdsOwnWriterMarker(repoDir)) {
+    await writeWriterMarker(repoDir, {
+      commits: handle.commitWriterInstance,
+      ...(options.sections === true ? { sections: true } : {}),
+    });
   }
 }
 
@@ -1925,7 +2191,10 @@ export async function v3RepositoryFactoryConfig(
   // a checkout that holds records never joins: refused before its copy is
   // restored or its read model opens
   await assertV3CheckoutJoinable(repoDir, config.namespace);
-  const writer = holdsV3WriterLock(config.path);
+  // a sectioned writer holds the lease only while it commits, but writes this
+  // checkout for the whole command
+  const writer = holdsV3WriterLock(config.path) ||
+    repoState().sectionedWriters.has(handleKey(repoDir, config));
   // a reader's copy is made current first, unless another process writes this
   // checkout: that writer keeps it current
   if (
@@ -1966,7 +2235,9 @@ export async function v3RepositoryFactoryConfig(
           handle.servePrincipal,
           { repoDir, repoId: options.repoId },
         ),
-        { holdsWriterLock: writer },
+        // a sectioned writer between commits holds no lease: it takes one to
+        // rebuild
+        { holdsWriterLock: holdsV3WriterLock(config.path) },
       ),
   );
   // in a checkout another process writes its files are already newest, so
@@ -2375,9 +2646,11 @@ export async function closeV3Datastores(
   // Serve's shutdown deadline, kept for the release once the sync's turn
   // has cleared it.
   const shutdownDeadline = v3ClosingDeadline();
+  const teardownSections = unreachable ? [] : await takeTeardownSections();
   const pending = repoState().releases.splice(0);
   const marked = new Set(repoState().markedCheckouts.keys());
   repoState().markedCheckouts.clear();
+  repoState().sectionedWriters.clear();
   repoState().commandStartMarks.clear();
   repoState().serveHolds.clear();
   repoState().serveTeams.clear();
@@ -2525,6 +2798,15 @@ export async function closeV3Datastores(
   });
   repoState().currentCopies.clear();
   repoState().restoredCopies.clear();
+  // judged while the outbox is still open; each section goes with the
+  // command's other releases
+  for (const section of teardownSections) {
+    const clean = await section.handle.outbox.hasUnsettledEntries().then(
+      (unsettled) => !unsettled,
+      () => false,
+    );
+    pending.push(() => section.release({ clean }));
+  }
   // Close before releasing, so no other writer starts while this process
   // still has the commit log open.
   const closed = await withSpan(

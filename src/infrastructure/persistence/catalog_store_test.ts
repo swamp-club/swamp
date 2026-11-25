@@ -3260,3 +3260,27 @@ Deno.test("CatalogStore.versionRowCounts: counts each name's version rows, and n
     store.close();
   }
 });
+
+Deno.test("CatalogStore.touchedScopes: reads an older swamp's table, without the writer column, and leaves it as it is", () => {
+  using tempDb = makeTempDb();
+  const store = new CatalogStore(tempDb.path);
+  try {
+    const db = (store as unknown as { db: DatabaseSync }).db;
+    db.exec(
+      "CREATE TABLE catalog_touched (id INTEGER PRIMARY KEY, unit_id TEXT NOT NULL, namespace TEXT NOT NULL, scope TEXT NOT NULL, type_normalized TEXT NOT NULL DEFAULT '', model_id TEXT NOT NULL DEFAULT '', data_name TEXT NOT NULL DEFAULT '', UNIQUE (unit_id, namespace, scope))",
+    );
+    db.prepare(
+      "INSERT INTO catalog_touched (unit_id, namespace, scope) VALUES ('u', '', 'data/t/m/n')",
+    ).run();
+    assertEquals(
+      store.touchedScopes().map((row) => [row.unit_id, row.instance]),
+      [["u", ""]],
+    );
+    const columns = (db.prepare("PRAGMA table_info(catalog_touched)").all() as {
+      name: string;
+    }[]).map((c) => c.name);
+    assertEquals(columns.includes("instance"), false, "a read adds no column");
+  } finally {
+    store.close();
+  }
+});

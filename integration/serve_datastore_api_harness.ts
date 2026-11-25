@@ -60,6 +60,7 @@ import type {
   V3Datastore,
 } from "../src/infrastructure/datastore_v3/v3_datastore.ts";
 import {
+  holdV3Writer,
   v3DatastoreConfigOf,
   v3DatastoreFor,
 } from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
@@ -134,6 +135,9 @@ export async function withServer(
       repo.datastoreConfig,
     );
     assert(location !== undefined, "the fixture repository is v3");
+    // serve holds the lease for its life, as swamp serve does, whatever hold
+    // the fixture's own command took
+    await holdV3Writer(location, repo.repoDir, { retakeLost: true });
     const v3 = v3DatastoreFor(repo.repoDir, location);
     const base = createServeCtx(repo, grants);
     const createLock = async (target: LockTarget): Promise<TryLock> =>

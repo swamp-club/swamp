@@ -20,6 +20,7 @@
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { createInMemoryRemote } from "@swamp-club/swamp-testing";
 import {
+  readWriterLeaseRecords,
   WRITER_LEASE_CLOCK_SKEW_MS,
   WriterFencedError,
   WriterLease,
@@ -139,6 +140,29 @@ const CASES: [
       const second = await writer().lease.acquire({ maxWaitMs: 0 });
       assertEquals(second.fence, 2);
       await second.release();
+    },
+  ],
+  [
+    "a release marked clean tells the next holder; a plain, expired or overtaken one does not",
+    async (store, clock) => {
+      const { writer } = writers(store, clock);
+      const clean = await writer().lease.acquire({ maxWaitMs: 0 });
+      await clean.release({ clean: true });
+      assertEquals((await readWriterLeaseRecords(store)).releasedClean, true);
+      const afterClean = await writer().lease.acquire({ maxWaitMs: 0 });
+      assertEquals(afterClean.predecessorClean, true);
+      await afterClean.release();
+      assertEquals(
+        (await readWriterLeaseRecords(store)).releasedClean,
+        undefined,
+      );
+      const afterPlain = await writer().lease.acquire({ maxWaitMs: 0 });
+      assertEquals(afterPlain.predecessorClean, false);
+      // never released: an expired holder is taken over, never clean
+      clock.advance(TTL + WRITER_LEASE_CLOCK_SKEW_MS + 1);
+      const afterExpiry = await writer().lease.acquire({ maxWaitMs: 0 });
+      assertEquals(afterExpiry.predecessorClean, false);
+      await afterExpiry.release({ clean: true });
     },
   ],
   ["of racing acquirers exactly one wins", async (store, clock) => {

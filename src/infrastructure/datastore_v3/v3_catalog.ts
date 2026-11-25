@@ -73,6 +73,7 @@ export interface CatalogDirtyTracking {
     pins: readonly DirtyNamePin[],
     landed: readonly { readonly partition: string; readonly txnId: string }[],
     keepUnits?: readonly string[],
+    instance?: string,
   ): void;
   ensureTouchedTracking(now: number): void;
   /** undefined when the table is missing */
@@ -87,6 +88,8 @@ export interface TouchedScope {
   readonly unitId: string;
   readonly namespace: string;
   readonly scope: string;
+  /** the writer's token; empty for an older swamp's rows */
+  readonly instance: string;
 }
 
 export interface ReadModelCatalog {
@@ -326,6 +329,7 @@ export class V3Catalog implements ReadModelCatalog, CatalogDirtyTracking {
     pins: readonly DirtyNamePin[],
     landed: readonly { readonly partition: string; readonly txnId: string }[],
     keepUnits: readonly string[] = [],
+    instance?: string,
   ): void {
     this.#store.releaseDirty(
       pins.map((pin): CatalogDirtyPin => ({
@@ -335,6 +339,7 @@ export class V3Catalog implements ReadModelCatalog, CatalogDirtyTracking {
       })),
       landed.map((l) => ({ partition: l.partition, txn_id: l.txnId })),
       keepUnits,
+      instance,
     );
   }
 
@@ -352,6 +357,7 @@ export class V3Catalog implements ReadModelCatalog, CatalogDirtyTracking {
       unitId: row.unit_id,
       namespace: row.namespace,
       scope: row.scope,
+      instance: row.instance,
     }));
   }
 

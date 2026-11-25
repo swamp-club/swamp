@@ -33,6 +33,7 @@ export interface PlantedV3WriterLease {
   readonly acquiredAt?: Date;
   readonly ttlMs?: number;
   readonly process?: ProcessIdentity | null;
+  readonly role?: "serve";
 }
 
 export async function plantedIdentity(
@@ -73,6 +74,7 @@ export async function plantV3WriterLease(
       hostname,
       pid: holder.pid,
       ...(process !== null ? { process } : {}),
+      ...(holder.role !== undefined ? { role: holder.role } : {}),
       nonce,
       ttlMs: holder.ttlMs ?? 60_000,
       acquiredAt: (holder.acquiredAt ?? new Date()).toISOString(),

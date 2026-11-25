@@ -647,7 +647,15 @@ export interface MethodRunCancellation {
   readonly closed: ActiveRun[];
   readonly failed: ActiveRun[];
   readonly errors: unknown[];
+  /** left for the process holding the behavior's lock, or the next cancel */
+  readonly deferred: ActiveRun[];
 }
+
+/** null when another process holds the behavior's lock */
+export type TryBehaviorLock = (
+  type: ModelType,
+  modelId: string,
+) => Promise<{ release(): Promise<void> } | null>;
 
 /**
  * a failed read or save is collected, not thrown, so the cancel can still
@@ -657,26 +665,57 @@ export async function cancelOrphanedMethodRuns(
   outputRepo: MethodRunOutputs,
   rows: readonly ActiveRun[],
   reason: string,
+  tryBehaviorLock?: TryBehaviorLock,
 ): Promise<MethodRunCancellation> {
   let match: MethodRunMatch;
   try {
     match = await matchMethodRunOutputs(outputRepo, rows);
   } catch (error) {
-    return { closed: [], failed: [...rows], errors: [error] };
+    return { closed: [], failed: [...rows], errors: [error], deferred: [] };
   }
   const closed = [...match.done];
   const failed: ActiveRun[] = [];
   const errors: unknown[] = [];
+  const deferred: ActiveRun[] = [];
   for (const orphan of match.running) {
     try {
-      await settleOrphanedMethodRun(outputRepo, orphan, reason);
+      if (tryBehaviorLock === undefined) {
+        await settleOrphanedMethodRun(outputRepo, orphan, reason);
+        closed.push(orphan.row);
+        continue;
+      }
+      const lock = await tryBehaviorLock(
+        orphan.type,
+        orphan.output.definitionId,
+      );
+      if (lock === null) {
+        deferred.push(orphan.row);
+        continue;
+      }
+      try {
+        // read again under the lock: another process may have settled it since
+        const current = await matchMethodRunOutputs(outputRepo, [orphan.row]);
+        for (const still of current.running) {
+          await settleOrphanedMethodRun(outputRepo, still, reason);
+        }
+      } finally {
+        await lock.release();
+      }
       closed.push(orphan.row);
     } catch (error) {
       failed.push(orphan.row);
       errors.push(error);
     }
   }
-  return { closed, failed, errors };
+  return { closed, failed, errors, deferred };
+}
+
+export function warnDeferredMethodRuns(rows: readonly ActiveRun[]): void {
+  if (rows.length === 0) return;
+  logger.warn(
+    "Another process holds the behavior lock of {count} method run(s) whose owner stopped, so their output was left to it; once it finishes, run 'swamp run doctor --fix' to settle them",
+    { count: rows.length },
+  );
 }
 
 export function warnUnsettledMethodRuns(

@@ -67,15 +67,29 @@ export const V3_LEGACY_WRITER_LOCK_KEY = join("_control", "writer.lock");
 export { V3_WRITER_BUSY_CODE };
 
 export class V3WriterBusyError extends UserError {
-  constructor(datastorePath: string, cause: LockTimeoutError) {
+  constructor(
+    datastorePath: string,
+    cause: LockTimeoutError,
+    options: { readonly heldByServe?: boolean } = {},
+  ) {
     const holder = cause.holder;
+    const named = holder ? ` (${holder.holder}, pid ${holder.pid})` : "";
     super(
-      `Another swamp process is writing the v3 datastore at ${datastorePath}` +
-        (holder ? ` (${holder.holder}, pid ${holder.pid})` : "") +
-        ". A v3 datastore takes one writer at a time. Wait for it to finish, " +
-        "or, if it is swamp serve, run this command through serve. If that " +
-        "process is gone, `swamp datastore lock status` shows the lock and " +
-        "`swamp datastore lock release --force` clears it. Nothing was changed.",
+      options.heldByServe === true
+        ? `swamp serve${named} holds the writer lease of the v3 datastore at ` +
+          `${datastorePath} for as long as it runs. If this command takes ` +
+          `--server, run it through serve: add --server ${
+            writerLockState().serveAddress ?? "<url>"
+          }. Otherwise run it on the serve host after stopping serve. If ` +
+          "serve is gone, `swamp datastore lock status` shows the " +
+          "lock and `swamp datastore lock release --force` clears it. " +
+          "Nothing was changed."
+        : `Another swamp process is writing the v3 datastore at ${datastorePath}` +
+          named +
+          ". A v3 datastore takes one writer at a time. Wait for it to finish, " +
+          "or, if it is swamp serve, run this command through serve. If that " +
+          "process is gone, `swamp datastore lock status` shows the lock and " +
+          "`swamp datastore lock release --force` clears it. Nothing was changed.",
       V3_WRITER_BUSY_CODE,
     );
     this.name = "V3WriterBusyError";
@@ -88,8 +102,25 @@ export interface V3WriterFenceStore {
   raiseWriterFence(fence: number): Promise<void>;
 }
 
+/** how a lease taker waiting on another holder polls the lease's records */
+export interface V3LeasePoll {
+  readonly retryMs: number;
+  readonly maxRetryMs: number;
+}
+
+// a commit section holds the lease only briefly, so a waiter on the
+// whole-command backoff sleeps through every free window
+export const COMMIT_SECTION_LEASE_POLL: V3LeasePoll = {
+  retryMs: 25,
+  maxRetryMs: 100,
+};
+
 interface WriterLockState {
   readonly held: Map<string, Held>;
+  /** each wait of a lease taker, when a test records them */
+  leaseWaits?: number[];
+  /** the serve a busy error names, when this command knows one */
+  serveAddress?: string;
   readonly holdRetakenListeners: Set<V3HoldRetakenListener>;
   readonly leaseLostListeners: Set<V3LeaseLostListener>;
   readonly leaseTakenListeners: Set<V3LeaseTakenListener>;
@@ -101,6 +132,10 @@ const writerLockState = processRuntimeSlot<WriterLockState>(() => ({
   leaseLostListeners: new Set(),
   leaseTakenListeners: new Set(),
 }));
+
+export function setV3WriterBusyServeAddress(address: string | undefined): void {
+  writerLockState().serveAddress = address === "" ? undefined : address;
+}
 
 interface Held {
   /** the runtime it was taken in, so its timer and retakes never use another's */
@@ -121,13 +156,22 @@ interface Held {
   take?: {
     readonly ttlMs: number;
     readonly fenceStore?: V3WriterFenceStore;
+    readonly role?: "serve";
+    readonly poll?: V3LeasePoll;
   };
   /**
    * a one-shot command's hold just ends: its later commits are refused too, so
    * it fails as a whole rather than landing part of itself
    */
   retakeLost: boolean;
+  /** a joined section released with an outbox entry left: the lease ends unclean */
+  dirty?: boolean;
 }
+
+/** clean: every outbox entry this caller prepared under the lease is settled */
+export type V3WriterLockRelease = (
+  options?: { readonly clean?: boolean },
+) => Promise<void>;
 
 export interface AcquireV3WriterLockOptions {
   readonly maxWaitMs?: number;
@@ -139,6 +183,10 @@ export interface AcquireV3WriterLockOptions {
   readonly fenceStore?: V3WriterFenceStore;
   /** the process's first acquire decides; later ones join its hold */
   readonly retakeLost?: boolean;
+  /** recorded on the lease, so a writer it keeps out is told to go through serve */
+  readonly role?: "serve";
+  /** the whole-command backoff when undefined */
+  readonly poll?: V3LeasePoll;
 }
 
 /**
@@ -149,7 +197,7 @@ export interface AcquireV3WriterLockOptions {
 export async function acquireV3WriterLock(
   datastorePath: string,
   options: AcquireV3WriterLockOptions = {},
-): Promise<() => Promise<void>> {
+): Promise<V3WriterLockRelease> {
   const key = resolve(datastorePath);
   const maxWaitMs = options.maxWaitMs ?? 60_000;
   const state = writerLockState();
@@ -165,6 +213,8 @@ export async function acquireV3WriterLock(
         ...(options.fenceStore !== undefined
           ? { fenceStore: options.fenceStore }
           : {}),
+        ...(options.role !== undefined ? { role: options.role } : {}),
+        ...(options.poll !== undefined ? { poll: options.poll } : {}),
       },
     };
     created.acquiring = retakeLease(created, datastorePath, maxWaitMs).then(
@@ -204,9 +254,10 @@ export async function acquireV3WriterLock(
   }
   const holding = entry;
   let released = false;
-  return async () => {
+  return async (release = {}) => {
     if (released) return;
     released = true;
+    if (release.clean !== true) holding.dirty = true;
     holding.refs--;
     if (holding.refs > 0) return;
     await endHold(key, holding);
@@ -234,7 +285,7 @@ async function endHold(key: string, entry: Held): Promise<void> {
   if (entry.state.held.get(key) === entry) entry.state.held.delete(key);
   if (entry.renewal !== undefined) clearInterval(entry.renewal);
   await entry.renewing;
-  await entry.hold?.release();
+  await entry.hold?.release({ clean: entry.dirty !== true });
 }
 
 function retaking(
@@ -266,6 +317,8 @@ async function retakeLease(
     ...(retake.fenceStore !== undefined
       ? { fenceStore: retake.fenceStore }
       : {}),
+    ...(retake.role !== undefined ? { role: retake.role } : {}),
+    ...(retake.poll !== undefined ? { poll: retake.poll } : {}),
   });
   entry.hold = hold;
   entry.confirmedAt = asked;
@@ -311,7 +364,7 @@ async function advanceHold(
   const take = entry.take!;
   let advanced: number | undefined;
   const move = (async () => {
-    const lease = await writerLease(datastorePath, take.ttlMs);
+    const lease = await writerLease(datastorePath, take.ttlMs, take.role);
     const asked = performance.now();
     const next = await lease.advance(hold);
     if (next === undefined) return;
@@ -589,6 +642,8 @@ async function takeLease(
     readonly maxWaitMs: number;
     readonly ttlMs: number;
     readonly fenceStore?: V3WriterFenceStore;
+    readonly role?: "serve";
+    readonly poll?: V3LeasePoll;
   },
 ): Promise<WriterLeaseHold> {
   // a bucket datastore is known to be v3 before its lease is written: every
@@ -598,7 +653,8 @@ async function takeLease(
   let hold: WriterLeaseHold;
   try {
     const floor = options.fenceStore?.writerFence();
-    hold = await (await writerLease(datastorePath, options.ttlMs)).acquire({
+    const { ttlMs, role, poll } = options;
+    hold = await (await writerLease(datastorePath, ttlMs, role, poll)).acquire({
       maxWaitMs: options.maxWaitMs,
       ...(floor !== undefined ? { floor } : {}),
     });
@@ -611,6 +667,7 @@ async function takeLease(
           lockInfoOf(error.inspection),
           error.waitedMs,
         ),
+        { heldByServe: error.inspection.record?.role === "serve" },
       );
     }
     throw error;
@@ -622,13 +679,20 @@ async function takeLease(
     throw error;
   }
   // Outside the release-on-error scope: a listener never costs the lease.
-  await notifyLeaseTaken(state, datastorePath, hold.fence);
+  await notifyLeaseTaken(
+    state,
+    datastorePath,
+    hold.fence,
+    hold.predecessorClean,
+  );
   return hold;
 }
 
 export type V3LeaseTakenListener = (
   datastorePath: string,
   fence: number,
+  /** the holder before released with nothing left in the outbox */
+  predecessorClean?: boolean,
 ) => Promise<void> | void;
 
 /**
@@ -648,10 +712,11 @@ async function notifyLeaseTaken(
   state: WriterLockState,
   datastorePath: string,
   fence: number,
+  predecessorClean = false,
 ): Promise<void> {
   for (const listener of [...state.leaseTakenListeners]) {
     try {
-      await listener(datastorePath, fence);
+      await listener(datastorePath, fence, predecessorClean);
     } catch (error) {
       logger
         .warn`A listener for the writer lease of the v3 datastore at ${datastorePath} failed: ${error}`;
@@ -756,8 +821,10 @@ export function v3WriterLeaseConfirmed(datastorePath: string): boolean {
 function writerLease(
   datastorePath: string,
   ttlMs: number,
+  role?: "serve",
+  poll?: V3LeasePoll,
 ): Promise<WriterLease> {
-  return v3WriterLease(v3ControlPlaneAt(datastorePath), ttlMs);
+  return v3WriterLease(v3ControlPlaneAt(datastorePath), ttlMs, role, poll);
 }
 
 /**
@@ -768,6 +835,8 @@ function writerLease(
 export async function v3WriterLease(
   store: WriterLeaseStore,
   ttlMs: number,
+  role?: "serve",
+  poll?: V3LeasePoll,
 ): Promise<WriterLease> {
   const host = Deno.hostname();
   const local = await localProcess();
@@ -778,10 +847,17 @@ export async function v3WriterLease(
       hostname: host,
       pid: local.pid,
       process: local.identity,
+      ...(role !== undefined ? { role } : {}),
     },
     ttlMs,
     now: () => Date.now(),
-    delay: (ms) => new Promise((done) => setTimeout(done, ms)),
+    delay: (ms) => {
+      writerLockState().leaseWaits?.push(ms);
+      return new Promise((done) => setTimeout(done, ms));
+    },
+    ...(poll !== undefined
+      ? { retryMs: poll.retryMs, maxRetryMs: poll.maxRetryMs }
+      : {}),
     // a holder is gone only when its own kernel says so
     judgeHolder: (record) =>
       judgeRecordedProcess(
@@ -847,4 +923,19 @@ export async function refuseLiveV3LegacyWriter(
       new LockTimeoutError(V3_LEGACY_WRITER_LOCK_KEY, holder, 0),
     );
   }
+}
+
+/** records the waits of this runtime's lease takers until disposed */
+export function recordV3LeaseWaitsForTesting(): Disposable & {
+  readonly waits: number[];
+} {
+  const state = writerLockState();
+  const waits: number[] = [];
+  state.leaseWaits = waits;
+  return {
+    waits,
+    [Symbol.dispose]: () => {
+      state.leaseWaits = undefined;
+    },
+  };
 }
