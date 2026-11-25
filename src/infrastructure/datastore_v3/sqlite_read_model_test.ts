@@ -657,6 +657,16 @@ Deno.test("SqliteReadModel.recover: a full rebuild stopped part way resumes from
             return target.clear(admits);
           };
         }
+        if (property === "clearInSlices") {
+          return (
+            admits: (key: string) => boolean,
+            between: () => Promise<void>,
+            sliceMs: number,
+          ) => {
+            cleared.push(1);
+            return target.clearInSlices(admits, between, sliceMs);
+          };
+        }
         const value = Reflect.get(target, property, target);
         return typeof value === "function" ? value.bind(target) : value;
       },
@@ -853,6 +863,16 @@ Deno.test("SqliteReadModel.recover: a stopped rebuild is resumed only by an inte
             return (admits: (key: string) => boolean) => {
               cleared.push(1);
               return target.clear(admits);
+            };
+          }
+          if (property === "clearInSlices") {
+            return (
+              admits: (key: string) => boolean,
+              between: () => Promise<void>,
+              sliceMs: number,
+            ) => {
+              cleared.push(1);
+              return target.clearInSlices(admits, between, sliceMs);
             };
           }
           const value = Reflect.get(target, property, target);
@@ -1183,6 +1203,13 @@ Deno.test("SqliteReadModel.recover: a targeted recovery stopped between partitio
     const catalog = proxied(inner, {
       commitBatch: () => {
         inner.commitBatch();
+        stop.abort();
+      },
+      commitBatchInSlices: async (
+        between: () => Promise<void>,
+        sliceMs: number,
+      ) => {
+        await inner.commitBatchInSlices(between, sliceMs);
         stop.abort();
       },
     });
@@ -3854,6 +3881,122 @@ Deno.test("SqliteReadModel.catchUp: a write under a directory a pooled write is 
       assertEquals(await readOrAbsent(under), "n@2");
     } finally {
       batch.gate.resolve();
+      await readModel.close();
+    }
+  });
+});
+
+/**
+ * a catalog that marks each reproject batch, from its clearNames to its
+ * rollbackBatch, so a test orders events without reading a clock
+ */
+function reprojectWatched(env: Env): {
+  catalog: V3Catalog;
+  reprojecting: () => boolean;
+  batchesEnded: () => number;
+} {
+  const inner = V3Catalog.open(
+    join(readModelStateDir(env.repoDir), CATALOG_V3_FILE),
+  );
+  let open = false;
+  let ended = 0;
+  const catalog: V3Catalog = new Proxy(inner, {
+    get(target, property) {
+      if (property === "dirtyTracking") return () => catalog;
+      if (property === "clearNames") {
+        return (...args: Parameters<V3Catalog["clearNames"]>) => {
+          open = true;
+          return target.clearNames(...args);
+        };
+      }
+      if (property === "rollbackBatch") {
+        return () => {
+          if (open) ended++;
+          open = false;
+          return target.rollbackBatch();
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  return { catalog, reprojecting: () => open, batchesEnded: () => ended };
+}
+
+Deno.test("SqliteReadModel.recover: a targeted recovery gives the event loop turns while it reprojects, and a read issued then waits for the reproject to end", async () => {
+  await withEnv(async (env) => {
+    const { since, clock } = await interruptedCheckout(env);
+    await writeUncommittedRow(env, "r12", 2);
+    recordWholeCheckout(env);
+    const watched = reprojectWatched(env);
+    const readModel = env.open({
+      catalog: watched.catalog,
+      clock,
+      pageSize: 5,
+      recoverySliceMs: 0,
+    });
+    const reads: Promise<{ endedBefore: number; endedAfter: number }>[] = [];
+    const timer = setInterval(() => {
+      if (!watched.reprojecting()) return;
+      const endedBefore = watched.batchesEnded();
+      reads.push(
+        readModel.chunksInUse("").then(() => ({
+          endedBefore,
+          endedAfter: watched.batchesEnded(),
+        })),
+      );
+    }, 0);
+    try {
+      await readModel.recover("", targetedOptions(since));
+      clearInterval(timer);
+      assert(reads.length > 0, "a timer ran while the reproject ran");
+      for (const read of await Promise.all(reads)) {
+        assert(
+          read.endedAfter > read.endedBefore,
+          "a read issued mid-reproject resolved before its batch ended",
+        );
+      }
+    } finally {
+      clearInterval(timer);
+      await Promise.allSettled(reads);
+      await readModel.close();
+    }
+  });
+});
+
+Deno.test("SqliteReadModel.recover: a catch-up a timer starts while a recovery reprojects queues behind the recovery", async () => {
+  await withEnv(async (env) => {
+    const { since, clock } = await interruptedCheckout(env);
+    await writeUncommittedRow(env, "r12", 2);
+    recordWholeCheckout(env);
+    const watched = reprojectWatched(env);
+    const readModel = env.open({
+      catalog: watched.catalog,
+      clock,
+      pageSize: 5,
+      recoverySliceMs: 0,
+    });
+    let recovered = false;
+    const catchUps: Promise<boolean>[] = [];
+    const timer = setInterval(() => {
+      if (!watched.reprojecting()) return;
+      catchUps.push(readModel.catchUp(signal()).then(() => recovered));
+    }, 0);
+    try {
+      const recovering = readModel.recover("", targetedOptions(since));
+      // attached first, so it runs before anything queued behind the recovery
+      const done = recovering.finally(() => {
+        recovered = true;
+      });
+      await done;
+      clearInterval(timer);
+      assert(catchUps.length > 0, "a catch-up was started mid-reproject");
+      for (const afterRecovery of await Promise.all(catchUps)) {
+        assert(afterRecovery, "a catch-up ran inside the recovery");
+      }
+    } finally {
+      clearInterval(timer);
+      await Promise.allSettled(catchUps);
       await readModel.close();
     }
   });

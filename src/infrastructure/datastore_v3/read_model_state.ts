@@ -1268,6 +1268,14 @@ export class ReadModelState {
     );
   }
 
+  presentKeysAfter(namespace: string, after: string, limit: number): string[] {
+    this.#requireOpen();
+    return (this.#db.prepare(
+      "SELECT record_key FROM materialised_keys WHERE namespace = ? AND present = 1 AND record_key > ? ORDER BY record_key LIMIT ?",
+    ).all(namespace, after, limit) as { record_key: string }[])
+      .map((row) => row.record_key);
+  }
+
   /** decided keys, present or removed, equal to `key` or under `key/` */
   decidedKeysAtOrUnder(namespace: string, key: string): string[] {
     this.#requireOpen();

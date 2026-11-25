@@ -85,6 +85,7 @@ import {
   type PartitionLeaseMarks,
   type PartitionPageOfNames,
 } from "../../domain/datastore_v3/commit_store.ts";
+import { TimeSlice } from "../persistence/scan_permits.ts";
 import {
   catalogNamesOfCommit,
   catalogNamesOfRawCommit,
@@ -660,13 +661,18 @@ export const DEFAULT_CACHED_PARTITIONS = 1024;
 export const DEFAULT_SNAPSHOT_INTERVAL = 1000;
 
 /** Rows read per query while rebuilding a partition. */
-const REBUILD_PAGE = 500;
+// a page holds whole commit bodies, so a large commit's page stays short
+const REBUILD_PAGE = 50;
 
 /**
  * Commits folded per compaction transaction by default. The fold runs
  * synchronously inside the transaction, like an append's fsync.
  */
 export const COMPACTION_BATCH = 250;
+
+const FOLD_SLICE_MS = 50;
+
+const FOLD_PREFETCH_COMMITS = 16;
 
 /** Hashes looked up per query by `referencedChunks`. */
 const REF_LOOKUP_PAGE = 500;
@@ -2823,7 +2829,9 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
       }
     }
     let fromSeq = partition.seq + 1;
+    const slice = new TimeSlice(undefined, FOLD_SLICE_MS);
     while (true) {
+      if (slice.over) await slice.next();
       const rows = this.#selectPartitionPage.all(
         namespace,
         key.toString(),
@@ -3007,40 +3015,53 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
     this.#assertOpen();
     requirePositive(fromSeq, "fromSeq");
     requirePositive(limit, "limit");
-    const rows = this.#readTransaction(() => {
-      const compacted = this.#compactedSeq(namespace, partition.toString());
-      if (fromSeq <= compacted) {
-        throw new CommitsCompactedError(
-          this.#point(),
-          `Partition ${partition} is compacted through seq ${compacted}; commits from seq ${fromSeq} cannot be read`,
-          compacted,
-        );
-      }
-      return this.#selectPartitionPage.all(
-        namespace,
-        partition.toString(),
-        fromSeq,
-        limit,
-      ) as unknown as CommitRow[];
-    });
+    // in pieces, each checked from where it starts; filled to the limit, so a
+    // short page still means the partition's end
+    const slice = new TimeSlice(undefined, FOLD_SLICE_MS);
     const changes: CommitChange[] = [];
-    for (const row of rows) {
-      let touched: string[] | undefined;
-      try {
-        touched = catalogNamesOfRawCommit(JSON.parse(row.body));
-      } catch {
-        touched = undefined;
+    const seqs: number[] = [];
+    let from = fromSeq;
+    while (seqs.length < limit) {
+      if (slice.over) await slice.next();
+      const want = Math.min(REBUILD_PAGE, limit - seqs.length);
+      const rows = this.#readTransaction(() => {
+        const compacted = this.#compactedSeq(namespace, partition.toString());
+        if (from <= compacted) {
+          throw new CommitsCompactedError(
+            this.#point(),
+            `Partition ${partition} is compacted through seq ${compacted}; commits from seq ${from} cannot be read`,
+            compacted,
+          );
+        }
+        return this.#selectPartitionPage.all(
+          namespace,
+          partition.toString(),
+          from,
+          want,
+        ) as unknown as CommitRow[];
+      });
+      for (const row of rows) {
+        if (slice.over) await slice.next();
+        seqs.push(row.seq);
+        let touched: string[] | undefined;
+        try {
+          touched = catalogNamesOfRawCommit(JSON.parse(row.body));
+        } catch {
+          touched = undefined;
+        }
+        // a row the filter cannot read is decoded, so parseRow reports it
+        if (touched !== undefined && !touched.some((name) => names.has(name))) {
+          continue;
+        }
+        const commit = await parseRow(row);
+        if (catalogNamesOfCommit(commit).some((name) => names.has(name))) {
+          changes.push({ cursor: row.cursor, commit });
+        }
       }
-      // a row the filter cannot read is decoded, so parseRow reports it
-      if (touched !== undefined && !touched.some((name) => names.has(name))) {
-        continue;
-      }
-      const commit = await parseRow(row);
-      if (catalogNamesOfCommit(commit).some((name) => names.has(name))) {
-        changes.push({ cursor: row.cursor, commit });
-      }
+      if (rows.length < want) break;
+      from = rows[rows.length - 1].seq + 1;
     }
-    return { changes, seqs: rows.map((row) => row.seq) };
+    return { changes, seqs };
   }
 
   /**
@@ -3134,19 +3155,30 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
       throw new Error(`cursor must be a non-negative integer: ${cursor}`);
     }
     requirePositive(limit, "limit");
-    const rows = this.#readTransaction(() => {
-      const point = this.#point();
-      if (cursor < point) {
-        throw new CommitsCompactedError(
-          point,
-          `The change feed from cursor ${cursor} cannot be read`,
-        );
-      }
-      return this.#selectChanges.all(cursor, limit) as unknown as CommitRow[];
-    });
+    // read in pieces, each checked against the point from where it starts:
+    // stored commits above the point never change, so the pieces join up
     const changes: CommitChange[] = [];
-    for (const row of rows) {
-      changes.push({ cursor: row.cursor, commit: await parseRow(row) });
+    const slice = new TimeSlice(undefined, FOLD_SLICE_MS);
+    let from = cursor;
+    while (changes.length < limit) {
+      if (slice.over) await slice.next();
+      const want = Math.min(REBUILD_PAGE, limit - changes.length);
+      const rows = this.#readTransaction(() => {
+        const point = this.#point();
+        if (from < point) {
+          throw new CommitsCompactedError(
+            point,
+            `The change feed from cursor ${from} cannot be read`,
+          );
+        }
+        return this.#selectChanges.all(from, want) as unknown as CommitRow[];
+      });
+      for (const row of rows) {
+        if (slice.over) await slice.next();
+        changes.push({ cursor: row.cursor, commit: await parseRow(row) });
+      }
+      if (rows.length < want) break;
+      from = rows[rows.length - 1].cursor;
     }
     return changes;
   }
@@ -3315,13 +3347,28 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
     const target = Math.min(through, last);
     const point = this.#point();
     if (point >= target) return false;
-    const rows = this.#db.prepare(
+    const page = this.#db.prepare(
       "SELECT cursor, namespace, partition, seq, txn_id, body FROM commits " +
         "WHERE cursor > ? AND cursor <= ? ORDER BY cursor LIMIT ?",
-    ).all(point, target, batchSize) as unknown as CommitRow[];
+    );
+    // in pages, a turn between them: each row carries a whole commit body
+    const reading = new TimeSlice(undefined, FOLD_SLICE_MS);
+    const rows: CommitRow[] = [];
+    let after = point;
+    while (rows.length < batchSize) {
+      if (reading.over) await reading.next();
+      const want = Math.min(REBUILD_PAGE, batchSize - rows.length);
+      const read = page.all(after, target, want) as unknown as CommitRow[];
+      for (const row of read) rows.push(row);
+      if (read.length < want) break;
+      after = read[read.length - 1].cursor;
+    }
     if (rows.length === 0) return false;
     const commits: Commit[] = [];
-    for (const row of rows) commits.push(await parseRow(row));
+    for (const row of rows) {
+      if (reading.over) await reading.next();
+      commits.push(await parseRow(row));
+    }
 
     // Each partition's last seq in the batch becomes its compacted seq. A
     // rebuild must never need a deleted commit, so a partition whose latest
@@ -3374,53 +3421,111 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
     const now = (options.clock ?? (() => new Date()))().getTime();
     const pruneTxnsBefore = options.pruneTxnsBefore?.getTime();
     const pruneRemovedBefore = options.pruneRemovedBefore?.getTime();
-    this.#db.exec("BEGIN IMMEDIATE");
-    try {
-      if (this.#point() !== point) {
-        throw new Error(
-          "The compaction point moved during compaction: another process is writing the store",
-        );
-      }
-      // Compaction is the writer's: one that lost its lease, or holds none
-      // once the store has a fence, stops here.
-      this.#checkWriterFence(options.fence);
-      this.#base.begin(now);
-      rows.forEach((row, i) => {
-        foldCommit(this.#base, commits[i], row.cursor, MATERIALISED_SUBDIRS);
-      });
-      for (let i = 0; i < rows.length; i++) {
-        this.#base.compactCommit(
-          rows[i],
-          commits[i].chunkRefs(),
-          Date.parse(commits[i].at),
-        );
-      }
-      for (const snapshot of snapshots) {
+    const sliceMs = options.sliceMs ?? FOLD_SLICE_MS;
+    const turn = () => new Promise((resolve) => setTimeout(resolve, 0));
+    // Each snapshot lands in its own transaction before any of the batch's
+    // commits is deleted, as an append's snapshot does, so a rebuild never
+    // needs a deleted commit.
+    for (const snapshot of snapshots) {
+      await turn();
+      this.#db.exec("BEGIN IMMEDIATE");
+      try {
+        if (this.#point() !== point) {
+          throw new Error(
+            "The compaction point moved during compaction: another process is writing the store",
+          );
+        }
+        this.#checkWriterFence(options.fence);
         this.#upsertSnapshot.run(
           snapshot.namespace,
           snapshot.partition,
           snapshot.seq,
           snapshot.body,
         );
+        this.#db.exec("COMMIT");
+      } catch (error) {
+        rollbackQuietly(this.#db);
+        this.#cache.clear();
+        throw error;
       }
-      this.#base.setPoint(rows[rows.length - 1]);
-      totals.released += this.#base.finish(now - retention);
-      if (pruneTxnsBefore !== undefined) {
-        totals.prunedTxns += this.#base.pruneTxns(pruneTxnsBefore);
-      }
-      if (pruneRemovedBefore !== undefined) {
-        this.#base.pruneRemoved(pruneRemovedBefore, BASE_REMOVED_CAP);
-      }
-      options.beforeCommit?.();
-      this.#db.exec("COMMIT");
-    } catch (error) {
-      rollbackQuietly(this.#db);
-      // Cached partitions are unaffected by a rolled-back batch, but drop
-      // them anyway so nothing rebuilt around it is trusted.
-      this.#cache.clear();
-      throw error;
     }
-    totals.compacted += rows.length;
+    // The batch then folds in transactions of about a slice each, the loop
+    // turning between them; each leaves the point at its last commit, as a
+    // smaller batch would.
+    let expected = point;
+    let next = 0;
+    this.#base.begin(now);
+    const prefetched = new Set<string>();
+    const loading = new TimeSlice(undefined, sliceMs);
+    while (next < rows.length) {
+      if (next > 0) await turn();
+      // the names the next commits fold, each read in its own turn rather than
+      // all inside one transaction
+      for (
+        let i = next;
+        i < Math.min(rows.length, next + FOLD_PREFETCH_COMMITS);
+        i++
+      ) {
+        const partition = commits[i].partition.toString();
+        for (const name of catalogNamesOfCommit(commits[i])) {
+          const key = JSON.stringify([commits[i].namespace, partition, name]);
+          if (prefetched.has(key)) continue;
+          prefetched.add(key);
+          if (loading.over) await loading.next();
+          this.#base.prefetch(commits[i].namespace, partition, name);
+        }
+      }
+      const from = next;
+      this.#db.exec("BEGIN IMMEDIATE");
+      try {
+        if (this.#point() !== expected) {
+          throw new Error(
+            "The compaction point moved during compaction: another process is writing the store",
+          );
+        }
+        // Compaction is the writer's: one that lost its lease, or holds none
+        // once the store has a fence, stops here.
+        this.#checkWriterFence(options.fence);
+        this.#base.beginSlice();
+        const until = performance.now() + sliceMs;
+        do {
+          foldCommit(
+            this.#base,
+            commits[next],
+            rows[next].cursor,
+            MATERIALISED_SUBDIRS,
+          );
+          next++;
+        } while (next < rows.length && performance.now() < until);
+        for (let i = from; i < next; i++) {
+          this.#base.compactCommit(
+            rows[i],
+            commits[i].chunkRefs(),
+            Date.parse(commits[i].at),
+          );
+        }
+        this.#base.setPoint(rows[next - 1]);
+        totals.released += this.#base.finish(now - retention);
+        if (next === rows.length) {
+          if (pruneTxnsBefore !== undefined) {
+            totals.prunedTxns += this.#base.pruneTxns(pruneTxnsBefore);
+          }
+          if (pruneRemovedBefore !== undefined) {
+            this.#base.pruneRemoved(pruneRemovedBefore, BASE_REMOVED_CAP);
+          }
+        }
+        options.beforeCommit?.();
+        this.#db.exec("COMMIT");
+      } catch (error) {
+        rollbackQuietly(this.#db);
+        // Cached partitions are unaffected by a rolled-back batch, but drop
+        // them anyway so nothing rebuilt around it is trusted.
+        this.#cache.clear();
+        throw error;
+      }
+      totals.compacted += next - from;
+      expected = rows[next - 1].cursor;
+    }
     totals.batches++;
     return true;
   }
@@ -4279,6 +4384,13 @@ export function openCommitsDatabase(
   }
 }
 
+export function migrateCommitsDatabase(
+  path: string,
+  options: { readonly replicated?: boolean } = {},
+): void {
+  openCommitsDatabase(path, options).close();
+}
+
 /**
  * Brings the schema to {@link COMMIT_STORE_SCHEMA_VERSION}, in one
  * transaction. A database from a newer schema is refused rather than read
@@ -4447,10 +4559,12 @@ interface CompactionTotals {
 /** Test hooks for {@link SqliteCommitStore.compactHistory}. */
 interface CompactionTestHooks {
   /**
-   * Called inside each batch's transaction just before it commits. Tests
-   * use it to fail or stop a batch there.
+   * Called inside each of a batch's transactions just before it commits.
+   * Tests use it to fail or stop a batch there.
    */
   readonly beforeCommit?: () => void;
+  /** how long one of a batch's transactions folds before the loop turns */
+  readonly sliceMs?: number;
 }
 
 /** {@link CompactHistoryOptions} with the SQLite store's test hooks. */
@@ -4616,7 +4730,7 @@ class SqliteCompactedBase implements CompactedBaseWriter {
   readonly #deleteVersion: StatementSync;
   readonly #insertVersion: StatementSync;
   readonly #updateVersion: StatementSync;
-  readonly #selectCatalog: StatementSync;
+  readonly #selectCatalogVersions: StatementSync;
   readonly #deleteCatalogRow: StatementSync;
   readonly #insertCatalog: StatementSync;
   readonly #stampCatalogRow: StatementSync;
@@ -4690,10 +4804,8 @@ class SqliteCompactedBase implements CompactedBaseWriter {
     this.#updateVersion = db.prepare(
       "UPDATE base_versions SET metadata = ?, changed_seq = ? WHERE namespace = ? AND partition = ? AND name = ? AND version = ?",
     );
-    this.#selectCatalog = db.prepare(
-      "SELECT c.version, v.metadata FROM base_catalog AS c LEFT JOIN base_versions AS v " +
-        "USING (namespace, partition, name, version) " +
-        "WHERE c.namespace = ? AND c.partition = ? AND c.name = ? ORDER BY c.version",
+    this.#selectCatalogVersions = db.prepare(
+      "SELECT version FROM base_catalog WHERE namespace = ? AND partition = ? AND name = ? ORDER BY version",
     );
     this.#deleteCatalogRow = db.prepare(
       "DELETE FROM base_catalog WHERE namespace = ? AND partition = ? AND name = ? AND version = ?",
@@ -4855,11 +4967,24 @@ class SqliteCompactedBase implements CompactedBaseWriter {
   /** Starts a batch at time `now` (epoch milliseconds). */
   begin(now: number): void {
     this.#now = now;
+    this.beginSlice();
+    this.#versions.clear();
+    this.#catalog.clear();
+  }
+
+  /** reads a name into the caches ahead of the transaction that folds it */
+  prefetch(namespace: string, partition: string, name: string): void {
+    this.catalogName(namespace, partition, name);
+  }
+
+  /**
+   * starts another of a batch's transactions; the read caches hold what the
+   * last one committed, so they carry over
+   */
+  beginSlice(): void {
     this.#at = null;
     this.touched.clear();
     this.#released = 0;
-    this.#versions.clear();
-    this.#catalog.clear();
   }
 
   putRecord(
@@ -4998,17 +5123,25 @@ class SqliteCompactedBase implements CompactedBaseWriter {
     const key = nameKey(namespace, partition, name);
     const cached = this.#catalog.get(key);
     if (cached !== undefined) return cached;
-    const rows = (this.#selectCatalog.all(namespace, partition, name) as {
-      version: number;
-      metadata: string | null;
-    }[]).map((row) => {
-      if (row.metadata === null) {
-        throw new Error(
-          `The compacted base has a catalog row for ${name}@${row.version} that is not a live version`,
-        );
-      }
-      return parseMetadata(row.metadata);
-    });
+    // a catalog row's metadata is its live version's: the same object, parsed once
+    const live = new Map(
+      this.liveVersions(namespace, partition, name).map((v) => [
+        v.version,
+        v.metadata,
+      ]),
+    );
+    const rows =
+      (this.#selectCatalogVersions.all(namespace, partition, name) as {
+        version: number;
+      }[]).map(({ version }) => {
+        const metadata = live.get(version);
+        if (metadata === undefined) {
+          throw new Error(
+            `The compacted base has a catalog row for ${name}@${version} that is not a live version`,
+          );
+        }
+        return metadata;
+      });
     const forward = this.#selectForward.get(namespace, partition, name) as
       | { renamed_to: string }
       | undefined;

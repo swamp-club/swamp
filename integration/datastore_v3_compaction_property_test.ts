@@ -131,6 +131,8 @@ const arbCompact = fc.record({
   kind: fc.constant("compact" as const),
   fraction: fc.double({ min: 0, max: 1, noNaN: true }),
   batchSize: fc.integer({ min: 1, max: 4 }),
+  sliced: fc.boolean(),
+  stopAt: fc.constant(undefined),
 });
 
 const arbStep = fc.oneof(
@@ -167,6 +169,10 @@ const arbStep = fc.oneof(
       kind: fc.constant("compact" as const),
       fraction: fc.double({ min: 0, max: 1, noNaN: true }),
       batchSize: fc.integer({ min: 1, max: 4 }),
+      // a slice of 0 folds each commit in its own transaction
+      sliced: fc.boolean(),
+      // the transaction a compaction stops in, as a crash would
+      stopAt: fc.option(fc.integer({ min: 1, max: 3 }), { nil: undefined }),
     }),
   },
 );
@@ -423,10 +429,26 @@ Deno.test("compaction: catching up through compactions ends where a full replay 
                   .cursor;
                 const point = (await env.store.readCompactedBase(undefined, 1))
                   .point;
-                await env.store.compactHistory(
-                  point + Math.ceil(step.fraction * (last - point)),
-                  { batchSize: step.batchSize },
-                );
+                let transactions = 0;
+                try {
+                  await env.store.compactHistory(
+                    point + Math.ceil(step.fraction * (last - point)),
+                    {
+                      batchSize: step.batchSize,
+                      ...(step.sliced ? { sliceMs: 0 } : {}),
+                      beforeCommit: () => {
+                        if (++transactions === step.stopAt) {
+                          throw new Error("stopped mid-compaction");
+                        }
+                      },
+                    },
+                  );
+                } catch (error) {
+                  if (
+                    step.stopAt === undefined ||
+                    (error as Error).message !== "stopped mid-compaction"
+                  ) throw error;
+                }
               }
             }
             await reference.readModel.catchUp(signal());

@@ -30,6 +30,9 @@ export const PREWARM_DEADLINE_MS = 10_000;
 
 const CHUNK_BYTES = 1024 * 1024;
 
+/** a catch-up this far behind its store reads at random, as a recovery does */
+export const PREWARM_BACKLOG_COMMITS = 10_000;
+
 export interface RecoveryPrewarmOptions {
   /** read in this order until the budget is spent */
   readonly paths: readonly string[];
@@ -67,6 +70,27 @@ export function prewarmForRecovery(
     });
     return report;
   });
+}
+
+/**
+ * prewarms as a recovery does when a catch-up is at least
+ * PREWARM_BACKLOG_COMMITS behind or its read model has never been complete;
+ * undefined, reading nothing, when neither holds
+ */
+export async function prewarmForBacklog(
+  options: RecoveryPrewarmOptions & {
+    readonly head: number;
+    readonly applied: number;
+    readonly complete: boolean;
+  },
+): Promise<RecoveryPrewarmReport | undefined> {
+  const behind = options.head - options.applied;
+  if (behind <= 0) return undefined;
+  if (options.complete && behind < PREWARM_BACKLOG_COMMITS) return undefined;
+  const report = await prewarmForRecovery(options);
+  logger
+    .info`Read ${report.bytesRead} bytes of ${report.files} files ahead of a catch-up ${behind} commits behind`;
+  return report;
 }
 
 async function prewarm(

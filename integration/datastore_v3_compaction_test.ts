@@ -137,6 +137,15 @@ async function observe(
   };
 }
 
+/**
+ * a fold writes the batch's snapshots before it folds, as an append does, so a
+ * stopped fold may leave them newer; everything else is as it was
+ */
+function dumpWithoutSnapshots(path: string): Record<string, unknown[]> {
+  const { partition_snapshots: _, ...rest } = dump(path);
+  return rest;
+}
+
 function dump(path: string): Record<string, unknown[]> {
   const db = new DatabaseSync(path);
   try {
@@ -536,7 +545,7 @@ Deno.test("compaction: a batch that fails before committing leaves commits.db as
       [await savePut("a", 2), versionOp("a", 2)],
     ]);
     const path = join(env.dir, "commits.db");
-    const before = dump(path);
+    const before = dumpWithoutSnapshots(path);
     await assertRejects(
       () =>
         env.store.compactHistory(2, {
@@ -547,7 +556,7 @@ Deno.test("compaction: a batch that fails before committing leaves commits.db as
       Error,
       "injected failure",
     );
-    assertEquals(dump(path), before);
+    assertEquals(dumpWithoutSnapshots(path), before);
     assertEquals((await env.store.compactHistory(2)).compacted, 2);
   });
 });
@@ -560,13 +569,13 @@ Deno.test("compaction: while a batch's transaction is open, another connection r
       [remove("a", 1)],
     ]);
     const path = join(env.dir, "commits.db");
-    const before = dump(path);
+    const before = dumpWithoutSnapshots(path);
     let during: Record<string, unknown[]> | undefined;
     await assertRejects(
       () =>
         env.store.compactHistory(3, {
           beforeCommit: () => {
-            during = dump(path);
+            during = dumpWithoutSnapshots(path);
             throw new Error("stopped before commit");
           },
         }),
