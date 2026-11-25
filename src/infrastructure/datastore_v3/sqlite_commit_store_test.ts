@@ -2741,7 +2741,7 @@ Deno.test("SqliteCommitStore.runPartitionsOf: reads a run's rows through the run
 });
 
 Deno.test("SqliteCommitStore.open: the run-tail index is made without raising the schema, so an older swamp still opens a shared commits.db", async () => {
-  await withStore(async (_store, path) => {
+  await withStore((_store, path) => {
     const indexes = rawRows(
       path,
       "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'partition_heads_by_tail'",
@@ -2754,5 +2754,6 @@ Deno.test("SqliteCommitStore.open: the run-tail index is made without raising th
       rawRows(path, "PRAGMA user_version")[0].user_version,
       14,
     );
+    return Promise.resolve();
   });
 });

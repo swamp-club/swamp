@@ -19,7 +19,7 @@
 
 // a writer's marker goes last, so a failed recovery reruns
 
-import { dirname, join } from "@std/path";
+import { basename, dirname, join } from "@std/path";
 import { ensureDir } from "@std/fs";
 import { getSwampLogger } from "../logging/logger.ts";
 import { removeStaleOutputSummaries } from "../persistence/output_summary_index.ts";
@@ -486,7 +486,8 @@ function liveInstancesOf(judged: readonly JudgedMarker[]): string[] {
 }
 
 function isLegacy(marker: WriterMarkerAt): boolean {
-  return marker.path.endsWith(WRITER_MARKER_FILE);
+  return basename(marker.path) === WRITER_MARKER_FILE &&
+    basename(dirname(marker.path)) !== WRITER_MARKERS_DIR;
 }
 
 /** the token a marker's journaled scopes carry; an older swamp's carry none */

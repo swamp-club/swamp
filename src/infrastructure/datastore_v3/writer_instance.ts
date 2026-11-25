@@ -19,6 +19,7 @@
 
 import { processRuntimeSlot } from "../runtime/process_runtime.ts";
 
+// one set for the whole OS process: every runtime in it shares its pid
 const liveHere = new Set<string>();
 
 const instance = processRuntimeSlot(() => {

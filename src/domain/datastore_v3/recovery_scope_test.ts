@@ -97,3 +97,49 @@ Deno.test("PartitionKey.forModel: builds the key partitionOf builds, and refuses
   }
   assert(refused);
 });
+
+Deno.test("RecoveryScope: a key a live writer covers is skipped, and counts as left to it only when the interrupted writer recorded it too", () => {
+  const live = `data/${MODEL_TYPE}/${MODEL_ID}/live`;
+  const dead = `data/${MODEL_TYPE}/${MODEL_ID}/dead`;
+  const kept = (_ns: string, key: string) => key.startsWith(live);
+  const scope = new RecoveryScope(kept, (_ns, key) => key.startsWith(dead));
+  scope.addRemoval("", `${live}/1/raw`, "/c/live-raw");
+  scope.addKeyToCheck("", `${live}/latest`);
+  assertEquals(scope.removals(), []);
+  assertEquals(scope.keysToCheck(), []);
+  assertEquals(scope.leftToLiveWriters, false, "the live writer's own work");
+  scope.addRemoval("", `${dead}/2/raw`, "/c/dead-raw");
+  assertEquals(scope.leftToLiveWriters, false, "not covered by a live writer");
+  assertEquals(scope.removals().length, 1);
+
+  const overlapping = new RecoveryScope(
+    (_ns, key) => key.startsWith(dead),
+    (_ns, key) => key.startsWith(dead),
+  );
+  overlapping.addRemoval("", `${dead}/2/raw`, "/c/dead-raw");
+  assertEquals(overlapping.removals(), []);
+  assertEquals(
+    overlapping.leftToLiveWriters,
+    true,
+    "the interrupted writer's file sits where a live writer journaled",
+  );
+});
+
+Deno.test("RecoveryScope: a name any writer may have changed is skipped quietly when a live writer covers it", () => {
+  const name = {
+    namespace: "",
+    type: MODEL_TYPE,
+    modelId: MODEL_ID,
+    name: "shared",
+  };
+  const covered = () => true;
+  const others = new RecoveryScope(covered, covered);
+  assertEquals(others.addName(name, { others: true }), true);
+  assertEquals(others.names(), []);
+  assertEquals(others.leftToLiveWriters, false);
+
+  const own = new RecoveryScope(covered, covered);
+  assertEquals(own.addName(name), true);
+  assertEquals(own.names(), []);
+  assertEquals(own.leftToLiveWriters, true);
+});
