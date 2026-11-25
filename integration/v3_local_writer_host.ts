@@ -425,7 +425,7 @@ export const localWriterHost: ProcessHost<
   async function plantGoneLock(
     request: Extract<LocalWriterRequest, { kind: "plantGoneLock" }>,
   ): Promise<void> {
-    const config = context.datastoreConfig;
+    const config = datastoreConfig;
     if (isCustomDatastoreConfig(config)) {
       throw new Error("a local writer host runs on a filesystem datastore");
     }
