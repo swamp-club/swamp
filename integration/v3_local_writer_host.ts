@@ -30,7 +30,10 @@ import {
 } from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
 import { endWriterInstanceForTesting } from "../src/infrastructure/datastore_v3/writer_instance.ts";
 import { isCustomDatastoreConfig } from "../src/domain/datastore/datastore_config.ts";
-import { runInRootUnitOfWork } from "../src/infrastructure/persistence/repo_unit_of_work.ts";
+import {
+  checkpointOpenUnitOfWork,
+  runInRootUnitOfWork,
+} from "../src/infrastructure/persistence/repo_unit_of_work.ts";
 import type { ProcessHost } from "./process_host.ts";
 
 export type LocalWriterRequest =
@@ -44,6 +47,8 @@ export type LocalWriterRequest =
     readonly pause?: boolean;
     /** under the behavior's own lock, as a method run takes it */
     readonly lock?: boolean;
+    /** saved, committed by a checkpoint, then saved again in the same unit */
+    readonly checkpointed?: boolean;
   }
   | { readonly kind: "resume"; readonly id: string }
   /** catches every handle of the checkout up, as a reader's command does */
@@ -107,33 +112,42 @@ export const localWriterHost: ProcessHost<
         { flush: undefined },
         async () => {
           const model = await definitionOf(request.model);
-          const latest = await context.repoContext.unifiedDataRepo.getContent(
-            type,
-            model.id,
-            request.data,
-          );
-          count = latest === null
-            ? 1
-            : (JSON.parse(new TextDecoder().decode(latest)).count as number) +
-              1;
-          const data = Data.create({
-            name: request.data,
-            contentType: "application/json",
-            lifetime: "infinite",
-            garbageCollection: 1000,
-            tags: { type: "resource", modelName: model.name },
-            ownerDefinition: {
-              ownerType: "model-method",
-              ownerRef: `${type.normalized}:${model.id}`,
-            },
-          });
-          const saved = await context.repoContext.unifiedDataRepo.save(
-            type,
-            model.id,
-            data,
-            new TextEncoder().encode(JSON.stringify({ by: request.id, count })),
-          );
-          version = saved.version;
+          const saveOnce = async () => {
+            const latest = await context.repoContext.unifiedDataRepo.getContent(
+              type,
+              model.id,
+              request.data,
+            );
+            count = latest === null
+              ? 1
+              : (JSON.parse(new TextDecoder().decode(latest)).count as number) +
+                1;
+            const data = Data.create({
+              name: request.data,
+              contentType: "application/json",
+              lifetime: "infinite",
+              garbageCollection: 1000,
+              tags: { type: "resource", modelName: model.name },
+              ownerDefinition: {
+                ownerType: "model-method",
+                ownerRef: `${type.normalized}:${model.id}`,
+              },
+            });
+            const saved = await context.repoContext.unifiedDataRepo.save(
+              type,
+              model.id,
+              data,
+              new TextEncoder().encode(
+                JSON.stringify({ by: request.id, count }),
+              ),
+            );
+            version = saved.version;
+          };
+          await saveOnce();
+          if (request.checkpointed === true) {
+            await checkpointOpenUnitOfWork(context.repoContext);
+            await saveOnce();
+          }
           if (request.pause === true) {
             const resumed = new Promise<void>((resolve) =>
               resumes.set(request.id, resolve)

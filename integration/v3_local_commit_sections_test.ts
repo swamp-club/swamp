@@ -337,20 +337,15 @@ Deno.test({
         const type = repos.modelType.normalized;
         await opened(reader, repos.repoA, type);
         await opened(writer, repos.repoA, type);
-        writer.send({
-          kind: "write",
-          id: "v1",
-          model: "m",
-          data: "d-w",
-          lock: true,
-        });
-        assertEquals(await written(writer, "v1"), 1);
+        // v1 is committed by a checkpoint of the unit that then stages v2, as
+        // a workflow's step checkpoint is
         writer.send({
           kind: "write",
           id: "v2",
           model: "m",
           data: "d-w",
           lock: true,
+          checkpointed: true,
           pause: true,
         });
         await writer.seen((m) => "paused" in m, "v2 staged");
@@ -374,6 +369,17 @@ Deno.test({
     });
   },
 });
+
+function touchedScopesIn(repoDir: string): string[] {
+  const db = new DatabaseSync(v3CatalogPath(repoDir));
+  try {
+    return (db.prepare("SELECT scope FROM catalog_touched").all() as {
+      scope: string;
+    }[]).map((row) => row.scope);
+  } finally {
+    db.close();
+  }
+}
 
 /** as a checkout tracking its writes long before any writer started */
 function backdateTracking(repoDir: string): void {
@@ -469,6 +475,10 @@ Deno.test({
           "the live writer's staged v1 survived the recovery",
         );
         assertEquals(await latestOf(repos.repoA, "d-l"), "1");
+        assert(
+          touchedScopesIn(repos.repoA).some((scope) => scope.includes("/d-l")),
+          "the live writer's journaled scopes are kept for its own recovery",
+        );
         live.send({ kind: "resume", id: "l1" });
         assertEquals(await written(live, "l1"), 1);
         await closed(live);
