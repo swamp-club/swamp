@@ -621,11 +621,33 @@ Deno.test("resource size: select content refuses a page of bodies each under the
       ResourceTooLargeToLoadError,
     );
     assertStringIncludes(pageError.message, "this read already holds");
-    assertStringIncludes(pageError.message, "a smaller --limit");
-    assertThrows(
-      () => dqs.querySync(NOTES, { select: "content" }),
+    // a caller with no limit, such as CEL data.query, names no flag
+    assertStringIncludes(
+      pageError.message,
+      "Read fewer items at once, or list the largest",
+    );
+    assert(!pageError.message.includes("smaller --limit"));
+    const limited = await assertRejects(
+      () =>
+        dqs.query(NOTES, {
+          select: "content",
+          pageRemedy: "read fewer items at once, with a smaller --limit",
+        }),
       ResourceTooLargeToLoadError,
     );
+    assertStringIncludes(
+      limited.message,
+      "Read fewer items at once, with a smaller --limit, or list",
+    );
+    const sync = assertThrows(
+      () =>
+        dqs.querySync(NOTES, {
+          select: "content",
+          pageRemedy: "read fewer items at once, with a smaller --limit",
+        }),
+      ResourceTooLargeToLoadError,
+    );
+    assertStringIncludes(sync.message, "with a smaller --limit");
   }, nearlyFull);
 });
 

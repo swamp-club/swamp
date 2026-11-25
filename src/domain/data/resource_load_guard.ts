@@ -639,8 +639,8 @@ export class ResourceLoadGuard {
 
   /**
    * parsed is priced by its JSON structure, split by its line estimate, which
-   * also stands in for the bytes at the floor; a split refusal names its remedy
-   * even with nothing held
+   * also stands in for the bytes at the floor; with nothing held, a split
+   * refusal names its remedy only when the lines, not the decode, tipped it
    */
   #memoryRefusal(
     item: LoadedItemRef,
@@ -682,7 +682,8 @@ export class ResourceLoadGuard {
       "memory",
       heldBytes > 0
         ? { heldBytes, ...(remedy ? { remedy } : {}) }
-        : split !== undefined && remedy
+        : split !== undefined && remedy &&
+            used + bytes * DECODED_HEAP_FACTOR <= limit
         ? { remedy }
         : {},
     );

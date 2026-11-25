@@ -841,3 +841,21 @@ Deno.test("ResourceLoadGuard.splitRefusalFor: content under the floor whose line
     undefined,
   );
 });
+
+Deno.test("ResourceLoadGuard.splitRefusalFor: with nothing held, names its remedy only when the lines tipped it, and always with held bytes", () => {
+  const remedy = "pass --tail to read only the last lines";
+  // 200 bytes of short lines: the decode (600) fits a 1000-byte heap, the lines do not
+  const shortLines = encode("a\n".repeat(100));
+  const tipped = new ResourceLoadGuard(probe(1000, 0), 50, 10_000)
+    .splitRefusalFor(item, shortLines, 0, remedy);
+  assertEquals(tipped?.detail, { remedy });
+  // 400 bytes on one line: the decode alone (1200) passes the heap
+  const oneLine = encode("x".repeat(400));
+  const decoded = new ResourceLoadGuard(probe(1000, 0), 50, 10_000)
+    .splitRefusalFor(item, oneLine, 0, remedy);
+  assertInstanceOf(decoded, ResourceTooLargeToLoadError);
+  assertEquals(decoded.detail, {});
+  const held = new ResourceLoadGuard(probe(1000, 0), 50, 10_000)
+    .splitRefusalFor(item, oneLine, 10, remedy);
+  assertEquals(held?.detail, { heldBytes: 10, remedy });
+});

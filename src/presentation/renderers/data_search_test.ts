@@ -65,19 +65,31 @@ Deno.test("createDataSearchRenderer: non-interactive log lists every result the 
   assertEquals(lines[2], "data: 2");
 });
 
-Deno.test("truncationNote: says a preview shows only the start, and nothing for a whole body", () => {
-  assertEquals(truncationNote({ content: "x", contentPath: "p" }), undefined);
-  const note = truncationNote({
+Deno.test("truncationNote: says a preview shows only the start and gives the data get command, quoted", () => {
+  const plain = item("notes");
+  assertEquals(
+    truncationNote(plain, { content: "x", contentPath: "p" }),
+    undefined,
+  );
+  const note = truncationNote(plain, {
     content: "x",
     contentPath: "p",
     truncatedFrom: 3 * 1024 * 1024,
   });
   assertStringIncludes(note ?? "", "preview shows the start of 3");
-  assertStringIncludes(note ?? "", "swamp data get");
-  const unsized = truncationNote({
+  assertStringIncludes(
+    note ?? "",
+    `read it all with swamp data get ${plain.modelName} notes)`,
+  );
+  const spaced = { ...item("my notes"), modelName: "it's mine" };
+  const unsized = truncationNote(spaced, {
     content: "x",
     contentPath: "p",
     truncatedFrom: 0,
   });
   assertStringIncludes(unsized ?? "", "only the start of the body");
+  assertStringIncludes(
+    unsized ?? "",
+    `swamp data get 'it'"'"'s mine' 'my notes')`,
+  );
 });
