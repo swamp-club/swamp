@@ -18,8 +18,16 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import type { LiveDataVersion } from "./catalog_projection.ts";
-import { type CatalogNameState, EMPTY_CATALOG_NAME } from "./catalog_state.ts";
+import {
+  liveAfter,
+  type LiveDataVersion,
+  type LiveVersionChanges,
+} from "./catalog_projection.ts";
+import {
+  type CatalogNameChange,
+  type CatalogNameState,
+  EMPTY_CATALOG_NAME,
+} from "./catalog_state.ts";
 import {
   type BaseRecord,
   type CompactedBaseWriter,
@@ -63,20 +71,61 @@ class MemoryBase implements CompactedBaseWriter {
   liveVersions(ns: string, p: string, name: string) {
     return this.versions.get(`${ns}|${p}|${name}`) ?? [];
   }
-  setLiveVersions(
+  greatestLiveVersion(
     ns: string,
     p: string,
     name: string,
-    versions: readonly LiveDataVersion[],
+    excluding: ReadonlySet<number>,
+  ): LiveDataVersion | undefined {
+    return this.liveVersions(ns, p, name)
+      .filter((v) => !excluding.has(v.version))
+      .at(-1);
+  }
+  applyLiveVersions(
+    ns: string,
+    p: string,
+    name: string,
+    changes: LiveVersionChanges,
   ): void {
+    const versions = liveAfter(this.liveVersions(ns, p, name), changes);
     if (versions.length === 0) this.versions.delete(`${ns}|${p}|${name}`);
     else this.versions.set(`${ns}|${p}|${name}`, versions);
   }
   catalogName(ns: string, p: string, name: string): CatalogNameState {
     return this.catalog.get(`${ns}|${p}|${name}`) ?? EMPTY_CATALOG_NAME;
   }
-  setCatalogName(ns: string, p: string, name: string, state: CatalogNameState) {
-    this.catalog.set(`${ns}|${p}|${name}`, state);
+  greatestCatalogRow(
+    ns: string,
+    p: string,
+    name: string,
+    excluding: ReadonlySet<number>,
+  ): number | undefined {
+    return this.catalogName(ns, p, name).rows
+      .map((row) => row.version)
+      .filter((version) => !excluding.has(version))
+      .at(-1);
+  }
+  catalogRow(ns: string, p: string, name: string, version: number) {
+    return this.catalogName(ns, p, name).rows.find((row) =>
+      row.version === version
+    );
+  }
+  catalogForward(ns: string, p: string, name: string) {
+    return this.catalogName(ns, p, name).forward;
+  }
+  applyCatalogChange(
+    ns: string,
+    p: string,
+    name: string,
+    change: CatalogNameChange,
+  ): void {
+    const kept = change.cleared ? [] : this.catalogName(ns, p, name).rows
+      .filter((row) =>
+        !change.removed.has(row.version) && !change.put.has(row.version)
+      );
+    const rows = [...kept, ...[...change.put.values()].map((p) => p.metadata)]
+      .sort((a, b) => a.version - b.version);
+    this.catalog.set(`${ns}|${p}|${name}`, { rows, forward: change.forward });
   }
   fileOwnership(ns: string, key: string) {
     return this.files.get(`${ns}|${key}`);

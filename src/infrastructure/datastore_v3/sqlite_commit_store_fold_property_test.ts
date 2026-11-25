@@ -20,16 +20,23 @@
 import { assert, assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import fc from "fast-check";
-import type { LiveDataVersion } from "../../domain/datastore_v3/catalog_projection.ts";
-import type { CatalogNameState } from "../../domain/datastore_v3/catalog_state.ts";
+import {
+  greatestLiveIn,
+  liveAfter,
+  type LiveDataVersion,
+  projectCatalog,
+} from "../../domain/datastore_v3/catalog_projection.ts";
+import {
+  type CatalogNameState,
+  foldCatalogActions,
+} from "../../domain/datastore_v3/catalog_state.ts";
 import type { Commit } from "../../domain/datastore_v3/commit.ts";
 import type { PartitionBaseRows } from "../../domain/datastore_v3/commit_store.ts";
 import {
-  type CompactedBaseWriter,
-  foldCommit,
-} from "../../domain/datastore_v3/compaction.ts";
-import type { FileOwnership } from "../../domain/datastore_v3/materialisation.ts";
-import { dataVersionOp, type Op } from "../../domain/datastore_v3/op.ts";
+  dataVersionOp,
+  type Op,
+  tombstoneOp,
+} from "../../domain/datastore_v3/op.ts";
 import { CommitRejectedError } from "../../domain/datastore_v3/partition.ts";
 import { RecordKey } from "../../domain/datastore_v3/record_key.ts";
 import {
@@ -38,6 +45,7 @@ import {
   MODEL_ID,
   MODEL_TYPE,
   modelCommit,
+  modelIntent,
   modelPartition,
   savePut,
 } from "../../domain/datastore_v3/v3_test_helpers.ts";
@@ -65,6 +73,11 @@ const arbOp = fc.oneof(
     name: fc.constantFrom(...NAMES),
     version: fc.integer({ min: 1, max: 4 }),
   }),
+  // a retention expiry: the whole name, with no version
+  fc.record({
+    kind: fc.constant("expire" as const),
+    name: fc.constantFrom(...NAMES),
+  }),
 );
 
 const arbStep = fc.oneof(
@@ -88,6 +101,14 @@ type OpSpec = typeof arbOp extends fc.Arbitrary<infer T> ? T : never;
 
 async function buildOps(spec: OpSpec): Promise<Op[]> {
   if (spec.kind === "delete") return [deleteVersion(spec.name, spec.version)];
+  if (spec.kind === "expire") {
+    return [tombstoneOp({
+      intent: modelIntent({ kind: "data.gc", name: spec.name }),
+      key: RecordKey.create(
+        `data/${MODEL_TYPE.normalized}/${MODEL_ID}/${spec.name}/latest`,
+      ),
+    })];
+  }
   const base = metadata(spec.name, spec.version) as Record<string, unknown>;
   const recorded = spec.kind === "marker"
     ? {
@@ -112,47 +133,23 @@ async function buildOps(spec: OpSpec): Promise<Op[]> {
     : [record];
 }
 
-/** reference fold: every set replaces the name's whole state */
-class RewritingBase implements CompactedBaseWriter {
+/** the reference: every commit replaces each touched name's whole state */
+class RewritingBase {
   readonly versions = new Map<string, readonly LiveDataVersion[]>();
   readonly catalog = new Map<string, CatalogNameState>();
-  readonly #files = new Map<string, FileOwnership>();
 
-  atCommit(): void {}
-  putRecord(): void {}
-  deleteRecord(): void {}
-  liveVersions(_ns: string, _p: string, name: string) {
-    return this.versions.get(name) ?? [];
+  fold(commit: Commit): void {
+    const versionsOf = (name: string) => this.versions.get(name) ?? [];
+    const projection = projectCatalog(commit.ops, greatestLiveIn(versionsOf));
+    const catalog = foldCatalogActions(
+      projection.actions,
+      (name) => this.catalog.get(name) ?? { rows: [], forward: undefined },
+    );
+    for (const [name, changes] of projection.versions) {
+      this.versions.set(name, liveAfter(versionsOf(name), changes));
+    }
+    for (const [name, state] of catalog) this.catalog.set(name, state);
   }
-  setLiveVersions(
-    _ns: string,
-    _p: string,
-    name: string,
-    versions: readonly LiveDataVersion[],
-  ): void {
-    this.versions.set(name, versions);
-  }
-  catalogName(_ns: string, _p: string, name: string): CatalogNameState {
-    return this.catalog.get(name) ?? { rows: [], forward: undefined };
-  }
-  setCatalogName(
-    _ns: string,
-    _p: string,
-    name: string,
-    state: CatalogNameState,
-  ): void {
-    this.catalog.set(name, state);
-  }
-  fileOwnership(_ns: string, key: string): FileOwnership | undefined {
-    return this.#files.get(key);
-  }
-  setFileOwnership(_ns: string, key: string, ownership: FileOwnership): void {
-    this.#files.set(key, ownership);
-  }
-  hasPresentFileUnder(): boolean {
-    return false;
-  }
-  setCompactedSeq(): void {}
 }
 
 /** versions, catalog rows (with the metadata a reader is sent) and forwards, by row key */
@@ -224,7 +221,12 @@ function applied(start: BaseView, difference: PartitionBaseRows): BaseView {
 }
 
 Deno.test("SqliteCommitStore fold: a fold that writes only what each commit changed leaves the base a full rewrite would, and every difference since a fold brings that fold's base to the head (swamp-club#4981)", async () => {
-  const coverage = { metadataChanged: 0, readded: 0, differences: 0 };
+  const coverage = {
+    metadataChanged: 0,
+    readded: 0,
+    differences: 0,
+    expired: 0,
+  };
   const dir = await Deno.makeTempDir();
   try {
     await fc.assert(
@@ -268,6 +270,10 @@ Deno.test("SqliteCommitStore fold: a fold that writes only what each commit chan
               }
               commits.push(commit);
               for (const op of step.ops) {
+                if (op.kind === "expire") {
+                  coverage.expired++;
+                  continue;
+                }
                 const key = `${op.name}@${op.version}`;
                 if (op.kind === "delete") {
                   deleted.add(key);
@@ -284,9 +290,7 @@ Deno.test("SqliteCommitStore fold: a fold that writes only what each commit chan
             }
             if (commits.length === 0) return;
             await fold(3);
-            commits.forEach((commit, i) =>
-              foldCommit(reference, commit, i + 1, new Set())
-            );
+            for (const commit of commits) reference.fold(commit);
             const head = folds[folds.length - 1].view;
             assertEquals(sorted(head), sorted(referenceView(reference)));
             for (const { seq, view } of folds) {
@@ -318,4 +322,5 @@ Deno.test("SqliteCommitStore fold: a fold that writes only what each commit chan
   );
   assert(coverage.readded > 0, "no version was deleted and recorded again");
   assert(coverage.differences > 0, "no difference was read");
+  assert(coverage.expired > 0, "no name expired");
 });

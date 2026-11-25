@@ -19,12 +19,11 @@
 
 import type { BlobRef } from "./blob_ref.ts";
 import {
-  greatestLiveIn,
-  liveAfter,
   type LiveDataVersion,
+  type LiveVersionChanges,
   projectCatalog,
 } from "./catalog_projection.ts";
-import { type CatalogNameState, foldCatalogActions } from "./catalog_state.ts";
+import { type CatalogNameChange, foldCatalogChanges } from "./catalog_state.ts";
 import type { Commit } from "./commit.ts";
 import type { FileAccess } from "./file_access.ts";
 import {
@@ -57,27 +56,41 @@ export interface CompactedBaseWriter {
     record: BaseRecord,
   ): void;
   deleteRecord(namespace: string, partition: string, key: string): void;
-  liveVersions(
+  greatestLiveVersion(
     namespace: string,
     partition: string,
     name: string,
-  ): readonly LiveDataVersion[];
-  setLiveVersions(
+    excluding: ReadonlySet<number>,
+  ): LiveDataVersion | undefined;
+  applyLiveVersions(
     namespace: string,
     partition: string,
     name: string,
-    versions: readonly LiveDataVersion[],
+    changes: LiveVersionChanges,
   ): void;
-  catalogName(
+  greatestCatalogRow(
     namespace: string,
     partition: string,
     name: string,
-  ): CatalogNameState;
-  setCatalogName(
+    excluding: ReadonlySet<number>,
+  ): number | undefined;
+  catalogRow(
     namespace: string,
     partition: string,
     name: string,
-    state: CatalogNameState,
+    version: number,
+  ): LiveDataVersion["metadata"] | undefined;
+  catalogForward(
+    namespace: string,
+    partition: string,
+    name: string,
+  ): string | undefined;
+  /** after the commit's live versions, so its rows can be checked against them */
+  applyCatalogChange(
+    namespace: string,
+    partition: string,
+    name: string,
+    change: CatalogNameChange,
   ): void;
   fileOwnership(namespace: string, key: string): FileOwnership | undefined;
   setFileOwnership(
@@ -89,7 +102,10 @@ export interface CompactedBaseWriter {
   setCompactedSeq(namespace: string, partition: string, seq: number): void;
 }
 
-/** commits must be folded in feed order, each once */
+/**
+ * commits must be folded in feed order, each once; a fold reads and writes only
+ * the rows its commit changes, so its cost never grows with a name's history
+ */
 export function foldCommit(
   base: CompactedBaseWriter,
   commit: Commit,
@@ -134,26 +150,26 @@ export function foldCommit(
       base.setFileOwnership(namespace, key, decision.next);
     }
   }
-  const versionsOf = (name: string) =>
-    base.liveVersions(namespace, partition, name);
-  const projection = projectCatalog(commit.ops, greatestLiveIn(versionsOf));
-  // Read every name's catalog state as it was before the commit, then write
+  const projection = projectCatalog(
+    commit.ops,
+    (name, excluding) =>
+      base.greatestLiveVersion(namespace, partition, name, excluding),
+  );
+  // Read every name's catalog rows as they were before the commit, then write
   // the live versions, then the catalog: a store may keep catalog rows as
   // references to live versions.
-  const catalog = foldCatalogActions(
-    projection.actions,
-    (name) => base.catalogName(namespace, partition, name),
-  );
+  const catalog = foldCatalogChanges(projection.actions, {
+    greatestRow: (name, excluding) =>
+      base.greatestCatalogRow(namespace, partition, name, excluding),
+    row: (name, version) =>
+      base.catalogRow(namespace, partition, name, version),
+    forward: (name) => base.catalogForward(namespace, partition, name),
+  });
   for (const [name, changes] of projection.versions) {
-    base.setLiveVersions(
-      namespace,
-      partition,
-      name,
-      liveAfter(versionsOf(name), changes),
-    );
+    base.applyLiveVersions(namespace, partition, name, changes);
   }
-  for (const [name, state] of catalog) {
-    base.setCatalogName(namespace, partition, name, state);
+  for (const [name, change] of catalog) {
+    base.applyCatalogChange(namespace, partition, name, change);
   }
   base.setCompactedSeq(namespace, partition, commit.seq);
 }
