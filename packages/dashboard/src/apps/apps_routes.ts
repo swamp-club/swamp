@@ -17,7 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { appsBaseFor, PAGE_WORKSPACE } from "../client/workspace_path.ts";
+import {
+  appsBaseFor,
+  dashboardBaseFor,
+  PAGE_WORKSPACE,
+  workspaceFromPath,
+} from "../client/workspace_path.ts";
 
 /** Where this page's apps live: `/apps`, or a local workspace's. */
 export const APPS_BASE = appsBaseFor(PAGE_WORKSPACE);
@@ -69,4 +74,27 @@ export function appPagePath(
 ): string {
   const page = `${base}/${name}`;
   return path === "/" ? page : `${page}${path}`;
+}
+
+/** The dashboard page the viewer came from, or the dashboard's home. */
+export function dashboardReturnPath(
+  referrer: string,
+  origin: string,
+  workspace: string | null = PAGE_WORKSPACE,
+): string {
+  const base = dashboardBaseFor(workspace);
+  let url: URL;
+  try {
+    url = new URL(referrer);
+  } catch {
+    return base;
+  }
+  const path = url.pathname;
+  if (url.origin !== origin) return base;
+  if (path !== base && !path.startsWith(`${base}/`)) return base;
+  // serve's /dashboard is a prefix of every workspace's /dashboard/w/<name>
+  if (workspaceFromPath(path) !== workspace) return base;
+  // a dashboard app address hands off to /apps, so returning there loops back
+  if (path.startsWith(`${base}/apps/`)) return base;
+  return `${path}${url.search}`;
 }

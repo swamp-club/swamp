@@ -17,6 +17,9 @@ the dashboard's theme, shadcn components and d3 chart examples.
 share its sign-in and broker. Hosting them apart from the dashboard
 changes nothing about the sandbox: the iframe stays, because app code on the
 session's origin could act as whoever is signed in.
+The apps header, which the dashboard owns outside the sandbox, links back to
+the dashboard page the viewer came from (or the dashboard's home when that is
+unknown), and its Apps logo to the list of apps.
 
 ## Why this shape
 
