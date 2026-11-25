@@ -7383,3 +7383,65 @@ Deno.test("DataQueryService: select content refuses an oversized solo-namespace 
 
   catalog.close();
 });
+
+Deno.test("DataQueryService: select content refuses a foreign text body past the text-length limit before it is fetched", async () => {
+  let fetched = 0;
+  using t = setupForeignTest(
+    soloReadingFetcher(() => {
+      fetched++;
+      return Promise.resolve(new TextEncoder().encode("x".repeat(500)));
+    }),
+    "alpha",
+    new ResourceLoadGuard(
+      {
+        heapLimitBytes: () => 1_000_000,
+        heapUsedBytes: () => 0,
+      },
+      50,
+      400,
+    ),
+  );
+  const { catalog, service } = t;
+  catalog.upsert(foreignRow({
+    namespace: "",
+    content_type: "text/plain",
+    size: 500,
+  }));
+
+  const error = await assertRejects(
+    () => service.query('ns == ""', { select: "content" }),
+    ResourceTooLargeToLoadError,
+    "scanner/results@v1",
+  );
+  assertEquals(error.reason, "text-length");
+  assertEquals(fetched, 0);
+
+  catalog.close();
+});
+
+Deno.test("DataQueryService: select content counts the fetched bytes of foreign JSON toward the page, not the recorded size", async () => {
+  const body = jsonBytes({ a: "x".repeat(20) });
+  using t = setupForeignTest(
+    soloReadingFetcher(() => Promise.resolve(body)),
+    "alpha",
+    new ResourceLoadGuard({
+      heapLimitBytes: () => 1000,
+      heapUsedBytes: () => 920,
+    }, 50),
+  );
+  const { catalog, service } = t;
+  catalog.upsert(foreignRow({ namespace: "", data_name: "one", size: 0 }));
+  catalog.upsert(foreignRow({ namespace: "", data_name: "two", size: 0 }));
+
+  assert(body.length < 50 && body.length * 2 >= 50);
+  assertEquals(
+    await service.query('ns == "" && name == "one"', { select: "content" }),
+    [{ a: "x".repeat(20) }],
+  );
+  await assertRejects(
+    () => service.query('ns == ""', { select: "content" }),
+    ResourceTooLargeToLoadError,
+  );
+
+  catalog.close();
+});

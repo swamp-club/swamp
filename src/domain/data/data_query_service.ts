@@ -746,14 +746,21 @@ export class DataQueryService {
     record: DataRecord,
     heldBytes: number,
   ): Promise<Uint8Array | null> {
+    if (
+      !this.dataRepo.fetchForeignContent ||
+      !isForeignNamespace(record.namespace, this.dataRepo)
+    ) return null;
     const guard = resourceLoadGuardOf(this.dataRepo);
     const item = loadedItemOf(record);
-    // past the text-length limit the decode fails by name with its own code,
-    // as fromRow's does, so only a memory refusal is raised here
+    const isJson = record.contentType === "application/json";
+    // JSON past the text-length limit keeps the decode's own error code, as
+    // fromRow's does, so it is fetched and refused there
     const sizeRefusal = guard.refusalFor(item, record.size ?? 0, heldBytes);
-    if (sizeRefusal?.reason === "memory") throw sizeRefusal;
+    if (sizeRefusal && (sizeRefusal.reason === "memory" || !isJson)) {
+      throw sizeRefusal;
+    }
     const bytes = await this.foreignContent(record);
-    if (bytes && record.contentType === "application/json") {
+    if (bytes && isJson) {
       const refusal = guard.parseRefusalFor(item, bytes, heldBytes);
       if (refusal?.reason === "memory") throw refusal;
     }
@@ -1836,7 +1843,7 @@ export class DataQueryService {
     }
   }
 
-  /** bytes of an already-parsed record or a decoded body the page now holds */
+  /** a string body counts its length, parsed attributes their recorded size */
   private heldBy(record: DataRecord, projected: ProjectedContent): number {
     if (projected.content === null) return 0;
     return typeof projected.content === "string"
@@ -1906,9 +1913,13 @@ export class DataQueryService {
     if (!readsContent) return undefined;
     const contents = new Map<DataRecord, ProjectedContent>();
     let heldBytes = 0;
-    const hold = (record: DataRecord, projected: ProjectedContent) => {
+    const hold = (
+      record: DataRecord,
+      projected: ProjectedContent,
+      held = this.heldBy(record, projected),
+    ) => {
       contents.set(record, projected);
-      heldBytes += this.heldBy(record, projected);
+      heldBytes += held;
     };
     for (const record of records) {
       // Only a v3 checkout reads another namespace's body from local disk;
@@ -1917,7 +1928,11 @@ export class DataQueryService {
         this.dataRepo.fetchForeignContent?.readsSoloNamespace === true &&
         isForeignNamespace(record.namespace, this.dataRepo)
       ) {
-        hold(record, await this.projectedForeignContent(record, heldBytes));
+        const { projected, held } = await this.projectedForeignContent(
+          record,
+          heldBytes,
+        );
+        hold(record, projected, held);
         continue;
       }
       const known = this.projectedContentWithoutBytes(record);
@@ -1951,26 +1966,40 @@ export class DataQueryService {
     return contents;
   }
 
+  /**
+   * held counts the fetched bytes, not the other namespace's recorded size,
+   * which a reader cannot trust to bound what the page holds
+   */
   private async projectedForeignContent(
     record: DataRecord,
     heldBytes: number,
-  ): Promise<ProjectedContent> {
+  ): Promise<{ projected: ProjectedContent; held: number }> {
     if (
       record.contentType === "application/json" &&
       Object.keys(record.attributes).length > 0
     ) {
-      return { content: record.attributes, contentEncoding: "utf-8" };
+      const projected: ProjectedContent = {
+        content: record.attributes,
+        contentEncoding: "utf-8",
+      };
+      return { projected, held: record.size ?? 0 };
     }
     const bytes = await this.guardedForeignContent(record, heldBytes);
     if (bytes && record.contentType === "application/json") {
       const text = decodeRecordContent(bytes, recordIdentity(record));
+      let content: unknown;
       try {
-        return { content: JSON.parse(text), contentEncoding: "utf-8" };
+        content = JSON.parse(text);
       } catch {
-        return { content: {}, contentEncoding: "utf-8" };
+        content = {};
       }
+      return {
+        projected: { content, contentEncoding: "utf-8" },
+        held: bytes.length,
+      };
     }
-    return this.encodeProjected(record, bytes, heldBytes);
+    const projected = this.encodeProjected(record, bytes, heldBytes);
+    return { projected, held: this.heldBy(record, projected) };
   }
 
   private rowToRecord(
