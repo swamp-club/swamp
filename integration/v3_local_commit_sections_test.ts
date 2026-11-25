@@ -906,8 +906,8 @@ Deno.test({
   },
 });
 
-/** the datastore sync coordinator's key for the global lock */
-const GLOBAL_LOCK_RESOURCE = "__global__";
+/** the global lock's file, which its wait names as the resource */
+const GLOBAL_LOCK_FILE = ".datastore.lock";
 
 async function waitingOnGlobalLock(writer: Writer): Promise<void> {
   const phases = () => writer.messages.filter((m) => "phase" in m);
@@ -922,7 +922,7 @@ async function waitingOnGlobalLock(writer: Writer): Promise<void> {
     if (
       last !== undefined && "phase" in last &&
       last.phase === "waiting_for_lock" &&
-      last.resource === GLOBAL_LOCK_RESOURCE
+      last.resource?.endsWith(GLOBAL_LOCK_FILE) === true
     ) {
       return;
     }
