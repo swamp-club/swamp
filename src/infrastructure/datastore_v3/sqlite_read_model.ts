@@ -3941,12 +3941,11 @@ export class SqliteReadModel implements ReadModel {
     const unreadable: StoredUnreadableRecord[] = [];
     const skipped = new Set<string>();
     const done: LoadKey[] = [];
-    // pooled writes land later: the done list records a file only once the
-    // pool has drained, so it never names one not yet in place
-    const recordDone = async (force: boolean) => {
+    // a file joins the done list only once its own write has landed, pooled or
+    // not, so the list never names one not yet in place
+    const recordDone = (force: boolean) => {
       if (resume === undefined) return;
       if (!force && done.length < LOAD_DONE_FLUSH) return;
-      await this.#drainPool();
       this.#state.markLoadDone(done, resume);
       done.length = 0;
     };
@@ -3963,23 +3962,24 @@ export class SqliteReadModel implements ReadModel {
         signal,
         unreadable,
         skipped,
-        async (key) => {
+        (key) => {
           done.push(key);
-          await recordDone(false);
+          recordDone(false);
         },
       );
       await this.#drainPool();
     } catch (error) {
       // a load cut off keeps what it wrote for the retry; its own error wins
       try {
-        if (await this.#settlePool() === undefined) await recordDone(true);
+        await this.#settlePool();
+        recordDone(true);
       } catch { /* the load's error is the one to report */ }
       throw error;
     } finally {
       await this.#settlePool();
       this.#pool = undefined;
     }
-    await recordDone(true);
+    recordDone(true);
     return result;
   }
 
@@ -3990,7 +3990,7 @@ export class SqliteReadModel implements ReadModel {
     signal: AbortSignal,
     unreadable: StoredUnreadableRecord[],
     skipped: Set<string>,
-    wrote: (key: LoadKey) => Promise<void>,
+    landed: (key: LoadKey) => void,
   ): Promise<{ unreadable: StoredUnreadableRecord[]; skipped: Set<string> }> {
     for (const { namespace, record_key } of removals) {
       signal.throwIfAborted();
@@ -4060,8 +4060,8 @@ export class SqliteReadModel implements ReadModel {
           signal,
           batch,
           source,
+          () => landed({ namespace, record_key }),
         );
-        await wrote({ namespace, record_key });
       } catch (error) {
         if (
           !("blob" in content) || !isChunkError(error) || signal.aborted ||
@@ -4167,12 +4167,14 @@ export class SqliteReadModel implements ReadModel {
     signal: AbortSignal,
     batch: DurableWriteBatch,
     source: ChangeSource,
+    landed?: () => void,
   ): Promise<void> {
     await this.#noteRewriting(key, path);
     const intended = "blob" in content ? content.blob : undefined;
     const keep = async () => {
       // The file stays as it is: nothing under the checkout was replaced.
       this.#rewritten?.delete(key);
+      landed?.();
       if (!batch.syncs) return;
       await this.#syncFile(path);
       batch.touch(dirname(path));
@@ -4228,7 +4230,9 @@ export class SqliteReadModel implements ReadModel {
       const bytes = "inline" in content
         ? decodeBase64(content.inline)
         : pool !== undefined && content.blob.size <= POOLED_BLOB_BYTES
-        ? await new Response(stream).bytes()
+        ? await new Response(
+          stats === undefined ? stream : stats.count(stream!),
+        ).bytes()
         : stream!;
       if (pool !== undefined && bytes instanceof Uint8Array) {
         if (pool.length >= this.#pooledWrites) {
@@ -4242,7 +4246,7 @@ export class SqliteReadModel implements ReadModel {
           done: batch.write(path, bytes, signal, {
             ...(absentDirectories === undefined ? {} : { absentDirectories }),
             ...(content.access === undefined ? {} : { access: content.access }),
-          }).catch((error: unknown) => {
+          }).then(() => landed?.(), (error: unknown) => {
             this.#poolFailure ??= { error };
           }),
         });
@@ -4261,6 +4265,7 @@ export class SqliteReadModel implements ReadModel {
             ...(content.access === undefined ? {} : { access: content.access }),
           },
         );
+        landed?.();
       }
     } catch (error) {
       // A failed write leaves the file as it was. One that only meant to
