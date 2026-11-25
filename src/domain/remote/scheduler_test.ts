@@ -19,6 +19,7 @@
 
 import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import { FanOutPolicySchema } from "./fan_out.ts";
+import { planBatches } from "./rollout.ts";
 import {
   describePlacement,
   eligibleWorkers,
@@ -679,6 +680,82 @@ Deno.test("planFanOut: a disconnected draining or unverified worker is excluded,
   );
 });
 
+Deno.test("planFanOut: an unverified worker whose probe is pending follows the offline policy, as a disconnected one does", () => {
+  const pool = [
+    poolWorker({ name: "a" }),
+    poolWorker({ name: "b", status: "unverified", verificationPending: true }),
+  ];
+  const member = (offline: "wait" | "skip" | "fail") => {
+    const plan = planFanOut(
+      {},
+      FanOutPolicySchema.parse({ offline }),
+      pool,
+    );
+    if (plan.kind !== "planned") throw new Error("expected a plan");
+    return [plan.members[1].disposition, plan.members[1].reason];
+  };
+  assertEquals(member("wait"), ["waiting", "unverified"]);
+  assertEquals(member("skip"), ["skipped", "unverified"]);
+  assertEquals(member("fail"), ["failed", "unverified"]);
+});
+
+Deno.test("planFanOut: a pending worker that dropped its connection follows the offline policy as disconnected", () => {
+  const pool = [
+    poolWorker({ name: "a" }),
+    poolWorker({
+      name: "b",
+      status: "unverified",
+      connected: false,
+      verificationPending: true,
+    }),
+  ];
+  const member = (offline: "wait" | "skip" | "fail") => {
+    const plan = planFanOut(
+      {},
+      FanOutPolicySchema.parse({ offline }),
+      pool,
+    );
+    if (plan.kind !== "planned") throw new Error("expected a plan");
+    return [plan.members[1].disposition, plan.members[1].reason];
+  };
+  assertEquals(member("wait"), ["waiting", "disconnected"]);
+  assertEquals(member("skip"), ["skipped", "disconnected"]);
+  assertEquals(member("fail"), ["failed", "disconnected"]);
+});
+
+Deno.test("planFanOut: an unverified worker whose probe failed stays excluded, and pending never outranks draining", () => {
+  const pool = [
+    poolWorker({ name: "a" }),
+    poolWorker({ name: "b", status: "unverified", verificationPending: false }),
+    poolWorker({ name: "c", status: "draining", verificationPending: true }),
+  ];
+  const plan = planFanOut({}, defaultPolicy, pool);
+  if (plan.kind !== "planned") throw new Error("expected a plan");
+  assertEquals(
+    plan.members.slice(1).map((m) => [m.worker, m.disposition, m.reason]),
+    [["b", "excluded", "unverified"], ["c", "excluded", "draining"]],
+  );
+});
+
+Deno.test("planFanOut: a pending worker's waiting lane counts toward minWorkers and runs after the dispatch lanes", () => {
+  const pool = [
+    poolWorker({ name: "a", status: "unverified", verificationPending: true }),
+    poolWorker({ name: "b" }),
+  ];
+  const plan = planFanOut(
+    {},
+    FanOutPolicySchema.parse({ minWorkers: 2 }),
+    pool,
+  );
+  if (plan.kind !== "planned") throw new Error("expected a plan");
+  assertEquals(plan.plannedLanes, 2);
+  assertEquals(planBatches(plan.members), [["b", "a"]]);
+  assertEquals(
+    planBatches(plan.members, { batches: [1, "100%"] }),
+    [["b"], ["a"]],
+  );
+});
+
 Deno.test("planFanOut: platform selector uses the scheduler's platform/arch matching", () => {
   const pool = [
     poolWorker({ name: "a", platform: "linux", arch: "aarch64" }),
@@ -776,10 +853,46 @@ Deno.test("laneDispatchVerdict: a worker absent from the pool or disconnected ma
 Deno.test("laneDispatchVerdict: an unverified or draining worker is ineligible, connected or not", () => {
   for (const status of ["unverified", "draining"] as const) {
     for (const connected of [true, false]) {
-      assertEquals(laneDispatchVerdict({ status, connected }), {
-        kind: "ineligible",
-        reason: status,
-      });
+      for (const verificationPending of [undefined, false]) {
+        assertEquals(
+          laneDispatchVerdict({ status, connected, verificationPending }),
+          { kind: "ineligible", reason: status },
+        );
+      }
     }
   }
+});
+
+Deno.test("laneDispatchVerdict: an unverified worker whose verification is pending makes the lane wait, connected or not", () => {
+  for (const connected of [true, false]) {
+    assertEquals(
+      laneDispatchVerdict({
+        status: "unverified",
+        connected,
+        verificationPending: true,
+      }),
+      { kind: "wait" },
+    );
+  }
+});
+
+Deno.test("laneDispatchVerdict: pending verification never holds back a draining worker or changes a verified one", () => {
+  for (const connected of [true, false]) {
+    assertEquals(
+      laneDispatchVerdict({
+        status: "draining",
+        connected,
+        verificationPending: true,
+      }),
+      { kind: "ineligible", reason: "draining" },
+    );
+  }
+  assertEquals(
+    laneDispatchVerdict({
+      status: "idle",
+      connected: true,
+      verificationPending: true,
+    }),
+    { kind: "dispatch" },
+  );
 });

@@ -596,6 +596,15 @@ export interface ModelOutputDataPayload {
   version?: number;
 }
 
+/** the CLI's own model.output.data; the published client never sends inParts */
+export interface ModelOutputDataInPartsPayload extends ModelOutputDataPayload {
+  /**
+   * answer with the output's value as JSON text in model.output.data.part frames
+   * before the reply; a serve that predates it drops the key and replies whole
+   */
+  inParts?: boolean;
+}
+
 export interface ModelOutputLogsPayload {
   outputIdArg: string;
   tail?: number;
@@ -1695,6 +1704,14 @@ export interface ModelOutputGetResponse {
 
 export interface ModelOutputDataResponse {
   data: Record<string, unknown>;
+  /** set only for inParts: how many parts carried the value's JSON text, its data emptied */
+  dataParts?: number;
+  /** set only for inParts: that text's length in UTF-16 code units */
+  dataLength?: number;
+}
+
+export interface ModelOutputDataPartPayload {
+  content: string;
 }
 
 export interface ModelOutputLogsResponse {
@@ -2537,6 +2554,11 @@ export type ServerMessage =
   }
   | { type: "model.output.get"; id: string; payload: ModelOutputGetResponse }
   | { type: "model.output.data"; id: string; payload: ModelOutputDataResponse }
+  | {
+    type: "model.output.data.part";
+    id: string;
+    payload: ModelOutputDataPartPayload;
+  }
   | { type: "model.output.logs"; id: string; payload: ModelOutputLogsResponse }
   | {
     type: "model.output.search";

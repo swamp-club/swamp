@@ -39,9 +39,11 @@ export function LoadError(
 ) {
   return (
     <div
-      className="notice notice-danger"
+      className={`notice notice-danger load-error${
+        inset ? " load-error--inset" : ""
+      }`}
       role="alert"
-      style={{ ...(inset ? { margin: "12px 18px" } : {}), ...style }}
+      style={style}
     >
       <div>
         <strong>Couldn't load {subject}.</strong>

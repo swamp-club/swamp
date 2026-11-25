@@ -39,6 +39,7 @@ import {
 } from "../../domain/definitions/definition.ts";
 import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { Data } from "../../domain/data/data.ts";
+import type { GarbageCollectionPolicy } from "../../domain/data/data_metadata.ts";
 import type { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
 import type { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
 import type { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
@@ -180,6 +181,7 @@ export async function saveAgedDataVersions(
   modelId: string,
   name: string,
   agesMs: readonly number[],
+  garbageCollection: GarbageCollectionPolicy = 100,
 ): Promise<number[]> {
   const versions: number[] = [];
   for (const ageMs of agesMs) {
@@ -187,7 +189,7 @@ export async function saveAgedDataVersions(
       name,
       contentType: "application/json",
       lifetime: "infinite",
-      garbageCollection: 100,
+      garbageCollection,
       tags: { type: "resource", specName: name, modelName: modelId },
       ownerDefinition: { ownerType: "model-method", ownerRef: "ref" },
     });

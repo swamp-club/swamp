@@ -138,6 +138,7 @@ async function runChild(options: AnyOptions): Promise<void> {
     ctx,
     healthCollector,
     hubToken,
+    repoDir: repo.repoDir,
     busy: () => activeRunRegistry.list().length > 0,
     trackedRuns: () =>
       trackedWorkflowRuns(

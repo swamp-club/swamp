@@ -351,6 +351,40 @@ Deno.test("ConsoleWorkflowRunRenderer: a waiting worker names serve's queue time
   );
 });
 
+Deno.test("ConsoleWorkflowRunRenderer: a lane waiting on an unverified worker says it waits for verification, and one without a reason for its connection", async () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "test-pipeline",
+  });
+  const events = simpleEvents(makeRunView("succeeded"));
+  const at = events.findIndex((e) => e.kind === "job_completed");
+  events.splice(
+    at,
+    0,
+    ...(["unverified", "disconnected", undefined] as const).map((
+      reason,
+    ): WorkflowRunEvent => ({
+      kind: "job_fanout_waiting",
+      jobId: "extract",
+      worker: "w-b",
+      ...(reason === undefined ? {} : { reason }),
+      queueTimeoutSeconds: 600,
+    })),
+  );
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(events), renderer.handlers());
+  });
+  assertEquals(
+    lines.filter((line) => line.includes("w-b waiting")).map((line) =>
+      line.replace(/^.*?│ /, "")
+    ),
+    [
+      "w-b waiting for its worker to pass verification (queue timeout 600s)",
+      "w-b waiting for its worker to connect (queue timeout 600s)",
+      "w-b waiting for its worker to connect (queue timeout 600s)",
+    ],
+  );
+});
+
 Deno.test("JsonWorkflowRunRenderer: fan-out events go to stderr as one record each, and stdout keeps one document", async () => {
   const stdout: string[] = [];
   const stderr: string[] = [];

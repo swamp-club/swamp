@@ -50,6 +50,7 @@ const poolArb = fc.uniqueArray(
     arch: fc.constantFrom("x86_64", "aarch64"),
     status: fc.constantFrom(...STATUSES),
     connected: fc.boolean(),
+    verificationPending: fc.option(fc.boolean(), { nil: undefined }),
   }),
   { selector: (worker) => worker.name, maxLength: 12 },
 ) as fc.Arbitrary<PoolWorker[]>;
@@ -93,6 +94,9 @@ function matches(selector: FanOutSelector, worker: PoolWorker): boolean {
 }
 
 function isLive(worker: PoolWorker, policy: FanOutPolicy): boolean {
+  if (worker.status === "unverified" && worker.verificationPending === true) {
+    return policy.offline === "wait";
+  }
   if (worker.status === "unverified" || worker.status === "draining") {
     return false;
   }
@@ -124,15 +128,27 @@ Deno.test("planFanOut: every matching worker appears exactly once and no other w
   assert(planned > 100, `only ${planned} runs produced a plan`);
 });
 
-Deno.test("planFanOut: unverified and draining workers never get a lane", () => {
+Deno.test("planFanOut: draining and failed-unverified workers never get a lane, and a pending one is never dispatched", () => {
   fc.assert(
     fc.property(poolArb, selectorArb, policyArb, (pool, selector, policy) => {
       const plan = planFanOut(selector, policy, pool);
       if (plan.kind === "refused") return;
       const byName = new Map(pool.map((w) => [w.name, w]));
       for (const member of plan.members) {
-        const status = byName.get(member.worker)!.status;
-        if (status === "unverified" || status === "draining") {
+        const worker = byName.get(member.worker)!;
+        const status = worker.status;
+        if (status === "unverified" && worker.verificationPending === true) {
+          const notReady = policy.offline === "wait"
+            ? "waiting"
+            : policy.offline === "skip"
+            ? "skipped"
+            : "failed";
+          assertEquals(member.disposition, notReady);
+          assertEquals(
+            member.reason,
+            worker.connected ? "unverified" : "disconnected",
+          );
+        } else if (status === "unverified" || status === "draining") {
           assertEquals(member.disposition, "excluded");
           assertEquals(member.reason, status);
         }
@@ -209,6 +225,7 @@ Deno.test("laneDispatchVerdict: a lane is only ever sent to a connected worker t
             "draining" as const,
           ),
           connected: fc.boolean(),
+          verificationPending: fc.option(fc.boolean(), { nil: undefined }),
         }),
         { nil: null },
       ),
@@ -221,6 +238,8 @@ Deno.test("laneDispatchVerdict: a lane is only ever sent to a connected worker t
         if (verdict.kind === "wait") {
           assert(
             worker === null ||
+              (worker.status === "unverified" &&
+                worker.verificationPending === true) ||
               (!worker.connected &&
                 (worker.status === "idle" || worker.status === "busy")),
           );
@@ -228,7 +247,9 @@ Deno.test("laneDispatchVerdict: a lane is only ever sent to a connected worker t
         if (verdict.kind === "ineligible") {
           assert(
             worker !== null &&
-              (worker.status === "unverified" || worker.status === "draining"),
+              (worker.status === "draining" ||
+                (worker.status === "unverified" &&
+                  worker.verificationPending !== true)),
           );
         }
       },

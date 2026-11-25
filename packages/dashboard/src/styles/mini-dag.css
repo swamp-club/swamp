@@ -42,10 +42,10 @@
   gap: 6px;
   padding: 0 10px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: calc(6px * var(--radius-scale));
   background: var(--surface);
   color: var(--text-1);
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 0.7rem;
   transition: opacity 0.15s ease;
 }
@@ -126,7 +126,7 @@
 .mini-dag-swatch {
   width: 14px;
   height: 10px;
-  border-radius: 3px;
+  border-radius: calc(3px * var(--radius-scale));
   border: 1px solid var(--border);
 }
 .mini-dag-swatch.tone-suspended {
@@ -147,5 +147,5 @@
 .mini-dag:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
-  border-radius: 4px;
+  border-radius: calc(4px * var(--radius-scale));
 }

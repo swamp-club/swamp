@@ -34,19 +34,6 @@ export function statusColor(status: string): string {
 }
 
 export function StatusDot({ status }: { status: string }) {
-  const color = statusColor(status);
-  const isAnimated = status === "running";
-  return (
-    <span
-      style={{
-        width: 8,
-        height: 8,
-        borderRadius: "50%",
-        background: color,
-        flexShrink: 0,
-        display: "inline-block",
-        animation: isAnimated ? "pulse-dot 1.5s infinite" : undefined,
-      }}
-    />
-  );
+  const variant = Object.hasOwn(DOT_COLORS, status) ? status : "other";
+  return <span className={`status-dot status-dot--${variant}`} />;
 }

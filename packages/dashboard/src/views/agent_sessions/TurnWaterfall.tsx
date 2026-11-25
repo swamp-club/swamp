@@ -140,8 +140,7 @@ function CallRow(
         {child && (
           <button
             type="button"
-            className="as-link-button"
-            style={{ marginLeft: 6 }}
+            className="as-link-button as-subagent-toggle"
             aria-expanded={subagentOpen}
             onClick={(e) => {
               e.stopPropagation();

@@ -24,6 +24,7 @@ import {
   checkPrincipalRate,
   failedAttemptKey,
   limitFailedAttempts,
+  type RateCheck,
 } from "./rate_limiter.ts";
 import { resolveDashboardSessionForOrigin } from "./dashboard_session_handler.ts";
 import type {
@@ -49,6 +50,8 @@ export interface HttpCallerAuthDeps {
   readonly now?: () => number;
   /** the per-principal request rate; on unless false */
   readonly limitPrincipalRate?: boolean;
+  /** which bucket a route spends; the general one when absent */
+  readonly principalRate?: RateCheck;
   /**
    * accepts the dashboard's session cookie from the exact origin that created
    * it; absent, only a bearer token is accepted
@@ -184,7 +187,10 @@ function authenticatedCaller(
   deps: HttpCallerAuthDeps,
 ): HttpCaller | Response {
   if (deps.limitPrincipalRate !== false) {
-    const rate = checkPrincipalRate(auth.principalId, deps.now?.());
+    const rate = (deps.principalRate ?? checkPrincipalRate)(
+      auth.principalId,
+      deps.now?.(),
+    );
     if (!rate.allowed) return tooManyRequests(rate.retryAfterSeconds);
   }
   return {

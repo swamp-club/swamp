@@ -17,7 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import {
+  ResourceLoadGuard,
+  ResourceTooLargeToLoadError,
+} from "../../domain/data/resource_load_guard.ts";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import { reportGet } from "./get.ts";
@@ -502,4 +506,115 @@ Deno.test("reportGet: --version looks up the newest candidate's data name", asyn
     assertEquals(last.data.version, 2);
   }
   assertEquals(lookups, [{ dataName: "report-cost-eu", version: 2 }]);
+});
+
+function guardedReportDeps(
+  markdown: Uint8Array,
+  json: Uint8Array,
+): ReportGetDeps {
+  const modelType = ModelType.create("aws/ec2");
+  return {
+    ...makeDeps([{
+      data: makeReportData("report-cost", "cost-report", "model"),
+      modelType,
+      modelId: "test-id",
+    }]),
+    getContent: (_type, _modelId, dataName) =>
+      Promise.resolve(dataName.endsWith("-json") ? json : markdown),
+    // a heap of 1000 and a floor of 10; the text limit is 400 bytes
+    loadGuard: new ResourceLoadGuard(
+      { heapLimitBytes: () => 1000, heapUsedBytes: () => 0 },
+      10,
+      400,
+    ),
+  };
+}
+
+const markdown = new TextEncoder().encode("# Report");
+
+Deno.test("reportGet - refuses a dense report JSON on its parsed structure", async () => {
+  const dense = new TextEncoder().encode(JSON.stringify(Array(100).fill("")));
+  assertEquals(dense.length * 3 <= 1000, true);
+  await assertRejects(
+    () =>
+      collect(
+        reportGet(
+          createLibSwampContext(),
+          guardedReportDeps(markdown, dense),
+          { reportName: "cost-report" },
+        ),
+      ),
+    ResourceTooLargeToLoadError,
+    "report-cost-json",
+  );
+});
+
+Deno.test("reportGet - refuses report markdown past the text limit before decoding it", async () => {
+  const error = await assertRejects(
+    () =>
+      collect(
+        reportGet(
+          createLibSwampContext(),
+          guardedReportDeps(
+            new TextEncoder().encode("x".repeat(401)),
+            new TextEncoder().encode("{}"),
+          ),
+          { reportName: "cost-report" },
+        ),
+      ),
+    ResourceTooLargeToLoadError,
+  );
+  assertEquals(error.reason, "text-length");
+});
+
+Deno.test("reportGet - refuses a report on its recorded size before reading it", async () => {
+  const modelType = ModelType.create("aws/ec2");
+  const sized = Data.create({
+    name: "report-cost",
+    contentType: "text/markdown",
+    lifetime: "30d",
+    garbageCollection: 5,
+    tags: { type: "report", reportName: "cost-report", reportScope: "model" },
+    ownerDefinition: { ownerType: "model-method", ownerRef: "test" },
+    size: 500,
+  });
+  let reads = 0;
+  const deps: ReportGetDeps = {
+    ...makeDeps([{ data: sized, modelType, modelId: "test-id" }]),
+    getContent: () => {
+      reads++;
+      return Promise.resolve(new TextEncoder().encode("# Report"));
+    },
+    loadGuard: new ResourceLoadGuard(
+      { heapLimitBytes: () => 1000, heapUsedBytes: () => 0 },
+      10,
+    ),
+  };
+  await assertRejects(
+    () =>
+      collect(
+        reportGet(createLibSwampContext(), deps, { reportName: "cost-report" }),
+      ),
+    ResourceTooLargeToLoadError,
+  );
+  assertEquals(reads, 0);
+});
+
+Deno.test("reportGet - a report JSON past the text limit is read as empty, as before, and the markdown still shows", async () => {
+  const events = await collect(
+    reportGet(
+      createLibSwampContext(),
+      guardedReportDeps(
+        new TextEncoder().encode("# Report"),
+        new TextEncoder().encode(JSON.stringify({ pad: "x".repeat(400) })),
+      ),
+      { reportName: "cost-report" },
+    ),
+  );
+  const last = events[events.length - 1];
+  assertEquals(last.kind, "completed");
+  if (last.kind === "completed") {
+    assertEquals(last.data.markdown, "# Report");
+    assertEquals(last.data.json, {});
+  }
 });

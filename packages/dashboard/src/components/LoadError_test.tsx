@@ -40,6 +40,6 @@ Deno.test("LoadError: inset adds panel margins", () => {
   const html = renderToStaticMarkup(
     <LoadError subject="keys" message={null} onRetry={() => {}} inset />,
   );
-  assertStringIncludes(html, "margin:12px 18px");
+  assertStringIncludes(html, "load-error--inset");
   assert(!html.includes("null"));
 });

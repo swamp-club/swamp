@@ -330,8 +330,7 @@ export function WebhookDetail(
                       <RouteLink
                         key={r}
                         to={webhookRoute(r)}
-                        className="mono"
-                        style={{ display: "block" }}
+                        className="mono trig-shared-link"
                       >
                         {r}
                       </RouteLink>
@@ -390,7 +389,7 @@ export function WebhookDetail(
                 </span>
               )}
             </div>
-            <span className="trig-muted" style={{ fontSize: "0.75rem" }}>
+            <span className="trig-muted trig-runs-range">
               {selected.length === 1
                 ? "Tick one more run to compare · "
                 : runs.runs.length > 1 && selected.length === 0

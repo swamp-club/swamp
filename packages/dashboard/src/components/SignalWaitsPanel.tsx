@@ -37,18 +37,6 @@ const STATE_LABELS: Record<SignalWaitRow["state"], string> = {
   expired: "Expired",
 };
 
-const STATE_COLORS: Record<SignalWaitRow["state"], string> = {
-  open: "var(--warning)",
-  signalled: "var(--success)",
-  expired: "var(--danger)",
-};
-
-const DETAIL_STYLE = {
-  fontSize: "0.75rem",
-  color: "var(--text-3)",
-  marginTop: 2,
-};
-
 /**
  * The runs waiting for a signal: each wait with its ID, deadline and what
  * moves it on. An open wait shows the payload schema and the signal command,
@@ -63,7 +51,7 @@ export function SignalWaitsPanel(
 ) {
   if (rows.length === 0) return null;
   return (
-    <div className="panel" style={{ marginTop: 14 }}>
+    <div className="panel signal-waits-panel">
       <div className="panel-header">
         <div className="panel-title">
           Signal waits <span className="panel-count">{rows.length}</span>
@@ -75,28 +63,17 @@ export function SignalWaitsPanel(
           key={row.waitId}
           data-wait-state={row.state}
         >
-          <div style={{ minWidth: 0 }}>
-            <div
-              style={{
-                fontWeight: 500,
-                fontSize: "0.85rem",
-                display: "flex",
-                alignItems: "center",
-                gap: 6,
-              }}
-            >
+          <div className="signal-row-body">
+            <div className="signal-row-title">
               {row.workflowName}
-              <span className="mono" style={{ color: "var(--text-3)" }}>
+              <span className="mono signal-row-id">
                 {row.runId.slice(0, 8)}
               </span>
-              <span
-                className="mono"
-                style={{ fontSize: "0.72rem", color: STATE_COLORS[row.state] }}
-              >
+              <span className={`mono signal-row-state is-${row.state}`}>
                 {STATE_LABELS[row.state]}
               </span>
             </div>
-            <div style={DETAIL_STYLE}>
+            <div className="signal-row-detail">
               Step <span className="mono">{row.stepName}</span> · wait{" "}
               <span className="mono">{row.waitId}</span>
               {row.key && (
@@ -106,13 +83,13 @@ export function SignalWaitsPanel(
               )}
             </div>
             {row.deadline && (
-              <div style={DETAIL_STYLE}>
+              <div className="signal-row-detail">
                 {row.state === "expired" ? "Deadline passed" : "Deadline"}{" "}
                 <span className="mono">{row.deadline}</span>
               </div>
             )}
             {row.receipt && (
-              <div style={DETAIL_STYLE}>
+              <div className="signal-row-detail">
                 Signal <span className="mono">{row.receipt.id}</span> from{" "}
                 {row.receipt.submittedBy}
                 {row.receipt.receivedAt && (
@@ -124,23 +101,23 @@ export function SignalWaitsPanel(
               </div>
             )}
             {row.state === "open" && row.schema !== undefined && (
-              <div style={DETAIL_STYLE}>
+              <div className="signal-row-detail">
                 Payload schema{" "}
                 <span className="mono">{JSON.stringify(row.schema)}</span>
               </div>
             )}
             {row.state === "expired" && (
-              <div style={DETAIL_STYLE}>
+              <div className="signal-row-detail">
                 No signal can reach it. A resume fails the step.
               </div>
             )}
             {row.state === "signalled" && row.awaitingResume && renderResume
               ? renderResume(row)
               : row.command && (
-                <div className="mono" style={DETAIL_STYLE}>{row.command}</div>
+                <div className="mono signal-row-detail">{row.command}</div>
               )}
             {row.state === "open" && row.signalByKeyCommand && (
-              <div style={DETAIL_STYLE}>
+              <div className="signal-row-detail">
                 Or by key:{" "}
                 <span className="mono">{row.signalByKeyCommand}</span>
               </div>

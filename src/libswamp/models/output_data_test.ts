@@ -17,7 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
+import {
+  ResourceLoadGuard,
+  ResourceTooLargeToLoadError,
+} from "../../domain/data/resource_load_guard.ts";
 import type { DefinitionId } from "../../domain/definitions/definition.ts";
 import { ModelOutput } from "../../domain/models/model_output.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
@@ -338,4 +342,77 @@ Deno.test("modelOutputData acts on a passed reference without looking the id up"
     { kind: "completed" }
   >;
   assertEquals(completed.data.outputId, output.id);
+});
+
+// a heap of 1000 and a floor of 10; the text limit is 400 bytes
+const outputGuard = new ResourceLoadGuard(
+  { heapLimitBytes: () => 1000, heapUsedBytes: () => 0 },
+  10,
+  400,
+);
+const denseOutput = new TextEncoder().encode(
+  JSON.stringify(Array(100).fill("")),
+);
+
+function guardedOutput(
+  contentType: string,
+  bytes: Uint8Array,
+  size?: number,
+): ModelOutputDataDeps & { reads: number } {
+  const deps = {
+    ...makeDeps({
+      findDataByName: () =>
+        Promise.resolve({
+          id: "data-1",
+          name: "output",
+          version: 1,
+          contentType,
+          size,
+        }),
+      getContent: () => {
+        deps.reads++;
+        return Promise.resolve(bytes);
+      },
+    }),
+    loadGuard: outputGuard,
+    reads: 0,
+  };
+  return deps;
+}
+
+Deno.test("modelOutputData: refuses a dense JSON output on its parsed structure, though its bytes fit", async () => {
+  assertEquals(denseOutput.length * 3 <= 1000, true);
+  await assertRejects(
+    () => runOutputData(guardedOutput("application/json", denseOutput)),
+    ResourceTooLargeToLoadError,
+    "/output@v1",
+  );
+});
+
+Deno.test("modelOutputData: loads a sparse JSON output of the same size", async () => {
+  const sparse = new TextEncoder().encode(
+    JSON.stringify(["x".repeat(denseOutput.length - 4)]),
+  );
+  assertEquals(sparse.length, denseOutput.length);
+  const data = completedOf(
+    await runOutputData(guardedOutput("application/json", sparse)),
+  );
+  assertEquals((data.data as string[])[0].length, denseOutput.length - 4);
+});
+
+Deno.test("modelOutputData: refuses on the recorded size before reading the content", async () => {
+  const deps = guardedOutput("text/plain", new Uint8Array(5), 500);
+  await assertRejects(() => runOutputData(deps), ResourceTooLargeToLoadError);
+  assertEquals(deps.reads, 0);
+});
+
+Deno.test("modelOutputData: refuses text past the text limit before decoding it", async () => {
+  const error = await assertRejects(
+    () =>
+      runOutputData(
+        guardedOutput("text/plain", new TextEncoder().encode("x".repeat(401))),
+      ),
+    ResourceTooLargeToLoadError,
+  );
+  assertEquals(error.reason, "text-length");
 });

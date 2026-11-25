@@ -141,7 +141,7 @@
   align-items: center;
   gap: 7px;
   padding: 6px 14px;
-  border-radius: 7px;
+  border-radius: calc(7px * var(--radius-scale));
   border: 1px solid var(--danger);
   background: var(--danger);
   color: var(--surface);
@@ -168,7 +168,7 @@
   padding: 12px 16px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: calc(8px * var(--radius-scale));
 }
 
 .rd-fact {
@@ -212,7 +212,7 @@
   display: inline-block;
   width: 72px;
   height: 5px;
-  border-radius: 3px;
+  border-radius: calc(3px * var(--radius-scale));
   background: var(--surface-inset);
   overflow: hidden;
 }
@@ -220,7 +220,7 @@
   display: block;
   height: 100%;
   background: var(--text-3);
-  border-radius: 3px;
+  border-radius: calc(3px * var(--radius-scale));
   transition: width 0.4s ease;
 }
 .rd-progress-succeeded > span {
@@ -247,7 +247,7 @@
   justify-content: center;
   width: 24px;
   height: 24px;
-  border-radius: 5px;
+  border-radius: calc(5px * var(--radius-scale));
   border: 1px solid transparent;
   background: transparent;
   color: var(--text-3);
@@ -297,7 +297,7 @@
   font-size: 0.75rem;
   font-weight: 500;
   padding: 3px 8px;
-  border-radius: 5px;
+  border-radius: calc(5px * var(--radius-scale));
   color: var(--text-2);
   text-decoration: none;
   white-space: nowrap;
@@ -323,7 +323,7 @@ a.rd-hop:focus-visible {
 }
 .rd-error-detail {
   display: block;
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 0.75rem;
   white-space: pre-wrap;
   word-break: break-word;
@@ -344,7 +344,7 @@ a.rd-hop:focus-visible {
 }
 .rd-failure-error {
   margin: 6px 0 0;
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 0.75rem;
   white-space: pre-wrap;
   word-break: break-word;
@@ -394,7 +394,7 @@ a.rd-hop:focus-visible {
   display: inline-flex;
   padding: 3px;
   gap: 2px;
-  border-radius: 8px;
+  border-radius: calc(8px * var(--radius-scale));
   background: var(--surface-inset);
   border: 1px solid var(--border-subtle);
 }
@@ -404,7 +404,7 @@ a.rd-hop:focus-visible {
   gap: 6px;
   padding: 5px 12px;
   border: none;
-  border-radius: 6px;
+  border-radius: calc(6px * var(--radius-scale));
   background: transparent;
   color: var(--text-2);
   font-family: inherit;
@@ -435,7 +435,7 @@ a.rd-hop:focus-visible {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 0.65rem;
   font-weight: 600;
   letter-spacing: 0.04em;
@@ -587,7 +587,7 @@ a.rd-hop:focus-visible {
 .rg-node {
   position: absolute;
   box-sizing: border-box;
-  border-radius: 10px;
+  border-radius: calc(10px * var(--radius-scale));
   background: var(--surface);
   border: 1px solid var(--border);
   box-shadow: 0 1px 2px color-mix(in srgb, var(--text-1) 8%, transparent);
@@ -690,7 +690,7 @@ a.rd-hop:focus-visible {
 .rg-node-nested:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
-  border-radius: 3px;
+  border-radius: calc(3px * var(--radius-scale));
 }
 .rg-node-more {
   color: var(--text-3);
@@ -796,7 +796,7 @@ a.rd-hop:focus-visible {
   align-items: center;
   gap: 2px;
   padding: 3px;
-  border-radius: 8px;
+  border-radius: calc(8px * var(--radius-scale));
   background: var(--surface);
   border: 1px solid var(--border);
   box-shadow: 0 2px 8px color-mix(in srgb, var(--text-1) 10%, transparent);
@@ -812,7 +812,7 @@ a.rd-hop:focus-visible {
   height: 28px;
   padding: 0 6px;
   border: none;
-  border-radius: 6px;
+  border-radius: calc(6px * var(--radius-scale));
   background: transparent;
   color: var(--text-2);
   font-family: inherit;
@@ -840,7 +840,7 @@ a.rd-hop:focus-visible {
 .rg-zoom {
   min-width: 40px;
   text-align: center;
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 0.68rem;
   color: var(--text-3);
 }
@@ -929,7 +929,7 @@ a.rd-hop:focus-visible {
   width: 30px;
   height: 30px;
   flex-shrink: 0;
-  border-radius: 6px;
+  border-radius: calc(6px * var(--radius-scale));
   border: 1px solid transparent;
   background: transparent;
   color: var(--text-3);
@@ -952,7 +952,7 @@ a.rd-hop:focus-visible {
   gap: 10px;
   margin: 12px 14px 0;
   padding: 10px 12px;
-  border-radius: 8px;
+  border-radius: calc(8px * var(--radius-scale));
   border: 1px solid var(--danger);
   background: var(--danger-bg);
   color: var(--danger);
@@ -970,7 +970,7 @@ a.rd-hop:focus-visible {
 }
 .rj-failure-error {
   margin: 4px 0 0;
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 0.74rem;
   color: var(--text-1);
   white-space: pre-wrap;
@@ -1024,7 +1024,7 @@ a.rd-hop:focus-visible {
   border: 1px dashed var(--text-3);
 }
 .rj-dep-cond {
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 0.65rem;
   color: var(--text-3);
 }
@@ -1083,12 +1083,12 @@ a.rd-hop:focus-visible {
   font-weight: 600;
 }
 .rs-badge {
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 0.6rem;
   color: var(--text-3);
   background: var(--surface-inset);
   padding: 1px 6px;
-  border-radius: 3px;
+  border-radius: calc(3px * var(--radius-scale));
   white-space: nowrap;
 }
 .rs-badge-warn {
@@ -1104,10 +1104,10 @@ a.rd-hop:focus-visible {
 .rs-error {
   margin: 6px 0 0;
   padding: 6px 10px;
-  border-radius: 5px;
+  border-radius: calc(5px * var(--radius-scale));
   background: var(--danger-bg);
   color: var(--danger);
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 0.74rem;
   white-space: pre-wrap;
   word-break: break-word;
@@ -1115,7 +1115,7 @@ a.rd-hop:focus-visible {
 .rs-note {
   margin-top: 6px;
   padding: 6px 10px;
-  border-radius: 5px;
+  border-radius: calc(5px * var(--radius-scale));
   font-size: 0.78rem;
 }
 .rs-note-success {
@@ -1150,11 +1150,11 @@ a.rd-hop:focus-visible {
   gap: 6px;
   max-width: 100%;
   padding: 2px 8px;
-  border-radius: 5px;
+  border-radius: calc(5px * var(--radius-scale));
   border: 1px solid var(--border);
   background: var(--surface);
   color: var(--text-2);
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 0.68rem;
   text-decoration: none;
   overflow: hidden;
@@ -1174,7 +1174,7 @@ a.rs-chip:focus-visible {
   border-color: transparent;
 }
 .rs-chip-kind {
-  font-family: "Plus Jakarta Sans", sans-serif;
+  font-family: var(--font-body);
   font-size: 0.58rem;
   font-weight: 700;
   letter-spacing: 0.05em;
@@ -1194,7 +1194,7 @@ a.rs-chip:focus-visible {
 .rs-outputs summary:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
-  border-radius: 3px;
+  border-radius: calc(3px * var(--radius-scale));
 }
 .rs-outputs .code-block {
   margin-top: 6px;
@@ -1219,7 +1219,7 @@ a.rs-chip:focus-visible {
   align-items: center;
   gap: 4px;
   padding: 2px 8px 2px 6px;
-  border-radius: 5px;
+  border-radius: calc(5px * var(--radius-scale));
   border: 1px solid var(--border);
   background: var(--surface);
   color: var(--text-2);
@@ -1246,7 +1246,7 @@ a.rs-chip:focus-visible {
 /* A step's log */
 .sl {
   margin-top: 8px;
-  border-radius: 7px;
+  border-radius: calc(7px * var(--radius-scale));
   border: 1px solid var(--border);
   background: var(--surface-inset);
   overflow: hidden;
@@ -1294,14 +1294,14 @@ a.rs-chip:focus-visible {
 .sl-open:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
-  border-radius: 3px;
+  border-radius: calc(3px * var(--radius-scale));
 }
 .sl-lines {
   margin: 0;
   padding: 8px 0;
   max-height: 320px;
   overflow: auto;
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 0.72rem;
   line-height: 1.55;
   color: var(--text-1);
@@ -1362,7 +1362,7 @@ a.rs-chip:focus-visible {
   align-items: center;
   gap: 8px;
   padding: 7px 12px;
-  border-radius: 7px;
+  border-radius: calc(7px * var(--radius-scale));
   border: 1px solid var(--border);
   background: var(--surface);
   color: var(--text-1);
@@ -1431,7 +1431,7 @@ a.rs-chip:focus-visible {
   display: flex;
   gap: 10px;
   padding: 12px;
-  border-radius: 10px;
+  border-radius: calc(10px * var(--radius-scale));
   border: 1px solid var(--border);
   background: var(--surface);
 }

@@ -17,8 +17,16 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
-import { encodeContent } from "./content_encoding.ts";
+import { assertEquals, assertThrows } from "@std/assert";
+import {
+  decodePreview,
+  encodeContent,
+  encodeLoadableContent,
+} from "./content_encoding.ts";
+import {
+  ResourceLoadGuard,
+  ResourceTooLargeToLoadError,
+} from "./resource_load_guard.ts";
 
 const PNG_HEADER = new Uint8Array([
   0x89,
@@ -77,4 +85,82 @@ Deno.test("encodeContent: drops a leading byte-order mark from utf-8 text", () =
   const bytes = new Uint8Array([0xef, 0xbb, 0xbf, ...json]);
   const result = encodeContent(bytes);
   assertEquals(result, { content: '{"a":1}', contentEncoding: "utf-8" });
+});
+
+const item = { modelType: "m", modelName: "m", dataName: "d", version: 1 };
+
+function guard(
+  limit: number,
+  used: number,
+  maxDecodableBytes = 10_000,
+): ResourceLoadGuard {
+  return new ResourceLoadGuard(
+    {
+      heapLimitBytes: () => limit,
+      heapUsedBytes: () => used,
+    },
+    50,
+    maxDecodableBytes,
+  );
+}
+
+Deno.test("encodeLoadableContent: encodes what the guard admits as encodeContent does", () => {
+  const text = new TextEncoder().encode("hello\n");
+  assertEquals(
+    encodeLoadableContent(guard(1000, 0), item, text),
+    encodeContent(text),
+  );
+  const binary = new Uint8Array([0xff, 0xfe, 0x00]);
+  assertEquals(
+    encodeLoadableContent(guard(1000, 0), item, binary),
+    encodeContent(binary),
+  );
+});
+
+Deno.test("encodeLoadableContent: refuses bytes the heap cannot hold, with held bytes and remedy in the message", () => {
+  const error = assertThrows(
+    () =>
+      encodeLoadableContent(
+        guard(1000, 900),
+        item,
+        new Uint8Array(40),
+        20,
+        "fewer, please",
+      ),
+    ResourceTooLargeToLoadError,
+  );
+  assertEquals(error.reason, "memory");
+  assertEquals(error.detail.heldBytes, 20);
+  assertEquals(error.detail.remedy, "fewer, please");
+});
+
+Deno.test("encodeLoadableContent: refuses a binary body whose base64 form passes the text limit, and keeps UTF-8 text of its size", () => {
+  const error = assertThrows(
+    () =>
+      encodeLoadableContent(
+        guard(1_000_000, 0, 400),
+        item,
+        new Uint8Array(320).fill(0xff),
+      ),
+    ResourceTooLargeToLoadError,
+  );
+  assertEquals(error.reason, "text-length");
+  assertEquals(error.bytes, 320);
+  assertEquals(error.detail.encodedChars, 428);
+  const text = new TextEncoder().encode("x".repeat(320));
+  assertEquals(
+    encodeLoadableContent(guard(1_000_000, 0, 400), item, text),
+    { content: "x".repeat(320), contentEncoding: "utf-8" },
+  );
+});
+
+Deno.test("decodePreview: returns all of a short body, and the start of a long one without a broken character", () => {
+  assertEquals(decodePreview(new TextEncoder().encode("abc"), 3), {
+    text: "abc",
+    truncated: false,
+  });
+  // the euro sign is three bytes; a cut inside it drops it, never U+FFFD
+  const bytes = new TextEncoder().encode("ab\u20accd");
+  assertEquals(decodePreview(bytes, 3), { text: "ab", truncated: true });
+  assertEquals(decodePreview(bytes, 5), { text: "ab\u20ac", truncated: true });
 });

@@ -58,11 +58,20 @@ export type LaneDispatchVerdict =
   | { kind: "wait" }
   | { kind: "ineligible"; reason: "unverified" | "draining" };
 
+export interface LaneWorker
+  extends Pick<SchedulableWorker, "status" | "connected"> {
+  /** an unverified worker whose probe is running or owed, not one that failed */
+  verificationPending?: boolean;
+}
+
 /** a lane never queues behind a worker that may not take it */
 export function laneDispatchVerdict(
-  worker: Pick<SchedulableWorker, "status" | "connected"> | null,
+  worker: LaneWorker | null,
 ): LaneDispatchVerdict {
   if (worker === null) return { kind: "wait" };
+  if (worker.status === "unverified" && worker.verificationPending === true) {
+    return { kind: "wait" };
+  }
   if (worker.status === "unverified" || worker.status === "draining") {
     return { kind: "ineligible", reason: worker.status };
   }
@@ -228,17 +237,22 @@ function fanOutMember(
   offline: FanOutPolicy["offline"],
 ): FanOutMember {
   const base = { worker: worker.name, instanceUuid: worker.instanceUuid };
-  // last known status beats the connection: draining is leaving, unverified is unproven
+  const notReady = offline === "wait"
+    ? "waiting"
+    : offline === "skip"
+    ? "skipped"
+    : "failed";
+  // a probe still to come makes a worker not ready yet, like a disconnected one
+  if (worker.status === "unverified" && worker.verificationPending === true) {
+    const reason = worker.connected ? "unverified" : "disconnected";
+    return { ...base, disposition: notReady, reason };
+  }
+  // last known status beats the connection: draining is leaving, unverified failed its probe
   if (worker.status === "unverified" || worker.status === "draining") {
     return { ...base, disposition: "excluded", reason: worker.status };
   }
   if (!worker.connected || worker.status === "disconnected") {
-    const disposition = offline === "wait"
-      ? "waiting"
-      : offline === "skip"
-      ? "skipped"
-      : "failed";
-    return { ...base, disposition, reason: "disconnected" };
+    return { ...base, disposition: notReady, reason: "disconnected" };
   }
   return { ...base, disposition: "dispatch" };
 }

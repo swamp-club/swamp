@@ -97,6 +97,10 @@ import {
   serveDashboardRoute,
 } from "../../serve/dashboard_assets.ts";
 import {
+  DashboardThemeStore,
+  serveDashboardTheme,
+} from "../../serve/dashboard_theme.ts";
+import {
   validateNoAuthHttpRequest,
   validateWebSocketOrigin,
 } from "../../serve/origin.ts";
@@ -811,6 +815,7 @@ import {
   RetentionGcService,
 } from "../../serve/retention_gc_service.ts";
 import { runRepoRetention } from "../../libswamp/retention/run.ts";
+import type { DeclaredLimitScan } from "../../domain/data/data_lifecycle_service.ts";
 import { serveAutoDefinitionRetentionSources } from "../../serve/deps.ts";
 import { withSharedSyncGate, withSyncGate } from "../../serve/sync_gate.ts";
 import { GcMutex } from "../../serve/gc_mutex.ts";
@@ -2773,6 +2778,8 @@ export const serveCommand = new Command()
         dispatchService.notifyWorkerEnrolled(worker),
       onWorkerDraining: (worker) =>
         dispatchService.notifyWorkerDraining(worker),
+      onWorkerVerifyFailed: (worker) =>
+        dispatchService.notifyWorkerVerifyFailed(worker),
       // reload changes it; each enrollment reads the one in force
       get verifyOnEnroll() {
         return verifyOnEnroll;
@@ -6647,6 +6654,7 @@ export const serveCommand = new Command()
 
     const dashboardEnabled = merged.dashboard;
     let dashboardDistDir = dashboardEnabled ? getDashboardDistDir() : null;
+    const dashboardThemes = new DashboardThemeStore(resolvedRepoDir);
 
     if (dashboardEnabled && !isJson) {
       const scheme = tlsEnabled ? "https" : "http";
@@ -8047,12 +8055,16 @@ export const serveCommand = new Command()
             );
 
             return createHealthStreamResponse({
-              collect: async (signal) =>
-                await healthSnapshotFor(
+              collect: async (signal) => ({
+                ...await healthSnapshotFor(
                   await healthCollector.collect(signal),
                   reader,
                   healthResources,
                 ),
+                ...(dashboardDistDir
+                  ? { themeVersion: await dashboardThemes.version() }
+                  : {}),
+              }),
               intervalParam: url.searchParams.get("interval"),
               lastEventId: req.headers.get("Last-Event-ID"),
               serverSignal: listenerAc.signal,
@@ -8451,6 +8463,12 @@ export const serveCommand = new Command()
           return new Response(JSON.stringify(authInfo), {
             headers: { "content-type": "application/json" },
           });
+        }
+
+        // public like /auth/info: the login page wears the theme
+        if (dashboardDistDir) {
+          const theme = await serveDashboardTheme(req, dashboardThemes);
+          if (theme) return theme;
         }
 
         // Readiness endpoint — returns 200 only after full startup and
@@ -9867,8 +9885,10 @@ export const serveCommand = new Command()
       workerGcService.start();
     }
 
-    // applies garbageCollection hourly when automatic is on; the policy is read
-    // every tick so toggling it needs no restart
+    // applies garbageCollection hourly when automatic is on, and declared version
+    // limits even when it is off; the policy is read every tick so toggling it
+    // needs no restart
+    const declaredLimitScan: DeclaredLimitScan = {};
     retentionGcService = new RetentionGcService({
       intervalMs: DEFAULT_RETENTION_GC_INTERVAL_MS,
       initialDelayMs: DEFAULT_RETENTION_GC_INITIAL_DELAY_MS,
@@ -9895,6 +9915,7 @@ export const serveCommand = new Command()
               workflowRunRepo: repoContext.workflowRunRepo,
             },
             watermarks: repoContext.retentionWatermarks,
+            declaredLimitScan,
             autoDefinitions: serveAutoDefinitionRetentionSources(
               repoContext,
               datastoreConfig,
@@ -9914,6 +9935,7 @@ export const serveCommand = new Command()
             afterPass: async () => {
               repoContext.catalogStore.checkpoint();
               if (
+                policy.appliesCutoffs &&
                 v3Maintenance && v3Location !== undefined &&
                 !control.isStopping()
               ) {
@@ -9934,6 +9956,7 @@ export const serveCommand = new Command()
           },
           {
             policy,
+            kinds: control.kinds,
             isStopping: control.isStopping,
             budgetMs: control.budgetMs,
             // Busy: every run slot taken, or a manual gc waiting for the

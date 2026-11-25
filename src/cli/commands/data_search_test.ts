@@ -118,3 +118,66 @@ Deno.test("parseTags last value wins for duplicate keys", () => {
   const result = parseTags(["env=prod", "env=dev"]);
   assertEquals(result, { env: "dev" });
 });
+
+function previewRepo(
+  read: (maxBytes: number) => Promise<Uint8Array | null>,
+): { repo: never; requested: number[] } {
+  const requested: number[] = [];
+  const repo = {
+    getContentPath: () => "/repo/.swamp/data/test/model/m/notes/1/raw",
+    getContentPrefix: (
+      _type: unknown,
+      _modelId: string,
+      _name: string,
+      _version: number,
+      maxBytes: number,
+    ) => {
+      requested.push(maxBytes);
+      return read(maxBytes);
+    },
+  } as never;
+  return { repo, requested };
+}
+
+function previewItem(size: number): never {
+  return {
+    modelType: "test/model",
+    modelId: "m",
+    name: "notes",
+    version: 1,
+    contentType: "text/plain",
+    size,
+  } as never;
+}
+
+Deno.test("createDataFetchPreview: asks the repository for only the start of a body and marks a long one truncated", async () => {
+  const { createDataFetchPreview } = await import("./data_search.ts");
+  const body = new TextEncoder().encode("x".repeat(100 * 1024));
+  const { repo, requested } = previewRepo((max) =>
+    Promise.resolve(body.subarray(0, max))
+  );
+  const detail = await createDataFetchPreview(repo, "/repo")(
+    previewItem(body.length),
+  );
+  assertEquals(requested, [64 * 1024 + 1]);
+  assertEquals(detail.content?.length, 64 * 1024);
+  assertEquals(detail.truncatedFrom, body.length);
+
+  const short = previewRepo(() =>
+    Promise.resolve(new TextEncoder().encode("hello\n"))
+  );
+  const whole = await createDataFetchPreview(short.repo, "/repo")(
+    previewItem(6),
+  );
+  assertEquals(whole.content, "hello\n");
+  assertEquals(whole.truncatedFrom, undefined);
+});
+
+Deno.test("createDataFetchPreview: a body the repository refuses, such as a content symlink out of its model, shows no content", async () => {
+  const { createDataFetchPreview } = await import("./data_search.ts");
+  const { repo } = previewRepo(() =>
+    Promise.reject(new Error("Path traversal detected"))
+  );
+  const detail = await createDataFetchPreview(repo, "/repo")(previewItem(10));
+  assertEquals(detail.content, undefined);
+});

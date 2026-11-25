@@ -484,7 +484,7 @@ function ItemPage(props: ItemPageProps) {
         : (
           <>
             <div className="page-header">
-              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <div className="page-header-lead">
                 <button
                   type="button"
                   className="back-button"
@@ -558,15 +558,19 @@ function ItemPage(props: ItemPageProps) {
 function EmbeddedSkeleton({ label }: { label: string }) {
   return (
     <SkeletonRegion label={label}>
-      <div className="panel" style={{ marginBottom: 16 }}>
+      <div className="panel data-content-panel">
         <div className="panel-header">
           <Skeleton width={90} height={12} />
           <Skeleton width={72} height={22} radius={5} />
         </div>
         <div className="content-body">
-          <Skeleton width="45%" height={18} style={{ marginBottom: 14 }} />
+          <Skeleton width="45%" height={18} className="data-skel-heading" />
           <SkeletonText lines={6} />
-          <Skeleton width="35%" height={14} style={{ margin: "18px 0 12px" }} />
+          <Skeleton
+            width="35%"
+            height={14}
+            className="data-skel-subheading"
+          />
           <SkeletonText lines={4} />
         </div>
       </div>
@@ -665,7 +669,7 @@ function ContentPanel(
   };
 
   return (
-    <div className="panel" style={{ marginBottom: 16 }}>
+    <div className="panel data-content-panel">
       <div className="panel-header">
         <div className="panel-title">
           Content

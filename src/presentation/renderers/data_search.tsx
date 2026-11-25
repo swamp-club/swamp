@@ -38,6 +38,18 @@ import { renderMarkdownToTerminal } from "../markdown_renderer.ts";
 export interface DataPreviewDetail {
   content: string | undefined;
   contentPath: string;
+  /** the full size when content is only the start of it */
+  truncatedFrom?: number;
+}
+
+export function truncationNote(detail: DataPreviewDetail): string | undefined {
+  return detail.truncatedFrom === undefined
+    ? undefined
+    : `(preview shows ${
+      detail.truncatedFrom > 0
+        ? `the start of ${formatSize(detail.truncatedFrom)}`
+        : "only the start of the body"
+    }; read it all with swamp data get)`;
 }
 
 export type DataPreviewFetcher = (
@@ -291,6 +303,12 @@ function renderDataPreview(
         <Text key={`c-${i}`} wrap="truncate-end">{contentLines[i]}</Text>,
       );
     }
+    const note = truncationNote(detail);
+    if (note) {
+      elements.push(
+        <Text key="truncated" dimColor wrap="truncate-end">{note}</Text>,
+      );
+    }
   } else if (detail && !detail.content) {
     elements.push(
       <Text key="binary" dimColor wrap="truncate-end">
@@ -313,7 +331,8 @@ function renderDataScrollback(
   const metadata = renderMarkdownToTerminal(buildMetadataMarkdown(item));
 
   if (detail?.content) {
-    return metadata + "\n" + detail.content;
+    const note = truncationNote(detail);
+    return metadata + "\n" + detail.content + (note ? "\n" + note : "");
   }
 
   return metadata;

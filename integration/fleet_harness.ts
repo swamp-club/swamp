@@ -194,8 +194,11 @@ export class FleetWorker {
     await this.connect();
   }
 
-  /** Opens a control socket and enrolls (a reconnect after the first time). */
-  async connect(): Promise<void> {
+  /**
+   * Opens a control socket and enrolls (a reconnect after the first time).
+   * With `settle: false`, returns once enrolled, before the probe's verdict.
+   */
+  async connect(options: { settle?: boolean } = {}): Promise<void> {
     const channel: RpcChannel = new RpcChannel({
       send: (data) => void Promise.resolve().then(() => attached.feed(data)),
     });
@@ -223,6 +226,7 @@ export class FleetWorker {
         resourceLimits: { capacity: this.#options.capacity ?? 1 },
       },
     );
+    if (options.settle === false) return;
     // Enrollment ends with the verify probe; wait for its verdict.
     const settledStatus = this.#options.unverified ? "unverified" : "idle";
     await waitFor(
@@ -295,6 +299,16 @@ export class FleetWorker {
   }
 }
 
+interface ProbeOutcome {
+  ok: boolean;
+  failureReason?: string;
+}
+
+const PROBE_FAILED: ProbeOutcome = {
+  ok: false,
+  failureReason: "fleet harness: probe failed",
+};
+
 export interface FleetOptions {
   /** Serve-level queue timeout. Default 15s; steps can set their own. */
   queueTimeoutMs?: number;
@@ -332,6 +346,7 @@ export class Fleet implements AsyncDisposable {
   #repo: Awaited<ReturnType<typeof requireInitializedRepoUnlocked>>;
   #server: Deno.HttpServer;
   #unverified = new Set<string>();
+  #heldProbes: Map<string, Promise<ProbeOutcome>>;
   #tempDir: string;
 
   private constructor(
@@ -342,6 +357,7 @@ export class Fleet implements AsyncDisposable {
     server: Deno.HttpServer,
     modelType: ModelType,
     unverified: Set<string>,
+    heldProbes: Map<string, Promise<ProbeOutcome>>,
   ) {
     this.#tempDir = tempDir;
     this.#repo = repo;
@@ -352,6 +368,7 @@ export class Fleet implements AsyncDisposable {
     this.#server = server;
     this.modelType = modelType;
     this.#unverified = unverified;
+    this.#heldProbes = heldProbes;
   }
 
   static async start(options: FleetOptions = {}): Promise<Fleet> {
@@ -386,24 +403,31 @@ export class Fleet implements AsyncDisposable {
         captureEnvironment: () => ({}),
       });
       const unverified = new Set<string>();
+      const heldProbes = new Map<string, Promise<ProbeOutcome>>();
       gateway = new WorkerGateway({
         repoDir: repo.repoDir,
         repoContext,
         capabilityService,
         graceWindowMs: options.graceWindowMs ?? 1_000,
         verifyOnEnroll: true,
-        verifyWorker: (name) =>
-          Promise.resolve(
-            unverified.has(name)
-              ? { ok: false, failureReason: "fleet harness: probe failed" }
-              : { ok: true },
-          ),
+        verifyWorker: (name) => {
+          const held = heldProbes.get(name);
+          if (held) {
+            heldProbes.delete(name);
+            return held;
+          }
+          return Promise.resolve(
+            unverified.has(name) ? PROBE_FAILED : { ok: true },
+          );
+        },
         onWorkerIdle: (worker) => dispatchService.notifyWorkerIdle(worker),
         onGraceExpired: (worker) => dispatchService.notifyGraceExpired(worker),
         onWorkerEnrolled: (worker) =>
           dispatchService.notifyWorkerEnrolled(worker),
         onWorkerDraining: (worker) =>
           dispatchService.notifyWorkerDraining(worker),
+        onWorkerVerifyFailed: (worker) =>
+          dispatchService.notifyWorkerVerifyFailed(worker),
         onWorkerRemoved: (worker) =>
           dispatchService.notifyWorkerRemoved(worker),
       });
@@ -456,6 +480,7 @@ export class Fleet implements AsyncDisposable {
         server,
         modelType,
         unverified,
+        heldProbes,
       );
     } catch (error) {
       setWorkerPoolReader(null);
@@ -467,6 +492,14 @@ export class Fleet implements AsyncDisposable {
       await removeDir(dir);
       throw error;
     }
+  }
+
+  /** Holds `name`'s next enrollment probe until the returned function settles it. */
+  holdProbe(name: string): (outcome: "pass" | "fail") => void {
+    const held = Promise.withResolvers<ProbeOutcome>();
+    this.#heldProbes.set(name, held.promise);
+    return (outcome) =>
+      held.resolve(outcome === "pass" ? { ok: true } : PROBE_FAILED);
   }
 
   /** Mints a token for `name`, connects the worker, and waits for it to settle. */

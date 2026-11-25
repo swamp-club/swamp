@@ -1,0 +1,210 @@
+/* Classes for styles that were inline in the components below; loaded after styles.css so a moved rule wins ties as the inline style did. */
+
+/* Skeleton.tsx */
+.skel-text {
+  display: flex;
+  flex-direction: column;
+}
+.skel-pills {
+  display: inline-flex;
+  gap: 8px;
+}
+.skel.skel-run-history-slot {
+  flex: 1;
+}
+.skel-card-history {
+  margin-top: 12px;
+}
+.skel-cell-strip {
+  display: block;
+  width: 140px;
+}
+.skel-list-text {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+}
+.skel.skel-stat-label {
+  display: block;
+  margin-bottom: 12px;
+}
+
+/* SkeletonChart insets match the Overview's canvas chart (top 8, right 12, bottom 28, left 36). */
+.skel-chart {
+  position: relative;
+}
+.skel-chart-gridline {
+  position: absolute;
+  left: 36px;
+  right: 12px;
+  height: 1px;
+  background: var(--border-subtle);
+}
+.skel-chart-gridline.is-baseline {
+  background: var(--border);
+}
+.skel.skel-chart-tick {
+  position: absolute;
+  right: calc(100% - 30px);
+}
+.skel-chart-bars {
+  position: absolute;
+  left: 36px;
+  right: 12px;
+  top: 8px;
+  bottom: 28px;
+  display: flex;
+  align-items: flex-end;
+}
+.skel-chart-bar {
+  flex: 1;
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+.skel.skel-chart-bar-fill {
+  max-width: 40px;
+}
+.skel-chart-labels {
+  position: absolute;
+  left: 36px;
+  right: 12px;
+  bottom: 6px;
+  display: flex;
+}
+.skel-chart-label {
+  flex: 1;
+  display: flex;
+  justify-content: center;
+}
+
+/* PageSkeletons.tsx */
+.legend-dot.skel-legend-succeeded {
+  background: var(--chart-bar-1);
+}
+.legend-dot.skel-legend-failed {
+  background: var(--chart-bar-2);
+}
+.legend-dot.skel-legend-cancelled {
+  background: var(--chart-bar-5);
+}
+.legend-dot.skel-legend-running {
+  background: var(--chart-bar-4);
+}
+.skel-region.skel-vault-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.panel-header.skel-vault-header {
+  justify-content: start;
+  border-bottom: none;
+}
+/* Matches the expanded vault's key and activity rows. */
+.skel-vault-row {
+  padding: 8px 18px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.skel.skel-push-end {
+  margin-left: auto;
+}
+.sys-row.skel-sys-row {
+  padding: 8px 18px;
+}
+.panel.skel-table-panel {
+  margin-bottom: 14px;
+}
+.panel.skel-content-panel {
+  margin-bottom: 16px;
+}
+.skel-code-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 4px 0;
+}
+.skel-login-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.skel.skel-login-line-last {
+  margin-bottom: 20px;
+}
+.skel.skel-login-code {
+  background-color: var(--border);
+}
+
+/* ModelDiagramSkeleton.tsx */
+.mds-badge-row {
+  display: flex;
+  gap: 6px;
+}
+.skel.mds-badge-meta {
+  margin-top: 3px;
+}
+
+/* SwampifyCandidates.tsx */
+.sw-table col.sw-col-rank {
+  width: 44px;
+}
+.sw-table col.sw-col-kind {
+  width: 130px;
+}
+.sw-table col.sw-col-runs,
+.sw-table col.sw-col-failed {
+  width: 70px;
+}
+.sw-table col.sw-col-sessions,
+.sw-table col.sw-col-tokens {
+  width: 84px;
+}
+
+/* agent_sessions */
+.as-link-button.as-subagent-toggle {
+  margin-left: 6px;
+}
+.as-swamp-spans {
+  margin-top: 12px;
+}
+.as-swamp-spans-command {
+  margin-bottom: 8px;
+}
+
+/* Markdown.tsx */
+.markdown .data-table th.md-align-left,
+.markdown .data-table td.md-align-left {
+  text-align: left;
+}
+.markdown .data-table th.md-align-center,
+.markdown .data-table td.md-align-center {
+  text-align: center;
+}
+.markdown .data-table th.md-align-right,
+.markdown .data-table td.md-align-right {
+  text-align: right;
+}
+
+/* TriggerFlow.tsx */
+.trigger-flow svg.trigger-flow-graph {
+  width: 100%;
+}
+
+/* VirtualRows.tsx */
+.virtual-rows {
+  overflow-y: auto;
+  position: relative;
+}
+.virtual-rows-content {
+  position: relative;
+}
+.virtual-row {
+  position: absolute;
+  left: 0;
+  right: 0;
+}

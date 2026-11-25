@@ -2314,7 +2314,7 @@ export function createResourceReader(
       resolvedVersion ?? version,
     );
     if (!content || content.length === 0) return null;
-    loadGuard.assertLoadable(loadedItem, content.length);
+    loadGuard.assertParsable(loadedItem, content);
     let parsed: unknown;
     try {
       parsed = JSON.parse(new TextDecoder().decode(content));

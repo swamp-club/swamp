@@ -30,6 +30,21 @@ import { ensureDir } from "@std/fs";
 import { z } from "zod";
 import { RunSensitiveValues } from "../src/domain/secrets/mod.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
+import { Data } from "../src/domain/data/data.ts";
+import { ModelOutput } from "../src/domain/models/model_output.ts";
+import type { DefinitionId } from "../src/domain/definitions/definition.ts";
+import {
+  createModelOutputLogsDeps,
+  modelOutputLogs,
+  type ModelOutputLogsEvent,
+} from "../src/libswamp/models/output_logs.ts";
+import {
+  createDataGetDeps,
+  dataGet,
+  type DataGetEvent,
+} from "../src/libswamp/data/get.ts";
+import { createLibSwampContext } from "../src/libswamp/context.ts";
+import { collect } from "../src/libswamp/testing.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import { FileSystemUnifiedDataRepository } from "../src/infrastructure/persistence/unified_data_repository.ts";
 import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
@@ -80,6 +95,8 @@ interface Fixture {
   definitionRepo: YamlDefinitionRepository;
   big: Definition;
   write: (name: string, bytes: number) => Promise<unknown>;
+  /** empty strings: few bytes each, a slot each once parsed */
+  writeDense: (name: string, items: number) => Promise<unknown>;
 }
 
 // a heap of 1000 bytes refuses any item past a third of it
@@ -144,7 +161,17 @@ resourceSize:
     );
     const write = (name: string, bytes: number) =>
       writeResource("blob", name, { items: ["x".repeat(bytes)] });
-    await fn({ repoDir, dataRepo, catalog, definitionRepo, big, write });
+    const writeDense = (name: string, items: number) =>
+      writeResource("blob", name, { items: Array(items).fill("") });
+    await fn({
+      repoDir,
+      dataRepo,
+      catalog,
+      definitionRepo,
+      big,
+      write,
+      writeDense,
+    });
   } finally {
     catalog.close();
     if (Deno.build.os === "windows") {
@@ -385,4 +412,460 @@ Deno.test("resource size: a step that wrote a resource past the text-length limi
       200,
     ),
   );
+});
+
+// about 300 bytes each: three times that fits the 1000-byte heap, the dense
+// one's parsed slots do not
+const DENSE_ITEMS = 100;
+const SPARSE_BYTES = 290;
+
+Deno.test("resource size: a dense resource the byte factor would load is refused on its parsed structure, a sparse one of its size loads", async () => {
+  await withFixture(async (f) => {
+    await f.writeDense("dense", DENSE_ITEMS);
+    await f.write("sparse", SPARSE_BYTES);
+    const sizes = await new DataQueryService(f.catalog, f.dataRepo).query(
+      'modelName == "big" && specName == "blob"',
+      { select: "size", sort: parseQuerySort("size:desc") },
+    ) as number[];
+    for (const size of sizes) {
+      assert(size * 3 <= 1000, `size ${size} must pass the byte factor`);
+    }
+    const dqs = new DataQueryService(f.catalog, f.dataRepo);
+
+    await assertRejects(
+      () =>
+        dqs.query('modelName == "big" && name == "dense"', {
+          select: "content",
+        }),
+      ResourceTooLargeToLoadError,
+      "big/dense",
+    );
+    const sparse = await dqs.query('modelName == "big" && name == "sparse"', {
+      select: "content",
+    }) as { items: string[] }[];
+    assertEquals(sparse[0].items[0].length, SPARSE_BYTES);
+  });
+});
+
+Deno.test("resource size: a CEL reference to a dense resource fails on its parsed structure", async () => {
+  await withFixture(async (f) => {
+    await f.writeDense("dense", DENSE_ITEMS);
+    const reader = Definition.create({
+      name: "reader",
+      globalArguments: {
+        n: '${{ size(model.big.resource.blob["dense"].attributes.items) }}',
+      },
+    });
+    await f.definitionRepo.save(type, reader);
+    const evalService = new ExpressionEvaluationService(
+      f.definitionRepo,
+      f.repoDir,
+      { dataRepo: f.dataRepo },
+    );
+    const error = await assertRejects(() =>
+      evalService.evaluateDefinition(reader, type, new RunSensitiveValues())
+    );
+    assertInstanceOf(error, Error);
+    assertStringIncludes(error.message, "Cannot load big/dense");
+  });
+});
+
+Deno.test("resource size: a workflow step output read refuses a dense resource on its parsed structure", async () => {
+  await withFixture(async (f) => {
+    const handle = await f.writeDense("dense", DENSE_ITEMS) as {
+      dataId: string;
+      name: string;
+      version: number;
+    };
+    const read = createDataRepositoryAttributeReader(f.dataRepo);
+    await assertRejects(
+      () =>
+        read({
+          dataId: handle.dataId,
+          modelType: type.normalized,
+          modelId: f.big.id,
+          modelName: "big",
+          specName: "blob",
+          contentType: "application/json",
+          name: handle.name,
+          version: handle.version,
+          tags: {},
+        }),
+      ResourceTooLargeToLoadError,
+      "big/dense@v1",
+    );
+  });
+});
+
+async function saveFile(
+  f: Fixture,
+  name: string,
+  content: Uint8Array,
+  contentType = "text/plain",
+): Promise<void> {
+  await f.dataRepo.save(
+    type,
+    f.big.id,
+    Data.create({
+      name,
+      contentType,
+      lifetime: "infinite",
+      garbageCollection: 5,
+      tags: { type: "file", modelName: "big" },
+      ownerDefinition: {
+        ownerType: "model-method",
+        ownerRef: "repro/bigdata:write",
+      },
+    }),
+    content,
+  );
+}
+
+function text(bytes: number): Uint8Array {
+  return new TextEncoder().encode("x".repeat(bytes));
+}
+
+const NOTES = 'modelName == "big" && name.startsWith("note")';
+
+Deno.test("resource size: data query --select content refuses an oversized text body by name, async and sync, while select name lists it", async () => {
+  await withFixture(async (f) => {
+    await saveFile(f, "note-big", text(400));
+    await saveFile(f, "note-small", text(10));
+    const dqs = new DataQueryService(f.catalog, f.dataRepo);
+
+    const error = await assertRejects(
+      () => dqs.query(NOTES, { select: "content" }),
+      ResourceTooLargeToLoadError,
+      "big/note-big@v1",
+    );
+    assertStringIncludes(error.message, "--sort size:desc");
+    assertThrows(
+      () => dqs.querySync(NOTES, { select: "content" }),
+      ResourceTooLargeToLoadError,
+      "big/note-big@v1",
+    );
+    assertEquals(
+      ((await dqs.query(NOTES, { select: "name" })) as string[]).toSorted(),
+      ["note-big", "note-small"],
+    );
+    assertEquals(
+      await dqs.query('modelName == "big" && name == "note-small"', {
+        select: "content",
+      }),
+      ["x".repeat(10)],
+    );
+  });
+});
+
+Deno.test("resource size: a select content refusal for a row the caller may not read is dropped, never named", async () => {
+  await withFixture(async (f) => {
+    await saveFile(f, "note-secret", text(400));
+    await saveFile(f, "note-small", text(10));
+    const dqs = new DataQueryService(f.catalog, f.dataRepo);
+
+    assertEquals(
+      await dqs.query(NOTES, {
+        select: "content",
+        include: (record) => Promise.resolve(record.name !== "note-secret"),
+      }),
+      ["x".repeat(10)],
+    );
+    await assertRejects(
+      () =>
+        dqs.query(NOTES, {
+          select: "content",
+          include: () => Promise.resolve(true),
+        }),
+      ResourceTooLargeToLoadError,
+      "big/note-secret@v1",
+    );
+  });
+});
+
+Deno.test("resource size: select content reads the heap afresh for each body, so a later body is refused once the earlier ones fill it", async () => {
+  let used = 0;
+  const growing = new ResourceLoadGuard({
+    heapLimitBytes: () => 1000,
+    heapUsedBytes: () => (used += 150),
+  }, 50);
+  await withFixture(async (f) => {
+    for (const name of ["note-a", "note-b", "note-c"]) {
+      await saveFile(f, name, text(100));
+    }
+    const dqs = new DataQueryService(f.catalog, f.dataRepo);
+    await assertRejects(
+      () => dqs.query(NOTES, { select: "content" }),
+      ResourceTooLargeToLoadError,
+    );
+  }, growing);
+});
+
+Deno.test("resource size: select content refuses a page of bodies each under the floor once their total passes it and the heap is short", async () => {
+  const nearlyFull = new ResourceLoadGuard({
+    heapLimitBytes: () => 1000,
+    heapUsedBytes: () => 920,
+  }, 50);
+  await withFixture(async (f) => {
+    await saveFile(f, "note-a", text(30));
+    await saveFile(f, "note-b", text(30));
+    const dqs = new DataQueryService(f.catalog, f.dataRepo);
+
+    assertEquals(
+      await dqs.query('modelName == "big" && name == "note-a"', {
+        select: "content",
+      }),
+      ["x".repeat(30)],
+    );
+    const pageError = await assertRejects(
+      () => dqs.query(NOTES, { select: "content" }),
+      ResourceTooLargeToLoadError,
+    );
+    assertStringIncludes(pageError.message, "this read already holds");
+    assertStringIncludes(pageError.message, "a smaller --limit");
+    assertThrows(
+      () => dqs.querySync(NOTES, { select: "content" }),
+      ResourceTooLargeToLoadError,
+    );
+  }, nearlyFull);
+});
+
+Deno.test("resource size: select content refuses a binary body whose base64 form passes the text-length limit, and keeps UTF-8 text of its size", async () => {
+  const shortStrings = new ResourceLoadGuard(
+    {
+      heapLimitBytes: () => 1_000_000,
+      heapUsedBytes: () => 0,
+    },
+    50,
+    400,
+  );
+  await withFixture(async (f) => {
+    await saveFile(
+      f,
+      "note-bin",
+      new Uint8Array(320).fill(0xff),
+      "application/octet-stream",
+    );
+    await saveFile(f, "note-text", text(320));
+    const dqs = new DataQueryService(f.catalog, f.dataRepo);
+
+    const error = await assertRejects(
+      () =>
+        dqs.query('modelName == "big" && name == "note-bin"', {
+          select: "content",
+        }),
+      ResourceTooLargeToLoadError,
+      "big/note-bin@v1",
+    );
+    assertEquals(error.reason, "text-length");
+    assertEquals(
+      await dqs.query('modelName == "big" && name == "note-text"', {
+        select: "content",
+      }),
+      ["x".repeat(320)],
+    );
+  }, shortStrings);
+});
+
+Deno.test("resource size: select content refuses a body on its recorded size, without reading it", async () => {
+  await withFixture(async (f) => {
+    await saveFile(f, "note-big", text(400));
+    await Deno.remove(
+      f.dataRepo.getContentPath(type, f.big.id, "note-big", 1),
+    );
+    const dqs = new DataQueryService(f.catalog, f.dataRepo);
+
+    await assertRejects(
+      () => dqs.query(NOTES, { select: "content" }),
+      ResourceTooLargeToLoadError,
+      "big/note-big@v1",
+    );
+    assertThrows(
+      () => dqs.querySync(NOTES, { select: "content" }),
+      ResourceTooLargeToLoadError,
+      "big/note-big@v1",
+    );
+  });
+});
+
+Deno.test("resource size: a resource of unique short strings the byte factor would load is refused on their distinct count, one of repeated strings loads", async () => {
+  await withFixture(async (f) => {
+    const { writeResource } = createResourceWriter(
+      f.dataRepo,
+      type,
+      f.big.id,
+      resources,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "big",
+      undefined,
+      "write",
+      undefined,
+      undefined,
+      false,
+      Deno.build.os,
+      undefined,
+      undefined,
+      repoResourceSizePolicy(f.dataRepo),
+    );
+    // the same size and shape, so only distinctness differs
+    await writeResource("blob", "unique", {
+      items: Array.from(
+        { length: 20 },
+        (_, i) => "u" + String(i).padStart(9, "0"),
+      ),
+    });
+    await writeResource("blob", "repeated", {
+      items: Array(20).fill("abcdefghij"),
+    });
+    const dqs = new DataQueryService(f.catalog, f.dataRepo);
+    await assertRejects(
+      () =>
+        dqs.query('modelName == "big" && name == "unique"', {
+          select: "content",
+        }),
+      ResourceTooLargeToLoadError,
+      "big/unique",
+    );
+    const repeated = await dqs.query(
+      'modelName == "big" && name == "repeated"',
+      {
+        select: "content",
+      },
+    ) as { items: string[] }[];
+    assertEquals(repeated[0].items.length, 20);
+  });
+});
+
+async function getContent(
+  f: Fixture,
+  dataName: string,
+): Promise<DataGetEvent[]> {
+  return await collect<DataGetEvent>(dataGet(
+    createLibSwampContext(),
+    createDataGetDeps(
+      f.repoDir,
+      undefined,
+      f.dataRepo,
+      undefined,
+      f.definitionRepo,
+      f.catalog,
+    ),
+    {
+      modelIdOrName: "big",
+      dataName,
+      includeContent: true,
+      repoDir: f.repoDir,
+    },
+  ));
+}
+
+Deno.test("resource size: data get refuses a text body past the text-length limit, and a binary body whose base64 form passes it, by name", async () => {
+  const shortStrings = new ResourceLoadGuard(
+    {
+      heapLimitBytes: () => 1_000_000,
+      heapUsedBytes: () => 0,
+    },
+    50,
+    400,
+  );
+  await withFixture(async (f) => {
+    await saveFile(f, "note-long", text(500));
+    await saveFile(
+      f,
+      "note-bin",
+      new Uint8Array(320).fill(0xff),
+      "application/octet-stream",
+    );
+    await saveFile(f, "note-text", text(320));
+
+    const long = await assertRejects(
+      () => getContent(f, "note-long"),
+      ResourceTooLargeToLoadError,
+      "big/note-long@v1",
+    );
+    assertEquals(long.reason, "text-length");
+    const binary = await assertRejects(
+      () => getContent(f, "note-bin"),
+      ResourceTooLargeToLoadError,
+      "its base64 form of 428 characters",
+    );
+    assertEquals(binary.reason, "text-length");
+    const events = await getContent(f, "note-text");
+    const done = events[events.length - 1];
+    if (done.kind !== "completed") throw new Error(`got ${done.kind}`);
+    assertEquals(done.data.content, "x".repeat(320));
+  }, shortStrings);
+});
+
+async function readLogs(
+  f: Fixture,
+  logs: Record<string, Uint8Array>,
+  tail?: number,
+): Promise<ModelOutputLogsEvent[]> {
+  const output = ModelOutput.create({
+    definitionId: f.big.id as DefinitionId,
+    methodName: "write",
+    provenance: {
+      definitionHash: "abc",
+      modelVersion: "1",
+      triggeredBy: "manual",
+    },
+  });
+  output.markRunning();
+  for (const [name, content] of Object.entries(logs)) {
+    await f.dataRepo.save(
+      type,
+      f.big.id,
+      Data.create({
+        name,
+        contentType: "text/plain",
+        lifetime: "infinite",
+        garbageCollection: 5,
+        tags: { type: "log", modelName: "big" },
+        ownerDefinition: {
+          ownerType: "model-method",
+          ownerRef: "repro/bigdata:write",
+        },
+      }),
+      content,
+    );
+    output.addDataArtifact({
+      dataId: crypto.randomUUID(),
+      name,
+      version: 1,
+      tags: { type: "log" },
+    });
+  }
+  output.markSucceeded();
+  const deps = {
+    ...createModelOutputLogsDeps(f.repoDir, undefined, f.dataRepo),
+    matchOutputByPartialId: () =>
+      Promise.resolve({
+        status: "found" as const,
+        match: { output, type },
+      }),
+  };
+  return await collect<ModelOutputLogsEvent>(modelOutputLogs(
+    createLibSwampContext(),
+    deps,
+    { outputIdArg: output.id, ...(tail === undefined ? {} : { tail }) },
+  ));
+}
+
+Deno.test("resource size: behavior output logs refuses a log of short lines by name on its line count, and a tail of it reads", async () => {
+  await withFixture(async (f) => {
+    const shortLines = new TextEncoder().encode("a\n".repeat(100));
+    await assertRejects(
+      () => readLogs(f, { "run.log": shortLines }),
+      ResourceTooLargeToLoadError,
+      "run.log@v1",
+    );
+    const events = await readLogs(f, { "tail.log": shortLines }, 3);
+    const done = events[events.length - 1];
+    if (done.kind !== "completed") throw new Error(`got ${done.kind}`);
+    assertEquals(done.data.lines, ["a", "a", "a"]);
+    assertEquals(done.data.totalLines, 100);
+  });
 });

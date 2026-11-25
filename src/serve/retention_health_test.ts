@@ -84,7 +84,13 @@ Deno.test("createRetentionHealthProvider: reports not configured without a garba
   const retention = await provider.retention();
   assertEquals(retention?.configured, false);
   assertEquals(retention?.automatic, false);
-  assertEquals(retention?.kinds.every((k) => k.retention === null), true);
+  assertEquals(
+    retention?.kinds.filter((k) => k.retention !== null).map((k) => [
+      k.kind,
+      k.retention,
+    ]),
+    [["versionLimits", "declared"]],
+  );
 });
 
 Deno.test("createRetentionHealthProvider: reads once per ttl and again after it", async () => {

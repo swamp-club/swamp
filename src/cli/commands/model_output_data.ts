@@ -38,12 +38,41 @@ import {
 } from "../../libswamp/models/output_data.ts";
 import { createModelOutputDataRenderer } from "../../presentation/renderers/model_output_data.ts";
 import {
-  requestServerResponse,
+  type RequestResponseOptions,
+  requestServerParts,
   resolveServerTokenFromOptions,
   resolveServeUrl,
   withRemoteOptions,
 } from "../remote_run.ts";
-import type { ModelOutputDataResponse } from "../../serve/protocol.ts";
+import type {
+  ModelOutputDataInPartsPayload,
+  ModelOutputDataPayload,
+  ModelOutputDataResponse,
+} from "../../serve/protocol.ts";
+import { assembleDataGetContent } from "../../serve/data_get_parts.ts";
+import { UserError } from "../../domain/errors.ts";
+
+/** the value in parts, so no reply is one string; a serve that predates them replies whole */
+export async function requestRemoteOutputData(
+  target: RequestResponseOptions,
+  payload: ModelOutputDataPayload,
+): Promise<ModelOutputDataData> {
+  const inParts: ModelOutputDataInPartsPayload = { ...payload, inParts: true };
+  const { payload: reply, parts } = await requestServerParts<
+    ModelOutputDataResponse
+  >(target, { type: "model.output.data", payload: inParts });
+  const data = reply.data as unknown as ModelOutputDataData;
+  if (reply.dataParts === undefined) return data;
+  const text = assembleDataGetContent(parts, reply.dataParts, reply.dataLength);
+  try {
+    data.data = JSON.parse(text);
+  } catch {
+    throw new UserError(
+      "The server sent output data that is not valid JSON. Run the command again.",
+    );
+  }
+  return data;
+}
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -104,24 +133,18 @@ export function createModelOutputDataCommand(syntax: CommandSyntax) {
         server,
         options,
       );
-      const response = await requestServerResponse<ModelOutputDataResponse>(
-        { server, token },
-        {
-          type: "model.output.data",
-          payload: {
-            outputIdArg,
-            name: options.name as string | undefined,
-            field: options.field as string | undefined,
-            version: options.version as number | undefined,
-          },
-        },
-      );
+      const data = await requestRemoteOutputData({ server, token }, {
+        outputIdArg,
+        name: options.name as string | undefined,
+        field: options.field as string | undefined,
+        version: options.version as number | undefined,
+      });
       const renderer = createModelOutputDataRenderer(cliCtx.outputMode);
       await consumeStream(
         (async function* () {
           yield {
             kind: "completed" as const,
-            data: response.data as unknown as ModelOutputDataData,
+            data,
           };
         })(),
         renderer.handlers(),

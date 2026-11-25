@@ -109,8 +109,8 @@ export function TriggerFlow({ spec }: { spec: FlowSpec }) {
         aria-label={label}
         viewBox={`0 0 ${layout.width} ${layout.height}`}
         // Shrinks to fit a narrow panel down to 70%, then scrolls.
+        className="trigger-flow-graph"
         style={{
-          width: "100%",
           maxWidth: layout.width,
           minWidth: Math.round(layout.width * 0.7),
         }}

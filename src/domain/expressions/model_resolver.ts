@@ -1453,7 +1453,11 @@ export class ModelResolver {
         resolvedVersion,
       );
       if (rawBytes) {
-        loadGuard.assertLoadable(item, rawBytes.length);
+        if (data.contentType === "application/json") {
+          loadGuard.assertParsable(item, rawBytes);
+        } else {
+          loadGuard.assertLoadable(item, rawBytes.length);
+        }
         const decoded = new TextDecoder().decode(rawBytes);
         textContent = decoded;
         if (data.contentType === "application/json") {

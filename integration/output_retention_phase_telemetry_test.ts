@@ -220,7 +220,12 @@ function runOutputRetention(
             ),
         ),
     },
-    { policy: RetentionPolicy.fromConfig({ outputs: "1d" }) },
+    {
+      policy: RetentionPolicy.fromConfig({
+        outputs: "1d",
+        versionLimits: false,
+      }),
+    },
   );
 }
 

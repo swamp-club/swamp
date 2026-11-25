@@ -138,10 +138,10 @@ export function CallInspector(
             )}
           </dl>
           {call.swampSpans && call.swampSpans.length > 0 && (
-            <div style={{ marginTop: 12 }}>
+            <div className="as-swamp-spans">
               <h2>swamp spans</h2>
               {call.swampSpans.map((root, i) => (
-                <div key={i} style={{ marginBottom: 8 }}>
+                <div key={i} className="as-swamp-spans-command">
                   <div className="as-muted">
                     Command {i + 1}, {formatDuration(root.offset)}{" "}
                     after the call started

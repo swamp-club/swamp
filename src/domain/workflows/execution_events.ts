@@ -98,6 +98,8 @@ export type WorkflowExecutionEvent =
     kind: "job_fanout_waiting";
     jobId: string;
     worker: string;
+    // absent from events of an older serve; read as disconnected
+    reason?: "disconnected" | "unverified";
     /** null when serve's default applies and the domain cannot read it */
     queueTimeoutSeconds: number | null;
   }

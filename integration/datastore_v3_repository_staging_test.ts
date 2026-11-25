@@ -850,3 +850,59 @@ for (const emptied of [false, true]) {
     },
   );
 }
+
+Deno.test("v3 staging: declared-limit batches commit their removals, and the read model a follower replays matches", async () => {
+  await withAuditedV3Env(async (env) => {
+    const writer = new V3Writer(env, "");
+    // without write-time pruning, so the backlog builds as on a serve with
+    // autoGc off
+    const repo = new FileSystemUnifiedDataRepository(
+      writer.dir,
+      join(writer.root, "data"),
+      writer.catalog,
+      writer.hook,
+      undefined,
+      writer.namespace,
+      false,
+    );
+    for (let n = 1; n <= 11; n++) {
+      await writer.run(() =>
+        repo.save(
+          MODEL_TYPE,
+          MODEL_ID,
+          data("log", { garbageCollection: 3 }),
+          text(`log${n}`),
+        )
+      );
+    }
+    const before = (await commitsAfter(writer, 0)).length;
+
+    let cursor: string | undefined;
+    let batches = 0;
+    let removed = 0;
+    do {
+      const batch = await writer.run(() =>
+        repo.collectDeclaredGarbageBatch({ limit: 3, cursor, now: Date.now() })
+      );
+      assert(batch.versionsRemoved <= 3);
+      removed += batch.versionsRemoved;
+      cursor = batch.cursor;
+      batches++;
+    } while (cursor !== undefined);
+
+    assertEquals(removed, 8);
+    assert(batches > 1, `${batches} batches`);
+    assertEquals(await repo.listVersions(MODEL_TYPE, MODEL_ID, "log"), [
+      9,
+      10,
+      11,
+    ]);
+    assertVersionsTombstoned(
+      await commitsAfter(writer, before),
+      "data.gc",
+      "log",
+      [1, 2, 3, 4, 5, 6, 7, 8],
+    );
+    await assertMatches(writer);
+  });
+});

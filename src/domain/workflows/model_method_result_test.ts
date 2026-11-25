@@ -158,14 +158,21 @@ Deno.test("modelMethodResourceResult: a typed consumer is handed the stored reco
   }
 });
 
-function guarded(base: UnifiedDataRepository): UnifiedDataRepository {
+function guardedAt(
+  limit: number,
+  base: UnifiedDataRepository,
+): UnifiedDataRepository {
   return {
     ...base,
     loadGuard: new ResourceLoadGuard({
-      heapLimitBytes: () => 90,
+      heapLimitBytes: () => limit,
       heapUsedBytes: () => 0,
     }, 10),
   } as UnifiedDataRepository;
+}
+
+function guarded(base: UnifiedDataRepository): UnifiedDataRepository {
+  return guardedAt(90, base);
 }
 
 Deno.test("modelMethodResourceResult: refuses a non-JSON result the guard rejects, by recorded size before reading or by byte length", async () => {
@@ -205,6 +212,33 @@ Deno.test("modelMethodResourceResult: refuses a non-JSON result the guard reject
       ),
     ResourceTooLargeToLoadError,
   );
+});
+
+Deno.test("modelMethodResourceResult: refuses dense JSON on its parsed structure, and loads sparse JSON of the same size", async () => {
+  // 28 bytes each: on a 160-byte heap one long string fits, nine slots do not
+  const dense = JSON.stringify(Array(9).fill(""));
+  const sparse = JSON.stringify(["x".repeat(dense.length - 4)]);
+  assertEquals(sparse.length, dense.length);
+  await assertRejects(
+    () =>
+      modelMethodResourceResult(
+        guardedAt(160, repo(data("application/json"), dense).repo),
+        TYPE,
+        "id-1",
+        "creds",
+        "db",
+      ),
+    ResourceTooLargeToLoadError,
+    "db/creds",
+  );
+  const loaded = await modelMethodResourceResult(
+    guardedAt(160, repo(data("application/json"), sparse).repo),
+    TYPE,
+    "id-1",
+    "creds",
+    "db",
+  );
+  assertEquals(loaded === undefined, false);
 });
 
 Deno.test("storedResourceRecord: the media type is matched by prefix, so application/json with parameters reads as stored (typed-secrets 4.1)", async () => {
@@ -273,4 +307,34 @@ Deno.test("modelMethodResourceResult: a non-JSON result is looked up once and re
     "plain text",
   );
   assertEquals(calls, ["findByName", "getContent@4"]);
+});
+
+Deno.test("modelMethodResourceResult: prices the parse of any content type, and of content with no metadata", async () => {
+  const dense = JSON.stringify(Array(9).fill(""));
+  for (const stored of [data("text/plain"), null]) {
+    await assertRejects(
+      () =>
+        modelMethodResourceResult(
+          guarded(repo(stored, dense).repo),
+          TYPE,
+          "id-1",
+          "creds",
+          "db",
+        ),
+      ResourceTooLargeToLoadError,
+    );
+  }
+});
+
+Deno.test("modelMethodResourceResult: text that is not one JSON document is priced by its first value only, so NDJSON loads", async () => {
+  // 24 bytes: on a 200-byte heap its first object fits; pricing all three would not
+  const ndjson = '{"a":1}\n'.repeat(3);
+  const loaded = await modelMethodResourceResult(
+    guardedAt(200, repo(data("text/plain"), ndjson).repo),
+    TYPE,
+    "id-1",
+    "creds",
+    "db",
+  );
+  assertEquals(loaded, ndjson);
 });

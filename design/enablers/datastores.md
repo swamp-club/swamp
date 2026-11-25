@@ -7479,8 +7479,11 @@ and every intent must belong to it.
 
 **Per commit, in order:**
 
-1. Authenticate, and rate-limit: a token bucket per principal
-   (`checkPrincipalRate`, 600 a minute with a burst of 200). The per-IP burst
+1. Authenticate, and rate-limit: the data plane's own token bucket per
+   principal (`checkPrincipalDataPlaneRate`, 6,000 a minute with a burst of
+   1,024, so a member's 32-step fan-out of lock, head, commit and release
+   requests is not throttled), apart from the general bucket other routes
+   spend (`checkPrincipalRate`, 600 a minute with a burst of 200). The per-IP burst
    and the failed-token limiter count only failed authentication, so one CI
    host's chunk traffic is not capped at 50 requests a minute; at most 200
    attempts per token name authenticate at once.
@@ -7956,7 +7959,13 @@ the ledger, so a client uploads again.
 **Memory and limits.** `storage/1` puts and gets whole chunks, so serve holds
 at most one chunk (16 MiB) per request (a commit's carried chunks are
 verified and staged one at a time), with at most 8 chunk requests per
-principal in flight. Streaming a chunk to storage without holding it needs a
+principal in flight. A commit past those 8 waits for one of them, its chunk
+bytes unread (up to 64 waiting, `MAX_QUEUED_COMMIT_INGESTS`; `429` past
+that), so a member's parallel fan-out queues instead of being refused; a chunk
+upload or download past them is still `429`. A waiting commit has already read
+its envelope, so what one principal's commits pin is bounded by
+`MAX_COMMITS_IN_FLIGHT` (72 open commit requests, each with an envelope of up
+to 4 MiB), counted before any envelope is read and refused `429` past it. Streaming a chunk to storage without holding it needs a
 streaming `storage/1`, which the S3 and GCS stores would implement too. The
 other limits are constants, with no flags:
 
@@ -8459,7 +8468,8 @@ below describes them.
 - **Bounds.** `ttlMs` between 5 s and 120 s (30 s by default); one request
   waits at serve at most 10 s (`waitMs`), so a waiting client asks again
   rather than polls; at most 256 leases per principal (`429
-  too_many_leases`). The routes are rate-limited like the others.
+  too_many_leases`). The routes spend the data plane's bucket, like the others
+  here.
 - **Waiting order.** Callers waiting for one lock queue in arrival order:
   only the longest waiter tries the lock, a newcomer behind a queue is
   answered `lock_held` when its own wait ends rather than taking a freed lock
@@ -9269,7 +9279,7 @@ chunks: a revoked principal cannot `PUT chunks`, so serve keeps both in the
 control plane under `quarantine/<txnId>`, with the depositing principal and
 the reason. A deposit takes one of its caller's upload slots
 (`MAX_CONCURRENT_CHUNK_REQUESTS`, shared with commits and chunk uploads;
-`429` past them) before its body is read, and its txnId is lowercased
+`429` past them, where a commit would wait) before its body is read, and its txnId is lowercased
 before anything reads it, the form every landed commit carries, so a
 re-cased copy of a landed change is answered `quarantine_landed`. Its
 chunks are decoded only once the checks below keep it

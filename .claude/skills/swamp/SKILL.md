@@ -55,6 +55,7 @@ Route to the right guide based on what the user needs.
 | Sharing — promote solo repo to team, datastore + vault setup                                | [references/share/guide.md](references/share/guide.md)                         |
 | Serve — auth, grants, access control, tokens, OAuth                                         | [references/serve/guide.md](references/serve/guide.md)                         |
 | Team mode — members' checkouts through serve, managedConfig, run control, limits            | [references/serve/team-mode.md](references/serve/team-mode.md)                 |
+| Dashboard theme — white-label colours, logo, name, fonts for serve, dashboard and apps      | [references/serve/dashboard-theme.md](references/serve/dashboard-theme.md)     |
 | Troubleshooting — errors, health checks, diagnostics                                        | [references/troubleshooting/guide.md](references/troubleshooting/guide.md)     |
 
 ## Common Commands

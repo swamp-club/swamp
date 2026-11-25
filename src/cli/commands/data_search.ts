@@ -20,7 +20,6 @@
 import { Command } from "@cliffy/command";
 import { consumeStream } from "../../libswamp/stream.ts";
 import { createLibSwampContext } from "../../libswamp/context.ts";
-import type { DataGetData } from "../../libswamp/data/get.ts";
 import {
   dataSearch,
   type DataSearchDeps,
@@ -31,7 +30,6 @@ import {
   createDataSearchRenderer,
   type DataPreviewDetail,
 } from "../../presentation/renderers/data_search.tsx";
-import { renderDataGet } from "../../presentation/renderers/data_get.ts";
 import {
   createContext,
   type GlobalOptions,
@@ -48,10 +46,8 @@ import {
 import type { DataSearchResponse } from "../../serve/protocol.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
-import { encodeContent } from "../../domain/data/content_encoding.ts";
+import { decodePreview } from "../../domain/data/content_encoding.ts";
 import { canonicalOwnerType } from "../../domain/data/data_metadata.ts";
-import type { OutputMode } from "../../presentation/output/output.ts";
-import { UserError } from "../../domain/errors.ts";
 import { toRelativePath } from "../../infrastructure/persistence/paths.ts";
 import type { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { findLatestItemsFromCatalog } from "../../infrastructure/persistence/catalog_search_adapter.ts";
@@ -59,7 +55,7 @@ import { findLatestItemsFromCatalog } from "../../infrastructure/persistence/cat
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-function createDataFetchPreview(
+export function createDataFetchPreview(
   dataRepo: FileSystemUnifiedDataRepository,
   repoDir: string,
 ): (item: DataSearchItem) => Promise<DataPreviewDetail> {
@@ -83,15 +79,20 @@ function createDataFetchPreview(
     }
 
     try {
-      const rawContent = await dataRepo.getContent(
+      const bytes = await dataRepo.getContentPrefix(
         modelType,
         item.modelId,
         item.name,
         item.version,
+        PREVIEW_BYTES + 1,
       );
-      if (rawContent) {
-        const content = new TextDecoder().decode(rawContent);
-        return { content, contentPath };
+      if (bytes) {
+        const { text, truncated } = decodePreview(bytes, PREVIEW_BYTES);
+        return {
+          content: text,
+          contentPath,
+          ...(truncated ? { truncatedFrom: item.size } : {}),
+        };
       }
     } catch {
       // Silently handle read errors
@@ -101,66 +102,7 @@ function createDataFetchPreview(
   };
 }
 
-async function displayDataDetail(
-  item: DataSearchItem,
-  dataRepo: FileSystemUnifiedDataRepository,
-  repoDir: string,
-  outputMode: OutputMode,
-): Promise<void> {
-  const modelType = ModelType.create(item.modelType);
-
-  const data = await dataRepo.findByName(
-    modelType,
-    item.modelId,
-    item.name,
-  );
-
-  if (!data) {
-    throw new UserError(
-      `Data "${item.name}" not found for behavior "${item.modelName}"`,
-    );
-  }
-
-  const absoluteContentPath = dataRepo.getContentPath(
-    modelType,
-    item.modelId,
-    item.name,
-    data.version,
-  );
-
-  const output: DataGetData = {
-    id: data.id,
-    name: data.name,
-    modelId: item.modelId,
-    modelName: item.modelName,
-    modelType: modelType.normalized,
-    version: data.version,
-    contentType: data.contentType,
-    lifetime: data.lifetime,
-    garbageCollection: data.garbageCollection,
-    streaming: data.streaming,
-    tags: data.tags,
-    ownerDefinition: data.ownerDefinition,
-    createdAt: data.createdAt.toISOString(),
-    size: data.size,
-    checksum: data.checksum,
-    contentPath: toRelativePath(repoDir, absoluteContentPath),
-  };
-
-  const rawContent = await dataRepo.getContent(
-    modelType,
-    item.modelId,
-    item.name,
-    data.version,
-  );
-  if (rawContent) {
-    const { content, contentEncoding } = encodeContent(rawContent);
-    output.content = content;
-    output.contentEncoding = contentEncoding;
-  }
-
-  await renderDataGet(output, outputMode);
-}
+const PREVIEW_BYTES = 64 * 1024;
 
 export const dataSearchCommand = withRemoteOptions(
   new Command()
@@ -330,14 +272,6 @@ export const dataSearchCommand = withRemoteOptions(
     }),
     renderer.handlers(),
   );
-
-  const selected = renderer.selectedItem();
-  if (selected) {
-    if (effectiveMode === "json") {
-      await displayDataDetail(selected, dataRepo, repoDir, effectiveMode);
-    }
-    // In interactive mode, scrollback from the picker already has the detail
-  }
 
   ctx.logger.debug("Data search command completed");
 });

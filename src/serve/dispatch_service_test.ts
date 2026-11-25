@@ -133,6 +133,7 @@ function createHarness(options?: {
     inputs: Record<string, unknown>,
   ) => Promise<void>;
   owner?: OrchestratorOwner;
+  verificationPending?: (name: string) => boolean;
 }) {
   const pool = new Map<string, WorkerSnapshot>(
     (options?.workers ?? [snapshot({ name: "w1" })]).map((w) => [w.name, w]),
@@ -168,9 +169,15 @@ function createHarness(options?: {
       if (entry) pool.set(name, { ...entry, status: "busy" });
       return behavior(name, params, options).finally(() => {
         const after = pool.get(name);
-        if (after) pool.set(name, { ...after, status: "idle" });
+        // a status the behavior set itself, such as a re-enrollment, stands
+        if (after?.status === "busy") {
+          pool.set(name, { ...after, status: "idle" });
+        }
       });
     },
+    ...(options?.verificationPending
+      ? { verificationPending: options.verificationPending }
+      : {}),
   };
 
   const dispatches = new DispatchRegistry();
@@ -4011,6 +4018,113 @@ Deno.test("DispatchService: a step refused for its own cause during a planned re
       ),
     WorkerIneligibleError,
   );
+});
+
+function laneRequest(onEvent?: (event: RpcStreamEvent) => void) {
+  return stepRequest({
+    workflowRunId: "run-1",
+    jobName: "main",
+    placement: { labels: {}, platform: "linux", lane: { worker: "w1" } },
+    onEvent,
+  });
+}
+
+Deno.test("DispatchService: a lane whose unverified worker is still being verified queues, and is sent once the worker is promoted", async () => {
+  let pending = true;
+  const h = createHarness({
+    workers: [snapshot({ name: "w1", status: "unverified" })],
+    queueTimeoutMs: 60_000,
+    verificationPending: () => pending,
+  });
+  const events: RpcStreamEvent[] = [];
+  const result = h.service.executeRemote(laneRequest((e) => events.push(e)));
+  await waitFor(
+    () => events.some((e) => e.kind === "queued"),
+    "the lane to queue",
+  );
+  assertEquals(h.dispatchCalls.length, 0);
+
+  pending = false;
+  h.pool.set("w1", snapshot({ name: "w1" }));
+  h.service.notifyWorkerIdle(snapshot({ name: "w1" }));
+  await result;
+  assertEquals(h.dispatchCalls.map((c) => c.name), ["w1"]);
+});
+
+Deno.test("DispatchService: a lane waiting on a worker whose verification then fails is woken and fails as ineligible, never sent", async () => {
+  let pending = true;
+  const h = createHarness({
+    workers: [snapshot({ name: "w1", status: "unverified" })],
+    queueTimeoutMs: 60_000,
+    verificationPending: () => pending,
+  });
+  const events: RpcStreamEvent[] = [];
+  const result = h.service.executeRemote(laneRequest((e) => events.push(e)));
+  await waitFor(
+    () => events.some((e) => e.kind === "queued"),
+    "the lane to queue",
+  );
+
+  pending = false;
+  h.service.notifyWorkerVerifyFailed(
+    snapshot({ name: "w1", status: "unverified" }),
+  );
+  const error = await assertRejects(() => result, WorkerIneligibleError);
+  assertEquals(error.reason, "unverified");
+  assertEquals(h.dispatchCalls.length, 0);
+});
+
+Deno.test("DispatchService: a lane whose worker re-enrolled between scheduling and the send re-queues while its verification is pending", async () => {
+  let pending = false;
+  const h = createHarness({
+    queueTimeoutMs: 60_000,
+    verificationPending: () => pending,
+  });
+  h.setBehavior((name) => {
+    if (h.dispatchCalls.length === 1) {
+      pending = true;
+      h.pool.set(name, snapshot({ name, status: "unverified" }));
+      return Promise.reject(new WorkerNotDispatchableError(name, "unverified"));
+    }
+    return Promise.resolve<DispatchResult>({
+      status: "success",
+      outputs: [],
+      logs: [],
+      durationMs: 1,
+    });
+  });
+  let failure: unknown;
+  const result = h.service.executeRemote(laneRequest());
+  result.catch((e: unknown) => {
+    failure = e;
+  });
+  await waitFor(() => h.dispatchCalls.length === 1, "the first send");
+  // the refused send waits for a pool change; keep waking it until it queues
+  await waitFor(() => {
+    if (failure !== undefined) throw failure;
+    h.service.notifyWorkerIdle(snapshot({ name: "w2" }));
+    return h.transitions.some((t) => t.methodName === "enqueue");
+  }, "the refused lane to queue on its re-enrolled worker");
+  assertEquals(h.dispatchCalls.length, 1);
+
+  pending = false;
+  h.pool.set("w1", snapshot({ name: "w1" }));
+  h.service.notifyWorkerIdle(snapshot({ name: "w1" }));
+  await result;
+  assertEquals(h.dispatchCalls.map((c) => c.name), ["w1", "w1"]);
+});
+
+Deno.test("DispatchService: a gateway that cannot say whether verification is pending fails an unverified worker's lane at once", async () => {
+  const h = createHarness({
+    workers: [snapshot({ name: "w1", status: "unverified" })],
+    queueTimeoutMs: 60_000,
+  });
+  const error = await assertRejects(
+    () => h.service.executeRemote(laneRequest()),
+    WorkerIneligibleError,
+  );
+  assertEquals(error.reason, "unverified");
+  assertEquals(h.dispatchCalls.length, 0);
 });
 
 async function withAddOnType(

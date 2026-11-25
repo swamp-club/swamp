@@ -27,9 +27,19 @@ export const RETENTION_KINDS = [
   "audit",
   "bookkeeping",
   "autoDefinitions",
+  "versionLimits",
 ] as const;
 
 export type RetentionKind = typeof RETENTION_KINDS[number];
+
+type DurationKind = Exclude<RetentionKind, "versionLimits">;
+
+const DURATION_KINDS: readonly DurationKind[] = RETENTION_KINDS.filter(
+  (kind): kind is DurationKind => kind !== "versionLimits",
+);
+
+/** what a versionLimits watermark and status show in place of a duration */
+export const DECLARED_RETENTION = "declared";
 
 export interface RetentionConfig {
   /**
@@ -45,6 +55,11 @@ export interface RetentionConfig {
   audit?: string;
   bookkeeping?: string;
   autoDefinitions?: string;
+  /**
+   * Each data name's own declared garbageCollection, applied by serve's hourly
+   * pass whether or not `automatic` is on.
+   */
+  versionLimits?: boolean;
 }
 
 export const RETENTION_CONFIG_KEYS: readonly string[] = [
@@ -56,7 +71,7 @@ export const RETENTION_CONFIG_KEYS: readonly string[] = [
 export interface RetentionConfigProblem {
   field?: string;
   message: string;
-  replacement?: string;
+  replacement?: string | boolean;
 }
 
 /**
@@ -95,7 +110,7 @@ export function checkRetentionConfig(
   const problem = (legacy: boolean, entry: RetentionConfigProblem) =>
     (legacy ? errors : ignored).push(entry);
 
-  for (const field of ["retention", ...RETENTION_KINDS] as const) {
+  for (const field of ["retention", ...DURATION_KINDS] as const) {
     const value = config[field];
     if (value === undefined) continue;
     const legacy = LEGACY_KEYS.includes(field);
@@ -134,6 +149,18 @@ export function checkRetentionConfig(
     ignored.push({
       field: "automatic",
       message: "garbageCollection.automatic must be true or false",
+    });
+  }
+  if (
+    config.versionLimits !== undefined &&
+    typeof config.versionLimits !== "boolean"
+  ) {
+    // a malformed switch fails safe: declared limits delete data
+    ignored.push({
+      field: "versionLimits",
+      message:
+        "garbageCollection.versionLimits must be true or false; declared version limits stay off until it is",
+      replacement: false,
     });
   }
 
@@ -199,7 +226,23 @@ export class RetentionPolicy {
     return this.config.automatic === true;
   }
 
+  get versionLimits(): boolean {
+    return this.config.versionLimits !== false;
+  }
+
+  enforcedKinds(): RetentionKind[] {
+    if (this.automatic) {
+      return RETENTION_KINDS.filter((kind) =>
+        this.durationFor(kind) !== undefined
+      );
+    }
+    return this.versionLimits ? ["versionLimits"] : [];
+  }
+
   durationFor(kind: RetentionKind): string | undefined {
+    if (kind === "versionLimits") {
+      return this.versionLimits ? DECLARED_RETENTION : undefined;
+    }
     // Data retention deletes latest versions, a behavior's current state
     // included: it applies only when `data` is set, never from the shared
     // default.
@@ -222,6 +265,7 @@ export class RetentionPolicy {
   }
 
   retentionMs(kind: RetentionKind, overrideMs?: number): number | undefined {
+    if (kind === "versionLimits") return undefined;
     if (overrideMs !== undefined) return overrideMs;
     const duration = this.durationFor(kind);
     return duration === undefined ? undefined : parseDataDuration(duration);
@@ -232,6 +276,10 @@ export class RetentionPolicy {
     now: Date,
     overrideMs?: number,
   ): Date | undefined {
+    // Declared limits have no cutoff of their own; the pass start is recorded.
+    if (kind === "versionLimits") {
+      return this.versionLimits ? new Date(now.getTime()) : undefined;
+    }
     const ms = this.retentionMs(kind, overrideMs);
     if (ms === undefined) return undefined;
     // A cutoff no Date can hold means nothing can be that old.
@@ -239,7 +287,15 @@ export class RetentionPolicy {
     return Number.isFinite(cutoff.getTime()) ? cutoff : undefined;
   }
 
+  /**
+   * true only when a pass applies an age cutoff; compacting history before a
+   * cutoff drops the newest-commits floor, which declared limits never imply
+   */
+  get appliesCutoffs(): boolean {
+    return this.automatic && this.hasAnyRetention;
+  }
+
   get hasAnyRetention(): boolean {
-    return RETENTION_KINDS.some((kind) => this.durationFor(kind) !== undefined);
+    return DURATION_KINDS.some((kind) => this.durationFor(kind) !== undefined);
   }
 }

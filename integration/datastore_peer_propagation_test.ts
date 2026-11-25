@@ -61,8 +61,7 @@ const PINNED_GAPS: readonly string[] = [
   "s1 without invalidation: B's catalog misses the new name",
   "s2 without invalidation: B's catalog keeps the old version",
   "s3 version delete: B's catalog still lists the version its files lost",
-  "s3 latest-version delete: the remote latest marker still names the deleted version",
-  "s3 latest-version delete: B reads x as missing while its catalog lists the deleted version",
+  "s3 latest-version delete: B's history still lists the version deleted before it",
   "s3 delete all: B still has the deleted data",
   "s3 after B's push: B still has the deleted data",
   "s4 rename: B's catalog still serves the old name",
@@ -524,16 +523,17 @@ for (const { label, twoPhaseSync } of FLUSH_MODES) {
         "2",
         "3",
       );
-      const staleCatalog: View = {
-        latest: { x: "x@3" },
-        query: ["x@3"],
-        history: versionsOf("x", [1, 2, 3]),
-        repo: { x: null },
+      // the version delete's stale row above lingers in history
+      const staleHistory: View = {
+        latest: { x: "x@2" },
+        query: ["x@2"],
+        history: versionsOf("x", [1, 2]),
+        repo: { x: "x@2" },
         versions: { x: [2] },
       };
       expectOrGap(
         gaps,
-        "s3 latest-version delete: B reads x as missing while its catalog lists the deleted version",
+        "s3 latest-version delete: B's history still lists the version deleted before it",
         await observeOn(p.repo.B, modelId, ["x"]),
         {
           latest: { x: "x@2" },
@@ -542,7 +542,7 @@ for (const { label, twoPhaseSync } of FLUSH_MODES) {
           repo: { x: "x@2" },
           versions: { x: [2] },
         },
-        staleCatalog,
+        staleHistory,
       );
 
       await withModelLock(
@@ -564,7 +564,7 @@ for (const { label, twoPhaseSync } of FLUSH_MODES) {
         "s3 delete all: B still has the deleted data",
         await observeOn(p.repo.B, modelId, ["x"]),
         gone,
-        staleCatalog,
+        staleHistory,
       );
 
       await saveOn(p.repo.B, modelId, "y", { y: 1 });

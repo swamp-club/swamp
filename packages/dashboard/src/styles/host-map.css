@@ -14,7 +14,7 @@
 .hm-svg:focus-visible {
   outline: 2px solid var(--info);
   outline-offset: 2px;
-  border-radius: 8px;
+  border-radius: calc(8px * var(--radius-scale));
 }
 
 .hm-cell-bg {
@@ -30,7 +30,7 @@
 }
 
 .hm-cell-count {
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
   fill: var(--text-2);
 }
@@ -204,7 +204,7 @@
   flex-wrap: wrap;
   background: var(--surface-inset);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: calc(6px * var(--radius-scale));
   padding: 2px;
 }
 
@@ -215,7 +215,7 @@
   font: inherit;
   font-size: 12.5px;
   padding: 4px 10px;
-  border-radius: 4px;
+  border-radius: calc(4px * var(--radius-scale));
   cursor: pointer;
 }
 
@@ -226,13 +226,13 @@
 }
 
 .fleet-input {
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   width: 260px;
   max-width: 100%;
   height: 30px;
   padding: 0 9px;
-  border-radius: 6px;
+  border-radius: calc(6px * var(--radius-scale));
   border: 1px solid var(--border-strong);
   background: var(--surface-inset);
   color: var(--text-1);
@@ -244,7 +244,7 @@
   gap: 6px;
   height: 30px;
   padding: 0 10px;
-  border-radius: 6px;
+  border-radius: calc(6px * var(--radius-scale));
   border: 1px solid var(--border);
   background: var(--surface-inset);
   color: var(--text-2);
@@ -260,7 +260,7 @@
 .fleet-swatch {
   width: 9px;
   height: 9px;
-  border-radius: 2px;
+  border-radius: calc(2px * var(--radius-scale));
   flex: none;
 }
 
@@ -305,7 +305,7 @@
   gap: 4px;
   height: 30px;
   padding: 0 4px;
-  border-radius: 6px;
+  border-radius: calc(6px * var(--radius-scale));
   border: 1px solid var(--border);
   background: var(--surface-inset);
 }
@@ -314,7 +314,7 @@
   width: 24px;
   height: 24px;
   border: 0;
-  border-radius: 4px;
+  border-radius: calc(4px * var(--radius-scale));
   background: transparent;
   color: var(--text-1);
   cursor: pointer;
@@ -323,7 +323,7 @@
 .fleet-ttl output {
   min-width: 48px;
   text-align: center;
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 12.5px;
 }
 
@@ -331,7 +331,7 @@
   display: flex;
   flex-wrap: wrap;
   gap: 14px;
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   color: var(--text-2);
 }
@@ -430,11 +430,11 @@
 }
 
 .fleet-label {
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 10.5px;
   background: var(--surface-inset);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: calc(4px * var(--radius-scale));
   padding: 1px 6px;
   color: var(--text-2);
 }
@@ -453,7 +453,7 @@
 }
 
 .fleet-slot-what {
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   color: var(--text-2);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -472,6 +472,6 @@
 }
 
 .fleet-slot-when {
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   color: var(--text-3);
 }

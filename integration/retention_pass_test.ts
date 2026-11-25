@@ -283,7 +283,14 @@ Deno.test("runRetentionAtCommandEnd: reaps every kind past its retention and kee
     assertEquals(result.complete, true);
     assertEquals(
       result.kinds.map((k) => k.kind),
-      ["workflowRuns", "evaluatedSnapshots", "outputs", "data", "audit"],
+      [
+        "workflowRuns",
+        "evaluatedSnapshots",
+        "outputs",
+        "data",
+        "versionLimits",
+        "audit",
+      ],
     );
 
     assertEquals(await pathExists(oldDone.yamlPath), false);
@@ -350,12 +357,13 @@ Deno.test("runRetentionAtCommandEnd: reaps every kind past its retention and kee
       "data",
       "evaluatedSnapshots",
       "outputs",
+      "versionLimits",
       "workflowRuns",
     ]);
     const watermarks = await new ControlPlaneRetentionWatermarkRepository(
       new FileSystemControlPlaneStore(repo.datastorePath),
     ).getAll();
-    assertEquals(watermarks.length, 5);
+    assertEquals(watermarks.length, 6);
     for (const watermark of watermarks) {
       assertEquals(watermark.complete, true, watermark.kind);
       assertEquals(
@@ -440,7 +448,10 @@ Deno.test("runRepoRetention: small batches drain every old run; a spent budget s
     const watermarks = new ControlPlaneRetentionWatermarkRepository(
       new FileSystemControlPlaneStore(join(dir, "control")),
     );
-    const policy = RetentionPolicy.fromConfig({ workflowRuns: "7d" });
+    const policy = RetentionPolicy.fromConfig({
+      workflowRuns: "7d",
+      versionLimits: false,
+    });
     let batches = 0;
     const deps = {
       repoDir: repo.repoDir,

@@ -66,17 +66,46 @@ function service(
   });
 }
 
-Deno.test("RetentionGcService.runOnce: runs no pass unless automatic is on", async () => {
+Deno.test("RetentionGcService.runOnce: without automatic runs only declared version limits", async () => {
+  const kinds: (readonly string[])[] = [];
+  const result = await service({ retention: "30d" }, {
+    runPass: (control) => {
+      kinds.push(control.kinds);
+      return Promise.resolve(passResult());
+    },
+  }).runOnce();
+  assertEquals(result?.complete, true);
+  assertEquals(kinds, [["versionLimits"]]);
+});
+
+Deno.test("RetentionGcService.runOnce: runs no pass with nothing to enforce", async () => {
   const passes: number[] = [];
   assertEquals(
-    await service({ retention: "30d" }, { passes }).runOnce(),
+    await service({ retention: "30d", versionLimits: false }, { passes })
+      .runOnce(),
     undefined,
   );
   assertEquals(
-    await service({ automatic: true }, { passes }).runOnce(),
+    await service({ automatic: true, versionLimits: false }, { passes })
+      .runOnce(),
     undefined,
   );
   assertEquals(passes, []);
+});
+
+Deno.test("RetentionGcService.runOnce: with automatic on passes every kind with a retention", async () => {
+  const kinds: (readonly string[])[] = [];
+  await service({ automatic: true, workflowRuns: "7d" }, {
+    runPass: (control) => {
+      kinds.push(control.kinds);
+      return Promise.resolve(passResult());
+    },
+  }).runOnce();
+  assertEquals(kinds, [[
+    "workflowRuns",
+    "evaluatedSnapshots",
+    "versionLimits",
+  ]]);
 });
 
 Deno.test("RetentionGcService.runOnce: runs a pass and reports it", async () => {

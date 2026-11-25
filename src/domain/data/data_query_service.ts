@@ -19,7 +19,7 @@
 
 import { getLogger } from "@logtape/logtape";
 import { Environment } from "cel-js";
-import { coerceBigInts } from "../../infrastructure/cel/cel_evaluator.ts";
+import { coerceBigIntsShared } from "../../infrastructure/cel/cel_evaluator.ts";
 import type {
   CatalogRow,
   CatalogSortOrder,
@@ -70,9 +70,16 @@ import {
   type QueryView,
   QueryViewRefusal,
 } from "./query_view.ts";
-import { type ContentEncoding, encodeContent } from "./content_encoding.ts";
+import {
+  type ContentEncoding,
+  encodeLoadableContent,
+} from "./content_encoding.ts";
 import { BinaryContentPredicateError } from "./binary_content_predicate_error.ts";
-import { ResourceTooLargeToLoadError } from "./resource_load_guard.ts";
+import {
+  type LoadedItemRef,
+  resourceLoadGuardOf,
+  ResourceTooLargeToLoadError,
+} from "./resource_load_guard.ts";
 import { ModelType } from "../models/model_type.ts";
 import type { Data } from "./data.ts";
 import {
@@ -371,6 +378,19 @@ function recordIdentity(record: DataRecord): RecordContentIdentity {
     version: record.version,
   };
 }
+
+function loadedItemOf(record: DataRecord): LoadedItemRef {
+  return {
+    modelType: record.modelType,
+    modelName: record.modelName,
+    dataName: record.name,
+    version: record.version,
+  };
+}
+
+// a page refused on what it already holds is read again with fewer items
+const PAGE_REMEDY =
+  "read fewer items at once, with a smaller --limit on swamp data query";
 
 export class DataQueryService {
   private readonly queryEnv: Environment;
@@ -711,7 +731,7 @@ export class DataQueryService {
       record.contentType !== "application/json" ||
       Object.keys(record.attributes).length > 0
     ) return;
-    const bytes = await this.foreignContent(record);
+    const bytes = await this.guardedForeignContent(record, 0);
     if (!bytes) return;
     const text = decodeRecordContent(bytes, recordIdentity(record));
     try {
@@ -719,6 +739,45 @@ export class DataQueryService {
     } catch {
       // Invalid JSON — leave attributes empty
     }
+  }
+
+  /**
+   * refused on its recorded size before the fetch, so an oversized body is
+   * never downloaded; a JSON body is then priced on its parsed structure
+   */
+  private async guardedForeignContent(
+    record: DataRecord,
+    heldBytes: number,
+  ): Promise<Uint8Array | null> {
+    if (
+      !this.dataRepo.fetchForeignContent ||
+      !isForeignNamespace(record.namespace, this.dataRepo)
+    ) return null;
+    const guard = resourceLoadGuardOf(this.dataRepo);
+    const item = loadedItemOf(record);
+    const isJson = record.contentType === "application/json";
+    // JSON past the text-length limit keeps the decode's own error code, as
+    // fromRow's does, so it is fetched and refused there
+    const sizeRefusal = guard.refusalFor(
+      item,
+      record.size ?? 0,
+      heldBytes,
+      PAGE_REMEDY,
+    );
+    if (sizeRefusal && (sizeRefusal.reason === "memory" || !isJson)) {
+      throw sizeRefusal;
+    }
+    const bytes = await this.foreignContent(record);
+    if (bytes && isJson) {
+      const refusal = guard.parseRefusalFor(
+        item,
+        bytes,
+        heldBytes,
+        PAGE_REMEDY,
+      );
+      if (refusal?.reason === "memory") throw refusal;
+    }
+    return bytes;
   }
 
   /**
@@ -997,7 +1056,7 @@ export class DataQueryService {
       matched.records,
       matched.selectParsed,
       matched.selectReadsContent
-        ? new Map(matched.records.map((r) => [r, this.projectedContent(r)]))
+        ? this.projectedContentsSync(matched.records)
         : undefined,
       options,
     );
@@ -1739,7 +1798,7 @@ export class DataQueryService {
           } else if (r.contentType === "application/json") {
             selectCtx["content"] = r.attributes;
           }
-          return coerceBigInts(selectParsed(selectCtx));
+          return coerceBigIntsShared(selectParsed(selectCtx));
         } catch (error) {
           // A refusal the view raised fails the query, never a null.
           if (error instanceof QueryViewRefusal) throw error;
@@ -1768,19 +1827,67 @@ export class DataQueryService {
     return undefined;
   }
 
-  private encodeProjected(bytes: Uint8Array | null): ProjectedContent {
-    return bytes
-      ? encodeContent(bytes)
-      : { content: null, contentEncoding: null };
+  /**
+   * a page of items each under the guard's floor is still refused before the
+   * heap runs out
+   */
+  private encodeProjected(
+    record: DataRecord,
+    bytes: Uint8Array | null,
+    heldBytes: number,
+  ): ProjectedContent {
+    if (!bytes) return { content: null, contentEncoding: null };
+    return encodeLoadableContent(
+      resourceLoadGuardOf(this.dataRepo),
+      loadedItemOf(record),
+      bytes,
+      heldBytes,
+      PAGE_REMEDY,
+    );
+  }
+
+  // string length stands in for bytes; it only moves where the floor is reached
+  private heldBy(record: DataRecord, projected: ProjectedContent): number {
+    if (projected.content === null) return 0;
+    return typeof projected.content === "string"
+      ? projected.content.length
+      : record.size ?? 0;
+  }
+
+  private assertProjectable(record: DataRecord, heldBytes: number): void {
+    const refusal = resourceLoadGuardOf(this.dataRepo).refusalFor(
+      loadedItemOf(record),
+      record.size ?? 0,
+      heldBytes,
+      PAGE_REMEDY,
+    );
+    if (refusal) throw refusal;
+  }
+
+  private projectedContentsSync(
+    records: DataRecord[],
+  ): Map<DataRecord, ProjectedContent> {
+    const contents = new Map<DataRecord, ProjectedContent>();
+    let heldBytes = 0;
+    for (const record of records) {
+      const projected = this.projectedContent(record, heldBytes);
+      contents.set(record, projected);
+      heldBytes += this.heldBy(record, projected);
+    }
+    return contents;
   }
 
   /**
    * read synchronously from local disk; the querySync path cannot download
    * lazily-synced bodies
    */
-  private projectedContent(record: DataRecord): ProjectedContent {
+  private projectedContent(
+    record: DataRecord,
+    heldBytes: number,
+  ): ProjectedContent {
     const known = this.projectedContentWithoutBytes(record);
     if (known) return known;
+    this.assertProjectable(record, heldBytes);
     let bytes: Uint8Array | null = null;
     try {
       bytes = this.dataRepo.getContentSync(
@@ -1795,7 +1902,7 @@ export class DataQueryService {
         String(error)
       }`;
     }
-    return this.encodeProjected(bytes);
+    return this.encodeProjected(record, bytes, heldBytes);
   }
 
   /**
@@ -1809,6 +1916,15 @@ export class DataQueryService {
   ): Promise<Map<DataRecord, ProjectedContent> | undefined> {
     if (!readsContent) return undefined;
     const contents = new Map<DataRecord, ProjectedContent>();
+    let heldBytes = 0;
+    const hold = (
+      record: DataRecord,
+      projected: ProjectedContent,
+      held = this.heldBy(record, projected),
+    ) => {
+      contents.set(record, projected);
+      heldBytes += held;
+    };
     for (const record of records) {
       // Only a v3 checkout reads another namespace's body from local disk;
       // a v2 sync fetcher would download it, so its rows stay null below.
@@ -1816,14 +1932,19 @@ export class DataQueryService {
         this.dataRepo.fetchForeignContent?.readsSoloNamespace === true &&
         isForeignNamespace(record.namespace, this.dataRepo)
       ) {
-        contents.set(record, await this.projectedForeignContent(record));
+        const { projected, held } = await this.projectedForeignContent(
+          record,
+          heldBytes,
+        );
+        hold(record, projected, held);
         continue;
       }
       const known = this.projectedContentWithoutBytes(record);
       if (known) {
-        contents.set(record, known);
+        hold(record, known);
         continue;
       }
+      this.assertProjectable(record, heldBytes);
       await this.ensureContentOf({
         namespace: record.namespace,
         modelType: record.modelType,
@@ -1832,40 +1953,57 @@ export class DataQueryService {
         version: record.version,
         size: record.size,
       });
-      contents.set(
+      hold(
         record,
         this.encodeProjected(
+          record,
           await this.dataRepo.getContent(
             ModelType.create(record.modelType),
             record.modelId,
             record.name,
             record.version,
           ),
+          heldBytes,
         ),
       );
     }
     return contents;
   }
 
+  /**
+   * a fetched body counts its fetched bytes, not the recorded size another
+   * namespace wrote
+   */
   private async projectedForeignContent(
     record: DataRecord,
-  ): Promise<ProjectedContent> {
+    heldBytes: number,
+  ): Promise<{ projected: ProjectedContent; held: number }> {
     if (
       record.contentType === "application/json" &&
       Object.keys(record.attributes).length > 0
     ) {
-      return { content: record.attributes, contentEncoding: "utf-8" };
+      const projected: ProjectedContent = {
+        content: record.attributes,
+        contentEncoding: "utf-8",
+      };
+      return { projected, held: record.size ?? 0 };
     }
-    const bytes = await this.foreignContent(record);
+    const bytes = await this.guardedForeignContent(record, heldBytes);
     if (bytes && record.contentType === "application/json") {
       const text = decodeRecordContent(bytes, recordIdentity(record));
+      let content: unknown;
       try {
-        return { content: JSON.parse(text), contentEncoding: "utf-8" };
+        content = JSON.parse(text);
       } catch {
-        return { content: {}, contentEncoding: "utf-8" };
+        content = {};
       }
+      return {
+        projected: { content, contentEncoding: "utf-8" },
+        held: bytes.length,
+      };
     }
-    return this.encodeProjected(bytes);
+    const projected = this.encodeProjected(record, bytes, heldBytes);
+    return { projected, held: this.heldBy(record, projected) };
   }
 
   private rowToRecord(

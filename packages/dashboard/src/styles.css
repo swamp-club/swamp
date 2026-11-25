@@ -2,6 +2,12 @@
 @import "./styles/apps.css";
 
 :root {
+  --font-body: "Plus Jakarta Sans", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+  --font-display: var(--font-body);
+  --radius-scale: 1;
+  --chart-font: var(--font-mono);
+  --chart-bar-glow: 0;
   --bg: #f4f5f7;
   --surface: #ffffff;
   --surface-hover: #f8f9fb;
@@ -21,6 +27,7 @@
   --accent: #047857;
   --accent-hover: #065f46;
   --accent-subtle: #ecfdf5;
+  --on-accent: #ffffff;
   --success: #047857;
   --success-bg: #ecfdf5;
   --warning: #a15308;
@@ -65,6 +72,7 @@
     --accent: #34d399;
     --accent-hover: #6ee7b7;
     --accent-subtle: #0d2818;
+    --on-accent: #0b0d12;
     --success: #34d399;
     --success-bg: #0d2818;
     --warning: #fbbf24;
@@ -109,6 +117,7 @@
   --accent: #34d399;
   --accent-hover: #6ee7b7;
   --accent-subtle: #0d2818;
+  --on-accent: #0b0d12;
   --success: #34d399;
   --success-bg: #0d2818;
   --warning: #fbbf24;
@@ -141,7 +150,7 @@
 body {
   background: var(--bg);
   color: var(--text-1);
-  font-family: "Plus Jakarta Sans", system-ui, -apple-system, sans-serif;
+  font-family: var(--font-body);
   font-size: 14px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
@@ -171,9 +180,7 @@ body {
 }
 
 /* ── Sidebar: collapsible rail (desktop) and drawer (mobile) ──
-   Sidebar.tsx styles its elements inline, so these rules only set
-   properties the inline styles leave alone. Keep 768px in sync with
-   MOBILE_BREAKPOINT_PX in components/sidebar_state.ts. */
+   Keep 768px in sync with MOBILE_BREAKPOINT_PX in components/sidebar_state.ts. */
 
 .sidebar-header {
   padding: 20px 20px 24px;
@@ -207,7 +214,7 @@ a.start-dashboard-link {
 .workspace-switcher-select {
   width: 100%;
   padding: 6px 8px;
-  border-radius: 6px;
+  border-radius: calc(6px * var(--radius-scale));
   border: 1px solid rgba(255, 255, 255, 0.12);
   background: rgba(255, 255, 255, 0.06);
   color: var(--sidebar-text);
@@ -232,7 +239,7 @@ a.start-dashboard-link {
   height: 28px;
   padding: 0;
   border: none;
-  border-radius: 6px;
+  border-radius: calc(6px * var(--radius-scale));
   background: transparent;
   color: var(--sidebar-text);
   cursor: pointer;
@@ -270,7 +277,7 @@ a.start-dashboard-link {
   width: 100%;
   padding: 6px 0;
   border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 5px;
+  border-radius: calc(5px * var(--radius-scale));
   background: transparent;
   color: var(--sidebar-text);
   font-family: inherit;
@@ -324,7 +331,7 @@ a.start-dashboard-link {
     width: 180px;
     margin-top: 0;
     padding: 10px;
-    border-radius: 6px;
+    border-radius: calc(6px * var(--radius-scale));
     background: var(--sidebar-active);
     border: 1px solid rgba(255, 255, 255, 0.08);
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
@@ -376,7 +383,7 @@ a.start-dashboard-link {
     z-index: 60;
     transform: translateY(-50%);
     padding: 5px 10px;
-    border-radius: 6px;
+    border-radius: calc(6px * var(--radius-scale));
     background: var(--sidebar-active);
     border: 1px solid rgba(255, 255, 255, 0.08);
     color: var(--sidebar-text-active);
@@ -457,7 +464,7 @@ a.start-dashboard-link {
     height: 36px;
     padding: 0;
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: calc(6px * var(--radius-scale));
     background: var(--surface);
     color: var(--text-1);
     cursor: pointer;
@@ -482,6 +489,7 @@ a.start-dashboard-link {
 }
 
 .page-header h1 {
+  font-family: var(--font-display);
   font-size: 1.5rem;
   font-weight: 700;
   letter-spacing: -0.01em;
@@ -497,7 +505,7 @@ a.start-dashboard-link {
 .panel {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: calc(8px * var(--radius-scale));
   overflow: hidden;
 }
 
@@ -510,6 +518,7 @@ a.start-dashboard-link {
 }
 
 .panel-title {
+  font-family: var(--font-display);
   font-size: 0.88rem;
   font-weight: 600;
   display: flex;
@@ -518,11 +527,11 @@ a.start-dashboard-link {
 }
 
 .panel-count {
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 0.65rem;
   font-weight: 500;
   padding: 1px 7px;
-  border-radius: 10px;
+  border-radius: calc(10px * var(--radius-scale));
   background: var(--surface-inset);
   color: var(--text-3);
 }
@@ -554,7 +563,7 @@ a.start-dashboard-link {
 .stat-card {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: calc(8px * var(--radius-scale));
   padding: 18px 20px;
 }
 
@@ -566,6 +575,7 @@ a.start-dashboard-link {
 }
 
 .stat-value {
+  font-family: var(--font-display);
   font-size: 1.8rem;
   font-weight: 700;
   letter-spacing: -0.02em;
@@ -574,7 +584,7 @@ a.start-dashboard-link {
 }
 
 .stat-change {
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 0.7rem;
   font-weight: 500;
   margin-top: 6px;
@@ -582,7 +592,7 @@ a.start-dashboard-link {
   align-items: center;
   gap: 3px;
   padding: 1px 6px;
-  border-radius: 4px;
+  border-radius: calc(4px * var(--radius-scale));
 }
 
 .stat-change.up {
@@ -616,7 +626,7 @@ a.start-dashboard-link {
 }
 
 .data-table th {
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 0.65rem;
   font-weight: 500;
   letter-spacing: 0.06em;
@@ -647,7 +657,7 @@ a.start-dashboard-link {
 
 /* Monospace utility */
 .mono {
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
 }
 
 /* The client after an actor ("via integration:slackwater") */
@@ -665,7 +675,7 @@ a.start-dashboard-link {
 .card {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: calc(8px * var(--radius-scale));
   padding: 18px 20px;
   cursor: pointer;
   transition: border-color 0.15s;
@@ -728,11 +738,11 @@ a.start-dashboard-link {
 .run-detail {
   font-size: 0.75rem;
   color: var(--text-3);
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
 }
 
 .run-duration {
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 0.75rem;
   color: var(--text-2);
   white-space: nowrap;
@@ -748,14 +758,14 @@ a.start-dashboard-link {
 .progress-bar {
   height: 3px;
   background: var(--surface-inset);
-  border-radius: 2px;
+  border-radius: calc(2px * var(--radius-scale));
   margin-top: 4px;
   overflow: hidden;
 }
 
 .progress-fill {
   height: 100%;
-  border-radius: 2px;
+  border-radius: calc(2px * var(--radius-scale));
   background: var(--running);
   transition: width 0.5s ease;
 }
@@ -788,7 +798,7 @@ a.start-dashboard-link {
   position: relative;
   background: var(--surface);
   border: 1px solid var(--border-strong);
-  border-radius: 8px;
+  border-radius: calc(8px * var(--radius-scale));
   cursor: text;
   transition: border-color 0.12s, box-shadow 0.12s;
 }
@@ -821,11 +831,11 @@ a.start-dashboard-link {
 }
 .qbar-field kbd,
 .qbar-menu-foot kbd {
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 0.65rem;
   padding: 0 5px;
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: calc(4px * var(--radius-scale));
   color: var(--text-3);
   background: var(--surface);
 }
@@ -844,7 +854,7 @@ a.start-dashboard-link {
   border: none;
   cursor: pointer;
   padding: 2px 4px;
-  border-radius: 4px;
+  border-radius: calc(4px * var(--radius-scale));
 }
 .qbar-clear:hover {
   color: var(--text-1);
@@ -858,7 +868,7 @@ a.start-dashboard-link {
   align-items: center;
   max-width: 260px;
   height: 24px;
-  border-radius: 6px;
+  border-radius: calc(6px * var(--radius-scale));
   background: var(--accent-subtle);
   border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
   font-size: 0.75rem;
@@ -870,7 +880,7 @@ a.start-dashboard-link {
   gap: 6px;
 }
 .qchip-and {
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 0.62rem;
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -900,7 +910,7 @@ a.start-dashboard-link {
   margin-right: 8px;
   vertical-align: -2px;
   border: 1.5px solid var(--border);
-  border-radius: 4px;
+  border-radius: calc(4px * var(--radius-scale));
   background: var(--surface);
   color: var(--surface);
 }
@@ -910,7 +920,7 @@ a.start-dashboard-link {
 }
 .qchip-key {
   padding: 0 6px 0 8px;
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 0.65rem;
   color: var(--accent);
   text-transform: lowercase;
@@ -952,14 +962,14 @@ a.start-dashboard-link {
   width: min(560px, 100%);
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: calc(10px * var(--radius-scale));
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.16), 0 2px 6px rgba(0, 0, 0, 0.08);
   overflow: hidden;
   animation: sel-in 0.12s ease-out;
 }
 .qbar-menu-head {
   padding: 10px 14px 6px;
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 0.62rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -979,7 +989,7 @@ a.start-dashboard-link {
   align-items: baseline;
   gap: 10px;
   padding: 7px 8px;
-  border-radius: 6px;
+  border-radius: calc(6px * var(--radius-scale));
   font-size: 0.82rem;
   cursor: pointer;
 }
@@ -987,7 +997,7 @@ a.start-dashboard-link {
   background: var(--surface-inset);
 }
 .qbar-opt-key {
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 0.72rem;
   color: var(--accent);
 }
@@ -1006,7 +1016,7 @@ a.start-dashboard-link {
   font-size: 0.75rem;
 }
 .qbar-opt-hint {
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 0.68rem;
   color: var(--text-3);
   font-variant-numeric: tabular-nums;
@@ -1054,7 +1064,7 @@ a.start-dashboard-link {
   color: var(--text-2);
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: calc(8px * var(--radius-scale));
   cursor: pointer;
   position: relative;
 }
@@ -1093,7 +1103,7 @@ a.start-dashboard-link {
   padding: 6px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: calc(10px * var(--radius-scale));
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.16), 0 2px 6px rgba(0, 0, 0, 0.08);
   animation: sel-in 0.12s ease-out;
 }
@@ -1112,7 +1122,7 @@ a.start-dashboard-link {
   float: left;
   width: 100%;
   padding: 2px 8px 4px;
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 0.62rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -1124,7 +1134,7 @@ a.start-dashboard-link {
   align-items: center;
   gap: 8px;
   padding: 6px 8px;
-  border-radius: 5px;
+  border-radius: calc(5px * var(--radius-scale));
   font-size: 0.8rem;
   color: var(--text-1);
   cursor: pointer;
@@ -1185,7 +1195,7 @@ a.start-dashboard-link {
   color: var(--text-1);
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: calc(6px * var(--radius-scale));
   cursor: pointer;
   transition: border-color 0.12s, box-shadow 0.12s;
 }
@@ -1230,7 +1240,7 @@ a.start-dashboard-link {
   padding: 4px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: calc(8px * var(--radius-scale));
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.14), 0 2px 6px rgba(0, 0, 0, 0.08);
   animation: sel-in 0.12s ease-out;
 }
@@ -1255,7 +1265,7 @@ a.start-dashboard-link {
   color: var(--text-1);
   background: var(--bg);
   border: 1px solid var(--border-strong);
-  border-radius: 5px;
+  border-radius: calc(5px * var(--radius-scale));
 }
 .sel-search input:focus {
   outline: none;
@@ -1276,7 +1286,7 @@ a.start-dashboard-link {
   align-items: center;
   gap: 8px;
   padding: 6px 8px;
-  border-radius: 5px;
+  border-radius: calc(5px * var(--radius-scale));
   font-size: 0.8rem;
   color: var(--text-1);
   white-space: nowrap;
@@ -1302,7 +1312,7 @@ a.start-dashboard-link {
   color: var(--accent);
 }
 .sel-hint {
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 0.68rem;
   font-weight: 500;
   font-variant-numeric: tabular-nums;
@@ -1381,7 +1391,7 @@ a.start-dashboard-link {
   color: var(--danger);
   text-decoration: none;
   padding: 1px 6px;
-  border-radius: 4px;
+  border-radius: calc(4px * var(--radius-scale));
   border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
   transition: background 0.15s;
 }
@@ -1415,7 +1425,7 @@ a.start-dashboard-link {
   align-items: baseline;
   gap: 6px;
   padding: 5px 10px;
-  border-radius: 6px;
+  border-radius: calc(6px * var(--radius-scale));
   border: 1px solid var(--border);
   background: var(--surface);
   font-size: 0.75rem;
@@ -1424,7 +1434,7 @@ a.start-dashboard-link {
 }
 .stat-pill dd {
   margin: 0;
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   color: var(--text-1);
@@ -1460,7 +1470,7 @@ a.start-dashboard-link {
   flex: 1;
   min-width: 3px;
   max-width: 14px;
-  border-radius: 2px;
+  border-radius: calc(2px * var(--radius-scale));
   background: var(--text-3);
   transition: transform 0.1s ease, opacity 0.1s ease;
 }
@@ -1511,13 +1521,13 @@ a.run-pip:focus-visible {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 0.65rem;
   font-weight: 500;
   letter-spacing: 0.03em;
   text-transform: uppercase;
   padding: 2px 8px;
-  border-radius: 4px;
+  border-radius: calc(4px * var(--radius-scale));
   white-space: nowrap;
   background: var(--running-bg);
   color: var(--running);
@@ -1594,12 +1604,12 @@ a.run-pip:focus-visible {
 }
 
 .cron-badge {
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 0.7rem;
   color: var(--text-3);
   background: var(--surface-inset);
   padding: 2px 8px;
-  border-radius: 4px;
+  border-radius: calc(4px * var(--radius-scale));
 }
 
 /* components/PreviewChip.tsx */
@@ -1612,7 +1622,7 @@ a.run-pip:focus-visible {
   text-transform: uppercase;
   white-space: nowrap;
   padding: 2px 8px;
-  border-radius: 10px;
+  border-radius: calc(10px * var(--radius-scale));
   color: var(--info);
   background: var(--info-bg);
   border: 1px solid var(--info);
@@ -1639,11 +1649,11 @@ a.run-pip:focus-visible {
 }
 
 .btn-sm {
-  font-family: "Plus Jakarta Sans", sans-serif;
+  font-family: var(--font-body);
   font-size: 0.75rem;
   font-weight: 600;
   padding: 4px 12px;
-  border-radius: 5px;
+  border-radius: calc(5px * var(--radius-scale));
   border: 1px solid var(--border);
   cursor: pointer;
   transition: all 0.15s;
@@ -1653,7 +1663,7 @@ a.run-pip:focus-visible {
 
 .btn-approve {
   background: var(--accent);
-  color: #000;
+  color: var(--on-accent);
   border-color: var(--accent);
 }
 
@@ -1735,12 +1745,12 @@ a.run-pip:focus-visible {
 .sys-card {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: calc(8px * var(--radius-scale));
   padding: 18px 20px;
 }
 
 .sys-card-title {
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 0.65rem;
   font-weight: 500;
   letter-spacing: 0.08em;
@@ -1772,7 +1782,7 @@ a.run-pip:focus-visible {
   min-width: 0;
   text-align: right;
   overflow-wrap: anywhere;
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 0.78rem;
   font-weight: 500;
 }
@@ -1788,7 +1798,7 @@ a.run-pip:focus-visible {
   display: flex;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: calc(6px * var(--radius-scale));
   overflow: hidden;
 }
 
@@ -1813,11 +1823,11 @@ a.run-pip:focus-visible {
 
 /* Health pill */
 .health-pill {
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 0.7rem;
   font-weight: 500;
   padding: 5px 10px;
-  border-radius: 6px;
+  border-radius: calc(6px * var(--radius-scale));
   background: var(--success-bg);
   color: var(--success);
   display: flex;
@@ -1826,11 +1836,11 @@ a.run-pip:focus-visible {
 }
 
 .workers-pill {
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 0.7rem;
   font-weight: 500;
   padding: 5px 10px;
-  border-radius: 6px;
+  border-radius: calc(6px * var(--radius-scale));
   border: 1px solid var(--border);
   background: var(--surface);
   color: var(--text-2);
@@ -1904,7 +1914,7 @@ a.run-pip:focus-visible {
 .chart-section {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: calc(8px * var(--radius-scale));
   padding: 20px 24px;
   margin-bottom: 14px;
 }
@@ -1917,6 +1927,7 @@ a.run-pip:focus-visible {
 }
 
 .chart-title {
+  font-family: var(--font-display);
   font-size: 0.95rem;
   font-weight: 600;
 }
@@ -1932,7 +1943,7 @@ a.run-pip:focus-visible {
   display: inline-block;
   width: 8px;
   height: 8px;
-  border-radius: 2px;
+  border-radius: calc(2px * var(--radius-scale));
   margin-right: 4px;
   vertical-align: middle;
 }
@@ -1961,7 +1972,7 @@ a.run-pip:focus-visible {
 .skel {
   display: inline-block;
   vertical-align: middle;
-  border-radius: 4px;
+  border-radius: calc(4px * var(--radius-scale));
   background-color: var(--surface-inset);
   background-image: linear-gradient(
     100deg,
@@ -2067,7 +2078,7 @@ a.run-pip:focus-visible {
 .login-card {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: calc(12px * var(--radius-scale));
   padding: 32px;
 }
 
@@ -2096,8 +2107,8 @@ a.run-pip:focus-visible {
   width: 100%;
   padding: 10px 14px;
   border: 1px solid var(--border-strong);
-  border-radius: 6px;
-  font-family: "JetBrains Mono", monospace;
+  border-radius: calc(6px * var(--radius-scale));
+  font-family: var(--font-mono);
   font-size: 0.85rem;
   background: var(--surface-inset);
   color: var(--text-1);
@@ -2108,16 +2119,16 @@ a.run-pip:focus-visible {
 
 .login-card input:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.1);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 15%, transparent);
 }
 
 .login-card button[type="submit"] {
   width: 100%;
   padding: 10px;
   border: none;
-  border-radius: 6px;
+  border-radius: calc(6px * var(--radius-scale));
   background: var(--accent);
-  color: #000;
+  color: var(--on-accent);
   font-family: inherit;
   font-size: 0.88rem;
   font-weight: 600;
@@ -2140,7 +2151,7 @@ a.run-pip:focus-visible {
   margin-bottom: 12px;
   padding: 8px 12px;
   background: var(--danger-bg);
-  border-radius: 6px;
+  border-radius: calc(6px * var(--radius-scale));
 }
 
 .login-hint {
@@ -2152,11 +2163,11 @@ a.run-pip:focus-visible {
 }
 
 .login-hint code {
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 0.75rem;
   background: var(--surface-inset);
   padding: 1px 5px;
-  border-radius: 3px;
+  border-radius: calc(3px * var(--radius-scale));
 }
 
 .login-hint a {
@@ -2171,7 +2182,7 @@ a.run-pip:focus-visible {
 .login-code-block {
   background: var(--surface-inset);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: calc(8px * var(--radius-scale));
   padding: 20px;
   text-align: center;
   margin-bottom: 20px;
@@ -2187,7 +2198,7 @@ a.run-pip:focus-visible {
 }
 
 .login-code {
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 2.2rem;
   font-weight: 700;
   letter-spacing: 0.2em;
@@ -2263,11 +2274,11 @@ a.start-primary {
 
 .start-card code,
 .start-hint code {
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 0.8em;
   background: var(--surface-inset);
   padding: 1px 5px;
-  border-radius: 3px;
+  border-radius: calc(3px * var(--radius-scale));
 }
 
 .start-card .start-lead {
@@ -2293,7 +2304,7 @@ a.start-primary {
   min-height: 180px;
   padding: 12px 14px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: calc(8px * var(--radius-scale));
   font-family: inherit;
   font-size: 0.9rem;
   line-height: 1.55;
@@ -2306,7 +2317,7 @@ a.start-primary {
 
 .start-textarea:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.1);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 15%, transparent);
 }
 
 .start-examples-label {
@@ -2329,7 +2340,7 @@ a.start-primary {
   width: 100%;
   padding: 10px 14px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: calc(8px * var(--radius-scale));
   background: var(--surface);
   color: var(--text-1);
   font-family: inherit;
@@ -2373,7 +2384,7 @@ a.start-primary {
 }
 
 .start-inline-path {
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 0.76rem;
   color: var(--text-3);
   overflow-wrap: anywhere;
@@ -2424,7 +2435,7 @@ a.start-primary {
 .start-primary,
 .start-secondary {
   padding: 10px 18px;
-  border-radius: 6px;
+  border-radius: calc(6px * var(--radius-scale));
   font-family: inherit;
   font-size: 0.88rem;
   font-weight: 600;
@@ -2435,7 +2446,7 @@ a.start-primary {
 .start-primary {
   border: none;
   background: var(--accent);
-  color: #000;
+  color: var(--on-accent);
 }
 
 .start-primary:hover:not(:disabled) {
@@ -2463,11 +2474,11 @@ a.start-primary {
 }
 
 .start-path {
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 0.82rem;
   background: var(--surface-inset);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: calc(6px * var(--radius-scale));
   padding: 10px 12px;
   margin-bottom: 14px;
   overflow-wrap: anywhere;
@@ -2489,7 +2500,7 @@ a.start-primary {
   font-size: 0.84rem;
   line-height: 1.5;
   padding: 10px 12px;
-  border-radius: 6px;
+  border-radius: calc(6px * var(--radius-scale));
   margin-bottom: 12px;
 }
 
@@ -2539,7 +2550,7 @@ a.start-primary {
 .start-check-done .start-check-mark {
   background: var(--accent);
   border-color: var(--accent);
-  color: #000;
+  color: var(--on-accent);
 }
 
 .start-check-active {
@@ -2567,11 +2578,11 @@ a.start-primary {
   width: 100%;
   margin: 0;
   padding: 12px 14px;
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 0.8rem;
   background: var(--surface-inset);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: calc(6px * var(--radius-scale));
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   user-select: all;
@@ -2636,8 +2647,8 @@ a.start-primary {
   min-width: 0;
   padding: 9px 12px;
   border: 1px solid var(--border);
-  border-radius: 6px;
-  font-family: "JetBrains Mono", monospace;
+  border-radius: calc(6px * var(--radius-scale));
+  font-family: var(--font-mono);
   font-size: 0.85rem;
   background: var(--surface-inset);
   color: var(--text-1);
@@ -2647,7 +2658,7 @@ a.start-primary {
 
 .start-input:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.1);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 15%, transparent);
 }
 
 /* The login card's input rule would otherwise pad and space these. */
@@ -2720,7 +2731,7 @@ a.start-primary {
 /* Code block — Obsidian-inspired */
 .code-block {
   padding: 18px;
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 0.78rem;
   line-height: 1.7;
   margin: 0;
@@ -2822,7 +2833,7 @@ a.start-primary {
 .back-button {
   border: 1px solid var(--border);
   background: var(--surface);
-  border-radius: 6px;
+  border-radius: calc(6px * var(--radius-scale));
   padding: 4px 10px;
   cursor: pointer;
   color: var(--text-2);
@@ -2876,7 +2887,7 @@ a.start-primary {
   justify-content: space-between;
   gap: 8px 16px;
   padding: 10px 14px;
-  border-radius: 6px;
+  border-radius: calc(6px * var(--radius-scale));
   margin-bottom: 16px;
   font-size: 0.85rem;
   border: 1px solid transparent;
@@ -2960,7 +2971,7 @@ a.start-primary {
 }
 
 .version-list a {
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-weight: 600;
   color: var(--text-1);
 }
@@ -3043,11 +3054,11 @@ a.cron-badge:hover {
 }
 
 .markdown code {
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 0.82em;
   background: var(--surface-inset);
   padding: 1px 5px;
-  border-radius: 4px;
+  border-radius: calc(4px * var(--radius-scale));
 }
 
 .markdown blockquote {
@@ -3067,7 +3078,7 @@ a.cron-badge:hover {
 }
 
 .markdown-raw {
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 0.8rem;
   white-space: pre-wrap;
   color: var(--text-2);
@@ -3108,7 +3119,7 @@ a.cron-badge:hover {
 
 .detail-val {
   color: var(--text-1);
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 0.76rem;
   text-align: right;
   overflow-wrap: anywhere;
@@ -3165,7 +3176,7 @@ a.cron-badge:hover {
 }
 
 .start-agent-path {
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 0.7rem;
   color: var(--text-3);
   overflow: hidden;
@@ -3205,7 +3216,7 @@ a.cron-badge:hover {
 }
 
 .start-others .start-missing-binary {
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 0.72rem;
   color: var(--text-3);
 }
@@ -3243,7 +3254,7 @@ a.cron-badge:hover {
   gap: 10px;
   padding: 9px 12px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: calc(8px * var(--radius-scale));
   background: var(--surface);
   font-size: 0.86rem;
   color: var(--text-1);
@@ -3584,7 +3595,7 @@ a.cron-badge:hover {
   overflow-y: auto;
   padding: 10px 12px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: calc(8px * var(--radius-scale));
   background: var(--surface-inset);
   font-size: 0.82rem;
   line-height: 1.5;
@@ -3594,7 +3605,7 @@ a.cron-badge:hover {
 
 /* swamp start: import an existing workspace */
 .start-input.start-input-mono {
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 0.85rem;
 }
 
@@ -3612,7 +3623,7 @@ a.cron-badge:hover {
 }
 
 .start-workspace-path {
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 0.76rem;
   color: var(--text-3);
   white-space: nowrap;
@@ -3650,7 +3661,7 @@ a.cron-badge:hover {
 .start-built-item {
   font-size: 0.78rem;
   padding: 1px 8px;
-  border-radius: 6px;
+  border-radius: calc(6px * var(--radius-scale));
   background: var(--surface-inset);
   border: 1px solid var(--border-subtle);
   overflow-wrap: anywhere;
@@ -3695,7 +3706,7 @@ a.cron-badge:hover {
   padding: 14px 16px;
   margin: 0 0 14px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: calc(8px * var(--radius-scale));
   background: var(--surface-inset);
 }
 
@@ -3744,7 +3755,7 @@ a.cron-badge:hover {
   justify-content: center;
   width: 32px;
   height: 32px;
-  border-radius: 6px;
+  border-radius: calc(6px * var(--radius-scale));
   border: 1px solid var(--border);
   background: var(--surface);
   color: var(--text-2);
@@ -3772,7 +3783,7 @@ a.cron-badge:hover {
   justify-content: center;
   flex-shrink: 0;
   margin-right: 6px;
-  border-radius: 4px;
+  border-radius: calc(4px * var(--radius-scale));
   color: #fff;
   font-weight: 700;
   line-height: 1;
@@ -3794,7 +3805,7 @@ a.cron-badge:hover {
   width: 22px;
   height: 22px;
   font-size: 10px;
-  border-radius: 5px;
+  border-radius: calc(5px * var(--radius-scale));
 }
 
 /* ==========================================================================
@@ -3824,6 +3835,7 @@ a.cron-badge:hover {
   --sw-border-strong: #2a3730;
   --sw-accent-soft: #1c3a2c;
   --sw-on-accent: #0b0f0d;
+  --on-accent: var(--sw-on-accent);
   --sw-display: "Space Grotesk", system-ui, sans-serif;
   --sw-body: "IBM Plex Sans", system-ui, sans-serif;
   --sw-mono: "JetBrains Mono", ui-monospace, monospace;
@@ -3915,7 +3927,7 @@ a.cron-badge:hover {
   padding: 2px 4px;
   margin: -2px -4px;
   border: none;
-  border-radius: 6px;
+  border-radius: calc(6px * var(--radius-scale));
   background: none;
   color: inherit;
   font: inherit;
@@ -4044,7 +4056,7 @@ a.cron-badge:hover {
   align-items: center;
   gap: 12px;
   padding: 10px 12px;
-  border-radius: 10px;
+  border-radius: calc(10px * var(--radius-scale));
   color: var(--text-3);
 }
 
@@ -4082,7 +4094,7 @@ a.cron-badge:hover {
   width: 100%;
   padding: 10px 12px;
   border: 0;
-  border-radius: 10px;
+  border-radius: calc(10px * var(--radius-scale));
   background: none;
   color: inherit;
   font: inherit;
@@ -4216,7 +4228,7 @@ a.cron-badge:hover {
 .start-panel {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 16px;
+  border-radius: calc(16px * var(--radius-scale));
   padding: 28px;
 }
 
@@ -4241,7 +4253,7 @@ a.cron-badge:hover {
 .start-page .start-hint code {
   background: var(--bg);
   color: var(--text-1);
-  border-radius: 4px;
+  border-radius: calc(4px * var(--radius-scale));
 }
 
 /* Inputs */
@@ -4250,7 +4262,7 @@ a.cron-badge:hover {
 .start-page .start-textarea {
   background: var(--bg);
   border: 1px solid var(--sw-border-strong);
-  border-radius: 10px;
+  border-radius: calc(10px * var(--radius-scale));
   color: var(--text-1);
   font-size: 15px;
 }
@@ -4279,7 +4291,7 @@ a.cron-badge:hover {
   min-height: 48px;
   padding: 0 22px;
   border: 0;
-  border-radius: 10px;
+  border-radius: calc(10px * var(--radius-scale));
   background: var(--accent);
   color: var(--sw-on-accent);
   font-family: var(--sw-display);
@@ -4302,7 +4314,7 @@ a.cron-badge:hover {
   min-height: 44px;
   padding: 0 18px;
   border: 1px solid var(--sw-border-strong);
-  border-radius: 10px;
+  border-radius: calc(10px * var(--radius-scale));
   background: transparent;
   color: var(--text-1);
   font-weight: 500;
@@ -4340,7 +4352,7 @@ a.cron-badge:hover {
 .start-page .start-harness {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: calc(12px * var(--radius-scale));
   padding: 14px 16px;
   color: var(--text-1);
   font-size: 15px;
@@ -4392,7 +4404,7 @@ a.cron-badge:hover {
   gap: 6px;
   padding: 16px;
   border: 1px solid var(--border-subtle);
-  border-radius: 12px;
+  border-radius: calc(12px * var(--radius-scale));
   color: var(--text-3);
   font-size: 13px;
 }
@@ -4416,7 +4428,7 @@ a.cron-badge:hover {
   padding: 14px 16px;
   margin-bottom: 8px;
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: calc(12px * var(--radius-scale));
   background: var(--surface);
 }
 
@@ -4446,7 +4458,7 @@ a.cron-badge:hover {
   align-items: stretch;
   gap: 0;
   padding: 18px;
-  border-radius: 14px;
+  border-radius: calc(14px * var(--radius-scale));
 }
 
 .start-page .start-agent .start-radio {
@@ -4495,7 +4507,7 @@ a.cron-badge:hover {
   width: 40px;
   height: 40px;
   margin-right: 0;
-  border-radius: 10px;
+  border-radius: calc(10px * var(--radius-scale));
   font-family: var(--sw-display);
   font-size: 15px;
 }
@@ -4557,7 +4569,7 @@ a.cron-badge:hover {
   min-width: 84px;
   padding: 10px 16px;
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: calc(12px * var(--radius-scale));
 }
 
 .start-stat b {
@@ -4619,7 +4631,7 @@ a.cron-badge:hover {
 }
 
 .start-page .start-agent-toggle-option {
-  border-radius: 12px;
+  border-radius: calc(12px * var(--radius-scale));
   padding: 8px 14px 8px 8px;
   background: transparent;
   border-color: var(--sw-border-strong);
@@ -4635,7 +4647,7 @@ a.cron-badge:hover {
   width: 28px;
   height: 28px;
   margin-right: 0;
-  border-radius: 8px;
+  border-radius: calc(8px * var(--radius-scale));
   font-size: 12px;
 }
 
@@ -4675,7 +4687,7 @@ a.cron-badge:hover {
   min-height: 48px;
   padding: 12px 14px;
   border: 1.5px dashed var(--accent);
-  border-radius: 12px;
+  border-radius: calc(12px * var(--radius-scale));
   background: transparent;
   color: var(--accent);
   font: inherit;
@@ -4702,18 +4714,18 @@ a.cron-badge:hover {
 /* Notes, warnings, paths and the copy-command block on the dark ground */
 .start-page .start-note,
 .start-page .start-warning {
-  border-radius: 10px;
+  border-radius: calc(10px * var(--radius-scale));
   border-left-width: 3px;
 }
 
 .start-page .start-path {
   background: var(--bg);
   border-color: var(--sw-border-strong);
-  border-radius: 10px;
+  border-radius: calc(10px * var(--radius-scale));
 }
 
 .start-page .start-task-hero {
-  border-radius: 12px;
+  border-radius: calc(12px * var(--radius-scale));
 }
 
 /* Workspace home: every task, as equal rows */
@@ -4736,7 +4748,7 @@ a.cron-badge:hover {
   gap: 4px;
   width: 100%;
   padding: 12px 14px;
-  border-radius: 12px;
+  border-radius: calc(12px * var(--radius-scale));
   border: 1px solid var(--border);
   background: transparent;
   color: inherit;
@@ -4879,7 +4891,7 @@ a.cron-badge:hover {
   margin-bottom: 20px;
   padding: 12px 14px;
   border: 1px solid var(--sw-accent-soft);
-  border-radius: 10px;
+  border-radius: calc(10px * var(--radius-scale));
   background: var(--accent-subtle);
 }
 
@@ -4988,7 +5000,7 @@ a.cron-badge:hover {
   height: 40px;
   padding: 0 40px 0 16px;
   border: 1px solid var(--sw-border-strong);
-  border-radius: 10px;
+  border-radius: calc(10px * var(--radius-scale));
   background: var(--bg)
     url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none' stroke='%23b9c6bf' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 4.5l3 3 3-3'/%3E%3C/svg%3E")
     no-repeat right 14px center / 12px 12px;
@@ -5025,7 +5037,7 @@ a.cron-badge:hover {
   height: 40px;
   padding: 0 14px 0 10px;
   border: 1px solid var(--sw-border-strong);
-  border-radius: 10px;
+  border-radius: calc(10px * var(--radius-scale));
   background: var(--bg);
   color: var(--text-1);
   cursor: pointer;
@@ -5168,7 +5180,7 @@ a.cron-badge:hover {
   row-gap: 4px;
   padding: 12px 16px;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: calc(10px * var(--radius-scale));
   background: var(--surface);
   font-size: 0.85rem;
   color: var(--text-2);

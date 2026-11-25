@@ -51,9 +51,9 @@ export function ModelDiagramSkeleton() {
         <div className="mds-card">
           <Skeleton width="45%" height={10} />
           <Skeleton width="70%" height={16} />
-          <span style={{ display: "flex", gap: 6 }}>
+          <span className="mds-badge-row">
             <Skeleton width={34} height={16} radius={4} />
-            <Skeleton width={64} height={10} style={{ marginTop: 3 }} />
+            <Skeleton width={64} height={10} className="mds-badge-meta" />
           </span>
         </div>
       </div>

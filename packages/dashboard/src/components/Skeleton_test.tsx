@@ -36,14 +36,14 @@ Deno.test("SkeletonChart: draws one bar and one x label per bar", () => {
   const html = renderToStaticMarkup(<SkeletonChart bars={5} />);
   // Each bar and each x label is a placeholder block; gridLines + 1 more
   // blocks are the y-axis ticks.
-  assertEquals(count(html, 'class="skel"'), 5 + 5 + 5);
+  assertEquals(html.match(/class="skel(?: [^"]*)?"/g)?.length, 5 + 5 + 5);
   assertStringIncludes(html, 'aria-hidden="true"');
 });
 
 Deno.test("SkeletonChart: draws gridlines with a stronger baseline", () => {
   const html = renderToStaticMarkup(<SkeletonChart gridLines={3} />);
-  assertEquals(count(html, "var(--border-subtle)"), 3);
-  assertEquals(count(html, "background:var(--border)"), 1);
+  assertEquals(count(html, 'class="skel-chart-gridline"'), 3);
+  assertEquals(count(html, 'class="skel-chart-gridline is-baseline"'), 1);
 });
 
 Deno.test("SkeletonChart: is decorative and never claims to be data", () => {

@@ -240,6 +240,45 @@ Deno.test("ServeWorkerPoolReader: live workers are members as the gateway report
   ], ["b", "busy", false]]);
 });
 
+Deno.test("ServeWorkerPoolReader: a live unverified worker whose verification is pending reads pending, and no other does", async () => {
+  const pool = await reader({
+    liveWorkers: () => [
+      live({ name: "a", status: "unverified" }),
+      live({ name: "b", status: "unverified" }),
+      live({ name: "c" }),
+    ],
+    verificationPending: (name) => name === "a",
+    readWorkerRecords: () => Promise.resolve([record({ name: "gone" })]),
+    readTokenRecords: () =>
+      Promise.resolve(new Map([["gone", token({ name: "gone" })]])),
+  }).readPool();
+  assertEquals(
+    pool.map((w) => [w.name, w.verificationPending ?? false]),
+    [["a", true], ["b", false], ["c", false], ["gone", false]],
+  );
+});
+
+Deno.test("ServeWorkerPoolReader: without a pending answer no worker reads pending", async () => {
+  const pool = await reader({
+    liveWorkers: () => [live({ name: "a", status: "unverified" })],
+  }).readPool();
+  assertEquals(pool[0].verificationPending, undefined);
+});
+
+Deno.test("createServeWorkerPoolReader: asks the gateway whether a worker's verification is pending", async () => {
+  const pool = await createServeWorkerPoolReader({
+    gateway: {
+      workers: () => [live({ name: "a", status: "unverified" })],
+      readTokenRecords: () => Promise.resolve(new Map()),
+      verificationPending: (name) => name === "a",
+    },
+    query: () => Promise.resolve([]),
+    namespace: "team-a",
+    now: () => NOW,
+  }).readPool();
+  assertEquals(pool[0].verificationPending, true);
+});
+
 Deno.test("ServeWorkerPoolReader: a left-pool worker joins only while its token holds", async () => {
   const pool = await reader({
     readWorkerRecords: () =>

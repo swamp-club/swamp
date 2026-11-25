@@ -478,9 +478,9 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
           this.pipe.line(
             this.getJobDisplayName(e.jobId),
             dim(
-              `${e.worker} waiting for its worker to connect (${
-                queueTimeoutText(e.queueTimeoutSeconds)
-              })`,
+              `${e.worker} waiting for its worker to ${
+                e.reason === "unverified" ? "pass verification" : "connect"
+              } (${queueTimeoutText(e.queueTimeoutSeconds)})`,
             ),
           ),
         );

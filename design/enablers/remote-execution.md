@@ -1858,10 +1858,13 @@ lane engine in `execution_service.ts` uses it at job start.
   still cannot see control-plane records.
 - **`planFanOut(selector, policy, pool)`** (`src/domain/remote/scheduler.ts`)
   matches labels and platform exactly as `eligibleWorkers` does and gives every
-  match one disposition, in name order: `excluded` for unverified or draining
-  workers (whatever their connection), `waiting`, `skipped` or `failed` for
-  disconnected ones by `offline`, and `dispatch` for the rest. Only `dispatch`
-  and `waiting` members get a lane. With fewer lanes than `minWorkers`
+  match one disposition, in name order: `waiting`, `skipped` or `failed` by
+  `offline` for a connected unverified worker whose probe is pending (reason
+  `unverified`, read through `PoolWorker.verificationPending`, which the serve
+  pool reader takes from the gateway) and for a disconnected one, pending or
+  not (reason `disconnected`); `excluded` for a draining worker or an
+  unverified one whose probe failed (whatever their connection); and
+  `dispatch` for the rest. Only `dispatch` and `waiting` members get a lane. With fewer lanes than `minWorkers`
   (default 1, never 0), the plan is refused and holds no members.
 - **`planBatches`** and **`nextBatch`** (`src/domain/remote/rollout.ts`).
   Batches take `dispatch` lanes in name order, then `waiting` lanes, so the
@@ -1900,11 +1903,19 @@ moves, with nothing to release when the job ends.
 
 **Eligibility at dispatch.** Before every attempt of a lane step,
 `laneDispatchVerdict` (`src/domain/remote/scheduler.ts`) reads the worker's
-live snapshot:
+live snapshot, and the gateway's `verificationPending` for it:
 
-- unverified or draining: the step fails with `WorkerIneligibleError` (`worker_ineligible`) and nothing
-  is sent. This holds for every lane step, not only the first, as a draining
-  pinned worker already fails an affinity group today.
+- draining, or unverified with a failed probe: the step fails with
+  `WorkerIneligibleError` (`worker_ineligible`) and nothing is sent. This holds
+  for every lane step, not only the first, as a draining pinned worker already
+  fails an affinity group today.
+- unverified with a probe running or owed (an enrollment or reconnect under
+  verify-on-enroll whose probe has not finished, or a probe refused for
+  capacity): the step queues, as the scheduler never offers an unverified
+  worker. It is sent once the probe passes, and fails `worker_ineligible` as
+  soon as it fails, since the gateway's `onWorkerVerifyFailed` wakes the
+  waiting lanes. Pending is tracked, never inferred from a missing failure
+  reason, so an unverified worker no probe is coming for stays ineligible.
 - disconnected or absent: the step queues on its target until the worker
   reconnects, or fails at `queueTimeout` with the usual "Timed out waiting for
   a worker matching target" error.

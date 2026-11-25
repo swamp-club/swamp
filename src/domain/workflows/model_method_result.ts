@@ -105,7 +105,8 @@ export async function modelMethodResourceResult(
   guard.assertLoadable(item, data?.size ?? 0);
   const raw = await dataRepo.getContent(type, modelId, dataName, data?.version);
   if (!raw) return undefined;
-  guard.assertLoadable(item, raw.length);
+  // any content type is tried as JSON below, so the parse is always priced
+  guard.assertParsable(item, raw);
   const text = new TextDecoder().decode(raw);
   try {
     return JSON.parse(text);

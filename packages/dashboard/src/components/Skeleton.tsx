@@ -91,7 +91,7 @@ export function SkeletonText(
   },
 ) {
   return (
-    <span style={{ display: "flex", flexDirection: "column", gap }}>
+    <span className="skel-text" style={{ gap }}>
       {Array.from({ length: lines }, (_, i) => (
         <Skeleton
           key={i}
@@ -106,7 +106,7 @@ export function SkeletonText(
 /** The header's stat pills. */
 export function SkeletonPills({ count = 4 }: { count?: number }) {
   return (
-    <span style={{ display: "inline-flex", gap: 8 }} aria-hidden="true">
+    <span className="skel-pills" aria-hidden="true">
       {Array.from(
         { length: count },
         (_, i) => (
@@ -126,7 +126,12 @@ export function SkeletonRunHistory(
       {Array.from(
         { length: slots },
         (_, i) => (
-          <Skeleton key={i} height={height} radius={1} style={{ flex: 1 }} />
+          <Skeleton
+            key={i}
+            height={height}
+            radius={1}
+            className="skel-run-history-slot"
+          />
         ),
       )}
     </span>
@@ -156,7 +161,7 @@ export function SkeletonCardGrid(
               <Skeleton width={50} height={10} />
             </div>
             {history && (
-              <div style={{ marginTop: 12 }}>
+              <div className="skel-card-history">
                 <SkeletonRunHistory />
               </div>
             )}
@@ -180,7 +185,7 @@ function SkeletonCell(
   if (cell === "pill") return <Skeleton width={72} height={18} radius={4} />;
   if (cell === "strip") {
     return (
-      <span style={{ display: "block", width: 140 }}>
+      <span className="skel-cell-strip">
         <SkeletonRunHistory slots={12} height={10} />
       </span>
     );
@@ -235,14 +240,7 @@ export function SkeletonList(
         (_, i) => (
           <div className="skel-list-row" key={i}>
             <Skeleton width={8} height={8} radius="50%" />
-            <span
-              style={{
-                display: "flex",
-                flexDirection: "column",
-                gap: 6,
-                flex: 1,
-              }}
-            >
+            <span className="skel-list-text">
               <Skeleton width={widthAt(i)} height={11} />
               <Skeleton width="30%" height={9} />
             </span>
@@ -288,7 +286,7 @@ export function SkeletonStats({ count = 4 }: { count?: number }) {
             <Skeleton
               width={70}
               height={10}
-              style={{ display: "block", marginBottom: 12 }}
+              className="skel-stat-label"
             />
             <Skeleton width={i % 2 ? 54 : 80} height={26} />
           </div>
@@ -322,7 +320,7 @@ export function SkeletonChart(
     <div
       aria-hidden="true"
       className="skel-chart"
-      style={{ position: "relative", height }}
+      style={{ height }}
     >
       {Array.from({ length: lines + 1 }, (_, i) => {
         const top = `calc(${plot.top}px + (100% - ${
@@ -332,75 +330,42 @@ export function SkeletonChart(
         return (
           <Fragment key={i}>
             <span
-              style={{
-                position: "absolute",
-                left: plot.left,
-                right: plot.right,
-                top,
-                height: 1,
-                background: baseline ? "var(--border)" : "var(--border-subtle)",
-              }}
+              className={`skel-chart-gridline${baseline ? " is-baseline" : ""}`}
+              style={{ top }}
             />
             <Skeleton
               width={i === lines ? 8 : 18}
               height={8}
-              style={{
-                position: "absolute",
-                right: `calc(100% - ${plot.left - 6}px)`,
-                top: `calc(${top} - 4px)`,
-              }}
+              className="skel-chart-tick"
+              style={{ top: `calc(${top} - 4px)` }}
             />
           </Fragment>
         );
       })}
-      <div
-        style={{
-          position: "absolute",
-          left: plot.left,
-          right: plot.right,
-          top: plot.top,
-          bottom: plot.bottom,
-          display: "flex",
-          alignItems: "flex-end",
-        }}
-      >
-        {Array.from({ length: bars }, (_, i) => (
-          <span
-            key={i}
-            style={{
-              flex: 1,
-              height: "100%",
-              display: "flex",
-              alignItems: "flex-end",
-              justifyContent: "center",
-            }}
-          >
-            <Skeleton
-              width="55%"
-              height={`${BAR_HEIGHTS[i % BAR_HEIGHTS.length]}%`}
-              radius="3px 3px 0 0"
-              style={{ maxWidth: 40 }}
-            />
-          </span>
-        ))}
+      <div className="skel-chart-bars">
+        {Array.from(
+          { length: bars },
+          (_, i) => (
+            <span key={i} className="skel-chart-bar">
+              <Skeleton
+                width="55%"
+                height={`${BAR_HEIGHTS[i % BAR_HEIGHTS.length]}%`}
+                radius="3px 3px 0 0"
+                className="skel-chart-bar-fill"
+              />
+            </span>
+          ),
+        )}
       </div>
-      <div
-        style={{
-          position: "absolute",
-          left: plot.left,
-          right: plot.right,
-          bottom: 6,
-          display: "flex",
-        }}
-      >
-        {Array.from({ length: bars }, (_, i) => (
-          <span
-            key={i}
-            style={{ flex: 1, display: "flex", justifyContent: "center" }}
-          >
-            <Skeleton width={30} height={8} />
-          </span>
-        ))}
+      <div className="skel-chart-labels">
+        {Array.from(
+          { length: bars },
+          (_, i) => (
+            <span key={i} className="skel-chart-label">
+              <Skeleton width={30} height={8} />
+            </span>
+          ),
+        )}
       </div>
     </div>
   );

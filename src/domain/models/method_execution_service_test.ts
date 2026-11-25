@@ -1686,6 +1686,68 @@ Deno.test("executeWorkflow - delete marker of a resource too large to load warns
   }
 });
 
+Deno.test("executeWorkflow - delete marker of a dense resource carries no state, refused on its parsed structure", async () => {
+  const service = new DefaultMethodExecutionService();
+  const existingData = Data.create({
+    name: "my-resource",
+    contentType: "application/json",
+    lifetime: "infinite",
+    garbageCollection: 10,
+    tags: { type: "resource", specName: "my-resource", modelName: "big" },
+    ownerDefinition: {
+      ownerType: "model-method",
+      ownerRef: "test/model:create",
+    },
+    version: 3,
+  });
+  const activeContent = new TextEncoder().encode(
+    JSON.stringify({ items: Array(100).fill("") }),
+  );
+  const mockRepo = createMockDataRepoWithData([existingData], {
+    "my-resource": activeContent,
+  });
+  const repo = Object.assign(mockRepo, {
+    loadGuard: new ResourceLoadGuard(
+      { heapLimitBytes: () => 1000, heapUsedBytes: () => 0 },
+      10,
+    ),
+    getContent: () => Promise.resolve(activeContent),
+  });
+  const model: ModelDefinition = {
+    type: ModelType.create("test/delete-dense"),
+    version: "1",
+    resources: {
+      "my-resource": {
+        description: "A resource",
+        schema: z.object({}),
+        lifetime: "infinite",
+        garbageCollection: 10,
+      },
+    },
+    methods: {
+      delete: {
+        description: "Delete the resource",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({}),
+      },
+    },
+  };
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: {},
+  });
+  const { context } = createTestContext({ modelType: model.type });
+  await service.executeWorkflow(definition, model, "delete", {
+    ...context,
+    dataRepository: repo,
+  });
+  assertEquals(activeContent.length * 3 <= 1000, true);
+  const content = JSON.parse(
+    new TextDecoder().decode(mockRepo.savedData[0].content),
+  );
+  assertEquals(Object.keys(content).sort(), ["deletedAt", "deletedByMethod"]);
+});
+
 Deno.test("executeWorkflow - read after delete throws UserError", async () => {
   const service = new DefaultMethodExecutionService();
 
