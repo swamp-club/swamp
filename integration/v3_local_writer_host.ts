@@ -321,7 +321,7 @@ export const localWriterHost: ProcessHost<
       id: request.id,
       definitionId: model.id,
       methodName: OUTPUT_METHOD,
-      status: request.status,
+      status: "running",
       provenance: {
         definitionHash: "hash",
         modelVersion: "2026.01.01.1",
@@ -332,7 +332,28 @@ export const localWriterHost: ProcessHost<
       runInRootUnitOfWork(
         context.repoContext,
         { flush: undefined },
-        () => context.repoContext.outputRepo.save(type, OUTPUT_METHOD, output),
+        async () => {
+          if (request.status === "running") {
+            return await context.repoContext.outputRepo.save(
+              type,
+              OUTPUT_METHOD,
+              output,
+            );
+          }
+          // the record as stored, so its file is the one the owner wrote
+          const stored = (await context.repoContext.outputRepo.findByIds(
+            type,
+            OUTPUT_METHOD,
+            new Set([request.id]),
+          )).get(request.id);
+          if (stored === undefined) throw new Error(`no output ${request.id}`);
+          stored.markSucceeded();
+          await context.repoContext.outputRepo.save(
+            type,
+            OUTPUT_METHOD,
+            stored,
+          );
+        },
       );
     if (request.lock !== true) return await save();
     const lock = await createModelLock(

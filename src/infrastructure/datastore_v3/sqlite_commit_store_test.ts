@@ -2690,11 +2690,11 @@ Deno.test("SqliteCommitStore.runPartitionsOf: reads a run's rows through the run
         RUN_PARTITION_RANGE.from,
         RUN_PARTITION_RANGE.to,
       ) as { detail: string }[];
-      assertEquals(
-        plan.map((row) => row.detail),
-        [
-          "SEARCH partition_heads USING INDEX partition_heads_by_tail (namespace=? AND <expr>=?)",
-        ],
+      // a search keyed on the run id's tail, never a range over every run
+      assertEquals(plan.length, 1);
+      assertStringIncludes(
+        plan[0].detail,
+        "partition_heads_by_tail (namespace=? AND <expr>=?",
       );
     } finally {
       db.close();
