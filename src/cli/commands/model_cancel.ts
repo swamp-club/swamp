@@ -573,7 +573,10 @@ export function createModelCancelCommand(syntax: CommandSyntax) {
               cancelModelMethodRuns(runs, reason, {
                 tracker: runTracker,
                 outputRepo: repoContext.outputRepo,
-                tryBehaviorLock: tryBehaviorLockOf(datastoreConfig),
+                tryBehaviorLock: tryBehaviorLockOf(
+                  datastoreConfig,
+                  repoContext,
+                ),
                 onStopping,
               }),
           );
@@ -610,7 +613,10 @@ export function createModelCancelCommand(syntax: CommandSyntax) {
             settleStoppedMethodRuns(stopped, reason, {
               tracker: runTracker,
               outputRepo: writer.repoContext.outputRepo,
-              tryBehaviorLock: tryBehaviorLockOf(datastoreConfig),
+              tryBehaviorLock: tryBehaviorLockOf(
+                datastoreConfig,
+                writer.repoContext,
+              ),
             }),
         );
       };

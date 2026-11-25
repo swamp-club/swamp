@@ -857,6 +857,56 @@ Deno.test({
 
 Deno.test({
   name:
+    "v3 local commit sections: a cancel commits its settle before it lets the behavior's lock go, though its command goes on",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withV3RowRepos({}, async (repos, datastorePath) => {
+      await closeV3Datastores();
+      const owner = startWriter("owner");
+      const canceller = startWriter("canceller");
+      try {
+        const type = repos.modelType.normalized;
+        const id = crypto.randomUUID();
+        await opened(owner, repos.repoA, type);
+        owner.send({ kind: "output", id, model: "m", status: "running" });
+        await owner.seen((m) => "saved" in m, "the running output landed");
+        // definitions live in the repo, shared through git
+        await copy(join(repos.repoA, "models"), join(repos.repoB, "models"), {
+          overwrite: true,
+        });
+        await opened(canceller, repos.repoB, type);
+        canceller.send({
+          kind: "settleOrphan",
+          id,
+          model: "m",
+          ownerPid: DEAD_PID,
+          holdUnit: true,
+        });
+        await canceller.seen(
+          (m) => "paused" in m && m.paused === id,
+          "the cancel settled and let the lock go, its unit still open",
+        );
+        assertEquals(
+          await outputStatusOf(owner, id, "m"),
+          "cancelled",
+          "the next holder of the lock reads the settle",
+        );
+        canceller.send({ kind: "resume", id });
+        await canceller.seen((m) => "settled" in m, "the cancel ended");
+        await closed(canceller);
+        await closed(owner);
+      } finally {
+        owner.stop();
+        canceller.stop();
+      }
+      await assertCheckoutsAgree(repos, datastorePath, "settle committed");
+    });
+  },
+});
+
+Deno.test({
+  name:
     "v3 local commit sections: a cancel leaves a dead owner's output alone while another process holds its behavior's lock",
   sanitizeOps: false,
   sanitizeResources: false,

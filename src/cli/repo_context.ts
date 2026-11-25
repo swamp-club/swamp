@@ -1989,14 +1989,28 @@ export const CANCEL_BEHAVIOR_LOCK_WAIT_MS = 250;
 
 export function tryBehaviorLockOf(
   datastoreConfig: DatastoreConfig,
+  repoContext: Pick<RepositoryContext, "markDirty" | "commitLog">,
 ): TryBehaviorLock {
-  return (type, modelId) =>
-    tryModelLock(
+  return async (type, modelId) => {
+    const lock = await tryModelLock(
       datastoreConfig,
       type.normalized,
       modelId,
       CANCEL_BEHAVIOR_LOCK_WAIT_MS,
     );
+    if (lock === null) return null;
+    return {
+      // the settle commits before the lock goes: landing after it, the next
+      // holder could read the output unsettled and the settle overwrite it
+      release: async () => {
+        try {
+          await checkpointOpenUnitOfWork(repoContext);
+        } finally {
+          await lock.release();
+        }
+      },
+    };
+  };
 }
 
 export async function tryAcquireWithin(

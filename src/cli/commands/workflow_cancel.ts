@@ -1626,7 +1626,10 @@ export const workflowCancelCommand = withRemoteOptions(
                   runTracker,
                   runClaims,
                   outputRepo: repoContext.outputRepo,
-                  tryBehaviorLock: tryBehaviorLockOf(datastoreConfig),
+                  tryBehaviorLock: tryBehaviorLockOf(
+                    datastoreConfig,
+                    repoContext,
+                  ),
                   preStopped,
                 });
                 // A nested run that was itself active is in the list and
@@ -1804,7 +1807,7 @@ export const workflowCancelCommand = withRemoteOptions(
               runTracker,
               runClaims,
               outputRepo: repoContext.outputRepo,
-              tryBehaviorLock: tryBehaviorLockOf(datastoreConfig),
+              tryBehaviorLock: tryBehaviorLockOf(datastoreConfig, repoContext),
               preStopped,
             });
             // The suspended nested runs a cancelled run waited on are

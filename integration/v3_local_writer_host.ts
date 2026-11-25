@@ -103,6 +103,8 @@ export type LocalWriterRequest =
     readonly id: string;
     readonly model: string;
     readonly ownerPid: number;
+    /** the cancel's unit stays open once settled, until resumed */
+    readonly holdUnit?: boolean;
   }
   | {
     readonly kind: "outputStatus";
@@ -395,8 +397,17 @@ export const localWriterHost: ProcessHost<
           context.repoContext.outputRepo,
           [row],
           "cancelled by a test",
-          tryBehaviorLockOf(datastoreConfig),
-        ),
+          tryBehaviorLockOf(datastoreConfig, context.repoContext),
+        ).then(async (result) => {
+          if (request.holdUnit === true) {
+            const resumed = new Promise<void>((resolve) =>
+              resumes.set(request.id, resolve)
+            );
+            post({ paused: request.id });
+            await resumed;
+          }
+          return result;
+        }),
     );
     if (result.errors.length > 0) throw result.errors[0];
     return { closed: result.closed.length, deferred: result.deferred.length };
