@@ -828,6 +828,11 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
     string,
     { point: number; entries: readonly BaseIndexEntry[] }
   >();
+  /** base index builds under way, one per namespace, joined by every request for that point */
+  readonly #indexBuilds = new Map<
+    string,
+    { point: number; build: Promise<readonly BaseIndexEntry[]> }
+  >();
   #connectionKey: string | undefined;
   /** Append transactions committed; see {@link appendTransactions}. */
   #appendTransactions = 0;
@@ -3446,23 +3451,113 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
     }
   }
 
-  readBaseIndex(namespace: string): Promise<readonly BaseIndexEntry[]> {
-    if (this.#closed) return Promise.reject(closedError());
-    try {
-      return Promise.resolve(
-        this.#readTransaction(() => {
-          // the base changes only when a fold moves the point, so one read per point
-          const point = this.#point();
-          const cached = this.#indexCache.get(namespace);
-          if (cached?.point === point) return cached.entries;
-          const entries = this.#base.readIndex(namespace);
-          this.#indexCache.set(namespace, { point, entries });
-          return entries;
-        }),
-      );
-    } catch (error) {
-      return Promise.reject(error);
+  async readBaseIndex(
+    namespace: string,
+    slice: BaseIndexSlice = BASE_INDEX_SLICE,
+  ): Promise<readonly BaseIndexEntry[]> {
+    if (this.#closed) throw closedError();
+    // the base changes only when a fold moves the point, so one build per point
+    const point = this.#readTransaction(() => this.#point());
+    const cached = this.#indexCache.get(namespace);
+    if (cached?.point === point) return cached.entries;
+    const running = this.#indexBuilds.get(namespace);
+    if (running?.point === point) return await running.build;
+    const build = (async () => {
+      try {
+        const built = await this.#buildBaseIndex(namespace, slice);
+        this.#indexCache.set(namespace, built);
+        return built.entries;
+      } finally {
+        if (this.#indexBuilds.get(namespace)?.build === build) {
+          this.#indexBuilds.delete(namespace);
+        }
+      }
+    })();
+    this.#indexBuilds.set(namespace, { point, build });
+    return await build;
+  }
+
+  /**
+   * builds the index in slices, each its own read transaction with the event
+   * loop free between them; a fold moving the point mid-build starts it again
+   */
+  async #buildBaseIndex(
+    namespace: string,
+    slice: BaseIndexSlice,
+  ): Promise<{ point: number; entries: readonly BaseIndexEntry[] }> {
+    for (let attempt = 1; attempt <= BASE_INDEX_BUILD_ATTEMPTS; attempt++) {
+      const built = await this.#buildBaseIndexAt(namespace, slice);
+      if (built !== undefined) return built;
     }
+    // folds outran every sliced build: one blocking read is still correct
+    return this.#readTransaction(() => ({
+      point: this.#point(),
+      entries: this.#base.readIndex(namespace),
+    }));
+  }
+
+  async #buildBaseIndexAt(
+    namespace: string,
+    slice: BaseIndexSlice,
+  ): Promise<
+    { point: number; entries: readonly BaseIndexEntry[] } | undefined
+  > {
+    let point = 0;
+    const sliceAt = async <T>(body: () => T): Promise<T | undefined> => {
+      await yieldToLoop();
+      if (this.#closed) throw closedError();
+      return this.#readTransaction(() =>
+        this.#point() === point ? body() : undefined
+      );
+    };
+    const first = this.#readTransaction(() => {
+      point = this.#point();
+      return {
+        partitions: this.#base.indexPartitions(namespace),
+        horizons: this.#base.indexHorizons(namespace),
+      };
+    });
+    const counts = new Map<string, number>();
+    const add = (from: ReadonlyMap<string, number>) => {
+      for (const [partition, n] of from) {
+        counts.set(partition, (counts.get(partition) ?? 0) + n);
+      }
+    };
+    const contested = new Set<string>();
+    const { partitions } = first;
+    for (let i = 0; i < partitions.length; i += slice.partitions) {
+      const range = partitions.slice(i, i + slice.partitions);
+      const part = await sliceAt(() =>
+        this.#base.indexPartitionCounts(
+          namespace,
+          range[0].partition,
+          range[range.length - 1].partition,
+        )
+      );
+      if (part === undefined) return undefined;
+      add(part.counts);
+      for (const partition of part.contested) contested.add(partition);
+    }
+    let after: string | undefined;
+    for (;;) {
+      const page = await sliceAt(() =>
+        this.#base.indexFileOwners(namespace, after, slice.files)
+      );
+      if (page === undefined) return undefined;
+      add(page.owners);
+      if (page.last === undefined) break;
+      after = page.last;
+    }
+    return {
+      point,
+      entries: partitions.map((row) => ({
+        partition: row.partition,
+        seq: row.seq,
+        rows: counts.get(row.partition) ?? 0,
+        horizon: first.horizons.get(row.partition) ?? 0,
+        contested: contested.has(row.partition),
+      })),
+    };
   }
 
   /** when this copy last asked serve's index, and whether it found nothing to do */
@@ -4314,6 +4409,24 @@ function selectRefsSql(count: number): string {
     `UNION SELECT sha256 FROM released_chunks WHERE namespace = ? AND sha256 IN (${list}) AND released_at >= ?`;
 }
 
+export interface BaseIndexSlice {
+  /** compacted partitions counted per slice */
+  readonly partitions: number;
+  /** base files counted per slice */
+  readonly files: number;
+}
+
+export const BASE_INDEX_SLICE: BaseIndexSlice = {
+  partitions: 256,
+  files: 5_000,
+};
+
+const BASE_INDEX_BUILD_ATTEMPTS = 3;
+
+function yieldToLoop(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 function closedError(): Error {
   return new Error("The commit store is closed");
 }
@@ -5157,6 +5270,81 @@ class SqliteCompactedBase implements CompactedBaseWriter {
   finish(pruneBefore: number): number {
     this.#pruneReleased.run(pruneBefore);
     return this.#released;
+  }
+
+  indexPartitions(namespace: string): { partition: string; seq: number }[] {
+    return this.#db.prepare(
+      "SELECT partition, seq FROM compacted_partitions WHERE namespace = ? ORDER BY partition",
+    ).all(namespace) as { partition: string; seq: number }[];
+  }
+
+  indexHorizons(namespace: string): Map<string, number> {
+    return new Map(
+      (this.#db.prepare(
+        "SELECT partition, seq FROM difference_horizons WHERE namespace = ?",
+      ).all(namespace) as { partition: string; seq: number }[]).map((
+        row,
+      ) => [row.partition, row.seq]),
+    );
+  }
+
+  /** row counts and contested partitions for the partitions from first to last */
+  indexPartitionCounts(
+    namespace: string,
+    first: string,
+    last: string,
+  ): { counts: Map<string, number>; contested: Set<string> } {
+    const counts = new Map<string, number>();
+    for (
+      const table of [
+        "base_records",
+        "base_versions",
+        "base_catalog",
+        "base_forwards",
+      ]
+    ) {
+      for (
+        const row of this.#db.prepare(
+          `SELECT partition, COUNT(*) AS n FROM ${table} ` +
+            "WHERE namespace = ? AND partition >= ? AND partition <= ? GROUP BY partition",
+        ).all(namespace, first, last) as { partition: string; n: number }[]
+      ) {
+        counts.set(row.partition, (counts.get(row.partition) ?? 0) + row.n);
+      }
+    }
+    const contested = new Set(
+      (this.#db.prepare(
+        "SELECT DISTINCT r.partition AS partition FROM base_records AS r JOIN base_files AS f " +
+          "ON f.namespace = r.namespace AND f.record_key = r.record_key " +
+          "WHERE r.namespace = ? AND r.partition >= ? AND r.partition <= ? AND f.owner != r.partition",
+      ).all(namespace, first, last) as { partition: string }[]).map((row) =>
+        row.partition
+      ),
+    );
+    return { counts, contested };
+  }
+
+  /** file counts by owner over one page of the namespace's files, in key order */
+  indexFileOwners(
+    namespace: string,
+    after: string | undefined,
+    limit: number,
+  ): { owners: Map<string, number>; last: string | undefined } {
+    const rows = this.#db.prepare(
+      "SELECT record_key, owner FROM base_files WHERE namespace = ? AND record_key > ? " +
+        "ORDER BY record_key LIMIT ?",
+    ).all(namespace, after ?? "", limit) as {
+      record_key: string;
+      owner: string;
+    }[];
+    const owners = new Map<string, number>();
+    for (const row of rows) {
+      owners.set(row.owner, (owners.get(row.owner) ?? 0) + 1);
+    }
+    return {
+      owners,
+      last: rows.length < limit ? undefined : rows[rows.length - 1].record_key,
+    };
   }
 
   readIndex(namespace: string): BaseIndexEntry[] {
