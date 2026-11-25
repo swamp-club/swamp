@@ -55,6 +55,7 @@ import {
   ServeAcknowledgedCommitLostError,
   ServeCommitsCompactedError,
   ServeReplyTooLargeError,
+  ServeUnreachableError,
   ServeUpstreamDivergedError,
   ServeUpstreamError,
   ServeUpstreamUpgradeRequiredError,
