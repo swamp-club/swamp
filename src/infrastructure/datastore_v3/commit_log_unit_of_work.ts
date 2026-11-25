@@ -268,6 +268,12 @@ export interface CommitLogUnitOptions {
   /** The writer's fence (its writer lease's or leader lease's), if any. */
   readonly fence?: number;
   /**
+   * the lease is taken only around each commit: the landing runs inside it, and
+   * the fence is read there rather than when the unit opened
+   */
+  readonly commitSection?: <T>(land: () => Promise<T>) => Promise<T>;
+  readonly fenceNow?: () => number | undefined;
+  /**
    * a forwarded section's keys: its append runs under them rather than queueing
    * behind itself on a lock it holds
    */
@@ -1589,149 +1595,164 @@ async function appendGroupIn(
   } finally {
     await chunks.discard();
   }
-  let queued = false;
-  let withdrawn = false;
-  await partitionLocksOf(options.sink).hold(
-    [
-      partitionLockKey(options.namespace, group.partition),
-      ...runIdLockKeysOf(options.namespace, intentsOf(group)),
-    ],
-    async () => {
-      // A seq gap means another writer moved the head between the read and
-      // the append; one rebuild at the new head usually lands it.
-      for (let attempt = 1;; attempt++) {
-        const base = await outbox?.headIdentity(
-          options.namespace,
-          group.partition,
-        );
-        const head = base ??
-          await options.sink.head(options.namespace, group.partition);
-        // Asked on each attempt, since the writer that moved the head may be
-        // the owner this group's puts yield to, and after the head read, so
-        // an owner landing after this check leaves a seq gap that asks again.
-        const kept = opsNotWithdrawn(group, ops, storedOps);
-        if (kept.length === 0) {
-          withdrawn = true;
-          // One that cannot be discarded is warned about. A recovery drops
-          // it once the new owner's commit has moved the head, and if that
-          // commit missed its deadline the owner's next start commits on top.
-          await discardEntries(options, unitOutbox, [group]);
-          return;
-        }
-        if (
-          group.expectedSeq !== undefined && head.seq !== group.expectedSeq
-        ) {
-          throw new StaleSeqError(group.partition, group.expectedSeq, head.seq);
-        }
-        const commit = Commit.create({
-          seq: head.seq + 1,
-          partition: group.partition,
-          namespace: options.namespace,
-          txnId: group.txnId,
-          writer: options.writer,
-          ...(options.fence === undefined ? {} : { fence: options.fence }),
-          ...(group.principal === undefined
-            ? {}
-            : { principal: group.principal }),
-          ...executionOf(options, group),
-          at: clock().toISOString(),
-          ops: kept,
-        });
-        if (
-          outbox !== undefined && base !== undefined &&
-          sweepBefore !== undefined
-        ) {
-          // Prepared with the head just read, under the partition's lock; a
-          // rebuild prepares again with its new base. Tracked first, so a
-          // prepare that persisted and then failed is still discarded.
-          unitOutbox.prepared.set(
-            group.txnId,
-            outboxKeyOfGroup(options, group),
+  const land = async (): Promise<boolean> => {
+    let queued = false;
+    let withdrawn = false;
+    await partitionLocksOf(options.sink).hold(
+      [
+        partitionLockKey(options.namespace, group.partition),
+        ...runIdLockKeysOf(options.namespace, intentsOf(group)),
+      ],
+      async () => {
+        // A seq gap means another writer moved the head between the read and
+        // the append; one rebuild at the new head usually lands it.
+        for (let attempt = 1;; attempt++) {
+          const base = await outbox?.headIdentity(
+            options.namespace,
+            group.partition,
           );
-          const offline =
-            await options.sink.queuesOffline?.(group.partition) === true;
-          await outbox.prepare({
-            commit,
-            unitId: unitOutbox.unitId,
-            base,
-            ...(offline ? { queuedOffline: true } : {}),
-          });
-          if (sweepMayOverlap(sweepBefore, await outbox.sweepState())) {
-            // a batch in flight may have judged a chunk unreferenced before the
-            // prepare and delete it after this check; once re-checked with the
-            // entry present, the check holds
-            await outbox.sweepBatch?.();
-            try {
-              await restoreMissingChunks(stored, options);
-            } catch (error) {
-              throw storagePhase(error);
-            }
-          }
-        }
-        unitOutbox.sent.set(group.txnId, group.partition.toString());
-        try {
-          if (batched !== undefined && !batched.used) {
-            batched.used = true;
-            await batched.batch.append(batched.slot, commit);
-          } else {
-            await options.sink.append(commit);
-          }
-          return;
-        } catch (error) {
-          if (error instanceof CommitNotTriedError) {
-            unitOutbox.sent.delete(group.txnId);
-            throw error;
-          }
-          // queued in the outbox while serve is unreachable: the entry stays,
-          // marked, for the next command to land, and the unit goes on as if it
-          // had landed
-          if (
-            error instanceof CommitQueuedOfflineError && outbox?.queue &&
-            unitOutbox.prepared.has(group.txnId)
-          ) {
-            const key = unitOutbox.prepared.get(group.txnId)!;
-            await outbox.queue([key]);
-            unitOutbox.prepared.delete(group.txnId);
-            queued = true;
-            onQueued?.();
+          const head = base ??
+            await options.sink.head(options.namespace, group.partition);
+          // Asked on each attempt, since the writer that moved the head may be
+          // the owner this group's puts yield to, and after the head read, so
+          // an owner landing after this check leaves a seq gap that asks again.
+          const kept = opsNotWithdrawn(group, ops, storedOps);
+          if (kept.length === 0) {
+            withdrawn = true;
+            // One that cannot be discarded is warned about. A recovery drops
+            // it once the new owner's commit has moved the head, and if that
+            // commit missed its deadline the owner's next start commits on top.
+            await discardEntries(options, unitOutbox, [group]);
             return;
           }
           if (
-            attempt < (options.sink.seqGapAttempts ?? SEQ_GAP_ATTEMPTS) &&
-            error instanceof CommitRejectedError && error.reason === "seq-gap"
+            group.expectedSeq !== undefined && head.seq !== group.expectedSeq
           ) {
-            continue;
+            throw new StaleSeqError(
+              group.partition,
+              group.expectedSeq,
+              head.seq,
+            );
           }
-          if (await landedDespite(error, group, options, unitOutbox)) return;
-          throw error;
+          const commit = Commit.create({
+            seq: head.seq + 1,
+            partition: group.partition,
+            namespace: options.namespace,
+            txnId: group.txnId,
+            writer: options.writer,
+            ...(fenceOf(options) === undefined
+              ? {}
+              : { fence: fenceOf(options) }),
+            ...(group.principal === undefined
+              ? {}
+              : { principal: group.principal }),
+            ...executionOf(options, group),
+            at: clock().toISOString(),
+            ops: kept,
+          });
+          if (
+            outbox !== undefined && base !== undefined &&
+            sweepBefore !== undefined
+          ) {
+            // Prepared with the head just read, under the partition's lock; a
+            // rebuild prepares again with its new base. Tracked first, so a
+            // prepare that persisted and then failed is still discarded.
+            unitOutbox.prepared.set(
+              group.txnId,
+              outboxKeyOfGroup(options, group),
+            );
+            const offline =
+              await options.sink.queuesOffline?.(group.partition) === true;
+            await outbox.prepare({
+              commit,
+              unitId: unitOutbox.unitId,
+              base,
+              ...(offline ? { queuedOffline: true } : {}),
+            });
+            if (sweepMayOverlap(sweepBefore, await outbox.sweepState())) {
+              // a batch in flight may have judged a chunk unreferenced before the
+              // prepare and delete it after this check; once re-checked with the
+              // entry present, the check holds
+              await outbox.sweepBatch?.();
+              try {
+                await restoreMissingChunks(stored, options);
+              } catch (error) {
+                throw storagePhase(error);
+              }
+            }
+          }
+          unitOutbox.sent.set(group.txnId, group.partition.toString());
+          try {
+            if (batched !== undefined && !batched.used) {
+              batched.used = true;
+              await batched.batch.append(batched.slot, commit);
+            } else {
+              await options.sink.append(commit);
+            }
+            return;
+          } catch (error) {
+            if (error instanceof CommitNotTriedError) {
+              unitOutbox.sent.delete(group.txnId);
+              throw error;
+            }
+            // queued in the outbox while serve is unreachable: the entry stays,
+            // marked, for the next command to land, and the unit goes on as if it
+            // had landed
+            if (
+              error instanceof CommitQueuedOfflineError && outbox?.queue &&
+              unitOutbox.prepared.has(group.txnId)
+            ) {
+              const key = unitOutbox.prepared.get(group.txnId)!;
+              await outbox.queue([key]);
+              unitOutbox.prepared.delete(group.txnId);
+              queued = true;
+              onQueued?.();
+              return;
+            }
+            if (
+              attempt < (options.sink.seqGapAttempts ?? SEQ_GAP_ATTEMPTS) &&
+              error instanceof CommitRejectedError && error.reason === "seq-gap"
+            ) {
+              continue;
+            }
+            if (await landedDespite(error, group, options, unitOutbox)) return;
+            throw error;
+          }
         }
-      }
-    },
-    options.held,
-  );
-  if (withdrawn) return true;
-  if (queued) return false;
-  // the commit has landed: a failing check is a warning, never a failure that
-  // would drop landed work
-  try {
-    await restoreMissingChunks(stored, options);
-  } catch (error) {
-    logger
-      .warn`A v3 commit to partition ${group.partition.toString()} landed, but checking the content it names failed; reads of that content may fail: ${error}`;
-  }
-  if (outbox !== undefined) {
-    const key = unitOutbox.prepared.get(group.txnId);
-    unitOutbox.prepared.delete(group.txnId);
-    // A settle that fails costs a duplicate on the next recovery, never the
-    // commit, which has landed.
-    if (key !== undefined) {
-      await outbox.settle([key]).catch((error) =>
-        logger
-          .debug`Settling the outbox entry of a landed commit failed; the next recovery settles it: ${error}`
-      );
+      },
+      options.held,
+    );
+    if (withdrawn) return true;
+    if (queued) return false;
+    // the commit has landed: a failing check is a warning, never a failure that
+    // would drop landed work
+    try {
+      await restoreMissingChunks(stored, options);
+    } catch (error) {
+      logger
+        .warn`A v3 commit to partition ${group.partition.toString()} landed, but checking the content it names failed; reads of that content may fail: ${error}`;
     }
-  }
-  return false;
+    if (outbox !== undefined) {
+      const key = unitOutbox.prepared.get(group.txnId);
+      unitOutbox.prepared.delete(group.txnId);
+      // A settle that fails costs a duplicate on the next recovery, never the
+      // commit, which has landed.
+      if (key !== undefined) {
+        await outbox.settle([key]).catch((error) =>
+          logger
+            .debug`Settling the outbox entry of a landed commit failed; the next recovery settles it: ${error}`
+        );
+      }
+    }
+    return false;
+  };
+  return options.commitSection === undefined
+    ? await land()
+    : await options.commitSection(land);
+}
+
+function fenceOf(options: CommitLogUnitOptions): number | undefined {
+  return options.fenceNow === undefined ? options.fence : options.fenceNow();
 }
 
 function isWithdrawn(group: Group): boolean {

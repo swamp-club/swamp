@@ -47,7 +47,10 @@ import {
   initializeV3Datastore,
   openV3Datastore,
 } from "../src/infrastructure/datastore_v3/v3_datastore.ts";
-import { closeV3Datastores } from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
+import {
+  closeV3Datastores,
+  wholeCommandHoldForTesting,
+} from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
 import {
   acquireV3WriterLock,
   assertV3WriterCurrent,
@@ -98,6 +101,8 @@ function fencedRefusal(error: unknown): WriterFencedError | undefined {
 }
 
 Deno.test("v3 writer lease: every commit names the writer's fence", async () => {
+  // the whole-command hold a bucket writer takes
+  using _wholeCommand = wholeCommandHoldForTesting();
   await withV3RowRepos({}, async (repos, datastorePath) => {
     const fence = v3WriterFence(datastorePath);
     assert(fence !== undefined, "checkout A holds the writer lease");
@@ -109,6 +114,8 @@ Deno.test("v3 writer lease: every commit names the writer's fence", async () => 
 });
 
 Deno.test("v3 writer lease: a writer whose lease another process took over commits nothing more", async () => {
+  // the whole-command hold a bucket writer takes
+  using _wholeCommand = wholeCommandHoldForTesting();
   await withV3RowRepos({}, async (repos, datastorePath) => {
     await saveThroughA(repos, "before");
     const before = await commitFences(datastorePath);
@@ -156,14 +163,20 @@ async function fencedExit(landFirst: boolean): Promise<number> {
 }
 
 Deno.test("v3 writer lease: a writer taken over before its command landed anything exits 75", async () => {
+  // the whole-command hold a bucket writer takes
+  using _wholeCommand = wholeCommandHoldForTesting();
   assertEquals(await fencedExit(false), 75);
 });
 
 Deno.test("v3 writer lease: a writer taken over after its command landed a commit exits 1", async () => {
+  // the whole-command hold a bucket writer takes
+  using _wholeCommand = wholeCommandHoldForTesting();
   assertEquals(await fencedExit(true), 1);
 });
 
 Deno.test("v3 writer lease: a holder whose lease was force-released stops committing before anyone takes over", async () => {
+  // the whole-command hold a bucket writer takes
+  using _wholeCommand = wholeCommandHoldForTesting();
   await withV3RowRepos({}, async (repos, datastorePath) => {
     await saveThroughA(repos, "before");
     const before = await commitFences(datastorePath);
@@ -183,6 +196,8 @@ Deno.test("v3 writer lease: a holder whose lease was force-released stops commit
 });
 
 Deno.test("v3 writer lease: a Phase 3 datastore keeps its unfenced history and starts fencing at its first lease", async () => {
+  // the whole-command hold a bucket writer takes
+  using _wholeCommand = wholeCommandHoldForTesting();
   await withV3RowRepos({}, async (repos, datastorePath) => {
     await closeV3Datastores();
     // Take the datastore back to what Phase 3 left: schema 3, no lease

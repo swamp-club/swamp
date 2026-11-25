@@ -68,6 +68,7 @@ import {
 import {
   closeV3Datastores,
   v3DatastoreFor,
+  wholeCommandHoldForTesting,
 } from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
 import {
   V3WriterBusyError,
@@ -917,6 +918,8 @@ Deno.test("v3 opt-in: a read-only context refuses any change staged through it",
 });
 
 Deno.test("v3 opt-in: datastore lock status and release act on the writer lease", async () => {
+  // the whole-command hold a bucket writer takes
+  using _wholeCommand = wholeCommandHoldForTesting();
   await withV3RowRepos({}, async (repos, datastorePath) => {
     await withMockedEnv(UNSET_ENV, async () => {
       const json = ["--repo-dir", repos.repoB, "--json"];

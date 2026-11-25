@@ -373,6 +373,14 @@ export interface OpenV3DatastoreOptions {
    */
   readonly writerFence?: () => number | undefined;
   /**
+   * defined while this process writes a filesystem datastore locally: the lease
+   * is taken only around each commit, so a unit opened then lands inside the
+   * returned section and reads its fence there
+   */
+  readonly commitSection?: () =>
+    | (<T>(land: () => Promise<T>) => Promise<T>)
+    | undefined;
+  /**
    * throws when the writer lease was taken over or released; checked before
    * each commit is appended
    */
@@ -1777,6 +1785,13 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
     },
     engineFor(markDirty, runRepo, engineOptions = {}) {
       const fenced = () => {
+        const commitSection = options.commitSection?.();
+        if (commitSection !== undefined) {
+          return {
+            commitSection,
+            fenceNow: () => options.writerFence?.(),
+          };
+        }
         const fence = options.writerFence?.();
         return fence === undefined ? {} : { fence };
       };

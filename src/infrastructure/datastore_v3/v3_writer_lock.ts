@@ -127,7 +127,14 @@ interface Held {
    * it fails as a whole rather than landing part of itself
    */
   retakeLost: boolean;
+  /** a joined section released with an outbox entry left: the lease ends unclean */
+  dirty?: boolean;
 }
+
+/** clean: every outbox entry this caller prepared under the lease is settled */
+export type V3WriterLockRelease = (
+  options?: { readonly clean?: boolean },
+) => Promise<void>;
 
 export interface AcquireV3WriterLockOptions {
   readonly maxWaitMs?: number;
@@ -149,7 +156,7 @@ export interface AcquireV3WriterLockOptions {
 export async function acquireV3WriterLock(
   datastorePath: string,
   options: AcquireV3WriterLockOptions = {},
-): Promise<() => Promise<void>> {
+): Promise<V3WriterLockRelease> {
   const key = resolve(datastorePath);
   const maxWaitMs = options.maxWaitMs ?? 60_000;
   const state = writerLockState();
@@ -204,9 +211,10 @@ export async function acquireV3WriterLock(
   }
   const holding = entry;
   let released = false;
-  return async () => {
+  return async (release = {}) => {
     if (released) return;
     released = true;
+    if (release.clean !== true) holding.dirty = true;
     holding.refs--;
     if (holding.refs > 0) return;
     await endHold(key, holding);
@@ -234,7 +242,7 @@ async function endHold(key: string, entry: Held): Promise<void> {
   if (entry.state.held.get(key) === entry) entry.state.held.delete(key);
   if (entry.renewal !== undefined) clearInterval(entry.renewal);
   await entry.renewing;
-  await entry.hold?.release();
+  await entry.hold?.release({ clean: entry.dirty !== true });
 }
 
 function retaking(
@@ -622,13 +630,20 @@ async function takeLease(
     throw error;
   }
   // Outside the release-on-error scope: a listener never costs the lease.
-  await notifyLeaseTaken(state, datastorePath, hold.fence);
+  await notifyLeaseTaken(
+    state,
+    datastorePath,
+    hold.fence,
+    hold.predecessorClean,
+  );
   return hold;
 }
 
 export type V3LeaseTakenListener = (
   datastorePath: string,
   fence: number,
+  /** the holder before released with nothing left in the outbox */
+  predecessorClean?: boolean,
 ) => Promise<void> | void;
 
 /**
@@ -648,10 +663,11 @@ async function notifyLeaseTaken(
   state: WriterLockState,
   datastorePath: string,
   fence: number,
+  predecessorClean = false,
 ): Promise<void> {
   for (const listener of [...state.leaseTakenListeners]) {
     try {
-      await listener(datastorePath, fence);
+      await listener(datastorePath, fence, predecessorClean);
     } catch (error) {
       logger
         .warn`A listener for the writer lease of the v3 datastore at ${datastorePath} failed: ${error}`;

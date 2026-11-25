@@ -39,6 +39,7 @@ import {
   closeV3Datastores,
   v3DatastoreConfigOf,
   v3DatastoreFor,
+  wholeCommandHoldForTesting,
 } from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
 import { v3WriterFence } from "../src/infrastructure/datastore_v3/v3_writer_lock.ts";
 import { FileSystemStorage } from "../src/infrastructure/persistence/fs_datastore_storage.ts";
@@ -49,6 +50,8 @@ export interface ClaimRaceRequest {
   readonly repoDir: string;
   readonly datastorePath: string;
   readonly id: string;
+  /** the writer holds the lease for its whole command, as a bucket writer does */
+  readonly wholeCommand?: boolean;
 }
 
 export type ClaimRaceMessage =
@@ -100,6 +103,7 @@ function reportLeaseWait(datastorePath: string): void {
 
 async function run(request: ClaimRaceRequest): Promise<void> {
   await initializeLogging({});
+  if (request.wholeCommand === true) wholeCommandHoldForTesting();
   reportLeaseWait(request.datastorePath);
   const go = new Promise<void>((resolve) => commit = resolve);
   let context;

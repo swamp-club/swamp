@@ -50,6 +50,7 @@ import {
   keepV3WriterMarkers,
   v3DatastoreFor,
   v3RepositoryFactoryConfig,
+  wholeCommandHoldForTesting,
 } from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
 import { openV3Datastore } from "../src/infrastructure/datastore_v3/v3_datastore.ts";
 import {
@@ -716,6 +717,8 @@ Deno.test("v3 interrupted run: a writing command recovers another host's marker 
 });
 
 Deno.test("v3 interrupted run: a hold whose checkout record cannot be written releases the lock and leaves no marker after teardown", async () => {
+  // the whole-command hold a bucket writer takes
+  using _wholeCommand = wholeCommandHoldForTesting();
   await withV3RowRepos({}, async (repos, datastorePath) => {
     const config = filesystemConfig(repos);
     await closeV3Datastores();

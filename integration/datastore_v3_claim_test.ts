@@ -474,6 +474,7 @@ Deno.test("datastore claim: a writer that holds the lease when the claim is aske
       repoDir: repos.repoB,
       datastorePath,
       id: crypto.randomUUID(),
+      wholeCommand: true,
     });
     try {
       await writer.seen((m) => "held" in m);

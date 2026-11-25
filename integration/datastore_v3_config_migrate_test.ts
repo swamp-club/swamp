@@ -37,7 +37,10 @@ import {
 import { isCustomDatastoreConfig } from "../src/domain/datastore/datastore_config.ts";
 import { UserError } from "../src/domain/errors.ts";
 import type { PartitionKey } from "../src/domain/datastore_v3/partition_key.ts";
-import { v3DatastoreFor } from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
+import {
+  v3DatastoreFor,
+  wholeCommandHoldForTesting,
+} from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
 import {
   commitConfigAdoption,
   ConfigAdoptionRefusedError,
@@ -437,6 +440,8 @@ Deno.test("v3 managedConfig by hand: the swamp-uat#623 sequence shows clone A's 
 });
 
 Deno.test("v3 managedConfig by hand: a refused adoption warns and the writing command still runs, with its locks held", async () => {
+  // the whole-command hold a bucket writer takes
+  using _wholeCommand = wholeCommandHoldForTesting();
   await withV3RowRepos({}, async (repos) => {
     await seedRepoLocalConfig(repos.repoA);
     await cli(repos.repoA, "datastore", "config", "migrate");

@@ -141,6 +141,12 @@ export interface WriterLeaseRecords {
   readonly record?: FenceRecord;
   readonly renewedAt?: number;
   readonly released: boolean;
+  /**
+   * the highest fence was released by its holder with every outbox entry it
+   * prepared settled; a release from before this field, a forced one, an expiry
+   * or a crash is not clean
+   */
+  readonly releasedClean?: boolean;
 }
 
 export type WriterLeaseVerdict =
@@ -352,7 +358,7 @@ export class WriterLease {
       let records = await this.#read();
       if (this.#judge(records).kind !== "held") {
         const next = Math.max(records.fence ?? 0, options.floor ?? 0) + 1;
-        const hold = await this.#take(next);
+        const hold = await this.#take(next, records.releasedClean === true);
         if (hold !== undefined) return hold;
         // Another writer took it first, or a higher fence appeared: that
         // writer holds the lease now, so wait for it like any other.
@@ -417,7 +423,10 @@ export class WriterLease {
     return next;
   }
 
-  async #take(fence: number): Promise<WriterLeaseHold | undefined> {
+  async #take(
+    fence: number,
+    predecessorClean = false,
+  ): Promise<WriterLeaseHold | undefined> {
     const o = this.#options;
     const record: FenceRecord = {
       ...o.holder,
@@ -429,7 +438,7 @@ export class WriterLease {
     if (!await o.store.putIfAbsent(fenceKey(fence), encode(record))) {
       return undefined;
     }
-    const hold = new WriterLeaseHold(this.#options, record);
+    const hold = new WriterLeaseHold(this.#options, record, predecessorClean);
     let renewed: "held" | "fenced";
     try {
       renewed = await hold.renew();
@@ -490,12 +499,22 @@ export class WriterLease {
 export class WriterLeaseHold {
   readonly #options: WriterLeaseOptions;
   readonly record: FenceRecord;
+  /**
+   * the fence before this one was released by its holder with nothing left in
+   * the outbox, so this take need not recover it
+   */
+  readonly predecessorClean: boolean;
   #lost: WriterFencedError | undefined;
   #released = false;
 
-  constructor(options: WriterLeaseOptions, record: FenceRecord) {
+  constructor(
+    options: WriterLeaseOptions,
+    record: FenceRecord,
+    predecessorClean = false,
+  ) {
     this.#options = options;
     this.record = record;
+    this.predecessorClean = predecessorClean;
   }
 
   get fence(): number {
@@ -533,7 +552,7 @@ export class WriterLeaseHold {
    * Gives the lease up: marks the fence released, then removes the
    * heartbeat. The fence record stays, so the fence is never reused.
    */
-  async release(): Promise<void> {
+  async release(options: { readonly clean?: boolean } = {}): Promise<void> {
     if (this.#released) return;
     this.#released = true;
     const store = this.#options.store;
@@ -544,6 +563,7 @@ export class WriterLeaseHold {
           fence: this.fence,
           releasedAt: new Date(this.#options.now()).toISOString(),
           by: "holder",
+          ...(options.clean === true ? { clean: true } : {}),
         }),
       );
       this.#lost = new WriterFencedError(this.fence, undefined, "released");
@@ -590,6 +610,8 @@ export async function readWriterLeaseRecords(
   }
   if (fence === undefined) return { released: false };
   const record = parseFenceRecord(await store.get(fenceKey(fence)), fence);
+  const releasedClean = released.has(fence) &&
+    parseReleasedClean(await store.get(releasedKey(fence)));
   const heartbeat = parseHeartbeat(
     await store.get(heartbeatKey(fence)),
     fence,
@@ -600,7 +622,19 @@ export async function readWriterLeaseRecords(
     ...(record !== undefined ? { record } : {}),
     ...(heartbeat !== undefined ? { renewedAt: heartbeat } : {}),
     released: released.has(fence),
+    ...(releasedClean ? { releasedClean } : {}),
   };
+}
+
+function parseReleasedClean(bytes: Uint8Array | null | undefined): boolean {
+  if (bytes === undefined || bytes === null) return false;
+  try {
+    const value = JSON.parse(new TextDecoder().decode(bytes));
+    return value !== null && typeof value === "object" &&
+      value.by === "holder" && value.clean === true;
+  } catch {
+    return false;
+  }
 }
 
 function inspectionOf(
