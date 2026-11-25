@@ -108,3 +108,119 @@ export function foldCatalogActions(
     }]),
   );
 }
+
+/** what foldCatalogChanges reads of a name, as it was before the commit */
+export interface CatalogBaseView {
+  /** the greatest row's version past the excluded, if any */
+  greatestRow(name: string, excluding: ReadonlySet<number>): number | undefined;
+  row(name: string, version: number): DataMetadata | undefined;
+  forward(name: string): string | undefined;
+}
+
+/**
+ * one name's rows and forward after a commit, as what changed: the name's
+ * other rows stay as they were unless `cleared` removes them
+ */
+export interface CatalogNameChange {
+  readonly cleared: boolean;
+  /** each row the commit leaves set, with the row it replaces */
+  readonly put: ReadonlyMap<
+    number,
+    {
+      readonly metadata: DataMetadata;
+      readonly before: DataMetadata | undefined;
+    }
+  >;
+  /** rows removed and not put again; some may never have existed */
+  readonly removed: ReadonlySet<number>;
+  readonly forward: string | undefined;
+  readonly forwardBefore: string | undefined;
+}
+
+/**
+ * foldCatalogActions as changes: reads a point per touched row and the
+ * greatest row per upsert, never the name's whole state
+ */
+export function foldCatalogChanges(
+  actions: readonly CatalogAction[],
+  view: CatalogBaseView,
+): Map<string, CatalogNameChange> {
+  const working = new Map<
+    string,
+    {
+      cleared: boolean;
+      put: Map<number, DataMetadata>;
+      removed: Set<number>;
+      forward: string | undefined;
+      forwardBefore: string | undefined;
+    }
+  >();
+  const stateOf = (name: string) => {
+    let state = working.get(name);
+    if (state === undefined) {
+      const forward = view.forward(name);
+      state = {
+        cleared: false,
+        put: new Map(),
+        removed: new Set(),
+        forward,
+        forwardBefore: forward,
+      };
+      working.set(name, state);
+    }
+    return state;
+  };
+  for (const action of actions) {
+    switch (action.kind) {
+      case "upsert-version": {
+        const state = stateOf(action.metadata.name);
+        const version = action.metadata.version;
+        let greater = false;
+        for (const put of state.put.keys()) {
+          if (put > version) greater = true;
+        }
+        if (!greater && !state.cleared) {
+          const before = view.greatestRow(action.metadata.name, state.removed);
+          greater = before !== undefined && before > version;
+        }
+        if (!greater) state.forward = undefined;
+        state.put.set(version, action.metadata);
+        state.removed.delete(version);
+        break;
+      }
+      case "remove-version": {
+        const state = stateOf(action.name);
+        state.put.delete(action.version);
+        if (!state.cleared) state.removed.add(action.version);
+        break;
+      }
+      case "remove-name": {
+        const state = stateOf(action.name);
+        state.cleared = true;
+        state.put.clear();
+        state.removed.clear();
+        break;
+      }
+      case "forward":
+        stateOf(action.name).forward = action.to;
+        break;
+      case "end-forward":
+        stateOf(action.name).forward = undefined;
+        break;
+    }
+  }
+  return new Map(
+    [...working].map(([name, state]) => [name, {
+      cleared: state.cleared,
+      put: new Map(
+        [...state.put].map(([version, metadata]) => [version, {
+          metadata,
+          before: view.row(name, version),
+        }]),
+      ),
+      removed: state.removed,
+      forward: state.forward,
+      forwardBefore: state.forwardBefore,
+    }]),
+  );
+}

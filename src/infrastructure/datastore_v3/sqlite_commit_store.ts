@@ -56,8 +56,11 @@ import { ensureDirSync } from "@std/fs";
 import { maxOf } from "../../domain/array_extrema.ts";
 import { BlobRef } from "../../domain/datastore_v3/blob_ref.ts";
 import { readFileAccess } from "../../domain/datastore_v3/file_access.ts";
-import type { LiveDataVersion } from "../../domain/datastore_v3/catalog_projection.ts";
-import type { CatalogNameState } from "../../domain/datastore_v3/catalog_state.ts";
+import type {
+  LiveDataVersion,
+  LiveVersionChanges,
+} from "../../domain/datastore_v3/catalog_projection.ts";
+import type { CatalogNameChange } from "../../domain/datastore_v3/catalog_state.ts";
 import { DEFAULT_CHUNK_GRACE_MS } from "../../domain/datastore_v3/chunk_collector.ts";
 import { Commit } from "../../domain/datastore_v3/commit.ts";
 import type { HeadIdentity } from "../../domain/datastore_v3/commit_outbox.ts";
@@ -676,8 +679,6 @@ const REBUILD_PAGE = 50;
 export const COMPACTION_BATCH = 250;
 
 const FOLD_SLICE_MS = 50;
-
-const FOLD_PREFETCH_COMMITS = 16;
 
 /** Hashes looked up per query by `referencedChunks`. */
 const REF_LOOKUP_PAGE = 500;
@@ -3460,26 +3461,8 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
     let expected = point;
     let next = 0;
     this.#base.begin(now);
-    const prefetched = new Set<string>();
-    const loading = new TimeSlice(undefined, sliceMs);
     while (next < rows.length) {
       if (next > 0) await turn();
-      // the names the next commits fold, each read in its own turn rather than
-      // all inside one transaction
-      for (
-        let i = next;
-        i < Math.min(rows.length, next + FOLD_PREFETCH_COMMITS);
-        i++
-      ) {
-        const partition = commits[i].partition.toString();
-        for (const name of catalogNamesOfCommit(commits[i])) {
-          const key = JSON.stringify([commits[i].namespace, partition, name]);
-          if (prefetched.has(key)) continue;
-          prefetched.add(key);
-          if (loading.over) await loading.next();
-          this.#base.prefetch(commits[i].namespace, partition, name);
-        }
-      }
       const from = next;
       this.#db.exec("BEGIN IMMEDIATE");
       try {
@@ -4732,11 +4715,14 @@ class SqliteCompactedBase implements CompactedBaseWriter {
   readonly #selectRecordBlob: StatementSync;
   readonly #upsertRecord: StatementSync;
   readonly #deleteRecord: StatementSync;
-  readonly #selectVersions: StatementSync;
+  readonly #selectGreatestVersions: StatementSync;
+  readonly #selectVersion: StatementSync;
   readonly #deleteVersion: StatementSync;
   readonly #insertVersion: StatementSync;
   readonly #updateVersion: StatementSync;
   readonly #selectCatalogVersions: StatementSync;
+  readonly #selectGreatestCatalogRows: StatementSync;
+  readonly #selectCatalogRow: StatementSync;
   readonly #deleteCatalogRow: StatementSync;
   readonly #insertCatalog: StatementSync;
   readonly #stampCatalogRow: StatementSync;
@@ -4774,13 +4760,6 @@ class SqliteCompactedBase implements CompactedBaseWriter {
   #at: number | null = null;
   /** chunks whose counts the batch changed, for an install's invariant check */
   readonly touched = new Set<string>();
-  /**
-   * Live versions and catalog state read or written in the batch, by name:
-   * a batch folds many commits of a few names, and parsing every live
-   * version's metadata again for each commit would dominate it.
-   */
-  readonly #versions = new Map<string, readonly LiveDataVersion[]>();
-  readonly #catalog = new Map<string, CatalogNameState>();
   /** each metadata object is serialised once: a fold compares a name's live versions on every commit */
   readonly #serialized = new WeakMap<object, string>();
   /** Chunks released in the batch so far. */
@@ -4798,8 +4777,11 @@ class SqliteCompactedBase implements CompactedBaseWriter {
     this.#deleteRecord = db.prepare(
       "DELETE FROM base_records WHERE namespace = ? AND partition = ? AND record_key = ?",
     );
-    this.#selectVersions = db.prepare(
-      "SELECT metadata FROM base_versions WHERE namespace = ? AND partition = ? AND name = ? ORDER BY version",
+    this.#selectGreatestVersions = db.prepare(
+      "SELECT version, metadata FROM base_versions WHERE namespace = ? AND partition = ? AND name = ? ORDER BY version DESC LIMIT ?",
+    );
+    this.#selectVersion = db.prepare(
+      "SELECT metadata FROM base_versions WHERE namespace = ? AND partition = ? AND name = ? AND version = ?",
     );
     this.#deleteVersion = db.prepare(
       "DELETE FROM base_versions WHERE namespace = ? AND partition = ? AND name = ? AND version = ?",
@@ -4812,6 +4794,14 @@ class SqliteCompactedBase implements CompactedBaseWriter {
     );
     this.#selectCatalogVersions = db.prepare(
       "SELECT version FROM base_catalog WHERE namespace = ? AND partition = ? AND name = ? ORDER BY version",
+    );
+    this.#selectGreatestCatalogRows = db.prepare(
+      "SELECT version FROM base_catalog WHERE namespace = ? AND partition = ? AND name = ? ORDER BY version DESC LIMIT ?",
+    );
+    this.#selectCatalogRow = db.prepare(
+      "SELECT v.metadata FROM base_catalog AS c LEFT JOIN base_versions AS v " +
+        "USING (namespace, partition, name, version) " +
+        "WHERE c.namespace = ? AND c.partition = ? AND c.name = ? AND c.version = ?",
     );
     this.#deleteCatalogRow = db.prepare(
       "DELETE FROM base_catalog WHERE namespace = ? AND partition = ? AND name = ? AND version = ?",
@@ -4974,19 +4964,8 @@ class SqliteCompactedBase implements CompactedBaseWriter {
   begin(now: number): void {
     this.#now = now;
     this.beginSlice();
-    this.#versions.clear();
-    this.#catalog.clear();
   }
 
-  /** reads a name into the caches ahead of the transaction that folds it */
-  prefetch(namespace: string, partition: string, name: string): void {
-    this.catalogName(namespace, partition, name);
-  }
-
-  /**
-   * starts another of a batch's transactions; the read caches hold what the
-   * last one committed, so they carry over
-   */
   beginSlice(): void {
     this.#at = null;
     this.touched.clear();
@@ -5031,40 +5010,49 @@ class SqliteCompactedBase implements CompactedBaseWriter {
     for (const sha256 of before) this.#release(namespace, partition, sha256);
   }
 
-  liveVersions(
+  greatestLiveVersion(
     namespace: string,
     partition: string,
     name: string,
-  ): readonly LiveDataVersion[] {
-    const key = nameKey(namespace, partition, name);
-    const cached = this.#versions.get(key);
-    if (cached !== undefined) return cached;
-    const versions = (this.#selectVersions.all(namespace, partition, name) as {
-      metadata: string;
-    }[]).map((row) => {
-      const metadata = parseMetadata(row.metadata);
-      return { version: metadata.version, metadata };
-    });
-    this.#versions.set(key, versions);
-    return versions;
+    excluding: ReadonlySet<number>,
+  ): LiveDataVersion | undefined {
+    for (
+      const row of this.#selectGreatestVersions.all(
+        namespace,
+        partition,
+        name,
+        excluding.size + 1,
+      ) as { version: number; metadata: string }[]
+    ) {
+      if (excluding.has(row.version)) continue;
+      return { version: row.version, metadata: parseMetadata(row.metadata) };
+    }
+    return undefined;
   }
 
-  setLiveVersions(
+  applyLiveVersions(
     namespace: string,
     partition: string,
     name: string,
-    versions: readonly LiveDataVersion[],
+    changes: LiveVersionChanges,
   ): void {
-    // only changed rows: a full rewrite per commit stalls the loop on a name with many versions
-    const previous = new Map(
-      this.liveVersions(namespace, partition, name).map((v) => [
-        v.version,
-        v.metadata,
-      ]),
-    );
-    for (const { version, metadata } of versions) {
-      const before = previous.get(version);
-      previous.delete(version);
+    for (const version of changes.removed) {
+      const deleted = this.#deleteVersion.run(
+        namespace,
+        partition,
+        name,
+        version,
+      ).changes;
+      if (Number(deleted) === 0) continue;
+      this.#removed(
+        namespace,
+        partition,
+        "version",
+        versionRowKey(name, version),
+      );
+    }
+    for (const { version, metadata } of changes.put) {
+      const before = this.#liveVersion(namespace, partition, name, version);
       if (before === undefined) {
         this.#insertVersion.run(
           namespace,
@@ -5093,16 +5081,18 @@ class SqliteCompactedBase implements CompactedBaseWriter {
         versionRowKey(name, version),
       );
     }
-    for (const version of previous.keys()) {
-      this.#deleteVersion.run(namespace, partition, name, version);
-      this.#removed(
-        namespace,
-        partition,
-        "version",
-        versionRowKey(name, version),
-      );
-    }
-    this.#versions.set(nameKey(namespace, partition, name), versions);
+  }
+
+  #liveVersion(
+    namespace: string,
+    partition: string,
+    name: string,
+    version: number,
+  ): LiveDataVersion["metadata"] | undefined {
+    const row = this.#selectVersion.get(namespace, partition, name, version) as
+      | { metadata: string }
+      | undefined;
+    return row === undefined ? undefined : parseMetadata(row.metadata);
   }
 
   #serialize(metadata: LiveDataVersion["metadata"]): string {
@@ -5121,86 +5111,107 @@ class SqliteCompactedBase implements CompactedBaseWriter {
     return a === b || this.#serialize(a) === this.#serialize(b);
   }
 
-  catalogName(
+  greatestCatalogRow(
     namespace: string,
     partition: string,
     name: string,
-  ): CatalogNameState {
-    const key = nameKey(namespace, partition, name);
-    const cached = this.#catalog.get(key);
-    if (cached !== undefined) return cached;
-    // a catalog row's metadata is its live version's: the same object, parsed once
-    const live = new Map(
-      this.liveVersions(namespace, partition, name).map((v) => [
-        v.version,
-        v.metadata,
-      ]),
-    );
-    const rows =
-      (this.#selectCatalogVersions.all(namespace, partition, name) as {
-        version: number;
-      }[]).map(({ version }) => {
-        const metadata = live.get(version);
-        if (metadata === undefined) {
-          throw new Error(
-            `The compacted base has a catalog row for ${name}@${version} that is not a live version`,
-          );
-        }
-        return metadata;
-      });
-    const forward = this.#selectForward.get(namespace, partition, name) as
-      | { renamed_to: string }
-      | undefined;
-    const state = { rows, forward: forward?.renamed_to };
-    this.#catalog.set(key, state);
-    return state;
+    excluding: ReadonlySet<number>,
+  ): number | undefined {
+    for (
+      const row of this.#selectGreatestCatalogRows.all(
+        namespace,
+        partition,
+        name,
+        excluding.size + 1,
+      ) as { version: number }[]
+    ) {
+      if (!excluding.has(row.version)) return row.version;
+    }
+    return undefined;
   }
 
-  setCatalogName(
+  catalogRow(
     namespace: string,
     partition: string,
     name: string,
-    state: CatalogNameState,
-  ): void {
-    // Rows are versions of base_versions and share their metadata. The
-    // fold sets a name's live versions before its catalog state, so a row
-    // that is not the live version is a broken invariant: refuse it rather
-    // than let the row vanish or change.
-    const live = new Map(
-      this.liveVersions(namespace, partition, name).map((v) => [
-        v.version,
-        v.metadata,
-      ]),
-    );
-    for (const metadata of state.rows) {
-      const shown = live.get(metadata.version);
-      if (shown === undefined || !this.#same(shown, metadata)) {
-        throw new Error(
-          `A catalog row of ${name}@${metadata.version} is not the live version's metadata`,
-        );
-      }
+    version: number,
+  ): LiveDataVersion["metadata"] | undefined {
+    const row = this.#selectCatalogRow.get(
+      namespace,
+      partition,
+      name,
+      version,
+    ) as { metadata: string | null } | undefined;
+    if (row === undefined) return undefined;
+    if (row.metadata === null) {
+      throw new Error(
+        `The compacted base has a catalog row for ${name}@${version} that is not a live version`,
+      );
     }
-    const previous = this.catalogName(namespace, partition, name);
-    const before = new Map(previous.rows.map((row) => [row.version, row]));
-    for (const metadata of state.rows) {
-      const row = before.get(metadata.version);
-      before.delete(metadata.version);
-      if (row === undefined) {
-        this.#insertCatalog.run(
+    return parseMetadata(row.metadata);
+  }
+
+  catalogForward(
+    namespace: string,
+    partition: string,
+    name: string,
+  ): string | undefined {
+    return (this.#selectForward.get(namespace, partition, name) as
+      | { renamed_to: string }
+      | undefined)?.renamed_to;
+  }
+
+  applyCatalogChange(
+    namespace: string,
+    partition: string,
+    name: string,
+    change: CatalogNameChange,
+  ): void {
+    const remove = (version: number) => {
+      const deleted = this.#deleteCatalogRow.run(
+        namespace,
+        partition,
+        name,
+        version,
+      ).changes;
+      if (Number(deleted) === 0) return;
+      this.#removed(
+        namespace,
+        partition,
+        "catalog",
+        versionRowKey(name, version),
+      );
+    };
+    if (change.cleared) {
+      for (
+        const { version } of this.#selectCatalogVersions.all(
           namespace,
           partition,
           name,
-          metadata.version,
-          this.#at,
+        ) as { version: number }[]
+      ) {
+        if (!change.put.has(version)) remove(version);
+      }
+    }
+    for (const version of change.removed) remove(version);
+    for (const [version, { metadata, before }] of change.put) {
+      // a row that is not its live version is a broken invariant: refused
+      const shown = this.#liveVersion(namespace, partition, name, version);
+      if (shown === undefined || !this.#same(shown, metadata)) {
+        throw new Error(
+          `A catalog row of ${name}@${version} is not the live version's metadata`,
         );
-      } else if (!this.#same(row, metadata)) {
+      }
+      if (before === undefined) {
+        this.#insertCatalog.run(namespace, partition, name, version, this.#at);
+      } else if (!this.#same(before, metadata)) {
         // its metadata is read through base_versions: a difference resends it
         this.#stampCatalogRow.run(
           this.#at,
           namespace,
           partition,
           name,
-          metadata.version,
+          version,
         );
       } else {
         continue;
@@ -5209,21 +5220,12 @@ class SqliteCompactedBase implements CompactedBaseWriter {
         namespace,
         partition,
         "catalog",
-        versionRowKey(name, metadata.version),
-      );
-    }
-    for (const version of before.keys()) {
-      this.#deleteCatalogRow.run(namespace, partition, name, version);
-      this.#removed(
-        namespace,
-        partition,
-        "catalog",
         versionRowKey(name, version),
       );
     }
-    if (state.forward === undefined) {
+    if (change.forward === undefined) {
       this.#deleteForward.run(namespace, partition, name);
-      if (previous.forward !== undefined) {
+      if (change.forwardBefore !== undefined) {
         this.#removed(namespace, partition, "forward", name);
       }
     } else {
@@ -5231,12 +5233,11 @@ class SqliteCompactedBase implements CompactedBaseWriter {
         namespace,
         partition,
         name,
-        state.forward,
+        change.forward,
         this.#at,
       );
       this.#written(namespace, partition, "forward", name);
     }
-    this.#catalog.set(nameKey(namespace, partition, name), state);
   }
 
   fileOwnership(namespace: string, key: string): FileOwnership | undefined {
@@ -5897,10 +5898,6 @@ function baseRecordOf(row: Record<string, unknown>): BaseRecord {
 
 function parseMetadata(text: string): DataMetadata {
   return DataMetadataSchema.parse(JSON.parse(text));
-}
-
-function nameKey(namespace: string, partition: string, name: string): string {
-  return JSON.stringify([namespace, partition, name]);
 }
 
 function distinctChunks(blob: BlobRef | undefined): readonly string[] {
