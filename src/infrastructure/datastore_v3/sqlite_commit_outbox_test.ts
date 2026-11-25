@@ -216,20 +216,14 @@ async function countingSqlite(
     counts.exec.push(sql);
     return exec.call(this, sql);
   };
-  database.prepare = function (
-    this: DatabaseSync,
-    ...args: Parameters<DatabaseSync["prepare"]>
-  ) {
+  database.prepare = function (this: DatabaseSync, ...args: never[]) {
     counts.prepare++;
-    return prepare.apply(this, args);
-  };
-  statement.run = function (
-    this: StatementSync,
-    ...args: Parameters<StatementSync["run"]>
-  ) {
+    return Reflect.apply(prepare, this, args);
+  } as typeof prepare;
+  statement.run = function (this: StatementSync, ...args: never[]) {
     counts.run++;
-    return run.apply(this, args);
-  };
+    return Reflect.apply(run, this, args);
+  } as typeof run;
   try {
     await fn();
   } finally {
