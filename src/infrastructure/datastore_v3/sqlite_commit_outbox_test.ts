@@ -1132,3 +1132,75 @@ Deno.test("SqliteCommitOutbox.markState: a rejected entry keeps the code it was 
     }
   });
 });
+
+Deno.test("SqliteCommitOutbox: staged chunk names are seen by another connection until unstaged, and only since the bound asked", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "outbox.db");
+    let now = 1_000;
+    const writer = new SqliteCommitOutbox(path, {
+      clock: () => new Date(now),
+    });
+    const sweeper = new SqliteCommitOutbox(path);
+    try {
+      await writer.stageChunks("unit-1", "", [HASH_A]);
+      now = 2_000;
+      await writer.stageChunks("unit-2", "", [HASH_B]);
+      assertEquals(
+        await sweeper.stagedChunks("", [HASH_A, HASH_B], 0),
+        new Set([HASH_A, HASH_B]),
+      );
+      assertEquals(await sweeper.stagedChunks("other", [HASH_A], 0), new Set());
+      assertEquals(
+        await sweeper.stagedChunks("", [HASH_A, HASH_B], 1_500),
+        new Set([HASH_B]),
+      );
+      // a staged name is not an outbox entry's reference
+      assertEquals(await sweeper.referencedChunks("", [HASH_A]), new Set());
+
+      await writer.unstageChunks("unit-1");
+      assertEquals(
+        await sweeper.stagedChunks("", [HASH_A, HASH_B], 0),
+        new Set([HASH_B]),
+      );
+      await sweeper.pruneStagedChunks(2_001);
+      assertEquals(
+        await sweeper.stagedChunks("", [HASH_A, HASH_B], 0),
+        new Set(),
+      );
+    } finally {
+      await writer.close();
+      await sweeper.close();
+    }
+  });
+});
+
+Deno.test("SqliteCommitOutbox: an outbox written before staged names opens without a schema change", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "outbox.db");
+    const first = new SqliteCommitOutbox(path);
+    await first.stageChunks("unit", "", [HASH_A]);
+    await first.close();
+    const raw = new DatabaseSync(path);
+    try {
+      raw.exec("DROP TABLE outbox_staged");
+      assertEquals(
+        (raw.prepare("PRAGMA user_version").get() as { user_version: number })
+          .user_version,
+        COMMIT_OUTBOX_SCHEMA_VERSION,
+      );
+    } finally {
+      raw.close();
+    }
+    const again = new SqliteCommitOutbox(path);
+    try {
+      assertEquals(await again.stagedChunks("", [HASH_A], 0), new Set());
+      await again.stageChunks("unit", "", [HASH_A]);
+      assertEquals(
+        await again.stagedChunks("", [HASH_A], 0),
+        new Set([HASH_A]),
+      );
+    } finally {
+      await again.close();
+    }
+  });
+});
