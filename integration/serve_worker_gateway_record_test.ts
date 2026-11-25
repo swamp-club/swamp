@@ -131,6 +131,7 @@ async function withGateway(
     repoContext,
     capabilityService: { registerHandlers: () => {} },
     graceWindowMs: 60_000,
+    owner: { instanceId: "this-serve", pid: Deno.pid },
     pushWorkerRecords: async () => {
       pushes++;
       await holdPushes;
@@ -233,10 +234,10 @@ async function overwrite(
     swampVersion: "1.0.0",
     protocolVersion: REMOTE_PROTOCOL_VERSION,
   };
+  const peerServe = { instanceId: "peer-serve", pid: 1 };
+  // placed unowned, then stamped with the peer's owner, as a pull would leave it
   await ledger.recordStatus(h.name, { status: "idle" }, peer);
-  if (status === "disconnected") {
-    await ledger.recordStatus(h.name, { status: "disconnected" }, peer);
-  }
+  await ledger.recordStatus(h.name, { status, owner: peerServe }, peer);
 }
 
 async function removeRecord(h: Harness): Promise<void> {
@@ -392,21 +393,24 @@ Deno.test("WorkerGateway on a repo: a draining worker over another instance's re
 Deno.test("WorkerGateway on a repo: publishes queued while one waits are coalesced", async () => {
   const release = Promise.withResolvers<void>();
   await withGateway(async (h) => {
-    const first = connectWorker(h.gateway);
-    await enroll(first.channel, h.token, crypto.randomUUID());
-    await waitFor(() => h.pushes() === 1, "the first publish started");
+    try {
+      const first = connectWorker(h.gateway);
+      await enroll(first.channel, h.token, crypto.randomUUID());
+      await waitFor(() => h.pushes() === 1, "the first publish started");
 
-    first.drop();
-    const secondInstance = crypto.randomUUID();
-    const second = connectWorker(h.gateway);
-    await enroll(second.channel, h.token, secondInstance);
-    second.drop();
-    await waitFor(async () => {
-      const record = await stored(h);
-      return record?.instanceUuid === secondInstance &&
-        record.status === "disconnected";
-    }, "the last departure written");
-    release.resolve();
+      first.drop();
+      const secondInstance = crypto.randomUUID();
+      const second = connectWorker(h.gateway);
+      await enroll(second.channel, h.token, secondInstance);
+      second.drop();
+      await waitFor(async () => {
+        const record = await stored(h);
+        return record?.instanceUuid === secondInstance &&
+          record.status === "disconnected";
+      }, "the last departure written");
+    } finally {
+      release.resolve();
+    }
     await h.gateway.settled();
     assertEquals(h.pushes(), 2);
   }, release.promise);

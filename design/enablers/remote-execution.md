@@ -911,7 +911,8 @@ The serve holding a worker's connection owns that worker's record. Each
 status write carries the enrollment of the live connection
 (`statusWriteBase` in `worker_model.ts`): a record that is missing, or that
 names another instance, is rebuilt from the connection rather than refused,
-and a missing definition is created again first. A departure (`draining`,
+unless that instance is live and another serve owns it, and a missing
+definition is created again first. A departure (`draining`,
 `disconnected`) is written only over the departing instance's own record that
 this serve owns (the record's `owner`), so a serve a worker has left never
 stamps the enrollment on another serve as gone, even when the same worker
@@ -924,9 +925,9 @@ brought the change), the gateway rewrites the record of each
 connected worker whose record says it is gone (missing, `disconnected`, or
 another instance `draining`), numbered above what the pull brought, and
 publishes it through the sync gate (`reassertConnected`). A record naming
-another instance that is still idle, busy or unverified is left alone with a
-warning, so two serves holding one worker name never take turns overwriting
-it. Enrollments and departures are also published through the sync gate as
+another instance that is still idle, busy or unverified, owned by another
+serve, is left alone by both rules, with a warning on reassert, so two serves
+holding one worker name never take turns overwriting it. Enrollments and departures are also published through the sync gate as
 soon as they are written, on a chain of their own so the reply never waits on
 the datastore. A publish queued while another waits is dropped, since the one
 waiting carries every write made before it starts. Shutdown waits for that
@@ -934,8 +935,10 @@ chain before it disposes the gateway, and again after the listener closes the
 sockets of the workers still connected: an unpublished departure is otherwise
 lost to the next model-lock pull, which replaces the cache's latest markers
 with the remote's. If the busy write before a dispatch still fails, the
-gateway refuses the dispatch unsent with `state_unrecorded`, and the step
-waits for a worker until its queue timeout instead of failing at once.
+gateway refuses the dispatch unsent with `state_unrecorded`. The step then
+goes at once to another worker that can take it, preferring others for the
+rest of its scheduling; when that worker is the only candidate, the step waits
+for it until its queue timeout instead of failing at once.
 
 **Worker, token and bookkeeping reaping:** `WorkerGcService` runs on the serve
 side 5 minutes after serve starts and then hourly (default grace period 24 h),

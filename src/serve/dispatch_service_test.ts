@@ -4237,3 +4237,23 @@ Deno.test("DispatchService: a type without add-ons dispatches with no extension 
   await h.service.executeRemote(stepRequest());
   assertEquals(h.dispatchCalls[0].params.extensionBundles, []);
 });
+
+Deno.test("DispatchService: a worker whose state cannot be recorded gives the step to another idle worker at once", async () => {
+  const h = createHarness({
+    workers: [snapshot({ name: "w1" }), snapshot({ name: "w2" })],
+    queueTimeoutMs: 500,
+  });
+  h.setBehavior((name) =>
+    name === "w1"
+      ? Promise.reject(new WorkerNotDispatchableError(name, "state_unrecorded"))
+      : Promise.resolve({
+        status: "success",
+        outputs: [],
+        logs: [],
+        durationMs: 1,
+      })
+  );
+  const result = await h.service.executeRemote(stepRequest());
+  assertEquals(result.workerName, "w2");
+  assertEquals(h.dispatchCalls.map((c) => c.name), ["w1", "w2"]);
+});

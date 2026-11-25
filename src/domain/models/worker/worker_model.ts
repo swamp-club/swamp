@@ -221,18 +221,24 @@ export function statusWriteBase(
       ? { kind: "write", base: current }
       : { kind: "skip" };
   }
-  return {
-    kind: "write",
-    base: sameInstance ? current : enrolledWorkerState(live, now),
-  };
+  if (sameInstance) return { kind: "write", base: current };
+  // another serve's live worker of the same name keeps its record
+  if (current !== null && liveElsewhere(current, live)) return { kind: "skip" };
+  return { kind: "write", base: enrolledWorkerState(live, now) };
+}
+
+function liveElsewhere(current: WorkerState, live: WorkerEnrollment): boolean {
+  return current.status !== "disconnected" && current.status !== "draining" &&
+    current.owner !== undefined && live.owner !== undefined &&
+    current.owner.instanceId !== live.owner.instanceId;
 }
 
 export type ReassertDecision = "rewrite" | "keep" | "live_elsewhere";
 
 /**
- * whether a serve holding a worker's connection rewrites its stored record: only
- * when the record says the worker is gone, so two serves holding one name never
- * take turns overwriting it
+ * whether a serve holding a worker's connection rewrites its stored record: not
+ * when another serve owns a live instance of the name, so two serves holding
+ * one name never take turns overwriting it
  */
 export function reassertDecision(
   stored: WorkerState | null,
@@ -242,9 +248,7 @@ export function reassertDecision(
   if (stored.instanceUuid === live.instanceUuid) {
     return stored.status === "disconnected" ? "rewrite" : "keep";
   }
-  return stored.status === "disconnected" || stored.status === "draining"
-    ? "rewrite"
-    : "live_elsewhere";
+  return liveElsewhere(stored, live) ? "live_elsewhere" : "rewrite";
 }
 
 async function setStatus(
