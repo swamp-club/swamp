@@ -921,8 +921,9 @@ that collide with the new enrollment's and a pull then brings back the old
 record. After every runtime-data pull that changed files, and after a quiet one
 at most every five minutes (`QUIET_REASSERT_INTERVAL_MS`, since a step-start
 pull may already have brought the change), the gateway rewrites the record of
-each connected worker whose record says it is gone (missing, `disconnected`, or
-another instance `draining`), numbered above what the pull brought, and
+each connected worker whose record says it is gone (missing, `disconnected`,
+another instance `draining`, or its own instance owned by a serve it left),
+numbered above what the pull brought, and
 publishes it through the sync gate (`reassertConnected`). A record naming
 another instance that is still idle, busy or unverified, owned by another serve,
 is left alone by both rules, with a warning on reassert, so two serves holding
@@ -931,8 +932,10 @@ also published through the sync gate as soon as they are written, on a chain of
 their own so the reply never waits on the datastore. A publish queued while
 another waits is dropped, since the one waiting carries every write made before
 it starts. Shutdown writes and publishes the departure of every worker still
-connected before it disposes the gateway, while the store is open, and the
-socket closes that follow when the listener stops write nothing more: a
+connected before it disposes the gateway, while the store is open. From then on
+the gateway refuses enrollments (`serve_stopping`, which workers retry), writes
+no other status and reasserts nothing, and the socket closes that follow when
+the listener stops write nothing more: a
 departure written after the store closes is lost, and an unpublished one is lost
 to the next model-lock pull, which replaces the cache's latest markers with the
 remote's. If the busy write before

@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import "../src/domain/models/models.ts";
 import { collect } from "../src/libswamp/testing.ts";
@@ -35,7 +35,7 @@ import {
   TOKEN_SECRETS_VAULT_NAME,
 } from "../src/domain/vaults/control_plane_vault_provider.ts";
 import { VaultService } from "../src/domain/vaults/vault_service.ts";
-import { RpcChannel } from "../src/domain/remote/rpc_channel.ts";
+import { RpcChannel, RpcError } from "../src/domain/remote/rpc_channel.ts";
 import {
   type DispatchParams,
   type EnrollResult,
@@ -547,5 +547,19 @@ Deno.test("WorkerGateway on a repo: after shutdown departures nothing marks a wo
     await channel.call(RemoteMethod.drain, {});
     await h.gateway.settled();
     assertEquals((await stored(h))?.status, "disconnected");
+  });
+});
+
+Deno.test("WorkerGateway on a repo: a stopping serve refuses a new enrollment with a retryable code", async () => {
+  await withGateway(async (h) => {
+    await h.gateway.recordShutdownDepartures();
+    const { channel } = connectWorker(h.gateway);
+    const refusal = await assertRejects(
+      () => enroll(channel, h.token, crypto.randomUUID()),
+      RpcError,
+    );
+    assertEquals(refusal.code, "serve_stopping");
+    await h.gateway.settled();
+    assertEquals(await stored(h), null);
   });
 });

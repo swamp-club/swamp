@@ -394,6 +394,14 @@ interface SocketState {
 /** how often a pull that changed nothing still checks the connected workers' records */
 export const QUIET_REASSERT_INTERVAL_MS = 5 * 60_000;
 
+function stoppingRefusal(): RpcError {
+  return new RpcError({
+    code: "serve_stopping",
+    message:
+      "This serve is stopping, so it takes no workers; the worker retries",
+  });
+}
+
 // fails the definition name pattern, so it is never a worker's key
 const WORKER_RECORDS_PUSH_KEY = "push:worker-records";
 
@@ -479,7 +487,9 @@ export class WorkerGateway {
       },
       ...(reassert === undefined ? {} : {
         reassert: (workerName, args, live) =>
-          reassert(workerName, stamp(args), live),
+          this.#departuresRecorded
+            ? Promise.resolve("keep" as const)
+            : reassert(workerName, stamp(args), live),
       }),
     };
     this.#findTokenDefinitionId = options.findTokenDefinitionId ??
@@ -625,7 +635,7 @@ export class WorkerGateway {
           const current = this.#workers.get(name);
           if (
             current === undefined || current.channel === null ||
-            current.instanceUuid !== instanceUuid
+            current.instanceUuid !== instanceUuid || this.#departuresRecorded
           ) return;
           // read in the worker's turn, so a re-stamped mint is the one recorded
           const live = this.#enrollmentOf(current);
@@ -663,7 +673,9 @@ export class WorkerGateway {
         );
       }
     }
-    if (rewritten > 0) await this.#pushWorkerRecords();
+    if (rewritten > 0 && !this.#departuresRecorded) {
+      await this.#pushWorkerRecords();
+    }
     return rewritten;
   }
 
@@ -686,18 +698,25 @@ export class WorkerGateway {
    */
   async recordShutdownDepartures(): Promise<void> {
     this.#departuresRecorded = true;
-    for (const entry of [...this.#workers.values()]) {
-      if (entry.channel === null) continue;
-      const name = entry.name;
-      const live = this.#enrollmentOf(entry);
-      // #recordDisconnected logs its own failures, so this never rejects
-      this.#recordWorkerWrite(
-        "worker_disconnected",
-        name,
-        () => this.#recordDisconnected(name, live),
-      ).catch(() => {});
+    const departed = new Set<string>();
+    // a second pass catches an entry an in-flight transition added meanwhile
+    for (let pass = 0; pass < 2; pass++) {
+      for (const entry of [...this.#workers.values()]) {
+        if (entry.channel === null || departed.has(entry.instanceUuid)) {
+          continue;
+        }
+        departed.add(entry.instanceUuid);
+        const name = entry.name;
+        const live = this.#enrollmentOf(entry);
+        // #recordDisconnected logs its own failures, so this never rejects
+        this.#recordWorkerWrite(
+          "worker_disconnected",
+          name,
+          () => this.#recordDisconnected(name, live),
+        ).catch(() => {});
+      }
+      await this.settled();
     }
-    await this.settled();
   }
 
   /** runs fn in order with token and pool-admission turns, so no enrollment interleaves */
@@ -1456,6 +1475,7 @@ export class WorkerGateway {
           "This serve node does not lead the datastore, so it takes no workers; the worker retries",
       });
     }
+    if (this.#departuresRecorded) throw stoppingRefusal();
 
     // only a worker that asks gets the pass, read once so refusal and reply
     // agree; a worker needing a pass is refused before token redemption so it
@@ -1551,6 +1571,8 @@ export class WorkerGateway {
           "worker_enroll",
           workerName,
           async () => {
+            // an enrollment that began before shutdown would record no departure
+            if (this.#departuresRecorded) throw stoppingRefusal();
             const existing = this.#workers.get(workerName);
             if (
               existing && existing.channel !== null &&

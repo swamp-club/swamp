@@ -227,10 +227,14 @@ export function statusWriteBase(
   return { kind: "write", base: enrolledWorkerState(live, now) };
 }
 
+function ownedElsewhere(current: WorkerState, live: WorkerEnrollment): boolean {
+  return current.owner !== undefined && live.owner !== undefined &&
+    current.owner.instanceId !== live.owner.instanceId;
+}
+
 function liveElsewhere(current: WorkerState, live: WorkerEnrollment): boolean {
   return current.status !== "disconnected" && current.status !== "draining" &&
-    current.owner !== undefined && live.owner !== undefined &&
-    current.owner.instanceId !== live.owner.instanceId;
+    ownedElsewhere(current, live);
 }
 
 export type ReassertDecision = "rewrite" | "keep" | "live_elsewhere";
@@ -246,7 +250,10 @@ export function reassertDecision(
 ): ReassertDecision {
   if (stored === null) return "rewrite";
   if (stored.instanceUuid === live.instanceUuid) {
-    return stored.status === "disconnected" ? "rewrite" : "keep";
+    // a serve the worker left can still own it; this serve's departure would skip such a record
+    return stored.status === "disconnected" || ownedElsewhere(stored, live)
+      ? "rewrite"
+      : "keep";
   }
   return liveElsewhere(stored, live) ? "live_elsewhere" : "rewrite";
 }
