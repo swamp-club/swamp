@@ -255,6 +255,19 @@ const MIGRATIONS: readonly SqliteMigration[] = [
   // several processes write one checkout, each recovering only its own scopes;
   // an older swamp takes every touched scope for its own, so must not open it
   `SELECT 1;`,
+  // files a base load wrote, so a retry of the load at the same point in the
+  // same boot leaves them be; cleared by a finished load, kept by a reset
+  `
+  CREATE TABLE IF NOT EXISTS load_done (
+    namespace TEXT NOT NULL,
+    record_key TEXT NOT NULL,
+    owner TEXT NOT NULL,
+    mark INTEGER NOT NULL,
+    point INTEGER NOT NULL,
+    boot TEXT NOT NULL,
+    PRIMARY KEY (namespace, record_key)
+  ) STRICT, WITHOUT ROWID;
+  `,
 ];
 
 export type { FileOwnership };
@@ -308,6 +321,12 @@ export interface StagedFile extends LoadKey {
   readonly owner: string;
   readonly mark: number;
   readonly present: boolean;
+}
+
+/** the base point and boot a base load's done files hold for */
+export interface LoadResume {
+  readonly point: number;
+  readonly boot: string;
 }
 
 export interface LoadName {
@@ -1023,15 +1042,52 @@ export class ReadModelState {
    * the state already shows the same put there and no earlier attempt
    * touched them.
    */
-  loadWrites(): LoadKey[] {
+  loadWrites(resume?: LoadResume): LoadKey[] {
     this.#requireOpen();
-    return this.#db.prepare(
+    const sql =
       "SELECT f.namespace, f.record_key FROM load_files AS f WHERE f.present = 1 AND (" +
-        "NOT EXISTS (SELECT 1 FROM materialised_keys AS m WHERE m.namespace = f.namespace " +
-        "AND m.record_key = f.record_key AND m.present = 1 AND m.owner = f.owner AND m.mark = f.mark) " +
-        "OR EXISTS (SELECT 1 FROM load_touched_keys AS t WHERE t.namespace = f.namespace " +
-        "AND t.record_key = f.record_key)) ORDER BY 1, 2",
-    ).all() as unknown as LoadKey[];
+      "NOT EXISTS (SELECT 1 FROM materialised_keys AS m WHERE m.namespace = f.namespace " +
+      "AND m.record_key = f.record_key AND m.present = 1 AND m.owner = f.owner AND m.mark = f.mark) " +
+      "OR EXISTS (SELECT 1 FROM load_touched_keys AS t WHERE t.namespace = f.namespace " +
+      "AND t.record_key = f.record_key))";
+    if (resume === undefined) {
+      return this.#db.prepare(`${sql} ORDER BY 1, 2`)
+        .all() as unknown as LoadKey[];
+    }
+    return this.#db.prepare(
+      `${sql} AND NOT EXISTS (SELECT 1 FROM load_done AS d WHERE d.namespace = f.namespace ` +
+        "AND d.record_key = f.record_key AND d.owner = f.owner AND d.mark = f.mark " +
+        "AND d.point = ? AND d.boot = ?) ORDER BY 1, 2",
+    ).all(resume.point, resume.boot) as unknown as LoadKey[];
+  }
+
+  /** files an earlier attempt of this load already wrote, which a retry leaves be */
+  loadDoneCount(resume: LoadResume): number {
+    this.#requireOpen();
+    return (this.#db.prepare(
+      "SELECT COUNT(*) AS n FROM load_done AS d JOIN load_files AS f " +
+        "ON f.namespace = d.namespace AND f.record_key = d.record_key " +
+        "AND f.owner = d.owner AND f.mark = d.mark AND f.present = 1 " +
+        "WHERE d.point = ? AND d.boot = ?",
+    ).get(resume.point, resume.boot) as { n: number }).n;
+  }
+
+  /** records files this load has written, after they are in place */
+  markLoadDone(
+    files: readonly { namespace: string; record_key: string }[],
+    resume: LoadResume,
+  ): void {
+    if (files.length === 0) return;
+    this.#transaction(() => {
+      const insert = this.#db.prepare(
+        "INSERT OR REPLACE INTO load_done (namespace, record_key, owner, mark, point, boot) " +
+          "SELECT namespace, record_key, owner, mark, ?, ? FROM load_files " +
+          "WHERE namespace = ? AND record_key = ?",
+      );
+      for (const file of files) {
+        insert.run(resume.point, resume.boot, file.namespace, file.record_key);
+      }
+    });
   }
 
   loadContent(
@@ -1180,12 +1236,20 @@ export class ReadModelState {
           AND m.mark = unreadable_records.position AND m.present = 1);
       `);
       for (const record of unreadable) this.#insertUnreadable(record);
-      if (unsynced !== undefined && unsynced.keys.length > 0) {
+      if (unsynced !== undefined) {
+        // what an earlier attempt wrote is as unsynced as what this one wrote
+        const resumed = this.#db.prepare(
+          "INSERT OR IGNORE INTO unsynced_keys (namespace, record_key) " +
+            "SELECT namespace, record_key FROM load_done WHERE boot = ?",
+        ).run(unsynced.boot).changes;
         for (const { namespace, record_key } of unsynced.keys) {
           this.#insertUnsynced.run(namespace, record_key);
         }
-        this.#upsertUnsyncedBoot.run(unsynced.boot);
+        if (unsynced.keys.length > 0 || Number(resumed) > 0) {
+          this.#upsertUnsyncedBoot.run(unsynced.boot);
+        }
       }
+      this.#db.exec("DELETE FROM load_done;");
       this.#upsertMeta.run("cursor", point);
       this.#upsertMeta.run("incomplete_pid", this.#pid);
     });

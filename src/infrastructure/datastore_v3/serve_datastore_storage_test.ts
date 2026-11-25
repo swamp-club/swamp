@@ -35,6 +35,10 @@ import {
   storageNamespaceOf,
 } from "./serve_datastore_storage.ts";
 import { FakeServe, removeTempDir } from "./serve_upstream_test_helpers.ts";
+import {
+  ServeRateLimitedError,
+  ServeUnreachableError,
+} from "./serve_upstream_errors.ts";
 
 const NO_SYNC = {
   syncFile: () => Promise.resolve(),
@@ -315,7 +319,13 @@ function gatedRemote(
       seen.mostAtOnce = Math.max(seen.mostAtOnce, ++inFlight);
       try {
         await gate.promise;
-        if (fail.has(sha256)) throw new Error("serve unreachable");
+        if (fail.has(sha256)) {
+          throw new ServeUnreachableError(
+            "http://serve.invalid",
+            "never",
+            new Error("request timed out"),
+          );
+        }
         return chunks.get(sha256) ?? null;
       } finally {
         inFlight--;
@@ -402,7 +412,7 @@ Deno.test("CachedServeStorage.prefetch: an offline checkout fetches nothing", as
   }, true);
 });
 
-Deno.test("CachedServeStorage.prefetch: stops at the first failure, so a hung serve costs one timeout, not one per chunk", async () => {
+Deno.test("CachedServeStorage.prefetch: stops when serve is unreachable, so a hung serve costs one timeout, not one per chunk", async () => {
   const all = await Promise.all(
     Array.from({ length: 20 }, (_, i) => chunk(`chunk-${i}`)),
   );
@@ -414,6 +424,105 @@ Deno.test("CachedServeStorage.prefetch: stops at the first failure, so a hung se
   await withGatedCache(remote, async (cache) => {
     await cache.prefetch("_default", all.map((c) => c.sha256), live());
     assertEquals(seen.reads, 8, "only the reads already in flight");
+  });
+});
+
+/** a remote answering each chunk from a script of outcomes, one per read */
+function scriptedRemote(
+  chunks: ReadonlyMap<string, Uint8Array>,
+  outcome: (sha256: string, read: number) => Error | undefined,
+) {
+  const reads = new Map<string, number>();
+  let inFlight = 0;
+  const seen = { reads: 0, mostAtOnce: 0 };
+  const remote = {
+    async get(_namespace: string, sha256: string): Promise<Uint8Array | null> {
+      seen.reads++;
+      seen.mostAtOnce = Math.max(seen.mostAtOnce, ++inFlight);
+      const read = (reads.get(sha256) ?? 0) + 1;
+      reads.set(sha256, read);
+      try {
+        await Promise.resolve();
+        const error = outcome(sha256, read);
+        if (error !== undefined) throw error;
+        return chunks.get(sha256) ?? null;
+      } finally {
+        inFlight--;
+      }
+    },
+    has: () => Promise.resolve(new Set<string>()),
+  } as unknown as DatastoreStorage;
+  return { remote, seen };
+}
+
+Deno.test("CachedServeStorage.prefetch: one chunk it cannot fetch never stops the rest (swamp-club#5083)", async () => {
+  const all = await Promise.all(
+    Array.from({ length: 40 }, (_, i) => chunk(`chunk-${i}`)),
+  );
+  const bad = all[0].sha256;
+  const { remote, seen } = scriptedRemote(
+    new Map(all.map((c) => [c.sha256, c.bytes])),
+    (sha256) => sha256 === bad ? new Error("bad chunk") : undefined,
+  );
+  await withGatedCache(remote, async (cache) => {
+    const report = await cache.prefetch(
+      "_default",
+      all.map((c) => c.sha256),
+      live(),
+    );
+    assertEquals(report, { requested: 40, fetched: 39, retries: 0, failed: 1 });
+    const held = await cache.statChunks(
+      "_default",
+      all.map((c) => c.sha256),
+      live(),
+    );
+    assertEquals(held.size, 39);
+    assertEquals(seen.mostAtOnce <= 8, true, "never more than eight at once");
+  });
+});
+
+Deno.test("CachedServeStorage.prefetch: a chunk serve refused with 429 is tried again (swamp-club#5083)", async () => {
+  const all = await Promise.all(
+    Array.from({ length: 12 }, (_, i) => chunk(`chunk-${i}`)),
+  );
+  const { remote } = scriptedRemote(
+    new Map(all.map((c) => [c.sha256, c.bytes])),
+    (_sha256, read) =>
+      read === 1
+        ? new ServeRateLimitedError("rate_limited", "chunk slots full", 0)
+        : undefined,
+  );
+  await withGatedCache(remote, async (cache) => {
+    const report = await cache.prefetch(
+      "_default",
+      all.map((c) => c.sha256),
+      live(),
+    );
+    assertEquals(report, {
+      requested: 12,
+      fetched: 12,
+      retries: 12,
+      failed: 0,
+    });
+  });
+});
+
+Deno.test("CachedServeStorage.prefetch: an unreachable serve stops it at once (swamp-club#5083)", async () => {
+  const all = await Promise.all(
+    Array.from({ length: 30 }, (_, i) => chunk(`chunk-${i}`)),
+  );
+  const { remote, seen } = scriptedRemote(
+    new Map(all.map((c) => [c.sha256, c.bytes])),
+    () =>
+      new ServeUnreachableError(
+        "http://serve.invalid",
+        "never",
+        new Error("connection refused"),
+      ),
+  );
+  await withGatedCache(remote, async (cache) => {
+    await cache.prefetch("_default", all.map((c) => c.sha256), live());
+    assertEquals(seen.reads <= 8, true, "only the reads already in flight");
   });
 });
 

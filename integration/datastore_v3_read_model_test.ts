@@ -953,7 +953,13 @@ Deno.test("read model: a compacted base's files a reboot lost are repaired on th
 });
 
 class FailingWriteBatch extends DurableWriteBatch {
-  constructor(readonly control: { writes: number; fail: number | undefined }) {
+  constructor(
+    readonly control: {
+      writes: number;
+      fail: number | undefined;
+      paths?: string[];
+    },
+  ) {
     super({ sync: false });
   }
   override async write(
@@ -967,7 +973,77 @@ class FailingWriteBatch extends DurableWriteBatch {
       throw new Error("injected crash partway through the base load");
     }
     await super.write(path, content, signal, options);
+    this.control.paths?.push(path);
   }
+}
+
+for (
+  const [label, retry] of [
+    ["the next catch-up", "catch_up"],
+    ["an interrupted-writer recovery", "recover"],
+  ] as const
+) {
+  Deno.test(`read model: a base load cut off partway is finished by ${label} in the same boot without rewriting what it wrote (swamp-club#5083)`, async () => {
+    const clean = await cleanCompactedResult();
+    await withV3Env(async (env) => {
+      await appendScenario(env);
+      await env.store.compactHistory(Number.MAX_SAFE_INTEGER);
+      const first = {
+        writes: 0,
+        fail: 4 as number | undefined,
+        paths: [] as string[],
+      };
+      const cut = env.openReadModel({
+        bootIdentity: () => Promise.resolve("boot-id:1"),
+        writeBatch: () => new FailingWriteBatch(first),
+      });
+      try {
+        await assertRejects(
+          () => cut.catchUp(signal()),
+          Error,
+          "injected crash partway through the base load",
+        );
+      } finally {
+        await cut.close();
+      }
+      assertEquals(committedCursor(env), 0);
+      assert(first.paths.length > 0, "the cut-off load wrote files");
+
+      const second = {
+        writes: 0,
+        fail: undefined as number | undefined,
+        paths: [] as string[],
+      };
+      const next = env.openReadModel({
+        bootIdentity: () => Promise.resolve("boot-id:1"),
+        writeBatch: () => new FailingWriteBatch(second),
+      });
+      try {
+        if (retry === "recover") {
+          await next.recover("", {
+            since: 0,
+            admits: () => true,
+            signal: signal(),
+            entry: "interrupted_writer",
+          });
+        }
+        assertEquals((await next.catchUp(signal())).cursor, 5);
+      } finally {
+        await next.close();
+      }
+      assertEquals(
+        second.paths.filter((path) => first.paths.includes(path)),
+        [],
+        "a file the cut-off load wrote is written again",
+      );
+      assert(second.paths.length > 0, "the retry wrote the rest");
+      assertEquals(await observe(env), clean);
+      assert(
+        unsyncedCount(env) > 0,
+        "the resumed load listed no unsynced files",
+      );
+    });
+  });
 }
 
 Deno.test("read model: a base load cut off partway, whose written files a reboot then lost, ends as a clean load on the next open (swamp-club#3803)", async () => {
