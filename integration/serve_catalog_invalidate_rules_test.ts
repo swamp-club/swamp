@@ -59,6 +59,8 @@ const PINNED = [
   "src/serve/runtime_data_poller.ts :: RuntimeDataPoller",
   // Inside the sync-service branch of the migration lock.
   "src/serve/token_secret_migration.ts :: createTokenMigrationLockDeps",
+  // Built only for an extension datastore with fetchContent and no commit log.
+  "src/serve/token_record_refresh.ts :: serverTokenRecordRefreshOver",
 ];
 
 const INVALIDATES =

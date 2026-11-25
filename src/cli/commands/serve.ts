@@ -321,6 +321,7 @@ import {
   extractDashboardSessionId,
   extractWebSocketToken,
   readServerTokenRecord,
+  setServerTokenRecordRefresh,
   setTokenRefusalNodeState,
   shouldInvalidateDashboardSession,
 } from "../../serve/token_auth.ts";
@@ -396,6 +397,7 @@ import {
   workerGcListPredicate,
   WorkerGcService,
 } from "../../serve/worker_gc_service.ts";
+import { serverTokenRecordRefreshOver } from "../../serve/token_record_refresh.ts";
 import {
   createBookkeepingRecordQuery,
   createWorkerTokenNameQuery,
@@ -3431,9 +3433,16 @@ export const serveCommand = new Command()
       if (warning !== undefined) logger.warn(warning);
     }
 
+    const refreshTokenRecord = serverTokenRecordRefreshOver(
+      datastoreConfig,
+      syncService,
+      repoContext,
+    );
+    setServerTokenRecordRefresh(refreshTokenRecord);
     await sweepTokenConsistency({
       repoContext,
       tokenSecretsProvider,
+      ...(refreshTokenRecord ? { refreshRecord: refreshTokenRecord } : {}),
       knownUndecryptable: new Set(healthResult.undecryptable),
       probeVaultSecret: async (vaultName, secretKey) => {
         try {
@@ -9012,6 +9021,7 @@ export const serveCommand = new Command()
         setRemoteStepDispatcher(null);
         setEnrollmentTokenWriteOrdering(null);
         setTokenRefusalNodeState(undefined);
+        setServerTokenRecordRefresh(undefined);
         setRemoteOnlyMode(false);
       });
       await stages.run("listener", () => listenerClosed, "awaited");

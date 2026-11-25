@@ -2167,6 +2167,27 @@ Deno.test("sweepTokenConsistency: detects a record and secret from different min
   );
 });
 
+Deno.test("sweepTokenConsistency: a mispaired record the datastore holds paired is refreshed, not reported", async () => {
+  const refreshed: string[] = [];
+  const deps = {
+    ...createMockConsistencyDeps({
+      secretKeys: ["moved"],
+      dataTokenNames: ["moved"],
+      definitionNames: ["moved"],
+      fingerprints: {
+        moved: await serverTokenSecretFingerprint("an-older-mint"),
+      },
+    }),
+    refreshRecord: (name: string) => {
+      refreshed.push(name);
+      return Promise.resolve(true);
+    },
+  };
+  const result = await sweepTokenConsistency(deps);
+  assertEquals(result.inconsistencies, []);
+  assertEquals(refreshed, ["moved"]);
+});
+
 Deno.test("sweepTokenConsistency: a token rotated into another vault is not compared with its old copy", async () => {
   const deps = createMockConsistencyDeps({
     secretKeys: ["moved-vault"],

@@ -34,6 +34,7 @@ import {
   validateServerToken,
   verifyServerTokenSecret,
 } from "../domain/models/access/server_token_model.ts";
+import { processRuntimeSlot } from "../infrastructure/runtime/process_runtime.ts";
 import { VaultService } from "../domain/vaults/vault_service.ts";
 import type { AuditEmitter } from "../domain/serve_audit/audit_emitter.ts";
 import type {
@@ -182,6 +183,25 @@ export interface TokenRefusalNodeState {
 }
 
 let nodeState: (() => TokenRefusalNodeState) | undefined;
+
+/**
+ * replaces this cache's copy of a token record with the datastore's when that
+ * one pairs with the secret; true when it did
+ */
+export type ServerTokenRecordRefresh = (
+  name: string,
+  secret: string,
+) => Promise<boolean>;
+
+const tokenRecordRefresh = processRuntimeSlot(() => ({
+  refresh: undefined as ServerTokenRecordRefresh | undefined,
+}));
+
+export function setServerTokenRecordRefresh(
+  refresh: ServerTokenRecordRefresh | undefined,
+): void {
+  tokenRecordRefresh().refresh = refresh;
+}
 
 export function setTokenRefusalNodeState(
   state: (() => TokenRefusalNodeState) | undefined,
@@ -420,14 +440,14 @@ export async function authenticateServerToken(
         {},
         () => createServerTokenAuthDeps(repoDir, repoContext),
       );
-    const token = await withSpan(
+    let token = await withSpan(
       "swamp.serve.token_auth.read_token",
       {},
       () => deps.readToken(split.name),
     );
     const nowMs = deps.now?.() ?? Date.now();
     validateServerToken(token, split.name, presented, nowMs);
-    const matchKey = vaultMatchKey(repoDir, token);
+    let matchKey = vaultMatchKey(repoDir, token);
     if (matchKey !== undefined && vaultMatchedRecently(matchKey, nowMs)) {
       // the vault's secret matched this fingerprint: the presented one must too,
       // and a miss is refused as the vault comparison refuses it
@@ -447,7 +467,20 @@ export async function authenticateServerToken(
       // the presented secret is the vault's; it must also be the one this
       // record was minted with, or the credential would authenticate as another
       // mint's principal
-      await verifyServerTokenSecret(token, secret);
+      try {
+        await verifyServerTokenSecret(token, secret);
+      } catch (error) {
+        const refresh = tokenRecordRefresh().refresh;
+        if (!(error instanceof ServerTokenSecretMismatchError) || !refresh) {
+          throw error;
+        }
+        // a peer writing the same version can leave this cache another mint's record
+        if (!await refresh(split.name, secret).catch(() => false)) throw error;
+        token = await deps.readToken(split.name);
+        validateServerToken(token, split.name, presented, nowMs, secret);
+        await verifyServerTokenSecret(token, secret);
+        matchKey = vaultMatchKey(repoDir, token);
+      }
       if (matchKey !== undefined) rememberVaultMatch(matchKey, nowMs);
     }
 

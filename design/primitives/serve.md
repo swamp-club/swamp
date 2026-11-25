@@ -727,6 +727,15 @@ with another mint's secret (swamp-club#2482):
   with `ServerTokenConcurrentChangeError` if another writer changed it in
   between, so a record is written only next to its own secret. A token whose
   pair already disagrees still rotates: rotation is its repair.
+- **A cache left with another mint's record.** Two writers can still publish
+  the same version of `token-main`, and the cache that published first never
+  downloads the other's, so its record disagrees with the secret every other
+  serve agrees on. On an extension datastore, authentication that finds the
+  record and the vault secret from different mints, and the boot consistency
+  sweep, fetch the datastore's latest record (`serverTokenRecordRefreshOver`)
+  and take it in place of the cache's copy, byte for byte, only when it pairs
+  with the secret; authentication then retries once. A v3 datastore has one
+  writer and never needs it.
 - **Reveal through serve.** `access.token.reveal` runs the same reveal as the
   local command on serve, for a caller with `admin` on `access:*`. A follower
   forwards it to the leader, which has applied every mint and rotate, and it is

@@ -1439,6 +1439,8 @@ export interface TokenConsistencyDeps {
     vaultName: string,
     secretKey: string,
   ) => Promise<boolean>;
+  /** takes the datastore's record when this cache holds another mint's */
+  refreshRecord?: (name: string, secret: string) => Promise<boolean>;
 }
 
 export interface TokenInconsistency {
@@ -1469,6 +1471,19 @@ export async function sweepTokenConsistency(
       { error: err instanceof Error ? err.message : String(err) },
     );
     return { inconsistencies: [] };
+  }
+}
+
+async function refreshed(
+  deps: TokenConsistencyDeps,
+  tokenName: string,
+  secret: string,
+): Promise<boolean> {
+  if (deps.refreshRecord === undefined) return false;
+  try {
+    return await deps.refreshRecord(tokenName, secret);
+  } catch {
+    return false;
   }
 }
 
@@ -1598,7 +1613,8 @@ async function sweepTokenConsistencyInner(
       : undefined;
     if (
       fingerprint !== undefined &&
-      fingerprint !== await serverTokenSecretFingerprint(secret)
+      fingerprint !== await serverTokenSecretFingerprint(secret) &&
+      !await refreshed(deps, tokenName, secret)
     ) {
       inconsistencies.push({
         mode: "mispaired-secret",

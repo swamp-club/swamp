@@ -78,7 +78,7 @@ export const ServerTokenSchema = z.object({
 
 export type ServerToken = z.infer<typeof ServerTokenSchema>;
 
-const TOKEN_DATA_NAME = "token-main";
+export const TOKEN_DATA_NAME = "token-main";
 
 const DEFAULT_DURATION_MS = 30 * 24 * 60 * 60 * 1000;
 
