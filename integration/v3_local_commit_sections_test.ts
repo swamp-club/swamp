@@ -26,6 +26,10 @@ import { waitFor } from "@swamp-club/swamp-testing";
 import { SqliteCommitStore } from "../src/infrastructure/datastore_v3/sqlite_commit_store.ts";
 import { listWriterMarkerFiles } from "../src/infrastructure/datastore_v3/interrupted_writer_recovery.ts";
 import { v3CatalogPath } from "../src/infrastructure/datastore_v3/record_path_guard.ts";
+import {
+  TouchedScopeJournal,
+  WHOLE_CHECKOUT_SCOPE,
+} from "../src/infrastructure/datastore_v3/touched_scope_journal.ts";
 import { closeV3Datastores } from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
 import {
   acquireV3WriterLock,
@@ -1180,6 +1184,59 @@ Deno.test({
         await closed(writer);
       } finally {
         writer.stop();
+      }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "v3 local commit sections: a killed writer's recovery waits while a live writer has journaled the whole checkout, keeping its marker and files",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withV3RowRepos({}, async (repos) => {
+      await closeV3Datastores();
+      const killed = startWriter("killed");
+      const live = startWriter("live");
+      const next = startWriter("next");
+      try {
+        await killOneBesideALive(repos, { killed, live });
+        backdateTracking(repos.repoA);
+        live.send({ kind: "token" });
+        const tokenMessage = await live.seen((m) => "token" in m, "token");
+        const token = "token" in tokenMessage ? tokenMessage.token : "";
+        // a bulk change journals the whole checkout before it writes
+        const journal = new TouchedScopeJournal(
+          v3CatalogPath(repos.repoA),
+          token,
+        );
+        try {
+          journal.record(crypto.randomUUID(), "", WHOLE_CHECKOUT_SCOPE);
+        } finally {
+          journal.close();
+        }
+        await opened(next, repos.repoA, repos.modelType.normalized);
+        next.send({ kind: "write", id: "n1", model: "mn", data: "d-n" });
+        assertEquals(await written(next, "n1"), 1);
+        assertEquals(
+          await stagedVersionExists(repos.repoA, "d-k", 2),
+          true,
+          "nothing under the live writer's scope was removed",
+        );
+        assertEquals(
+          (await listWriterMarkerFiles(repos.repoA)).length,
+          3,
+          "the killed writer's marker stays for a later recovery",
+        );
+        live.send({ kind: "resume", id: "l1" });
+        assertEquals(await written(live, "l1"), 1);
+        await closed(live);
+        await closed(next);
+      } finally {
+        killed.stop();
+        live.stop();
+        next.stop();
       }
     });
   },

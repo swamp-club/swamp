@@ -699,6 +699,8 @@ export interface V3Datastore {
       readonly instance?: string;
       /** writers still writing the checkout, whose scopes are kept */
       readonly liveInstances?: readonly string[];
+      /** every writer judged gone; any other writer's scopes are kept */
+      readonly deadInstances?: readonly string[];
     },
   ): Promise<string[]>;
   droppedWork():
@@ -1764,6 +1766,9 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
           : {}),
         ...(recoverOptions?.liveInstances !== undefined
           ? { liveInstances: recoverOptions.liveInstances }
+          : {}),
+        ...(recoverOptions?.deadInstances !== undefined
+          ? { deadInstances: recoverOptions.deadInstances }
           : {}),
         targeted: true,
       });

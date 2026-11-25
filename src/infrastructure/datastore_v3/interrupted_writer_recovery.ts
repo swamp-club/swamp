@@ -337,7 +337,7 @@ export async function recoverInterruptedWriter(
       .info`Not recovering ${repoDir} yet: an older swamp process still writes it`;
     return undefined;
   }
-  const live = liveInstancesOf(judged);
+  const live = peersOf(judged);
   let removed: string[] | undefined;
   for (const marker of dead) {
     const recovered = await recoverMarker(
@@ -356,7 +356,7 @@ async function recoverMarker(
   handle: V3Datastore,
   repoDir: string,
   marker: JudgedMarker,
-  live: readonly string[],
+  live: Peers,
   options: RecoverInterruptedWriterOptions,
 ): Promise<string[] | undefined> {
   const state = marker.state as "interrupted" | "unknown";
@@ -404,7 +404,7 @@ export async function recoverOwnPredecessor(
     repoDir,
     options.local ?? await localProcess(),
   );
-  const live = liveInstancesOf(judged);
+  const live = peersOf(judged);
   let removed: string[] | undefined;
   for (const marker of judged) {
     if (marker.state !== "interrupted") continue;
@@ -454,6 +454,22 @@ export async function otherLiveWriters(
     }
   }
   return live;
+}
+
+interface Peers {
+  readonly live: readonly string[];
+  readonly dead: readonly string[];
+}
+
+function peersOf(judged: readonly JudgedMarker[]): Peers {
+  return {
+    live: liveInstancesOf(judged),
+    dead: judged
+      .filter((marker) =>
+        marker.state === "interrupted" || marker.state === "unknown"
+      )
+      .map(journalInstanceOf),
+  };
 }
 
 /** the writers whose scopes a recovery keeps: this one, and every live one */
@@ -549,7 +565,7 @@ async function recover(
   repoDir: string,
   marker: WriterMarkerAt,
   state: "interrupted" | "unknown",
-  live: readonly string[],
+  live: Peers,
   signal: AbortSignal | undefined,
 ): Promise<string[] | undefined> {
   return await withCheckoutRecoveryLock(repoDir, async () => {
@@ -573,7 +589,7 @@ async function recoverLocked(
   repoDir: string,
   marker: WriterMarkerAt,
   state: "interrupted" | "unknown",
-  live: readonly string[],
+  live: Peers,
   signal: AbortSignal | undefined,
 ): Promise<string[] | undefined> {
   const file = marker.file;
@@ -606,7 +622,8 @@ async function recoverLocked(
       journaled: file.kind === "marker" &&
         file.marker.journal === WRITER_JOURNAL_VERSION,
       instance: journalInstanceOf(marker),
-      liveInstances: live.filter((token) => token !== ""),
+      liveInstances: live.live.filter((token) => token !== ""),
+      deadInstances: live.dead,
     });
     await restoreQueuedStepStarts(handle, repoDir);
   } catch (error) {

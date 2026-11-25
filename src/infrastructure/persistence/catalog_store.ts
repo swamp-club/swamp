@@ -1790,9 +1790,13 @@ export class CatalogStore {
 
   touchedScopes(): CatalogTouchedScope[] {
     if (!this.#hasTable("catalog_touched")) return [];
-    ensureTouchedInstanceColumn(this.db);
+    // a read: a table an older swamp made, not migrated yet, holds only its rows
+    const instance = (this.db.prepare("PRAGMA table_info(catalog_touched)")
+        .all() as { name: string }[]).some((c) => c.name === "instance")
+      ? "instance"
+      : "'' AS instance";
     return (this.db.prepare(
-      "SELECT id, unit_id, namespace, scope, type_normalized, model_id, data_name, instance FROM catalog_touched ORDER BY id",
+      `SELECT id, unit_id, namespace, scope, type_normalized, model_id, data_name, ${instance} FROM catalog_touched ORDER BY id`,
     ).all() as unknown as CatalogTouchedScope[]).map((row) => ({ ...row }));
   }
 

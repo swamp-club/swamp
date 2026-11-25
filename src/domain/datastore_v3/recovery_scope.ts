@@ -82,6 +82,7 @@ export class RecoveryScope {
     { namespace: string; key: string; path: string }
   >();
   #unscopable: string | undefined;
+  #left = false;
 
   constructor(kept: (namespace: string, key: string) => boolean = () => false) {
     this.#kept = kept;
@@ -89,7 +90,10 @@ export class RecoveryScope {
 
   /** false, and the scope unusable, for a name of no valid model partition */
   addName(name: CatalogNameKey): boolean {
-    if (this.#kept(name.namespace, dataNamePrefix(name))) return true;
+    if (this.#kept(name.namespace, dataNamePrefix(name))) {
+      this.#left = true;
+      return true;
+    }
     let partition: PartitionKey;
     try {
       partition = PartitionKey.forModel(name.type, name.modelId);
@@ -118,7 +122,10 @@ export class RecoveryScope {
 
   /** a file of `namespace` to check; its data name, if any, is touched */
   addKeyToCheck(namespace: string, key: string): void {
-    if (this.#kept(namespace, key)) return;
+    if (this.#kept(namespace, key)) {
+      this.#left = true;
+      return;
+    }
     let keys = this.#check.get(namespace);
     if (keys === undefined) this.#check.set(namespace, keys = new Set());
     keys.add(key);
@@ -127,7 +134,10 @@ export class RecoveryScope {
 
   /** a file no commit owns; its data name, if any, is touched */
   addRemoval(namespace: string, key: string, path: string): void {
-    if (this.#kept(namespace, key)) return;
+    if (this.#kept(namespace, key)) {
+      this.#left = true;
+      return;
+    }
     this.#remove.set(JSON.stringify([namespace, key]), {
       namespace,
       key,
@@ -153,6 +163,11 @@ export class RecoveryScope {
       return;
     }
     this.addName({ namespace, ...name });
+  }
+
+  /** something the dead writer touched was left to a live writer */
+  get leftToLiveWriters(): boolean {
+    return this.#left;
   }
 
   /** why a name could not be scoped, once one could not */

@@ -567,12 +567,17 @@ const MIGRATIONS: readonly SqliteMigration[] = [
       ) STRICT, WITHOUT ROWID;
     `);
   },
-  // a run lock knows only the run id, the tail of its partition key
-  `
+];
+
+/**
+ * a run lock knows only the run id, the tail of its partition key. Outside the
+ * migrations: every checkout shares a filesystem datastore's commits.db, and a
+ * schema bump would lock an older swamp out of all of them
+ */
+const RUN_TAIL_INDEX = `
   CREATE INDEX IF NOT EXISTS partition_heads_by_tail
     ON partition_heads (namespace, substr(partition, -36));
-  `,
-];
+`;
 
 /** The owner row of `db` (swamp-club#4063), undefined when it holds none. */
 function readOwner(db: DatabaseSync): DatastoreOwner | undefined {
@@ -4377,6 +4382,7 @@ export function openCommitsDatabase(
     db.exec("PRAGMA synchronous=FULL");
     if (options.replicated === true) db.exec("PRAGMA wal_autocheckpoint=0");
     migrate(db);
+    db.exec(RUN_TAIL_INDEX);
     return db;
   } catch (error) {
     db.close();

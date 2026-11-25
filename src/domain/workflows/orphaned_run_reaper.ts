@@ -713,7 +713,7 @@ export async function cancelOrphanedMethodRuns(
 export function warnDeferredMethodRuns(rows: readonly ActiveRun[]): void {
   if (rows.length === 0) return;
   logger.warn(
-    "Left {count} method run(s) whose owner stopped for the process holding their behavior's lock; cancel again once it finishes",
+    "Another process holds the behavior lock of {count} method run(s) whose owner stopped, so their output was left to it; once it finishes, run 'swamp run doctor --fix' to settle them",
     { count: rows.length },
   );
 }

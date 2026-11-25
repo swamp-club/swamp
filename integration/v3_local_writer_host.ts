@@ -50,7 +50,10 @@ import {
   catchUpV3HandlesAt,
   closeV3Datastores,
 } from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
-import { endWriterInstanceForTesting } from "../src/infrastructure/datastore_v3/writer_instance.ts";
+import {
+  endWriterInstanceForTesting,
+  writerInstance,
+} from "../src/infrastructure/datastore_v3/writer_instance.ts";
 import { recordV3LeaseWaitsForTesting } from "../src/infrastructure/datastore_v3/v3_writer_lock.ts";
 import { isCustomDatastoreConfig } from "../src/domain/datastore/datastore_config.ts";
 import { dirname, join } from "@std/path";
@@ -148,6 +151,8 @@ export type LocalWriterRequest =
   | { readonly kind: "catchUp" }
   /** killed: its units never finish and its token is no longer live */
   | { readonly kind: "die" }
+  /** this process's writer token */
+  | { readonly kind: "token" }
   /** records this process's lease waits from now on */
   | { readonly kind: "recordLeaseWaits" }
   | { readonly kind: "leaseWaits" }
@@ -184,6 +189,7 @@ export type LocalWriterMessage =
   | { readonly closed: true }
   | { readonly caughtUp: true }
   | { readonly leaseWaits: readonly number[] }
+  | { readonly token: string }
   | { readonly planted: string }
   | { readonly failed: string; readonly id?: string };
 
@@ -642,6 +648,9 @@ export const localWriterHost: ProcessHost<
         );
         return;
       }
+      case "token":
+        post({ token: writerInstance() });
+        return;
       case "recordLeaseWaits":
         leaseWaits ??= recordV3LeaseWaitsForTesting();
         post({ leaseWaits: [] });

@@ -2739,3 +2739,20 @@ Deno.test("SqliteCommitStore.runPartitionsOf: reads a run's rows through the run
     }
   });
 });
+
+Deno.test("SqliteCommitStore.open: the run-tail index is made without raising the schema, so an older swamp still opens a shared commits.db", async () => {
+  await withStore(async (_store, path) => {
+    const indexes = rawRows(
+      path,
+      "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'partition_heads_by_tail'",
+    );
+    assertEquals(indexes.length, 1);
+    // the version main's swamp writes: every checkout of a filesystem
+    // datastore shares this file, so no checkout may move it on alone
+    assertEquals(COMMIT_STORE_SCHEMA_VERSION, 21);
+    assertEquals(
+      rawRows(path, "PRAGMA user_version")[0].user_version,
+      21,
+    );
+  });
+});

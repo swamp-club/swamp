@@ -497,6 +497,11 @@ export interface RecoverOptions {
   readonly instance?: string;
   /** writers still writing the checkout: their journaled scopes are kept */
   readonly liveInstances?: readonly string[];
+  /**
+   * every writer judged gone: any other writer's journaled scope is kept,
+   * read again before each repair, so one that starts writing meanwhile is too
+   */
+  readonly deadInstances?: readonly string[];
 }
 
 /**
@@ -1008,13 +1013,26 @@ export class SqliteReadModel implements ReadModel {
     const scanStarted = performance.now();
     const allRows = tracking.touchedScopes();
     const live = new Set(options.liveInstances ?? []);
-    const keptScopes = allRows.filter((row) => live.has(row.instance));
-    const scope = new RecoveryScope((namespace, key) =>
-      keptScopes.some((row) =>
+    const dead = options.deadInstances === undefined
+      ? undefined
+      : new Set(options.deadInstances);
+    const keptRows = (rows: readonly TouchedScope[]) =>
+      rows.filter((row) =>
+        dead === undefined ? live.has(row.instance) : !dead.has(row.instance)
+      );
+    const covers = (
+      rows: readonly TouchedScope[],
+      namespace: string,
+      key: string,
+    ) =>
+      rows.some((row) =>
         row.namespace === namespace &&
         (scopeCovers(row.scope, key) ||
           scopeKey(row.scope).startsWith(`${key}/`))
-      )
+      );
+    const keptScopes = keptRows(allRows);
+    const scope = new RecoveryScope((namespace, key) =>
+      covers(keptScopes, namespace, key)
     );
     const dirty = tracking.dirtyNames();
     this.#judgeNameShare(
@@ -1177,6 +1195,15 @@ export class SqliteReadModel implements ReadModel {
       },
     );
     const scanMs = Math.round(performance.now() - scanStarted);
+    // what a live writer covers is its own to land or to leave for its own
+    // recovery: this writer's marker and rows stay until the checkout is free
+    if (scope.leftToLiveWriters) {
+      throw new RecoveryDeferredError(
+        "a live writer has journaled where the interrupted writer wrote",
+      );
+    }
+    const stillOthers = (namespace: string, key: string) =>
+      covers(keptRows(tracking.touchedScopes()), namespace, key);
     const removed = await withSpan(
       "swamp.datastore.v3.readmodel.recover.restore",
       {},
@@ -1185,6 +1212,12 @@ export class SqliteReadModel implements ReadModel {
         const batch = new DurableWriteBatch();
         try {
           for (const removal of scope.removals()) {
+            // a writer journals before it writes: read again just before
+            if (stillOthers(removal.namespace, removal.key)) {
+              throw new RecoveryDeferredError(
+                "a live writer started writing where the interrupted writer wrote",
+              );
+            }
             await this.#removeRecord(
               removal.namespace,
               removal.key,
@@ -1204,6 +1237,11 @@ export class SqliteReadModel implements ReadModel {
         const slice = new TimeSlice(signal, this.#recoverySliceMs);
         for (const { namespace: ns, keys } of scope.keysToCheck()) {
           if (slice.over) await slice.next();
+          if (keys.some((key) => stillOthers(ns, key))) {
+            throw new RecoveryDeferredError(
+              "a live writer started writing where the interrupted writer wrote",
+            );
+          }
           const expected = this.#state.expectedFiles(ns, keys);
           filesRead += expected.length;
           if (
