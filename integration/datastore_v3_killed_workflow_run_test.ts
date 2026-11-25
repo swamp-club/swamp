@@ -127,6 +127,8 @@ const REPO_DIR = ${JSON.stringify(repoDir)};
 const PROBE = ${JSON.stringify(probe ?? null)};
 const NESTED = ${JSON.stringify(nested)};
 
+// A pending promise alone lets Deno exit; only the parent's SIGKILL may end this.
+setInterval(() => {}, 1000);
 await initializeLogging({});
 const type = ModelType.create("test/killed-run-" + crypto.randomUUID());
 modelRegistry.register({
@@ -308,6 +310,8 @@ import { createWorkerModelRunDeps } from ${
 
 const REPO_DIR = ${JSON.stringify(repoDir)};
 
+// A pending promise alone lets Deno exit; only the parent's SIGKILL may end this.
+setInterval(() => {}, 1000);
 await initializeLogging({});
 const type = ModelType.create("test/killed-method-" + crypto.randomUUID());
 const writer = Definition.create({ name: "writer", globalArguments: {} });
@@ -353,7 +357,7 @@ await runInRootUnitOfWork(repoContext, {
   pushWhen: "completed",
 }, async () => {
   for await (
-    const _event of modelMethodRun(
+    const event of modelMethodRun(
       libSwampContextForRepo(repoContext, {
         signal: new AbortController().signal,
       }),
@@ -367,8 +371,10 @@ await runInRootUnitOfWork(repoContext, {
       },
     )
   ) {
-    // Drain the events; the method never returns.
+    // the keep-alive would hold a failed run until the hang guard
+    if (event.kind === "error") throw new Error(event.error.message);
   }
+  throw new Error("the method run ended; it should block until killed");
 });
 `;
 }
@@ -418,8 +424,12 @@ async function runChildAndKill<T>(program: string): Promise<T> {
   child.kill("SIGKILL");
   await stdout.cancel();
   const status = await child.status;
-  await stderr;
-  assertEquals(status.signal, "SIGKILL", "the child was killed");
+  const stderrText = await stderr;
+  assertEquals(
+    status.signal,
+    "SIGKILL",
+    `the child was killed, not exited ${status.code}:\n${stderrText}`,
+  );
   return JSON.parse(line.slice("READY ".length)) as T;
 }
 
