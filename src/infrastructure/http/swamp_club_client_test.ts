@@ -2054,7 +2054,7 @@ interface IdempotentRead {
   call: (client: SwampClubClient, signal?: AbortSignal) => Promise<unknown>;
 }
 
-// every idempotent swamp-club read that retries; a read left on single-attempt fetch fails these
+// retrying reads other than whoami, which has its own tests; one moved back to single-attempt fetch fails these
 const IDEMPOTENT_READS: IdempotentRead[] = [
   {
     name: "fetchIssue",
