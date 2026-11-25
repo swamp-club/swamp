@@ -2778,10 +2778,10 @@ export const serveCommand = new Command()
     // Armed detached so the keeper's checks never join swamp.cli's trace.
     runDetached(() => gatePassKeeper?.start(GATE_PASS_KEEPER_INTERVAL_MS));
     // bound once boot builds the owner check below
-    let workerOwnerAlive: PendingOwnerAlive | undefined;
+    const workerOwnerCheck: { alive?: PendingOwnerAlive } = {};
     const workerGateway = new WorkerGateway({
       workerOwnerAlive: (owner) =>
-        workerOwnerAlive?.(owner) ?? Promise.resolve(true),
+        workerOwnerCheck.alive?.(owner) ?? Promise.resolve(true),
       acceptsWorkers: () => !isFollowing(),
       owner: pendingRunOwner,
       repoDir: resolvedRepoDir,
@@ -4839,7 +4839,7 @@ export const serveCommand = new Command()
       });
     const bootOwnerAlive = ownerLiveness("gone");
     const sweepOwnerAlive = ownerLiveness("alive");
-    workerOwnerAlive = sweepOwnerAlive;
+    workerOwnerCheck.alive = sweepOwnerAlive;
     // queued and parked runs only: serve beats before it queues or parks any
     const bootRunOwnerAlive = ownerLiveness("gone", true);
     const sweepRunOwnerAlive = ownerLiveness("alive", true);
