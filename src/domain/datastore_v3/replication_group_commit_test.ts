@@ -18,8 +18,14 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects } from "@std/assert";
-import { ReplicationGroupCommit } from "./replication_group_commit.ts";
-import { V3ReplicationError } from "./litestream_replication.ts";
+import {
+  type GroupCommitClock,
+  ReplicationGroupCommit,
+} from "./replication_group_commit.ts";
+import {
+  HeadPublishRateLimitedError,
+  V3ReplicationError,
+} from "./litestream_replication.ts";
 
 function manualSyncs() {
   const calls: PromiseWithResolvers<number | undefined>[] = [];
@@ -164,4 +170,112 @@ Deno.test("ReplicationGroupCommit: each sync is told how many callers it covers,
   await Promise.all(rest);
   // one alone, then the two that queued behind it
   assertEquals(syncs.covering, [1, 2]);
+});
+
+/** a clock whose timers fire only when the test advances it */
+function manualClock(): GroupCommitClock & {
+  advance: (ms: number) => void;
+  pending: () => number;
+} {
+  let now = 0;
+  let next = 0;
+  const timers = new Map<number, { at: number; fn: () => void }>();
+  return {
+    now: () => now,
+    setTimer: (fn, ms) => {
+      const id = next++;
+      timers.set(id, { at: now + ms, fn });
+      return id;
+    },
+    clearTimer: (handle) => {
+      timers.delete(handle as number);
+    },
+    advance: (ms) => {
+      now += ms;
+      for (const [id, timer] of [...timers]) {
+        if (timer.at > now) continue;
+        timers.delete(id);
+        timer.fn();
+      }
+    },
+    pending: () => timers.size,
+  };
+}
+
+Deno.test("ReplicationGroupCommit: a round failed by a rate-limited head keeps its callers for one more round, and a second such failure rejects them", async () => {
+  const syncs = manualSyncs();
+  const group = new ReplicationGroupCommit(syncs.sync);
+  const caller = outcome(group.confirm(1));
+  syncs.calls[0].reject(new HeadPublishRateLimitedError("rate limited"));
+  await flush();
+  assertEquals(caller.settled, undefined);
+  assertEquals(syncs.calls.length, 2);
+  syncs.calls[1].reject(new HeadPublishRateLimitedError("rate limited"));
+  await flush();
+  assertEquals(caller.settled, "rejected");
+
+  const next = outcome(group.confirm(2));
+  await flush();
+  syncs.calls[2].reject(new HeadPublishRateLimitedError("rate limited"));
+  await flush();
+  syncs.calls[3].resolve(2);
+  await flush();
+  assertEquals(next.settled, "resolved");
+});
+
+Deno.test("ReplicationGroupCommit: any other failure, a head 429 followed by a failed lease check among them, rejects at once", async () => {
+  const syncs = manualSyncs();
+  const group = new ReplicationGroupCommit(syncs.sync);
+  const caller = outcome(group.confirm(1));
+  syncs.calls[0].reject(
+    new V3ReplicationError("the writer lease could not be checked", {
+      cause: new HeadPublishRateLimitedError("rate limited"),
+    }),
+  );
+  await flush();
+  assertEquals(caller.settled, "rejected");
+  assertEquals(syncs.calls.length, 1);
+});
+
+Deno.test("ReplicationGroupCommit: a caller is rejected at its deadline while a round runs, a later round never settles it again, and no timer is left", async () => {
+  const syncs = manualSyncs();
+  const clock = manualClock();
+  const group = new ReplicationGroupCommit(syncs.sync, clock);
+  let settlements = 0;
+  const promise = group.confirm(1, 10_000);
+  promise.then(() => settlements++, () => settlements++);
+  const caller = outcome(promise);
+  const other = outcome(group.confirm(1));
+  clock.advance(10_000);
+  await flush();
+  assertEquals(caller.settled, "rejected");
+  assertEquals(other.settled, undefined);
+  syncs.calls[0].resolve(1);
+  await flush();
+  assertEquals(other.settled, "resolved");
+  assertEquals(settlements, 1);
+  assertEquals(clock.pending(), 0);
+});
+
+Deno.test("ReplicationGroupCommit: a confirmed caller clears its deadline timer", async () => {
+  const syncs = manualSyncs();
+  const clock = manualClock();
+  const group = new ReplicationGroupCommit(syncs.sync, clock);
+  const caller = outcome(group.confirm(1, 10_000));
+  syncs.calls[0].resolve(1);
+  await flush();
+  assertEquals(caller.settled, "resolved");
+  assertEquals(clock.pending(), 0);
+});
+
+Deno.test("ReplicationGroupCommit: a caller whose deadline has passed is rejected without starting a sync", async () => {
+  const syncs = manualSyncs();
+  const clock = manualClock();
+  clock.advance(5_000);
+  const group = new ReplicationGroupCommit(syncs.sync, clock);
+  const caller = outcome(group.confirm(1, 5_000));
+  await flush();
+  assertEquals(caller.settled, "rejected");
+  assertEquals(syncs.calls.length, 0);
+  assertEquals(clock.pending(), 0);
 });

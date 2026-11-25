@@ -40,6 +40,7 @@ import {
 } from "./serve_datastore_client.ts";
 import {
   ServeChunksMissingError,
+  ServeCommitMayLandError,
   ServeCommitRejectedError,
   ServeCommitsCompactedError,
   ServeReplyTooLargeError,
@@ -78,7 +79,9 @@ export type PostFault =
   | { readonly kind: "maybe" }
   | { readonly kind: "collect"; readonly hashes: readonly string[] }
   /** serve's 503: in flight, a forwarded commit landed before the refusal */
-  | { readonly kind: "not-leader"; readonly inFlight: boolean };
+  | { readonly kind: "not-leader"; readonly inFlight: boolean }
+  /** landed, or found landed on a re-send, then not confirmed as replicated */
+  | { readonly kind: "may-land" };
 
 type Client = Pick<
   ServeDatastoreClient,
@@ -415,7 +418,10 @@ export class FakeServe implements Client {
     const key = partition.toString();
     const log = this.#log(key);
     const landed = log.find((entry) => entry.txnId === envelope.txnId);
-    if (landed !== undefined) return { seq: landed.seq, duplicate: true };
+    if (landed !== undefined) {
+      if (fault?.kind === "may-land") throw mayLand(landed.seq);
+      return { seq: landed.seq, duplicate: true };
+    }
     if (envelope.expectedSeq !== log.length) {
       throw new ServeStaleSeqError(log.length, "stale seq");
     }
@@ -433,6 +439,7 @@ export class FakeServe implements Client {
       json,
     });
     if (fault?.kind === "maybe") throw this.#unreachable("maybe");
+    if (fault?.kind === "may-land") throw mayLand(commit.seq);
     if (fault?.kind === "not-leader") {
       throw new ServeNotLeaderError(undefined, false, true);
     }
@@ -557,4 +564,12 @@ export async function removeTempDir(dir: string): Promise<void> {
   } else {
     await Deno.remove(dir, { recursive: true });
   }
+}
+
+function mayLand(seq: number): ServeCommitMayLandError {
+  return new ServeCommitMayLandError(
+    seq,
+    "datastore_v3_replication_unconfirmed",
+    "the replicated state could not be published",
+  );
 }

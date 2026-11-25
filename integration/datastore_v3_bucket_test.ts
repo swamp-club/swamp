@@ -1478,7 +1478,8 @@ async function headRefused(
     const retries = lines.filter(([level]) => level === "info");
     const failures = lines.filter(([level]) => level === "warning");
     assert(retries.length > 0, "no retry was logged");
-    assertEquals(failures.length, 1);
+    // a round failed by a rate-limited head is tried once more
+    assertEquals(failures.length, 2);
     assertStringIncludes(failures[0][1], "bucket_write_rate_limited");
     assertStringIncludes(failures[0][1], "head-");
   }

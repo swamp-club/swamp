@@ -68,6 +68,17 @@ export class V3ReplicationError extends UserError {
   }
 }
 
+/**
+ * the head the round would have published was refused as rate-limited; a head
+ * is cumulative, so the next round's covers what this one would have
+ */
+export class HeadPublishRateLimitedError extends V3ReplicationError {
+  constructor(detail: string, options: { readonly cause?: unknown } = {}) {
+    super(detail, options);
+    this.name = "HeadPublishRateLimitedError";
+  }
+}
+
 export const V3_REPLICATION_UNAVAILABLE_CODE =
   "datastore_v3_replication_unavailable";
 

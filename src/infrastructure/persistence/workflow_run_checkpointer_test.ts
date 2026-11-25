@@ -716,12 +716,15 @@ function journalEngine(
 ): CommitLogEngine & {
   readonly calls: () => number;
   readonly appended: Appended[];
+  readonly batches: number[];
 } {
   const base = engine(() => Promise.resolve("committed"));
   const appended: Appended[] = [];
+  const batches: number[] = [];
   return {
     ...base,
     appendToOpenUnit: async (changes) => {
+      batches.push(changes.length);
       const [change] = changes;
       const put = "put" in change ? change.put : undefined;
       appended.push({
@@ -731,6 +734,7 @@ function journalEngine(
       return await answer(change);
     },
     appended,
+    batches,
   };
 }
 
@@ -788,6 +792,32 @@ Deno.test("WorkflowRunCheckpointer: with a journal, a run's move into running ap
       new Set(["a", "b"]),
     );
     await checkpointer.close();
+  });
+});
+
+Deno.test("WorkflowRunCheckpointer: the starts of steps running together are appended in one commit, split above START_BATCH", async () => {
+  await withRunRepo(async (workflowRunRepo) => {
+    for (const [steps, expected] of [[32, [32]], [300, [256, 44]]] as const) {
+      const commitLog = journalEngine(() => Promise.resolve("committed"));
+      const checkpointer = new WorkflowRunCheckpointer(
+        { commitLog, workflowRunRepo },
+        { intervalMs: 60_000, now: () => 0 },
+      );
+      const run = manyStepRun(steps);
+      run.start();
+      await workflowRunRepo.save(createWorkflowId(run.workflowId), run);
+      await checkpointer.checkpoint(run);
+      run.jobs[0].start();
+      for (const step of run.jobs[0].steps) step.start();
+      await checkpointer.checkpoint(run);
+      // the first append is the run's record moving into running
+      assertEquals(commitLog.batches.slice(1), [...expected]);
+      assertEquals(
+        new Set(checkpointer.committedUnknownSteps(run.id)).size,
+        steps,
+      );
+      await checkpointer.close();
+    }
   });
 });
 

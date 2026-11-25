@@ -163,6 +163,7 @@ import { removeStaleOutputSummaries } from "../persistence/output_summary_index.
 import { removeStaleRunIndexes } from "../persistence/workflow_run_index.ts";
 import { storageNamespaceOf } from "../../domain/datastore_v3/chunk_store.ts";
 import {
+  HeadPublishRateLimitedError,
   V3ChunkCollectionDeferredError,
   V3ReplicationError,
   V3ReplicationUnavailableError,
@@ -177,6 +178,7 @@ import type {
 import { abortableSleep } from "../http/rate_limit.ts";
 import {
   type BucketWriteRefusal,
+  bucketWriteRefusal,
   withBucketWriteScope,
 } from "./bucket_write_retry.ts";
 import type { RepositoryFactoryConfig } from "../persistence/repository_factory.ts";
@@ -3040,6 +3042,17 @@ async function syncAndPublishNow(
           txid,
           mark,
         });
+      } catch (error) {
+        // told apart here, where the object written is known to be the head
+        if (bucketWriteRefusal(error) === "rate_limited") {
+          throw new HeadPublishRateLimitedError(
+            `the replicated state could not be published: ${
+              errorMessage(error)
+            }`,
+            { cause: error },
+          );
+        }
+        throw error;
       } finally {
         // its retries wrote the head too
         pacer?.attempted(Date.now());
@@ -3172,6 +3185,7 @@ export async function confirmV3CommandReplicated(): Promise<void> {
  */
 export async function confirmV3Replicated(
   datastorePath: string,
+  deadlineAt?: number,
 ): Promise<void> {
   if (!v3ReplicatesAt(datastorePath)) return;
   const datastore = resolve(datastorePath);
@@ -3193,7 +3207,7 @@ export async function confirmV3Replicated(
     );
     repoState().groupCommits.set(datastore, group);
   }
-  await group.confirm(mark);
+  await group.confirm(mark, deadlineAt);
 }
 
 /**

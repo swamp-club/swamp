@@ -23,8 +23,10 @@ import { DefaultDataLifecycleService } from "../../domain/data/data_lifecycle_se
 import { RunStartChanges } from "../../domain/datastore_v3/repository_changes.ts";
 import {
   AppendUnrecordedError,
+  MayLandLaterError,
   type TypedChange,
 } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
+import { ServeCommitMayLandError } from "./serve_upstream_errors.ts";
 import { CommitRejectedError } from "../../domain/datastore_v3/partition.ts";
 import {
   setV3DatastoreFaultsForTesting,
@@ -66,6 +68,7 @@ import {
   DroppedWorkRecoveryRunningError,
   initializeV3Datastore,
   isFreshV3Skeleton,
+  isTransientAppendFailure,
   listV3Namespaces,
   offlineSubjectOf,
   openV3Datastore,
@@ -2511,4 +2514,33 @@ Deno.test("openV3Datastore: rolling back a deferred write in a later unit record
     );
     assertEquals(scopes.includes(WHOLE_CHECKOUT_SCOPE), false, `${scopes}`);
   });
+});
+
+Deno.test("isTransientAppendFailure: a may-land serve could not confirm even when re-sent is never retried under a new txnId; another may-land still is", () => {
+  const unconfirmed = new ServeCommitMayLandError(
+    3,
+    "datastore_v3_replication_unconfirmed",
+    "the replicated state could not be published",
+  );
+  assertEquals(
+    isTransientAppendFailure(
+      new MayLandLaterError(unconfirmed, new Error("not asked")),
+    ),
+    false,
+  );
+  assertEquals(
+    isTransientAppendFailure(
+      new MayLandLaterError(new Error("reset"), new Error("not read")),
+    ),
+    true,
+  );
+  assertEquals(
+    isTransientAppendFailure(
+      new MayLandLaterError(
+        new Error("wrapped", { cause: unconfirmed }),
+        new Error("not asked"),
+      ),
+    ),
+    false,
+  );
 });

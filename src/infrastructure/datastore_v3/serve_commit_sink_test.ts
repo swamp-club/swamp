@@ -46,8 +46,10 @@ import { ServeCatchUp } from "./serve_catch_up.ts";
 import { clearServeUnreachableLatches } from "./serve_datastore_client.ts";
 import {
   CARRIED_SEND_ATTEMPTS,
+  CommitOutcomeUnknownError,
   createServeCommitSink,
   MAX_CARRIED_CHUNKS,
+  MAY_LAND_RESENDS,
   SERVE_SEQ_GAP_ATTEMPTS,
 } from "./serve_commit_sink.ts";
 import {
@@ -56,6 +58,7 @@ import {
 } from "./serve_datastore_storage.ts";
 import {
   ServeChunksMissingError,
+  ServeCommitMayLandError,
   ServeUnreachableError,
   ServeUpstreamDivergedError,
   ServeUpstreamError,
@@ -562,6 +565,45 @@ Deno.test("createServeCommitSink: a commit that may have reached serve is found 
     assertEquals(await sink.outbox!.landedSeq!("", MODEL, commit.txnId), 1);
     assertEquals((await copyCommit(store, 1)).principal, SERVE_PRINCIPAL);
   });
+});
+
+Deno.test("createServeCommitSink: a commit serve could not confirm is re-sent under its txnId and lands at its first seq, appended once", async () => {
+  await withCheckout(async ({ serve, sink }) => {
+    const commit = modelCommit(1, [await savePut("a", 1)]);
+    serve.postFaults.push({ kind: "may-land" }, { kind: "may-land" });
+
+    // serve answers the re-sent txnId as the commit it already landed
+    assertEquals(await sink.append(commit), { kind: "duplicate", seq: 1 });
+    assertEquals(serve.posted.length, 3);
+    assertEquals(
+      new Set(serve.posted.map((post) => post.envelope.txnId)).size,
+      1,
+    );
+    assertEquals(serve.head(MODEL), 1);
+  });
+});
+
+Deno.test("createServeCommitSink: a commit still unconfirmed after its re-sends fails as may-land, notes the command may have landed, and is never counted landed from a read-back", async () => {
+  resetCommandLandedForTesting();
+  try {
+    await withCheckout(async ({ serve, sink }) => {
+      const commit = modelCommit(1, [await savePut("a", 1)]);
+      for (let i = 0; i <= MAY_LAND_RESENDS; i++) {
+        serve.postFaults.push({ kind: "may-land" });
+      }
+
+      await assertRejects(() => sink.append(commit), ServeCommitMayLandError);
+      assertEquals(serve.posted.length, MAY_LAND_RESENDS + 1);
+      assertEquals(serve.head(MODEL), 1, "serve holds it, unconfirmed");
+      assertEquals(commandMayHaveLanded(), true);
+      await assertRejects(
+        () => sink.outbox!.landedSeq!("", MODEL, commit.txnId),
+        CommitOutcomeUnknownError,
+      );
+    });
+  } finally {
+    resetCommandLandedForTesting();
+  }
 });
 
 Deno.test("createServeCommitSink: a unit whose reply was lost lands once its commit is found at serve", async () => {

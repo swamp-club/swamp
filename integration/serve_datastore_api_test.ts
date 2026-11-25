@@ -27,9 +27,11 @@ import {
 import {
   commitIngestsForTesting,
   commitsInFlightForTesting,
+  CONFIRM_BOUND_MS,
   MAX_COMMITS_IN_FLIGHT,
   MAX_CONCURRENT_CHUNK_REQUESTS,
   MAX_QUEUED_COMMIT_INGESTS,
+  setCommitStageBarrierForTesting,
 } from "../src/serve/datastore_api.ts";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { join } from "@std/path";
@@ -2334,6 +2336,54 @@ Deno.test({
       },
       new UploadLedger(),
       { vouchLimits: { partitions: 1024, commits: 2 } },
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "datastore API: a commit's confirmation bound starts once it has landed, so a slow upload does not spend it (swamp-club#5089)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    let confirmStarted = 0;
+    let deadline: number | undefined;
+    setCommitStageBarrierForTesting(async (stage) => {
+      // the upload and the stages before the confirmation take their time
+      if (stage === "envelope") {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      if (stage === "confirm_replicated") confirmStarted = Date.now();
+    });
+    try {
+      await withServer(writer(), async (server) => {
+        server.ctx.confirmReplicated = (deadlineAt?: number) => {
+          deadline = deadlineAt;
+          return Promise.resolve();
+        };
+        const content = new TextEncoder().encode("0123456789abcdef");
+        const sha = await sha256Hex(content);
+        const committed = await post(
+          partitionPath(server),
+          "alice-token",
+          commitBody({
+            expectedSeq: 0,
+            txnId: crypto.randomUUID(),
+            ops: await blobSaveOps(server, "vpc", 1, content),
+            chunks: [{ sha256: sha, size: content.length }],
+          }, [content]),
+        );
+        assertEquals(committed.status, 200, JSON.stringify(committed.json));
+      });
+    } finally {
+      setCommitStageBarrierForTesting(undefined);
+    }
+    assert(deadline !== undefined, "the confirmation had no deadline");
+    assert(
+      deadline >= confirmStarted + CONFIRM_BOUND_MS,
+      `the bound started ${
+        confirmStarted + CONFIRM_BOUND_MS - deadline
+      } ms before the confirmation`,
     );
   },
 });

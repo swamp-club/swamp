@@ -1657,6 +1657,15 @@ probe and the closing sync.
 - A failed sync rejects only the requests it covered. A sync that publishes no
   head, from the bare-sync fallback or with no sidecar held (released for a
   replacement, or closed), confirms nothing.
+- A sync that failed only because the head write was refused as rate-limited
+  (`HeadPublishRateLimitedError`) keeps its requests for one more round: a head
+  is cumulative, so the next round's covers them. Each round keeps the bucket
+  write's own retry budget, so the writer lease check keeps its time.
+- A landed commit's confirmation waits at most 10 s, counted from when the
+  commit lands so its upload does not spend it, short of a follower's forward
+  deadline. Past it the request is answered `503` may-land rather than left to
+  time out, and a confirmation whose deadline has already passed starts no
+  sync (swamp-club#5089).
 
 **Pacing the head** (swamp-club#4522). A lineage head is one object per
 writer fence, and GCS refuses (HTTP 429) more than about one mutation a second

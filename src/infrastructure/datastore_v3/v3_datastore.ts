@@ -111,6 +111,7 @@ import {
   ServeChunkStorage,
 } from "./serve_datastore_storage.ts";
 import {
+  ServeCommitMayLandError,
   ServeCommitRefusedError,
   ServeNeverReadError,
   ServeUnreachableError,
@@ -2587,8 +2588,16 @@ const DIRECT_APPEND_BACKOFF_MS = 250;
  * a commit that may have landed is retried too: it lands the same bytes again;
  * serve unreachable is not retried, as the run stops at that commit
  */
-function isTransientAppendFailure(error: unknown): boolean {
+export function isTransientAppendFailure(error: unknown): boolean {
   if (fromUnreachableServe(error)) return false;
+  // serve holds it and could not confirm it, even when re-sent: a retry would
+  // append it again under a new txnId
+  if (
+    error instanceof MayLandLaterError &&
+    causedBy(error, ServeCommitMayLandError)
+  ) {
+    return false;
+  }
   if (isNetworkFailure(error) || error instanceof MayLandLaterError) {
     return true;
   }
@@ -2596,6 +2605,19 @@ function isTransientAppendFailure(error: unknown): boolean {
   const code = (error as { code?: unknown } | undefined)?.code;
   return code === V3_SERVE_UNREACHABLE_CODE ||
     code === V3_STORAGE_UNREACHABLE_CODE;
+}
+
+function causedBy(
+  error: Error,
+  type: abstract new (...args: never[]) => Error,
+): boolean {
+  let current: unknown = error.cause;
+  for (let depth = 0; depth < 8; depth++) {
+    if (current instanceof type) return true;
+    if (!(current instanceof Error)) return false;
+    current = current.cause;
+  }
+  return false;
 }
 
 function fromUnreachableServe(error: unknown): boolean {
