@@ -65,7 +65,9 @@ const FONT_STACK = /^[A-Za-z0-9 ,"'_-]+$/;
 const FONT_FAMILY = /^[A-Za-z0-9 _-]+$/;
 // assets arrive as blob: URLs this page made from fetched theme files
 const FONT_DATA = /^blob:[^\s"'()]+$/;
-const IMAGE_DATA = /^blob:[^\s"'()]+$/;
+// an SVG arrives as a data: URL, which no browser opens as a page of this origin
+const IMAGE_DATA =
+  /^(?:blob:[^\s"'()]+|data:image\/svg\+xml;base64,[A-Za-z0-9+/=]+)$/;
 
 function declarations(palette: Readonly<Record<string, string>> = {}): string {
   return Object.entries(palette)
@@ -193,8 +195,17 @@ function readChoice(): string | null {
 const ASSET_PATH = /^\/dashboard-theme\/assets\/[0-9a-f]{32}\.[a-z0-9]{2,5}$/;
 const assetUrls = new Map<string, Promise<string | undefined>>();
 
+async function base64Of(blob: Blob): Promise<string> {
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(binary);
+}
+
 /**
- * An asset as a blob: URL. Fetched rather than linked so the local token can
+ * An asset as a blob: URL (an SVG as a data: URL). Fetched rather than linked so the local token can
  * go with it; the server marks assets immutable, so the browser caches them.
  */
 function assetUrl(path: string | undefined): Promise<string | undefined> {
@@ -206,15 +217,26 @@ function assetUrl(path: string | undefined): Promise<string | undefined> {
     url = fetch(serverPath(path), {
       headers: withLocalToken(),
       signal: AbortSignal.timeout(10_000),
-    }).then(async (res) =>
-      res.ok ? URL.createObjectURL(await res.blob()) : undefined
-    ).catch(() => undefined);
+    }).then(async (res) => {
+      if (!res.ok) return undefined;
+      const blob = await res.blob();
+      return path.endsWith(".svg")
+        ? `data:image/svg+xml;base64,${await base64Of(blob)}`
+        : URL.createObjectURL(blob);
+    }).catch(() => undefined).then((made) => {
+      // a failed fetch is tried again the next time the theme is shown
+      if (made === undefined) assetUrls.delete(path);
+      return made;
+    });
     assetUrls.set(path, url);
   }
   return url;
 }
 
-async function withAssetUrls(theme: CustomTheme): Promise<CustomTheme> {
+/** The theme with its assets resolved, and whether every one of them loaded. */
+async function withAssetUrls(
+  theme: CustomTheme,
+): Promise<{ theme: CustomTheme; complete: boolean }> {
   const [logo, favicon, faces] = await Promise.all([
     assetUrl(theme.logo),
     assetUrl(theme.favicon),
@@ -225,11 +247,17 @@ async function withAssetUrls(theme: CustomTheme): Promise<CustomTheme> {
       })),
     ),
   ]);
+  const complete = (theme.logo === undefined || logo !== undefined) &&
+    (theme.favicon === undefined || favicon !== undefined) &&
+    faces.every((face) => face.src !== "");
   return {
-    ...theme,
-    logo,
-    favicon,
-    ...(theme.fonts ? { fonts: { ...theme.fonts, faces } } : {}),
+    theme: {
+      ...theme,
+      logo,
+      favicon,
+      ...(theme.fonts ? { fonts: { ...theme.fonts, faces } } : {}),
+    },
+    complete,
   };
 }
 
@@ -242,6 +270,7 @@ async function fetchJson<T>(path: string): Promise<T | null> {
 }
 
 let showing = 0;
+let shownId: string | null = null;
 
 /** Shows the chosen theme, fetching it only when its version is new. */
 async function show(): Promise<void> {
@@ -250,21 +279,33 @@ async function show(): Promise<void> {
   const id = shownThemeId(list, readChoice());
   picker = { options: pickerOptions(list), value: id ?? STOCK_THEME };
   if (id === null) {
+    shownId = null;
     applyCustomTheme(null);
     return;
   }
   const wanted = list.themes.find((t) => t.id === id)?.theme;
   const have = loaded.get(id);
-  if (have !== undefined) applyCustomTheme(have.theme);
+  if (have !== undefined) {
+    shownId = id;
+    applyCustomTheme(have.theme);
+  }
   if (have !== undefined && have.version === wanted) return;
   const body = await fetchJson<CustomTheme>(
     `/dashboard-theme/${encodeURIComponent(id)}`,
-  );
-  if (body === null || wanted === undefined) return;
-  const theme = await withAssetUrls(body);
-  loaded.set(id, { version: wanted, theme });
+  ).catch(() => null);
   // a newer pick or index arrived while this one loaded
-  if (turn === showing) applyCustomTheme(theme);
+  if (turn !== showing) return;
+  if (body === null || wanted === undefined) {
+    // the picker names the theme on screen, not the one that failed to load
+    picker = { ...picker, value: shownId ?? STOCK_THEME };
+    for (const listener of listeners) listener();
+    return;
+  }
+  const { theme, complete } = await withAssetUrls(body);
+  if (complete) loaded.set(id, { version: wanted, theme });
+  if (turn !== showing) return;
+  shownId = id;
+  applyCustomTheme(theme);
 }
 
 interface ThemeIndex {

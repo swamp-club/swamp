@@ -91,6 +91,9 @@ const MAX_IMAGE_BYTES = 512 * 1024;
 const MAX_FONT_BYTES = 1024 * 1024;
 const MAX_TOTAL_BYTES = 4 * 1024 * 1024;
 const MAX_CSS_BYTES = 256 * 1024;
+const MAX_YAML_BYTES = 64 * 1024;
+/** Matches the depth folderFingerprint watches, so every named file is watched. */
+const MAX_FILE_DEPTH = 4;
 
 /**
  * Why a theme stylesheet is refused, or null. It may restyle the page but never
@@ -231,8 +234,14 @@ async function storeFile(
   budget: { left: number },
   assets: Map<string, ThemeAsset>,
 ): Promise<string> {
-  if (isAbsolute(path) || path.split(/[\\/]/).includes("..")) {
+  const parts = path.split(/[\\/]/);
+  if (isAbsolute(path) || parts.includes("..")) {
     throw new ThemeError(`${path}: must be a path inside the theme folder`);
+  }
+  if (parts.length > MAX_FILE_DEPTH + 1) {
+    throw new ThemeError(
+      `${path}: at most ${MAX_FILE_DEPTH} folders deep inside the theme folder`,
+    );
   }
   const ext = extname(path).toLowerCase();
   const type = types[ext];
@@ -309,6 +318,11 @@ interface BuiltTheme {
 
 async function buildTheme(dir: string, id: string): Promise<BuiltTheme> {
   const text = await readContainedText(dir, "theme.yaml");
+  if (new TextEncoder().encode(text).length > MAX_YAML_BYTES) {
+    throw new ThemeError(
+      `theme.yaml: larger than ${MAX_YAML_BYTES / 1024} KiB`,
+    );
+  }
   const parsed = DashboardThemeFileSchema.safeParse(parseYaml(text) ?? {});
   if (!parsed.success) {
     throw new ThemeError(
@@ -389,7 +403,7 @@ async function folderFingerprint(dir: string): Promise<string> {
     for (const entry of entries) {
       const rel = sub === "" ? entry.name : `${sub}/${entry.name}`;
       if (entry.isDirectory) {
-        if (depth < 4) await walk(rel, depth + 1);
+        if (depth < MAX_FILE_DEPTH) await walk(rel, depth + 1);
         continue;
       }
       const info = await Deno.lstat(join(dir, rel));
@@ -669,6 +683,10 @@ export async function serveDashboardTheme(
       headers: {
         "content-type": asset.type,
         "cache-control": "public, max-age=31536000, immutable",
+        // an SVG opened on its own must not run script with the viewer's session
+        "content-security-policy":
+          "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+        "x-content-type-options": "nosniff",
       },
     });
   }

@@ -56,6 +56,9 @@ the page keeps the last good copy of that theme.
   are refused by serve and again by the page. It can hide or relabel parts of
   the page, so a theme carries the trust of a commit to the repo.
 - Token values are validated so none can leave its CSS declaration.
+- An asset is served with a sandboxing CSP and `nosniff`, and the page shows
+  an SVG as a `data:` URL, so a logo cannot run script on the dashboard origin.
+- A theme file is read only if it resolves inside its theme folder.
 - No contrast check: a theme can make text unreadable.
 - The `swamp start` page keeps its own palette, and code highlighting keeps its
   syntax colours.

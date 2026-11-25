@@ -432,3 +432,36 @@ Deno.test("DashboardThemeStore: errors name their own folder, quote no file text
   assertEquals(index.themes.length, 11);
   assertStringIncludes(errors.t11, "at most 12 themes");
 });
+
+Deno.test("serveDashboardTheme: an SVG asset opened on its own is sandboxed and never sniffed", async () => {
+  using dir = tempRepo();
+  await writeThemes(dir.path, { acme: "logo: logo.svg\n" });
+  await Deno.writeTextFile(
+    join(dir.path, DASHBOARD_THEMES_DIR, "acme", "logo.svg"),
+    `<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>`,
+  );
+  const store = new DashboardThemeStore(dir.path);
+  const theme = await (await serveTheme(
+    new Request("http://x/dashboard-theme/acme"),
+    store,
+  ))!.json();
+  const asset =
+    (await serveTheme(new Request(`http://x${theme.logo}`), store))!;
+  await asset.body?.cancel();
+  const csp = asset.headers.get("content-security-policy") ?? "";
+  assertStringIncludes(csp, "default-src 'none'");
+  assertStringIncludes(csp, "sandbox");
+  assertEquals(asset.headers.get("x-content-type-options"), "nosniff");
+});
+
+Deno.test("DashboardThemeStore: a named file deeper than change detection watches, and an oversized theme.yaml, are refused", async () => {
+  using dir = tempRepo();
+  await writeThemes(dir.path, {
+    deep: "logo: a/b/c/d/e/logo.svg\n",
+    big: `label: Big\n# ${"x".repeat(70 * 1024)}\n`,
+  });
+  const index = await new DashboardThemeStore(dir.path).index();
+  const errors = Object.fromEntries(index.errors.map((e) => [e.id, e.error]));
+  assertStringIncludes(errors.deep, "at most 4 folders deep");
+  assertStringIncludes(errors.big, "theme.yaml: larger than 64 KiB");
+});
