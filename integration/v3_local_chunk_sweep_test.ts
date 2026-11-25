@@ -198,12 +198,18 @@ Deno.test({
           await sweeper.close();
         }
 
-        await written(peer, "big");
+        const big = await written(peer, "big");
+        assert("written" in big);
         assertEquals(stagedNames(outboxPath), []);
         await closed(peer);
 
         await opened(reader, repos.repoB, type);
-        reader.send({ kind: "read", id: "r", model: "m", data: "big" });
+        reader.send({
+          kind: "read",
+          id: "r",
+          modelId: big.modelId,
+          data: "big",
+        });
         const read = await reader.seen(
           (m) => "read" in m && m.read === "r",
           "the reader read the peer's commit",

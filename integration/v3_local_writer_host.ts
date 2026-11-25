@@ -45,7 +45,8 @@ export type LocalWriterRequest =
   | {
     readonly kind: "read";
     readonly id: string;
-    readonly model: string;
+    /** by id: a definition lives in its own checkout, the data in the datastore */
+    readonly modelId: string;
     readonly data: string;
   }
   | { readonly kind: "resume"; readonly id: string }
@@ -59,6 +60,7 @@ export type LocalWriterMessage =
     readonly version: number;
     /** the count this write stored: one more than the latest it read */
     readonly count: number;
+    readonly modelId: string;
   }
   | { readonly read: string; readonly content: string | null }
   | { readonly closed: true }
@@ -97,15 +99,17 @@ export const localWriterHost: ProcessHost<
 
   async function write(
     request: Extract<LocalWriterRequest, { kind: "write" }>,
-  ): Promise<{ version: number; count: number }> {
+  ): Promise<{ version: number; count: number; modelId: string }> {
     let version = 0;
     let count = 0;
+    let modelId = "";
     const body = async () => {
       await runInRootUnitOfWork(
         context.repoContext,
         { flush: undefined },
         async () => {
           const model = await definitionOf(request.model);
+          modelId = model.id;
           const latest = await context.repoContext.unifiedDataRepo.getContent(
             type,
             model.id,
@@ -151,7 +155,7 @@ export const localWriterHost: ProcessHost<
     };
     if (request.lock !== true) {
       await body();
-      return { version, count };
+      return { version, count, modelId };
     }
     const model = await definitionOf(request.model);
     const lock = await createModelLock(
@@ -165,20 +169,15 @@ export const localWriterHost: ProcessHost<
     } finally {
       await lock.release();
     }
-    return { version, count };
+    return { version, count, modelId };
   }
 
   async function read(
     request: Extract<LocalWriterRequest, { kind: "read" }>,
   ): Promise<string | null> {
-    const model = await context.repoContext.definitionRepo.findByName(
-      type,
-      request.model,
-    );
-    if (model === null) return null;
     const content = await context.repoContext.unifiedDataRepo.getContent(
       type,
-      model.id,
+      request.modelId,
       request.data,
     );
     return content === null ? null : new TextDecoder().decode(content);
@@ -201,7 +200,8 @@ export const localWriterHost: ProcessHost<
         return;
       case "write":
         write(request).then(
-          ({ version, count }) => post({ written: request.id, version, count }),
+          ({ version, count, modelId }) =>
+            post({ written: request.id, version, count, modelId }),
           (error) => post({ failed: String(error), id: request.id }),
         );
         return;
