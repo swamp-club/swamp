@@ -268,6 +268,8 @@ export const MAX_QUARANTINE_REQUEST_BYTES =
 export const MAX_HAS_HASHES = 1024;
 /** The largest page of commits or changes. */
 export const MAX_PAGE = 1000;
+/** base entries one page may hold; a reply too large is asked again at half */
+export const MAX_BASE_PAGE = 5000;
 /** The most feed rows one changes request scans, kept or filtered. */
 export const MAX_CHANGES_SCAN = 10_000;
 /** The most compacted base entries one base request scans, kept or filtered. */
@@ -2106,7 +2108,7 @@ class DatastoreApi {
   async compactedBase(req: Request): Promise<Response> {
     const params = new URL(req.url).searchParams;
     const after = params.get("after") ?? undefined;
-    const limit = pageLimit(params.get("limit"));
+    const limit = pageLimit(params.get("limit"), MAX_BASE_PAGE);
     if (limit === undefined) {
       return failure(400, "invalid_request", "limit must be an integer");
     }
@@ -4774,12 +4776,13 @@ function nonNegative(value: string): number | undefined {
   return Number(value);
 }
 
-function pageLimit(value: string | null): number | undefined {
+function pageLimit(
+  value: string | null,
+  max: number = MAX_PAGE,
+): number | undefined {
   if (value === null) return MAX_PAGE;
   const limit = nonNegative(value);
-  return limit === undefined || limit === 0
-    ? undefined
-    : Math.min(limit, MAX_PAGE);
+  return limit === undefined || limit === 0 ? undefined : Math.min(limit, max);
 }
 
 /** A JSON body of at most `maxBytes`; undefined when it is not JSON. */

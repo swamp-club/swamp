@@ -201,6 +201,8 @@ const CLOSE_WAIT_MS = 500;
 
 /** inline writes of a catch-up's page that run at once */
 export const POOLED_WRITES = 16;
+/** blobs up to this size are read whole and written through the pool */
+const POOLED_BLOB_BYTES = 256 * 1024;
 
 interface PooledWrite {
   readonly folded: string;
@@ -3939,12 +3941,19 @@ export class SqliteReadModel implements ReadModel {
     const unreadable: StoredUnreadableRecord[] = [];
     const skipped = new Set<string>();
     const done: LoadKey[] = [];
-    const recordDone = (force: boolean) => {
+    // pooled writes land later: the done list records a file only once the
+    // pool has drained, so it never names one not yet in place
+    const recordDone = async (force: boolean) => {
       if (resume === undefined) return;
       if (!force && done.length < LOAD_DONE_FLUSH) return;
+      await this.#drainPool();
       this.#state.markLoadDone(done, resume);
       done.length = 0;
     };
+    this.#pool = batch.syncs || this.#recovering || this.#pooledWrites < 2
+      ? undefined
+      : [];
+    this.#poolFailure = undefined;
     let result;
     try {
       result = await this.#loadFilesInto(
@@ -3954,19 +3963,23 @@ export class SqliteReadModel implements ReadModel {
         signal,
         unreadable,
         skipped,
-        (key) => {
+        async (key) => {
           done.push(key);
-          recordDone(false);
+          await recordDone(false);
         },
       );
+      await this.#drainPool();
     } catch (error) {
       // a load cut off keeps what it wrote for the retry; its own error wins
       try {
-        recordDone(true);
+        if (await this.#settlePool() === undefined) await recordDone(true);
       } catch { /* the load's error is the one to report */ }
       throw error;
+    } finally {
+      await this.#settlePool();
+      this.#pool = undefined;
     }
-    recordDone(true);
+    await recordDone(true);
     return result;
   }
 
@@ -3977,7 +3990,7 @@ export class SqliteReadModel implements ReadModel {
     signal: AbortSignal,
     unreadable: StoredUnreadableRecord[],
     skipped: Set<string>,
-    wrote: (key: LoadKey) => void,
+    wrote: (key: LoadKey) => Promise<void>,
   ): Promise<{ unreadable: StoredUnreadableRecord[]; skipped: Set<string> }> {
     for (const { namespace, record_key } of removals) {
       signal.throwIfAborted();
@@ -4048,7 +4061,7 @@ export class SqliteReadModel implements ReadModel {
           batch,
           source,
         );
-        wrote({ namespace, record_key });
+        await wrote({ namespace, record_key });
       } catch (error) {
         if (
           !("blob" in content) || !isChunkError(error) || signal.aborted ||
@@ -4207,10 +4220,16 @@ export class SqliteReadModel implements ReadModel {
     const started = performance.now();
     try {
       if (!("inline" in content)) await this.#awaitPrefetched();
+      const pool = this.#pool;
+      const stream = "inline" in content
+        ? undefined
+        : this.#chunkStore.read(namespaceOf(namespace), content.blob, signal);
+      // a small blob is read whole so it can join the pool; a large one streams
       const bytes = "inline" in content
         ? decodeBase64(content.inline)
-        : this.#chunkStore.read(namespaceOf(namespace), content.blob, signal);
-      const pool = this.#pool;
+        : pool !== undefined && content.blob.size <= POOLED_BLOB_BYTES
+        ? await new Response(stream).bytes()
+        : stream!;
       if (pool !== undefined && bytes instanceof Uint8Array) {
         if (pool.length >= this.#pooledWrites) {
           await pool.shift()!.done;
