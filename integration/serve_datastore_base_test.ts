@@ -337,3 +337,21 @@ Deno.test({
     });
   },
 });
+
+Deno.test({
+  name:
+    "datastore base: a page holds more than the general 1000-entry page, up to the base page limit (swamp-club#5103)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer([...writer(), ...bobReadsWebData()], async (server) => {
+      const ops = [];
+      for (let i = 0; i < 400; i++) ops.push(...saveOps(server, `n${i}`, 1));
+      await commit(server, ops);
+      await compactAll(server);
+      const all = await readBase(server, "alice-token", 5000);
+      assert(all.entries.length > 1000, `${all.entries.length} entries`);
+      assertEquals(all.pages, 1);
+    });
+  },
+});
