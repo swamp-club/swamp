@@ -33,6 +33,7 @@ import {
 import {
   CHUNK_BYTES,
   type PrefetchingStorage,
+  type PrefetchReport,
 } from "../../domain/datastore_v3/chunk_store.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
@@ -40,6 +41,10 @@ import {
   type FileSystemStorageOptions,
 } from "../persistence/fs_datastore_storage.ts";
 import type { ServeDatastoreClient } from "./serve_datastore_client.ts";
+import {
+  ServeRateLimitedError,
+  ServeUnreachableError,
+} from "./serve_upstream_errors.ts";
 
 export const SERVE_STORAGE_UNSUPPORTED_CODE =
   "datastore_v3_serve_storage_unsupported";
@@ -146,6 +151,11 @@ export function storageNamespaceOf(namespace: string): string {
 }
 
 const PREFETCH_CONCURRENCY = 8;
+/** tries for a chunk serve refused with 429 because its chunk slots were full */
+export const PREFETCH_ATTEMPTS = 3;
+/** chunks failing in a row before the prefetch gives up on serve */
+export const PREFETCH_STOP_AFTER = 3;
+const PREFETCH_RETRY_MS = 200;
 
 export class CachedServeStorage extends FileSystemStorage
   implements PrefetchingStorage {
@@ -188,26 +198,60 @@ export class CachedServeStorage extends FileSystemStorage
     namespace: string,
     hashes: readonly string[],
     signal: AbortSignal,
-  ): Promise<void> {
-    if (this.#offline()) return;
+  ): Promise<PrefetchReport> {
+    const report: PrefetchReport = {
+      requested: 0,
+      fetched: 0,
+      retries: 0,
+      failed: 0,
+    };
+    if (this.#offline()) return report;
     let local: Set<string>;
     try {
       local = await super.has(namespace, hashes, signal);
     } catch {
-      return;
+      return report;
     }
     const rest = hashes.filter((hash) => !local.has(hash));
+    report.requested = rest.length;
     let next = 0;
-    let failed = false;
-    const worker = async () => {
-      while (next < rest.length && !failed && !signal.aborted) {
-        const hash = rest[next++];
+    let failingInARow = 0;
+    let unreachable = false;
+    const fetchOne = async (
+      hash: string,
+    ): Promise<"fetched" | "failed" | "unreachable"> => {
+      for (let attempt = 1;; attempt++) {
         try {
           await this.get(namespace, hash, signal);
-        } catch {
-          // A hung serve would cost every chunk a timeout: stop, and the read
-          // that needs a chunk fetches it and reports why.
-          failed = true;
+          return "fetched";
+        } catch (error) {
+          if (error instanceof ServeUnreachableError) return "unreachable";
+          if (
+            !(error instanceof ServeRateLimitedError) ||
+            attempt >= PREFETCH_ATTEMPTS || signal.aborted
+          ) {
+            return "failed";
+          }
+          report.retries++;
+          await abortableDelay(PREFETCH_RETRY_MS * attempt, signal);
+        }
+      }
+    };
+    const worker = async () => {
+      // one bad chunk never ends the prefetch; an unreachable serve or a run of
+      // failures does, so a hung serve costs one timeout, not one per chunk
+      while (
+        next < rest.length && !unreachable &&
+        failingInARow < PREFETCH_STOP_AFTER && !signal.aborted
+      ) {
+        const outcome = await fetchOne(rest[next++]);
+        if (outcome === "fetched") {
+          report.fetched++;
+          failingInARow = 0;
+        } else {
+          report.failed++;
+          failingInARow++;
+          if (outcome === "unreachable") unreachable = true;
         }
       }
     };
@@ -217,6 +261,7 @@ export class CachedServeStorage extends FileSystemStorage
         worker,
       ),
     );
+    return report;
   }
 
   override async get(
@@ -285,4 +330,16 @@ export class CachedServeStorage extends FileSystemStorage
       }
     }
   }
+}
+
+function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(done, ms);
+    function done() {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", done);
+      resolve();
+    }
+    signal.addEventListener("abort", done, { once: true });
+  });
 }
