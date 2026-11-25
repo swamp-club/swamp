@@ -99,8 +99,8 @@ Deno.test("PartitionKey.forModel: builds the key partitionOf builds, and refuses
 });
 
 Deno.test("RecoveryScope: a key a live writer covers is skipped, and counts as left to it only when the interrupted writer recorded it too", () => {
-  const live = `data/${MODEL_TYPE}/${MODEL_ID}/live`;
-  const dead = `data/${MODEL_TYPE}/${MODEL_ID}/dead`;
+  const live = `data/${MODEL_TYPE.normalized}/${MODEL_ID}/live`;
+  const dead = `data/${MODEL_TYPE.normalized}/${MODEL_ID}/dead`;
   const kept = (_ns: string, key: string) => key.startsWith(live);
   const scope = new RecoveryScope(kept, (_ns, key) => key.startsWith(dead));
   scope.addRemoval("", `${live}/1/raw`, "/c/live-raw");
@@ -128,7 +128,7 @@ Deno.test("RecoveryScope: a key a live writer covers is skipped, and counts as l
 Deno.test("RecoveryScope: a name any writer may have changed is skipped quietly when a live writer covers it", () => {
   const name = {
     namespace: "",
-    type: MODEL_TYPE,
+    type: MODEL_TYPE.normalized,
     modelId: MODEL_ID,
     name: "shared",
   };
