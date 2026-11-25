@@ -43,6 +43,7 @@ import {
   BASE_LOAD_ATTEMPTS,
   LockCatchUpBehindError,
   OBSERVED_BASE_STAGING_PREFIX,
+  RESUMABLE_STAGING_FILE,
   SERVE_PARTITION_PAGE,
   serveAccessCheck,
   ServeCatchUp,
@@ -1056,7 +1057,7 @@ Deno.test("ServeCatchUp.catchUp: a serve with no base route keeps the commits_co
   });
 });
 
-Deno.test("ServeCatchUp.catchUp: a load cut off between pages leaves the copy untouched, and the next catch-up loads it", async () => {
+Deno.test("ServeCatchUp.catchUp: a load cut off between pages leaves the copy untouched, keeps only its resumable staging, and the next catch-up loads it", async () => {
   await withCheckout(async ({ dir, store, state, serve, catchUp }) => {
     for (let seq = 1; seq <= 3; seq++) serve.land(await other(seq));
     await compactServe(serve, 3);
@@ -1070,7 +1071,12 @@ Deno.test("ServeCatchUp.catchUp: a load cut off between pages leaves the copy un
     assertEquals(await store.compactionPoint(), 0);
     assertEquals((await store.head("", MODEL)).seq, 0);
     assertEquals(state.feedCursor(), 0);
-    assertEquals(stagingFiles(dir), []);
+    assertEquals(
+      stagingFiles(dir).every((name) =>
+        name.startsWith(RESUMABLE_STAGING_FILE)
+      ),
+      true,
+    );
 
     serve.beforeBasePage = undefined;
     await catchUp.catchUp(signal());
