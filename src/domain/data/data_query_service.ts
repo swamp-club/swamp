@@ -1815,8 +1815,8 @@ export class DataQueryService {
   }
 
   /**
-   * heldBytes counts the bodies this projection already holds, so a page of
-   * items each under the guard's floor is still refused before the heap runs out
+   * a page of items each under the guard's floor is still refused before the
+   * heap runs out
    */
   private encodeProjected(
     record: DataRecord,
@@ -1843,7 +1843,7 @@ export class DataQueryService {
     }
   }
 
-  /** a string body counts its length, parsed attributes their recorded size */
+  // string length stands in for bytes; it only moves where the floor is reached
   private heldBy(record: DataRecord, projected: ProjectedContent): number {
     if (projected.content === null) return 0;
     return typeof projected.content === "string"
@@ -1967,8 +1967,8 @@ export class DataQueryService {
   }
 
   /**
-   * held counts the fetched bytes, not the other namespace's recorded size,
-   * which a reader cannot trust to bound what the page holds
+   * a fetched body counts its fetched bytes, not the recorded size another
+   * namespace wrote
    */
   private async projectedForeignContent(
     record: DataRecord,

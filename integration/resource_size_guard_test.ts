@@ -568,7 +568,7 @@ Deno.test("resource size: a select content refusal for a row the caller may not 
   });
 });
 
-Deno.test("resource size: select content asks the guard for each body against the heap the earlier ones hold", async () => {
+Deno.test("resource size: select content reads the heap afresh for each body, so a later body is refused once the earlier ones fill it", async () => {
   let used = 0;
   const growing = new ResourceLoadGuard({
     heapLimitBytes: () => 1000,
