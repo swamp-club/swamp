@@ -24,7 +24,7 @@ import {
   assertRejects,
   assertStringIncludes,
 } from "@std/assert";
-import { join } from "@std/path";
+import { basename, join } from "@std/path";
 import { createInMemoryRemote, waitFor } from "@swamp-club/swamp-testing";
 import { configure, type LogRecord, reset } from "@logtape/logtape";
 import {
@@ -1130,6 +1130,58 @@ Deno.test("v3RepositoryFactoryConfig: a writing process catches up once, not aga
       false,
       "the second context did not replay the commit",
     );
+  });
+});
+
+/** connections closed while it is in scope, by database file name */
+function closesByFile(): Disposable & { readonly counts: Map<string, number> } {
+  const close = DatabaseSync.prototype.close;
+  const counts = new Map<string, number>();
+  DatabaseSync.prototype.close = function (this: DatabaseSync) {
+    const path = (this as unknown as { location(): string | null })
+      .location();
+    const name = path === null ? ":memory:" : basename(path);
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+    return close.call(this);
+  };
+  return {
+    counts,
+    [Symbol.dispose]: () => {
+      DatabaseSync.prototype.close = close;
+    },
+  };
+}
+
+Deno.test("holdV3Writer: a quiet write opens each of its databases once, commits.db and the read model state among them (swamp-club#5094)", async () => {
+  await withTempDir(async (dir) => {
+    const datastorePath = join(dir, "datastore");
+    await initializeV3Datastore(datastorePath, "test");
+    const config = { type: "filesystem" as const, path: datastorePath };
+    const repoDir = join(dir, "repo");
+    const write = async () => {
+      await holdV3Writer(config, repoDir);
+      await v3RepositoryFactoryConfig(repoDir, config);
+      const handle = v3DatastoreFor(repoDir, config);
+      const engine = handle.engineFor(() => Promise.resolve(), () => {
+        throw new Error("no run repository needed");
+      });
+      await engine.runRoot({}, async () => {
+        const unit = engine.openUnit() as unknown as CommitLogUnitOfWork;
+        await unit.stageOps([
+          new AutoDefinitionChanges(crypto.randomUUID()).write(
+            recordKeyOf(["auto-definitions", "x.yaml"]),
+            new TextEncoder().encode(crypto.randomUUID()),
+          ),
+        ]);
+        await unit.commit();
+      });
+      await closeV3Datastores();
+    };
+    // the first write creates the checkout and its files
+    await write();
+    using closes = closesByFile();
+    await write();
+    assertEquals(Object.fromEntries(closes.counts), {});
   });
 });
 

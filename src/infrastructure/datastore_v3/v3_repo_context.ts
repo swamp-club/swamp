@@ -927,9 +927,10 @@ async function enterCommitSections(
   };
   // a claim this writer may not write under, as the file showed before the
   // lease: refused at once rather than after waiting on a lease serve holds;
-  // only the check under the lease decides
+  // only the check under the lease decides. Read through the handle the lease
+  // opens for its fence anyway, so commits.db is opened once
   const claimHint = claimRefusal(
-    peekDatastoreOwner(v3CommitsDbPath(config.path, repoDir)),
+    v3DatastoreFor(repoDir, config).commitStore.owner(),
     ownerCheckOf(config, ownerCheck),
   );
   // the first section recovers what an interrupted writer left and marks the

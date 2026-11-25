@@ -283,6 +283,8 @@ export interface SqliteReadModelOptions {
   readonly chunkStore: ChunkStore;
   readonly cacheRoot: (namespace: string) => string;
   readonly stateDir: string;
+  /** the state at stateDir, already open; the read model owns it from here */
+  readonly state?: ReadModelState;
   readonly pageSize?: number;
   readonly catalog?: ReadModelCatalog;
   readonly checkout?: ReadModelCheckout;
@@ -694,7 +696,7 @@ export class SqliteReadModel implements ReadModel {
     if (!Number.isSafeInteger(pageSize) || pageSize < 1) {
       throw new Error(`pageSize must be a positive integer: ${pageSize}`);
     }
-    const state = ReadModelState.open(
+    const state = options.state ?? ReadModelState.open(
       join(options.stateDir, READ_MODEL_STATE_FILE),
       { pid: options.pid },
     );

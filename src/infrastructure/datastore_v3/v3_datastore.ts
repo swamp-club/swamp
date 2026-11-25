@@ -546,13 +546,14 @@ export class V3CheckoutFilterChangedError extends UserError {
 
 /**
  * runs before anything of the datastore is opened, so a refusal leaves nothing
- * open and nothing written but the state's own schema
+ * open and nothing written but the state's own schema; the state it returns is
+ * the read model's, so the file is opened once
  */
-function assertCheckoutFilterUnchanged(
+function checkoutFilterCheckedState(
   repoDir: string,
   directories: readonly string[] | undefined,
   exclude: readonly string[] | undefined,
-): void {
+): ReadModelState {
   const current = checkoutFilterInputs(directories, exclude);
   const state = ReadModelState.open(
     join(readModelStateDir(repoDir), READ_MODEL_STATE_FILE),
@@ -560,15 +561,18 @@ function assertCheckoutFilterUnchanged(
   let projected: string;
   try {
     projected = state.stampFilterInputs(current);
-  } finally {
+  } catch (error) {
     state.close();
+    throw error;
   }
   if (projected !== current) {
+    state.close();
     throw markErrorPaths(
       new V3CheckoutFilterChangedError(repoDir, projected, current),
       [repoDir],
     );
   }
+  return state;
 }
 
 export function v3CheckoutFilterRefusal(
@@ -903,10 +907,29 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
   ensureDirSync(readModelStateDir(options.repoDir));
   const repoDir = Deno.realPathSync(options.repoDir);
   const datastorePath = Deno.realPathSync(options.datastorePath);
-  const namespace = options.namespace ?? "";
   // before anything else opens: the read model must never catch up, load or
   // recover under another filter than it projected with
-  assertCheckoutFilterUnchanged(repoDir, options.directories, options.exclude);
+  const readModelState = checkoutFilterCheckedState(
+    repoDir,
+    options.directories,
+    options.exclude,
+  );
+  try {
+    return openFilterChecked(options, repoDir, datastorePath, readModelState);
+  } catch (error) {
+    // closing twice is harmless once the read model has taken the state
+    readModelState.close();
+    throw error;
+  }
+}
+
+function openFilterChecked(
+  options: OpenV3DatastoreOptions,
+  repoDir: string,
+  datastorePath: string,
+  readModelState: ReadModelState,
+): V3Datastore {
+  const namespace = options.namespace ?? "";
   const writer = options.writer ?? processCommitWriter();
   // its outbox entries belong to units of this process
   registerOwnCommitWriter(writer);
@@ -979,6 +1002,7 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
         chunkStore,
         cacheRoot: (ns) => v3CacheRoot(repoDir, ns),
         stateDir,
+        state: readModelState,
         catalog: new V3Catalog(catalogStore),
         // never written onto this checkout's local tier
         checkout: { namespace, admits },
