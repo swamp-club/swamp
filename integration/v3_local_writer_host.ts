@@ -28,6 +28,10 @@ import {
 } from "../src/domain/workflows/workflow_id.ts";
 import { WorkflowRun } from "../src/domain/workflows/workflow_run.ts";
 import { ActiveRun } from "../src/domain/models/active_run.ts";
+import {
+  RunProgress,
+  withRunProgress,
+} from "../src/domain/remote/run_progress.ts";
 import { ModelOutput } from "../src/domain/models/model_output.ts";
 import { cancelOrphanedMethodRuns } from "../src/domain/workflows/orphaned_run_reaper.ts";
 import {
@@ -105,6 +109,8 @@ export type LocalWriterRequest =
     readonly id: string;
     readonly model: string;
   }
+  /** what the open is doing, as a run's progress reports it */
+  | { readonly kind: "phase" }
   | {
     readonly kind: "read";
     readonly id: string;
@@ -149,6 +155,7 @@ export type LocalWriterMessage =
     readonly deferred: number;
   }
   | { readonly outputOf: string; readonly status: string | null }
+  | { readonly phase: string; readonly resource?: string }
   | { readonly held: string; readonly env: Record<string, string> }
   | { readonly unheld: string }
   | {
@@ -174,6 +181,7 @@ export const localWriterHost: ProcessHost<
   const resumes = new Map<string, () => void>();
   const definitions = new Map<string, Promise<Definition>>();
   const held = new Map<string, ModelLockResult>();
+  const progress = new RunProgress({ runId: crypto.randomUUID() });
 
   function within<T>(fn: () => Promise<T>): Promise<T> {
     return env === undefined ? fn() : withMockedEnv(env, fn);
@@ -216,7 +224,10 @@ export const localWriterHost: ProcessHost<
     type = ModelType.create(request.type);
     const options = { repoDir: request.repoDir, outputMode: "json" as const };
     if (request.structural === true) {
-      context = await requireInitializedRepo(options);
+      context = await withRunProgress(
+        progress,
+        () => requireInitializedRepo(options),
+      );
       datastoreConfig =
         (await resolveDatastoreForRepo(request.repoDir)).datastoreConfig;
       return;
@@ -491,6 +502,11 @@ export const localWriterHost: ProcessHost<
           (error) => post({ failed: String(error), id: request.id }),
         );
         return;
+      case "phase": {
+        const { phase, resource } = progress.snapshot();
+        post({ phase, ...(resource === undefined ? {} : { resource }) });
+        return;
+      }
       case "outputStatus":
         within(() => outputStatus(request)).then(
           (status) => post({ outputOf: request.id, status }),

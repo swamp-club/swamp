@@ -905,3 +905,79 @@ Deno.test({
     });
   },
 });
+
+/** the datastore sync coordinator's key for the global lock */
+const GLOBAL_LOCK_RESOURCE = "__global__";
+
+async function waitingOnGlobalLock(writer: Writer): Promise<void> {
+  const phases = () => writer.messages.filter((m) => "phase" in m);
+  for (;;) {
+    const before = phases().length;
+    writer.send({ kind: "phase" });
+    await writer.seen(
+      () => phases().length > before,
+      "the writer reported its phase",
+    );
+    const last = phases().at(-1);
+    if (
+      last !== undefined && "phase" in last &&
+      last.phase === "waiting_for_lock" &&
+      last.resource === GLOBAL_LOCK_RESOURCE
+    ) {
+      return;
+    }
+  }
+}
+
+Deno.test({
+  name:
+    "v3 local commit sections: a structural command catches up after it takes the global lock, so it reads a commit made while it waited",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withV3RowRepos({}, async (repos, datastorePath) => {
+      await closeV3Datastores();
+      const type = repos.modelType.normalized;
+      const first = startWriter("structural-first");
+      const waiter = startWriter("structural-waiter");
+      try {
+        first.send({
+          kind: "open",
+          repoDir: repos.repoA,
+          type,
+          structural: true,
+        });
+        await first.seen((m) => "opened" in m, "the first holds the lock");
+        first.send({ kind: "write", id: "before", model: "shared", data: "d" });
+        assertEquals((await landed(first, "before")).count, 1);
+        // definitions live in the repo, shared through git
+        await copy(join(repos.repoA, "models"), join(repos.repoB, "models"), {
+          overwrite: true,
+        });
+        waiter.send({
+          kind: "open",
+          repoDir: repos.repoB,
+          type,
+          structural: true,
+        });
+        // everything the waiter does before the lock is done by now
+        await waitingOnGlobalLock(waiter);
+        first.send({ kind: "write", id: "while", model: "shared", data: "d" });
+        assertEquals((await landed(first, "while")).count, 2);
+        await closed(first);
+        await waiter.seen((m) => "opened" in m, "the waiter took the lock");
+        waiter.send({ kind: "write", id: "after", model: "shared", data: "d" });
+        assertEquals(
+          (await landed(waiter, "after")).count,
+          3,
+          "the waiter read the commit made while it waited",
+        );
+        await closed(waiter);
+      } finally {
+        first.stop();
+        waiter.stop();
+      }
+      await assertCheckoutsAgree(repos, datastorePath, "global lock order");
+    });
+  },
+});
