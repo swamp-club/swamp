@@ -149,12 +149,40 @@ import {
   V3Catalog,
 } from "./v3_catalog.ts";
 import { isNetworkFailure } from "./network_failure.ts";
+import { TimeSlice } from "../persistence/scan_permits.ts";
 
 export const UNSYNCED_SYNC_BATCH = 500;
 
 const MAX_UNSYNCED_SYNC_BATCHES = 1_000;
 
 const logger = getLogger(["swamp", "datastore", "read-model"]);
+
+/** long enough to cost little, short enough that the writer lease renews on time */
+const RECOVERY_SLICE_MS = 50;
+
+const PRESENT_KEYS_PAGE = 1_000;
+
+// a page of large commits commits its state in parts this size, so no one
+// transaction's commit writes the whole page
+const PAGE_OPS = 5_000;
+
+/** consecutive parts of at most PAGE_OPS ops; a larger commit stands alone */
+function pageParts(
+  page: readonly CommitChange[],
+): (readonly CommitChange[])[] {
+  const parts: CommitChange[][] = [];
+  let ops = Infinity;
+  for (const change of page) {
+    const size = change.commit.ops.length;
+    if (ops + size > PAGE_OPS) {
+      parts.push([]);
+      ops = 0;
+    }
+    parts[parts.length - 1].push(change);
+    ops += size;
+  }
+  return parts;
+}
 
 export const DEFAULT_READ_MODEL_PAGE_SIZE = 500;
 
@@ -279,6 +307,7 @@ export interface SqliteReadModelOptions {
   readonly pid?: number;
   readonly syncFile?: (path: string) => Promise<void>;
   readonly atRiskCopyBytes?: number;
+  readonly recoverySliceMs?: number;
   readonly os?: typeof Deno.build.os;
   /**
    * false replays every commit in full from the start of the feed, as a
@@ -481,6 +510,7 @@ export class SqliteReadModel implements ReadModel {
   readonly #cacheRoot: (namespace: string) => string;
   readonly #stateDir: string;
   readonly #pageSize: number;
+  readonly #recoverySliceMs: number;
   readonly #catalog: ReadModelCatalog;
   readonly #state: ReadModelState;
   readonly #writeBatch: () => DurableWriteBatch;
@@ -579,6 +609,7 @@ export class SqliteReadModel implements ReadModel {
     this.#cacheRoot = options.cacheRoot;
     this.#stateDir = options.stateDir;
     this.#pageSize = pageSize;
+    this.#recoverySliceMs = options.recoverySliceMs ?? RECOVERY_SLICE_MS;
     const checkout = options.checkout;
     this.#checkout = checkout;
     // one filter for every catalog action, from commits and the compacted base
@@ -641,6 +672,11 @@ export class SqliteReadModel implements ReadModel {
 
   cursor(): number {
     return this.#state.cursor();
+  }
+
+  /** false until a catch-up has reached the end of the feed */
+  isComplete(): boolean {
+    return this.#state.isComplete();
   }
 
   catchUp(signal: AbortSignal): Promise<CatchUpResult> {
@@ -829,7 +865,10 @@ export class SqliteReadModel implements ReadModel {
     if (!resuming) {
       // Every namespace's rows are judged by this checkout's filter: the
       // replay below rebuilds every namespace, and a checkout writes one.
-      const generation = this.#catalog.clear(options.admits);
+      const generation = await this.#clearCatalog(
+        options.admits,
+        options.signal,
+      );
       this.#reset(generation);
       this.#catalog.markPopulated(generation);
       this.#state.markRebuildStarted(
@@ -917,7 +956,11 @@ export class SqliteReadModel implements ReadModel {
     this.#recovering = true;
     this.#forbidBase = true;
     try {
-      await this.#catchUpFeed(signal);
+      await withSpan(
+        "swamp.datastore.v3.readmodel.recover.catch_up",
+        {},
+        () => this.#catchUpFeed(signal),
+      );
     } finally {
       this.#recovering = false;
       this.#forbidBase = false;
@@ -971,10 +1014,15 @@ export class SqliteReadModel implements ReadModel {
           const name = dataNameOfKey(dir);
           if (name !== undefined) scope.addName({ namespace, ...name });
         }
+        const listing = new TimeSlice(signal, this.#recoverySliceMs);
         for (const { key, path } of scan.unowned) {
+          if (listing.over) await listing.next();
           scope.addRemoval(namespace, key, path);
         }
-        for (const key of scan.changed) scope.addKeyToCheck(namespace, key);
+        for (const key of scan.changed) {
+          if (listing.over) await listing.next();
+          scope.addKeyToCheck(namespace, key);
+        }
         const missing = await this.#missingKeys(
           namespace,
           scan,
@@ -1001,9 +1049,11 @@ export class SqliteReadModel implements ReadModel {
             `a touched name has no model partition: ${scope.unscopable}`,
           );
         }
+        const slice = new TimeSlice(signal, this.#recoverySliceMs);
         if (bounded === undefined) {
           // every file of a touched name a commit decided, whatever its mtime
           for (const name of scope.names()) {
+            if (slice.over) await slice.next();
             for (
               const key of this.#state.decidedKeysUnder(
                 name.namespace,
@@ -1017,6 +1067,7 @@ export class SqliteReadModel implements ReadModel {
           // every file a commit decided where the writer wrote, whatever its
           // mtime
           for (const walked of outermostScopes(bounded.walk)) {
+            if (slice.over) await slice.next();
             for (
               const key of this.#state.decidedKeysAtOrUnder(namespace, walked)
             ) {
@@ -1042,8 +1093,10 @@ export class SqliteReadModel implements ReadModel {
           history: NameHistory;
         }[] = [];
         const held = { commits: 0 };
+        const slice = new TimeSlice(signal, this.#recoverySliceMs);
         for (const scoped of scope.partitions()) {
           signal.throwIfAborted();
+          if (slice.over) await slice.next();
           const history = await this.#readHistory(scoped, signal, held);
           histories.push({ scoped, history });
           // a tombstone of a key no commit owned yet leaves no state row, and
@@ -1093,7 +1146,9 @@ export class SqliteReadModel implements ReadModel {
         }
         const counts = { restored: 0 };
         let filesRead = 0;
+        const slice = new TimeSlice(signal, this.#recoverySliceMs);
         for (const { namespace: ns, keys } of scope.keysToCheck()) {
+          if (slice.over) await slice.next();
           const expected = this.#state.expectedFiles(ns, keys);
           filesRead += expected.length;
           if (
@@ -1124,23 +1179,34 @@ export class SqliteReadModel implements ReadModel {
     const reprojected = await withSpan(
       "swamp.datastore.v3.readmodel.recover.reproject",
       {},
-      (reprojectSpan) => {
+      async (reprojectSpan) => {
         const counts = newReprojectCounts();
-        for (const { scoped, history } of histories) {
-          signal.throwIfAborted();
-          this.#reprojectNames(
-            scoped,
-            history,
-            tracking,
-            options.admits,
-            counts,
-          );
+        // readers wait on #pageInFlight until the reproject ends
+        const reprojecting = Promise.withResolvers<void>();
+        this.#pageInFlight = reprojecting.promise;
+        try {
+          const slice = new TimeSlice(signal, this.#recoverySliceMs);
+          for (const { scoped, history } of histories) {
+            signal.throwIfAborted();
+            if (slice.over) await slice.next();
+            await this.#reprojectNames(
+              scoped,
+              history,
+              tracking,
+              options.admits,
+              counts,
+              signal,
+            );
+          }
+        } finally {
+          this.#pageInFlight = undefined;
+          reprojecting.resolve();
         }
         reprojectSpan.setAttributes(reprojectAttributes(counts));
-        return Promise.resolve({
+        return {
           historyCommits: counts.commits,
           baseNames: counts.baseNames,
-        });
+        };
       },
     );
     span.setAttributes({
@@ -1294,6 +1360,20 @@ export class SqliteReadModel implements ReadModel {
     }
   }
 
+  async *#presentKeysPaged(namespace: string): AsyncGenerator<string> {
+    let after = "";
+    for (;;) {
+      const page = this.#state.presentKeysAfter(
+        namespace,
+        after,
+        PRESENT_KEYS_PAGE,
+      );
+      yield* page;
+      if (page.length < PRESENT_KEYS_PAGE) return;
+      after = page[page.length - 1];
+    }
+  }
+
   async #missingKeys(
     namespace: string,
     scan: ScanResult,
@@ -1303,13 +1383,15 @@ export class SqliteReadModel implements ReadModel {
     const missing: string[] = [];
     const root = this.#cacheRoot(namespace);
     const present = scopes === undefined
-      ? this.#state.presentKeys(namespace)
+      ? this.#presentKeysPaged(namespace)
       : new Set(
         outermostScopes(scopes).flatMap((scope) =>
           this.#state.presentKeysAtOrUnder(namespace, scope)
         ),
       );
-    for (const key of present) {
+    const slice = new TimeSlice(options.signal, this.#recoverySliceMs);
+    for await (const key of present) {
+      if (slice.over) await slice.next();
       if (scan.listed.has(key) || scan.listed.has(key.normalize("NFC"))) {
         continue;
       }
@@ -1339,18 +1421,51 @@ export class SqliteReadModel implements ReadModel {
     return missing;
   }
 
+  /** readers wait on #pageInFlight until the clear ends */
+  async #clearCatalog(
+    admits: (key: string) => boolean,
+    signal: AbortSignal,
+  ): Promise<number> {
+    if (this.#catalog.clearInSlices === undefined) {
+      return this.#catalog.clear(admits);
+    }
+    const clearing = Promise.withResolvers<void>();
+    this.#pageInFlight = clearing.promise;
+    try {
+      return await this.#catalog.clearInSlices(admits, async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        signal.throwIfAborted();
+      }, this.#recoverySliceMs);
+    } finally {
+      this.#pageInFlight = undefined;
+      clearing.resolve();
+    }
+  }
+
+  #commitCatalog(signal: AbortSignal): Promise<void> {
+    if (this.#catalog.commitBatchInSlices === undefined) {
+      this.#catalog.commitBatch();
+      return Promise.resolve();
+    }
+    return this.#catalog.commitBatchInSlices(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      signal.throwIfAborted();
+    }, this.#recoverySliceMs);
+  }
+
   /**
    * one partition's names from its compacted base and later commits up to the
    * applied seq, checked against the state, then cleared, re-projected and
-   * forgotten as dirty in one catalog transaction
+   * forgotten as dirty
    */
-  #reprojectNames(
+  async #reprojectNames(
     scoped: ScopedPartition,
     { base, commits }: NameHistory,
     tracking: CatalogDirtyTracking,
     admits: (key: string) => boolean,
     counts: ReprojectCounts,
-  ): void {
+    signal: AbortSignal,
+  ): Promise<void> {
     const { namespace, partition, names } = scoped;
     const identity = partition.identity;
     if (identity.kind !== "model") return;
@@ -1383,7 +1498,7 @@ export class SqliteReadModel implements ReadModel {
       tracking.clearNames(nameKeys, admits);
       this.#catalog.apply(namespace, partition, replay.actions);
       tracking.forgetDirty(nameKeys);
-      this.#catalog.commitBatch();
+      await this.#commitCatalog(signal);
     } finally {
       this.#catalog.rollbackBatch();
     }
@@ -1637,8 +1752,10 @@ export class SqliteReadModel implements ReadModel {
         if (counted === undefined || counted < TAIL_NET_MIN_COMMITS) {
           return undefined;
         }
+        const slice = new TimeSlice(signal, this.#recoverySliceMs);
         for (;;) {
           signal.throwIfAborted();
+          if (slice.over) await slice.next();
           let page;
           try {
             page = await this.#time(
@@ -1666,12 +1783,19 @@ export class SqliteReadModel implements ReadModel {
         if (tail.length < 2) return undefined;
         // a write at or below a recorded mark is kept off disk skipped or not, so no seeding
         const planner = this.#netPlanner();
-        for (const commit of tail) planner.add(commit);
-        const plan = planner.finish(() => true);
+        for (const commit of tail) {
+          if (slice.over) await slice.next();
+          planner.add(commit);
+        }
+        const plan = await planner.finishInSlices(
+          () => true,
+          () => slice.over ? slice.next() : undefined,
+        );
         // only a key with a write to skip is looked at on disk
         const judged = new Map<string, boolean>();
         let skippable = 0;
         for (const commit of tail) {
+          if (slice.over) await slice.next();
           for (const change of commit.changes) {
             const key = change.key.toString();
             if (
@@ -1738,6 +1862,7 @@ export class SqliteReadModel implements ReadModel {
   ): Promise<NetReplayPlan | undefined> {
     let cursor = from;
     let commits = 0;
+    const slice = new TimeSlice(signal, this.#recoverySliceMs);
     for (;;) {
       signal.throwIfAborted();
       let page;
@@ -1748,6 +1873,7 @@ export class SqliteReadModel implements ReadModel {
         throw error;
       }
       for (const change of page) {
+        if (slice.over) await slice.next();
         planner.add({
           namespace: change.commit.namespace,
           partition: change.commit.partition.toString(),
@@ -1761,6 +1887,7 @@ export class SqliteReadModel implements ReadModel {
     }
     const absent = new Set<string>();
     for (const { namespace, segment } of planner.directories()) {
+      if (slice.over) await slice.next();
       try {
         await Deno.lstat(join(this.#cacheRoot(namespace), segment));
       } catch (error) {
@@ -1768,8 +1895,9 @@ export class SqliteReadModel implements ReadModel {
         absent.add(`${namespace}\0${segment}`);
       }
     }
-    const plan = planner.finish((namespace, segment) =>
-      absent.has(`${namespace}\0${segment}`)
+    const plan = await planner.finishInSlices(
+      (namespace, segment) => absent.has(`${namespace}\0${segment}`),
+      () => slice.over ? slice.next() : undefined,
     );
     span.setAttributes({
       "swamp.datastore.v3.commits": commits,
@@ -1793,8 +1921,10 @@ export class SqliteReadModel implements ReadModel {
   async #catchUpFeedRun(signal: AbortSignal): Promise<CatchUpResult> {
     let applied = 0;
     let loadedBase: number | undefined;
+    const slice = new TimeSlice(signal, this.#recoverySliceMs);
     for (;;) {
       signal.throwIfAborted();
+      if (slice.over) await slice.next();
       let page;
       try {
         page = this.#readAhead.shift() ?? await this.#time(
@@ -1827,7 +1957,9 @@ export class SqliteReadModel implements ReadModel {
         loadedBase = this.#state.cursor();
         continue;
       }
-      applied += await this.#applyPage(page, true, signal);
+      for (const part of pageParts(page)) {
+        applied += await this.#applyPage(part, true, signal);
+      }
       if (page.length < this.#pageSize) break;
     }
     await this.#retryUnreadable(signal);
@@ -1966,6 +2098,7 @@ export class SqliteReadModel implements ReadModel {
     from?: { readonly dir: string; readonly segments: readonly string[] },
   ): Promise<void> {
     const root = this.#cacheRoot(namespace);
+    const slice = new TimeSlice(signal, this.#recoverySliceMs);
     const visit = async (
       dir: string,
       segments: readonly string[],
@@ -1979,6 +2112,7 @@ export class SqliteReadModel implements ReadModel {
       }
       for (const entry of entries) {
         signal.throwIfAborted();
+        if (slice.over) await slice.next();
         // A symlink is never followed or removed: the read model writes none.
         if (entry.isSymlink) continue;
         const path = join(dir, entry.name);
@@ -2790,8 +2924,12 @@ export class SqliteReadModel implements ReadModel {
         : [];
       this.#poolFailure = undefined;
       try {
+        // the page's batches already stay open across awaits; readers wait on
+        // #pageInFlight and writers on #exclusive
+        const slice = new TimeSlice(signal, this.#recoverySliceMs);
         for (const change of page) {
           signal.throwIfAborted();
+          if (slice.over) await slice.next();
           if (await this.#apply(change, advance, signal, batch)) applied++;
           met.push(change.commit);
         }
@@ -2816,10 +2954,16 @@ export class SqliteReadModel implements ReadModel {
         throw error;
       }
       await this.#time("barrier", () => batch.barrier());
-      // the page's catalog actions in one transaction, after its files and
-      // before its state: a crash between them leaves the catalog ahead, and
-      // the page is applied again
-      this.#timeSync("catalog", () => this.#catalog.commitBatch());
+      // the page's catalog actions after its files and before its state: a
+      // crash between them leaves the catalog ahead, and the page is applied
+      // again
+      const catalogStarted = performance.now();
+      await this.#time("catalog", () => this.#commitCatalog(signal));
+      // a turn only when the catalog spent a slice, so a quick page pays none
+      if (performance.now() - catalogStarted >= this.#recoverySliceMs) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        signal.throwIfAborted();
+      }
       this.#state.commitBatch();
       tellOwnWorkApplied();
       await this.#releaseFetched(signal);
@@ -2951,8 +3095,10 @@ export class SqliteReadModel implements ReadModel {
         commit.writer.instance !== this.#writerInstance;
       const ownWork = !this.#recovering &&
         this.#holdsOwnWork?.(commit) === true;
+      const slice = new TimeSlice(signal, this.#recoverySliceMs);
       for (const keyChange of finalKeyStates(commit)) {
         signal.throwIfAborted();
+        if (slice.over) await slice.next();
         const key = keyChange.key.toString();
         // only the first change of a record's bytes in a catch-up replaces what
         // the checkout held; a commit leaving the file's bytes as they are (the

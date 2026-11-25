@@ -20,7 +20,9 @@
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import {
+  PREWARM_BACKLOG_COMMITS,
   PREWARM_MEMORY_FRACTION,
+  prewarmForBacklog,
   prewarmForRecovery,
 } from "./recovery_prewarm.ts";
 import { findSpan, withCapturedSpans } from "../tracing/span_test_helpers.ts";
@@ -207,5 +209,23 @@ Deno.test("prewarmForRecovery: records its read, file count, budget and why it s
       assertEquals(attr("capped"), true);
       assertEquals(attr("timed_out"), false);
     });
+  });
+});
+
+Deno.test("prewarmForBacklog: reads nothing for a complete read model less than the backlog behind or caught up, and prewarms one that far behind or never complete", async () => {
+  await withTempDir(async (dir) => {
+    const paths = [await file(dir, "a", 3000)];
+    const options = {
+      paths,
+      availableMemory: memoryFor(10_000),
+      chunkBytes: 512,
+    };
+    const read = async (head: number, applied: number, complete: boolean) =>
+      (await prewarmForBacklog({ ...options, head, applied, complete }))
+        ?.bytesRead;
+    assertEquals(await read(PREWARM_BACKLOG_COMMITS + 4, 5, true), undefined);
+    assertEquals(await read(PREWARM_BACKLOG_COMMITS + 5, 5, true), 3000);
+    assertEquals(await read(7, 2, false), 3000);
+    assertEquals(await read(7, 7, false), undefined);
   });
 });

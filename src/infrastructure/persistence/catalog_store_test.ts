@@ -3238,3 +3238,25 @@ Deno.test("CatalogStore.versionTimes: lists one name's published versions with t
   );
   store.close();
 });
+
+Deno.test("CatalogStore.versionRowCounts: counts each name's version rows, and none for a name it lacks", () => {
+  using tempDb = makeTempDb();
+  const store = new CatalogStore(tempDb.path);
+  try {
+    store.upsert(makeRow({ version: 1, is_latest: 0 }));
+    store.upsert(makeRow({ version: 2 }));
+    store.upsert(makeRow({ data_name: "other", id: "data-uuid-002" }));
+    const name = (data_name: string) => ({
+      namespace: "",
+      type_normalized: "test-model",
+      model_id: "model-001",
+      data_name,
+    });
+    assertEquals(
+      store.versionRowCounts([name("my-data"), name("other"), name("absent")]),
+      [2, 1, 0],
+    );
+  } finally {
+    store.close();
+  }
+});

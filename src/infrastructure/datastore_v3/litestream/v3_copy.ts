@@ -66,7 +66,10 @@ import {
 import { getSwampLogger } from "../../logging/logger.ts";
 import { readModelStateDir } from "../record_path_guard.ts";
 import { ReadModelState } from "../read_model_state.ts";
-import { SqliteCommitStore } from "../sqlite_commit_store.ts";
+import {
+  migrateCommitsDatabase,
+  SqliteCommitStore,
+} from "../sqlite_commit_store.ts";
 import { READ_MODEL_STATE_FILE } from "../sqlite_read_model.ts";
 import { SqliteCommitOutbox } from "../sqlite_commit_outbox.ts";
 import { v3OutboxPath, v3SharedCommitsDbPath } from "../v3_datastore.ts";
@@ -83,6 +86,7 @@ import {
   ensureSharedDir,
   readCopyState,
   readLineage,
+  readPresence,
   readReplicaVerification,
   type ReplicationPaths,
   replicationPathsFor,
@@ -100,7 +104,7 @@ import {
   v3PrivateRoot,
   v3Replicator,
 } from "./v3_replication.ts";
-import { withSpan } from "../../tracing/tracer.ts";
+import { withSpan, withSyncSpan } from "../../tracing/tracer.ts";
 import type { V3ReplicaPaths } from "./replica_target_resolver.ts";
 import {
   replicaUnreachableAfterFailure,
@@ -225,6 +229,35 @@ export interface V3CopyRefreshOptions {
    * removed and the copy left as it was; after that the refresh runs to its end
    */
   readonly signal?: AbortSignal;
+}
+
+/**
+ * before the lease is taken, so a scanning migration never runs while it must
+ * renew; a restoring copy or one with a sidecar is left to its open under it
+ */
+export async function migrateV3CopySchema(copy: V3Copy): Promise<void> {
+  if (v3ReplicaFor(copy.datastorePath) === undefined) return;
+  const paths = await copyPaths(copy);
+  if (!await exists(paths.commitsDb)) return;
+  const lock = await Deno.open(paths.restoreLock, {
+    read: true,
+    write: true,
+    create: true,
+  });
+  try {
+    if (!await lock.tryLock(true)) return;
+    try {
+      // a sidecar starting after this read replicates the migration as any write
+      if ((await readPresence(paths)).kind !== "missing") return;
+      withSyncSpan("swamp.datastore.v3.copy.premigrate", {}, () => {
+        migrateCommitsDatabase(paths.commitsDb, { replicated: true });
+      });
+    } finally {
+      await lock.unlock();
+    }
+  } finally {
+    lock.close();
+  }
 }
 
 async function makeV3CopyCurrentNow(

@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import {
   decideFile,
   finalKeyStates,
@@ -299,4 +299,52 @@ Deno.test("NetReplayPlanner: keys whose directories differ only by case or compo
   ]);
   assertEquals(plan.skipsWrite("", "data/a/1/raw", 2), false);
   assertEquals(plan.skipsWrite("", "data/b/1/raw", 4), true);
+});
+
+Deno.test("NetReplayPlanner.finishInSlices: pausing between keys gives the plan finish does", async () => {
+  const keys = [
+    "data/x",
+    "data/X",
+    "data/x/1",
+    "data/y",
+    "config/a",
+    "config/b",
+  ];
+  const commits: [string, KeyChange[]][] = [];
+  for (let i = 0; i < 24; i++) {
+    commits.push([
+      i % 3 === 0 ? "p" : "q",
+      [change(keys[i % keys.length], i % 5 !== 0)],
+    ]);
+  }
+  const plan = (sliced: boolean) => {
+    const planner = new NetReplayPlanner(() => false);
+    commits.forEach(([partition, changes], i) =>
+      planner.add({ namespace: "", partition, position: i + 1, changes })
+    );
+    const absent = (_: string, segment: string) => segment !== "config";
+    let pauses = 0;
+    return sliced
+      ? planner.finishInSlices(absent, () => {
+        pauses++;
+        return Promise.resolve();
+      }).then((p) => ({ p, pauses }))
+      : Promise.resolve({ p: planner.finish(absent), pauses });
+  };
+  const whole = await plan(false);
+  const sliced = await plan(true);
+  assert(sliced.pauses > 0, "finishInSlices never paused");
+  const decisions = (p: NetReplayPlan) => ({
+    bound: p.bound,
+    replaceable: p.replaceable,
+    keptForPrefix: p.keptForPrefix,
+    keptForDirectory: p.keptForDirectory,
+    writes: keys.flatMap((key) =>
+      commits.map((_, i) => p.skipsWrite("", key, i + 1))
+    ),
+    removals: keys.flatMap((key) =>
+      commits.map((_, i) => p.skipsRemoval("", key, i + 1))
+    ),
+  });
+  assertEquals(decisions(sliced.p), decisions(whole.p));
 });
