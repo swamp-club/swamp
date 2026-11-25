@@ -307,7 +307,6 @@ export interface SqliteReadModelOptions {
   readonly pid?: number;
   readonly syncFile?: (path: string) => Promise<void>;
   readonly atRiskCopyBytes?: number;
-  /** how long a recovery or catch-up holds the event loop between turns */
   readonly recoverySliceMs?: number;
   readonly os?: typeof Deno.build.os;
   /**
@@ -1361,7 +1360,6 @@ export class SqliteReadModel implements ReadModel {
     }
   }
 
-  /** every present key, read a page at a time rather than in one statement */
   async *#presentKeysPaged(namespace: string): AsyncGenerator<string> {
     let after = "";
     for (;;) {
@@ -1444,7 +1442,6 @@ export class SqliteReadModel implements ReadModel {
     }
   }
 
-  /** a large reconcile commits in bounded transactions, the loop turning between */
   #commitCatalog(signal: AbortSignal): Promise<void> {
     if (this.#catalog.commitBatchInSlices === undefined) {
       this.#catalog.commitBatch();

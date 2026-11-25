@@ -219,7 +219,6 @@ export class NetReplayPlanner {
     }
   }
 
-  /** finish, pausing between keys when pause hands back a promise */
   async finishInSlices(
     directoryAbsent: (namespace: string, segment: string) => boolean,
     pause: () => Promise<void> | undefined,

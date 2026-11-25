@@ -530,7 +530,6 @@ function replayedPerName(replays: readonly ActionsStep[]): Map<string, number> {
   return counts;
 }
 
-/** a replay's actions for the kept names only */
 function actionsOf(
   replay: ActionsStep,
   kept: ReadonlySet<string>,

@@ -3332,7 +3332,7 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
       if (reading.over) await reading.next();
       const want = Math.min(REBUILD_PAGE, batchSize - rows.length);
       const read = page.all(after, target, want) as unknown as CommitRow[];
-      rows.push(...read);
+      for (const row of read) rows.push(row);
       if (read.length < want) break;
       after = read[read.length - 1].cursor;
     }

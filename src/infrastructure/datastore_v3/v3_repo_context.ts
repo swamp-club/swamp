@@ -2034,11 +2034,6 @@ export async function v3RepositoryFactoryConfig(
 export const V3_RESERVED_NAMESPACE_CODE = "datastore_v3_reserved_namespace";
 
 /**
- * a reserved namespace's cache root is a directory swamp keeps its own files
- * in, and subdirectories linking out of their cache root would fail every
- * catch-up
- */
-/**
  * a writer far behind its store (a standby taking over, a copy restored or
  * seeded behind) reads the files its catch-up walks first, as a recovery does
  */
@@ -2058,6 +2053,11 @@ export async function prewarmBeforeFirstCatchUp(
   });
 }
 
+/**
+ * a reserved namespace's cache root is a directory swamp keeps its own files
+ * in, and subdirectories linking out of their cache root would fail every
+ * catch-up
+ */
 async function refuseUnsafeV3Checkout(
   repoDir: string,
   config: V3DatastoreConfig,

@@ -71,7 +71,6 @@ const upsert = (n: string, version: number) => ({
   metadata: DataMetadataSchema.parse(metadata(n, version)),
 });
 
-/** a catalog holding the true history, then a writer's torn rows marking names dirty */
 function seeded(path: string, world: World, bound: number): V3Catalog {
   const catalog = V3Catalog.open(path, { reconcileRowsPerTransaction: bound });
   catalog.ensureDirtyTracking(1_000);
@@ -95,7 +94,6 @@ function seeded(path: string, world: World, bound: number): V3Catalog {
   return catalog;
 }
 
-/** what a recovery holds: clear the dirty names, replay their history, forget them */
 function holdRepair(catalog: V3Catalog, world: World): void {
   const names = world.history.map((_, index) => key(nameOf(index)));
   catalog.beginBatch();

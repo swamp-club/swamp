@@ -3935,7 +3935,6 @@ Deno.test("SqliteReadModel.recover: a targeted recovery gives the event loop tur
       pageSize: 5,
       recoverySliceMs: 0,
     });
-    // a renewal timer and an HTTP read, as serve would have them
     const reads: Promise<{ endedBefore: number; endedAfter: number }>[] = [];
     const timer = setInterval(() => {
       if (!watched.reprojecting()) return;

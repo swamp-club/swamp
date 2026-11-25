@@ -1265,7 +1265,6 @@ export class ReadModelState {
     );
   }
 
-  /** present keys after `after` in key order, at most `limit` of them */
   presentKeysAfter(namespace: string, after: string, limit: number): string[] {
     this.#requireOpen();
     return (this.#db.prepare(
