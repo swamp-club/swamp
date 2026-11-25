@@ -930,7 +930,7 @@ async function enterCommitSections(
   // only the check under the lease decides. Read through the handle the lease
   // opens for its fence anyway, so commits.db is opened once
   const claimHint = claimRefusal(
-    v3DatastoreFor(repoDir, config).commitStore.owner(),
+    peekDatastoreOwner(v3CommitsDbPath(config.path, repoDir)),
     ownerCheckOf(config, ownerCheck),
   );
   // the first section recovers what an interrupted writer left and marks the
