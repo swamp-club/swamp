@@ -988,7 +988,11 @@ for (
     await withV3Env(async (env) => {
       await appendScenario(env);
       await env.store.compactHistory(Number.MAX_SAFE_INTEGER);
-      const first = { writes: 0, fail: 4 as number | undefined, paths: [] };
+      const first = {
+        writes: 0,
+        fail: 4 as number | undefined,
+        paths: [] as string[],
+      };
       const cut = env.openReadModel({
         bootIdentity: () => Promise.resolve("boot-id:1"),
         writeBatch: () => new FailingWriteBatch(first),
