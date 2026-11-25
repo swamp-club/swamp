@@ -212,10 +212,35 @@ export class NetReplayPlanner {
   finish(
     directoryAbsent: (namespace: string, segment: string) => boolean,
   ): NetReplayPlan {
+    const steps = this.#plan(directoryAbsent);
+    for (;;) {
+      const step = steps.next();
+      if (step.done) return step.value;
+    }
+  }
+
+  /** finish, pausing between keys when pause hands back a promise */
+  async finishInSlices(
+    directoryAbsent: (namespace: string, segment: string) => boolean,
+    pause: () => Promise<void> | undefined,
+  ): Promise<NetReplayPlan> {
+    const steps = this.#plan(directoryAbsent);
+    for (;;) {
+      const step = steps.next();
+      if (step.done) return step.value;
+      const paused = pause();
+      if (paused !== undefined) await paused;
+    }
+  }
+
+  *#plan(
+    directoryAbsent: (namespace: string, segment: string) => boolean,
+  ): Generator<void, NetReplayPlan> {
     const prefixed = new Set<string>();
     for (const [namespace, keys] of this.#keys) {
       const folded = new Map<string, string[]>();
       for (const key of keys) {
+        yield;
         const spelling = foldKey(key);
         folded.set(spelling, [...(folded.get(spelling) ?? []), key]);
       }
@@ -224,6 +249,7 @@ export class NetReplayPlanner {
         for (const key of same) prefixed.add(idOf(namespace, key));
       }
       for (const key of keys) {
+        yield;
         const segments = foldKey(key).split("/");
         for (let i = 1; i < segments.length; i++) {
           const prefixes = folded.get(segments.slice(0, i).join("/"));
@@ -236,6 +262,7 @@ export class NetReplayPlanner {
       // differ only by case or composition replay in full
       const spellings = new Map<string, Set<string>>();
       for (const key of keys) {
+        yield;
         const segments = key.split("/");
         for (let i = 1; i < segments.length; i++) {
           const dir = segments.slice(0, i).join("/");
@@ -245,6 +272,7 @@ export class NetReplayPlanner {
         }
       }
       for (const key of keys) {
+        yield;
         const segments = key.split("/");
         for (let i = 1; i < segments.length; i++) {
           const dir = segments.slice(0, i).join("/");
@@ -261,6 +289,7 @@ export class NetReplayPlanner {
     let keptForPrefix = 0;
     let keptForDirectory = 0;
     for (const [id, writes] of this.#writes) {
+      yield;
       const own = this.#ownership.get(id);
       const final = own?.present === true ? own.mark : undefined;
       const replaced = writes.filter((position) => position !== final);
@@ -280,6 +309,7 @@ export class NetReplayPlanner {
     // A key only ever removed is eligible as well: nothing of it is on disk.
     for (const [namespace, keys] of this.#keys) {
       for (const key of keys) {
+        yield;
         const id = idOf(namespace, key);
         if (this.#writes.has(id) || prefixed.has(id)) continue;
         if (directoryAbsent(namespace, key.split("/")[0])) eligible.add(id);

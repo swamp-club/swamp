@@ -160,6 +160,28 @@ const logger = getLogger(["swamp", "datastore", "read-model"]);
 /** long enough to cost little, short enough that the writer lease renews on time */
 const RECOVERY_SLICE_MS = 50;
 
+// a page of large commits commits its state in parts this size, so no one
+// transaction's commit writes the whole page
+const PAGE_OPS = 5_000;
+
+/** consecutive parts of at most PAGE_OPS ops; a larger commit stands alone */
+function pageParts(
+  page: readonly CommitChange[],
+): (readonly CommitChange[])[] {
+  const parts: CommitChange[][] = [];
+  let ops = Infinity;
+  for (const change of page) {
+    const size = change.commit.ops.length;
+    if (ops + size > PAGE_OPS) {
+      parts.push([]);
+      ops = 0;
+    }
+    parts[parts.length - 1].push(change);
+    ops += size;
+  }
+  return parts;
+}
+
 export const DEFAULT_READ_MODEL_PAGE_SIZE = 500;
 
 export { CATALOG_V3_FILE };
@@ -1747,8 +1769,14 @@ export class SqliteReadModel implements ReadModel {
         if (tail.length < 2) return undefined;
         // a write at or below a recorded mark is kept off disk skipped or not, so no seeding
         const planner = this.#netPlanner();
-        for (const commit of tail) planner.add(commit);
-        const plan = planner.finish(() => true);
+        for (const commit of tail) {
+          if (slice.over) await slice.next();
+          planner.add(commit);
+        }
+        const plan = await planner.finishInSlices(
+          () => true,
+          () => slice.over ? slice.next() : undefined,
+        );
         // only a key with a write to skip is looked at on disk
         const judged = new Map<string, boolean>();
         let skippable = 0;
@@ -1820,6 +1848,7 @@ export class SqliteReadModel implements ReadModel {
   ): Promise<NetReplayPlan | undefined> {
     let cursor = from;
     let commits = 0;
+    const slice = new TimeSlice(signal, this.#recoverySliceMs);
     for (;;) {
       signal.throwIfAborted();
       let page;
@@ -1830,6 +1859,7 @@ export class SqliteReadModel implements ReadModel {
         throw error;
       }
       for (const change of page) {
+        if (slice.over) await slice.next();
         planner.add({
           namespace: change.commit.namespace,
           partition: change.commit.partition.toString(),
@@ -1843,6 +1873,7 @@ export class SqliteReadModel implements ReadModel {
     }
     const absent = new Set<string>();
     for (const { namespace, segment } of planner.directories()) {
+      if (slice.over) await slice.next();
       try {
         await Deno.lstat(join(this.#cacheRoot(namespace), segment));
       } catch (error) {
@@ -1850,8 +1881,9 @@ export class SqliteReadModel implements ReadModel {
         absent.add(`${namespace}\0${segment}`);
       }
     }
-    const plan = planner.finish((namespace, segment) =>
-      absent.has(`${namespace}\0${segment}`)
+    const plan = await planner.finishInSlices(
+      (namespace, segment) => absent.has(`${namespace}\0${segment}`),
+      () => slice.over ? slice.next() : undefined,
     );
     span.setAttributes({
       "swamp.datastore.v3.commits": commits,
@@ -1911,7 +1943,9 @@ export class SqliteReadModel implements ReadModel {
         loadedBase = this.#state.cursor();
         continue;
       }
-      applied += await this.#applyPage(page, true, signal);
+      for (const part of pageParts(page)) {
+        applied += await this.#applyPage(part, true, signal);
+      }
       if (page.length < this.#pageSize) break;
     }
     await this.#retryUnreadable(signal);

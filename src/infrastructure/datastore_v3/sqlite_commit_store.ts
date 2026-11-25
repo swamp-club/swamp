@@ -3115,19 +3115,30 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
       throw new Error(`cursor must be a non-negative integer: ${cursor}`);
     }
     requirePositive(limit, "limit");
-    const rows = this.#readTransaction(() => {
-      const point = this.#point();
-      if (cursor < point) {
-        throw new CommitsCompactedError(
-          point,
-          `The change feed from cursor ${cursor} cannot be read`,
-        );
-      }
-      return this.#selectChanges.all(cursor, limit) as unknown as CommitRow[];
-    });
+    // read in pieces, each checked against the point from where it starts:
+    // stored commits above the point never change, so the pieces join up
     const changes: CommitChange[] = [];
-    for (const row of rows) {
-      changes.push({ cursor: row.cursor, commit: await parseRow(row) });
+    const slice = new TimeSlice(undefined, FOLD_SLICE_MS);
+    let from = cursor;
+    while (changes.length < limit) {
+      if (slice.over) await slice.next();
+      const want = Math.min(REBUILD_PAGE, limit - changes.length);
+      const rows = this.#readTransaction(() => {
+        const point = this.#point();
+        if (from < point) {
+          throw new CommitsCompactedError(
+            point,
+            `The change feed from cursor ${from} cannot be read`,
+          );
+        }
+        return this.#selectChanges.all(from, want) as unknown as CommitRow[];
+      });
+      for (const row of rows) {
+        if (slice.over) await slice.next();
+        changes.push({ cursor: row.cursor, commit: await parseRow(row) });
+      }
+      if (rows.length < want) break;
+      from = rows[rows.length - 1].cursor;
     }
     return changes;
   }
