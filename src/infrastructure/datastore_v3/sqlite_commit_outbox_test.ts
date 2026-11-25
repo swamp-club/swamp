@@ -19,7 +19,7 @@
 
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync, StatementSync } from "node:sqlite";
 import { BlobRef } from "../../domain/datastore_v3/blob_ref.ts";
 import {
   OUTBOX_SWEEP_STALE_MS,
@@ -201,6 +201,78 @@ Deno.test("SqliteCommitOutbox: a discard is fsynced and a settle is not, and lat
     );
     assertEquals(await outbox.hasEntries(), false);
     await outbox.close();
+  });
+});
+
+async function countingSqlite(
+  fn: () => Promise<void>,
+): Promise<{ exec: string[]; prepare: number; run: number }> {
+  const database = DatabaseSync.prototype;
+  const statement = StatementSync.prototype;
+  const { exec, prepare } = database;
+  const { run } = statement;
+  const counts = { exec: [] as string[], prepare: 0, run: 0 };
+  database.exec = function (this: DatabaseSync, sql: string) {
+    counts.exec.push(sql);
+    return exec.call(this, sql);
+  };
+  database.prepare = function (
+    this: DatabaseSync,
+    ...args: Parameters<DatabaseSync["prepare"]>
+  ) {
+    counts.prepare++;
+    return prepare.apply(this, args);
+  };
+  statement.run = function (
+    this: StatementSync,
+    ...args: Parameters<StatementSync["run"]>
+  ) {
+    counts.run++;
+    return run.apply(this, args);
+  };
+  try {
+    await fn();
+  } finally {
+    database.exec = exec;
+    database.prepare = prepare;
+    statement.run = run;
+  }
+  return counts;
+}
+
+Deno.test("SqliteCommitOutbox: one commit's lifecycle on an open outbox reuses its statements and runs two write transactions, the prepare's fsynced", async () => {
+  await withTempDir(async (dir) => {
+    const outbox = new SqliteCommitOutbox(join(dir, "outbox.db"));
+    try {
+      const lifecycle = async (seq: number) => {
+        const commit = modelCommit(seq, [
+          await blobPut("a", seq, blobOf(HASH_A)),
+        ]);
+        await outbox.sweepState(0);
+        await outbox.prepare({
+          commit,
+          unitId: "u",
+          base: { seq: seq - 1, txnId: undefined },
+        });
+        await outbox.sweepState(0);
+        await outbox.settle([outboxKeyOf(commit)]);
+      };
+      await lifecycle(1);
+      const counts = await countingSqlite(() => lifecycle(2));
+      assertEquals(counts.exec, [
+        "PRAGMA synchronous=FULL",
+        "BEGIN IMMEDIATE",
+        "COMMIT",
+        "PRAGMA synchronous=NORMAL",
+        "BEGIN IMMEDIATE",
+        "COMMIT",
+      ]);
+      assertEquals(counts.prepare, 0);
+      assert(counts.run > 0, "the lifecycle's writes were counted");
+      assertEquals(await outbox.hasEntries(), false);
+    } finally {
+      await outbox.close();
+    }
   });
 });
 

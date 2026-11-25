@@ -25,7 +25,7 @@
 
 import { dirname } from "@std/path";
 import { ensureDirSync } from "@std/fs";
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync, type StatementSync } from "node:sqlite";
 import { Commit } from "../../domain/datastore_v3/commit.ts";
 import {
   type CommitOutbox,
@@ -239,6 +239,8 @@ export class SqliteCommitOutbox implements CommitOutbox {
     | undefined;
   readonly #groupPrepares: boolean;
   #db: DatabaseSync | undefined;
+  #statements = new Map<string, StatementSync>();
+  #relaxed = false;
   #closed = false;
   #pending: PendingPrepare[] = [];
   #flushScheduled = false;
@@ -329,7 +331,8 @@ export class SqliteCommitOutbox implements CommitOutbox {
     process: ProcessIdentity | undefined,
   ): void {
     const { commit, unitId, base, lease, queuedOffline } = preparation;
-    const row = db.prepare(
+    const row = this.#prepareCached(
+      db,
       "INSERT INTO outbox_entries (namespace, partition, txn_id, unit_id, base_seq, base_txn_id, created_at, body, writer_process, lease_id, lease_fence, state) " +
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
         "ON CONFLICT (namespace, partition, txn_id) DO UPDATE SET unit_id = excluded.unit_id, " +
@@ -354,15 +357,14 @@ export class SqliteCommitOutbox implements CommitOutbox {
       lease?.fence ?? null,
       queuedOffline === true ? "offline" : null,
     ) as { sequence: number };
-    db.prepare("DELETE FROM outbox_chunks WHERE sequence = ?").run(
-      row.sequence,
-    );
+    this.#prepareCached(db, "DELETE FROM outbox_chunks WHERE sequence = ?")
+      .run(row.sequence);
     // records the data versions so a version allocation reads an index, not
     // every entry's body
-    db.prepare("DELETE FROM outbox_versions WHERE sequence = ?").run(
-      row.sequence,
-    );
-    const version = db.prepare(
+    this.#prepareCached(db, "DELETE FROM outbox_versions WHERE sequence = ?")
+      .run(row.sequence);
+    const version = this.#prepareCached(
+      db,
       "INSERT OR IGNORE INTO outbox_versions (sequence, name, version) VALUES (?, ?, ?)",
     );
     for (const op of commit.ops) {
@@ -370,7 +372,8 @@ export class SqliteCommitOutbox implements CommitOutbox {
         version.run(row.sequence, op.metadata.name, op.metadata.version);
       }
     }
-    const insert = db.prepare(
+    const insert = this.#prepareCached(
+      db,
       "INSERT OR IGNORE INTO outbox_chunks (sequence, namespace, sha256) VALUES (?, ?, ?)",
     );
     for (const sha256 of commit.chunkRefs()) {
@@ -395,7 +398,8 @@ export class SqliteCommitOutbox implements CommitOutbox {
     // The mark is what keeps a reported failure from landing: fsynced.
     const at = this.#clock().getTime();
     return this.#write((db) => {
-      const mark = db.prepare(
+      const mark = this.#prepareCached(
+        db,
         "UPDATE outbox_entries SET abandoned_at = ? " +
           "WHERE namespace = ? AND partition = ? AND txn_id = ? AND abandoned_at IS NULL",
       );
@@ -408,16 +412,20 @@ export class SqliteCommitOutbox implements CommitOutbox {
   #remove(keys: readonly OutboxKey[], durable: boolean): Promise<void> {
     if (keys.length === 0) return Promise.resolve();
     return this.#write((db) => {
-      const select = db.prepare(
+      const select = this.#prepareCached(
+        db,
         "SELECT sequence FROM outbox_entries WHERE namespace = ? AND partition = ? AND txn_id = ?",
       );
-      const deleteChunks = db.prepare(
+      const deleteChunks = this.#prepareCached(
+        db,
         "DELETE FROM outbox_chunks WHERE sequence = ?",
       );
-      const deleteVersions = db.prepare(
+      const deleteVersions = this.#prepareCached(
+        db,
         "DELETE FROM outbox_versions WHERE sequence = ?",
       );
-      const deleteEntry = db.prepare(
+      const deleteEntry = this.#prepareCached(
+        db,
         "DELETE FROM outbox_entries WHERE sequence = ?",
       );
       for (const key of keys) {
@@ -433,7 +441,7 @@ export class SqliteCommitOutbox implements CommitOutbox {
   }
 
   async entries(): Promise<OutboxListing> {
-    const rows = this.#read((db) =>
+    const rows = this.#readOne((db) =>
       db.prepare(
         "SELECT sequence, namespace, partition, txn_id, unit_id, base_seq, base_txn_id, created_at, body, " +
           "writer_process, left_at_fence, abandoned_at, lease_id, lease_fence, state, state_reason, state_code, sent_maybe_at " +
@@ -497,8 +505,9 @@ export class SqliteCommitOutbox implements CommitOutbox {
 
   // deno-lint-ignore require-await
   async hasEntries(): Promise<boolean> {
-    return this.#read((db) =>
-      db.prepare("SELECT 1 AS found FROM outbox_entries LIMIT 1").get() !==
+    return this.#readOne((db) =>
+      this.#prepareCached(db, "SELECT 1 AS found FROM outbox_entries LIMIT 1")
+        .get() !==
         undefined
     ) ?? false;
   }
@@ -509,8 +518,9 @@ export class SqliteCommitOutbox implements CommitOutbox {
    */
   // deno-lint-ignore require-await
   async hasUnsettledEntries(): Promise<boolean> {
-    return this.#read((db) =>
-      db.prepare(
+    return this.#readOne((db) =>
+      this.#prepareCached(
+        db,
         "SELECT 1 AS found FROM outbox_entries " +
           "WHERE state IS NULL OR state = 'offline' LIMIT 1",
       ).get() !== undefined
@@ -523,26 +533,33 @@ export class SqliteCommitOutbox implements CommitOutbox {
    */
   resetKeepingKept(): Promise<number> {
     return this.#write((db) => {
-      db.prepare(
+      this.#prepareCached(
+        db,
         "DELETE FROM outbox_chunks WHERE sequence IN (" +
           "SELECT sequence FROM outbox_entries WHERE state IS NULL " +
           "OR state NOT IN ('rejected', 'quarantined'))",
       ).run();
-      db.prepare(
+      this.#prepareCached(
+        db,
         "DELETE FROM outbox_versions WHERE sequence IN (" +
           "SELECT sequence FROM outbox_entries WHERE state IS NULL " +
           "OR state NOT IN ('rejected', 'quarantined'))",
       ).run();
-      db.prepare(
+      this.#prepareCached(
+        db,
         "DELETE FROM outbox_entries WHERE state IS NULL " +
           "OR state NOT IN ('rejected', 'quarantined')",
       ).run();
-      db.prepare("DELETE FROM outbox_chain").run();
-      db.prepare("DELETE FROM outbox_landed_offline").run();
-      db.prepare(
+      this.#prepareCached(db, "DELETE FROM outbox_chain").run();
+      this.#prepareCached(db, "DELETE FROM outbox_landed_offline").run();
+      this.#prepareCached(
+        db,
         "UPDATE outbox_sweep SET epoch = 0, instance = NULL, heartbeat_at = NULL",
       ).run();
-      const row = db.prepare("SELECT COUNT(*) AS kept FROM outbox_entries")
+      const row = this.#prepareCached(
+        db,
+        "SELECT COUNT(*) AS kept FROM outbox_entries",
+      )
         .get() as { kept: number };
       return row.kept;
     }, { create: false }).then((kept) => kept ?? 0);
@@ -562,7 +579,8 @@ export class SqliteCommitOutbox implements CommitOutbox {
     // Fsynced: a later entry that misses it could remove another writer's
     // version that took the number this one landed away from.
     return this.#write((db) => {
-      db.prepare(
+      this.#prepareCached(
+        db,
         "INSERT OR REPLACE INTO outbox_landed_offline (namespace, partition, txn_id, landed_at, carry) VALUES (?, ?, ?, ?, ?)",
       ).run(
         key.namespace,
@@ -571,7 +589,8 @@ export class SqliteCommitOutbox implements CommitOutbox {
         at,
         carry === undefined ? null : JSON.stringify(carry),
       );
-      db.prepare(
+      this.#prepareCached(
+        db,
         "DELETE FROM outbox_landed_offline WHERE landed_at < ? AND NOT EXISTS (" +
           "SELECT 1 FROM outbox_entries AS entry " +
           "WHERE entry.namespace = outbox_landed_offline.namespace " +
@@ -586,7 +605,7 @@ export class SqliteCommitOutbox implements CommitOutbox {
     namespace: string,
     partition: string,
   ): Promise<OfflineRebaseCarry> {
-    const rows = this.#read((db) =>
+    const rows = this.#readOne((db) =>
       db.prepare(
         "SELECT carry FROM outbox_landed_offline WHERE namespace = ? AND partition = ? AND carry IS NOT NULL ORDER BY landed_at, txn_id",
       ).all(namespace, partition) as { carry: string }[]
@@ -604,7 +623,7 @@ export class SqliteCommitOutbox implements CommitOutbox {
     namespace: string,
     partition: string,
   ): Promise<ReadonlySet<string>> {
-    const rows = this.#read((db) =>
+    const rows = this.#readOne((db) =>
       db.prepare(
         "SELECT txn_id FROM outbox_landed_offline WHERE namespace = ? AND partition = ?",
       ).all(namespace, partition) as { txn_id: string }[]
@@ -615,7 +634,8 @@ export class SqliteCommitOutbox implements CommitOutbox {
   markSentMaybe(key: OutboxKey, at: number): Promise<void> {
     // Fsynced: a resend after serve's txnId retention could land it twice.
     return this.#write((db) => {
-      db.prepare(
+      this.#prepareCached(
+        db,
         "UPDATE outbox_entries SET sent_maybe_at = ? " +
           "WHERE namespace = ? AND partition = ? AND txn_id = ? " +
           "AND sent_maybe_at IS NULL",
@@ -632,7 +652,8 @@ export class SqliteCommitOutbox implements CommitOutbox {
     if (keys.length === 0) return Promise.resolve();
     // The mark is what keeps the entry from every drop rule: fsynced.
     return this.#write((db) => {
-      const mark = db.prepare(
+      const mark = this.#prepareCached(
+        db,
         "UPDATE outbox_entries SET state = ?, state_reason = ?, " +
           "state_code = ? " +
           "WHERE namespace = ? AND partition = ? AND txn_id = ?",
@@ -654,7 +675,8 @@ export class SqliteCommitOutbox implements CommitOutbox {
     // Fsynced, as every state mark is: it is what keeps the entry from a drop.
     const moved = await this.#write((db) =>
       Number(
-        db.prepare(
+        this.#prepareCached(
+          db,
           "UPDATE outbox_entries SET state = 'offline', state_reason = NULL, " +
             "state_code = NULL " +
             "WHERE namespace = ? AND partition = ? AND txn_id = ? " +
@@ -673,8 +695,9 @@ export class SqliteCommitOutbox implements CommitOutbox {
     // Read from the version index the prepare writes: no entry body is
     // parsed, so the cost does not grow with what the outbox holds. A pending
     // entry may have landed unconfirmed, so its versions count too.
-    const row = this.#read((db) =>
-      db.prepare(
+    const row = this.#readOne((db) =>
+      this.#prepareCached(
+        db,
         "SELECT MAX(version.version) AS high FROM outbox_versions AS version " +
           "JOIN outbox_entries AS entry ON entry.sequence = version.sequence " +
           "WHERE entry.namespace = ? AND entry.partition = ? " +
@@ -690,7 +713,8 @@ export class SqliteCommitOutbox implements CommitOutbox {
       // A note one above the last fence, or the first note of a chain that
       // holds no fence yet, is a fence this copy took whose record was
       // lost: the chain takes it before this note replaces it.
-      db.prepare(
+      this.#prepareCached(
+        db,
         "UPDATE outbox_chain SET last_fence = pending_fence, " +
           "chain_start = CASE WHEN last_fence = 0 THEN pending_fence ELSE chain_start END " +
           "WHERE id = 1 AND pending_fence IS NOT NULL " +
@@ -698,7 +722,8 @@ export class SqliteCommitOutbox implements CommitOutbox {
       ).run();
       // Before any chain, an empty one (fence 0) holds the note, so even the
       // copy's first fence is recognised when its record is lost.
-      db.prepare(
+      this.#prepareCached(
+        db,
         "INSERT INTO outbox_chain (id, last_fence, chain_start, floor, pending_fence) VALUES (1, 0, 0, 0, ?) " +
           "ON CONFLICT (id) DO UPDATE SET pending_fence = MAX(COALESCE(pending_fence, 0), excluded.pending_fence)",
       ).run(fence);
@@ -710,21 +735,27 @@ export class SqliteCommitOutbox implements CommitOutbox {
     options: { readonly replicated?: boolean } = {},
   ): Promise<FenceChain> {
     return this.#write((db) => {
-      const pending = db.prepare(
+      const pending = this.#prepareCached(
+        db,
         "SELECT pending_fence FROM outbox_chain WHERE id = 1",
       ).get() as { pending_fence: number | null } | undefined;
-      const next = decideFenceChain(readChain(db), fence, {
-        ...(pending !== undefined && pending.pending_fence !== null
-          ? { pendingFence: pending.pending_fence }
-          : {}),
-        ...(options.replicated !== undefined
-          ? { replicated: options.replicated }
-          : {}),
-      });
+      const next = decideFenceChain(
+        readChain((sql) => this.#prepareCached(db, sql)),
+        fence,
+        {
+          ...(pending !== undefined && pending.pending_fence !== null
+            ? { pendingFence: pending.pending_fence }
+            : {}),
+          ...(options.replicated !== undefined
+            ? { replicated: options.replicated }
+            : {}),
+        },
+      );
       // A recorded fence needs no note: clearing it keeps a stale one from
       // outliving a restart of the lease's records and being taken later for
       // a fence another copy held.
-      db.prepare(
+      this.#prepareCached(
+        db,
         "INSERT INTO outbox_chain (id, last_fence, chain_start, floor) VALUES (1, ?, ?, ?) " +
           "ON CONFLICT (id) DO UPDATE SET last_fence = excluded.last_fence, " +
           "chain_start = excluded.chain_start, floor = excluded.floor, pending_fence = NULL",
@@ -735,12 +766,15 @@ export class SqliteCommitOutbox implements CommitOutbox {
 
   // deno-lint-ignore require-await
   async chain(): Promise<FenceChain | undefined> {
-    return this.#read(readChain);
+    return this.#readOne((db) =>
+      readChain((sql) => this.#prepareCached(db, sql))
+    );
   }
 
   raiseFloor(fence: number): Promise<void> {
     return this.#write((db) => {
-      db.prepare(
+      this.#prepareCached(
+        db,
         "UPDATE outbox_chain SET floor = ? WHERE id = 1 AND floor < ? AND last_fence >= ?",
       ).run(fence, fence, fence);
     }, { create: false });
@@ -749,7 +783,8 @@ export class SqliteCommitOutbox implements CommitOutbox {
   markLeft(keys: readonly OutboxKey[], fence: number): Promise<void> {
     if (keys.length === 0) return Promise.resolve();
     return this.#write((db) => {
-      const mark = db.prepare(
+      const mark = this.#prepareCached(
+        db,
         "UPDATE outbox_entries SET left_at_fence = ? " +
           "WHERE namespace = ? AND partition = ? AND txn_id = ? AND left_at_fence IS NULL",
       );
@@ -789,7 +824,8 @@ export class SqliteCommitOutbox implements CommitOutbox {
     const at = this.#clock().getTime();
     // a power cut also ends the stager, whose chunks then need no keeping
     return this.#write((db) => {
-      const insert = db.prepare(
+      const insert = this.#prepareCached(
+        db,
         "INSERT OR IGNORE INTO outbox_staged (stager, namespace, sha256, staged_at) VALUES (?, ?, ?, ?)",
       );
       for (const sha256 of hashes) insert.run(stager, namespace, sha256, at);
@@ -798,7 +834,9 @@ export class SqliteCommitOutbox implements CommitOutbox {
 
   unstageChunks(stager: string): Promise<void> {
     return this.#write((db) => {
-      db.prepare("DELETE FROM outbox_staged WHERE stager = ?").run(stager);
+      this.#prepareCached(db, "DELETE FROM outbox_staged WHERE stager = ?").run(
+        stager,
+      );
     }, { create: false, durable: false });
   }
 
@@ -826,14 +864,16 @@ export class SqliteCommitOutbox implements CommitOutbox {
 
   pruneStagedChunks(before: number): Promise<void> {
     return this.#write((db) => {
-      db.prepare("DELETE FROM outbox_staged WHERE staged_at < ?").run(before);
+      this.#prepareCached(db, "DELETE FROM outbox_staged WHERE staged_at < ?")
+        .run(before);
     }, { create: false, durable: false });
   }
 
   // deno-lint-ignore require-await
   async sweepState(now: number): Promise<SweepState> {
-    const row = this.#read((db) =>
-      db.prepare(
+    const row = this.#readOne((db) =>
+      this.#prepareCached(
+        db,
         "SELECT epoch, instance, heartbeat_at FROM outbox_sweep WHERE id = 1",
       ).get() as
         | {
@@ -853,7 +893,8 @@ export class SqliteCommitOutbox implements CommitOutbox {
 
   beginSweep(instance: string, now: number): Promise<void> {
     return this.#write((db) => {
-      db.prepare(
+      this.#prepareCached(
+        db,
         "UPDATE outbox_sweep SET epoch = epoch + 1, instance = ?, heartbeat_at = ? WHERE id = 1",
       ).run(instance, now);
     });
@@ -861,7 +902,8 @@ export class SqliteCommitOutbox implements CommitOutbox {
 
   heartbeatSweep(instance: string, now: number): Promise<void> {
     return this.#write((db) => {
-      db.prepare(
+      this.#prepareCached(
+        db,
         "UPDATE outbox_sweep SET heartbeat_at = ? WHERE id = 1 AND instance = ?",
       ).run(now, instance);
     });
@@ -869,7 +911,8 @@ export class SqliteCommitOutbox implements CommitOutbox {
 
   endSweep(instance: string): Promise<void> {
     return this.#write((db) => {
-      db.prepare(
+      this.#prepareCached(
+        db,
         "UPDATE outbox_sweep SET epoch = epoch + 1, instance = NULL, heartbeat_at = NULL " +
           "WHERE id = 1 AND instance = ?",
       ).run(instance);
@@ -880,6 +923,7 @@ export class SqliteCommitOutbox implements CommitOutbox {
     // close writes the prepares still waiting
     if (!this.#closed) this.#flushPrepares();
     this.#closed = true;
+    this.#statements.clear();
     this.#db?.close();
     this.#db = undefined;
     return Promise.resolve();
@@ -912,28 +956,48 @@ export class SqliteCommitOutbox implements CommitOutbox {
   ): T {
     const db = this.#connection(options.create ?? true);
     if (db === undefined) return undefined as T;
-    // A write that need not survive a power cut skips the fsync.
+    // A write that need not survive a power cut skips the fsync. The level is
+    // switched only when the next write needs the other, and always before it
+    // begins, so each transaction commits at its own level.
     const relaxed = options.durable === false;
-    if (relaxed) db.exec("PRAGMA synchronous=NORMAL");
-    try {
-      db.exec("BEGIN IMMEDIATE");
-      try {
-        if (this.#onWrite !== undefined) {
-          const row = db.prepare("PRAGMA synchronous").get() as
-            | { synchronous: number }
-            | undefined;
-          this.#onWrite(row?.synchronous ?? -1);
-        }
-        const result = body(db);
-        db.exec("COMMIT");
-        return result;
-      } catch (error) {
-        rollbackQuietly(db);
-        throw error;
-      }
-    } finally {
-      if (relaxed) db.exec("PRAGMA synchronous=FULL");
+    if (relaxed !== this.#relaxed) {
+      db.exec(`PRAGMA synchronous=${relaxed ? "NORMAL" : "FULL"}`);
+      this.#relaxed = relaxed;
     }
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      if (this.#onWrite !== undefined) {
+        const row = this.#prepareCached(db, "PRAGMA synchronous").get() as
+          | { synchronous: number }
+          | undefined;
+        this.#onWrite(row?.synchronous ?? -1);
+      }
+      const result = body(db);
+      db.exec("COMMIT");
+      return result;
+    } catch (error) {
+      rollbackQuietly(db);
+      throw error;
+    }
+  }
+
+  // only for statements run with run() or get(): reusing one resets it, which
+  // would cut short a live all() or iterate()
+  #prepareCached(db: DatabaseSync, sql: string): StatementSync {
+    let statement = this.#statements.get(sql);
+    if (statement === undefined) {
+      statement = db.prepare(sql);
+      this.#statements.set(sql, statement);
+    }
+    return statement;
+  }
+
+  /** a single statement reads one snapshot of its own, needing no transaction */
+  #readOne<T>(body: (db: DatabaseSync) => T): T | undefined {
+    this.#flushPrepares();
+    const db = this.#connection(false);
+    if (db === undefined) return undefined;
+    return body(db);
   }
 
   #read<T>(body: (db: DatabaseSync) => T): T | undefined {
@@ -956,6 +1020,7 @@ export class SqliteCommitOutbox implements CommitOutbox {
     if (this.#db !== undefined) return this.#db;
     if (!create && !exists(this.#path)) return undefined;
     this.#db = openOutboxDatabase(this.#path);
+    this.#relaxed = false;
     return this.#db;
   }
 }
@@ -1021,8 +1086,9 @@ function migrate(db: DatabaseSync, path: string): void {
       );
     }
   };
-  check(read());
-  if (read() === COMMIT_OUTBOX_SCHEMA_VERSION) return;
+  const current = read();
+  check(current);
+  if (current === COMMIT_OUTBOX_SCHEMA_VERSION) return;
   db.exec("BEGIN IMMEDIATE");
   try {
     const version = read();
@@ -1038,8 +1104,10 @@ function migrate(db: DatabaseSync, path: string): void {
   }
 }
 
-function readChain(db: DatabaseSync): FenceChain | undefined {
-  const row = db.prepare(
+function readChain(
+  prepare: (sql: string) => StatementSync,
+): FenceChain | undefined {
+  const row = prepare(
     "SELECT last_fence, chain_start, floor FROM outbox_chain WHERE id = 1",
   ).get() as
     | { last_fence: number; chain_start: number; floor: number }
