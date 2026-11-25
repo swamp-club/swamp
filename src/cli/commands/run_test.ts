@@ -16,7 +16,8 @@
 //
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
+import { Command } from "@cliffy/command";
 import { join } from "@std/path";
 import { hostname } from "node:os";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
@@ -24,8 +25,22 @@ import "../../domain/models/models.ts";
 import {
   diagnoseLocalRuns,
   mergeRunHistory,
+  runCommand,
   serveRunHistoryOf,
 } from "./run.ts";
+import { RepoPath } from "../../domain/repo/repo_path.ts";
+import { RepoService } from "../../domain/repo/repo_service.ts";
+import { VERSION } from "../../infrastructure/runtime/build_info.ts";
+import { initializeV3Datastore } from "../../infrastructure/datastore_v3/v3_datastore.ts";
+import { closeV3Datastores } from "../../infrastructure/datastore_v3/v3_repo_context.ts";
+import { plantV3WriterLease } from "../../infrastructure/datastore_v3/v3_writer_lock_test_helpers.ts";
+import {
+  holdsV3WriterLock,
+  V3WriterBusyError,
+} from "../../infrastructure/datastore_v3/v3_writer_lock.ts";
+import { readWriterLeaseRecords } from "../../domain/datastore_v3/writer_lease.ts";
+import { FileSystemControlPlaneStore } from "../../infrastructure/persistence/fs_control_plane_store.ts";
+import { withMockedEnv } from "../../infrastructure/persistence/path_test_helpers.ts";
 import { ServerResponseError } from "../remote_run.ts";
 import { settleUnreadableRun } from "../../domain/workflows/orphaned_run_reaper.ts";
 import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
@@ -820,3 +835,96 @@ Deno.test(
     assertEquals(await Deno.readTextFile(path), repaired);
   }),
 );
+
+/** a v3 filesystem checkout whose datastore's writer lease serve holds */
+async function withServeHeldV3Repo(
+  fn: (repoDir: string, datastorePath: string) => Promise<void>,
+): Promise<void> {
+  const dir = await Deno.realPath(
+    await Deno.makeTempDir({ prefix: "swamp-run-doctor-v3-test-" }),
+  );
+  try {
+    const datastorePath = join(dir, "datastore");
+    await initializeV3Datastore(datastorePath, "test");
+    const repoDir = join(dir, "repo");
+    await Deno.mkdir(repoDir);
+    const homeDir = join(dir, "test-home");
+    await new RepoService(VERSION, {
+      homeDir,
+      configDir: join(homeDir, ".config", "swamp"),
+    }).init(RepoPath.create(repoDir), { tools: [] });
+    const markerPath = join(repoDir, ".swamp.yaml");
+    const marker = await Deno.readTextFile(markerPath);
+    await Deno.writeTextFile(
+      markerPath,
+      marker.trimEnd() + "\n" + [
+        "datastore:",
+        "  type: filesystem",
+        `  path: ${JSON.stringify(datastorePath)}`,
+        "  format: 3",
+      ].join("\n") + "\n",
+    );
+    // on another host, so it is alive until its TTL whatever its pid here
+    await plantV3WriterLease(datastorePath, {
+      pid: DEAD_PID,
+      hostname: `serve-host-${crypto.randomUUID()}`,
+      ttlMs: 10 * 60_000,
+      role: "serve",
+    });
+    await withMockedEnv({
+      SWAMP_SERVE_URL: undefined,
+      SWAMP_SERVER_URL: undefined,
+      SWAMP_LOCK_TIMEOUT_MS: "200",
+    }, () => fn(repoDir, datastorePath));
+  } finally {
+    await closeV3Datastores();
+    await Deno.remove(dir, { recursive: true }).catch(
+      Deno.build.os === "windows" ? () => {} : (e) => {
+        throw e;
+      },
+    );
+  }
+}
+
+async function runDoctor(args: string[]): Promise<string> {
+  const printed: string[] = [];
+  const originalLog = console.log;
+  const previousExitCode = Deno.exitCode;
+  console.log = (...data: unknown[]) => printed.push(data.join(" "));
+  try {
+    await new Command()
+      .globalOption("--json", "JSON output")
+      .command("run", runCommand)
+      .parse(["run", "doctor", ...args, "--json"]);
+  } finally {
+    console.log = originalLog;
+    Deno.exitCode = previousExitCode;
+  }
+  return printed.join("\n");
+}
+
+Deno.test("run doctor: without --fix diagnoses a v3 checkout while serve holds the writer lease, and takes no lease", async () => {
+  await withServeHeldV3Repo(async (repoDir, datastorePath) => {
+    const store = new FileSystemControlPlaneStore(datastorePath);
+    const before = await readWriterLeaseRecords(store);
+
+    const output = await runDoctor(["--repo-dir", repoDir]);
+
+    assertEquals(JSON.parse(output).totalTracked, 0);
+    assertEquals(holdsV3WriterLock(datastorePath), false);
+    const after = await readWriterLeaseRecords(store);
+    assertEquals(after.fence, before.fence);
+    assertEquals(after.record?.nonce, before.record?.nonce);
+    assertEquals(after.released, false);
+  });
+});
+
+Deno.test("run doctor: --fix still opens as a writer, and serve's lease refuses it naming --server", async () => {
+  await withServeHeldV3Repo(async (repoDir) => {
+    const error = await assertRejects(
+      () => runDoctor(["--repo-dir", repoDir, "--fix"]),
+      V3WriterBusyError,
+    );
+    assert(error.message.includes("add --server <url>"), error.message);
+  });
+});

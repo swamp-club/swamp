@@ -72,6 +72,7 @@ import {
   V3WriterBusyError,
   v3WriterFence,
   v3WriterLeaseExpiresAt,
+  v3WriterLeaseHolder,
   v3WriterLockHandle,
 } from "./v3_writer_lock.ts";
 import type { ProcessIdentity } from "../../domain/datastore_v3/process_liveness.ts";
@@ -629,6 +630,36 @@ Deno.test("holdV3Writer: a TTL asked for is the lease's, and a writer asking for
           expiresAt !== undefined && expiresAt >= before + lapse &&
             expiresAt <= after + lapse,
           `${expiresAt} within [${before + lapse}, ${after + lapse}]`,
+        );
+      } finally {
+        await closeV3Datastores();
+      }
+    });
+  }
+});
+
+Deno.test("holdV3Writer: serve's hold records serve on the lease, and a writer's does not", async () => {
+  // the whole-command hold a bucket writer takes
+  using _wholeCommand = wholeCommandHoldForTesting();
+  for (
+    const [ownerCheck, role] of [
+      [{ as: "serve", address: undefined }, "serve"],
+      [undefined, undefined],
+    ] as const
+  ) {
+    await withTempDir(async (dir) => {
+      const datastorePath = join(dir, "datastore");
+      await initializeV3Datastore(datastorePath, "test");
+      const config = { type: "filesystem" as const, path: datastorePath };
+      await holdV3Writer(
+        config,
+        join(dir, "repo"),
+        ownerCheck === undefined ? {} : { ownerCheck, retakeLost: true },
+      );
+      try {
+        assertEquals(
+          (await v3WriterLeaseHolder(datastorePath))?.record?.role,
+          role,
         );
       } finally {
         await closeV3Datastores();

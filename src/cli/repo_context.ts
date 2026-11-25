@@ -32,6 +32,7 @@ import {
   serveUpstreamCommandPath,
 } from "./serve_upstream.ts";
 import { noteRetentionCandidate } from "./retention_candidate.ts";
+import { implicitServeUrl } from "./remote_run.ts";
 import type { RetentionWatermarkRepository } from "../domain/retention/retention_watermark.ts";
 import { ControlPlaneRetentionWatermarkRepository } from "../infrastructure/persistence/control_plane_retention_watermark_repository.ts";
 import { withRunPhase } from "../domain/remote/run_progress.ts";
@@ -320,6 +321,7 @@ import {
   goServeOfflineAtLock,
   holdV3Writer,
   serveCatchUpRequestAt,
+  setV3WriterBusyServeAddress,
   v3BucketNamespacedStoreAt,
   type V3DatastoreConfig,
   v3DatastoreConfigOf,
@@ -1324,6 +1326,7 @@ export function requireInitializedRepo(
     // root
     const v3 = engine === "v3" ? await v3LocationOf(resolution) : undefined;
     if (v3 !== undefined) {
+      setV3WriterBusyServeAddress(implicitServeUrl(marker?.serverAddress));
       await holdV3Writer(v3, repoDir, {
         ...(options.v3OwnerCheck !== undefined
           ? { ownerCheck: options.v3OwnerCheck }
@@ -1607,6 +1610,7 @@ export async function requireInitializedRepoUnlocked(
   const v3 = engine === "v3" ? await v3LocationOf(resolution) : undefined;
   let v3Role: "writer" | "follower" | undefined;
   if (v3 !== undefined) {
+    setV3WriterBusyServeAddress(implicitServeUrl(marker?.serverAddress));
     v3Role = await holdV3Writer(v3, repoDir, {
       ...(options.retakeLostV3Lease === true ? { retakeLost: true } : {}),
       ...(options.followV3Lease === true ? { follow: true } : {}),

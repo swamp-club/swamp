@@ -62,7 +62,7 @@ const PINNED = [
   // Saves the evaluated definition.
   "src/cli/commands/model_evaluate.ts :: createModelEvaluateCommand",
   "src/cli/commands/model_method_run.ts :: createModelMethodRunCommand",
-  // Reaps rows and settles orphaned runs with --fix, and verifies indexes.
+  // Opens as a writer only with --fix, which reaps rows and settles orphaned runs.
   "src/cli/commands/run.ts :: runDoctorCommand",
   "src/cli/commands/serve.ts :: serveCommand",
   "src/cli/commands/vault_annotate.ts :: vaultAnnotateCommand",

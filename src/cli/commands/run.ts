@@ -485,30 +485,39 @@ const runDoctorCommand = withRemoteOptions(
         return;
       }
 
-      const { repoDir, repoContext } = await requireInitializedRepoUnlocked({
+      const fix = !!options.fix;
+      const opened = {
         repoDir: resolveRepoDir(options.repoDir),
         outputMode: ctx.outputMode,
-      });
+      };
+      // a diagnosis writes only this checkout's run index cache, so it takes no
+      // writer lease and runs while serve holds it
+      const { repoDir, repoContext } = fix
+        ? await requireInitializedRepoUnlocked(opened)
+        : await requireInitializedRepoReadOnly(opened);
 
       const tracker = RunTrackerStore.fromSwampDir(swampPath(repoDir));
 
       try {
+        const diagnose = () =>
+          diagnoseLocalRuns(
+            tracker,
+            repoContext.workflowRunRepo,
+            repoContext.workflowRepo,
+            repoContext.outputRepo,
+            localOwnerLiveness(),
+            fix,
+          );
         // in a root unit of work with no push, so the fix's saves stage into it
         // instead of reaching the hook through signalChange's fallback. Nothing
         // pushes.
-        const result = await runCommandInRootUnit(
-          repoContext,
-          { push: undefined },
-          () =>
-            diagnoseLocalRuns(
-              tracker,
-              repoContext.workflowRunRepo,
-              repoContext.workflowRepo,
-              repoContext.outputRepo,
-              localOwnerLiveness(),
-              !!options.fix,
-            ),
-        );
+        const result = fix
+          ? await runCommandInRootUnit(
+            repoContext,
+            { push: undefined },
+            diagnose,
+          )
+          : await diagnose();
 
         if (ctx.outputMode === "json") {
           writeDoctorRunsJson(
@@ -530,7 +539,7 @@ const runDoctorCommand = withRemoteOptions(
             result.active,
             result.stale,
             result.reaped,
-            !!options.fix,
+            fix,
             result.orphanedWorkflowRuns,
             result.orphanedReaped,
             result.orphanedMethodRuns,

@@ -67,6 +67,7 @@ import {
   onV3HoldRetaken,
   onV3LeaseTaken,
   refuseLiveV3LegacyWriter,
+  setV3WriterBusyServeAddress,
   tryAcquireV3WriterLock,
   V3WriterBusyError,
   v3WriterFence,
@@ -198,7 +199,7 @@ import { processRuntimeSlot } from "../runtime/process_runtime.ts";
 
 const logger = getSwampLogger(["datastore", "v3"]);
 
-export { v3ReplicatesAt };
+export { setV3WriterBusyServeAddress, v3ReplicatesAt };
 
 export type V3DatastoreConfig = V3DatastoreLocation | FilesystemDatastoreConfig;
 
@@ -1369,6 +1370,9 @@ async function takeV3WriterHold(
       },
       ...(options.retakeLost === true ? { retakeLost: true } : {}),
       ...(options.ttlMs !== undefined ? { ttlMs: options.ttlMs } : {}),
+      ...(ownerCheckOf(config, options.ownerCheck).as === "serve"
+        ? { role: "serve" as const }
+        : {}),
     });
   } catch (error) {
     if (follows && error instanceof V3WriterBusyError) {
