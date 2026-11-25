@@ -97,6 +97,7 @@ const GUARDED_PINNED = [
   "src/infrastructure/datastore_v3/v3_repo_context.ts:holdV3Writer",
   // reached only through holdV3Writer, whose callers ran the format guard
   "src/infrastructure/datastore_v3/v3_repo_context.ts:takeCommitSection (x3)",
+  "src/infrastructure/datastore_v3/v3_repo_context.ts:enterCommitSections",
   "src/infrastructure/datastore_v3/v3_repo_context.ts:outboxClean",
   // teardown of a writer that holdV3Writer let in
   "src/infrastructure/datastore_v3/v3_repo_context.ts:takeTeardownSections",
