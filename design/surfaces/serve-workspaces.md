@@ -95,9 +95,9 @@ delegations are records in the serve's own datastore, and
 Keeping each workspace a whole serve keeps that design intact. A person still
 signs in once; see [Sign-in](#sign-in).
 
-**One writer per v3 datastore.** The writer lease covers the whole datastore, so
-two serve processes cannot write two namespaces of one datastore. A hosted
-workspace has its own datastore.
+**One serve per v3 datastore.** Serve holds the datastore-wide writer lease for
+its whole life, so two serve processes cannot write two namespaces of one
+datastore. A hosted workspace has its own datastore.
 
 **The address is already keyed with its path.** `normalizeServerUrl` keeps the
 path, so `servers.json` credentials, the datastore owner claim and a team-mode
