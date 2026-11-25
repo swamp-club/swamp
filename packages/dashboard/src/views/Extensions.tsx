@@ -50,14 +50,7 @@ export function Extensions() {
           {state === "loading"
             ? <Skeleton width={92} height={28} radius={20} />
             : (
-              <div
-                className="health-pill"
-                style={{
-                  background: "var(--surface)",
-                  color: "var(--text-2)",
-                  border: "1px solid var(--border)",
-                }}
-              >
+              <div className="health-pill page-count-pill">
                 {formatCount(extensions.length)} installed
               </div>
             )}
@@ -93,13 +86,11 @@ export function Extensions() {
               <tbody>
                 {extensions.map((ext) => (
                   <tr key={ext.name}>
-                    <td style={{ fontWeight: 500 }}>{ext.name}</td>
+                    <td className="extensions-name">{ext.name}</td>
                     <td>
                       <span className="cron-badge">{ext.version}</span>
                     </td>
-                    <td
-                      style={{ fontSize: "0.82rem", color: "var(--text-3)" }}
-                    >
+                    <td className="extensions-channel">
                       {ext.channel ?? "stable"}
                     </td>
                     <td>

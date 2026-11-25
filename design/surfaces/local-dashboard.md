@@ -59,6 +59,7 @@ syncing. Actions run as CLI commands instead (see [Actions](#actions)).
 | `/api/local/workspaces` | hub | `{ workspaces: [{name, path}], switchable }` for the picker |
 | `/w/<workspace>/` (WebSocket) | child, through the hub | Only the reads the dashboard makes; four actions are taken by the hub, anything else refused |
 | `/w/<workspace>/apps/<launch-id>/…` | child, through the hub | An app's files. The launch id replaces the hub token, and only a running child answers. See [apps](./apps.md) |
+| `/w/<workspace>/dashboard-theme[/…]` | child, through the hub | The repo's [dashboard themes](./dashboard-themes.md): index, one theme, assets |
 | `/w/<workspace>/auth/info` | child | `{ mode: "none", local: true }` |
 | `/w/<workspace>/api/v1/health[/stream]` | child | A local snapshot: scheduling off, no workers or webhooks |
 | `/w/<workspace>/auth/dashboard/session` | child | 401: there is no login |

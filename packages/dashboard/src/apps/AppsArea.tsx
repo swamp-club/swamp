@@ -25,6 +25,7 @@ import { useDocumentVisible } from "../client/run_activity.ts";
 import { EmptyState } from "../components/EmptyState.tsx";
 import { Logo } from "../components/Logo.tsx";
 import { ThemeToggle } from "../components/ThemeToggle.tsx";
+import { ThemePicker } from "../theme/ThemePicker.tsx";
 import { AppFrame } from "./AppFrame.tsx";
 import { useApps } from "./useApps.ts";
 import {
@@ -86,6 +87,7 @@ export function AppsArea({ onLogout }: { onLogout: () => void }) {
         </a>
         {current && <span className="apps-current">{current.title}</span>}
         <nav className="apps-header-links">
+          <ThemePicker placement="header" />
           <ThemeToggle placement="header" />
           {showsLogout(local, authMode) && (
             <button type="button" className="link-button" onClick={onLogout}>

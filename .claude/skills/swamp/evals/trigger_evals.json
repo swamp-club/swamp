@@ -333,5 +333,15 @@
     "query": "Roll an openssl update out to our fleet with one canary host first, stop if more than 10% fail, and let me approve the plan",
     "should_trigger": true,
     "note": "workflow domain — fanOut rollout, budget and approval gates"
+  },
+  {
+    "query": "I want to customize the theme of the swamp dashboard our serve is running",
+    "should_trigger": true,
+    "note": "serve domain — dashboard theme"
+  },
+  {
+    "query": "Rebrand the swamp dashboard with our org's logo, colours and font",
+    "should_trigger": true,
+    "note": "serve domain — white-label"
   }
 ]

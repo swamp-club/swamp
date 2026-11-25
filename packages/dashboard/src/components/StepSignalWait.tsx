@@ -56,14 +56,9 @@ export function StepSignalWait({ status, wait }: StepSignalWaitProps) {
   const waiting = status === "waiting";
   return (
     <div
-      style={{
-        marginTop: 6,
-        padding: "6px 10px",
-        borderRadius: 4,
-        fontSize: "0.78rem",
-        background: wait.receipt ? "var(--success-bg)" : "var(--warning-bg)",
-        color: wait.receipt ? "var(--success)" : "var(--warning)",
-      }}
+      className={wait.receipt
+        ? "step-signal-wait is-received"
+        : "step-signal-wait"}
     >
       {wait.receipt
         ? (

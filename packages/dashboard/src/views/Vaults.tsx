@@ -67,14 +67,7 @@ export function Vaults() {
           {state === "loading"
             ? <Skeleton width={78} height={28} radius={20} />
             : (
-              <div
-                className="health-pill"
-                style={{
-                  background: "var(--surface)",
-                  color: "var(--text-2)",
-                  border: "1px solid var(--border)",
-                }}
-              >
+              <div className="health-pill page-count-pill">
                 {pluralize(vaults.length, "vault")}
               </div>
             )}
@@ -98,7 +91,7 @@ export function Vaults() {
           </EmptyState>
         </div>
       )}
-      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      <div className="vaults-list">
         {state === "ready" &&
           vaults.map((v) => (
             <div key={v.id} className="panel">
@@ -111,15 +104,9 @@ export function Vaults() {
                 <span className="panel-title">
                   <span
                     aria-hidden="true"
-                    style={{
-                      fontSize: "0.7rem",
-                      color: "var(--text-3)",
-                      transition: "transform 0.15s",
-                      display: "inline-block",
-                      transform: expanded === v.name
-                        ? "rotate(90deg)"
-                        : "rotate(0deg)",
-                    }}
+                    className={`vault-chevron${
+                      expanded === v.name ? " is-expanded" : ""
+                    }`}
                   >
                     &#9654;
                   </span>
@@ -155,7 +142,7 @@ function VaultExpanded({ vaultName }: { vaultName: string }) {
   const auditState = loadState(auditReq, () => auditEntries.length === 0);
 
   return (
-    <div style={{ borderTop: "1px solid var(--border)" }}>
+    <div className="vault-expanded">
       {/* Config */}
       <SectionHeader title="Configuration" />
       {descState === "loading" && (
@@ -176,15 +163,11 @@ function VaultExpanded({ vaultName }: { vaultName: string }) {
               k !== "name" && k !== "type" && k !== "id" && k !== "version"
             )
             .map(([key, val]) => (
-              <div
-                className="sys-row"
-                style={{ padding: "4px 18px" }}
-                key={key}
-              >
-                <span className="sys-key" style={{ fontSize: "0.78rem" }}>
+              <div className="sys-row vault-config-row" key={key}>
+                <span className="sys-key vault-config-key">
                   {key}
                 </span>
-                <span className="sys-val" style={{ fontSize: "0.75rem" }}>
+                <span className="sys-val vault-config-val">
                   {typeof val === "object" ? JSON.stringify(val) : String(val)}
                 </span>
               </div>
@@ -211,47 +194,22 @@ function VaultExpanded({ vaultName }: { vaultName: string }) {
         />
       )}
       {keysState === "empty" && (
-        <div
-          style={{
-            padding: "8px 18px 14px",
-            fontSize: "0.82rem",
-            color: "var(--text-3)",
-          }}
-        >
+        <div className="vault-section-empty">
           No keys stored yet. Add one with{" "}
           <code>swamp vault put {vaultName} &lt;key&gt;</code>.
         </div>
       )}
       {keysState === "ready" && (
-        <div style={{ padding: "0 0 4px" }}>
+        <div className="vault-keys">
           {keys.map((k) => {
             const keyName = typeof k === "string" ? k : k.key;
             return (
-              <div
-                key={keyName}
-                style={{
-                  padding: "6px 18px",
-                  borderBottom: "1px solid var(--border-subtle)",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                  fontSize: "0.82rem",
-                }}
-              >
-                <span
-                  className="mono"
-                  style={{ fontWeight: 500 }}
-                >
+              <div key={keyName} className="vault-key-row">
+                <span className="mono vault-key-name">
                   {keyName}
                 </span>
                 {typeof k === "object" && k.labels && (
-                  <div
-                    style={{
-                      display: "flex",
-                      gap: 4,
-                      marginLeft: "auto",
-                    }}
-                  >
+                  <div className="vault-key-labels">
                     {Object.entries(k.labels).map(([lk, lv]) => (
                       <span className="cron-badge" key={lk}>
                         {lk}: {lv}
@@ -284,13 +242,7 @@ function VaultExpanded({ vaultName }: { vaultName: string }) {
         />
       )}
       {auditState === "empty" && (
-        <div
-          style={{
-            padding: "8px 18px 14px",
-            fontSize: "0.82rem",
-            color: "var(--text-3)",
-          }}
-        >
+        <div className="vault-section-empty">
           No recent reads or writes of this vault.
         </div>
       )}
@@ -299,38 +251,22 @@ function VaultExpanded({ vaultName }: { vaultName: string }) {
           {auditEntries.map((entry, i) => (
             <div
               key={i}
-              style={{
-                padding: "4px 18px",
-                display: "flex",
-                alignItems: "center",
-                gap: 10,
-                fontSize: "0.78rem",
-                borderBottom: i < auditEntries.length - 1
-                  ? "1px solid var(--border-subtle)"
-                  : "none",
-              }}
+              className={`vault-audit-row${
+                i < auditEntries.length - 1 ? "" : " is-last"
+              }`}
             >
               <span className="cron-badge">{entry.action}</span>
-              <span
-                className="mono"
-                style={{ fontWeight: 500 }}
-              >
+              <span className="mono vault-audit-key">
                 {entry.key ?? "—"}
               </span>
-              <span
-                style={{
-                  marginLeft: "auto",
-                  color: "var(--text-3)",
-                  fontSize: "0.72rem",
-                }}
-              >
+              <span className="vault-audit-time">
                 {entry.timestamp ? formatRelativeTime(entry.timestamp) : ""}
               </span>
             </div>
           ))}
         </>
       )}
-      <div style={{ height: 8 }} />
+      <div className="vault-expanded-end" />
     </div>
   );
 }
@@ -340,16 +276,7 @@ function SectionHeader(
 ) {
   return (
     <div
-      style={{
-        padding: "10px 18px 6px",
-        fontSize: "0.7rem",
-        fontFamily: "'JetBrains Mono', monospace",
-        fontWeight: 500,
-        letterSpacing: "0.08em",
-        textTransform: "uppercase",
-        color: "var(--text-3)",
-        borderTop: border ? "1px solid var(--border-subtle)" : undefined,
-      }}
+      className={`vault-section-header${border ? " has-border" : ""}`}
     >
       {title}
     </div>

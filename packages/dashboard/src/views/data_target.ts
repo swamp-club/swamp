@@ -19,6 +19,7 @@
 
 import type { RequestErrorInfo } from "../client/stream.ts";
 import { reportDataName } from "./report_name.ts";
+import { brandName } from "../theme/custom_theme.ts";
 
 /** A data artifact reference as recorded on a workflow run. */
 export interface ArtifactRef {
@@ -231,7 +232,7 @@ export function shortRunId(runId: string): string {
 
 /** The browser tab title for an item. */
 export function documentTitle(item: string, context: string): string {
-  return `${item} · ${context} · Swamp`;
+  return `${item} · ${context} · ${brandName()}`;
 }
 
 /** The raw bytes to download for an item's content. */

@@ -86,14 +86,7 @@ export function Data() {
           {state === "loading"
             ? <Skeleton width={96} height={28} radius={20} />
             : (
-              <div
-                className="health-pill"
-                style={{
-                  background: "var(--surface)",
-                  color: "var(--text-2)",
-                  border: "1px solid var(--border)",
-                }}
-              >
+              <div className="health-pill data-count-pill">
                 {pluralize(allItems.length, "artifact")}
               </div>
             )}
@@ -150,7 +143,7 @@ export function Data() {
                 <tbody>
                   {items.map((item, i) => (
                     <tr key={`${item.name}-${item.modelName}-${page}-${i}`}>
-                      <td style={{ fontWeight: 500 }}>
+                      <td className="data-name-cell">
                         {(() => {
                           const to = dataRowLink(item);
                           return to
@@ -160,10 +153,7 @@ export function Data() {
                       </td>
                       {item.modelName && isWorkflowOwned(item)
                         ? (
-                          <td
-                            className="mono"
-                            style={{ fontSize: "0.78rem" }}
-                          >
+                          <td className="mono data-source-cell">
                             <RouteLink
                               to={{
                                 view: "workflows",
@@ -179,12 +169,7 @@ export function Data() {
                         )
                         : (
                           <td
-                            className="mono"
-                            style={{
-                              fontSize: "0.78rem",
-                              color: "var(--accent)",
-                              cursor: "pointer",
-                            }}
+                            className="mono data-source-cell data-model-link"
                             onClick={() =>
                               item.modelName &&
                               handleModelChange(item.modelName)}
@@ -192,30 +177,13 @@ export function Data() {
                             {item.modelName ?? "—"}
                           </td>
                         )}
-                      <td
-                        style={{
-                          fontSize: "0.82rem",
-                          color: "var(--text-3)",
-                        }}
-                      >
+                      <td className="data-type-cell">
                         {item.type ?? "—"}
                       </td>
-                      <td
-                        className="mono"
-                        style={{
-                          fontSize: "0.75rem",
-                          color: "var(--text-3)",
-                        }}
-                      >
+                      <td className="mono data-content-type-cell">
                         {item.contentType ?? "—"}
                       </td>
-                      <td
-                        className="mono"
-                        style={{
-                          fontSize: "0.78rem",
-                          color: "var(--text-3)",
-                        }}
-                      >
+                      <td className="mono data-version-cell">
                         {item.version ?? "—"}
                       </td>
                     </tr>
@@ -225,38 +193,26 @@ export function Data() {
             </div>
 
             {totalPages > 1 && (
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  padding: "10px 18px",
-                  borderTop: "1px solid var(--border)",
-                  fontSize: "0.78rem",
-                  color: "var(--text-3)",
-                }}
-              >
+              <div className="data-pager">
                 <span>
                   Showing {page * PAGE_SIZE + 1}–
                   {Math.min((page + 1) * PAGE_SIZE, allItems.length)} of{" "}
                   {formatCount(allItems.length)}
                 </span>
-                <div style={{ display: "flex", gap: 4 }}>
+                <div className="data-pager-buttons">
                   <button
                     type="button"
-                    className="btn-sm"
+                    className="btn-sm data-pager-button"
                     disabled={page === 0}
                     onClick={() => setPage(page - 1)}
-                    style={{ opacity: page === 0 ? 0.4 : 1 }}
                   >
                     Previous
                   </button>
                   <button
                     type="button"
-                    className="btn-sm"
+                    className="btn-sm data-pager-button"
                     disabled={page >= totalPages - 1}
                     onClick={() => setPage(page + 1)}
-                    style={{ opacity: page >= totalPages - 1 ? 0.4 : 1 }}
                   >
                     Next
                   </button>

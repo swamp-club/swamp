@@ -35,7 +35,7 @@
   display: block;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: calc(8px * var(--radius-scale));
   overflow: hidden;
 }
 .act-feed-head {
@@ -118,11 +118,11 @@
 
 .act-cat {
   justify-self: start;
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 0.65rem;
   font-weight: 500;
   padding: 1px 6px;
-  border-radius: 4px;
+  border-radius: calc(4px * var(--radius-scale));
   white-space: nowrap;
 }
 .act-tone-info {
@@ -173,7 +173,7 @@
 }
 .act-field dd {
   margin: 0;
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   color: var(--text-2);
   overflow-wrap: anywhere;
 }
@@ -181,8 +181,8 @@
   grid-column: 1 / -1;
   margin-top: 4px;
   padding: 6px 10px;
-  border-radius: 6px;
-  font-family: "JetBrains Mono", monospace;
+  border-radius: calc(6px * var(--radius-scale));
+  font-family: var(--font-mono);
   color: var(--text-2);
 }
 .act-decision-allow {
@@ -255,16 +255,16 @@
 .act-state {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: calc(10px * var(--radius-scale));
   color: var(--text-2);
   font-size: 0.86rem;
   line-height: 1.55;
 }
 .act-state code {
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 0.8em;
   padding: 1px 5px;
-  border-radius: 4px;
+  border-radius: calc(4px * var(--radius-scale));
   background: var(--surface-inset);
   color: var(--text-1);
 }
@@ -290,7 +290,7 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 0.66rem;
   font-weight: 500;
   text-transform: uppercase;
@@ -327,7 +327,7 @@
   font-size: 0.8rem;
   font-weight: 600;
   padding: 6px 14px;
-  border-radius: 6px;
+  border-radius: calc(6px * var(--radius-scale));
   border: 1px solid var(--border);
   background: var(--surface);
   color: var(--text-1);
@@ -386,7 +386,7 @@
   flex-shrink: 0;
   width: 32px;
   height: 32px;
-  border-radius: 8px;
+  border-radius: calc(8px * var(--radius-scale));
   background: var(--accent-subtle);
   color: var(--accent);
 }
@@ -411,7 +411,7 @@
 .act-snippet {
   margin-top: 10px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: calc(8px * var(--radius-scale));
   background: var(--surface-inset);
   overflow: hidden;
 }
@@ -429,7 +429,7 @@
   font-size: 0.72rem;
   font-weight: 600;
   padding: 3px 10px;
-  border-radius: 5px;
+  border-radius: calc(5px * var(--radius-scale));
   border: 1px solid var(--border);
   background: var(--surface);
   color: var(--text-1);
@@ -447,7 +447,7 @@
   margin: 0;
   padding: 12px 14px;
   overflow-x: auto;
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 0.74rem;
   line-height: 1.6;
   color: var(--text-1);
@@ -466,7 +466,7 @@
   font-size: 0.84rem;
   color: var(--accent);
   text-decoration: none;
-  border-radius: 4px;
+  border-radius: calc(4px * var(--radius-scale));
 }
 .act-doc-link:hover {
   text-decoration: underline;

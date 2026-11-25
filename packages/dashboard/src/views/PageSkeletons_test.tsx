@@ -103,7 +103,7 @@ Deno.test("VaultSectionSkeleton: rows for an expanded vault section", () => {
     <VaultSectionSkeleton label="Loading keys" rows={2} />,
     "Loading keys",
   );
-  assertEquals(html.split("padding:8px 18px").length - 1, 2);
+  assertEquals(html.split('class="skel-vault-row"').length - 1, 2);
 });
 
 Deno.test("TablePanelSkeleton: System's tables keep their titles and headers", () => {

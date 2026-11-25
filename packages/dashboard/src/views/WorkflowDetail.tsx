@@ -108,7 +108,7 @@ export function WorkflowDetail(
   return (
     <>
       <div className="page-header">
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <div className="page-header-lead">
           <button type="button" className="back-button" onClick={onBack}>
             &larr; Back
           </button>
@@ -117,27 +117,24 @@ export function WorkflowDetail(
         </div>
       </div>
 
-      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      <div className="workflow-detail-body">
         {/* Stats row */}
         {runsPending && <SkeletonStats count={3} />}
         {total > 0 && (
-          <div
-            className="stats-grid"
-            style={{ gridTemplateColumns: "repeat(3, 1fr)" }}
-          >
+          <div className="stats-grid workflow-stats">
             <div className="stat-card">
               <div className="stat-label">Total Runs</div>
               <div className="stat-value">{formatCount(total)}</div>
             </div>
             <div className="stat-card">
               <div className="stat-label">Succeeded</div>
-              <div className="stat-value" style={{ color: "var(--success)" }}>
+              <div className="stat-value stat-value-success">
                 {formatCount(succeeded)}
               </div>
             </div>
             <div className="stat-card">
               <div className="stat-label">Failed</div>
-              <div className="stat-value" style={{ color: "var(--danger)" }}>
+              <div className="stat-value stat-value-danger">
                 {formatCount(failed)}
               </div>
             </div>
@@ -164,61 +161,24 @@ export function WorkflowDetail(
             <div>
               {(workflow.jobs ?? []).map((job) => (
                 <div key={job.name}>
-                  <div
-                    style={{
-                      padding: "8px 18px",
-                      background: "var(--surface-inset)",
-                      fontSize: "0.78rem",
-                      fontWeight: 600,
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 6,
-                    }}
-                  >
+                  <div className="workflow-job-header">
                     Job: {job.name}
-                    <span
-                      className="mono"
-                      style={{
-                        fontSize: "0.7rem",
-                        color: "var(--text-3)",
-                        fontWeight: 400,
-                        marginLeft: "auto",
-                      }}
-                    >
+                    <span className="mono workflow-job-count">
                       {job.steps?.length ?? 0} steps
                     </span>
                   </div>
                   {(job.steps ?? []).map((step) => (
-                    <div
-                      key={step.name}
-                      style={{
-                        padding: "8px 18px 8px 36px",
-                        borderBottom: "1px solid var(--border-subtle)",
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 8,
-                        fontSize: "0.82rem",
-                      }}
-                    >
-                      <span style={{ fontWeight: 500 }}>{step.name}</span>
+                    <div key={step.name} className="workflow-step-row">
+                      <span className="workflow-step-name">{step.name}</span>
                       {step.task?.modelIdOrName && (
-                        <span
-                          className="mono"
-                          style={{
-                            fontSize: "0.72rem",
-                            color: "var(--text-3)",
-                          }}
-                        >
+                        <span className="mono workflow-step-model">
                           {step.task.modelIdOrName}
                           {step.task.methodName
                             ? `.${step.task.methodName}`
                             : ""}
                         </span>
                       )}
-                      <span
-                        className="cron-badge"
-                        style={{ marginLeft: "auto" }}
-                      >
+                      <span className="cron-badge workflow-step-type">
                         {step.task?.type ?? "unknown"}
                       </span>
                     </div>
@@ -322,10 +282,7 @@ export function WorkflowDetail(
             <div className="panel-header">
               <div className="panel-title">Definition</div>
               {workflow.path && (
-                <span
-                  className="mono"
-                  style={{ fontSize: "0.7rem", color: "var(--text-3)" }}
-                >
+                <span className="mono workflow-path">
                   {workflow.path}
                 </span>
               )}

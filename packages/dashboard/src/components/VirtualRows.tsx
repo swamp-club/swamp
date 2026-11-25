@@ -93,13 +93,8 @@ export function VirtualRows(
       <div
         key={i}
         role="listitem"
-        style={{
-          position: "absolute",
-          top: i * rowHeight,
-          left: 0,
-          right: 0,
-          height: rowHeight,
-        }}
+        className="virtual-row"
+        style={{ top: i * rowHeight, height: rowHeight }}
       >
         {renderRow(i)}
       </div>,
@@ -112,10 +107,13 @@ export function VirtualRows(
       role="list"
       aria-label={label}
       aria-rowcount={count}
-      style={{ height, overflowY: "auto", position: "relative" }}
+      style={{ height }}
       onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
     >
-      <div style={{ height: count * rowHeight, position: "relative" }}>
+      <div
+        className="virtual-rows-content"
+        style={{ height: count * rowHeight }}
+      >
         {rows}
       </div>
     </div>

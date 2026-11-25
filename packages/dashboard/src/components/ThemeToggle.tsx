@@ -72,42 +72,17 @@ export function ThemeToggle(
 
   return (
     <div
-      className="theme-toggle"
-      style={{
-        display: "flex",
-        background: header ? "var(--bg)" : "rgba(255,255,255,0.06)",
-        border: header ? "1px solid var(--border)" : undefined,
-        borderRadius: 6,
-        padding: 2,
-        margin: header ? 0 : "0 8px 16px",
-        minWidth: header ? 96 : undefined,
-      }}
+      className={`theme-toggle${header ? " theme-toggle--header" : ""}`}
     >
       {buttons.map(({ t, label }) => (
         <button
           type="button"
           key={t}
+          className="theme-toggle-button"
           onClick={() => setTheme(t)}
           title={t}
           aria-label={`${t} theme`}
           aria-pressed={theme === t}
-          style={{
-            flex: 1,
-            padding: "5px 0",
-            border: "none",
-            background: theme === t
-              ? header ? "var(--surface)" : "rgba(255,255,255,0.1)"
-              : "transparent",
-            color: theme === t
-              ? header ? "var(--text)" : "var(--sidebar-text-active)"
-              : header
-              ? "var(--text-3)"
-              : "var(--sidebar-text)",
-            cursor: "pointer",
-            borderRadius: 4,
-            fontSize: "0.85rem",
-            lineHeight: 1,
-          }}
         >
           {label}
         </button>

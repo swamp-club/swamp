@@ -129,6 +129,8 @@ export interface HealthSnapshotWebhookRouteFiles {
 }
 
 export interface HealthSnapshot {
+  /** changes when the repo's dashboard themes change, so pages refetch them */
+  readonly themeVersion?: string;
   readonly instanceId: string;
   readonly deploymentMode: string;
   readonly remoteOnly: boolean;

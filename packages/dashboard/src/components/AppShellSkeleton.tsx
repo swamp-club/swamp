@@ -19,8 +19,8 @@
 
 /** @jsxRuntime automatic */
 /** @jsxImportSource react */
-import type { CSSProperties } from "react";
 import { Logo } from "./Logo.tsx";
+import { useBrandName } from "../theme/useCustomTheme.ts";
 import {
   Skeleton,
   SkeletonChart,
@@ -33,8 +33,8 @@ import { parseCollapsed, SIDEBAR_COLLAPSED_KEY } from "./sidebar_state.ts";
 // sidebar with its real sections, and a page of placeholders shaped like
 // the Overview (header, stat cards, chart, panels). It uses the app
 // shell's own classes, so the collapsed rail and the mobile drawer
-// behave exactly as they will once connected, and inline styles only, so
-// it renders before any view's stylesheet has loaded.
+// behave exactly as they will once connected, and only the stylesheets
+// main.tsx loads, so it renders before any view's stylesheet has loaded.
 
 const NAV: Array<[string, string[]]> = [
   ["Overview", ["Dashboard"]],
@@ -42,10 +42,6 @@ const NAV: Array<[string, string[]]> = [
   ["Operations", ["Schedules", "Webhooks", "Approvals & Signals", "Activity"]],
   ["System", ["Data", "Vaults", "Extensions", "System"]],
 ];
-
-// Placeholders on the always-dark sidebar use its own hover tone, so they
-// read in both themes.
-const ON_SIDEBAR: CSSProperties = { backgroundColor: "var(--sidebar-hover)" };
 
 function readCollapsed(): boolean {
   try {
@@ -69,96 +65,40 @@ export function AppShellSkeleton(
     collapsed?: boolean;
   },
 ) {
+  const brand = useBrandName();
   const isCollapsed = collapsed ?? readCollapsed();
   return (
     <div className={`app${isCollapsed ? " sidebar-collapsed" : ""}`}>
       <nav
-        className="sidebar"
+        className="sidebar sidebar-frame sidebar-skeleton"
         aria-hidden="true"
-        style={{
-          background: "var(--sidebar-bg)",
-          borderRight: "1px solid rgba(255,255,255,0.06)",
-          display: "flex",
-          flexDirection: "column",
-          overflow: "hidden",
-        }}
       >
-        <div
-          className="sidebar-header"
-          style={{ display: "flex", alignItems: "center", gap: 10 }}
-        >
+        <div className="sidebar-header">
           <Logo size="md" />
-          <span
-            className="sidebar-brand-text"
-            style={{
-              fontWeight: 600,
-              fontSize: "0.82rem",
-              color: "var(--sidebar-text)",
-              letterSpacing: "0.02em",
-            }}
-          >
-            Swamp
-          </span>
+          <span className="sidebar-brand-text">{brand}</span>
         </div>
         {NAV.map(([section, items]) => (
-          <div key={section} style={{ padding: "0 8px", marginBottom: 24 }}>
-            <div
-              className="sidebar-section-label"
-              style={{
-                fontFamily: "'JetBrains Mono', monospace",
-                fontSize: "0.6rem",
-                fontWeight: 500,
-                letterSpacing: "0.1em",
-                textTransform: "uppercase",
-                color: "var(--sidebar-text)",
-                padding: "0 12px 8px",
-              }}
-            >
-              {section}
-            </div>
+          <div key={section} className="sidebar-section">
+            <div className="sidebar-section-label">{section}</div>
             {items.map((item) => (
-              <div
-                key={item}
-                className="nav-item"
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 10,
-                  padding: "8px 12px",
-                  color: "var(--sidebar-text)",
-                  fontSize: "0.88rem",
-                  fontWeight: 500,
-                  opacity: 0.55,
-                }}
-              >
+              <div key={item} className="nav-item sidebar-skeleton-item">
                 <Skeleton
                   width={18}
                   height={18}
                   radius={5}
-                  style={ON_SIDEBAR}
+                  className="skel-on-sidebar"
                 />
                 <span className="nav-label">{item}</span>
               </div>
             ))}
           </div>
         ))}
-        <div
-          className="sidebar-footer"
-          style={{
-            marginTop: "auto",
-            padding: 16,
-            borderTop: "1px solid rgba(255,255,255,0.06)",
-            display: "flex",
-            flexDirection: "column",
-            gap: 8,
-          }}
-        >
-          <Skeleton width="70%" height={10} style={ON_SIDEBAR} />
+        <div className="sidebar-footer sidebar-skeleton-footer">
+          <Skeleton width="70%" height={10} className="skel-on-sidebar" />
           <Skeleton
             width="50%"
             height={8}
-            style={ON_SIDEBAR}
-            className="sidebar-health-text"
+            className="sidebar-health-text skel-on-sidebar"
           />
         </div>
       </nav>
@@ -175,14 +115,7 @@ export function AppShellSkeleton(
           <div className="page-header">
             <Skeleton width={160} height={26} radius={6} />
             <div className="header-right">
-              <span
-                style={{
-                  fontSize: "0.8rem",
-                  color: "var(--text-3)",
-                }}
-              >
-                {label}…
-              </span>
+              <span className="app-shell-skeleton-status">{label}…</span>
             </div>
           </div>
           <SkeletonStats count={4} />
@@ -206,14 +139,7 @@ export function AppShellSkeleton(
                   (_, i) => (
                     <div className="skel-list-row" key={i}>
                       <Skeleton width={8} height={8} radius="50%" />
-                      <span
-                        style={{
-                          display: "flex",
-                          flexDirection: "column",
-                          gap: 6,
-                          flex: 1,
-                        }}
-                      >
+                      <span className="app-shell-skeleton-lines">
                         <Skeleton width={widthAt(i + p)} height={11} />
                         <Skeleton width="30%" height={9} />
                       </span>

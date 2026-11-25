@@ -121,7 +121,7 @@ export function System(
         />
       )}
       {clusterState === "ready" && (
-        <div className="panel" style={{ marginBottom: 14 }}>
+        <div className="panel system-section">
           <div className="panel-header">
             <div className="panel-title">
               Cluster Instances{" "}
@@ -140,39 +140,30 @@ export function System(
               <tbody>
                 {instances.map((inst) => (
                   <tr key={inst.instanceId}>
-                    <td style={{ fontWeight: 500 }}>
+                    <td className="system-cluster-host">
                       {inst.hostname ?? inst.instanceId.slice(0, 8)}
                     </td>
                     <td>
                       <StatusPill status={inst.status} />
                     </td>
-                    <td
-                      className="mono"
-                      style={{ fontSize: "0.78rem", color: "var(--text-2)" }}
-                    >
+                    <td className="mono system-cluster-muted">
                       {formatUptime(inst.startedAt)}
                     </td>
-                    <td className="mono" style={{ fontSize: "0.75rem" }}>
+                    <td className="mono system-cluster-count">
                       {inst.health?.activeRuns?.length ?? "—"}
                     </td>
-                    <td
-                      className="mono"
-                      style={{ fontSize: "0.78rem", color: "var(--text-2)" }}
-                    >
+                    <td className="mono system-cluster-muted">
                       {inst.health?.metrics?.throughputPerMinute?.toFixed(1) ??
                         "—"}/min
                     </td>
-                    <td
-                      className="mono"
-                      style={{ fontSize: "0.78rem", color: "var(--text-2)" }}
-                    >
+                    <td className="mono system-cluster-muted">
                       {inst.health?.metrics?.latency?.p95
                         ? `${
                           (inst.health.metrics.latency.p95 / 1000).toFixed(1)
                         }s`
                         : "—"}
                     </td>
-                    <td className="mono" style={{ fontSize: "0.75rem" }}>
+                    <td className="mono system-cluster-count">
                       {inst.health?.workers?.length ?? "—"}
                     </td>
                   </tr>
@@ -184,7 +175,7 @@ export function System(
       )}
 
       {workersState === "loading" && (
-        <div style={{ marginBottom: 14 }}>
+        <div className="system-section">
           <KeyValuePanelSkeleton
             title="Workers"
             keys={WORKER_SUMMARY_KEYS}
@@ -200,7 +191,7 @@ export function System(
         />
       )}
       {workersState === "empty" && (
-        <div className="panel" style={{ marginBottom: 14 }}>
+        <div className="panel system-section">
           <div className="panel-header">
             <div className="panel-title">
               Workers <span className="panel-count">0</span>
@@ -213,7 +204,7 @@ export function System(
         </div>
       )}
       {workersState === "ready" && (
-        <div className="panel" style={{ marginBottom: 14 }}>
+        <div className="panel system-section">
           <div className="panel-header">
             <div className="panel-title">
               Workers <span className="panel-count">{workers.length}</span>
@@ -222,18 +213,16 @@ export function System(
               Open the worker map
             </RouteLink>
           </div>
-          <div style={{ padding: 0 }}>
+          <div className="system-kv-list">
             {WORKER_SUMMARY_KEYS.map((key) => (
-              <div
-                className="sys-row"
-                style={{ padding: "8px 18px" }}
-                key={key}
-              >
+              <div className="sys-row system-kv-row" key={key}>
                 <span className="sys-key">{key}</span>
                 <span className="sys-val mono">
                   {key === "Slots in use"
                     ? slotSummary(workers)
-                    : workers.filter((w) => w.status === key.toLowerCase())
+                    : workers.filter((w) =>
+                      w.status === key.toLowerCase()
+                    )
                       .length}
                 </span>
               </div>
@@ -243,7 +232,7 @@ export function System(
       )}
 
       {healthState === "denied" && (
-        <div className="panel" style={{ marginBottom: 14 }}>
+        <div className="panel system-section">
           <HealthUnavailable
             state={healthState}
             subject="deployment and component health"
@@ -252,7 +241,7 @@ export function System(
       )}
 
       {/* Deployment + Datastore side by side */}
-      <div className="panels-grid" style={{ marginBottom: 14 }}>
+      <div className="panels-grid system-section">
         {healthState === "loading" && <DeploymentPanelSkeleton />}
         {health && (
           <div className="panel">
@@ -266,31 +255,30 @@ export function System(
                   : "cancelled"}
               />
             </div>
-            <div style={{ padding: 0 }}>
-              <div className="sys-row" style={{ padding: "8px 18px" }}>
+            <div className="system-kv-list">
+              <div className="sys-row system-kv-row">
                 <span className="sys-key">Mode</span>
                 <span
-                  className="sys-val"
-                  style={{
-                    color: health.deploymentMode === "durable"
-                      ? "var(--success)"
+                  className={`sys-val system-deploy-mode${
+                    health.deploymentMode === "durable"
+                      ? " is-durable"
                       : health.deploymentMode === "local"
-                      ? "var(--text-3)"
-                      : "var(--warning)",
-                  }}
+                      ? " is-local"
+                      : ""
+                  }`}
                 >
                   {health.deploymentMode}
                 </span>
               </div>
-              <div className="sys-row" style={{ padding: "8px 18px" }}>
+              <div className="sys-row system-kv-row">
                 <span className="sys-key">Instances</span>
                 <span className="sys-val">{instances.length || 1}</span>
               </div>
-              <div className="sys-row" style={{ padding: "8px 18px" }}>
+              <div className="sys-row system-kv-row">
                 <span className="sys-key">Workers</span>
                 <span className="sys-val">{workers.length}</span>
               </div>
-              <div className="sys-row" style={{ padding: "8px 18px" }}>
+              <div className="sys-row system-kv-row">
                 <span className="sys-key">Uptime</span>
                 <span className="sys-val">
                   {formatUptime(
@@ -299,7 +287,7 @@ export function System(
                 </span>
               </div>
               {(!health.components || health.components.length === 0) && (
-                <div className="sys-row" style={{ padding: "8px 18px" }}>
+                <div className="sys-row system-kv-row">
                   <span className="sys-key">components</span>
                   <span className="sys-val">
                     none visible to this token (admins see component health)
@@ -308,22 +296,12 @@ export function System(
               )}
               {health.components && health.components.length > 0 &&
                 health.components.map((c) => (
-                  <div
-                    className="sys-row"
-                    style={{ padding: "8px 18px" }}
-                    key={c.name}
-                  >
+                  <div className="sys-row system-kv-row" key={c.name}>
                     <span className="sys-key">{c.name}</span>
                     <span className={`sys-val ${c.healthy ? "ok" : "warn"}`}>
                       {c.healthy ? "healthy" : c.message ?? "unhealthy"}
                       {c.latencyMs !== undefined && c.latencyMs > 0 && (
-                        <span
-                          style={{
-                            color: "var(--text-3)",
-                            fontWeight: 400,
-                            marginLeft: 6,
-                          }}
-                        >
+                        <span className="system-component-latency">
                           {c.latencyMs}ms
                         </span>
                       )}
@@ -359,7 +337,7 @@ export function System(
             <div className="panel-header">
               <div className="panel-title">Datastore</div>
             </div>
-            <div style={{ padding: 0 }}>
+            <div className="system-kv-list">
               {Object.entries(
                 extractObject<Record<string, unknown>>(datastoreData) ?? {},
               ).map(([key, val]) => (
@@ -367,31 +345,13 @@ export function System(
                   {Array.isArray(val)
                     ? (
                       <>
-                        <div
-                          className="sys-row"
-                          style={{
-                            padding: "8px 18px",
-                            borderBottom: "none",
-                            paddingBottom: 0,
-                          }}
-                        >
+                        <div className="sys-row system-kv-row system-kv-list-head">
                           <span className="sys-key">{key}</span>
-                          <span
-                            className="sys-val"
-                            style={{ color: "var(--text-3)" }}
-                          >
+                          <span className="sys-val system-kv-list-count">
                             {val.length}
                           </span>
                         </div>
-                        <div
-                          style={{
-                            display: "flex",
-                            flexWrap: "wrap",
-                            gap: 4,
-                            padding: "2px 18px 8px",
-                            borderBottom: "1px solid var(--border-subtle)",
-                          }}
-                        >
+                        <div className="system-kv-list-items">
                           {val.map((item, i) => (
                             <span className="cron-badge" key={i}>
                               {String(item)}
@@ -401,10 +361,7 @@ export function System(
                       </>
                     )
                     : (
-                      <div
-                        className="sys-row"
-                        style={{ padding: "8px 18px" }}
-                      >
+                      <div className="sys-row system-kv-row">
                         <span className="sys-key">{key}</span>
                         <span className="sys-val">
                           {val === true
@@ -442,13 +399,9 @@ export function System(
           <div className="panel-header">
             <div className="panel-title">Serve Configuration</div>
           </div>
-          <div style={{ padding: 0 }}>
+          <div className="system-kv-list">
             {configRows.map((row) => (
-              <div
-                className="sys-row"
-                style={{ padding: "8px 18px" }}
-                key={row.label}
-              >
+              <div className="sys-row system-kv-row" key={row.label}>
                 <span className="sys-key">{row.label}</span>
                 <span className={`sys-val ${row.ok ? "ok" : ""}`}>
                   {row.value}

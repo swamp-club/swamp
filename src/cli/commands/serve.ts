@@ -97,6 +97,10 @@ import {
   serveDashboardRoute,
 } from "../../serve/dashboard_assets.ts";
 import {
+  DashboardThemeStore,
+  serveDashboardTheme,
+} from "../../serve/dashboard_theme.ts";
+import {
   validateNoAuthHttpRequest,
   validateWebSocketOrigin,
 } from "../../serve/origin.ts";
@@ -6650,6 +6654,7 @@ export const serveCommand = new Command()
 
     const dashboardEnabled = merged.dashboard;
     let dashboardDistDir = dashboardEnabled ? getDashboardDistDir() : null;
+    const dashboardThemes = new DashboardThemeStore(resolvedRepoDir);
 
     if (dashboardEnabled && !isJson) {
       const scheme = tlsEnabled ? "https" : "http";
@@ -8050,12 +8055,16 @@ export const serveCommand = new Command()
             );
 
             return createHealthStreamResponse({
-              collect: async (signal) =>
-                await healthSnapshotFor(
+              collect: async (signal) => ({
+                ...await healthSnapshotFor(
                   await healthCollector.collect(signal),
                   reader,
                   healthResources,
                 ),
+                ...(dashboardDistDir
+                  ? { themeVersion: await dashboardThemes.version() }
+                  : {}),
+              }),
               intervalParam: url.searchParams.get("interval"),
               lastEventId: req.headers.get("Last-Event-ID"),
               serverSignal: listenerAc.signal,
@@ -8454,6 +8463,12 @@ export const serveCommand = new Command()
           return new Response(JSON.stringify(authInfo), {
             headers: { "content-type": "application/json" },
           });
+        }
+
+        // public like /auth/info: the login page wears the theme
+        if (dashboardDistDir) {
+          const theme = await serveDashboardTheme(req, dashboardThemes);
+          if (theme) return theme;
         }
 
         // Readiness endpoint — returns 200 only after full startup and

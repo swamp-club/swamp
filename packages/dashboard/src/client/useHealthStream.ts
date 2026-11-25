@@ -20,6 +20,7 @@
 import { serverPath, withLocalToken } from "./workspace_path.ts";
 import { useEffect, useState } from "react";
 import { useSwamp } from "./SwampProvider.tsx";
+import { noteThemeVersion } from "../theme/custom_theme.ts";
 import {
   HEALTH_RETRY_MS,
   healthRetryDelayMs,
@@ -101,6 +102,8 @@ interface ComponentHealth {
 }
 
 export interface HealthSnapshot {
+  /** changes when the repo's dashboard themes change */
+  themeVersion?: string;
   instanceId: string;
   deploymentMode: string;
   uptimeMs: number;
@@ -241,7 +244,10 @@ export function useHealthStream(
         headers: withLocalToken(headers),
         signal: abort.signal,
         onOpen: () => setDenied(false),
-        onSnapshot: setHealth,
+        onSnapshot: (snapshot) => {
+          setHealth(snapshot);
+          noteThemeVersion(snapshot.themeVersion);
+        },
       });
       if (cancelled) return;
       if (end.kind === "denied") {

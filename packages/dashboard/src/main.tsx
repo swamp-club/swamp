@@ -36,6 +36,11 @@ import "@fontsource/plus-jakarta-sans/700.css";
 import "@fontsource/jetbrains-mono/400.css";
 import "@fontsource/jetbrains-mono/500.css";
 import "./styles.css";
+import "./styles/inline-shell.css";
+import "./styles/inline-pages.css";
+import "./styles/inline-system.css";
+import "./styles/inline-misc.css";
+import { startCustomTheme } from "./theme/custom_theme.ts";
 
 // `swamp dashboard` lands on a workspace's dashboard with the start token in
 // the fragment: keep it, as the start page would, so "All workspaces" works.
@@ -48,6 +53,8 @@ if (PAGE_WORKSPACE !== null) {
     history.replaceState(null, "", location.pathname + location.search);
   }
 }
+
+startCustomTheme();
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

@@ -217,7 +217,7 @@ export function Workers(
         </div>
       </div>
 
-      <div className="panel" style={{ marginBottom: 14, padding: "12px 16px" }}>
+      <div className="panel workers-toolbar-panel">
         <div className="fleet-toolbar">
           <div className="fleet-field">
             <span className="fleet-field-label" id="fleet-group-label">
@@ -260,7 +260,7 @@ export function Workers(
               Status
             </span>
             <div
-              style={{ display: "flex", flexWrap: "wrap", gap: 6 }}
+              className="workers-status-chips"
               role="group"
               aria-labelledby="fleet-status-label"
             >
@@ -308,8 +308,7 @@ export function Workers(
           </div>
         </div>
         <div
-          className="fleet-key"
-          style={{ marginTop: 10 }}
+          className="fleet-key workers-key"
           id="fleet-selector-result"
         >
           {selecting && (
@@ -338,8 +337,7 @@ export function Workers(
       {fleet.loading && (
         <SkeletonRegion
           label="Loading workers"
-          className="panel"
-          style={{ padding: 16, marginBottom: 14, display: "block" }}
+          className="panel workers-skeleton-panel"
         >
           <Skeleton width="100%" height={380} radius={8} />
         </SkeletonRegion>
@@ -352,7 +350,7 @@ export function Workers(
         />
       )}
       {!fleet.loading && !fleet.error && fleet.workers.length === 0 && (
-        <div className="panel" style={{ marginBottom: 14 }}>
+        <div className="panel workers-empty-panel">
           <EmptyState title="No remote workers">
             Steps run on this serve. Workers that join with{" "}
             <code>swamp worker connect</code> show here, grouped by fleet.
@@ -360,8 +358,8 @@ export function Workers(
         </div>
       )}
       {!fleet.loading && !fleet.error && fleet.workers.length > 0 && (
-        <div className="fleet-layout" style={{ marginBottom: 14 }}>
-          <div className="panel fleet-map" style={{ padding: 8 }}>
+        <div className="fleet-layout workers-fleet-layout">
+          <div className="panel fleet-map workers-map-panel">
             <HostMap
               workers={visible}
               slots={slots}
@@ -387,9 +385,9 @@ export function Workers(
       )}
 
       {fleet.workers.length > 0 && (
-        <details className="panel" style={{ padding: "10px 16px" }}>
-          <summary style={{ cursor: "pointer" }}>Worker table</summary>
-          <div className="table-wrap" style={{ marginTop: 8 }}>
+        <details className="panel workers-table-panel">
+          <summary className="workers-table-summary">Worker table</summary>
+          <div className="table-wrap workers-table-wrap">
             <table className="data-table">
               <thead>
                 <tr>
@@ -439,14 +437,13 @@ function WorkerDetail(
   const ageS = Math.max(0, Math.round((now - Date.parse(since)) / 1000));
   return (
     <aside
-      className="panel fleet-detail"
-      style={{ padding: 16 }}
+      className="panel fleet-detail worker-detail"
       aria-label={`Worker ${worker.name}`}
     >
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+      <div className="worker-detail-head">
         <div>
-          <div className="mono" style={{ fontWeight: 600 }}>{worker.name}</div>
-          <div style={{ fontSize: "0.75rem", color: "var(--text-3)" }}>
+          <div className="mono worker-detail-name">{worker.name}</div>
+          <div className="worker-detail-meta">
             enrolled via token “{worker.tokenName}” ·{" "}
             {groupValue(worker, groupBy)}
           </div>
@@ -487,15 +484,7 @@ function WorkerDetail(
           <span className="fleet-label" key={k}>{k}={v}</span>
         ))}
       </div>
-      <div
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          gap: 4,
-          borderTop: "1px solid var(--border-subtle)",
-          paddingTop: 8,
-        }}
-      >
+      <div className="worker-detail-slots">
         {slots.map((slot, i) => (
           <div className="fleet-slot-row" key={i}>
             <span className={`fleet-swatch hm-slot-${slot.state}`} />
