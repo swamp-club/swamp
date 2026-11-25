@@ -616,3 +616,29 @@ Deno.test("runOnce: the keep window starts again after the record pairs", async 
   assertEquals(await service.runOnce(), 0);
   assertEquals(h.closes, []);
 });
+
+Deno.test("runOnce: a transient read failure does not restart the keep window", async () => {
+  const stale = await pairedToken("old-secret", { createdAt: MINT_1 });
+  let failRead = false;
+  const h = harness(
+    [{ name: "tok", createdAt: MINT_2 }],
+    () =>
+      failRead
+        ? Promise.reject(new Error("datastore offline"))
+        : Promise.resolve(stale),
+  );
+  let now = NOW;
+  const s = withSecret(h, () => Promise.resolve("current-secret"));
+  const service = new TokenSessionRevalidationService({
+    ...s.deps,
+    now: () => now,
+  });
+  await service.runOnce();
+  now += STALE_COPY_KEEP_MS / 2;
+  failRead = true;
+  await service.runOnce();
+  failRead = false;
+  now += STALE_COPY_KEEP_MS / 2;
+  await service.runOnce();
+  assertEquals(h.closes.map((c) => c.options.cause), ["rotated"]);
+});

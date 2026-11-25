@@ -271,6 +271,10 @@ export class TokenSessionRevalidationService {
             "Could not revalidate sessions for token {name}, keeping them until the next pass: {error}",
             { name, error: message },
           );
+          // a skipped read must not restart a keep window
+          for (const createdAt of mints) {
+            stillStale.add(JSON.stringify([name, createdAt]));
+          }
           continue;
         }
       }

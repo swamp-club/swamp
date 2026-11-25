@@ -430,6 +430,8 @@ export class WorkerGateway {
   /** instanceUuid to the mint it refused, so a pass never offers it again */
   readonly #rotationRefusals = new Map<string, string>();
   #publishQueued = false;
+  /** worker name to the instance last warned about, so a busy datastore does not repeat it every pull */
+  readonly #warnedLiveElsewhere = new Map<string, string>();
   #lastReassertAtMs: number | undefined;
 
   constructor(options: WorkerGatewayOptions) {
@@ -614,14 +616,16 @@ export class WorkerGateway {
     for (const entry of [...this.#workers.values()]) {
       if (entry.channel === null) continue;
       const name = entry.name;
-      const live = this.#enrollmentOf(entry);
+      const instanceUuid = entry.instanceUuid;
       try {
         await this.#recordWorkerWrite("worker_reassert", name, async () => {
           const current = this.#workers.get(name);
           if (
             current === undefined || current.channel === null ||
-            current.instanceUuid !== live.instanceUuid
+            current.instanceUuid !== instanceUuid
           ) return;
+          // read in the worker's turn, so a re-stamped mint is the one recorded
+          const live = this.#enrollmentOf(current);
           const decision = await reassert(name, {
             status: current.status,
             activeDispatchIds: [...current.activeDispatchIds],
@@ -635,7 +639,11 @@ export class WorkerGateway {
               "Worker {worker} record was restored from its live connection",
               { worker: name },
             );
-          } else if (decision === "live_elsewhere") {
+          } else if (
+            decision === "live_elsewhere" &&
+            this.#warnedLiveElsewhere.get(name) !== current.instanceUuid
+          ) {
+            this.#warnedLiveElsewhere.set(name, current.instanceUuid);
             logger.warn(
               "Worker {worker} is recorded as live on another serve as well as connected here; leaving that record",
               { worker: name },
@@ -1263,7 +1271,7 @@ export class WorkerGateway {
               }),
           );
         } catch (error) {
-          // refused unsent, so the step waits for its queue timeout instead of failing
+          // refused unsent, so the step goes to another worker or waits, never fails here
           logger.warn(
             "Failed to record {worker} busy; refusing the dispatch: {error}",
             {
