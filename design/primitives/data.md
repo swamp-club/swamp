@@ -365,26 +365,37 @@ the hard form and removes every version.
 **Load guard.** Every path that decodes stored content into memory (`fromRow`,
 `fromData` and `fromResourceHandle` in `data_record_mapper.ts`, CEL
 `model.<name>.resource` in `model_resolver.ts`, `readResource`, the workflow
-step output reader, typed step results and `data get`) first asks the
-repository's `ResourceLoadGuard` (`resource_load_guard.ts`) whether the item
-fits: it refuses when the heap in use plus three times the item's size (one
-copy decoded, one to two parsed) would pass V8's heap limit. It checks the
-recorded `size` before reading, and the byte length after reading when the size
-is unrecorded; the raw bytes live outside the V8 heap. Items under 64 MiB are
-never refused. A refusal is `ResourceTooLargeToLoadError`, a user error naming
-the item and its size and pointing at `swamp data query ... --sort size:desc`,
-so a run ends with a diagnosis instead of a V8 abort. The heap figures go to the
-log only, as serve relays the error to remote callers. `refusalFor` also refuses
-an item past `maxDecodableBytes` (V8's maximum string length; `TextDecoder`
-refuses more bytes than that) and returns the refusal rather than throwing it.
-The step-end record (`fromResourceHandle`) and the workflow step output reader
-use it, so a step's resource too large to load is marked on its record and
-refused where an expression reads it, never decoded into empty attributes; the
-`delete` method warns and writes its deletion marker without the last known
-state. A query records a refusal
-against its row, as it does a binary-content violation, and raises it only if
-the caller's `include` accepts that row; a row the caller may not read is
-dropped without being named.
+step output reader, typed step results, `data get`, `behavior output data` and
+report get) first asks the repository's `ResourceLoadGuard`
+(`resource_load_guard.ts`) whether the item fits: it refuses when the heap in
+use plus three times the item's size (one copy decoded, one to two parsed) would
+pass V8's heap limit. It checks the recorded `size` before reading, and the byte
+length after reading when the size is unrecorded; the raw bytes live outside the
+V8 heap. After the read, content the path will parse as JSON is also priced by
+its structure (`assertParsable`, `parseRefusalFor`): the bytes plus V8's cost of
+each object, array and array element, counted in one pass that skips string
+contents, and the larger of that and the three-times estimate decides. JSON
+dense in small objects or arrays, which parses to many times its size, is then
+refused rather than aborting V8. Only what `JSON.parse` can build is priced:
+content that does not start with an object or array costs nothing, and the scan
+ends with the first top-level value, since the parse fails on whatever follows
+it, so NDJSON or log text is not charged for every brace in it. Braces and
+commas inside strings cost nothing, and strings are not priced, so content of
+many unique short strings can still exceed the estimate. Items under 64 MiB are
+never refused or scanned. A refusal is `ResourceTooLargeToLoadError`, a user
+error naming the item and its size and pointing at
+`swamp data query ... --sort size:desc`, so a run ends with a diagnosis instead
+of a V8 abort. The heap figures go to the log only, as serve relays the error to
+remote callers. `refusalFor` also refuses an item past `maxDecodableBytes` (V8's
+maximum string length; `TextDecoder` refuses more bytes than that) and returns
+the refusal rather than throwing it. The step-end record (`fromResourceHandle`)
+and the workflow step output reader use it, so a step's resource too large to
+load is marked on its record and refused where an expression reads it, never
+decoded into empty attributes; the `delete` method warns and writes its deletion
+marker without the last known state. A query records a refusal against its row,
+as it does a binary-content violation, and raises it only if the caller's
+`include` accepts that row; a row the caller may not read is dropped without
+being named.
 
 ## Versioning and lifecycle
 

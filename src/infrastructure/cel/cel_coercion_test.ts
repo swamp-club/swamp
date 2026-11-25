@@ -19,7 +19,7 @@
 
 import { assertEquals, assertStrictEquals } from "@std/assert";
 import { Environment, Optional } from "cel-js";
-import { coerceBigInts } from "./cel_coercion.ts";
+import { coerceBigInts, coerceBigIntsShared } from "./cel_coercion.ts";
 
 const env = new Environment({ unlistedVariablesAreDyn: true });
 
@@ -93,4 +93,58 @@ Deno.test("coerceBigInts: without keep the result equals the result with a keep 
     a: [1, 2, "1s"],
     b: { c: "1970-01-01T00:00:00.000Z", d: 2 },
   });
+});
+
+Deno.test("coerceBigIntsShared: a plain value with nothing to convert comes back by identity", () => {
+  const value = { a: [1, "x", { b: null }], c: { d: true } };
+  assertStrictEquals(coerceBigIntsShared(value), value);
+  const list = [{ a: 1 }, [2, 3]];
+  assertStrictEquals(coerceBigIntsShared(list), list);
+  const bare = Object.assign(Object.create(null), { a: 1 });
+  assertStrictEquals(coerceBigIntsShared(bare), bare);
+});
+
+Deno.test("coerceBigIntsShared: converts as coerceBigInts does, copying only the path to a change", () => {
+  const untouched = { keep: ["same"] };
+  const value = { untouched, changed: { n: 7n, list: [1, 2n] } };
+  const result = coerceBigIntsShared(value) as Record<string, unknown>;
+  assertEquals(result, coerceBigInts(value));
+  assertStrictEquals(result.untouched, untouched);
+  assertEquals(result === value, false);
+  assertEquals(
+    coerceBigIntsShared(env.evaluate("timestamp('2026-01-02T03:04:05Z')", {})),
+    "2026-01-02T03:04:05.000Z",
+  );
+  assertEquals(coerceBigIntsShared(Optional.of(1n)), 1);
+  assertEquals(coerceBigIntsShared([new Uint8Array([104, 105])]), ["aGk="]);
+});
+
+Deno.test("coerceBigIntsShared: an object that is not plain is copied as coerceBigInts copies it", () => {
+  class Point {
+    constructor(readonly x: number) {}
+  }
+  const point = new Point(1);
+  const result = coerceBigIntsShared({ point }) as Record<string, unknown>;
+  assertEquals(result.point === point, false);
+  assertEquals(JSON.stringify(result), JSON.stringify({ point: { x: 1 } }));
+});
+
+Deno.test("coerceBigIntsShared: keep is asked first and returns by identity", () => {
+  const kept = [1n];
+  const keep = (value: object) => value === kept;
+  const result = coerceBigIntsShared({ kept, n: 2n }, keep) as Record<
+    string,
+    unknown
+  >;
+  assertStrictEquals(result.kept, kept);
+  assertEquals(result.n, 2);
+});
+
+Deno.test("coerceBigIntsShared: nests as deep as coerceBigInts does", () => {
+  let value: unknown = 1n;
+  for (let i = 0; i < 1000; i++) value = { next: value };
+  assertEquals(
+    JSON.stringify(coerceBigIntsShared(value)),
+    JSON.stringify(coerceBigInts(value)),
+  );
 });

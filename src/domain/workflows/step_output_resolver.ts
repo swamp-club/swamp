@@ -450,7 +450,7 @@ export function createDataRepositoryAttributeReader(
     }
     tally.add("reads_succeeded");
     tally.add("content_bytes", content.length);
-    const lengthRefusal = loadGuard.refusalFor(item, content.length);
+    const lengthRefusal = loadGuard.parseRefusalFor(item, content);
     if (lengthRefusal) throw lengthRefusal;
     let parsed: unknown;
     try {

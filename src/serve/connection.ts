@@ -822,6 +822,7 @@ const ModelOutputDataRequestSchema = z.object({
     name: z.string().optional(),
     field: z.string().optional(),
     version: z.number().optional(),
+    inParts: z.boolean().optional(),
   }),
 });
 

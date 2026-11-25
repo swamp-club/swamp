@@ -80,6 +80,8 @@ interface Fixture {
   definitionRepo: YamlDefinitionRepository;
   big: Definition;
   write: (name: string, bytes: number) => Promise<unknown>;
+  /** empty strings: few bytes each, a slot each once parsed */
+  writeDense: (name: string, items: number) => Promise<unknown>;
 }
 
 // a heap of 1000 bytes refuses any item past a third of it
@@ -144,7 +146,17 @@ resourceSize:
     );
     const write = (name: string, bytes: number) =>
       writeResource("blob", name, { items: ["x".repeat(bytes)] });
-    await fn({ repoDir, dataRepo, catalog, definitionRepo, big, write });
+    const writeDense = (name: string, items: number) =>
+      writeResource("blob", name, { items: Array(items).fill("") });
+    await fn({
+      repoDir,
+      dataRepo,
+      catalog,
+      definitionRepo,
+      big,
+      write,
+      writeDense,
+    });
   } finally {
     catalog.close();
     if (Deno.build.os === "windows") {
@@ -385,4 +397,87 @@ Deno.test("resource size: a step that wrote a resource past the text-length limi
       200,
     ),
   );
+});
+
+// about 300 bytes each: three times that fits the 1000-byte heap, the dense
+// one's parsed slots do not
+const DENSE_ITEMS = 100;
+const SPARSE_BYTES = 290;
+
+Deno.test("resource size: a dense resource the byte factor would load is refused on its parsed structure, a sparse one of its size loads", async () => {
+  await withFixture(async (f) => {
+    await f.writeDense("dense", DENSE_ITEMS);
+    await f.write("sparse", SPARSE_BYTES);
+    const sizes = await new DataQueryService(f.catalog, f.dataRepo).query(
+      'modelName == "big" && specName == "blob"',
+      { select: "size", sort: parseQuerySort("size:desc") },
+    ) as number[];
+    for (const size of sizes) {
+      assert(size * 3 <= 1000, `size ${size} must pass the byte factor`);
+    }
+    const dqs = new DataQueryService(f.catalog, f.dataRepo);
+
+    await assertRejects(
+      () =>
+        dqs.query('modelName == "big" && name == "dense"', {
+          select: "content",
+        }),
+      ResourceTooLargeToLoadError,
+      "big/dense",
+    );
+    const sparse = await dqs.query('modelName == "big" && name == "sparse"', {
+      select: "content",
+    }) as { items: string[] }[];
+    assertEquals(sparse[0].items[0].length, SPARSE_BYTES);
+  });
+});
+
+Deno.test("resource size: a CEL reference to a dense resource fails on its parsed structure", async () => {
+  await withFixture(async (f) => {
+    await f.writeDense("dense", DENSE_ITEMS);
+    const reader = Definition.create({
+      name: "reader",
+      globalArguments: {
+        n: '${{ size(model.big.resource.blob["dense"].attributes.items) }}',
+      },
+    });
+    await f.definitionRepo.save(type, reader);
+    const evalService = new ExpressionEvaluationService(
+      f.definitionRepo,
+      f.repoDir,
+      { dataRepo: f.dataRepo },
+    );
+    const error = await assertRejects(() =>
+      evalService.evaluateDefinition(reader, type, new RunSensitiveValues())
+    );
+    assertInstanceOf(error, Error);
+    assertStringIncludes(error.message, "Cannot load big/dense");
+  });
+});
+
+Deno.test("resource size: a workflow step output read refuses a dense resource on its parsed structure", async () => {
+  await withFixture(async (f) => {
+    const handle = await f.writeDense("dense", DENSE_ITEMS) as {
+      dataId: string;
+      name: string;
+      version: number;
+    };
+    const read = createDataRepositoryAttributeReader(f.dataRepo);
+    await assertRejects(
+      () =>
+        read({
+          dataId: handle.dataId,
+          modelType: type.normalized,
+          modelId: f.big.id,
+          modelName: "big",
+          specName: "blob",
+          contentType: "application/json",
+          name: handle.name,
+          version: handle.version,
+          tags: {},
+        }),
+      ResourceTooLargeToLoadError,
+      "big/dense@v1",
+    );
+  });
 });

@@ -92,6 +92,55 @@ function coerceInt(value: bigint): number | bigint {
   return value;
 }
 
+function isPlainRecord(value: object): boolean {
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+/**
+ * coerceBigInts for a value no caller mutates afterwards: a plain object or
+ * array whose members all come back unchanged is returned as is, not rebuilt
+ */
+export function coerceBigIntsShared(
+  value: unknown,
+  keep?: (value: object) => boolean,
+): unknown {
+  if (value === null || typeof value !== "object") {
+    return coerceBigInts(value, keep);
+  }
+  if (keep?.(value) === true) return value;
+  if (Array.isArray(value)) {
+    let copy: unknown[] | undefined;
+    for (let i = 0; i < value.length; i++) {
+      const item = coerceBigIntsShared(value[i], keep);
+      if (copy === undefined && item !== value[i]) copy = value.slice(0, i);
+      if (copy !== undefined) copy.push(item);
+    }
+    return copy ?? value;
+  }
+  if (!isPlainRecord(value)) return coerceBigInts(value, keep);
+  const entries = Object.entries(value);
+  let changed: unknown[] | undefined;
+  for (let i = 0; i < entries.length; i++) {
+    const item = coerceBigIntsShared(entries[i][1], keep);
+    if (changed === undefined && item !== entries[i][1]) {
+      changed = entries.slice(0, i).map(([, v]) => v);
+    }
+    if (changed !== undefined) changed.push(item);
+  }
+  if (changed === undefined) return value;
+  const result: Record<string, unknown> = Object.create(null);
+  for (let i = 0; i < entries.length; i++) {
+    Object.defineProperty(result, entries[i][0], {
+      value: changed[i],
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+  }
+  return result;
+}
+
 /**
  * ints beyond MAX_SAFE_INTEGER stay bigint; an object keep answers true for is
  * returned as is, decided first, so a Secret or adapted record view reaches the

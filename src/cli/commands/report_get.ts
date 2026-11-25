@@ -153,6 +153,7 @@ export const reportGetCommand = withRemoteOptions(
       ),
     findDataByVersion: (type, modelId, dataName, version) =>
       repoContext.unifiedDataRepo.findByName(type, modelId, dataName, version),
+    loadGuard: repoContext.unifiedDataRepo.loadGuard,
     getContent: (type, modelId, dataName, version) =>
       repoContext.unifiedDataRepo.getContent(
         type,

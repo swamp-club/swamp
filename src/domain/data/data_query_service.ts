@@ -19,7 +19,7 @@
 
 import { getLogger } from "@logtape/logtape";
 import { Environment } from "cel-js";
-import { coerceBigInts } from "../../infrastructure/cel/cel_evaluator.ts";
+import { coerceBigIntsShared } from "../../infrastructure/cel/cel_evaluator.ts";
 import type {
   CatalogRow,
   CatalogSortOrder,
@@ -1739,7 +1739,7 @@ export class DataQueryService {
           } else if (r.contentType === "application/json") {
             selectCtx["content"] = r.attributes;
           }
-          return coerceBigInts(selectParsed(selectCtx));
+          return coerceBigIntsShared(selectParsed(selectCtx));
         } catch (error) {
           // A refusal the view raised fails the query, never a null.
           if (error instanceof QueryViewRefusal) throw error;

@@ -62,6 +62,10 @@ import type {
 } from "../../domain/datastore_v3/run_artifact_resolution.ts";
 import { resolverEngine } from "../../domain/datastore/datastore_path_resolver.ts";
 import { outputArtifactCheck } from "../data/run_artifact_check.ts";
+import {
+  type ResourceLoadGuard,
+  resourceLoadGuardOf,
+} from "../../domain/data/resource_load_guard.ts";
 export interface ModelOutputDataData {
   outputId: string;
   methodName: string;
@@ -101,6 +105,7 @@ interface DataMeta {
   name: string;
   version: number;
   contentType: string;
+  size?: number;
 }
 
 export interface ModelOutputDataDeps
@@ -121,6 +126,7 @@ export interface ModelOutputDataDeps
     name: string,
     version?: number,
   ) => Promise<Uint8Array | null>;
+  loadGuard?: ResourceLoadGuard;
   /**
    * on a v3 datastore, whether the version an output's ref names is still the
    * content that output produced, since history compaction can leave a later
@@ -203,6 +209,7 @@ export function createModelOutputDataDeps(
       dataRepo.findByName(type, definitionId, name, version),
     getContent: (type, definitionId, name, version) =>
       dataRepo.getContent(type, definitionId, name, version),
+    loadGuard: dataRepo.loadGuard,
     ...(resolverEngine(datastoreResolver) === "v3"
       ? {
         checkArtifact: outputArtifactCheck(dataRepo),
@@ -359,12 +366,27 @@ export async function* modelOutputData(
         return;
       }
 
+      const loadGuard = resourceLoadGuardOf(deps);
+      const item = {
+        modelType: type.normalized,
+        modelName: definition.name,
+        dataName: dataArtifact.name,
+        version,
+      };
+      const sizeRefusal = loadGuard.refusalFor(item, data.size ?? 0);
+      if (sizeRefusal) throw sizeRefusal;
       const content = await deps.getContent(
         type,
         definition.id,
         dataArtifact.name,
         version,
       );
+      if (content) {
+        const refusal = data.contentType === "application/json"
+          ? loadGuard.parseRefusalFor(item, content)
+          : loadGuard.refusalFor(item, content.length);
+        if (refusal) throw refusal;
+      }
 
       if (!content) {
         yield {

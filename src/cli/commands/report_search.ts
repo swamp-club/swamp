@@ -101,6 +101,7 @@ function buildGetDeps(repoContext: RepositoryContext): ReportGetDeps {
       repoContext.unifiedDataRepo.findByName(type, modelId, dataName, version),
     getContent: (type, modelId, dataName, version) =>
       repoContext.unifiedDataRepo.getContent(type, modelId, dataName, version),
+    loadGuard: repoContext.unifiedDataRepo.loadGuard,
     lookupDefinition: (idOrName) =>
       findDefinitionByIdOrName(repoContext.definitionRepo, idOrName),
     lookupDefinitionById: (type, id) =>

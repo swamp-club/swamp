@@ -206,7 +206,13 @@ export function fromRow(
       row.data_name,
       row.version,
     );
-    if (rawBytes !== null) loadGuard.assertLoadable(item, rawBytes.length);
+    if (rawBytes !== null) {
+      if (loadAttributes && isJsonMediaType(row.content_type)) {
+        loadGuard.assertParsable(item, rawBytes);
+      } else {
+        loadGuard.assertLoadable(item, rawBytes.length);
+      }
+    }
     if (rawBytes === null) {
       onMissingContent?.();
     } else if (
@@ -313,7 +319,13 @@ export async function fromData(
       resolvedName,
       resolvedVersion,
     );
-    if (rawBytes !== null) loadGuard.assertLoadable(item, rawBytes.length);
+    if (rawBytes !== null) {
+      if (isJsonMediaType(data.contentType)) {
+        loadGuard.assertParsable(item, rawBytes);
+      } else {
+        loadGuard.assertLoadable(item, rawBytes.length);
+      }
+    }
   }
 
   const resolvedModelName = options.modelName ?? data.tags["modelName"] ?? "";
@@ -408,7 +420,7 @@ export async function fromResourceHandle(
       } catch {
         // unreadable content leaves the attributes empty
       }
-      if (content) refusal = loadGuard.refusalFor(item, content.length);
+      if (content) refusal = loadGuard.parseRefusalFor(item, content);
       if (content && !refusal) {
         try {
           attributes = JSON.parse(new TextDecoder().decode(content)) as Record<

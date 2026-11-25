@@ -4328,6 +4328,26 @@ Deno.test("DataQueryService.query: select content never downloads a body include
   }
 });
 
+Deno.test("DataQueryService.query: select content hands back the parsed JSON itself, not a rebuilt copy", async () => {
+  const { service, cleanup } = setupHydrationTest([
+    { name: "a", body: { rows: [{ id: 1 }, { id: 2 }], meta: { n: 3 } } },
+  ]);
+  try {
+    const [content] = await service.query('modelName == "ingest"', {
+      select: "content",
+    }) as Record<string, unknown>[];
+    assertEquals(content, { rows: [{ id: 1 }, { id: 2 }], meta: { n: 3 } });
+    // a rebuilt copy has no prototype; the parsed object keeps its own
+    assertEquals(Object.getPrototypeOf(content), Object.prototype);
+    assertEquals(
+      Object.getPrototypeOf(content.meta as Record<string, unknown>),
+      Object.prototype,
+    );
+  } finally {
+    cleanup();
+  }
+});
+
 Deno.test("DataQueryService.query: an attribute predicate matches a lazily-synced row", async () => {
   const { service, cleanup } = setupHydrationTest([
     { name: "a", body: { value: 1 } },

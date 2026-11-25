@@ -49,25 +49,8 @@ function makeCompletedData() {
 }
 
 Deno.test("LogModelOutputDataRenderer - completed with object outputs JSON", async () => {
-  const logs: string[] = [];
-  const originalLog = console.log;
-  console.log = (msg: string) => logs.push(msg);
-
-  try {
-    const renderer = createModelOutputDataRenderer("log");
-    await consumeStream(
-      toStream([
-        { kind: "resolving" },
-        { kind: "completed", data: makeCompletedData() },
-      ]),
-      renderer.handlers(),
-    );
-    assertEquals(logs.length, 1);
-    const parsed = JSON.parse(logs[0]);
-    assertEquals(parsed.key, "value");
-  } finally {
-    console.log = originalLog;
-  }
+  const output = await captureLog("log", makeCompletedData());
+  assertEquals(JSON.parse(output).key, "value");
 });
 
 Deno.test("LogModelOutputDataRenderer - completed with string outputs text", async () => {
@@ -94,26 +77,9 @@ Deno.test("LogModelOutputDataRenderer - completed with string outputs text", asy
 });
 
 Deno.test("JsonModelOutputDataRenderer - completed outputs JSON", async () => {
-  const logs: string[] = [];
-  const originalLog = console.log;
-  console.log = (msg: string) => logs.push(msg);
-
-  try {
-    const renderer = createModelOutputDataRenderer("json");
-    await consumeStream(
-      toStream([
-        { kind: "resolving" },
-        { kind: "completed", data: makeCompletedData() },
-      ]),
-      renderer.handlers(),
-    );
-    assertEquals(logs.length, 1);
-    const parsed = JSON.parse(logs[0]);
-    assertEquals(parsed.outputId, "abc-123");
-    assertEquals(parsed.dataName, "result");
-  } finally {
-    console.log = originalLog;
-  }
+  const parsed = JSON.parse(await captureLog("json", makeCompletedData()));
+  assertEquals(parsed.outputId, "abc-123");
+  assertEquals(parsed.dataName, "result");
 });
 
 Deno.test("ModelOutputDataRenderer - error throws UserError", () => {
@@ -130,15 +96,24 @@ Deno.test("ModelOutputDataRenderer - error throws UserError", () => {
   );
 });
 
+// console.log lines and sink writes land in one ordered stream
 async function captureLog(
   mode: "log" | "json",
   data: ModelOutputDataData,
+  writes: number[] = [],
 ): Promise<string> {
-  const logs: string[] = [];
+  const pieces: string[] = [];
+  const decoder = new TextDecoder();
   const originalLog = console.log;
-  console.log = (msg: string) => logs.push(msg);
+  console.log = (msg: string) => pieces.push(msg + "\n");
   try {
-    const renderer = createModelOutputDataRenderer(mode);
+    const renderer = createModelOutputDataRenderer(mode, {
+      sink: (bytes) => {
+        writes.push(bytes.length);
+        pieces.push(decoder.decode(bytes));
+        return Promise.resolve(bytes.length);
+      },
+    });
     await consumeStream(
       toStream([{ kind: "completed", data }]),
       renderer.handlers(),
@@ -146,7 +121,7 @@ async function captureLog(
   } finally {
     console.log = originalLog;
   }
-  return stripAnsiCode(logs.join("\n"));
+  return stripAnsiCode(pieces.join("")).replace(/\n$/, "");
 }
 
 Deno.test("LogModelOutputDataRenderer - binary content prints a notice, not the content", async () => {
@@ -179,4 +154,31 @@ Deno.test("JsonModelOutputDataRenderer - binary content passes through as base64
   const parsed = JSON.parse(output);
   assertEquals(parsed.contentEncoding, "base64");
   assertEquals(parsed.data, "iVBORw0KGgo=");
+});
+
+const largeValue = {
+  rows: Array.from({ length: 120_000 }, (_, i) => ({ id: i, v: `row-${i}` })),
+};
+
+Deno.test("JsonModelOutputDataRenderer: writes the bytes of JSON.stringify(value, null, 2), in bounded pieces", async () => {
+  const data = { ...makeCompletedData(), data: largeValue };
+  const writes: number[] = [];
+  const output = await captureLog("json", data, writes);
+  const expected = JSON.stringify(data, null, 2);
+  assertEquals(output === expected, true, `printed ${output.length} chars`);
+  assertEquals(writes.length > 50, true);
+  assertEquals(writes.every((n) => n < 1024 * 1024), true);
+});
+
+Deno.test("LogModelOutputDataRenderer: prints a JSON value indented, in bounded pieces", async () => {
+  const writes: number[] = [];
+  const output = await captureLog(
+    "log",
+    { ...makeCompletedData(), data: largeValue },
+    writes,
+  );
+  const expected = JSON.stringify(largeValue, null, 2);
+  assertEquals(output === expected, true, `printed ${output.length} chars`);
+  assertEquals(writes.length > 50, true);
+  assertEquals(writes.every((n) => n < 1024 * 1024), true);
 });
