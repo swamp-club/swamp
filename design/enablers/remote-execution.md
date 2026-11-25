@@ -1859,12 +1859,12 @@ lane engine in `execution_service.ts` uses it at job start.
 - **`planFanOut(selector, policy, pool)`** (`src/domain/remote/scheduler.ts`)
   matches labels and platform exactly as `eligibleWorkers` does and gives every
   match one disposition, in name order: `waiting`, `skipped` or `failed` by
-  `offline` for an unverified worker whose probe is pending (reason
+  `offline` for a connected unverified worker whose probe is pending (reason
   `unverified`, read through `PoolWorker.verificationPending`, which the serve
-  pool reader takes from the gateway) and for a disconnected one (reason
-  `disconnected`), `excluded` for a draining worker or an unverified one whose
-  probe failed (whatever their connection), and `dispatch` for the rest. Only `dispatch`
-  and `waiting` members get a lane. With fewer lanes than `minWorkers`
+  pool reader takes from the gateway) and for a disconnected one, pending or
+  not (reason `disconnected`); `excluded` for a draining worker or an
+  unverified one whose probe failed (whatever their connection); and
+  `dispatch` for the rest. Only `dispatch` and `waiting` members get a lane. With fewer lanes than `minWorkers`
   (default 1, never 0), the plan is refused and holds no members.
 - **`planBatches`** and **`nextBatch`** (`src/domain/remote/rollout.ts`).
   Batches take `dispatch` lanes in name order, then `waiting` lanes, so the

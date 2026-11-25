@@ -6202,7 +6202,9 @@ export class WorkflowExecutionService {
             : "disconnected",
         }))
       : rerun.flatMap((worker): WaitingLane[] =>
-        pendingVerification(worker)
+        // only a connected one: a dropped worker's lane follows the offline policy
+        pendingVerification(worker) &&
+          poolByName.get(worker)?.connected === true
           ? [{ worker, reason: "unverified" as const }]
           : poolByName.get(worker)?.connected !== true &&
               policy.offline === "wait" &&

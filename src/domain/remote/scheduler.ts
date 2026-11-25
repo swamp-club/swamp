@@ -244,7 +244,8 @@ function fanOutMember(
     : "failed";
   // a probe still to come makes a worker not ready yet, like a disconnected one
   if (worker.status === "unverified" && worker.verificationPending === true) {
-    return { ...base, disposition: notReady, reason: "unverified" };
+    const reason = worker.connected ? "unverified" : "disconnected";
+    return { ...base, disposition: notReady, reason };
   }
   // last known status beats the connection: draining is leaving, unverified failed its probe
   if (worker.status === "unverified" || worker.status === "draining") {

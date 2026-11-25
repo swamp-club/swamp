@@ -3314,8 +3314,10 @@ member, in name order, and gets one disposition:
   whatever its connection. No lane, and the job does not fail for it.
 
 A member is not ready when it is not connected (reason `disconnected`), or when
-it is unverified with its verify-on-enroll probe still running or owed (reason
-`unverified`), such as a worker that reconnected just before the plan. The
+it is connected and unverified with its verify-on-enroll probe still running or
+owed (reason `unverified`), such as a worker that reconnected just before the
+plan. One whose probe is pending but whose connection has dropped reads as
+`disconnected`. The
 second case follows the offline policy too, so under `offline: fail` a job fails
 for a worker that is only mid-probe. A waiting lane on such a worker waits for
 the probe, runs once it passes, and fails `worker_ineligible` if it fails.
@@ -3548,9 +3550,9 @@ adds a worker that enrolled since.
 every resume (selector, offline policy, `minWorkers`, `plannedLanes`, every
 member's worker name with its disposition and reason, and on a resume the lanes
 re-run and kept), a `job_fanout_waiting` per waiting member or resumed lane
-whose worker is not connected or still being verified (with that reason and the
-job's queue timeout, or serve's through `WorkerPoolReader.queueTimeoutMs`), and
-`job_fanout_summary` before
+whose worker is not connected, or is connected and still being verified (with
+that reason and the job's queue timeout, or serve's through
+`WorkerPoolReader.queueTimeoutMs`), and `job_fanout_summary` before
 `job_completed`. A rollout also emits `job_fanout_batch_started` as each of the
 attempt's batches starts (its index, the batch count and its lanes) and
 `job_fanout_halted` on a halt (the failed lanes, the budget and the held lanes).

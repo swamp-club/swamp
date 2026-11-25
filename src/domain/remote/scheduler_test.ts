@@ -699,6 +699,30 @@ Deno.test("planFanOut: an unverified worker whose probe is pending follows the o
   assertEquals(member("fail"), ["failed", "unverified"]);
 });
 
+Deno.test("planFanOut: a pending worker that dropped its connection follows the offline policy as disconnected", () => {
+  const pool = [
+    poolWorker({ name: "a" }),
+    poolWorker({
+      name: "b",
+      status: "unverified",
+      connected: false,
+      verificationPending: true,
+    }),
+  ];
+  const member = (offline: "wait" | "skip" | "fail") => {
+    const plan = planFanOut(
+      {},
+      FanOutPolicySchema.parse({ offline }),
+      pool,
+    );
+    if (plan.kind !== "planned") throw new Error("expected a plan");
+    return [plan.members[1].disposition, plan.members[1].reason];
+  };
+  assertEquals(member("wait"), ["waiting", "disconnected"]);
+  assertEquals(member("skip"), ["skipped", "disconnected"]);
+  assertEquals(member("fail"), ["failed", "disconnected"]);
+});
+
 Deno.test("planFanOut: an unverified worker whose probe failed stays excluded, and pending never outranks draining", () => {
   const pool = [
     poolWorker({ name: "a" }),

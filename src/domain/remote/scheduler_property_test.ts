@@ -144,7 +144,10 @@ Deno.test("planFanOut: draining and failed-unverified workers never get a lane, 
             ? "skipped"
             : "failed";
           assertEquals(member.disposition, notReady);
-          assertEquals(member.reason, "unverified");
+          assertEquals(
+            member.reason,
+            worker.connected ? "unverified" : "disconnected",
+          );
         } else if (status === "unverified" || status === "draining") {
           assertEquals(member.disposition, "excluded");
           assertEquals(member.reason, status);

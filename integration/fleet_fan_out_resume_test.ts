@@ -241,6 +241,36 @@ Deno.test({
 
 Deno.test({
   name:
+    "fan-out resume: under offline skip a re-run lane whose pending worker dropped its connection is not reported waiting and fails by the policy",
+  ...SANITIZE,
+  fn: async () => {
+    await using fleet = await Fleet.start({ graceWindowMs: 60_000 });
+    await fleet.addWorker("w-a", { labels: WEB });
+    const b = await fleet.addWorker("w-b", { labels: WEB });
+    const { runId } = await failedOnLane(fleet, "w-b", {
+      fanOut: { offline: "skip" },
+    });
+    await b.disconnect();
+    const settleProbe = fleet.holdProbe("w-b");
+    await b.connect({ settle: false });
+    await b.disconnect();
+    assertEquals(fleet.gateway.verificationPending("w-b"), true);
+
+    const events: WorkflowExecutionEvent[] = [];
+    const retried = await fleet.retryRun("patch-all", runId, { events });
+    settleProbe("pass");
+
+    assertEquals(retried.status, "failed");
+    assertEquals(events.some((e) => e.kind === "job_fanout_waiting"), false);
+    assertStringIncludes(
+      retried.getJob("patch")!.getStep("apply[w-b]")!.error ?? "",
+      "offline policy is skip",
+    );
+  },
+});
+
+Deno.test({
+  name:
     "fan-out resume: a worker that enrolled after the plan gets no lane on a retry",
   ...SANITIZE,
   fn: async () => {
