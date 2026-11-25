@@ -252,6 +252,16 @@ export interface SinkOutbox {
   ): Promise<number | undefined>;
   sweepState(): Promise<SweepState>;
   /**
+   * names chunks stored before the entry is prepared, so a sweep in another
+   * process keeps them; removed once the landing ends either way
+   */
+  stageChunks?(
+    stager: string,
+    namespace: string,
+    hashes: readonly string[],
+  ): Promise<void>;
+  unstageChunks?(stager: string): Promise<void>;
+  /**
    * Resolves once the chunk sweep batch this process is running, if any,
    * has deleted its chunks and re-checked their references.
    */
@@ -1562,6 +1572,15 @@ async function appendGroupIn(
   // Read before any content is stored or refreshed: a sweep that starts,
   // deletes and ends before the entry is prepared moves the epoch.
   const sweepBefore = await outbox?.sweepState();
+  let stager: string | undefined;
+  // a name left behind only keeps its chunks until the staged names expire
+  const unstage = async () => {
+    if (stager === undefined) return;
+    await outbox?.unstageChunks?.(stager).catch((error) =>
+      logger
+        .debug`Removing the staged chunk names of a v3 commit failed; they expire on their own: ${error}`
+    );
+  };
   const ops: Op[] = [];
   const stored: StoredContent[] = [];
   const chunks = options.chunkStore.beginBatch(options.namespace);
@@ -1590,7 +1609,21 @@ async function appendGroupIn(
       {},
       () => chunks.commit(options.signal),
     );
+    // only a sectioned writer stores outside the lease; a sweep overlapping
+    // any other is in its own process
+    if (
+      options.commitSection !== undefined &&
+      outbox?.stageChunks !== undefined && stored.length > 0
+    ) {
+      stager = crypto.randomUUID();
+      await outbox.stageChunks(
+        stager,
+        options.namespace,
+        stored.flatMap((content) => content.blob.chunkHashes()),
+      );
+    }
   } catch (error) {
+    await unstage();
     throw storagePhase(error);
   } finally {
     await chunks.discard();
@@ -1746,9 +1779,13 @@ async function appendGroupIn(
     }
     return false;
   };
-  return options.commitSection === undefined
-    ? await land()
-    : await options.commitSection(land);
+  try {
+    return options.commitSection === undefined
+      ? await land()
+      : await options.commitSection(land);
+  } finally {
+    await unstage();
+  }
 }
 
 function fenceOf(options: CommitLogUnitOptions): number | undefined {

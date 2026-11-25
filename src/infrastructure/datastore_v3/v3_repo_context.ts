@@ -2174,7 +2174,8 @@ export async function v3RepositoryFactoryConfig(
       handle.servePrincipal,
       { repoDir, repoId: options.repoId },
     ),
-    { holdsWriterLock: writer },
+    // a sectioned writer between commits holds no lease: it takes one to rebuild
+    { holdsWriterLock: holdsV3WriterLock(config.path) },
   );
   // in a checkout another process writes its files are already newest, so
   // catching up would replay older commits over them; a writer catches up once,

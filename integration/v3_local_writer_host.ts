@@ -39,6 +39,14 @@ export type LocalWriterRequest =
     readonly pause?: boolean;
     /** under the behavior's own lock, as a method run takes it */
     readonly lock?: boolean;
+    /** padding past the inline limit, so the content is stored as chunks */
+    readonly pad?: string;
+  }
+  | {
+    readonly kind: "read";
+    readonly id: string;
+    readonly model: string;
+    readonly data: string;
   }
   | { readonly kind: "resume"; readonly id: string }
   | { readonly kind: "close" };
@@ -52,6 +60,7 @@ export type LocalWriterMessage =
     /** the count this write stored: one more than the latest it read */
     readonly count: number;
   }
+  | { readonly read: string; readonly content: string | null }
   | { readonly closed: true }
   | { readonly failed: string; readonly id?: string };
 
@@ -121,7 +130,13 @@ export const localWriterHost: ProcessHost<
             type,
             model.id,
             data,
-            new TextEncoder().encode(JSON.stringify({ by: request.id, count })),
+            new TextEncoder().encode(
+              JSON.stringify({
+                by: request.id,
+                count,
+                ...(request.pad === undefined ? {} : { pad: request.pad }),
+              }),
+            ),
           );
           version = saved.version;
           if (request.pause === true) {
@@ -153,6 +168,22 @@ export const localWriterHost: ProcessHost<
     return { version, count };
   }
 
+  async function read(
+    request: Extract<LocalWriterRequest, { kind: "read" }>,
+  ): Promise<string | null> {
+    const model = await context.repoContext.definitionRepo.findByName(
+      type,
+      request.model,
+    );
+    if (model === null) return null;
+    const content = await context.repoContext.unifiedDataRepo.getContent(
+      type,
+      model.id,
+      request.data,
+    );
+    return content === null ? null : new TextDecoder().decode(content);
+  }
+
   return (request) => {
     switch (request.kind) {
       case "open":
@@ -171,6 +202,12 @@ export const localWriterHost: ProcessHost<
       case "write":
         write(request).then(
           ({ version, count }) => post({ written: request.id, version, count }),
+          (error) => post({ failed: String(error), id: request.id }),
+        );
+        return;
+      case "read":
+        read(request).then(
+          (content) => post({ read: request.id, content }),
           (error) => post({ failed: String(error), id: request.id }),
         );
         return;
