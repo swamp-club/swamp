@@ -918,8 +918,9 @@ stamps the enrollment on another serve as gone, even when the same worker
 process moved there. Two serves over one remote datastore number versions
 from their own caches, so a serve the worker left can publish versions that collide with the
 new enrollment's and a pull then brings back the old record. After every
-runtime-data pull that runs and does not fail (a step-start pull may already
-have brought the change), the gateway rewrites the record of each
+runtime-data pull that changed files, and after a quiet one at most every five
+minutes (`QUIET_REASSERT_INTERVAL_MS`, since a step-start pull may already have
+brought the change), the gateway rewrites the record of each
 connected worker whose record says it is gone (missing, `disconnected`, or
 another instance `draining`), numbered above what the pull brought, and
 publishes it through the sync gate (`reassertConnected`). A record naming

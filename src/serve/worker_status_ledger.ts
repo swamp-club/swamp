@@ -116,8 +116,12 @@ export class WorkerStatusLedger implements WorkerStatusStore {
       async () => {
         const decided: { value: ReassertDecision } = { value: "keep" };
         const wrote = await this.#write(workerName, args, live, (stored) => {
+          const parsed = stored === null
+            ? null
+            : WorkerStateSchema.safeParse(stored);
+          // a malformed record says nothing about the worker, so it is rewritten
           decided.value = reassertDecision(
-            stored === null ? null : WorkerStateSchema.parse(stored),
+            parsed?.success === true ? parsed.data : null,
             live,
           );
           return decided.value === "rewrite";

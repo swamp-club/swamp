@@ -456,7 +456,8 @@ Deno.test("RuntimeDataPoller: runs onPulled after a pull that changed files, out
     syncService: sync,
     syncGate: gate,
     catalogInvalidate,
-    onPulled: async () => {
+    onPulled: async (changedFiles) => {
+      assertEquals(changedFiles, 2);
       hookRuns++;
       // an exclusive turn would wait forever if the hook still held the gate
       await withSyncGate(gate, () => {

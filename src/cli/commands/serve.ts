@@ -4415,8 +4415,8 @@ export const serveCommand = new Command()
         syncGate,
         pollIntervalMs: datastorePollIntervalMs,
         catalogInvalidate: () => repoContext.catalogStore.invalidate(),
-        onPulled: async () => {
-          await workerGateway.reassertConnected();
+        onPulled: async (changedFiles) => {
+          await workerGateway.reassertAfterPull(changedFiles);
         },
         namespace: serveNamespace,
       });

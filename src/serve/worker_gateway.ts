@@ -391,6 +391,9 @@ interface SocketState {
   forwardedPrefix: string | undefined;
 }
 
+/** how often a pull that changed nothing still checks the connected workers' records */
+export const QUIET_REASSERT_INTERVAL_MS = 5 * 60_000;
+
 // fails the definition name pattern, so it is never a worker's key
 const WORKER_RECORDS_PUSH_KEY = "push:worker-records";
 
@@ -427,6 +430,7 @@ export class WorkerGateway {
   /** instanceUuid to the mint it refused, so a pass never offers it again */
   readonly #rotationRefusals = new Map<string, string>();
   #publishQueued = false;
+  #lastReassertAtMs: number | undefined;
 
   constructor(options: WorkerGatewayOptions) {
     this.#options = options;
@@ -579,6 +583,23 @@ export class WorkerGateway {
 
   workers(): WorkerSnapshot[] {
     return [...this.#workers.values()].map((entry) => this.#snapshot(entry));
+  }
+
+  /**
+   * a pull that changed files may have brought a peer's record; a quiet one
+   * checks on a slower clock, since a step-start pull may have brought it
+   */
+  async reassertAfterPull(
+    changedFiles: number,
+    nowMs: number = Date.now(),
+  ): Promise<number> {
+    const last = this.#lastReassertAtMs;
+    if (
+      changedFiles === 0 && last !== undefined &&
+      nowMs - last < QUIET_REASSERT_INTERVAL_MS
+    ) return 0;
+    this.#lastReassertAtMs = nowMs;
+    return await this.reassertConnected();
   }
 
   /**

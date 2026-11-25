@@ -52,7 +52,10 @@ import {
 } from "../src/domain/models/worker/worker_model.ts";
 import { handleWorkerTokenCreate } from "../src/serve/handlers/admin_handlers.ts";
 import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
-import { WorkerGateway } from "../src/serve/worker_gateway.ts";
+import {
+  QUIET_REASSERT_INTERVAL_MS,
+  WorkerGateway,
+} from "../src/serve/worker_gateway.ts";
 import { WorkerStatusLedger } from "../src/serve/worker_status_ledger.ts";
 import { methodRunnerWorkerStatusStore } from "../src/serve/worker_status_ledger.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
@@ -426,5 +429,67 @@ Deno.test("WorkerGateway on a repo: a reconnect with an unusable capacity can st
     const rebuilt = await stored(h);
     assertEquals(rebuilt?.instanceUuid, live);
     assertEquals(rebuilt?.capacity, 1);
+  });
+});
+
+Deno.test("WorkerGateway on a repo: a quiet pull checks the records only on the slower clock", async () => {
+  await withGateway(async (h) => {
+    const live = crypto.randomUUID();
+    const { channel } = connectWorker(h.gateway);
+    await enroll(channel, h.token, live);
+    await h.gateway.settled();
+    const start = Date.now();
+
+    assertEquals(await h.gateway.reassertAfterPull(0, start), 0);
+    await overwrite(h, crypto.randomUUID(), "disconnected");
+    assertEquals(await h.gateway.reassertAfterPull(0, start + 1), 0);
+    assertEquals(await h.gateway.reassertAfterPull(5, start + 2), 1);
+
+    await overwrite(h, crypto.randomUUID(), "disconnected");
+    assertEquals(
+      await h.gateway.reassertAfterPull(
+        0,
+        start + 2 + QUIET_REASSERT_INTERVAL_MS - 1,
+      ),
+      0,
+    );
+    assertEquals(
+      await h.gateway.reassertAfterPull(
+        0,
+        start + 2 + QUIET_REASSERT_INTERVAL_MS,
+      ),
+      1,
+    );
+    assertEquals((await stored(h))?.instanceUuid, live);
+  });
+});
+
+Deno.test("WorkerGateway on a repo: a malformed record of a connected worker is rewritten", async () => {
+  await withGateway(async (h) => {
+    const live = crypto.randomUUID();
+    const { channel } = connectWorker(h.gateway);
+    await enroll(channel, h.token, live);
+    await h.gateway.settled();
+    const definition = await h.repoContext.definitionRepo.findByName(
+      WORKER_MODEL_TYPE,
+      workerDefinitionName(h.name),
+    );
+    assert(definition !== null);
+    const latest = await h.repoContext.unifiedDataRepo.findByName(
+      WORKER_MODEL_TYPE,
+      definition.id,
+      WORKER_STATE_DATA_NAME,
+    );
+    assert(latest !== null);
+    const path = h.repoContext.unifiedDataRepo.getContentPath(
+      WORKER_MODEL_TYPE,
+      definition.id,
+      WORKER_STATE_DATA_NAME,
+      latest.version,
+    );
+    await Deno.writeTextFile(path, JSON.stringify({ name: 42 }));
+
+    assertEquals(await h.gateway.reassertConnected(), 1);
+    assertEquals((await stored(h))?.instanceUuid, live);
   });
 });

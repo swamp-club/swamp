@@ -50,7 +50,7 @@ export interface RuntimeDataPollerOptions {
    * runs after each pull that ran and did not fail, once the gate is released;
    * a step-start pull can bring a peer's write that this pull then sees no change in
    */
-  onPulled?: () => Promise<void>;
+  onPulled?: (changedFiles: number) => Promise<void>;
   pollIntervalMs?: number;
   namespace?: string;
 }
@@ -59,7 +59,7 @@ export class RuntimeDataPoller {
   readonly #syncService: DatastoreSyncService;
   readonly #syncGate?: SyncGate;
   readonly #catalogInvalidate: () => void;
-  readonly #onPulled?: () => Promise<void>;
+  readonly #onPulled?: (changedFiles: number) => Promise<void>;
   #pollIntervalMs: number;
   readonly #namespace?: string;
   #gateTiming: PollerGateTiming;
@@ -153,7 +153,7 @@ export class RuntimeDataPoller {
           .info`Runtime data poller: ${count} file(s) updated, invalidating catalog`;
         this.#catalogInvalidate();
       }
-      if (pulled) await this.#onPulled?.();
+      if (pulled) await this.#onPulled?.(count);
       this.#logHeapStats();
     } catch (error) {
       logger

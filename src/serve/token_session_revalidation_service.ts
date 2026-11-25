@@ -90,7 +90,8 @@ export function tokenSessionVerdict(
     };
   }
   if (token.createdAt !== sessionCreatedAt) {
-    // a stale copy is older than the live mint; an unparseable time fails closed
+    // a stale copy is older than the live mint; an unparseable time fails closed,
+    // and expiry goes unchecked only for the bounded keep window
     if (
       recordIsStaleCopy &&
       Date.parse(sessionCreatedAt) > Date.parse(token.createdAt)
