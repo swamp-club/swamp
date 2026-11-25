@@ -743,6 +743,7 @@ Deno.test("WorkerGateway: a failed busy status releases only its own slot (swamp
     WorkerNotDispatchableError,
   );
   assertEquals(refusal.reason, "state_unrecorded");
+  assertEquals((refusal.cause as Error).message, "datastore offline");
   assertEquals(h.gateway.worker("ci-runner-3")?.activeDispatchIds, ["d-1"]);
   assertEquals(h.gateway.worker("ci-runner-3")?.status, "busy");
 

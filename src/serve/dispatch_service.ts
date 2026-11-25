@@ -115,6 +115,12 @@ export const DEFAULT_QUEUE_TIMEOUT_MS = 600 * 1000;
  */
 const WAIT_FOREVER_POLL_CAP_MS = 60 * 1000;
 
+/**
+ * a step with no queue timeout fails after this many refusals in a row from a
+ * sole worker whose state cannot be written, rather than waiting forever
+ */
+export const MAX_UNRECORDED_REFUSALS = 5;
+
 async function sha256Hex(text: string): Promise<string> {
   const digest = await crypto.subtle.digest(
     "SHA-256",
@@ -488,6 +494,7 @@ export class DispatchService {
     let attemptWorker: string | undefined;
     // workers whose state record could not be written for this step
     const unrecordable = new Set<string>();
+    let unrecordedInARow = 0;
     let failure: unknown;
     try {
       const affinityKey = request.placement.affinityKey;
@@ -658,6 +665,7 @@ export class DispatchService {
                 writtenVersionsOf(error),
               );
             }
+            unrecordedInARow = 0;
             logger.warn(
               "Worker {worker} lost a no-write dispatch; re-scheduling",
               { worker: workerName },
@@ -698,6 +706,9 @@ export class DispatchService {
               });
               continue;
             }
+            unrecordedInARow = refusal === "state_unrecorded"
+              ? unrecordedInARow + 1
+              : 0;
             if (refusal === "state_unrecorded") {
               unrecordable.add(workerName);
               // another worker can take it now; only a sole candidate is waited on
@@ -707,6 +718,17 @@ export class DispatchService {
                   dispatchId: lastDispatchId ?? "unknown",
                 });
                 continue;
+              }
+              // the write error stays the cause: its text can name serve-local paths
+              if (
+                deadline === null && unrecordedInARow >= MAX_UNRECORDED_REFUSALS
+              ) {
+                throw new Error(
+                  `Worker '${workerName}' could not have its busy state recorded ` +
+                    `on ${unrecordedInARow} dispatches in a row, and the step has ` +
+                    `no queue timeout to wait out; the serve log has the write error`,
+                  { cause: error },
+                );
               }
             }
             const remaining = deadline !== null

@@ -33,6 +33,7 @@ import {
   DEFAULT_QUEUE_TIMEOUT_MS,
   type DispatchGateway,
   DispatchService,
+  MAX_UNRECORDED_REFUSALS,
   withWrittenVersions,
   WorkerAffinityLostError,
   WorkerIneligibleError,
@@ -4256,4 +4257,87 @@ Deno.test("DispatchService: a worker whose state cannot be recorded gives the st
   const result = await h.service.executeRemote(stepRequest());
   assertEquals(result.workerName, "w2");
   assertEquals(h.dispatchCalls.map((c) => c.name), ["w1", "w2"]);
+});
+
+// wakes the step's pool wait so its retries need not sit out the 5 s backstop
+function nudgePool(h: ReturnType<typeof createHarness>): () => void {
+  const timer = setInterval(
+    () => h.service.notifyWorkerIdle(snapshot({ name: "w1" })),
+    1,
+  );
+  return () => clearInterval(timer);
+}
+
+Deno.test("DispatchService: a step with no queue timeout fails after its sole worker's state cannot be recorded MAX_UNRECORDED_REFUSALS times in a row", async () => {
+  const h = createHarness({ queueTimeoutMs: 0 });
+  const writeError = new Error("No space left at /var/serve/cache/state-main");
+  h.setBehavior((name) =>
+    Promise.reject(
+      new WorkerNotDispatchableError(name, "state_unrecorded", {
+        cause: writeError,
+      }),
+    )
+  );
+  const stop = nudgePool(h);
+  try {
+    const failure = await assertRejects(
+      () => h.service.executeRemote(stepRequest()),
+      Error,
+      `Worker 'w1' could not have its busy state recorded on ${MAX_UNRECORDED_REFUSALS} dispatches in a row`,
+    );
+    assertEquals(h.dispatchCalls.length, MAX_UNRECORDED_REFUSALS);
+    assertEquals(failure.message.includes("/var/serve"), false);
+    assertEquals(
+      ((failure.cause as Error).cause as Error).message,
+      writeError.message,
+    );
+  } finally {
+    stop();
+  }
+});
+
+Deno.test("DispatchService: a step with no queue timeout runs once its sole worker's state can be recorded again", async () => {
+  const h = createHarness({ queueTimeoutMs: 0 });
+  let refusals = 0;
+  h.setBehavior((name) =>
+    ++refusals <= MAX_UNRECORDED_REFUSALS - 1
+      ? Promise.reject(new WorkerNotDispatchableError(name, "state_unrecorded"))
+      : Promise.resolve({
+        status: "success",
+        outputs: [],
+        logs: [],
+        durationMs: 1,
+      })
+  );
+  const stop = nudgePool(h);
+  try {
+    const result = await h.service.executeRemote(stepRequest());
+    assertEquals(result.workerName, "w1");
+    assertEquals(h.dispatchCalls.length, MAX_UNRECORDED_REFUSALS);
+  } finally {
+    stop();
+  }
+});
+
+Deno.test("DispatchService: a step with a queue timeout keeps waiting past MAX_UNRECORDED_REFUSALS refusals for its sole worker", async () => {
+  const h = createHarness({ queueTimeoutMs: 60_000 });
+  let refusals = 0;
+  h.setBehavior((name) =>
+    ++refusals <= MAX_UNRECORDED_REFUSALS + 1
+      ? Promise.reject(new WorkerNotDispatchableError(name, "state_unrecorded"))
+      : Promise.resolve({
+        status: "success",
+        outputs: [],
+        logs: [],
+        durationMs: 1,
+      })
+  );
+  const stop = nudgePool(h);
+  try {
+    const result = await h.service.executeRemote(stepRequest());
+    assertEquals(result.workerName, "w1");
+    assertEquals(h.dispatchCalls.length, MAX_UNRECORDED_REFUSALS + 2);
+  } finally {
+    stop();
+  }
 });
