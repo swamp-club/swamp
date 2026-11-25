@@ -119,6 +119,7 @@ import {
   type FileOwnership,
   type LiveRecordWriter,
   type LoadKey,
+  type LoadResume,
   ReadModelState,
   type RecordContent,
   REPLAY_PENDING,
@@ -185,6 +186,8 @@ function pageParts(
 }
 
 export const DEFAULT_READ_MODEL_PAGE_SIZE = 500;
+/** files a base load writes between records of what it has written */
+const LOAD_DONE_FLUSH = 256;
 
 export { CATALOG_V3_FILE };
 
@@ -2845,11 +2848,31 @@ export class SqliteReadModel implements ReadModel {
       byNamespace.set(namespace, refs);
     }
     if (byNamespace.size === 0) return;
-    await withSpan("swamp.datastore.v3.readmodel.prefetch", {}, async () => {
-      for (const [namespace, refs] of byNamespace) {
-        await this.#chunkStore.prefetch(namespaceOf(namespace), refs, signal);
-      }
-    });
+    await withSpan(
+      "swamp.datastore.v3.readmodel.prefetch",
+      {},
+      async (span) => {
+        const totals = { requested: 0, fetched: 0, retries: 0, failed: 0 };
+        for (const [namespace, refs] of byNamespace) {
+          const report = await this.#chunkStore.prefetch(
+            namespaceOf(namespace),
+            refs,
+            signal,
+          );
+          if (report === undefined) continue;
+          totals.requested += report.requested;
+          totals.fetched += report.fetched;
+          totals.retries += report.retries;
+          totals.failed += report.failed;
+        }
+        span.setAttributes({
+          "swamp.datastore.v3.readmodel.prefetch.requested": totals.requested,
+          "swamp.datastore.v3.readmodel.prefetch.fetched": totals.fetched,
+          "swamp.datastore.v3.readmodel.prefetch.retries": totals.retries,
+          "swamp.datastore.v3.readmodel.prefetch.failed": totals.failed,
+        });
+      },
+    );
   }
 
   /**
@@ -2878,11 +2901,31 @@ export class SqliteReadModel implements ReadModel {
       }
     }
     if (byNamespace.size === 0) return;
-    await withSpan("swamp.datastore.v3.readmodel.prefetch", {}, async () => {
-      for (const [namespace, refs] of byNamespace) {
-        await this.#chunkStore.prefetch(namespaceOf(namespace), refs, signal);
-      }
-    });
+    await withSpan(
+      "swamp.datastore.v3.readmodel.prefetch",
+      {},
+      async (span) => {
+        const totals = { requested: 0, fetched: 0, retries: 0, failed: 0 };
+        for (const [namespace, refs] of byNamespace) {
+          const report = await this.#chunkStore.prefetch(
+            namespaceOf(namespace),
+            refs,
+            signal,
+          );
+          if (report === undefined) continue;
+          totals.requested += report.requested;
+          totals.fetched += report.fetched;
+          totals.retries += report.retries;
+          totals.failed += report.failed;
+        }
+        span.setAttributes({
+          "swamp.datastore.v3.readmodel.prefetch.requested": totals.requested,
+          "swamp.datastore.v3.readmodel.prefetch.fetched": totals.fetched,
+          "swamp.datastore.v3.readmodel.prefetch.retries": totals.retries,
+          "swamp.datastore.v3.readmodel.prefetch.failed": totals.failed,
+        });
+      },
+    );
   }
 
   /**
@@ -3614,11 +3657,15 @@ export class SqliteReadModel implements ReadModel {
     return withSpan(
       "swamp.datastore.v3.readmodel.load_base",
       {},
-      () => this.#loadBaseNow(signal, net),
+      (span) => this.#loadBaseNow(signal, net, span),
     );
   }
 
-  async #loadBaseNow(signal: AbortSignal, net: boolean): Promise<void> {
+  async #loadBaseNow(
+    signal: AbortSignal,
+    net: boolean,
+    span: Span,
+  ): Promise<void> {
     const started = performance.now();
     let point: number | undefined;
     for (let staged = false; !staged;) {
@@ -3647,8 +3694,22 @@ export class SqliteReadModel implements ReadModel {
     if (point === undefined) return;
 
     if (net) this.#net = await this.#planBaseNet(point, signal);
+    // a boot-named load writes unsynced, so only this boot's earlier attempt
+    // at this point is trusted to have left its files in place
+    const resume: LoadResume | undefined = this.#boot === undefined
+      ? undefined
+      : { point, boot: this.#boot };
     const removals = this.#state.loadRemovals();
-    const writes = this.#state.loadWrites();
+    const writes = this.#state.loadWrites(resume);
+    span.setAttributes({
+      "swamp.datastore.v3.readmodel.load_base.point": point,
+      "swamp.datastore.v3.readmodel.load_base.removals": removals.length,
+      "swamp.datastore.v3.readmodel.load_base.writes": writes.length,
+      "swamp.datastore.v3.readmodel.load_base.resumed_files": resume ===
+          undefined
+        ? 0
+        : this.#state.loadDoneCount(resume),
+    });
     this.#state.touchKeys([...removals, ...writes]);
     this.#stats?.bump("base_removals", removals.length);
     this.#stats?.bump("base_writes", writes.length);
@@ -3665,6 +3726,7 @@ export class SqliteReadModel implements ReadModel {
         writes,
         batch,
         signal,
+        resume,
       ));
       await batch.barrier();
       await this.#releaseFetched(signal);
@@ -3732,9 +3794,45 @@ export class SqliteReadModel implements ReadModel {
     writes: readonly LoadKey[],
     batch: DurableWriteBatch,
     signal: AbortSignal,
+    resume: LoadResume | undefined,
   ): Promise<{ unreadable: StoredUnreadableRecord[]; skipped: Set<string> }> {
     const unreadable: StoredUnreadableRecord[] = [];
     const skipped = new Set<string>();
+    const done: LoadKey[] = [];
+    const recordDone = (force: boolean) => {
+      if (resume === undefined) return;
+      if (!force && done.length < LOAD_DONE_FLUSH) return;
+      this.#state.markLoadDone(done, resume);
+      done.length = 0;
+    };
+    try {
+      return await this.#loadFilesInto(
+        removals,
+        writes,
+        batch,
+        signal,
+        unreadable,
+        skipped,
+        (key) => {
+          done.push(key);
+          recordDone(false);
+        },
+      );
+    } finally {
+      // a load cut off keeps what it wrote for the retry
+      recordDone(true);
+    }
+  }
+
+  async #loadFilesInto(
+    removals: readonly LoadKey[],
+    writes: readonly LoadKey[],
+    batch: DurableWriteBatch,
+    signal: AbortSignal,
+    unreadable: StoredUnreadableRecord[],
+    skipped: Set<string>,
+    wrote: (key: LoadKey) => void,
+  ): Promise<{ unreadable: StoredUnreadableRecord[]; skipped: Set<string> }> {
     for (const { namespace, record_key } of removals) {
       signal.throwIfAborted();
       const path = await this.#target(
@@ -3804,6 +3902,7 @@ export class SqliteReadModel implements ReadModel {
           batch,
           source,
         );
+        wrote({ namespace, record_key });
       } catch (error) {
         if (
           !("blob" in content) || !isChunkError(error) || signal.aborted ||

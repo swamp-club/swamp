@@ -85,6 +85,7 @@ import {
 } from "../domain/datastore_v3/commit_authorization.ts";
 import { storageNamespaceOf } from "../domain/datastore_v3/chunk_store.ts";
 import {
+  type BaseIndexEntry,
   CommitsCompactedError,
   type CompactedBaseEntry,
   InvalidBasePageTokenError,
@@ -2056,15 +2057,22 @@ class DatastoreApi {
    * partition owns a key under its records.
    */
   async baseIndex(): Promise<Response> {
-    const partitions = [];
-    for (
-      const entry of await this.#v3.commitStore.readBaseIndex(this.#namespace)
-    ) {
-      if (!await this.#mayReadAnyOf(PartitionKey.parse(entry.partition))) {
-        continue;
+    const partitions: BaseIndexEntry[] = [];
+    await withSpan("swamp.serve.datastore.base_index", {}, async (span) => {
+      const entries = await this.#v3.commitStore.readBaseIndex(
+        this.#namespace,
+      );
+      for (const entry of entries) {
+        if (!await this.#mayReadAnyOf(PartitionKey.parse(entry.partition))) {
+          continue;
+        }
+        partitions.push(entry);
       }
-      partitions.push(entry);
-    }
+      span.setAttributes({
+        "swamp.serve.datastore.base_index.partitions": entries.length,
+        "swamp.serve.datastore.base_index.readable": partitions.length,
+      });
+    });
     return Response.json({
       point: await this.#v3.commitStore.compactionPoint(),
       partitions,
