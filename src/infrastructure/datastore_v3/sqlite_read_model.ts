@@ -2711,11 +2711,31 @@ export class SqliteReadModel implements ReadModel {
       byNamespace.set(namespace, refs);
     }
     if (byNamespace.size === 0) return;
-    await withSpan("swamp.datastore.v3.readmodel.prefetch", {}, async () => {
-      for (const [namespace, refs] of byNamespace) {
-        await this.#chunkStore.prefetch(namespaceOf(namespace), refs, signal);
-      }
-    });
+    await withSpan(
+      "swamp.datastore.v3.readmodel.prefetch",
+      {},
+      async (span) => {
+        const totals = { requested: 0, fetched: 0, retries: 0, failed: 0 };
+        for (const [namespace, refs] of byNamespace) {
+          const report = await this.#chunkStore.prefetch(
+            namespaceOf(namespace),
+            refs,
+            signal,
+          );
+          if (report === undefined) continue;
+          totals.requested += report.requested;
+          totals.fetched += report.fetched;
+          totals.retries += report.retries;
+          totals.failed += report.failed;
+        }
+        span.setAttributes({
+          "swamp.datastore.v3.readmodel.prefetch.requested": totals.requested,
+          "swamp.datastore.v3.readmodel.prefetch.fetched": totals.fetched,
+          "swamp.datastore.v3.readmodel.prefetch.retries": totals.retries,
+          "swamp.datastore.v3.readmodel.prefetch.failed": totals.failed,
+        });
+      },
+    );
   }
 
   /**
@@ -2744,11 +2764,31 @@ export class SqliteReadModel implements ReadModel {
       }
     }
     if (byNamespace.size === 0) return;
-    await withSpan("swamp.datastore.v3.readmodel.prefetch", {}, async () => {
-      for (const [namespace, refs] of byNamespace) {
-        await this.#chunkStore.prefetch(namespaceOf(namespace), refs, signal);
-      }
-    });
+    await withSpan(
+      "swamp.datastore.v3.readmodel.prefetch",
+      {},
+      async (span) => {
+        const totals = { requested: 0, fetched: 0, retries: 0, failed: 0 };
+        for (const [namespace, refs] of byNamespace) {
+          const report = await this.#chunkStore.prefetch(
+            namespaceOf(namespace),
+            refs,
+            signal,
+          );
+          if (report === undefined) continue;
+          totals.requested += report.requested;
+          totals.fetched += report.fetched;
+          totals.retries += report.retries;
+          totals.failed += report.failed;
+        }
+        span.setAttributes({
+          "swamp.datastore.v3.readmodel.prefetch.requested": totals.requested,
+          "swamp.datastore.v3.readmodel.prefetch.fetched": totals.fetched,
+          "swamp.datastore.v3.readmodel.prefetch.retries": totals.retries,
+          "swamp.datastore.v3.readmodel.prefetch.failed": totals.failed,
+        });
+      },
+    );
   }
 
   /**
