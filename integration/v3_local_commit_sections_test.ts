@@ -18,11 +18,14 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assert, assertEquals } from "@std/assert";
-import { copy, walk } from "@std/fs";
+import { copy, exists, walk } from "@std/fs";
+import { DatabaseSync } from "node:sqlite";
 import { join } from "@std/path";
 import fc from "fast-check";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { SqliteCommitStore } from "../src/infrastructure/datastore_v3/sqlite_commit_store.ts";
+import { listWriterMarkerFiles } from "../src/infrastructure/datastore_v3/interrupted_writer_recovery.ts";
+import { v3CatalogPath } from "../src/infrastructure/datastore_v3/record_path_guard.ts";
 import { closeV3Datastores } from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
 import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpers.ts";
 import { startProcessHost } from "./process_host.ts";
@@ -372,9 +375,74 @@ Deno.test({
   },
 });
 
+/** as a checkout tracking its writes long before any writer started */
+function backdateTracking(repoDir: string): void {
+  const db = new DatabaseSync(v3CatalogPath(repoDir));
+  try {
+    db.prepare(
+      "UPDATE catalog_meta SET value = '0' WHERE key IN ('dirty_tracking_since', 'touched_tracking_since')",
+    ).run();
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * a killed writer with an uncommitted v2 of d-k and a live one with an
+ * uncommitted v1 of d-l, both in repoA; returns the three writers
+ */
+async function killOneBesideALive(
+  repos: Parameters<Parameters<typeof withV3RowRepos>[1]>[0],
+  writers: { killed: Writer; live: Writer },
+): Promise<void> {
+  const { killed, live } = writers;
+  const type = repos.modelType.normalized;
+  await opened(killed, repos.repoA, type);
+  await opened(live, repos.repoA, type);
+  killed.send({
+    kind: "write",
+    id: "k1",
+    model: "mk",
+    data: "d-k",
+    lock: true,
+  });
+  assertEquals(await written(killed, "k1"), 1);
+  killed.send({
+    kind: "write",
+    id: "k2",
+    model: "mk",
+    data: "d-k",
+    pause: true,
+  });
+  await killed.seen((m) => "paused" in m, "k2 staged");
+  live.send({ kind: "write", id: "l1", model: "ml", data: "d-l", pause: true });
+  await live.seen((m) => "paused" in m, "l1 staged");
+  assertEquals(await latestOf(repos.repoA, "d-k"), "2");
+  killed.send({ kind: "die" });
+  killed.stop();
+}
+
+async function stagedVersionExists(
+  repoDir: string,
+  dataName: string,
+  version: number,
+): Promise<boolean> {
+  for await (
+    const entry of walk(join(repoDir, ".swamp", "data"), {
+      includeFiles: false,
+      followSymlinks: false,
+    })
+  ) {
+    if (entry.path.endsWith(join(dataName, String(version)))) {
+      return await exists(join(entry.path, "raw"));
+    }
+  }
+  return false;
+}
+
 Deno.test({
   name:
-    "v3 local commit sections: a writer killed mid-unit is recovered by the next writer of its checkout, and a live writer's staged work there survives",
+    "v3 local commit sections: beside a live writer, a killed writer's recovery repairs only its own scopes",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
@@ -384,50 +452,23 @@ Deno.test({
       const live = startWriter("live");
       const next = startWriter("next");
       try {
-        const type = repos.modelType.normalized;
-        await opened(killed, repos.repoA, type);
-        await opened(live, repos.repoA, type);
-        killed.send({
-          kind: "write",
-          id: "k1",
-          model: "mk",
-          data: "d-k",
-          lock: true,
-        });
-        assertEquals(await written(killed, "k1"), 1);
-        killed.send({
-          kind: "write",
-          id: "k2",
-          model: "mk",
-          data: "d-k",
-          pause: true,
-        });
-        await killed.seen((m) => "paused" in m, "k2 staged");
-        live.send({
-          kind: "write",
-          id: "l1",
-          model: "ml",
-          data: "d-l",
-          pause: true,
-        });
-        await live.seen((m) => "paused" in m, "l1 staged");
-        assertEquals(await latestOf(repos.repoA, "d-k"), "2");
-        assertEquals(await latestOf(repos.repoA, "d-l"), "1");
-        killed.send({ kind: "die" });
-        killed.stop();
-        await opened(next, repos.repoA, type);
+        await killOneBesideALive(repos, { killed, live });
+        backdateTracking(repos.repoA);
+        await opened(next, repos.repoA, repos.modelType.normalized);
         next.send({ kind: "write", id: "n1", model: "mn", data: "d-n" });
         assertEquals(await written(next, "n1"), 1);
         assertEquals(
-          await latestOf(repos.repoA, "d-k"),
-          "1",
-          "the killed writer's uncommitted v2 is recovered to its last commit",
+          await stagedVersionExists(repos.repoA, "d-k", 2),
+          false,
+          "the killed writer's uncommitted v2 is removed",
         );
+        assertEquals(await latestOf(repos.repoA, "d-k"), "1");
         assertEquals(
-          await latestOf(repos.repoA, "d-l"),
-          "1",
-          "the live writer's staged file survived the recovery",
+          await stagedVersionExists(repos.repoA, "d-l", 1),
+          true,
+          "the live writer's staged v1 survived the recovery",
         );
+        assertEquals(await latestOf(repos.repoA, "d-l"), "1");
         live.send({ kind: "resume", id: "l1" });
         assertEquals(await written(live, "l1"), 1);
         await closed(live);
@@ -437,6 +478,55 @@ Deno.test({
         killed.stop();
         live.stop();
         next.stop();
+      }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "v3 local commit sections: a killed writer's recovery that needs the whole checkout waits while another writer writes it, then runs",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withV3RowRepos({}, async (repos, datastorePath) => {
+      await closeV3Datastores();
+      const killed = startWriter("killed");
+      const live = startWriter("live");
+      const next = startWriter("next");
+      const after = startWriter("after");
+      try {
+        await killOneBesideALive(repos, { killed, live });
+        // a checkout that began tracking just now cannot bound the recovery
+        await opened(next, repos.repoA, repos.modelType.normalized);
+        next.send({ kind: "write", id: "n1", model: "mn", data: "d-n" });
+        assertEquals(await written(next, "n1"), 1);
+        assertEquals(
+          await stagedVersionExists(repos.repoA, "d-l", 1),
+          true,
+          "the live writer's staged v1 survived",
+        );
+        assertEquals(
+          (await listWriterMarkerFiles(repos.repoA)).length,
+          3,
+          "the killed writer's marker waits beside the two live ones",
+        );
+        live.send({ kind: "resume", id: "l1" });
+        assertEquals(await written(live, "l1"), 1);
+        await closed(live);
+        await closed(next);
+        await opened(after, repos.repoA, repos.modelType.normalized);
+        after.send({ kind: "write", id: "a1", model: "ma", data: "d-a" });
+        assertEquals(await written(after, "a1"), 1);
+        await closed(after);
+        assertEquals(await listWriterMarkerFiles(repos.repoA), []);
+        assertEquals(await stagedVersionExists(repos.repoA, "d-k", 2), false);
+        await assertCheckoutsAgree(repos, datastorePath, "once quiet");
+      } finally {
+        killed.stop();
+        live.stop();
+        next.stop();
+        after.stop();
       }
     });
   },
