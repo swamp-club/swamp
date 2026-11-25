@@ -46,11 +46,13 @@ import {
   advanceV3WriterLease,
   assertV3WriterCurrent,
   checkV3WriterLease,
+  COMMIT_SECTION_LEASE_POLL,
   holdsCurrentV3WriterLease,
   holdsV3WriterLock,
   onV3HoldRetaken,
   onV3LeaseLost,
   onV3LeaseTaken,
+  recordV3LeaseWaitsForTesting,
   setV3WriterBusyServeAddress,
   stopV3WriterRenewal,
   tryAcquireV3WriterLock,
@@ -886,4 +888,37 @@ Deno.test("acquireV3WriterLock: a hold taken as serve records its role, keeps it
       await plain();
     }
   });
+});
+
+Deno.test("acquireV3WriterLock: a commit section waiting on another holder polls in short steps, a whole-command take on the long backoff", async () => {
+  for (const poll of [COMMIT_SECTION_LEASE_POLL, undefined]) {
+    await withTempDir(async (dir) => {
+      const other = new ProcessRuntime(`other-${crypto.randomUUID()}`);
+      const release = await acquireV3WriterLock(dir);
+      try {
+        await other.run(async () => {
+          using recorded = recordV3LeaseWaitsForTesting();
+          await assertRejects(
+            () =>
+              acquireV3WriterLock(dir, {
+                maxWaitMs: 400,
+                ...(poll !== undefined ? { poll } : {}),
+              }),
+            V3WriterBusyError,
+          );
+          if (poll !== undefined) {
+            assertEquals(recorded.waits[0], poll.retryMs);
+            assert(
+              recorded.waits.every((ms) => ms <= poll.maxRetryMs),
+              `waits ${recorded.waits}`,
+            );
+          } else {
+            assertEquals(recorded.waits[0], 250);
+          }
+        });
+      } finally {
+        await release();
+      }
+    });
+  }
 });

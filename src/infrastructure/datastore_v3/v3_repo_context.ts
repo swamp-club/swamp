@@ -62,6 +62,7 @@ import {
   acquireV3WriterLock,
   advanceV3WriterLease,
   assertV3WriterCurrent,
+  COMMIT_SECTION_LEASE_POLL,
   holdsCurrentV3WriterLease,
   holdsV3WriterLock,
   onV3HoldRetaken,
@@ -995,6 +996,7 @@ function takeCommitSection(
 ): Promise<V3WriterLockRelease> {
   const { config, repoDir } = writer;
   return acquireV3WriterLock(config.path, {
+    poll: COMMIT_SECTION_LEASE_POLL,
     maxWaitMs: wait ? resolveLockTimeoutMs() : 0,
     fenceStore: {
       writerFence: () =>
@@ -1024,6 +1026,7 @@ async function takeTeardownSections(): Promise<
     let release;
     try {
       release = await acquireV3WriterLock(writer.config.path, {
+        poll: COMMIT_SECTION_LEASE_POLL,
         maxWaitMs: dropped ? resolveLockTimeoutMs() : 0,
         fenceStore: {
           writerFence: () => handle.commitStore.writerFence(),

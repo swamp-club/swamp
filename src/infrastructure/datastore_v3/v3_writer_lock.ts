@@ -102,8 +102,25 @@ export interface V3WriterFenceStore {
   raiseWriterFence(fence: number): Promise<void>;
 }
 
+/** how a lease taker waiting on another holder polls the lease's records */
+export interface V3LeasePoll {
+  readonly retryMs: number;
+  readonly maxRetryMs: number;
+}
+
+/**
+ * a commit section holds the lease for tens of milliseconds, so a waiter
+ * polling on the whole-command backoff sleeps through every free window
+ */
+export const COMMIT_SECTION_LEASE_POLL: V3LeasePoll = {
+  retryMs: 25,
+  maxRetryMs: 100,
+};
+
 interface WriterLockState {
   readonly held: Map<string, Held>;
+  /** each wait of a lease taker, when a test records them */
+  leaseWaits?: number[];
   /** the serve a busy error names, when this command knows one */
   serveAddress?: string;
   readonly holdRetakenListeners: Set<V3HoldRetakenListener>;
@@ -142,6 +159,7 @@ interface Held {
     readonly ttlMs: number;
     readonly fenceStore?: V3WriterFenceStore;
     readonly role?: "serve";
+    readonly poll?: V3LeasePoll;
   };
   /**
    * a one-shot command's hold just ends: its later commits are refused too, so
@@ -169,6 +187,8 @@ export interface AcquireV3WriterLockOptions {
   readonly retakeLost?: boolean;
   /** recorded on the lease, so a writer it keeps out is told to go through serve */
   readonly role?: "serve";
+  /** the whole-command backoff when undefined */
+  readonly poll?: V3LeasePoll;
 }
 
 /**
@@ -196,6 +216,7 @@ export async function acquireV3WriterLock(
           ? { fenceStore: options.fenceStore }
           : {}),
         ...(options.role !== undefined ? { role: options.role } : {}),
+        ...(options.poll !== undefined ? { poll: options.poll } : {}),
       },
     };
     created.acquiring = retakeLease(created, datastorePath, maxWaitMs).then(
@@ -299,6 +320,7 @@ async function retakeLease(
       ? { fenceStore: retake.fenceStore }
       : {}),
     ...(retake.role !== undefined ? { role: retake.role } : {}),
+    ...(retake.poll !== undefined ? { poll: retake.poll } : {}),
   });
   entry.hold = hold;
   entry.confirmedAt = asked;
@@ -623,6 +645,7 @@ async function takeLease(
     readonly ttlMs: number;
     readonly fenceStore?: V3WriterFenceStore;
     readonly role?: "serve";
+    readonly poll?: V3LeasePoll;
   },
 ): Promise<WriterLeaseHold> {
   // a bucket datastore is known to be v3 before its lease is written: every
@@ -632,8 +655,8 @@ async function takeLease(
   let hold: WriterLeaseHold;
   try {
     const floor = options.fenceStore?.writerFence();
-    const { ttlMs, role } = options;
-    hold = await (await writerLease(datastorePath, ttlMs, role)).acquire({
+    const { ttlMs, role, poll } = options;
+    hold = await (await writerLease(datastorePath, ttlMs, role, poll)).acquire({
       maxWaitMs: options.maxWaitMs,
       ...(floor !== undefined ? { floor } : {}),
     });
@@ -801,8 +824,9 @@ function writerLease(
   datastorePath: string,
   ttlMs: number,
   role?: "serve",
+  poll?: V3LeasePoll,
 ): Promise<WriterLease> {
-  return v3WriterLease(v3ControlPlaneAt(datastorePath), ttlMs, role);
+  return v3WriterLease(v3ControlPlaneAt(datastorePath), ttlMs, role, poll);
 }
 
 /**
@@ -814,6 +838,7 @@ export async function v3WriterLease(
   store: WriterLeaseStore,
   ttlMs: number,
   role?: "serve",
+  poll?: V3LeasePoll,
 ): Promise<WriterLease> {
   const host = Deno.hostname();
   const local = await localProcess();
@@ -828,7 +853,13 @@ export async function v3WriterLease(
     },
     ttlMs,
     now: () => Date.now(),
-    delay: (ms) => new Promise((done) => setTimeout(done, ms)),
+    delay: (ms) => {
+      writerLockState().leaseWaits?.push(ms);
+      return new Promise((done) => setTimeout(done, ms));
+    },
+    ...(poll !== undefined
+      ? { retryMs: poll.retryMs, maxRetryMs: poll.maxRetryMs }
+      : {}),
     // a holder is gone only when its own kernel says so
     judgeHolder: (record) =>
       judgeRecordedProcess(
@@ -894,4 +925,19 @@ export async function refuseLiveV3LegacyWriter(
       new LockTimeoutError(V3_LEGACY_WRITER_LOCK_KEY, holder, 0),
     );
   }
+}
+
+/** records the waits of this runtime's lease takers until disposed */
+export function recordV3LeaseWaitsForTesting(): Disposable & {
+  readonly waits: number[];
+} {
+  const state = writerLockState();
+  const waits: number[] = [];
+  state.leaseWaits = waits;
+  return {
+    waits,
+    [Symbol.dispose]: () => {
+      state.leaseWaits = undefined;
+    },
+  };
 }

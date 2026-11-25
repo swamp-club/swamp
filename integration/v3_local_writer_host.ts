@@ -51,6 +51,7 @@ import {
   closeV3Datastores,
 } from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
 import { endWriterInstanceForTesting } from "../src/infrastructure/datastore_v3/writer_instance.ts";
+import { recordV3LeaseWaitsForTesting } from "../src/infrastructure/datastore_v3/v3_writer_lock.ts";
 import { isCustomDatastoreConfig } from "../src/domain/datastore/datastore_config.ts";
 import { dirname, join } from "@std/path";
 import { modelLockKey } from "../src/libswamp/datastores/lock.ts";
@@ -147,6 +148,9 @@ export type LocalWriterRequest =
   | { readonly kind: "catchUp" }
   /** killed: its units never finish and its token is no longer live */
   | { readonly kind: "die" }
+  /** records this process's lease waits from now on */
+  | { readonly kind: "recordLeaseWaits" }
+  | { readonly kind: "leaseWaits" }
   | { readonly kind: "close" };
 
 export type LocalWriterMessage =
@@ -179,6 +183,7 @@ export type LocalWriterMessage =
   }
   | { readonly closed: true }
   | { readonly caughtUp: true }
+  | { readonly leaseWaits: readonly number[] }
   | { readonly planted: string }
   | { readonly failed: string; readonly id?: string };
 
@@ -192,6 +197,7 @@ export const localWriterHost: ProcessHost<
   let type: ModelType;
   let env: Record<string, string> | undefined;
   const resumes = new Map<string, () => void>();
+  let leaseWaits: ReturnType<typeof recordV3LeaseWaitsForTesting> | undefined;
   const definitions = new Map<string, Promise<Definition>>();
   const held = new Map<string, ModelLockResult>();
   const progress = new RunProgress({ runId: crypto.randomUUID() });
@@ -636,6 +642,13 @@ export const localWriterHost: ProcessHost<
         );
         return;
       }
+      case "recordLeaseWaits":
+        leaseWaits ??= recordV3LeaseWaitsForTesting();
+        post({ leaseWaits: [] });
+        return;
+      case "leaseWaits":
+        post({ leaseWaits: [...leaseWaits?.waits ?? []] });
+        return;
       case "die":
         endWriterInstanceForTesting();
         resumes.clear();

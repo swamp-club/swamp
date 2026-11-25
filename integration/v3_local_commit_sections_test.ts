@@ -27,6 +27,10 @@ import { SqliteCommitStore } from "../src/infrastructure/datastore_v3/sqlite_com
 import { listWriterMarkerFiles } from "../src/infrastructure/datastore_v3/interrupted_writer_recovery.ts";
 import { v3CatalogPath } from "../src/infrastructure/datastore_v3/record_path_guard.ts";
 import { closeV3Datastores } from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
+import {
+  acquireV3WriterLock,
+  COMMIT_SECTION_LEASE_POLL,
+} from "../src/infrastructure/datastore_v3/v3_writer_lock.ts";
 import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpers.ts";
 import { startProcessHost } from "./process_host.ts";
 import { assertCheckoutsAgree, withV3RowRepos } from "./usecase_v3_fixtures.ts";
@@ -1130,6 +1134,52 @@ Deno.test({
         long.stop();
         reader.stop();
         other.stop();
+      }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "v3 local commit sections: a commit section waiting on the lease polls in short steps, so it lands soon after the holder lets go",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withV3RowRepos({}, async (repos, datastorePath) => {
+      await closeV3Datastores();
+      const writer = startWriter("writer");
+      try {
+        await opened(writer, repos.repoA, repos.modelType.normalized);
+        writer.send({ kind: "write", id: "w0", model: "m", data: "d" });
+        assertEquals(await written(writer, "w0"), 1);
+        writer.send({ kind: "recordLeaseWaits" });
+        await writer.seen((m) => "leaseWaits" in m, "recording");
+        // another process holds the lease for a while
+        const release = await acquireV3WriterLock(datastorePath);
+        writer.send({ kind: "write", id: "w1", model: "m", data: "d" });
+        await waitFor(
+          async () => {
+            writer.messages.length = 0;
+            writer.send({ kind: "leaseWaits" });
+            const m = await writer.seen((x) => "leaseWaits" in x, "waits");
+            return "leaseWaits" in m && m.leaseWaits.length >= 4;
+          },
+          "the section waits on the held lease",
+          { timeoutMs: 30_000 },
+        );
+        await release();
+        assertEquals(await written(writer, "w1"), 2);
+        writer.messages.length = 0;
+        writer.send({ kind: "leaseWaits" });
+        const m = await writer.seen((x) => "leaseWaits" in x, "waits");
+        const waits = "leaseWaits" in m ? m.leaseWaits : [];
+        assert(
+          waits.every((ms) => ms <= COMMIT_SECTION_LEASE_POLL.maxRetryMs),
+          `a section polled on the whole-command backoff: ${waits}`,
+        );
+        await closed(writer);
+      } finally {
+        writer.stop();
       }
     });
   },
