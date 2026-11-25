@@ -655,6 +655,8 @@ const REBUILD_PAGE = 500;
  */
 export const COMPACTION_BATCH = 250;
 
+const FOLD_SLICE_MS = 50;
+
 /** Hashes looked up per query by `referencedChunks`. */
 const REF_LOOKUP_PAGE = 500;
 
@@ -3347,53 +3349,93 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
     const now = (options.clock ?? (() => new Date()))().getTime();
     const pruneTxnsBefore = options.pruneTxnsBefore?.getTime();
     const pruneRemovedBefore = options.pruneRemovedBefore?.getTime();
-    this.#db.exec("BEGIN IMMEDIATE");
-    try {
-      if (this.#point() !== point) {
-        throw new Error(
-          "The compaction point moved during compaction: another process is writing the store",
-        );
-      }
-      // Compaction is the writer's: one that lost its lease, or holds none
-      // once the store has a fence, stops here.
-      this.#checkWriterFence(options.fence);
-      this.#base.begin(now);
-      rows.forEach((row, i) => {
-        foldCommit(this.#base, commits[i], row.cursor, MATERIALISED_SUBDIRS);
-      });
-      for (let i = 0; i < rows.length; i++) {
-        this.#base.compactCommit(
-          rows[i],
-          commits[i].chunkRefs(),
-          Date.parse(commits[i].at),
-        );
-      }
-      for (const snapshot of snapshots) {
+    const sliceMs = options.sliceMs ?? FOLD_SLICE_MS;
+    const turn = () => new Promise((resolve) => setTimeout(resolve, 0));
+    // Each snapshot lands in its own transaction before any of the batch's
+    // commits is deleted, as an append's snapshot does, so a rebuild never
+    // needs a deleted commit.
+    for (const snapshot of snapshots) {
+      await turn();
+      this.#db.exec("BEGIN IMMEDIATE");
+      try {
+        if (this.#point() !== point) {
+          throw new Error(
+            "The compaction point moved during compaction: another process is writing the store",
+          );
+        }
+        this.#checkWriterFence(options.fence);
         this.#upsertSnapshot.run(
           snapshot.namespace,
           snapshot.partition,
           snapshot.seq,
           snapshot.body,
         );
+        this.#db.exec("COMMIT");
+      } catch (error) {
+        rollbackQuietly(this.#db);
+        this.#cache.clear();
+        throw error;
       }
-      this.#base.setPoint(rows[rows.length - 1]);
-      totals.released += this.#base.finish(now - retention);
-      if (pruneTxnsBefore !== undefined) {
-        totals.prunedTxns += this.#base.pruneTxns(pruneTxnsBefore);
-      }
-      if (pruneRemovedBefore !== undefined) {
-        this.#base.pruneRemoved(pruneRemovedBefore, BASE_REMOVED_CAP);
-      }
-      options.beforeCommit?.();
-      this.#db.exec("COMMIT");
-    } catch (error) {
-      rollbackQuietly(this.#db);
-      // Cached partitions are unaffected by a rolled-back batch, but drop
-      // them anyway so nothing rebuilt around it is trusted.
-      this.#cache.clear();
-      throw error;
     }
-    totals.compacted += rows.length;
+    // The batch then folds in transactions of about a slice each, the loop
+    // turning between them; each leaves the point at its last commit, as a
+    // smaller batch would.
+    let expected = point;
+    let next = 0;
+    while (next < rows.length) {
+      if (next > 0) await turn();
+      const from = next;
+      this.#db.exec("BEGIN IMMEDIATE");
+      try {
+        if (this.#point() !== expected) {
+          throw new Error(
+            "The compaction point moved during compaction: another process is writing the store",
+          );
+        }
+        // Compaction is the writer's: one that lost its lease, or holds none
+        // once the store has a fence, stops here.
+        this.#checkWriterFence(options.fence);
+        if (from === 0) this.#base.begin(now);
+        else this.#base.beginSlice();
+        const until = performance.now() + sliceMs;
+        do {
+          foldCommit(
+            this.#base,
+            commits[next],
+            rows[next].cursor,
+            MATERIALISED_SUBDIRS,
+          );
+          next++;
+        } while (next < rows.length && performance.now() < until);
+        for (let i = from; i < next; i++) {
+          this.#base.compactCommit(
+            rows[i],
+            commits[i].chunkRefs(),
+            Date.parse(commits[i].at),
+          );
+        }
+        this.#base.setPoint(rows[next - 1]);
+        totals.released += this.#base.finish(now - retention);
+        if (next === rows.length) {
+          if (pruneTxnsBefore !== undefined) {
+            totals.prunedTxns += this.#base.pruneTxns(pruneTxnsBefore);
+          }
+          if (pruneRemovedBefore !== undefined) {
+            this.#base.pruneRemoved(pruneRemovedBefore, BASE_REMOVED_CAP);
+          }
+        }
+        options.beforeCommit?.();
+        this.#db.exec("COMMIT");
+      } catch (error) {
+        rollbackQuietly(this.#db);
+        // Cached partitions are unaffected by a rolled-back batch, but drop
+        // them anyway so nothing rebuilt around it is trusted.
+        this.#cache.clear();
+        throw error;
+      }
+      totals.compacted += next - from;
+      expected = rows[next - 1].cursor;
+    }
     totals.batches++;
     return true;
   }
@@ -4427,10 +4469,12 @@ interface CompactionTotals {
 /** Test hooks for {@link SqliteCommitStore.compactHistory}. */
 interface CompactionTestHooks {
   /**
-   * Called inside each batch's transaction just before it commits. Tests
-   * use it to fail or stop a batch there.
+   * Called inside each of a batch's transactions just before it commits.
+   * Tests use it to fail or stop a batch there.
    */
   readonly beforeCommit?: () => void;
+  /** how long one of a batch's transactions folds before the loop turns */
+  readonly sliceMs?: number;
 }
 
 /** {@link CompactHistoryOptions} with the SQLite store's test hooks. */
@@ -4835,11 +4879,19 @@ class SqliteCompactedBase implements CompactedBaseWriter {
   /** Starts a batch at time `now` (epoch milliseconds). */
   begin(now: number): void {
     this.#now = now;
+    this.beginSlice();
+    this.#versions.clear();
+    this.#catalog.clear();
+  }
+
+  /**
+   * starts another of a batch's transactions; the read caches hold what the
+   * last one committed, so they carry over
+   */
+  beginSlice(): void {
     this.#at = null;
     this.touched.clear();
     this.#released = 0;
-    this.#versions.clear();
-    this.#catalog.clear();
   }
 
   putRecord(

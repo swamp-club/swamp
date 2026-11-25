@@ -329,6 +329,44 @@ Deno.test("SqliteCommitStore.compactHistory: never folds past its target, though
   });
 });
 
+async function basePages(store: SqliteCommitStore): Promise<unknown[]> {
+  const pages: unknown[] = [];
+  let after: string | undefined;
+  do {
+    const page = await store.readCompactedBase(after, 100);
+    pages.push({ ...page, next: undefined });
+    after = page.next;
+  } while (after !== undefined);
+  return pages;
+}
+
+Deno.test("SqliteCommitStore.compactHistory: a batch stopped in its second transaction keeps the first's fold, and the next compaction ends where one transaction does", async () => {
+  await withStore(async (whole) => {
+    await withStore(async (sliced) => {
+      for (let seq = 1; seq <= 4; seq++) {
+        await whole.append(await save(seq));
+        await sliced.append(await save(seq));
+      }
+      await whole.compactHistory(4);
+      let transactions = 0;
+      await assertRejects(() =>
+        sliced.compactHistory(4, {
+          sliceMs: 0,
+          beforeCommit: () => {
+            if (++transactions === 2) throw new Error("stopped");
+          },
+        })
+      );
+      assertEquals(await sliced.compactionPoint(), 1);
+      assertEquals((await sliced.history()).storedCommits, 3);
+      const report = await sliced.compactHistory(4, { sliceMs: 0 });
+      assertEquals(report.compacted, 3);
+      assertEquals(await sliced.compactionPoint(), 4);
+      assertEquals(await basePages(sliced), await basePages(whole));
+    });
+  });
+});
+
 Deno.test("SqliteCommitStore.oldestStoredCommitAt: is the oldest commit above the compaction point", async () => {
   await withStore(async (store, path) => {
     assertEquals(await store.oldestStoredCommitAt(), null);
