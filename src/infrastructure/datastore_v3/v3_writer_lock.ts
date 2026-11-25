@@ -77,10 +77,11 @@ export class V3WriterBusyError extends UserError {
     super(
       options.heldByServe === true
         ? `swamp serve${named} holds the writer lease of the v3 datastore at ` +
-          `${datastorePath} for as long as it runs. Run this command ` +
-          `through serve: add --server ${
+          `${datastorePath} for as long as it runs. If this command takes ` +
+          `--server, run it through serve: add --server ${
             writerLockState().serveAddress ?? "<url>"
-          }. If serve is gone, \`swamp datastore lock status\` shows the ` +
+          }. Otherwise run it on the serve host after stopping serve. If ` +
+          "serve is gone, `swamp datastore lock status` shows the " +
           "lock and `swamp datastore lock release --force` clears it. " +
           "Nothing was changed."
         : `Another swamp process is writing the v3 datastore at ${datastorePath}` +

@@ -2029,7 +2029,11 @@ export async function tryAcquireWithin(
     await lock.acquire(signal);
   } catch (error) {
     // only a wait that ran out is a held lock; a failed catch-up is an error
-    if (error instanceof LockTimeoutError || error === signal.reason) {
+    if (
+      error instanceof LockTimeoutError || error === signal.reason ||
+      (signal.aborted && error instanceof DOMException &&
+        (error.name === "AbortError" || error.name === "TimeoutError"))
+    ) {
       return null;
     }
     throw error;

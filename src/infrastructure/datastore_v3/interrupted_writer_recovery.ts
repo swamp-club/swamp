@@ -330,6 +330,13 @@ export async function recoverInterruptedWriter(
     marker.state === "interrupted" || marker.state === "unknown"
   );
   if (dead.length === 0) return undefined;
+  // a live older swamp writes for its whole command and journals nothing this
+  // one can keep apart, so its checkout waits until it ends
+  if (judged.some((marker) => marker.state === "live" && isLegacy(marker))) {
+    logger
+      .info`Not recovering ${repoDir} yet: an older swamp process still writes it`;
+    return undefined;
+  }
   const live = liveInstancesOf(judged);
   let removed: string[] | undefined;
   for (const marker of dead) {
@@ -462,9 +469,13 @@ function liveInstancesOf(judged: readonly JudgedMarker[]): string[] {
   return [...live];
 }
 
+function isLegacy(marker: WriterMarkerAt): boolean {
+  return marker.path.endsWith(WRITER_MARKER_FILE);
+}
+
 /** the token a marker's journaled scopes carry; an older swamp's carry none */
 function journalInstanceOf(marker: WriterMarkerAt): string {
-  if (marker.path.endsWith(WRITER_MARKER_FILE)) return "";
+  if (isLegacy(marker)) return "";
   return marker.file.kind === "marker" ? marker.file.marker.instance ?? "" : "";
 }
 

@@ -23,8 +23,9 @@ import type {
   LocalProcess,
   ProcessIdentity,
 } from "../../domain/datastore_v3/process_liveness.ts";
-import { localProcess } from "./process_identity.ts";
+import { localProcess, setLocalProcessForTesting } from "./process_identity.ts";
 import {
+  listWriterMarkerFiles,
   readWriterMarker,
   readWriterMarkerFile,
   recoverInterruptedWriter,
@@ -652,4 +653,67 @@ Deno.test("recoverOwnPredecessor: prewarms before recovering a gone predecessor,
       assertEquals(seen, [true]);
     });
   });
+});
+
+Deno.test("recoverInterruptedWriter: a dead writer's marker waits while an older swamp still writes the checkout", async () => {
+  const kernel = { host: "host#pid:[1]", bootId: "boot-id:a" };
+  const LEGACY_PID = 4242;
+  for (const legacyAlive of [true, false]) {
+    await withTempDir(async (dir) => {
+      const legacy = writerMarkerPath(dir);
+      await Deno.mkdir(dirname(legacy), { recursive: true });
+      await Deno.writeTextFile(
+        legacy,
+        JSON.stringify({
+          hostname: "host",
+          pid: LEGACY_PID,
+          since: 0,
+          process: kernel,
+        }),
+      );
+      const instance = crypto.randomUUID();
+      const dead = join(dirname(legacy), "writers", `${instance}.json`);
+      await Deno.mkdir(dirname(dead), { recursive: true });
+      await Deno.writeTextFile(
+        dead,
+        JSON.stringify({
+          hostname: "host",
+          pid: 5151,
+          instance,
+          since: 0,
+          process: kernel,
+          journal: 1,
+        }),
+      );
+      setLocalProcessForTesting({
+        pid: Deno.pid,
+        identity: { ...kernel, startTime: "t-self" },
+        probe: (pid) => ({
+          present: legacyAlive && pid === LEGACY_PID,
+          zombie: false,
+          startTime: "t1",
+        }),
+        bootIdRequired: true,
+      });
+      try {
+        const calls: number[] = [];
+        await recoverInterruptedWriter(recordingHandle(dir, calls), dir, {
+          holdsWriterLock: true,
+        });
+        assertEquals(
+          calls.length,
+          legacyAlive ? 0 : 2,
+          legacyAlive
+            ? "nothing is recovered beside a live older writer"
+            : "both gone writers are recovered",
+        );
+        assertEquals(
+          (await listWriterMarkerFiles(dir)).length,
+          legacyAlive ? 2 : 0,
+        );
+      } finally {
+        setLocalProcessForTesting(undefined);
+      }
+    });
+  }
 });
