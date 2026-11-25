@@ -107,8 +107,7 @@ export function createWorkspaceRouter(
     };
     upstream.onmessage = (e) => queueForCaller(e.data);
 
-    // the WebSocket API hides a refused handshake's status, so a child's 401
-    // or 421 reaches the caller as this 502
+    let failure = "";
     const outcome = await new Promise<"open" | "refused" | "timeout">(
       (resolve) => {
         const settle = (result: "open" | "refused" | "timeout") => {
@@ -125,9 +124,10 @@ export function createWorkspaceRouter(
         upstream.addEventListener("open", () => settle("open"), {
           once: true,
         });
-        upstream.addEventListener("error", () => settle("refused"), {
-          once: true,
-        });
+        upstream.addEventListener("error", (e) => {
+          failure = e instanceof ErrorEvent ? e.message : "";
+          settle("refused");
+        }, { once: true });
         upstream.addEventListener("close", () => settle("refused"), {
           once: true,
         });
@@ -136,10 +136,16 @@ export function createWorkspaceRouter(
     if (outcome !== "open") {
       closeQuietly(upstream, 1000, "");
       logger
-        .info`A WebSocket to the child on port ${port} did not open: ${outcome}`;
-      return outcome === "timeout"
-        ? hostReply(504, { error: "The workspace did not answer in time." })
-        : hostReply(502, { error: "The workspace could not be reached." });
+        .info`A WebSocket to the child on port ${port} did not open: ${outcome} ${failure}`;
+      if (outcome === "timeout") {
+        return hostReply(504, {
+          error: "The workspace did not answer in time.",
+        });
+      }
+      const status = refusalStatus(failure);
+      return status === undefined
+        ? hostReply(502, { error: "The workspace could not be reached." })
+        : hostReply(status, { error: "The workspace refused the WebSocket." });
     }
 
     let upgraded: { socket: WebSocket; response: Response };
@@ -242,6 +248,15 @@ export function createWorkspaceRouter(
       );
     },
   };
+}
+
+// Deno's WebSocket client names a refused handshake's status only in its error
+// text, never its body or headers, so a redirect without Location falls to 502
+function refusalStatus(failure: string): number | undefined {
+  const match = failure.match(/Invalid status code: (\d{3})\b/);
+  if (match === null) return undefined;
+  const status = Number(match[1]);
+  return status >= 400 && status <= 599 ? status : undefined;
 }
 
 function noWorkspace(): Response {

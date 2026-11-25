@@ -36,6 +36,8 @@ interface StandIn {
   /** resolves the SSE route's second event */
   releaseSse(): void;
   readonly cancelled: { value: boolean };
+  /** how many handshakes reached /ws-auth */
+  readonly handshakes: { value: number };
   shutdown(): Promise<void>;
 }
 
@@ -43,6 +45,7 @@ interface StandIn {
 function startStandIn(who: string): StandIn {
   let releaseSse = () => {};
   const cancelled = { value: false };
+  const handshakes = { value: 0 };
   const hold = { waiting: false, aborted: false };
   const server = Deno.serve(
     { hostname: "127.0.0.1", port: 0, onListen() {} },
@@ -92,8 +95,50 @@ function startStandIn(who: string): StandIn {
           };
           return response;
         }
-        case "/ws-refuse":
-          return new Response("no", { status: 401 });
+        // refuses as a serve does, by the credential and headers it is sent
+        case "/ws-auth": {
+          handshakes.value++;
+          const detail = { headers: { "x-child-detail": "internal" } };
+          switch (seen.authorization) {
+            case "Bearer good":
+              break;
+            case "Bearer busy":
+              return new Response("child: rate limited", {
+                status: 429,
+                headers: { "retry-after": "30", "x-child-detail": "internal" },
+              });
+            case "Bearer draining":
+              return new Response("child: shutting down", {
+                status: 503,
+                ...detail,
+              });
+            default:
+              return new Response("child: token refused", {
+                status: 401,
+                ...detail,
+              });
+          }
+          if (seen.origin === "https://evil.example") {
+            return new Response("child: origin refused", {
+              status: 403,
+              ...detail,
+            });
+          }
+          if (seen.forwardedHost === "elsewhere.example") {
+            return new Response("child: misdirected", {
+              status: 421,
+              ...detail,
+            });
+          }
+          const { socket, response } = Deno.upgradeWebSocket(req);
+          socket.onmessage = (e) => socket.send(e.data);
+          return response;
+        }
+        case "/ws-redirect":
+          return new Response("child: moved", {
+            status: 301,
+            headers: { location: "/elsewhere" },
+          });
         case "/upload": {
           const size = (await req.arrayBuffer()).byteLength;
           return Response.json({ ...seen, size });
@@ -179,6 +224,7 @@ function startStandIn(who: string): StandIn {
     hold,
     releaseSse: () => releaseSse(),
     cancelled,
+    handshakes,
     shutdown: () => server.shutdown(),
   };
 }
@@ -531,17 +577,96 @@ Deno.test("workspace router: a WebSocket is relayed with its subprotocol, Origin
   });
 });
 
-Deno.test("workspace router: a child that refuses a WebSocket upgrade is answered 502", async () => {
-  await withFixture(async ({ router }) => {
-    const reply = await nodeRequest(router.port, "/w/edge-dns/ws-refuse", {
+const UPGRADE = {
+  connection: "Upgrade",
+  upgrade: "websocket",
+  "sec-websocket-version": "13",
+  "sec-websocket-key": btoa("0123456789abcdef"),
+};
+
+Deno.test("workspace router: a child's refusal of a WebSocket reaches the caller with its status, asked once and with none of the child's reply", async () => {
+  const cases: Array<
+    { name: string; headers: Record<string, string>; status: number }
+  > = [
+    { name: "no token", headers: {}, status: 401 },
+    {
+      name: "a wrong token",
+      headers: { authorization: "Bearer wrong" },
+      status: 401,
+    },
+    {
+      name: "a foreign origin",
       headers: {
-        connection: "Upgrade",
-        upgrade: "websocket",
-        "sec-websocket-version": "13",
-        "sec-websocket-key": btoa("0123456789abcdef"),
+        authorization: "Bearer good",
+        origin: "https://evil.example",
       },
+      status: 403,
+    },
+    {
+      name: "a misdirected host",
+      headers: { authorization: "Bearer good", host: "elsewhere.example" },
+      status: 421,
+    },
+    {
+      name: "a rate limit",
+      headers: { authorization: "Bearer busy" },
+      status: 429,
+    },
+    {
+      name: "a child shutting down",
+      headers: { authorization: "Bearer draining" },
+      status: 503,
+    },
+  ];
+  await withFixture(async ({ router, child }) => {
+    for (const { name, headers, status } of cases) {
+      const before = child.handshakes.value;
+      const reply = await nodeRequest(router.port, "/w/edge-dns/ws-auth", {
+        headers: { ...UPGRADE, ...headers },
+      });
+      assertEquals(reply.status, status, name);
+      assertEquals(
+        JSON.parse(reply.body),
+        { error: "The workspace refused the WebSocket." },
+        name,
+      );
+      assertEquals(reply.headers["x-child-detail"], undefined, name);
+      assertEquals(reply.headers["retry-after"], undefined, name);
+      assertEquals(child.handshakes.value - before, 1, name);
+    }
+  });
+});
+
+Deno.test("workspace router: a WebSocket the child accepts for its credential is relayed after one handshake", async () => {
+  await withFixture(async ({ router, child }) => {
+    const ws = new WebSocket(
+      `ws://127.0.0.1:${router.port}/w/edge-dns/ws-auth`,
+      { headers: { authorization: "Bearer good" } },
+    );
+    const messages: string[] = [];
+    ws.onmessage = (e) => messages.push(e.data);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        ws.onopen = () => resolve();
+        ws.onerror = () => reject(new Error("the relayed socket did not open"));
+      });
+      ws.send("echo me");
+      await waitFor(() => messages.length >= 1, "the echoed frame");
+      assertEquals(messages[0], "echo me");
+      assertEquals(child.handshakes.value, 1);
+    } finally {
+      ws.close();
+    }
+  });
+});
+
+Deno.test("workspace router: a child redirecting a WebSocket upgrade is answered 502, since its Location cannot be passed on", async () => {
+  await withFixture(async ({ router }) => {
+    const reply = await nodeRequest(router.port, "/w/edge-dns/ws-redirect", {
+      headers: UPGRADE,
     });
     assertEquals(reply.status, 502);
+    assertEquals(reply.headers.location, undefined);
   });
 });
 

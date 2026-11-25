@@ -671,12 +671,9 @@ Deno.test("workspace sign-in from the CLI: a workspace refusing its exchanged to
       command(host, host.workspaceAddress)
     );
     const message = (error as Error).message;
-    assert(message.includes("HTTP 502"), message);
-    assert(
-      message.includes(
-        `signing in to the host again replaces it: swamp auth server-login --server ${host.hostAddress}`,
-      ),
+    assertEquals(
       message,
+      `Authentication failed — the workspace refused the token from your host sign-in; sign in to the host again to replace it: swamp auth server-login --server ${host.hostAddress}`,
     );
   });
 });

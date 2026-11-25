@@ -2115,7 +2115,9 @@ connection error with two guards:
   (`PRE_ENROLL_RETRY_BUDGET_MS`) have passed since the first failure of the
   current streak; the last sleep is shortened so one final attempt lands at the
   budget. Any other failure (a 401 or 403, a DNS failure, a timeout) gives up
-  after 3 consecutive attempts (`MAX_PRE_ENROLL_FAILURES`). The streak resets whenever a `connectOnce` attempt returns normally
+  after 3 consecutive attempts (`MAX_PRE_ENROLL_FAILURES`). Behind a serve
+  host the same rule holds, since its router passes on the workspace's
+  status at the upgrade. The streak resets whenever a `connectOnce` attempt returns normally
   (after an enrolled session ends), so blips during an established session do
   not accumulate. This lets an enrolled worker ride out a `swamp serve` restart
   that refuses connections for several seconds or minutes.
