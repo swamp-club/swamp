@@ -607,7 +607,7 @@ function dumpState(path: string): Record<string, string[]> {
   }
 }
 
-Deno.test("ReadModelState.recordApplied: commits applied a batch at a time leave the same state as each in its own transaction (swamp-club#5094)", async () => {
+Deno.test("ReadModelState.recordApplied: commits applied a batch at a time leave, at each batch's end, the same state as each in its own transaction (swamp-club#5094)", async () => {
   await fc.assert(
     fc.asyncProperty(
       fc.array(fc.tuple(stateStep, fc.boolean()), {
@@ -615,32 +615,40 @@ Deno.test("ReadModelState.recordApplied: commits applied a batch at a time leave
         maxLength: 30,
       }),
       async (steps) => {
-        const dumps: Record<string, string[]>[] = [];
-        for (const batched of [false, true]) {
-          await withStatePath((path) => {
-            const state = ReadModelState.open(path, { pid: 7 });
-            const seqs = new Map<string, number>();
-            try {
-              let open = false;
-              steps.forEach(([step, endsBatch], i) => {
-                if (batched && !open) {
-                  state.beginBatch();
-                  open = true;
-                }
-                applyStep(state, step, seqs, i + 1);
-                if (batched && endsBatch) {
-                  state.commitBatch();
-                  open = false;
-                }
-              });
-              if (open) state.commitBatch();
-            } finally {
-              state.close();
-            }
-            dumps.push(dumpState(path));
-          });
-        }
-        assertEquals(dumps[1], dumps[0]);
+        const unbatched: Record<string, string[]>[] = [];
+        await withStatePath((path) => {
+          const state = ReadModelState.open(path, { pid: 7 });
+          const seqs = new Map<string, number>();
+          try {
+            steps.forEach(([step], i) => {
+              applyStep(state, step, seqs, i + 1);
+              unbatched.push(dumpState(path));
+            });
+          } finally {
+            state.close();
+          }
+        });
+        await withStatePath((path) => {
+          const state = ReadModelState.open(path, { pid: 7 });
+          const seqs = new Map<string, number>();
+          try {
+            let open = false;
+            steps.forEach(([step, endsBatch], i) => {
+              if (!open) {
+                state.beginBatch();
+                open = true;
+              }
+              applyStep(state, step, seqs, i + 1);
+              if (endsBatch || i === steps.length - 1) {
+                state.commitBatch();
+                open = false;
+                assertEquals(dumpState(path), unbatched[i], `after step ${i}`);
+              }
+            });
+          } finally {
+            state.close();
+          }
+        });
       },
     ),
     { numRuns: 150 },
