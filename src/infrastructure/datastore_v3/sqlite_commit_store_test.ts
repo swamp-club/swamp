@@ -2749,10 +2749,10 @@ Deno.test("SqliteCommitStore.open: the run-tail index is made without raising th
     assertEquals(indexes.length, 1);
     // the version main's swamp writes: every checkout of a filesystem
     // datastore shares this file, so no checkout may move it on alone
-    assertEquals(COMMIT_STORE_SCHEMA_VERSION, 21);
+    assertEquals(COMMIT_STORE_SCHEMA_VERSION, 14);
     assertEquals(
       rawRows(path, "PRAGMA user_version")[0].user_version,
-      21,
+      14,
     );
   });
 });

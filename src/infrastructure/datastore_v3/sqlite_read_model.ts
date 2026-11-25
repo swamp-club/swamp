@@ -1081,7 +1081,7 @@ export class SqliteReadModel implements ReadModel {
           owned: true,
           ...(bounded === undefined ? {} : { scopes: bounded.walk }),
         });
-        for (const name of dirty) scope.addName(name);
+        for (const name of dirty) scope.addName(name, { others: true });
         for (const name of bounded?.names ?? []) scope.addName(name);
         for (const dir of options.droppedDirs ?? []) {
           const name = dataNameOfKey(dir);

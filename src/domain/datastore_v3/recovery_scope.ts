@@ -88,10 +88,14 @@ export class RecoveryScope {
     this.#kept = kept;
   }
 
-  /** false, and the scope unusable, for a name of no valid model partition */
-  addName(name: CatalogNameKey): boolean {
+  /**
+   * false, and the scope unusable, for a name of no valid model partition;
+   * `others` is a name any writer may have changed, so one a live writer keeps
+   * is its own rather than one left to it
+   */
+  addName(name: CatalogNameKey, options: { others?: boolean } = {}): boolean {
     if (this.#kept(name.namespace, dataNamePrefix(name))) {
-      this.#left = true;
+      if (options.others !== true) this.#left = true;
       return true;
     }
     let partition: PartitionKey;
