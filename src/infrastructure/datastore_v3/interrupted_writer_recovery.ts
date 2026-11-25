@@ -101,6 +101,11 @@ export interface WriterMarker {
   readonly journal?: number;
   /** the writer instance the process's commits to this checkout carry */
   readonly commits?: string;
+  /**
+   * the writer holds the lease only to commit, so a free lease never says it
+   * has ended
+   */
+  readonly sections?: boolean;
 }
 
 /** what a writer marker's journal says this binary's writers record */
@@ -123,6 +128,7 @@ export interface WriteWriterMarkerOptions
   extends Pick<DurableWriteBatchOptions, "syncFile" | "syncDirectory"> {
   readonly signal?: AbortSignal;
   readonly commits?: string;
+  readonly sections?: boolean;
 }
 
 /**
@@ -142,6 +148,7 @@ export async function writeWriterMarker(
     since: recoverySince(Date.now()),
     journal: WRITER_JOURNAL_VERSION,
     ...(options.commits !== undefined ? { commits: options.commits } : {}),
+    ...(options.sections === true ? { sections: true } : {}),
   };
   await writeFileDurably(
     ownWriterMarkerPath(repoDir),
@@ -271,6 +278,7 @@ function parseWriterMarker(text: string): WriterMarker | undefined {
         ...(typeof value.commits === "string"
           ? { commits: value.commits }
           : {}),
+        ...(value.sections === true ? { sections: true } : {}),
       };
     }
   } catch {
@@ -326,9 +334,7 @@ export async function recoverInterruptedWriter(
   options: RecoverInterruptedWriterOptions,
 ): Promise<string[] | undefined> {
   const judged = await judgeMarkers(repoDir, await localProcess());
-  const dead = judged.filter((marker) =>
-    marker.state === "interrupted" || marker.state === "unknown"
-  );
+  const dead = judged.filter(isDead);
   if (dead.length === 0) return undefined;
   // a live older swamp writes for its whole command and journals nothing this
   // one can keep apart, so its checkout waits until it ends
@@ -464,12 +470,20 @@ interface Peers {
 function peersOf(judged: readonly JudgedMarker[]): Peers {
   return {
     live: liveInstancesOf(judged),
-    dead: judged
-      .filter((marker) =>
-        marker.state === "interrupted" || marker.state === "unknown"
-      )
-      .map(journalInstanceOf),
+    dead: judged.filter(isDead).map(journalInstanceOf),
   };
+}
+
+/**
+ * a writer this host cannot judge (another host, namespace, or a hostname
+ * changed since it started) is taken as ended only by the lease, which says
+ * so only for a writer that holds it for its whole command
+ */
+function isDead(marker: JudgedMarker): boolean {
+  if (marker.state === "interrupted") return true;
+  if (marker.state !== "unknown") return false;
+  return !(marker.file.kind === "marker" &&
+    marker.file.marker.sections === true);
 }
 
 /** the writers whose scopes a recovery keeps: this one, and every live one */

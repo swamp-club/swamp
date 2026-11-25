@@ -937,7 +937,7 @@ async function enterCommitSections(
       await repoState().markedCheckouts.get(key);
       return;
     }
-    const marking = recoverAndMark(config, repoDir);
+    const marking = recoverAndMark(config, repoDir, { sections: true });
     repoState().markedCheckouts.set(key, marking);
     try {
       await marking;
@@ -1849,17 +1849,19 @@ async function recordWriterCheckout(
 function recoverAndMark(
   config: V3DatastoreConfig,
   repoDir: string,
+  options: { readonly sections?: boolean } = {},
 ): Promise<void> {
   return withSpan(
     "swamp.datastore.v3.recover_and_mark",
     {},
-    () => recoverAndMarkTraced(config, repoDir),
+    () => recoverAndMarkTraced(config, repoDir, options),
   );
 }
 
 async function recoverAndMarkTraced(
   config: V3DatastoreConfig,
   repoDir: string,
+  options: { readonly sections?: boolean },
 ): Promise<void> {
   // what a writer that died left in the outbox lands first, so the
   // interrupted-writer recovery keeps the files its commits own; failures name
@@ -1918,6 +1920,7 @@ async function recoverAndMarkTraced(
   if (!await holdsOwnWriterMarker(repoDir)) {
     await writeWriterMarker(repoDir, {
       commits: handle.commitWriterInstance,
+      ...(options.sections === true ? { sections: true } : {}),
     });
   }
 }

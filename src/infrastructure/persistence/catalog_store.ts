@@ -343,9 +343,14 @@ export function ensureTouchedInstanceColumn(db: DatabaseSync): void {
   if (columns.length === 0 || columns.some((c) => c.name === "instance")) {
     return;
   }
-  db.exec(
-    "ALTER TABLE catalog_touched ADD COLUMN instance TEXT NOT NULL DEFAULT ''",
-  );
+  try {
+    db.exec(
+      "ALTER TABLE catalog_touched ADD COLUMN instance TEXT NOT NULL DEFAULT ''",
+    );
+  } catch (error) {
+    // another process sharing the checkout added it between the look and here
+    if (!/duplicate column name/i.test(String(error))) throw error;
+  }
 }
 
 /** a dirty name held by a commit not known to have landed */
