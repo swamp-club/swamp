@@ -313,6 +313,7 @@ import {
   catchUpBeforeLockAt,
   catchUpDeferredAt,
   catchUpDeferredTo,
+  catchUpV3AfterBehaviorLock,
   catchUpV3HandlesAt,
   endDeferralsAt,
   goServeOfflineAt,
@@ -2012,7 +2013,7 @@ export async function createModelLock(
     const provider = await resolveCustomProvider(config);
     return provider.createLock(config.datastorePath, { lockKey, maxWaitMs });
   }
-  return new FileLock(config.path, {
+  const lock = new FileLock(config.path, {
     lockKey,
     maxWaitMs,
     retryIntervalMs: MODEL_LOCK_RETRY_INTERVAL_MS,
@@ -2020,6 +2021,20 @@ export async function createModelLock(
     syncCreatedDirectories: resolveDurableWrites(datastoreConfig) &&
       (config.format !== 3 || mayKeepDataLocal(config)),
   });
+  if (config.format !== 3) return lock;
+  // a v3 writer holds the lease only to commit, so others commit between its
+  // sections: under the behavior's lock it must first see what they committed
+  const acquire = lock.acquire.bind(lock);
+  lock.acquire = async (signal?: AbortSignal) => {
+    await acquire(signal);
+    try {
+      await catchUpV3AfterBehaviorLock(config.path, modelType, modelId);
+    } catch (error) {
+      await lock.release().catch(() => {});
+      throw error;
+    }
+  };
+  return lock;
 }
 
 /**

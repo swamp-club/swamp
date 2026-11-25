@@ -112,6 +112,7 @@ import { isLineageBroken } from "../../domain/datastore_v3/replica_verification.
 import { atomicWriteTextFile } from "../persistence/atomic_write.ts";
 import { catalogNamesOfCommit } from "../../domain/datastore_v3/name_history_replay.ts";
 import { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
+import { isUuid } from "../../domain/models/model_lookup.ts";
 import type { DirtyNamePin } from "./v3_catalog.ts";
 import {
   holdsOwnWriterMarker,
@@ -1039,6 +1040,31 @@ async function takeTeardownSections(): Promise<
     sections.push({ handle, release });
   }
   return sections;
+}
+
+/**
+ * another process may have committed to the behavior between this writer's
+ * sections; its lock orders this writer after them, so the behavior's own
+ * partition catches up before work under the lock reads it
+ */
+export async function catchUpV3AfterBehaviorLock(
+  datastorePath: string,
+  modelType: string,
+  modelId: string,
+): Promise<void> {
+  // a lock named for a behavior, not its id, guards no partition
+  if (!isUuid(modelId)) return;
+  const partition = PartitionKey.forModel(modelType, modelId);
+  for (const [key, writer] of repoState().sectionedWriters) {
+    if (resolve(writer.config.path) !== resolve(datastorePath)) continue;
+    const handle = repoState().opened.get(key);
+    if (handle === undefined) continue;
+    await handle.readModel.catchUpPartition(
+      handle.namespace,
+      partition,
+      new AbortController().signal,
+    );
+  }
 }
 
 async function outboxClean(writer: SectionedWriter): Promise<boolean> {
