@@ -24,7 +24,12 @@ import {
   createModelLock,
   requireInitializedRepoUnlocked,
 } from "../src/cli/repo_context.ts";
-import { closeV3Datastores } from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
+import {
+  catchUpV3HandlesAt,
+  closeV3Datastores,
+} from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
+import { endWriterInstanceForTesting } from "../src/infrastructure/datastore_v3/writer_instance.ts";
+import { isCustomDatastoreConfig } from "../src/domain/datastore/datastore_config.ts";
 import { runInRootUnitOfWork } from "../src/infrastructure/persistence/repo_unit_of_work.ts";
 import type { ProcessHost } from "./process_host.ts";
 
@@ -41,6 +46,10 @@ export type LocalWriterRequest =
     readonly lock?: boolean;
   }
   | { readonly kind: "resume"; readonly id: string }
+  /** catches every handle of the checkout up, as a reader's command does */
+  | { readonly kind: "catchUp" }
+  /** killed: its units never finish and its token is no longer live */
+  | { readonly kind: "die" }
   | { readonly kind: "close" };
 
 export type LocalWriterMessage =
@@ -53,6 +62,7 @@ export type LocalWriterMessage =
     readonly count: number;
   }
   | { readonly closed: true }
+  | { readonly caughtUp: true }
   | { readonly failed: string; readonly id?: string };
 
 /** one swamp process writing a checkout of a local filesystem v3 datastore */
@@ -177,6 +187,24 @@ export const localWriterHost: ProcessHost<
       case "resume":
         resumes.get(request.id)?.();
         resumes.delete(request.id);
+        return;
+      case "catchUp": {
+        const config = context.datastoreConfig;
+        if (isCustomDatastoreConfig(config)) {
+          post({
+            failed: "a local writer host runs on a filesystem datastore",
+          });
+          return;
+        }
+        catchUpV3HandlesAt(config.path).then(
+          () => post({ caughtUp: true }),
+          (error) => post({ failed: String(error) }),
+        );
+        return;
+      }
+      case "die":
+        endWriterInstanceForTesting();
+        resumes.clear();
         return;
       case "close":
         closeV3Datastores().then(

@@ -39,3 +39,8 @@ export function writerInstance(): string {
 export function isWriterInstanceLiveHere(token: string): boolean {
   return liveHere.has(token);
 }
+
+/** the runtime plays a process that was killed: its token is no longer live */
+export function endWriterInstanceForTesting(): void {
+  liveHere.delete(instance());
+}

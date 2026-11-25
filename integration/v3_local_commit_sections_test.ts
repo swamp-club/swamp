@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assert, assertEquals } from "@std/assert";
-import { copy } from "@std/fs";
+import { copy, walk } from "@std/fs";
 import { join } from "@std/path";
 import fc from "fast-check";
 import { waitFor } from "@swamp-club/swamp-testing";
@@ -297,6 +297,146 @@ Deno.test({
         await assertCheckoutsAgree(repos, datastorePath, "shared behavior");
       } finally {
         for (const writer of writers) writer.stop();
+      }
+    });
+  },
+});
+
+/** the latest-version marker of a data name in a checkout, or undefined */
+async function latestOf(
+  repoDir: string,
+  dataName: string,
+): Promise<string | undefined> {
+  for await (
+    const entry of walk(join(repoDir, ".swamp", "data"), {
+      includeDirs: false,
+      followSymlinks: false,
+    })
+  ) {
+    if (entry.path.endsWith(join(dataName, "latest"))) {
+      return (await Deno.readTextFile(entry.path)).trim();
+    }
+  }
+  return undefined;
+}
+
+Deno.test({
+  name:
+    "v3 local commit sections: another process's catch-up in the same checkout leaves a paused writer's uncommitted files",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withV3RowRepos({}, async (repos, datastorePath) => {
+      await closeV3Datastores();
+      const writer = startWriter("writer");
+      const reader = startWriter("reader");
+      try {
+        const type = repos.modelType.normalized;
+        await opened(reader, repos.repoA, type);
+        await opened(writer, repos.repoA, type);
+        writer.send({
+          kind: "write",
+          id: "v1",
+          model: "m",
+          data: "d-w",
+          lock: true,
+        });
+        assertEquals(await written(writer, "v1"), 1);
+        writer.send({
+          kind: "write",
+          id: "v2",
+          model: "m",
+          data: "d-w",
+          lock: true,
+          pause: true,
+        });
+        await writer.seen((m) => "paused" in m, "v2 staged");
+        assertEquals(await latestOf(repos.repoA, "d-w"), "2");
+        reader.send({ kind: "catchUp" });
+        await reader.seen((m) => "caughtUp" in m, "the reader caught up");
+        assertEquals(
+          await latestOf(repos.repoA, "d-w"),
+          "2",
+          "the catch-up replayed v1 over the writer's staged v2",
+        );
+        writer.send({ kind: "resume", id: "v2" });
+        assertEquals(await written(writer, "v2"), 2);
+        await closed(writer);
+        await closed(reader);
+        await assertCheckoutsAgree(repos, datastorePath, "after v2");
+      } finally {
+        writer.stop();
+        reader.stop();
+      }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "v3 local commit sections: a writer killed mid-unit is recovered by the next writer of its checkout, and a live writer's staged work there survives",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withV3RowRepos({}, async (repos, datastorePath) => {
+      await closeV3Datastores();
+      const killed = startWriter("killed");
+      const live = startWriter("live");
+      const next = startWriter("next");
+      try {
+        const type = repos.modelType.normalized;
+        await opened(killed, repos.repoA, type);
+        await opened(live, repos.repoA, type);
+        killed.send({
+          kind: "write",
+          id: "k1",
+          model: "mk",
+          data: "d-k",
+          lock: true,
+        });
+        assertEquals(await written(killed, "k1"), 1);
+        killed.send({
+          kind: "write",
+          id: "k2",
+          model: "mk",
+          data: "d-k",
+          pause: true,
+        });
+        await killed.seen((m) => "paused" in m, "k2 staged");
+        live.send({
+          kind: "write",
+          id: "l1",
+          model: "ml",
+          data: "d-l",
+          pause: true,
+        });
+        await live.seen((m) => "paused" in m, "l1 staged");
+        assertEquals(await latestOf(repos.repoA, "d-k"), "2");
+        assertEquals(await latestOf(repos.repoA, "d-l"), "1");
+        killed.send({ kind: "die" });
+        killed.stop();
+        await opened(next, repos.repoA, type);
+        next.send({ kind: "write", id: "n1", model: "mn", data: "d-n" });
+        assertEquals(await written(next, "n1"), 1);
+        assertEquals(
+          await latestOf(repos.repoA, "d-k"),
+          "1",
+          "the killed writer's uncommitted v2 is recovered to its last commit",
+        );
+        assertEquals(
+          await latestOf(repos.repoA, "d-l"),
+          "1",
+          "the live writer's staged file survived the recovery",
+        );
+        live.send({ kind: "resume", id: "l1" });
+        assertEquals(await written(live, "l1"), 1);
+        await closed(live);
+        await closed(next);
+        await assertCheckoutsAgree(repos, datastorePath, "after recovery");
+      } finally {
+        killed.stop();
+        live.stop();
+        next.stop();
       }
     });
   },
