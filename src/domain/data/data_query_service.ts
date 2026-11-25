@@ -72,7 +72,11 @@ import {
 } from "./query_view.ts";
 import { type ContentEncoding, encodeContent } from "./content_encoding.ts";
 import { BinaryContentPredicateError } from "./binary_content_predicate_error.ts";
-import { ResourceTooLargeToLoadError } from "./resource_load_guard.ts";
+import {
+  type LoadedItemRef,
+  resourceLoadGuardOf,
+  ResourceTooLargeToLoadError,
+} from "./resource_load_guard.ts";
 import { ModelType } from "../models/model_type.ts";
 import type { Data } from "./data.ts";
 import {
@@ -370,6 +374,19 @@ function recordIdentity(record: DataRecord): RecordContentIdentity {
     dataName: record.name,
     version: record.version,
   };
+}
+
+function loadedItemOf(record: DataRecord): LoadedItemRef {
+  return {
+    modelType: record.modelType,
+    modelName: record.modelName,
+    dataName: record.name,
+    version: record.version,
+  };
+}
+
+function base64Length(bytes: number): number {
+  return Math.ceil(bytes / 3) * 4;
 }
 
 export class DataQueryService {
@@ -711,7 +728,7 @@ export class DataQueryService {
       record.contentType !== "application/json" ||
       Object.keys(record.attributes).length > 0
     ) return;
-    const bytes = await this.foreignContent(record);
+    const bytes = await this.guardedForeignContent(record, 0);
     if (!bytes) return;
     const text = decodeRecordContent(bytes, recordIdentity(record));
     try {
@@ -719,6 +736,28 @@ export class DataQueryService {
     } catch {
       // Invalid JSON — leave attributes empty
     }
+  }
+
+  /**
+   * refused on its recorded size before the fetch, so an oversized body is
+   * never downloaded; a JSON body is then priced on its parsed structure
+   */
+  private async guardedForeignContent(
+    record: DataRecord,
+    heldBytes: number,
+  ): Promise<Uint8Array | null> {
+    const guard = resourceLoadGuardOf(this.dataRepo);
+    const item = loadedItemOf(record);
+    // past the text-length limit the decode fails by name with its own code,
+    // as fromRow's does, so only a memory refusal is raised here
+    const sizeRefusal = guard.refusalFor(item, record.size ?? 0, heldBytes);
+    if (sizeRefusal?.reason === "memory") throw sizeRefusal;
+    const bytes = await this.foreignContent(record);
+    if (bytes && record.contentType === "application/json") {
+      const refusal = guard.parseRefusalFor(item, bytes, heldBytes);
+      if (refusal?.reason === "memory") throw refusal;
+    }
+    return bytes;
   }
 
   /**
@@ -997,7 +1036,7 @@ export class DataQueryService {
       matched.records,
       matched.selectParsed,
       matched.selectReadsContent
-        ? new Map(matched.records.map((r) => [r, this.projectedContent(r)]))
+        ? this.projectedContentsSync(matched.records)
         : undefined,
       options,
     );
@@ -1768,19 +1807,76 @@ export class DataQueryService {
     return undefined;
   }
 
-  private encodeProjected(bytes: Uint8Array | null): ProjectedContent {
-    return bytes
-      ? encodeContent(bytes)
-      : { content: null, contentEncoding: null };
+  /**
+   * heldBytes counts the bodies this projection already holds, so a page of
+   * items each under the guard's floor is still refused before the heap runs out
+   */
+  private encodeProjected(
+    record: DataRecord,
+    bytes: Uint8Array | null,
+    heldBytes: number,
+  ): ProjectedContent {
+    if (!bytes) return { content: null, contentEncoding: null };
+    const guard = resourceLoadGuardOf(this.dataRepo);
+    const item = loadedItemOf(record);
+    const refusal = guard.refusalFor(item, bytes.length, heldBytes);
+    if (refusal) throw refusal;
+    if (base64Length(bytes.length) <= guard.maxDecodableBytes) {
+      return encodeContent(bytes);
+    }
+    // only UTF-8 text of this size fits in a string; its base64 form would not
+    try {
+      return {
+        content: new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+        contentEncoding: "utf-8",
+      };
+    } catch (error) {
+      if (!(error instanceof TypeError)) throw error;
+      throw new ResourceTooLargeToLoadError(item, bytes.length, "text-length");
+    }
+  }
+
+  /** bytes of an already-parsed record or a decoded body the page now holds */
+  private heldBy(record: DataRecord, projected: ProjectedContent): number {
+    if (projected.content === null) return 0;
+    return typeof projected.content === "string"
+      ? projected.content.length
+      : record.size ?? 0;
+  }
+
+  private assertProjectable(record: DataRecord, heldBytes: number): void {
+    const refusal = resourceLoadGuardOf(this.dataRepo).refusalFor(
+      loadedItemOf(record),
+      record.size ?? 0,
+      heldBytes,
+    );
+    if (refusal) throw refusal;
+  }
+
+  private projectedContentsSync(
+    records: DataRecord[],
+  ): Map<DataRecord, ProjectedContent> {
+    const contents = new Map<DataRecord, ProjectedContent>();
+    let heldBytes = 0;
+    for (const record of records) {
+      const projected = this.projectedContent(record, heldBytes);
+      contents.set(record, projected);
+      heldBytes += this.heldBy(record, projected);
+    }
+    return contents;
   }
 
   /**
    * read synchronously from local disk; the querySync path cannot download
    * lazily-synced bodies
    */
-  private projectedContent(record: DataRecord): ProjectedContent {
+  private projectedContent(
+    record: DataRecord,
+    heldBytes: number,
+  ): ProjectedContent {
     const known = this.projectedContentWithoutBytes(record);
     if (known) return known;
+    this.assertProjectable(record, heldBytes);
     let bytes: Uint8Array | null = null;
     try {
       bytes = this.dataRepo.getContentSync(
@@ -1795,7 +1891,7 @@ export class DataQueryService {
         String(error)
       }`;
     }
-    return this.encodeProjected(bytes);
+    return this.encodeProjected(record, bytes, heldBytes);
   }
 
   /**
@@ -1809,6 +1905,11 @@ export class DataQueryService {
   ): Promise<Map<DataRecord, ProjectedContent> | undefined> {
     if (!readsContent) return undefined;
     const contents = new Map<DataRecord, ProjectedContent>();
+    let heldBytes = 0;
+    const hold = (record: DataRecord, projected: ProjectedContent) => {
+      contents.set(record, projected);
+      heldBytes += this.heldBy(record, projected);
+    };
     for (const record of records) {
       // Only a v3 checkout reads another namespace's body from local disk;
       // a v2 sync fetcher would download it, so its rows stay null below.
@@ -1816,14 +1917,15 @@ export class DataQueryService {
         this.dataRepo.fetchForeignContent?.readsSoloNamespace === true &&
         isForeignNamespace(record.namespace, this.dataRepo)
       ) {
-        contents.set(record, await this.projectedForeignContent(record));
+        hold(record, await this.projectedForeignContent(record, heldBytes));
         continue;
       }
       const known = this.projectedContentWithoutBytes(record);
       if (known) {
-        contents.set(record, known);
+        hold(record, known);
         continue;
       }
+      this.assertProjectable(record, heldBytes);
       await this.ensureContentOf({
         namespace: record.namespace,
         modelType: record.modelType,
@@ -1832,15 +1934,17 @@ export class DataQueryService {
         version: record.version,
         size: record.size,
       });
-      contents.set(
+      hold(
         record,
         this.encodeProjected(
+          record,
           await this.dataRepo.getContent(
             ModelType.create(record.modelType),
             record.modelId,
             record.name,
             record.version,
           ),
+          heldBytes,
         ),
       );
     }
@@ -1849,6 +1953,7 @@ export class DataQueryService {
 
   private async projectedForeignContent(
     record: DataRecord,
+    heldBytes: number,
   ): Promise<ProjectedContent> {
     if (
       record.contentType === "application/json" &&
@@ -1856,7 +1961,7 @@ export class DataQueryService {
     ) {
       return { content: record.attributes, contentEncoding: "utf-8" };
     }
-    const bytes = await this.foreignContent(record);
+    const bytes = await this.guardedForeignContent(record, heldBytes);
     if (bytes && record.contentType === "application/json") {
       const text = decodeRecordContent(bytes, recordIdentity(record));
       try {
@@ -1865,7 +1970,7 @@ export class DataQueryService {
         return { content: {}, contentEncoding: "utf-8" };
       }
     }
-    return this.encodeProjected(bytes);
+    return this.encodeProjected(record, bytes, heldBytes);
   }
 
   private rowToRecord(

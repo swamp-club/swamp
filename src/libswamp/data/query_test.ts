@@ -20,6 +20,7 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { collect } from "../testing.ts";
 import { UserError } from "../../domain/errors.ts";
+import { ResourceTooLargeToLoadError } from "../../domain/data/resource_load_guard.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
   dataQuery,
@@ -321,6 +322,23 @@ Deno.test("dataQuery: an unreadable record's error keeps its code (swamp-club#36
       code: "datastore_v3_record_unreadable",
       message: "record unreadable",
     },
+  });
+});
+
+Deno.test("dataQuery: a record the load guard refuses keeps the guard's code", async () => {
+  const refusal = new ResourceTooLargeToLoadError(
+    { modelType: "m", modelName: "m", dataName: "d", version: 1 },
+    1_000_000_000,
+  );
+  const deps: DataQueryDeps = { query: () => Promise.reject(refusal) };
+
+  const events = await collect<DataQueryEvent>(
+    dataQuery(createLibSwampContext(), deps, { predicate: "true" }),
+  );
+
+  assertEquals(events[1], {
+    kind: "error",
+    error: { code: "resource_too_large_to_load", message: refusal.message },
   });
 });
 

@@ -123,6 +123,26 @@ Deno.test("ResourceLoadGuard.refusalFor: returns the heap refusal assertLoadable
   assertStringIncludes(refusal.message, "exhaust the memory");
 });
 
+Deno.test("ResourceLoadGuard.refusalFor: an item under the floor is measured once held bytes lift the total past it", () => {
+  const p = probe(100, 90);
+  const guard = new ResourceLoadGuard(p, 50, 10_000);
+  assertEquals(guard.refusalFor(item, 40), undefined);
+  assertEquals(p.reads, 0);
+  const refusal = guard.refusalFor(item, 40, 10);
+  assertInstanceOf(refusal, ResourceTooLargeToLoadError);
+  assertEquals(refusal.bytes, 40);
+  assertEquals(refusal.reason, "memory");
+});
+
+Deno.test("ResourceLoadGuard.refusalFor: held bytes never enter the heap estimate", () => {
+  const guard = new ResourceLoadGuard(probe(1000, 100), 50, 10_000);
+  assertEquals(guard.refusalFor(item, 300, 1_000_000), undefined);
+  assertInstanceOf(
+    guard.refusalFor(item, 301, 1_000_000),
+    ResourceTooLargeToLoadError,
+  );
+});
+
 Deno.test("ResourceLoadGuard.assertLoadable: leaves the text-length limit to refusalFor", () => {
   new ResourceLoadGuard(probe(10_000, 0), 50, 200).assertLoadable(item, 201);
 });
@@ -253,6 +273,17 @@ Deno.test("ResourceLoadGuard.parseRefusalFor: returns the structure refusal, and
   assertEquals(guard.parseRefusalFor(item, sparse), undefined);
   const long = new Uint8Array(dense.length + 11);
   assertEquals(guard.parseRefusalFor(item, long)?.reason, "text-length");
+});
+
+Deno.test("ResourceLoadGuard.parseRefusalFor: held bytes lift content under the floor into the structure scan", () => {
+  const p = probe(1000, 0);
+  const guard = new ResourceLoadGuard(p, dense.length + 1, dense.length + 10);
+  assertEquals(guard.parseRefusalFor(item, dense), undefined);
+  assertEquals(p.reads, 0);
+  assertInstanceOf(
+    guard.parseRefusalFor(item, dense, 1),
+    ResourceTooLargeToLoadError,
+  );
 });
 
 Deno.test("estimateParsedJsonBytes: stops once the count passes cap, returning a figure over it", () => {

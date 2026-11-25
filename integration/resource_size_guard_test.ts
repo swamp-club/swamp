@@ -30,6 +30,7 @@ import { ensureDir } from "@std/fs";
 import { z } from "zod";
 import { RunSensitiveValues } from "../src/domain/secrets/mod.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
+import { Data } from "../src/domain/data/data.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import { FileSystemUnifiedDataRepository } from "../src/infrastructure/persistence/unified_data_repository.ts";
 import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
@@ -478,6 +479,194 @@ Deno.test("resource size: a workflow step output read refuses a dense resource o
         }),
       ResourceTooLargeToLoadError,
       "big/dense@v1",
+    );
+  });
+});
+
+async function saveFile(
+  f: Fixture,
+  name: string,
+  content: Uint8Array,
+  contentType = "text/plain",
+): Promise<void> {
+  await f.dataRepo.save(
+    type,
+    f.big.id,
+    Data.create({
+      name,
+      contentType,
+      lifetime: "infinite",
+      garbageCollection: 5,
+      tags: { type: "file", modelName: "big" },
+      ownerDefinition: {
+        ownerType: "model-method",
+        ownerRef: "repro/bigdata:write",
+      },
+    }),
+    content,
+  );
+}
+
+function text(bytes: number): Uint8Array {
+  return new TextEncoder().encode("x".repeat(bytes));
+}
+
+const NOTES = 'modelName == "big" && name.startsWith("note")';
+
+Deno.test("resource size: data query --select content refuses an oversized text body by name, async and sync, while select name lists it", async () => {
+  await withFixture(async (f) => {
+    await saveFile(f, "note-big", text(400));
+    await saveFile(f, "note-small", text(10));
+    const dqs = new DataQueryService(f.catalog, f.dataRepo);
+
+    const error = await assertRejects(
+      () => dqs.query(NOTES, { select: "content" }),
+      ResourceTooLargeToLoadError,
+      "big/note-big@v1",
+    );
+    assertStringIncludes(error.message, "--sort size:desc");
+    assertThrows(
+      () => dqs.querySync(NOTES, { select: "content" }),
+      ResourceTooLargeToLoadError,
+      "big/note-big@v1",
+    );
+    assertEquals(
+      ((await dqs.query(NOTES, { select: "name" })) as string[]).toSorted(),
+      ["note-big", "note-small"],
+    );
+    assertEquals(
+      await dqs.query('modelName == "big" && name == "note-small"', {
+        select: "content",
+      }),
+      ["x".repeat(10)],
+    );
+  });
+});
+
+Deno.test("resource size: a select content refusal for a row the caller may not read is dropped, never named", async () => {
+  await withFixture(async (f) => {
+    await saveFile(f, "note-secret", text(400));
+    await saveFile(f, "note-small", text(10));
+    const dqs = new DataQueryService(f.catalog, f.dataRepo);
+
+    assertEquals(
+      await dqs.query(NOTES, {
+        select: "content",
+        include: (record) => Promise.resolve(record.name !== "note-secret"),
+      }),
+      ["x".repeat(10)],
+    );
+    await assertRejects(
+      () =>
+        dqs.query(NOTES, {
+          select: "content",
+          include: () => Promise.resolve(true),
+        }),
+      ResourceTooLargeToLoadError,
+      "big/note-secret@v1",
+    );
+  });
+});
+
+Deno.test("resource size: select content asks the guard for each body against the heap the earlier ones hold", async () => {
+  let used = 0;
+  const growing = new ResourceLoadGuard({
+    heapLimitBytes: () => 1000,
+    heapUsedBytes: () => (used += 150),
+  }, 50);
+  await withFixture(async (f) => {
+    for (const name of ["note-a", "note-b", "note-c"]) {
+      await saveFile(f, name, text(100));
+    }
+    const dqs = new DataQueryService(f.catalog, f.dataRepo);
+    await assertRejects(
+      () => dqs.query(NOTES, { select: "content" }),
+      ResourceTooLargeToLoadError,
+    );
+  }, growing);
+});
+
+Deno.test("resource size: select content refuses a page of bodies each under the floor once their total passes it and the heap is short", async () => {
+  const nearlyFull = new ResourceLoadGuard({
+    heapLimitBytes: () => 1000,
+    heapUsedBytes: () => 920,
+  }, 50);
+  await withFixture(async (f) => {
+    await saveFile(f, "note-a", text(30));
+    await saveFile(f, "note-b", text(30));
+    const dqs = new DataQueryService(f.catalog, f.dataRepo);
+
+    assertEquals(
+      await dqs.query('modelName == "big" && name == "note-a"', {
+        select: "content",
+      }),
+      ["x".repeat(30)],
+    );
+    await assertRejects(
+      () => dqs.query(NOTES, { select: "content" }),
+      ResourceTooLargeToLoadError,
+    );
+    assertThrows(
+      () => dqs.querySync(NOTES, { select: "content" }),
+      ResourceTooLargeToLoadError,
+    );
+  }, nearlyFull);
+});
+
+Deno.test("resource size: select content refuses a binary body whose base64 form passes the text-length limit, and keeps UTF-8 text of its size", async () => {
+  const shortStrings = new ResourceLoadGuard(
+    {
+      heapLimitBytes: () => 1_000_000,
+      heapUsedBytes: () => 0,
+    },
+    50,
+    400,
+  );
+  await withFixture(async (f) => {
+    await saveFile(
+      f,
+      "note-bin",
+      new Uint8Array(320).fill(0xff),
+      "application/octet-stream",
+    );
+    await saveFile(f, "note-text", text(320));
+    const dqs = new DataQueryService(f.catalog, f.dataRepo);
+
+    const error = await assertRejects(
+      () =>
+        dqs.query('modelName == "big" && name == "note-bin"', {
+          select: "content",
+        }),
+      ResourceTooLargeToLoadError,
+      "big/note-bin@v1",
+    );
+    assertEquals(error.reason, "text-length");
+    assertEquals(
+      await dqs.query('modelName == "big" && name == "note-text"', {
+        select: "content",
+      }),
+      ["x".repeat(320)],
+    );
+  }, shortStrings);
+});
+
+Deno.test("resource size: select content refuses a body on its recorded size, without reading it", async () => {
+  await withFixture(async (f) => {
+    await saveFile(f, "note-big", text(400));
+    await Deno.remove(
+      f.dataRepo.getContentPath(type, f.big.id, "note-big", 1),
+    );
+    const dqs = new DataQueryService(f.catalog, f.dataRepo);
+
+    await assertRejects(
+      () => dqs.query(NOTES, { select: "content" }),
+      ResourceTooLargeToLoadError,
+      "big/note-big@v1",
+    );
+    assertThrows(
+      () => dqs.querySync(NOTES, { select: "content" }),
+      ResourceTooLargeToLoadError,
+      "big/note-big@v1",
     );
   });
 });

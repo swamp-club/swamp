@@ -216,21 +216,27 @@ export class ResourceLoadGuard {
     if (refusal) throw refusal;
   }
 
-  /** the heap check plus the text-length limit, for callers that record a refusal */
+  /**
+   * the heap check plus the text-length limit, for callers that record a
+   * refusal; heldBytes, earlier items the read still holds, counts toward the
+   * floor only, since the heap in use already includes them
+   */
   refusalFor(
     item: LoadedItemRef,
     bytes: number,
+    heldBytes = 0,
   ): ResourceTooLargeToLoadError | undefined {
     if (bytes > this.maxDecodableBytes) {
       return new ResourceTooLargeToLoadError(item, bytes, "text-length");
     }
-    return this.#memoryRefusal(item, bytes);
+    return this.#memoryRefusal(item, bytes, undefined, heldBytes);
   }
 
   /** refusalFor for content in hand that will be parsed as JSON */
   parseRefusalFor(
     item: LoadedItemRef,
     content: Uint8Array,
+    heldBytes = 0,
   ): ResourceTooLargeToLoadError | undefined {
     if (content.length > this.maxDecodableBytes) {
       return new ResourceTooLargeToLoadError(
@@ -239,15 +245,16 @@ export class ResourceLoadGuard {
         "text-length",
       );
     }
-    return this.#memoryRefusal(item, content.length, content);
+    return this.#memoryRefusal(item, content.length, content, heldBytes);
   }
 
   #memoryRefusal(
     item: LoadedItemRef,
     bytes: number,
     parsed?: Uint8Array,
+    heldBytes = 0,
   ): ResourceTooLargeToLoadError | undefined {
-    if (!(bytes >= this.floorBytes)) return undefined;
+    if (!(bytes + heldBytes >= this.floorBytes)) return undefined;
     const limit = this.probe.heapLimitBytes();
     const used = this.probe.heapUsedBytes();
     let needed = bytes * DECODED_HEAP_FACTOR;
