@@ -108,10 +108,8 @@ export interface V3LeasePoll {
   readonly maxRetryMs: number;
 }
 
-/**
- * a commit section holds the lease for tens of milliseconds, so a waiter
- * polling on the whole-command backoff sleeps through every free window
- */
+// a commit section holds the lease only briefly, so a waiter on the
+// whole-command backoff sleeps through every free window
 export const COMMIT_SECTION_LEASE_POLL: V3LeasePoll = {
   retryMs: 25,
   maxRetryMs: 100,

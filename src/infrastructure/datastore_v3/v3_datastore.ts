@@ -2034,7 +2034,7 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
       options.assertCopyCurrent?.();
       await options.assertCollectable?.();
       const sweeper = crypto.randomUUID();
-      // a staged name older than any unit may retry for names nothing to land
+      // a staged name past the longest a unit retries names no chunk still to land
       const stagedSince = clock().getTime() - OUTBOX_RETRY_BOUND_MS;
       await outbox.pruneStagedChunks(stagedSince);
       return await new ChunkCollector({
