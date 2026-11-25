@@ -206,6 +206,10 @@ export interface PrefetchReport {
   fetched: number;
   retries: number;
   failed: number;
+  /** batch reads sent, when the storage reads many chunks per request */
+  batches?: number;
+  /** chunks a batch read answered as missing */
+  missing?: number;
 }
 
 // prefetch keeps what it fetches; ChunkStore asks only a storage that does

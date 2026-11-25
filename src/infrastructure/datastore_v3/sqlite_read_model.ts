@@ -2953,7 +2953,13 @@ export class SqliteReadModel implements ReadModel {
       "swamp.datastore.v3.readmodel.prefetch",
       {},
       async (span) => {
-        const totals = { requested: 0, fetched: 0, retries: 0, failed: 0 };
+        const totals = {
+          requested: 0,
+          fetched: 0,
+          retries: 0,
+          failed: 0,
+          batches: 0,
+        };
         for (const [namespace, refs] of byNamespace) {
           const report = await this.#chunkStore.prefetch(
             namespaceOf(namespace),
@@ -2965,12 +2971,14 @@ export class SqliteReadModel implements ReadModel {
           totals.fetched += report.fetched;
           totals.retries += report.retries;
           totals.failed += report.failed;
+          totals.batches += report.batches ?? 0;
         }
         span.setAttributes({
           "swamp.datastore.v3.readmodel.prefetch.requested": totals.requested,
           "swamp.datastore.v3.readmodel.prefetch.fetched": totals.fetched,
           "swamp.datastore.v3.readmodel.prefetch.retries": totals.retries,
           "swamp.datastore.v3.readmodel.prefetch.failed": totals.failed,
+          "swamp.datastore.v3.readmodel.prefetch.batches": totals.batches,
         });
       },
     );
@@ -3006,7 +3014,13 @@ export class SqliteReadModel implements ReadModel {
       "swamp.datastore.v3.readmodel.prefetch",
       {},
       async (span) => {
-        const totals = { requested: 0, fetched: 0, retries: 0, failed: 0 };
+        const totals = {
+          requested: 0,
+          fetched: 0,
+          retries: 0,
+          failed: 0,
+          batches: 0,
+        };
         for (const [namespace, refs] of byNamespace) {
           const report = await this.#chunkStore.prefetch(
             namespaceOf(namespace),
@@ -3018,12 +3032,14 @@ export class SqliteReadModel implements ReadModel {
           totals.fetched += report.fetched;
           totals.retries += report.retries;
           totals.failed += report.failed;
+          totals.batches += report.batches ?? 0;
         }
         span.setAttributes({
           "swamp.datastore.v3.readmodel.prefetch.requested": totals.requested,
           "swamp.datastore.v3.readmodel.prefetch.fetched": totals.fetched,
           "swamp.datastore.v3.readmodel.prefetch.retries": totals.retries,
           "swamp.datastore.v3.readmodel.prefetch.failed": totals.failed,
+          "swamp.datastore.v3.readmodel.prefetch.batches": totals.batches,
         });
       },
     );

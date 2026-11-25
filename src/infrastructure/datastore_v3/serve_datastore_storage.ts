@@ -40,7 +40,11 @@ import {
   FileSystemStorage,
   type FileSystemStorageOptions,
 } from "../persistence/fs_datastore_storage.ts";
-import type { ServeDatastoreClient } from "./serve_datastore_client.ts";
+import type { DecodedChunkBatch } from "./chunk_ingest.ts";
+import {
+  ChunkBatchUnsupportedError,
+  type ServeDatastoreClient,
+} from "./serve_datastore_client.ts";
 import {
   ServeRateLimitedError,
   ServeUnreachableError,
@@ -62,10 +66,22 @@ export class ServeStorageUnsupportedError extends UserError {
   }
 }
 
-type ChunkClient = Pick<
-  ServeDatastoreClient,
-  "hasChunks" | "getChunk" | "putChunk" | "namespace"
->;
+type ChunkClient =
+  & Pick<
+    ServeDatastoreClient,
+    "hasChunks" | "getChunk" | "putChunk" | "namespace"
+  >
+  & Partial<Pick<ServeDatastoreClient, "getChunks" | "takesChunkBatch">>;
+
+/** a storage that can read many chunks in one round trip */
+export interface BatchReadingStorage {
+  /** undefined when the other side has no batch read */
+  getMany(
+    namespace: string,
+    hashes: readonly string[],
+    signal: AbortSignal,
+  ): Promise<DecodedChunkBatch | undefined>;
+}
 
 export class ServeChunkStorage implements DatastoreStorage {
   readonly contract = STORAGE_CONTRACT;
@@ -110,6 +126,27 @@ export class ServeChunkStorage implements DatastoreStorage {
     return await this.#client.getChunk(sha256, signal);
   }
 
+  async getMany(
+    namespace: string,
+    hashes: readonly string[],
+    signal: AbortSignal,
+  ): Promise<DecodedChunkBatch | undefined> {
+    signal.throwIfAborted();
+    const client = this.#client;
+    if (
+      !this.#bound(namespace) || client.getChunks === undefined ||
+      client.takesChunkBatch?.() !== true
+    ) {
+      return undefined;
+    }
+    try {
+      return await client.getChunks(hashes, signal);
+    } catch (error) {
+      if (error instanceof ChunkBatchUnsupportedError) return undefined;
+      throw error;
+    }
+  }
+
   list(_namespace: string, signal: AbortSignal): AsyncIterable<StoredChunk> {
     return {
       [Symbol.asyncIterator]() {
@@ -151,6 +188,8 @@ export function storageNamespaceOf(namespace: string): string {
 }
 
 const PREFETCH_CONCURRENCY = 8;
+/** hashes per batch read; serve caps the bytes and defers the rest */
+export const PREFETCH_BATCH_HASHES = 128;
 /** tries for a chunk serve refused with 429 because its chunk slots were full */
 export const PREFETCH_ATTEMPTS = 3;
 /** chunks failing in a row before the prefetch gives up on serve */
@@ -212,8 +251,20 @@ export class CachedServeStorage extends FileSystemStorage
     } catch {
       return report;
     }
-    const rest = hashes.filter((hash) => !local.has(hash));
+    let rest = hashes.filter((hash) => !local.has(hash));
     report.requested = rest.length;
+    const remote = this.#remote as Partial<BatchReadingStorage>;
+    if (remote.getMany !== undefined && rest.length > 0) {
+      const left = await this.#prefetchBatches(
+        remote as BatchReadingStorage,
+        namespace,
+        rest,
+        signal,
+        report,
+      );
+      if (left === "stop") return report;
+      rest = left;
+    }
     let next = 0;
     let failingInARow = 0;
     let unreachable = false;
@@ -264,6 +315,103 @@ export class CachedServeStorage extends FileSystemStorage
     return report;
   }
 
+  /**
+   * fetches in batches, many chunks per round trip; returns the hashes still
+   * to fetch one at a time (all of them when serve has no batch read), or
+   * stop when serve is unreachable or failing
+   */
+  async #prefetchBatches(
+    remote: BatchReadingStorage,
+    namespace: string,
+    hashes: readonly string[],
+    signal: AbortSignal,
+    report: PrefetchReport,
+  ): Promise<string[] | "stop"> {
+    const queue = [...hashes];
+    const singly: string[] = [];
+    let unsupported = false;
+    let stop = false;
+    let failingInARow = 0;
+    const fetchBatch = async (
+      batch: string[],
+    ): Promise<DecodedChunkBatch | undefined | "failed"> => {
+      for (let attempt = 1;; attempt++) {
+        try {
+          return await remote.getMany(namespace, batch, signal);
+        } catch (error) {
+          if (error instanceof ServeUnreachableError) {
+            stop = true;
+            return "failed";
+          }
+          if (
+            !(error instanceof ServeRateLimitedError) ||
+            attempt >= PREFETCH_ATTEMPTS || signal.aborted
+          ) {
+            return "failed";
+          }
+          report.retries++;
+          await abortableDelay(PREFETCH_RETRY_MS * attempt, signal);
+        }
+      }
+    };
+    const worker = async () => {
+      while (
+        queue.length > 0 && !unsupported && !stop &&
+        failingInARow < PREFETCH_STOP_AFTER && !signal.aborted
+      ) {
+        const batch = queue.splice(0, PREFETCH_BATCH_HASHES);
+        const result = await fetchBatch(batch);
+        if (result === undefined) {
+          unsupported = true;
+          queue.unshift(...batch);
+          return;
+        }
+        report.batches = (report.batches ?? 0) + 1;
+        if (result === "failed") {
+          report.failed += batch.length;
+          failingInARow++;
+          continue;
+        }
+        failingInARow = 0;
+        for (const [sha256, bytes] of result.chunks) {
+          await this.#keepFetched(namespace, sha256, bytes, signal);
+          report.fetched++;
+        }
+        queue.push(...result.deferred);
+        // a shared vouch budget may run out: each of these gets its own read
+        singly.push(...result.undecided);
+        report.missing = (report.missing ?? 0) + result.missing.length;
+      }
+    };
+    await Promise.all(
+      Array.from(
+        {
+          length: Math.min(
+            PREFETCH_CONCURRENCY,
+            Math.ceil(queue.length / PREFETCH_BATCH_HASHES),
+          ),
+        },
+        worker,
+      ),
+    );
+    if (stop || failingInARow >= PREFETCH_STOP_AFTER) return "stop";
+    return unsupported ? [...queue, ...singly] : singly;
+  }
+
+  async #keepFetched(
+    namespace: string,
+    sha256: string,
+    bytes: Uint8Array,
+    signal: AbortSignal,
+  ): Promise<void> {
+    await super.put(namespace, sha256, bytes, signal);
+    let fetched = this.#fetched.get(namespace);
+    if (fetched === undefined) {
+      this.#fetched.set(namespace, fetched = new Set());
+    }
+    fetched.add(sha256);
+  }
+
   override async get(
     namespace: string,
     sha256: string,
@@ -274,12 +422,7 @@ export class CachedServeStorage extends FileSystemStorage
     const bytes = await this.#remote.get(namespace, sha256, signal);
     // The client checked the bytes' hash; keep them for the next read.
     if (bytes !== null) {
-      await super.put(namespace, sha256, bytes, signal);
-      let fetched = this.#fetched.get(namespace);
-      if (fetched === undefined) {
-        this.#fetched.set(namespace, fetched = new Set());
-      }
-      fetched.add(sha256);
+      await this.#keepFetched(namespace, sha256, bytes, signal);
     }
     return bytes;
   }

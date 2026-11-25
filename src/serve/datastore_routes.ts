@@ -21,6 +21,7 @@ const ROUTE_PREFIX = "/api/v1/datastore/";
 
 export type DatastoreRoute =
   | { readonly kind: "has"; readonly namespace: string }
+  | { readonly kind: "chunkBatch"; readonly namespace: string }
   | {
     readonly kind: "chunk";
     readonly namespace: string;
@@ -86,6 +87,9 @@ export function matchDatastoreRoute(
   if (rest.length === 2 && rest[0] === "chunks" && rest[1] === "has") {
     return { kind: "has", namespace };
   }
+  if (rest.length === 2 && rest[0] === "chunks" && rest[1] === "batch") {
+    return { kind: "chunkBatch", namespace };
+  }
   if (rest.length === 2 && rest[0] === "chunks") {
     return { kind: "chunk", namespace, sha256: rest[1] };
   }
@@ -142,6 +146,8 @@ export function datastoreRouteTemplate(route: DatastoreRoute): string {
   switch (route.kind) {
     case "has":
       return "/api/v1/datastore/{namespace}/chunks/has";
+    case "chunkBatch":
+      return "/api/v1/datastore/{namespace}/chunks/batch";
     case "chunk":
       return "/api/v1/datastore/{namespace}/chunks/{sha256}";
     case "batch":

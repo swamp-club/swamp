@@ -422,3 +422,104 @@ function toBody(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
     ? bytes as Uint8Array<ArrayBuffer>
     : new Uint8Array(bytes);
 }
+
+export const CHUNK_BATCH_CONTENT_TYPE = "application/vnd.swamp.chunks+v1";
+/** hashes one batch read may name */
+export const MAX_BATCH_CHUNK_HASHES = 256;
+/** chunk bytes one batch read returns; the rest of the asked hashes are deferred */
+export const MAX_BATCH_CHUNK_BYTES = 8 * 1024 * 1024;
+
+export interface ChunkBatchHeader {
+  readonly chunks: readonly {
+    readonly sha256: string;
+    readonly size: number;
+  }[];
+  /** refused or absent alike, as a single read answers 404 for both */
+  readonly missing: readonly string[];
+  readonly undecided: readonly string[];
+  readonly deferred: readonly string[];
+}
+
+export function encodeChunkBatch(
+  header: ChunkBatchHeader,
+  chunks: readonly CarriedChunk[],
+): Uint8Array<ArrayBuffer> {
+  return encodeCommitBody(header, chunks);
+}
+
+export interface DecodedChunkBatch {
+  readonly chunks: Map<string, Uint8Array>;
+  readonly missing: readonly string[];
+  readonly undecided: readonly string[];
+  readonly deferred: readonly string[];
+}
+
+/** every returned chunk is checked against its hash before it is handed out */
+export async function decodeChunkBatch(
+  body: Uint8Array,
+): Promise<DecodedChunkBatch> {
+  if (body.byteLength < 4) {
+    throw new ChunkTruncatedError("the chunk batch header", 4, body.byteLength);
+  }
+  const length = new DataView(body.buffer, body.byteOffset, body.byteLength)
+    .getUint32(0, false);
+  if (4 + length > body.byteLength) {
+    throw new ChunkTruncatedError(
+      "the chunk batch header",
+      length,
+      body.byteLength - 4,
+    );
+  }
+  const header = JSON.parse(
+    new TextDecoder().decode(body.subarray(4, 4 + length)),
+  ) as ChunkBatchHeader;
+  const strings = (value: unknown): string[] =>
+    Array.isArray(value) && value.every((v) => typeof v === "string")
+      ? value as string[]
+      : (() => {
+        throw new ChunkHashMalformedError(String(value));
+      })();
+  const chunks = new Map<string, Uint8Array>();
+  let offset = 4 + length;
+  if (!Array.isArray(header?.chunks)) {
+    throw new ChunkHashMalformedError("chunks");
+  }
+  for (const entry of header.chunks) {
+    if (typeof entry?.sha256 !== "string" || !isSha256Hex(entry.sha256)) {
+      throw new ChunkHashMalformedError(String(entry?.sha256));
+    }
+    assertByteCount(entry.size);
+    if (offset + entry.size > body.byteLength) {
+      throw new ChunkTruncatedError(
+        entry.sha256,
+        entry.size,
+        body.byteLength - offset,
+      );
+    }
+    const bytes = body.slice(offset, offset + entry.size);
+    offset += entry.size;
+    const actual = await sha256HexOf(bytes);
+    if (actual !== entry.sha256) {
+      throw new ChunkHashMismatchError(entry.sha256, actual);
+    }
+    chunks.set(entry.sha256, bytes);
+  }
+  if (offset !== body.byteLength) throw new StreamTrailingBytesError();
+  return {
+    chunks,
+    missing: strings(header.missing),
+    undecided: strings(header.undecided),
+    deferred: strings(header.deferred),
+  };
+}
+
+async function sha256HexOf(bytes: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    bytes as Uint8Array<ArrayBuffer>,
+  );
+  return Array.from(
+    new Uint8Array(digest),
+    (b) => b.toString(16).padStart(2, "0"),
+  ).join("");
+}

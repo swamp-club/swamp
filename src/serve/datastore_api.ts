@@ -144,11 +144,15 @@ import { ModelType } from "../domain/models/model_type.ts";
 import { createWorkflowRunId } from "../domain/workflows/workflow_id.ts";
 import type { YamlWorkflowRunRepository } from "../infrastructure/persistence/yaml_workflow_run_repository.ts";
 import {
+  CHUNK_BATCH_CONTENT_TYPE,
   ChunkIngestError,
   chunkReadResponse,
+  encodeChunkBatch,
   FramedReader,
   ingestChunk,
   isSha256Hex,
+  MAX_BATCH_CHUNK_BYTES,
+  MAX_BATCH_CHUNK_HASHES,
   parseRange,
 } from "../infrastructure/datastore_v3/chunk_ingest.ts";
 import { CarriedBytesBudget } from "./carried_bytes_budget.ts";
@@ -180,6 +184,7 @@ import type {
 import {
   AUTHORIZE_ONLY_FEATURE,
   BASE_DIFFERENCE_FEATURE,
+  CHUNK_BATCH_FEATURE,
   COMMIT_BATCH_FEATURE,
   LEASE_HOLDER_FEATURE,
   LEASE_OPS_FEATURE,
@@ -598,6 +603,7 @@ export function callerReplyHeaders(
         AUTHORIZE_ONLY_FEATURE,
         COMMIT_BATCH_FEATURE,
         BASE_DIFFERENCE_FEATURE,
+        CHUNK_BATCH_FEATURE,
       ].join(","),
     ]];
   }
@@ -611,6 +617,7 @@ export function callerReplyHeaders(
         AUTHORIZE_ONLY_FEATURE,
         COMMIT_BATCH_FEATURE,
         BASE_DIFFERENCE_FEATURE,
+        CHUNK_BATCH_FEATURE,
       ].join(","),
     ],
     [SERVE_DATASTORE_PRINCIPAL_HEADER, encodeURIComponent(principal)],
@@ -618,6 +625,9 @@ export function callerReplyHeaders(
 }
 
 const MAX_AUTHORIZE_BODY_BYTES = 256 * 1024;
+
+/** chunks one batch read asks storage for at once */
+const BATCH_READ_CONCURRENCY = 8;
 const MAX_AUTHORIZED_COMMITS = 16;
 const MAX_AUTHORIZED_OPS = 64;
 
@@ -798,6 +808,10 @@ async function answerDatastoreRequest(
         return req.method === "POST"
           ? await api.has(req)
           : methodNotAllowed("POST");
+      case "chunkBatch":
+        return req.method === "POST"
+          ? await api.getChunks(req)
+          : methodNotAllowed("POST");
       case "chunk":
         if (req.method === "PUT") return await api.putChunk(req, route.sha256);
         if (req.method === "GET") return await api.getChunk(req, route.sha256);
@@ -911,6 +925,79 @@ class DatastoreApi {
     this.#namespace = v3.namespace;
     this.#storageNamespace = storageNamespaceOf(namespaceOf(v3));
     this.#resolver = memoized(serveResolver(deps.ctx, v3));
+  }
+
+  /**
+   * `POST chunks/batch`: many chunks in one reply, decided as `GET chunks`
+   * decides each, under one slot and one vouch budget
+   */
+  async getChunks(req: Request): Promise<Response> {
+    const body = await readJson(req, 256 * 1024);
+    const hashes = (body as { hashes?: unknown })?.hashes;
+    if (
+      !Array.isArray(hashes) || hashes.length > MAX_BATCH_CHUNK_HASHES ||
+      !hashes.every((hash) => typeof hash === "string" && isSha256Hex(hash))
+    ) {
+      return failure(
+        400,
+        "invalid_request",
+        `Body must be {"hashes": [...]} with at most ${MAX_BATCH_CHUNK_HASHES} SHA-256 hex digests`,
+      );
+    }
+    return await this.#withChunkSlot(async () => {
+      const budget = this.#vouchBudget();
+      const chunks: { sha256: string; size: number }[] = [];
+      const carried: { bytes: Uint8Array }[] = [];
+      const missing: string[] = [];
+      const undecided: string[] = [];
+      const deferred: string[] = [];
+      let bytesOut = 0;
+      const readable: string[] = [];
+      for (const sha256 of new Set(hashes as string[])) {
+        const vouch = await this.#mayReference(sha256, budget);
+        if (vouch === "undecided") undecided.push(sha256);
+        else if (vouch === "refused") missing.push(sha256);
+        else readable.push(sha256);
+      }
+      // read a few at a time from storage that may be a bucket; the cut is
+      // made only among readable chunks, so it says nothing about the others
+      for (let i = 0; i < readable.length; i += BATCH_READ_CONCURRENCY) {
+        if (bytesOut >= MAX_BATCH_CHUNK_BYTES) {
+          deferred.push(...readable.slice(i));
+          break;
+        }
+        const group = readable.slice(i, i + BATCH_READ_CONCURRENCY);
+        const read = await Promise.all(
+          group.map((sha256) =>
+            this.#v3.storage.get(this.#storageNamespace, sha256, req.signal)
+          ),
+        );
+        for (const [k, bytes] of read.entries()) {
+          const sha256 = group[k];
+          if (bytes === null) {
+            missing.push(sha256);
+            continue;
+          }
+          if (await sha256Hex(bytes) !== sha256) {
+            logger.error`Stored chunk ${sha256} does not hold its own bytes`;
+            return failure(500, "chunk_corrupt", "The stored chunk is damaged");
+          }
+          chunks.push({ sha256, size: bytes.byteLength });
+          carried.push({ bytes });
+          bytesOut += bytes.byteLength;
+        }
+      }
+      return new Response(
+        encodeChunkBatch({ chunks, missing, undecided, deferred }, carried),
+        {
+          status: 200,
+          headers: {
+            "content-type": CHUNK_BATCH_CONTENT_TYPE,
+            "cache-control": "no-store",
+          },
+        },
+      );
+    });
   }
 
   /** `POST chunks/has`. */
