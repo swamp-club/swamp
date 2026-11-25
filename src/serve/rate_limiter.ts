@@ -24,6 +24,7 @@ import {
 } from "../domain/access/delegated_token.ts";
 import { integrationIdOfCredential } from "../domain/access/integration_credential.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
+import { processRuntimeSlot } from "../infrastructure/runtime/process_runtime.ts";
 
 const logger = getSwampLogger(["serve", "rate-limit"]);
 
@@ -32,7 +33,7 @@ interface RateLimitEntry {
   resetAt: number;
 }
 
-type RateLimitResult =
+export type RateLimitResult =
   | { allowed: true }
   | { allowed: false; retryAfterSeconds: number };
 
@@ -275,64 +276,114 @@ export const MAX_PENDING_ATTEMPTS = PRINCIPAL_RATE_BURST;
 
 export const MAX_PRINCIPAL_RATE_BUCKETS = 10_000;
 
-const PRINCIPAL_RATE_PER_MS = PRINCIPAL_RATE_PER_MINUTE / 60_000;
+export const DATA_PLANE_RATE_PER_MINUTE = 6_000;
+
+/** sized for a member's fan-out: 32 to 64 parallel steps of a few requests each */
+export const DATA_PLANE_RATE_BURST = 1_024;
+
+export type RateCheck = (principalId: string, now?: number) => RateLimitResult;
 
 interface TokenBucket {
   tokens: number;
   updatedAt: number;
 }
 
-const principalRateBuckets = new Map<string, TokenBucket>();
+/** a token bucket per principal, least recently used dropped past maxBuckets */
+export class PrincipalRateLimiter {
+  readonly #buckets = new Map<string, TokenBucket>();
+  readonly #burst: number;
+  readonly #perMs: number;
+  readonly #maxBuckets: number;
 
-/** Drops buckets that have refilled to the burst: dropping them is lossless. */
-function sweepIdleRateBuckets(now: number): void {
-  for (const [key, bucket] of principalRateBuckets) {
-    const refilled = bucket.tokens +
-      (now - bucket.updatedAt) * PRINCIPAL_RATE_PER_MS;
-    if (refilled >= PRINCIPAL_RATE_BURST) principalRateBuckets.delete(key);
+  constructor(options: {
+    readonly burst: number;
+    readonly perMinute: number;
+    readonly maxBuckets?: number;
+  }) {
+    this.#burst = options.burst;
+    this.#perMs = options.perMinute / 60_000;
+    this.#maxBuckets = options.maxBuckets ?? MAX_PRINCIPAL_RATE_BUCKETS;
+  }
+
+  check(principalId: string, now: number = Date.now()): RateLimitResult {
+    let bucket = this.#buckets.get(principalId);
+    if (bucket === undefined) {
+      if (this.#buckets.size >= this.#maxBuckets) this.#sweepIdle(now);
+      if (this.#buckets.size >= this.#maxBuckets) {
+        const oldest = this.#buckets.keys().next().value!;
+        this.#buckets.delete(oldest);
+      }
+      bucket = { tokens: this.#burst, updatedAt: now };
+    } else {
+      // Re-inserted below, so map order stays least recently used first.
+      this.#buckets.delete(principalId);
+      const elapsed = Math.max(0, now - bucket.updatedAt);
+      bucket.tokens = Math.min(
+        this.#burst,
+        bucket.tokens + elapsed * this.#perMs,
+      );
+      bucket.updatedAt = Math.max(now, bucket.updatedAt);
+    }
+    this.#buckets.set(principalId, bucket);
+    if (bucket.tokens >= 1) {
+      bucket.tokens -= 1;
+      return { allowed: true };
+    }
+    return {
+      allowed: false,
+      retryAfterSeconds: Math.max(
+        1,
+        Math.ceil((1 - bucket.tokens) / this.#perMs / 1000),
+      ),
+    };
+  }
+
+  get size(): number {
+    return this.#buckets.size;
+  }
+
+  clear(): void {
+    this.#buckets.clear();
+  }
+
+  /** Drops buckets that have refilled to the burst: dropping them is lossless. */
+  #sweepIdle(now: number): void {
+    for (const [key, bucket] of this.#buckets) {
+      const refilled = bucket.tokens + (now - bucket.updatedAt) * this.#perMs;
+      if (refilled >= this.#burst) this.#buckets.delete(key);
+    }
   }
 }
+
+const generalRate = new PrincipalRateLimiter({
+  burst: PRINCIPAL_RATE_BURST,
+  perMinute: PRINCIPAL_RATE_PER_MINUTE,
+});
+
+const dataPlaneRate = processRuntimeSlot(() =>
+  new PrincipalRateLimiter({
+    burst: DATA_PLANE_RATE_BURST,
+    perMinute: DATA_PLANE_RATE_PER_MINUTE,
+  })
+);
 
 export function checkPrincipalRate(
   principalId: string,
   now: number = Date.now(),
 ): RateLimitResult {
-  let bucket = principalRateBuckets.get(principalId);
-  if (bucket === undefined) {
-    if (principalRateBuckets.size >= MAX_PRINCIPAL_RATE_BUCKETS) {
-      sweepIdleRateBuckets(now);
-    }
-    if (principalRateBuckets.size >= MAX_PRINCIPAL_RATE_BUCKETS) {
-      const oldest = principalRateBuckets.keys().next().value!;
-      principalRateBuckets.delete(oldest);
-    }
-    bucket = { tokens: PRINCIPAL_RATE_BURST, updatedAt: now };
-  } else {
-    // Re-inserted below, so map order stays least recently used first.
-    principalRateBuckets.delete(principalId);
-    const elapsed = Math.max(0, now - bucket.updatedAt);
-    bucket.tokens = Math.min(
-      PRINCIPAL_RATE_BURST,
-      bucket.tokens + elapsed * PRINCIPAL_RATE_PER_MS,
-    );
-    bucket.updatedAt = Math.max(now, bucket.updatedAt);
-  }
-  principalRateBuckets.set(principalId, bucket);
-  if (bucket.tokens >= 1) {
-    bucket.tokens -= 1;
-    return { allowed: true };
-  }
-  return {
-    allowed: false,
-    retryAfterSeconds: Math.max(
-      1,
-      Math.ceil((1 - bucket.tokens) / PRINCIPAL_RATE_PER_MS / 1000),
-    ),
-  };
+  return generalRate.check(principalId, now);
+}
+
+/** the datastore data plane's own bucket, so a member's fan-out never spends the general one */
+export function checkPrincipalDataPlaneRate(
+  principalId: string,
+  now: number = Date.now(),
+): RateLimitResult {
+  return dataPlaneRate().check(principalId, now);
 }
 
 export function principalRateBucketCount(): number {
-  return principalRateBuckets.size;
+  return generalRate.size;
 }
 
 export function resetRateLimitState(): void {
@@ -341,5 +392,6 @@ export function resetRateLimitState(): void {
   ipBurstBuckets.clear();
   dashboardSessionGuessBuckets.clear();
   pendingDashboardSessionGuesses.clear();
-  principalRateBuckets.clear();
+  generalRate.clear();
+  dataPlaneRate().clear();
 }

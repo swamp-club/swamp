@@ -28,7 +28,10 @@ import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import {
   checkFailedAttempts,
   checkIpBurst,
+  checkPrincipalDataPlaneRate,
   checkPrincipalRate,
+  DATA_PLANE_RATE_BURST,
+  DATA_PLANE_RATE_PER_MINUTE,
   failedAttemptKey,
   limitDashboardSessionGuesses,
   limitFailedAttempts,
@@ -38,6 +41,7 @@ import {
   PRINCIPAL_RATE_BURST,
   PRINCIPAL_RATE_PER_MINUTE,
   principalRateBucketCount,
+  PrincipalRateLimiter,
   recordFailedAttempt,
   resetRateLimitState,
 } from "./rate_limiter.ts";
@@ -621,4 +625,67 @@ Deno.test("limitFailedAttempts: the failure that locks a key out is logged once,
   assertEquals(lockouts.length, 1);
   assertEquals(lockouts[0].properties.count, 5);
   assert((lockouts[0].properties.seconds as number) > 0);
+});
+
+Deno.test("checkPrincipalDataPlaneRate: allows its own burst, far above the general one, then refuses", () => {
+  resetRateLimitState();
+  const now = 7_000_000;
+  for (let i = 0; i < DATA_PLANE_RATE_BURST; i++) {
+    assertEquals(
+      checkPrincipalDataPlaneRate("p-plane", now).allowed,
+      true,
+      `${i}`,
+    );
+  }
+  const refused = checkPrincipalDataPlaneRate("p-plane", now);
+  assertEquals(refused.allowed, false);
+  const perToken = 60_000 / DATA_PLANE_RATE_PER_MINUTE;
+  assertEquals(
+    checkPrincipalDataPlaneRate("p-plane", now + perToken).allowed,
+    true,
+  );
+});
+
+Deno.test("checkPrincipalDataPlaneRate: spending either bucket leaves the other whole", () => {
+  resetRateLimitState();
+  const now = 9_000_000;
+  while (checkPrincipalDataPlaneRate("p-both", now).allowed) {
+    // spend the data plane
+  }
+  assertEquals(checkPrincipalRate("p-both", now).allowed, true);
+  resetRateLimitState();
+  while (checkPrincipalRate("p-both", now).allowed) {
+    // spend the general bucket
+  }
+  assertEquals(checkPrincipalDataPlaneRate("p-both", now).allowed, true);
+});
+
+Deno.test("checkPrincipalDataPlaneRate: is cleared by resetRateLimitState", () => {
+  resetRateLimitState();
+  const now = 11_000_000;
+  while (checkPrincipalDataPlaneRate("p-reset", now).allowed) {
+    // spend it
+  }
+  resetRateLimitState();
+  assertEquals(checkPrincipalDataPlaneRate("p-reset", now).allowed, true);
+});
+
+Deno.test("MAX_PENDING_ATTEMPTS: stays the general burst, not the data plane's", () => {
+  assertEquals(MAX_PENDING_ATTEMPTS, PRINCIPAL_RATE_BURST);
+  assertEquals(MAX_PENDING_ATTEMPTS, 200);
+});
+
+Deno.test("PrincipalRateLimiter: holds at most maxBuckets principals, dropping the least recently used", () => {
+  const limiter = new PrincipalRateLimiter({
+    burst: 2,
+    perMinute: 60,
+    maxBuckets: 3,
+  });
+  const now = 1_000;
+  for (const id of ["a", "b", "c", "d"]) limiter.check(id, now);
+  assertEquals(limiter.size, 3);
+  limiter.check("a", now);
+  limiter.check("a", now);
+  // "a" came back fresh: it had been dropped as least recently used
+  assertEquals(limiter.check("a", now).allowed, false);
 });
