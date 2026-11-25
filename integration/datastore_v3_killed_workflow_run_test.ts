@@ -357,7 +357,7 @@ await runInRootUnitOfWork(repoContext, {
   pushWhen: "completed",
 }, async () => {
   for await (
-    const _event of modelMethodRun(
+    const event of modelMethodRun(
       libSwampContextForRepo(repoContext, {
         signal: new AbortController().signal,
       }),
@@ -371,8 +371,10 @@ await runInRootUnitOfWork(repoContext, {
       },
     )
   ) {
-    // Drain the events; the method never returns.
+    // the keep-alive would hold a failed run until the hang guard
+    if (event.kind === "error") throw new Error(event.error.message);
   }
+  throw new Error("the method run ended; it should block until killed");
 });
 `;
 }
