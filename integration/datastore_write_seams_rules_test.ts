@@ -1510,7 +1510,7 @@ const PINNED_CATALOG_STORE_CONSTRUCTIONS: readonly string[] = [
   // the read model's own catalog, at v3CatalogPath, the path catalogDbPath
   // returns on v3
   "src/infrastructure/datastore_v3/v3_catalog.ts: V3Catalog",
-  "src/infrastructure/datastore_v3/v3_datastore.ts: openV3Datastore",
+  "src/infrastructure/datastore_v3/v3_datastore.ts: openFilterChecked",
   // An in-memory scratch catalog a reconcile replays into, never a
   // repository's.
   "src/infrastructure/persistence/catalog_store.ts: CatalogStore",
