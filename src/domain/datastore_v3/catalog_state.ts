@@ -40,18 +40,29 @@ export function foldCatalogActions(
   actions: readonly CatalogAction[],
   before: (name: string) => CatalogNameState,
 ): Map<string, CatalogNameState> {
+  // greatest is the greatest row's version, so a commit's upserts cost what
+  // they change rather than a scan of the name's rows each
   const working = new Map<
     string,
-    { rows: Map<number, DataMetadata>; forward: string | undefined }
+    {
+      rows: Map<number, DataMetadata>;
+      forward: string | undefined;
+      greatest: number;
+    }
   >();
+  const greatestOf = (rows: Map<number, DataMetadata>) => {
+    let greatest = -Infinity;
+    for (const version of rows.keys()) {
+      if (version > greatest) greatest = version;
+    }
+    return greatest;
+  };
   const stateOf = (name: string) => {
     let state = working.get(name);
     if (state === undefined) {
       const prior = before(name);
-      state = {
-        rows: new Map(prior.rows.map((row) => [row.version, row])),
-        forward: prior.forward,
-      };
+      const rows = new Map(prior.rows.map((row) => [row.version, row]));
+      state = { rows, forward: prior.forward, greatest: greatestOf(rows) };
       working.set(name, state);
     }
     return state;
@@ -60,19 +71,28 @@ export function foldCatalogActions(
     switch (action.kind) {
       case "upsert-version": {
         const state = stateOf(action.metadata.name);
-        const latest = ![...state.rows.keys()].some((version) =>
-          version > action.metadata.version
-        );
-        if (latest) state.forward = undefined;
-        state.rows.set(action.metadata.version, action.metadata);
+        const version = action.metadata.version;
+        if (state.greatest <= version) {
+          state.forward = undefined;
+          state.greatest = version;
+        }
+        state.rows.set(version, action.metadata);
         break;
       }
-      case "remove-version":
-        stateOf(action.name).rows.delete(action.version);
+      case "remove-version": {
+        const state = stateOf(action.name);
+        if (!state.rows.delete(action.version)) break;
+        if (action.version === state.greatest) {
+          state.greatest = greatestOf(state.rows);
+        }
         break;
-      case "remove-name":
-        stateOf(action.name).rows.clear();
+      }
+      case "remove-name": {
+        const state = stateOf(action.name);
+        state.rows.clear();
+        state.greatest = -Infinity;
         break;
+      }
       case "forward":
         stateOf(action.name).forward = action.to;
         break;
