@@ -717,3 +717,45 @@ Deno.test("recoverInterruptedWriter: a dead writer's marker waits while an older
     });
   }
 });
+
+Deno.test("recoverInterruptedWriter: a writer this host cannot judge is recovered on the lease only when it held the lease for its whole command", async () => {
+  for (const sections of [true, false]) {
+    await withTempDir(async (dir) => {
+      const instance = crypto.randomUUID();
+      const path = join(
+        dirname(writerMarkerPath(dir)),
+        "writers",
+        `${instance}.json`,
+      );
+      await Deno.mkdir(dirname(path), { recursive: true });
+      await Deno.writeTextFile(
+        path,
+        JSON.stringify({
+          hostname: "renamed-or-elsewhere",
+          pid: 5151,
+          instance,
+          // another host, or this one under a hostname it had at start
+          process: { host: "other-host#pid:[9]", bootId: "boot-id:z" },
+          since: 0,
+          journal: 1,
+          ...(sections ? { sections: true } : {}),
+        }),
+      );
+      const calls: number[] = [];
+      await recoverInterruptedWriter(recordingHandle(dir, calls), dir, {
+        holdsWriterLock: true,
+      });
+      assertEquals(
+        calls.length,
+        sections ? 0 : 1,
+        sections
+          ? "a sectioned writer frees the lease between commits, so a free lease says nothing"
+          : "a whole-command holder no longer holding the lease has ended",
+      );
+      assertEquals(
+        (await listWriterMarkerFiles(dir)).length,
+        sections ? 1 : 0,
+      );
+    });
+  }
+});
