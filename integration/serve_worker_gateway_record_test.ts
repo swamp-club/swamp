@@ -98,7 +98,10 @@ async function mintToken(
   return JSON.parse(sent[0]).payload.data.token as string;
 }
 
-async function withGateway(fn: (h: Harness) => Promise<void>): Promise<void> {
+async function withGateway(
+  fn: (h: Harness) => Promise<void>,
+  holdPushes?: Promise<void>,
+): Promise<void> {
   const repoDir = await Deno.makeTempDir({ prefix: "swamp-gateway-record-" });
   const initEvents = await collect(
     repoInit(createLibSwampContext(), createRepoInitDeps(VERSION), {
@@ -125,9 +128,9 @@ async function withGateway(fn: (h: Harness) => Promise<void>): Promise<void> {
     repoContext,
     capabilityService: { registerHandlers: () => {} },
     graceWindowMs: 60_000,
-    pushWorkerRecords: () => {
+    pushWorkerRecords: async () => {
       pushes++;
-      return Promise.resolve();
+      await holdPushes;
     },
   });
   try {
@@ -176,8 +179,10 @@ function enroll(
   channel: RpcChannel,
   token: string,
   instanceUuid: string,
+  extra: Record<string, unknown> = {},
 ): Promise<EnrollResult> {
   return channel.call<EnrollResult>(RemoteMethod.enroll, {
+    ...extra,
     token,
     instanceUuid,
     machineId: "machine-1",
@@ -362,5 +367,64 @@ Deno.test("WorkerGateway on a repo: a draining worker's close leaves a newer enr
     const kept = await stored(h);
     assertEquals(kept?.instanceUuid, newer);
     assertEquals(kept?.status, "idle");
+  });
+});
+
+Deno.test("WorkerGateway on a repo: a draining worker over another instance's record is not counted as restored", async () => {
+  await withGateway(async (h) => {
+    const { channel } = connectWorker(h.gateway);
+    await enroll(channel, h.token, crypto.randomUUID());
+    await channel.call(RemoteMethod.drain, {});
+    await h.gateway.settled();
+    const before = h.pushes();
+
+    const other = crypto.randomUUID();
+    await overwrite(h, other, "disconnected");
+    assertEquals(await h.gateway.reassertConnected(), 0);
+    assertEquals(h.pushes(), before);
+    assertEquals((await stored(h))?.instanceUuid, other);
+  });
+});
+
+Deno.test("WorkerGateway on a repo: publishes queued while one waits are coalesced", async () => {
+  const release = Promise.withResolvers<void>();
+  await withGateway(async (h) => {
+    const first = connectWorker(h.gateway);
+    await enroll(first.channel, h.token, crypto.randomUUID());
+    await waitFor(() => h.pushes() === 1, "the first publish started");
+
+    first.drop();
+    const secondInstance = crypto.randomUUID();
+    const second = connectWorker(h.gateway);
+    await enroll(second.channel, h.token, secondInstance);
+    second.drop();
+    await waitFor(async () => {
+      const record = await stored(h);
+      return record?.instanceUuid === secondInstance &&
+        record.status === "disconnected";
+    }, "the last departure written");
+    release.resolve();
+    await h.gateway.settled();
+    assertEquals(h.pushes(), 2);
+  }, release.promise);
+});
+
+Deno.test("WorkerGateway on a repo: a reconnect with an unusable capacity can still have its record rebuilt", async () => {
+  await withGateway(async (h) => {
+    const live = crypto.randomUUID();
+    const first = connectWorker(h.gateway);
+    await enroll(first.channel, h.token, live);
+    first.drop();
+    const again = connectWorker(h.gateway);
+    await enroll(again.channel, h.token, live, {
+      resourceLimits: { capacity: 0 },
+    });
+    await h.gateway.settled();
+
+    await removeRecord(h);
+    assertEquals(await h.gateway.reassertConnected(), 1);
+    const rebuilt = await stored(h);
+    assertEquals(rebuilt?.instanceUuid, live);
+    assertEquals(rebuilt?.capacity, 1);
   });
 });

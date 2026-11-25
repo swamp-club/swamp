@@ -426,6 +426,7 @@ export class WorkerGateway {
   readonly #deliveriesInFlight = new Map<string, number>();
   /** instanceUuid to the mint it refused, so a pass never offers it again */
   readonly #rotationRefusals = new Map<string, string>();
+  #publishQueued = false;
 
   constructor(options: WorkerGatewayOptions) {
     this.#options = options;
@@ -1712,10 +1713,16 @@ export class WorkerGateway {
    */
   #publishWorkerRecords(): void {
     if (this.#options.pushWorkerRecords === undefined) return;
+    // a push not yet started carries every write made before it starts
+    if (this.#publishQueued) return;
+    this.#publishQueued = true;
     // #pushWorkerRecords logs its own failures, so this never rejects
     this.#transitions.run(
       "worker_records_push",
-      () => this.#pushWorkerRecords(),
+      () => {
+        this.#publishQueued = false;
+        return this.#pushWorkerRecords();
+      },
       WORKER_RECORDS_PUSH_KEY,
     ).catch(() => {});
   }
@@ -2095,7 +2102,10 @@ export class WorkerGateway {
       arch: entry.arch,
       swampVersion: entry.swampVersion,
       protocolVersion: entry.protocolVersion,
-      capacity: entry.capacity,
+      // a reconnect takes its capacity unchecked; the record needs a valid one
+      capacity: Number.isInteger(entry.capacity) && entry.capacity >= 1
+        ? entry.capacity
+        : 1,
       tokenCreatedAt: entry.tokenCreatedAt,
       ...(this.#options.owner ? { owner: this.#options.owner } : {}),
     };

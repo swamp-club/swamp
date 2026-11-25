@@ -917,7 +917,8 @@ a serve a worker has left never stamps the newer enrollment on another serve
 as gone. Two serves over one remote datastore number versions from their own
 caches, so a serve the worker left can publish versions that collide with the
 new enrollment's and a pull then brings back the old record. After every
-runtime-data pull that changed files, the gateway rewrites the record of each
+runtime-data pull that does not fail (a step-start pull may already have
+brought the change), the gateway rewrites the record of each
 connected worker whose record says it is gone (missing, `disconnected`, or
 another instance `draining`), numbered above what the pull brought, and
 publishes it through the sync gate (`reassertConnected`). A record naming
@@ -925,8 +926,10 @@ another instance that is still idle, busy or unverified is left alone with a
 warning, so two serves holding one worker name never take turns overwriting
 it. Enrollments and departures are also published through the sync gate as
 soon as they are written, on a chain of their own so the reply never waits on
-the datastore, and shutdown waits for that chain before it disposes the
-gateway: an unpublished departure is otherwise lost to the next model-lock
+the datastore. A publish queued while another waits is dropped, since the one
+waiting carries every write made before it starts. Shutdown waits for that
+chain before it disposes the gateway, and again after the listener closes the
+sockets of the workers still connected: an unpublished departure is otherwise lost to the next model-lock
 pull, which replaces the cache's latest markers with the remote's. If the busy write before a dispatch still fails, the gateway
 refuses the dispatch unsent with `state_unrecorded`, and the step waits for a
 worker until its queue timeout instead of failing at once.

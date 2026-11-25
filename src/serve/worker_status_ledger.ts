@@ -114,15 +114,16 @@ export class WorkerStatusLedger implements WorkerStatusStore {
       "swamp.serve.worker_status.reassert",
       { "swamp.worker.status": args.status },
       async () => {
-        let decision: ReassertDecision = "keep";
-        await this.#write(workerName, args, live, (stored) => {
-          decision = reassertDecision(
+        const decided: { value: ReassertDecision } = { value: "keep" };
+        const wrote = await this.#write(workerName, args, live, (stored) => {
+          decided.value = reassertDecision(
             stored === null ? null : WorkerStateSchema.parse(stored),
             live,
           );
-          return decision === "rewrite";
+          return decided.value === "rewrite";
         });
-        return decision;
+        // a departure over another instance's record is skipped, so nothing was restored
+        return decided.value === "rewrite" && !wrote ? "keep" : decided.value;
       },
     );
   }
@@ -132,18 +133,18 @@ export class WorkerStatusLedger implements WorkerStatusStore {
     args: SetStatusArgs,
     live: WorkerEnrollment | undefined,
     shouldWrite: (stored: Record<string, unknown> | null) => boolean,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const definitionName = workerDefinitionName(workerName);
     let definition = await this.#repoContext.definitionRepo.findByName(
       WORKER_MODEL_TYPE,
       definitionName,
     );
     if (definition === null && live !== undefined) {
-      // nothing to mark departing; a live worker's record is recreated
+      // nothing to mark departing
       if (args.status === "disconnected" || args.status === "draining") {
-        return;
+        return false;
       }
-      if (!shouldWrite(null)) return;
+      if (!shouldWrite(null)) return false;
       if (this.#ensureDefinition !== undefined) {
         await this.#ensureDefinition(workerName);
         definition = await this.#repoContext.definitionRepo.findByName(
@@ -155,13 +156,14 @@ export class WorkerStatusLedger implements WorkerStatusStore {
     // the method run resolves a definition that does not exist yet
     if (definition === null) {
       await this.#fallback.recordStatus(workerName, args, live);
-      return;
+      return true;
     }
     const found = definition;
     const repo = this.#repoContext.unifiedDataRepo;
     const resources = workerModel.resources!;
     // no push of its own, matching the method run's unit: a dispatching
     // run's root carries the write, and outside one it goes to the hook
+    let wrote = false;
     await runInRootUnitOfWork(
       this.#repoContext,
       { flush: undefined },
@@ -200,7 +202,9 @@ export class WorkerStatusLedger implements WorkerStatusStore {
           WORKER_STATE_DATA_NAME,
           nextWorkerState(base.base, args, new Date()),
         );
+        wrote = true;
       },
     );
+    return wrote;
   }
 }

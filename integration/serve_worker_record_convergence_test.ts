@@ -190,12 +190,10 @@ Deno.test("serve worker record: a peer's colliding stale versions are pulled ove
         const oldInstance = crypto.randomUUID();
         const newInstance = crypto.randomUUID();
 
-        // the old serve held the worker and published its record
         await enroll(oldServe, oldInstance);
         await push(oldServe);
         await pull(newServe);
 
-        // the worker reconnects to the new serve, which publishes first
         await enroll(newServe, newInstance);
         await push(newServe);
         assertEquals((await stored(newServe)).instanceUuid, newInstance);
@@ -233,7 +231,6 @@ Deno.test("serve worker record: a peer's colliding stale versions are pulled ove
         await pull(oldServe);
         assertEquals((await stored(oldServe)).instanceUuid, newInstance);
 
-        // a second pass leaves the record alone
         assertEquals(
           await newServe.ledger.reassert(
             WORKER,

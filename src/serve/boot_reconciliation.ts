@@ -60,6 +60,7 @@ import {
   SERVER_TOKEN_SECRET_KEY_PREFIX,
   serverTokenSecretFingerprint,
 } from "../domain/models/access/server_token_model.ts";
+import { TOKEN_SECRETS_VAULT_NAME } from "../domain/vaults/control_plane_vault_provider.ts";
 import type {
   VaultDeleteProvider,
   VaultProvider,
@@ -1589,7 +1590,12 @@ async function sweepTokenConsistencyInner(
       });
       continue;
     }
-    const fingerprint = dataAttrsByName.get(tokenName)?.secretFingerprint;
+    const attrs = dataAttrsByName.get(tokenName);
+    // a token rotated into another vault leaves its old copy here, unread
+    const fingerprint = attrs?.vaultName === TOKEN_SECRETS_VAULT_NAME &&
+        attrs.secretKey === key
+      ? attrs.secretFingerprint
+      : undefined;
     if (
       fingerprint !== undefined &&
       fingerprint !== await serverTokenSecretFingerprint(secret)

@@ -46,7 +46,10 @@ export interface RuntimeDataPollerOptions {
   syncService: DatastoreSyncService;
   syncGate?: SyncGate;
   catalogInvalidate: () => void;
-  /** runs after the gate is released, once a pull changed files */
+  /**
+   * runs after each pull that did not fail, once the gate is released; a
+   * step-start pull can bring a peer's write that this pull then sees no change in
+   */
   onPulled?: () => Promise<void>;
   pollIntervalMs?: number;
   namespace?: string;
@@ -144,8 +147,8 @@ export class RuntimeDataPoller {
         logger
           .info`Runtime data poller: ${count} file(s) updated, invalidating catalog`;
         this.#catalogInvalidate();
-        await this.#onPulled?.();
       }
+      await this.#onPulled?.();
       this.#logHeapStats();
     } catch (error) {
       logger

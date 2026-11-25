@@ -473,9 +473,9 @@ Deno.test("RuntimeDataPoller: runs onPulled after a pull that changed files, out
   assert(gateFreeDuringHook);
 });
 
-Deno.test("RuntimeDataPoller: does not run onPulled when the pull changed nothing", async () => {
+Deno.test("RuntimeDataPoller: runs onPulled after a pull that changed nothing, and not after a failed one", async () => {
   const sync = createMockSyncService({ pullResult: 0 });
-  const { catalogInvalidate } = createCallbackTrackers();
+  const { state, catalogInvalidate } = createCallbackTrackers();
   let hookRuns = 0;
   const poller = new RuntimeDataPoller({
     syncService: sync,
@@ -488,9 +488,14 @@ Deno.test("RuntimeDataPoller: does not run onPulled when the pull changed nothin
   });
 
   poller.start();
-  await waitFor(() => sync.pullCalls.length >= 2, "at least two pulls");
+  await waitFor(() => hookRuns >= 1, "onPulled after a quiet pull");
+  sync.pullError = new Error("bucket down");
+  const before = sync.pullCalls.length;
+  const runsBefore = hookRuns;
+  await waitFor(() => sync.pullCalls.length >= before + 2, "two failed pulls");
   await poller.stop();
-  assertEquals(hookRuns, 0);
+  assertEquals(state.catalogInvalidateCalls, 0);
+  assert(hookRuns <= runsBefore + 1, "a failed pull runs no hook");
 });
 
 Deno.test("RuntimeDataPoller: stop waits for a running onPulled", async () => {

@@ -2167,6 +2167,20 @@ Deno.test("sweepTokenConsistency: detects a record and secret from different min
   );
 });
 
+Deno.test("sweepTokenConsistency: a token rotated into another vault is not compared with its old copy", async () => {
+  const deps = createMockConsistencyDeps({
+    secretKeys: ["moved-vault"],
+    dataTokenNames: ["moved-vault"],
+    definitionNames: ["moved-vault"],
+    tokenVaultNames: { "moved-vault": "my-vault" },
+    fingerprints: {
+      "moved-vault": await serverTokenSecretFingerprint("the-new-secret"),
+    },
+  });
+  const result = await sweepTokenConsistency(deps);
+  assertEquals(result.inconsistencies, []);
+});
+
 Deno.test("sweepTokenConsistency: a record paired with its secret is consistent", async () => {
   const deps = createMockConsistencyDeps({
     secretKeys: ["paired"],
