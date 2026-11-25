@@ -19,9 +19,12 @@
 
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
+  enrolledWorkerState,
   nextWorkerState,
   parseStoredWorkerState,
+  reassertDecision,
   SetStatusArgsSchema,
+  statusWriteBase,
   WORKER_MODEL_TYPE,
   workerModel,
   WorkerStateSchema,
@@ -306,4 +309,139 @@ Deno.test("WorkerStateSchema: a malformed owner reads as none", () => {
     owner: { instanceId: 7 },
   });
   assertEquals(parsed.owner, undefined);
+});
+
+const liveEnrollment = { ...enrollArgs, instanceUuid: "uuid-live" };
+const at = new Date("2026-11-25T12:00:00.000Z");
+
+function storedState(
+  instanceUuid: string,
+  status: "idle" | "busy" | "disconnected" | "draining" | "unverified",
+): Record<string, unknown> {
+  return {
+    ...enrolledWorkerState({ ...enrollArgs, instanceUuid }, at),
+    status,
+  };
+}
+
+Deno.test("enrolledWorkerState: builds the record the enroll method writes", async () => {
+  const { context, store } = createInMemoryWorkerContext(
+    WORKER_MODEL_TYPE,
+    "ci-runner-3",
+  );
+  await workerModel.methods.enroll.execute(enrollArgs, context);
+  const written = WorkerStateSchema.parse(store.get("state-main"));
+  const built = enrolledWorkerState(
+    enrollArgs,
+    new Date(written.enrolledAt),
+  );
+  assertEquals(built, written);
+});
+
+Deno.test("statusWriteBase: without a live enrollment a missing record still throws", () => {
+  assertThrows(
+    () => statusWriteBase("worker-w", null, { status: "busy" }, undefined, at),
+    Error,
+    "has no recorded state",
+  );
+});
+
+Deno.test("statusWriteBase: a missing record is rebuilt from the live enrollment", () => {
+  const result = statusWriteBase(
+    "worker-w",
+    null,
+    { status: "busy" },
+    liveEnrollment,
+    at,
+  );
+  assertEquals(result.kind, "write");
+  if (result.kind !== "write") return;
+  assertEquals(result.base.instanceUuid, "uuid-live");
+  assertEquals(result.base.enrolledAt, at.toISOString());
+});
+
+Deno.test("statusWriteBase: another instance's record is replaced for an in-pool status", () => {
+  const result = statusWriteBase(
+    "worker-w",
+    storedState("uuid-old", "disconnected"),
+    { status: "idle" },
+    liveEnrollment,
+    at,
+  );
+  assertEquals(result.kind, "write");
+  if (result.kind !== "write") return;
+  assertEquals(result.base.instanceUuid, "uuid-live");
+});
+
+Deno.test("statusWriteBase: the record of the same instance is kept as the base", () => {
+  const stored = storedState("uuid-live", "busy");
+  const result = statusWriteBase(
+    "worker-w",
+    stored,
+    { status: "idle" },
+    liveEnrollment,
+    at,
+  );
+  assertEquals(result, {
+    kind: "write",
+    base: WorkerStateSchema.parse(stored),
+  });
+});
+
+Deno.test("statusWriteBase: a departure never stamps another instance's record", () => {
+  for (const status of ["disconnected", "draining"] as const) {
+    assertEquals(
+      statusWriteBase(
+        "worker-w",
+        storedState("uuid-newer", "idle"),
+        { status },
+        liveEnrollment,
+        at,
+      ),
+      { kind: "skip" },
+    );
+    assertEquals(
+      statusWriteBase("worker-w", null, { status }, liveEnrollment, at),
+      { kind: "skip" },
+    );
+  }
+});
+
+Deno.test("statusWriteBase: a disconnect of the recorded instance is written", () => {
+  const result = statusWriteBase(
+    "worker-w",
+    storedState("uuid-live", "idle"),
+    { status: "disconnected" },
+    liveEnrollment,
+    at,
+  );
+  assertEquals(result.kind, "write");
+});
+
+Deno.test("reassertDecision: rewrites only a record that says the worker is gone", () => {
+  const parse = (uuid: string, status: Parameters<typeof storedState>[1]) =>
+    WorkerStateSchema.parse(storedState(uuid, status));
+  assertEquals(reassertDecision(null, liveEnrollment), "rewrite");
+  assertEquals(
+    reassertDecision(parse("uuid-live", "disconnected"), liveEnrollment),
+    "rewrite",
+  );
+  assertEquals(
+    reassertDecision(parse("uuid-live", "idle"), liveEnrollment),
+    "keep",
+  );
+  assertEquals(
+    reassertDecision(parse("uuid-old", "disconnected"), liveEnrollment),
+    "rewrite",
+  );
+  assertEquals(
+    reassertDecision(parse("uuid-old", "draining"), liveEnrollment),
+    "rewrite",
+  );
+  for (const status of ["idle", "busy", "unverified"] as const) {
+    assertEquals(
+      reassertDecision(parse("uuid-other", status), liveEnrollment),
+      "live_elsewhere",
+    );
+  }
 });

@@ -56,6 +56,7 @@ import {
 } from "../../libswamp/worker/prune.ts";
 import {
   WORKER_MODEL_TYPE,
+  WORKER_STATE_DATA_NAME,
   WorkerStateSchema,
 } from "../../domain/models/worker/worker_model.ts";
 import type { DataRecord } from "../../domain/data/data_record.ts";
@@ -196,6 +197,7 @@ export const workerPruneCommand = withRemoteOptions(
         return [{
           name: s.name,
           definitionName: `worker-${s.name}`,
+          definitionId: r.modelId,
           status: s.status,
           tokenName: s.tokenName,
           disconnectedAt: s.disconnectedAt,
@@ -223,11 +225,24 @@ export const workerPruneCommand = withRemoteOptions(
       return tokens;
     },
 
-    deleteWorker: (definitionName) =>
+    deleteWorker: (definitionId, definitionName) =>
       modelDelete(libCtx, deleteDeps, {
-        modelIdOrName: definitionName,
+        modelIdOrName: definitionId,
+        byId: true,
+        expectedName: definitionName,
         force: true,
       }),
+    findDefinitionId: async (definitionName) =>
+      (await repoContext.definitionRepo.findByName(
+        WORKER_MODEL_TYPE,
+        definitionName,
+      ))?.id ?? null,
+    deleteOrphanRecord: (definitionId) =>
+      repoContext.unifiedDataRepo.delete(
+        WORKER_MODEL_TYPE,
+        definitionId,
+        WORKER_STATE_DATA_NAME,
+      ),
 
     pruneBindings: (tokenName, machineIds) =>
       modelMethodRun(libCtx, runDeps, {

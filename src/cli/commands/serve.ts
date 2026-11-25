@@ -317,6 +317,7 @@ import {
 import {
   authenticateDashboardSession,
   authenticateServerToken,
+  createServerTokenAuthDeps,
   extractDashboardSessionId,
   extractWebSocketToken,
   readServerTokenRecord,
@@ -399,6 +400,7 @@ import {
   createBookkeepingRecordQuery,
   createWorkerTokenNameQuery,
   reapEndedBookkeepingRecords,
+  type VanishedRecordRow,
 } from "../../serve/bookkeeping_gc.ts";
 import { resolveAuditStoreRetentionDays } from "../../domain/audit/audit_service.ts";
 import { RetentionPolicy } from "../../domain/retention/retention_policy.ts";
@@ -467,7 +469,11 @@ import {
   type WorkerPruneDeps,
   type WorkerPruneResult,
 } from "../../libswamp/worker/prune.ts";
-import { WorkerStateSchema } from "../../domain/models/worker/worker_model.ts";
+import {
+  WORKER_MODEL_TYPE,
+  WORKER_STATE_DATA_NAME,
+  WorkerStateSchema,
+} from "../../domain/models/worker/worker_model.ts";
 import type { DataRecord } from "../../domain/data/data_record.ts";
 import {
   isSensitiveHeader,
@@ -555,7 +561,11 @@ import {
   UNPUSHED_INTERRUPTS_FILE,
   type UnpushedInterrupts,
 } from "../../serve/unpushed_interrupts.ts";
-import { pushNamespaceCounted } from "../../infrastructure/persistence/push_paths.ts";
+import {
+  pushBoundOf,
+  pushNamespace,
+  pushNamespaceCounted,
+} from "../../infrastructure/persistence/push_paths.ts";
 import { runBoundedSync } from "../../infrastructure/persistence/datastore_sync_coordinator.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { ActiveRunRegistry } from "../../serve/active_run_registry.ts";
@@ -2772,6 +2782,19 @@ export const serveCommand = new Command()
       repoDir: resolvedRepoDir,
       repoContext,
       capabilityService,
+      ...(syncService
+        ? {
+          pushWorkerRecords: () =>
+            withSyncGate(syncGate, () =>
+              pushNamespace(
+                syncService,
+                isCustomDatastoreConfig(datastoreConfig)
+                  ? datastoreConfig.namespace
+                  : undefined,
+                pushBoundOf(datastoreConfig),
+              )),
+        }
+        : {}),
       onWorkerIdle: (worker) => dispatchService.notifyWorkerIdle(worker),
       onGraceExpired: (worker) => dispatchService.notifyGraceExpired(worker),
       onWorkerRemoved: (worker) => dispatchService.notifyWorkerRemoved(worker),
@@ -4392,6 +4415,9 @@ export const serveCommand = new Command()
         syncGate,
         pollIntervalMs: datastorePollIntervalMs,
         catalogInvalidate: () => repoContext.catalogStore.invalidate(),
+        onPulled: async () => {
+          await workerGateway.reassertConnected();
+        },
         namespace: serveNamespace,
       });
       runtimeDataPoller.start();
@@ -6101,6 +6127,9 @@ export const serveCommand = new Command()
         intervalMs: DEFAULT_TOKEN_SESSION_REVALIDATION_MS,
         listTokenSessions,
         readToken: (name) => readServerTokenRecord(repoContext, name),
+        readSecret: async (vaultName, secretKey) =>
+          await (await createServerTokenAuthDeps(resolvedRepoDir, repoContext))
+            .readSecret(vaultName, secretKey),
         delegationStanding: (id) => delegationDirectory.standingOf(id).kind,
         delegationPerson: (id) => delegationDirectory.recordOf(id)?.person,
         admission: tokenAdmission,
@@ -8848,6 +8877,8 @@ export const serveCommand = new Command()
           return workerTokenRevalidationService.dispose();
         },
       );
+      // the departures and their publishes still queued reach the datastore
+      await stages.run("worker records", () => workerGateway.settled());
       runShutdownStep("worker gateway", () => workerGateway.dispose());
       if (collectiveRefreshService) {
         const service = collectiveRefreshService;
@@ -9768,6 +9799,7 @@ export const serveCommand = new Command()
             return [{
               name: s.name,
               definitionName: `worker-${s.name}`,
+              definitionId: r.modelId,
               status: s.status,
               tokenName: s.tokenName,
               disconnectedAt: s.disconnectedAt,
@@ -9797,11 +9829,25 @@ export const serveCommand = new Command()
           );
           return tokens;
         },
-        deleteWorker: (definitionName) =>
+        deleteWorker: (definitionId, definitionName) =>
           modelDelete(libCtx, deleteDeps, {
-            modelIdOrName: definitionName,
+            modelIdOrName: definitionId,
+            byId: true,
+            expectedName: definitionName,
             force: true,
           }),
+        findDefinitionId: async (definitionName) =>
+          (await repoContext.definitionRepo.findByName(
+            WORKER_MODEL_TYPE,
+            definitionName,
+          ))?.id ?? null,
+        deleteOrphanRecord: (definitionId) =>
+          repoContext.unifiedDataRepo.delete(
+            WORKER_MODEL_TYPE,
+            definitionId,
+            WORKER_STATE_DATA_NAME,
+          ),
+        isLive: (name) => workerGateway.worker(name) !== null,
         pruneBindings: (tokenName, machineIds) =>
           modelMethodRun(libCtx, runDeps, {
             modelIdOrName: tokenName,
@@ -9828,6 +9874,22 @@ export const serveCommand = new Command()
       const gcSyncNamespace = isCustomDatastoreConfig(datastoreConfig)
         ? datastoreConfig.namespace
         : undefined;
+      // a backfill only adds rows, so a row whose file a push removed for a
+      // peer's delete stays until dropped here
+      const dropVanishedCatalogRows = (
+        rows: readonly VanishedRecordRow[],
+      ): void => {
+        const namespace = repoContext.unifiedDataRepo.namespace;
+        const key = (type: string, modelId: string, name: string) =>
+          JSON.stringify([type, modelId, name]);
+        const gone = new Set(
+          rows.map((r) => key(r.modelType.normalized, r.modelId, r.name)),
+        );
+        repoContext.catalogStore.clearRows((row) =>
+          row.namespace === namespace &&
+          gone.has(key(row.type_normalized, row.model_id, row.data_name))
+        );
+      };
       workerGcService = new WorkerGcService({
         intervalMs: DEFAULT_WORKER_GC_INTERVAL_MS,
         initialDelayMs: DEFAULT_WORKER_GC_INITIAL_DELAY_MS,
@@ -9851,7 +9913,19 @@ export const serveCommand = new Command()
               listWorkerTokenNames: createWorkerTokenNameQuery(
                 repoContext.dataQueryService,
                 repoContext.unifiedDataRepo.namespace,
+                {
+                  repo: repoContext.unifiedDataRepo,
+                  onVanished: (modelIds) =>
+                    dropVanishedCatalogRows(
+                      modelIds.map((modelId) => ({
+                        modelType: WORKER_MODEL_TYPE,
+                        modelId,
+                        name: WORKER_STATE_DATA_NAME,
+                      })),
+                    ),
+                },
               ),
+              dropVanishedRows: dropVanishedCatalogRows,
               repo: repoContext.unifiedDataRepo,
               markDirty: repoContext.markDirty,
               syncService,

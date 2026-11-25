@@ -2452,6 +2452,11 @@ for (
       (name: string) => new WorkerNotDispatchableError(name, "at_capacity"),
     ],
     [
+      "an unwritable state record",
+      (name: string) =>
+        new WorkerNotDispatchableError(name, "state_unrecorded"),
+    ],
+    [
       "worker_busy",
       (_name: string) =>
         new RpcError({ code: "worker_busy", message: "at capacity" }),

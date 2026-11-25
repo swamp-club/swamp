@@ -284,6 +284,7 @@ async function withPruneFixture(
             workers.push({
               name: spec.name,
               definitionName,
+              definitionId: found.id,
               status: spec.status ?? "disconnected",
               tokenName: TOKEN,
               disconnectedAt: spec.disconnectedMsAgo === undefined
@@ -298,8 +299,8 @@ async function withPruneFixture(
             name: TOKEN,
             bindings: specs.map((s) => ({ machineId: `machine-${s.name}` })),
           }]),
-        deleteWorker: (definitionName) =>
-          deleteWorkerWith(deleteDeps, definitionName),
+        deleteWorker: (definitionId, definitionName) =>
+          deleteWorkerWith(deleteDeps, definitionId, definitionName),
         resolveStaleBindings: (token, remaining) =>
           Promise.resolve(
             token.bindings
@@ -324,10 +325,13 @@ async function withPruneFixture(
 
 function deleteWorkerWith(
   deleteDeps: ReturnType<typeof createModelDeleteDeps>,
+  definitionId: string,
   definitionName: string,
 ) {
   return modelDelete(createLibSwampContext(), deleteDeps, {
-    modelIdOrName: definitionName,
+    modelIdOrName: definitionId,
+    byId: true,
+    expectedName: definitionName,
     force: true,
   });
 }

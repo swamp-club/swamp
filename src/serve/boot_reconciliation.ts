@@ -58,6 +58,7 @@ import { isSensitiveHeader } from "./webhook.ts";
 import {
   SERVER_TOKEN_MODEL_TYPE,
   SERVER_TOKEN_SECRET_KEY_PREFIX,
+  serverTokenSecretFingerprint,
 } from "../domain/models/access/server_token_model.ts";
 import type {
   VaultDeleteProvider,
@@ -1444,7 +1445,8 @@ export interface TokenInconsistency {
     | "orphaned-secret"
     | "orphaned-data"
     | "undecryptable-secret"
-    | "missing-secret";
+    | "missing-secret"
+    | "mispaired-secret";
   tokenName: string;
   detail: string;
 }
@@ -1531,7 +1533,11 @@ async function sweepTokenConsistencyInner(
       .filter((item) => item.modelName && item.data.name === "token-main")
       .map((item) => [
         item.modelName,
-        item.attrs as { vaultName?: string; secretKey?: string },
+        item.attrs as {
+          vaultName?: string;
+          secretKey?: string;
+          secretFingerprint?: string;
+        },
       ]),
   );
   for (const tokenName of definitionNames) {
@@ -1569,8 +1575,9 @@ async function sweepTokenConsistencyInner(
       });
       continue;
     }
+    let secret: string;
     try {
-      await deps.tokenSecretsProvider.get(key);
+      secret = await deps.tokenSecretsProvider.get(key);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (message.includes("not found")) continue;
@@ -1580,22 +1587,36 @@ async function sweepTokenConsistencyInner(
         detail:
           "Secret exists but cannot be decrypted — encryption key may have been lost or rotated",
       });
+      continue;
+    }
+    const fingerprint = dataAttrsByName.get(tokenName)?.secretFingerprint;
+    if (
+      fingerprint !== undefined &&
+      fingerprint !== await serverTokenSecretFingerprint(secret)
+    ) {
+      inconsistencies.push({
+        mode: "mispaired-secret",
+        tokenName,
+        detail:
+          "Record and secret come from different mints — the token will fail authentication until it is rotated",
+      });
     }
   }
 
   inconsistencies.sort((a, b) => {
     const order: Record<TokenInconsistency["mode"], number> = {
       "undecryptable-secret": 0,
-      "missing-secret": 1,
-      "orphaned-secret": 2,
-      "orphaned-data": 3,
+      "mispaired-secret": 1,
+      "missing-secret": 2,
+      "orphaned-secret": 3,
+      "orphaned-data": 4,
     };
     return order[a.mode] - order[b.mode];
   });
 
   for (const item of inconsistencies) {
     const level = item.mode === "undecryptable-secret" ||
-        item.mode === "missing-secret"
+        item.mode === "missing-secret" || item.mode === "mispaired-secret"
       ? "error"
       : "warn";
     if (level === "error") {

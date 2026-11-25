@@ -34,6 +34,8 @@ import type { ModelDeleteEvent } from "../models/delete.ts";
 export interface PrunableWorker {
   readonly name: string;
   readonly definitionName: string;
+  /** the definition the record was written under, which a peer's pull can make differ from the named one */
+  readonly definitionId: string;
   readonly status: string;
   readonly tokenName: string;
   readonly disconnectedAt: string | undefined;
@@ -89,8 +91,14 @@ export interface WorkerPruneDeps {
   listWorkers(): Promise<PrunableWorker[]>;
   listTokens(): Promise<PrunableToken[]>;
   deleteWorker(
+    definitionId: string,
     definitionName: string,
   ): AsyncIterable<ModelDeleteEvent>;
+  /** a worker this process holds in its pool is never pruned, whatever its record says */
+  isLive?(name: string): boolean;
+  /** with deleteOrphanRecord, a record under another id than the named definition is removed alone */
+  findDefinitionId?(definitionName: string): Promise<string | null>;
+  deleteOrphanRecord?(definitionId: string): Promise<void>;
   pruneBindings(
     tokenName: string,
     machineIds: string[],
@@ -110,7 +118,14 @@ function pruneSkipReason(
   worker: PrunableWorker,
   gracePeriodMs: number,
   nowMs: number,
-): "not_disconnected" | "no_disconnect_time" | "within_grace" | undefined {
+  isLive: ((name: string) => boolean) | undefined,
+):
+  | "live"
+  | "not_disconnected"
+  | "no_disconnect_time"
+  | "within_grace"
+  | undefined {
+  if (isLive?.(worker.name) === true) return "live";
   if (worker.status !== "disconnected") return "not_disconnected";
   if (!worker.disconnectedAt) return "no_disconnect_time";
   const disconnectedMs = Date.parse(worker.disconnectedAt);
@@ -178,7 +193,12 @@ async function* pruneStages(
     ({ tally }) => {
       tally.add("considered", allWorkers.length);
       return Promise.resolve(allWorkers.filter((w) => {
-        const reason = pruneSkipReason(w, input.gracePeriodMs, nowMs);
+        const reason = pruneSkipReason(
+          w,
+          input.gracePeriodMs,
+          nowMs,
+          deps.isLive?.bind(deps),
+        );
         tally.add(reason ? `skipped_${reason}` : "eligible");
         return reason === undefined;
       }));
@@ -262,9 +282,19 @@ async function* deleteWorkers(
     yield { kind: "deleting_worker" as const, name: worker.name };
     phase.tally.add("attempted");
     try {
+      if (await isOrphanRecord(deps, worker)) {
+        await deps.deleteOrphanRecord!(worker.definitionId);
+        workersDeleted++;
+        phase.tally.add("orphans_deleted");
+        yield { kind: "worker_deleted" as const, name: worker.name };
+        continue;
+      }
       let deleteCompleted = false;
       for await (
-        const event of deps.deleteWorker(worker.definitionName)
+        const event of deps.deleteWorker(
+          worker.definitionId,
+          worker.definitionName,
+        )
       ) {
         if (event.kind === "completed") deleteCompleted = true;
         if (event.kind === "error") {
@@ -291,6 +321,16 @@ async function* deleteWorkers(
 
   phase.result(workersFailed > 0 ? "partial" : "completed");
   return { workersDeleted, workersFailed, affectedTokens };
+}
+
+// its bindings belong to whichever definition holds the name, so they are left alone
+async function isOrphanRecord(
+  deps: WorkerPruneDeps,
+  worker: PrunableWorker,
+): Promise<boolean> {
+  if (!deps.findDefinitionId || !deps.deleteOrphanRecord) return false;
+  return await deps.findDefinitionId(worker.definitionName) !==
+    worker.definitionId;
 }
 
 async function* cleanUpBindings(

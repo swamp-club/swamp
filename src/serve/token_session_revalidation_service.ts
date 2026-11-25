@@ -26,7 +26,11 @@ import type { TokenAdmissionChecker } from "./token_admission.ts";
 import { runDetached } from "../infrastructure/tracing/mod.ts";
 import { z } from "zod";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
-import type { ServerToken } from "../domain/models/access/server_token_model.ts";
+import {
+  type ServerToken,
+  ServerTokenSecretMismatchError,
+  verifyServerTokenSecret,
+} from "../domain/models/access/server_token_model.ts";
 import { ServerTokenNotFoundError } from "./token_auth.ts";
 import { delegationOfSessionName } from "./delegated_token_auth.ts";
 import {
@@ -58,12 +62,14 @@ export type TokenSessionVerdict =
 
 /**
  * a session is kept only while its own mint is still the active, unexpired
- * record
+ * record; a record that does not pair with the vault secret is a stale copy,
+ * not a rotation, since a rotation writes the secret before the record
  */
 export function tokenSessionVerdict(
   token: ServerToken | null,
   sessionCreatedAt: string,
   nowMs: number,
+  recordIsStaleCopy = false,
 ): TokenSessionVerdict {
   if (token === null) {
     return {
@@ -82,6 +88,7 @@ export function tokenSessionVerdict(
     };
   }
   if (token.createdAt !== sessionCreatedAt) {
+    if (recordIsStaleCopy) return { keep: true };
     return {
       keep: false,
       cause: "rotated",
@@ -122,6 +129,8 @@ export interface TokenSessionRevalidationDeps {
   readonly intervalMs: number;
   listTokenSessions(): readonly { name: string; createdAt: string }[];
   readToken(name: string): Promise<ServerToken>;
+  /** absent, a changed mint is always a rotation */
+  readSecret?(vaultName: string, secretKey: string): Promise<string>;
   terminateSessions(name: string, options: TokenSessionCloseOptions): number;
   /** a delegation's sessions are checked against the directory, never a token record */
   delegationStanding?(id: string): string;
@@ -257,6 +266,9 @@ export class TokenSessionRevalidationService {
       }
 
       const nowMs = this.#deps.now?.() ?? Date.now();
+      const staleCopy = token !== null &&
+        mints.some((createdAt) => createdAt !== token.createdAt) &&
+        await this.#isStaleCopy(token);
       const admission = token === null || !this.#deps.admission
         ? undefined
         : await this.#deps.admission.serverToken(token);
@@ -265,7 +277,12 @@ export class TokenSessionRevalidationService {
       const admitted = admission === undefined || admission.admitted ||
         admission.unavailable === true;
       for (const createdAt of mints) {
-        const verdict = tokenSessionVerdict(token, createdAt, nowMs);
+        const verdict = tokenSessionVerdict(
+          token,
+          createdAt,
+          nowMs,
+          staleCopy,
+        );
         if (verdict.keep) {
           if (!admitted) closed += this.#closeNotAdmitted(name, [createdAt]);
           continue;
@@ -279,6 +296,26 @@ export class TokenSessionRevalidationService {
       }
     }
     return closed;
+  }
+
+  /** any doubt reads as a real rotation, which closes the session */
+  async #isStaleCopy(token: ServerToken): Promise<boolean> {
+    const readSecret = this.#deps.readSecret;
+    if (readSecret === undefined || token.secretFingerprint === undefined) {
+      return false;
+    }
+    try {
+      const secret = await readSecret(token.vaultName, token.secretKey);
+      await verifyServerTokenSecret(token, secret);
+      return false;
+    } catch (err) {
+      if (!(err instanceof ServerTokenSecretMismatchError)) return false;
+      logger.warn(
+        "Token {name} has a record that does not pair with its secret, so it is a stale copy and its sessions stay open; rotate the token if it persists",
+        { name: token.name },
+      );
+      return true;
+    }
   }
 
   #closeNotAdmitted(name: string, mints: readonly string[]): number {

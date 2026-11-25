@@ -46,6 +46,8 @@ export interface RuntimeDataPollerOptions {
   syncService: DatastoreSyncService;
   syncGate?: SyncGate;
   catalogInvalidate: () => void;
+  /** runs after the gate is released, once a pull changed files */
+  onPulled?: () => Promise<void>;
   pollIntervalMs?: number;
   namespace?: string;
 }
@@ -54,6 +56,7 @@ export class RuntimeDataPoller {
   readonly #syncService: DatastoreSyncService;
   readonly #syncGate?: SyncGate;
   readonly #catalogInvalidate: () => void;
+  readonly #onPulled?: () => Promise<void>;
   #pollIntervalMs: number;
   readonly #namespace?: string;
   #gateTiming: PollerGateTiming;
@@ -67,6 +70,7 @@ export class RuntimeDataPoller {
     this.#syncService = options.syncService;
     this.#syncGate = options.syncGate;
     this.#catalogInvalidate = options.catalogInvalidate;
+    this.#onPulled = options.onPulled;
     this.#pollIntervalMs = options.pollIntervalMs ??
       DEFAULT_RUNTIME_DATA_POLL_INTERVAL_MS;
     this.#namespace = options.namespace;
@@ -140,6 +144,7 @@ export class RuntimeDataPoller {
         logger
           .info`Runtime data poller: ${count} file(s) updated, invalidating catalog`;
         this.#catalogInvalidate();
+        await this.#onPulled?.();
       }
       this.#logHeapStats();
     } catch (error) {

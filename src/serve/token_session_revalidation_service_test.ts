@@ -22,7 +22,10 @@ import { assert, assertEquals } from "@std/assert";
 import { type Span, trace } from "@opentelemetry/api";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { z } from "zod";
-import type { ServerToken } from "../domain/models/access/server_token_model.ts";
+import {
+  type ServerToken,
+  serverTokenSecretFingerprint,
+} from "../domain/models/access/server_token_model.ts";
 import { ServerTokenNotFoundError } from "./token_auth.ts";
 import {
   type TokenSessionCloseOptions,
@@ -470,4 +473,94 @@ Deno.test("runOnce: closes a standing delegation's sessions once its person is n
   assertEquals(await service.runOnce(), 1);
   assertEquals(h.closes[0].options.cause, "not-admitted");
   assertEquals(h.reads, []);
+});
+
+Deno.test("tokenSessionVerdict: a stale copy of the record keeps a session on another mint", () => {
+  assertEquals(tokenSessionVerdict(token(), MINT_2, NOW, true), {
+    keep: true,
+  });
+  assertEquals(
+    tokenSessionVerdict(token({ state: "revoked" }), MINT_2, NOW, true).keep,
+    false,
+  );
+});
+
+async function pairedToken(
+  secret: string,
+  overrides: Partial<ServerToken> = {},
+): Promise<ServerToken> {
+  return token({
+    secretFingerprint: await serverTokenSecretFingerprint(secret),
+    ...overrides,
+  });
+}
+
+function withSecret(
+  h: Harness,
+  readSecret: () => Promise<string>,
+): { reads: number; deps: TokenSessionRevalidationDeps } {
+  const counted = { reads: 0, deps: h.deps };
+  counted.deps = {
+    ...h.deps,
+    readSecret: () => {
+      counted.reads++;
+      return readSecret();
+    },
+  };
+  return counted;
+}
+
+Deno.test("runOnce: a changed record that pairs with the vault secret closes as rotated", async () => {
+  const record = await pairedToken("new-secret", { createdAt: MINT_1 });
+  const h = harness(
+    [{ name: "tok", createdAt: MINT_2 }],
+    () => Promise.resolve(record),
+  );
+  const s = withSecret(h, () => Promise.resolve("new-secret"));
+  await new TokenSessionRevalidationService(s.deps).runOnce();
+  assertEquals(h.closes.map((c) => c.options.cause), ["rotated"]);
+});
+
+Deno.test("runOnce: a changed record that does not pair with the vault secret keeps the session", async () => {
+  const stale = await pairedToken("old-secret", { createdAt: MINT_1 });
+  const h = harness(
+    [{ name: "tok", createdAt: MINT_2 }],
+    () => Promise.resolve(stale),
+  );
+  const s = withSecret(h, () => Promise.resolve("current-secret"));
+  assertEquals(await new TokenSessionRevalidationService(s.deps).runOnce(), 0);
+  assertEquals(h.closes, []);
+});
+
+Deno.test("runOnce: an unreadable secret or a record with no fingerprint closes as rotated", async () => {
+  for (
+    const [label, record, readSecret] of [
+      [
+        "vault error",
+        await pairedToken("old-secret"),
+        () => Promise.reject(new Error("vault offline")),
+      ],
+      ["no fingerprint", token(), () => Promise.resolve("anything")],
+    ] as const
+  ) {
+    const h = harness(
+      [{ name: "tok", createdAt: MINT_2 }],
+      () => Promise.resolve(record),
+    );
+    const s = withSecret(h, readSecret);
+    await new TokenSessionRevalidationService(s.deps).runOnce();
+    assertEquals(h.closes.map((c) => c.options.cause), ["rotated"], label);
+  }
+});
+
+Deno.test("runOnce: the vault is read only when a session's mint differs from the record", async () => {
+  const record = await pairedToken("s");
+  const h = harness(
+    [{ name: "tok", createdAt: MINT_1 }],
+    () => Promise.resolve(record),
+  );
+  const s = withSecret(h, () => Promise.resolve("s"));
+  await new TokenSessionRevalidationService(s.deps).runOnce();
+  assertEquals(s.reads, 0);
+  assertEquals(h.closes, []);
 });

@@ -49,6 +49,7 @@ function makeWorker(
   return {
     name: "worker-pool-abc",
     definitionName: "worker-worker-pool-abc",
+    definitionId: "def-worker-pool-abc",
     status: "disconnected",
     tokenName: "pool",
     disconnectedAt: new Date(NOW - 2 * DAY_MS).toISOString(),
@@ -171,7 +172,7 @@ Deno.test("workerPrune: dry run does not delete", async () => {
     [makeWorker()],
     [makeToken()],
     {
-      deleteWorker: (name) => {
+      deleteWorker: (_definitionId, name) => {
         deleted.push(name);
         return successDeleteStream();
       },
@@ -196,7 +197,7 @@ Deno.test("workerPrune: deletes stale worker and prunes bindings", async () => {
     [makeWorker()],
     [makeToken()],
     {
-      deleteWorker: (name) => {
+      deleteWorker: (_definitionId, name) => {
         deleted.push(name);
         return successDeleteStream();
       },
@@ -281,7 +282,7 @@ Deno.test("workerPrune: mixed prunable and non-prunable workers", async () => {
     ],
     [],
     {
-      deleteWorker: (name) => {
+      deleteWorker: (_definitionId, name) => {
         deleted.push(name);
         return successDeleteStream();
       },
@@ -587,4 +588,118 @@ Deno.test("workerPrune: no phases are exported without the execution observer", 
       0,
     );
   });
+});
+
+Deno.test("workerPrune: deletes a stale worker by the definition id its record names", async () => {
+  const deleted: Array<{ id: string; name: string }> = [];
+  const deps = makeDeps([makeWorker()], [], {
+    deleteWorker: (id, name) => {
+      deleted.push({ id, name });
+      return successDeleteStream();
+    },
+  });
+  await collectEvents(
+    workerPrune(createLibSwampContext(), deps, {
+      gracePeriodMs: DAY_MS,
+      dryRun: false,
+    }),
+  );
+  assertEquals(deleted, [{
+    id: "def-worker-pool-abc",
+    name: "worker-worker-pool-abc",
+  }]);
+});
+
+Deno.test("workerPrune: never prunes a worker this process holds, whatever its record says", async () => {
+  const deleted: string[] = [];
+  const pruned: string[][] = [];
+  const deps = makeDeps(
+    [
+      makeWorker({ name: "held", definitionName: "worker-held" }),
+      makeWorker({ name: "gone", definitionName: "worker-gone" }),
+    ],
+    [makeToken()],
+    {
+      isLive: (name) => name === "held",
+      deleteWorker: (_id, name) => {
+        deleted.push(name);
+        return successDeleteStream();
+      },
+      pruneBindings: (_token, ids) => {
+        pruned.push(ids);
+        return successPruneStream();
+      },
+    },
+  );
+  const events = await collectEvents(
+    workerPrune(createLibSwampContext(), deps, {
+      gracePeriodMs: DAY_MS,
+      dryRun: false,
+    }),
+  );
+  assertEquals(deleted, ["worker-gone"]);
+  const preview = events.find((e) => e.kind === "previewing");
+  assertEquals(
+    preview?.kind === "previewing" ? preview.workers.map((w) => w.name) : [],
+    ["gone"],
+  );
+});
+
+Deno.test("workerPrune: a record under another id than the named definition is removed alone", async () => {
+  const deletedDefinitions: string[] = [];
+  const orphans: string[] = [];
+  const staleResolved: string[] = [];
+  const deps = makeDeps(
+    [makeWorker({ definitionId: "def-from-peer" })],
+    [makeToken()],
+    {
+      findDefinitionId: () => Promise.resolve("def-live"),
+      deleteOrphanRecord: (id) => {
+        orphans.push(id);
+        return Promise.resolve();
+      },
+      deleteWorker: (id) => {
+        deletedDefinitions.push(id);
+        return successDeleteStream();
+      },
+      resolveStaleBindings: (token) => {
+        staleResolved.push(token.name);
+        return Promise.resolve(null);
+      },
+    },
+  );
+  const events = await collectEvents(
+    workerPrune(createLibSwampContext(), deps, {
+      gracePeriodMs: DAY_MS,
+      dryRun: false,
+    }),
+  );
+  assertEquals(orphans, ["def-from-peer"]);
+  assertEquals(deletedDefinitions, []);
+  assertEquals(staleResolved, []);
+  assertEquals(findResult(events)?.workersDeleted, 1);
+});
+
+Deno.test("workerPrune: a record under the named definition's id deletes the definition", async () => {
+  const deletedDefinitions: string[] = [];
+  const orphans: string[] = [];
+  const deps = makeDeps([makeWorker()], [], {
+    findDefinitionId: () => Promise.resolve("def-worker-pool-abc"),
+    deleteOrphanRecord: (id) => {
+      orphans.push(id);
+      return Promise.resolve();
+    },
+    deleteWorker: (id) => {
+      deletedDefinitions.push(id);
+      return successDeleteStream();
+    },
+  });
+  await collectEvents(
+    workerPrune(createLibSwampContext(), deps, {
+      gracePeriodMs: DAY_MS,
+      dryRun: false,
+    }),
+  );
+  assertEquals(orphans, []);
+  assertEquals(deletedDefinitions, ["def-worker-pool-abc"]);
 });

@@ -697,11 +697,11 @@ Deno.test("WorkerGateway: dispatch releases its slot when recording the busy sta
   });
 
   h.failOn.add("set_status");
-  await assertRejects(
+  const refusal = await assertRejects(
     () => h.gateway.dispatch("ci-runner-3", dispatchParams("d-1")),
-    Error,
-    "stubbed failure: set_status",
+    WorkerNotDispatchableError,
   );
+  assertEquals(refusal.reason, "state_unrecorded");
   assertEquals(received, []);
   assertEquals(h.gateway.worker("ci-runner-3")?.activeDispatchIds, []);
   assertEquals(h.gateway.worker("ci-runner-3")?.status, "idle");
@@ -738,11 +738,11 @@ Deno.test("WorkerGateway: a failed busy status releases only its own slot (swamp
   });
 
   const first = h.gateway.dispatch("ci-runner-3", dispatchParams("d-1"));
-  await assertRejects(
+  const refusal = await assertRejects(
     () => h.gateway.dispatch("ci-runner-3", dispatchParams("d-2")),
-    Error,
-    "datastore offline",
+    WorkerNotDispatchableError,
   );
+  assertEquals(refusal.reason, "state_unrecorded");
   assertEquals(h.gateway.worker("ci-runner-3")?.activeDispatchIds, ["d-1"]);
   assertEquals(h.gateway.worker("ci-runner-3")?.status, "busy");
 

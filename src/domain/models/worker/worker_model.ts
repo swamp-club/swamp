@@ -93,7 +93,7 @@ export function workerDefinitionName(workerName: string): string {
   return `worker-${workerName}`;
 }
 
-const EnrollArgsSchema = z.object({
+export const WorkerEnrollmentSchema = z.object({
   instanceUuid: z.string().min(1),
   tokenName: z.string().min(1),
   workerName: z.string().min(1).optional(),
@@ -108,12 +108,15 @@ const EnrollArgsSchema = z.object({
   owner: OrchestratorOwnerSchema.optional(),
 });
 
-async function enroll(
-  args: z.infer<typeof EnrollArgsSchema>,
-  context: MethodContext,
-): Promise<MethodResult> {
-  const now = new Date().toISOString();
-  const state: WorkerState = {
+export type WorkerEnrollment = z.input<typeof WorkerEnrollmentSchema>;
+
+export function enrolledWorkerState(
+  enrollment: WorkerEnrollment,
+  at: Date,
+): WorkerState {
+  const args = WorkerEnrollmentSchema.parse(enrollment);
+  const now = at.toISOString();
+  return {
     name: args.workerName ?? args.tokenName,
     instanceUuid: args.instanceUuid,
     tokenName: args.tokenName,
@@ -132,10 +135,16 @@ async function enroll(
     activeDispatchIds: [],
     ...(args.owner !== undefined ? { owner: args.owner } : {}),
   };
+}
+
+async function enroll(
+  args: WorkerEnrollment,
+  context: MethodContext,
+): Promise<MethodResult> {
   const handle = await context.writeResource!(
     "state",
     WORKER_STATE_DATA_NAME,
-    state,
+    enrolledWorkerState(args, new Date()),
   );
   return { dataHandles: [handle] };
 }
@@ -177,6 +186,59 @@ export function nextWorkerState(
   };
 }
 
+export type StatusWriteBase =
+  | { kind: "write"; base: WorkerState }
+  | { kind: "skip" };
+
+/**
+ * the state a status change applies to: a serve holding the connection owns the
+ * record, so it rebuilds one that is missing or another instance's, and never
+ * stamps a newer enrollment's record draining or disconnected
+ */
+export function statusWriteBase(
+  definitionName: string,
+  stored: Record<string, unknown> | null,
+  args: SetStatusArgs,
+  live: WorkerEnrollment | undefined,
+  now: Date,
+): StatusWriteBase {
+  if (live === undefined) {
+    return {
+      kind: "write",
+      base: parseStoredWorkerState(definitionName, stored),
+    };
+  }
+  const current = stored === null ? null : WorkerStateSchema.parse(stored);
+  const ours = current !== null && current.instanceUuid === live.instanceUuid;
+  if (args.status === "disconnected" || args.status === "draining") {
+    return ours ? { kind: "write", base: current } : { kind: "skip" };
+  }
+  return {
+    kind: "write",
+    base: ours ? current : enrolledWorkerState(live, now),
+  };
+}
+
+export type ReassertDecision = "rewrite" | "keep" | "live_elsewhere";
+
+/**
+ * whether a serve holding a worker's connection rewrites its stored record: only
+ * when the record says the worker is gone, so two serves holding one name never
+ * take turns overwriting it
+ */
+export function reassertDecision(
+  stored: WorkerState | null,
+  live: WorkerEnrollment,
+): ReassertDecision {
+  if (stored === null) return "rewrite";
+  if (stored.instanceUuid === live.instanceUuid) {
+    return stored.status === "disconnected" ? "rewrite" : "keep";
+  }
+  return stored.status === "disconnected" || stored.status === "draining"
+    ? "rewrite"
+    : "live_elsewhere";
+}
+
 async function setStatus(
   args: SetStatusArgs,
   context: MethodContext,
@@ -212,7 +274,7 @@ export const workerModel: ModelDefinition = defineModel({
     enroll: {
       description: "Record a worker's admission into the pool",
       kind: "create",
-      arguments: EnrollArgsSchema,
+      arguments: WorkerEnrollmentSchema,
       execute: enroll,
     },
     set_status: {
