@@ -963,6 +963,62 @@ Deno.test("ServeCatchUp.catchUp: the base load starts again when serve's point m
   });
 });
 
+Deno.test("ServeCatchUp.catchUp: a base load cut off part-way resumes from its last staged page on the next catch-up (swamp-club#5083)", async () => {
+  await withCheckout(async ({ dir, store, state, serve, catchUp }) => {
+    for (let seq = 1; seq <= 3; seq++) serve.land(await other(seq));
+    await compactServe(serve, 3);
+    serve.basePageSize = 1;
+    let cut = true;
+    serve.beforeBasePage = (page) => {
+      if (cut && page === 2) throw new Error("command timed out");
+    };
+    await assertRejects(() => catchUp.catchUp(signal()));
+    assertEquals(
+      stagingFiles(dir).length > 0,
+      true,
+      "the staging file is kept",
+    );
+    const firstRun = serve.baseReads.length;
+
+    cut = false;
+    await catchUp.catchUp(signal());
+    const resumedFrom = serve.baseReads[firstRun].after;
+    assertEquals(
+      resumedFrom !== undefined,
+      true,
+      "the second load pages on instead of starting over",
+    );
+    assertEquals((await store.head("", MODEL)).seq, 3);
+    assertEquals(state.feedCursor(), 3);
+    assertEquals(await store.dataHighWater("", MODEL, "m1"), 3);
+    const base = await store.readCompactedBase(undefined, 100);
+    assertEquals(base.entries.filter((e) => e.kind === "record").length, 3);
+    assertEquals(state.serveHead("", MODEL.toString()), 3);
+    assertEquals(stagingFiles(dir), []);
+  });
+});
+
+Deno.test("ServeCatchUp.catchUp: a cut-off load whose point serve has since moved past starts over (swamp-club#5083)", async () => {
+  await withCheckout(async ({ dir, store, state, serve, catchUp }) => {
+    for (let seq = 1; seq <= 4; seq++) serve.land(await other(seq));
+    await compactServe(serve, 3);
+    serve.basePageSize = 1;
+    let cut = true;
+    serve.beforeBasePage = (page) => {
+      if (cut && page === 2) throw new Error("command timed out");
+    };
+    await assertRejects(() => catchUp.catchUp(signal()));
+    cut = false;
+    await compactServe(serve, 4);
+    await catchUp.catchUp(signal());
+    assertEquals((await store.head("", MODEL)).seq, 4);
+    assertEquals(state.feedCursor(), 4);
+    const base = await store.readCompactedBase(undefined, 100);
+    assertEquals(base.entries.filter((e) => e.kind === "record").length, 4);
+    assertEquals(stagingFiles(dir), []);
+  });
+});
+
 Deno.test("ServeCatchUp.catchUp: a base whose point never holds still fails, and leaves the copy as it was", async () => {
   await withCheckout(async ({ dir, store, state, serve, catchUp }) => {
     for (let seq = 1; seq <= 3; seq++) serve.land(await other(seq));

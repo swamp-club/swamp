@@ -5649,7 +5649,85 @@ export class ObservedBaseStaging {
   /** A fresh staging file at `path`, removing whatever a cut-off load left. */
   static create(path: string, namespace: string): ObservedBaseStaging {
     removeDatabaseFiles(path);
-    return new ObservedBaseStaging(path, openCommitsDatabase(path), namespace);
+    const db = openCommitsDatabase(path);
+    db.exec(STAGING_PROGRESS_SCHEMA);
+    return new ObservedBaseStaging(path, db, namespace);
+  }
+
+  /**
+   * The staging file a cut-off load left at `path`, to page on from where it
+   * stopped; undefined, with the file removed, unless it staged part of the
+   * same serve's base of the same namespace and reads back whole
+   */
+  static resume(
+    path: string,
+    namespace: string,
+    serve: string,
+  ): { staging: ObservedBaseStaging; progress: StagingProgress } | undefined {
+    try {
+      Deno.statSync(path);
+    } catch {
+      return undefined;
+    }
+    let db: DatabaseSync | undefined;
+    try {
+      db = openCommitsDatabase(path);
+      const check = db.prepare("PRAGMA quick_check").get() as
+        | { quick_check: string }
+        | undefined;
+      const row = check?.quick_check === "ok"
+        ? db.prepare(
+          "SELECT namespace, serve, point, next, pages FROM staging_progress WHERE id = 1",
+        ).get() as
+          | {
+            namespace: string;
+            serve: string;
+            point: number;
+            next: string;
+            pages: number;
+          }
+          | undefined
+        : undefined;
+      if (
+        row === undefined || row.namespace !== namespace ||
+        row.serve !== serve
+      ) {
+        db.close();
+        removeDatabaseFiles(path);
+        return undefined;
+      }
+      const staging = new ObservedBaseStaging(path, db, namespace);
+      for (
+        const partition of db.prepare(
+          "SELECT partition, seq, names FROM staging_partitions",
+        ).all() as { partition: string; seq: number; names: string }[]
+      ) {
+        staging.#partitions.set(partition.partition, {
+          seq: partition.seq,
+          names: JSON.parse(partition.names) as DataNameMarks[],
+        });
+      }
+      return {
+        staging,
+        progress: { point: row.point, next: row.next, pages: row.pages },
+      };
+    } catch {
+      // unreadable: the load starts over
+      try {
+        db?.close();
+      } catch { /* already closed */ }
+      removeDatabaseFiles(path);
+      return undefined;
+    }
+  }
+
+  /** each partition's compacted seq, as staged so far */
+  heads(): { namespace: string; partition: string; seq: number }[] {
+    return [...this.#partitions].map(([partition, { seq }]) => ({
+      namespace: this.#namespace,
+      partition,
+      seq,
+    }));
   }
 
   /** Removes the staging file at `path` and its WAL, if there. */
@@ -5661,8 +5739,14 @@ export class ObservedBaseStaging {
    * Adds one page of serve's entries. A partition named twice with another
    * seq is refused: one point has one seq per partition.
    */
-  add(entries: readonly ObservedBaseEntry[]): void {
+  add(
+    entries: readonly ObservedBaseEntry[],
+    progress?: { readonly serve: string } & StagingProgress,
+  ): void {
     this.#assertOpen();
+    const insertPartition = this.#db.prepare(
+      "INSERT OR REPLACE INTO staging_partitions (partition, seq, names) VALUES (?, ?, ?)",
+    );
     const base = new SqliteCompactedBase(this.#db);
     const insertVersion = this.#db.prepare(
       "INSERT OR REPLACE INTO base_versions (namespace, partition, name, version, metadata) VALUES (?, ?, ?, ?, ?)",
@@ -5695,6 +5779,11 @@ export class ObservedBaseStaging {
               names: entry.names,
             });
             base.setCompactedSeq(entry.namespace, entry.partition, entry.seq);
+            insertPartition.run(
+              entry.partition,
+              entry.seq,
+              JSON.stringify(entry.names),
+            );
             break;
           }
           case "record":
@@ -5734,6 +5823,19 @@ export class ObservedBaseStaging {
             base.setFileOwnership(entry.namespace, entry.key, entry.ownership);
             break;
         }
+      }
+      // in the page's own transaction: a cut-off load resumes at a page boundary
+      if (progress !== undefined) {
+        this.#db.prepare(
+          "INSERT OR REPLACE INTO staging_progress (id, namespace, serve, point, next, pages) " +
+            "VALUES (1, ?, ?, ?, ?, ?)",
+        ).run(
+          this.#namespace,
+          progress.serve,
+          progress.point,
+          progress.next,
+          progress.pages,
+        );
       }
       this.#db.exec("COMMIT");
     } catch (error) {
@@ -5848,6 +5950,30 @@ export class ObservedBaseStaging {
     if (this.#closed) throw new Error("The base staging file is closed");
   }
 }
+
+/** where a staging file's load stopped: the next page of serve's base at `point` */
+export interface StagingProgress {
+  readonly point: number;
+  readonly next: string;
+  readonly pages: number;
+}
+
+// staging-only tables: an install copies the store's own tables, never these
+const STAGING_PROGRESS_SCHEMA = `
+  CREATE TABLE IF NOT EXISTS staging_progress (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    namespace TEXT NOT NULL,
+    serve TEXT NOT NULL,
+    point INTEGER NOT NULL,
+    next TEXT NOT NULL,
+    pages INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS staging_partitions (
+    partition TEXT PRIMARY KEY,
+    seq INTEGER NOT NULL,
+    names TEXT NOT NULL
+  );
+`;
 
 /** Replaces every row of `table` with `rows`. */
 function copyRows(
