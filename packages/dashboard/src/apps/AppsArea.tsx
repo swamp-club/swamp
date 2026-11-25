@@ -32,6 +32,7 @@ import {
   appPagePath,
   APPS_BASE,
   appsSegments,
+  dashboardReturnPath,
   resolveAppPage,
 } from "./apps_routes.ts";
 import type { AppEntry } from "./app_types.ts";
@@ -61,6 +62,7 @@ export function AppsArea({ onLogout }: { onLogout: () => void }) {
   const appOpen = segments.length > 0;
   const apps = useApps(appOpen);
   const { health } = useHealthStream(useDocumentVisible());
+  const dashboardHref = dashboardReturnPath(document.referrer, location.origin);
   const page = appOpen
     ? resolveAppPage(segments, apps.launchable.map((app) => app.name))
     : null;
@@ -87,6 +89,7 @@ export function AppsArea({ onLogout }: { onLogout: () => void }) {
         </a>
         {current && <span className="apps-current">{current.title}</span>}
         <nav className="apps-header-links">
+          <a href={dashboardHref}>Dashboard</a>
           <ThemePicker placement="header" />
           <ThemeToggle placement="header" />
           {showsLogout(local, authMode) && (
