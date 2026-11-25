@@ -68,7 +68,6 @@ export interface LocalDashboardServerOptions {
    * stopping an idle child since those runs would die with it
    */
   busy?: () => boolean;
-  /** where the dashboard theme is read from */
   repoDir?: string;
 }
 

@@ -20,6 +20,7 @@
 import { parse as parseYaml } from "@std/yaml";
 import { extname, isAbsolute, join, resolve, SEPARATOR } from "@std/path";
 import { z } from "zod";
+import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 
 /** Answered before sign-in, so the login page wears the theme too. */
 export const DASHBOARD_THEME_PATH = "/dashboard-theme";
@@ -27,7 +28,7 @@ export const DASHBOARD_THEME_PATH = "/dashboard-theme";
 /** Relative to the repo, outside the ignored `.swamp/`: one folder per theme. */
 export const DASHBOARD_THEMES_DIR = "dashboard-themes";
 
-/** The single-theme folder from before themes had names; read as `default`. */
+/** One unnamed theme, read as the theme `default`. */
 export const DASHBOARD_THEME_DIR = "dashboard-theme";
 
 const THEME_ID = /^[a-z0-9][a-z0-9-]{0,39}$/;
@@ -96,7 +97,15 @@ const MAX_CSS_BYTES = 256 * 1024;
  * make it fetch anything: no @import, and url() only for data: URLs.
  */
 export function themeCssProblem(css: string): string | null {
-  if (/@import/i.test(css)) return "@import is not allowed";
+  // an escape can spell url( or @import past every check below
+  if (css.includes("\\")) return "backslash escapes are not allowed";
+  if (/@(import|namespace)/i.test(css)) {
+    return "@import and @namespace are not allowed";
+  }
+  const fetching =
+    /(?<![\w-])(-webkit-image-set|image-set|image|cross-fade|src|element)\s*\(/i
+      .exec(css);
+  if (fetching !== null) return `${fetching[1]}() is not allowed`;
   for (const m of css.matchAll(/url\(\s*(['"]?)([^'")\s]*)/gi)) {
     if (!/^data:/i.test(m[2])) return `url(${m[2]}) must be a data: URL`;
   }
@@ -154,7 +163,7 @@ export const DashboardThemeFileSchema = z.strictObject({
 
 export type DashboardThemeFile = z.infer<typeof DashboardThemeFileSchema>;
 
-/** What `GET /dashboard-theme/<id>` answers; files are asset paths. */
+/** Logos and fonts are asset paths, not file contents. */
 export interface DashboardTheme {
   readonly name?: string;
   readonly logo?: string;
@@ -176,7 +185,7 @@ export interface DashboardTheme {
   };
 }
 
-/** What `GET /dashboard-theme` answers: enough for the picker, no theme bodies. */
+/** No theme bodies: enough for the picker and for deciding what to fetch. */
 export interface DashboardThemeIndex {
   /** changes whenever any theme file changes; the health stream carries it */
   readonly version: string;
@@ -202,6 +211,8 @@ const ASSET_PREFIX = `${DASHBOARD_THEME_PATH}/assets/`;
 const ASSET_NAME = /^[0-9a-f]{32}\.[a-z0-9]{2,5}$/;
 
 class ThemeError extends Error {}
+
+const logger = getSwampLogger(["serve", "dashboard-theme"]);
 
 async function sha256Hex(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
@@ -241,6 +252,9 @@ async function storeFile(
   if (!real.startsWith(root + SEPARATOR)) {
     throw new ThemeError(`${path}: must be a path inside the theme folder`);
   }
+  if (!(await Deno.stat(real)).isFile) {
+    throw new ThemeError(`${path}: must be a file`);
+  }
   const bytes = await Deno.readFile(real);
   if (bytes.length > maxBytes) {
     throw new ThemeError(`${path}: larger than ${maxBytes / 1024} KiB`);
@@ -256,10 +270,23 @@ async function storeFile(
   return `${ASSET_PREFIX}${name}`;
 }
 
+/** A file of the theme folder that resolves inside it, so a link cannot serve another file. */
+async function readContainedText(dir: string, name: string): Promise<string> {
+  const root = await Deno.realPath(dir);
+  const real = await Deno.realPath(join(dir, name));
+  if (!real.startsWith(root + SEPARATOR)) {
+    throw new ThemeError(`${name}: must be a file inside the theme folder`);
+  }
+  if (!(await Deno.stat(real)).isFile) {
+    throw new ThemeError(`${name}: must be a file`);
+  }
+  return await Deno.readTextFile(real);
+}
+
 async function readThemeCss(dir: string): Promise<string | undefined> {
   let css: string;
   try {
-    css = await Deno.readTextFile(join(dir, "theme.css"));
+    css = await readContainedText(dir, "theme.css");
   } catch (e) {
     if (e instanceof Deno.errors.NotFound) return undefined;
     throw e;
@@ -281,7 +308,7 @@ interface BuiltTheme {
 }
 
 async function buildTheme(dir: string, id: string): Promise<BuiltTheme> {
-  const text = await Deno.readTextFile(join(dir, "theme.yaml"));
+  const text = await readContainedText(dir, "theme.yaml");
   const parsed = DashboardThemeFileSchema.safeParse(parseYaml(text) ?? {});
   if (!parsed.success) {
     throw new ThemeError(
@@ -336,15 +363,22 @@ async function buildTheme(dir: string, id: string): Promise<BuiltTheme> {
   };
 }
 
-function themeErrorMessage(e: unknown): string | null {
-  if (e instanceof ThemeError || e instanceof SyntaxError) return e.message;
-  if (e instanceof Error && e.name === "YAMLError") return e.message;
-  return null;
+// served before sign-in: no file snippets and no server paths
+function themeErrorMessage(e: unknown): string {
+  if (e instanceof ThemeError) return e.message;
+  if (
+    e instanceof SyntaxError || (e instanceof Error && e.name === "YAMLError")
+  ) {
+    return `theme.yaml: ${e.message.split("\n")[0]}`;
+  }
+  if (e instanceof Deno.errors.NotFound) return "a file it names is missing";
+  return `could not be read (${e instanceof Error ? e.name : "error"})`;
 }
 
 /**
- * Every file's path, size and modification time: a change to any of them
- * changes the theme. Empty when the folder has no theme.yaml.
+ * Every file's path, size and modification time, four folders deep; links are
+ * not followed, so a broken one fails the build rather than hiding the theme.
+ * Empty when the folder has no theme.yaml.
  */
 async function folderFingerprint(dir: string): Promise<string> {
   const lines: string[] = [];
@@ -358,7 +392,7 @@ async function folderFingerprint(dir: string): Promise<string> {
         if (depth < 4) await walk(rel, depth + 1);
         continue;
       }
-      const info = await Deno.stat(join(dir, rel));
+      const info = await Deno.lstat(join(dir, rel));
       lines.push(`${rel}:${info.size}:${info.mtime?.getTime() ?? 0}`);
     }
   };
@@ -402,7 +436,6 @@ interface Snapshot {
   readonly assets: ReadonlyMap<string, ThemeAsset>;
 }
 
-/** How long one look at the theme folders serves every request. */
 export const THEME_SCAN_MAX_AGE_MS = 1000;
 
 /**
@@ -416,7 +449,7 @@ export class DashboardThemeStore {
   #snapshot: Snapshot | null = null;
   #scannedAt = -Infinity;
   #scanning: Promise<Snapshot> | null = null;
-  /** themes built from their files since the store was made */
+  /** counted so a test can prove an unchanged theme is never rebuilt */
   builds = 0;
 
   constructor(repoDir: string, now: () => number = Date.now) {
@@ -424,46 +457,87 @@ export class DashboardThemeStore {
     this.#now = now;
   }
 
-  async #folders(): Promise<[string, string][]> {
-    const folders: [string, string][] = [];
-    const root = join(this.#repoDir, DASHBOARD_THEMES_DIR);
+  async #isRealDir(path: string): Promise<boolean> {
     try {
+      const info = await Deno.lstat(path);
+      return info.isDirectory && !info.isSymlink;
+    } catch (e) {
+      if (e instanceof Deno.errors.NotFound) return false;
+      throw e;
+    }
+  }
+
+  async #folders(): Promise<{ id: string; dir: string; where: string }[]> {
+    const folders: { id: string; dir: string; where: string }[] = [];
+    const root = join(this.#repoDir, DASHBOARD_THEMES_DIR);
+    if (await this.#isRealDir(root)) {
       for await (const entry of Deno.readDir(root)) {
         if (entry.isDirectory && THEME_ID.test(entry.name)) {
-          folders.push([entry.name, join(root, entry.name)]);
+          folders.push({
+            id: entry.name,
+            dir: join(root, entry.name),
+            where: `${DASHBOARD_THEMES_DIR}/${entry.name}`,
+          });
         }
       }
-    } catch (e) {
-      if (!(e instanceof Deno.errors.NotFound)) throw e;
     }
-    folders.sort(([a], [b]) => a.localeCompare(b));
-    if (!folders.some(([id]) => id === "default")) {
-      folders.unshift(["default", join(this.#repoDir, DASHBOARD_THEME_DIR)]);
+    folders.sort((a, b) => a.id.localeCompare(b.id));
+    const legacy = join(this.#repoDir, DASHBOARD_THEME_DIR);
+    if (
+      !folders.some((f) => f.id === "default") &&
+      await this.#isRealDir(legacy)
+    ) {
+      folders.unshift({
+        id: "default",
+        dir: legacy,
+        where: DASHBOARD_THEME_DIR,
+      });
     }
-    return folders.slice(0, MAX_THEMES + 1);
+    return folders;
   }
 
   async #scan(): Promise<Snapshot> {
     const next = new Map<string, CachedTheme>();
-    for (const [id, dir] of await this.#folders()) {
-      const fingerprint = await folderFingerprint(dir);
-      if (fingerprint === "") continue;
-      const cached = this.#cache.get(id);
-      if (cached !== undefined && cached.fingerprint === fingerprint) {
-        next.set(id, cached);
+    let folders: { id: string; dir: string; where: string }[] = [];
+    try {
+      folders = await this.#folders();
+    } catch (e) {
+      logger.warn`Dashboard themes could not be listed: ${
+        themeErrorMessage(e)
+      }`;
+    }
+    for (const [n, { id, dir, where }] of folders.entries()) {
+      if (n >= MAX_THEMES) {
+        const error =
+          `${where}: not served, a repo serves at most ${MAX_THEMES} themes`;
+        next.set(id, {
+          fingerprint: "",
+          version: await contentVersion(id, { error }),
+          built: { error },
+        });
         continue;
       }
-      const where = dir.endsWith(DASHBOARD_THEME_DIR)
-        ? DASHBOARD_THEME_DIR
-        : `${DASHBOARD_THEMES_DIR}/${id}`;
+      const cached = this.#cache.get(id);
+      let fingerprint = "";
       let built: CachedTheme["built"];
       try {
+        fingerprint = await folderFingerprint(dir);
+        if (fingerprint === "") continue;
+        if (cached !== undefined && cached.fingerprint === fingerprint) {
+          next.set(id, cached);
+          continue;
+        }
         built = await buildTheme(dir, id);
         this.builds++;
       } catch (e) {
-        const message = themeErrorMessage(e);
-        if (message === null) throw e;
-        built = { error: `${where}: ${message}` };
+        built = { error: `${where}: ${themeErrorMessage(e)}` };
+      }
+      if (
+        "error" in built &&
+        !(cached !== undefined && "error" in cached.built &&
+          cached.built.error === built.error)
+      ) {
+        logger.warn`Dashboard theme ${id} not served: ${built.error}`;
       }
       next.set(id, {
         fingerprint,
@@ -484,7 +558,6 @@ export class DashboardThemeStore {
         errors.push({ id, error: cached.built.error });
         continue;
       }
-      if (good.length >= MAX_THEMES) continue;
       good.push([id, cached, cached.built]);
       for (const [name, asset] of cached.built.assets) assets.set(name, asset);
     }
@@ -536,9 +609,14 @@ export class DashboardThemeStore {
     return await this.#scanning;
   }
 
-  /** Changes whenever any theme changes; cheap enough for every health tick. */
-  async version(): Promise<string> {
-    return (await this.#current()).index.version;
+  /** Undefined when the themes cannot be read, so a health snapshot never fails on them. */
+  async version(): Promise<string | undefined> {
+    try {
+      return (await this.#current()).index.version;
+    } catch (e) {
+      logger.warn`Dashboard themes could not be read: ${themeErrorMessage(e)}`;
+      return undefined;
+    }
   }
 
   async index(): Promise<DashboardThemeIndex> {
@@ -571,11 +649,6 @@ function jsonWithEtag(req: Request, body: unknown, version: string): Response {
   return new Response(JSON.stringify(body), { headers });
 }
 
-/**
- * Answers `GET /dashboard-theme` (the index), `/dashboard-theme/<id>` (one
- * theme) and `/dashboard-theme/assets/<hash>.<ext>`, or null for any other
- * request.
- */
 export async function serveDashboardTheme(
   req: Request,
   store: DashboardThemeStore,

@@ -64,7 +64,6 @@ async function withThemeRepo(
   }
 }
 
-// the legacy single folder, read as one theme or its error
 function loadDashboardThemes(repoDir: string) {
   return new DashboardThemeStore(repoDir).index();
 }
@@ -369,4 +368,67 @@ Deno.test("DashboardThemeStore: identical theme files on two instances give iden
   const after = await later.index();
   assert(after.version !== before.version);
   assertEquals(after.themes[1].version, before.themes[1].version);
+});
+
+Deno.test("DashboardThemeStore: a theme.css or theme.yaml linked outside its folder is refused, not served", async () => {
+  using dir = tempRepo();
+  const secret = join(dir.path, "secret.txt");
+  await Deno.writeTextFile(secret, "aws_access_key_id=AKIA");
+  await writeThemes(dir.path, { acme: "label: Acme\n", other: "label: x\n" });
+  const acme = join(dir.path, DASHBOARD_THEMES_DIR, "acme");
+  await Deno.symlink(secret, join(acme, "theme.css"), { type: "file" });
+  const other = join(dir.path, DASHBOARD_THEMES_DIR, "other", "theme.yaml");
+  await Deno.remove(other);
+  await Deno.symlink(secret, other, { type: "file" });
+  const store = new DashboardThemeStore(dir.path);
+  const index = await store.index();
+  assertEquals(index.themes, []);
+  const errors = Object.fromEntries(index.errors.map((e) => [e.id, e.error]));
+  assertStringIncludes(errors.acme, "theme.css: must be a file inside");
+  assertStringIncludes(errors.other, "theme.yaml: must be a file inside");
+  assert(!JSON.stringify(index).includes("AKIA"));
+  assertEquals(await store.theme("acme"), null);
+});
+
+Deno.test("DashboardThemeStore: a theme that cannot be read is an error on that theme; the version still answers", async () => {
+  using dir = tempRepo();
+  await writeThemes(dir.path, { good: "label: Good\n", odd: "label: Odd\n" });
+  await Deno.mkdir(join(dir.path, DASHBOARD_THEMES_DIR, "odd", "theme.css"));
+  await writeThemes(dir.path, { broken: "label: Broken\nlogo: missing.svg\n" });
+  await Deno.symlink(
+    join(dir.path, "nowhere.svg"),
+    join(dir.path, DASHBOARD_THEMES_DIR, "broken", "missing.svg"),
+    { type: "file" },
+  );
+  const store = new DashboardThemeStore(dir.path);
+  assert(typeof await store.version() === "string");
+  const index = await store.index();
+  assertEquals(index.themes.map((t) => t.id), ["good"]);
+  const errors = Object.fromEntries(index.errors.map((e) => [e.id, e.error]));
+  assertStringIncludes(
+    errors.odd,
+    "dashboard-themes/odd: theme.css: must be a file",
+  );
+  assertStringIncludes(errors.broken, "dashboard-themes/broken: missing.svg");
+});
+
+Deno.test("DashboardThemeStore: errors name their own folder, quote no file text, and themes past the limit are reported", async () => {
+  using dir = tempRepo();
+  const themes: Record<string, string> = {
+    "acme-dashboard-theme": "label: [unclosed\n  secret: AKIA\n",
+  };
+  for (let i = 0; i < 12; i++) {
+    themes[`t${String(i).padStart(2, "0")}`] = "label: T\n";
+  }
+  await writeThemes(dir.path, themes);
+  const index = await new DashboardThemeStore(dir.path).index();
+  const errors = Object.fromEntries(index.errors.map((e) => [e.id, e.error]));
+  assertStringIncludes(
+    errors["acme-dashboard-theme"],
+    "dashboard-themes/acme-dashboard-theme: theme.yaml:",
+  );
+  assert(!errors["acme-dashboard-theme"].includes("AKIA"));
+  // the broken folder takes one of the 12 slots
+  assertEquals(index.themes.length, 11);
+  assertStringIncludes(errors.t11, "at most 12 themes");
 });

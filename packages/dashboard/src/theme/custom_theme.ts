@@ -22,6 +22,7 @@ import {
   serverPath,
   withLocalToken,
 } from "../client/workspace_path.ts";
+import { safeThemeCss } from "./theme_css.ts";
 import {
   mergeThemes,
   pickerOptions,
@@ -112,19 +113,6 @@ export function customThemeCss(theme: CustomTheme): string {
   // last, so it can restyle anything the tokens cannot reach
   if (theme.css && safeThemeCss(theme.css)) rules.push(theme.css);
   return rules.join("\n");
-}
-
-/** The server refuses these too; the page writes the stylesheet, so it checks again. */
-function safeThemeCss(css: string): boolean {
-  if (
-    /@import|expression\s*\(|javascript:|-moz-binding|behavior\s*:/i.test(css)
-  ) {
-    return false;
-  }
-  for (const m of css.matchAll(/url\(\s*(['"]?)([^'")\s]*)/gi)) {
-    if (!/^data:/i.test(m[2])) return false;
-  }
-  return true;
 }
 
 let current: CustomTheme | null = null;
