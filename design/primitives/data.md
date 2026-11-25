@@ -362,11 +362,13 @@ the hard form and removes every version.
   the filesystem repository (`src/libswamp/data/{get,list,versions}.ts`). Every
   `swamp data` subcommand accepts `--server` to run against a serve instance.
 
-**Load guard.** Every path that decodes stored content into memory (`fromRow`,
-`fromData` and `fromResourceHandle` in `data_record_mapper.ts`, CEL
+**Load guard.** The paths that decode stored data content into memory
+(`fromRow`, `fromData` and `fromResourceHandle` in `data_record_mapper.ts`, CEL
 `model.<name>.resource` in `model_resolver.ts`, `readResource`, the workflow
-step output reader, typed step results, `data get`, `behavior output data` and
-report get) first asks the repository's `ResourceLoadGuard`
+step output reader, typed step results, `data get`, `behavior output data`,
+report get, and in `DataQueryService` the `--select content` projection and the
+hydration of another namespace's content) first ask the repository's
+`ResourceLoadGuard`
 (`resource_load_guard.ts`) whether the item fits: it refuses when the heap in
 use plus three times the item's size (one copy decoded, one to two parsed) would
 pass V8's heap limit. It checks the recorded `size` before reading, and the byte
@@ -388,7 +390,14 @@ error naming the item and its size and pointing at
 of a V8 abort. The heap figures go to the log only, as serve relays the error to
 remote callers. `refusalFor` also refuses an item past `maxDecodableBytes` (V8's
 maximum string length; `TextDecoder` refuses more bytes than that) and returns
-the refusal rather than throwing it. The step-end record (`fromResourceHandle`)
+the refusal rather than throwing it. A read that holds several items at once
+passes the bytes it already holds (`heldBytes`) to `refusalFor` and
+`parseRefusalFor`: they count toward the 64 MiB floor but not the heap estimate,
+which already sees them in the heap in use. The `--select content` projection
+holds every body of a page until it is written, so it passes its running total,
+and a page of items each under the floor is refused by name once the heap runs
+short; it also refuses a body whose UTF-8 text or base64 form would pass the
+maximum string length. The step-end record (`fromResourceHandle`)
 and the workflow step output reader use it, so a step's resource too large to
 load is marked on its record and refused where an expression reads it, never
 decoded into empty attributes; the `delete` method warns and writes its deletion
@@ -637,6 +646,12 @@ workflow-runs/{workflow-id}/workflow-run-{run-id}.yaml
   64 MiB near the limit can be refused that V8 would have fit after a
   collection. CEL `model.<name>.resource` still loads every latest resource of
   the behavior on first access, not just the one referenced.
+- Only the `--select content` projection counts what a query already holds. A
+  query without `--select`, or one whose select reads attributes, hydrates each
+  match, local or from another namespace, against the floor on its own size, so
+  a page of many matches each under 64 MiB is not refused before the heap runs
+  out. `data search` and `behavior output logs` decode content without asking
+  the guard.
 - The repository constructor still defaults its namespace to solo. The in-code
   note on `FileSystemUnifiedDataRepository` says every direct construction site
   must pass the configured namespace via `namespaceFromResolver`, or it will

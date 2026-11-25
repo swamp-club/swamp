@@ -30,6 +30,7 @@ import {
   isRecordContentTooLargeError,
   RECORD_CONTENT_TOO_LARGE_CODE,
 } from "../../domain/data/data_record_mapper.ts";
+import { ResourceTooLargeToLoadError } from "../../domain/data/resource_load_guard.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import {
   createQuerySort,
@@ -376,6 +377,8 @@ export async function* dataQuery(
               ? UNREADABLE_CONTENT_CODE
               : isRecordContentTooLargeError(error)
               ? RECORD_CONTENT_TOO_LARGE_CODE
+              : error instanceof ResourceTooLargeToLoadError
+              ? error.code ?? "QUERY_FAILED"
               : "QUERY_FAILED",
             message: error instanceof Error ? error.message : String(error),
           },
