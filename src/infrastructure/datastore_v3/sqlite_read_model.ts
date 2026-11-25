@@ -651,6 +651,11 @@ export class SqliteReadModel implements ReadModel {
     return this.#state.cursor();
   }
 
+  /** false until a catch-up has reached the end of the feed */
+  isComplete(): boolean {
+    return this.#state.isComplete();
+  }
+
   catchUp(signal: AbortSignal): Promise<CatchUpResult> {
     return this.#exclusive(
       () =>

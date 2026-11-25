@@ -77,6 +77,9 @@ import {
   peekDatastoreOwner,
   peekHighWaterCursor,
 } from "./sqlite_commit_store.ts";
+import { prewarmForBacklog } from "./recovery_prewarm.ts";
+import { readModelStateDir, v3CatalogPath } from "./record_path_guard.ts";
+import { READ_MODEL_STATE_FILE } from "./sqlite_read_model.ts";
 import { countPendingOutboxEntries } from "./sqlite_commit_outbox.ts";
 import {
   judgeRecordedProcess,
@@ -1988,6 +1991,7 @@ export async function v3RepositoryFactoryConfig(
   if (writer && caughtUpWriters.has(handle)) {
     // Caught up when this process's first context opened.
   } else if (otherWriter === undefined) {
+    if (writer) await prewarmBeforeFirstCatchUp(repoDir, handle);
     if (
       writer && caughtUpFromServe.has(handle) &&
       handle.catchUpReadModel !== undefined
@@ -2034,6 +2038,26 @@ export const V3_RESERVED_NAMESPACE_CODE = "datastore_v3_reserved_namespace";
  * in, and subdirectories linking out of their cache root would fail every
  * catch-up
  */
+/**
+ * a writer far behind its store (a standby taking over, a copy restored or
+ * seeded behind) reads the files its catch-up walks first, as a recovery does
+ */
+export async function prewarmBeforeFirstCatchUp(
+  repoDir: string,
+  handle: V3Datastore,
+): Promise<void> {
+  await prewarmForBacklog({
+    head: handle.commitStore.highWaterMark().cursor,
+    applied: handle.readModel.cursor(),
+    complete: handle.readModel.isComplete(),
+    paths: [
+      handle.commitsDbPath,
+      join(readModelStateDir(repoDir), READ_MODEL_STATE_FILE),
+      v3CatalogPath(repoDir),
+    ],
+  });
+}
+
 async function refuseUnsafeV3Checkout(
   repoDir: string,
   config: V3DatastoreConfig,
