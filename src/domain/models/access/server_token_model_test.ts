@@ -835,7 +835,7 @@ Deno.test("serverTokenModel: rotate writes no record when another writer replace
   const recordBefore = h.store.get("token-main");
   await assertRejects(
     () =>
-      serverTokenModel.methods.rotate.execute({}, withConcurrentWriter(h, 1)),
+      serverTokenModel.methods.rotate.execute({}, withConcurrentWriter(h, 2)),
     ServerTokenConcurrentChangeError,
   );
   assertEquals(h.store.get("token-main"), recordBefore);
@@ -853,12 +853,15 @@ Deno.test("serverTokenModel: rotate repairs a token whose record and secret alre
 Deno.test("serverTokenModel: mint writes no record when another writer replaces its secret", async () => {
   const h = createInMemoryWorkerContext(SERVER_TOKEN_MODEL_TYPE, "racing");
   const vault = h.context.vaultService!;
+  let reads = 0;
   const context = {
     ...h.context,
     vaultService: {
       ...vault,
       get: async (vaultName: string, secretKey: string) => {
-        h.vault.set(`${vaultName}/${secretKey}`, "another-writers-secret");
+        if (++reads === 2) {
+          h.vault.set(`${vaultName}/${secretKey}`, "another-writers-secret");
+        }
         return await vault.get(vaultName, secretKey);
       },
     } as typeof vault,
@@ -868,4 +871,21 @@ Deno.test("serverTokenModel: mint writes no record when another writer replaces 
     ServerTokenConcurrentChangeError,
   );
   assertEquals(h.store.get("token-main"), undefined);
+});
+
+Deno.test("serverTokenModel: rotate is not stopped by a store that briefly serves the previous secret", async () => {
+  const h = await mintToken();
+  const key = `local/${serverTokenSecretKey("user-token-1")}`;
+  const previous = h.vault.get(key)!;
+  const vault = h.context.vaultService!;
+  const context = {
+    ...h.context,
+    vaultService: {
+      ...vault,
+      get: () => Promise.resolve(previous),
+    } as unknown as typeof vault,
+  };
+  await serverTokenModel.methods.rotate.execute({}, context);
+  const record = ServerTokenSchema.parse(h.store.get("token-main"));
+  await verifyServerTokenSecret(record, h.vault.get(key)!);
 });

@@ -3437,6 +3437,7 @@ export const serveCommand = new Command()
       datastoreConfig,
       syncService,
       repoContext,
+      (fn) => withSyncGate(syncGate, fn),
     );
     setServerTokenRecordRefresh(refreshTokenRecord);
     await sweepTokenConsistency({

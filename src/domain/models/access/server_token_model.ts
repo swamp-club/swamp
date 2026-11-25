@@ -173,27 +173,36 @@ export class ServerTokenConcurrentChangeError extends Error {
   }
 }
 
+async function readSecret(
+  context: MethodContext,
+  vaultName: string,
+  secretKey: string,
+): Promise<string | undefined> {
+  try {
+    return await context.vaultService!.get(
+      vaultName,
+      secretKey,
+      "model:server-token-write",
+    );
+  } catch {
+    return undefined;
+  }
+}
+
 /**
- * true only when the vault answers with another secret; a read that fails
- * judges nothing, since stopping then would strand the secret just written
+ * true only when the vault answers with a third secret: a read that fails
+ * judges nothing, and a store that briefly serves the previous value after a
+ * write is not another writer; stopping then would strand the secret written
  */
 async function secretReplaced(
   context: MethodContext,
   vaultName: string,
   secretKey: string,
   written: string,
+  previous: string | undefined,
 ): Promise<boolean> {
-  let current: string;
-  try {
-    current = await context.vaultService!.get(
-      vaultName,
-      secretKey,
-      "model:server-token-write",
-    );
-  } catch {
-    return false;
-  }
-  return current !== written;
+  const current = await readSecret(context, vaultName, secretKey);
+  return current !== undefined && current !== written && current !== previous;
 }
 
 /**
@@ -267,9 +276,18 @@ async function mint(
   const name = context.definition.name;
   const secretKey = serverTokenSecretKey(name);
   const plaintext = generateOpaqueToken();
+  const previous = await readSecret(context, args.vaultName, secretKey);
   await context.vaultService.put(args.vaultName, secretKey, plaintext);
   // a writer that took the lock this one lost has replaced the secret
-  if (await secretReplaced(context, args.vaultName, secretKey, plaintext)) {
+  if (
+    await secretReplaced(
+      context,
+      args.vaultName,
+      secretKey,
+      plaintext,
+      previous,
+    )
+  ) {
     throw new ServerTokenConcurrentChangeError(name);
   }
 
@@ -346,9 +364,12 @@ async function rotate(
   const secretKey = serverTokenSecretKey(name);
   const plaintext = generateOpaqueToken();
   const vaultName = args.vaultName ?? existing.vaultName;
+  const previous = await readSecret(context, vaultName, secretKey);
   await context.vaultService.put(vaultName, secretKey, plaintext);
   // a writer that took the lock this one lost has replaced the secret
-  if (await secretReplaced(context, vaultName, secretKey, plaintext)) {
+  if (
+    await secretReplaced(context, vaultName, secretKey, plaintext, previous)
+  ) {
     throw new ServerTokenConcurrentChangeError(name);
   }
 

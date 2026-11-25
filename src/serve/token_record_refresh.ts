@@ -56,6 +56,8 @@ export function serverTokenRecordRefreshOver(
     | "markDirty"
     | "commitLog"
   >,
+  // a pull landing between the fetch and the write could leave an older marker
+  exclusively: <T>(fn: () => Promise<T>) => Promise<T> = (fn) => fn(),
 ): ServerTokenRecordRefresh | undefined {
   if (!isCustomDatastoreConfig(config) || !config.cachePath) return undefined;
   const fetchContent = syncService?.fetchContent?.bind(syncService);
@@ -79,7 +81,9 @@ export function serverTokenRecordRefreshOver(
       },
     );
   };
-  return async (name, secret) => {
+  return (name, secret) => exclusively(() => adopt(name, secret));
+
+  async function adopt(name: string, secret: string): Promise<boolean> {
     const definition = await repoContext.definitionRepo.findByName(
       SERVER_TOKEN_MODEL_TYPE,
       name,
@@ -139,5 +143,5 @@ export function serverTokenRecordRefreshOver(
       { name },
     );
     return true;
-  };
+  }
 }
