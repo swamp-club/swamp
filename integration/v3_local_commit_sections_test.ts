@@ -907,6 +907,52 @@ Deno.test({
 
 Deno.test({
   name:
+    "v3 local commit sections: a cancel settles the output of an owner killed while it held its behavior's lock",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withV3RowRepos({}, async (repos, datastorePath) => {
+      await closeV3Datastores();
+      const owner = startWriter("owner");
+      const canceller = startWriter("canceller");
+      try {
+        const type = repos.modelType.normalized;
+        const id = crypto.randomUUID();
+        await opened(owner, repos.repoA, type);
+        owner.send({ kind: "output", id, model: "m", status: "running" });
+        await owner.seen((m) => "saved" in m, "the running output landed");
+        owner.send({ kind: "plantGoneLock", model: "m", pid: DEAD_PID });
+        await owner.seen((m) => "planted" in m, "the killed owner's lock");
+        await opened(canceller, repos.repoA, type);
+        canceller.send({
+          kind: "settleOrphan",
+          id,
+          model: "m",
+          ownerPid: DEAD_PID,
+        });
+        const settled = await canceller.seen(
+          (m) => "settled" in m,
+          "the cancel settled",
+        );
+        assertEquals(
+          "settled" in settled ? settled.deferred : -1,
+          0,
+          "a lock whose holder is gone holds nothing",
+        );
+        assertEquals(await outputStatusOf(owner, id, "m"), "cancelled");
+        await closed(canceller);
+        await closed(owner);
+      } finally {
+        owner.stop();
+        canceller.stop();
+      }
+      await assertCheckoutsAgree(repos, datastorePath, "gone owner");
+    });
+  },
+});
+
+Deno.test({
+  name:
     "v3 local commit sections: a cancel leaves a dead owner's output alone while another process holds its behavior's lock",
   sanitizeOps: false,
   sanitizeResources: false,

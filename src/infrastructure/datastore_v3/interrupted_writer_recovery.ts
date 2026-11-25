@@ -17,12 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * each writing process's marker, writers/<token>.json, is written before its
- * first file and removed at teardown; one outliving its process triggers a
- * replay and removal of the files no commit owns in that writer's scopes; it
- * goes last, so a failed recovery reruns. writer.json is an older swamp's
- */
+// a writer's marker goes last, so a failed recovery reruns
 
 import { dirname, join } from "@std/path";
 import { ensureDir } from "@std/fs";

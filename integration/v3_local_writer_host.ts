@@ -52,6 +52,8 @@ import {
 } from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
 import { endWriterInstanceForTesting } from "../src/infrastructure/datastore_v3/writer_instance.ts";
 import { isCustomDatastoreConfig } from "../src/domain/datastore/datastore_config.ts";
+import { dirname, join } from "@std/path";
+import { modelLockKey } from "../src/libswamp/datastores/lock.ts";
 import { flushDatastoreSync } from "../src/infrastructure/persistence/datastore_sync_coordinator.ts";
 import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpers.ts";
 import {
@@ -105,6 +107,12 @@ export type LocalWriterRequest =
     readonly ownerPid: number;
     /** the cancel's unit stays open once settled, until resumed */
     readonly holdUnit?: boolean;
+  }
+  /** the behavior's lock file a killed process leaves, naming a gone pid */
+  | {
+    readonly kind: "plantGoneLock";
+    readonly model: string;
+    readonly pid: number;
   }
   | {
     readonly kind: "outputStatus";
@@ -169,6 +177,7 @@ export type LocalWriterMessage =
   }
   | { readonly closed: true }
   | { readonly caughtUp: true }
+  | { readonly planted: string }
   | { readonly failed: string; readonly id?: string };
 
 /** one swamp process writing a checkout of a local filesystem v3 datastore */
@@ -413,6 +422,32 @@ export const localWriterHost: ProcessHost<
     return { closed: result.closed.length, deferred: result.deferred.length };
   }
 
+  async function plantGoneLock(
+    request: Extract<LocalWriterRequest, { kind: "plantGoneLock" }>,
+  ): Promise<void> {
+    const config = context.datastoreConfig;
+    if (isCustomDatastoreConfig(config)) {
+      throw new Error("a local writer host runs on a filesystem datastore");
+    }
+    const model = await definitionOf(request.model);
+    const path = join(
+      config.path,
+      ...modelLockKey(config.namespace, type.normalized, model.id).split("/"),
+    );
+    await Deno.mkdir(dirname(path), { recursive: true });
+    await Deno.writeTextFile(
+      path,
+      JSON.stringify({
+        holder: "killed",
+        hostname: Deno.hostname(),
+        pid: request.pid,
+        acquiredAt: new Date().toISOString(),
+        ttlMs: 3_600_000,
+        nonce: crypto.randomUUID(),
+      }),
+    );
+  }
+
   async function outputStatus(
     request: Extract<LocalWriterRequest, { kind: "outputStatus" }>,
   ): Promise<string | null> {
@@ -525,6 +560,12 @@ export const localWriterHost: ProcessHost<
         within(() => saveOutput(request)).then(
           () => post({ saved: request.id }),
           (error) => post({ failed: String(error), id: request.id }),
+        );
+        return;
+      case "plantGoneLock":
+        within(() => plantGoneLock(request)).then(
+          () => post({ planted: request.model }),
+          (error) => post({ failed: String(error) }),
         );
         return;
       case "settleOrphan":

@@ -1977,10 +1977,12 @@ export async function tryModelLock(
   modelType: string,
   modelId: string,
   waitMs: number,
+  options: { readonly reclaimsGone?: boolean } = {},
 ): Promise<DistributedLock | null> {
   return await tryAcquireWithin(
     await createModelLock(datastoreConfig, modelType, modelId),
     waitMs,
+    options,
   );
 }
 
@@ -1992,11 +1994,14 @@ export function tryBehaviorLockOf(
   repoContext: Pick<RepositoryContext, "markDirty" | "commitLog">,
 ): TryBehaviorLock {
   return async (type, modelId) => {
+    // a killed owner leaves its lock behind: the acquire takes over a holder
+    // whose process is gone, where a held file alone would defer for good
     const lock = await tryModelLock(
       datastoreConfig,
       type.normalized,
       modelId,
       CANCEL_BEHAVIOR_LOCK_WAIT_MS,
+      { reclaimsGone: true },
     );
     if (lock === null) return null;
     return {
@@ -2016,13 +2021,17 @@ export function tryBehaviorLockOf(
 export async function tryAcquireWithin(
   lock: DistributedLock,
   waitMs: number,
+  options: { readonly reclaimsGone?: boolean } = {},
 ): Promise<DistributedLock | null> {
-  if (await lock.inspect()) return null;
+  if (options.reclaimsGone !== true && await lock.inspect()) return null;
   const signal = AbortSignal.timeout(waitMs);
   try {
     await lock.acquire(signal);
   } catch (error) {
-    if (signal.aborted || error instanceof LockTimeoutError) return null;
+    // only a wait that ran out is a held lock; a failed catch-up is an error
+    if (error instanceof LockTimeoutError || error === signal.reason) {
+      return null;
+    }
     throw error;
   }
   return lock;

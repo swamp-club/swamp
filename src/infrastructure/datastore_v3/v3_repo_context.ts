@@ -885,12 +885,8 @@ interface SectionedWriter {
   readonly ownerCheck?: V3OwnerCheck;
 }
 
-/**
- * a filesystem datastore's per-behavior locks sit at the shared datastore path
- * and order every writer, so a local writer needs the lease only to commit;
- * bucket locks are per machine, so a bucket writer, serve, a follower, a
- * serve-upstream copy and a claimer keep the whole-command hold
- */
+// bucket locks are per machine, so only a filesystem writer holds the lease
+// just to commit
 function takesCommitSections(
   config: V3DatastoreConfig,
   options: {
