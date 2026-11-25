@@ -28,7 +28,10 @@ const arbName = fc.stringMatching(/^[a-z0-9][a-z0-9-]{0,62}$/);
 const arbSegment = fc.stringMatching(/^[a-z0-9_-]{1,12}$/);
 const arbHost = fc.tuple(
   fc.constantFrom("http", "https"),
-  fc.stringMatching(/^[a-z][a-z0-9-]{0,15}$/),
+  // URL parsing refuses an xn-- label unless it is valid punycode
+  fc.stringMatching(/^[a-z][a-z0-9-]{0,15}$/).filter((label) =>
+    !label.startsWith("xn--")
+  ),
   fc.option(fc.integer({ min: 1024, max: 65535 }), { nil: undefined }),
   fc.array(arbSegment, { maxLength: 3 }),
 ).map(([scheme, host, port, path]) =>
