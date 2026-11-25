@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { isPolicyModelType } from "../../domain/models/control_plane_types.ts";
 import {
   INTEGRATION_DATA_NAME,
   INTEGRATION_MODEL_TYPE,
@@ -808,6 +809,18 @@ async function authorizeRunInputs(
   return false;
 }
 
+/**
+ * a grant or group run is enforced before it is answered, in either reload
+ * mode; a follower narrows the leader's release instead of replacing it, so a
+ * widening waits for the leader's next release
+ */
+async function rebuildPolicyAfterRun(ctx: ConnectionContext): Promise<void> {
+  const loader = ctx.policySnapshotLoader;
+  if (loader === undefined) return;
+  if (ctx.followerGate?.role === "follower") await loader.narrowRelease();
+  else await loader.load();
+}
+
 export async function handleModelMethodRun(
   socket: WebSocket,
   ctx: ConnectionContext,
@@ -893,6 +906,10 @@ export async function handleModelMethodRun(
         sendError(socket, requestId, "method_type_mismatch", typeRefusal);
         return;
       }
+      const policyRun = isPolicyModelType(
+        executedDefinition(target)?.type.normalized ?? payload.typeArg ??
+          payload.modelIdOrName,
+      );
       const dataInputPaths = await runDataInputPaths(payload, target);
       if (
         !await authorizeRunInputs(
@@ -1101,6 +1118,7 @@ export async function handleModelMethodRun(
                 });
               }
               await integrationRun?.settle();
+              if (policyRun) await rebuildPolicyAfterRun(ctx);
               send(socket, { type: "done", id: requestId });
             };
 
@@ -1166,6 +1184,10 @@ export async function handleModelMethodRun(
     sendError(socket, requestId, "method_type_mismatch", typeRefusal);
     return;
   }
+  const policyRun = isPolicyModelType(
+    (target.run?.definition ?? target.definition)?.type.normalized ??
+      payload.typeArg ?? payload.modelIdOrName,
+  );
   let dataInputPaths: KeyPath[];
   try {
     dataInputPaths = await runDataInputPaths(payload, target);
@@ -1498,6 +1520,7 @@ export async function handleModelMethodRun(
               ctx.holdRepliesUntilCommitted !== true
             ) {
               await integrationRun.settle();
+              if (policyRun) await rebuildPolicyAfterRun(ctx);
               buffer.finish({ kind: "done" });
               await detachedTelemetry?.finish(null);
             }
@@ -1523,6 +1546,7 @@ export async function handleModelMethodRun(
           "method_execution_failed",
         );
         if (unconfirmed === undefined) {
+          if (policyRun) await rebuildPolicyAfterRun(ctx);
           buffer.finish({ kind: "done" });
           await detachedTelemetry?.finish(null);
         } else {
