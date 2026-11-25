@@ -6183,20 +6183,39 @@ export class WorkflowExecutionService {
         scope,
       ) => [scope.name, scope]),
     );
+    const pendingVerification = (worker: string) => {
+      const live = poolByName.get(worker);
+      return live?.status === "unverified" &&
+        live.verificationPending === true;
+    };
+    type WaitingLane = {
+      worker: string;
+      reason: "disconnected" | "unverified";
+    };
     // a lane with no scope to bind fails instead of waiting
-    const waiting = stored === undefined
+    const waiting: WaitingLane[] = stored === undefined
       ? members.filter((member) => member.disposition === "waiting")
-        .map((member) => member.worker)
-      : rerun.filter((worker) =>
-        poolByName.get(worker)?.connected !== true &&
-        policy.offline === "wait" &&
-        (poolByName.has(worker) || storedScopes.has(worker))
+        .map((member) => ({
+          worker: member.worker,
+          reason: member.reason === "unverified"
+            ? "unverified"
+            : "disconnected",
+        }))
+      : rerun.flatMap((worker): WaitingLane[] =>
+        pendingVerification(worker)
+          ? [{ worker, reason: "unverified" as const }]
+          : poolByName.get(worker)?.connected !== true &&
+              policy.offline === "wait" &&
+              (poolByName.has(worker) || storedScopes.has(worker))
+          ? [{ worker, reason: "disconnected" as const }]
+          : []
       );
-    for (const worker of waiting) {
+    for (const { worker, reason } of waiting) {
       yield {
         kind: "job_fanout_waiting",
         jobId: job.name,
         worker,
+        reason,
         queueTimeoutSeconds,
       };
     }

@@ -408,6 +408,115 @@ Deno.test({
   },
 });
 
+// w-b is reconnected with its probe held, so it is pending when the plan is made
+async function planWhileProbing(
+  fleet: Fleet,
+  name: string,
+  offline: "wait" | "skip",
+) {
+  await fleet.addWorker("w-a", { labels: WEB });
+  const b = await fleet.addWorker("w-b", { labels: WEB });
+  await b.disconnect();
+  const settleProbe = fleet.holdProbe("w-b");
+  await b.connect({ settle: false });
+  assert(fleet.gateway.verificationPending("w-b"));
+  await fleet.saveWorkflow({
+    name,
+    inputs: {},
+    jobs: [laneJob(fleet, APPLY_VERIFY, { fanOut: { offline } })],
+  });
+  const events: WorkflowRunEvent[] = [];
+  const running = fleet.runWorkflow(name, { events });
+  await waitFor(
+    () => events.some((e) => e.kind === "job_fanout_planned"),
+    "the plan to be made",
+  );
+  const planned = events.find((e) => e.kind === "job_fanout_planned");
+  const members = planned?.kind === "job_fanout_planned"
+    ? planned.members.map((m) => [m.worker, m.disposition, m.reason])
+    : [];
+  return { running, settleProbe, events, members };
+}
+
+Deno.test({
+  name:
+    "fan-out lanes: a worker still being verified at plan time gets a waiting lane under offline wait, which runs once its probe passes",
+  ...SANITIZE,
+  fn: async () => {
+    await using fleet = await Fleet.start({
+      graceWindowMs: 60_000,
+      queueTimeoutMs: 60_000,
+    });
+    const { running, settleProbe, events, members } = await planWhileProbing(
+      fleet,
+      "patch-plan-pending",
+      "wait",
+    );
+    assertEquals(members, [
+      ["w-a", "dispatch", undefined],
+      ["w-b", "waiting", "unverified"],
+    ]);
+    const waiting = events.find((e) => e.kind === "job_fanout_waiting");
+    assertEquals(
+      waiting?.kind === "job_fanout_waiting"
+        ? [waiting.worker, waiting.reason]
+        : [],
+      ["w-b", "unverified"],
+    );
+
+    settleProbe("pass");
+    const run = await running;
+
+    assertEquals(run.status, "succeeded", stepError(run, "apply[w-b]"));
+    assertEquals(fleet.dispatchCounts(), { "w-a": 2, "w-b": 2 });
+  },
+});
+
+Deno.test({
+  name:
+    "fan-out lanes: a worker still being verified at plan time whose probe then fails fails its lane with worker_ineligible and is never sent it",
+  ...SANITIZE,
+  fn: async () => {
+    await using fleet = await Fleet.start({
+      graceWindowMs: 60_000,
+      queueTimeoutMs: 60_000,
+    });
+    const { running, settleProbe, members } = await planWhileProbing(
+      fleet,
+      "patch-plan-pending-fail",
+      "wait",
+    );
+    assertEquals(members[1], ["w-b", "waiting", "unverified"]);
+
+    settleProbe("fail");
+    const run = await running;
+
+    assertEquals(run.status, "failed");
+    assertStringIncludes(stepError(run, "apply[w-b]"), "worker_ineligible");
+    assertEquals(fleet.dispatchCounts(), { "w-a": 2, "w-b": 0 });
+  },
+});
+
+Deno.test({
+  name:
+    "fan-out lanes: under offline skip a worker still being verified at plan time is skipped and the job succeeds without it",
+  ...SANITIZE,
+  fn: async () => {
+    await using fleet = await Fleet.start({ graceWindowMs: 60_000 });
+    const { running, settleProbe, members } = await planWhileProbing(
+      fleet,
+      "patch-plan-pending-skip",
+      "skip",
+    );
+    assertEquals(members[1], ["w-b", "skipped", "unverified"]);
+    const run = await running;
+    settleProbe("pass");
+
+    assertEquals(run.status, "succeeded");
+    assertEquals(fleet.dispatchCounts(), { "w-a": 2, "w-b": 0 });
+  },
+});
+
 Deno.test({
   name:
     "fan-out lanes: a selector matching no worker, or fewer live members than minWorkers, fails the job and sends nothing",

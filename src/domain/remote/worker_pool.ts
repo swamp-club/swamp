@@ -33,6 +33,8 @@ export interface PoolWorker {
   // a worker that left the pool reads disconnected unless it was unverified or draining
   readonly status: PoolWorkerStatus;
   readonly connected: boolean;
+  /** unverified with a verify-on-enroll probe running or owed, not one that failed */
+  readonly verificationPending?: boolean;
 }
 
 // unique names; a worker whose token expired, was revoked, re-minted or deleted is absent

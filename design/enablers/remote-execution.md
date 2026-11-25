@@ -1858,9 +1858,12 @@ lane engine in `execution_service.ts` uses it at job start.
   still cannot see control-plane records.
 - **`planFanOut(selector, policy, pool)`** (`src/domain/remote/scheduler.ts`)
   matches labels and platform exactly as `eligibleWorkers` does and gives every
-  match one disposition, in name order: `excluded` for unverified or draining
-  workers (whatever their connection), `waiting`, `skipped` or `failed` for
-  disconnected ones by `offline`, and `dispatch` for the rest. Only `dispatch`
+  match one disposition, in name order: `waiting`, `skipped` or `failed` by
+  `offline` for an unverified worker whose probe is pending (reason
+  `unverified`, read through `PoolWorker.verificationPending`, which the serve
+  pool reader takes from the gateway) and for a disconnected one (reason
+  `disconnected`), `excluded` for a draining worker or an unverified one whose
+  probe failed (whatever their connection), and `dispatch` for the rest. Only `dispatch`
   and `waiting` members get a lane. With fewer lanes than `minWorkers`
   (default 1, never 0), the plan is refused and holds no members.
 - **`planBatches`** and **`nextBatch`** (`src/domain/remote/rollout.ts`).

@@ -149,7 +149,7 @@ jobs:
   - name: patch
     labels: { role: web } # the selector: job (or workflow) labels/platform
     fanOut: # or the short form: fanOut: all (every default)
-      offline: wait # wait (default) | skip | fail, for hosts not connected
+      offline: wait # wait (default) | skip | fail, for hosts not connected or still being verified
       minWorkers: 2 # default 1; fewer live members refuses the plan
       rollout: # optional; without it every lane runs at once
         batches: [1, "25%", "100%"] # count or whole %; the last must be "100%"

@@ -208,6 +208,39 @@ Deno.test({
 
 Deno.test({
   name:
+    "fan-out resume: a re-run lane whose worker is still being verified is reported waiting for verification and runs once its probe passes",
+  ...SANITIZE,
+  fn: async () => {
+    await using fleet = await Fleet.start({ graceWindowMs: 60_000 });
+    await fleet.addWorker("w-a", { labels: WEB });
+    const b = await fleet.addWorker("w-b", { labels: WEB });
+    const { runId } = await failedOnLane(fleet, "w-b");
+    await b.disconnect();
+    const settleProbe = fleet.holdProbe("w-b");
+    await b.connect({ settle: false });
+
+    const events: WorkflowExecutionEvent[] = [];
+    const retrying = fleet.retryRun("patch-all", runId, { events });
+    await waitFor(
+      () => events.some((e) => e.kind === "job_fanout_waiting"),
+      "the retry to report w-b waiting",
+    );
+    settleProbe("pass");
+    const retried = await retrying;
+
+    assertEquals(retried.status, "succeeded");
+    const waiting = events.find((e) => e.kind === "job_fanout_waiting");
+    assertEquals(
+      waiting?.kind === "job_fanout_waiting"
+        ? [waiting.worker, waiting.reason]
+        : undefined,
+      ["w-b", "unverified"],
+    );
+  },
+});
+
+Deno.test({
+  name:
     "fan-out resume: a worker that enrolled after the plan gets no lane on a retry",
   ...SANITIZE,
   fn: async () => {

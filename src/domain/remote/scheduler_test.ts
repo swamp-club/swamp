@@ -19,6 +19,7 @@
 
 import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import { FanOutPolicySchema } from "./fan_out.ts";
+import { planBatches } from "./rollout.ts";
 import {
   describePlacement,
   eligibleWorkers,
@@ -676,6 +677,58 @@ Deno.test("planFanOut: a disconnected draining or unverified worker is excluded,
       "excluded",
       "unverified",
     ]],
+  );
+});
+
+Deno.test("planFanOut: an unverified worker whose probe is pending follows the offline policy, as a disconnected one does", () => {
+  const pool = [
+    poolWorker({ name: "a" }),
+    poolWorker({ name: "b", status: "unverified", verificationPending: true }),
+  ];
+  const member = (offline: "wait" | "skip" | "fail") => {
+    const plan = planFanOut(
+      {},
+      FanOutPolicySchema.parse({ offline }),
+      pool,
+    );
+    if (plan.kind !== "planned") throw new Error("expected a plan");
+    return [plan.members[1].disposition, plan.members[1].reason];
+  };
+  assertEquals(member("wait"), ["waiting", "unverified"]);
+  assertEquals(member("skip"), ["skipped", "unverified"]);
+  assertEquals(member("fail"), ["failed", "unverified"]);
+});
+
+Deno.test("planFanOut: an unverified worker whose probe failed stays excluded, and pending never outranks draining", () => {
+  const pool = [
+    poolWorker({ name: "a" }),
+    poolWorker({ name: "b", status: "unverified", verificationPending: false }),
+    poolWorker({ name: "c", status: "draining", verificationPending: true }),
+  ];
+  const plan = planFanOut({}, defaultPolicy, pool);
+  if (plan.kind !== "planned") throw new Error("expected a plan");
+  assertEquals(
+    plan.members.slice(1).map((m) => [m.worker, m.disposition, m.reason]),
+    [["b", "excluded", "unverified"], ["c", "excluded", "draining"]],
+  );
+});
+
+Deno.test("planFanOut: a pending worker's waiting lane counts toward minWorkers and runs after the dispatch lanes", () => {
+  const pool = [
+    poolWorker({ name: "a", status: "unverified", verificationPending: true }),
+    poolWorker({ name: "b" }),
+  ];
+  const plan = planFanOut(
+    {},
+    FanOutPolicySchema.parse({ minWorkers: 2 }),
+    pool,
+  );
+  if (plan.kind !== "planned") throw new Error("expected a plan");
+  assertEquals(plan.plannedLanes, 2);
+  assertEquals(planBatches(plan.members), [["b", "a"]]);
+  assertEquals(
+    planBatches(plan.members, { batches: [1, "100%"] }),
+    [["b"], ["a"]],
   );
 });
 
