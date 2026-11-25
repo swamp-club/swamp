@@ -770,3 +770,138 @@ Deno.test({
     });
   },
 });
+
+/** a pid no process has, as a cancel finds a dead owner's */
+const DEAD_PID = 2_147_483_000;
+
+async function outputStatusOf(
+  writer: Writer,
+  id: string,
+  model: string,
+): Promise<string | null> {
+  writer.send({ kind: "catchUp" });
+  await writer.seen((m) => "caughtUp" in m, "the reader caught up");
+  writer.send({ kind: "outputStatus", id, model });
+  const message = await writer.seen(
+    (m) => "outputOf" in m && m.outputOf === id,
+    `the status of ${id}`,
+  );
+  return "outputOf" in message ? message.status : null;
+}
+
+Deno.test({
+  name:
+    "v3 local commit sections: a cancel settles a dead owner's output under its behavior's lock, so a settle another checkout committed since is not overwritten",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withV3RowRepos({}, async (repos, datastorePath) => {
+      await closeV3Datastores();
+      const owner = startWriter("owner");
+      const canceller = startWriter("canceller");
+      try {
+        const type = repos.modelType.normalized;
+        const id = crypto.randomUUID();
+        await opened(owner, repos.repoA, type);
+        owner.send({ kind: "output", id, model: "m", status: "running" });
+        await owner.seen((m) => "saved" in m, "the running output landed");
+        // definitions live in the repo, shared through git
+        await copy(join(repos.repoA, "models"), join(repos.repoB, "models"), {
+          overwrite: true,
+        });
+        await opened(canceller, repos.repoB, type);
+        // another checkout settles it after the canceller read it running
+        owner.send({
+          kind: "output",
+          id,
+          model: "m",
+          status: "succeeded",
+          lock: true,
+        });
+        await owner.seen(
+          (m) =>
+            "saved" in m &&
+            owner.messages.filter((x) => "saved" in x).length === 2,
+          "the settled output landed",
+        );
+        canceller.send({
+          kind: "settleOrphan",
+          id,
+          model: "m",
+          ownerPid: DEAD_PID,
+        });
+        const settled = await canceller.seen(
+          (m) => "settled" in m,
+          "the cancel settled",
+        );
+        assertEquals(
+          "settled" in settled ? settled.deferred : -1,
+          0,
+          "nothing held the lock",
+        );
+        assertEquals(
+          await outputStatusOf(owner, id, "m"),
+          "succeeded",
+          "the other checkout's settle is kept",
+        );
+        await closed(canceller);
+        await closed(owner);
+      } finally {
+        owner.stop();
+        canceller.stop();
+      }
+      await assertCheckoutsAgree(repos, datastorePath, "orphan settle");
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "v3 local commit sections: a cancel leaves a dead owner's output alone while another process holds its behavior's lock",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withV3RowRepos({}, async (repos, datastorePath) => {
+      await closeV3Datastores();
+      const holder = startWriter("holder");
+      const canceller = startWriter("canceller");
+      try {
+        const type = repos.modelType.normalized;
+        const id = crypto.randomUUID();
+        await opened(holder, repos.repoA, type);
+        holder.send({ kind: "output", id, model: "m", status: "running" });
+        await holder.seen((m) => "saved" in m, "the running output landed");
+        holder.send({ kind: "hold", model: "m" });
+        await holder.seen((m) => "held" in m, "the holder holds the lock");
+        await copy(join(repos.repoA, "models"), join(repos.repoB, "models"), {
+          overwrite: true,
+        });
+        await opened(canceller, repos.repoB, type);
+        canceller.send({
+          kind: "settleOrphan",
+          id,
+          model: "m",
+          ownerPid: DEAD_PID,
+        });
+        const settled = await canceller.seen(
+          (m) => "settled" in m,
+          "the cancel returned",
+        );
+        assertEquals(
+          "settled" in settled ? settled.deferred : -1,
+          1,
+          "the output is left for the holder",
+        );
+        assertEquals(await outputStatusOf(canceller, id, "m"), "running");
+        holder.send({ kind: "unhold", model: "m" });
+        await holder.seen((m) => "unheld" in m, "the holder released");
+        await closed(canceller);
+        await closed(holder);
+      } finally {
+        holder.stop();
+        canceller.stop();
+      }
+      await assertCheckoutsAgree(repos, datastorePath, "orphan deferred");
+    });
+  },
+});

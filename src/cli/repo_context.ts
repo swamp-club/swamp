@@ -19,6 +19,7 @@
 
 import { processRuntimeSlot } from "../infrastructure/runtime/process_runtime.ts";
 import { nameLockHolder } from "./auth_context.ts";
+import type { TryBehaviorLock } from "../domain/workflows/orphaned_run_reaper.ts";
 import { CommitLeaseLostError } from "../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { serveUpstreamAt } from "../infrastructure/datastore_v3/serve_upstream_registry.ts";
 import type { ServeUpstreamTarget } from "../domain/datastore_v3/serve_upstream.ts";
@@ -1981,6 +1982,21 @@ export async function tryModelLock(
     await createModelLock(datastoreConfig, modelType, modelId),
     waitMs,
   );
+}
+
+/** as retention waits, so a cancel leaves an output whose behavior a run holds */
+export const CANCEL_BEHAVIOR_LOCK_WAIT_MS = 250;
+
+export function tryBehaviorLockOf(
+  datastoreConfig: DatastoreConfig,
+): TryBehaviorLock {
+  return (type, modelId) =>
+    tryModelLock(
+      datastoreConfig,
+      type.normalized,
+      modelId,
+      CANCEL_BEHAVIOR_LOCK_WAIT_MS,
+    );
 }
 
 export async function tryAcquireWithin(

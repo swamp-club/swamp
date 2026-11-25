@@ -27,6 +27,9 @@ import {
   createWorkflowRunId,
 } from "../src/domain/workflows/workflow_id.ts";
 import { WorkflowRun } from "../src/domain/workflows/workflow_run.ts";
+import { ActiveRun } from "../src/domain/models/active_run.ts";
+import { ModelOutput } from "../src/domain/models/model_output.ts";
+import { cancelOrphanedMethodRuns } from "../src/domain/workflows/orphaned_run_reaper.ts";
 import {
   acquireModelLocks,
   createModelLock,
@@ -37,6 +40,7 @@ import {
   requireInitializedRepoUnlocked,
   resolveDatastoreForRepo,
   runUnderModelLocks,
+  tryBehaviorLockOf,
 } from "../src/cli/repo_context.ts";
 import {
   catchUpV3HandlesAt,
@@ -51,6 +55,9 @@ import {
   runInRootUnitOfWork,
 } from "../src/infrastructure/persistence/repo_unit_of_work.ts";
 import type { ProcessHost } from "./process_host.ts";
+
+/** a method of the fixture's model type, so a cancel can name its output */
+const OUTPUT_METHOD = "touch";
 
 export type RunAction = "seed" | "resume" | "suspend" | "cancel";
 
@@ -77,6 +84,26 @@ export type LocalWriterRequest =
     readonly checkpointed?: boolean;
     /** padding past the inline limit, so the content is stored as chunks */
     readonly pad?: string;
+  }
+  /** a method run's output, saved as its owner would */
+  | {
+    readonly kind: "output";
+    readonly id: string;
+    readonly model: string;
+    readonly status: "running" | "succeeded";
+    readonly lock?: boolean;
+  }
+  /** settles a dead owner's output as a cancel does */
+  | {
+    readonly kind: "settleOrphan";
+    readonly id: string;
+    readonly model: string;
+    readonly ownerPid: number;
+  }
+  | {
+    readonly kind: "outputStatus";
+    readonly id: string;
+    readonly model: string;
   }
   | {
     readonly kind: "read";
@@ -115,6 +142,13 @@ export type LocalWriterMessage =
     readonly modelId: string;
   }
   | { readonly read: string; readonly content: string | null }
+  | { readonly saved: string }
+  | {
+    readonly settled: string;
+    readonly closed: number;
+    readonly deferred: number;
+  }
+  | { readonly outputOf: string; readonly status: string | null }
   | { readonly held: string; readonly env: Record<string, string> }
   | { readonly unheld: string }
   | {
@@ -268,6 +302,80 @@ export const localWriterHost: ProcessHost<
     return { version, count, modelId };
   }
 
+  async function saveOutput(
+    request: Extract<LocalWriterRequest, { kind: "output" }>,
+  ): Promise<void> {
+    const model = await definitionOf(request.model);
+    const output = ModelOutput.create({
+      id: request.id,
+      definitionId: model.id,
+      methodName: OUTPUT_METHOD,
+      status: request.status,
+    });
+    const save = () =>
+      runInRootUnitOfWork(
+        context.repoContext,
+        { flush: undefined },
+        () => context.repoContext.outputRepo.save(type, OUTPUT_METHOD, output),
+      );
+    if (request.lock !== true) return await save();
+    const lock = await createModelLock(
+      datastoreConfig,
+      type.normalized,
+      model.id,
+    );
+    await lock.acquire();
+    try {
+      await save();
+    } finally {
+      await lock.release();
+    }
+  }
+
+  async function settleOrphan(
+    request: Extract<LocalWriterRequest, { kind: "settleOrphan" }>,
+  ): Promise<{ closed: number; deferred: number }> {
+    const model = await definitionOf(request.model);
+    const now = new Date().toISOString();
+    const row = ActiveRun.fromData({
+      id: request.id,
+      runKind: "model_method",
+      modelType: type.normalized,
+      definitionId: model.id,
+      methodName: OUTPUT_METHOD,
+      workflowName: null,
+      pid: request.ownerPid,
+      hostname: "host",
+      startedAt: now,
+      heartbeatAt: now,
+      status: "running",
+    });
+    const result = await runInRootUnitOfWork(
+      context.repoContext,
+      { flush: undefined },
+      () =>
+        cancelOrphanedMethodRuns(
+          context.repoContext.outputRepo,
+          [row],
+          "cancelled by a test",
+          tryBehaviorLockOf(datastoreConfig),
+        ),
+    );
+    if (result.errors.length > 0) throw result.errors[0];
+    return { closed: result.closed.length, deferred: result.deferred.length };
+  }
+
+  async function outputStatus(
+    request: Extract<LocalWriterRequest, { kind: "outputStatus" }>,
+  ): Promise<string | null> {
+    const outputs = await context.repoContext.outputRepo.findByIds(
+      type,
+      OUTPUT_METHOD,
+      new Set([request.id]),
+    );
+    return outputs.get(request.id)?.status ?? null;
+  }
+
   async function read(
     request: Extract<LocalWriterRequest, { kind: "read" }>,
   ): Promise<string | null> {
@@ -362,6 +470,25 @@ export const localWriterHost: ProcessHost<
         within(() => write(request)).then(
           ({ version, count, modelId }) =>
             post({ written: request.id, version, count, modelId }),
+          (error) => post({ failed: String(error), id: request.id }),
+        );
+        return;
+      case "output":
+        within(() => saveOutput(request)).then(
+          () => post({ saved: request.id }),
+          (error) => post({ failed: String(error), id: request.id }),
+        );
+        return;
+      case "settleOrphan":
+        within(() => settleOrphan(request)).then(
+          ({ closed, deferred }) =>
+            post({ settled: request.id, closed, deferred }),
+          (error) => post({ failed: String(error), id: request.id }),
+        );
+        return;
+      case "outputStatus":
+        within(() => outputStatus(request)).then(
+          (status) => post({ outputOf: request.id, status }),
           (error) => post({ failed: String(error), id: request.id }),
         );
         return;

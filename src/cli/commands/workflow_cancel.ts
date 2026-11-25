@@ -29,6 +29,7 @@ import {
   requireInitializedRepoReadOnly,
   requireInitializedRepoUnlocked,
   resolveDatastoreForRepo,
+  tryBehaviorLockOf,
 } from "../repo_context.ts";
 import { V3_WRITER_BUSY_CODE } from "../../domain/datastore_v3/writer_lease.ts";
 import { runCommandInRootUnit } from "../command_root_unit.ts";
@@ -81,6 +82,8 @@ import {
   cancelOrphanedMethodRuns,
   type MethodRunOutputs,
   type OwnerLiveness,
+  type TryBehaviorLock,
+  warnDeferredMethodRuns,
   warnUnsettledMethodRuns,
 } from "../../domain/workflows/orphaned_run_reaper.ts";
 import {
@@ -346,6 +349,8 @@ export interface CancelLocalRunDeps {
   runClaims: WorkflowRunClaims;
   /** The method-run records of the stopped owner's steps. */
   outputRepo: MethodRunOutputs;
+  /** A stopped owner's outputs are settled only under their behavior's lock. */
+  tryBehaviorLock?: TryBehaviorLock;
   killProcess?: (
     pid: number,
     options: { maxWaitMs: number },
@@ -504,9 +509,14 @@ async function closeStoppedOwnerRuns(
   pid: number,
   cancelled: ReadonlySet<string>,
   reason: string,
-  { runTracker, outputRepo, liveness = localOwnerLiveness() }: Pick<
+  {
+    runTracker,
+    outputRepo,
+    tryBehaviorLock,
+    liveness = localOwnerLiveness(),
+  }: Pick<
     CancelLocalRunDeps,
-    "runTracker" | "outputRepo" | "liveness"
+    "runTracker" | "outputRepo" | "tryBehaviorLock" | "liveness"
   >,
 ): Promise<void> {
   if (!liveness.isDead(pid)) return;
@@ -515,14 +525,19 @@ async function closeStoppedOwnerRuns(
     row.isLocalTo(liveness.hostname, liveness.instanceId) &&
     (row.runKind === "model_method" || cancelled.has(row.id))
   );
-  const { failed, errors } = await cancelOrphanedMethodRuns(
+  const { failed, errors, deferred } = await cancelOrphanedMethodRuns(
     outputRepo,
     rows.filter((row) => row.runKind === "model_method"),
     OWNER_STOPPED_STEP_ERROR,
+    tryBehaviorLock,
   );
   warnUnsettledMethodRuns(failed.length, errors);
+  warnDeferredMethodRuns(deferred);
   const unsettled = new Set(failed.map((row) => row.id));
+  const left = new Set(deferred.map((row) => row.id));
   for (const row of rows) {
+    // its row stays running, so the next cancel finds it again
+    if (left.has(row.id)) continue;
     if (unsettled.has(row.id)) {
       runTracker.complete(row.id, "interrupted");
     } else {
@@ -1611,6 +1626,7 @@ export const workflowCancelCommand = withRemoteOptions(
                   runTracker,
                   runClaims,
                   outputRepo: repoContext.outputRepo,
+                  tryBehaviorLock: tryBehaviorLockOf(datastoreConfig),
                   preStopped,
                 });
                 // A nested run that was itself active is in the list and
@@ -1788,6 +1804,7 @@ export const workflowCancelCommand = withRemoteOptions(
               runTracker,
               runClaims,
               outputRepo: repoContext.outputRepo,
+              tryBehaviorLock: tryBehaviorLockOf(datastoreConfig),
               preStopped,
             });
             // The suspended nested runs a cancelled run waited on are
