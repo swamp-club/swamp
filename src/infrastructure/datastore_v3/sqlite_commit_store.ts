@@ -112,7 +112,10 @@ import {
 import { WriterFencedError } from "../../domain/datastore_v3/writer_lease.ts";
 import { DatastoreOwner } from "../../domain/datastore_v3/datastore_owner.ts";
 import { UserError } from "../../domain/errors.ts";
-import { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
+import {
+  PartitionKey,
+  RUN_PARTITION_RANGE,
+} from "../../domain/datastore_v3/partition_key.ts";
 import { forwardedCommitClass } from "../../domain/datastore_v3/forwarded_commit_class.ts";
 import { withSyncSpan } from "../tracing/tracer.ts";
 import type { RecordKey } from "../../domain/datastore_v3/record_key.ts";
@@ -2929,9 +2932,13 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
     this.#assertOpen();
     const rows = this.#db.prepare(
       "SELECT partition FROM partition_heads WHERE namespace = ? " +
-        "AND partition >= 'run--' AND partition < 'run-.' " +
-        "AND substr(partition, -36) = ?",
-    ).all(namespace, runId.toLowerCase()) as { partition: string }[];
+        "AND partition >= ? AND partition < ? AND substr(partition, -36) = ?",
+    ).all(
+      namespace,
+      RUN_PARTITION_RANGE.from,
+      RUN_PARTITION_RANGE.to,
+      runId.toLowerCase(),
+    ) as { partition: string }[];
     return rows.map((row) => PartitionKey.parse(row.partition));
   }
 

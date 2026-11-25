@@ -180,6 +180,9 @@ export function partitionOf(identity: AggregateIdentity): PartitionKey {
   }
 }
 
+/** every run partition key sorts at or after `from` and before `to` */
+export const RUN_PARTITION_RANGE = { from: "run--", to: "run-." } as const;
+
 export function runPartitionsPrefix(workflowId: string): string {
   return `run--${canonicalUuid(workflowId, "workflow id")}--`;
 }
