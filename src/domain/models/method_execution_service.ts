@@ -1784,8 +1784,8 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
           `Method '${methodName}' of an enrollment token cannot run with ` +
             `remote placement: only the orchestrator writes enrollment ` +
             `tokens. Remove the step's own placement and clear inherited ` +
-            `labels with labels: {}; an inherited target or platform means ` +
-            `moving the step to a job and workflow that set neither. ` +
+            `labels with labels: {} and an inherited target or platform by ` +
+            `setting it to the empty string. ` +
             `workflow validate names where each field comes from.`,
         );
       }
@@ -2179,13 +2179,21 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
           isRemoteOnlyMode() &&
           !modelRegistry.isInternal(context.modelType)
         ) {
+          const cleared = context.clearedPlacement ?? [];
           throw wordedUserError(
             wordedText((w) =>
-              `Step '${methodName}' on ${w.noun} '${context.modelType.normalized}' ` +
-              `has no placement but the server is running in remote-only mode. ` +
-              `Add a placement block (target, labels, or platform) to the ` +
-              `workflow step, job, or workflow so it can be dispatched to a ` +
-              `remote worker.`
+              cleared.length > 0
+                ? `Method '${methodName}' on ${w.noun} '${context.modelType.normalized}' ` +
+                  `has no placement because ${cleared.join(", ")} ${
+                    cleared.length === 1 ? "is" : "are"
+                  } empty or resolved to empty, which clears placement, ` +
+                  `and the server is running in remote-only mode. Pass a ` +
+                  `non-empty value so it can be dispatched to a remote worker.`
+                : `Method '${methodName}' on ${w.noun} '${context.modelType.normalized}' ` +
+                  `has no placement but the server is running in remote-only mode. ` +
+                  `Add a placement block (target, labels, or platform) to the ` +
+                  `workflow step, job, or workflow so it can be dispatched to a ` +
+                  `remote worker.`
             ),
           );
         } else {

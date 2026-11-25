@@ -59,24 +59,60 @@ export function mergePlacementFields(
   };
 }
 
-export function resolvePlacement(
-  fields: PlacementFields | undefined,
-): ResolvedPlacement | undefined {
-  if (fields === undefined) return undefined;
-  if (
-    fields.target === undefined && fields.platform === undefined &&
-    (fields.labels === undefined || Object.keys(fields.labels).length === 0)
-  ) {
-    return undefined;
+export interface PlacementClearResult {
+  /** undefined when no target, platform or label is left: the step is unplaced */
+  placement: ResolvedPlacement | undefined;
+  /** the fields an empty string cleared, as target, platform or labels.KEY */
+  cleared: string[];
+}
+
+/**
+ * an empty string clears its field, as labels {} does; only the exact empty
+ * string, so a whitespace typo still fails to match rather than running locally
+ */
+export function clearEmptyPlacement(
+  placement: ResolvedPlacement,
+): PlacementClearResult {
+  const cleared: string[] = [];
+  const target = placement.target === "" ? undefined : placement.target;
+  if (placement.target === "") cleared.push("target");
+  const platform = placement.platform === "" ? undefined : placement.platform;
+  if (placement.platform === "") cleared.push("platform");
+  let labels = placement.labels;
+  if (labels !== undefined) {
+    const entries = Object.entries(labels);
+    for (const [key, value] of entries) {
+      if (value === "") cleared.push(`labels.${key}`);
+    }
+    labels = Object.fromEntries(entries.filter(([, value]) => value !== ""));
   }
-  return {
+  if (
+    target === undefined && platform === undefined &&
+    (labels === undefined || Object.keys(labels).length === 0)
+  ) {
+    return { placement: undefined, cleared };
+  }
+  return { placement: { ...placement, target, labels, platform }, cleared };
+}
+
+export function clearPlacementFields(
+  fields: PlacementFields | undefined,
+): PlacementClearResult {
+  if (fields === undefined) return { placement: undefined, cleared: [] };
+  return clearEmptyPlacement({
     target: fields.target,
     labels: fields.labels,
     platform: fields.platform,
     queueTimeoutMs: fields.queueTimeout !== undefined
       ? fields.queueTimeout * 1000
       : undefined,
-  };
+  });
+}
+
+export function resolvePlacement(
+  fields: PlacementFields | undefined,
+): ResolvedPlacement | undefined {
+  return clearPlacementFields(fields).placement;
 }
 
 /**

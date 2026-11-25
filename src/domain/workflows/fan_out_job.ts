@@ -20,7 +20,22 @@
 import { UserError } from "../errors.ts";
 import { FAN_OUT_GATE_KINDS, fanOutGateName } from "../remote/fan_out.ts";
 import type { JobData } from "./job.ts";
-import { mergePlacementFields, type PlacementFields } from "./placement.ts";
+import {
+  clearPlacementFields,
+  mergePlacementFields,
+  type PlacementFields,
+} from "./placement.ts";
+
+// for a single step an empty value only clears its field; across a fleet the
+// wider selector would reach every worker the rest matches, so it is refused
+export function emptyFanOutSelectorMessage(
+  jobName: string,
+  fields: readonly string[],
+): string {
+  return `Fan-out job '${jobName}' has ${
+    fields.join(", ")
+  } set to the empty string. Dropping it would widen the fan-out to every worker the rest of the selector matches, so it is refused: give it a value or remove it.`;
+}
 
 export interface FanOutRefusal {
   readonly path: (string | number)[];
@@ -49,13 +64,13 @@ export function fanOutJobRefusals(
     const name = job.name;
 
     const selector = mergePlacementFields(workflow, job);
-    if (job.target !== undefined) {
+    if (job.target !== undefined && job.target !== "") {
       refusals.push({
         path: at("target"),
         message:
           `Fan-out job '${name}' sets target, which names one worker. Remove target and select the workers with labels or platform.`,
       });
-    } else if (selector?.target !== undefined) {
+    } else if (selector?.target !== undefined && selector.target !== "") {
       refusals.push({
         path: ["target"],
         message:
@@ -63,9 +78,16 @@ export function fanOutJobRefusals(
       });
     }
 
-    const hasLabels = selector?.labels !== undefined &&
-      Object.keys(selector.labels).length > 0;
-    if (!hasLabels && selector?.platform === undefined) {
+    const { placement: inEffect, cleared } = clearPlacementFields({
+      ...selector,
+      target: undefined,
+    });
+    if (cleared.length > 0) {
+      refusals.push({
+        path: at("fanOut"),
+        message: emptyFanOutSelectorMessage(name, cleared),
+      });
+    } else if (inEffect === undefined) {
       refusals.push({
         path: at("fanOut"),
         message:

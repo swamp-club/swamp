@@ -248,6 +248,9 @@ export interface MethodContext {
     affinityKey?: string;
   };
 
+  /** placement fields an empty value cleared; never leaves this host */
+  clearedPlacement?: readonly string[];
+
   /**
    * the step declared external writes the data-plane write path does not track;
    * forces fail-instead-of-redispatch on worker disconnect

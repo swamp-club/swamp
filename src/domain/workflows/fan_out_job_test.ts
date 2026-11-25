@@ -85,6 +85,33 @@ Deno.test("validateWorkflow: a fan-out job with no labels or platform in effect 
   assertEquals(refusalsOf(fanOutWorkflow({ labels: {} })), [message]);
 });
 
+Deno.test("validateWorkflow: a fan-out job with an empty-string label or platform is refused, never widened", () => {
+  assertEquals(
+    refusalsOf(fanOutWorkflow({ labels: undefined, platform: "" })),
+    [
+      "Fan-out job 'patch' has platform set to the empty string. Dropping it would widen the fan-out to every worker the rest of the selector matches, so it is refused: give it a value or remove it.",
+    ],
+  );
+  assertEquals(refusalsOf(fanOutWorkflow({ labels: { role: "" } })), [
+    "Fan-out job 'patch' has labels.role set to the empty string. Dropping it would widen the fan-out to every worker the rest of the selector matches, so it is refused: give it a value or remove it.",
+  ]);
+  assertEquals(
+    refusalsOf(fanOutWorkflow({ labels: { role: "web", host: "" } })),
+    [
+      "Fan-out job 'patch' has labels.host set to the empty string. Dropping it would widen the fan-out to every worker the rest of the selector matches, so it is refused: give it a value or remove it.",
+    ],
+  );
+});
+
+Deno.test("validateWorkflow: an empty target on a fan-out job or its workflow is not a target", () => {
+  assertEquals(refusalsOf(fanOutWorkflow({ target: "" })), []);
+  assertEquals(refusalsOf(fanOutWorkflow({}, { target: "" })), []);
+  assertEquals(
+    refusalsOf(fanOutWorkflow({ target: "" }, { target: "host-a" })),
+    [],
+  );
+});
+
 Deno.test("validateWorkflow: a fan-out job inherits its selector from the workflow", () => {
   assertEquals(
     refusalsOf(
