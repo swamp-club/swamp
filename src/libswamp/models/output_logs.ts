@@ -86,7 +86,12 @@ export interface ModelOutputLogsDeps
     definitionId: string,
     name: string,
     version?: number,
-  ) => Promise<{ readonly size?: number } | null>;
+  ) => Promise<
+    {
+      readonly size?: number;
+      readonly tags?: Readonly<Record<string, string>>;
+    } | null
+  >;
   getContent: (
     type: ModelType,
     definitionId: string,
@@ -270,8 +275,11 @@ export async function* modelOutputLogs(
           artifact.name,
           artifact.version,
         );
+        // the name the log was written under; absent, the type stands in
+        const modelName = dataResult?.tags?.["modelName"];
         const item = {
           modelType: type.normalized,
+          ...(modelName ? { modelName } : {}),
           dataName: artifact.name,
           version: artifact.version,
         };

@@ -423,9 +423,13 @@ interactive `data search` preview reads only the first 64 KiB of a body through
 `getContent` does, so it never holds the whole body or needs the guard, and it
 says when it is truncated. A refusal's message carries optional detail that its
 stored marker does not: the bytes the read already holds, a remedy the caller
-supplies (the projection names a smaller `--limit` for a page; `behavior output
-logs` names `--tail`, or a smaller one, for a refused log), or the base64 length
-that passed the text limit. The step-end record
+supplies, or the base64 length that passed the text limit. A query's page
+remedy is a `pageRemedy` option that only `dataQuery` (the CLI command and
+serve's `data.query`, which take a limit) sets, to a smaller `--limit`; CEL
+`data.query` and worker reads have no limit, so their page refusals advise
+reading fewer items. `behavior output logs` names `--tail`, or a smaller one,
+for a refused log; with nothing held, only when the per-line cost tipped the
+refusal, since a tail pays the decode too. The step-end record
 (`fromResourceHandle`) and the workflow step output reader use it, so a step's
 resource too large to load is marked on its record and refused where an
 expression reads it, never decoded into empty attributes; the `delete` method

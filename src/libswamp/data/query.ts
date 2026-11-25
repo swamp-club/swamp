@@ -41,6 +41,10 @@ import {
   type QuerySort,
 } from "../../domain/data/query_sort.ts";
 
+// the CLI and serve's data.query both take a limit; other query callers do not
+const PAGE_REMEDY =
+  "read fewer items at once, with a smaller limit (--limit on swamp data query)";
+
 export { parseQuerySort } from "../../domain/data/query_sort.ts";
 export type {
   QuerySort,
@@ -88,6 +92,7 @@ export interface DataQueryDeps {
       limit?: number;
       select?: string;
       include?: (record: DataRecord) => Promise<boolean>;
+      pageRemedy?: string;
     },
   ): Promise<DataRecord[] | unknown[]>;
   /**
@@ -102,6 +107,7 @@ export interface DataQueryDeps {
       include?: (record: DataRecord) => Promise<boolean>;
       sort: QuerySort;
       after?: QueryCursorPosition;
+      pageRemedy?: string;
     },
   ): Promise<{ results: DataRecord[] | unknown[]; last?: QueryCursorPosition }>;
   specNameFallback?(predicate: string): SpecNameFallback | null;
@@ -267,6 +273,7 @@ export async function* dataQuery(
               include: input.include,
               sort,
               after,
+              pageRemedy: PAGE_REMEDY,
             },
           ));
         } else {
@@ -274,6 +281,7 @@ export async function* dataQuery(
             limit,
             select: input.select,
             include: input.include,
+            pageRemedy: PAGE_REMEDY,
           });
         }
         const total = rawResults.length;

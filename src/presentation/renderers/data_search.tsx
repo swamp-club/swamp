@@ -32,6 +32,7 @@ import type {
 import { createSearchListRenderer } from "./search_result_list.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
+import { quoteShellWord } from "../../domain/shell_word.ts";
 import { renderInteractivePicker } from "./components/search_picker.tsx";
 import { renderMarkdownToTerminal } from "../markdown_renderer.ts";
 
@@ -42,14 +43,19 @@ export interface DataPreviewDetail {
   truncatedFrom?: number;
 }
 
-export function truncationNote(detail: DataPreviewDetail): string | undefined {
+export function truncationNote(
+  item: DataSearchItem,
+  detail: DataPreviewDetail,
+): string | undefined {
   return detail.truncatedFrom === undefined
     ? undefined
     : `(preview shows ${
       detail.truncatedFrom > 0
         ? `the start of ${formatSize(detail.truncatedFrom)}`
         : "only the start of the body"
-    }; read it all with swamp data get)`;
+    }; read it all with swamp data get ${quoteShellWord(item.modelName)} ${
+      quoteShellWord(item.name)
+    })`;
 }
 
 export type DataPreviewFetcher = (
@@ -303,7 +309,7 @@ function renderDataPreview(
         <Text key={`c-${i}`} wrap="truncate-end">{contentLines[i]}</Text>,
       );
     }
-    const note = truncationNote(detail);
+    const note = truncationNote(item, detail);
     if (note) {
       elements.push(
         <Text key="truncated" dimColor wrap="truncate-end">{note}</Text>,
@@ -331,7 +337,7 @@ function renderDataScrollback(
   const metadata = renderMarkdownToTerminal(buildMetadataMarkdown(item));
 
   if (detail?.content) {
-    const note = truncationNote(detail);
+    const note = truncationNote(item, detail);
     return metadata + "\n" + detail.content + (note ? "\n" + note : "");
   }
 

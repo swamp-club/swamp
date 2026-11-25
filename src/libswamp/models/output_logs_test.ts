@@ -602,3 +602,24 @@ Deno.test("modelOutputLogs: a full read counts the earlier logs' line cost towar
     "b.log@v1",
   );
 });
+
+Deno.test("modelOutputLogs: a refusal names the behavior from the log's modelName tag, and the model type without it", async () => {
+  const big = { "big.log": "x".repeat(400) };
+  const named = await assertRejects(
+    () =>
+      completedOf(
+        logsOf(big, {
+          loadGuard: smallHeap(),
+          findDataByName: () =>
+            Promise.resolve({ size: 400, tags: { modelName: "scanner" } }),
+        }).deps,
+      ),
+    ResourceTooLargeToLoadError,
+  );
+  assertStringIncludes(named.message, "Cannot load scanner/big.log@v1:");
+  const untagged = await assertRejects(
+    () => completedOf(logsOf(big, { loadGuard: smallHeap() }).deps),
+    ResourceTooLargeToLoadError,
+  );
+  assertStringIncludes(untagged.message, "Cannot load aws/ec2/big.log@v1:");
+});

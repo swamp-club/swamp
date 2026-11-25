@@ -248,6 +248,8 @@ const NO_MODELS: ResolvedModels = new Map();
 
 export interface DataQueryOptions {
   limit?: number;
+  /** advice for a page refused on what it already holds, from a caller with a limit */
+  pageRemedy?: string;
   select?: string;
   loadAttributes?: boolean;
   /**
@@ -387,10 +389,6 @@ function loadedItemOf(record: DataRecord): LoadedItemRef {
     version: record.version,
   };
 }
-
-// a page refused on what it already holds is read again with fewer items
-const PAGE_REMEDY =
-  "read fewer items at once, with a smaller --limit on swamp data query";
 
 export class DataQueryService {
   private readonly queryEnv: Environment;
@@ -731,7 +729,7 @@ export class DataQueryService {
       record.contentType !== "application/json" ||
       Object.keys(record.attributes).length > 0
     ) return;
-    const bytes = await this.guardedForeignContent(record, 0);
+    const bytes = await this.guardedForeignContent(record, 0, undefined);
     if (!bytes) return;
     const text = decodeRecordContent(bytes, recordIdentity(record));
     try {
@@ -748,6 +746,7 @@ export class DataQueryService {
   private async guardedForeignContent(
     record: DataRecord,
     heldBytes: number,
+    remedy: string | undefined,
   ): Promise<Uint8Array | null> {
     if (
       !this.dataRepo.fetchForeignContent ||
@@ -762,7 +761,7 @@ export class DataQueryService {
       item,
       record.size ?? 0,
       heldBytes,
-      PAGE_REMEDY,
+      remedy,
     );
     if (sizeRefusal && (sizeRefusal.reason === "memory" || !isJson)) {
       throw sizeRefusal;
@@ -773,7 +772,7 @@ export class DataQueryService {
         item,
         bytes,
         heldBytes,
-        PAGE_REMEDY,
+        remedy,
       );
       if (refusal?.reason === "memory") throw refusal;
     }
@@ -1021,7 +1020,11 @@ export class DataQueryService {
         results = this.project(
           accepted,
           matched.selectParsed,
-          await this.projectedContents(accepted, matched.selectReadsContent),
+          await this.projectedContents(
+            accepted,
+            matched.selectReadsContent,
+            options?.pageRemedy,
+          ),
           options,
         );
         last = lastAccepted;
@@ -1056,7 +1059,7 @@ export class DataQueryService {
       matched.records,
       matched.selectParsed,
       matched.selectReadsContent
-        ? this.projectedContentsSync(matched.records)
+        ? this.projectedContentsSync(matched.records, options?.pageRemedy)
         : undefined,
       options,
     );
@@ -1835,6 +1838,7 @@ export class DataQueryService {
     record: DataRecord,
     bytes: Uint8Array | null,
     heldBytes: number,
+    remedy: string | undefined,
   ): ProjectedContent {
     if (!bytes) return { content: null, contentEncoding: null };
     return encodeLoadableContent(
@@ -1842,7 +1846,7 @@ export class DataQueryService {
       loadedItemOf(record),
       bytes,
       heldBytes,
-      PAGE_REMEDY,
+      remedy,
     );
   }
 
@@ -1854,23 +1858,28 @@ export class DataQueryService {
       : record.size ?? 0;
   }
 
-  private assertProjectable(record: DataRecord, heldBytes: number): void {
+  private assertProjectable(
+    record: DataRecord,
+    heldBytes: number,
+    remedy: string | undefined,
+  ): void {
     const refusal = resourceLoadGuardOf(this.dataRepo).refusalFor(
       loadedItemOf(record),
       record.size ?? 0,
       heldBytes,
-      PAGE_REMEDY,
+      remedy,
     );
     if (refusal) throw refusal;
   }
 
   private projectedContentsSync(
     records: DataRecord[],
+    remedy: string | undefined,
   ): Map<DataRecord, ProjectedContent> {
     const contents = new Map<DataRecord, ProjectedContent>();
     let heldBytes = 0;
     for (const record of records) {
-      const projected = this.projectedContent(record, heldBytes);
+      const projected = this.projectedContent(record, heldBytes, remedy);
       contents.set(record, projected);
       heldBytes += this.heldBy(record, projected);
     }
@@ -1884,10 +1893,11 @@ export class DataQueryService {
   private projectedContent(
     record: DataRecord,
     heldBytes: number,
+    remedy: string | undefined,
   ): ProjectedContent {
     const known = this.projectedContentWithoutBytes(record);
     if (known) return known;
-    this.assertProjectable(record, heldBytes);
+    this.assertProjectable(record, heldBytes, remedy);
     let bytes: Uint8Array | null = null;
     try {
       bytes = this.dataRepo.getContentSync(
@@ -1902,7 +1912,7 @@ export class DataQueryService {
         String(error)
       }`;
     }
-    return this.encodeProjected(record, bytes, heldBytes);
+    return this.encodeProjected(record, bytes, heldBytes, remedy);
   }
 
   /**
@@ -1913,6 +1923,7 @@ export class DataQueryService {
   private async projectedContents(
     records: DataRecord[],
     readsContent: boolean,
+    remedy: string | undefined,
   ): Promise<Map<DataRecord, ProjectedContent> | undefined> {
     if (!readsContent) return undefined;
     const contents = new Map<DataRecord, ProjectedContent>();
@@ -1935,6 +1946,7 @@ export class DataQueryService {
         const { projected, held } = await this.projectedForeignContent(
           record,
           heldBytes,
+          remedy,
         );
         hold(record, projected, held);
         continue;
@@ -1944,7 +1956,7 @@ export class DataQueryService {
         hold(record, known);
         continue;
       }
-      this.assertProjectable(record, heldBytes);
+      this.assertProjectable(record, heldBytes, remedy);
       await this.ensureContentOf({
         namespace: record.namespace,
         modelType: record.modelType,
@@ -1964,6 +1976,7 @@ export class DataQueryService {
             record.version,
           ),
           heldBytes,
+          remedy,
         ),
       );
     }
@@ -1977,6 +1990,7 @@ export class DataQueryService {
   private async projectedForeignContent(
     record: DataRecord,
     heldBytes: number,
+    remedy: string | undefined,
   ): Promise<{ projected: ProjectedContent; held: number }> {
     if (
       record.contentType === "application/json" &&
@@ -1988,7 +2002,7 @@ export class DataQueryService {
       };
       return { projected, held: record.size ?? 0 };
     }
-    const bytes = await this.guardedForeignContent(record, heldBytes);
+    const bytes = await this.guardedForeignContent(record, heldBytes, remedy);
     if (bytes && record.contentType === "application/json") {
       const text = decodeRecordContent(bytes, recordIdentity(record));
       let content: unknown;
@@ -2002,7 +2016,7 @@ export class DataQueryService {
         held: bytes.length,
       };
     }
-    const projected = this.encodeProjected(record, bytes, heldBytes);
+    const projected = this.encodeProjected(record, bytes, heldBytes, remedy);
     return { projected, held: this.heldBy(record, projected) };
   }
 

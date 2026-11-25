@@ -924,3 +924,38 @@ Deno.test("dataQuery: an empty page after a cursor offers no spec-name hint (swa
   assertEquals(data.specNameHint, undefined);
   assertEquals(probes, 0);
 });
+
+Deno.test("dataQuery: passes the --limit remedy on both the paged and unpaged reads, not on the spec-name probe", async () => {
+  const queried: { remedy: string | undefined; limit: number | undefined }[] =
+    [];
+  const paged: (string | undefined)[] = [];
+  const deps: DataQueryDeps = {
+    query: (_pred, opts) => {
+      queried.push({ remedy: opts?.pageRemedy, limit: opts?.limit });
+      return Promise.resolve([]);
+    },
+    queryPage: (_pred, opts) => {
+      paged.push(opts.pageRemedy);
+      return Promise.resolve({ results: [makeRecord({ name: "a" })] });
+    },
+    specNameFallback: () => ({ predicate: "true", specName: "x" }) as never,
+  };
+
+  await collect<DataQueryEvent>(
+    dataQuery(createLibSwampContext(), deps, { predicate: "true" }),
+  );
+  await collect<DataQueryEvent>(
+    dataQuery(createLibSwampContext(), deps, {
+      predicate: "true",
+      limit: 5,
+      sort: { field: "tags.startedAt", direction: "desc" },
+    }),
+  );
+
+  assertStringIncludes(queried[0].remedy ?? "", "smaller limit (--limit");
+  assertEquals(paged.length, 1);
+  assertStringIncludes(paged[0] ?? "", "smaller limit (--limit");
+  for (const probe of queried.slice(1)) {
+    assertEquals(probe.remedy, undefined);
+  }
+});
