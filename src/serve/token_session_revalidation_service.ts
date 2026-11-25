@@ -158,6 +158,8 @@ export class TokenSessionRevalidationService {
   #disposed = false;
   /** session key to when it was first kept over a stale copy */
   #staleSince = new Map<string, number>();
+  /** token name to the stale record's mint already warned about */
+  readonly #warnedStale = new Map<string, string>();
 
   constructor(deps: TokenSessionRevalidationDeps) {
     this.#deps = deps;
@@ -336,6 +338,8 @@ export class TokenSessionRevalidationService {
       return false;
     } catch (err) {
       if (!(err instanceof ServerTokenSecretMismatchError)) return false;
+      if (this.#warnedStale.get(token.name) === token.createdAt) return true;
+      this.#warnedStale.set(token.name, token.createdAt);
       logger.warn(
         "Token {name} has a record that does not pair with its secret, so it is a stale copy and its sessions stay open; rotate the token if it persists",
         { name: token.name },

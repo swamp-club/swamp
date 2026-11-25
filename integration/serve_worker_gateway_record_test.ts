@@ -56,8 +56,10 @@ import {
   QUIET_REASSERT_INTERVAL_MS,
   WorkerGateway,
 } from "../src/serve/worker_gateway.ts";
-import { WorkerStatusLedger } from "../src/serve/worker_status_ledger.ts";
-import { methodRunnerWorkerStatusStore } from "../src/serve/worker_status_ledger.ts";
+import {
+  methodRunnerWorkerStatusStore,
+  WorkerStatusLedger,
+} from "../src/serve/worker_status_ledger.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 
 await initializeLogging({});

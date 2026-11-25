@@ -1254,6 +1254,7 @@ export class WorkerGateway {
     // the slot is taken from here on, so everything below runs under the
     // finally that gives it back: a dispatch failing before it reaches the
     // worker must not keep the slot
+    let busyUnrecorded = false;
     try {
       // Kept in the same synchronous turn as the push: the dispatcher drops
       // its reservation here, and an await in between would count the
@@ -1279,6 +1280,7 @@ export class WorkerGateway {
               error: error instanceof Error ? error.message : String(error),
             },
           );
+          busyUnrecorded = true;
           throw new WorkerNotDispatchableError(name, "state_unrecorded");
         }
       }
@@ -1327,11 +1329,17 @@ export class WorkerGateway {
       );
       this.#sessions.revokeDispatch(name, params.dispatchId);
       const currentStatus = entry.status as string;
+      // nothing was recorded, so nothing is undone on disk, and waking the
+      // waiters would send them straight back to a worker that cannot be recorded
       // Neither status is left by a dispatch ending: a draining worker is on
       // its way out, and an unverified one waits on its enrollment probe.
       const settled = currentStatus === "draining" ||
         currentStatus === "unverified";
-      if (entry.channel === null || entry.channel.closed) {
+      if (busyUnrecorded) {
+        if (currentStatus === "busy" && entry.activeDispatchIds.length === 0) {
+          entry.status = "idle";
+        }
+      } else if (entry.channel === null || entry.channel.closed) {
         if (!settled && entry.activeDispatchIds.length === 0) {
           entry.status = "idle";
         }

@@ -134,7 +134,7 @@ export function createWorkerTokenNameQuery(
   dataQueryService: Pick<DataQueryService, "query">,
   namespace: string,
   vanished?: {
-    repo: Pick<UnifiedDataRepository, "getContent">;
+    repo: Pick<UnifiedDataRepository, "getContent" | "listVersions">;
     /** the catalog keeps rows whose files are gone, so the caller drops them */
     onVanished: (modelIds: readonly string[]) => void;
   },
@@ -175,7 +175,15 @@ export function createWorkerTokenNameQuery(
         id,
         WORKER_STATE_DATA_NAME,
       );
-      if (content !== null) {
+      if (
+        content !== null ||
+        !await bodyGone(
+          vanished.repo,
+          WORKER_MODEL_TYPE,
+          id,
+          WORKER_STATE_DATA_NAME,
+        )
+      ) {
         throw new Error("a worker record has no readable token name");
       }
       gone.push(id);
@@ -227,6 +235,21 @@ const decoder = new TextDecoder();
 
 const GONE = Symbol("gone");
 
+// a pull replacing the latest marker leaves it missing for a moment, so every version is checked
+async function bodyGone(
+  repo: Pick<UnifiedDataRepository, "getContent" | "listVersions">,
+  modelType: ModelType,
+  modelId: string,
+  name: string,
+): Promise<boolean> {
+  for (const version of await repo.listVersions(modelType, modelId, name)) {
+    if (await repo.getContent(modelType, modelId, name, version) !== null) {
+      return false;
+    }
+  }
+  return true;
+}
+
 /**
  * GONE when the body is no longer on disk; null when it is unreadable or not
  * JSON, logged; the record is kept and the sweep continues
@@ -242,7 +265,11 @@ async function readAttributes(
       record.modelId,
       record.name,
     );
-    if (content === null) return GONE;
+    if (content === null) {
+      return await bodyGone(deps.repo, modelType, record.modelId, record.name)
+        ? GONE
+        : null;
+    }
     return JSON.parse(decoder.decode(content));
   } catch (error) {
     logger.warn("Skipping unreadable {kind} record {dataName}: {error}", {

@@ -153,7 +153,7 @@ export class RuntimeDataPoller {
           .info`Runtime data poller: ${count} file(s) updated, invalidating catalog`;
         this.#catalogInvalidate();
       }
-      if (pulled) await this.#onPulled?.(count);
+      if (pulled) await this.#followUp(count);
       this.#logHeapStats();
     } catch (error) {
       logger
@@ -162,6 +162,16 @@ export class RuntimeDataPoller {
       }`;
     } finally {
       this.#pulling = false;
+    }
+  }
+
+  async #followUp(changedFiles: number): Promise<void> {
+    try {
+      await this.#onPulled?.(changedFiles);
+    } catch (error) {
+      logger.warn`Runtime data poller follow-up failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`;
     }
   }
 

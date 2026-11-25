@@ -4932,3 +4932,21 @@ Deno.test("WorkerGateway: a dispatch to a worker still being admitted is sent on
   assertEquals((await dispatched).status, "success");
   assertEquals(received, ["d-1"]);
 });
+
+Deno.test("WorkerGateway: a dispatch refused for an unrecorded busy write wakes no waiters and writes no idle", async () => {
+  const h = createHarness();
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel);
+  const idleBefore = h.idle.length;
+  const writesBefore = h.transitions.length;
+
+  h.failOn.add("set_status");
+  await assertRejects(
+    () => h.gateway.dispatch("ci-runner-3", dispatchParams("d-1")),
+    WorkerNotDispatchableError,
+  );
+  assertEquals(h.idle.length, idleBefore);
+  assertEquals(h.transitions.length, writesBefore);
+  assertEquals(h.gateway.worker("ci-runner-3")?.status, "idle");
+  assertEquals(h.gateway.worker("ci-runner-3")?.activeDispatchIds, []);
+});

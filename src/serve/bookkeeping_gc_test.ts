@@ -120,6 +120,7 @@ function harness(opts: {
   unreadableBody?: Set<string>;
   corruptBody?: Set<string>;
   vanishedBody?: Set<string>;
+  markerMissing?: Set<string>;
   dropped?: string[];
 }): Harness {
   const events: string[] = [];
@@ -154,7 +155,12 @@ function harness(opts: {
     },
     repo: {
       namespace: "team-a" as Namespace,
-      getContent: (_type: ModelType | string, id: string, name: string) => {
+      getContent: (
+        _type: ModelType | string,
+        id: string,
+        name: string,
+        version?: number,
+      ) => {
         if (opts.unreadableBody?.has(name)) {
           return Promise.reject(new Error(`EIO reading ${name}`));
         }
@@ -162,6 +168,9 @@ function harness(opts: {
           return Promise.resolve(new TextEncoder().encode("{not json"));
         }
         if (opts.vanishedBody?.has(name)) return Promise.resolve(null);
+        if (opts.markerMissing?.has(name) && version === undefined) {
+          return Promise.resolve(null);
+        }
         const body = bodies.get(key(id, name));
         return Promise.resolve(
           body === undefined
@@ -470,6 +479,18 @@ Deno.test("reapEndedBookkeepingRecords: a row whose record is gone from disk is 
   assertEquals(dropped, ["swamp/step-lease:lease-gone"]);
 });
 
+Deno.test("reapEndedBookkeepingRecords: a record whose latest marker is missing for a moment is not gone", async () => {
+  const dropped: string[] = [];
+  const h = harness({
+    leases: [leaseRecord("moving", "completed", OLD)],
+    markerMissing: new Set(["lease-moving"]),
+    dropped,
+  });
+  const result = await reapEndedBookkeepingRecords(h.deps, GRACE);
+  assertEquals(dropped, []);
+  assertEquals(result.unreadable, 1);
+});
+
 const FUTURE = new Date(NOW + 10 * GRACE).toISOString();
 
 Deno.test("enrollmentTokenListPredicate: scopes to token records in the own namespace", () => {
@@ -605,6 +626,7 @@ Deno.test("createWorkerTokenNameQuery: a row whose record is gone from disk is s
     "team-a",
     {
       repo: {
+        listVersions: () => Promise.resolve([1]),
         getContent: (_type, modelId) =>
           Promise.resolve(
             modelId === "gone" ? null : new TextEncoder().encode("{}"),
@@ -624,6 +646,7 @@ Deno.test("createWorkerTokenNameQuery: a record still on disk without a token na
     "team-a",
     {
       repo: {
+        listVersions: () => Promise.resolve([1]),
         getContent: () => Promise.resolve(new TextEncoder().encode("{}")),
       },
       onVanished: () => refreshed++,
@@ -639,6 +662,7 @@ Deno.test("createWorkerTokenNameQuery: an unreadable record body fails the looku
     "team-a",
     {
       repo: {
+        listVersions: () => Promise.resolve([1]),
         getContent: () => Promise.reject(new Error("unreadable content")),
       },
       onVanished: () => {},
@@ -652,9 +676,32 @@ Deno.test("createWorkerTokenNameQuery: an unresolved row the id listing does not
     rowsThenIds([["w1", "fleet"], null], ["w1"]),
     "team-a",
     {
-      repo: { getContent: () => Promise.resolve(null) },
+      repo: {
+        listVersions: () => Promise.resolve([]),
+        getContent: () => Promise.resolve(null),
+      },
       onVanished: () => {},
     },
   );
   await assertRejects(() => list());
+});
+
+Deno.test("createWorkerTokenNameQuery: a worker record whose latest marker is missing for a moment still fails the lookup", async () => {
+  let dropped = 0;
+  const list = createWorkerTokenNameQuery(
+    rowsThenIds([null], ["w1"]),
+    "team-a",
+    {
+      repo: {
+        listVersions: () => Promise.resolve([3]),
+        getContent: (_type, _id, _name, version) =>
+          Promise.resolve(
+            version === undefined ? null : new TextEncoder().encode("{}"),
+          ),
+      },
+      onVanished: () => dropped++,
+    },
+  );
+  await assertRejects(() => list());
+  assertEquals(dropped, 0);
 });
