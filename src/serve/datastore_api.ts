@@ -244,6 +244,10 @@ export const MAX_LISTED_LEASES = 512;
 
 /** The largest commit envelope, before it is parsed. */
 export const MAX_ENVELOPE_BYTES = 4 * 1024 * 1024;
+
+// a landed commit's confirmation answers within this, short of a follower's
+// forward deadline, so a slow confirmation is a may-land, never a timeout
+export const CONFIRM_BOUND_MS = 10_000;
 /** The most chunks one commit request carries. */
 export const MAX_CHUNKS_PER_COMMIT = 1024;
 /** The largest commit request body: envelope and chunks. */
@@ -1325,11 +1329,13 @@ class DatastoreApi {
     if (commitStageBarrier !== undefined) {
       await commitStageBarrier("confirm_replicated");
     }
+    // the upload and the locked stages before it are not the confirmation's
+    const deadlineAt = Date.now() + CONFIRM_BOUND_MS;
     try {
       await withSpan(
         "swamp.serve.datastore.confirm_replicated",
         {},
-        () => confirmReplicated(),
+        () => confirmReplicated(deadlineAt),
       );
       return undefined;
     } catch (error) {
@@ -1356,35 +1362,41 @@ class DatastoreApi {
     signal: AbortSignal,
     last: boolean,
   ): Promise<Response | LandedCommit> {
-    const envelopeLength = await reader.readUint32BE(signal);
-    if (envelopeLength > MAX_ENVELOPE_BYTES) {
-      await reader.cancel();
-      return failure(
-        413,
-        "envelope_too_large",
-        `The commit envelope exceeds ${MAX_ENVELOPE_BYTES} bytes`,
-      );
-    }
-    let envelope: CommitEnvelope;
-    let ops: Op[];
-    try {
-      envelope = parseEnvelope(
-        JSON.parse(
-          new TextDecoder().decode(
-            await reader.readExactly(envelopeLength, signal),
+    // reading the envelope waits on the client's upload
+    const read = await commitStage("envelope", async () => {
+      const envelopeLength = await reader.readUint32BE(signal);
+      if (envelopeLength > MAX_ENVELOPE_BYTES) {
+        await reader.cancel();
+        return failure(
+          413,
+          "envelope_too_large",
+          `The commit envelope exceeds ${MAX_ENVELOPE_BYTES} bytes`,
+        );
+      }
+      try {
+        const envelope = parseEnvelope(
+          JSON.parse(
+            new TextDecoder().decode(
+              await reader.readExactly(envelopeLength, signal),
+            ),
           ),
-        ),
-      );
-      ops = await Promise.all(envelope.ops.map((op) => opFromJSON(op)));
-    } catch (error) {
-      await reader.cancel();
-      if (error instanceof ChunkIngestError) throw error;
-      return failure(
-        400,
-        "invalid_request",
-        `Malformed commit: ${error instanceof Error ? error.message : error}`,
-      );
-    }
+        );
+        const ops: Op[] = await Promise.all(
+          envelope.ops.map((op) => opFromJSON(op)),
+        );
+        return { envelope, ops };
+      } catch (error) {
+        await reader.cancel();
+        if (error instanceof ChunkIngestError) throw error;
+        return failure(
+          400,
+          "invalid_request",
+          `Malformed commit: ${error instanceof Error ? error.message : error}`,
+        );
+      }
+    });
+    if (read instanceof Response) return read;
+    const { envelope, ops } = read;
     // Key ownership is read from serve's read model: catch it up first, so
     // it includes everything serve itself committed. Content is checked
     // once it has arrived, below; this pass refuses early on access alone.

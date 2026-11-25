@@ -25433,6 +25433,30 @@ function failingStartCheckpointer(
   };
 }
 
+Deno.test("WorkflowExecutionService: a job's parallel steps are all running when the first of their starts is saved, so one checkpoint records them together", async () => {
+  await withTempDir(async (tempDir) => {
+    const steps = Array.from({ length: 32 }, (_, i) => modelStep(`s${i}`));
+    const workflow = Workflow.create({
+      name: "fanout-wf",
+      jobs: [Job.create({ name: "main", steps })],
+    });
+    const { service } = await setupRetry(tempDir, workflow);
+    const running: number[] = [];
+    service.runCheckpointer = {
+      checkpoint: (run) => {
+        running.push(
+          run.jobs.flatMap((job) => job.steps)
+            .filter((step) => step.status === "running").length,
+        );
+        return Promise.resolve();
+      },
+      committedLatest: () => true,
+    };
+    await runUntilThrown(service.run(workflow.name));
+    assertEquals(running.find((count) => count > 0), 32);
+  });
+});
+
 async function runUntilThrown(
   stream: AsyncIterable<WorkflowExecutionEvent>,
 ): Promise<{ run: WorkflowRun | undefined; error: unknown }> {

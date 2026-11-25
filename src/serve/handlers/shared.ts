@@ -414,9 +414,9 @@ export interface ConnectionContext {
   runWriteFence?: RunWriteFence;
   /**
    * set only on a v3 datastore while replication is on, so without it nothing
-   * waits
+   * waits; a caller passing deadlineAt is rejected at it rather than waiting on
    */
-  confirmReplicated?: () => Promise<void>;
+  confirmReplicated?: (deadlineAt?: number) => Promise<void>;
   /**
    * read when a write request starts, so one that committed nothing, such as
    * `run doctor` without `--fix`, never waits on other writers' commits

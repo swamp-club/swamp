@@ -2699,7 +2699,8 @@ export const serveCommand = new Command()
       : undefined;
     const confirmReplicated = v3Location !== undefined &&
         v3ReplicatesAt(v3Location.path)
-      ? ((path: string) => () => confirmV3Replicated(path))(v3Location.path)
+      ? ((path: string) => (deadlineAt?: number) =>
+        confirmV3Replicated(path, deadlineAt))(v3Location.path)
       : undefined;
     const replicationMark = confirmReplicated !== undefined &&
         v3Location !== undefined

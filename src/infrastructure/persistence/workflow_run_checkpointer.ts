@@ -28,6 +28,7 @@ import {
   checkpointOpenUnitOfWork,
   commitsThroughCommitLog,
   lastOpenUnitCheckpointAt,
+  type OpenUnitAppend,
   rootCommittedBeforeThrowing,
 } from "./repo_unit_of_work.ts";
 import {
@@ -41,6 +42,9 @@ import type { RepositoryContext } from "./repository_factory.ts";
 import { processRuntimeSlot } from "../runtime/process_runtime.ts";
 
 const logger = getSwampLogger(["workflow", "checkpoint"]);
+
+// well below a commit's op limit and serve's envelope size
+const START_BATCH = 256;
 
 /**
  * each checkpoint stores the whole run record, so one per save would store it
@@ -257,49 +261,61 @@ export class WorkflowRunCheckpointer implements RunCheckpointer {
     const repo = this.#repoContext.workflowRunRepo!;
     const done = new Set(this.#checkpointedStarts.get(run.id) ?? []);
     const running = new Set(runningStepsOf(run));
+    const pending: { key: string; start: StepStart }[] = [];
     for (const job of run.jobs) {
       for (const step of job.steps) {
         if (step.status !== "running") continue;
         const key = startKeyOf(job.jobName, step);
         if (done.has(key)) continue;
-        const start = StepStart.create({
-          workflowId: run.workflowId,
-          runId: run.id,
-          jobName: job.jobName,
-          stepName: step.stepName,
-          startedAt: step.startedAt?.getTime() ?? this.#now(),
-        });
-        try {
-          const outcome = await appendToOpenUnitOfWork(this.#repoContext, [
-            await repo.writeStepStart(start),
-          ]);
-          if (outcome === "unsupported") {
-            this.#journalRefused = true;
-            return;
-          }
-          // with no open unit nothing commits, a start no more than the rest
-          if (outcome === "no-unit") {
-            done.add(key);
-            continue;
-          }
-        } catch (error) {
-          throw new StepStartUnrecordedError(error, {
+        pending.push({
+          key,
+          start: StepStart.create({
             workflowId: run.workflowId,
-            workflowName: run.workflowName,
             runId: run.id,
-            stepName: step.stepName,
             jobName: job.jobName,
-          });
-        }
+            stepName: step.stepName,
+            startedAt: step.startedAt?.getTime() ?? this.#now(),
+          }),
+        });
+      }
+    }
+    // the starts of steps running together land in one commit, not one each
+    for (let at = 0; at < pending.length; at += START_BATCH) {
+      const batch = pending.slice(at, at + START_BATCH);
+      let outcome: OpenUnitAppend;
+      try {
+        outcome = await appendToOpenUnitOfWork(
+          this.#repoContext,
+          await Promise.all(
+            batch.map(({ start }) => repo.writeStepStart(start)),
+          ),
+        );
+      } catch (error) {
+        const { start } = batch[0];
+        throw new StepStartUnrecordedError(error, {
+          workflowId: run.workflowId,
+          workflowName: run.workflowName,
+          runId: run.id,
+          stepName: start.stepName,
+          jobName: start.jobName,
+        });
+      }
+      if (outcome === "unsupported") {
+        this.#journalRefused = true;
+        return;
+      }
+      for (const { key, start } of batch) {
         // Only a committed start counts: one that failed is started again.
         done.add(key);
+        // with no open unit nothing commits, a start no more than the rest
+        if (outcome === "no-unit") continue;
         const journal = this.#journal.get(run.id) ?? [];
         journal.push({ start, save });
         this.#journal.set(run.id, journal);
         this.#committedUnknownSteps.set(run.id, [
           ...new Set([
             ...this.#committedUnknownSteps.get(run.id) ?? [],
-            step.stepName,
+            start.stepName,
           ]),
         ]);
       }

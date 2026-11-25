@@ -2556,8 +2556,11 @@ these.
    crash must never leave a step that may have run recorded as `pending`,
    which `workflow recover` would run again without asking. So a run's move
    into running (its create, a resume, a recovery, a nested child's create)
-   commits that run's own record at once, and then each step start commits a
-   `StepStart` on its own, before the step runs. The run's event loop begins
+   commits that run's own record at once, and then the starts of the steps
+   running together commit together, one `StepStart` per step in a single
+   commit of at most 256, before those steps run: a job's parallel steps are
+   all running when the first of their starts is saved, and one commit each
+   would reach serve one at a time (swamp-club#5089). The run's event loop begins
    that save and asks for the step's next event meanwhile, so a behavior's
    step sends its lock request while its start commits; the method waits on a
    pending-start promise (by run, job, step and `forEach` iteration) until the
@@ -9659,7 +9662,11 @@ already bounded by its published mark. A commit whose replication confirm
 fails with `writer_fenced` is answered `503` with its seq (may land); the
 member's commit sink checks the current leader for its txnId, sends it again
 under the same txnId when it is absent, and serve answers a re-send of a
-landed txnId from the commit it landed, so the write lands once.
+landed txnId from the commit it landed, so the write lands once. Any `503`
+may-land is re-sent under its txnId up to twice before the commit fails
+(swamp-club#5089); one still unconfirmed is never counted landed from a read
+of serve's partition in that command, whose read route is not bounded by the
+published mark, and its failure is not retried under a new txnId.
 
 With two nodes on one host, a test arrangement, the follower was not seen to
 take a stopped leader's lease before the leader resumed; across hosts the

@@ -101,6 +101,9 @@ export const CARRIED_SEND_ATTEMPTS = 3;
  */
 export const SERVE_SEQ_GAP_ATTEMPTS = 8;
 
+/** a may-land is re-sent this many times, each under the client's response deadline */
+export const MAY_LAND_RESENDS = 2;
+
 export interface ServeCommitSinkOptions {
   readonly client:
     & Pick<
@@ -209,6 +212,9 @@ export function createServeCommitSink(
   // Sent once already and maybe run: a later refusal before sending, or a
   // follower's copy without it, never shows that it did not land.
   const mayHaveRunTxns = new Set<string>();
+  // serve landed these and could not confirm them, even when re-sent: only
+  // serve's answer to the same txnId may count them landed, never a read-back
+  const mayLandTxns = new Set<string>();
   const noteNeverSent = (txnId: string): void => {
     if (!mayHaveRunTxns.has(txnId)) neverSent.add(txnId);
   };
@@ -287,7 +293,9 @@ export function createServeCommitSink(
   /** the send may have run at serve, or at the leader a follower forwarded to */
   const mayHaveRun = (error: unknown): boolean =>
     (error instanceof ServeUnreachableError && error.sent === "maybe") ||
-    (error instanceof ServeNotLeaderError && error.inFlight);
+    (error instanceof ServeNotLeaderError && error.inFlight) ||
+    // only once its re-sends are spent: the ones before it are not thrown
+    error instanceof ServeCommitMayLandError;
 
   const noteMayHaveRun = (commit: Commit, error: unknown): void => {
     mayHaveRunTxns.add(commit.txnId);
@@ -454,10 +462,9 @@ export function createServeCommitSink(
       {},
       () => carried(commit, refs),
     );
-    let reply: CommitReply;
-    try {
+    const post = async (): Promise<CommitReply> => {
       try {
-        reply = await client.postCommit(
+        return await client.postCommit(
           commit.partition,
           envelope,
           chunks,
@@ -469,12 +476,28 @@ export function createServeCommitSink(
         if (!(error instanceof ServeChunksMissingError)) throw error;
         const named = new Set(error.missing);
         chunks = await chunksOf(commit, refs.filter((hash) => named.has(hash)));
-        reply = await client.postCommit(
+        return await client.postCommit(
           commit.partition,
           envelope,
           chunks,
           signal,
         );
+      }
+    };
+    let reply: CommitReply;
+    try {
+      // serve answers a landed txnId with its seq once confirmed, never
+      // appending it twice, so a may-land is asked again before it fails
+      for (let resends = MAY_LAND_RESENDS;; resends--) {
+        try {
+          reply = await post();
+          break;
+        } catch (error) {
+          if (!(error instanceof ServeCommitMayLandError)) throw error;
+          if (resends > 0) continue;
+          mayLandTxns.add(commit.txnId);
+          throw error;
+        }
       }
     } catch (error) {
       noteCarriedFailure(commit, chunks, error);
@@ -676,7 +699,10 @@ export function createServeCommitSink(
           entry.reject(
             new CommitNotTriedError(entry.commit.partition.toString()),
           );
-        } else if (outcome.error instanceof ServeChunksMissingError) {
+        } else if (
+          outcome.error instanceof ServeChunksMissingError ||
+          outcome.error instanceof ServeCommitMayLandError
+        ) {
           // as the single route resends them: alone, once
           entry.resolve(
             await underLease(
@@ -885,6 +911,9 @@ export function createServeCommitSink(
       // and is not seen landed may still be at serve
       ...(sink.outbox.landedSeq === undefined ? {} : {
         landedSeq: async (namespace, partition, txnId) => {
+          if (mayLandTxns.has(txnId)) {
+            throw new CommitOutcomeUnknownError(partition.toString());
+          }
           const seq = await sink.outbox!.landedSeq!(
             namespace,
             partition,

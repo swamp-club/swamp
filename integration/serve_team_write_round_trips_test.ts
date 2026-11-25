@@ -1033,11 +1033,11 @@ Deno.test({
         );
         try {
           const proxied = { ...member, env: serveEnv(proxy, "alice-token") };
-          // starts commit in step order, so step N's needs N landed
+          // the parallel steps' starts land together in the first commit
           onWrite = (bytes) => {
             const step = bytes === CHUNKED_BYTES ? 2 : 1;
-            if (landedStarts < step) {
-              early.push(`step ${step} ran with ${landedStarts} starts landed`);
+            if (landedStarts < 1) {
+              early.push(`step ${step} ran before its start landed`);
             }
           };
           await runCommand(
