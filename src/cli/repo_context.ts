@@ -33,7 +33,6 @@ import {
 } from "./serve_upstream.ts";
 import { noteRetentionCandidate } from "./retention_candidate.ts";
 import { implicitServeUrl } from "./remote_run.ts";
-import { setV3WriterBusyServeAddress } from "../infrastructure/datastore_v3/v3_writer_lock.ts";
 import type { RetentionWatermarkRepository } from "../domain/retention/retention_watermark.ts";
 import { ControlPlaneRetentionWatermarkRepository } from "../infrastructure/persistence/control_plane_retention_watermark_repository.ts";
 import { withRunPhase } from "../domain/remote/run_progress.ts";
@@ -322,6 +321,7 @@ import {
   goServeOfflineAtLock,
   holdV3Writer,
   serveCatchUpRequestAt,
+  setV3WriterBusyServeAddress,
   v3BucketNamespacedStoreAt,
   type V3DatastoreConfig,
   v3DatastoreConfigOf,

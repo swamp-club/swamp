@@ -631,11 +631,11 @@ async function takeLease(
   let hold: WriterLeaseHold;
   try {
     const floor = options.fenceStore?.writerFence();
-    hold = await (await writerLease(datastorePath, options.ttlMs, options.role))
-      .acquire({
-        maxWaitMs: options.maxWaitMs,
-        ...(floor !== undefined ? { floor } : {}),
-      });
+    const { ttlMs, role } = options;
+    hold = await (await writerLease(datastorePath, ttlMs, role)).acquire({
+      maxWaitMs: options.maxWaitMs,
+      ...(floor !== undefined ? { floor } : {}),
+    });
   } catch (error) {
     if (error instanceof WriterLeaseBusyError) {
       throw new V3WriterBusyError(
