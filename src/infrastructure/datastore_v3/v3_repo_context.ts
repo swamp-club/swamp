@@ -116,7 +116,8 @@ import { isUuid } from "../../domain/models/model_lookup.ts";
 import type { DirtyNamePin } from "./v3_catalog.ts";
 import {
   holdsOwnWriterMarker,
-  readWriterMarkerFile,
+  markerPathOfRecoveryError,
+  otherLiveWriters,
   recoverInterruptedWriter,
   recoverOwnPredecessor,
   removeOwnWriterMarker,
@@ -606,6 +607,7 @@ export function v3DatastoreFor(
         ? { serveFollower: true }
         : {}),
       writerFence: () => v3WriterFence(config.path),
+      liveWriters: () => otherLiveWriters(repoDir),
       commitSection: () => {
         const writer = repoState().sectionedWriters.get(key);
         return writer === undefined
@@ -1845,7 +1847,8 @@ async function recoverAndMarkTraced(
     }
     // a stopped command: the marker stays, so the next command resumes
     if (commandStopSignal().aborted) throw error;
-    const markerPath = writerMarkerPath(repoDir);
+    const markerPath = markerPathOfRecoveryError(error) ??
+      writerMarkerPath(repoDir);
     const recoveryError = markErrorPaths(
       new UserError(
         `Recovering ${repoDir} after a swamp process ended without finishing ` +
@@ -1860,10 +1863,9 @@ async function recoverAndMarkTraced(
     recoveryError.cause = error;
     throw recoveryError;
   }
-  // a marker left stays: another host's or live process's, whose writer may yet
-  // leave uncommitted files, or this process's own from before a kept close. An
-  // unreadable one was recovered above
-  if ((await readWriterMarkerFile(repoDir)).kind === "absent") {
+  // other processes' markers stay: their writers may yet leave uncommitted
+  // files; an unreadable one was recovered above
+  if (!await holdsOwnWriterMarker(repoDir)) {
     await writeWriterMarker(repoDir);
   }
 }

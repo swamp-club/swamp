@@ -297,6 +297,8 @@ export interface CatalogTouchedScope extends CatalogDataName {
   readonly id: number;
   readonly scope: string;
   readonly unit_id: string;
+  /** the writer's token; empty for an older swamp's rows */
+  readonly instance: string;
 }
 
 /**
@@ -312,11 +314,25 @@ export const TOUCHED_TRACKING_SQL = `
     type_normalized TEXT NOT NULL DEFAULT '',
     model_id        TEXT NOT NULL DEFAULT '',
     data_name       TEXT NOT NULL DEFAULT '',
+    instance        TEXT NOT NULL DEFAULT '',
     UNIQUE (unit_id, namespace, scope)
   );
   CREATE INDEX IF NOT EXISTS idx_catalog_touched_name
     ON catalog_touched(namespace, type_normalized, model_id, data_name);
 `;
+
+/** a table an older swamp created gains the writer's token, empty in its rows */
+export function ensureTouchedInstanceColumn(db: DatabaseSync): void {
+  const columns = db.prepare("PRAGMA table_info(catalog_touched)").all() as {
+    name: string;
+  }[];
+  if (columns.length === 0 || columns.some((c) => c.name === "instance")) {
+    return;
+  }
+  db.exec(
+    "ALTER TABLE catalog_touched ADD COLUMN instance TEXT NOT NULL DEFAULT ''",
+  );
+}
 
 /** a dirty name held by a commit not known to have landed */
 export interface CatalogDirtyPin extends CatalogDataName {
@@ -1606,6 +1622,7 @@ export class CatalogStore {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       this.db.exec(TOUCHED_TRACKING_SQL);
+      ensureTouchedInstanceColumn(this.db);
       if (this.readMeta("touched_tracking_since") === undefined) {
         this.writeMeta("touched_tracking_since", String(now));
       }
@@ -1625,8 +1642,9 @@ export class CatalogStore {
 
   touchedScopes(): CatalogTouchedScope[] {
     if (!this.#hasTable("catalog_touched")) return [];
+    ensureTouchedInstanceColumn(this.db);
     return (this.db.prepare(
-      "SELECT id, unit_id, namespace, scope, type_normalized, model_id, data_name FROM catalog_touched ORDER BY id",
+      "SELECT id, unit_id, namespace, scope, type_normalized, model_id, data_name, instance FROM catalog_touched ORDER BY id",
     ).all() as unknown as CatalogTouchedScope[]).map((row) => ({ ...row }));
   }
 
@@ -1779,20 +1797,27 @@ export class CatalogStore {
     pins: readonly CatalogDirtyPin[],
     landed: readonly { readonly partition: string; readonly txn_id: string }[],
     keepUnits: readonly string[] = [],
+    instance?: string,
   ): void {
     if (!this.#hasDirtyTable()) return;
+    const touched = this.#hasTable("catalog_touched");
+    if (touched && instance !== undefined) ensureTouchedInstanceColumn(this.db);
     this.db.exec("BEGIN IMMEDIATE");
     try {
-      const touched = this.#hasTable("catalog_touched");
       if (touched) {
         const keep = new Set(keepUnits);
         const forget = this.#prepareCached(
           "DELETE FROM catalog_touched WHERE unit_id = ?",
         );
+        // another live writer's rows keep its names dirty until it ends
+        const units = instance === undefined
+          ? this.db.prepare("SELECT DISTINCT unit_id FROM catalog_touched")
+            .all()
+          : this.db.prepare(
+            "SELECT DISTINCT unit_id FROM catalog_touched WHERE instance = ?",
+          ).all(instance);
         for (
-          const { unit_id } of this.db.prepare(
-            "SELECT DISTINCT unit_id FROM catalog_touched",
-          ).all() as { unit_id: string }[]
+          const { unit_id } of units as { unit_id: string }[]
         ) {
           if (!keep.has(unit_id)) forget.run(unit_id);
         }

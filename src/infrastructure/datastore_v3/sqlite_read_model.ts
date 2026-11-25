@@ -148,6 +148,7 @@ import {
   type TouchedScope,
   V3Catalog,
 } from "./v3_catalog.ts";
+import { writerInstance } from "./writer_instance.ts";
 import { isNetworkFailure } from "./network_failure.ts";
 
 export const UNSYNCED_SYNC_BATCH = 500;
@@ -322,6 +323,12 @@ export interface SqliteReadModelOptions {
    * replays but in a recovery; the caller of holdsOwnWork forgets it then
    */
   readonly ownWorkApplied?: (commit: Commit) => void;
+  /**
+   * the tokens of the other processes writing this checkout: a replay leaves
+   * the files under their journaled scopes, which their own commits write, or
+   * their recovery restores
+   */
+  readonly liveWriters?: () => Promise<ReadonlySet<string>>;
   /** MAX_TARGETED_SHARE by default; a benchmark lifts it to compare */
   readonly targetedShare?: number;
   /** TARGETED_COMMITS_CEILING by default */
@@ -457,6 +464,27 @@ export interface RecoverOptions {
   readonly targeted?: boolean;
   /** the writer recorded where it wrote before writing, so its scopes bound the walk */
   readonly journaled?: boolean;
+  /** the token the dead writer's journaled scopes carry; every writer's when undefined */
+  readonly instance?: string;
+  /** writers still writing the checkout: their journaled scopes are kept */
+  readonly liveInstances?: readonly string[];
+}
+
+/**
+ * another writer still writes the checkout, and this recovery would have to
+ * rebuild it whole or walk it unbounded, under that writer's feet; the next
+ * command retries once it is quiet
+ */
+export class RecoveryDeferredError extends Error {
+  constructor(detail: string) {
+    super(detail);
+    this.name = "RecoveryDeferredError";
+  }
+}
+
+function othersWrite(options: RecoverOptions): boolean {
+  const own = writerInstance();
+  return (options.liveInstances ?? []).some((token) => token !== own);
 }
 
 interface NameHistory {
@@ -503,6 +531,8 @@ export class SqliteReadModel implements ReadModel {
   readonly #writerInstance: string | undefined;
   readonly #holdsOwnWork: ((commit: Commit) => boolean) | undefined;
   readonly #ownWorkApplied: ((commit: Commit) => void) | undefined;
+  readonly #liveWriters: (() => Promise<ReadonlySet<string>>) | undefined;
+  #othersWork: readonly TouchedScope[] = [];
   readonly #targetedShare: number;
   readonly #targetedCommitsCeiling: number;
   /**
@@ -614,6 +644,7 @@ export class SqliteReadModel implements ReadModel {
     this.#writerInstance = options.writerInstance;
     this.#holdsOwnWork = options.holdsOwnWork;
     this.#ownWorkApplied = options.ownWorkApplied;
+    this.#liveWriters = options.liveWriters;
     this.#forcedFolding = options.spellingFolding;
     this.#targetedShare = options.targetedShare ?? MAX_TARGETED_SHARE;
     this.#targetedCommitsCeiling = options.targetedCommitsCeiling ??
@@ -788,6 +819,13 @@ export class SqliteReadModel implements ReadModel {
               }); rebuilding the whole read model instead`;
             }
           }
+          if (othersWrite(options)) {
+            throw new RecoveryDeferredError(
+              `it needs the whole checkout rebuilt (${
+                fallback ?? "a rebuild is in progress"
+              })`,
+            );
+          }
           return await this.#recoverFull(
             namespace,
             options,
@@ -923,7 +961,16 @@ export class SqliteReadModel implements ReadModel {
       this.#forbidBase = false;
     }
     const scanStarted = performance.now();
-    const scope = new RecoveryScope();
+    const allRows = tracking.touchedScopes();
+    const live = new Set(options.liveInstances ?? []);
+    const keptScopes = allRows.filter((row) => live.has(row.instance));
+    const scope = new RecoveryScope((namespace, key) =>
+      keptScopes.some((row) =>
+        row.namespace === namespace &&
+        (scopeCovers(row.scope, key) ||
+          scopeKey(row.scope).startsWith(`${key}/`))
+      )
+    );
     const dirty = tracking.dirtyNames();
     this.#judgeNameShare(
       new Set([
@@ -936,8 +983,9 @@ export class SqliteReadModel implements ReadModel {
         }),
       ]).size,
     );
-    const touchedRows = tracking.touchedScopes().filter((row) =>
-      row.namespace === namespace
+    const touchedRows = allRows.filter((row) =>
+      row.namespace === namespace &&
+      (options.instance === undefined || row.instance === options.instance)
     );
     let boundedWalk: readonly string[] | undefined;
     const scanned = await withSpan(
@@ -951,6 +999,11 @@ export class SqliteReadModel implements ReadModel {
           dirty,
           touchedRows,
         );
+        if (bounded === undefined && othersWrite(options)) {
+          throw new RecoveryDeferredError(
+            "the interrupted writer's scopes cannot be bounded",
+          );
+        }
         const boundedAttributes = {
           "swamp.datastore.v3.readmodel.recover.bounded": bounded !== undefined,
           ...(bounded === undefined ? {} : {
@@ -1538,7 +1591,7 @@ export class SqliteReadModel implements ReadModel {
         landedPins.push({ partition: pin.partition, txnId: pin.txnId });
       }
     }
-    tracking.releaseDirty(pending, landedPins, keepUnits);
+    tracking.releaseDirty(pending, landedPins, keepUnits, writerInstance());
   }
 
   #ensureDirtyTracking(): void {
@@ -2756,12 +2809,27 @@ export class SqliteReadModel implements ReadModel {
    * barrier; on failure earlier commits are kept, and if the barrier fails too
    * the page rolls back and the apply failure is still thrown
    */
+  async #othersJournaled(): Promise<readonly TouchedScope[]> {
+    if (this.#liveWriters === undefined) return [];
+    const live = await this.#liveWriters();
+    if (live.size === 0) return [];
+    const rows = this.#catalog.dirtyTracking?.()?.touchedScopes() ?? [];
+    return rows.filter((row) => live.has(row.instance));
+  }
+
+  #othersWrite(namespace: string, key: string): boolean {
+    return this.#othersWork.some((row) =>
+      row.namespace === namespace && scopeCovers(row.scope, key)
+    );
+  }
+
   async #applyPage(
     page: readonly CommitChange[],
     advance: boolean,
     signal: AbortSignal,
   ): Promise<number> {
     if (page.length === 0) return 0;
+    this.#othersWork = this.#recovering ? [] : await this.#othersJournaled();
     this.#paths.forgetListings();
     const batch = this.#writeBatch();
     this.#state.beginBatch();
@@ -2975,7 +3043,7 @@ export class SqliteReadModel implements ReadModel {
             touched,
             touchedFolded,
             unreadable,
-            ownWork,
+            ownWork || this.#othersWrite(namespace, key),
           );
         } finally {
           this.#rewritten = undefined;

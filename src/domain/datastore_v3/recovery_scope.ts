@@ -70,6 +70,8 @@ export interface ScopedPartition {
  * commit owns that are removed
  */
 export class RecoveryScope {
+  /** true for a record key a live writer may be writing, left as it is */
+  readonly #kept: (namespace: string, key: string) => boolean;
   readonly #partitions = new Map<
     string,
     { namespace: string; partition: PartitionKey; names: Set<string> }
@@ -81,8 +83,13 @@ export class RecoveryScope {
   >();
   #unscopable: string | undefined;
 
+  constructor(kept: (namespace: string, key: string) => boolean = () => false) {
+    this.#kept = kept;
+  }
+
   /** false, and the scope unusable, for a name of no valid model partition */
   addName(name: CatalogNameKey): boolean {
+    if (this.#kept(name.namespace, dataNamePrefix(name))) return true;
     let partition: PartitionKey;
     try {
       partition = PartitionKey.forModel(name.type, name.modelId);
@@ -111,6 +118,7 @@ export class RecoveryScope {
 
   /** a file of `namespace` to check; its data name, if any, is touched */
   addKeyToCheck(namespace: string, key: string): void {
+    if (this.#kept(namespace, key)) return;
     let keys = this.#check.get(namespace);
     if (keys === undefined) this.#check.set(namespace, keys = new Set());
     keys.add(key);
@@ -119,6 +127,7 @@ export class RecoveryScope {
 
   /** a file no commit owns; its data name, if any, is touched */
   addRemoval(namespace: string, key: string, path: string): void {
+    if (this.#kept(namespace, key)) return;
     this.#remove.set(JSON.stringify([namespace, key]), {
       namespace,
       key,

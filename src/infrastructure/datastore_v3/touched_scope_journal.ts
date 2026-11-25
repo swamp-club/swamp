@@ -27,7 +27,10 @@ import {
 } from "@std/path";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
 import { dataNameOfKey } from "../../domain/datastore_v3/recovery_scope.ts";
-import { TOUCHED_TRACKING_SQL } from "../persistence/catalog_store.ts";
+import {
+  ensureTouchedInstanceColumn,
+  TOUCHED_TRACKING_SQL,
+} from "../persistence/catalog_store.ts";
 import {
   isCheckoutLocalKey,
   MATERIALISED_SUBDIRS,
@@ -111,12 +114,14 @@ export function scopeCovers(scope: string, key: string): boolean {
  */
 export class TouchedScopeJournal {
   readonly #path: string;
+  readonly #instance: string;
   #db: DatabaseSync | undefined;
   #insert: StatementSync | undefined;
   readonly #recorded = new Map<string, Set<string>>();
 
-  constructor(catalogPath: string) {
+  constructor(catalogPath: string, instance: string) {
     this.#path = catalogPath;
+    this.#instance = instance;
   }
 
   /**
@@ -137,7 +142,7 @@ export class TouchedScopeJournal {
       ? undefined
       : dataNameOfKey(scope);
     this.#insert ??= db.prepare(
-      "INSERT OR IGNORE INTO catalog_touched (unit_id, namespace, scope, type_normalized, model_id, data_name) VALUES (?, ?, ?, ?, ?, ?)",
+      "INSERT OR IGNORE INTO catalog_touched (unit_id, namespace, scope, type_normalized, model_id, data_name, instance) VALUES (?, ?, ?, ?, ?, ?, ?)",
     );
     this.#insert.run(
       unitId,
@@ -146,6 +151,7 @@ export class TouchedScopeJournal {
       name?.type ?? "",
       name?.modelId ?? "",
       name?.name ?? "",
+      this.#instance,
     );
     scopes.add(key);
     return true;
@@ -184,6 +190,7 @@ export class TouchedScopeJournal {
       db.exec("PRAGMA busy_timeout=5000");
       db.exec("PRAGMA synchronous=FULL");
       db.exec(TOUCHED_TRACKING_SQL);
+      ensureTouchedInstanceColumn(db);
     } catch (error) {
       db.close();
       throw error;

@@ -18,9 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * writer.json is written before the first file and removed at teardown; one
- * outliving its process triggers a replay and removal of files no commit owns;
- * it goes last, so a failed recovery reruns
+ * each writing process's marker, writers/<token>.json, is written before its
+ * first file and removed at teardown; one outliving its process triggers a
+ * replay and removal of the files no commit owns in that writer's scopes; it
+ * goes last, so a failed recovery reruns. writer.json is an older swamp's
  */
 
 import { dirname, join } from "@std/path";
@@ -39,9 +40,13 @@ import {
   type ProcessIdentity,
 } from "../../domain/datastore_v3/process_liveness.ts";
 import { localProcess } from "./process_identity.ts";
+import { isWriterInstanceLiveHere, writerInstance } from "./writer_instance.ts";
 import { readModelStateDir, v3CatalogPath } from "./record_path_guard.ts";
 import { prewarmForRecovery } from "./recovery_prewarm.ts";
-import { READ_MODEL_STATE_FILE } from "./sqlite_read_model.ts";
+import {
+  READ_MODEL_STATE_FILE,
+  RecoveryDeferredError,
+} from "./sqlite_read_model.ts";
 import { v3CacheRoot, type V3Datastore } from "./v3_datastore.ts";
 import {
   tryAcquireV3WriterLock,
@@ -64,6 +69,9 @@ export function setV3RecoveryProgress(
 }
 
 export const WRITER_MARKER_FILE = "writer.json";
+
+/** one marker per writing process, so several can write one checkout */
+export const WRITER_MARKERS_DIR = "writers";
 
 /**
  * Slack taken off a marker's start, so a filesystem that keeps
@@ -101,10 +109,17 @@ export interface WriterMarker {
 /** what a writer marker's journal says this binary's writers record */
 export const WRITER_JOURNAL_VERSION = 1;
 
-const PROCESS_INSTANCE = crypto.randomUUID();
-
+/** the marker an older swamp writes, one per checkout */
 export function writerMarkerPath(repoDir: string): string {
   return join(readModelStateDir(repoDir), WRITER_MARKER_FILE);
+}
+
+export function ownWriterMarkerPath(repoDir: string): string {
+  return join(
+    readModelStateDir(repoDir),
+    WRITER_MARKERS_DIR,
+    `${writerInstance()}.json`,
+  );
 }
 
 export interface WriteWriterMarkerOptions
@@ -124,13 +139,13 @@ export async function writeWriterMarker(
   const marker: WriterMarker = {
     hostname: Deno.hostname(),
     pid: local.pid,
-    instance: PROCESS_INSTANCE,
+    instance: writerInstance(),
     process: local.identity,
     since: recoverySince(Date.now()),
     journal: WRITER_JOURNAL_VERSION,
   };
   await writeFileDurably(
-    writerMarkerPath(repoDir),
+    ownWriterMarkerPath(repoDir),
     new TextEncoder().encode(JSON.stringify(marker)),
     options.signal ?? new AbortController().signal,
     options,
@@ -138,15 +153,13 @@ export async function writeWriterMarker(
 }
 
 export async function holdsOwnWriterMarker(repoDir: string): Promise<boolean> {
-  const file = await readWriterMarkerFile(repoDir);
+  const file = await readWriterMarkerFileAt(ownWriterMarkerPath(repoDir));
   return file.kind === "marker" && isOwn(file.marker);
 }
 
 export async function removeOwnWriterMarker(repoDir: string): Promise<void> {
-  const marker = await readWriterMarker(repoDir);
-  if (marker === undefined || !isOwn(marker)) return;
   try {
-    await Deno.remove(writerMarkerPath(repoDir));
+    await Deno.remove(ownWriterMarkerPath(repoDir));
   } catch (error) {
     if (!(error instanceof Deno.errors.NotFound)) throw error;
   }
@@ -162,10 +175,47 @@ export type WriterMarkerFile =
   | { readonly kind: "marker"; readonly marker: WriterMarker }
   | { readonly kind: "unreadable"; readonly since: number };
 
+export interface WriterMarkerAt {
+  readonly path: string;
+  readonly file: WriterMarkerFile & { readonly kind: "marker" | "unreadable" };
+}
+
+/** an older swamp's marker first, then each process's */
+export async function listWriterMarkerFiles(
+  repoDir: string,
+): Promise<WriterMarkerAt[]> {
+  const found: WriterMarkerAt[] = [];
+  const legacy = await readWriterMarkerFileAt(writerMarkerPath(repoDir));
+  if (legacy.kind !== "absent") {
+    found.push({ path: writerMarkerPath(repoDir), file: legacy });
+  }
+  const dir = join(readModelStateDir(repoDir), WRITER_MARKERS_DIR);
+  const names: string[] = [];
+  try {
+    for await (const entry of Deno.readDir(dir)) {
+      if (entry.isFile && entry.name.endsWith(".json")) names.push(entry.name);
+    }
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+  }
+  for (const name of names.sort()) {
+    const path = join(dir, name);
+    const file = await readWriterMarkerFileAt(path);
+    if (file.kind !== "absent") found.push({ path, file });
+  }
+  return found;
+}
+
+/** the first marker the checkout holds, an older swamp's before any process's */
 export async function readWriterMarkerFile(
   repoDir: string,
 ): Promise<WriterMarkerFile> {
-  const path = writerMarkerPath(repoDir);
+  return (await listWriterMarkerFiles(repoDir))[0]?.file ?? { kind: "absent" };
+}
+
+async function readWriterMarkerFileAt(
+  path: string,
+): Promise<WriterMarkerFile> {
   let text: string;
   let info: Deno.FileInfo;
   try {
@@ -232,6 +282,11 @@ export function writerMarkerState(
   local: LocalProcess,
 ): "own" | "live" | "interrupted" | "unknown" {
   if (isOwn(marker)) return "own";
+  if (
+    marker.instance !== undefined && isWriterInstanceLiveHere(marker.instance)
+  ) {
+    return "live";
+  }
   // Not this process's token: a marker with this pid is a predecessor's.
   const verdict = judgeRecordedProcess(
     {
@@ -259,33 +314,52 @@ export interface RecoverInterruptedWriterOptions {
 }
 
 /**
- * recovers when the marker names a gone writer, or one this process cannot
+ * recovers each marker that names a gone writer, or one this process cannot
  * judge whose lease no live process holds; an unreadable marker is unjudgeable,
- * dated by its file's modification time
+ * dated by its file's modification time. Live writers' scopes are left alone
  */
 export async function recoverInterruptedWriter(
   handle: V3Datastore,
   repoDir: string,
   options: RecoverInterruptedWriterOptions,
 ): Promise<string[] | undefined> {
-  const file = await readWriterMarkerFile(repoDir);
-  if (file.kind === "absent") return undefined;
-  const state = file.kind === "marker"
-    ? writerMarkerState(file.marker, await localProcess())
-    : "unknown";
-  if (state === "own" || state === "live") return undefined;
-  // A writer writes only while it holds the lease: one this process holds
-  // now has no other writer.
-  if (options.holdsWriterLock) {
-    return await recover(handle, repoDir, file, state, options.signal);
+  const judged = await judgeMarkers(repoDir, await localProcess());
+  const dead = judged.filter((marker) =>
+    marker.state === "interrupted" || marker.state === "unknown"
+  );
+  if (dead.length === 0) return undefined;
+  const live = liveInstancesOf(judged);
+  let removed: string[] | undefined;
+  for (const marker of dead) {
+    const recovered = await recoverMarker(
+      handle,
+      repoDir,
+      marker,
+      live,
+      options,
+    );
+    if (recovered !== undefined) removed = [...removed ?? [], ...recovered];
+  }
+  return removed;
+}
+
+async function recoverMarker(
+  handle: V3Datastore,
+  repoDir: string,
+  marker: JudgedMarker,
+  live: readonly string[],
+  options: RecoverInterruptedWriterOptions,
+): Promise<string[] | undefined> {
+  const state = marker.state as "interrupted" | "unknown";
+  // A writer holding the lease commits alone; one judged gone writes no more
+  if (options.holdsWriterLock || state === "interrupted") {
+    return await recover(handle, repoDir, marker, state, live, options.signal);
   }
   if (await lockHeldByLiveProcess(handle.datastorePath)) {
-    if (state === "unknown") {
-      logger
-        .debug`Not recovering ${repoDir} yet: ${
-        describeMarker(file)
-      }, which this process cannot judge, and the writer lease is held`;
-    }
+    logger
+      .debug`Not recovering ${repoDir} yet: ${
+      describeMarker(marker.file)
+    }, which this process cannot judge, and the writer lease is held`;
     return undefined;
   }
   let release: (() => Promise<void>) | undefined;
@@ -301,11 +375,7 @@ export async function recoverInterruptedWriter(
   }
   if (release === undefined) return undefined;
   try {
-    // Another command may have recovered while this one waited for nothing.
-    if (!sameMarkerFile(await readWriterMarkerFile(repoDir), file)) {
-      return undefined;
-    }
-    return await recover(handle, repoDir, file, state, options.signal);
+    return await recover(handle, repoDir, marker, state, live, options.signal);
   } finally {
     await release();
   }
@@ -321,13 +391,81 @@ export async function recoverOwnPredecessor(
   options: { readonly local?: LocalProcess; readonly signal?: AbortSignal } =
     {},
 ): Promise<string[] | undefined> {
-  const file = await readWriterMarkerFile(repoDir);
-  if (file.kind !== "marker") return undefined;
-  const local = options.local ?? await localProcess();
-  if (writerMarkerState(file.marker, local) !== "interrupted") {
-    return undefined;
+  const judged = await judgeMarkers(
+    repoDir,
+    options.local ?? await localProcess(),
+  );
+  const live = liveInstancesOf(judged);
+  let removed: string[] | undefined;
+  for (const marker of judged) {
+    if (marker.state !== "interrupted") continue;
+    const recovered = await recover(
+      handle,
+      repoDir,
+      marker,
+      "interrupted",
+      live,
+      options.signal,
+    );
+    if (recovered !== undefined) removed = [...removed ?? [], ...recovered];
   }
-  return await recover(handle, repoDir, file, "interrupted", options.signal);
+  return removed;
+}
+
+interface JudgedMarker extends WriterMarkerAt {
+  readonly state: "own" | "live" | "interrupted" | "unknown";
+}
+
+async function judgeMarkers(
+  repoDir: string,
+  local: LocalProcess,
+): Promise<JudgedMarker[]> {
+  return (await listWriterMarkerFiles(repoDir)).map((marker) => ({
+    ...marker,
+    state: marker.file.kind === "marker"
+      ? writerMarkerState(marker.file.marker, local)
+      : "unknown",
+  }));
+}
+
+/** the other processes writing the checkout, by their markers */
+export async function otherLiveWriters(
+  repoDir: string,
+): Promise<ReadonlySet<string>> {
+  const judged = await judgeMarkers(repoDir, await localProcess());
+  const live = new Set<string>();
+  for (const marker of judged) {
+    if (marker.state !== "live" || marker.file.kind !== "marker") continue;
+    if (marker.file.marker.instance !== undefined) {
+      live.add(marker.file.marker.instance);
+    }
+  }
+  return live;
+}
+
+/** the writers whose scopes a recovery keeps: this one, and every live one */
+function liveInstancesOf(judged: readonly JudgedMarker[]): string[] {
+  const live = new Set([writerInstance()]);
+  for (const marker of judged) {
+    if (marker.state !== "own" && marker.state !== "live") continue;
+    if (marker.file.kind !== "marker") continue;
+    if (marker.file.marker.instance !== undefined) {
+      live.add(marker.file.marker.instance);
+    }
+  }
+  return [...live];
+}
+
+/** the token a marker's journaled scopes carry; an older swamp's carry none */
+function journalInstanceOf(marker: WriterMarkerAt): string {
+  if (marker.path.endsWith(WRITER_MARKER_FILE)) return "";
+  return marker.file.kind === "marker" ? marker.file.marker.instance ?? "" : "";
+}
+
+async function readMarkerAgain(
+  marker: WriterMarkerAt,
+): Promise<WriterMarkerFile> {
+  return await readWriterMarkerFileAt(marker.path);
 }
 
 function sameMarkerFile(
@@ -353,6 +491,15 @@ function describeMarker(
   return file.kind === "marker"
     ? `its v3 writer marker names ${file.marker.hostname} (pid ${file.marker.pid})`
     : "its v3 writer marker is unreadable and names no process";
+}
+
+const recoveryMarkerPaths = new WeakMap<object, string>();
+
+/** the marker whose recovery failed, for the error that tells the user */
+export function markerPathOfRecoveryError(error: unknown): string | undefined {
+  return typeof error === "object" && error !== null
+    ? recoveryMarkerPaths.get(error)
+    : undefined;
 }
 
 export const RECOVERY_LOCK_FILE = "recovery.lock";
@@ -383,26 +530,36 @@ async function withCheckoutRecoveryLock<T>(
 async function recover(
   handle: V3Datastore,
   repoDir: string,
-  file: WriterMarkerFile & { readonly kind: "marker" | "unreadable" },
+  marker: WriterMarkerAt,
   state: "interrupted" | "unknown",
+  live: readonly string[],
   signal: AbortSignal | undefined,
 ): Promise<string[] | undefined> {
   return await withCheckoutRecoveryLock(repoDir, async () => {
     // another process may have recovered it while this one waited
-    if (!sameMarkerFile(await readWriterMarkerFile(repoDir), file)) {
+    if (!sameMarkerFile(await readMarkerAgain(marker), marker.file)) {
       return undefined;
     }
-    return await recoverLocked(handle, repoDir, file, state, signal);
+    try {
+      return await recoverLocked(handle, repoDir, marker, state, live, signal);
+    } catch (error) {
+      if (typeof error === "object" && error !== null) {
+        recoveryMarkerPaths.set(error, marker.path);
+      }
+      throw error;
+    }
   });
 }
 
 async function recoverLocked(
   handle: V3Datastore,
   repoDir: string,
-  file: WriterMarkerFile & { readonly kind: "marker" | "unreadable" },
+  marker: WriterMarkerAt,
   state: "interrupted" | "unknown",
+  live: readonly string[],
   signal: AbortSignal | undefined,
-): Promise<string[]> {
+): Promise<string[] | undefined> {
+  const file = marker.file;
   if (state === "unknown") {
     // Its process could not be judged from here (another host, pid
     // namespace or boot, or no process named): the lease alone says it no
@@ -431,7 +588,16 @@ async function recoverLocked(
       entry: "interrupted_writer",
       journaled: file.kind === "marker" &&
         file.marker.journal === WRITER_JOURNAL_VERSION,
+      instance: journalInstanceOf(marker),
+      liveInstances: live.filter((token) => token !== ""),
     });
+  } catch (error) {
+    if (!(error instanceof RecoveryDeferredError)) throw error;
+    logger
+      .info`Not recovering ${repoDir} yet: ${
+      describeMarker(file)
+    }, and another writer is still writing this checkout: ${error.message}`;
+    return undefined;
     await restoreQueuedStepStarts(handle, repoDir);
   } finally {
     // The replay may have rewritten run records before any failure.
@@ -454,7 +620,7 @@ async function recoverLocked(
     logger
       .debug`Recovered ${repoDir} after a swamp process ended without tearing down; nothing was uncommitted`;
   }
-  await Deno.remove(writerMarkerPath(repoDir));
+  await Deno.remove(marker.path);
   return removed;
 }
 
@@ -501,5 +667,5 @@ async function lockHeldByLiveProcess(datastorePath: string): Promise<boolean> {
 }
 
 function isOwn(marker: WriterMarker): boolean {
-  return marker.instance === PROCESS_INSTANCE;
+  return marker.instance === writerInstance();
 }

@@ -199,6 +199,7 @@ import {
   touchedScopeOf,
   WHOLE_CHECKOUT_SCOPE,
 } from "./touched_scope_journal.ts";
+import { writerInstance } from "./writer_instance.ts";
 import { dataNameOfKey } from "../../domain/datastore_v3/recovery_scope.ts";
 import { commandStopSignal } from "../process/shutdown_handlers.ts";
 import { recordLastChange } from "./record_last_change.ts";
@@ -380,6 +381,8 @@ export interface OpenV3DatastoreOptions {
   readonly commitSection?: () =>
     | (<T>(land: () => Promise<T>) => Promise<T>)
     | undefined;
+  /** the tokens of the other processes writing this checkout */
+  readonly liveWriters?: () => Promise<ReadonlySet<string>>;
   /**
    * throws when the writer lease was taken over or released; checked before
    * each commit is appended
@@ -686,6 +689,10 @@ export interface V3Datastore {
       readonly entry?: RecoveryEntry;
       /** the interrupted writer recorded where it wrote before writing */
       readonly journaled?: boolean;
+      /** the token its journaled scopes carry; every writer's when undefined */
+      readonly instance?: string;
+      /** writers still writing the checkout, whose scopes are kept */
+      readonly liveInstances?: readonly string[];
     },
   ): Promise<string[]>;
   droppedWork():
@@ -987,6 +994,9 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
         ownWorkApplied: (commit) => {
           units.sent.delete(commit.txnId);
         },
+        ...(options.liveWriters !== undefined
+          ? { liveWriters: options.liveWriters }
+          : {}),
       }),
   );
   // one sink for every engine on this handle, so contexts sharing it queue
@@ -1423,7 +1433,10 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
       throw error;
     }
   };
-  const journal = new TouchedScopeJournal(v3CatalogPath(repoDir));
+  const journal = new TouchedScopeJournal(
+    v3CatalogPath(repoDir),
+    writerInstance(),
+  );
   const cacheRoot = v3CacheRoot(repoDir, namespace);
   let canonicalRoot: string | undefined;
   const canonicalCacheRoot = () => canonicalRoot ??= canonicalPath(cacheRoot);
@@ -1726,6 +1739,12 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
           ? { entry: recoverOptions.entry }
           : {}),
         ...(recoverOptions?.journaled === true ? { journaled: true } : {}),
+        ...(recoverOptions?.instance !== undefined
+          ? { instance: recoverOptions.instance }
+          : {}),
+        ...(recoverOptions?.liveInstances !== undefined
+          ? { liveInstances: recoverOptions.liveInstances }
+          : {}),
         targeted: true,
       });
     },
