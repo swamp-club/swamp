@@ -710,14 +710,17 @@ with another mint's secret (swamp-club#2482):
   since hashing the current secret would bless a pairing that may already be
   wrong.
   The boot consistency sweep reports a token whose record and secret do not
-  pair as `mispaired-secret`. Session revalidation reads the vault only for a
-  token whose record names another mint than an open session: a record that
-  pairs with the vault secret is a rotation and the session closes as
-  `rotated`; one that does not pair is a stale copy (a rotation writes the
-  secret before the record), so the session stays open and a warning names the
-  token. A record with no fingerprint, or a secret that cannot be read, closes
-  the session as before. The check never compares mint times, so a rotation
-  made on a host whose clock is behind still closes old sessions.
+  pair as `mispaired-secret`, comparing only a record that names the
+  `_token-secrets` copy. Session revalidation reads the vault only for a token
+  whose record names another mint than an open session. A record that pairs
+  with the vault secret is a rotation, and the session closes as `rotated`,
+  whatever the mint times say, so a rotation made on a host whose clock is
+  behind still closes old sessions. A record that does not pair is a stale copy
+  (a rotation writes the secret before the record). A session whose mint is
+  newer than that copy stays open, with a warning naming the token, for at most
+  ten minutes (`STALE_COPY_KEEP_MS`), and then closes as `rotated`; an older
+  session closes at once. A record with no fingerprint, or a secret that cannot
+  be read, closes the session as before.
 - **Reveal through serve.** `access.token.reveal` runs the same reveal as the
   local command on serve, for a caller with `admin` on `access:*`. A follower
   forwards it to the leader, which has applied every mint and rotate, and it is

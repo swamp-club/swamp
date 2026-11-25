@@ -522,3 +522,31 @@ Deno.test("RuntimeDataPoller: stop waits for a running onPulled", async () => {
   await stopping;
   assert(finished);
 });
+
+Deno.test("RuntimeDataPoller: pulls skipped for a busy gate, and one a stop ends, run no onPulled", async () => {
+  const sync = createMockSyncService({ pullResult: 0 });
+  const gate = createSyncGate();
+  const { catalogInvalidate } = createCallbackTrackers();
+  let hookRuns = 0;
+  const poller = new RuntimeDataPoller({
+    syncService: sync,
+    syncGate: gate,
+    catalogInvalidate,
+    onPulled: () => {
+      hookRuns++;
+      return Promise.resolve();
+    },
+    pollIntervalMs: 30,
+  });
+  const release = Promise.withResolvers<void>();
+  const holding = withSyncGate(gate, () => release.promise);
+
+  poller.start();
+  // a queued waiter appears only after the skipped cycles escalate
+  await waitFor(() => gate.waiters >= 1, "the poller queued after skips");
+  await poller.stop();
+  release.resolve();
+  await holding;
+  assertEquals(sync.pullCalls.length, 0);
+  assertEquals(hookRuns, 0);
+});

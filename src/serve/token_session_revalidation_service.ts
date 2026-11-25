@@ -47,6 +47,8 @@ import {
 const logger = getSwampLogger(["serve", "token-session-revalidation"]);
 
 export const DEFAULT_TOKEN_SESSION_REVALIDATION_MS = 30_000;
+/** how long a session outlives a record that does not pair with the secret */
+export const STALE_COPY_KEEP_MS = 10 * 60_000;
 
 const REVOKED_CLOSE_CODE = 4003;
 const EXPIRED_CLOSE_CODE = 4002;
@@ -88,7 +90,11 @@ export function tokenSessionVerdict(
     };
   }
   if (token.createdAt !== sessionCreatedAt) {
-    if (recordIsStaleCopy) return { keep: true };
+    // a stale copy is older than the live mint; an unparseable time fails closed
+    if (
+      recordIsStaleCopy &&
+      Date.parse(sessionCreatedAt) > Date.parse(token.createdAt)
+    ) return { keep: true };
     return {
       keep: false,
       cause: "rotated",
@@ -149,6 +155,8 @@ export class TokenSessionRevalidationService {
   #timer: ReturnType<typeof setTimeout> | null = null;
   #pending: Promise<void> = Promise.resolve();
   #disposed = false;
+  /** session key to when it was first kept over a stale copy */
+  #staleSince = new Map<string, number>();
 
   constructor(deps: TokenSessionRevalidationDeps) {
     this.#deps = deps;
@@ -208,6 +216,7 @@ export class TokenSessionRevalidationService {
     }
 
     let closed = 0;
+    const stillStale = new Set<string>();
     for (const [name, mints] of mintsByName) {
       if (this.#disposed) break;
       const delegationId = delegationOfSessionName(name);
@@ -277,12 +286,21 @@ export class TokenSessionRevalidationService {
       const admitted = admission === undefined || admission.admitted ||
         admission.unavailable === true;
       for (const createdAt of mints) {
-        const verdict = tokenSessionVerdict(
+        let verdict = tokenSessionVerdict(
           token,
           createdAt,
           nowMs,
           staleCopy,
         );
+        if (verdict.keep && token !== null && createdAt !== token.createdAt) {
+          const key = JSON.stringify([name, createdAt]);
+          const since = this.#staleSince.get(key) ?? nowMs;
+          this.#staleSince.set(key, since);
+          stillStale.add(key);
+          if (nowMs - since >= STALE_COPY_KEEP_MS) {
+            verdict = tokenSessionVerdict(token, createdAt, nowMs);
+          }
+        }
         if (verdict.keep) {
           if (!admitted) closed += this.#closeNotAdmitted(name, [createdAt]);
           continue;
@@ -294,6 +312,9 @@ export class TokenSessionRevalidationService {
           cause: verdict.cause,
         });
       }
+    }
+    for (const key of this.#staleSince.keys()) {
+      if (!stillStale.has(key)) this.#staleSince.delete(key);
     }
     return closed;
   }

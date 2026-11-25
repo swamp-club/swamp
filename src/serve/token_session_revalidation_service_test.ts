@@ -28,6 +28,7 @@ import {
 } from "../domain/models/access/server_token_model.ts";
 import { ServerTokenNotFoundError } from "./token_auth.ts";
 import {
+  STALE_COPY_KEEP_MS,
   type TokenSessionCloseOptions,
   type TokenSessionRevalidationDeps,
   TokenSessionRevalidationService,
@@ -562,5 +563,56 @@ Deno.test("runOnce: the vault is read only when a session's mint differs from th
   const s = withSecret(h, () => Promise.resolve("s"));
   await new TokenSessionRevalidationService(s.deps).runOnce();
   assertEquals(s.reads, 0);
+  assertEquals(h.closes, []);
+});
+
+Deno.test("tokenSessionVerdict: a stale copy keeps only a session newer than it", () => {
+  const stale = token({ createdAt: MINT_2 });
+  assertEquals(tokenSessionVerdict(stale, MINT_1, NOW, true).keep, false);
+  assertEquals(tokenSessionVerdict(stale, "not-a-time", NOW, true).keep, false);
+});
+
+Deno.test("runOnce: a session kept over a stale copy closes as rotated once the keep window runs out", async () => {
+  const stale = await pairedToken("old-secret", { createdAt: MINT_1 });
+  const h = harness(
+    [{ name: "tok", createdAt: MINT_2 }],
+    () => Promise.resolve(stale),
+  );
+  let now = NOW;
+  const s = withSecret(h, () => Promise.resolve("current-secret"));
+  const service = new TokenSessionRevalidationService({
+    ...s.deps,
+    now: () => now,
+  });
+  assertEquals(await service.runOnce(), 0);
+  now += STALE_COPY_KEEP_MS - 1;
+  assertEquals(await service.runOnce(), 0);
+  now += 1;
+  await service.runOnce();
+  assertEquals(h.closes.map((c) => c.options.cause), ["rotated"]);
+});
+
+Deno.test("runOnce: the keep window starts again after the record pairs", async () => {
+  let record = await pairedToken("old-secret", { createdAt: MINT_1 });
+  let secret = "current-secret";
+  const h = harness(
+    [{ name: "tok", createdAt: MINT_2 }],
+    () => Promise.resolve(record),
+  );
+  let now = NOW;
+  const s = withSecret(h, () => Promise.resolve(secret));
+  const service = new TokenSessionRevalidationService({
+    ...s.deps,
+    now: () => now,
+  });
+  await service.runOnce();
+  now += STALE_COPY_KEEP_MS - 1;
+  // the session's own mint comes back, so nothing is kept over a stale copy
+  record = await pairedToken("current-secret", { createdAt: MINT_2 });
+  await service.runOnce();
+  record = await pairedToken("old-secret", { createdAt: MINT_1 });
+  secret = "current-secret";
+  now += 1;
+  assertEquals(await service.runOnce(), 0);
   assertEquals(h.closes, []);
 });

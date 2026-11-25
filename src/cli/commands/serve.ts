@@ -9844,10 +9844,15 @@ export const serveCommand = new Command()
             definitionName,
           ))?.id ?? null,
         deleteOrphanRecord: (definitionId) =>
-          repoContext.unifiedDataRepo.delete(
-            WORKER_MODEL_TYPE,
-            definitionId,
-            WORKER_STATE_DATA_NAME,
+          runInRootUnitOfWork(
+            repoContext,
+            { flush: undefined },
+            () =>
+              repoContext.unifiedDataRepo.delete(
+                WORKER_MODEL_TYPE,
+                definitionId,
+                WORKER_STATE_DATA_NAME,
+              ),
           ),
         isLive: (name) => workerGateway.worker(name) !== null,
         pruneBindings: (tokenName, machineIds) =>

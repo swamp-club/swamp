@@ -47,8 +47,8 @@ export interface RuntimeDataPollerOptions {
   syncGate?: SyncGate;
   catalogInvalidate: () => void;
   /**
-   * runs after each pull that did not fail, once the gate is released; a
-   * step-start pull can bring a peer's write that this pull then sees no change in
+   * runs after each pull that ran and did not fail, once the gate is released;
+   * a step-start pull can bring a peer's write that this pull then sees no change in
    */
   onPulled?: () => Promise<void>;
   pollIntervalMs?: number;
@@ -127,15 +127,20 @@ export class RuntimeDataPoller {
   async #pullAndInvalidate(): Promise<void> {
     this.#pulling = true;
     try {
+      // a busy gate or a stop skips the pull, and then there is nothing to follow up
+      let pulled = false;
       const result = await gatedPull(
         this.#syncGate,
         "runtime data poller",
-        (signal) =>
-          this.#syncService.pullChanged({
+        async (signal) => {
+          const changed = await this.#syncService.pullChanged({
             signal,
             subdirs: [...RUNTIME_DATA_SUBDIRS],
             namespace: this.#namespace,
-          }),
+          });
+          pulled = true;
+          return changed;
+        },
         {
           state: this.#gateState,
           signal: this.#stopController.signal,
@@ -148,7 +153,7 @@ export class RuntimeDataPoller {
           .info`Runtime data poller: ${count} file(s) updated, invalidating catalog`;
         this.#catalogInvalidate();
       }
-      await this.#onPulled?.();
+      if (pulled) await this.#onPulled?.();
       this.#logHeapStats();
     } catch (error) {
       logger

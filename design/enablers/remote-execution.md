@@ -912,13 +912,14 @@ status write carries the enrollment of the live connection
 (`statusWriteBase` in `worker_model.ts`): a record that is missing, or that
 names another instance, is rebuilt from the connection rather than refused,
 and a missing definition is created again first. A departure (`draining`,
-`disconnected`) is written only over the departing instance's own record, so
-a serve a worker has left never stamps the newer enrollment on another serve
-as gone. Two serves over one remote datastore number versions from their own
-caches, so a serve the worker left can publish versions that collide with the
+`disconnected`) is written only over the departing instance's own record that
+this serve owns (the record's `owner`), so a serve a worker has left never
+stamps the enrollment on another serve as gone, even when the same worker
+process moved there. Two serves over one remote datastore number versions
+from their own caches, so a serve the worker left can publish versions that collide with the
 new enrollment's and a pull then brings back the old record. After every
-runtime-data pull that does not fail (a step-start pull may already have
-brought the change), the gateway rewrites the record of each
+runtime-data pull that runs and does not fail (a step-start pull may already
+have brought the change), the gateway rewrites the record of each
 connected worker whose record says it is gone (missing, `disconnected`, or
 another instance `draining`), numbered above what the pull brought, and
 publishes it through the sync gate (`reassertConnected`). A record naming
@@ -929,10 +930,11 @@ soon as they are written, on a chain of their own so the reply never waits on
 the datastore. A publish queued while another waits is dropped, since the one
 waiting carries every write made before it starts. Shutdown waits for that
 chain before it disposes the gateway, and again after the listener closes the
-sockets of the workers still connected: an unpublished departure is otherwise lost to the next model-lock
-pull, which replaces the cache's latest markers with the remote's. If the busy write before a dispatch still fails, the gateway
-refuses the dispatch unsent with `state_unrecorded`, and the step waits for a
-worker until its queue timeout instead of failing at once.
+sockets of the workers still connected: an unpublished departure is otherwise
+lost to the next model-lock pull, which replaces the cache's latest markers
+with the remote's. If the busy write before a dispatch still fails, the
+gateway refuses the dispatch unsent with `state_unrecorded`, and the step
+waits for a worker until its queue timeout instead of failing at once.
 
 **Worker, token and bookkeeping reaping:** `WorkerGcService` runs on the serve
 side 5 minutes after serve starts and then hourly (default grace period 24 h),
@@ -948,10 +950,11 @@ independent parts, so a failure in one never skips the other:
   with the `prune_bindings` method. A worker this serve holds in its pool
   (connected, or within its reconnection grace window) is never pruned,
   whatever its record says. A worker is deleted by the definition id its
-  record names; a record whose id is not the named definition's (a peer's
-  definition for the same name) is removed on its own, leaving the named
-  definition and its token bindings alone. `swamp worker prune` is the CLI
-  equivalent. Both export the prune's stages as `worker_delete` phases (see
+  record names. A record whose id is not the named definition's is removed on
+  its own: when a peer's definition holds the name, that definition and its
+  token bindings are left alone; when no definition holds it, the record's
+  token is checked for stale bindings as a deleted worker's is.
+  `swamp worker prune` is the CLI equivalent. Both export the prune's stages as `worker_delete` phases (see
   [serve phase telemetry](./serve-phase-telemetry.md#worker-deletion)).
 - **Step leases and pending dispatches.** It deletes every ended record — a
   lease that is `completed`, `failed` or `expired`, a dispatch that is
@@ -962,9 +965,10 @@ independent parts, so a failure in one never skips the other:
 - **Enrollment tokens.** In the same reap, it deletes enrollment token records
   that were revoked or have expired longer than the grace period ago and that
   no worker record (connected or not) names. A worker record it cannot read
-  stops that reap, so an unknown reference never lets a token go; a catalog
+  stops that reap, so an unknown reference never lets a token go. A catalog
   row whose record is gone from disk (a push that removed a peer's delete
-  leaves the row) names nothing, and its row is dropped. Fire records and dashboard
+  leaves the row) names nothing, is not counted as unreadable in any part of
+  the reap, and is dropped from the catalog. Fire records and dashboard
   sessions are not bookkeeping: they keep their own fixed lifetimes.
 
 Both parts only list records in the repository's own namespace, and both commit

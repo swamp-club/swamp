@@ -282,11 +282,14 @@ async function* deleteWorkers(
     yield { kind: "deleting_worker" as const, name: worker.name };
     phase.tally.add("attempted");
     try {
-      if (await isOrphanRecord(deps, worker)) {
+      const orphan = await orphanRecord(deps, worker);
+      if (orphan !== "none") {
         await deps.deleteOrphanRecord!(worker.definitionId);
         workersDeleted++;
         phase.tally.add("orphans_deleted");
         yield { kind: "worker_deleted" as const, name: worker.name };
+        // with no definition holding the name, no other prune reaches its bindings
+        if (orphan === "unnamed") affectedTokens.add(worker.tokenName);
         continue;
       }
       let deleteCompleted = false;
@@ -323,14 +326,15 @@ async function* deleteWorkers(
   return { workersDeleted, workersFailed, affectedTokens };
 }
 
-// its bindings belong to whichever definition holds the name, so they are left alone
-async function isOrphanRecord(
+// a peer's definition holding the name owns its bindings, so they are left alone
+async function orphanRecord(
   deps: WorkerPruneDeps,
   worker: PrunableWorker,
-): Promise<boolean> {
-  if (!deps.findDefinitionId || !deps.deleteOrphanRecord) return false;
-  return await deps.findDefinitionId(worker.definitionName) !==
-    worker.definitionId;
+): Promise<"none" | "peer" | "unnamed"> {
+  if (!deps.findDefinitionId || !deps.deleteOrphanRecord) return "none";
+  const named = await deps.findDefinitionId(worker.definitionName);
+  if (named === worker.definitionId) return "none";
+  return named === null ? "unnamed" : "peer";
 }
 
 async function* cleanUpBindings(

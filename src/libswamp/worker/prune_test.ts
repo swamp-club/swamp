@@ -703,3 +703,34 @@ Deno.test("workerPrune: a record under the named definition's id deletes the def
   assertEquals(orphans, []);
   assertEquals(deletedDefinitions, ["def-worker-pool-abc"]);
 });
+
+Deno.test("workerPrune: a record whose name no definition holds is removed and its bindings reconsidered", async () => {
+  const orphans: string[] = [];
+  const staleResolved: string[] = [];
+  const deps = makeDeps(
+    [makeWorker({ definitionId: "def-gone" })],
+    [makeToken()],
+    {
+      findDefinitionId: () => Promise.resolve(null),
+      deleteOrphanRecord: (id) => {
+        orphans.push(id);
+        return Promise.resolve();
+      },
+      deleteWorker: () => {
+        throw new Error("no definition to delete");
+      },
+      resolveStaleBindings: (token) => {
+        staleResolved.push(token.name);
+        return Promise.resolve(null);
+      },
+    },
+  );
+  await collectEvents(
+    workerPrune(createLibSwampContext(), deps, {
+      gracePeriodMs: DAY_MS,
+      dryRun: false,
+    }),
+  );
+  assertEquals(orphans, ["def-gone"]);
+  assertEquals(staleResolved, ["pool"]);
+});

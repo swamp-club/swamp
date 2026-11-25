@@ -208,14 +208,22 @@ export function statusWriteBase(
       base: parseStoredWorkerState(definitionName, stored),
     };
   }
-  const current = stored === null ? null : WorkerStateSchema.parse(stored);
-  const ours = current !== null && current.instanceUuid === live.instanceUuid;
+  const parsed = stored === null ? null : WorkerStateSchema.safeParse(stored);
+  const current = parsed?.success === true ? parsed.data : null;
+  const sameInstance = current !== null &&
+    current.instanceUuid === live.instanceUuid;
   if (args.status === "disconnected" || args.status === "draining") {
-    return ours ? { kind: "write", base: current } : { kind: "skip" };
+    // a worker process that moved to another serve keeps its instance
+    const sameOwner = current?.owner === undefined ||
+      live.owner === undefined ||
+      current.owner.instanceId === live.owner.instanceId;
+    return sameInstance && sameOwner
+      ? { kind: "write", base: current }
+      : { kind: "skip" };
   }
   return {
     kind: "write",
-    base: ours ? current : enrolledWorkerState(live, now),
+    base: sameInstance ? current : enrolledWorkerState(live, now),
   };
 }
 

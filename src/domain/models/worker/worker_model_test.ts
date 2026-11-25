@@ -445,3 +445,57 @@ Deno.test("reassertDecision: rewrites only a record that says the worker is gone
     );
   }
 });
+
+Deno.test("statusWriteBase: a departure skips the same instance's record when another serve owns it", () => {
+  const thisServe = { instanceId: "serve-a", pid: 10 };
+  const otherServe = { instanceId: "serve-b", pid: 20 };
+  const live = { ...liveEnrollment, owner: thisServe };
+  const movedAway = { ...storedState("uuid-live", "idle"), owner: otherServe };
+  assertEquals(
+    statusWriteBase(
+      "worker-w",
+      movedAway,
+      { status: "disconnected" },
+      live,
+      at,
+    ),
+    { kind: "skip" },
+  );
+  const stillOurs = { ...storedState("uuid-live", "idle"), owner: thisServe };
+  assertEquals(
+    statusWriteBase("worker-w", stillOurs, { status: "disconnected" }, live, at)
+      .kind,
+    "write",
+  );
+  const unowned = storedState("uuid-live", "idle");
+  assertEquals(
+    statusWriteBase("worker-w", unowned, { status: "disconnected" }, live, at)
+      .kind,
+    "write",
+  );
+});
+
+Deno.test("statusWriteBase: a malformed stored record is rebuilt for an in-pool status and left for a departure", () => {
+  const malformed = { name: 42 };
+  const rebuilt = statusWriteBase(
+    "worker-w",
+    malformed,
+    { status: "busy" },
+    liveEnrollment,
+    at,
+  );
+  assertEquals(rebuilt.kind, "write");
+  if (rebuilt.kind === "write") {
+    assertEquals(rebuilt.base.instanceUuid, "uuid-live");
+  }
+  assertEquals(
+    statusWriteBase(
+      "worker-w",
+      malformed,
+      { status: "disconnected" },
+      liveEnrollment,
+      at,
+    ),
+    { kind: "skip" },
+  );
+});
