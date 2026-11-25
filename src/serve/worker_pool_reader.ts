@@ -35,6 +35,8 @@ import { workerGcListPredicate } from "./worker_gc_service.ts";
 
 export interface ServeWorkerPoolReaderDeps {
   liveWorkers(): readonly WorkerSnapshot[];
+  // absent reads as not pending: an unverified worker is excluded from a plan
+  verificationPending?(name: string): boolean;
   // a function reads serve's live value, so a reload reaches fan-out lanes
   queueTimeoutMs?: number | (() => number);
   readTokenRecords(): Promise<ReadonlyMap<string, EnrollmentToken>>;
@@ -84,6 +86,9 @@ export class ServeWorkerPoolReader implements WorkerPoolReader {
       arch: worker.arch,
       status: worker.status,
       connected: worker.connected,
+      ...(this.#deps.verificationPending?.(worker.name)
+        ? { verificationPending: true }
+        : {}),
     }));
     const names = new Set(live.map((worker) => worker.name));
     const records = (await this.#deps.readWorkerRecords())
@@ -126,6 +131,7 @@ export function createServeWorkerPoolReader(options: {
   gateway: {
     workers(): WorkerSnapshot[];
     readTokenRecords(): Promise<Map<string, EnrollmentToken>>;
+    verificationPending?(name: string): boolean;
   };
   query(
     predicate: string,
@@ -138,6 +144,8 @@ export function createServeWorkerPoolReader(options: {
 }): ServeWorkerPoolReader {
   return new ServeWorkerPoolReader({
     liveWorkers: () => options.gateway.workers(),
+    verificationPending: (name) =>
+      options.gateway.verificationPending?.(name) ?? false,
     queueTimeoutMs: options.queueTimeoutMs,
     readTokenRecords: () => options.gateway.readTokenRecords(),
     readWorkerRecords: async () =>

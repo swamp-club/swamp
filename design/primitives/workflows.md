@@ -3304,14 +3304,23 @@ At job start the execution service reads the pool through the registered
 member, in name order, and gets one disposition:
 
 - `dispatch`: connected and eligible. It gets a lane.
-- `waiting`: not connected, under `offline: wait`. It gets a lane, which waits
-  for the worker ("The offline policy and `minWorkers`").
-- `skipped`: not connected, under `offline: skip`. No lane, and the job does not
+- `waiting`: not ready, under `offline: wait`. It gets a lane, which waits for
+  the worker ("The offline policy and `minWorkers`").
+- `skipped`: not ready, under `offline: skip`. No lane, and the job does not
   fail for it.
-- `failed`: not connected, under `offline: fail`. No lane. The other lanes still
+- `failed`: not ready, under `offline: fail`. No lane. The other lanes still
   run, and the job fails when they finish.
-- `excluded`: unverified or draining, whatever its connection. No lane, and the
-  job does not fail for it.
+- `excluded`: draining, or unverified with a failed probe (or none coming),
+  whatever its connection. No lane, and the job does not fail for it.
+
+A member is not ready when it is not connected (reason `disconnected`), or when
+it is connected and unverified with its verify-on-enroll probe still running or
+owed (reason `unverified`), such as a worker that reconnected just before the
+plan. One whose probe is pending but whose connection has dropped reads as
+`disconnected`. The
+second case follows the offline policy too, so under `offline: fail` a job fails
+for a worker that is only mid-probe. A waiting lane on such a worker waits for
+the probe, runs once it passes, and fails `worker_ineligible` if it fails.
 
 The job succeeds only if every lane does and no member failed at plan time.
 Plan-time `failed`, `skipped` and `excluded` members never count toward the
@@ -3360,12 +3369,13 @@ worker names may both hold brackets).
 
 #### The offline policy and `minWorkers`
 
-`offline` decides what a plan does with a matching worker that is not connected
-when the job starts (the `waiting`, `skipped` and `failed` dispositions above).
-Under `offline: wait`, a waiting lane's steps queue on their worker and fail at
-the queue timeout if it never returns; the run sends a `job_fanout_waiting`
-event per waiting member with the job's `queueTimeout`, or serve's
-(`WorkerPoolReader.queueTimeoutMs`).
+`offline` decides what a plan does with a matching worker that is not ready
+when the job starts: not connected, or still being verified (the `waiting`,
+`skipped` and `failed` dispositions above). Under `offline: wait`, a waiting
+lane's steps queue on their worker and fail at the queue timeout if it never
+becomes ready; the run sends a `job_fanout_waiting` event per waiting member,
+with its reason (`disconnected` or `unverified`) and the job's `queueTimeout`,
+or serve's (`WorkerPoolReader.queueTimeoutMs`).
 
 `minWorkers` counts planned lanes, the `dispatch` and `waiting` members. With
 fewer than `minWorkers` (an empty match included, since the minimum is 1), the
@@ -3540,7 +3550,8 @@ adds a worker that enrolled since.
 every resume (selector, offline policy, `minWorkers`, `plannedLanes`, every
 member's worker name with its disposition and reason, and on a resume the lanes
 re-run and kept), a `job_fanout_waiting` per waiting member or resumed lane
-whose worker is not connected (with the job's queue timeout, or serve's through
+whose worker is not connected, or is connected and still being verified (with
+that reason and the job's queue timeout, or serve's through
 `WorkerPoolReader.queueTimeoutMs`), and `job_fanout_summary` before
 `job_completed`. A rollout also emits `job_fanout_batch_started` as each of the
 attempt's batches starts (its index, the batch count and its lanes) and

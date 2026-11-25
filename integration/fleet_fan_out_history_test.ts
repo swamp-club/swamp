@@ -218,6 +218,43 @@ Deno.test({
 
 Deno.test({
   name:
+    "fan-out history: a member still being verified at plan time shows as waiting (unverified) and its lane as succeeded once its probe passed",
+  ...SANITIZE,
+  fn: async () => {
+    await using fleet = await Fleet.start({ graceWindowMs: 60_000 });
+    const w = await workers(fleet, 2);
+    await w[1].disconnect();
+    const settleProbe = fleet.holdProbe("w-2");
+    await w[1].connect({ settle: false });
+    await fleet.saveWorkflow({
+      name: "verifying",
+      inputs: {},
+      jobs: [fanOutJob(fleet, { offline: "wait" })],
+    });
+    const events: WorkflowRunEvent[] = [];
+    const running = fleet.runWorkflow("verifying", { events });
+    await waitFor(
+      () => events.some((e) => e.kind === "job_fanout_planned"),
+      "the plan to be made",
+    );
+    settleProbe("pass");
+    const run = await running;
+    assertEquals(run.status, "succeeded");
+
+    const { fanOut, log } = await inspect(fleet, run.id);
+    assertEquals(fanOut?.members.find((m) => m.worker === "w-2"), {
+      worker: "w-2",
+      disposition: "waiting",
+      reason: "unverified",
+      batch: 0,
+      lane: "succeeded",
+    });
+    assertStringIncludes(log, "w-2: waiting (unverified), batch 1, succeeded");
+  },
+});
+
+Deno.test({
+  name:
     "fan-out history: a canary halt shows the failed canary with its error, the held lanes and the spent budget",
   ...SANITIZE,
   fn: async () => {
