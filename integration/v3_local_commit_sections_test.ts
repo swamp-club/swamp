@@ -541,3 +541,232 @@ Deno.test({
     });
   },
 });
+
+Deno.test({
+  name:
+    "v3 local commit sections: a nested swamp given its parent's lock tokens writes the parent's behavior and another while the parent holds the lock, and every write lands",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withV3RowRepos({}, async (repos, datastorePath) => {
+      await closeV3Datastores();
+      const parent = startWriter("parent");
+      const child = startWriter("child");
+      try {
+        const type = repos.modelType.normalized;
+        await opened(parent, repos.repoA, type);
+        parent.send({ kind: "hold", model: "parent-model" });
+        const held = await parent.seen(
+          (m) => "held" in m,
+          "the parent holds its behavior's lock",
+        );
+        const tokens = "held" in held ? held.env : {};
+        assert(Object.keys(tokens).length > 0, "the parent hands tokens down");
+        parent.send({
+          kind: "write",
+          id: "parent-1",
+          model: "parent-model",
+          data: "d",
+        });
+        assertEquals(await landed(parent, "parent-1"), {
+          version: 1,
+          count: 1,
+        });
+        // a nested swamp runs in its parent's checkout, as a shell step's does
+        child.send({
+          kind: "open",
+          repoDir: repos.repoA,
+          type,
+          structural: true,
+          env: { ...tokens, ...QUICK_LOCK },
+        });
+        await child.seen((m) => "opened" in m, "the child opened");
+        child.send({
+          kind: "write",
+          id: "child-parent",
+          model: "parent-model",
+          data: "d",
+        });
+        assertEquals(await landed(child, "child-parent"), {
+          version: 2,
+          count: 2,
+        });
+        child.send({
+          kind: "write",
+          id: "child-other",
+          model: "child-model",
+          data: "d",
+          lock: true,
+        });
+        assertEquals(await landed(child, "child-other"), {
+          version: 1,
+          count: 1,
+        });
+        await closed(child);
+        parent.send({
+          kind: "write",
+          id: "parent-2",
+          model: "parent-model",
+          data: "d",
+        });
+        assertEquals(
+          await landed(parent, "parent-2"),
+          { version: 3, count: 3 },
+          "the parent counts on from its child's write",
+        );
+        parent.send({ kind: "unhold", model: "parent-model" });
+        await parent.seen((m) => "unheld" in m, "the parent released");
+        await closed(parent);
+      } finally {
+        parent.stop();
+        child.stop();
+      }
+      await assertCheckoutsAgree(repos, datastorePath, "nested");
+    });
+  },
+});
+
+async function turned(
+  writer: Writer,
+  id: string,
+): Promise<{ saw: string; turns: readonly string[] }> {
+  const message = await writer.seen(
+    (m) => "turned" in m && m.turned === id,
+    `turn ${id}`,
+  );
+  return "turned" in message
+    ? { saw: message.saw, turns: message.turns }
+    : { saw: "", turns: [] };
+}
+
+Deno.test({
+  name:
+    "v3 local commit sections: checkouts that resume, suspend and cancel one run under its run lock lose no transition",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withV3RowRepos({}, async (repos, datastorePath) => {
+      await closeV3Datastores();
+      const a = startWriter("a");
+      const b = startWriter("b");
+      try {
+        const type = repos.modelType.normalized;
+        await opened(a, repos.repoA, type);
+        const run = {
+          workflowId: crypto.randomUUID(),
+          runId: crypto.randomUUID(),
+        };
+        a.send({ kind: "run", id: "seed", action: "seed", ...run });
+        await turned(a, "seed");
+        // b opens knowing the run, so only the lock's catch-up shows it a's turns
+        await opened(b, repos.repoB, type);
+        b.send({ kind: "run", id: "resume-1", action: "resume", ...run });
+        assertEquals(await turned(b, "resume-1"), {
+          saw: "suspended",
+          turns: ["seed", "resume-1"],
+        });
+        // a suspend holds the run's lock while b's resume waits on it
+        a.send({
+          kind: "run",
+          id: "suspend",
+          action: "suspend",
+          pause: true,
+          ...run,
+        });
+        await a.seen((m) => "paused" in m, "the suspend holds the run");
+        b.send({ kind: "run", id: "resume-2", action: "resume", ...run });
+        a.send({ kind: "resume", id: "suspend" });
+        assertEquals(await turned(a, "suspend"), {
+          saw: "running",
+          turns: ["seed", "resume-1", "suspend"],
+        });
+        assertEquals(await turned(b, "resume-2"), {
+          saw: "suspended",
+          turns: ["seed", "resume-1", "suspend", "resume-2"],
+        });
+        a.send({ kind: "run", id: "cancel", action: "cancel", ...run });
+        assertEquals(await turned(a, "cancel"), {
+          saw: "running",
+          turns: ["seed", "resume-1", "suspend", "resume-2", "cancel"],
+        });
+        await closed(a);
+        await closed(b);
+      } finally {
+        a.stop();
+        b.stop();
+      }
+      await assertCheckoutsAgree(repos, datastorePath, "run turns");
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "v3 local commit sections: a structural command waiting on another checkout's global lock reads what that command committed under it",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withV3RowRepos({}, async (repos, datastorePath) => {
+      await closeV3Datastores();
+      const type = repos.modelType.normalized;
+      // a structural command is its own process, so each turn starts one
+      const writers = [0, 1, 2].map((turn) =>
+        startWriter(`structural-${turn}`)
+      );
+      try {
+        const counts: number[] = [];
+        writers[0].send({
+          kind: "open",
+          repoDir: repos.repoA,
+          type,
+          structural: true,
+        });
+        await writers[0].seen((m) => "opened" in m, "turn 0 opened");
+        for (let turn = 0; turn < writers.length; turn++) {
+          const writer = writers[turn];
+          const id = `turn-${turn}`;
+          const next = writers[turn + 1];
+          writer.send({
+            kind: "write",
+            id,
+            model: "shared",
+            data: "d",
+            pause: next !== undefined,
+          });
+          if (next !== undefined) {
+            await writer.seen((m) => "paused" in m, `${id} holds the lock`);
+            if (turn === 0) {
+              // definitions live in the repo, shared through git
+              await copy(
+                join(repos.repoA, "models"),
+                join(repos.repoB, "models"),
+                { overwrite: true },
+              );
+            }
+            next.send({
+              kind: "open",
+              repoDir: turn % 2 === 0 ? repos.repoB : repos.repoA,
+              type,
+              structural: true,
+            });
+            assertEquals(
+              next.messages.some((m) => "opened" in m),
+              false,
+              `turn ${turn + 1} opened under turn ${turn}'s global lock`,
+            );
+            writer.send({ kind: "resume", id });
+          }
+          counts.push((await landed(writer, id)).count);
+          await closed(writer);
+          if (next !== undefined) {
+            await next.seen((m) => "opened" in m, `turn ${turn + 1} opened`);
+          }
+        }
+        assertEquals(counts, [1, 2, 3], "each turn counts on from the last");
+      } finally {
+        for (const writer of writers) writer.stop();
+      }
+      await assertCheckoutsAgree(repos, datastorePath, "structural turns");
+    });
+  },
+});

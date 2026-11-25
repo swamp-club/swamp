@@ -736,8 +736,8 @@ export async function cancelLocalRun(
 
 /**
  * Stops, together and each once, the owners this checkout's run tracker
- * vouches for, and returns their pids. Needs no datastore writer: on a v3
- * datastore the owner holds it for the whole run, so cancel stops it first.
+ * vouches for, and returns their pids. Needs no datastore writer, so it can
+ * stop an owner that holds one for its whole run.
  */
 export async function stopLocalRunOwners(
   runs: readonly WorkflowRun[],
@@ -760,9 +760,9 @@ export async function stopLocalRunOwners(
 }
 
 /**
- * Whether cancel must stop a run's owner before it takes the datastore's
- * writer: on v3 the owner holds the writer for the whole run, in a team
- * member's checkout of serve's datastore as on one bound directly.
+ * Whether cancel stops a run's owner before it takes the writer: on v3 an owner
+ * may hold it for its whole run (bucket, team checkout, older swamp). The settle
+ * never relies on that: it reads each run under its claim, which catches it up.
  */
 export function ownerHoldsWriterOf(
   resolution: Pick<DatastoreResolutionResult, "engine">,
@@ -1304,7 +1304,7 @@ async function cancelOnServe(
 
 type CancelContext = ReturnType<typeof createContext>;
 
-/** What a cancel did before it took the writer, on a datastore whose owner holds it. */
+/** What a cancel did before it took the writer, on a datastore whose owner may hold it. */
 export type PreStop =
   | {
     kind: "all";
@@ -1351,7 +1351,7 @@ function refuseLocalCancel(run: WorkflowRun): void {
 
 /**
  * Finds the runs to cancel through a read-only open and stops their owners,
- * so the writer the owners held is free for the settle that follows.
+ * so a writer an owner held for its whole run is free for the settle.
  */
 export async function stopOwnersBeforeWriter(
   cliCtx: CancelContext,

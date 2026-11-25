@@ -2609,3 +2609,49 @@ Deno.test("SqliteCommitStore.partitionHeadCursor: names its last commit, or says
     );
   });
 });
+
+Deno.test("SqliteCommitStore.runPartitionsOf: finds a run's partition by its id alone, per namespace", async () => {
+  await withStore(async (store) => {
+    const workflowId = "0b6c4bb4-9d61-4f0c-9a43-6f0c1f7b2a82";
+    const runId = "0b6c4bb4-9d61-4f0c-9a43-6f0c1f7b2a83";
+    const otherRunId = "0b6c4bb4-9d61-4f0c-9a43-6f0c1f7b2a84";
+    const run = partitionOf({ kind: "run", workflowId, runId });
+    const otherRun = partitionOf({
+      kind: "run",
+      workflowId,
+      runId: otherRunId,
+    });
+    const commits: ReadonlyArray<readonly [PartitionKey, string]> = [
+      [run, ""],
+      [otherRun, "acme"],
+    ];
+    for (const [partition, namespace] of commits) {
+      const identity = partition.identity;
+      if (identity.kind !== "run") throw new Error("not a run partition");
+      const start = await putOp({
+        intent: createIntent({
+          kind: "run-start.save",
+          run: { workflowId: identity.workflowId, runId: identity.runId },
+        }),
+        key: RecordKey.create(
+          `workflow-runs/${identity.workflowId}/starts/${identity.runId}/a`,
+        ),
+        inline: btoa("a"),
+      });
+      await store.append(
+        modelCommit(1, [start], { partition, namespace, fence: 1 }),
+      );
+    }
+    await store.append(await save(1));
+    assertEquals(
+      store.runPartitionsOf("", runId.toUpperCase()).map(String),
+      [run.toString()],
+    );
+    assertEquals(store.runPartitionsOf("acme", runId), []);
+    assertEquals(store.runPartitionsOf("", otherRunId), []);
+    assertEquals(
+      store.runPartitionsOf("acme", otherRunId).map(String),
+      [otherRun.toString()],
+    );
+  });
+});

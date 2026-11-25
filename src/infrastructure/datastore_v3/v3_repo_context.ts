@@ -1058,15 +1058,38 @@ export async function catchUpV3AfterBehaviorLock(
   // a lock named for a behavior, not its id, guards no partition
   if (!isUuid(modelId)) return;
   const partition = PartitionKey.forModel(modelType, modelId);
+  await catchUpSectionedPartitions(datastorePath, () => [partition]);
+}
+
+/**
+ * as for a behavior's lock, but for the run's record: only its partition, since
+ * the process holding the claim may have other work in flight
+ */
+export async function catchUpV3AfterRunLock(
+  datastorePath: string,
+  runId: string,
+): Promise<void> {
+  await catchUpSectionedPartitions(
+    datastorePath,
+    (handle) => handle.commitStore.runPartitionsOf(handle.namespace, runId),
+  );
+}
+
+async function catchUpSectionedPartitions(
+  datastorePath: string,
+  partitionsOf: (handle: V3Datastore) => readonly PartitionKey[],
+): Promise<void> {
   for (const [key, writer] of repoState().sectionedWriters) {
     if (resolve(writer.config.path) !== resolve(datastorePath)) continue;
     const handle = repoState().opened.get(key);
     if (handle === undefined) continue;
-    await handle.readModel.catchUpPartition(
-      handle.namespace,
-      partition,
-      new AbortController().signal,
-    );
+    for (const partition of partitionsOf(handle)) {
+      await handle.readModel.catchUpPartition(
+        handle.namespace,
+        partition,
+        new AbortController().signal,
+      );
+    }
   }
 }
 

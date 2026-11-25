@@ -20,9 +20,23 @@
 import { Data } from "../src/domain/data/data.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
+import type { DatastoreConfig } from "../src/domain/datastore/datastore_config.ts";
+import { processLockHolderMarker } from "../src/domain/datastore/lock_holder_marker.ts";
 import {
+  createWorkflowId,
+  createWorkflowRunId,
+} from "../src/domain/workflows/workflow_id.ts";
+import { WorkflowRun } from "../src/domain/workflows/workflow_run.ts";
+import {
+  acquireModelLocks,
   createModelLock,
+  createWorkflowRunLock,
+  type ModelLockResult,
+  type RepoValidationContext,
+  requireInitializedRepo,
   requireInitializedRepoUnlocked,
+  resolveDatastoreForRepo,
+  runUnderModelLocks,
 } from "../src/cli/repo_context.ts";
 import {
   catchUpV3HandlesAt,
@@ -30,14 +44,26 @@ import {
 } from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
 import { endWriterInstanceForTesting } from "../src/infrastructure/datastore_v3/writer_instance.ts";
 import { isCustomDatastoreConfig } from "../src/domain/datastore/datastore_config.ts";
+import { flushDatastoreSync } from "../src/infrastructure/persistence/datastore_sync_coordinator.ts";
+import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpers.ts";
 import {
   checkpointOpenUnitOfWork,
   runInRootUnitOfWork,
 } from "../src/infrastructure/persistence/repo_unit_of_work.ts";
 import type { ProcessHost } from "./process_host.ts";
 
+export type RunAction = "seed" | "resume" | "suspend" | "cancel";
+
 export type LocalWriterRequest =
-  | { readonly kind: "open"; readonly repoDir: string; readonly type: string }
+  | {
+    readonly kind: "open";
+    readonly repoDir: string;
+    readonly type: string;
+    /** under the datastore's global lock, as a structural command opens */
+    readonly structural?: boolean;
+    /** this process's own env, as a parent hands its child */
+    readonly env?: Record<string, string>;
+  }
   | {
     readonly kind: "write";
     readonly id: string;
@@ -59,6 +85,18 @@ export type LocalWriterRequest =
     readonly modelId: string;
     readonly data: string;
   }
+  /** the behavior's lock, held as a run holds it while its steps run */
+  | { readonly kind: "hold"; readonly model: string }
+  | { readonly kind: "unhold"; readonly model: string }
+  /** one transition of a run record under the run's lock */
+  | {
+    readonly kind: "run";
+    readonly id: string;
+    readonly workflowId: string;
+    readonly runId: string;
+    readonly action: RunAction;
+    readonly pause?: boolean;
+  }
   | { readonly kind: "resume"; readonly id: string }
   /** catches every handle of the checkout up, as a reader's command does */
   | { readonly kind: "catchUp" }
@@ -77,6 +115,15 @@ export type LocalWriterMessage =
     readonly modelId: string;
   }
   | { readonly read: string; readonly content: string | null }
+  | { readonly held: string; readonly env: Record<string, string> }
+  | { readonly unheld: string }
+  | {
+    readonly turned: string;
+    /** the status the turn read under the lock */
+    readonly saw: string;
+    /** every turn the record names, this one last */
+    readonly turns: readonly string[];
+  }
   | { readonly closed: true }
   | { readonly caughtUp: true }
   | { readonly failed: string; readonly id?: string };
@@ -86,10 +133,23 @@ export const localWriterHost: ProcessHost<
   LocalWriterRequest,
   LocalWriterMessage
 > = (post) => {
-  let context: Awaited<ReturnType<typeof requireInitializedRepoUnlocked>>;
+  let context: RepoValidationContext;
+  let datastoreConfig: DatastoreConfig;
   let type: ModelType;
+  let env: Record<string, string> | undefined;
   const resumes = new Map<string, () => void>();
   const definitions = new Map<string, Promise<Definition>>();
+  const held = new Map<string, ModelLockResult>();
+
+  function within<T>(fn: () => Promise<T>): Promise<T> {
+    return env === undefined ? fn() : withMockedEnv(env, fn);
+  }
+
+  async function paused(id: string): Promise<void> {
+    const resumed = new Promise<void>((resolve) => resumes.set(id, resolve));
+    post({ paused: id });
+    await resumed;
+  }
 
   // one lookup per name, shared, so concurrent writes never create it twice
   function definitionOf(name: string): Promise<Definition> {
@@ -114,6 +174,22 @@ export const localWriterHost: ProcessHost<
       () => context.repoContext.definitionRepo.save(type, created),
     );
     return created;
+  }
+
+  async function open(
+    request: Extract<LocalWriterRequest, { kind: "open" }>,
+  ): Promise<void> {
+    type = ModelType.create(request.type);
+    const options = { repoDir: request.repoDir, outputMode: "json" as const };
+    if (request.structural === true) {
+      context = await requireInitializedRepo(options);
+      datastoreConfig =
+        (await resolveDatastoreForRepo(request.repoDir)).datastoreConfig;
+      return;
+    }
+    const opened = await requireInitializedRepoUnlocked(options);
+    context = opened;
+    datastoreConfig = opened.datastoreConfig;
   }
 
   async function write(
@@ -169,13 +245,7 @@ export const localWriterHost: ProcessHost<
             await checkpointOpenUnitOfWork(context.repoContext);
             await saveOnce();
           }
-          if (request.pause === true) {
-            const resumed = new Promise<void>((resolve) =>
-              resumes.set(request.id, resolve)
-            );
-            post({ paused: request.id });
-            await resumed;
-          }
+          if (request.pause === true) await paused(request.id);
         },
       );
     };
@@ -185,7 +255,7 @@ export const localWriterHost: ProcessHost<
     }
     const model = await definitionOf(request.model);
     const lock = await createModelLock(
-      context.datastoreConfig,
+      datastoreConfig,
       type.normalized,
       model.id,
     );
@@ -209,31 +279,116 @@ export const localWriterHost: ProcessHost<
     return content === null ? null : new TextDecoder().decode(content);
   }
 
+  async function hold(name: string): Promise<Record<string, string>> {
+    const model = await definitionOf(name);
+    const locks = await acquireModelLocks(datastoreConfig, [
+      { modelType: type.normalized, modelId: model.id },
+    ], context.repoDir);
+    held.set(name, locks);
+    return await runUnderModelLocks(
+      locks,
+      () => Promise.resolve(processLockHolderMarker.childLockEnv()),
+    );
+  }
+
+  async function turn(
+    request: Extract<LocalWriterRequest, { kind: "run" }>,
+  ): Promise<{ saw: string; turns: string[] }> {
+    const workflowId = createWorkflowId(request.workflowId);
+    const lock = await createWorkflowRunLock(datastoreConfig, request.runId);
+    return await lock.withLock(async () => {
+      let saw = "none";
+      let turns: string[] = [];
+      await runInRootUnitOfWork(
+        context.repoContext,
+        { flush: undefined },
+        async () => {
+          const repo = context.repoContext.workflowRunRepo;
+          const run = request.action === "seed"
+            ? WorkflowRun.fromData({
+              id: request.runId,
+              workflowId: request.workflowId,
+              workflowName: "turns",
+              status: "suspended",
+              startedAt: new Date().toISOString(),
+              jobs: [],
+              tags: {},
+            })
+            : await repo.findById(
+              workflowId,
+              createWorkflowRunId(request.runId),
+            );
+          if (run === null) throw new Error(`run ${request.runId} not found`);
+          if (request.action !== "seed") saw = run.status;
+          turns = [...(run.inputs.turns as string[] | undefined ?? [])];
+          switch (request.action) {
+            case "resume":
+              run.resumeFromSuspended({ pid: Deno.pid });
+              break;
+            case "suspend":
+              run.suspend();
+              break;
+            case "cancel":
+              run.endAsCancelled("cancelled by a turn");
+              break;
+          }
+          turns.push(request.id);
+          run.captureInputs({ turns });
+          await repo.save(workflowId, run);
+          if (request.pause === true) await paused(request.id);
+        },
+      );
+      return { saw, turns };
+    });
+  }
+
+  async function close(): Promise<void> {
+    for (const locks of held.values()) await locks.flush();
+    held.clear();
+    await closeV3Datastores();
+    await flushDatastoreSync();
+  }
+
   return (request) => {
     switch (request.kind) {
       case "open":
-        type = ModelType.create(request.type);
-        requireInitializedRepoUnlocked({
-          repoDir: request.repoDir,
-          outputMode: "json",
-        }).then(
-          (opened) => {
-            context = opened;
-            post({ opened: true });
-          },
+        env = request.env;
+        within(() => open(request)).then(
+          () => post({ opened: true }),
           (error) => post({ failed: String(error) }),
         );
         return;
       case "write":
-        write(request).then(
+        within(() => write(request)).then(
           ({ version, count, modelId }) =>
             post({ written: request.id, version, count, modelId }),
           (error) => post({ failed: String(error), id: request.id }),
         );
         return;
       case "read":
-        read(request).then(
+        within(() => read(request)).then(
           (content) => post({ read: request.id, content }),
+          (error) => post({ failed: String(error), id: request.id }),
+        );
+        return;
+      case "hold":
+        within(() => hold(request.model)).then(
+          (childEnv) => post({ held: request.model, env: childEnv }),
+          (error) => post({ failed: String(error), id: request.model }),
+        );
+        return;
+      case "unhold":
+        within(async () => {
+          await held.get(request.model)?.flush();
+          held.delete(request.model);
+        }).then(
+          () => post({ unheld: request.model }),
+          (error) => post({ failed: String(error), id: request.model }),
+        );
+        return;
+      case "run":
+        within(() => turn(request)).then(
+          ({ saw, turns }) => post({ turned: request.id, saw, turns }),
           (error) => post({ failed: String(error), id: request.id }),
         );
         return;
@@ -242,7 +397,7 @@ export const localWriterHost: ProcessHost<
         resumes.delete(request.id);
         return;
       case "catchUp": {
-        const config = context.datastoreConfig;
+        const config = datastoreConfig;
         if (isCustomDatastoreConfig(config)) {
           post({
             failed: "a local writer host runs on a filesystem datastore",
@@ -260,7 +415,7 @@ export const localWriterHost: ProcessHost<
         resumes.clear();
         return;
       case "close":
-        closeV3Datastores().then(
+        within(close).then(
           () => post({ closed: true }),
           (error) => post({ failed: String(error) }),
         );

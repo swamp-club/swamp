@@ -2827,7 +2827,7 @@ Deno.test("openCancelWriter: answers a busy v3 writer with the cancel's own erro
   );
 });
 
-Deno.test("ownerHoldsWriterOf: on v3 the owner holds the writer, bound directly or as a team member's checkout of serve's datastore", () => {
+Deno.test("ownerHoldsWriterOf: on v3 the owner may hold the writer, bound directly or as a team member's checkout of serve's datastore", () => {
   assertEquals(ownerHoldsWriterOf({ engine: "v3" }), true);
   assertEquals(ownerHoldsWriterOf({ engine: "v2" }), false);
 });

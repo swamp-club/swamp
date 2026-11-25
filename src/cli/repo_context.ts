@@ -315,6 +315,7 @@ import {
   catchUpDeferredAt,
   catchUpDeferredTo,
   catchUpV3AfterBehaviorLock,
+  catchUpV3AfterRunLock,
   catchUpV3HandlesAt,
   endDeferralsAt,
   goServeOfflineAt,
@@ -1448,6 +1449,7 @@ export function requireInitializedRepo(
           maxWaitMs: resolveLockTimeoutMs(options.lockWaitMs),
         },
       );
+      // a v3 checkout catches up as the repository opens below, under this lock
       await registerDatastoreSync({
         lock,
         namespace: lockConfig.namespace,
@@ -2026,13 +2028,25 @@ export async function createModelLock(
       (config.format !== 3 || mayKeepDataLocal(config)),
   });
   if (config.format !== 3) return lock;
-  // a v3 writer holds the lease only to commit, so others commit between its
-  // sections: under the behavior's lock it must first see what they committed
+  return catchingUpOnAcquire(
+    lock,
+    () => catchUpV3AfterBehaviorLock(config.path, modelType, modelId),
+  );
+}
+
+/**
+ * a v3 writer holds the lease only to commit, so others commit between its
+ * sections: under the lock it must first see what they committed
+ */
+function catchingUpOnAcquire(
+  lock: FileLock,
+  catchUp: () => Promise<void>,
+): FileLock {
   const acquire = lock.acquire.bind(lock);
   lock.acquire = async (signal?: AbortSignal) => {
     await acquire(signal);
     try {
-      await catchUpV3AfterBehaviorLock(config.path, modelType, modelId);
+      await catchUp();
     } catch (error) {
       await lock.release().catch(() => {});
       throw error;
@@ -2080,12 +2094,17 @@ export async function createWorkflowRunLock(
     const provider = await resolveCustomProvider(config);
     return provider.createLock(config.datastorePath, { lockKey, maxWaitMs });
   }
-  return new FileLock(config.path, {
+  const lock = new FileLock(config.path, {
     lockKey,
     maxWaitMs,
     retryIntervalMs: MODEL_LOCK_RETRY_INTERVAL_MS,
     maxBackoffMs: MODEL_LOCK_MAX_BACKOFF_MS,
   });
+  if (config.format !== 3) return lock;
+  return catchingUpOnAcquire(
+    lock,
+    () => catchUpV3AfterRunLock(config.path, runId),
+  );
 }
 
 export function createWorkflowRunClaims(

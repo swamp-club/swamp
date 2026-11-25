@@ -2924,6 +2924,17 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
     return Promise.resolve(keys);
   }
 
+  /** a run's partition names its workflow too, which a lock on the run lacks */
+  runPartitionsOf(namespace: string, runId: string): readonly PartitionKey[] {
+    this.#assertOpen();
+    const rows = this.#db.prepare(
+      "SELECT partition FROM partition_heads WHERE namespace = ? " +
+        "AND partition >= 'run--' AND partition < 'run-.' " +
+        "AND substr(partition, -36) = ?",
+    ).all(namespace, runId.toLowerCase()) as { partition: string }[];
+    return rows.map((row) => PartitionKey.parse(row.partition));
+  }
+
   baseRecordKeysNaming(
     namespace: string,
     partition: PartitionKey,
