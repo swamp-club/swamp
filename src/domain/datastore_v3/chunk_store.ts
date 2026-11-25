@@ -201,7 +201,6 @@ export function storageNamespaceOf(namespace: Namespace): string {
     : namespace;
 }
 
-// prefetch keeps what it fetches; ChunkStore asks only a storage that does
 export interface PrefetchReport {
   requested: number;
   fetched: number;
@@ -209,6 +208,7 @@ export interface PrefetchReport {
   failed: number;
 }
 
+// prefetch keeps what it fetches; ChunkStore asks only a storage that does
 export interface PrefetchingStorage {
   prefetch(
     namespace: string,

@@ -323,7 +323,6 @@ export interface StagedFile extends LoadKey {
   readonly present: boolean;
 }
 
-/** the base point and boot a base load's done files hold for */
 export interface LoadResume {
   readonly point: number;
   readonly boot: string;
@@ -1061,7 +1060,6 @@ export class ReadModelState {
     ).all(resume.point, resume.boot) as unknown as LoadKey[];
   }
 
-  /** files an earlier attempt of this load already wrote, which a retry leaves be */
   loadDoneCount(resume: LoadResume): number {
     this.#requireOpen();
     return (this.#db.prepare(
@@ -1072,7 +1070,7 @@ export class ReadModelState {
     ).get(resume.point, resume.boot) as { n: number }).n;
   }
 
-  /** records files this load has written, after they are in place */
+  /** only after the files are in place */
   markLoadDone(
     files: readonly { namespace: string; record_key: string }[],
     resume: LoadResume,
@@ -1240,8 +1238,8 @@ export class ReadModelState {
         // what an earlier attempt wrote is as unsynced as what this one wrote
         const resumed = this.#db.prepare(
           "INSERT OR IGNORE INTO unsynced_keys (namespace, record_key) " +
-            "SELECT namespace, record_key FROM load_done WHERE boot = ?",
-        ).run(unsynced.boot).changes;
+            "SELECT namespace, record_key FROM load_done WHERE boot = ? AND point = ?",
+        ).run(unsynced.boot, point).changes;
         for (const { namespace, record_key } of unsynced.keys) {
           this.#insertUnsynced.run(namespace, record_key);
         }

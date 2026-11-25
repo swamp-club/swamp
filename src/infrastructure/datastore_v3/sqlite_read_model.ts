@@ -187,7 +187,7 @@ function pageParts(
 }
 
 export const DEFAULT_READ_MODEL_PAGE_SIZE = 500;
-/** files a base load writes between records of what it has written */
+/** files written between flushes of the done list */
 const LOAD_DONE_FLUSH = 256;
 
 export { CATALOG_V3_FILE };
@@ -3929,8 +3929,9 @@ export class SqliteReadModel implements ReadModel {
       this.#state.markLoadDone(done, resume);
       done.length = 0;
     };
+    let result;
     try {
-      return await this.#loadFilesInto(
+      result = await this.#loadFilesInto(
         removals,
         writes,
         batch,
@@ -3942,10 +3943,15 @@ export class SqliteReadModel implements ReadModel {
           recordDone(false);
         },
       );
-    } finally {
-      // a load cut off keeps what it wrote for the retry
-      recordDone(true);
+    } catch (error) {
+      // a load cut off keeps what it wrote for the retry; its own error wins
+      try {
+        recordDone(true);
+      } catch { /* the load's error is the one to report */ }
+      throw error;
     }
+    recordDone(true);
+    return result;
   }
 
   async #loadFilesInto(

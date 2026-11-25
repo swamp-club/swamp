@@ -4537,9 +4537,7 @@ function selectRefsSql(count: number): string {
 }
 
 export interface BaseIndexSlice {
-  /** compacted partitions counted per slice */
   readonly partitions: number;
-  /** base files counted per slice */
   readonly files: number;
 }
 
@@ -5454,7 +5452,6 @@ class SqliteCompactedBase implements CompactedBaseWriter {
     );
   }
 
-  /** row counts and contested partitions for the partitions from first to last */
   indexPartitionCounts(
     namespace: string,
     first: string,
@@ -5490,7 +5487,6 @@ class SqliteCompactedBase implements CompactedBaseWriter {
     return { counts, contested };
   }
 
-  /** file counts by owner over one page of the namespace's files, in key order */
   indexFileOwners(
     namespace: string,
     after: string | undefined,
@@ -5888,7 +5884,6 @@ export class ObservedBaseStaging {
     }
   }
 
-  /** each partition's compacted seq, as staged so far */
   heads(): { namespace: string; partition: string; seq: number }[] {
     return [...this.#partitions].map(([partition, { seq }]) => ({
       namespace: this.#namespace,

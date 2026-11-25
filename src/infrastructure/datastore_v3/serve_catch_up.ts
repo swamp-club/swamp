@@ -42,7 +42,9 @@ import {
   type ServeDivergedCommit,
   type ServeDivergence,
   type ServeLostCommit,
+  ServeRateLimitedError,
   ServeReplyTooLargeError,
+  ServeUnreachableError,
   ServeUpstreamDivergedError,
   ServeUpstreamError,
   ServeUpstreamUpgradeRequiredError,
@@ -527,16 +529,22 @@ export class ServeCatchUp {
       );
       const staging = resumed?.staging ??
         ObservedBaseStaging.create(resumable, this.#namespace);
-      // kept when the load is cut off, so the next command pages on from it
-      let keep = true;
+      // kept only when the load was cut off by something that passes, so the
+      // next command pages on from it; a refusal that would repeat starts over
+      let keep = false;
       try {
-        const loaded = await this.#stageBase(
-          staging,
-          compacted,
-          resumed?.progress,
-          signal,
-        );
-        keep = false;
+        let loaded;
+        try {
+          loaded = await this.#stageBase(
+            staging,
+            compacted,
+            resumed?.progress,
+            signal,
+          );
+        } catch (error) {
+          keep = signal.aborted || isTransientBaseLoadError(error);
+          throw error;
+        }
         if (loaded !== undefined) {
           await this.#commitStore.installObservedBase(staging, loaded.point);
           this.#state.recordBaseLoaded(loaded.point, loaded.heads);
@@ -1409,6 +1417,12 @@ export class ServeCatchUp {
     const result = await this.#commitStore.append(commit);
     return result.kind === "appended";
   }
+}
+
+function isTransientBaseLoadError(error: unknown): boolean {
+  if (error instanceof ServeUnreachableError) return true;
+  if (error instanceof ServeRateLimitedError) return true;
+  return error instanceof ServeUpstreamError && error.status >= 500;
 }
 
 function removeStagingFiles(copyDir: string, keep: string): void {

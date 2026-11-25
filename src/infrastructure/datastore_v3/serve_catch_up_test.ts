@@ -971,9 +971,9 @@ Deno.test("ServeCatchUp.catchUp: a base load cut off part-way resumes from its l
     serve.basePageSize = 1;
     let cut = true;
     serve.beforeBasePage = (page) => {
-      if (cut && page === 2) throw new Error("command timed out");
+      if (cut && page === 2) throw timedOut();
     };
-    await assertRejects(() => catchUp.catchUp(signal()));
+    await assertRejects(() => catchUp.catchUp(signal()), ServeUnreachableError);
     assertEquals(
       stagingFiles(dir).length > 0,
       true,
@@ -999,6 +999,49 @@ Deno.test("ServeCatchUp.catchUp: a base load cut off part-way resumes from its l
   });
 });
 
+function timedOut(): ServeUnreachableError {
+  return new ServeUnreachableError(
+    "http://serve.invalid",
+    "never",
+    new Error("request timed out"),
+  );
+}
+
+Deno.test("ServeCatchUp.catchUp: a resumed load that serve refuses is dropped, so the next catch-up starts over instead of failing the same way (swamp-club#5083)", async () => {
+  await withCheckout(async ({ dir, store, state, serve, catchUp }) => {
+    for (let seq = 1; seq <= 3; seq++) serve.land(await other(seq));
+    await compactServe(serve, 3);
+    serve.basePageSize = 1;
+    let mode: "cut" | "refuse" | "serve" = "cut";
+    serve.beforeBasePage = (page) => {
+      if (mode === "cut" && page === 2) throw timedOut();
+      if (mode === "refuse") {
+        throw new ServeUpstreamError(
+          400,
+          "invalid_request",
+          "after must be the next token of a base page",
+        );
+      }
+    };
+    await assertRejects(() => catchUp.catchUp(signal()), ServeUnreachableError);
+    assertEquals(stagingFiles(dir).length > 0, true, "a timeout keeps it");
+
+    mode = "refuse";
+    const refused = await assertRejects(
+      () => catchUp.catchUp(signal()),
+      ServeUpstreamError,
+    );
+    assertEquals(refused.status, 400);
+    assertEquals(stagingFiles(dir), [], "a refusal drops it");
+
+    mode = "serve";
+    await catchUp.catchUp(signal());
+    assertEquals((await store.head("", MODEL)).seq, 3);
+    assertEquals(state.feedCursor(), 3);
+    assertEquals(stagingFiles(dir), []);
+  });
+});
+
 Deno.test("ServeCatchUp.catchUp: a cut-off load whose point serve has since moved past starts over (swamp-club#5083)", async () => {
   await withCheckout(async ({ dir, store, state, serve, catchUp }) => {
     for (let seq = 1; seq <= 4; seq++) serve.land(await other(seq));
@@ -1006,9 +1049,9 @@ Deno.test("ServeCatchUp.catchUp: a cut-off load whose point serve has since move
     serve.basePageSize = 1;
     let cut = true;
     serve.beforeBasePage = (page) => {
-      if (cut && page === 2) throw new Error("command timed out");
+      if (cut && page === 2) throw timedOut();
     };
-    await assertRejects(() => catchUp.catchUp(signal()));
+    await assertRejects(() => catchUp.catchUp(signal()), ServeUnreachableError);
     cut = false;
     await compactServe(serve, 4);
     await catchUp.catchUp(signal());
