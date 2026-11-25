@@ -25,6 +25,11 @@ import {
   type WhoamiOrganization,
 } from "./swamp_club_client.ts";
 import { UserError } from "../../domain/errors.ts";
+import {
+  configure,
+  type LogRecord,
+  reset as resetLogging,
+} from "@logtape/logtape";
 
 function startMockServer(
   handler: (req: Request) => Response | Promise<Response>,
@@ -2034,4 +2039,214 @@ Deno.test("SwampClubClient - verifyIdentity still asks once, so the auth gate st
   } finally {
     await mock.shutdown();
   }
+});
+
+const inboxFixture = JSON.parse(
+  await Deno.readTextFile(
+    new URL("./inbox_responses.fixture.json", import.meta.url),
+  ),
+);
+
+interface IdempotentRead {
+  name: string;
+  path: string;
+  body: unknown;
+  call: (client: SwampClubClient, signal?: AbortSignal) => Promise<unknown>;
+}
+
+// every idempotent swamp-club read that retries; a read left on single-attempt fetch fails these
+const IDEMPOTENT_READS: IdempotentRead[] = [
+  {
+    name: "fetchIssue",
+    path: "/api/v1/lab/issues/7",
+    body: { issue: { number: 7 }, comments: [] },
+    call: (client) => client.fetchIssue("key", 7),
+  },
+  {
+    name: "searchIssues",
+    path: "/api/v1/lab/issues",
+    body: { issues: [], total: 0 },
+    call: (client) => client.searchIssues("key", { q: "x" }),
+  },
+  {
+    name: "fetchGenesisPass",
+    path: "/api/u/someone/genesis",
+    body: {},
+    call: (client, signal) => client.fetchGenesisPass("someone", signal),
+  },
+  {
+    name: "fetchGhostGenesisPass",
+    path: "/api/quest/genesis/ghost",
+    body: {},
+    call: (client, signal) => client.fetchGhostGenesisPass(signal),
+  },
+  {
+    name: "listCollectiveTokens",
+    path: "/api/v1/collectives/acme/api-tokens",
+    body: { tokens: [] },
+    call: (client, signal) =>
+      client.listCollectiveTokens("key", "acme", signal),
+  },
+  {
+    name: "listInboxMessages",
+    path: "/api/inbox/messages",
+    body: inboxFixture.messagesPage,
+    call: (client, signal) => client.listInboxMessages("key", {}, signal),
+  },
+  {
+    name: "getInboxMessage",
+    path: `/api/inbox/messages/${inboxFixture.message.id}`,
+    body: inboxFixture.message,
+    call: (client, signal) =>
+      client.getInboxMessage("key", inboxFixture.message.id, signal),
+  },
+];
+
+// the last step repeats once the script runs out
+function readScript(read: IdempotentRead, script: (number | "timeout")[]) {
+  const calls: URL[] = [];
+  const fetch = (url: string | URL, _init?: RequestInit) => {
+    calls.push(new URL(String(url)));
+    const next = script[Math.min(calls.length - 1, script.length - 1)];
+    if (next === "timeout") {
+      return Promise.reject(
+        new DOMException("The operation timed out.", "TimeoutError"),
+      );
+    }
+    return Promise.resolve(
+      next === 200
+        ? Response.json(read.body)
+        : Response.json({ error: "busy" }, { status: next }),
+    );
+  };
+  return { calls, fetch };
+}
+
+for (const read of IDEMPOTENT_READS) {
+  Deno.test(`SwampClubClient - ${read.name} retries a 503 and returns the answer`, async () => {
+    const { calls, fetch } = readScript(read, [503, 200]);
+    const client = new SwampClubClient("http://club.test", {}, {
+      sleep: noSleep,
+      fetch,
+    });
+    await read.call(client);
+    assertEquals(calls.length, 2);
+    assertEquals(calls[1].pathname, read.path);
+  });
+
+  Deno.test(`SwampClubClient - ${read.name} retries an attempt that timed out`, async () => {
+    const { calls, fetch } = readScript(read, ["timeout", 200]);
+    const client = new SwampClubClient("http://club.test", {}, {
+      sleep: noSleep,
+      fetch,
+    });
+    await read.call(client);
+    assertEquals(calls.length, 2);
+  });
+
+  for (const status of [401, 403, 404]) {
+    Deno.test(`SwampClubClient - ${read.name} does not retry an HTTP ${status}`, async () => {
+      const { calls, fetch } = readScript(read, [status, 200]);
+      const client = new SwampClubClient("http://club.test", {}, {
+        sleep: noSleep,
+        fetch,
+      });
+      await assertRejects(() => read.call(client), UserError);
+      assertEquals(calls.length, 1);
+    });
+  }
+
+  Deno.test(`SwampClubClient - ${read.name} stops retrying when the caller aborts`, async () => {
+    const controller = new AbortController();
+    const { calls, fetch } = readScript(read, [503]);
+    const client = new SwampClubClient("http://club.test", {}, {
+      sleep: () => {
+        controller.abort(new DOMException("stop", "AbortError"));
+        return Promise.reject(controller.signal.reason);
+      },
+      fetch,
+    });
+    // fetchIssue and searchIssues take no signal; an aborted wait still ends them
+    await assertRejects(() => read.call(client, controller.signal));
+    assertEquals(calls.length, 1);
+  });
+}
+
+Deno.test("SwampClubClient - fetchIssue that stays unavailable keeps its message and names the attempts", async () => {
+  const read = IDEMPOTENT_READS[0];
+  const { calls, fetch } = readScript(read, [504]);
+  const client = new SwampClubClient("http://club.test", {}, {
+    sleep: noSleep,
+    fetch,
+  });
+  const error = await assertRejects(
+    () => read.call(client),
+    UserError,
+    "Failed to fetch issue #7 (HTTP 504) after 6 attempts over ",
+  );
+  assertEquals(calls.length, 6);
+  assertStringIncludes(error.message, ': {"error":"busy"}');
+});
+
+Deno.test("SwampClubClient - getInboxMessage that stays unavailable keeps its message and names the attempts", async () => {
+  const read = IDEMPOTENT_READS[6];
+  const { fetch } = readScript(read, [503]);
+  const client = new SwampClubClient("http://club.test", {}, {
+    sleep: noSleep,
+    fetch,
+  });
+  const error = await assertRejects(
+    () => read.call(client),
+    UserError,
+    `Failed to fetch message ${inboxFixture.message.id} (HTTP 503) after 6 attempts over `,
+  );
+  assertStringIncludes(error.message, ": busy");
+});
+
+Deno.test("SwampClubClient - searchIssues' retry warning leaves out the query string", async () => {
+  const records: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => records.push(record) },
+    loggers: [
+      {
+        category: ["swamp", "http", "retry"],
+        lowestLevel: "warning",
+        sinks: ["capture"],
+      },
+      { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+    ],
+    reset: true,
+  });
+  try {
+    const { fetch } = readScript(IDEMPOTENT_READS[1], [503, 200]);
+    const client = new SwampClubClient("http://club.test", {}, {
+      sleep: noSleep,
+      fetch,
+    });
+    await client.searchIssues("key", { q: "secret-term" });
+  } finally {
+    await resetLogging();
+  }
+  assertEquals(records.length, 1);
+  const line = records[0].message.join("");
+  assertStringIncludes(line, "GET http://club.test/api/v1/lab/issues ");
+  assertEquals(line.includes("secret-term"), false);
+});
+
+Deno.test("SwampClubClient - a write is not retried on a 503", async () => {
+  let calls = 0;
+  const client = new SwampClubClient("http://club.test", {}, {
+    sleep: noSleep,
+    fetch: () => {
+      calls++;
+      return Promise.resolve(
+        Response.json({ error: "busy" }, { status: 503 }),
+      );
+    },
+  });
+  await assertRejects(
+    () => client.markInboxRead("key", [inboxFixture.message.id]),
+    UserError,
+  );
+  assertEquals(calls, 1);
 });

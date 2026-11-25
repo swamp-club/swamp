@@ -326,11 +326,9 @@ Deno.test("listInboxMessages: another failure lifts the error field and never ec
   const err = await assertRejects(
     () => lifted.client.listInboxMessages(KEY),
     UserError,
+    "Failed to list your inbox (HTTP 503) after 6 attempts over ",
   );
-  assertEquals(
-    err.message,
-    "Failed to list your inbox (HTTP 503): maintenance",
-  );
+  assert(err.message.endsWith(": maintenance"), err.message);
 
   const proxy = stubClient(() =>
     new Response("<html><body>Bad gateway</body></html>", { status: 502 })
@@ -339,7 +337,12 @@ Deno.test("listInboxMessages: another failure lifts the error field and never ec
     () => proxy.client.listInboxMessages(KEY),
     UserError,
   );
-  assertEquals(proxyErr.message, "Failed to list your inbox (HTTP 502).");
+  assertStringIncludes(
+    proxyErr.message,
+    "Failed to list your inbox (HTTP 502) after 6 attempts over ",
+  );
+  assert(proxyErr.message.endsWith("."), proxyErr.message);
+  assertEquals(proxyErr.message.includes("Bad gateway"), false);
 });
 
 Deno.test("listInboxMessages: a 401 or 404 with a body that never arrives still gives its plain message", async () => {
