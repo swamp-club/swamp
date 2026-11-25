@@ -4545,6 +4545,89 @@ Deno.test("executeWorkflow: non-internal model without placement throws in remot
   }
 });
 
+Deno.test("executeWorkflow: in remote-only mode a step whose placement an empty value cleared is refused, naming the field", async () => {
+  const service = new DefaultMethodExecutionService();
+  let executed = false;
+
+  setRemoteOnlyMode(true);
+  try {
+    const model: ModelDefinition = {
+      type: ModelType.create("test/user-model"),
+      version: "1",
+      methods: {
+        run: {
+          description: "User method",
+          arguments: z.object({}),
+          execute: () => {
+            executed = true;
+            return Promise.resolve({});
+          },
+        },
+      },
+    };
+    const definition = Definition.create({
+      name: "test-user-model",
+      globalArguments: {},
+    });
+    const { context } = createTestContext({
+      modelType: model.type,
+      clearedPlacement: ["target", "labels.host"],
+    });
+
+    const error = await assertRejects(
+      () => service.executeWorkflow(definition, model, "run", context),
+      UserError,
+    );
+    assertStringIncludes(
+      error.message,
+      "target, labels.host are empty or resolved to empty, which clears placement",
+    );
+    assertStringIncludes(error.message, "remote-only mode");
+    assertEquals(executed, false);
+  } finally {
+    setRemoteOnlyMode(false);
+  }
+});
+
+Deno.test("executeWorkflow: in remote-only mode one cleared field is named in the singular", async () => {
+  const service = new DefaultMethodExecutionService();
+  setRemoteOnlyMode(true);
+  try {
+    const model: ModelDefinition = {
+      type: ModelType.create("test/user-model"),
+      version: "1",
+      methods: {
+        run: {
+          description: "User method",
+          arguments: z.object({}),
+          execute: () => Promise.resolve({}),
+        },
+      },
+    };
+    const { context } = createTestContext({
+      modelType: model.type,
+      clearedPlacement: ["target"],
+    });
+
+    const error = await assertRejects(
+      () =>
+        service.executeWorkflow(
+          Definition.create({ name: "test-user-model", globalArguments: {} }),
+          model,
+          "run",
+          context,
+        ),
+      UserError,
+    );
+    assertStringIncludes(
+      error.message,
+      "Method 'run' on behavior 'test/user-model' has no placement because target is empty or resolved to empty",
+    );
+  } finally {
+    setRemoteOnlyMode(false);
+  }
+});
+
 /**
  * LogTape loggers are tagged-template callables, so each level is returned as a
  * function that reassembles the template

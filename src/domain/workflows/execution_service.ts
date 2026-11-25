@@ -22,6 +22,8 @@ import type { Job } from "./job.ts";
 import { Step } from "./step.ts";
 import { escapeControlCharacters } from "../control_characters.ts";
 import {
+  clearEmptyPlacement,
+  clearPlacementFields,
   inheritedAffinityKey,
   type InheritedPlacement,
   InheritedPlacementSchema,
@@ -409,7 +411,11 @@ import {
   type FailedExpressions,
 } from "../expressions/unresolved_expression_guard.ts";
 import { errorPaths, UserError } from "../errors.ts";
-import { FAN_OUT_NEEDS_SERVE, refuseFanOutRun } from "./fan_out_job.ts";
+import {
+  emptyFanOutSelectorMessage,
+  FAN_OUT_NEEDS_SERVE,
+  refuseFanOutRun,
+} from "./fan_out_job.ts";
 import {
   isForeignExpression,
   storedTextRefusal,
@@ -1775,7 +1781,8 @@ export class DefaultStepExecutor implements StepExecutor {
       mergePlacementFields(ctx.workflowPlacement, ctx.jobPlacement),
       ctx.step?.placementFields,
     );
-    let resolvedPlacement = resolvePlacement(effectiveFields);
+    let { placement: resolvedPlacement, cleared: clearedPlacement } =
+      clearPlacementFields(effectiveFields);
     let placementMap = ctx.placementProvenance ?? ProvenanceMap.authored();
 
     // one bag per step, so remote dispatch ships only this step's secrets,
@@ -1874,6 +1881,9 @@ export class DefaultStepExecutor implements StepExecutor {
           secretBag: stepSecretBag,
           location: ctx.stepName,
         }));
+      const resolvedClear = clearEmptyPlacement(resolvedPlacement);
+      resolvedPlacement = resolvedClear.placement;
+      clearedPlacement = [...clearedPlacement, ...resolvedClear.cleared];
     }
 
     if (resolvedPlacement && ctx.affinityKey) {
@@ -2679,6 +2689,7 @@ export class DefaultStepExecutor implements StepExecutor {
             secretLoader: expressionEvaluator.secretLoader(ctx.secretRedactor),
             argumentProvenance: runtimeResult.provenance,
             resolvedPlacement,
+            clearedPlacement,
           });
         const result = heldLockIds === undefined
           ? await invoke()
@@ -2845,6 +2856,7 @@ export class DefaultStepExecutor implements StepExecutor {
       queueTimeoutMs?: number;
       affinityKey?: string;
     };
+    clearedPlacement: readonly string[];
   }): Promise<MethodResult> {
     const {
       task,
@@ -2863,9 +2875,24 @@ export class DefaultStepExecutor implements StepExecutor {
       secretLoader,
       argumentProvenance,
       resolvedPlacement,
+      clearedPlacement,
     } = args;
 
     runLogger.debug("Executing method {method}", { method: task.methodName });
+    if (clearedPlacement.length > 0 && !ctx.lane) {
+      const fields = clearedPlacement.join(", ");
+      if (resolvedPlacement) {
+        runLogger.info(
+          "Placement {fields} is empty, which clears it: the step is placed by the fields that remain",
+          { fields },
+        );
+      } else {
+        runLogger.warn(
+          "Placement {fields} is empty, which clears it: the step has no placement",
+          { fields },
+        );
+      }
+    }
 
     // tags are filtered by exact string, so a sensitive value in one becomes
     // its placeholder before any writer sees it; source (not type) keeps the
@@ -2989,6 +3016,7 @@ export class DefaultStepExecutor implements StepExecutor {
           ),
           vaultSecrets: secretBag,
           placement: resolvedPlacement,
+          clearedPlacement,
           declaredWrites: ctx.declaredWrites,
           inFlightDataWrites: ctx.inFlightDataWrites,
           skipCheckNames: ctx.skipCheckNames,
@@ -6028,16 +6056,32 @@ export class WorkflowExecutionService {
       workflow.placementFields,
       job.placementFields,
     );
-    const selector = { labels: fields?.labels, platform: fields?.platform };
-    const pool = await reader.readPool();
-    const poolByName = new Map(pool.map((worker) => [worker.name, worker]));
+    const { placement: inEffect, cleared } = clearPlacementFields({
+      ...fields,
+      target: undefined,
+    });
     // a resume never re-plans: the stored plan names the lanes and members
     const stored = jobRun.fanOutPlan;
-    const plan = stored === undefined
+    // the schema refuses both, on the evaluated workflow too: an empty selector
+    // would match every worker, and dropping an empty value would widen it
+    if (
+      stored === undefined && inEffect === undefined && cleared.length === 0
+    ) {
+      throw new UserError(
+        `Fan-out job '${job.name}' has no labels or platform in effect.`,
+      );
+    }
+    const emptyValues = stored === undefined && cleared.length > 0
+      ? emptyFanOutSelectorMessage(job.name, cleared)
+      : undefined;
+    const selector = { labels: inEffect?.labels, platform: inEffect?.platform };
+    const pool = await reader.readPool();
+    const poolByName = new Map(pool.map((worker) => [worker.name, worker]));
+    const plan = stored === undefined && emptyValues === undefined
       ? planFanOut(selector, policy, pool)
       : undefined;
 
-    let refusal: string | undefined;
+    let refusal: string | undefined = emptyValues;
     let laneSteps: ReadonlyMap<string, { worker: string; authored: string }> =
       new Map();
     let lanes: string[] = stored?.batches.flat() ?? [];
@@ -8119,13 +8163,15 @@ export class WorkflowExecutionService {
         location: stepName,
       },
     );
+    const cleared = clearEmptyPlacement(resolved).placement;
+    if (cleared === undefined) return undefined;
     // the child's run record must stay readable, so a value that resolved to
     // anything but a string fails the call step here
     const parsed = InheritedPlacementSchema.safeParse({
       fields: {
-        target: resolved.target,
-        labels: resolved.labels,
-        platform: resolved.platform,
+        target: cleared.target,
+        labels: cleared.labels,
+        platform: cleared.platform,
         queueTimeout: fields?.queueTimeout,
       },
       affinityKey: inheritedAffinityKey(

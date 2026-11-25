@@ -71,7 +71,33 @@ placement run locally; steps with placement dispatch to a matching worker.
 
 Inheritance: workflow-level placement applies to all steps as a default,
 job-level overrides workflow, step-level overrides job. An explicit empty value
-(e.g., `labels: {}`) clears inherited placement for that field.
+(e.g., `labels: {}`) clears inherited placement for that field. A `target` or
+`platform` that is, or resolves to, the empty string clears that field the same
+way, and a label whose value is empty is dropped from the selector, which widens
+the match to the remaining labels. A step left with no target, platform or label
+runs locally, so one workflow can default to local and take a worker name as an
+input:
+
+```yaml
+inputs:
+  properties:
+    worker: { type: string, default: "" }
+jobs:
+  - name: main
+    target: ${{ inputs.worker }} # empty: runs locally; a name: runs there
+```
+
+**Security:** anyone who can run the workflow can pass an empty value. On a
+serve that allows local execution, an unconstrained worker input therefore lets
+them run the step on the orchestrator, with its filesystem, vaults and shell. To
+prevent it, constrain the input (for example to an `enum` of worker names) or
+run serve in [remote-only mode](#remote-only-mode), where a cleared step is
+refused.
+
+`workflow validate` warns when a placement field is exactly an input a caller
+could set to the empty string, unless the input sets `default: ''`, an `enum`, a
+`const`, `minLength: 1` or a `pattern` that refuses it. A run that clears a
+field logs which one, at warning level when the step is left with no placement.
 
 Nested workflows inherit too: a child's steps run where the step that calls it
 would run, with its affinity pin. On the calling step, `target`, `labels` or
@@ -310,22 +336,23 @@ enough to cover the reboot: a lane waits for its own worker by name.
 
 `swamp workflow validate` reports these (`<job>` / `<step>` stand for names):
 
-| Message (start)                                                                               | Fix                                                                                  |
-| --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| `Fan-out job '<job>' sets target, which names one worker.`                                    | Remove `target`; select with `labels` / `platform`                                   |
-| `The workflow sets target, which fan-out job '<job>' would inherit`                           | Move `target` off the workflow onto the jobs that need it                            |
-| `Fan-out job '<job>' has no labels or platform in effect.`                                    | Add `labels` or `platform` to the job or workflow (`labels: {}` counts as none)      |
-| `Fan-out job '<job>' sets affinity: true`                                                     | Remove `affinity` from the job                                                       |
-| `The workflow sets affinity: true, which would pin fan-out job '<job>' to one worker.`        | Set `affinity: false` on the fan-out job, or drop workflow affinity                  |
-| `Step '<step>' in fan-out job '<job>' sets labels, but each lane runs on one worker.`         | Remove step `target` / `labels` / `platform`; place the job (`queueTimeout` is fine) |
-| `... uses forEach, which fan-out jobs do not support yet.`                                    | Move the loop into a job without `fanOut`                                            |
-| `... runs the named definition '<name>', which every lane would share.`                       | Use `behaviorType` + `behaviorName`                                                  |
-| `... is a manual_approval step` / `a wait_for_signal` / `a nested workflow`                   | Move it to another job; ask for approval with `rollout.approve`                      |
-| `... has the name of the job's plan approval gate.`                                           | Rename the step                                                                      |
-| `approve: canary needs a batch after the canary; add batches, for example [1, 100%]`          | Add a batch after the canary                                                         |
-| `approveTimeout needs approve: plan, canary, or both`                                         | Add `approve` or drop `approveTimeout`                                               |
-| `The last batch must be "100%" (the rest of the lanes)` / `Only the last batch may be "100%"` | End `batches` with `"100%"`, and only there                                          |
-| `Expected a whole percentage from 1% to 100%` (0% for `maxFailures`)                          | Use a count or a whole percentage string such as `"25%"`                             |
+| Message (start)                                                                               | Fix                                                                                                             |
+| --------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `Fan-out job '<job>' sets target, which names one worker.`                                    | Remove `target`; select with `labels` / `platform`                                                              |
+| `The workflow sets target, which fan-out job '<job>' would inherit`                           | Move `target` off the workflow onto the jobs that need it                                                       |
+| `Fan-out job '<job>' has no labels or platform in effect.`                                    | Add `labels` or `platform` to the job or workflow (`labels: {}` counts as none)                                 |
+| `Fan-out job '<job>' has <field> set to the empty string. …`                                  | Give the label or platform a value, or remove it: an empty value is refused for fan-out rather than widening it |
+| `Fan-out job '<job>' sets affinity: true`                                                     | Remove `affinity` from the job                                                                                  |
+| `The workflow sets affinity: true, which would pin fan-out job '<job>' to one worker.`        | Set `affinity: false` on the fan-out job, or drop workflow affinity                                             |
+| `Step '<step>' in fan-out job '<job>' sets labels, but each lane runs on one worker.`         | Remove step `target` / `labels` / `platform`; place the job (`queueTimeout` is fine)                            |
+| `... uses forEach, which fan-out jobs do not support yet.`                                    | Move the loop into a job without `fanOut`                                                                       |
+| `... runs the named definition '<name>', which every lane would share.`                       | Use `behaviorType` + `behaviorName`                                                                             |
+| `... is a manual_approval step` / `a wait_for_signal` / `a nested workflow`                   | Move it to another job; ask for approval with `rollout.approve`                                                 |
+| `... has the name of the job's plan approval gate.`                                           | Rename the step                                                                                                 |
+| `approve: canary needs a batch after the canary; add batches, for example [1, 100%]`          | Add a batch after the canary                                                                                    |
+| `approveTimeout needs approve: plan, canary, or both`                                         | Add `approve` or drop `approveTimeout`                                                                          |
+| `The last batch must be "100%" (the rest of the lanes)` / `Only the last batch may be "100%"` | End `batches` with `"100%"`, and only there                                                                     |
+| `Expected a whole percentage from 1% to 100%` (0% for `maxFailures`)                          | Use a count or a whole percentage string such as `"25%"`                                                        |
 
 At run time:
 
@@ -408,7 +435,9 @@ By default, steps without placement run locally on the orchestrator. Enable
 **remote-only mode** to forbid local execution entirely — every user step must
 declare placement and be dispatched to a worker. Steps that lack a `target`,
 `labels`, or `platform` block fail immediately instead of falling back to
-in-process execution.
+in-process execution. This includes a step whose placement an empty value
+cleared, so remote-only mode is how a serve keeps callers from steering a
+workflow onto the orchestrator with an empty worker input.
 
 Enable via any of:
 
@@ -421,10 +450,13 @@ Enable via any of:
 When an unplaced step runs in remote-only mode, swamp raises a `UserError`:
 
 ```
-Step 'train' on model '@acme/ml-pipeline' has no placement but the server is
+Method 'train' on model '@acme/ml-pipeline' has no placement but the server is
 running in remote-only mode. Add a placement block (target, labels, or platform)
 to the workflow step, job, or workflow so it can be dispatched to a remote worker.
 ```
+
+If the step has no placement because a field resolved to the empty string, the
+message names that field and asks for a non-empty value instead.
 
 The fix is a workflow-level or job-level placement default so all steps inherit
 it:

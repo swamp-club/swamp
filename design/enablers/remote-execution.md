@@ -1808,7 +1808,21 @@ A step declares its requirements in workflow YAML with four placement fields
 for all steps, job-level overrides workflow, step-level overrides job, and an
 omitted field inherits from the parent. An explicit `labels: {}` clears the
 inherited labels; the step then runs locally only if no `target` or `platform`
-remains in effect (`src/serve/dispatch_service.ts`).
+remains in effect (`src/serve/dispatch_service.ts`). A `target`, `platform` or
+label value that is, or resolves to, the empty string clears that field too
+(`clearEmptyPlacement` in `src/domain/workflows/placement.ts`), checked both
+before and after the step's expressions resolve, so an empty input default
+means local rather than a selector no worker can match. On a remote-only serve
+such a step is refused at once, and the refusal names the field that was
+empty. `workflow validate` warns when a placement field is exactly a string
+input a caller could set to the empty string: one without `default: ''`, an
+`enum`, a `const`, `minLength: 1` or a `pattern` that refuses it. A non-empty
+default does not count, since it only fills an omitted input. This turns what
+used to be a step queued until `queueTimeout` into a step that runs on the
+orchestrator, so on a serve that allows local execution anyone who may run such
+a workflow can steer an unconstrained worker input onto the orchestrator;
+remote-only mode is the serve-wide guard. The run logs each cleared field, at
+warning level when the step is left with no placement.
 
 Inheritance crosses into nested workflows: a child workflow's steps start from
 the placement and affinity key of the step that called it, unless that step

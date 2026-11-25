@@ -3277,6 +3277,10 @@ path and `workflow validate` report them:
 - `fanOut` with a job-level `target` (a target names one worker).
 - No `labels` or `platform` in effect. An explicit `labels: {}` with no platform
   counts as none. To reach every worker, give them a label and select it.
+- A label or `platform` that is, or resolves to, the empty string. A single
+  step drops such a value, but a fan-out would then reach every worker the rest
+  of the selector matches, so it is refused instead; the evaluated workflow is
+  checked at run start, before anything is planned.
 - A step that sets `target`, `labels` or `platform` (a lane runs on one worker).
   A step's `queueTimeout` is allowed.
 - `affinity: true` on the job. Lanes already stay on their workers. Workflow
@@ -3740,11 +3744,15 @@ the same way. The run output names the step it came from.
   is refused on any other step, and `own` is refused beside `target`, `labels`
   or `platform` on the same step.
 - A child that sets `target`, `labels` or `platform` at any level (workflow,
-  job or step, `labels: {}` included) is placed only by its own fields for
-  that step, and drops the inherited pin. Merging field by field would let an
-  inherited `target` outrank the labels the child chose. `labels: {}` is how a
-  child keeps itself on the orchestrator under a placed caller. A child's job
-  with `affinity: false` also drops the inherited pin.
+  job or step, `labels: {}` or an empty-string `target` or `platform`
+  included) is placed only by its own fields for that step, and drops the
+  inherited pin. Merging field by field would let an inherited `target`
+  outrank the labels the child chose. `labels: {}` is how a child keeps itself
+  on the orchestrator under a placed caller. A child's job with
+  `affinity: false` also drops the inherited pin.
+- A calling step whose `target`, `platform` and labels all resolve to the empty
+  string hands down no placement: the child is placed as an unplaced caller's
+  would be.
 - The inherited pin belongs to the caller: the child never releases it, and
   it ends with the caller's job or run. A child resumed after the pin is gone
   binds a new group, as any unbound affinity group does.

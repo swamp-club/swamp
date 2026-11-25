@@ -69,6 +69,7 @@ export interface MethodInvocationContext {
   reportNames?: MethodContext["reportNames"];
   reportLabels?: MethodContext["reportLabels"];
   placement?: MethodContext["placement"];
+  clearedPlacement?: MethodContext["clearedPlacement"];
   declaredWrites?: MethodContext["declaredWrites"];
   inFlightDataWrites?: MethodContext["inFlightDataWrites"];
   vaultSecrets?: MethodContext["vaultSecrets"];
@@ -123,6 +124,7 @@ export function buildMethodContext(
     reportNames: invocation.reportNames,
     reportLabels: invocation.reportLabels,
     placement: invocation.placement,
+    clearedPlacement: invocation.clearedPlacement,
     declaredWrites: invocation.declaredWrites,
     inFlightDataWrites: invocation.inFlightDataWrites,
     vaultSecrets: invocation.vaultSecrets,

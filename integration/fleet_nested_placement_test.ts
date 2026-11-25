@@ -587,3 +587,72 @@ Deno.test({
     assertEquals(fleet.dispatchCounts(), { "w-a": 0 });
   },
 });
+
+Deno.test({
+  name:
+    "nested placement: a caller whose target resolves to empty hands no placement to its child, which runs locally",
+  ...SANITIZE,
+  fn: async () => {
+    await using fleet = await Fleet.start();
+    await fleet.addWorker("w-a");
+    await fleet.saveDefinition("deploy");
+    const child = await saveChild(fleet);
+    await fleet.saveWorkflow({
+      name: "parent",
+      inputs: { properties: { worker: { type: "string", default: "" } } },
+      target: "${{ inputs.worker }}",
+      queueTimeout: 2,
+      jobs: [{
+        name: "install",
+        affinity: true,
+        steps: [{ name: "sudo", task: CALL_CHILD }],
+      }],
+    });
+
+    const parentRun = await fleet.runWorkflow("parent");
+
+    assertEquals(parentRun.status, "succeeded");
+    const [childRun] = await fleet.repoContext.workflowRunRepo
+      .findAllByWorkflowId(child.id);
+    assertEquals(childRun.inheritedPlacement, undefined);
+    assertEquals(stepsOn(fleet, "w-a"), []);
+  },
+});
+
+Deno.test({
+  name:
+    "nested placement: a forEach caller whose target is empty for one item hands that child no placement",
+  ...SANITIZE,
+  fn: async () => {
+    await using fleet = await Fleet.start();
+    await fleet.addWorker("w-a");
+    await fleet.saveDefinition("deploy");
+    const child = await saveChild(fleet);
+    await fleet.saveWorkflow({
+      name: "parent",
+      inputs: {},
+      queueTimeout: 2,
+      jobs: [{
+        name: "install",
+        steps: [{
+          name: "sudo-${{ self.worker }}",
+          forEach: { item: "worker", in: '${{ ["w-a", ""] }}' },
+          target: "${{ self.worker }}",
+          task: CALL_CHILD,
+        }],
+      }],
+    });
+
+    const parentRun = await fleet.runWorkflow("parent");
+
+    assertEquals(parentRun.status, "succeeded");
+    const childRuns = await fleet.repoContext.workflowRunRepo
+      .findAllByWorkflowId(child.id);
+    assertEquals(
+      childRuns.map((run) => run.inheritedPlacement?.fields.target ?? null)
+        .sort(),
+      ["w-a", null].sort(),
+    );
+    assertEquals(stepsOn(fleet, "w-a"), ["child/setcap"]);
+  },
+});

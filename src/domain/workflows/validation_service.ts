@@ -186,10 +186,35 @@ function placementOrigins(
     const level = levels.find(([, fields]) => fields?.[field] !== undefined);
     if (level === undefined) continue;
     const value = level[1]?.[field];
-    if (typeof value === "object" && Object.keys(value).length === 0) continue;
+    if (value === "") continue;
+    if (
+      typeof value === "object" &&
+      Object.values(value).every((label) => label === "")
+    ) continue;
     origins.push(`${field} set on ${level[0]}`);
   }
   return origins;
+}
+
+// a default only fills an omitted input, so a non-empty one does not rule out
+// an empty value; default '' is the author choosing it
+function mayBeEmptyInput(schema: unknown): boolean {
+  if (typeof schema !== "object" || schema === null) return false;
+  const property = schema as Record<string, unknown>;
+  if (property.type !== undefined && property.type !== "string") return false;
+  if (property.default === "") return false;
+  if (Array.isArray(property.enum) || "const" in property) return false;
+  if (typeof property.minLength === "number" && property.minLength >= 1) {
+    return false;
+  }
+  if (typeof property.pattern === "string") {
+    try {
+      if (!new RegExp(property.pattern, "u").test("")) return false;
+    } catch {
+      // a pattern that does not compile rules nothing out, so the warning stands
+    }
+  }
+  return true;
 }
 
 /** guards and assert exprs written without ${{ }} are CEL all the same */
@@ -295,6 +320,10 @@ export class DefaultWorkflowValidationService
     }
 
     results.push(...this.validateQueueTimeoutPlacement(workflow));
+
+    for (const result of this.validatePlacementInputs(workflow)) {
+      results.push(result);
+    }
 
     results.push(...this.validateAssertExprNotInterpolated(workflow));
     for (const result of this.validateWaitSchemaExpressions(workflow)) {
@@ -593,6 +622,67 @@ export class DefaultWorkflowValidationService
           } to vaults or point the output at a listed vault`,
         ));
       }
+    }
+    return results;
+  }
+
+  private validatePlacementInputs(
+    workflow: Workflow,
+  ): WorkflowValidationResult[] {
+    const properties = workflow.inputs?.properties ?? {};
+    // only the level each step takes a field from, so an overridden one is quiet
+    const inEffect = new Map<string, [string, string, string]>();
+    for (const job of workflow.jobs) {
+      for (const step of job.steps) {
+        const levels: [string, PlacementFields][] = [
+          [`step '${step.name}' in job '${job.name}'`, step.placementFields],
+          [`job '${job.name}'`, job.placementFields],
+          ["the workflow", workflow.placementFields],
+        ];
+        const target = levels.find(([, fields]) => fields.target !== undefined)
+          ?.[1].target;
+        // a named worker stands in for labels and platform, as in scheduling
+        const fixedTarget = target !== undefined && target !== "" &&
+          !containsExpression(target);
+        for (const field of ["target", "labels", "platform"] as const) {
+          if (fixedTarget && field !== "target") continue;
+          const level = levels.find(([, fields]) =>
+            fields[field] !== undefined
+          );
+          if (level === undefined) continue;
+          const [where, fields] = level;
+          const values: [string, string][] = field === "labels"
+            ? Object.entries(fields.labels ?? {}).map((
+              [key, value],
+            ): [string, string] => [`labels.${key}`, value])
+            : [[field, fields[field] ?? ""]];
+          for (const [name, value] of values) {
+            inEffect.set(`${where}\0${name}`, [where, name, value]);
+          }
+        }
+      }
+    }
+    const results: WorkflowValidationResult[] = [];
+    for (const [where, field, value] of inEffect.values()) {
+      const name = extractWholeFieldInputRef(value);
+      if (name === null || !Object.hasOwn(properties, name)) continue;
+      if (!mayBeEmptyInput(properties[name])) continue;
+      const effect = field.startsWith("labels.")
+        ? `An empty value drops that label from the selector, which widens ` +
+          `the match to the remaining labels, or leaves the step unplaced ` +
+          `if it was the only one.`
+        : `An empty value clears that field, so with nothing else in effect ` +
+          `the step runs as if unplaced: on the orchestrator, or refused ` +
+          `when serve is remote-only.`;
+      results.push(
+        WorkflowValidationResult.warning(
+          `Placement ${field} on ${where} may be empty`,
+          `${field} on ${where} is inputs.${name}, which a caller can set ` +
+            `to the empty string. ${effect} Limit the input with an enum of ` +
+            `worker names or minLength: 1, or set default: '' if that is ` +
+            `intended`,
+        ),
+      );
     }
     return results;
   }
@@ -1326,10 +1416,9 @@ export class DefaultWorkflowValidationService
                 `Only the orchestrator writes enrollment tokens, so this ` +
                 `step cannot run with remote placement (${
                   stepPlacement.join("; ")
-                }). Remove placement set on the step; a step can clear ` +
-                `inherited labels with labels: {}, but not an inherited ` +
-                `target or platform: move the step to a job and workflow ` +
-                `that set neither`,
+                }). Remove placement set on the step; a step clears ` +
+                `inherited labels with labels: {} and an inherited target ` +
+                `or platform by setting it to the empty string`,
             ),
           ]
           : [];

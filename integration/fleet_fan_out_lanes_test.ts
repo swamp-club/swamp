@@ -17,7 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { join } from "@std/path";
 import { waitFor } from "@swamp-club/swamp-testing";
 import "../src/domain/models/models.ts";
@@ -549,6 +554,34 @@ Deno.test({
       "needs at least 2 workers matching labels fleet=web that are connected or waiting, and 1 is",
     );
     assertEquals(fleet.dispatchCounts(), { "w-a": 0 });
+  },
+});
+
+Deno.test({
+  name:
+    "fan-out lanes: a selector label an input resolves to the empty string refuses the run before anything is sent, rather than widening the fan-out",
+  ...SANITIZE,
+  fn: async () => {
+    await using fleet = await Fleet.start();
+    await fleet.addWorker("w-a", { labels: { fleet: "web", env: "prod" } });
+    await fleet.addWorker("w-b", { labels: { fleet: "web", env: "dev" } });
+    await fleet.saveWorkflow({
+      name: "patch-env",
+      inputs: { properties: { env: { type: "string", default: "" } } },
+      jobs: [
+        laneJob(fleet, APPLY_VERIFY, {
+          labels: { fleet: "web", env: "${{ inputs.env }}" },
+        }),
+      ],
+    });
+
+    const error = await assertRejects(() => fleet.runWorkflow("patch-env"));
+
+    assertStringIncludes(
+      String(error),
+      "Fan-out job 'patch' has labels.env set to the empty string",
+    );
+    assertEquals(fleet.dispatchCounts(), { "w-a": 0, "w-b": 0 });
   },
 });
 

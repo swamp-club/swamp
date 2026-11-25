@@ -3937,7 +3937,11 @@ Deno.test("validate: forEach.in reading data written by an earlier job does not 
 function tokenStepWorkflow(placement: {
   workflow?: { target?: string; labels?: Record<string, string> };
   job?: { platform?: string; labels?: Record<string, string> };
-  step?: { labels?: Record<string, string> };
+  step?: {
+    target?: string;
+    platform?: string;
+    labels?: Record<string, string>;
+  };
 }): Workflow {
   return Workflow.create({
     name: "rotate-fleet",
@@ -3993,6 +3997,271 @@ Deno.test("validateStepInputs: an enrollment token step whose inherited labels a
     results.find((r) => r.name.startsWith("Placement for")),
     undefined,
   );
+});
+
+Deno.test("validateStepInputs: an enrollment token step that clears an inherited target and platform with empty values passes", async () => {
+  const svc = new DefaultWorkflowValidationService(tokenResolver());
+  const results = await svc.validate(
+    tokenStepWorkflow({
+      workflow: { target: "w1" },
+      job: { platform: "linux" },
+      step: { target: "", platform: "" },
+    }),
+  );
+  assertEquals(
+    results.find((r) => r.name.startsWith("Placement for")),
+    undefined,
+  );
+});
+
+Deno.test("validateStepInputs: the enrollment token refusal says an inherited target or platform is cleared with an empty value", async () => {
+  const svc = new DefaultWorkflowValidationService(tokenResolver());
+  const results = await svc.validate(
+    tokenStepWorkflow({ workflow: { target: "w1" } }),
+  );
+  const placement = results.find((r) => r.name.startsWith("Placement for"));
+  assertStringIncludes(
+    placement?.error ?? "",
+    "an inherited target or platform by setting it to the empty string",
+  );
+});
+
+function placementInputWorkflow(
+  worker: Record<string, unknown>,
+  placement: {
+    target?: string;
+    labels?: Record<string, string>;
+    stepTarget?: string;
+  },
+): Workflow {
+  return Workflow.create({
+    name: "placement-input",
+    inputs: { properties: { worker } },
+    ...(placement.labels ? { labels: placement.labels } : {}),
+    jobs: [
+      Job.create({
+        name: "main",
+        ...(placement.target !== undefined ? { target: placement.target } : {}),
+        steps: [
+          Step.create({
+            name: "collect",
+            task: StepTask.model("test-model", "run"),
+            ...(placement.stepTarget !== undefined
+              ? { target: placement.stepTarget }
+              : {}),
+          }),
+        ],
+      }),
+    ],
+  });
+}
+
+async function placementInputWarnings(workflow: Workflow): Promise<string[]> {
+  return (await service.validate(workflow))
+    .filter((r) => r.warning && r.name.endsWith(" may be empty"))
+    .map((r) => r.name);
+}
+
+const WORKER = "${{ inputs.worker }}";
+
+Deno.test("validate: warns when a placement field is exactly an input a caller can set to the empty string", async () => {
+  assertEquals(
+    await placementInputWarnings(
+      placementInputWorkflow({ type: "string" }, { target: WORKER }),
+    ),
+    ["Placement target on job 'main' may be empty"],
+  );
+  assertEquals(
+    await placementInputWarnings(
+      placementInputWorkflow({ type: "string" }, { labels: { host: WORKER } }),
+    ),
+    ["Placement labels.host on the workflow may be empty"],
+  );
+  assertEquals(
+    await placementInputWarnings(
+      placementInputWorkflow({ type: "string" }, { stepTarget: WORKER }),
+    ),
+    ["Placement target on step 'collect' in job 'main' may be empty"],
+  );
+});
+
+Deno.test("validate: warns when platform is exactly an input a caller can set to the empty string", async () => {
+  const workflow = Workflow.create({
+    name: "placement-input",
+    inputs: { properties: { os: { type: "string" } } },
+    platform: "${{ inputs.os }}",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "collect",
+            task: StepTask.model("test-model", "run"),
+          }),
+        ],
+      }),
+    ],
+  });
+  assertEquals(await placementInputWarnings(workflow), [
+    "Placement platform on the workflow may be empty",
+  ]);
+});
+
+Deno.test("validate: a non-empty default does not silence the placement input warning, since a caller can still pass an empty string", async () => {
+  for (
+    const worker of [
+      { type: "string", default: "w1" },
+      { type: "string", pattern: ".*" },
+      {},
+    ]
+  ) {
+    assertEquals(
+      await placementInputWarnings(
+        placementInputWorkflow(worker, { target: WORKER }),
+      ),
+      ["Placement target on job 'main' may be empty"],
+      JSON.stringify(worker),
+    );
+  }
+});
+
+Deno.test("validate: no placement input warning when the input opts in with default '' or cannot be empty", async () => {
+  for (
+    const worker of [
+      { type: "string", default: "" },
+      { type: "string", enum: ["w1", "w2"] },
+      { type: "string", enum: ["", "w1"] },
+      { type: "string", const: "w1" },
+      { type: "string", minLength: 1 },
+      { type: "string", pattern: "^w" },
+      { type: "boolean" },
+      { type: "integer" },
+    ]
+  ) {
+    assertEquals(
+      await placementInputWarnings(
+        placementInputWorkflow(worker, { target: WORKER }),
+      ),
+      [],
+      JSON.stringify(worker),
+    );
+  }
+});
+
+Deno.test("validate: no placement input warning for a level every step overrides", async () => {
+  const workflow = Workflow.create({
+    name: "placement-input",
+    inputs: { properties: { worker: { type: "string" } } },
+    target: WORKER,
+    jobs: [
+      Job.create({
+        name: "main",
+        target: "w1",
+        steps: [
+          Step.create({
+            name: "collect",
+            task: StepTask.model("test-model", "run"),
+          }),
+        ],
+      }),
+    ],
+  });
+  assertEquals(await placementInputWarnings(workflow), []);
+});
+
+Deno.test("validate: no label placement input warning for a step with a named target, which stands in for labels", async () => {
+  const workflow = Workflow.create({
+    name: "placement-input",
+    inputs: { properties: { worker: { type: "string" } } },
+    labels: { host: WORKER },
+    jobs: [
+      Job.create({
+        name: "main",
+        target: "w1",
+        steps: [
+          Step.create({
+            name: "collect",
+            task: StepTask.model("test-model", "run"),
+          }),
+        ],
+      }),
+    ],
+  });
+  assertEquals(await placementInputWarnings(workflow), []);
+});
+
+Deno.test("validate: a placement input warning names one source once, however many steps use it", async () => {
+  const workflow = Workflow.create({
+    name: "placement-input",
+    inputs: { properties: { worker: { type: "string" } } },
+    target: WORKER,
+    jobs: ["a", "b"].map((name) =>
+      Job.create({
+        name,
+        steps: [
+          Step.create({
+            name: "one",
+            task: StepTask.model("test-model", "run"),
+          }),
+          Step.create({
+            name: "two",
+            task: StepTask.model("test-model", "run"),
+          }),
+        ],
+      })
+    ),
+  });
+  assertEquals(await placementInputWarnings(workflow), [
+    "Placement target on the workflow may be empty",
+  ]);
+});
+
+Deno.test("validate: a label placement input warning says the label is dropped, not that the step is unplaced", async () => {
+  const result = (await service.validate(
+    placementInputWorkflow({ type: "string" }, { labels: { host: WORKER } }),
+  )).find((r) =>
+    r.name === "Placement labels.host on the workflow may be empty"
+  );
+  assertStringIncludes(
+    result?.error ?? "",
+    "drops that label from the selector",
+  );
+});
+
+Deno.test("validate: no placement input warning for an expression that is more than a bare input", async () => {
+  assertEquals(
+    await placementInputWarnings(
+      placementInputWorkflow({ type: "string" }, {
+        target: "${{ 'w-' + inputs.worker }}",
+      }),
+    ),
+    [],
+  );
+});
+
+Deno.test("validate: warns when queueTimeout is set and the only placement is an empty target", async () => {
+  const workflow = Workflow.create({
+    name: "test-workflow",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "collect",
+            task: StepTask.model("test-model", "run"),
+            queueTimeout: 30,
+            target: "",
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await service.validate(workflow);
+  const warning = results.find((r) =>
+    r.name.includes("queueTimeout without placement")
+  );
+  assertEquals(warning?.warning, true);
 });
 
 Deno.test("validateStepInputs: another type's step keeps its inherited placement", async () => {

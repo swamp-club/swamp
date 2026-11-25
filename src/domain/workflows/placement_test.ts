@@ -19,6 +19,7 @@
 
 import { assertEquals } from "@std/assert";
 import {
+  clearEmptyPlacement,
   declaresPlacement,
   inheritedAffinityKey,
   type InheritedPlacement,
@@ -144,6 +145,72 @@ Deno.test("resolvePlacement: labels alone produces placement", () => {
     platform: undefined,
     queueTimeoutMs: undefined,
   });
+});
+
+Deno.test("resolvePlacement: an empty target, platform or label clears that field, as labels {} does", () => {
+  assertEquals(resolvePlacement({ target: "" }), undefined);
+  assertEquals(resolvePlacement({ platform: "" }), undefined);
+  assertEquals(resolvePlacement({ labels: { host: "" } }), undefined);
+  assertEquals(resolvePlacement({ target: "", queueTimeout: 30 }), undefined);
+  assertEquals(resolvePlacement({ target: "", labels: { pool: "gpu" } }), {
+    target: undefined,
+    labels: { pool: "gpu" },
+    platform: undefined,
+    queueTimeoutMs: undefined,
+  });
+});
+
+Deno.test("mergePlacementFields: an empty target at a lower level clears the inherited one", () => {
+  const merged = mergePlacementFields({ target: "w1" }, { target: "" });
+  assertEquals(resolvePlacement(merged), undefined);
+});
+
+Deno.test("clearEmptyPlacement: an empty label drops only its own key and names it", () => {
+  assertEquals(
+    clearEmptyPlacement({ labels: { pool: "gpu", host: "" } }),
+    {
+      placement: {
+        target: undefined,
+        labels: { pool: "gpu" },
+        platform: undefined,
+      },
+      cleared: ["labels.host"],
+    },
+  );
+});
+
+Deno.test("clearEmptyPlacement: a placement left with nothing is unplaced, whatever else it carried", () => {
+  assertEquals(
+    clearEmptyPlacement({
+      target: "",
+      platform: "",
+      queueTimeoutMs: 1000,
+      affinityKey: "run-1",
+    }),
+    { placement: undefined, cleared: ["target", "platform"] },
+  );
+});
+
+Deno.test("clearEmptyPlacement: a whitespace value is still a selector, so a typo never runs locally", () => {
+  assertEquals(clearEmptyPlacement({ target: " " }), {
+    placement: {
+      target: " ",
+      labels: undefined,
+      platform: undefined,
+    },
+    cleared: [],
+  });
+});
+
+Deno.test("clearEmptyPlacement: a placement with no empty value is returned as it was", () => {
+  const placement = {
+    target: "w1",
+    labels: { env: "prod" },
+    platform: "linux/amd64",
+    queueTimeoutMs: 5000,
+    affinityKey: "run-1",
+  };
+  assertEquals(clearEmptyPlacement(placement), { placement, cleared: [] });
 });
 
 Deno.test("resolveAffinityKey: resolves every workflow and job combination", () => {
