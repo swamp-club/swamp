@@ -21,6 +21,41 @@ const FLUSH_CHARS = 64 * 1024;
 
 export type Sink = (bytes: Uint8Array) => Promise<number>;
 
+const LONG_STRING_SLICE = 1024 * 1024;
+
+function isHighSurrogate(code: number): boolean {
+  return code >= 0xd800 && code <= 0xdbff;
+}
+
+/**
+ * JSON.stringify(text) in pieces: V8 aborts the process with a Zone OOM when
+ * one call escapes a long decoded string, so a long string is escaped a slice
+ * at a time, never splitting a surrogate pair
+ */
+export function* jsonStringChunks(
+  text: string,
+  slice: number = LONG_STRING_SLICE,
+): Generator<string> {
+  // a slice under two could never hold a surrogate pair, or never advance
+  slice = Math.max(2, Math.floor(slice));
+  if (text.length <= slice) {
+    yield JSON.stringify(text);
+    return;
+  }
+  yield '"';
+  let start = 0;
+  while (start < text.length) {
+    let end = Math.min(start + slice, text.length);
+    if (
+      end < text.length && end - start > 1 &&
+      isHighSurrogate(text.charCodeAt(end - 1))
+    ) end--;
+    yield JSON.stringify(text.slice(start, end)).slice(1, -1);
+    start = end;
+  }
+  yield '"';
+}
+
 function viaToJSON(value: unknown, key: string): unknown {
   return typeof value === "object" && value !== null &&
       typeof (value as { toJSON?: unknown }).toJSON === "function"
@@ -64,15 +99,22 @@ function sizeOf(container: Container): number {
  * the pieces of JSON.stringify(value, null, 2), never joined into one string;
  * walks an explicit stack, so depth is no limit
  */
-export function* prettyJsonChunks(value: unknown): Generator<string> {
+export function* prettyJsonChunks(
+  value: unknown,
+  slice: number = LONG_STRING_SLICE,
+): Generator<string> {
   const open: Container[] = [];
   let current = viaToJSON(value, "");
   let indent = "";
   while (true) {
     const container = containerOf(current, indent);
     if (container === undefined) {
-      const text = JSON.stringify(current);
-      if (text !== undefined) yield text;
+      if (typeof current === "string") {
+        yield* jsonStringChunks(current, slice);
+      } else {
+        const text = JSON.stringify(current);
+        if (text !== undefined) yield text;
+      }
     } else if (sizeOf(container) === 0) {
       yield container.kind === "array" ? "[]" : "{}";
     } else {
@@ -96,7 +138,8 @@ export function* prettyJsonChunks(value: unknown): Generator<string> {
       current = skipped(item) ? null : item;
     } else {
       const [k, v] = parent.entries[i];
-      yield `${JSON.stringify(k)}: `;
+      yield* jsonStringChunks(k, slice);
+      yield ": ";
       current = v;
     }
   }

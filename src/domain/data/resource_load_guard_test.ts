@@ -36,6 +36,7 @@ import {
   ResourceLoadGuard,
   resourceLoadGuardOf,
   ResourceTooLargeToLoadError,
+  SPLIT_LINE_BYTES,
 } from "./resource_load_guard.ts";
 import { UserError } from "../errors.ts";
 
@@ -752,4 +753,91 @@ Deno.test("DistinctStrings: strings that collide as they move into the bitmap do
   const distinct = new DistinctStrings(64, 40);
   for (let i = 0; i < 41; i++) distinct.add(spread(i), 8);
   assert(distinct.bytes(0) <= 41 * stringCost(8), `${distinct.bytes(0)}`);
+});
+
+Deno.test("ResourceTooLargeToLoadError: a refusal with no detail reads as it always has", () => {
+  const error = new ResourceTooLargeToLoadError(item, 301);
+  assertStringIncludes(
+    error.message,
+    "and loading it would exhaust the memory left to this process. List the largest data items",
+  );
+});
+
+Deno.test("ResourceTooLargeToLoadError: a refusal on held bytes names them and gives the caller's remedy, or advises fewer items", () => {
+  const remedy = "read fewer items at once, with a smaller --limit";
+  const refusal = new ResourceLoadGuard(probe(100, 90), 50, 10_000)
+    .refusalFor(item, 40, 10, remedy);
+  assertInstanceOf(refusal, ResourceTooLargeToLoadError);
+  assertEquals(refusal.detail, { heldBytes: 10, remedy });
+  assertStringIncludes(
+    refusal.message,
+    "of other items this read already holds",
+  );
+  assertStringIncludes(
+    refusal.message,
+    "Read fewer items at once, with a smaller --limit, or list the largest",
+  );
+  const plain = new ResourceTooLargeToLoadError(item, 40, "memory", {
+    heldBytes: 10,
+  });
+  assertStringIncludes(
+    plain.message,
+    "Read fewer items at once, or list the largest",
+  );
+  const unheld = new ResourceLoadGuard(probe(100, 90), 10, 10_000)
+    .refusalFor(item, 40, 0, remedy);
+  assertEquals(unheld?.detail, {});
+});
+
+Deno.test("ResourceTooLargeToLoadError: a base64 refusal names the encoded length", () => {
+  const error = new ResourceTooLargeToLoadError(item, 320, "text-length", {
+    encodedChars: 428,
+  });
+  assertStringIncludes(
+    error.message,
+    "its base64 form of 428 characters is more than swamp can load as text",
+  );
+});
+
+Deno.test("ResourceLoadGuard.splitRefusalFor: prices each line of content the byte factor admits", () => {
+  const lines = encode("a\n".repeat(100));
+  const guard = new ResourceLoadGuard(probe(1000, 0), 50, 10_000);
+  assertEquals(lines.length * 3 <= 1000, true);
+  assertEquals(lines.length + 101 * SPLIT_LINE_BYTES > 1000, true);
+  assertInstanceOf(
+    guard.splitRefusalFor(item, lines),
+    ResourceTooLargeToLoadError,
+  );
+  assertEquals(guard.refusalFor(item, lines.length), undefined);
+  assertEquals(
+    guard.splitRefusalFor(item, encode("a".repeat(200))),
+    undefined,
+  );
+});
+
+Deno.test("ResourceLoadGuard.splitRefusalFor: the text-length limit comes first, and held bytes lift content under the floor", () => {
+  const guard = new ResourceLoadGuard(probe(1000, 990), 100, 30);
+  assertEquals(
+    guard.splitRefusalFor(item, encode("x".repeat(31)))?.reason,
+    "text-length",
+  );
+  assertEquals(guard.splitRefusalFor(item, encode("x".repeat(20))), undefined);
+  assertEquals(
+    guard.splitRefusalFor(item, encode("x".repeat(20)), 40)?.reason,
+    "memory",
+  );
+});
+
+Deno.test("ResourceLoadGuard.splitRefusalFor: content under the floor whose lines lift it past the floor is priced, and a reader keeping fewer lines prices only those", () => {
+  const shortLines = encode("a\n".repeat(100));
+  const guard = new ResourceLoadGuard(probe(5000, 0), 1000, 10_000);
+  assertEquals(shortLines.length < 1000, true);
+  assertInstanceOf(
+    guard.splitRefusalFor(item, shortLines),
+    ResourceTooLargeToLoadError,
+  );
+  assertEquals(
+    guard.splitRefusalFor(item, shortLines, 0, undefined, 2),
+    undefined,
+  );
 });

@@ -70,7 +70,10 @@ import {
   type QueryView,
   QueryViewRefusal,
 } from "./query_view.ts";
-import { type ContentEncoding, encodeContent } from "./content_encoding.ts";
+import {
+  type ContentEncoding,
+  encodeLoadableContent,
+} from "./content_encoding.ts";
 import { BinaryContentPredicateError } from "./binary_content_predicate_error.ts";
 import {
   type LoadedItemRef,
@@ -385,9 +388,9 @@ function loadedItemOf(record: DataRecord): LoadedItemRef {
   };
 }
 
-function base64Length(bytes: number): number {
-  return Math.ceil(bytes / 3) * 4;
-}
+// a page refused on what it already holds is read again with fewer items
+const PAGE_REMEDY =
+  "read fewer items at once, with a smaller --limit on swamp data query";
 
 export class DataQueryService {
   private readonly queryEnv: Environment;
@@ -755,13 +758,23 @@ export class DataQueryService {
     const isJson = record.contentType === "application/json";
     // JSON past the text-length limit keeps the decode's own error code, as
     // fromRow's does, so it is fetched and refused there
-    const sizeRefusal = guard.refusalFor(item, record.size ?? 0, heldBytes);
+    const sizeRefusal = guard.refusalFor(
+      item,
+      record.size ?? 0,
+      heldBytes,
+      PAGE_REMEDY,
+    );
     if (sizeRefusal && (sizeRefusal.reason === "memory" || !isJson)) {
       throw sizeRefusal;
     }
     const bytes = await this.foreignContent(record);
     if (bytes && isJson) {
-      const refusal = guard.parseRefusalFor(item, bytes, heldBytes);
+      const refusal = guard.parseRefusalFor(
+        item,
+        bytes,
+        heldBytes,
+        PAGE_REMEDY,
+      );
       if (refusal?.reason === "memory") throw refusal;
     }
     return bytes;
@@ -1824,23 +1837,13 @@ export class DataQueryService {
     heldBytes: number,
   ): ProjectedContent {
     if (!bytes) return { content: null, contentEncoding: null };
-    const guard = resourceLoadGuardOf(this.dataRepo);
-    const item = loadedItemOf(record);
-    const refusal = guard.refusalFor(item, bytes.length, heldBytes);
-    if (refusal) throw refusal;
-    if (base64Length(bytes.length) <= guard.maxDecodableBytes) {
-      return encodeContent(bytes);
-    }
-    // only UTF-8 text of this size fits in a string; its base64 form would not
-    try {
-      return {
-        content: new TextDecoder("utf-8", { fatal: true }).decode(bytes),
-        contentEncoding: "utf-8",
-      };
-    } catch (error) {
-      if (!(error instanceof TypeError)) throw error;
-      throw new ResourceTooLargeToLoadError(item, bytes.length, "text-length");
-    }
+    return encodeLoadableContent(
+      resourceLoadGuardOf(this.dataRepo),
+      loadedItemOf(record),
+      bytes,
+      heldBytes,
+      PAGE_REMEDY,
+    );
   }
 
   // string length stands in for bytes; it only moves where the floor is reached
@@ -1856,6 +1859,7 @@ export class DataQueryService {
       loadedItemOf(record),
       record.size ?? 0,
       heldBytes,
+      PAGE_REMEDY,
     );
     if (refusal) throw refusal;
   }

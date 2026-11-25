@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
-import { createDataSearchRenderer } from "./data_search.tsx";
+import { createDataSearchRenderer, truncationNote } from "./data_search.tsx";
 import { captureLog } from "./search_list_test_helpers.ts";
 import type { DataSearchItem } from "../../libswamp/data/search.ts";
 
@@ -63,4 +63,21 @@ Deno.test("createDataSearchRenderer: non-interactive log lists every result the 
   assertStringIncludes(lines[0], "alpha");
   assertStringIncludes(lines[0], "beta");
   assertEquals(lines[2], "data: 2");
+});
+
+Deno.test("truncationNote: says a preview shows only the start, and nothing for a whole body", () => {
+  assertEquals(truncationNote({ content: "x", contentPath: "p" }), undefined);
+  const note = truncationNote({
+    content: "x",
+    contentPath: "p",
+    truncatedFrom: 3 * 1024 * 1024,
+  });
+  assertStringIncludes(note ?? "", "preview shows the start of 3");
+  assertStringIncludes(note ?? "", "swamp data get");
+  const unsized = truncationNote({
+    content: "x",
+    contentPath: "p",
+    truncatedFrom: 0,
+  });
+  assertStringIncludes(unsized ?? "", "only the start of the body");
 });

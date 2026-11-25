@@ -31,6 +31,20 @@ import { z } from "zod";
 import { RunSensitiveValues } from "../src/domain/secrets/mod.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import { Data } from "../src/domain/data/data.ts";
+import { ModelOutput } from "../src/domain/models/model_output.ts";
+import type { DefinitionId } from "../src/domain/definitions/definition.ts";
+import {
+  createModelOutputLogsDeps,
+  modelOutputLogs,
+  type ModelOutputLogsEvent,
+} from "../src/libswamp/models/output_logs.ts";
+import {
+  createDataGetDeps,
+  dataGet,
+  type DataGetEvent,
+} from "../src/libswamp/data/get.ts";
+import { createLibSwampContext } from "../src/libswamp/context.ts";
+import { collect } from "../src/libswamp/testing.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import { FileSystemUnifiedDataRepository } from "../src/infrastructure/persistence/unified_data_repository.ts";
 import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
@@ -602,10 +616,12 @@ Deno.test("resource size: select content refuses a page of bodies each under the
       }),
       ["x".repeat(30)],
     );
-    await assertRejects(
+    const pageError = await assertRejects(
       () => dqs.query(NOTES, { select: "content" }),
       ResourceTooLargeToLoadError,
     );
+    assertStringIncludes(pageError.message, "this read already holds");
+    assertStringIncludes(pageError.message, "a smaller --limit");
     assertThrows(
       () => dqs.querySync(NOTES, { select: "content" }),
       ResourceTooLargeToLoadError,
@@ -719,5 +735,137 @@ Deno.test("resource size: a resource of unique short strings the byte factor wou
       },
     ) as { items: string[] }[];
     assertEquals(repeated[0].items.length, 20);
+  });
+});
+
+async function getContent(
+  f: Fixture,
+  dataName: string,
+): Promise<DataGetEvent[]> {
+  return await collect<DataGetEvent>(dataGet(
+    createLibSwampContext(),
+    createDataGetDeps(
+      f.repoDir,
+      undefined,
+      f.dataRepo,
+      undefined,
+      f.definitionRepo,
+      f.catalog,
+    ),
+    {
+      modelIdOrName: "big",
+      dataName,
+      includeContent: true,
+      repoDir: f.repoDir,
+    },
+  ));
+}
+
+Deno.test("resource size: data get refuses a text body past the text-length limit, and a binary body whose base64 form passes it, by name", async () => {
+  const shortStrings = new ResourceLoadGuard(
+    {
+      heapLimitBytes: () => 1_000_000,
+      heapUsedBytes: () => 0,
+    },
+    50,
+    400,
+  );
+  await withFixture(async (f) => {
+    await saveFile(f, "note-long", text(500));
+    await saveFile(
+      f,
+      "note-bin",
+      new Uint8Array(320).fill(0xff),
+      "application/octet-stream",
+    );
+    await saveFile(f, "note-text", text(320));
+
+    const long = await assertRejects(
+      () => getContent(f, "note-long"),
+      ResourceTooLargeToLoadError,
+      "big/note-long@v1",
+    );
+    assertEquals(long.reason, "text-length");
+    const binary = await assertRejects(
+      () => getContent(f, "note-bin"),
+      ResourceTooLargeToLoadError,
+      "its base64 form of 428 characters",
+    );
+    assertEquals(binary.reason, "text-length");
+    const events = await getContent(f, "note-text");
+    const done = events[events.length - 1];
+    if (done.kind !== "completed") throw new Error(`got ${done.kind}`);
+    assertEquals(done.data.content, "x".repeat(320));
+  }, shortStrings);
+});
+
+async function readLogs(
+  f: Fixture,
+  logs: Record<string, Uint8Array>,
+  tail?: number,
+): Promise<ModelOutputLogsEvent[]> {
+  const output = ModelOutput.create({
+    definitionId: f.big.id as DefinitionId,
+    methodName: "write",
+    provenance: {
+      definitionHash: "abc",
+      modelVersion: "1",
+      triggeredBy: "manual",
+    },
+  });
+  output.markRunning();
+  for (const [name, content] of Object.entries(logs)) {
+    await f.dataRepo.save(
+      type,
+      f.big.id,
+      Data.create({
+        name,
+        contentType: "text/plain",
+        lifetime: "infinite",
+        garbageCollection: 5,
+        tags: { type: "log", modelName: "big" },
+        ownerDefinition: {
+          ownerType: "model-method",
+          ownerRef: "repro/bigdata:write",
+        },
+      }),
+      content,
+    );
+    output.addDataArtifact({
+      dataId: crypto.randomUUID(),
+      name,
+      version: 1,
+      tags: { type: "log" },
+    });
+  }
+  output.markSucceeded();
+  const deps = {
+    ...createModelOutputLogsDeps(f.repoDir, undefined, f.dataRepo),
+    matchOutputByPartialId: () =>
+      Promise.resolve({
+        status: "found" as const,
+        match: { output, type },
+      }),
+  };
+  return await collect<ModelOutputLogsEvent>(modelOutputLogs(
+    createLibSwampContext(),
+    deps,
+    { outputIdArg: output.id, ...(tail === undefined ? {} : { tail }) },
+  ));
+}
+
+Deno.test("resource size: behavior output logs refuses a log of short lines by name on its line count, and a tail of it reads", async () => {
+  await withFixture(async (f) => {
+    const shortLines = new TextEncoder().encode("a\n".repeat(100));
+    await assertRejects(
+      () => readLogs(f, { "run.log": shortLines }),
+      ResourceTooLargeToLoadError,
+      "run.log@v1",
+    );
+    const events = await readLogs(f, { "tail.log": shortLines }, 3);
+    const done = events[events.length - 1];
+    if (done.kind !== "completed") throw new Error(`got ${done.kind}`);
+    assertEquals(done.data.lines, ["a", "a", "a"]);
+    assertEquals(done.data.totalLines, 100);
   });
 });

@@ -35,7 +35,8 @@ import {
 } from "../../domain/data/resource_load_guard.ts";
 import {
   type ContentEncoding,
-  encodeContent,
+  type EncodedContent,
+  encodeLoadableContent,
 } from "../../domain/data/content_encoding.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
 import { findWorkflowById } from "../../domain/workflows/workflow_lookup.ts";
@@ -394,17 +395,17 @@ export function createDataGetDeps(
 
 // the recorded size is decided before the read; the byte length covers an
 // item whose size was never recorded
-async function readGuardedContent(
+async function readEncodedContent(
   deps: Pick<DataGetDeps, "loadGuard">,
   item: LoadedItemRef,
   recordedSize: number | undefined,
   read: () => Promise<Uint8Array | null>,
-): Promise<Uint8Array | null> {
+): Promise<EncodedContent | null> {
   const guard = resourceLoadGuardOf(deps);
-  guard.assertLoadable(item, recordedSize ?? 0);
+  const refusal = guard.refusalFor(item, recordedSize ?? 0);
+  if (refusal) throw refusal;
   const bytes = await read();
-  if (bytes) guard.assertLoadable(item, bytes.length);
-  return bytes;
+  return bytes ? encodeLoadableContent(guard, item, bytes) : null;
 }
 
 export async function* dataGet(
@@ -674,7 +675,7 @@ async function* workflowScopedGet(
   };
 
   if (input.includeContent) {
-    const rawContent = await readGuardedContent(
+    const encoded = await readEncodedContent(
       deps,
       {
         modelType: item.modelType.normalized,
@@ -691,10 +692,9 @@ async function* workflowScopedGet(
           item.data.version,
         ),
     );
-    if (rawContent) {
-      const { content, contentEncoding } = encodeContent(rawContent);
-      output.content = content;
-      output.contentEncoding = contentEncoding;
+    if (encoded) {
+      output.content = encoded.content;
+      output.contentEncoding = encoded.contentEncoding;
     }
   }
 
@@ -807,7 +807,7 @@ async function* modelScopedGet(
   };
 
   if (includeContent) {
-    const rawContent = await readGuardedContent(
+    const encoded = await readEncodedContent(
       deps,
       {
         modelType: modelType.normalized,
@@ -819,10 +819,9 @@ async function* modelScopedGet(
       () =>
         deps.getContent(modelType, owner.modelId, resolvedName, data.version),
     );
-    if (rawContent) {
-      const { content, contentEncoding } = encodeContent(rawContent);
-      output.content = content;
-      output.contentEncoding = contentEncoding;
+    if (encoded) {
+      output.content = encoded.content;
+      output.contentEncoding = encoded.contentEncoding;
     }
   }
 

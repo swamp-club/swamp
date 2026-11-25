@@ -45,6 +45,12 @@ import {
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import {
+  countLines,
+  KEPT_LINE_BYTES,
+  type ResourceLoadGuard,
+  resourceLoadGuardOf,
+} from "../../domain/data/resource_load_guard.ts";
+import {
   type OutputArtifactCheck,
   outputArtifactCheck,
 } from "../data/run_artifact_check.ts";
@@ -80,7 +86,7 @@ export interface ModelOutputLogsDeps
     definitionId: string,
     name: string,
     version?: number,
-  ) => Promise<unknown | null>;
+  ) => Promise<{ readonly size?: number } | null>;
   getContent: (
     type: ModelType,
     definitionId: string,
@@ -92,6 +98,7 @@ export interface ModelOutputLogsDeps
    * content that output produced; absent on v2
    */
   checkArtifact?: OutputArtifactCheck;
+  loadGuard?: ResourceLoadGuard;
 }
 
 export function createModelOutputLogsDeps(
@@ -156,6 +163,7 @@ export function createModelOutputLogsDeps(
       dataRepo.findByName(type, definitionId, name, version),
     getContent: (type, definitionId, name, version) =>
       dataRepo.getContent(type, definitionId, name, version),
+    loadGuard: dataRepo.loadGuard,
     ...(resolverEngine(datastoreResolver) === "v3"
       ? { checkArtifact: outputArtifactCheck(dataRepo) }
       : {}),
@@ -223,7 +231,16 @@ export async function* modelOutputLogs(
         return;
       }
 
+      const loadGuard = resourceLoadGuardOf(deps);
+      const tail = input.tail !== undefined && input.tail >= 1
+        ? Math.floor(input.tail)
+        : undefined;
+      const remedy = tail === undefined ? LOGS_REMEDY : TAIL_REMEDY;
       const allEntries: string[] = [];
+      let totalLines = 0;
+      let heldBytes = 0;
+      // a kept line is a slice that pins its whole decoded log
+      const pinned: { bytes: number; lines: number }[] = [];
 
       for (const artifact of logArtifacts) {
         if (deps.checkArtifact !== undefined) {
@@ -253,6 +270,20 @@ export async function* modelOutputLogs(
           artifact.name,
           artifact.version,
         );
+        const item = {
+          modelType: type.normalized,
+          dataName: artifact.name,
+          version: artifact.version,
+        };
+        if (dataResult !== null) {
+          const sizeRefusal = loadGuard.refusalFor(
+            item,
+            dataResult.size ?? 0,
+            heldBytes,
+            remedy,
+          );
+          if (sizeRefusal) throw sizeRefusal;
+        }
         const content = dataResult === null ? null : await deps.getContent(
           type,
           output.definitionId,
@@ -266,14 +297,60 @@ export async function* modelOutputLogs(
           };
           return;
         }
-        const text = new TextDecoder().decode(content);
-        const lines = text.split("\n").filter((line) => line.length > 0);
-        for (const line of lines) allEntries.push(line);
+        if (tail === undefined) {
+          const lines = countLines(content);
+          const refusal = loadGuard.splitRefusalFor(
+            item,
+            content,
+            heldBytes,
+            remedy,
+            lines,
+          );
+          if (refusal) throw refusal;
+          const text = new TextDecoder().decode(content);
+          for (const line of text.split("\n")) {
+            if (line.length > 0) allEntries.push(line);
+          }
+          heldBytes += content.length + lines * KEPT_LINE_BYTES;
+        } else {
+          // a tail splits nothing and keeps at most its own count of lines
+          const nonEmpty = countNonEmptyLines(content);
+          const refusal = loadGuard.splitRefusalFor(
+            item,
+            content,
+            heldBytes,
+            remedy,
+            Math.min(nonEmpty, tail),
+          );
+          if (refusal) throw refusal;
+          totalLines += nonEmpty;
+          const last = lastNonEmptyLines(
+            new TextDecoder().decode(content),
+            tail,
+          );
+          for (const line of last) allEntries.push(line);
+          if (last.length > 0) {
+            pinned.push({ bytes: content.length, lines: last.length });
+            heldBytes += content.length + last.length * KEPT_LINE_BYTES;
+          }
+          let excess = allEntries.length - tail;
+          if (excess > 0) allEntries.splice(0, excess);
+          while (excess > 0 && pinned.length > 0) {
+            const oldest = pinned[0];
+            const dropped = Math.min(excess, oldest.lines);
+            oldest.lines -= dropped;
+            excess -= dropped;
+            heldBytes -= dropped * KEPT_LINE_BYTES;
+            if (oldest.lines === 0) {
+              heldBytes -= oldest.bytes;
+              pinned.shift();
+            }
+          }
+        }
       }
 
-      const entriesToShow = input.tail
-        ? allEntries.slice(-input.tail)
-        : allEntries;
+      if (tail === undefined) totalLines = allEntries.length;
+      const entriesToShow = allEntries;
 
       yield {
         kind: "completed",
@@ -282,10 +359,45 @@ export async function* modelOutputLogs(
           methodName: output.methodName,
           logArtifacts: logArtifacts.map((a) => a.name),
           lines: entriesToShow,
-          totalLines: allEntries.length,
+          totalLines,
           showingLines: entriesToShow.length,
         },
       };
     })(),
   );
+}
+
+const NEWLINE = 0x0a;
+// a tail holds one log at a time, so it reads logs too large to read together
+const LOGS_REMEDY =
+  "pass --tail to read only the last lines, one log at a time";
+const TAIL_REMEDY = "pass a smaller --tail";
+
+function hasByteOrderMark(content: Uint8Array): boolean {
+  return content[0] === 0xef && content[1] === 0xbb && content[2] === 0xbf;
+}
+
+// TextDecoder drops a leading byte-order mark, so the count skips it too
+function countNonEmptyLines(content: Uint8Array): number {
+  let count = 0;
+  let start = hasByteOrderMark(content) ? 3 : 0;
+  while (start <= content.length) {
+    const at = content.indexOf(NEWLINE, start);
+    const end = at === -1 ? content.length : at;
+    if (end > start) count++;
+    if (at === -1) break;
+    start = at + 1;
+  }
+  return count;
+}
+
+function lastNonEmptyLines(text: string, count: number): string[] {
+  const lines: string[] = [];
+  let end = text.length;
+  while (lines.length < count && end > 0) {
+    const at = text.lastIndexOf("\n", end - 1);
+    if (end > at + 1) lines.push(text.slice(at + 1, end));
+    end = at === -1 ? 0 : at;
+  }
+  return lines.reverse();
 }

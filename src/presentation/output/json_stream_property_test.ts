@@ -19,7 +19,7 @@
 
 import { assertEquals } from "@std/assert";
 import fc from "fast-check";
-import { prettyJsonChunks } from "./json_stream.ts";
+import { jsonStringChunks, prettyJsonChunks } from "./json_stream.ts";
 
 Deno.test("prettyJsonChunks: always joins to JSON.stringify(value, null, 2)", () => {
   fc.assert(fc.property(fc.jsonValue(), (value) => {
@@ -28,4 +28,30 @@ Deno.test("prettyJsonChunks: always joins to JSON.stringify(value, null, 2)", ()
       JSON.stringify(value, null, 2),
     );
   }));
+});
+
+// full code units, so lone surrogates and pairs land on every slice boundary
+const anyString = fc.string({ unit: "binary", maxLength: 40 });
+
+Deno.test("jsonStringChunks: always joins to JSON.stringify at any slice size", () => {
+  fc.assert(
+    fc.property(anyString, fc.integer({ min: 2, max: 8 }), (text, slice) => {
+      assertEquals(
+        [...jsonStringChunks(text, slice)].join(""),
+        JSON.stringify(text),
+      );
+    }),
+  );
+});
+
+Deno.test("prettyJsonChunks: with any slice size, always joins to JSON.stringify(value, null, 2)", () => {
+  const value = fc.jsonValue({ maxDepth: 3, stringUnit: "binary" });
+  fc.assert(
+    fc.property(value, fc.integer({ min: 2, max: 8 }), (v, slice) => {
+      assertEquals(
+        [...prettyJsonChunks(v, slice)].join(""),
+        JSON.stringify(v, null, 2),
+      );
+    }),
+  );
 });
