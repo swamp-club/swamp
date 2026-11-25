@@ -19,7 +19,8 @@
 
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync, StatementSync } from "node:sqlite";
+import fc from "fast-check";
 import {
   READ_MODEL_STATE_SCHEMA_VERSION,
   ReadModelState,
@@ -343,4 +344,313 @@ Deno.test("ReadModelState.presentKeyCount: counts a namespace's present keys as 
       state.close();
     }
   });
+});
+
+function keyedCommit(
+  seq: number,
+  keys: number,
+  boot: string,
+): Parameters<ReadModelState["recordApplied"]>[0] {
+  const names = Array.from(
+    { length: keys },
+    (_, i) => `data/n${i}/${seq}/raw`,
+  );
+  return {
+    namespace: "",
+    partition: "p",
+    seq,
+    cursor: seq,
+    records: new Map(names.map((key) => [key, { sha256: "a".repeat(64) }])),
+    versions: new Map(),
+    files: new Map(
+      names.map((key) => [key, { owner: "p", mark: seq, present: true }]),
+    ),
+    unsynced: { keys: new Set(names), boot },
+    decided: new Set(names),
+    unreadable: new Map(),
+  };
+}
+
+/** every node:sqlite call `fn` makes, by kind */
+function sqliteCalls(fn: () => void): number {
+  const db = DatabaseSync.prototype as unknown as Record<string, unknown>;
+  const statement = StatementSync.prototype as unknown as Record<
+    string,
+    unknown
+  >;
+  const saved: [Record<string, unknown>, string, unknown][] = [];
+  let calls = 0;
+  const wrap = (target: Record<string, unknown>, method: string) => {
+    const original = target[method] as (...args: unknown[]) => unknown;
+    saved.push([target, method, original]);
+    target[method] = function (this: unknown, ...args: unknown[]) {
+      calls++;
+      return original.apply(this, args);
+    };
+  };
+  for (const method of ["exec", "prepare"]) wrap(db, method);
+  for (const method of ["run", "get", "all", "iterate"]) {
+    wrap(statement, method);
+  }
+  try {
+    fn();
+  } finally {
+    for (const [target, method, original] of saved) target[method] = original;
+  }
+  return calls;
+}
+
+Deno.test("ReadModelState.recordApplied: in a batch, a commit costs the same nine SQLite calls however many keys it writes (swamp-club#5094)", async () => {
+  for (const keys of [1, 14, 40]) {
+    await withStatePath((path) => {
+      const state = ReadModelState.open(path);
+      try {
+        state.beginBatch();
+        state.recordApplied(keyedCommit(1, keys, "boot-1"));
+        const commits = 10;
+        const calls = sqliteCalls(() => {
+          for (let seq = 2; seq < 2 + commits; seq++) {
+            state.recordApplied(keyedCommit(seq, keys, "boot-1"));
+          }
+        });
+        state.commitBatch();
+        assertEquals({ keys, perCommit: calls / commits }, {
+          keys,
+          perCommit: 9,
+        });
+        assertEquals(state.unsyncedKeys(1000).length, keys * (1 + commits));
+        assertEquals(state.unsyncedBoot(), "boot-1");
+      } finally {
+        state.close();
+      }
+    });
+  }
+});
+
+Deno.test("ReadModelState.recordApplied: a decided key's unreadable record is forgotten whether it was noted before the batch, in it, or by another connection between batches (swamp-club#5094)", async () => {
+  await withStatePath((path) => {
+    const state = ReadModelState.open(path);
+    const unreadable = (namespace: string, key: string, seq: number) => ({
+      namespace,
+      recordKey: key,
+      partition: "p",
+      seq,
+      position: seq,
+      reason: "missing" as const,
+      lastAttempt: new Date(0),
+    });
+    const decide = (namespace: string, seq: number, keys: string[]) =>
+      state.recordApplied({
+        namespace,
+        partition: "p",
+        seq,
+        records: new Map(),
+        versions: new Map(),
+        decided: new Set(keys),
+      });
+    try {
+      state.noteUnreadableAttempts([unreadable("", "k1", 1)]);
+      state.beginBatch();
+      decide("team", 1, ["k1"]);
+      decide("", 1, ["k0"]);
+      assertEquals(state.unreadableRecord("", "k1")?.recordKey, "k1");
+      decide("", 2, ["k1"]);
+      assertEquals(state.unreadableRecord("", "k1"), undefined);
+      decide("team", 2, ["k2"]);
+      state.noteUnreadableAttempts([unreadable("team", "k2", 2)]);
+      decide("team", 3, ["k2"]);
+      assertEquals(state.unreadableRecord("team", "k2"), undefined);
+      decide("ops", 1, ["k3"]);
+      state.commitBatch();
+
+      const other = ReadModelState.open(path);
+      try {
+        other.noteUnreadableAttempts([unreadable("ops", "k3", 2)]);
+      } finally {
+        other.close();
+      }
+      state.beginBatch();
+      decide("ops", 2, ["k3"]);
+      state.commitBatch();
+      assertEquals(state.unreadableRecord("ops", "k3"), undefined);
+    } finally {
+      state.close();
+    }
+  });
+});
+
+type StateStep =
+  | {
+    readonly kind: "commit";
+    readonly namespace: string;
+    readonly partition: string;
+    readonly puts: readonly string[];
+    readonly removes: readonly string[];
+    readonly files: readonly (readonly [string, boolean])[];
+    readonly decided: readonly string[];
+    readonly unreadable: readonly string[];
+    readonly unsynced: readonly string[];
+    readonly boot: string;
+  }
+  | { readonly kind: "forget-unreadable"; readonly key: string }
+  | { readonly kind: "clear-unsynced" }
+  | { readonly kind: "forget-unsynced"; readonly key: string };
+
+const stateKey = fc.constantFrom("k1", "k2", "k3", "k4");
+const stateKeys = fc.uniqueArray(stateKey, { maxLength: 4 });
+const stateStep: fc.Arbitrary<StateStep> = fc.oneof(
+  {
+    weight: 6,
+    arbitrary: fc.record({
+      kind: fc.constant("commit" as const),
+      namespace: fc.constantFrom("", "team"),
+      partition: fc.constantFrom("p", "q"),
+      puts: stateKeys,
+      removes: stateKeys,
+      files: fc.uniqueArray(fc.tuple(stateKey, fc.boolean()), {
+        maxLength: 4,
+        selector: ([key]) => key,
+      }),
+      decided: stateKeys,
+      unreadable: stateKeys,
+      unsynced: stateKeys,
+      boot: fc.constantFrom("b1", "b2"),
+    }),
+  },
+  {
+    weight: 1,
+    arbitrary: fc.record({
+      kind: fc.constant("forget-unreadable" as const),
+      key: stateKey,
+    }),
+  },
+  { weight: 1, arbitrary: fc.constant({ kind: "clear-unsynced" as const }) },
+  {
+    weight: 1,
+    arbitrary: fc.record({
+      kind: fc.constant("forget-unsynced" as const),
+      key: stateKey,
+    }),
+  },
+);
+
+function applyStep(
+  state: ReadModelState,
+  step: StateStep,
+  seqs: Map<string, number>,
+  cursor: number,
+): void {
+  switch (step.kind) {
+    case "commit": {
+      const id = `${step.namespace}/${step.partition}`;
+      const seq = (seqs.get(id) ?? 0) + 1;
+      seqs.set(id, seq);
+      const records = new Map<string, { sha256: string } | null>();
+      for (const key of step.removes) records.set(key, null);
+      for (const key of step.puts) {
+        records.set(key, { sha256: `${seq}`.padStart(64, "0") });
+      }
+      state.recordApplied({
+        namespace: step.namespace,
+        partition: step.partition,
+        seq,
+        cursor,
+        records,
+        versions: new Map(),
+        files: new Map(
+          step.files.map((
+            [key, present],
+          ) => [key, { owner: step.partition, mark: cursor, present }]),
+        ),
+        decided: new Set(step.decided),
+        unreadable: new Map(step.unreadable.map((key) => [key, {
+          namespace: step.namespace,
+          recordKey: key,
+          partition: step.partition,
+          seq,
+          position: cursor,
+          reason: "missing" as const,
+          lastAttempt: new Date(cursor),
+        }])),
+        ...(step.unsynced.length === 0
+          ? {}
+          : { unsynced: { keys: new Set(step.unsynced), boot: step.boot } }),
+      });
+      return;
+    }
+    case "forget-unreadable":
+      state.forgetUnreadable("", step.key);
+      return;
+    case "clear-unsynced":
+      state.clearUnsynced();
+      return;
+    case "forget-unsynced":
+      state.forgetUnsynced([{ namespace: "", record_key: step.key }]);
+      return;
+  }
+}
+
+function dumpState(path: string): Record<string, string[]> {
+  const db = new DatabaseSync(path, { readOnly: true });
+  try {
+    const tables = (db.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name",
+    ).all() as { name: string }[]).map((row) => row.name);
+    const dump: Record<string, string[]> = {};
+    for (const table of tables) {
+      dump[table] = (db.prepare(`SELECT * FROM "${table}"`).all())
+        .map((row) => JSON.stringify(row)).toSorted();
+    }
+    return dump;
+  } finally {
+    db.close();
+  }
+}
+
+Deno.test("ReadModelState.recordApplied: commits applied a batch at a time leave, at each batch's end, the same state as each in its own transaction (swamp-club#5094)", async () => {
+  await fc.assert(
+    fc.asyncProperty(
+      fc.array(fc.tuple(stateStep, fc.boolean()), {
+        minLength: 1,
+        maxLength: 30,
+      }),
+      async (steps) => {
+        const unbatched: Record<string, string[]>[] = [];
+        await withStatePath((path) => {
+          const state = ReadModelState.open(path, { pid: 7 });
+          const seqs = new Map<string, number>();
+          try {
+            steps.forEach(([step], i) => {
+              applyStep(state, step, seqs, i + 1);
+              unbatched.push(dumpState(path));
+            });
+          } finally {
+            state.close();
+          }
+        });
+        await withStatePath((path) => {
+          const state = ReadModelState.open(path, { pid: 7 });
+          const seqs = new Map<string, number>();
+          try {
+            let open = false;
+            steps.forEach(([step, endsBatch], i) => {
+              if (!open) {
+                state.beginBatch();
+                open = true;
+              }
+              applyStep(state, step, seqs, i + 1);
+              if (endsBatch || i === steps.length - 1) {
+                state.commitBatch();
+                open = false;
+                assertEquals(dumpState(path), unbatched[i], `after step ${i}`);
+              }
+            });
+          } finally {
+            state.close();
+          }
+        });
+      },
+    ),
+    { numRuns: 150 },
+  );
 });

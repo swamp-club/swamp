@@ -23,7 +23,11 @@
  * versions, applied seq and cursor land in one transaction
  */
 
-import { DatabaseSync, type StatementSync } from "node:sqlite";
+import {
+  DatabaseSync,
+  type SQLInputValue,
+  type StatementSync,
+} from "node:sqlite";
 import { dirname } from "@std/path";
 import { ensureDirSync } from "@std/fs";
 import {
@@ -373,7 +377,6 @@ export class ReadModelState {
   readonly #upsertMeta: StatementSync;
   readonly #selectApplied: StatementSync;
   readonly #upsertApplied: StatementSync;
-  readonly #upsertRecord: StatementSync;
   readonly #deleteRecord: StatementSync;
   readonly #selectRecords: StatementSync;
   readonly #selectRecord: StatementSync;
@@ -383,10 +386,10 @@ export class ReadModelState {
   readonly #deleteVersion: StatementSync;
   readonly #upsertVersion: StatementSync;
   readonly #selectOwnership: StatementSync;
-  readonly #upsertOwnership: StatementSync;
   readonly #insertUnsynced: StatementSync;
   readonly #upsertUnsyncedBoot: StatementSync;
   readonly #deleteUnreadable: StatementSync;
+  readonly #selectAnyUnreadable: StatementSync;
   readonly #upsertUnreadable: StatementSync;
   readonly #stageProgress: StatementSync;
   readonly #stageRecord: StatementSync;
@@ -396,6 +399,10 @@ export class ReadModelState {
   readonly #stageFile: StatementSync;
   #closed = false;
   #batchOpen = false;
+  readonly #rowStatements = new Map<string, StatementSync>();
+  // valid only while a batch holds the write lock; any rollback drops both
+  #unreadableIn: Map<string, boolean> | undefined;
+  #unsyncedBootInBatch: string | undefined;
   /**
    * keys with a present file by folded spelling, built from materialised_keys
    * on first use; recordApplied keeps it in step, anything else that rewrites
@@ -416,10 +423,6 @@ export class ReadModelState {
     this.#upsertApplied = db.prepare(
       "INSERT INTO partition_progress (namespace, partition, applied_seq) VALUES (?, ?, ?) " +
         "ON CONFLICT (namespace, partition) DO UPDATE SET applied_seq = excluded.applied_seq",
-    );
-    this.#upsertRecord = db.prepare(
-      "INSERT INTO live_records (namespace, partition, record_key, sha256, blob, access, writer) VALUES (?, ?, ?, ?, ?, ?, ?) " +
-        "ON CONFLICT (namespace, partition, record_key) DO UPDATE SET sha256 = excluded.sha256, blob = excluded.blob, access = excluded.access, writer = excluded.writer",
     );
     this.#deleteRecord = db.prepare(
       "DELETE FROM live_records WHERE namespace = ? AND partition = ? AND record_key = ?",
@@ -449,10 +452,6 @@ export class ReadModelState {
     this.#selectOwnership = db.prepare(
       "SELECT owner, mark, present FROM materialised_keys WHERE namespace = ? AND record_key = ?",
     );
-    this.#upsertOwnership = db.prepare(
-      "INSERT INTO materialised_keys (namespace, record_key, owner, mark, present) VALUES (?, ?, ?, ?, ?) " +
-        "ON CONFLICT (namespace, record_key) DO UPDATE SET owner = excluded.owner, mark = excluded.mark, present = excluded.present",
-    );
     this.#insertUnsynced = db.prepare(
       "INSERT OR IGNORE INTO unsynced_keys (namespace, record_key) VALUES (?, ?)",
     );
@@ -461,6 +460,9 @@ export class ReadModelState {
     );
     this.#deleteUnreadable = db.prepare(
       "DELETE FROM unreadable_records WHERE namespace = ? AND record_key = ?",
+    );
+    this.#selectAnyUnreadable = db.prepare(
+      "SELECT 1 FROM unreadable_records WHERE namespace = ? LIMIT 1",
     );
     this.#upsertUnreadable = db.prepare(
       "INSERT OR REPLACE INTO unreadable_records (namespace, record_key, partition, seq, position, blob, chunk, chunk_size, chunk_mtime, reason, last_attempt, access) " +
@@ -796,11 +798,12 @@ export class ReadModelState {
     this.#transaction(() => {
       const applied = this.appliedSeq(commit.namespace, commit.partition);
       if (commit.seq > applied) {
+        const puts: SQLInputValue[][] = [];
         for (const [key, record] of commit.records) {
           if (record === null) {
             this.#deleteRecord.run(commit.namespace, commit.partition, key);
           } else {
-            this.#upsertRecord.run(
+            puts.push([
               commit.namespace,
               commit.partition,
               key,
@@ -810,9 +813,10 @@ export class ReadModelState {
                 : JSON.stringify(record.blob.toJSON()),
               record.access ?? null,
               record.writer ?? null,
-            );
+            ]);
           }
         }
+        this.#runRows(UPSERT_RECORDS, puts);
         for (const [name, changes] of commit.versions) {
           for (const version of changes.removed) {
             this.#deleteVersion.run(
@@ -832,18 +836,23 @@ export class ReadModelState {
             );
           }
         }
+        const owned: SQLInputValue[][] = [];
         for (const [key, file] of commit.files ?? []) {
           ownershipChanged = true;
-          this.#upsertOwnership.run(
+          owned.push([
             commit.namespace,
             key,
             file.owner,
             file.mark,
             file.present ? 1 : 0,
-          );
+          ]);
         }
-        for (const key of commit.decided ?? []) {
-          this.#deleteUnreadable.run(commit.namespace, key);
+        this.#runRows(UPSERT_OWNERSHIP, owned);
+        const decided = commit.decided ?? NO_KEYS;
+        if (decided.size > 0 && this.#holdsUnreadable(commit.namespace)) {
+          for (const key of decided) {
+            this.#deleteUnreadable.run(commit.namespace, key);
+          }
         }
         for (const record of commit.unreadable?.values() ?? []) {
           this.#insertUnreadable(record);
@@ -908,6 +917,7 @@ export class ReadModelState {
    */
   reset(catalogGeneration: number, keepUnsynced = false): void {
     this.#foldedKeys = undefined;
+    this.#forgetBatchKnowledge();
     this.#transaction(() => {
       this.#db.exec(
         "INSERT OR IGNORE INTO load_touched_keys (namespace, record_key) " +
@@ -1179,6 +1189,7 @@ export class ReadModelState {
           AND m.owner = unreadable_records.partition
           AND m.mark = unreadable_records.position AND m.present = 1);
       `);
+      this.#forgetBatchKnowledge();
       for (const record of unreadable) this.#insertUnreadable(record);
       if (unsynced !== undefined && unsynced.keys.length > 0) {
         for (const { namespace, record_key } of unsynced.keys) {
@@ -1200,17 +1211,20 @@ export class ReadModelState {
     if (this.#batchOpen) throw new Error("A read model state batch is open");
     this.#db.exec("BEGIN IMMEDIATE");
     this.#batchOpen = true;
+    this.#forgetBatchKnowledge();
   }
 
   commitBatch(): void {
     this.#requireOpen();
     this.#db.exec("COMMIT");
     this.#batchOpen = false;
+    this.#forgetBatchKnowledge();
   }
 
   rollbackBatch(): void {
     if (!this.#batchOpen) return;
     this.#batchOpen = false;
+    this.#forgetBatchKnowledge();
     this.#foldedKeys = undefined;
     rollbackQuietly(this.#db);
   }
@@ -1445,6 +1459,7 @@ export class ReadModelState {
     keys: readonly { namespace: string; record_key: string }[],
   ): void {
     this.#transaction(() => {
+      this.#forgetBatchKnowledge();
       const remove = this.#db.prepare(
         "DELETE FROM unsynced_keys WHERE namespace = ? AND record_key = ?",
       );
@@ -1456,9 +1471,10 @@ export class ReadModelState {
   }
 
   clearUnsynced(): void {
-    this.#transaction(() =>
-      this.#db.exec("DELETE FROM unsynced_keys; DELETE FROM unsynced_boot;")
-    );
+    this.#transaction(() => {
+      this.#forgetBatchKnowledge();
+      this.#db.exec("DELETE FROM unsynced_keys; DELETE FROM unsynced_boot;");
+    });
   }
 
   recordWrittenFile(file: WrittenFile): void {
@@ -1529,11 +1545,53 @@ export class ReadModelState {
     keys: Iterable<string>,
     boot: string,
   ): void {
-    for (const key of keys) this.#insertUnsynced.run(namespace, key);
+    const rows: SQLInputValue[][] = [];
+    for (const key of keys) rows.push([namespace, key]);
+    this.#runRows(INSERT_UNSYNCED, rows);
+    if (this.#batchOpen && this.#unsyncedBootInBatch === boot) return;
     this.#upsertUnsyncedBoot.run(boot);
+    if (this.#batchOpen) this.#unsyncedBootInBatch = boot;
+  }
+
+  /**
+   * whether the namespace may hold an unreadable record; true is always safe.
+   * In a batch the answer is kept, since only this connection writes until
+   * it ends
+   */
+  #holdsUnreadable(namespace: string): boolean {
+    const known = this.#unreadableIn?.get(namespace);
+    if (known !== undefined) return known;
+    const holds = this.#selectAnyUnreadable.get(namespace) !== undefined;
+    this.#unreadableIn?.set(namespace, holds);
+    return holds;
+  }
+
+  /** one statement per chunk of rows, each of the shape's width */
+  #runRows(shape: RowsStatement, rows: readonly SQLInputValue[][]): void {
+    for (let start = 0; start < rows.length; start += MAX_ROWS_PER_STATEMENT) {
+      const chunk = rows.slice(start, start + MAX_ROWS_PER_STATEMENT);
+      const id = `${shape.head}#${chunk.length}`;
+      let statement = this.#rowStatements.get(id);
+      if (statement === undefined) {
+        const tuple = `(${new Array(shape.width).fill("?").join(", ")})`;
+        statement = this.#db.prepare(
+          `${shape.head} VALUES ${
+            new Array(chunk.length).fill(tuple).join(", ")
+          }${shape.tail}`,
+        );
+        this.#rowStatements.set(id, statement);
+      }
+      statement.run(...chunk.flat());
+    }
+  }
+
+  #forgetBatchKnowledge(): void {
+    this.#unreadableIn = this.#batchOpen ? new Map() : undefined;
+    this.#unsyncedBootInBatch = undefined;
   }
 
   #insertUnreadable(record: StoredUnreadableRecord): void {
+    this.#unreadableIn?.set(record.namespace, true);
     this.#upsertUnreadable.run(
       record.namespace,
       record.recordKey,
@@ -1587,6 +1645,7 @@ export class ReadModelState {
         body();
         this.#db.exec("RELEASE state_change");
       } catch (error) {
+        this.#forgetBatchKnowledge();
         try {
           this.#db.exec("ROLLBACK TO state_change");
           this.#db.exec("RELEASE state_change");
@@ -1616,6 +1675,37 @@ export class ReadModelState {
     if (this.#closed) throw new Error("The read model state is closed");
   }
 }
+
+interface RowsStatement {
+  readonly head: string;
+  readonly width: number;
+  readonly tail: string;
+}
+
+// 64 rows of the widest shape bind 448 values, far below SQLite's limit
+const MAX_ROWS_PER_STATEMENT = 64;
+
+const UPSERT_RECORDS: RowsStatement = {
+  head:
+    "INSERT INTO live_records (namespace, partition, record_key, sha256, blob, access, writer)",
+  width: 7,
+  tail:
+    " ON CONFLICT (namespace, partition, record_key) DO UPDATE SET sha256 = excluded.sha256, blob = excluded.blob, access = excluded.access, writer = excluded.writer",
+};
+
+const UPSERT_OWNERSHIP: RowsStatement = {
+  head:
+    "INSERT INTO materialised_keys (namespace, record_key, owner, mark, present)",
+  width: 5,
+  tail:
+    " ON CONFLICT (namespace, record_key) DO UPDATE SET owner = excluded.owner, mark = excluded.mark, present = excluded.present",
+};
+
+const INSERT_UNSYNCED: RowsStatement = {
+  head: "INSERT OR IGNORE INTO unsynced_keys (namespace, record_key)",
+  width: 2,
+  tail: "",
+};
 
 /** never a catalog's generation, which starts at 0 and only grows */
 export const REPLAY_PENDING = -1;
