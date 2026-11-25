@@ -1671,8 +1671,13 @@ changes.
    control-plane commits (workers, leases, tokens) never rebuild a policy.
    What follows from this:
    - under `--grant-reload manual` only the grant and group writes serve runs
-     itself are held; a forwarded member commit rebuilds the leader's policy
-     at once, which also releases its own held writes;
+     itself are held (its grant-file reconciles); a forwarded member commit
+     rebuilds the leader's policy at once, which also releases its own held
+     writes, and so does a run of the grant or group behavior through serve
+     (`swamp access grant create`/`revoke`, group commands, with `--server`):
+     serve rebuilds before it answers the run, and a failed rebuild fails it,
+     so a grant reported created is in force (on a follower the run narrows the
+     leader's release, and a widening waits for the leader's next release);
    - a follower lags its leader by the time to apply the release commit, and a
      follower's own `--grant-reload` has no effect on what it enforces;
    - a takeover releases held changes, as a leader restart does: the new
