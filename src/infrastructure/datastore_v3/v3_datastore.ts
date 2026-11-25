@@ -915,6 +915,7 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
     options.exclude,
   );
   try {
+    readModelState.close();
     return openFilterChecked(options, repoDir, datastorePath, readModelState);
   } catch (error) {
     // closing twice is harmless once the read model has taken the state
@@ -1002,7 +1003,6 @@ function openFilterChecked(
         chunkStore,
         cacheRoot: (ns) => v3CacheRoot(repoDir, ns),
         stateDir,
-        state: readModelState,
         catalog: new V3Catalog(catalogStore),
         // never written onto this checkout's local tier
         checkout: { namespace, admits },

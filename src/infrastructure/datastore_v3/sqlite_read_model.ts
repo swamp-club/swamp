@@ -696,7 +696,7 @@ export class SqliteReadModel implements ReadModel {
     if (!Number.isSafeInteger(pageSize) || pageSize < 1) {
       throw new Error(`pageSize must be a positive integer: ${pageSize}`);
     }
-    const state = options.state ?? ReadModelState.open(
+    const state = ReadModelState.open(
       join(options.stateDir, READ_MODEL_STATE_FILE),
       { pid: options.pid },
     );
