@@ -382,8 +382,11 @@ export interface OpenV3DatastoreOptions {
   readonly commitSection?: () =>
     | (<T>(land: () => Promise<T>) => Promise<T>)
     | undefined;
-  /** the tokens of the other processes writing this checkout */
-  readonly liveWriters?: () => Promise<ReadonlySet<string>>;
+  /**
+   * the other processes writing this checkout: each token with the writer
+   * instance its commits carry
+   */
+  readonly liveWriters?: () => Promise<ReadonlyMap<string, string>>;
   /**
    * throws when the writer lease was taken over or released; checked before
    * each commit is appended
@@ -682,6 +685,8 @@ export interface V3Datastore {
    */
   raiseWriterFence(fence: number): Promise<void>;
   writerFence(): number | undefined;
+  /** the writer instance this handle's commits carry */
+  readonly commitWriterInstance: string;
   /** run only while this process holds the writer lock */
   recoverInterruptedWriter(
     since: number,
@@ -1738,6 +1743,7 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
           v3ReplicaFor(datastorePath) !== undefined,
       });
     },
+    commitWriterInstance: writer.instance,
     writerFence() {
       return commitStore.writerFence();
     },

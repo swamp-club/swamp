@@ -99,6 +99,8 @@ export interface WriterMarker {
    * without it is an older swamp's, whose recovery walks the whole checkout
    */
   readonly journal?: number;
+  /** the writer instance the process's commits to this checkout carry */
+  readonly commits?: string;
 }
 
 /** what a writer marker's journal says this binary's writers record */
@@ -120,6 +122,7 @@ export function ownWriterMarkerPath(repoDir: string): string {
 export interface WriteWriterMarkerOptions
   extends Pick<DurableWriteBatchOptions, "syncFile" | "syncDirectory"> {
   readonly signal?: AbortSignal;
+  readonly commits?: string;
 }
 
 /**
@@ -138,6 +141,7 @@ export async function writeWriterMarker(
     process: local.identity,
     since: recoverySince(Date.now()),
     journal: WRITER_JOURNAL_VERSION,
+    ...(options.commits !== undefined ? { commits: options.commits } : {}),
   };
   await writeFileDurably(
     ownWriterMarkerPath(repoDir),
@@ -263,6 +267,9 @@ function parseWriterMarker(text: string): WriterMarker | undefined {
         since: value.since,
         ...(Number.isSafeInteger(value.journal)
           ? { journal: value.journal }
+          : {}),
+        ...(typeof value.commits === "string"
+          ? { commits: value.commits }
           : {}),
       };
     }
@@ -423,16 +430,20 @@ async function judgeMarkers(
   }));
 }
 
-/** the other processes writing the checkout, by their markers */
+/**
+ * the other processes writing the checkout, by their markers: each token with
+ * the writer instance its commits carry
+ */
 export async function otherLiveWriters(
   repoDir: string,
-): Promise<ReadonlySet<string>> {
+): Promise<ReadonlyMap<string, string>> {
   const judged = await judgeMarkers(repoDir, await localProcess());
-  const live = new Set<string>();
+  const live = new Map<string, string>();
   for (const marker of judged) {
     if (marker.state !== "live" || marker.file.kind !== "marker") continue;
-    if (marker.file.marker.instance !== undefined) {
-      live.add(marker.file.marker.instance);
+    const { instance, commits } = marker.file.marker;
+    if (instance !== undefined && commits !== undefined) {
+      live.set(instance, commits);
     }
   }
   return live;

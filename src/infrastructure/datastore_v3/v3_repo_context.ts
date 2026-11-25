@@ -1027,14 +1027,14 @@ async function takeTeardownSections(): Promise<
         },
       });
     } catch (error) {
-      if (error instanceof V3WriterBusyError) {
-        if (dropped) {
-          logger
-            .info`Work this command dropped stays in ${writer.repoDir} until the next command recovers it: another process holds the v3 writer lease`;
-        }
-        continue;
+      // the close goes on without this section: its releases must still run
+      if (dropped) {
+        logger
+          .info`Work this command dropped stays in ${writer.repoDir} until the next command recovers it: ${error}`;
+      } else if (!(error instanceof V3WriterBusyError)) {
+        logger.debug`No teardown section for ${writer.repoDir}: ${error}`;
       }
-      throw error;
+      continue;
     }
     sections.push({ handle, release });
   }
@@ -1889,7 +1889,9 @@ async function recoverAndMarkTraced(
   // other processes' markers stay: their writers may yet leave uncommitted
   // files; an unreadable one was recovered above
   if (!await holdsOwnWriterMarker(repoDir)) {
-    await writeWriterMarker(repoDir);
+    await writeWriterMarker(repoDir, {
+      commits: handle.commitWriterInstance,
+    });
   }
 }
 

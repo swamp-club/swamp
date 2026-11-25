@@ -1077,3 +1077,60 @@ Deno.test({
     });
   },
 });
+
+Deno.test({
+  name:
+    "v3 local commit sections: a catch-up applies another checkout's newer commit under a scope a live writer journaled and already committed",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withV3RowRepos({}, async (repos, datastorePath) => {
+      await closeV3Datastores();
+      const long = startWriter("long");
+      const reader = startWriter("reader");
+      const other = startWriter("other");
+      try {
+        const type = repos.modelType.normalized;
+        await opened(reader, repos.repoA, type);
+        await opened(long, repos.repoA, type);
+        // a long run commits B by a checkpoint, lets B's lock go, and runs on
+        long.send({
+          kind: "write",
+          id: "b1",
+          model: "b",
+          data: "d-b",
+          checkpointOnly: true,
+          pause: true,
+        });
+        await long.seen((m) => "paused" in m, "b1 committed, the run goes on");
+        await copy(join(repos.repoA, "models"), join(repos.repoB, "models"), {
+          overwrite: true,
+        });
+        await opened(other, repos.repoB, type);
+        other.send({
+          kind: "write",
+          id: "b2",
+          model: "b",
+          data: "d-b",
+          lock: true,
+        });
+        assertEquals(await written(other, "b2"), 2);
+        reader.send({ kind: "catchUp" });
+        await reader.seen((m) => "caughtUp" in m, "the reader caught up");
+        assertEquals(
+          await latestOf(repos.repoA, "d-b"),
+          "2",
+          "the other checkout's commit is applied, not kept out as the run's",
+        );
+        long.send({ kind: "resume", id: "b1" });
+        await written(long, "b1");
+        for (const writer of [long, reader, other]) await closed(writer);
+        await assertCheckoutsAgree(repos, datastorePath, "after the long run");
+      } finally {
+        long.stop();
+        reader.stop();
+        other.stop();
+      }
+    });
+  },
+});

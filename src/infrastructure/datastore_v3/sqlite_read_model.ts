@@ -328,7 +328,7 @@ export interface SqliteReadModelOptions {
    * the files under their journaled scopes, which their own commits write, or
    * their recovery restores
    */
-  readonly liveWriters?: () => Promise<ReadonlySet<string>>;
+  readonly liveWriters?: () => Promise<ReadonlyMap<string, string>>;
   /** MAX_TARGETED_SHARE by default; a benchmark lifts it to compare */
   readonly targetedShare?: number;
   /** TARGETED_COMMITS_CEILING by default */
@@ -531,8 +531,10 @@ export class SqliteReadModel implements ReadModel {
   readonly #writerInstance: string | undefined;
   readonly #holdsOwnWork: ((commit: Commit) => boolean) | undefined;
   readonly #ownWorkApplied: ((commit: Commit) => void) | undefined;
-  readonly #liveWriters: (() => Promise<ReadonlySet<string>>) | undefined;
-  #othersWork: readonly TouchedScope[] = [];
+  readonly #liveWriters:
+    | (() => Promise<ReadonlyMap<string, string>>)
+    | undefined;
+  #othersWork: readonly { scope: TouchedScope; commits: string }[] = [];
   readonly #targetedShare: number;
   readonly #targetedCommitsCeiling: number;
   /**
@@ -2809,17 +2811,25 @@ export class SqliteReadModel implements ReadModel {
    * barrier; on failure earlier commits are kept, and if the barrier fails too
    * the page rolls back and the apply failure is still thrown
    */
-  async #othersJournaled(): Promise<readonly TouchedScope[]> {
+  async #othersJournaled(): Promise<
+    readonly { scope: TouchedScope; commits: string }[]
+  > {
     if (this.#liveWriters === undefined) return [];
     const live = await this.#liveWriters();
     if (live.size === 0) return [];
     const rows = this.#catalog.dirtyTracking?.()?.touchedScopes() ?? [];
-    return rows.filter((row) => live.has(row.instance));
+    return rows.flatMap((row) => {
+      const commits = live.get(row.instance);
+      return commits === undefined ? [] : [{ scope: row, commits }];
+    });
   }
 
-  #othersWrite(namespace: string, key: string): boolean {
-    return this.#othersWork.some((row) =>
-      row.namespace === namespace && scopeCovers(row.scope, key)
+  // a journal row outlives its writer's lock: only that writer's own commits
+  // are its files to keep, another's newer commit is applied
+  #othersWrite(namespace: string, key: string, commit: Commit): boolean {
+    return this.#othersWork.some(({ scope, commits }) =>
+      commit.writer.instance === commits && scope.namespace === namespace &&
+      scopeCovers(scope.scope, key)
     );
   }
 
@@ -3043,7 +3053,7 @@ export class SqliteReadModel implements ReadModel {
             touched,
             touchedFolded,
             unreadable,
-            ownWork || this.#othersWrite(namespace, key),
+            ownWork || this.#othersWrite(namespace, key, commit),
           );
         } finally {
           this.#rewritten = undefined;

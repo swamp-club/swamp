@@ -88,6 +88,8 @@ export type LocalWriterRequest =
     readonly lock?: boolean;
     /** saved, committed by a checkpoint, then saved again in the same unit */
     readonly checkpointed?: boolean;
+    /** saved and committed by a checkpoint, the unit then held open unwritten */
+    readonly checkpointOnly?: boolean;
     /** padding past the inline limit, so the content is stored as chunks */
     readonly pad?: string;
   }
@@ -297,6 +299,9 @@ export const localWriterHost: ProcessHost<
             version = saved.version;
           };
           await saveOnce();
+          if (request.checkpointOnly === true) {
+            await checkpointOpenUnitOfWork(context.repoContext);
+          }
           if (request.checkpointed === true) {
             await checkpointOpenUnitOfWork(context.repoContext);
             await saveOnce();
