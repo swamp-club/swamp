@@ -40,6 +40,7 @@ import {
 import {
   type PartitionKey,
   partitionOf,
+  RUN_PARTITION_RANGE,
 } from "../../domain/datastore_v3/partition_key.ts";
 import { CommitRejectedError } from "../../domain/datastore_v3/partition.ts";
 import { RecordKey } from "../../domain/datastore_v3/record_key.ts";
@@ -69,6 +70,7 @@ import {
   COMMIT_STORE_SCHEMA_VERSION,
   CommitStoreTruncateRefusedError,
   ObservedBaseStaging,
+  RUN_PARTITIONS_SQL,
   SqliteCommitStore,
   type SqliteCommitStoreOptions,
   stopAutoCheckpointAt,
@@ -2653,5 +2655,49 @@ Deno.test("SqliteCommitStore.runPartitionsOf: finds a run's partition by its id 
       store.runPartitionsOf("acme", otherRunId).map(String),
       [otherRun.toString()],
     );
+  });
+});
+
+Deno.test("SqliteCommitStore.runPartitionsOf: reads a run's rows through the run-tail index, not every run's head", async () => {
+  await withStore(async (store, path) => {
+    const workflowId = "0b6c4bb4-9d61-4f0c-9a43-6f0c1f7b2a82";
+    let last = "";
+    for (let i = 0; i < 200; i++) {
+      const runId = crypto.randomUUID();
+      last = runId;
+      const start = await putOp({
+        intent: createIntent({
+          kind: "run-start.save",
+          run: { workflowId, runId },
+        }),
+        key: RecordKey.create(`workflow-runs/${workflowId}/starts/${runId}/a`),
+        inline: btoa("a"),
+      });
+      await store.append(
+        modelCommit(1, [start], {
+          partition: partitionOf({ kind: "run", workflowId, runId }),
+          fence: 1,
+          txnId: `run-${i}`,
+        }),
+      );
+    }
+    assertEquals(store.runPartitionsOf("", last).length, 1);
+    const db = new DatabaseSync(path, { readOnly: true });
+    try {
+      const plan = db.prepare(`EXPLAIN QUERY PLAN ${RUN_PARTITIONS_SQL}`).all(
+        "",
+        last,
+        RUN_PARTITION_RANGE.from,
+        RUN_PARTITION_RANGE.to,
+      ) as { detail: string }[];
+      assertEquals(
+        plan.map((row) => row.detail),
+        [
+          "SEARCH partition_heads USING INDEX partition_heads_by_tail (namespace=? AND <expr>=?)",
+        ],
+      );
+    } finally {
+      db.close();
+    }
   });
 });

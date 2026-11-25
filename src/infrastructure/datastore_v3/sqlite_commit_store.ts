@@ -566,6 +566,11 @@ const MIGRATIONS: readonly SqliteMigration[] = [
       ) STRICT, WITHOUT ROWID;
     `);
   },
+  // a run lock knows only the run id, the tail of its partition key
+  `
+  CREATE INDEX IF NOT EXISTS partition_heads_by_tail
+    ON partition_heads (namespace, substr(partition, -36));
+  `,
 ];
 
 /** The owner row of `db` (swamp-club#4063), undefined when it holds none. */
@@ -642,6 +647,11 @@ export const COMMIT_STORE_SCHEMA_NEWER_CODE = "datastore_v3_schema_newer";
 
 /** The schema version this store writes. */
 export const COMMIT_STORE_SCHEMA_VERSION = MIGRATIONS.length;
+
+/** by partition_heads_by_tail, so a lookup reads only the run's own rows */
+export const RUN_PARTITIONS_SQL =
+  "SELECT partition FROM partition_heads WHERE namespace = ? " +
+  "AND substr(partition, -36) = ? AND partition >= ? AND partition < ?";
 
 /** How many rebuilt partitions a store keeps by default. */
 export const DEFAULT_CACHED_PARTITIONS = 1024;
@@ -2931,13 +2941,12 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
   runPartitionsOf(namespace: string, runId: string): readonly PartitionKey[] {
     this.#assertOpen();
     const rows = this.#db.prepare(
-      "SELECT partition FROM partition_heads WHERE namespace = ? " +
-        "AND partition >= ? AND partition < ? AND substr(partition, -36) = ?",
+      RUN_PARTITIONS_SQL,
     ).all(
       namespace,
+      runId.toLowerCase(),
       RUN_PARTITION_RANGE.from,
       RUN_PARTITION_RANGE.to,
-      runId.toLowerCase(),
     ) as { partition: string }[];
     return rows.map((row) => PartitionKey.parse(row.partition));
   }

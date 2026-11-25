@@ -311,6 +311,11 @@ export const localWriterHost: ProcessHost<
       definitionId: model.id,
       methodName: OUTPUT_METHOD,
       status: request.status,
+      provenance: {
+        definitionHash: "hash",
+        modelVersion: "2026.01.01.1",
+        triggeredBy: "manual",
+      },
     });
     const save = () =>
       runInRootUnitOfWork(
