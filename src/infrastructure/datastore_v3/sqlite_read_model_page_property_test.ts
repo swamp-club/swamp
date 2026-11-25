@@ -91,6 +91,8 @@ class Versions {
 
 // the stat columns name the copy's inodes, not what the read model decided
 const STAT_COLUMNS = new Set(["ino", "dev", "mtime", "ctime"]);
+// when each catalog started tracking, a clock reading
+const TRACKING_START = /_tracking_since$/;
 
 function dumpDatabase(path: string): Record<string, string[]> {
   const db = new DatabaseSync(path, { readOnly: true });
@@ -103,7 +105,7 @@ function dumpDatabase(path: string): Record<string, string[]> {
       dump[table] = (db.prepare(`SELECT * FROM "${table}"`).all() as Record<
         string,
         unknown
-      >[]).map((row) =>
+      >[]).filter((row) => !TRACKING_START.test(String(row.key))).map((row) =>
         JSON.stringify(
           Object.entries(row).filter(([column]) => !STAT_COLUMNS.has(column)),
         )
