@@ -382,6 +382,8 @@ export interface WorkerGatewayOptions {
   ) => Promise<MaxEnrollments | null>;
   /** publishes worker records written outside a run, so a peer's pull sees a live enrollment */
   pushWorkerRecords?: () => Promise<void>;
+  /** whether the serve owning a stored worker record still runs; absent, every owner counts as alive */
+  workerOwnerAlive?: (owner: OrchestratorOwner) => Promise<boolean>;
 }
 
 interface SocketState {
@@ -465,6 +467,7 @@ export class WorkerGateway {
         options.repoContext,
         methodRunnerWorkerStatusStore(this.#runModelMethod),
         this.#ensureWorkerDefinition,
+        options.workerOwnerAlive,
       );
     const owner = options.owner;
     const stamp = (args: SetStatusArgs) =>

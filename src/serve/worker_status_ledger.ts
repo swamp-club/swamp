@@ -34,6 +34,7 @@ import {
   workerModel,
   WorkerStateSchema,
 } from "../domain/models/worker/worker_model.ts";
+import type { OrchestratorOwner } from "../domain/models/worker/orchestrator_owner.ts";
 import { runInRootUnitOfWork } from "../infrastructure/persistence/repo_unit_of_work.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import { withSpan } from "../infrastructure/tracing/mod.ts";
@@ -75,6 +76,7 @@ export class WorkerStatusLedger implements WorkerStatusStore {
   >;
   readonly #fallback: WorkerStatusStore;
   readonly #ensureDefinition?: (workerName: string) => Promise<void>;
+  readonly #ownerAlive?: (owner: OrchestratorOwner) => Promise<boolean>;
 
   constructor(
     repoContext: Pick<
@@ -83,10 +85,12 @@ export class WorkerStatusLedger implements WorkerStatusStore {
     >,
     fallback: WorkerStatusStore,
     ensureDefinition?: (workerName: string) => Promise<void>,
+    ownerAlive?: (owner: OrchestratorOwner) => Promise<boolean>,
   ) {
     this.#repoContext = repoContext;
     this.#fallback = fallback;
     this.#ensureDefinition = ensureDefinition;
+    this.#ownerAlive = ownerAlive;
   }
 
   // read-then-write with no compare-and-swap: the gateway orders a worker's changes
@@ -115,17 +119,23 @@ export class WorkerStatusLedger implements WorkerStatusStore {
       { "swamp.worker.status": args.status },
       async () => {
         const decided: { value: ReassertDecision } = { value: "keep" };
-        const wrote = await this.#write(workerName, args, live, (stored) => {
-          const parsed = stored === null
-            ? null
-            : WorkerStateSchema.safeParse(stored);
-          // a malformed record says nothing about the worker, so it is rewritten
-          decided.value = reassertDecision(
-            parsed?.success === true ? parsed.data : null,
-            live,
-          );
-          return decided.value === "rewrite";
-        });
+        const wrote = await this.#write(
+          workerName,
+          args,
+          live,
+          (stored, storedOwnerAlive) => {
+            const parsed = stored === null
+              ? null
+              : WorkerStateSchema.safeParse(stored);
+            // a malformed record says nothing about the worker, so it is rewritten
+            decided.value = reassertDecision(
+              parsed?.success === true ? parsed.data : null,
+              live,
+              storedOwnerAlive,
+            );
+            return decided.value === "rewrite";
+          },
+        );
         // a departure over another instance's record is skipped, so nothing was restored
         return decided.value === "rewrite" && !wrote ? "keep" : decided.value;
       },
@@ -136,7 +146,10 @@ export class WorkerStatusLedger implements WorkerStatusStore {
     workerName: string,
     args: SetStatusArgs,
     live: WorkerEnrollment | undefined,
-    shouldWrite: (stored: Record<string, unknown> | null) => boolean,
+    shouldWrite: (
+      stored: Record<string, unknown> | null,
+      storedOwnerAlive: boolean,
+    ) => boolean,
   ): Promise<boolean> {
     const definitionName = workerDefinitionName(workerName);
     let definition = await this.#repoContext.definitionRepo.findByName(
@@ -148,7 +161,7 @@ export class WorkerStatusLedger implements WorkerStatusStore {
       if (args.status === "disconnected" || args.status === "draining") {
         return false;
       }
-      if (!shouldWrite(null)) return false;
+      if (!shouldWrite(null, true)) return false;
       if (this.#ensureDefinition !== undefined) {
         await this.#ensureDefinition(workerName);
         definition = await this.#repoContext.definitionRepo.findByName(
@@ -181,13 +194,15 @@ export class WorkerStatusLedger implements WorkerStatusStore {
           resources,
         );
         const stored = await read(WORKER_STATE_DATA_NAME);
-        if (!shouldWrite(stored)) return;
+        const storedOwnerAlive = await this.#storedOwnerAlive(stored, live);
+        if (!shouldWrite(stored, storedOwnerAlive)) return;
         const base = statusWriteBase(
           definitionName,
           stored,
           args,
           live,
           new Date(),
+          storedOwnerAlive,
         );
         if (base.kind === "skip") return;
         const { writeResource } = createResourceWriter(
@@ -210,5 +225,23 @@ export class WorkerStatusLedger implements WorkerStatusStore {
       },
     );
     return wrote;
+  }
+
+  /** an owner that cannot be judged counts as alive, so its record is left alone */
+  async #storedOwnerAlive(
+    stored: Record<string, unknown> | null,
+    live: WorkerEnrollment | undefined,
+  ): Promise<boolean> {
+    const ownerAlive = this.#ownerAlive;
+    if (ownerAlive === undefined || stored === null) return true;
+    const parsed = WorkerStateSchema.safeParse(stored);
+    const owner = parsed.success ? parsed.data.owner : undefined;
+    if (owner === undefined || live?.owner === undefined) return true;
+    if (owner.instanceId === live.owner.instanceId) return true;
+    try {
+      return await ownerAlive(owner);
+    } catch {
+      return true;
+    }
   }
 }

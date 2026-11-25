@@ -545,3 +545,22 @@ Deno.test("statusWriteBase: a malformed stored record is rebuilt for an in-pool 
     { kind: "skip" },
   );
 });
+
+Deno.test("statusWriteBase and reassertDecision: a record a dead serve left is taken over", () => {
+  const thisServe = { instanceId: "serve-a", pid: 10 };
+  const deadServe = { instanceId: "serve-gone", pid: 30 };
+  const live = { ...liveEnrollment, owner: thisServe };
+  const left = { ...storedState("uuid-old", "idle"), owner: deadServe };
+  assertEquals(
+    statusWriteBase("worker-w", left, { status: "busy" }, live, at, false)
+      .kind,
+    "write",
+  );
+  assertEquals(
+    statusWriteBase("worker-w", left, { status: "busy" }, live, at, true),
+    { kind: "skip" },
+  );
+  const parsed = WorkerStateSchema.parse(left);
+  assertEquals(reassertDecision(parsed, live, false), "rewrite");
+  assertEquals(reassertDecision(parsed, live, true), "live_elsewhere");
+});

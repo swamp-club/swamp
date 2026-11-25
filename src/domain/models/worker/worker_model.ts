@@ -201,6 +201,7 @@ export function statusWriteBase(
   args: SetStatusArgs,
   live: WorkerEnrollment | undefined,
   now: Date,
+  storedOwnerAlive = true,
 ): StatusWriteBase {
   if (live === undefined) {
     return {
@@ -223,7 +224,9 @@ export function statusWriteBase(
   }
   if (sameInstance) return { kind: "write", base: current };
   // another serve's live worker of the same name keeps its record
-  if (current !== null && liveElsewhere(current, live)) return { kind: "skip" };
+  if (current !== null && storedOwnerAlive && liveElsewhere(current, live)) {
+    return { kind: "skip" };
+  }
   return { kind: "write", base: enrolledWorkerState(live, now) };
 }
 
@@ -247,6 +250,7 @@ export type ReassertDecision = "rewrite" | "keep" | "live_elsewhere";
 export function reassertDecision(
   stored: WorkerState | null,
   live: WorkerEnrollment,
+  storedOwnerAlive = true,
 ): ReassertDecision {
   if (stored === null) return "rewrite";
   if (stored.instanceUuid === live.instanceUuid) {
@@ -255,7 +259,10 @@ export function reassertDecision(
       ? "rewrite"
       : "keep";
   }
-  return liveElsewhere(stored, live) ? "live_elsewhere" : "rewrite";
+  // a record a dead serve left says nothing about a live worker
+  return storedOwnerAlive && liveElsewhere(stored, live)
+    ? "live_elsewhere"
+    : "rewrite";
 }
 
 async function setStatus(

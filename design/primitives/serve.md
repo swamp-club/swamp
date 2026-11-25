@@ -721,6 +721,12 @@ with another mint's secret (swamp-club#2482):
   ten minutes (`STALE_COPY_KEEP_MS`), and then closes as `rotated`; an older
   session closes at once. A record with no fingerprint, or a secret that cannot
   be read, closes the session as before.
+- **A writer that lost the lock.** The name lock can be lost by a writer frozen
+  past its lifetime while another rotates. `mint` and `rotate` therefore read
+  the secret before writing it and again before writing the record, and stop
+  with `ServerTokenConcurrentChangeError` if another writer changed it in
+  between, so a record is written only next to its own secret. A token whose
+  pair already disagrees still rotates: rotation is its repair.
 - **Reveal through serve.** `access.token.reveal` runs the same reveal as the
   local command on serve, for a caller with `admin` on `access:*`. A follower
   forwards it to the leader, which has applied every mint and rotate, and it is

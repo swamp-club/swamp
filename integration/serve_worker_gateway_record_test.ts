@@ -71,6 +71,7 @@ interface Harness {
   repoContext: RepositoryContext;
   gateway: WorkerGateway;
   pushes: () => number;
+  peerAlive: { value: boolean };
   token: string;
   name: string;
 }
@@ -128,7 +129,9 @@ async function withGateway(
     provider,
   );
   let pushes = 0;
+  const peerAlive = { value: true };
   const gateway = new WorkerGateway({
+    workerOwnerAlive: () => Promise.resolve(peerAlive.value),
     repoDir,
     repoContext,
     capabilityService: { registerHandlers: () => {} },
@@ -147,6 +150,7 @@ async function withGateway(
       repoContext,
       gateway,
       pushes: () => pushes,
+      peerAlive,
       token,
       name,
     });
@@ -561,5 +565,18 @@ Deno.test("WorkerGateway on a repo: a stopping serve refuses a new enrollment wi
     assertEquals(refusal.code, "serve_stopping");
     await h.gateway.settled();
     assertEquals(await stored(h), null);
+  });
+});
+
+Deno.test("WorkerGateway on a repo: a record a dead serve left is restored from the live connection", async () => {
+  await withGateway(async (h) => {
+    const live = crypto.randomUUID();
+    const { channel } = connectWorker(h.gateway);
+    await enroll(channel, h.token, live);
+    await h.gateway.settled();
+    await overwrite(h, crypto.randomUUID(), "idle");
+    h.peerAlive.value = false;
+    assertEquals(await h.gateway.reassertConnected(), 1);
+    assertEquals((await stored(h))?.instanceUuid, live);
   });
 });

@@ -572,6 +572,7 @@ import { ActiveRunRegistry } from "../../serve/active_run_registry.ts";
 import { ServeAdmission } from "../../serve/serve_admission.ts";
 import { checkReusePortListen } from "../../infrastructure/runtime/reuse_port_check.ts";
 import {
+  type PendingOwnerAlive,
   pendingOwnerLiveness,
   PendingReplaySweep,
   withStoreDeadline,
@@ -2776,7 +2777,11 @@ export const serveCommand = new Command()
       : undefined;
     // Armed detached so the keeper's checks never join swamp.cli's trace.
     runDetached(() => gatePassKeeper?.start(GATE_PASS_KEEPER_INTERVAL_MS));
+    // bound once boot builds the owner check below
+    let workerOwnerAlive: PendingOwnerAlive | undefined;
     const workerGateway = new WorkerGateway({
+      workerOwnerAlive: (owner) =>
+        workerOwnerAlive?.(owner) ?? Promise.resolve(true),
       acceptsWorkers: () => !isFollowing(),
       owner: pendingRunOwner,
       repoDir: resolvedRepoDir,
@@ -4834,6 +4839,7 @@ export const serveCommand = new Command()
       });
     const bootOwnerAlive = ownerLiveness("gone");
     const sweepOwnerAlive = ownerLiveness("alive");
+    workerOwnerAlive = sweepOwnerAlive;
     // queued and parked runs only: serve beats before it queues or parks any
     const bootRunOwnerAlive = ownerLiveness("gone", true);
     const sweepRunOwnerAlive = ownerLiveness("alive", true);

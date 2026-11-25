@@ -160,6 +160,36 @@ export class ServerTokenSecretMismatchError extends Error {
 }
 
 /**
+ * another writer changed the token's secret while this one ran without its
+ * lock; this one wrote nothing further, so the token stays the other writer's
+ */
+export class ServerTokenConcurrentChangeError extends Error {
+  constructor(name: string) {
+    super(
+      `Server token '${name}' was changed by another operation while this one ` +
+        `ran, so this one kept nothing — check the token and try again`,
+    );
+    this.name = "ServerTokenConcurrentChangeError";
+  }
+}
+
+async function readSecretOrNull(
+  context: MethodContext,
+  vaultName: string,
+  secretKey: string,
+): Promise<string | null> {
+  try {
+    return await context.vaultService!.get(
+      vaultName,
+      secretKey,
+      "model:server-token-write",
+    );
+  } catch {
+    return null;
+  }
+}
+
+/**
  * record and secret live in separate stores, so two writers of one name can
  * leave mismatched mints; a record without a fingerprint predates the check and
  * passes
@@ -231,6 +261,12 @@ async function mint(
   const secretKey = serverTokenSecretKey(name);
   const plaintext = generateOpaqueToken();
   await context.vaultService.put(args.vaultName, secretKey, plaintext);
+  // a writer that took the lock this one lost has replaced the secret
+  if (
+    await readSecretOrNull(context, args.vaultName, secretKey) !== plaintext
+  ) {
+    throw new ServerTokenConcurrentChangeError(name);
+  }
 
   const now = Date.now();
   const durationMs = args.durationMs ?? DEFAULT_DURATION_MS;
@@ -301,11 +337,27 @@ async function rotate(
     throw new Error("Rotating a server token requires a vault service");
   }
   const existing = await readToken(context);
+  // read with the record, so a secret another writer moved on is seen below;
+  // a pair already mismatched still rotates, since rotation is its repair
+  const before = await readSecretOrNull(
+    context,
+    existing.vaultName,
+    existing.secretKey,
+  );
   const name = context.definition.name;
   const secretKey = serverTokenSecretKey(name);
   const plaintext = generateOpaqueToken();
   const vaultName = args.vaultName ?? existing.vaultName;
+  if (
+    await readSecretOrNull(context, existing.vaultName, existing.secretKey) !==
+      before
+  ) {
+    throw new ServerTokenConcurrentChangeError(name);
+  }
   await context.vaultService.put(vaultName, secretKey, plaintext);
+  if (await readSecretOrNull(context, vaultName, secretKey) !== plaintext) {
+    throw new ServerTokenConcurrentChangeError(name);
+  }
 
   const now = Date.now();
   const durationMs = args.durationMs ?? DEFAULT_DURATION_MS;
