@@ -901,7 +901,7 @@ Deno.test({
 
 Deno.test({
   name:
-    "team-mode reads: a catch-up fetches another member's new chunks together, not one at a time",
+    "team-mode reads: a lazy catch-up of another member's new data owes its content instead of fetching it, and a read hydrates it",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
@@ -955,15 +955,8 @@ Deno.test({
           parentNames.set(span.spanContext().spanId, span.name);
         }
       });
-      // all four fetched ahead in one batch read, before the page applied any
-      assertEquals(
-        fetches.map((span) => span.attributes["http.route"]),
-        ["chunks/batch"],
-      );
-      assertEquals(
-        fetches.map((span) => parentNames.get(parentIdOf(span))),
-        ["swamp.datastore.v3.readmodel.prefetch"],
-      );
+      // the catch-up owes the four contents: nothing is fetched until a read
+      assertEquals(fetches, []);
       assertEquals(await copyChunkFiles(member.client.repoDir), 0);
       const paths = await readCommand(
         member.scratch,
