@@ -701,7 +701,13 @@ export function v3DatastoreFor(
     });
     repoState().opened.set(key, handle);
     const opened = handle;
-    const lazy = lazyModelFilesOf(config) ? lazyHydrationOf(opened) : undefined;
+    // registered while it still owes files, lazy or not: a checkout switched to
+    // full keeps hydrating what it owed before
+    const candidate = lazyHydrationOf(opened);
+    const lazy = candidate !== undefined &&
+        (lazyModelFilesOf(config) || candidate.owedCount() > 0)
+      ? candidate
+      : undefined;
     if (lazy !== undefined) {
       repoState().lazyCheckouts.set(key, {
         path: resolve(config.path),

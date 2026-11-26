@@ -127,7 +127,7 @@ export async function drainOwedWithin(
   return { hydrated, left };
 }
 
-/** a pass that hydrates nothing while files are still owed fails the drain */
+/** a pass that leaves as many files owed as before it fails the drain */
 export async function drainAllOwed(
   lazies: readonly LazyHydration[],
   signal: AbortSignal,

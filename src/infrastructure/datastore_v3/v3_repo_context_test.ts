@@ -118,6 +118,8 @@ import {
   ReadModelBusyError,
 } from "../../domain/datastore_v3/read_model.ts";
 import { readModelStateDir } from "./record_path_guard.ts";
+import { ReadModelState } from "./read_model_state.ts";
+import { READ_MODEL_STATE_FILE } from "./sqlite_read_model.ts";
 import { READ_MODEL_LOCK_FILE } from "./sqlite_read_model.ts";
 import { DatabaseSync } from "node:sqlite";
 import {
@@ -2123,4 +2125,41 @@ Deno.test("drainAllV3Owed: drains every file the lazy checkouts owe", async () =
     left: 0,
   });
   assertEquals(first.lazy.owedCount() + second.lazy.owedCount(), 0);
+});
+
+Deno.test("v3DatastoreFor: a checkout opened without lazy model files still drains the files it owed before (swamp-club#5108)", async () => {
+  await withTempDir(async (dir) => {
+    const datastorePath = join(dir, "datastore");
+    const repoDir = join(dir, "repo");
+    await initializeV3Datastore(datastorePath, "test");
+    const config = { type: "filesystem" as const, path: datastorePath };
+    v3DatastoreFor(repoDir, config);
+    await closeV3Datastores();
+    const statePath = join(readModelStateDir(repoDir), READ_MODEL_STATE_FILE);
+    const state = ReadModelState.open(statePath);
+    try {
+      state.oweFiles([{
+        namespace: "",
+        recordKey:
+          "data/test/model/00000000-0000-4000-8000-000000000001/x/1/raw",
+        owner: "model:test/model:00000000-0000-4000-8000-000000000001",
+        mark: 1,
+        content: { inline: btoa("x") },
+      }]);
+    } finally {
+      state.close();
+    }
+    v3DatastoreFor(repoDir, config);
+    try {
+      await drainAllV3Owed(AbortSignal.timeout(30_000));
+    } finally {
+      await closeV3Datastores();
+    }
+    const after = ReadModelState.open(statePath);
+    try {
+      assertEquals(after.owedCount(), 0);
+    } finally {
+      after.close();
+    }
+  });
 });
