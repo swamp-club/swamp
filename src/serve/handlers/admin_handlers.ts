@@ -2781,6 +2781,7 @@ export async function handleWorkerTokenCreate(
             // resolveVaultName count _token-secrets with user vaults and fail
             vaultName: payload.vaultName ?? TOKEN_SECRETS_VAULT_NAME,
             maxEnrollments: payload.maxEnrollments,
+            labels: payload.labels,
           }),
           withDefaults({
             completed: (e) => {

@@ -65,12 +65,15 @@ import type { OrchestratorOwner } from "../domain/models/worker/orchestrator_own
 import {
   admitsMachine,
   deliverablePredecessor,
+  effectiveWorkerLabels,
   ENROLLMENT_TOKEN_MODEL_TYPE,
   type EnrollmentBindingCutoffCause,
   enrollmentMintFor,
   type EnrollmentToken,
   enrollmentTokenClosed,
   EnrollmentTokenSchema,
+  LABEL_CONFLICT_PHRASE,
+  LABEL_RESERVED_PHRASE,
   type MaxEnrollments,
   presentedTokenMint,
 } from "../domain/models/worker/enrollment_token_model.ts";
@@ -106,6 +109,9 @@ const TOKEN_DATA_NAME = "token-main";
  * redeem_failed with a generic message: a vault error names serve's paths
  */
 const REDEEM_FAILURE_CODES: readonly [string, string][] = [
+  // first: a refused label's key and value are the worker's own text
+  [LABEL_CONFLICT_PHRASE, "label_conflict"],
+  [LABEL_RESERVED_PHRASE, "label_conflict"],
   ["has been revoked", "token_revoked"],
   ["has expired", "token_expired"],
   ["does not match", "token_mismatch"],
@@ -363,6 +369,8 @@ export interface WorkerGatewayOptions {
    */
   onWorkerRemoved?: (worker: WorkerSnapshot) => void;
   verifyOnEnroll?: boolean;
+  /** label keys a worker may carry only when its token supplies them */
+  reservedLabelKeys?: readonly string[];
   verifyWorker?: (
     workerName: string,
   ) => Promise<{ ok: boolean; failureReason?: string }>;
@@ -1474,6 +1482,7 @@ export class WorkerGateway {
     const params = parseUntrustedOrThrow(EnrollParamsSchema, rawParams);
     // one enrollment, one answer, though a reload may change it meanwhile
     const verifyOnEnroll = this.#options.verifyOnEnroll === true;
+    const reservedLabelKeys = [...(this.#options.reservedLabelKeys ?? [])];
 
     if (!isSupportedRemoteProtocolVersion(params.protocolVersion)) {
       throw new RpcError({
@@ -1559,6 +1568,8 @@ export class WorkerGateway {
             inputs: {
               presentedToken: secret,
               machineId: params.machineId,
+              offeredLabels: params.labels,
+              reservedLabelKeys,
             },
             // Pinned so a token this repo lacks is never auto-created.
             expectedDefinitionId: definitionId,
@@ -1628,16 +1639,25 @@ export class WorkerGateway {
               existing.expiryTimer = undefined;
             }
 
-            const labels = { ...params.labels };
-            if (maxEnrollments !== 1) {
-              if (labels.fleet !== undefined) {
-                logger.warn(
-                  "Worker {worker} supplies its own fleet label {fleet}; keeping it instead of auto-injecting {tokenName}",
-                  { worker: workerName, fleet: labels.fleet, tokenName: name },
-                );
-              } else {
-                labels.fleet = name;
-              }
+            const labelSource = {
+              name,
+              maxEnrollments,
+              labels: record.labels,
+            };
+            const labels = effectiveWorkerLabels(labelSource, params.labels);
+            if (
+              maxEnrollments !== 1 &&
+              !Object.hasOwn(record.labels ?? {}, "fleet") &&
+              Object.hasOwn(params.labels, "fleet")
+            ) {
+              logger.warn(
+                "Worker {worker} supplies its own fleet label {fleet}; keeping it instead of auto-injecting {tokenName}",
+                {
+                  worker: workerName,
+                  fleet: params.labels.fleet,
+                  tokenName: name,
+                },
+              );
             }
 
             const capacity = (params.resourceLimits?.capacity as number) ?? 1;

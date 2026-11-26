@@ -96,6 +96,7 @@ without it the default file is optional.
 | `--trust-proxy`, `--trusted-hosts` | `SWAMP_TRUSTED_HOSTS` | `false`, unset | `X-Forwarded-For` and WebSocket `Origin` handling |
 | `--ws-idle-timeout`, `--queue-timeout` | `SWAMP_WS_IDLE_TIMEOUT`, `SWAMP_QUEUE_TIMEOUT` | unset | Worker-facing |
 | `--verify-on-enroll` | `SWAMP_VERIFY_ON_ENROLL` | `false` | Fleet probe on each enrolling worker; failures marked unverified |
+| `--reserved-worker-labels` / `reserved-worker-labels` | `SWAMP_RESERVED_WORKER_LABELS` | none | Label keys a worker may carry only when its enrollment token supplies them; a worker that sets one itself is refused with `label_conflict`. Needs a restart to change. Set it on every node of an HA serve. See [remote execution](../enablers/remote-execution.md#enrollment-tokens) |
 | `--dispatch-env-allow` / `dispatch-env-allow` | `SWAMP_DISPATCH_ENV_ALLOW` | unset | Only these variables ship in the environment snapshot (case-insensitive, denylist still applies); an empty list (`[]` in serve.yaml, or an empty env var; the flag needs a value) ships none; unset ships the whole environment. See [remote execution](../enablers/remote-execution.md#the-execution-environment) |
 | `--heartbeat-interval`, `--stale-ttl`, `--reconciliation-interval` | `SWAMP_HEARTBEAT_INTERVAL`, `SWAMP_STALE_TTL`, `SWAMP_RECONCILIATION_INTERVAL` | 30 s, 90 s, 60 s | `stale-ttl` must be ≥ 2× heartbeat; no effect without a remote control plane |
 | `--hydration-timeout` | `SWAMP_HYDRATION_TIMEOUT` | 60 s | Startup pull of the remote datastore |

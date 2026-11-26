@@ -130,6 +130,8 @@ export interface FleetWorkerOptions {
   capacity?: number;
   /** Fail the enrollment probe, so the worker stays `unverified`. */
   unverified?: boolean;
+  /** Labels bound to the worker's enrollment token at mint. */
+  tokenLabels?: Record<string, string>;
 }
 
 /** A worker connected to the fleet's serve, in this process. */
@@ -314,6 +316,8 @@ export interface FleetOptions {
   queueTimeoutMs?: number;
   /** How long a dropped worker stays in the pool. Default 1s. */
   graceWindowMs?: number;
+  /** Serve's reserved-worker-labels. Default none. */
+  reservedLabelKeys?: readonly string[];
 }
 
 /** Options for {@link Fleet.retryRun}, as `swamp workflow run --resume` takes them. */
@@ -410,6 +414,7 @@ export class Fleet implements AsyncDisposable {
         capabilityService,
         graceWindowMs: options.graceWindowMs ?? 1_000,
         verifyOnEnroll: true,
+        reservedLabelKeys: options.reservedLabelKeys ?? [],
         verifyWorker: (name) => {
           const held = heldProbes.get(name);
           if (held) {
@@ -511,7 +516,7 @@ export class Fleet implements AsyncDisposable {
     const worker = new FleetWorker(
       this,
       name,
-      await this.#mintToken(name),
+      await this.#mintToken(name, options.tokenLabels),
       options,
     );
     this.workers.set(name, worker);
@@ -817,6 +822,16 @@ export class Fleet implements AsyncDisposable {
     return records[0]?.attributes?.status;
   }
 
+  /** How many machines the named token has bound, from its durable record. */
+  async tokenBindingCount(name: string): Promise<number> {
+    const records = await this.repoContext.dataQueryService.query(
+      `modelType == "${ENROLLMENT_TOKEN_MODEL_TYPE.normalized}" && ` +
+        `modelName == "${name}" && name == "token-main"`,
+      { loadAttributes: true },
+    ) as Array<{ attributes?: { bindings?: unknown[] } }>;
+    return records[0]?.attributes?.bindings?.length ?? 0;
+  }
+
   /** @internal Called by a worker as a dispatch starts. */
   enterDispatch(): void {
     this.#inFlight++;
@@ -828,13 +843,20 @@ export class Fleet implements AsyncDisposable {
     this.#inFlight--;
   }
 
-  async #mintToken(name: string): Promise<string> {
+  async #mintToken(
+    name: string,
+    labels?: Record<string, string>,
+  ): Promise<string> {
     const deps = await createWorkerModelRunDeps(this.repoDir, this.repoContext);
     for await (
       const event of modelMethodRun(createLibSwampContext({}), deps, {
         modelIdOrName: name,
         methodName: "mint",
-        inputs: { durationMs: 10 * 60 * 1000, vaultName: BASELINE_VAULT },
+        inputs: {
+          durationMs: 10 * 60 * 1000,
+          vaultName: BASELINE_VAULT,
+          ...(labels !== undefined ? { labels } : {}),
+        },
         lastEvaluated: false,
         typeArg: ENROLLMENT_TOKEN_MODEL_TYPE.normalized,
         definitionName: name,

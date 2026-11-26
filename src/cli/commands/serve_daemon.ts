@@ -42,6 +42,7 @@ import {
   ADVERTISE_ADDRESS_DESCRIPTION,
   CLUB_API_KEY_FILE_DESCRIPTION,
   DISPATCH_ENV_ALLOW_HELP,
+  RESERVED_WORKER_LABELS_HELP,
   SERVE_CA_CERT_DESCRIPTION,
 } from "./serve_options.ts";
 import {
@@ -236,6 +237,10 @@ const daemonEnableCommand = new Command()
   .option(
     "--dispatch-env-allow <names:string>",
     DISPATCH_ENV_ALLOW_HELP,
+  )
+  .option(
+    "--reserved-worker-labels <keys:string>",
+    RESERVED_WORKER_LABELS_HELP,
   )
   .option(
     "--detach-runs",

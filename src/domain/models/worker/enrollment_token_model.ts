@@ -34,6 +34,7 @@ import {
 import { generateOpaqueToken } from "../../remote/session_credential.ts";
 import { timingSafeEqual } from "../../crypto/timing_safe_equal.ts";
 import { isSecretNotFoundError } from "../../vaults/secret_not_found_error.ts";
+import { boundedRecord } from "../../untrusted_parse.ts";
 
 export const ENROLLMENT_TOKEN_MODEL_TYPE = ModelType.create(
   "swamp/enrollment-token",
@@ -58,6 +59,93 @@ export const MaxEnrollmentsSchema = z.union([
 ]);
 
 export type MaxEnrollments = z.infer<typeof MaxEnrollmentsSchema>;
+
+/** labels as an operator writes them at mint: `key=value`, so a key holds no '=' */
+export const TokenLabelsSchema = boundedRecord(
+  z.string().min(1).regex(/^[^=]+$/, "a label key cannot contain '='"),
+  z.string().min(1),
+);
+
+/** what decides a worker's labels; a fleet token's name doubles as its automatic fleet label */
+export interface TokenLabelSource {
+  name: string;
+  maxEnrollments: MaxEnrollments;
+  /** absent on a record minted before tokens could bind labels */
+  labels?: Readonly<Record<string, string>>;
+}
+
+export type WorkerLabelRefusal =
+  | { reason: "bound"; key: string; boundValue: string }
+  | { reason: "reserved"; key: string; suppliedValue?: string };
+
+function boundLabels(
+  token: TokenLabelSource,
+): Readonly<Record<string, string>> {
+  return token.labels ?? {};
+}
+
+function automaticFleetLabel(token: TokenLabelSource): Record<string, string> {
+  return token.maxEnrollments !== 1 &&
+      !Object.hasOwn(boundLabels(token), "fleet")
+    ? { fleet: token.name }
+    : {};
+}
+
+export function tokenSuppliedLabels(
+  token: TokenLabelSource,
+): Record<string, string> {
+  return { ...automaticFleetLabel(token), ...boundLabels(token) };
+}
+
+/** bound labels win over the worker's own, which win over the automatic fleet label */
+export function effectiveWorkerLabels(
+  token: TokenLabelSource,
+  offered: Readonly<Record<string, string>>,
+): Record<string, string> {
+  return { ...automaticFleetLabel(token), ...offered, ...boundLabels(token) };
+}
+
+/**
+ * a worker may not override a bound label, and may offer a reserved key only
+ * with the value its token supplies, so only a token can grant a reserved label
+ */
+export function workerLabelRefusal(
+  token: TokenLabelSource,
+  offered: Readonly<Record<string, string>>,
+  reservedKeys: readonly string[],
+): WorkerLabelRefusal | undefined {
+  const bound = boundLabels(token);
+  const supplied = tokenSuppliedLabels(token);
+  for (const [key, value] of Object.entries(offered)) {
+    if (Object.hasOwn(bound, key)) {
+      if (bound[key] !== value) {
+        return { reason: "bound", key, boundValue: bound[key] };
+      }
+      continue;
+    }
+    if (!reservedKeys.includes(key)) continue;
+    if (!Object.hasOwn(supplied, key)) return { reason: "reserved", key };
+    if (supplied[key] !== value) {
+      return { reason: "reserved", key, suppliedValue: supplied[key] };
+    }
+  }
+  return undefined;
+}
+
+export const LABEL_CONFLICT_PHRASE = "conflicts with the token";
+export const LABEL_RESERVED_PHRASE = "is reserved by the orchestrator";
+
+function labelRefusalMessage(
+  tokenName: string,
+  refusal: WorkerLabelRefusal,
+): string {
+  if (refusal.reason === "bound") {
+    return `Enrollment token '${tokenName}': label '${refusal.key}' ${LABEL_CONFLICT_PHRASE}, which binds it to '${refusal.boundValue}'`;
+  }
+  return refusal.suppliedValue === undefined
+    ? `Enrollment token '${tokenName}': label '${refusal.key}' ${LABEL_RESERVED_PHRASE} and this token does not supply it`
+    : `Enrollment token '${tokenName}': label '${refusal.key}' ${LABEL_RESERVED_PHRASE} and this token supplies '${refusal.suppliedValue}'`;
+}
 
 const BindingSchema = z.object({
   machineId: z.string(),
@@ -87,6 +175,8 @@ export const EnrollmentTokenSchema = z.object({
   vaultName: z.string(),
   secretKey: z.string(),
   maxEnrollments: MaxEnrollmentsSchema.default(1),
+  /** labels every worker enrolled with this token carries; fixed for a mint */
+  labels: z.record(z.string(), z.string()).optional(),
   bindings: z.array(BindingSchema).default([]),
   predecessor: PredecessorSchema.optional(),
   /** a default rotation extends by this, since expiresAt minus createdAt grows with each early run */
@@ -326,6 +416,9 @@ const MintArgsSchema = z.object({
     "Vault that stores the token plaintext",
   ),
   maxEnrollments: MaxEnrollmentsSchema.default(1),
+  labels: TokenLabelsSchema.default({}).describe(
+    "Labels every worker enrolled with this token carries; a worker offering another value for one is refused",
+  ),
 });
 
 async function mint(
@@ -364,6 +457,7 @@ async function mint(
     vaultName: args.vaultName,
     secretKey,
     maxEnrollments: args.maxEnrollments,
+    labels: args.labels,
     bindings: [] as Binding[],
   };
   const handle = await context.writeResource!("token", TOKEN_DATA_NAME, token);
@@ -383,6 +477,12 @@ async function mint(
 const RedeemArgsSchema = z.object({
   presentedToken: z.string().min(1),
   machineId: z.string().min(1),
+  offeredLabels: boundedRecord(z.string(), z.string()).default({}).describe(
+    "Labels the enrolling worker offers",
+  ),
+  reservedLabelKeys: z.array(z.string().min(1)).default([]).describe(
+    "Label keys the orchestrator lets only a token supply",
+  ),
 });
 
 /**
@@ -424,6 +524,17 @@ async function redeem(
     throw new Error(`Enrollment token '${name}' does not match`);
   }
   const { mint, current: matchesCurrent } = opened;
+
+  // after the secret matches, so bound labels and reserved keys reach only a
+  // holder; before any binding write, so a refusal spends no enrollment
+  const refusal = workerLabelRefusal(
+    token,
+    args.offeredLabels ?? {},
+    args.reservedLabelKeys ?? [],
+  );
+  if (refusal !== undefined) {
+    throw new Error(labelRefusalMessage(name, refusal));
+  }
 
   const existingBinding = token.bindings.find(
     (b) => b.machineId === args.machineId,

@@ -169,6 +169,7 @@ export const PERMANENT_ENROLLMENT_ERROR_CODES: ReadonlySet<string> = new Set([
   "token_mismatch",
   "token_not_found",
   "enrollment_allowance_exhausted",
+  "label_conflict",
 ]);
 
 /**

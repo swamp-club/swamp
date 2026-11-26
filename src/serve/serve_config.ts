@@ -153,6 +153,7 @@ export interface ServeConfigFile {
   "trust-proxy"?: boolean;
   "trusted-hosts"?: string[];
   "dispatch-env-allow"?: string[];
+  "reserved-worker-labels"?: string[];
   "grants-file"?: string;
   address?: string;
   "advertise-address"?: string;
@@ -284,6 +285,7 @@ const KNOWN_TOP_LEVEL_KEYS = new Set([
   "trust-proxy",
   "trusted-hosts",
   "dispatch-env-allow",
+  "reserved-worker-labels",
   "grants-file",
   "grants-dir",
   "webhook-routes-dir",
@@ -884,6 +886,22 @@ function validateConfigValues(
     }
   }
 
+  if (raw["reserved-worker-labels"] !== undefined) {
+    const keys = raw["reserved-worker-labels"];
+    if (
+      !Array.isArray(keys) ||
+      !keys.every((key) =>
+        typeof key === "string" && key.trim() !== "" && !key.includes(",") &&
+        !key.includes("=")
+      )
+    ) {
+      throw configError(
+        path,
+        `Invalid reserved-worker-labels in ${path}: expected array of label keys`,
+      );
+    }
+  }
+
   if (raw.audit !== undefined) {
     validateAuditConfig(raw.audit, path, policy);
   }
@@ -1244,6 +1262,7 @@ export interface MergedServeOptions {
   verifyOnEnroll: boolean;
   trustedHosts?: string;
   dispatchEnvAllow?: string;
+  reservedWorkerLabels?: string;
   detachRuns: boolean;
   heartbeatInterval?: string;
   staleTtl?: string;
@@ -1603,6 +1622,13 @@ export function mergeServeOptions(
     undefined,
   );
 
+  const reservedWorkerLabels = resolveString(
+    "reserved-worker-labels",
+    cliOptions.reservedWorkerLabels as string | undefined,
+    config?.["reserved-worker-labels"]?.join(","),
+    undefined,
+  );
+
   const detachRuns = resolveBoolean(
     "detach-runs",
     cliOptions.detachRuns as boolean,
@@ -1847,6 +1873,7 @@ export function mergeServeOptions(
     verifyOnEnroll,
     trustedHosts,
     dispatchEnvAllow,
+    reservedWorkerLabels,
     detachRuns,
     heartbeatInterval,
     staleTtl,

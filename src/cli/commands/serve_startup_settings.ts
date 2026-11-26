@@ -64,6 +64,19 @@ const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
 
 export const RECONCILIATION_JITTER_MS = 500;
 
+export function parseReservedWorkerLabels(
+  raw: string | undefined,
+): readonly string[] {
+  const keys = parseDispatchEnvAllow(raw) ?? [];
+  const malformed = keys.find((key) => key.includes("="));
+  if (malformed !== undefined) {
+    throw new UserError(
+      `Invalid reserved-worker-labels key '${malformed}': give label keys only, without '=value'`,
+    );
+  }
+  return keys;
+}
+
 export function assertOffLoopbackSecurity(
   host: string,
   tlsEnabled: boolean,
@@ -229,6 +242,12 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
   }
   if (options.dispatchEnvAllow) {
     args.push("--dispatch-env-allow", options.dispatchEnvAllow as string);
+  }
+  if (options.reservedWorkerLabels) {
+    args.push(
+      "--reserved-worker-labels",
+      options.reservedWorkerLabels as string,
+    );
   }
   if (options.heartbeatInterval) {
     args.push("--heartbeat-interval", options.heartbeatInterval as string);
@@ -569,6 +588,7 @@ export interface ServeStartupSettings {
   /** 0 when group refresh is off */
   groupRefreshMs: number;
   dispatchEnvAllow?: readonly string[];
+  reservedWorkerLabels: readonly string[];
   maxConcurrentRuns?: number;
   maxConcurrentScheduledRuns?: number;
   maxConcurrentWebhookRuns?: number;
@@ -663,6 +683,9 @@ export function resolveServeStartupSettings(
   );
 
   const dispatchEnvAllow = parseDispatchEnvAllow(merged.dispatchEnvAllow);
+  const reservedWorkerLabels = parseReservedWorkerLabels(
+    merged.reservedWorkerLabels,
+  );
 
   let groupRefreshMs = DEFAULT_GROUP_REFRESH_MS;
   if (merged.groupRefreshInterval !== undefined) {
@@ -762,6 +785,7 @@ export function resolveServeStartupSettings(
     tokenGcSettings,
     groupRefreshMs,
     ...(dispatchEnvAllow !== undefined ? { dispatchEnvAllow } : {}),
+    reservedWorkerLabels,
     maxConcurrentRuns,
     maxConcurrentScheduledRuns,
     maxConcurrentWebhookRuns,

@@ -38,6 +38,8 @@ export interface WorkerTokenCreateData {
   token: string;
   expiresAt: string;
   maxEnrollments: MaxEnrollments;
+  /** labels every worker enrolled with the token carries */
+  labels: Record<string, string>;
   vaultRef: { vaultName: string; secretKey: string };
 }
 
@@ -52,6 +54,7 @@ export interface WorkerTokenCreateInput {
   /** Omit to use the repo's sole configured vault. */
   vaultName?: string;
   maxEnrollments?: MaxEnrollments;
+  labels?: Record<string, string>;
 }
 
 export interface WorkerTokenCreateDeps {
@@ -62,6 +65,7 @@ export interface WorkerTokenCreateDeps {
       durationMs: number;
       vaultName: string;
       maxEnrollments?: MaxEnrollments;
+      labels?: Record<string, string>;
     },
   ) => AsyncIterable<ModelMethodRunEvent>;
   readSecret: (vaultName: string, secretKey: string) => Promise<string>;
@@ -91,6 +95,7 @@ export async function createWorkerTokenCreateDeps(
           ...(input.maxEnrollments !== undefined
             ? { maxEnrollments: input.maxEnrollments }
             : {}),
+          ...(input.labels !== undefined ? { labels: input.labels } : {}),
         },
         lastEvaluated: false,
         typeArg: ENROLLMENT_TOKEN_MODEL_TYPE.normalized,
@@ -167,6 +172,7 @@ export async function* workerTokenCreate(
             durationMs: input.durationMs,
             vaultName,
             maxEnrollments: input.maxEnrollments,
+            labels: input.labels,
           })
         ) {
           if (event.kind === "error") {
@@ -210,6 +216,7 @@ export async function* workerTokenCreate(
             token: `${input.name}.${plaintext}`,
             expiresAt: tokenRecord.expiresAt,
             maxEnrollments: (tokenRecord.maxEnrollments as MaxEnrollments) ?? 1,
+            labels: (tokenRecord.labels as Record<string, string>) ?? {},
             vaultRef: { vaultName, secretKey },
           },
         };

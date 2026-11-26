@@ -102,11 +102,47 @@ Deno.test("workerTokenCreate: mints and yields the plaintext once", async () => 
     token: "ci-runner-3.plaintext-token",
     expiresAt: EXPIRES_AT,
     maxEnrollments: 1,
+    labels: {},
     vaultRef: {
       vaultName: "main-vault",
       secretKey: "worker-token-ci-runner-3",
     },
   });
+});
+
+Deno.test("workerTokenCreate: passes bound labels to mint and reports the recorded ones", async () => {
+  let mintedLabels: Record<string, string> | undefined;
+  const deps = makeDeps({
+    runMint: async function* (input) {
+      mintedLabels = input.labels;
+      for (
+        const event of mintEvents(input.name, {
+          name: input.name,
+          state: "unused",
+          createdAt: "2026-06-09T00:00:00.000Z",
+          expiresAt: EXPIRES_AT,
+          vaultName: "main-vault",
+          secretKey: `worker-token-${input.name}`,
+          labels: { fleet: "k3s-prod" },
+        })
+      ) {
+        yield await Promise.resolve(event);
+      }
+    },
+  });
+  const events = await collect<WorkerTokenCreateEvent>(
+    workerTokenCreate(createLibSwampContext(), deps, {
+      name: "k3s-prod",
+      durationMs: 60_000,
+      labels: { fleet: "k3s-prod" },
+    }),
+  );
+  assertEquals(mintedLabels, { fleet: "k3s-prod" });
+  const completed = events[1] as Extract<
+    WorkerTokenCreateEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.labels, { fleet: "k3s-prod" });
 });
 
 Deno.test("workerTokenCreate: defaults to the sole configured vault", async () => {

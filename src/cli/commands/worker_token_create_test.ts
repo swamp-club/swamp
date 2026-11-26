@@ -91,6 +91,36 @@ Deno.test("workerTokenCreateCommand: rejects --vault before any repo work", asyn
   );
 });
 
+Deno.test("workerTokenCreateCommand: --label is repeatable", async () => {
+  const { workerTokenCreateCommand } = await import("./worker_token_create.ts");
+  const labelOpt = workerTokenCreateCommand.getOptions().find((o) =>
+    o.name === "label"
+  );
+  assertEquals(labelOpt?.collect, true);
+});
+
+Deno.test("workerTokenCreateCommand: a malformed --label is refused before any repo work", async () => {
+  const { workerTokenCreateCommand } = await import("./worker_token_create.ts");
+  const root = new Command()
+    .globalOption("--json", "JSON output")
+    .command("create", workerTokenCreateCommand);
+  await assertRejects(
+    () =>
+      root.parse([
+        "create",
+        "fleet-a",
+        "--duration",
+        "1d",
+        "--label",
+        "fleet",
+        "--repo-dir",
+        "/nonexistent-swamp-repo",
+      ]),
+    UserError,
+    "expected the form key=value",
+  );
+});
+
 Deno.test("workerTokenCreateCommand: --vault help and example say it needs --server", async () => {
   const { workerTokenCreateCommand } = await import("./worker_token_create.ts");
   const vaultOpt = workerTokenCreateCommand.getOptions().find((o) =>

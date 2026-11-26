@@ -137,6 +137,27 @@ Deno.test("workerTokenList: yields resolving then completed with mapped tokens",
   assertEquals(completed.data.tokens[0].secretKey, "worker-token-ci-runner-1");
 });
 
+Deno.test("workerTokenList: reports bound labels, and none for a record minted before them", async () => {
+  const deps = makeDeps([
+    makeRecord(
+      "bound",
+      "token-main",
+      tokenAttributes("bound", { labels: { fleet: "k3s-prod" } }),
+    ),
+    makeRecord("legacy", "token-main", tokenAttributes("legacy")),
+  ]);
+  const events = await collect<WorkerTokenListEvent>(
+    workerTokenList(createLibSwampContext(), deps),
+  );
+  const completed = events[1] as Extract<
+    WorkerTokenListEvent,
+    { kind: "completed" }
+  >;
+  const byName = new Map(completed.data.tokens.map((t) => [t.name, t]));
+  assertEquals(byName.get("bound")?.labels, { fleet: "k3s-prod" });
+  assertEquals(byName.get("legacy")?.labels, {});
+});
+
 Deno.test("workerTokenList: overlays expired display state on stale live tokens", async () => {
   const deps = makeDeps([
     makeRecord(

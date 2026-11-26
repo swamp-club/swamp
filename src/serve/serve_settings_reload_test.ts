@@ -176,6 +176,17 @@ Deno.test("diffServeSettings: a startup-only setting is not reported", () => {
   assertEquals(report, { applied: [], needsRestart: [], overridden: [] });
 });
 
+Deno.test("diffServeSettings: reserved-worker-labels needs a restart, so no worker keeps a key reserved after it enrolled", () => {
+  const report = diff({ "reserved-worker-labels": [] }, {
+    "reserved-worker-labels": ["fleet"],
+  });
+  assertEquals(report.applied, []);
+  assertEquals(
+    report.needsRestart.map((entry) => entry.setting),
+    ["reserved-worker-labels"],
+  );
+});
+
 Deno.test("SETTING_CATALOGUE: every restart setting says why", () => {
   for (const [key, entry] of Object.entries(SETTING_CATALOGUE)) {
     if (entry.reloadClass === "restart") {

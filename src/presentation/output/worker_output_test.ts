@@ -58,6 +58,7 @@ const createData: WorkerTokenCreateData = {
   token: "swamp-token-plaintext",
   expiresAt: "2026-06-10T00:00:00.000Z",
   maxEnrollments: 1,
+  labels: {},
   vaultRef: { vaultName: "main-vault", secretKey: "worker-token-ci-runner-3" },
 };
 
@@ -71,6 +72,22 @@ Deno.test("renderWorkerTokenCreate: log mode shows the token once with warning",
   assertStringIncludes(output, "worker-token-ci-runner-3");
   assertStringIncludes(output, "swamp-token-plaintext");
   assertStringIncludes(output, "shown once");
+});
+
+Deno.test("renderWorkerTokenCreate: log mode lists bound labels only when the token has them", () => {
+  const plain = stripAnsiCode(
+    captureLogs(() => renderWorkerTokenCreate(createData, "log")),
+  );
+  assertEquals(plain.includes("Labels:"), false);
+  const bound = stripAnsiCode(
+    captureLogs(() =>
+      renderWorkerTokenCreate(
+        { ...createData, labels: { fleet: "k3s-prod", region: "eu" } },
+        "log",
+      )
+    ),
+  );
+  assertStringIncludes(bound, "Labels: fleet=k3s-prod,region=eu");
 });
 
 Deno.test("renderWorkerTokenCreate: json mode emits the structured record", () => {
@@ -94,6 +111,7 @@ const tokenListData: WorkerTokenListData = {
       createdAt: "2026-06-09T00:00:00.000Z",
       expiresAt: "2026-06-10T00:00:00.000Z",
       maxEnrollments: 1,
+      labels: { fleet: "k3s-prod" },
       bindingCount: 1,
       bindings: [{
         machineId: "machine-42",
@@ -109,6 +127,7 @@ const tokenListData: WorkerTokenListData = {
       createdAt: "2026-06-01T00:00:00.000Z",
       expiresAt: "2026-06-02T00:00:00.000Z",
       maxEnrollments: 1,
+      labels: {},
       bindingCount: 0,
       bindings: [],
       vaultName: "main-vault",
@@ -132,6 +151,18 @@ Deno.test("renderWorkerTokenList: log mode renders the table with display state"
   assertStringIncludes(output, "expired");
 });
 
+Deno.test("renderWorkerTokenList: log mode shows each token's bound labels, or a dash", () => {
+  const output = stripAnsiCode(
+    captureLogs(() => renderWorkerTokenList(tokenListData, "log")),
+  );
+  assertStringIncludes(output, "LABELS");
+  const lines = output.split("\n");
+  const bound = lines.find((line) => line.startsWith("ci-runner-3"));
+  const unbound = lines.find((line) => line.startsWith("stale"));
+  assertEquals(bound?.trimEnd().endsWith("fleet=k3s-prod"), true);
+  assertEquals(unbound?.trimEnd().endsWith("-"), true);
+});
+
 Deno.test("renderWorkerTokenList: log mode shows empty-state hint", () => {
   const output = stripAnsiCode(
     captureLogs(() => renderWorkerTokenList({ tokens: [], count: 0 }, "log")),
@@ -149,6 +180,8 @@ Deno.test("renderWorkerTokenList: json mode emits the array of records", () => {
   assertEquals(parsed[0].name, "ci-runner-3");
   assertEquals(parsed[1].effectiveState, "expired");
   assertEquals(parsed[1].state, "unused");
+  assertEquals(parsed[0].labels, { fleet: "k3s-prod" });
+  assertEquals(parsed[1].labels, {});
 });
 
 Deno.test("renderWorkerTokenRevoke: log mode confirms revocation", () => {

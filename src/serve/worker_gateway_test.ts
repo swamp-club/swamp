@@ -1066,6 +1066,62 @@ Deno.test("WorkerGateway: worker-supplied fleet label wins over auto-injection",
   assertEquals(labels.fleet, "custom-fleet");
 });
 
+Deno.test("WorkerGateway: redeem judges the worker's own labels against the reserved keys in force", async () => {
+  let reserved: readonly string[] = ["fleet"];
+  const h = createHarness({
+    readTokenMaxEnrollments: () => Promise.resolve(3),
+    get reservedLabelKeys() {
+      return reserved;
+    },
+  });
+  const { workerChannel: w1 } = connectWorkerSocket(h.gateway);
+  await enroll(w1, {
+    ...enrollParams,
+    labels: { region: "us-east", fleet: "a" },
+  });
+  const first = h.transitions.find((t) => t.methodName === "redeem");
+  assertEquals(first?.inputs.offeredLabels, { region: "us-east", fleet: "a" });
+  assertEquals(first?.inputs.reservedLabelKeys, ["fleet"]);
+
+  reserved = [];
+  const { workerChannel: w2 } = connectWorkerSocket(h.gateway);
+  await enroll(w2, { ...enrollParams, machineId: "m-2", instanceUuid: "u-2" });
+  const redeems = h.transitions.filter((t) => t.methodName === "redeem");
+  assertEquals(redeems[1].inputs.reservedLabelKeys, []);
+});
+
+Deno.test("WorkerGateway: a worker carries its token's bound labels over its own and the automatic fleet label", async () => {
+  const h = createHarness({
+    readTokenMaxEnrollments: () => Promise.resolve(5),
+    readTokenRecord: (name) =>
+      Promise.resolve({
+        ...mintRecord(name, BASE_MINT),
+        maxEnrollments: 5,
+        labels: { fleet: "b", tier: "prod" },
+      }),
+  });
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel, {
+    ...enrollParams,
+    labels: { region: "us-east" },
+  });
+  const enrollTransition = h.transitions.find((t) => t.methodName === "enroll");
+  assertEquals(enrollTransition?.inputs.labels, {
+    region: "us-east",
+    fleet: "b",
+    tier: "prod",
+  });
+  assertEquals(h.gateway.workers()[0].labels, {
+    region: "us-east",
+    fleet: "b",
+    tier: "prod",
+  });
+});
+
+Deno.test("WorkerGateway: a refused label is permanent, so the worker stops", () => {
+  assertEquals(PERMANENT_ENROLLMENT_ERROR_CODES.has("label_conflict"), true);
+});
+
 Deno.test("WorkerGateway: fleet worker naming is stable across reconnects", async () => {
   const h = createHarness({
     graceWindowMs: 200,
@@ -2774,6 +2830,18 @@ Deno.test("WorkerGateway: redeem rejections reach the worker coded, whatever the
     [
       "Enrollment token 'ci': enrollment allowance exhausted",
       "enrollment_allowance_exhausted",
+    ],
+    [
+      "Enrollment token 'ci': label 'fleet' conflicts with the token, which binds it to 'b'",
+      "label_conflict",
+    ],
+    [
+      "Enrollment token 'ci': label 'fleet' is reserved by the orchestrator and this token does not supply it",
+      "label_conflict",
+    ],
+    [
+      "Enrollment token 'ci': label 'has expired' conflicts with the token, which binds it to 'does not match'",
+      "label_conflict",
     ],
   ];
   for (const [message, code] of cases) {

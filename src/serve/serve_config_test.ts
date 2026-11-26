@@ -3520,6 +3520,59 @@ Deno.test("loadServeConfig: dispatch-env-allow must be a list of names", () => {
   }
 });
 
+Deno.test("mergeServeOptions: reserved-worker-labels comes from the flag, then the env var, then serve.yaml", () => {
+  const config = { "reserved-worker-labels": ["fleet", "region"] };
+  assertEquals(
+    mergeServeOptions(config, {}, new Set<string>(), () => undefined)
+      .reservedWorkerLabels,
+    "fleet,region",
+  );
+  const fromEnv = (name: string) =>
+    name === "SWAMP_RESERVED_WORKER_LABELS" ? "tier" : undefined;
+  assertEquals(
+    mergeServeOptions(config, {}, new Set<string>(), fromEnv)
+      .reservedWorkerLabels,
+    "tier",
+  );
+  assertEquals(
+    mergeServeOptions(
+      config,
+      { reservedWorkerLabels: "gpu" },
+      new Set(["reserved-worker-labels"]),
+      fromEnv,
+    ).reservedWorkerLabels,
+    "gpu",
+  );
+  assertEquals(
+    mergeServeOptions(null, {}, new Set<string>(), () => undefined)
+      .reservedWorkerLabels,
+    undefined,
+  );
+});
+
+Deno.test("loadServeConfig: reserved-worker-labels must be a list of label keys", () => {
+  for (
+    const bad of [
+      "reserved-worker-labels: fleet",
+      'reserved-worker-labels: [""]',
+      "reserved-worker-labels: [1]",
+      'reserved-worker-labels: ["a,b"]',
+      'reserved-worker-labels: ["fleet=a"]',
+    ]
+  ) {
+    withTempDir((dir) => {
+      const swampDir = join(dir, ".swamp");
+      Deno.mkdirSync(swampDir, { recursive: true });
+      Deno.writeTextFileSync(join(swampDir, "serve.yaml"), bad);
+      assertThrows(
+        () => loadServeConfig(undefined, dir),
+        Error,
+        "Invalid reserved-worker-labels",
+      );
+    });
+  }
+});
+
 Deno.test("mergeServeOptions: address comes from the CLI flag, then SWAMP_SERVE_ADDRESS, then serve.yaml", () => {
   const config: ServeConfigFile = {
     address: "https://from-config.example.com",

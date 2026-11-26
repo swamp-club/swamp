@@ -765,6 +765,12 @@ server. `--vault` is for operators and provisioning outside workflows to read
 the secret: its key (`worker-token-<name>`) stays reserved, so a dispatched step
 cannot read it and a workflow cannot deliver a successor token to a worker.
 
+`--label key=value` on `worker token create` binds labels every enrolled worker
+carries. `--reserved-worker-labels` on serve (`reserved-worker-labels:` in
+serve.yaml, `SWAMP_RESERVED_WORKER_LABELS`) names keys only a token can supply.
+Together they stop a leaked token from enrolling into another fleet. See
+[remote execution](../workflow/references/remote-execution.md#containing-a-leaked-token).
+
 ## OAuth Login
 
 ```bash

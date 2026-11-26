@@ -40,6 +40,12 @@ export const DISPATCH_ENV_ALLOW_HELP =
   "'dispatch-env-allow: []' in serve.yaml or an empty SWAMP_DISPATCH_ENV_ALLOW " +
   "(env: SWAMP_DISPATCH_ENV_ALLOW)";
 
+export const RESERVED_WORKER_LABELS_HELP =
+  "Comma-separated label keys a worker may carry only when its enrollment token " +
+  "supplies them (a label bound with 'swamp worker token create --label', or a fleet " +
+  "token's automatic fleet label); a worker that sets one itself is refused. " +
+  "Restart serve to change it (env: SWAMP_RESERVED_WORKER_LABELS)";
+
 export const ADDRESS_DESCRIPTION =
   "The address clients reach this serve at, as they put it in serverAddress. " +
   "Required to write a v3 datastore 'swamp datastore claim' gave to that address";
