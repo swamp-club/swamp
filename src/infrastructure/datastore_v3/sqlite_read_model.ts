@@ -281,9 +281,12 @@ function pruneSettled(pool: PooledWrite[]): void {
   pool.length = kept;
 }
 
-/** case-folded and NFC, as case-insensitive or normalising filesystems compare */
+/**
+ * case-folded and NFC, as case-insensitive or normalising filesystems compare;
+ * the round trip through upper case folds ß and ẞ to ss, as APFS and ext4 do
+ */
 function foldPath(path: string): string {
-  return path.normalize("NFC").toLowerCase();
+  return path.toLowerCase().toUpperCase().toLowerCase().normalize("NFC");
 }
 
 /** a longer tail is replayed in full rather than held in memory to be netted */

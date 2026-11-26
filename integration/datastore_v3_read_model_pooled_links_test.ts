@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { join } from "@std/path";
+import { join, relative } from "@std/path";
 import { putOp } from "../src/domain/datastore_v3/op.ts";
 import { RecordKey } from "../src/domain/datastore_v3/record_key.ts";
 import {
@@ -149,4 +149,56 @@ Deno.test({
     });
     assertEquals(pooled, oneAtATime);
   },
+});
+
+Deno.test("SqliteReadModel.catchUp: a pooled put of data/ß waits for the pooled write that makes data/SS, which a case-insensitive filesystem folds it into", async () => {
+  await withV3Env(async (env) => {
+    // with data/ made, only the fold of ß to SS makes the two writes meet
+    await Deno.mkdir(dataPath(env), { recursive: true });
+    const writes: string[] = [];
+    const batch = new (class extends HeldWriteBatch {
+      override async write(
+        path: string,
+        content: Uint8Array | ReadableStream<Uint8Array>,
+        signal: AbortSignal,
+        options?: Parameters<DurableWriteBatch["write"]>[3],
+      ): Promise<void> {
+        const name = relative(dataPath(env), path);
+        writes.push(`start ${name}`);
+        await super.write(path, content, signal, options);
+        writes.push(`end ${name}`);
+      }
+    })(dataPath(env, "SS", "a"));
+    const put = async (key: string) =>
+      await putOp({
+        intent: modelIntent({ kind: "data.save", name: "n", version: 1 }),
+        key: RecordKey.create(key),
+        inline: base64("p"),
+      });
+    await env.store.append(
+      commitOf({
+        seq: 1,
+        partition: PARTITION,
+        namespace: "",
+        ops: [await put("data/SS/a"), await put("data/ß")],
+      }),
+    );
+    const readModel = env.openReadModel({
+      bootIdentity: () => Promise.resolve("boot-1"),
+      writeBatch: () => batch,
+      // SS/a lands only once the page waits for it
+      onPoolDrain: () => batch.gate.resolve(),
+    });
+    try {
+      await readModel.catchUp(AbortSignal.timeout(30_000));
+    } finally {
+      batch.gate.resolve();
+      await readModel.close();
+    }
+    // a folding filesystem then skips ß as a directory, so it may not start
+    assertEquals(writes.slice(0, 2), [
+      `start ${join("SS", "a")}`,
+      `end ${join("SS", "a")}`,
+    ]);
+  });
 });
