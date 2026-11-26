@@ -118,6 +118,8 @@ const GUARDED_PINNED = [
   "src/infrastructure/datastore_v3/serve_feed.ts:v3FollowerCopyCursor",
   "src/infrastructure/datastore_v3/v3_repo_context.ts:v3RepositoryFactoryConfig",
   "src/infrastructure/datastore_v3/v3_repo_context.ts:v3RetentionHistory",
+  // datastore compact --history, after requireInitializedRepo's guard
+  "src/infrastructure/datastore_v3/v3_repo_context.ts:compactV3HistoryNow",
   "src/infrastructure/datastore_v3/v3_config_adoption.ts:planV3ConfigAdoption",
   "src/serve/handlers/admin_handlers.ts:handleDatastoreStatus",
   "src/cli/commands/datastore_lock.ts:datastoreLockReleaseCommand (x2)",

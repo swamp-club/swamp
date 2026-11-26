@@ -25,34 +25,34 @@ import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 export type DatastoreHistoryCompaction = HistoryCompactionOutcome;
 
 /** applies only to a v3 datastore, which keeps a commit history */
-export type DatastoreCompactHistoryData =
+export type DatastoreHistoryCompactData =
   | { readonly applies: false }
   | ({ readonly applies: true } & DatastoreHistoryCompaction);
 
-export type DatastoreCompactHistoryEvent =
+export type DatastoreHistoryCompactEvent =
   | { kind: "compacting" }
-  | { kind: "completed"; data: DatastoreCompactHistoryData }
+  | { kind: "completed"; data: DatastoreHistoryCompactData }
   | { kind: "error"; error: SwampError };
 
-export interface DatastoreCompactHistoryDeps {
+export interface DatastoreHistoryCompactDeps {
   /** absent on a v2 datastore */
-  compactHistory?: (signal: AbortSignal) => Promise<DatastoreHistoryCompaction>;
+  compact?: (signal: AbortSignal) => Promise<DatastoreHistoryCompaction>;
 }
 
-export async function* datastoreCompactHistory(
+export async function* datastoreHistoryCompact(
   ctx: LibSwampContext,
-  deps: DatastoreCompactHistoryDeps,
-): AsyncIterable<DatastoreCompactHistoryEvent> {
+  deps: DatastoreHistoryCompactDeps,
+): AsyncIterable<DatastoreHistoryCompactEvent> {
   yield* withGeneratorSpan(
     "swamp.datastore.compact_history",
     {},
     (async function* () {
-      if (deps.compactHistory === undefined) {
+      if (deps.compact === undefined) {
         yield { kind: "completed" as const, data: { applies: false } };
         return;
       }
       yield { kind: "compacting" as const };
-      const outcome = await deps.compactHistory(ctx.signal);
+      const outcome = await deps.compact(ctx.signal);
       yield {
         kind: "completed" as const,
         data: { applies: true, ...outcome },

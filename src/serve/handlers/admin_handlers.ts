@@ -288,8 +288,8 @@ import {
   v3DatastoreFor,
 } from "../../infrastructure/datastore_v3/v3_repo_context.ts";
 import {
-  datastoreCompactHistory,
-  type DatastoreCompactHistoryData,
+  datastoreHistoryCompact,
+  type DatastoreHistoryCompactData,
 } from "../../libswamp/datastores/compact_history.ts";
 import {
   datastoreClaim,
@@ -899,12 +899,12 @@ export async function handleDatastoreHistoryCompact(
 
   const compaction = ctx.v3HistoryCompaction;
   try {
-    let result: DatastoreCompactHistoryData | undefined;
+    let result: DatastoreHistoryCompactData | undefined;
     await consumeStream(
-      datastoreCompactHistory(
+      datastoreHistoryCompact(
         handlerLibSwampContext(ctx, { signal: controller.signal }),
         compaction === undefined ? {} : {
-          compactHistory: (signal) =>
+          compact: (signal) =>
             compaction.compactNow(HISTORY_COMPACT_BUDGET_MS, signal),
         },
       ),

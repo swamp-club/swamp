@@ -787,6 +787,9 @@ const PINNED_CLI_ROOT_UNIT_COMMANDS: readonly string[] = [
   // datastore gc runs
   "src/cli/commands/datastore_claim.ts: datastoreClaimCommand",
   "src/cli/commands/datastore_release.ts: datastoreReleaseCommand",
+  // datastore compact --history folds the v3 history under the coordinator
+  // root, as datastore gc sweeps
+  "src/cli/commands/datastore_compact.ts: runHistoryCompaction",
 ];
 
 // callers of ModelLockResult.flush (push, then release) whose push is not a
@@ -1463,6 +1466,8 @@ const PINNED_ENGINE_READERS: readonly string[] = [
   "src/cli/commands/datastore_claim.ts: datastoreClaimCommand",
   "src/cli/commands/datastore_release.ts: datastoreReleaseCommand",
   "src/serve/handlers/admin_handlers.ts: serveClaimCommitLog",
+  // history compaction applies only to a v3 datastore's commit log
+  "src/cli/commands/datastore_compact.ts: runHistoryCompaction",
   // a traced dashboard read records the engine as a span attribute; nothing is
   // chosen by it
   "src/serve/connection.ts: handleMessage",

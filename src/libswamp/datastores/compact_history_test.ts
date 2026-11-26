@@ -21,19 +21,19 @@ import { assertEquals } from "@std/assert";
 import { createLibSwampContext } from "../context.ts";
 import { collect } from "../testing.ts";
 import {
-  datastoreCompactHistory,
-  type DatastoreCompactHistoryEvent,
+  datastoreHistoryCompact,
+  type DatastoreHistoryCompactEvent,
   type DatastoreHistoryCompaction,
 } from "./compact_history.ts";
 
-Deno.test("datastoreCompactHistory: a v2 datastore has no history to compact", async () => {
-  const events = await collect<DatastoreCompactHistoryEvent>(
-    datastoreCompactHistory(createLibSwampContext(), {}),
+Deno.test("datastoreHistoryCompact: a v2 datastore has no history to compact", async () => {
+  const events = await collect<DatastoreHistoryCompactEvent>(
+    datastoreHistoryCompact(createLibSwampContext(), {}),
   );
   assertEquals(events, [{ kind: "completed", data: { applies: false } }]);
 });
 
-Deno.test("datastoreCompactHistory: a v3 datastore compacts once, with the context's signal, and reports the outcome", async () => {
+Deno.test("datastoreHistoryCompact: a v3 datastore compacts once, with the context's signal, and reports the outcome", async () => {
   const outcome: DatastoreHistoryCompaction = {
     outcome: "timed_out",
     budgetMs: 60_000,
@@ -45,9 +45,9 @@ Deno.test("datastoreCompactHistory: a v3 datastore compacts once, with the conte
   };
   const ctx = createLibSwampContext();
   const signals: AbortSignal[] = [];
-  const events = await collect<DatastoreCompactHistoryEvent>(
-    datastoreCompactHistory(ctx, {
-      compactHistory: (signal) => {
+  const events = await collect<DatastoreHistoryCompactEvent>(
+    datastoreHistoryCompact(ctx, {
+      compact: (signal) => {
         signals.push(signal);
         return Promise.resolve(outcome);
       },

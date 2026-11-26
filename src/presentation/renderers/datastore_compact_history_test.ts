@@ -19,9 +19,9 @@
 
 import { assertEquals, assertThrows } from "@std/assert";
 import { configure, reset } from "@logtape/logtape";
-import type { DatastoreCompactHistoryData } from "../../libswamp/datastores/compact_history.ts";
+import type { DatastoreHistoryCompactData } from "../../libswamp/datastores/compact_history.ts";
 import { UserError } from "../../domain/errors.ts";
-import { createDatastoreCompactHistoryRenderer } from "./datastore_compact_history.ts";
+import { createDatastoreHistoryCompactRenderer } from "./datastore_compact_history.ts";
 
 function capture(fn: () => void): string {
   const output: string[] = [];
@@ -35,7 +35,7 @@ function capture(fn: () => void): string {
   return output.join("\n");
 }
 
-const CASES: DatastoreCompactHistoryData[] = [
+const CASES: DatastoreHistoryCompactData[] = [
   { applies: false },
   {
     applies: true,
@@ -65,10 +65,10 @@ const CASES: DatastoreCompactHistoryData[] = [
   },
 ];
 
-Deno.test("datastoreCompactHistoryRenderer json: prints each outcome as its data", () => {
+Deno.test("datastoreHistoryCompactRenderer json: prints each outcome as its data", () => {
   for (const data of CASES) {
     const output = capture(() =>
-      createDatastoreCompactHistoryRenderer("json").handlers().completed({
+      createDatastoreHistoryCompactRenderer("json").handlers().completed({
         kind: "completed",
         data,
       })
@@ -77,7 +77,7 @@ Deno.test("datastoreCompactHistoryRenderer json: prints each outcome as its data
   }
 });
 
-Deno.test("datastoreCompactHistoryRenderer log: says what each outcome means, without printing to stdout", async () => {
+Deno.test("datastoreHistoryCompactRenderer log: says what each outcome means, without printing to stdout", async () => {
   const messages: string[] = [];
   await configure({
     reset: true,
@@ -93,7 +93,7 @@ Deno.test("datastoreCompactHistoryRenderer log: says what each outcome means, wi
   });
   let output: string;
   try {
-    const handlers = createDatastoreCompactHistoryRenderer("log").handlers();
+    const handlers = createDatastoreHistoryCompactRenderer("log").handlers();
     output = capture(() => {
       for (const data of CASES) handlers.completed({ kind: "completed", data });
     });
@@ -110,11 +110,11 @@ Deno.test("datastoreCompactHistoryRenderer log: says what each outcome means, wi
   ]);
 });
 
-Deno.test("datastoreCompactHistoryRenderer: an error event is a user error in both modes", () => {
+Deno.test("datastoreHistoryCompactRenderer: an error event is a user error in both modes", () => {
   for (const mode of ["log", "json"] as const) {
     assertThrows(
       () =>
-        createDatastoreCompactHistoryRenderer(mode).handlers().error({
+        createDatastoreHistoryCompactRenderer(mode).handlers().error({
           kind: "error",
           error: { code: "maintenance_busy", message: "busy" },
         }),

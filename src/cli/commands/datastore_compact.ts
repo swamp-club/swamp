@@ -35,10 +35,10 @@ import { requireInitializedRepo } from "../repo_context.ts";
 import { runInCoordinatorRoot } from "../coordinator_root.ts";
 import { catalogDbPath } from "../../infrastructure/persistence/repository_factory.ts";
 import {
-  datastoreCompactHistory,
-  type DatastoreCompactHistoryData,
+  datastoreHistoryCompact,
+  type DatastoreHistoryCompactData,
 } from "../../libswamp/datastores/compact_history.ts";
-import { createDatastoreCompactHistoryRenderer } from "../../presentation/renderers/datastore_compact_history.ts";
+import { createDatastoreHistoryCompactRenderer } from "../../presentation/renderers/datastore_compact_history.ts";
 import {
   requestNewerServerResponse,
   resolveServerTokenFromOptions,
@@ -94,7 +94,7 @@ export const datastoreCompactCommand = withRemoteOptions(
     "compact",
   ]);
   if (options.history === true) {
-    await compactHistory(options, cliCtx);
+    await runHistoryCompaction(options, cliCtx);
     return;
   }
   if (
@@ -141,11 +141,11 @@ export const datastoreCompactCommand = withRemoteOptions(
   });
 });
 
-async function compactHistory(
+async function runHistoryCompaction(
   options: AnyOptions,
   cliCtx: CommandContext,
 ): Promise<void> {
-  const renderer = createDatastoreCompactHistoryRenderer(cliCtx.outputMode);
+  const renderer = createDatastoreHistoryCompactRenderer(cliCtx.outputMode);
   const server = resolveServeUrl(options.server as string | undefined);
   if (server) {
     const token = await resolveServerTokenFromOptions(server, options);
@@ -160,7 +160,7 @@ async function compactHistory(
       (async function* () {
         yield {
           kind: "completed" as const,
-          data: response.data as DatastoreCompactHistoryData,
+          data: response.data as DatastoreHistoryCompactData,
         };
       })(),
       renderer.handlers(),
@@ -181,10 +181,10 @@ async function compactHistory(
   await runInCoordinatorRoot(repoContext, async () => {
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
     await consumeStream(
-      datastoreCompactHistory(
+      datastoreHistoryCompact(
         ctx,
         config === undefined ? {} : {
-          compactHistory: (signal) =>
+          compact: (signal) =>
             compactV3HistoryNow(
               repoDir,
               config,

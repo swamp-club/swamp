@@ -436,6 +436,10 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   // audit entry records.
   "src/cli/commands/datastore_claim.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
   "src/cli/commands/datastore_release.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
+  // swamp-club#5130: `datastore compact --history` folds the history now,
+  // under the command's writer lease, and its outcome is the policy's
+  "src/cli/commands/datastore_compact.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
+  "src/libswamp/datastores/compact_history.ts -> src/domain/datastore_v3/compaction_policy.ts",
   "src/cli/commands/serve_startup_settings.ts -> src/domain/datastore_v3/datastore_owner.ts",
   "src/libswamp/datastores/claim.ts -> src/domain/datastore_v3/datastore_owner.ts",
   "src/serve/connection.ts -> src/domain/datastore_v3/datastore_owner.ts",
@@ -582,9 +586,9 @@ const CHECKPOINT = /wal_(?:auto)?checkpoint/i;
 const PINNED_V3_CHECKPOINTS: readonly string[] = [
   // Off on every open connection before this node's sidecar starts on a copy
   // a serve follower opened with the default.
-  "src/infrastructure/datastore_v3/sqlite_commit_store.ts:4433",
+  "src/infrastructure/datastore_v3/sqlite_commit_store.ts:4440",
   // Auto-checkpoint off on a copy Litestream replicates (swamp-club#3935).
-  "src/infrastructure/datastore_v3/sqlite_commit_store.ts:4460",
+  "src/infrastructure/datastore_v3/sqlite_commit_store.ts:4467",
 ];
 
 Deno.test("datastore v3: no v3 code forces or tunes a WAL checkpoint", async () => {
@@ -931,6 +935,8 @@ const PINNED_COMPACTION_IMPORTERS: readonly string[] = [
   // v3, where a removed version can be written again.
   "src/libswamp/data/run_artifact_check.ts -> src/domain/datastore_v3/run_artifact_resolution.ts",
   "src/libswamp/models/output_data.ts -> src/domain/datastore_v3/run_artifact_resolution.ts",
+  // swamp-club#5130: an operator's compaction reports the policy's outcome
+  "src/libswamp/datastores/compact_history.ts -> src/domain/datastore_v3/compaction_policy.ts",
 ];
 
 Deno.test("datastore v3: no production code outside v3 imports history compaction", async () => {

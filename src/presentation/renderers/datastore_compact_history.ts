@@ -17,16 +17,16 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { DatastoreCompactHistoryEvent } from "../../libswamp/datastores/compact_history.ts";
+import type { DatastoreHistoryCompactEvent } from "../../libswamp/datastores/compact_history.ts";
 import type { EventHandlers } from "../../libswamp/stream.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
 
-class LogDatastoreCompactHistoryRenderer
-  implements Renderer<DatastoreCompactHistoryEvent> {
-  handlers(): EventHandlers<DatastoreCompactHistoryEvent> {
+class LogDatastoreHistoryCompactRenderer
+  implements Renderer<DatastoreHistoryCompactEvent> {
+  handlers(): EventHandlers<DatastoreHistoryCompactEvent> {
     const logger = getSwampLogger(["datastore", "compact"]);
     return {
       compacting: () => {
@@ -65,9 +65,9 @@ class LogDatastoreCompactHistoryRenderer
   }
 }
 
-class JsonDatastoreCompactHistoryRenderer
-  implements Renderer<DatastoreCompactHistoryEvent> {
-  handlers(): EventHandlers<DatastoreCompactHistoryEvent> {
+class JsonDatastoreHistoryCompactRenderer
+  implements Renderer<DatastoreHistoryCompactEvent> {
+  handlers(): EventHandlers<DatastoreHistoryCompactEvent> {
     return {
       compacting: () => {},
       completed: (e) => {
@@ -80,13 +80,13 @@ class JsonDatastoreCompactHistoryRenderer
   }
 }
 
-export function createDatastoreCompactHistoryRenderer(
+export function createDatastoreHistoryCompactRenderer(
   mode: OutputMode,
-): Renderer<DatastoreCompactHistoryEvent> {
+): Renderer<DatastoreHistoryCompactEvent> {
   switch (mode) {
     case "json":
-      return new JsonDatastoreCompactHistoryRenderer();
+      return new JsonDatastoreHistoryCompactRenderer();
     case "log":
-      return new LogDatastoreCompactHistoryRenderer();
+      return new LogDatastoreHistoryCompactRenderer();
   }
 }
