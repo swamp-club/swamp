@@ -1722,10 +1722,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   /**
-   * with a hydrate hook a missing or short file is downloaded; one still short
-   * after is the remote's copy and is used for the accepted-short TTL. Without
-   * a hook the file is current unlooked-at; an owed-only hook fills it only if
-   * absent.
+   * with a hydrate hook a missing or short file is downloaded, but an
+   * owed-only hook fills it only if absent; without a hook the file is current
+   * unlooked-at
    */
   private async ensureContentFile(
     type: ModelType,

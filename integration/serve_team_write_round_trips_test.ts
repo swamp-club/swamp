@@ -249,10 +249,6 @@ async function copyChunkFiles(repoDir: string): Promise<number> {
   return count;
 }
 
-function parentIdOf(span: ReadableSpan): string {
-  return span.parentSpanId ?? "";
-}
-
 /** Member-to-serve requests, `METHOD route`, in the order they were sent. */
 function requestsOf(spans: readonly ReadableSpan[]): string[] {
   return spans
@@ -934,7 +930,6 @@ Deno.test({
         }
       });
       let fetches: ReadableSpan[] = [];
-      const parentNames = new Map<string, string>();
       await withCapturedSpans(async (spans) => {
         await runCommand(
           member.scratch,
@@ -951,9 +946,6 @@ Deno.test({
           (span.attributes["http.route"] === "chunks/{sha256}" ||
             span.attributes["http.route"] === "chunks/batch")
         );
-        for (const span of spans) {
-          parentNames.set(span.spanContext().spanId, span.name);
-        }
       });
       // the catch-up owes the four contents: nothing is fetched until a read
       assertEquals(fetches, []);

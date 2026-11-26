@@ -957,10 +957,9 @@ export class ReadModelState {
   }
 
   /**
-   * clears every table but the at-risk copies, the done list and the owed
-   * files; files shown present stay as removal candidates so a later base load
-   * redoes a removal a crash undid. Unsynced keys are candidates too with
-   * keepUnsynced
+   * clears every table but the at-risk copies, done list and owed files; files
+   * shown present stay removal candidates, so a later base load redoes a
+   * removal a crash undid (unsynced keys too, with keepUnsynced)
    */
   reset(catalogGeneration: number, keepUnsynced = false): void {
     this.#foldedKeys = undefined;

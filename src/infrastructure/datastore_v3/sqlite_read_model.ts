@@ -208,6 +208,8 @@ const CLOSE_WAIT_MS = 500;
 
 /** inline writes of a catch-up's page that run at once */
 export const POOLED_WRITES = 16;
+/** owed files fetched and written together before a hydrate checks its budget */
+const HYDRATE_GROUP = 16;
 /** blobs up to this size are read whole and written through the pool */
 const POOLED_BLOB_BYTES = 256 * 1024;
 
@@ -2725,64 +2727,73 @@ export class SqliteReadModel implements ReadModel {
         const unreadable: StoredUnreadableRecord[] = [];
         const others = await this.#othersJournaled();
         try {
-          if (rows.length > 1) await this.#prefetchOwed(rows, signal);
-          for (const row of rows) {
-            signal.throwIfAborted();
-            if (this.#clock().getTime() >= until) break;
-            const key = { namespace: row.namespace, record_key: row.recordKey };
-            settled.push(key);
-            if (this.#owedFile(row.namespace, row.recordKey) === undefined) {
-              continue;
-            }
-            // another live writer's file stands there: its commit or its
-            // recovery decides it, as a catch-up leaves it
-            if (
-              others.some(({ scope }) =>
-                scope.namespace === row.namespace &&
-                scopeCovers(scope.scope, row.recordKey)
-              ) && !await this.#nothingAt(row.namespace, row.recordKey)
-            ) {
-              continue;
-            }
-            const path = await this.#target(
-              row.namespace,
-              RecordKey.create(row.recordKey),
-              true,
-              "an owed file",
-            );
-            if (path === undefined) continue;
-            const source = { partition: row.owner, seq: 0 };
-            try {
-              await this.#writeContent(
-                row.namespace,
-                row.recordKey,
-                path,
-                row.content,
-                signal,
-                batch,
-                source,
-              );
-              written.push(key);
-            } catch (error) {
-              const content = row.content;
-              if (
-                !("blob" in content) || !isChunkError(error) || signal.aborted
-              ) {
-                throw error;
+          // a few at a time, each group's chunks fetched just before it is
+          // written, so the budget bounds the fetching and the first group
+          // always lands: every pass makes progress
+          for (let i = 0; i < rows.length; i += HYDRATE_GROUP) {
+            if (i > 0 && this.#clock().getTime() >= until) break;
+            const group = rows.slice(i, i + HYDRATE_GROUP);
+            if (group.length > 1) await this.#prefetchOwed(group, signal);
+            for (const row of group) {
+              signal.throwIfAborted();
+              const key = {
+                namespace: row.namespace,
+                record_key: row.recordKey,
+              };
+              settled.push(key);
+              if (this.#owedFile(row.namespace, row.recordKey) === undefined) {
+                continue;
               }
-              unreadable.push(
-                await this.#unreadable(
+              // another live writer's file stands there: its commit or its
+              // recovery decides it, as a catch-up leaves it
+              if (
+                others.some(({ scope }) =>
+                  scope.namespace === row.namespace &&
+                  scopeCovers(scope.scope, row.recordKey)
+                ) && !await this.#nothingAt(row.namespace, row.recordKey)
+              ) {
+                continue;
+              }
+              const path = await this.#target(
+                row.namespace,
+                RecordKey.create(row.recordKey),
+                true,
+                "an owed file",
+              );
+              if (path === undefined) continue;
+              const source = { partition: row.owner, seq: 0 };
+              try {
+                await this.#writeContent(
                   row.namespace,
                   row.recordKey,
-                  withAccess(
-                    { ...source, position: row.mark },
-                    content.access,
-                  ),
-                  content.blob,
-                  error,
+                  path,
+                  row.content,
                   signal,
-                ),
-              );
+                  batch,
+                  source,
+                );
+                written.push(key);
+              } catch (error) {
+                const content = row.content;
+                if (
+                  !("blob" in content) || !isChunkError(error) || signal.aborted
+                ) {
+                  throw error;
+                }
+                unreadable.push(
+                  await this.#unreadable(
+                    row.namespace,
+                    row.recordKey,
+                    withAccess(
+                      { ...source, position: row.mark },
+                      content.access,
+                    ),
+                    content.blob,
+                    error,
+                    signal,
+                  ),
+                );
+              }
             }
           }
           await batch.barrier();

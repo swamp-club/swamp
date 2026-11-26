@@ -134,18 +134,22 @@ export async function drainAllOwed(
 ): Promise<OwedDrainReport> {
   let hydrated = 0;
   for (const lazy of lazies) {
-    while (lazy.owedCount() > 0) {
+    let before = lazy.owedCount();
+    while (before > 0) {
       signal.throwIfAborted();
       const report = await lazy.drainOwed(DRAIN_ALL_PASS_MS, signal);
       hydrated += report.hydrated;
       if (report.left === 0) break;
-      if (report.hydrated === 0) {
+      // a pass that settles rows without writing them (stale, another
+      // writer's, unreadable) still progresses: judge by what is left
+      if (report.left >= before) {
         throw new Error(
           `Hydrating the files this checkout is owed made no progress with ` +
             `${report.left} still owed. Run the command again; if it keeps ` +
             `failing, run \`swamp doctor datastores\`.`,
         );
       }
+      before = report.left;
     }
   }
   return { hydrated, left: 0 };

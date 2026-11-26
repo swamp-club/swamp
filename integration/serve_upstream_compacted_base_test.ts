@@ -81,6 +81,7 @@ async function saveVersions(
   }
 }
 
+/** a lazy checkout owes content until it is read: hydrate it all */
 async function hydrateAll(
   scratch: Scratch,
   client: Client,
@@ -158,8 +159,6 @@ Deno.test({
       };
       assertEquals(await read(a), expected);
       assertEquals(await read(b), expected);
-      // a lazy checkout owes content until it is read: both hydrate in full
-      // before their files are compared
       await hydrateAll(scratch, b, env);
       await hydrateAll(scratch, a, env);
       assertEquals(await dataRecords(b.repoDir), await dataRecords(a.repoDir));
@@ -217,8 +216,6 @@ Deno.test({
       await saveVersions(scratch, a, env, type, web, "vpc", VPC_ID, 4, 4);
 
       assertEquals(await latest(c), { version: 4, content: "4" });
-      // a lazy checkout owes content until it is read: both hydrate in full
-      // before their files are compared
       await hydrateAll(scratch, c, env);
       await hydrateAll(scratch, a, env);
       assertEquals(await dataRecords(c.repoDir), await dataRecords(a.repoDir));
