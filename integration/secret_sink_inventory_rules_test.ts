@@ -275,6 +275,8 @@ const NOT_A_SINK: Record<string, Record<string, string>> = {
       READ_ONLY_DB,
     "src/infrastructure/datastore_v3/litestream/v3_copy.ts: droppedCommits":
       READ_ONLY_DB,
+    "src/infrastructure/datastore_v3/litestream/v3_copy.ts: divergesThrough":
+      READ_ONLY_DB,
     "src/infrastructure/datastore_v3/litestream/v3_copy.ts: quickCheck":
       READ_ONLY_DB,
     "src/infrastructure/datastore_v3/litestream/v3_copy.ts: txnAt":

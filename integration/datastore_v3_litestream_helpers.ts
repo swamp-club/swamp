@@ -356,6 +356,8 @@ export async function commitIn(
   env: Pick<ReplicationEnv, "repoDir" | "config">,
   commits: number,
   bytes = 64,
+  /** one definition every commit rewrites, so they share a partition */
+  definition?: string,
 ): Promise<void> {
   const engine = v3DatastoreFor(env.repoDir, env.config).engineFor(
     () => Promise.resolve(),
@@ -368,9 +370,13 @@ export async function commitIn(
       const unit = engine.openUnit() as unknown as CommitLogUnitOfWork;
       const content = new Uint8Array(bytes);
       crypto.getRandomValues(content.subarray(0, Math.min(bytes, 65536)));
+      const id = definition ?? crypto.randomUUID();
       await unit.stageOps([
-        new AutoDefinitionChanges(crypto.randomUUID()).write(
-          recordKeyOf(["auto-definitions", `${crypto.randomUUID()}.yaml`]),
+        new AutoDefinitionChanges(id).write(
+          recordKeyOf([
+            "auto-definitions",
+            `${definition ?? crypto.randomUUID()}.yaml`,
+          ]),
           content,
         ),
       ]);

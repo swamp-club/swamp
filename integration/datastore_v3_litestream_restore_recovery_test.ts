@@ -20,6 +20,7 @@
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import {
   ignore,
+  MachineError,
   read,
   STALL_MS,
   withMachines,
@@ -108,6 +109,58 @@ Deno.test({
       await other.send({ kind: "write", commits: 1, close: true });
       const fresh = await world.machine("fresh");
       assertEquals((await read(fresh)).commits, 4);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "v3 restore: a follower that appended its new leader's commits above its own unconfirmed one rebuilds its read model when restored, instead of failing on a missing seq at every refresh",
+  ignore,
+  async fn() {
+    await withMachines(async (world) => {
+      const definition = crypto.randomUUID();
+      const a = await world.machine("a");
+      await a.send({ kind: "write", commits: 2, close: true });
+      await a.send({ kind: "lease", ttlMs: 1_500 });
+      // a's own commit, never confirmed: b takes over without it
+      await a.send({ kind: "write", commits: 1, close: false });
+      await a.send({ kind: "catchUp" });
+      const own = await a.send({ kind: "highWater" }) as number;
+      const paused = a.send({ kind: "pause", ms: STALL_MS });
+      const b = await world.machine("b");
+      await b.send({ kind: "write", commits: 1, close: true, definition });
+      await b.send({ kind: "write", commits: 1, close: true });
+      await b.send({ kind: "write", commits: 1, close: true, definition });
+      await paused;
+      const leader = await b.send({ kind: "changes", since: own - 1 }) as {
+        cursor: number;
+        commit: unknown;
+      }[];
+      assertEquals(
+        leader.map((change) => change.cursor),
+        [own, own + 1, own + 2],
+        "b's first commit sits at the cursor of a's dropped one",
+      );
+      // a's feed starts at its own high-water: b's commit at `own` is skipped
+      await a.send({ kind: "follow", changes: [leader[1]] });
+      await assertRejects(
+        () => a.send({ kind: "follow", changes: [leader[2]] }),
+        MachineError,
+        "the leader's commit at cursor",
+      );
+      // a's lead ended with its process: a follower starts on its checkout
+      await a.stopSidecars();
+      await a.crash();
+      const follower = await world.machine("a2", { checkout: "a" });
+      // a second refresh restores nothing: a read model left behind fails again
+      assertEquals(await follower.send({ kind: "refresh" }), own + 2);
+      assertEquals(await follower.send({ kind: "refresh" }), own + 2);
+      const files = await follower.send({ kind: "files" }) as string[];
+      assert(
+        files.includes(`${definition}.yaml`),
+        "the definition b wrote is applied after the restore",
+      );
     });
   },
 });
