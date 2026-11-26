@@ -2947,7 +2947,7 @@ export class SqliteReadModel implements ReadModel {
         }
         const locked = performance.now();
         // Another process may have changed the tree since the last section.
-        this.#paths.clear();
+        this.#paths.startSection();
         this.#state.forgetFoldedKeys();
         this.#guarded.clear();
         this.#replaying = false;
@@ -3563,10 +3563,13 @@ export class SqliteReadModel implements ReadModel {
     const pool = this.#pool;
     if (pool === undefined || pool.length === 0) return;
     const folded = foldPath(path);
-    const overlapping = pool.filter((write) =>
-      within(folded, write.folded) || within(write.folded, folded) ||
-      write.creates.some((dir) => within(folded, dir))
-    );
+    // a link makes two spellings of one path, which no lexical test sees
+    const overlapping = this.#paths.linked
+      ? pool
+      : pool.filter((write) =>
+        within(folded, write.folded) || within(write.folded, folded) ||
+        write.creates.some((dir) => within(folded, dir))
+      );
     if (overlapping.length === 0) return;
     // only the writes this path meets: the others go on in the pool
     this.#onPoolDrain?.();
@@ -4040,11 +4043,13 @@ export class SqliteReadModel implements ReadModel {
       depth: TARGET_LOOKAHEAD,
       resolve: (item) => this.#resolveTarget(item),
       runsAhead: (item, pending) =>
-        !signal.aborted && item.isPut &&
+        !signal.aborted && item.isPut && !this.#paths.linked &&
         !this.#meetsUnlanded(item, pending),
       // a removal can take emptied directories with it
       schedulesAfter: (item) => item.isPut,
-      fresh: (resolved) => resolved.generation === this.#paths.generation,
+      // a link seen since may lead to a file still landing
+      fresh: (resolved) =>
+        resolved.generation === this.#paths.generation && !this.#paths.linked,
       discard: ({ target }) => {
         if (target === undefined) return;
         this.#paths.takeAbsent(target.path);
@@ -4111,11 +4116,39 @@ export class SqliteReadModel implements ReadModel {
   ): Promise<{ path: string; existing?: string } | undefined> {
     const key = recordKey.toString();
     if (this.#unprojected(namespace, key)) return undefined;
-    const root = this.#cacheRoot(namespace);
-    const skip = (reason: string): undefined => {
-      logger.warn`Not materialising ${key} from ${source}: ${reason}`;
+    const linked = this.#paths.linked;
+    const attempt = () =>
+      this.#findTarget(namespace, recordKey, isPut).then(
+        (found) => ({ found }),
+        (error: unknown) => ({ error }),
+      );
+    let outcome = await attempt();
+    if (!linked && this.#paths.linked && this.#pool !== undefined) {
+      // judged with only the lexically overlapping writes landed
+      const path = join(this.#cacheRoot(namespace), ...key.split("/"));
+      this.#paths.takeAbsent(path);
+      this.#paths.takeExisting(path);
+      outcome = await attempt();
+    }
+    if ("error" in outcome) throw outcome.error;
+    const found = outcome.found;
+    if (found !== undefined && "skip" in found) {
+      logger.warn`Not materialising ${key} from ${source}: ${found.skip}`;
       return undefined;
-    };
+    }
+    return found;
+  }
+
+  async #findTarget(
+    namespace: string,
+    recordKey: RecordKey,
+    isPut: boolean,
+  ): Promise<
+    { path: string; existing?: string } | { skip: string } | undefined
+  > {
+    const key = recordKey.toString();
+    const root = this.#cacheRoot(namespace);
+    const skip = (reason: string) => ({ skip: reason });
     const refused = refusedKeyReason(recordKey, root, this.#stateDir);
     if (refused !== undefined) return skip(refused);
     assertContainedPath(key, root);
@@ -5955,7 +5988,11 @@ async function pathConflict(
     if (i < segments.length && paths.isDirectory(prefix)) continue;
     let info: Deno.FileInfo;
     try {
-      info = await Deno.stat(prefix);
+      info = await Deno.lstat(prefix);
+      if (info.isSymlink) {
+        paths.noteLink();
+        info = await Deno.stat(prefix);
+      }
     } catch (error) {
       if (error instanceof Deno.errors.NotFound) return { missingFrom: i };
       throw error;
@@ -6116,6 +6153,16 @@ class PathCache {
   readonly #listings = new Map<string, ListedNames | "unchecked">();
   /** warned about once each, across sections */
   readonly #unlistable = new Set<string>();
+  #linked = false;
+
+  /** whether a probe this section met a symlink */
+  get linked(): boolean {
+    return this.#linked;
+  }
+
+  noteLink(): void {
+    this.#linked = true;
+  }
 
   isDirectory(path: string): boolean {
     return this.#directories.has(path);
@@ -6170,7 +6217,7 @@ class PathCache {
    */
   async resolve(path: string): Promise<string> {
     try {
-      await Deno.lstat(path);
+      if ((await Deno.lstat(path)).isSymlink) this.#linked = true;
       return await resolveRealPath(path);
     } catch (error) {
       if (!(error instanceof Deno.errors.NotFound)) throw error;
@@ -6195,7 +6242,7 @@ class PathCache {
     const parent = dirname(dir);
     if (parent === dir) return await resolveRealPath(dir);
     try {
-      await Deno.lstat(dir);
+      if ((await Deno.lstat(dir)).isSymlink) this.#linked = true;
     } catch (error) {
       if (!(error instanceof Deno.errors.NotFound)) throw error;
       return join(await this.resolveDirectory(parent), basename(dir));
@@ -6262,6 +6309,12 @@ class PathCache {
     this.#nothingAt.clear();
     this.#listings.clear();
     this.#generation++;
+  }
+
+  /** a removal clears the cache mid-section, but a link seen stays seen */
+  startSection(): void {
+    this.clear();
+    this.#linked = false;
   }
 }
 
