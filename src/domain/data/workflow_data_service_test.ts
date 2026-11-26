@@ -285,6 +285,62 @@ Deno.test("WorkflowDataService.findAllForWorkflowRun resolves model names", asyn
   assertEquals(result[0].modelName, "my-vpc");
 });
 
+async function namedOwnerResult(
+  tags: Record<string, string>,
+  definitions: Map<string, Definition> = new Map(),
+) {
+  const modelType = ModelType.create("command/shell");
+  const data = await createTestData("log", tags);
+  const service = new WorkflowDataService(
+    createMockDefinitionRepo(definitions),
+    createMockDataRepo([{ data, modelType, modelId: TEST_MODEL_ID }]),
+  );
+  return await service.findAllForWorkflowRun(
+    createTestRun([{ stepName: "run", artifacts: [refFor(data)] }]),
+  );
+}
+
+Deno.test("WorkflowDataService.findAllForWorkflowRun: a deleted definition's data is named as it recorded, not by id", async () => {
+  const result = await namedOwnerResult({
+    type: "resource",
+    modelName: "echoer",
+  });
+  assertEquals(result.length, 1);
+  assertEquals(result[0].modelId, TEST_MODEL_ID);
+  assertEquals(result[0].modelName, "echoer");
+});
+
+Deno.test("WorkflowDataService.findAllForWorkflowRun: a deleted definition's data with no recorded name is named by id", async () => {
+  const untagged: Record<string, string>[] = [
+    { type: "resource" },
+    { type: "resource", modelName: "" },
+  ];
+  for (const tags of untagged) {
+    const result = await namedOwnerResult(tags);
+    assertEquals(result[0].modelName, TEST_MODEL_ID, JSON.stringify(tags));
+  }
+});
+
+Deno.test("WorkflowDataService.findAllForWorkflowRun: a renamed definition names its data by the current name, not the recorded one", async () => {
+  const definitions = new Map<string, Definition>([[
+    TEST_MODEL_ID,
+    Definition.fromData({
+      id: TEST_MODEL_ID,
+      name: "renamed-echoer",
+      version: 1,
+      tags: {},
+      globalArguments: {},
+      methods: {},
+      inputs: undefined,
+    }),
+  ]]);
+  const result = await namedOwnerResult(
+    { type: "resource", modelName: "echoer" },
+    definitions,
+  );
+  assertEquals(result[0].modelName, "renamed-echoer");
+});
+
 Deno.test("WorkflowDataService.findByNameInWorkflowRun finds data by name", async () => {
   const modelType = ModelType.create("aws/ec2/vpc");
   const data1 = await createTestData("vpc-state");
@@ -588,6 +644,7 @@ async function createRunData(
   name: string,
   runId: string,
   version = 1,
+  extraTags: Record<string, string> = {},
 ): Promise<Data> {
   const definitionHash = await computeDefinitionHash({
     type: "model-method",
@@ -599,7 +656,12 @@ async function createRunData(
     contentType: "application/json",
     lifetime: "infinite",
     garbageCollection: 5,
-    tags: { type: "resource", specName: name, workflowRunId: runId },
+    tags: {
+      type: "resource",
+      specName: name,
+      workflowRunId: runId,
+      ...extraTags,
+    },
     ownerDefinition: {
       definitionHash,
       ownerType: "model-method",
@@ -892,6 +954,32 @@ Deno.test("WorkflowDataService.matchByNameInWorkflowRun: reports other steps tha
     "review",
   ]);
   assertEquals(match?.otherProducers[0].modelId, OTHER_MODEL_ID);
+});
+
+Deno.test("WorkflowDataService.matchByNameInWorkflowRun: another producer whose definition is gone is named as its data recorded", async () => {
+  const modelType = ModelType.create("command/shell");
+  const first = await createRunData("result", TEST_RUN_ID, 1);
+  const recordedSecond = await createRunData("result", TEST_RUN_ID, 1, {
+    modelName: "reviewer",
+  });
+  const global = [
+    { data: first, modelType, modelId: TEST_MODEL_ID },
+    { data: recordedSecond, modelType, modelId: OTHER_MODEL_ID },
+  ];
+
+  const run = createTestRun([
+    { stepName: "checkout", artifacts: [refFor(first)] },
+    { stepName: "review", artifacts: [refFor(recordedSecond)] },
+  ]);
+  const service = new WorkflowDataService(
+    createMockDefinitionRepo(),
+    createMockDataRepo(global),
+  );
+
+  const match = await service.matchByNameInWorkflowRun(run, "result");
+  assertEquals(match?.otherProducers.map((item) => item.modelName), [
+    "reviewer",
+  ]);
 });
 
 Deno.test("WorkflowDataService.matchByNameInWorkflowRun: a name only one step wrote has no other producers", async () => {

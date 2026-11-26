@@ -39,6 +39,12 @@ import {
 } from "../src/libswamp/data/get.ts";
 import { createLibSwampContext } from "../src/libswamp/context.ts";
 import {
+  createDataListDeps,
+  dataList,
+  type DataListEvent,
+  type WorkflowDataListData,
+} from "../src/libswamp/data/list.ts";
+import {
   dataQuery,
   type DataQueryDeps,
   type DataQueryEvent,
@@ -265,6 +271,56 @@ Deno.test("data get: a workflow-scoped read's replacement query selects the same
       assertStringIncludes(data.warnings![1], "job build, step compile");
       assertStringIncludes(data.warnings![1], "job verify, step check");
     }
+  });
+});
+
+Deno.test("data get: a workflow-scoped read of data whose behavior definition is gone names the behavior as data query does, and so does data list", async () => {
+  await withServeRepo(async (repo) => {
+    const { run, built } = await sharedNameRun(repo);
+    const buildModel = await repo.repoContext.definitionRepo.findByNameGlobal(
+      "build-model",
+    );
+    assert(buildModel);
+    await repo.repoContext.definitionRepo.delete(
+      repo.modelType,
+      buildModel.definition.id,
+      buildModel.definition.name,
+    );
+
+    const data = await read(repo, {
+      workflowName: "shared-name",
+      runId: run.id,
+      dataName: "result",
+    });
+    assertEquals(data.id, built.id);
+    assertEquals(data.modelId, buildModel.definition.id);
+    assertEquals(data.modelName, "build-model");
+    const queried = await queryReplacement(repo, data);
+    assertSameItem(queried, data);
+    assertEquals(queried.map((r) => r.modelName), [data.modelName]);
+
+    const listDeps = createDataListDeps(
+      repo.repoDir,
+      repo.datastoreResolver,
+      repo.repoContext.unifiedDataRepo,
+      undefined,
+      repo.repoContext.workflowRepo,
+      repo.repoContext.definitionRepo,
+      repo.repoContext.catalogStore,
+    );
+    const listed = (await collect<DataListEvent>(
+      dataList(createLibSwampContext(), listDeps, {
+        workflowName: "shared-name",
+        runId: run.id,
+      }),
+    )).at(-1);
+    assert(listed?.kind === "completed", JSON.stringify(listed));
+    const owners = (listed.data as WorkflowDataListData).groups
+      .flatMap((group) => group.items)
+      .filter((item) => item.modelId === buildModel.definition.id)
+      .map((item) => item.modelName);
+    assertEquals(owners.length > 0, true);
+    assertEquals(new Set(owners), new Set(["build-model"]));
   });
 });
 

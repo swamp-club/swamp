@@ -228,7 +228,7 @@ export class WorkflowDataService {
 
     const { data, owner } = found;
     const modelName = owner.name ??
-      await this.resolveModelName(owner.modelType, owner.modelId);
+      await this.resolveModelName(owner.modelType, owner.modelId, data);
 
     const contentPath = this.dataRepo.getContentPath(
       owner.modelType,
@@ -279,9 +279,14 @@ export class WorkflowDataService {
     );
   }
 
+  /**
+   * a gone definition is named as the data recorded it, as the catalog and
+   * serve's owner authorization name it
+   */
   private async resolveModelName(
     modelType: ModelType,
     modelId: string,
+    data: Data,
   ): Promise<string> {
     const definition = await this.definitionRepo.findById(
       modelType,
@@ -290,6 +295,7 @@ export class WorkflowDataService {
     if (definition) {
       return definition.name;
     }
-    return modelId;
+    const recorded = data.tags["modelName"];
+    return recorded ? recorded : modelId;
   }
 }

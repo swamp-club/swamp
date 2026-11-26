@@ -58,6 +58,15 @@ recorded under several owner ids is refused with those ids, and passing an id
 reads that owner. A name with no definition and no recorded data is still
 `Behavior not found`.
 
+A workflow-scoped `data get` or `data list` names an item whose definition is
+gone by the item's own `modelName` tag, as `data query` names its row, and by
+the owner id only when the item has no such tag
+(`WorkflowDataService`). Serve authorizes that read on the same name. A
+behavior-scoped read of a gone definition is authorized on every name the
+owner's data was written under, because it can reach any version; a
+workflow-scoped read reaches only the version its run recorded, so that
+version's name is the whole identity.
+
 ### CLI shortcuts
 
 Deprecated `data get` forms map to these queries:
