@@ -64,6 +64,7 @@ import {
 } from "../persistence/repo_unit_of_work.ts";
 import {
   COMMITS_DB_FILE,
+  compactedVersionInCheckout,
   datastoreKeyFilter,
   DroppedWorkRecoveryRunningError,
   initializeV3Datastore,
@@ -84,6 +85,10 @@ import {
   ReadModelCatchUpUnreachableError,
 } from "../../domain/datastore_v3/read_model.ts";
 import { readModelStateDir, v3CatalogPath } from "./record_path_guard.ts";
+import type { LiveRecordWriter } from "./read_model_state.ts";
+import { fakeLazyHydration } from "./lazy_hydration_test_helpers.ts";
+import { ModelType } from "../../domain/models/model_type.ts";
+import { stringify as stringifyYaml } from "@std/yaml";
 import { READ_MODEL_STATE_FILE } from "./sqlite_read_model.ts";
 import { writerAliveFrom } from "./commit_outbox_recovery.ts";
 import { localProcess } from "./process_identity.ts";
@@ -2543,4 +2548,57 @@ Deno.test("isTransientAppendFailure: a may-land serve could not confirm even whe
     ),
     false,
   );
+});
+
+Deno.test("compactedVersionInCheckout: a raw file a lazy checkout owes is hydrated before it is read, so the version can be restated", async () => {
+  const cacheRoot = join("checkout", ".swamp");
+  const partition = partitionOf({
+    kind: "model",
+    type: ModelType.create("test/model"),
+    id: "m-1",
+  });
+  const metadataKey = "data/test/model/m-1/state/3/metadata.yaml";
+  const rawKey = "data/test/model/m-1/state/3/raw";
+  const rawPath = join(cacheRoot, ...rawKey.split("/"));
+  const metadata = new TextEncoder().encode(stringifyYaml({
+    name: "state",
+    id: crypto.randomUUID(),
+    version: 3,
+    contentType: "application/json",
+    lifetime: "1d",
+    garbageCollection: 5,
+    streaming: false,
+    tags: { type: "resource" },
+    ownerDefinition: { ownerType: "manual", ownerRef: "test" },
+    createdAt: new Date(0).toISOString(),
+  }));
+  const raw = new TextEncoder().encode('{"a":1}');
+  const lazy = fakeLazyHydration({ owedPaths: [rawPath] });
+  const readModel = {
+    hydrateOwedPath: lazy.hydrateOwedPath,
+    recordBytes: (_ns: string, _partition: unknown, key: string) => {
+      const bytes = key === metadataKey
+        ? metadata
+        : key === rawKey && lazy.calls.paths.length > 0
+        ? raw
+        : undefined;
+      return Promise.resolve(
+        bytes === undefined ? undefined : {
+          record: {} as LiveRecordWriter,
+          bytes,
+        },
+      );
+    },
+  };
+
+  const found = await compactedVersionInCheckout(
+    readModel,
+    cacheRoot,
+    { namespace: "", partition, name: "state", version: 3 },
+    new AbortController().signal,
+  );
+
+  assertEquals(found?.metadata.version, 3);
+  assertEquals(found?.raw, raw);
+  assertEquals(lazy.calls.paths.map((p) => p.absPath), [rawPath]);
 });
