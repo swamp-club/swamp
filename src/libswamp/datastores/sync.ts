@@ -37,10 +37,14 @@ import type { SwampError } from "../errors.ts";
 import { join } from "@std/path";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 
+/** hydrate writes the files a lazy v3 checkout is owed; it moves no data */
+export type DatastoreSyncMode = "push" | "pull" | "sync" | "hydrate";
+
 export interface DatastoreSyncData {
-  mode: "push" | "pull" | "sync";
+  mode: DatastoreSyncMode;
   filesPushed?: number;
   filesPulled?: number;
+  filesHydrated?: number;
   errors?: string[];
 }
 
@@ -50,13 +54,13 @@ export interface DatastoreSyncPreviewData {
 }
 
 export type DatastoreSyncEvent =
-  | { kind: "syncing"; mode: "push" | "pull" | "sync" }
+  | { kind: "syncing"; mode: DatastoreSyncMode }
   | { kind: "preview"; data: DatastoreSyncPreviewData }
   | { kind: "completed"; data: DatastoreSyncData }
   | { kind: "error"; error: SwampError };
 
 export interface DatastoreSyncInput {
-  mode: "push" | "pull" | "sync";
+  mode: DatastoreSyncMode;
   confirm?: boolean;
 }
 
@@ -79,6 +83,8 @@ export interface DatastoreSyncDeps {
     directories: string[];
     namespace: string;
   }>;
+  /** absent unless the datastore is v3, whose checkout may owe files */
+  hydrateOwed?: () => Promise<{ hydrated: number }>;
 }
 
 export interface CreateDatastoreSyncDepsOptions {
@@ -251,6 +257,17 @@ export async function createDatastoreSyncDeps(
   );
 }
 
+/** a v3 checkout drains what it is owed; any other datastore refuses */
+export function createDatastoreHydrateDeps(
+  hydrateOwed: (() => Promise<{ hydrated: number }>) | undefined,
+): DatastoreSyncDeps {
+  const deps = makeUnsupportedDeps(
+    "hydrate",
+    "--hydrate cannot be combined with a sync of data.",
+  );
+  return hydrateOwed !== undefined ? { ...deps, hydrateOwed } : deps;
+}
+
 function makeUnsupportedDeps(
   type: string,
   errorMessage: string,
@@ -282,6 +299,28 @@ export async function* datastoreSync(
     {},
     (async function* () {
       ctx.logger.debug`Executing datastore sync in ${input.mode} mode`;
+
+      if (input.mode === "hydrate") {
+        if (!deps.hydrateOwed) {
+          yield {
+            kind: "error",
+            error: {
+              code: "hydrate_not_supported",
+              message: "--hydrate is only for format 3 (v3) datastores, " +
+                "whose checkouts may owe files; this datastore is format 2. " +
+                "Use `swamp datastore sync --pull` to fetch its data.",
+            },
+          };
+          return;
+        }
+        yield { kind: "syncing", mode: "hydrate" };
+        const result = await deps.hydrateOwed();
+        yield {
+          kind: "completed",
+          data: { mode: "hydrate", filesHydrated: result.hydrated },
+        };
+        return;
+      }
 
       const validation = await deps.validateSyncSupport();
       if (!validation.supported) {

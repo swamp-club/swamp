@@ -310,6 +310,7 @@ import { unguardedConsole } from "../domain/models/console_guard.ts";
 import { WRITER_LEASE_CLOCK_SKEW_MS } from "../domain/datastore_v3/writer_lease.ts";
 import { decideOfflineWork } from "../domain/datastore_v3/offline_write_policy.ts";
 import { partitionOf } from "../domain/datastore_v3/partition_key.ts";
+import { v3LazyModelFiles } from "../infrastructure/datastore_v3/lazy_hydration.ts";
 import type { MethodKind } from "../domain/models/model.ts";
 import {
   catchUpBeforeLockAt,
@@ -322,6 +323,8 @@ import {
   goServeOfflineAt,
   goServeOfflineAtLock,
   holdV3Writer,
+  hydrateV3BehaviorPartition,
+  hydrateV3RunPartitions,
   serveCatchUpRequestAt,
   setV3WriterBusyServeAddress,
   v3BucketNamespacedStoreAt,
@@ -838,22 +841,44 @@ export function serveUpstreamConfigOptions(
 }
 
 export async function v3LocationOf(
-  resolution: Pick<
-    DatastoreResolutionResult,
-    "repoDir" | "datastoreConfig" | "serveUpstream"
-  >,
+  resolution:
+    & Pick<
+      DatastoreResolutionResult,
+      "repoDir" | "datastoreConfig" | "serveUpstream"
+    >
+    & { readonly marker?: RepoMarkerData | null },
 ): Promise<V3DatastoreConfig> {
-  return resolution.serveUpstream !== undefined
-    ? await bindV3ServeUpstream(
-      resolution.repoDir,
-      resolution.datastoreConfig,
-      resolution.serveUpstream,
-      VERSION,
-    )
-    : await v3DatastoreConfigOf(
+  if (resolution.serveUpstream === undefined) {
+    return await v3DatastoreConfigOf(
       resolution.repoDir,
       resolution.datastoreConfig,
     );
+  }
+  const location = await bindV3ServeUpstream(
+    resolution.repoDir,
+    resolution.datastoreConfig,
+    resolution.serveUpstream,
+    VERSION,
+  );
+  return v3LazyModelFiles({
+      serveUpstream: true,
+      hydrationStrategy: hydrationStrategyOf(resolution),
+    })
+    ? { ...location, lazyModelFiles: true }
+    : location;
+}
+
+/** a filesystem config carries none, so its checkout's marker says */
+function hydrationStrategyOf(
+  resolution: {
+    readonly datastoreConfig: DatastoreConfig;
+    readonly marker?: RepoMarkerData | null;
+  },
+): string | undefined {
+  const config = resolution.datastoreConfig;
+  return (isCustomDatastoreConfig(config)
+    ? config.hydrationStrategy
+    : undefined) ?? resolution.marker?.datastore?.hydrationStrategy;
 }
 
 function redactHomePath(path: string): string {
@@ -1818,7 +1843,8 @@ function serveLockOf(
   serveKey: string,
   displayKey: string,
   maxWaitMs: number,
-  options?: ServeLockHoldOptions,
+  options: ServeLockHoldOptions | undefined,
+  hydrateHeld: (root: string) => Promise<void>,
 ): DistributedLock | undefined {
   if (isCustomDatastoreConfig(config)) return undefined;
   const root = config.path;
@@ -1833,6 +1859,8 @@ function serveLockOf(
         delivered,
         maxCommits,
       );
+      // the work under the lock reads its partition's files synchronously
+      await hydrateHeld(root);
       nameLockHolder(root);
     },
     catchUpOutside: () =>
@@ -2056,6 +2084,7 @@ export async function createModelLock(
     lockKey,
     maxWaitMs,
     options,
+    (root) => hydrateV3BehaviorPartition(root, modelType, modelId),
   );
   if (atServe !== undefined) return atServe;
   if (isCustomDatastoreConfig(config)) {
@@ -2131,6 +2160,7 @@ export async function createWorkflowRunLock(
     lockKey,
     maxWaitMs,
     { ignoresStop: true },
+    (root) => hydrateV3RunPartitions(root, runId),
   );
   if (atServe !== undefined) return atServe;
   if (isCustomDatastoreConfig(config)) {

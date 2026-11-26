@@ -20,6 +20,7 @@
 import { V3ReplicationError } from "../domain/datastore_v3/litestream_replication.ts";
 import {
   closeV3Datastores,
+  drainV3OwedAtCommandEnd,
   followServeCompactionAtCommandEnd as followServeCompaction,
   reportedV3Failure,
   type V3CommandCommits,
@@ -27,6 +28,10 @@ import {
 } from "../infrastructure/datastore_v3/v3_repo_context.ts";
 import { causeChainHoldsDatastoreOutage } from "../infrastructure/datastore_v3/datastore_outage.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
+import {
+  OWED_DRAIN_BUDGET_MS,
+  type OwedDrainReport,
+} from "../infrastructure/datastore_v3/lazy_hydration.ts";
 
 /**
  * commits a sync could not confirm fail the command: they are saved but not yet
@@ -83,5 +88,22 @@ export async function followServeCompactionAtCommandEnd(
   } catch (error) {
     getSwampLogger(["datastore", "v3"])
       .debug`Following serve's compaction at the command's end failed: ${error}`;
+  }
+}
+
+/** never fails the command: a file left owed is written when first read */
+export async function drainOwedAtCommandEnd(
+  drain: (budgetMs: number) => Promise<OwedDrainReport> =
+    drainV3OwedAtCommandEnd,
+): Promise<void> {
+  try {
+    const { hydrated, left } = await drain(OWED_DRAIN_BUDGET_MS);
+    if (hydrated > 0 || left > 0) {
+      getSwampLogger(["datastore", "v3"])
+        .debug`Hydrated ${hydrated} owed files at the command's end; ${left} left`;
+    }
+  } catch (error) {
+    getSwampLogger(["datastore", "v3"])
+      .debug`Hydrating owed files at the command's end failed: ${error}`;
   }
 }

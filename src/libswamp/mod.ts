@@ -2004,6 +2004,7 @@ export {
   type DatastoreQuarantineDiscardInput,
 } from "./datastores/quarantine_discard.ts";
 export {
+  createDatastoreHydrateDeps,
   createDatastoreSyncDeps,
   type CreateDatastoreSyncDepsOptions,
   datastoreSync,

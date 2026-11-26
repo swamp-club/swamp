@@ -4742,7 +4742,9 @@ unified data repository consults it only in the not-found branches of
 and `RepositoryContext` (`unreadableContent`) wherever `hydrateFile` goes:
 `v3RepositoryFactoryConfig`, the execution service, workflow run, resume,
 evaluate and history, serve's deps and workflow handlers, and the behavior output data, logs,
-evaluate and validate factories. `hydrateFile` stays undefined on v3.
+evaluate and validate factories. `hydrateFile` stays undefined on v3, except
+on a serve-mode checkout that owes model files (Team mode: lazy model files),
+where it is an owed-only hook.
 
 A lookup that fails throws a `UserError` naming the path; it no longer warns
 and reads as absent, since it runs only after a read found no file, and a
@@ -9459,6 +9461,84 @@ an admin": kept, never sent again.
   behind the newest observation. `integration/serve_v3_team_mode_test.ts`
   takes over from a leader while a member holds an explicit lease (Workers
   as machines): the lease survives and its renewal succeeds.
+
+### Team mode: lazy model files
+
+A serve-mode checkout's first command loads serve's compacted base. Writing
+every model's data and output files then costs the first command minutes on a
+large datastore, though a command touches a few partitions. So the base load,
+and every page applied after it, writes as before except a model partition's
+data content files (`data/<type>/<id>/<name>/<version>/raw`), which it records
+as **owed**: logically present, not yet on disk, their chunks not fetched.
+`metadata.yaml`, latest markers, outputs, and config, definition and run files
+are always written, since their readers do not hydrate. A content file is owed
+only when nothing is on disk at its path; one already there is written at
+once.
+
+**The contract.** Data content files under `.swamp/` for partitions this
+checkout has not touched may be absent until hydrated. Read them through swamp
+(`data get`, `data query`, expressions, methods, an extension's async
+`getContent`), which hydrates on read, or run `swamp datastore sync --hydrate`
+to write every owed file, for tools that read `.swamp/` directly. A printed
+`contentPath` may name an owed file not yet on disk, and an extension's
+synchronous `getContentSync` and `getContentPath` cannot hydrate, as with a
+lazy v2 datastore. Switching a checkout to `hydrationStrategy: full` stops new
+owing; files already owed still hydrate on read or on `sync --hydrate`.
+
+**When it applies.** `v3LazyModelFiles` (`lazy_hydration.ts`) decides: a
+serve-mode checkout whose `hydrationStrategy` is unset or `lazy`. A
+filesystem-mode v3 checkout, a bucket checkout, and `hydrationStrategy: full`
+never owe files; `full` is the opt-out for a checkout whose `.swamp/` other
+tools read. `v3LocationOf` (`repo_context.ts`) sets `lazyModelFiles` on the
+location it binds, from the extension config's `hydrationStrategy` or, for a
+filesystem config, the marker's, and `v3DatastoreFor` opens the handle with
+it.
+
+**Never stale.** Laziness changes when a file is written, never what a read
+sees:
+
+- a page apply that writes or removes a key clears its owed row in the same
+  state batch, so an owed row never outlives a newer commit to its key;
+- a hydrate writes the file only when the owed row still matches the read
+  model's state (owner and mark), through the guarded write, under the read
+  model's exclusive section and the writer section or lease a catch-up takes;
+  one that cannot take it fails loudly;
+- the owed row is cleared only after the file lands, so a crash mid-hydration
+  leaves the key owed and the next read hydrates it again.
+
+**Reads.** `v3RepositoryFactoryConfig` gives a lazy checkout's contexts an
+owed-only `HydrateFileHook` (`v3OwedFileHook`, marked `owedOnly`) that calls
+the handle's `hydrateOwedPath`. The unified data repository consults it only
+when a content file is absent; it never refreshes a present or short file as
+a v2 lazy hook does, so `isContentAcceptedSync` and the accepted-short rules
+are unchanged. A path the hook reports not owed falls through to the
+unreadable-content lookup, so an unreadable record still fails loudly and
+never reads as absent.
+
+- `data query` and `data get`: the async match reports a row with absent
+  content, `ensureContentLocal` hydrates it, and the match runs again, so an
+  owed row is never dropped as stale. A row that is neither owed nor present
+  stays dropped. The synchronous match (`querySync`, used by
+  `data.listVersions`) cannot hydrate, so on a repository whose content may
+  be owed (`contentMayBeOwed`) it keeps the row, as a lazy v2 datastore's
+  match does.
+- Expressions: the resolver's prepare step (`ensureReadSet`,
+  `ensureContentLocal` before `data.latest`'s synchronous record build, and
+  `materializePath`) goes through the same hook, so a synchronous read of an
+  owed file sees its content.
+- Locks: a behavior lock and a run claim hydrate their partition's owed files
+  before the work under them runs (`hydrateV3BehaviorPartition`,
+  `hydrateV3RunPartitions`), from the serve lock's `onAcquired` after its
+  catch-up and from `catchUpV3AfterBehaviorLock` and `catchUpV3AfterRunLock`.
+- Teardown: `swamp.cli.teardown.hydrate` drains owed files for up to 2 s
+  (`OWED_DRAIN_BUDGET_MS`) before the datastores close; it never fails the
+  command, and what it leaves is hydrated when first read.
+- `swamp datastore sync --hydrate` drains every owed file and reports the
+  count (`{"mode":"hydrate","filesHydrated":N}` in JSON). On a v2 datastore it
+  is refused with `hydrate_not_supported`. `datastore sync` takes serve mode
+  (`SERVE_UPSTREAM_COMMANDS`) so `--hydrate` reaches the copy that owes the
+  files; without the flag it refuses a format 3 datastore as before, now
+  without binding its storage.
 
 ### Team mode: leader election and followers (datastore rework Phase 5)
 

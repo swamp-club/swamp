@@ -319,6 +319,19 @@ export type HydrateFileHook = (
 ) => Promise<boolean>;
 
 /**
+ * fills only an absent file the datastore owes this checkout and never
+ * refreshes a present one; false means the file is not owed
+ */
+export type OwedFileHook = HydrateFileHook & { readonly owedOnly: true };
+
+export function isOwedFileHook(
+  hook: HydrateFileHook | undefined,
+): hook is OwedFileHook {
+  return hook !== undefined &&
+    (hook as Partial<OwedFileHook>).owedOnly === true;
+}
+
+/**
  * consulted only after a read found no file; the repository throws the returned
  * error so the read fails loudly instead of reading as absent
  */
