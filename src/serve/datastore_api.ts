@@ -1200,20 +1200,23 @@ class DatastoreApi {
         `Malformed batch: ${error instanceof Error ? error.message : error}`,
       );
     }
-    const landed: LandedCommit[] = [];
+    let landed: LandedCommit[] = [];
     let refused: BatchItemReply | undefined;
+    // landed items from this index on are not yet applied to the read model
+    let appliedBefore = 0;
     for (const [index, item] of header.items.entries()) {
       const partition = parsePartition(item.partition);
+      const last = index === header.items.length - 1;
       let outcome: Response | LandedCommit;
       try {
         outcome = partition === undefined
           ? failure(400, "invalid_request", "Not a partition key")
-          : await this.#commitOne(
-            reader,
-            partition,
-            req.signal,
-            index === header.items.length - 1,
-          );
+          : await this.#commitOne(reader, partition, req.signal, last, {
+            deferCatchUp: !last,
+            caughtUp: () => {
+              appliedBefore = landed.length;
+            },
+          });
       } catch (error) {
         this.#deps.ctx.commitHealth?.recordFailure(error);
         outcome = storageFailureResponse(error, this.#deps.ctx) ??
@@ -1225,6 +1228,22 @@ class DatastoreApi {
         break;
       }
       landed.push(outcome);
+    }
+    // one catch-up for the items a stop left without the later one they were
+    // counting on; before the confirm and replies, as each item's own was
+    const final = landed.at(-1);
+    let warning = final?.warning;
+    if (final?.caughtUpLater === true) {
+      warning = await withSpan(
+        "swamp.serve.datastore.after_commit",
+        {},
+        () => this.#afterCommit(final.partition),
+      );
+    }
+    if (warning !== undefined) {
+      landed = landed.map((commit, index) =>
+        index >= appliedBefore ? { ...commit, warning } : commit
+      );
     }
     const unconfirmed = landed.length === 0
       ? undefined
@@ -1362,6 +1381,7 @@ class DatastoreApi {
     partition: PartitionKey,
     signal: AbortSignal,
     last: boolean,
+    place?: BatchPlace,
   ): Promise<Response | LandedCommit> {
     // reading the envelope waits on the client's upload
     const read = await commitStage("envelope", async () => {
@@ -1405,6 +1425,7 @@ class DatastoreApi {
     try {
       authorization = await commitStage("authorize", async () => {
         await this.#catchUp();
+        place?.caughtUp();
         return await authorizeCommit(
           partition,
           ops,
@@ -1671,6 +1692,9 @@ class DatastoreApi {
     if ("ok" in landed) return refusalResponse(landed);
     const { result } = landed;
     this.#deps.ledger.release(this.#storageNamespace, referenced);
+    if (place?.deferCatchUp === true && !afterCommitReloads(partition)) {
+      return { partition, result, caughtUpLater: true };
+    }
     // Outside the lock: the next forwarded commit catches up before it
     // authorises anyway, so holding the lock for this one gains nothing.
     const warning = await withSpan(
@@ -3600,6 +3624,7 @@ class DatastoreApi {
       // No catalog invalidate: it would make the read model replay every commit.
       await this.#catchUp();
       const identity = partition.identity;
+      if (!afterCommitReloads(partition)) return undefined;
       if (identity.kind === "model" && isIntegrationModelType(identity.type)) {
         await ctx.integrationDirectory?.reload();
       } else if (
@@ -4345,6 +4370,24 @@ interface LandedCommit {
   readonly partition: PartitionKey;
   readonly result: ForwardedCommitResult;
   readonly warning?: string;
+  /** landed without its own catch-up: a later one in the batch covers it */
+  readonly caughtUpLater?: true;
+}
+
+/** a batch item's place, so its trailing catch-up is left to a later one */
+interface BatchPlace {
+  readonly deferCatchUp: boolean;
+  /** the authorize-stage catch-up passed: every earlier item is applied */
+  caughtUp(): void;
+}
+
+/** a commit to one of these changes what later commits are judged against */
+function afterCommitReloads(partition: PartitionKey): boolean {
+  const identity = partition.identity;
+  return identity.kind === "model" &&
+    (isIntegrationModelType(identity.type) ||
+      isDelegationModelType(identity.type) ||
+      isPolicyModelType(identity.type));
 }
 
 interface BatchHeader {

@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assert, assertEquals } from "@std/assert";
+import { withCapturedSpans } from "../src/infrastructure/tracing/span_test_helpers.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { partitionOf } from "../src/domain/datastore_v3/partition_key.ts";
 import { Commit } from "../src/domain/datastore_v3/commit.ts";
@@ -178,6 +179,72 @@ Deno.test({
       // the parent a copy checks its head against before taking the commit
       assertEquals(batch.results[1].body.parentTxnId, first);
       assertEquals(await headOf(server), 2);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "datastore batch: the read model is caught up once after a batch's items, not after each (swamp-club#5115)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withCapturedSpans(async (spans) => {
+      await withServer(writer(), async (server) => {
+        const batch = await postBatch(server, "alice-token", [
+          await saveBody(server, 1, 0),
+          await saveBody(server, 2, 1),
+          await saveBody(server, 3, 2),
+          await saveBody(server, 4, 3),
+        ]);
+        assertEquals(batch.status, 200, JSON.stringify(batch.json));
+        assertEquals(batch.results.map((result) => result.status), [
+          200,
+          200,
+          200,
+          200,
+        ]);
+        assertEquals(batch.results.map((result) => result.body.seq), [
+          1,
+          2,
+          3,
+          4,
+        ]);
+      });
+      const afterCommits = spans.filter((span) =>
+        span.name === "swamp.serve.datastore.after_commit"
+      );
+      assertEquals(afterCommits.length, 1);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "datastore batch: a batch a refusal stops still catches the read model up once for what landed before it (swamp-club#5115)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withCapturedSpans(async (spans) => {
+      await withServer(writer(), async (server) => {
+        const batch = await postBatch(server, "alice-token", [
+          await saveBody(server, 1, 0),
+          await saveBody(server, 2, 1),
+          // built on a head two commits behind, as a commit that lost a race
+          await saveBody(server, 3, 0),
+        ]);
+        assertEquals(batch.status, 200, JSON.stringify(batch.json));
+        assertEquals(
+          batch.results.map((result) => result.status).slice(0, 2),
+          [200, 200],
+        );
+        assertEquals(batch.results.length, 3);
+        assertEquals(await headOf(server), 2);
+      });
+      const afterCommits = spans.filter((span) =>
+        span.name === "swamp.serve.datastore.after_commit"
+      );
+      assertEquals(afterCommits.length, 1);
     });
   },
 });
