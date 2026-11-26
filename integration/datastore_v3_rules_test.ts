@@ -436,7 +436,7 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   // audit entry records.
   "src/cli/commands/datastore_claim.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
   "src/cli/commands/datastore_release.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
-  // swamp-club#5130: `datastore compact --history` folds the history now,
+  // `datastore compact --history` folds the history now,
   // under the command's writer lease, and its outcome is the policy's
   "src/cli/commands/datastore_compact.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
   "src/libswamp/datastores/compact_history.ts -> src/domain/datastore_v3/compaction_policy.ts",
@@ -935,7 +935,7 @@ const PINNED_COMPACTION_IMPORTERS: readonly string[] = [
   // v3, where a removed version can be written again.
   "src/libswamp/data/run_artifact_check.ts -> src/domain/datastore_v3/run_artifact_resolution.ts",
   "src/libswamp/models/output_data.ts -> src/domain/datastore_v3/run_artifact_resolution.ts",
-  // swamp-club#5130: an operator's compaction reports the policy's outcome
+  // an operator's compaction reports the policy's outcome
   "src/libswamp/datastores/compact_history.ts -> src/domain/datastore_v3/compaction_policy.ts",
 ];
 

@@ -137,7 +137,6 @@ export interface HistoryCompactionTotals {
   readonly batches: number;
   readonly released: number;
   readonly partitions: number;
-  /** the compaction point once the run ended */
   readonly compactedThrough: number;
 }
 

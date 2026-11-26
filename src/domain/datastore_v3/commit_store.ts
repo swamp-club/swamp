@@ -306,7 +306,6 @@ export interface CompactHistoryOptions {
 
 /** What a compaction has folded so far; each batch it counts has committed. */
 export interface CompactionProgress {
-  /** The compaction point after the batch. */
   readonly point: number;
   readonly compacted: number;
   readonly batches: number;
