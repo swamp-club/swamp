@@ -187,6 +187,8 @@ export interface V3DatastoreLocation {
   readonly namespace?: string;
   readonly directories?: string[];
   readonly exclude?: string[];
+  /** model data files are owed and written when first read, never up front */
+  readonly lazyModelFiles?: boolean;
 }
 
 /**

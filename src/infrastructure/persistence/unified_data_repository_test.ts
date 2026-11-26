@@ -64,6 +64,8 @@ import {
 } from "../datastore_v3/commit_log_test_helpers.ts";
 import { MemoryStorage } from "../../domain/datastore_v3/v3_test_helpers.ts";
 import { captureUnreadableWarnings } from "./unreadable_records_test_helpers.ts";
+import { v3OwedFileHook } from "../datastore_v3/lazy_hydration.ts";
+import { fakeLazyHydration } from "../datastore_v3/lazy_hydration_test_helpers.ts";
 
 const testType = ModelType.create("test/model");
 
@@ -5160,4 +5162,126 @@ Deno.test("collectGarbage: a version gap, as an offline write renumbered past a 
       await Deno.remove(tmpDir, { recursive: true });
     }
   }
+});
+
+async function withOwedHook(
+  answer: UserError | undefined,
+  fn: (
+    repo: FileSystemUnifiedDataRepository,
+    owe: (path: string) => void,
+    lazy: ReturnType<typeof fakeLazyHydration>,
+    asked: string[],
+  ) => Promise<void>,
+): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-test-" });
+  const catalogStore = new CatalogStore(join(dir, "_catalog.db"));
+  const asked: string[] = [];
+  const owedPaths = new Set<string>();
+  const lazy = fakeLazyHydration({
+    owedPaths,
+    onHydrate: async (absPath) => {
+      await Deno.mkdir(dirname(absPath), { recursive: true });
+      await Deno.writeTextFile(absPath, "owed-content");
+    },
+  });
+  try {
+    await fn(
+      new FileSystemUnifiedDataRepository(
+        dir,
+        undefined,
+        catalogStore,
+        undefined,
+        v3OwedFileHook(lazy),
+        SOLO_NAMESPACE,
+        false,
+        undefined,
+        undefined,
+        (absPath) => {
+          asked.push(absPath);
+          return Promise.resolve(answer);
+        },
+      ),
+      (path) => owedPaths.add(path),
+      lazy,
+      asked,
+    );
+  } finally {
+    catalogStore.close();
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+}
+
+Deno.test("ensureContentLocal: an owed-only hook writes an owed file, and a path it does not owe still fails loudly through the unreadable-content lookup", async () => {
+  const unreadable = new UserError(
+    "unreadable",
+    "datastore_v3_record_unreadable",
+  );
+  await withOwedHook(unreadable, async (repo, owe, _lazy, asked) => {
+    await repo.save(testType, "model-1", makeData("owed"), new Uint8Array([1]));
+    await repo.save(testType, "model-1", makeData("lost"), new Uint8Array([1]));
+    const owedPath = repo.getContentPath(testType, "model-1", "owed", 1);
+    const lostPath = repo.getContentPath(testType, "model-1", "lost", 1);
+    await Deno.remove(owedPath);
+    await Deno.remove(lostPath);
+    owe(owedPath);
+
+    assertEquals(
+      await repo.ensureContentLocal(testType, "model-1", "owed", 1),
+      "current",
+    );
+    assertEquals(await Deno.readTextFile(owedPath), "owed-content");
+    const error = await assertRejects(() =>
+      repo.ensureContentLocal(testType, "model-1", "lost", 1)
+    );
+    assert(error === unreadable);
+    assertEquals(asked, [lostPath]);
+  });
+});
+
+Deno.test("getContent: an owed-only hook writes an owed file before the read, and missing content it does not owe reads as absent when the lookup does not know it", async () => {
+  await withOwedHook(undefined, async (repo, owe) => {
+    await repo.save(testType, "model-1", makeData("owed"), new Uint8Array([1]));
+    await repo.save(testType, "model-1", makeData("gone"), new Uint8Array([1]));
+    const owedPath = repo.getContentPath(testType, "model-1", "owed", 1);
+    await Deno.remove(owedPath);
+    await Deno.remove(repo.getContentPath(testType, "model-1", "gone", 1));
+    owe(owedPath);
+
+    const content = await repo.getContent(testType, "model-1", "owed", 1);
+    assertEquals(new TextDecoder().decode(content!), "owed-content");
+    assertEquals(await repo.getContent(testType, "model-1", "gone", 1), null);
+    assertEquals(
+      await repo.ensureContentLocal(testType, "model-1", "gone", 1),
+      "current",
+    );
+  });
+});
+
+Deno.test("ensureContentLocal and isContentAcceptedSync: an owed-only hook never refreshes a present or short file", async () => {
+  await withOwedHook(undefined, async (repo, _owe, lazy) => {
+    await repo.save(
+      testType,
+      "model-1",
+      makeData("short"),
+      new TextEncoder().encode("full content"),
+    );
+    const contentPath = repo.getContentPath(testType, "model-1", "short", 1);
+    await Deno.writeTextFile(contentPath, "full");
+
+    assertEquals(
+      await repo.ensureContentLocal(testType, "model-1", "short", 1, 12),
+      "current",
+    );
+    assertEquals(
+      repo.isContentAcceptedSync(testType, "model-1", "short", 1, 12),
+      true,
+    );
+    assertEquals(await Deno.readTextFile(contentPath), "full");
+    assertEquals(lazy.calls.paths, []);
+    assertEquals(repo.contentMayBeOwed(), true);
+  });
 });

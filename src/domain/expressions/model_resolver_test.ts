@@ -3024,25 +3024,32 @@ interface LazyItem {
   body: string;
 }
 
-async function setupLazyFixture(repoDir: string, items: LazyItem[]) {
+async function setupLazyFixture(
+  repoDir: string,
+  items: LazyItem[],
+  options: { owedOnly?: boolean } = {},
+) {
   await setupRepoDir(repoDir);
   const defRepo = new YamlDefinitionRepository(repoDir);
   const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
   const remote = new Map<string, Uint8Array>();
   const hydrated: string[] = [];
   const names = new Map<string, string>();
+  const hook = async (absPath: string) => {
+    hydrated.push(names.get(absPath) ?? absPath);
+    const bytes = remote.get(absPath);
+    if (!bytes) return false;
+    await Deno.writeFile(absPath, bytes);
+    // a lazy v3 checkout's file is owed once, until it lands
+    if (options.owedOnly) remote.delete(absPath);
+    return true;
+  };
   const dataRepo = new FileSystemUnifiedDataRepository(
     repoDir,
     undefined,
     catalog,
     undefined,
-    async (absPath: string) => {
-      hydrated.push(names.get(absPath) ?? absPath);
-      const bytes = remote.get(absPath);
-      if (!bytes) return false;
-      await Deno.writeFile(absPath, bytes);
-      return true;
-    },
+    options.owedOnly ? Object.assign(hook, { owedOnly: true as const }) : hook,
   );
   const type = ModelType.create("test/model");
   const model = Definition.create({ name: "vpc", globalArguments: {} });
@@ -3067,7 +3074,9 @@ async function setupLazyFixture(repoDir: string, items: LazyItem[]) {
     names.set(path, item.name);
     await Deno.remove(path);
   }
-  const dqs = new DataQueryService(catalog, dataRepo);
+  const dqs = new DataQueryService(catalog, dataRepo, {
+    filterStaleRows: options.owedOnly === true,
+  });
   await dqs.query('name == ""');
   const resolver = new ModelResolver(defRepo, {
     repoDir,
@@ -3119,6 +3128,41 @@ Deno.test("prepare: model.<name>.resource reads data a metadata-only pull left o
       "vpc-0abc123",
     );
     assertEquals(hydrated, ["main"]);
+    catalog.close();
+  });
+});
+
+Deno.test("prepare: on a lazy v3 checkout, expressions read files the read model owes", async () => {
+  await withTempDir(async (repoDir) => {
+    const { resolver, catalog, hydrated } = await setupLazyFixture(
+      repoDir,
+      [STATE, LOG],
+      { owedOnly: true },
+    );
+    const ctx = await resolver.buildContext(new RunSensitiveValues());
+    assertEquals(
+      await evaluateIn(ctx, "model.vpc.resource.state.main.attributes.vpcId"),
+      "vpc-0abc123",
+    );
+    assertEquals(
+      await evaluateIn(ctx, 'file.contents("vpc", "log")'),
+      "line1\n",
+    );
+    assertEquals(hydrated, ["main", "log"]);
+    catalog.close();
+  });
+});
+
+Deno.test("data.listVersions(): on a lazy v3 checkout, a version whose file is still owed is listed", async () => {
+  await withTempDir(async (repoDir) => {
+    const { resolver, catalog } = await setupLazyFixture(repoDir, [STATE], {
+      owedOnly: true,
+    });
+    const ctx = await resolver.buildContext(new RunSensitiveValues());
+    assertEquals(
+      await evaluateIn(ctx, 'data.listVersions("vpc", "main")'),
+      [1],
+    );
     catalog.close();
   });
 });

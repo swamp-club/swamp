@@ -32,6 +32,7 @@ import type { BlobRef } from "../../domain/datastore_v3/blob_ref.ts";
 import {
   dataVersionOp,
   type Op,
+  type PutOp,
   putOp,
   tombstoneOp,
 } from "../../domain/datastore_v3/op.ts";
@@ -71,6 +72,7 @@ import {
 } from "./sqlite_commit_store.ts";
 import {
   CATALOG_V3_FILE,
+  OwedContentOfflineError,
   READ_MODEL_LOCK_FILE,
   READ_MODEL_STATE_FILE,
   SqliteReadModel,
@@ -4030,6 +4032,589 @@ Deno.test("SqliteReadModel.recover: a catch-up a timer starts while a recovery r
     } finally {
       clearInterval(timer);
       await Promise.allSettled(catchUps);
+      await readModel.close();
+    }
+  });
+});
+
+const LAZY_CONFIG_KEY = "config/models/cfg.yaml";
+
+/**
+ * a compacted base holding a config file, inline data of each name and one
+ * chunked version; the model partition's last seq
+ */
+async function lazyBase(
+  env: Env,
+  names: readonly string[] = ["a", "b"],
+): Promise<number> {
+  let seq = 0;
+  for (const name of names) {
+    await env.append(++seq, "", [await savePut(name, 1), versionOp(name, 1)]);
+  }
+  const blob = await env.chunkStore.write(
+    SOLO_NAMESPACE,
+    new Uint8Array(20_000).fill(7),
+    signal(),
+  );
+  await env.append(++seq, "", [
+    await blobPut("big", 1, blob),
+    versionOp("big", 1),
+  ]);
+  await env.store.append(modelCommit(
+    1,
+    [
+      await putOp({
+        intent: createIntent({
+          kind: "definition.create",
+          definition: { kind: "model", name: "cfg" },
+        }),
+        key: RecordKey.create(LAZY_CONFIG_KEY),
+        inline: base64("cfg: 1\n"),
+      }),
+    ],
+    {
+      partition: partitionOf({
+        kind: "config",
+        definitionKind: "model",
+        name: "cfg",
+      }),
+      txnId: "txn-cfg-1",
+    },
+  ));
+  await env.store.compactHistory(Number.MAX_SAFE_INTEGER);
+  return seq;
+}
+
+function configPath(env: Env): string {
+  return join(v3CacheRoot(env.repoDir, ""), ...LAZY_CONFIG_KEY.split("/"));
+}
+
+function stateDb(env: Env): DatabaseSync {
+  return new DatabaseSync(
+    join(readModelStateDir(env.repoDir), READ_MODEL_STATE_FILE),
+  );
+}
+
+Deno.test("SqliteReadModel.catchUp: a lazy base load writes config files and owes only a model's data content files, its catalog and state complete (swamp-club#5108)", async () => {
+  await withEnv(async (env) => {
+    await lazyBase(env);
+    const readModel = env.open({ lazyModelFiles: true });
+    try {
+      await readModel.catchUp(signal());
+      assertEquals(await readOrAbsent(configPath(env)), "cfg: 1\n");
+      for (const name of ["a", "b", "big"]) {
+        assertEquals(
+          await readOrAbsent(env.contentPath("", name, 1)),
+          undefined,
+        );
+      }
+      // the content files alone: metadata and every other file is written
+      assertEquals(readModel.owedCount(), 3);
+      assert(readModel.isComplete());
+      const live = await liveKeys(readModel, "");
+      for (const name of ["a", "b", "big"]) {
+        assert(live.includes(dataKey(name, 1).toString()), name);
+      }
+      assertEquals(
+        env.catalogRows().map((row) => row[1]),
+        ["a", "b", "big"],
+      );
+    } finally {
+      await readModel.close();
+    }
+  });
+});
+
+Deno.test("SqliteReadModel.catchUp: without lazyModelFiles a base load writes every file and owes none (swamp-club#5108)", async () => {
+  await withEnv(async (env) => {
+    await lazyBase(env);
+    const readModel = env.open();
+    try {
+      await readModel.catchUp(signal());
+      assertEquals(readModel.owedCount(), 0);
+      assertEquals(await readOrAbsent(configPath(env)), "cfg: 1\n");
+      assertEquals(await readOrAbsent(env.contentPath("", "a", 1)), "a@1");
+      assertEquals(
+        (await Deno.readFile(env.contentPath("", "big", 1))).length,
+        20_000,
+      );
+    } finally {
+      await readModel.close();
+    }
+  });
+});
+
+Deno.test("SqliteReadModel.hydrateOwedPath: writes an owed file's bytes and forgets it; a file not owed is left to its reader (swamp-club#5108)", async () => {
+  await withEnv(async (env) => {
+    await lazyBase(env);
+    const readModel = env.open({ lazyModelFiles: true });
+    try {
+      await readModel.catchUp(signal());
+      const owed = readModel.owedCount();
+      const a = env.contentPath("", "a", 1);
+      assertEquals(await readModel.hydrateOwedPath(a, signal()), "hydrated");
+      assertEquals(await readOrAbsent(a), "a@1");
+      assertEquals(readModel.owedCount(), owed - 1);
+      assertEquals(await readModel.hydrateOwedPath(a, signal()), "not_owed");
+      const big = env.contentPath("", "big", 1);
+      assertEquals(await readModel.hydrateOwedPath(big, signal()), "hydrated");
+      assertEquals(
+        await Deno.readFile(big),
+        new Uint8Array(20_000).fill(7),
+      );
+      assertEquals(
+        await readModel.hydrateOwedPath(configPath(env), signal()),
+        "not_owed",
+      );
+      assertEquals(
+        await readModel.hydrateOwedPath(
+          join(env.repoDir, "elsewhere.txt"),
+          signal(),
+        ),
+        "not_owed",
+      );
+    } finally {
+      await readModel.close();
+    }
+  });
+});
+
+Deno.test("SqliteReadModel: a commit replacing or removing an owed file forgets it as it applies, and hydrating never writes the bytes it replaced (swamp-club#5108)", async () => {
+  await withEnv(async (env) => {
+    const seq = await lazyBase(env);
+    const readModel = env.open({ lazyModelFiles: true });
+    try {
+      await readModel.catchUp(signal());
+      const owed = readModel.owedCount();
+      await env.append(seq + 1, "", [
+        await savePut("a", 1, "a@1 replaced", undefined, "data.append"),
+        versionOp("a", 1),
+      ]);
+      await env.append(seq + 2, "", [deleteVersion("b", 1)]);
+      await readModel.catchUp(signal());
+      const a = env.contentPath("", "a", 1);
+      const b = env.contentPath("", "b", 1);
+      // a's file was absent, so its new put is owed in place of the old one
+      assertEquals(await readOrAbsent(a), undefined);
+      assertEquals(await readOrAbsent(b), undefined);
+      assertEquals(readModel.owedCount(), owed - 1);
+      assertEquals(await readModel.hydrateOwedPath(a, signal()), "hydrated");
+      assertEquals(await readModel.hydrateOwedPath(b, signal()), "not_owed");
+      assertEquals(await readOrAbsent(a), "a@1 replaced");
+      assertEquals(await readOrAbsent(b), undefined);
+    } finally {
+      await readModel.close();
+    }
+  });
+});
+
+Deno.test("SqliteReadModel.hydrateOwedPartition: writes every owed file of the partition and none of another's (swamp-club#5108)", async () => {
+  await withEnv(async (env) => {
+    await lazyBase(env);
+    const readModel = env.open({ lazyModelFiles: true });
+    try {
+      await readModel.catchUp(signal());
+      const owed = readModel.owedCount();
+      assert(owed > 0);
+      assertEquals(
+        await readModel.hydrateOwedPartition(
+          "",
+          "config/model/none",
+          signal(),
+        ),
+        0,
+      );
+      assertEquals(
+        await readModel.hydrateOwedPartition(
+          "",
+          modelPartition().toString(),
+          signal(),
+        ),
+        owed,
+      );
+      assertEquals(readModel.owedCount(), 0);
+      assertEquals(await readOrAbsent(env.contentPath("", "b", 1)), "b@1");
+    } finally {
+      await readModel.close();
+    }
+  });
+});
+
+Deno.test("SqliteReadModel.drainOwed: a pass whose budget is spent before it writes still writes its first group, so every pass progresses (swamp-club#5108)", async () => {
+  await withEnv(async (env) => {
+    const names = Array.from({ length: 40 }, (_, i) => `n${i}`);
+    await lazyBase(env, names);
+    let now = 0;
+    const readModel = env.open({
+      lazyModelFiles: true,
+      clock: () => new Date(now++),
+    });
+    try {
+      await readModel.catchUp(signal());
+      const owed = readModel.owedCount();
+      const pass = await readModel.drainOwed(3, signal());
+      assert(pass.hydrated > 0, `${pass.hydrated} written`);
+      assertEquals(pass.left, owed - pass.hydrated);
+    } finally {
+      await readModel.close();
+    }
+  });
+});
+
+Deno.test("SqliteReadModel.drainOwed: stops once its budget is spent, and drains the rest when called again (swamp-club#5108)", async () => {
+  await withEnv(async (env) => {
+    const names = Array.from({ length: 40 }, (_, i) => `n${i}`);
+    await lazyBase(env, names);
+    // every reading of the clock is a millisecond later, the lock section's
+    // own readings among them
+    let now = 0;
+    const readModel = env.open({
+      lazyModelFiles: true,
+      clock: () => new Date(now++),
+    });
+    try {
+      await readModel.catchUp(signal());
+      const owed = readModel.owedCount();
+      assertEquals(await readModel.drainOwed(0, signal()), {
+        hydrated: 0,
+        left: owed,
+      });
+      assert(owed > 8, `${owed}`);
+      const first = await readModel.drainOwed(3, signal());
+      assert(first.hydrated > 0 && first.hydrated < owed, `${first.hydrated}`);
+      assertEquals(first.left, owed - first.hydrated);
+      const rest = await readModel.drainOwed(1_000_000, signal());
+      assertEquals(rest, { hydrated: owed - first.hydrated, left: 0 });
+      for (const name of names) {
+        assertEquals(
+          await readOrAbsent(env.contentPath("", name, 1)),
+          `${name}@1`,
+        );
+      }
+    } finally {
+      await readModel.close();
+    }
+  });
+});
+
+Deno.test("SqliteReadModel.hydrateOwedPath: a hydration cut off after its write and before forgetting the row writes again, as it was or torn (swamp-club#5108)", async () => {
+  await withEnv(async (env) => {
+    await lazyBase(env);
+    const a = env.contentPath("", "a", 1);
+    const key = dataKey("a", 1).toString();
+    let row: Record<string, unknown> | undefined;
+    const readModel = env.open({ lazyModelFiles: true });
+    try {
+      await readModel.catchUp(signal());
+      const db = stateDb(env);
+      try {
+        row = db.prepare(
+          "SELECT namespace, record_key, owner, mark, content, access FROM owed_files WHERE record_key = ?",
+        ).get(key) as Record<string, unknown>;
+      } finally {
+        db.close();
+      }
+      assertEquals(await readModel.hydrateOwedPath(a, signal()), "hydrated");
+    } finally {
+      await readModel.close();
+    }
+    const owedAgain = () => {
+      const db = stateDb(env);
+      try {
+        db.prepare(
+          "INSERT INTO owed_files (namespace, record_key, owner, mark, content, access) VALUES (?, ?, ?, ?, ?, ?)",
+        ).run(
+          row!.namespace as string,
+          row!.record_key as string,
+          row!.owner as string,
+          row!.mark as number,
+          row!.content as string,
+          row!.access as string | null,
+        );
+      } finally {
+        db.close();
+      }
+    };
+    for (const left of ["a@1", "torn"]) {
+      owedAgain();
+      await Deno.writeTextFile(a, left);
+      const again = env.open({ lazyModelFiles: true });
+      try {
+        const owed = again.owedCount();
+        assertEquals(await again.hydrateOwedPath(a, signal()), "hydrated");
+        assertEquals(await readOrAbsent(a), "a@1");
+        assertEquals(again.owedCount(), owed - 1);
+      } finally {
+        await again.close();
+      }
+    }
+  });
+});
+
+Deno.test("SqliteReadModel.hydrateOwedPath: an owed file whose chunk cannot be read becomes an unreadable record, not a silent miss (swamp-club#5108)", async () => {
+  await withEnv(async (env) => {
+    await lazyBase(env);
+    const readModel = env.open({
+      lazyModelFiles: true,
+      chunkStore: new ChunkStore(new MemoryStorage()),
+    });
+    try {
+      await readModel.catchUp(signal());
+      const big = env.contentPath("", "big", 1);
+      const key = dataKey("big", 1).toString();
+      // owed, so the load never read its chunk
+      assertEquals(await readModel.unreadableRecord("", key), undefined);
+      assertEquals(await readModel.hydrateOwedPath(big, signal()), "not_owed");
+      assertEquals(await readOrAbsent(big), undefined);
+      assert(await readModel.unreadableRecord("", key) !== undefined);
+    } finally {
+      await readModel.close();
+    }
+  });
+});
+
+Deno.test("SqliteReadModel: offline, owed files stay owed: no hydrate runs, and a chunk the cache lacks is never recorded unreadable (swamp-club#5108)", async () => {
+  await withEnv(async (env) => {
+    await lazyBase(env);
+    let offline = false;
+    const answers: boolean[] = [];
+    const readModel = env.open({
+      lazyModelFiles: true,
+      chunkStore: new ChunkStore(new MemoryStorage()),
+      offline: () => answers.shift() ?? offline,
+    });
+    try {
+      await readModel.catchUp(signal());
+      const big = env.contentPath("", "big", 1);
+      const key = dataKey("big", 1).toString();
+      const owed = readModel.owedCount();
+      assert(owed > 0);
+
+      offline = true;
+      await assertRejects(
+        () => readModel.hydrateOwedPath(big, signal()),
+        OwedContentOfflineError,
+      );
+      await assertRejects(
+        () => readModel.drainOwed(60_000, signal()),
+        OwedContentOfflineError,
+      );
+      await assertRejects(
+        () => readModel.hydrateOwedPartition("", "model:x", signal()),
+        OwedContentOfflineError,
+      );
+      assertEquals(readModel.owedCount(), owed);
+      assertEquals(await readModel.unreadableRecord("", key), undefined);
+
+      // online when the hydrate starts, offline by the time its chunk is read
+      answers.push(false);
+      await assertRejects(
+        () => readModel.hydrateOwedPath(big, signal()),
+        OwedContentOfflineError,
+      );
+      assertEquals(readModel.owedCount(), owed);
+      assertEquals(await readModel.unreadableRecord("", key), undefined);
+      assertEquals(await readOrAbsent(big), undefined);
+    } finally {
+      await readModel.close();
+    }
+  });
+});
+
+Deno.test("SqliteReadModel.hydrateOwedPath: after a reset the state is caught up first, so the owed file is still written (swamp-club#5108)", async () => {
+  await withEnv(async (env) => {
+    await lazyBase(env);
+    const readModel = env.open({ lazyModelFiles: true });
+    try {
+      await readModel.catchUp(signal());
+      readModel.markReplayPending();
+      const a = env.contentPath("", "a", 1);
+      assertEquals(await readModel.hydrateOwedPath(a, signal()), "hydrated");
+      assertEquals(await readOrAbsent(a), "a@1");
+    } finally {
+      await readModel.close();
+    }
+  });
+});
+
+Deno.test("SqliteReadModel: a lazy load lists no owed file as unsynced, and the check in a later boot leaves owed files absent (swamp-club#5108)", async () => {
+  await withEnv(async (env) => {
+    await lazyBase(env);
+    const first = env.open({
+      lazyModelFiles: true,
+      bootIdentity: () => Promise.resolve("boot-1"),
+    });
+    let owed: number;
+    try {
+      await first.catchUp(signal());
+      owed = first.owedCount();
+    } finally {
+      await first.close();
+    }
+    const db = stateDb(env);
+    try {
+      const listed = (db.prepare(
+        "SELECT COUNT(*) AS n FROM unsynced_keys AS u JOIN owed_files AS o ON o.namespace = u.namespace AND o.record_key = u.record_key",
+      ).get() as { n: number }).n;
+      assertEquals(listed, 0);
+    } finally {
+      db.close();
+    }
+    const later = env.open({
+      lazyModelFiles: true,
+      bootIdentity: () => Promise.resolve("boot-2"),
+    });
+    try {
+      await later.catchUp(signal());
+      assertEquals(later.owedCount(), owed);
+      assertEquals(await readOrAbsent(env.contentPath("", "a", 1)), undefined);
+      assertEquals(await readOrAbsent(configPath(env)), "cfg: 1\n");
+    } finally {
+      await later.close();
+    }
+  });
+});
+
+Deno.test("SqliteReadModel.recover: a targeted recovery takes owed files as absent by design: none counts as missing, a dirty name's is not written, and one found torn is put back and forgotten (swamp-club#5108)", async () => {
+  await withEnv(async (env) => {
+    const names = Array.from(
+      { length: TARGETED_FILES_FLOOR + 50 },
+      (_, i) => `n${i}`,
+    );
+    await env.append(
+      1,
+      "",
+      await Promise.all(names.map((name) => savePut(name, 1))),
+    );
+    await env.append(2, "", [await savePut("a", 1), versionOp("a", 1)]);
+    await env.append(3, "", [await savePut("b", 1), versionOp("b", 1)]);
+    await env.store.compactHistory(Number.MAX_SAFE_INTEGER);
+    const first = env.open({ lazyModelFiles: true });
+    let owed: number;
+    try {
+      await first.catchUp(signal());
+      owed = first.owedCount();
+    } finally {
+      await first.close();
+    }
+    assert(owed > TARGETED_FILES_FLOOR);
+    const since = Date.now() + 60_000;
+    const torn = env.contentPath("", "b", 1);
+    await writeLocal(torn, "torn");
+    await touchAfter(torn, since);
+    await writeUncommittedRow(env, "a", 2);
+    recordWholeCheckout(env);
+    const readModel = env.open({
+      lazyModelFiles: true,
+      clock: () => new Date(since + 60_000),
+    });
+    try {
+      const { attributes } = await recoverWithSpan(
+        readModel,
+        targetedOptions(since),
+      );
+      assertEquals(attributes["path"], "targeted");
+      assertEquals(attributes["fallback"], undefined);
+      assertEquals(attributes["files_restored"], 1);
+      assertEquals(readModel.owedCount(), owed - 1);
+    } finally {
+      await readModel.close();
+    }
+    assertEquals(await readOrAbsent(torn), "b@1");
+    assertEquals(await readOrAbsent(env.contentPath("", "a", 1)), undefined);
+    assertEquals(await readOrAbsent(env.contentPath("", "n0", 1)), undefined);
+  });
+});
+
+Deno.test("SqliteReadModel.hydrateOwedPath: an owed path holding a file another live writer journaled is left to that writer (swamp-club#5108)", async () => {
+  await withEnv(async (env) => {
+    await lazyBase(env);
+    const readModel = env.open({
+      lazyModelFiles: true,
+      liveWriters: () => Promise.resolve(new Map([["other", "cli-2"]])),
+    });
+    try {
+      await readModel.catchUp(signal());
+      const journal = new TouchedScopeJournal(
+        join(readModelStateDir(env.repoDir), CATALOG_V3_FILE),
+        "other",
+      );
+      try {
+        journal.record(
+          crypto.randomUUID(),
+          "",
+          `data/${MODEL_TYPE.normalized}/${MODEL_ID}/a`,
+        );
+      } finally {
+        journal.close();
+      }
+      const a = env.contentPath("", "a", 1);
+      await writeLocal(a, "the other writer's");
+      assertEquals(await readModel.hydrateOwedPath(a, signal()), "not_owed");
+      assertEquals(await readOrAbsent(a), "the other writer's");
+      const b = env.contentPath("", "b", 1);
+      assertEquals(await readModel.hydrateOwedPath(b, signal()), "hydrated");
+      assertEquals(await readOrAbsent(b), "b@1");
+    } finally {
+      await readModel.close();
+    }
+  });
+});
+
+function metadataPut(name: string, version: number): Promise<PutOp> {
+  return putOp({
+    intent: modelIntent({ kind: "data.save", name, version }),
+    key: RecordKey.create(
+      `data/${MODEL_TYPE.normalized}/${MODEL_ID}/${name}/${version}/metadata.yaml`,
+    ),
+    inline: base64(`name: ${name}\n`),
+  });
+}
+
+Deno.test("SqliteReadModel.catchUp: under lazyModelFiles a tail page owes a new content file and writes its metadata; hydrated, it holds the put's bytes, and a put over a file on disk is written at once (swamp-club#5108)", async () => {
+  await withEnv(async (env) => {
+    const seq = await lazyBase(env);
+    const readModel = env.open({ lazyModelFiles: true });
+    try {
+      await readModel.catchUp(signal());
+      const owed = readModel.owedCount();
+      const blob = await env.chunkStore.write(
+        SOLO_NAMESPACE,
+        new Uint8Array(30_000).fill(9),
+        signal(),
+      );
+      await env.append(seq + 1, "", [
+        await savePut("c", 1),
+        await metadataPut("c", 1),
+        versionOp("c", 1),
+      ]);
+      await env.append(seq + 2, "", [
+        await blobPut("d", 1, blob),
+        versionOp("d", 1),
+      ]);
+      await readModel.catchUp(signal());
+      const c = env.contentPath("", "c", 1);
+      const d = env.contentPath("", "d", 1);
+      assertEquals(await readOrAbsent(c), undefined);
+      assertEquals(await readOrAbsent(d), undefined);
+      assertEquals(
+        await readOrAbsent(join(dirname(c), "metadata.yaml")),
+        "name: c\n",
+      );
+      assertEquals(readModel.owedCount(), owed + 2);
+      assertEquals(await readModel.hydrateOwedPath(c, signal()), "hydrated");
+      assertEquals(await readOrAbsent(c), "c@1");
+      assertEquals(await readModel.hydrateOwedPath(d, signal()), "hydrated");
+      assertEquals(await Deno.readFile(d), new Uint8Array(30_000).fill(9));
+
+      await env.append(seq + 3, "", [
+        await savePut("c", 1, "c@1 again", undefined, "data.append"),
+        versionOp("c", 1),
+      ]);
+      await readModel.catchUp(signal());
+      assertEquals(await readOrAbsent(c), "c@1 again");
+      assertEquals(await readModel.hydrateOwedPath(c, signal()), "not_owed");
+    } finally {
       await readModel.close();
     }
   });

@@ -274,6 +274,11 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   "src/cli/v3_teardown.ts -> src/domain/datastore_v3/litestream_replication.ts",
   "src/cli/v3_teardown.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
   "src/cli/v3_teardown.ts -> src/infrastructure/datastore_v3/datastore_outage.ts",
+  // a lazy v3 checkout's owed files: the decision, the teardown drain and
+  // sync --hydrate
+  "src/cli/repo_context.ts -> src/infrastructure/datastore_v3/lazy_hydration.ts",
+  "src/cli/v3_teardown.ts -> src/infrastructure/datastore_v3/lazy_hydration.ts",
+  "src/cli/commands/datastore_sync.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
   // swamp-club#3473: the end-of-command retention pass compacts v3 history
   // after a pass, as the writer, before teardown closes the hold.
   "src/cli/retention_teardown.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
@@ -679,7 +684,7 @@ const PINNED_STORAGE_CALLS: readonly string[] = [
   // swamp-club#3534: setup checks a bucket holds no chunk, and the binding
   // gives a bucket v3 datastore its chunk storage.
   "src/infrastructure/datastore_v3/v3_bucket_setup.ts:105",
-  "src/infrastructure/datastore_v3/v3_datastore_binding.ts:285",
+  "src/infrastructure/datastore_v3/v3_datastore_binding.ts:287",
 ];
 
 Deno.test("datastore v3: no production code calls a provider's storage()", async () => {

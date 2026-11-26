@@ -21,6 +21,7 @@ import { assertEquals } from "@std/assert";
 import { assertErrors, collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
+  createDatastoreHydrateDeps,
   createDatastoreSyncDeps,
   datastoreSync,
   type DatastoreSyncDeps,
@@ -397,4 +398,38 @@ Deno.test("datastoreSync: unsupported datastore type yields error", async () => 
     error.message,
     "Datastore sync is only available for sync-capable custom datastores.",
   );
+});
+
+Deno.test("datastoreSync: hydrate mode drains what the checkout owes and reports the count", async () => {
+  let drained = 0;
+  const deps = createDatastoreHydrateDeps(() => {
+    drained++;
+    return Promise.resolve({ hydrated: 7 });
+  });
+
+  const events = await collect<DatastoreSyncEvent>(
+    datastoreSync(createLibSwampContext(), deps, { mode: "hydrate" }),
+  );
+
+  assertEquals(drained, 1);
+  assertEquals(events, [
+    { kind: "syncing", mode: "hydrate" },
+    { kind: "completed", data: { mode: "hydrate", filesHydrated: 7 } },
+  ]);
+});
+
+Deno.test("datastoreSync: hydrate mode on a datastore that owes nothing is refused", async () => {
+  const events = await collect<DatastoreSyncEvent>(
+    datastoreSync(
+      createLibSwampContext(),
+      createDatastoreHydrateDeps(undefined),
+      { mode: "hydrate" },
+    ),
+  );
+  assertEquals(events.length, 1);
+  const [event] = events;
+  assertEquals(event.kind, "error");
+  if (event.kind === "error") {
+    assertEquals(event.error.code, "hydrate_not_supported");
+  }
 });

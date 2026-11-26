@@ -80,10 +80,11 @@ import {
 } from "../../domain/models/model_type.ts";
 import { isUuid } from "../../domain/models/model_lookup.ts";
 import { maxOf } from "../../domain/array_extrema.ts";
-import type {
-  HydrateFileHook,
-  MarkDirtyHook,
-  UnreadableContentLookup,
+import {
+  type HydrateFileHook,
+  isOwedFileHook,
+  type MarkDirtyHook,
+  type UnreadableContentLookup,
 } from "../../domain/datastore/datastore_sync_service.ts";
 import type { CatalogStore } from "./catalog_store.ts";
 import { type Namespace, SOLO_NAMESPACE } from "../../domain/data/namespace.ts";
@@ -1642,6 +1643,20 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     return buffer.subarray(0, filled);
   }
 
+  /** an owed-only hook fills absent files but never refreshes present ones */
+  private get refreshesContent(): boolean {
+    return this.hydrateFile !== undefined && !isOwedFileHook(this.hydrateFile);
+  }
+
+  private async hydrateOwed(contentPath: string): Promise<boolean> {
+    return isOwedFileHook(this.hydrateFile) &&
+      await this.hydrateFile(contentPath);
+  }
+
+  contentMayBeOwed(): boolean {
+    return isOwedFileHook(this.hydrateFile);
+  }
+
   private async throwIfUnreadable(contentPath: string): Promise<void> {
     const error = await this.unreadableContent?.(contentPath);
     if (error !== undefined) throw error;
@@ -1658,7 +1673,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     const modelType = coerceModelType(type);
     const versionToRead = version ??
       await this.getLatestVersion(modelType, modelId, dataName);
-    if (!this.hydrateFile) {
+    if (!this.refreshesContent) {
       // synchronous readers must fail loudly on a record the datastore could
       // not materialise rather than read it as empty; only an absent file is
       // looked up
@@ -1669,7 +1684,10 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           dataName,
           versionToRead,
         );
-        if ((await fileSize(contentPath)) === null) {
+        if (
+          (await fileSize(contentPath)) === null &&
+          !(await this.hydrateOwed(contentPath))
+        ) {
           await this.throwIfUnreadable(contentPath);
         }
       }
@@ -1692,7 +1710,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     version: number,
     size: number,
   ): boolean {
-    if (!this.hydrateFile) {
+    if (!this.refreshesContent) {
       this.warnShortContent(type, modelId, dataName, version, size);
       return true;
     }
@@ -1704,9 +1722,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   /**
-   * with a hydrate hook a missing or short file is downloaded; one still short
-   * after is the remote's copy and is used for the accepted-short TTL. Without
-   * a hook the file is current unlooked-at.
+   * with a hydrate hook a missing or short file is downloaded, but an
+   * owed-only hook fills it only if absent; without a hook the file is current
+   * unlooked-at
    */
   private async ensureContentFile(
     type: ModelType,
@@ -1718,6 +1736,12 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     const hydrate = this.hydrateFile;
     if (!hydrate) return "current";
     const contentPath = this.getContentPath(type, modelId, dataName, version);
+    if (!this.refreshesContent) {
+      if ((await fileSize(contentPath)) === null) {
+        await this.hydrateOwed(contentPath);
+      }
+      return "current";
+    }
     // recorded size is read before the file: a local append writes raw before
     // metadata, so this order never sees a size larger than the file's and
     // replaces a current file
@@ -3977,9 +4001,12 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     dataName: string,
     version: number,
   ): Promise<number | null> {
-    return await fileSize(
-      this.getContentPath(type, modelId, dataName, version),
-    );
+    const path = this.getContentPath(type, modelId, dataName, version);
+    const size = await fileSize(path);
+    if (size !== null || !isOwedFileHook(this.hydrateFile)) return size;
+    // an owed file was never fetched, not lost
+    if (!await this.hydrateFile(path)) return null;
+    return await fileSize(path);
   }
 
   /**

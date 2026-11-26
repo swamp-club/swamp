@@ -7633,3 +7633,95 @@ Deno.test("DataQueryService: an unknown field in a cel.bind init or body, or a b
     'Unknown field "cel"',
   );
 });
+
+Deno.test("DataQueryService: a row whose file the datastore owes is hydrated and never dropped as stale; one it does not owe stays dropped", async () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-query-owed-" });
+  const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
+  using _cleanup = cleanupOnDispose(catalog, dir);
+  catalog.markPopulated();
+  const owed = new Set<string>();
+  const hydrated: string[] = [];
+  const owedHook = Object.assign(
+    (absPath: string): Promise<boolean> => {
+      if (!owed.delete(absPath)) return Promise.resolve(false);
+      ensureDirSync(dirname(absPath));
+      Deno.writeTextFileSync(absPath, JSON.stringify({ result: "owed" }));
+      hydrated.push(absPath);
+      return Promise.resolve(true);
+    },
+    { owedOnly: true as const },
+  );
+  const dataRepo = new FileSystemUnifiedDataRepository(
+    dir,
+    undefined,
+    catalog,
+    undefined,
+    owedHook,
+  );
+  const service = new DataQueryService(catalog, dataRepo, {
+    filterStaleRows: true,
+  });
+  const owedRow = makeRow({
+    model_name: "owed-model",
+    type_normalized: "test/owed-type",
+    model_id: "owed-model-id",
+    size: JSON.stringify({ result: "owed" }).length,
+  });
+  const goneRow = makeRow({
+    model_name: "gone-model",
+    type_normalized: "test/gone-type",
+    model_id: "gone-model-id",
+    id: "00000000-0000-1000-8000-000000000002",
+  });
+  catalog.upsert(owedRow);
+  catalog.upsert(goneRow);
+  const owedPath = dataRepo.getContentPath(
+    ModelType.create(owedRow.type_normalized),
+    owedRow.model_id,
+    owedRow.data_name,
+    owedRow.version,
+  );
+  owed.add(owedPath);
+
+  const results = await service.query(
+    'modelName == "owed-model" && attributes.result == "owed"',
+  ) as DataRecord[];
+  assertEquals(results.map((r) => r.modelId), ["owed-model-id"]);
+  assertEquals(results[0].attributes, { result: "owed" });
+  assertEquals(hydrated, [owedPath]);
+  assertEquals(await service.query('modelName == "gone-model"'), []);
+});
+
+Deno.test("DataQueryService: a synchronous query keeps a row whose file the datastore may owe, since it cannot hydrate it", () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-query-owed-sync-" });
+  const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
+  using _cleanup = cleanupOnDispose(catalog, dir);
+  catalog.markPopulated();
+  const owedHook = Object.assign(
+    (_absPath: string): Promise<boolean> => Promise.resolve(false),
+    { owedOnly: true as const },
+  );
+  const owing = new FileSystemUnifiedDataRepository(
+    dir,
+    undefined,
+    catalog,
+    undefined,
+    owedHook,
+  );
+  catalog.upsert(makeRow({
+    model_name: "owed-model",
+    type_normalized: "test/owed-type",
+    model_id: "owed-model-id",
+    version: 3,
+  }));
+
+  const kept = new DataQueryService(catalog, owing, { filterStaleRows: true })
+    .querySync('modelName == "owed-model"') as DataRecord[];
+  assertEquals(kept.map((r) => r.version), [3]);
+  const dropped = new DataQueryService(
+    catalog,
+    new FileSystemUnifiedDataRepository(dir, undefined, catalog),
+    { filterStaleRows: true },
+  ).querySync('modelName == "owed-model"');
+  assertEquals(dropped, []);
+});

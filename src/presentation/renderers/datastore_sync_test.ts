@@ -201,3 +201,32 @@ Deno.test("JsonDatastoreSyncRenderer: error event throws UserError", () => {
     "Sync failed",
   );
 });
+
+Deno.test("datastore sync renderers: hydrate reports the files hydrated in log and json modes", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+  const events: DatastoreSyncEvent[] = [
+    { kind: "syncing", mode: "hydrate" },
+    { kind: "completed", data: { mode: "hydrate", filesHydrated: 12 } },
+  ];
+  try {
+    await consumeStream(
+      toStream(events),
+      createDatastoreSyncRenderer("log").handlers(),
+    );
+    assertEquals(logs, [
+      "Hydrating the files this checkout is owed...",
+      "Hydrated 12 files",
+    ]);
+    logs.length = 0;
+    await consumeStream(
+      toStream(events),
+      createDatastoreSyncRenderer("json").handlers(),
+    );
+    assertEquals(logs.length, 1);
+    assertEquals(JSON.parse(logs[0]), { mode: "hydrate", filesHydrated: 12 });
+  } finally {
+    console.log = originalLog;
+  }
+});
