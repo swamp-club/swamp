@@ -268,6 +268,20 @@ const MIGRATIONS: readonly SqliteMigration[] = [
     PRIMARY KEY (namespace, record_key)
   ) STRICT, WITHOUT ROWID;
   `,
+  // files a lazy base load left unwritten, with the content to write them from;
+  // their keys stay present in materialised_keys. Kept by a reset
+  `
+  CREATE TABLE IF NOT EXISTS owed_files (
+    namespace TEXT NOT NULL,
+    record_key TEXT NOT NULL,
+    owner TEXT NOT NULL,
+    mark INTEGER NOT NULL,
+    content TEXT NOT NULL,
+    access TEXT,
+    PRIMARY KEY (namespace, record_key)
+  ) STRICT, WITHOUT ROWID;
+  CREATE INDEX IF NOT EXISTS owed_files_owner ON owed_files (namespace, owner, record_key);
+  `,
 ];
 
 export type { FileOwnership };
@@ -332,6 +346,14 @@ export interface LoadName {
   readonly namespace: string;
   readonly partition: string;
   readonly name: string;
+}
+
+export interface OwedFile {
+  readonly namespace: string;
+  readonly recordKey: string;
+  readonly owner: string;
+  readonly mark: number;
+  readonly content: RecordContent;
 }
 
 export const READ_MODEL_STATE_SCHEMA_VERSION = MIGRATIONS.length;
@@ -412,6 +434,7 @@ export class ReadModelState {
   readonly #stageCatalogRow: StatementSync;
   readonly #stageForward: StatementSync;
   readonly #stageFile: StatementSync;
+  readonly #deleteOwed: StatementSync;
   #closed = false;
   #batchOpen = false;
   /**
@@ -501,6 +524,9 @@ export class ReadModelState {
     );
     this.#stageFile = db.prepare(
       "INSERT OR REPLACE INTO load_files (namespace, record_key, owner, mark, present) VALUES (?, ?, ?, ?, ?)",
+    );
+    this.#deleteOwed = db.prepare(
+      "DELETE FROM owed_files WHERE namespace = ? AND record_key = ?",
     );
   }
 
@@ -862,6 +888,10 @@ export class ReadModelState {
         }
         for (const key of commit.decided ?? []) {
           this.#deleteUnreadable.run(commit.namespace, key);
+          this.#deleteOwed.run(commit.namespace, key);
+        }
+        for (const key of commit.files?.keys() ?? []) {
+          this.#deleteOwed.run(commit.namespace, key);
         }
         for (const record of commit.unreadable?.values() ?? []) {
           this.#insertUnreadable(record);
@@ -920,9 +950,10 @@ export class ReadModelState {
   }
 
   /**
-   * clears every table but the at-risk copies; files shown present stay as
-   * removal candidates so a later base load redoes a removal a crash undid.
-   * Unsynced keys are candidates too with keepUnsynced
+   * clears every table but the at-risk copies, the done list and the owed
+   * files; files shown present stay as removal candidates so a later base load
+   * redoes a removal a crash undid. Unsynced keys are candidates too with
+   * keepUnsynced
    */
   reset(catalogGeneration: number, keepUnsynced = false): void {
     this.#foldedKeys = undefined;
@@ -1232,6 +1263,12 @@ export class ReadModelState {
           AND m.record_key = unreadable_records.record_key
           AND m.owner = unreadable_records.partition
           AND m.mark = unreadable_records.position AND m.present = 1);
+        DELETE FROM owed_files WHERE NOT EXISTS (
+          SELECT 1 FROM materialised_keys AS m
+          WHERE m.namespace = owed_files.namespace
+          AND m.record_key = owed_files.record_key
+          AND m.owner = owed_files.owner
+          AND m.mark = owed_files.mark AND m.present = 1);
       `);
       for (const record of unreadable) this.#insertUnreadable(record);
       if (unsynced !== undefined) {
@@ -1275,6 +1312,104 @@ export class ReadModelState {
     this.#batchOpen = false;
     this.#foldedKeys = undefined;
     rollbackQuietly(this.#db);
+  }
+
+  /** written in the load's own transactions, before its finishLoad */
+  oweFiles(rows: readonly OwedFile[]): void {
+    if (rows.length === 0) return;
+    this.#transaction(() => {
+      const insert = this.#db.prepare(
+        "INSERT OR REPLACE INTO owed_files (namespace, record_key, owner, mark, content, access) VALUES (?, ?, ?, ?, ?, ?)",
+      );
+      for (const row of rows) {
+        const content = row.content;
+        insert.run(
+          row.namespace,
+          row.recordKey,
+          row.owner,
+          row.mark,
+          JSON.stringify(
+            "blob" in content
+              ? { blob: content.blob.toJSON() }
+              : { inline: content.inline },
+          ),
+          content.access ?? null,
+        );
+      }
+    });
+  }
+
+  owedOf(namespace: string, recordKey: string): OwedFile | undefined {
+    this.#requireOpen();
+    const row = this.#db.prepare(
+      "SELECT namespace, record_key, owner, mark, content, access FROM owed_files WHERE namespace = ? AND record_key = ?",
+    ).get(namespace, recordKey) as OwedRow | undefined;
+    return row === undefined ? undefined : owedOf(row);
+  }
+
+  /**
+   * forgets the owed rows; `unsynced` keys, written without a sync, are listed
+   * with the boot and `unreadable` recorded, in the same transaction
+   */
+  clearOwed(
+    keys: readonly LoadKey[],
+    options: {
+      readonly unsynced?: {
+        readonly keys: readonly LoadKey[];
+        readonly boot: string;
+      };
+      readonly unreadable?: readonly StoredUnreadableRecord[];
+    } = {},
+  ): void {
+    const { unsynced, unreadable = [] } = options;
+    if (
+      keys.length === 0 && unreadable.length === 0 &&
+      (unsynced === undefined || unsynced.keys.length === 0)
+    ) {
+      return;
+    }
+    this.#transaction(() => {
+      for (const key of keys) {
+        this.#deleteOwed.run(key.namespace, key.record_key);
+      }
+      for (const record of unreadable) this.#insertUnreadable(record);
+      if (unsynced !== undefined && unsynced.keys.length > 0) {
+        for (const key of unsynced.keys) {
+          this.#insertUnsynced.run(key.namespace, key.record_key);
+        }
+        this.#upsertUnsyncedBoot.run(unsynced.boot);
+      }
+    });
+  }
+
+  /** in key order; with a filter, only the partition's own */
+  owedPage(
+    limit: number,
+    filter?: { readonly namespace: string; readonly partition: string },
+  ): OwedFile[] {
+    this.#requireOpen();
+    const rows = filter === undefined
+      ? this.#db.prepare(
+        "SELECT namespace, record_key, owner, mark, content, access FROM owed_files ORDER BY namespace, record_key LIMIT ?",
+      ).all(limit)
+      : this.#db.prepare(
+        "SELECT namespace, record_key, owner, mark, content, access FROM owed_files WHERE namespace = ? AND owner = ? ORDER BY record_key LIMIT ?",
+      ).all(filter.namespace, filter.partition, limit);
+    return (rows as unknown as OwedRow[]).map(owedOf);
+  }
+
+  owedCount(): number {
+    this.#requireOpen();
+    return (this.#db.prepare("SELECT COUNT(*) AS n FROM owed_files").get() as {
+      n: number;
+    }).n;
+  }
+
+  owedNamespaces(): string[] {
+    this.#requireOpen();
+    return (this.#db.prepare(
+      "SELECT DISTINCT namespace FROM owed_files ORDER BY namespace",
+    ).all() as { namespace: string }[]).map((row) => row.namespace);
   }
 
   unsyncedBoot(): string | undefined {
@@ -1751,6 +1886,31 @@ function unreadableOf(row: UnreadableRow): StoredUnreadableRecord {
 export type RecordContent =
   & ({ readonly blob: BlobRef } | { readonly inline: string })
   & { readonly access?: FileAccess };
+
+interface OwedRow {
+  namespace: string;
+  record_key: string;
+  owner: string;
+  mark: number;
+  content: string;
+  access: string | null;
+}
+
+function owedOf(row: OwedRow): OwedFile {
+  const stored = JSON.parse(row.content) as
+    | { blob: BlobRefJSON }
+    | { inline: string };
+  const access = accessOf(row.access);
+  return {
+    namespace: row.namespace,
+    recordKey: row.record_key,
+    owner: row.owner,
+    mark: row.mark,
+    content: "blob" in stored
+      ? { blob: BlobRef.fromJSON(stored.blob), ...access }
+      : { inline: stored.inline, ...access },
+  };
+}
 
 function accessOf(
   column: string | null,

@@ -419,6 +419,11 @@ export interface OpenV3DatastoreOptions {
    * or applied a commit; never told of a catch-up that had nothing to apply
    */
   readonly onCommitOutcome?: (outcome: V3CommitOutcome) => void;
+  /**
+   * a base load leaves model data and output files owed, written when
+   * hydrated; off by default
+   */
+  readonly lazyModelFiles?: boolean;
 }
 
 export type V3CommitOutcome =
@@ -758,6 +763,21 @@ export interface V3Datastore {
   describe(): Promise<{ storedCommits: number; compactedThrough: number }>;
   /** releases settled units whose commits the replica now confirms */
   releaseReplicated(): void;
+  /** see SqliteReadModel.hydrateOwedPath */
+  hydrateOwedPath(
+    absPath: string,
+    signal: AbortSignal,
+  ): Promise<"hydrated" | "not_owed">;
+  hydrateOwedPartition(
+    namespace: string,
+    partition: string,
+    signal: AbortSignal,
+  ): Promise<number>;
+  drainOwed(
+    budgetMs: number,
+    signal: AbortSignal,
+  ): Promise<{ hydrated: number; left: number }>;
+  owedCount(): number;
   close(): Promise<void>;
 }
 
@@ -1006,6 +1026,7 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
         ...(options.liveWriters !== undefined
           ? { liveWriters: options.liveWriters }
           : {}),
+        ...(options.lazyModelFiles === true ? { lazyModelFiles: true } : {}),
       }),
   );
   // one sink for every engine on this handle, so contexts sharing it queue
@@ -1747,6 +1768,12 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
       });
     },
     commitWriterInstance: writer.instance,
+    hydrateOwedPath: (absPath, signal) =>
+      readModel.hydrateOwedPath(absPath, signal),
+    hydrateOwedPartition: (ns, partition, signal) =>
+      readModel.hydrateOwedPartition(ns, partition, signal),
+    drainOwed: (budgetMs, signal) => readModel.drainOwed(budgetMs, signal),
+    owedCount: () => readModel.owedCount(),
     writerFence() {
       return commitStore.writerFence();
     },
