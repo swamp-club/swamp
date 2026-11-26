@@ -710,6 +710,7 @@ export {
 export {
   type MemberData,
   memberGet,
+  type MemberGetData,
   type MemberGetEvent,
   type MemberGetInput,
 } from "./serve/member_get.ts";

@@ -31,7 +31,7 @@ import {
   type MemberGetEvent,
 } from "../../libswamp/serve/member_get.ts";
 import { renderMemberGet } from "../../presentation/output/serve_member_output.ts";
-import type { FederationMemberResponse } from "../../serve/protocol.ts";
+import type { FederationMemberGetResponse } from "../../serve/protocol.ts";
 import {
   requestServerResponse,
   resolveServerTokenFromOptions,
@@ -69,7 +69,7 @@ export const serveMemberGetCommand = withRemoteOptions(
   const server = resolveServeUrl(options.server as string | undefined);
   if (server) {
     const token = await resolveServerTokenFromOptions(server, options);
-    const response = await requestServerResponse<FederationMemberResponse>(
+    const response = await requestServerResponse<FederationMemberGetResponse>(
       { server, token },
       { type: "federation.member.get", payload: { name } },
     );

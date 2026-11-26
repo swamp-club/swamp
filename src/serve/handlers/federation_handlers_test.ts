@@ -28,11 +28,15 @@ import {
   MemoryControlPlaneStore,
 } from "../federation/federation_hub_test_helpers.ts";
 import { HubLink } from "../../domain/serve/hub_link.ts";
+import { InstanceId } from "../../domain/serve/instance_id.ts";
+import { MemberCredential } from "../../domain/serve/member_credential.ts";
+import { sampleFingerprint } from "../../domain/serve/federation_test_helpers.ts";
 import { HubLinkStore } from "../federation/hub_link_store.ts";
 import type { ConnectionContext } from "./shared.ts";
 import {
   FEDERATION_RESOURCE,
   handleFederationLinkGet,
+  handleFederationMemberGet,
   handleFederationMemberList,
   handleFederationTokenCreate,
   handleFederationTokenList,
@@ -207,4 +211,58 @@ Deno.test("handleFederationLinkGet: a serve that is not a member says so", async
   const reply = frame(ws) as { type: string; error: { code: string } };
   assertEquals(reply.type, "error");
   assertEquals(reply.error.code, "unsupported_operation");
+});
+
+Deno.test("handleFederationMemberGet: a reader gets the record with its live view; without read on swamp/federation it is refused", async () => {
+  const t = createTestHub();
+  const { plaintext } = await t.hub.createToken("edge-1");
+  const joined = await t.hub.join(plaintext, sampleFingerprint());
+  if (joined.kind !== "joined") throw new Error(joined.kind);
+  const instance = InstanceId.create(crypto.randomUUID());
+  const runtime = {
+    team: { role: "single" as const, nodes: 1 },
+    startedAt: "2026-11-26T11:00:00.000Z",
+    ready: true,
+  };
+  await t.hub.checkIn(
+    MemberCredential.parse(joined.credential),
+    instance,
+    sampleFingerprint(runtime),
+  );
+
+  const reader = socket();
+  await handleFederationMemberGet(
+    reader,
+    context([grantOn("swamp/federation", ["read"])], t.hub),
+    "r1",
+    { name: "edge-1" },
+    OPERATOR,
+  );
+  const reply = frame(reader) as {
+    type: string;
+    payload: { member: { name: string; live: unknown } };
+  };
+  assertEquals(reply.type, "federation.member.get");
+  assertEquals(reply.payload.member.name, "edge-1");
+  const seenAt = new Date(t.clock.now).toISOString();
+  assertEquals(reply.payload.member.live, {
+    lastSeenAt: seenAt,
+    instances: [{ instanceId: instance.value, lastSeenAt: seenAt, runtime }],
+  });
+
+  for (const grants of [[], [grantOn("swamp/app-approval", ["read"])]]) {
+    const stranger = socket();
+    await handleFederationMemberGet(
+      stranger,
+      context(grants, t.hub),
+      "r2",
+      { name: "edge-1" },
+      OPERATOR,
+    );
+    assertEquals(frame(stranger).type, "error");
+    assertEquals(
+      JSON.stringify(frame(stranger)).includes(instance.value),
+      false,
+    );
+  }
 });

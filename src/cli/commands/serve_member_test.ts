@@ -29,6 +29,10 @@ import { createRepoInitDeps, repoInit } from "../../libswamp/repo/init.ts";
 import { collect } from "../../libswamp/testing.ts";
 import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
 import { serveMemberCommand } from "./serve_member.ts";
+import { withLocalHubForMember } from "./serve_member_local.ts";
+import { sampleFingerprint } from "../../domain/serve/federation_test_helpers.ts";
+import { InstanceId } from "../../domain/serve/instance_id.ts";
+import { MemberCredential } from "../../domain/serve/member_credential.ts";
 
 import "../../domain/models/models.ts";
 
@@ -238,6 +242,62 @@ Deno.test({
         await runJson("1", ["list", "--repo-dir", dir]),
         { members: [] },
       );
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "serve member list/get: local mode shows each member's live view from the hub's seen records",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  fn: async () => {
+    await withRepo(HUB_YAML, async (dir) => {
+      const instance = InstanceId.create(crypto.randomUUID());
+      const runtime = {
+        team: { role: "single" as const, nodes: 1 },
+        startedAt: "2026-11-26T11:00:00.000Z",
+        ready: true,
+      };
+      await withMockedEnv(
+        { [FEDERATION_GATE_VARIABLE]: "1" },
+        () =>
+          withLocalHubForMember(
+            { repoDir: dir, outputMode: "json" },
+            "edge-1",
+            async (hub) => {
+              const { plaintext } = await hub.createToken("edge-1");
+              const joined = await hub.join(plaintext, sampleFingerprint());
+              if (joined.kind !== "joined") throw new Error(joined.kind);
+              const outcome = await hub.checkIn(
+                MemberCredential.parse(joined.credential),
+                instance,
+                sampleFingerprint(runtime),
+              );
+              assertEquals(outcome.kind, "checked-in");
+              await hub.settled();
+            },
+          ),
+      );
+
+      const listed = await runJson("1", ["list", "--repo-dir", dir]) as {
+        members: Array<{ name: string; live: Record<string, unknown> }>;
+      };
+      assertEquals(listed.members.map((m) => m.name), ["edge-1"]);
+      const live = listed.members[0].live as {
+        lastSeenAt: string;
+        instances: Array<Record<string, unknown>>;
+      };
+      assertEquals(live.instances, [{
+        instanceId: instance.value,
+        lastSeenAt: live.lastSeenAt,
+        runtime,
+      }]);
+
+      const got = await runJson("1", ["get", "edge-1", "--repo-dir", dir]) as {
+        member: { live: unknown };
+      };
+      assertEquals(got.member.live, live);
     });
   },
 });

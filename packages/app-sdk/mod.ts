@@ -77,6 +77,8 @@ export {
   CAPABILITY_REQUESTS,
   decideAppRequest,
   exposedRequestTypes,
+  GATED_APP_READ_CAPABILITIES,
+  type GatedAppReadCapability,
   holdsExpression,
   METHOD_REQUEST,
   RUN_REQUEST,

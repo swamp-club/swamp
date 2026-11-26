@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { isServeFederationEnabled } from "../../domain/serve/federation_gate.ts";
 import { Command, EnumType } from "@cliffy/command";
 import { join, resolve } from "@std/path";
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
@@ -312,7 +313,9 @@ async function appFolder(dir: string | undefined): Promise<{
       [folder],
     );
   }
-  const descriptor = parseAppDescriptor(text, path);
+  const descriptor = parseAppDescriptor(text, path, {
+    federation: isServeFederationEnabled((name) => Deno.env.get(name)),
+  });
   return {
     folder,
     name: descriptor.name,

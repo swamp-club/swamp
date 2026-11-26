@@ -19,10 +19,11 @@
 
 import type { LibSwampContext } from "../context.ts";
 import type { ServeMemberRecord } from "../../domain/serve/serve_member.ts";
+import type { ServeMemberLiveRecord } from "../../domain/serve/member_live_view.ts";
 import {
   type FederationAdminDeps,
   type FederationAdminEvent,
-  memberView,
+  memberLiveRecord,
   runFederationAdmin,
 } from "./federation_admin.ts";
 
@@ -34,7 +35,11 @@ export interface MemberData {
   readonly member: ServeMemberRecord;
 }
 
-export type MemberGetEvent = FederationAdminEvent<MemberData>;
+export interface MemberGetData {
+  readonly member: ServeMemberLiveRecord;
+}
+
+export type MemberGetEvent = FederationAdminEvent<MemberGetData>;
 
 class MemberNotFoundError extends Error {
   readonly code = "not_found";
@@ -53,7 +58,8 @@ export function memberGet(
       if (member === null) {
         throw new MemberNotFoundError(`No member named '${input.name}'`);
       }
-      return { member: memberView(member) };
+      const sightings = await deps.admin.sightings(member.memberId);
+      return { member: memberLiveRecord(member, sightings) };
     },
   );
 }

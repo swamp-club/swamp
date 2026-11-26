@@ -44,13 +44,41 @@ const TOKEN: JoinTokenView = {
   expiresAt: new Date(NOW + 3_600_000).toISOString(),
 };
 
-const MEMBER = ServeMember.join({
+const RECORD = ServeMember.join({
   memberId: crypto.randomUUID(),
   name: MemberName.create("edge-1"),
   role: "member",
   fingerprint: sampleFingerprint(),
   now: NOW,
 }).toJSON();
+
+const INSTANCE = "00000000-0000-4000-8000-000000000001";
+const OLD_INSTANCE = "00000000-0000-4000-8000-000000000002";
+
+const MEMBER = {
+  ...RECORD,
+  live: {
+    lastSeenAt: new Date(NOW - 4_000).toISOString(),
+    instances: [
+      {
+        instanceId: INSTANCE,
+        lastSeenAt: new Date(NOW - 4_000).toISOString(),
+        runtime: {
+          team: { role: "leader" as const, nodes: 2 },
+          startedAt: "2026-11-26T11:00:00.000Z",
+          ready: true,
+        },
+      },
+      {
+        instanceId: OLD_INSTANCE,
+        lastSeenAt: new Date(NOW - 125_000).toISOString(),
+        runtime: null,
+      },
+    ],
+  },
+};
+
+const NEVER_SEEN = { ...RECORD, live: { lastSeenAt: null, instances: [] } };
 
 function captured(render: () => void): string {
   const lines: string[] = [];
@@ -116,7 +144,9 @@ Deno.test("renderMemberTokenRevoke: both modes name the token", () => {
 });
 
 Deno.test("renderMemberList and renderMemberGet: show the member's status and fingerprint", () => {
-  const list = captured(() => renderMemberList({ members: [MEMBER] }, "log"));
+  const list = captured(() =>
+    renderMemberList({ members: [MEMBER] }, "log", NOW)
+  );
   assertStringIncludes(list, "STATUS");
   assertStringIncludes(list, "edge-1");
   assertStringIncludes(list, "online");
@@ -124,7 +154,7 @@ Deno.test("renderMemberList and renderMemberGet: show the member's status and fi
     captured(() => renderMemberList({ members: [] }, "log")),
     "No members found.",
   );
-  const get = captured(() => renderMemberGet({ member: MEMBER }, "log"));
+  const get = captured(() => renderMemberGet({ member: MEMBER }, "log", NOW));
   assertStringIncludes(get, "Member: edge-1 (member)");
   assertStringIncludes(get, "Swamp version: 20261125.1629.0");
   assertEquals(
@@ -133,8 +163,62 @@ Deno.test("renderMemberList and renderMemberGet: show the member's status and fi
   );
 });
 
+Deno.test("renderMemberList: a LAST SEEN column after STATUS, '-' for a member never seen", () => {
+  const lines = captured(() =>
+    renderMemberList(
+      { members: [MEMBER, { ...NEVER_SEEN, name: "edge-2" }] },
+      "log",
+      NOW,
+    )
+  ).split("\n");
+  assertStringIncludes(lines[0], "STATUS  LAST SEEN  INSTANCES");
+  assertStringIncludes(lines[1], "online  4s ago");
+  assertEquals(lines[2].split(/\s{2,}/)[3], "-");
+});
+
+Deno.test("renderMemberGet: a Live section apart from the record's instances, one line per check-in", () => {
+  const get = captured(() => renderMemberGet({ member: MEMBER }, "log", NOW));
+  const live = get.slice(get.indexOf("Live:"));
+  assertStringIncludes(live, "Last seen: 4s ago (2026-11-26T11:59:56.000Z)");
+  assertStringIncludes(
+    live,
+    `${INSTANCE} 4s ago (leader of 2, started 2026-11-26T11:00:00.000Z, ready)`,
+  );
+  assertStringIncludes(
+    live,
+    `${OLD_INSTANCE} 2m 5s ago (no runtime reported)`,
+  );
+  assertEquals(live.split(INSTANCE).length, 2);
+  const never = captured(() =>
+    renderMemberGet({ member: NEVER_SEEN }, "log", NOW)
+  );
+  assertStringIncludes(never, "Last seen: -");
+});
+
+Deno.test("renderMemberList and renderMemberGet: json mode carries the live view", () => {
+  assertEquals(
+    JSON.parse(
+      captured(() => renderMemberList({ members: [MEMBER] }, "json", NOW)),
+    ),
+    { members: [MEMBER] },
+  );
+});
+
+Deno.test("renderMemberList and renderMemberGet: a reply without a live view, from an older serve, renders '-' instead of failing", () => {
+  const lines = captured(() =>
+    renderMemberList({ members: [RECORD] }, "log", NOW)
+  ).split("\n");
+  assertEquals(lines[1].split(/\s{2,}/)[3], "-");
+  const get = captured(() => renderMemberGet({ member: RECORD }, "log", NOW));
+  assertStringIncludes(get, "Live:\n  not reported by this server");
+  assertEquals(
+    JSON.parse(captured(() => renderMemberGet({ member: RECORD }, "json"))),
+    { member: RECORD },
+  );
+});
+
 Deno.test("renderMemberRemove: both modes name the member", () => {
-  const removed = { ...MEMBER, status: "removed" as const };
+  const removed = { ...RECORD, status: "removed" as const };
   assertStringIncludes(
     captured(() => renderMemberRemove({ member: removed }, "log")),
     "Member edge-1 removed.",

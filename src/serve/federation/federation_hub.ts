@@ -20,7 +20,11 @@
 import { z } from "zod";
 import type { ControlPlaneStore } from "../../domain/datastore/control_plane_store.ts";
 import { isServeFederationEnabled } from "../../domain/serve/federation_gate.ts";
-import type { Fingerprint } from "../../domain/serve/fingerprint.ts";
+import {
+  type Fingerprint,
+  type FingerprintRuntime,
+  FingerprintRuntimeSchema,
+} from "../../domain/serve/fingerprint.ts";
 import {
   type InstanceId,
   normalizedUuid,
@@ -34,6 +38,7 @@ import {
 } from "../../domain/serve/join_token.ts";
 import { MemberCredential } from "../../domain/serve/member_credential.ts";
 import { MemberName, MemberNameError } from "../../domain/serve/member_name.ts";
+import type { MemberSighting } from "../../domain/serve/member_live_view.ts";
 import { MemberRoster } from "../../domain/serve/member_roster.ts";
 import {
   INSTANCE_TTL_MS,
@@ -144,7 +149,13 @@ const CredentialRecordSchema = z.object({
   memberName: z.string(),
 }).strict();
 
-const SeenRecordSchema = z.object({ at: z.number().int() }).strict();
+// runtime is optional so a seen record holding only its time still parses
+const SeenRecordSchema = z.object({
+  at: z.number().int(),
+  runtime: FingerprintRuntimeSchema.optional(),
+}).strict();
+
+type SeenRecord = z.infer<typeof SeenRecordSchema>;
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -404,10 +415,8 @@ export class FederationHub {
           ? { kind: "unauthorized" }
           : { kind: "instance-limit" };
       }
-      await this.#store.put(
-        seenKey(member.memberId, instanceId),
-        encode({ at: now }),
-      );
+      const seen: SeenRecord = { at: now, runtime: fingerprint.runtime() };
+      await this.#store.put(seenKey(member.memberId, instanceId), encode(seen));
       if (result.changed) {
         await this.#run(member.name, {
           method: "record",
@@ -455,6 +464,42 @@ export class FederationHub {
     });
   }
 
+  /** the leader's own check-in; false until the hub's own record exists */
+  recordSelfSeen(
+    instanceId: InstanceId,
+    runtime: FingerprintRuntime,
+  ): Promise<boolean> {
+    return this.#tail.run("hub_seen", async () => {
+      const self = await this.#members.get(this.hubName);
+      if (self === null || self.isRemoved || self.role !== "hub") return false;
+      const seen: SeenRecord = { at: this.#now(), runtime };
+      await this.#store.put(seenKey(self.memberId, instanceId), encode(seen));
+      return true;
+    });
+  }
+
+  /** each member's last check-ins by memberId, or only that member's */
+  async sightings(memberId?: string): Promise<Map<string, MemberSighting[]>> {
+    const prefix = memberId === undefined
+      ? SEEN_PREFIX
+      : `${SEEN_PREFIX}${memberIdSegment(memberId)}/`;
+    const byMember = new Map<string, MemberSighting[]>();
+    for (const key of await this.#store.list(prefix)) {
+      const parsed = parseSeenKey(key);
+      if (parsed === undefined) continue;
+      const seen = await this.#readSeen(key);
+      if (seen === undefined) continue;
+      const list = byMember.get(parsed.memberId) ?? [];
+      list.push({
+        instanceId: parsed.instanceId,
+        at: seen.at,
+        runtime: seen.runtime ?? null,
+      });
+      byMember.set(parsed.memberId, list);
+    }
+    return byMember;
+  }
+
   /** derives every member's status from its check-ins and drops what is past INSTANCE_TTL_MS */
   sweep(): Promise<SweepReport> {
     return this.#tail.run("member_sweep", async () => {
@@ -469,7 +514,7 @@ export class FederationHub {
       for (const key of await this.#store.list(SEEN_PREFIX)) {
         const parsed = parseSeenKey(key);
         if (parsed === undefined) continue;
-        const at = await this.#readSeen(key);
+        const at = (await this.#readSeen(key))?.at;
         if (at === undefined || now - at >= INSTANCE_TTL_MS) {
           await drop(key);
           continue;
@@ -484,6 +529,10 @@ export class FederationHub {
       let membersWritten = 0;
       const live = new Set<string>();
       for (const member of await this.#members.list()) {
+        // the hub's own keys stay until the TTL; its status is not derived
+        if (!member.isRemoved && member.role === "hub") {
+          live.add(member.memberId);
+        }
         if (member.isRemoved || member.role !== "member") continue;
         live.add(member.memberId);
         const result = member.applySeen(
@@ -536,11 +585,11 @@ export class FederationHub {
     }
   }
 
-  async #readSeen(key: string): Promise<number | undefined> {
+  async #readSeen(key: string): Promise<SeenRecord | undefined> {
     const bytes = await this.#store.get(key);
     if (bytes === null) return undefined;
     try {
-      return SeenRecordSchema.parse(decode(bytes)).at;
+      return SeenRecordSchema.parse(decode(bytes));
     } catch {
       return undefined;
     }

@@ -8986,7 +8986,7 @@ export const serveCommand = new Command()
           "federation hub",
           async () => {
             await sweeper.stop();
-            await selfRecord.settled();
+            await selfRecord.stop();
             await hub.settled();
           },
           v3Location === undefined ? "left" : "awaited",

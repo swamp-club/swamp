@@ -24,6 +24,11 @@ import type {
   ServeMember,
   ServeMemberRecord,
 } from "../../domain/serve/serve_member.ts";
+import {
+  memberLiveView,
+  type MemberSighting,
+  type ServeMemberLiveRecord,
+} from "../../domain/serve/member_live_view.ts";
 
 /** what a federation hub offers its operators; serve's FederationHub is one */
 export interface FederationAdmin {
@@ -36,6 +41,8 @@ export interface FederationAdmin {
   listMembers(): Promise<ServeMember[]>;
   getMember(name: string): Promise<ServeMember | null>;
   removeMember(name: string): Promise<ServeMember>;
+  /** last check-ins by memberId, or only that member's */
+  sightings(memberId?: string): Promise<Map<string, MemberSighting[]>>;
 }
 
 export interface FederationAdminDeps {
@@ -73,6 +80,16 @@ export function federationAdminError(
 
 export function memberView(member: ServeMember): ServeMemberRecord {
   return member.toJSON();
+}
+
+export function memberLiveRecord(
+  member: ServeMember,
+  sightings: ReadonlyMap<string, readonly MemberSighting[]>,
+): ServeMemberLiveRecord {
+  return {
+    ...member.toJSON(),
+    live: memberLiveView(sightings.get(member.memberId) ?? []),
+  };
 }
 
 export async function* runFederationAdmin<T>(

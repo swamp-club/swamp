@@ -50,6 +50,8 @@ import {
   handleFederationRequest,
 } from "../src/serve/federation/hub_routes.ts";
 import { resetRateLimitState } from "../src/serve/rate_limiter.ts";
+import { memberList } from "../src/libswamp/serve/member_list.ts";
+import { memberGet } from "../src/libswamp/serve/member_get.ts";
 import { VERSION as BUILD_VERSION } from "../src/infrastructure/runtime/build_info.ts";
 import { staticImportClosure } from "./arch_fitness_helpers.ts";
 import "../src/domain/models/models.ts";
@@ -151,14 +153,16 @@ class FakeMember {
     return response;
   }
 
-  async checkIn(): Promise<Response> {
+  async checkIn(
+    runtime: Partial<ReturnType<typeof sampleFingerprintProps>> = {},
+  ): Promise<Response> {
     return await fetch(`${this.hubUrl}${FEDERATION_CHECK_IN_PATH}`, {
       method: "POST",
       headers: { authorization: `Bearer ${this.credential}` },
       body: JSON.stringify({
         protocolVersion: 1,
         capabilities: [],
-        fingerprint: sampleFingerprintProps(),
+        fingerprint: sampleFingerprintProps(runtime),
         instanceId: this.instanceId,
       }),
     });
@@ -278,4 +282,54 @@ Deno.test("federation hub: serve's static imports never register the member type
     false,
     "importing serve_member_model.ts registers swamp/serve-member; import serve_member_names.ts instead",
   );
+});
+
+Deno.test("federation hub: the live view shows each check-in's time and runtime facts, which never make a data version", async () => {
+  resetRateLimitState();
+  await using h = await startHub();
+  const { plaintext } = await h.hub.createToken("edge-1");
+  const member = new FakeMember(h.url);
+  assertEquals(await status(await member.join(plaintext)), 200);
+  assertEquals(await status(await member.checkIn()), 200);
+  const versions = await memberVersions(h.repoContext, "edge-1");
+  for (let i = 1; i <= 4; i++) {
+    h.clock.now += 30_000;
+    assertEquals(
+      await status(
+        await member.checkIn({
+          team: { role: "leader", nodes: i },
+          startedAt: "2026-11-26T11:00:00.000Z",
+          ready: i % 2 === 0,
+        }),
+      ),
+      200,
+    );
+  }
+  assertEquals(await memberVersions(h.repoContext, "edge-1"), versions);
+
+  const ctx = createLibSwampContext();
+  const listed = await collect(memberList(ctx, { admin: h.hub }));
+  const done = listed[listed.length - 1];
+  if (done.kind !== "completed") throw new Error(done.kind);
+  const live = done.data.members.find((m) => m.name === "edge-1")!.live;
+  const lastSeenAt = new Date(h.clock.now).toISOString();
+  assertEquals(live, {
+    lastSeenAt,
+    instances: [{
+      instanceId: member.instanceId,
+      lastSeenAt,
+      runtime: {
+        team: { role: "leader", nodes: 4 },
+        startedAt: "2026-11-26T11:00:00.000Z",
+        ready: true,
+      },
+    }],
+  });
+
+  const got = await collect(
+    memberGet(ctx, { admin: h.hub }, { name: "edge-1" }),
+  );
+  const gotDone = got[got.length - 1];
+  if (gotDone.kind !== "completed") throw new Error(gotDone.kind);
+  assertEquals(gotDone.data.member.live, live);
 });

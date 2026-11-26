@@ -20,6 +20,7 @@
 import type { GateState } from "../domain/workflows/gate_state.ts";
 import type { JoinTokenView } from "../domain/serve/join_token.ts";
 import type { ServeMemberRecord } from "../domain/serve/serve_member.ts";
+import type { ServeMemberLiveRecord } from "../domain/serve/member_live_view.ts";
 import type { HubLinkView } from "../domain/serve/hub_link.ts";
 
 export interface WorkflowRunPayload {
@@ -2518,9 +2519,14 @@ export interface FederationLinkGetResponse {
 }
 
 export interface FederationMemberListResponse {
-  members: ServeMemberRecord[];
+  members: ServeMemberLiveRecord[];
 }
 
+export interface FederationMemberGetResponse {
+  member: ServeMemberLiveRecord;
+}
+
+/** remove answers with the record alone */
 export interface FederationMemberResponse {
   member: ServeMemberRecord;
 }
@@ -3003,7 +3009,7 @@ export type ServerMessage =
   | {
     type: "federation.member.get";
     id: string;
-    payload: FederationMemberResponse;
+    payload: FederationMemberGetResponse;
   }
   | {
     type: "federation.member.remove";

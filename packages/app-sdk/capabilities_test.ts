@@ -22,6 +22,8 @@ import {
   decideAppRequest,
   exposedRequestTypes,
   holdsExpression,
+  isAppReadCapability,
+  isGatedAppReadCapability,
 } from "./capabilities.ts";
 
 Deno.test("decideAppRequest: a capability allows only its own requests", () => {
@@ -131,4 +133,64 @@ Deno.test("holdsExpression: input nested past the call stack is still read", () 
   let nested: unknown = "${{ vault.get('x', 'y') }}";
   for (let depth = 0; depth < 100_000; depth++) nested = { value: nested };
   assertEquals(holdsExpression(nested), true);
+});
+
+Deno.test("decideAppRequest: federation:read allows the two member reads and nothing else", () => {
+  const grant = { capabilities: ["federation:read"], run: [], methods: [] };
+  assertEquals(
+    decideAppRequest(grant, "federation.member.list", {}).allowed,
+    true,
+  );
+  assertEquals(
+    decideAppRequest(grant, "federation.member.get", { name: "a" }).allowed,
+    true,
+  );
+  for (
+    const type of [
+      "federation.member.remove",
+      "federation.token.create",
+      "federation.token.list",
+      "data.query",
+    ]
+  ) {
+    assertEquals(decideAppRequest(grant, type, {}).allowed, false, type);
+  }
+  const without = { capabilities: ["data:read"], run: [], methods: [] };
+  assertEquals(
+    decideAppRequest(without, "federation.member.list", {}).allowed,
+    false,
+  );
+});
+
+Deno.test("decideAppRequest: prototype names as capabilities grant nothing", () => {
+  for (
+    const name of ["__proto__", "constructor", "toString", "hasOwnProperty"]
+  ) {
+    const grant = { capabilities: [name], run: [], methods: [] };
+    for (
+      const type of ["worker.list", "constructor", "federation.member.list"]
+    ) {
+      assertEquals(
+        decideAppRequest(grant, type, {}).allowed,
+        false,
+        `${name} ${type}`,
+      );
+    }
+  }
+});
+
+Deno.test("exposedRequestTypes: the gated reads appear only when asked for", () => {
+  const off = exposedRequestTypes();
+  const on = exposedRequestTypes({ gated: true });
+  assertEquals(off.has("federation.member.list"), false);
+  assertEquals(
+    [...on].filter((type) => !off.has(type)).sort(),
+    ["federation.member.get", "federation.member.list"],
+  );
+});
+
+Deno.test("isAppReadCapability: federation:read is gated, never an ordinary read", () => {
+  assertEquals(isAppReadCapability("federation:read"), false);
+  assertEquals(isGatedAppReadCapability("federation:read"), true);
+  assertEquals(isGatedAppReadCapability("workers:read"), false);
 });

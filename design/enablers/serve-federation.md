@@ -185,7 +185,19 @@ methods with literal inputs. A member record gets a new data version only when
 its fingerprint hash, its pool summary or its status changes. Its versions are
 its history and can be queried with `data.query`. Runtime fields never create a
 version. Check-in times go to the control-plane store under
-`federation/seen/<memberId>/<instanceId>`, never to data.
+`federation/seen/<memberId>/<instanceId>`, never to data. Each seen record is
+`{ at, runtime: { team, startedAt, ready } }`, the runtime fields of that
+check-in's fingerprint; a record written before runtime was carried reads with
+no runtime. The leader writes the hub's own seen record under the hub record's
+id every check-in interval (`HubSelfRecord`). The sweeper keeps it until the
+TTL and never derives the hub's status from it.
+
+`federation.member.list` and `.get` answer each record with a `live` view beside
+it: per instance its last check-in and runtime facts, freshest first, and the
+freshest time. It comes only from the seen records, never from the record's own
+instance list. A binary from before Unit 4.1 parses seen records strictly and
+deletes this shape in its sweep, so a hub team on mixed versions can show
+members going stale until the old leader is replaced.
 
 An instance id must be a UUID before any key is built from it. A member has at
 most 64 live instances. An instance unseen for 24 hours is pruned.
@@ -354,6 +366,13 @@ the gate on.
 A new resource, `access:swamp/federation`. `read` lists and gets members.
 `admin` mints, lists and revokes join tokens, and removes members.
 
+An app reads the live view through the `federation:read` capability, which
+allows `federation.member.list` and `.get` and nothing else, under the viewer's
+`read` on the same resource. It exists only with the gate on: off, `app.yaml`
+naming it is refused as an unknown capability. Member history comes from
+`data:read` on `swamp/serve-member`, so viewing it also needs data read on that
+type. See `design/surfaces/apps.md`.
+
 Six WebSocket requests carry these: `federation.member.list`, `.get` and
 `.remove`, and `federation.token.create`, `.list` and `.revoke`. They are
 validated only on a hub. Member remove is sync-gated and confirmed. Token
@@ -405,7 +424,8 @@ minutes, so a serve stopped without shutting down blocks it that long.
 | 1. Foundation    | The gate and its fitness test, this doc, `serve.yaml` version 2, the fingerprint and its command      |
 | 2. Hub           | `role: hub`, join tokens, the `/federation/v1` routes, member records, the status sweeper, access     |
 | 3. Member        | `hub:` config, join, credential storage, the check-in loop, `swamp serve hub`                         |
-| 4. Dashboard app | The `@swamp/serve-federation` app, reading member records with `data:read`                            |
+| 4.1 Live view    | The live member view in the replies and `swamp serve member list/get`, `federation:read`, client types |
+| 4.2 Hub app      | The `@swamp/serve-hub` dashboard app, built in swamp-extensions, with `[federation:read, data:read]`   |
 | 5. Release       | A live check, removing the gate, user docs, UAT journeys, the bundled skill update, publishing the app |
 
 ## Why
@@ -424,6 +444,9 @@ minutes, so a serve stopped without shutting down blocks it that long.
 | Credential hashes in the control-plane store, not the member record  | The record is user data, readable with `data:read`. It holds no secret or hash of one.                                                                          |
 | `swfm1.<memberId>.<secret>` credentials                              | The member id finds the hash without a scan. The prefix is not reserved as a token name, so gate-off token handling is unchanged.                               |
 | Last-seen times outside the record                                   | A check-in would otherwise write a data version every 30 seconds.                                                                                               |
+| Runtime facts in the seen record                                     | The live view needs them, and the write already happens each check-in; in the record they would add a data version.                                            |
+| Live state through `federation:read`, history through `data:read`    | An app needs current last-seen times, which data never holds. Replaces the earlier decision that the app needs only `data:read`.                              |
+| The app gate decided at `app.yaml` parse, not in the SDK             | The broker runs in the browser and cannot see the gate; a grant only exists for a descriptor serve accepted.                                                   |
 | Instance ids are UUIDs, at most 64 per member                        | Untrusted ids build control-plane keys, and one member cannot grow its record without bound.                                                                    |
 | The burst limit on join only                                         | A member's instances check in from one address. Failed check-ins still count, per member and address.                                                           |
 | A hub-only request schema                                            | With no hub, today's schema and payload-field list apply, so `federation.*` gets today's `invalid_request`.                                                     |

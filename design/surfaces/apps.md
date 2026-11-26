@@ -192,12 +192,23 @@ would make the host close the first port and StrictMode mounts twice.
 | `catalog:read` | `workflow.search`, `workflow.get`, `model.search`, `model.get` |
 | `health:read` | The shared health stream |
 | `workers:read` | `worker.list` |
+| `federation:read` | `federation.member.list`, `federation.member.get`; gated, see below |
 | `run:` list | `workflow.run` for the named workflows |
 | `methods:` list | `model.method.run` of the listed method names, on the named behaviors, of the named type |
 
 Anything else is refused by default, so a new request type stays denied until someone adds it
 (`packages/app-sdk/capabilities.ts`). Read scopes are coarse because `data.query`
 takes free-form expressions.
+
+`federation:read` exists only behind `SWAMP_EXPERIMENTAL_FEDERATION`. It sits in
+`GATED_APP_READ_CAPABILITIES`, apart from `APP_READ_CAPABILITIES`, because the
+broker runs in the browser and cannot see the gate. Serve decides the gate where
+`app.yaml` is parsed: off, the capability is unknown exactly as before, so the
+app is a catalog problem that `swamp app approve` never offers, and no grant
+carries it. The viewer still needs `read` on `access:swamp/federation`. It reads
+the hub's live member view (last check-in and runtime facts per instance);
+member history comes from `data:read` on `swamp/serve-member`. It was added in
+platform 1.5.
 
 Serve evaluates expressions in run inputs as the viewer, which would reach past
 the app's capabilities. The broker always sends `literalInputs` on a method run,

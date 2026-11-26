@@ -24,6 +24,7 @@ import type {
   Fingerprint,
   FingerprintProps,
 } from "../../domain/serve/fingerprint.ts";
+import { InstanceId } from "../../domain/serve/instance_id.ts";
 import { registerFederationModelTypes } from "../../domain/models/serve/federation_model_types.ts";
 import type { AuditEmitter } from "../../domain/serve_audit/audit_emitter.ts";
 import type { RepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
@@ -92,6 +93,14 @@ export async function buildServeFederationHub(
   const selfRecord = new HubSelfRecord({
     hub,
     fingerprint: () => collectHubFingerprint(deps),
+    seen: {
+      instanceId: InstanceId.create(deps.instanceId),
+      runtime: async () => ({
+        team: await deps.team(),
+        startedAt: deps.startedAt,
+        ready: true,
+      }),
+    },
   });
   return {
     hub,
