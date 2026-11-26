@@ -950,6 +950,7 @@ export class DataQueryService {
     predicate: string,
     options?: DataQueryOptions,
   ): Promise<DataQueryPage> {
+    await this.dataRepo.beforeWideRead?.();
     // Resolved before the catalog is touched, so a query that cannot
     // resolve its runs fails without a backfill.
     const latestRuns = await this.resolveLatestRuns(predicate, options);
