@@ -28,6 +28,7 @@ import { join } from "@std/path";
 import { resolveLockTimeoutMs } from "../../domain/datastore/datastore_config.ts";
 import { Commit } from "../../domain/datastore_v3/commit.ts";
 import type { HeadIdentity } from "../../domain/datastore_v3/commit_outbox.ts";
+import type { ObservedBasePage } from "../../domain/datastore_v3/observed_base.ts";
 import { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
 import { getSwampLogger } from "../logging/logger.ts";
 import type {
@@ -587,37 +588,47 @@ export class ServeCatchUp {
     let point: number | undefined = resumed?.point;
     let after: string | undefined = resumed?.next;
     let pages = resumed?.pages ?? 0;
-    let limit = SERVE_BASE_PAGE;
+    // cancels the one page read ahead when the load ends before reading it
+    const ahead = new AbortController();
+    const readSignal = AbortSignal.any([signal, ahead.signal]);
+    const readPage = (
+      at: string | undefined,
+      limit: number,
+      first: boolean,
+    ): Promise<BasePageRead> =>
+      pageAtMost(
+        "base",
+        at,
+        limit,
+        (size) =>
+          this.#client.compactedBase(at, this.#namespace, readSignal, size),
+      ).then(
+        (read) => ({ read }),
+        (error) => {
+          // A serve too old to send its base.
+          if (
+            first && error instanceof ServeUpstreamError &&
+            error.status === 404
+          ) {
+            return { error: compacted };
+          }
+          return { error };
+        },
+      );
     await withSpan(
       "swamp.datastore.v3.serve.load_base",
       {},
       async (span) => {
         let entries = 0;
+        let pending: Promise<BasePageRead> | undefined;
         try {
-          do {
-            signal.throwIfAborted();
-            const at = after;
-            let read;
-            try {
-              read = await pageAtMost(
-                "base",
-                at,
-                limit,
-                (size) =>
-                  this.#client.compactedBase(at, this.#namespace, signal, size),
-              );
-            } catch (error) {
-              // A serve too old to send its base.
-              if (
-                error instanceof ServeUpstreamError && error.status === 404 &&
-                point === undefined
-              ) {
-                throw compacted;
-              }
-              throw error;
-            }
-            limit = read.limit;
-            const page = read.page;
+          signal.throwIfAborted();
+          pending = readPage(after, SERVE_BASE_PAGE, point === undefined);
+          while (pending !== undefined) {
+            const settled: BasePageRead = await pending;
+            pending = undefined;
+            if ("error" in settled) throw settled.error;
+            const page = settled.read.page;
             if (point !== undefined && page.point !== point) {
               point = undefined;
               return;
@@ -625,6 +636,11 @@ export class ServeCatchUp {
             point = page.point;
             pages++;
             entries += page.entries.length;
+            if (page.next !== undefined) {
+              pending = readPage(page.next, settled.read.limit, false);
+              // staging blocks this thread: the next request leaves first
+              await yieldToEventLoop();
+            }
             staging.add(
               page.entries,
               page.next === undefined ? undefined : {
@@ -635,8 +651,12 @@ export class ServeCatchUp {
               },
             );
             after = page.next;
-          } while (after !== undefined);
+          }
         } finally {
+          if (pending !== undefined) {
+            ahead.abort();
+            await pending;
+          }
           span.setAttributes({
             "swamp.datastore.v3.serve.load_base.resumed": resumed !== undefined,
             "swamp.datastore.v3.serve.load_base.resumed_pages":
@@ -1492,6 +1512,17 @@ function anchorOf(commit: Commit): ServeFeedAnchor {
     seq: commit.seq,
     txnId: commit.txnId,
   };
+}
+
+/** a base page read, settled so a read ahead never rejects unwatched */
+type BasePageRead =
+  | {
+    readonly read: { readonly page: ObservedBasePage; readonly limit: number };
+  }
+  | { readonly error: unknown };
+
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 async function pageAtMost<T>(
