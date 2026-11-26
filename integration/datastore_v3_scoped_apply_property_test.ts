@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * a scoped command applies single partitions ahead of the cursor, and the next
- * whole apply skips them; any mix must end where whole applies alone end, in
- * files, catalog and live index
- */
-
 import { assertEquals } from "@std/assert";
 import fc from "fast-check";
 import { createIntent, modelRef } from "../src/domain/datastore_v3/intent.ts";

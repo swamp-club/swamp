@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * the member under test runs the real `model method run` in a ProcessRuntime of
- * its own; what its read model applied is read from its state file between
- * commands, or while its run is held at its write
- */
-
 import "../src/domain/models/models.ts";
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { Command } from "@cliffy/command";
