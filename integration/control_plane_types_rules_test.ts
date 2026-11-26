@@ -32,9 +32,11 @@ import {
 } from "./arch_fitness_helpers.ts";
 import { CONTROL_PLANE_MODEL_TYPES } from "../src/domain/models/control_plane_types.ts";
 import { modelRegistry } from "../src/domain/models/models.ts";
+import { FEDERATION_GATE_VARIABLE } from "../src/domain/serve/federation_gate.ts";
+import { registerFederationModelTypes } from "../src/domain/models/serve/federation_model_types.ts";
 
-/** Built-in swamp/* types that hold user data. None today. */
-const USER_DATA_SWAMP_TYPES: readonly string[] = [];
+/** Built-in swamp/* types that hold user data; each holds no secret material. */
+const USER_DATA_SWAMP_TYPES: readonly string[] = ["swamp/serve-member"];
 
 const SWAMP_TYPE_DEFINITION = /ModelType\.create\(\s*["'](swamp\/[^"']+)["']/g;
 
@@ -70,15 +72,38 @@ Deno.test("control-plane types: each listed type is defined by a built-in model"
   );
 });
 
-Deno.test("control-plane types: every registered built-in swamp/* type is in CONTROL_PLANE_MODEL_TYPES", () => {
-  // The source scan above only sees literal type strings; the registry sees
-  // every built-in type however it is defined.
-  const missing = modelRegistry.types()
+function registeredSwampTypesOutsideTheLists(): string[] {
+  return modelRegistry.types()
     .map((type) => type.normalized)
     .filter((type) => type.startsWith("swamp/"))
     .filter((type) =>
       !CONTROL_PLANE_MODEL_TYPES.includes(type) &&
       !USER_DATA_SWAMP_TYPES.includes(type)
     );
-  assertEquals(missing, []);
+}
+
+Deno.test("control-plane types: every registered built-in swamp/* type is in CONTROL_PLANE_MODEL_TYPES", () => {
+  // The source scan above only sees literal type strings; the registry sees
+  // every built-in type however it is defined.
+  assertEquals(registeredSwampTypesOutsideTheLists(), []);
+});
+
+Deno.test("control-plane types: models.ts leaves the federation types unregistered", async () => {
+  const source = await Deno.readTextFile(
+    new URL("../src/domain/models/models.ts", import.meta.url),
+  );
+  assertEquals(source.includes("serve_member_model"), false);
+  assertEquals(modelRegistry.has("swamp/serve-member"), false);
+});
+
+Deno.test("control-plane types: with the gate on, the federation types are listed too", async () => {
+  try {
+    await registerFederationModelTypes((name) =>
+      name === FEDERATION_GATE_VARIABLE ? "1" : undefined
+    );
+    assertEquals(modelRegistry.has("swamp/serve-member"), true);
+    assertEquals(registeredSwampTypesOutsideTheLists(), []);
+  } finally {
+    modelRegistry.invalidateType("swamp/serve-member");
+  }
 });

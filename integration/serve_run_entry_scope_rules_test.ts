@@ -54,6 +54,8 @@ const PINNED: Readonly<Record<string, Classification>> = {
     "user-run",
   "src/serve/resume_launcher.ts: startDetachedResume: service.resume":
     "user-run",
+  "src/serve/federation/member_record_store.ts: repoMemberMethodRunner: modelMethodRun":
+    "control-plane",
   "src/serve/webhook.ts: WebhookService: execute": "user-run",
   "src/serve/webhook.ts: WebhookService: this.executeWorkflow": "queue",
   "src/serve/worker_gateway.ts: WorkerGateway: modelMethodRun": "control-plane",

@@ -74,6 +74,7 @@ const SINK: readonly string[] = [
   "run.ts",
   "run_gc.ts",
   "serve.ts",
+  "serve_member_local.ts",
   "vault_annotate.ts",
   "vault_create.ts",
   "vault_delete.ts",

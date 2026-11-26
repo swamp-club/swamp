@@ -132,7 +132,9 @@ export async function handleHttpRequest(
   } catch {
     return httpFailure(400, "invalid_request", "Invalid JSON");
   }
-  const validated = validateServerRequest(raw);
+  const validated = validateServerRequest(raw, {
+    federationHub: deps.ctx.federationHub !== undefined,
+  });
   if (typeof validated === "string") {
     return httpFailure(400, "invalid_request", validated);
   }

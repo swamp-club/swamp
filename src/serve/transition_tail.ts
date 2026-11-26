@@ -26,7 +26,7 @@
 import { withSpan } from "../infrastructure/tracing/mod.ts";
 import { observeExecution } from "../domain/remote/observability.ts";
 
-export type TransitionTailName = "dispatch" | "gateway";
+export type TransitionTailName = "dispatch" | "gateway" | "federation";
 
 interface Chain {
   tail: Promise<unknown>;

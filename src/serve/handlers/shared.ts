@@ -433,6 +433,8 @@ export interface ConnectionContext {
    */
   holdRepliesUntilCommitted?: boolean;
   workerGateway?: WorkerGateway;
+  /** set only when the federation gate is on and this serve is a hub; federation.* requests exist only then */
+  federationHub?: import("../federation/federation_hub.ts").FederationHub;
   policySnapshotLoader?: PolicySnapshotLoader;
   authConfig: ServeAuthConfig;
   cancelRegistry?: RunCancelRegistry;

@@ -27,6 +27,11 @@ import {
 } from "../infrastructure/tracing/span_test_helpers.ts";
 import { resolveHttpRoute, traceHttpRequests } from "./http_request_span.ts";
 import { SERVE_REQUEST_PATH } from "./protocol.ts";
+import {
+  FEDERATION_CHECK_IN_PATH,
+  FEDERATION_HUB_ROUTES,
+  FEDERATION_JOIN_PATH,
+} from "./federation/hub_routes.ts";
 
 const INFO = {
   remoteAddr: { transport: "tcp", hostname: "127.0.0.1", port: 1234 },
@@ -77,6 +82,41 @@ Deno.test("resolveHttpRoute: returns undefined for unknown and webhook paths", (
   ) {
     assertEquals(resolveHttpRoute(path), undefined, path);
   }
+});
+
+Deno.test("resolveHttpRoute: without extra routes the federation paths have no route", () => {
+  for (const path of [FEDERATION_JOIN_PATH, FEDERATION_CHECK_IN_PATH]) {
+    assertEquals(resolveHttpRoute(path), undefined, path);
+  }
+});
+
+Deno.test("resolveHttpRoute: extra routes resolve only their own paths", () => {
+  for (const path of [FEDERATION_JOIN_PATH, FEDERATION_CHECK_IN_PATH]) {
+    assertEquals(resolveHttpRoute(path, FEDERATION_HUB_ROUTES), path);
+  }
+  assertEquals(
+    resolveHttpRoute("/federation/v1/other", FEDERATION_HUB_ROUTES),
+    undefined,
+  );
+  assertEquals(resolveHttpRoute("/health", FEDERATION_HUB_ROUTES), "/health");
+});
+
+Deno.test("traceHttpRequests: an extra route names its span; without it the span has no route", async () => {
+  await withCapturedSpans(async (spans) => {
+    const withRoutes = traceHttpRequests(
+      () => new Response("ok"),
+      FEDERATION_HUB_ROUTES,
+    );
+    await withRoutes(request(FEDERATION_JOIN_PATH, { method: "POST" }), INFO);
+    const span = findSpan(spans, `POST ${FEDERATION_JOIN_PATH}`);
+    assertEquals(span.attributes["http.route"], FEDERATION_JOIN_PATH);
+  });
+  await withCapturedSpans(async (spans) => {
+    const plain = traceHttpRequests(() => new Response("nf", { status: 404 }));
+    await plain(request(FEDERATION_JOIN_PATH, { method: "POST" }), INFO);
+    const span = findSpan(spans, "POST");
+    assertEquals(span.attributes["http.route"], undefined);
+  });
 });
 
 Deno.test("traceHttpRequests: names the span by method and route with status", async () => {

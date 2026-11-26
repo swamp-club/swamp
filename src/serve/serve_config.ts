@@ -43,6 +43,7 @@ import { TOKEN_SECRETS_VAULT_NAME } from "../domain/vaults/control_plane_vault_p
 import type { TokenSecretsKeyRef } from "../domain/vaults/token_secrets_key.ts";
 import { validateSinkFilter } from "../domain/serve_audit/mod.ts";
 import { isServeFederationEnabled } from "../domain/serve/federation_gate.ts";
+import { MemberName } from "../domain/serve/member_name.ts";
 import { isLoopbackHost } from "../domain/serve/loopback.ts";
 
 /** the path is marked so telemetry removes it exactly */
@@ -110,6 +111,8 @@ export interface TriggerOverrideEntry {
 
 export interface FederationConfig {
   readonly role?: "hub";
+  /** set only with role hub */
+  readonly name?: string;
   /** normalised without a trailing slash */
   readonly hub?: string;
   /** resolved against the repository */
@@ -516,7 +519,18 @@ function readConfigVersion(value: unknown, path: string): ServeConfigVersion {
   return value as ServeConfigVersion;
 }
 
-const KNOWN_FEDERATION_KEYS = new Set(["role", "hub", "join-token-file"]);
+const KNOWN_FEDERATION_KEYS = new Set([
+  "role",
+  "name",
+  "hub",
+  "join-token-file",
+]);
+
+export const DEFAULT_HUB_NAME = "hub";
+
+export function hubName(federation: FederationConfig): string {
+  return federation.name ?? DEFAULT_HUB_NAME;
+}
 
 function validateFederationConfig(
   value: unknown,
@@ -554,7 +568,21 @@ function validateFederationConfig(
         `Invalid federation.join-token-file in ${path}: a hub joins no hub`,
       );
     }
-    return { role: "hub" };
+    if (obj.name === undefined) return { role: "hub" };
+    const problem = MemberName.problem(obj.name);
+    if (problem !== undefined) {
+      throw configError(
+        path,
+        `Invalid federation.name in ${path}: ${problem}`,
+      );
+    }
+    return { role: "hub", name: obj.name as string };
+  }
+  if (obj.name !== undefined) {
+    throw configError(
+      path,
+      `Invalid federation.name in ${path}: only a hub names itself in serve.yaml`,
+    );
   }
   const hub = validateHubUrl(obj.hub, path);
   const tokenFile = obj["join-token-file"];

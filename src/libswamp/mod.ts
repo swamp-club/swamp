@@ -668,6 +668,44 @@ export {
   type ServeFingerprintEvent,
 } from "./serve/fingerprint.ts";
 export {
+  type FederationAdmin,
+  type FederationAdminDeps,
+  type FederationAdminEvent,
+} from "./serve/federation_admin.ts";
+export {
+  memberTokenCreate,
+  type MemberTokenCreateData,
+  type MemberTokenCreateEvent,
+  type MemberTokenCreateInput,
+} from "./serve/member_token_create.ts";
+export {
+  memberTokenList,
+  type MemberTokenListData,
+  type MemberTokenListEvent,
+} from "./serve/member_token_list.ts";
+export {
+  memberTokenRevoke,
+  type MemberTokenRevokeData,
+  type MemberTokenRevokeEvent,
+  type MemberTokenRevokeInput,
+} from "./serve/member_token_revoke.ts";
+export {
+  memberList,
+  type MemberListData,
+  type MemberListEvent,
+} from "./serve/member_list.ts";
+export {
+  type MemberData,
+  memberGet,
+  type MemberGetEvent,
+  type MemberGetInput,
+} from "./serve/member_get.ts";
+export {
+  memberRemove,
+  type MemberRemoveEvent,
+  type MemberRemoveInput,
+} from "./serve/member_remove.ts";
+export {
   createWorkerTokenCreateDeps,
   workerTokenCreate,
   type WorkerTokenCreateData,

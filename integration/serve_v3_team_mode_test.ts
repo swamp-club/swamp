@@ -29,6 +29,8 @@ import type {
   TeamNodeState,
 } from "./serve_v3_team_machine_worker.ts";
 import { startLoadedWorker } from "./graph_worker.ts";
+import { sampleFingerprintProps } from "../src/domain/serve/federation_test_helpers.ts";
+import type { TeamHubFacts } from "./serve_v3_team_hub_node.ts";
 
 const OWNER = "http://serve.example:9090";
 
@@ -395,5 +397,60 @@ Deno.test("serve team mode: a node that never answers fails its request, naming 
       Error,
       "node-a: spin did not answer",
     );
+  });
+});
+
+Deno.test("serve team mode: a gated hub applies a member's join and check-in sent to the follower on the leader, which alone sweeps and writes the hub's own record", async () => {
+  const hub = { gate: "1", name: "central", sweepIntervalMs: 50 };
+  await withTeam(async (team) => {
+    const a = await team.node("a");
+    assertEquals(
+      await a.send({ kind: "start", tickMs: 3_600_000, hub }),
+      "writer",
+    );
+    const b = await team.node("b");
+    assertEquals(
+      await b.send({ kind: "start", tickMs: 3_600_000, hub }),
+      "follower",
+    );
+    const joinToken = await a.send({ kind: "hub-token", name: "edge-1" });
+    const follower = await b.send({ kind: "hub-url" }) as string;
+    const fingerprint = sampleFingerprintProps();
+    const joined = await fetch(`${follower}/federation/v1/join`, {
+      method: "POST",
+      body: JSON.stringify({ protocolVersion: 1, fingerprint, joinToken }),
+    });
+    assertEquals(joined.status, 200);
+    const { memberId, credential } = await joined.json();
+    const instanceId = crypto.randomUUID();
+    const checkedIn = await fetch(`${follower}/federation/v1/check-in`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${credential}` },
+      body: JSON.stringify({ protocolVersion: 1, fingerprint, instanceId }),
+    });
+    assertEquals(checkedIn.status, 200);
+    assertEquals((await checkedIn.json()).hub.name, hub.name);
+
+    const names = ["edge-1", hub.name];
+    await waitFor(
+      async () =>
+        ((await a.send({ kind: "hub-facts", names })) as TeamHubFacts)
+          .sweeps > 0,
+      "the leader to sweep",
+    );
+    const leader = await a.send({ kind: "hub-facts", names }) as TeamHubFacts;
+    assertEquals(leader.versions["edge-1"], [1, 2]);
+    assertEquals(leader.seenKeys, [
+      `federation/seen/${memberId}/${instanceId}`,
+    ]);
+    assertEquals(leader.versions[hub.name], [1]);
+    assertEquals(leader.selfWrites, 1);
+
+    const followed = await b.send({ kind: "hub-facts", names }) as TeamHubFacts;
+    assertEquals(followed.sweeps, 0);
+    assertEquals(followed.selfWrites, 0);
+    assertEquals(followed.seenKeys, leader.seenKeys);
+    // the follower never opened its repository: it applied nothing itself
+    assertEquals(followed.versions, {});
   });
 });

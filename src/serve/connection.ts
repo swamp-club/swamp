@@ -245,6 +245,14 @@ import {
   handleWorkerVerify,
 } from "./handlers/admin_handlers.ts";
 import {
+  handleFederationMemberGet,
+  handleFederationMemberList,
+  handleFederationMemberRemove,
+  handleFederationTokenCreate,
+  handleFederationTokenList,
+  handleFederationTokenRevoke,
+} from "./handlers/federation_handlers.ts";
+import {
   handleWorkspaceChange,
   handleWorkspaceCreate,
   handleWorkspaceGet,
@@ -1731,6 +1739,60 @@ const ServerVersionRequestSchema = z.object({
   payload: z.object({ leader: z.boolean().optional() }).optional(),
 });
 
+const FederationNamePayloadSchema = z.object({
+  name: z.string().min(1).max(64),
+});
+
+const FederationMemberListRequestSchema = z.object({
+  type: z.literal("federation.member.list"),
+  id: z.string().min(1).max(256),
+  payload: z.object({}).optional(),
+});
+
+const FederationMemberGetRequestSchema = z.object({
+  type: z.literal("federation.member.get"),
+  id: z.string().min(1).max(256),
+  payload: FederationNamePayloadSchema,
+});
+
+const FederationMemberRemoveRequestSchema = z.object({
+  type: z.literal("federation.member.remove"),
+  id: z.string().min(1).max(256),
+  payload: FederationNamePayloadSchema,
+});
+
+const FederationTokenCreateRequestSchema = z.object({
+  type: z.literal("federation.token.create"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    name: z.string().min(1).max(64),
+    durationMs: z.number().int().positive().optional(),
+  }),
+});
+
+const FederationTokenListRequestSchema = z.object({
+  type: z.literal("federation.token.list"),
+  id: z.string().min(1).max(256),
+  payload: z.object({}).optional(),
+});
+
+const FederationTokenRevokeRequestSchema = z.object({
+  type: z.literal("federation.token.revoke"),
+  id: z.string().min(1).max(256),
+  payload: FederationNamePayloadSchema,
+});
+
+// kept out of ServerRequestSchema: a serve without a hub refuses these exactly
+// as it refuses a type it has never heard of
+const FEDERATION_REQUEST_SCHEMAS = [
+  FederationMemberListRequestSchema,
+  FederationMemberGetRequestSchema,
+  FederationMemberRemoveRequestSchema,
+  FederationTokenCreateRequestSchema,
+  FederationTokenListRequestSchema,
+  FederationTokenRevokeRequestSchema,
+] as const;
+
 const ServerRequestSchema = z.discriminatedUnion("type", [
   ServerVersionRequestSchema,
   WorkflowRunRequestSchema,
@@ -1883,27 +1945,47 @@ const ServerRequestSchema = z.discriminatedUnion("type", [
   ServeConfigRequestSchema,
 ]);
 
+const HubServerRequestSchema = z.discriminatedUnion("type", [
+  ...ServerRequestSchema.options,
+  ...FEDERATION_REQUEST_SCHEMAS,
+]);
+
+/** which request schema applies: a serve that built a federation hub also takes federation.* */
+export interface ServerRequestScope {
+  readonly federationHub?: boolean;
+}
+
+function requestSchemaFor(scope: ServerRequestScope) {
+  return scope.federationHub === true
+    ? HubServerRequestSchema
+    : ServerRequestSchema;
+}
+
 /**
  * zod strips unknown keys, so a ServerRequest payload field missing from its
  * schema never reaches the handler; connection_schema_parity_test.ts compares
  * this type against ServerRequest
  */
-export type ValidatedServerRequest = z.infer<typeof ServerRequestSchema>;
+export type ValidatedServerRequest = z.infer<typeof HubServerRequestSchema>;
 
-export function serverRequestSchemas(): readonly z.ZodType[] {
-  return ServerRequestSchema.options;
+export function serverRequestSchemas(
+  scope: ServerRequestScope = {},
+): readonly z.ZodType[] {
+  return requestSchemaFor(scope).options;
 }
 
 /**
  * used by the serve id-deny conformance test to find every request that names a
  * resource, so a new one cannot ship without authorization coverage
  */
-export function serverRequestPayloadFields(): ReadonlyMap<
+export function serverRequestPayloadFields(
+  scope: ServerRequestScope = {},
+): ReadonlyMap<
   string,
   readonly string[]
 > {
   const fields = new Map<string, readonly string[]>();
-  for (const option of ServerRequestSchema.options) {
+  for (const option of requestSchemaFor(scope).options) {
     const shape = (option as z.ZodObject).shape;
     const type = (shape.type as z.ZodLiteral<string>).value;
     let payload: unknown = shape.payload;
@@ -1922,8 +2004,9 @@ export function serverRequestPayloadFields(): ReadonlyMap<
  */
 export function validateServerRequest(
   data: unknown,
+  scope: ServerRequestScope = {},
 ): ServerRequest | string {
-  const result = parseUntrusted(ServerRequestSchema, data);
+  const result = parseUntrusted(requestSchemaFor(scope), data);
   if (result.success) {
     return result.data as ServerRequest;
   }
@@ -2120,7 +2203,9 @@ export function handleMessage(
 
   const requestId = extractRequestId(parsed);
 
-  const validated = validateServerRequest(parsed);
+  const validated = validateServerRequest(parsed, {
+    federationHub: ctx.federationHub !== undefined,
+  });
   if (typeof validated === "string") {
     sendError(socket, requestId, "invalid_request", validated);
     return;
@@ -2327,6 +2412,16 @@ export function handleMessage(
       socket,
     };
   }
+
+  const notAFederationHub = (): Promise<void> =>
+    Promise.resolve(
+      sendError(
+        socket,
+        request.id,
+        "unsupported_operation",
+        `Operation '${request.type}' is not supported by this server version`,
+      ),
+    );
 
   // write requests answer once their commits are replicated; see
   // CONFIRMED_WRITE_REQUESTS
@@ -4839,6 +4934,70 @@ export function handleMessage(
           ),
         ),
         auditOpts("admin", "server", "*"),
+      );
+      break;
+    // validation admits these only on a hub; the arms check again
+    case "federation.member.list":
+      task = ctx.federationHub === undefined ? notAFederationHub() : audited(
+        handleFederationMemberList(socket, ctx, request.id, principal),
+        auditOpts("admin", "federation", "*"),
+      );
+      break;
+    case "federation.member.get":
+      task = ctx.federationHub === undefined ? notAFederationHub() : audited(
+        handleFederationMemberGet(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          principal,
+        ),
+        auditOpts("admin", "federation", request.payload.name),
+      );
+      break;
+    case "federation.member.remove":
+      task = ctx.federationHub === undefined ? notAFederationHub() : audited(
+        confirmed(() =>
+          withSyncGate(ctx.syncGate, () =>
+            handleFederationMemberRemove(
+              socket,
+              ctx,
+              request.id,
+              request.payload,
+              principal,
+            ))
+        ),
+        auditOpts("admin", "federation", request.payload.name),
+      );
+      break;
+    case "federation.token.create":
+      task = ctx.federationHub === undefined ? notAFederationHub() : audited(
+        handleFederationTokenCreate(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          principal,
+        ),
+        auditOpts("admin", "federation", request.payload.name),
+      );
+      break;
+    case "federation.token.list":
+      task = ctx.federationHub === undefined ? notAFederationHub() : audited(
+        handleFederationTokenList(socket, ctx, request.id, principal),
+        auditOpts("admin", "federation", "*"),
+      );
+      break;
+    case "federation.token.revoke":
+      task = ctx.federationHub === undefined ? notAFederationHub() : audited(
+        handleFederationTokenRevoke(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          principal,
+        ),
+        auditOpts("admin", "federation", request.payload.name),
       );
       break;
     default: {

@@ -24,6 +24,7 @@
  */
 
 import { LOCK_TIMEOUT_ENV_VAR } from "../src/domain/datastore/datastore_config.ts";
+import { FEDERATION_GATE_VARIABLE } from "../src/domain/serve/federation_gate.ts";
 import type { FilesystemDatastoreConfig } from "../src/domain/datastore/datastore_config.ts";
 import {
   closeV3Datastores,
@@ -69,6 +70,7 @@ import { commitIn } from "./datastore_v3_litestream_helpers.ts";
 import { LOADED } from "./graph_worker.ts";
 import { resolve } from "@std/path";
 import { fullWhen } from "./leader_cannot_commit_helpers.ts";
+import type { TeamHubFacts, TeamHubNode } from "./serve_v3_team_hub_node.ts";
 
 export type TeamNodeRequest =
   | {
@@ -94,7 +96,18 @@ export type TeamNodeRequest =
       readonly windowMs: number;
       readonly release: boolean;
     };
+    /** a federation hub on this node, with the gate env passed in explicitly */
+    readonly hub?: {
+      readonly gate: string;
+      readonly name: string;
+      readonly sweepIntervalMs: number;
+    };
   }
+  /** a join token minted on this node's hub */
+  | { readonly kind: "hub-token"; readonly name: string }
+  /** the address members send /federation/v1 to on this node */
+  | { readonly kind: "hub-url" }
+  | { readonly kind: "hub-facts"; readonly names: readonly string[] }
   /** every append on this node fails as a full disk makes SQLite fail */
   | { readonly kind: "disk-full"; readonly full: boolean }
   | { readonly kind: "stepDown" }
@@ -165,6 +178,7 @@ let takes = 0;
 const nodeLocks = new Set<string>();
 let diskFull = false;
 let commitHealth: WiredLeaderCommitHealth | undefined;
+let hubNode: TeamHubNode | undefined;
 
 function nodeLock(target: LockTarget) {
   const key = lockKeyOf(target);
@@ -243,7 +257,37 @@ async function handle(request: TeamNodeRequest): Promise<unknown> {
       const role = await take();
       const repoDir = init!.repoDir;
       let address = `http://${init!.hostname}:9090`;
-      if (request.feed !== undefined) {
+      const hubOptions = request.hub;
+      if (hubOptions !== undefined) {
+        const leaderLink = new LeaderLink({
+          leader: () => leadership?.leader(),
+        });
+        link = leaderLink;
+        const { startTeamHubNode } = await import(
+          "./serve_v3_team_hub_node.ts"
+        );
+        const node = await startTeamHubNode({
+          env: (name) =>
+            name === FEDERATION_GATE_VARIABLE ? hubOptions.gate : undefined,
+          hubName: hubOptions.name,
+          repoDir,
+          config: config(),
+          leader: {
+            isFollowing: () => leadership?.role !== "leader",
+            forward: (forwarded, forwardOptions) =>
+              leaderLink.forward(forwarded, forwardOptions),
+          },
+          sweepIntervalMs: hubOptions.sweepIntervalMs,
+        });
+        hubNode = node;
+        http = Deno.serve(
+          { port: 0, hostname: "127.0.0.1", onListen: () => {} },
+          async (req, info) =>
+            await node.handle(req, info.remoteAddr.hostname) ??
+              new Response("Not found", { status: 404 }),
+        );
+        address = `http://127.0.0.1:${(http.addr as Deno.NetAddr).port}`;
+      } else if (request.feed !== undefined) {
         const stepping = new LeaderSteppingDown();
         steppingDown = stepping;
         // a peer socket carries only the commit feed, which reads no more
@@ -332,6 +376,7 @@ async function handle(request: TeamNodeRequest): Promise<unknown> {
         onLead: async () => {
           events.push("lead");
           if (role !== "writer") await leases.adopt();
+          hubNode?.lead();
         },
         onLostLead: () => {
           events.push("lost");
@@ -482,7 +527,14 @@ async function handle(request: TeamNodeRequest): Promise<unknown> {
       return undefined;
     case "lease-records":
       return await v3ServeControlPlaneAt(config()).list("leases/");
+    case "hub-token":
+      return await hubNode!.createToken(request.name);
+    case "hub-url":
+      return `http://127.0.0.1:${(http!.addr as Deno.NetAddr).port}`;
+    case "hub-facts":
+      return await hubNode!.facts(request.names) satisfies TeamHubFacts;
     case "close":
+      await hubNode?.close();
       commitHealth?.stop();
       await commitHealth?.steppedDown();
       // a follower takes this close as the leader's end of its feed

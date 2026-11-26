@@ -167,7 +167,9 @@ function requestLabel(schema: z.ZodType): string {
 
 Deno.test("every typed-value record a client or worker can send is a boundedRecord", () => {
   const ingress: [string, unknown][] = [
-    ...serverRequestSchemas().map((s): [string, unknown] => [
+    ...serverRequestSchemas({ federationHub: true }).map((
+      s,
+    ): [string, unknown] => [
       requestLabel(s),
       s,
     ]),

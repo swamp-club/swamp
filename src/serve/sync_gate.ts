@@ -97,6 +97,7 @@ export const SYNC_GATED_REQUESTS: ReadonlySet<string> = new Set([
   "data.prune",
   "data.rename",
   "extension.install",
+  "federation.member.remove",
   "extension.pull",
   "extension.rm",
   "extension.update",

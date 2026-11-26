@@ -47,7 +47,7 @@ const ExtensionSchema = z.object({
 }).strict();
 
 // adding a field is an architecture decision: the allowlist is the contract
-const FingerprintSchema = z.object({
+export const FingerprintSchema = z.object({
   swampVersion: z.string(),
   platform: z.string(),
   arch: z.string(),

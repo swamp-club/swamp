@@ -669,7 +669,7 @@ const CASES: Record<string, Case> = {
 };
 
 Deno.test("serve id-deny conformance: every request naming a resource has a case or an owning-issue exemption", () => {
-  const named = [...serverRequestPayloadFields()]
+  const named = [...serverRequestPayloadFields({ federationHub: true })]
     .filter(([, fields]) =>
       fields.some((field) => IDENTIFIER_FIELD.test(field))
     )
@@ -685,7 +685,8 @@ Deno.test("serve id-deny conformance: every request naming a resource has a case
   );
   const stale = [...Object.keys(CASES), ...Object.keys(EXEMPT)]
     .filter((type) => !named.includes(type));
-  const knownTypes = [...serverRequestPayloadFields()].map(([type]) => type);
+  const knownTypes = [...serverRequestPayloadFields({ federationHub: true })]
+    .map(([type]) => type);
   assertEquals(
     Object.keys(IGNORES_IDENTIFIER).filter((type) =>
       !knownTypes.includes(type)

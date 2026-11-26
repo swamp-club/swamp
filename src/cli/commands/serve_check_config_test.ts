@@ -79,3 +79,35 @@ Deno.test("checkConfigCommand: with the gate on, JSON reports the config version
     2,
   );
 });
+
+const RESTRICTED = "auth:\n  restricted-commands:\n" +
+  "    - federation.token.create\n    - federation.made.up\n";
+
+function restrictionEntries(data: Record<string, unknown>): string[] {
+  return ((data.restrictionWarnings ?? []) as Array<{ entry: string }>)
+    .map((warning) => warning.entry);
+}
+
+Deno.test("checkConfigCommand: with the gate off, a federation request type in restricted-commands warns as an unknown type does", async () => {
+  const plain = await checkConfigJson(RESTRICTED, undefined);
+  assertEquals(restrictionEntries(plain), [
+    "federation.token.create",
+    "federation.made.up",
+  ]);
+  const hubYaml = "version: 2\nfederation:\n  role: hub\n" + RESTRICTED;
+  assertEquals(
+    (await checkConfigJson(hubYaml, undefined)).restrictionWarnings,
+    plain.restrictionWarnings,
+  );
+});
+
+Deno.test("checkConfigCommand: a gated version 2 hub knows the federation request types; any other serve does not", async () => {
+  const hubYaml = "version: 2\nfederation:\n  role: hub\n" + RESTRICTED;
+  assertEquals(restrictionEntries(await checkConfigJson(hubYaml, "1")), [
+    "federation.made.up",
+  ]);
+  assertEquals(restrictionEntries(await checkConfigJson(RESTRICTED, "1")), [
+    "federation.token.create",
+    "federation.made.up",
+  ]);
+});
