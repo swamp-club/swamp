@@ -423,7 +423,6 @@ Deno.test({
   },
 });
 
-/** the Deno.lstat calls on paths while fn runs */
 async function countingLstats(
   paths: ReadonlySet<string>,
   fn: () => Promise<unknown>,

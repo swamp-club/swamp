@@ -2228,7 +2228,6 @@ for (const net of [true, false]) {
   );
 }
 
-/** a storage whose chunk reads, once holding, wait until released */
 class GatedStorage extends MemoryStorage {
   readonly gate = Promise.withResolvers<void>();
   holding = false;
@@ -2243,7 +2242,6 @@ class GatedStorage extends MemoryStorage {
   }
 }
 
-/** the paths Deno.lstat is asked about while fn runs */
 async function withLstatsSeen<T>(
   fn: (seen: ReadonlySet<string>) => Promise<T>,
 ): Promise<T> {
@@ -2355,7 +2353,6 @@ Deno.test("SqliteReadModel.catchUp: a put over a file an earlier put of the page
   });
 });
 
-/** the Deno.realPath calls while fn runs */
 async function countingRealPaths(fn: () => Promise<unknown>): Promise<number> {
   const deno = Deno as { realPath: typeof Deno.realPath };
   const original = deno.realPath;
@@ -4192,7 +4189,6 @@ Deno.test("SqliteReadModel.catchUp: a full pool takes the next write as soon as 
   });
 });
 
-/** records whether each write asked to be told what it wrote */
 class NotingWriteBatch extends DurableWriteBatch {
   readonly noted = new Map<string, boolean>();
 
