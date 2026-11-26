@@ -521,7 +521,7 @@ Deno.test("ReadModelState: a schema-4 database migrates to the unreadable-record
     } finally {
       reopened.close();
     }
-    assertEquals(READ_MODEL_STATE_SCHEMA_VERSION, 11);
+    assertEquals(READ_MODEL_STATE_SCHEMA_VERSION, 12);
   });
 });
 
@@ -672,7 +672,7 @@ Deno.test("ReadModelState: a schema-6 state migrates to the access columns, its 
     rolled.exec("PRAGMA user_version=6");
     rolled.close();
     ReadModelState.open(path).close();
-    assertEquals(READ_MODEL_STATE_SCHEMA_VERSION, 11);
+    assertEquals(READ_MODEL_STATE_SCHEMA_VERSION, 12);
   });
 });
 
@@ -704,7 +704,7 @@ Deno.test("ReadModelState: a schema-9 state migrates through the version gate (1
         (after.prepare("PRAGMA user_version").get() as {
           user_version: number;
         }).user_version,
-        11,
+        12,
       );
       assertEquals(
         after.prepare(
@@ -716,5 +716,152 @@ Deno.test("ReadModelState: a schema-9 state migrates through the version gate (1
     } finally {
       after.close();
     }
+  });
+});
+
+Deno.test("ReadModelState: a schema-11 state migrates to the owed files (12), keeping its progress and done files (swamp-club#5108)", async () => {
+  await withState((state, path) => {
+    state.recordApplied(applied({
+      cursor: 7,
+      records: new Map([["data/a", { sha256: A }]]),
+      files: new Map([["data/a", { owner: "p", mark: 1, present: true }]]),
+    }));
+    const cursor = state.cursor();
+    state.close();
+    const db = new DatabaseSync(path);
+    db.exec(
+      "DROP INDEX owed_files_owner; DROP TABLE owed_files; PRAGMA user_version=11",
+    );
+    db.close();
+    const reopened = ReadModelState.open(path);
+    try {
+      assertEquals(reopened.cursor(), cursor);
+      assertEquals(reopened.owedCount(), 0);
+      reopened.oweFiles([{
+        namespace: "",
+        recordKey: "data/a",
+        owner: "p",
+        mark: 1,
+        content: { inline: "YQ==" },
+      }]);
+      assertEquals(reopened.owedCount(), 1);
+    } finally {
+      reopened.close();
+    }
+    const after = new DatabaseSync(path);
+    try {
+      assertEquals(
+        (after.prepare("PRAGMA user_version").get() as {
+          user_version: number;
+        }).user_version,
+        12,
+      );
+    } finally {
+      after.close();
+    }
+  });
+});
+
+Deno.test("ReadModelState: owed files round-trip their content and access, page by partition, and a commit deciding a key forgets it in its own transaction (swamp-club#5108)", async () => {
+  await withState((state) => {
+    state.oweFiles([
+      {
+        namespace: "",
+        recordKey: "data/a",
+        owner: "p",
+        mark: 1,
+        content: { inline: "YQ==", access: "executable" },
+      },
+      {
+        namespace: "",
+        recordKey: "data/b",
+        owner: "p",
+        mark: 2,
+        content: { blob: MULTI },
+      },
+      {
+        namespace: "",
+        recordKey: "data/c",
+        owner: "q",
+        mark: 3,
+        content: { inline: "Yw==" },
+      },
+    ]);
+    assertEquals(state.owedCount(), 3);
+    assertEquals(state.owedNamespaces(), [""]);
+    const a = state.owedOf("", "data/a");
+    assertEquals(a?.content, { inline: "YQ==", access: "executable" });
+    const b = state.owedOf("", "data/b")?.content;
+    assertEquals(
+      b !== undefined && "blob" in b ? b.blob.toJSON() : undefined,
+      MULTI.toJSON(),
+    );
+    assertEquals(
+      state.owedPage(10, { namespace: "", partition: "p" }).map((f) =>
+        f.recordKey
+      ),
+      ["data/a", "data/b"],
+    );
+    assertEquals(state.owedPage(1).map((f) => f.recordKey), ["data/a"]);
+
+    state.recordApplied(applied({
+      seq: 1,
+      records: new Map([["data/a", { sha256: A }]]),
+      files: new Map([["data/a", { owner: "p", mark: 9, present: true }]]),
+      decided: new Set(["data/a"]),
+    }));
+    state.recordApplied(applied({
+      partition: "q",
+      seq: 1,
+      records: new Map([["data/c", null]]),
+      decided: new Set(["data/c"]),
+    }));
+    assertEquals(state.owedOf("", "data/a"), undefined);
+    assertEquals(state.owedOf("", "data/c"), undefined);
+    assertEquals(state.owedCount(), 1);
+
+    state.clearOwed([{ namespace: "", record_key: "data/b" }], {
+      unsynced: {
+        keys: [{ namespace: "", record_key: "data/b" }],
+        boot: "boot-1",
+      },
+    });
+    assertEquals(state.owedCount(), 0);
+    assertEquals(state.unsyncedBoot(), "boot-1");
+    assertEquals(state.unsyncedKeys(10), [
+      { namespace: "", record_key: "data/b" },
+    ]);
+  });
+});
+
+Deno.test("ReadModelState: a reset keeps owed files, and a finished load keeps those it shows as owed and forgets the rest (swamp-club#5108)", async () => {
+  await withState((state) => {
+    const owe = (recordKey: string, mark: number) => ({
+      namespace: "",
+      recordKey,
+      owner: "p",
+      mark,
+      content: { inline: "YQ==" },
+    });
+    state.oweFiles([owe("data/a", 1), owe("data/b", 1), owe("data/c", 1)]);
+    state.reset(3);
+    assertEquals(state.owedCount(), 3);
+    state.beginLoad();
+    state.stageBase([
+      {
+        kind: "file",
+        namespace: "",
+        key: "data/a",
+        ownership: { owner: "p", mark: 1, present: true },
+      },
+      {
+        kind: "file",
+        namespace: "",
+        key: "data/b",
+        ownership: { owner: "p", mark: 2, present: true },
+      },
+    ]);
+    state.finishLoad(5);
+    assertEquals(state.owedPage(10).map((f) => f.recordKey), ["data/a"]);
   });
 });

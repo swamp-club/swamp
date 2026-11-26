@@ -249,10 +249,6 @@ async function copyChunkFiles(repoDir: string): Promise<number> {
   return count;
 }
 
-function parentIdOf(span: ReadableSpan): string {
-  return span.parentSpanId ?? "";
-}
-
 /** Member-to-serve requests, `METHOD route`, in the order they were sent. */
 function requestsOf(spans: readonly ReadableSpan[]): string[] {
   return spans
@@ -901,7 +897,7 @@ Deno.test({
 
 Deno.test({
   name:
-    "team-mode reads: a catch-up fetches another member's new chunks together, not one at a time",
+    "team-mode reads: a lazy catch-up of another member's new data owes its content instead of fetching it, and a read hydrates it",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
@@ -934,7 +930,6 @@ Deno.test({
         }
       });
       let fetches: ReadableSpan[] = [];
-      const parentNames = new Map<string, string>();
       await withCapturedSpans(async (spans) => {
         await runCommand(
           member.scratch,
@@ -951,19 +946,9 @@ Deno.test({
           (span.attributes["http.route"] === "chunks/{sha256}" ||
             span.attributes["http.route"] === "chunks/batch")
         );
-        for (const span of spans) {
-          parentNames.set(span.spanContext().spanId, span.name);
-        }
       });
-      // all four fetched ahead in one batch read, before the page applied any
-      assertEquals(
-        fetches.map((span) => span.attributes["http.route"]),
-        ["chunks/batch"],
-      );
-      assertEquals(
-        fetches.map((span) => parentNames.get(parentIdOf(span))),
-        ["swamp.datastore.v3.readmodel.prefetch"],
-      );
+      // the catch-up owes the four contents: nothing is fetched until a read
+      assertEquals(fetches, []);
       assertEquals(await copyChunkFiles(member.client.repoDir), 0);
       const paths = await readCommand(
         member.scratch,
@@ -975,6 +960,7 @@ Deno.test({
             WRITER,
           );
           assert(writer !== null);
+          // read through swamp, as the lazy contract asks: each read hydrates
           const found: [string, string][] = [];
           for (let i = 0; i < 4; i++) {
             const data = await repos.unifiedDataRepo.findByName(
@@ -983,24 +969,20 @@ Deno.test({
               `big-${i}`,
             );
             assert(data !== null);
-            found.push([
-              `${i}`,
-              repos.unifiedDataRepo.getContentPath(
-                member.serve.modelType,
-                writer.id,
-                `big-${i}`,
-                data.version,
-              ),
-            ]);
+            const content = await repos.unifiedDataRepo.getContent(
+              member.serve.modelType,
+              writer.id,
+              `big-${i}`,
+              data.version,
+            );
+            assert(content !== null);
+            found.push([`${i}`, new TextDecoder().decode(content)]);
           }
           return found;
         },
       );
-      for (const [i, path] of paths) {
-        assertEquals(
-          JSON.parse(await Deno.readTextFile(path)),
-          { body: i.repeat(CHUNKED_BYTES) },
-        );
+      for (const [i, text] of paths) {
+        assertEquals(JSON.parse(text), { body: i.repeat(CHUNKED_BYTES) });
       }
     });
   },

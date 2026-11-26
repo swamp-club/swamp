@@ -431,7 +431,6 @@ Deno.test("serveUpstreamAppliesTo: excludes serve, worker and the storage-bindin
   assertEquals(serveUpstreamAppliesTo(["worker", "connect"]), false);
   assertEquals(serveUpstreamAppliesTo(["datastore"]), false);
   assertEquals(serveUpstreamAppliesTo(["datastore", "setup"]), false);
-  assertEquals(serveUpstreamAppliesTo(["datastore", "sync"]), false);
   assertEquals(serveUpstreamAppliesTo(["datastore", "gc"]), false);
   assertEquals(serveUpstreamAppliesTo(["doctor", "datastores"]), false);
   assertEquals(serveUpstreamAppliesTo(["repo", "upgrade"]), false);
@@ -443,6 +442,7 @@ Deno.test("serveUpstreamAppliesTo: applies to ordinary repository commands", () 
   assertEquals(serveUpstreamAppliesTo(["behaviour", "method"]), true);
   assertEquals(serveUpstreamAppliesTo(["workflow", "run"]), true);
   assertEquals(serveUpstreamAppliesTo(["datastore", "type", "search"]), true);
+  assertEquals(serveUpstreamAppliesTo(["datastore", "sync"]), true);
   assertEquals(serveUpstreamAppliesTo(["doctor", "workflows"]), true);
 });
 

@@ -30,6 +30,7 @@ import {
 } from "../src/infrastructure/datastore_v3/serve_catch_up.ts";
 import { ServeUpstreamDivergedError } from "../src/infrastructure/datastore_v3/serve_upstream_errors.ts";
 import { swampPath } from "../src/infrastructure/persistence/paths.ts";
+import { drainAllV3Owed } from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
 import { datastoreRecords } from "./usecase_v3_fixtures.ts";
 import type { GrantSpec } from "./serve_upstream_server.ts";
 import {
@@ -78,6 +79,20 @@ async function saveVersions(
         repos.unifiedDataRepo.save(type, modelId, dataOf(name, id), json(i)),
     );
   }
+}
+
+/** a lazy checkout owes content until it is read: hydrate it all */
+async function hydrateAll(
+  scratch: Scratch,
+  client: Client,
+  env: Record<string, string | undefined>,
+): Promise<void> {
+  await readCommand(
+    scratch,
+    client,
+    env,
+    () => drainAllV3Owed(AbortSignal.timeout(60_000)),
+  );
 }
 
 async function dataRecords(repoDir: string): Promise<Map<string, string>> {
@@ -144,6 +159,8 @@ Deno.test({
       };
       assertEquals(await read(a), expected);
       assertEquals(await read(b), expected);
+      await hydrateAll(scratch, b, env);
+      await hydrateAll(scratch, a, env);
       assertEquals(await dataRecords(b.repoDir), await dataRecords(a.repoDir));
 
       const root = serveUpstreamLocalRoot(b.repoDir, serve.origin, "");
@@ -199,6 +216,8 @@ Deno.test({
       await saveVersions(scratch, a, env, type, web, "vpc", VPC_ID, 4, 4);
 
       assertEquals(await latest(c), { version: 4, content: "4" });
+      await hydrateAll(scratch, c, env);
+      await hydrateAll(scratch, a, env);
       assertEquals(await dataRecords(c.repoDir), await dataRecords(a.repoDir));
       await saveVersions(scratch, c, env, type, web, "vpc", VPC_ID, 5, 5);
       assertEquals(await latest(a), { version: 5, content: "5" });

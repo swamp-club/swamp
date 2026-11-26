@@ -372,6 +372,13 @@ export class CachedServeStorage extends FileSystemStorage
           failingInARow++;
           continue;
         }
+        if (result.chunks.size === 0 && result.deferred.length > 0) {
+          // a serve that only defers would loop: read these one at a time
+          for (const hash of result.deferred) singly.push(hash);
+          for (const hash of result.undecided) singly.push(hash);
+          failingInARow++;
+          continue;
+        }
         failingInARow = 0;
         for (const [sha256, bytes] of result.chunks) {
           try {

@@ -120,6 +120,7 @@ import {
   type LiveRecordWriter,
   type LoadKey,
   type LoadResume,
+  type OwedFile,
   ReadModelState,
   type RecordContent,
   REPLAY_PENDING,
@@ -164,6 +165,12 @@ const RECOVERY_SLICE_MS = 50;
 
 const PRESENT_KEYS_PAGE = 1_000;
 
+/** data/<type>/<id>/<name>/<version>/raw; a type may hold a slash */
+const DATA_CONTENT_KEY = /^data\/.+\/[0-9]+\/raw$/;
+
+/** owed files a hydration writes per lock section */
+const OWED_PAGE = 256;
+
 // a page of large commits commits its state in parts this size, so no one
 // transaction's commit writes the whole page
 const PAGE_OPS = 5_000;
@@ -201,6 +208,8 @@ const CLOSE_WAIT_MS = 500;
 
 /** inline writes of a catch-up's page that run at once */
 export const POOLED_WRITES = 16;
+/** owed files fetched and written together before a hydrate checks its budget */
+const HYDRATE_GROUP = 16;
 const POOLED_BLOB_BYTES = 256 * 1024;
 
 interface PooledWrite {
@@ -366,6 +375,12 @@ export interface SqliteReadModelOptions {
   readonly targetedShare?: number;
   /** TARGETED_COMMITS_CEILING by default */
   readonly targetedCommitsCeiling?: number;
+  /**
+   * a base load and a catch-up record a model partition's data content files
+   * as owed rather than writing them; they are written when hydrated. Off by
+   * default
+   */
+  readonly lazyModelFiles?: boolean;
 }
 
 interface ChangeSource {
@@ -559,8 +574,8 @@ export class SqliteReadModel implements ReadModel {
   readonly #clock: () => Date;
   readonly #recordsWrittenFiles: boolean;
   /**
-   * written-file records a base load holds back to land in one transaction,
-   * instead of one per file
+   * written-file records a base load or hydrate holds back to land in one
+   * transaction, instead of one per file
    */
   #writtenBuffer: WrittenFile[] | undefined;
   readonly #rename: (from: string, to: string) => Promise<void>;
@@ -581,6 +596,7 @@ export class SqliteReadModel implements ReadModel {
   #othersWork: readonly { scope: TouchedScope; commits: string }[] = [];
   readonly #targetedShare: number;
   readonly #targetedCommitsCeiling: number;
+  readonly #lazyModelFiles: boolean;
   /**
    * set while recover replays: it puts back every file, so no commit is taken
    * for work the files hold; a root waiting on the recovery counts as open
@@ -696,6 +712,7 @@ export class SqliteReadModel implements ReadModel {
     this.#targetedShare = options.targetedShare ?? MAX_TARGETED_SHARE;
     this.#targetedCommitsCeiling = options.targetedCommitsCeiling ??
       TARGETED_COMMITS_CEILING;
+    this.#lazyModelFiles = options.lazyModelFiles === true;
   }
 
   static open(options: SqliteReadModelOptions): SqliteReadModel {
@@ -1514,6 +1531,8 @@ export class SqliteReadModel implements ReadModel {
       ) {
         continue;
       }
+      // absent by design until hydrated, never missing
+      if (this.#owedFile(namespace, key) !== undefined) continue;
       // a filesystem that folds spellings lists the file under another one
       try {
         await Deno.lstat(join(root, ...segments));
@@ -1940,6 +1959,17 @@ export class SqliteReadModel implements ReadModel {
         };
       },
     );
+  }
+
+  /** the owed row only while the state still shows the put it was owed for */
+  #owedFile(namespace: string, key: string): OwedFile | undefined {
+    const owed = this.#state.owedOf(namespace, key);
+    if (owed === undefined) return undefined;
+    const file = this.#state.fileOwnership(namespace, key);
+    return file?.present === true && file.owner === owed.owner &&
+        file.mark === owed.mark
+      ? owed
+      : undefined;
   }
 
   /** a refused or unprojected key counts as occupied: it is never netted */
@@ -2558,6 +2588,241 @@ export class SqliteReadModel implements ReadModel {
     );
   }
 
+  owedCount(): number {
+    return this.#state.owedCount();
+  }
+
+  /**
+   * writes the owed file at absPath when the state still shows the put it was
+   * owed for; "not_owed" means the path is not owed, or a commit or another
+   * process wrote it since. Throws when the section cannot be taken
+   */
+  async hydrateOwedPath(
+    absPath: string,
+    signal: AbortSignal,
+  ): Promise<"hydrated" | "not_owed"> {
+    const namespaces = await this.#afterPage(() =>
+      this.#state.owedNamespaces()
+    );
+    if (namespaces.length === 0) return "not_owed";
+    const candidates = await this.#keysAt(absPath, namespaces);
+    const found = await this.#afterPage(() =>
+      candidates.find((c) => this.#state.owedOf(c.namespace, c.key))
+    );
+    if (found === undefined) return "not_owed";
+    return await this.#exclusive(async () => {
+      await this.#completeBeforeHydrating(signal);
+      const owed = this.#state.owedOf(found.namespace, found.key);
+      if (owed === undefined) return "not_owed";
+      const { hydrated } = await this.#hydrate([owed], signal);
+      return hydrated > 0 ? "hydrated" : "not_owed";
+    }, signal);
+  }
+
+  /** every owed file of the partition; the number written */
+  hydrateOwedPartition(
+    namespace: string,
+    partition: string,
+    signal: AbortSignal,
+  ): Promise<number> {
+    if (this.#state.owedCount() === 0) return Promise.resolve(0);
+    return this.#exclusive(async () => {
+      await this.#completeBeforeHydrating(signal);
+      let written = 0;
+      for (;;) {
+        signal.throwIfAborted();
+        const page = this.#state.owedPage(OWED_PAGE, { namespace, partition });
+        if (page.length === 0) return written;
+        written += (await this.#hydrate(page, signal)).hydrated;
+      }
+    }, signal);
+  }
+
+  /**
+   * writes owed files until budgetMs has passed, a page per section so other
+   * commands are not held back; `left` is what is still owed
+   */
+  async drainOwed(
+    budgetMs: number,
+    signal: AbortSignal,
+  ): Promise<{ hydrated: number; left: number }> {
+    const until = this.#clock().getTime() + budgetMs;
+    let hydrated = 0;
+    while (this.#clock().getTime() < until && this.#state.owedCount() > 0) {
+      signal.throwIfAborted();
+      const { written, settled } = await this.#exclusive(async () => {
+        await this.#completeBeforeHydrating(signal);
+        const page = this.#state.owedPage(OWED_PAGE);
+        if (page.length === 0) return { written: 0, settled: 0 };
+        const result = await this.#hydrate(page, signal, until);
+        return { written: result.hydrated, settled: result.settled };
+      }, signal);
+      hydrated += written;
+      if (settled === 0) break;
+    }
+    return { hydrated, left: this.#state.owedCount() };
+  }
+
+  async #prefetchOwed(
+    rows: readonly OwedFile[],
+    signal: AbortSignal,
+  ): Promise<void> {
+    const byNamespace = new Map<string, BlobRef[]>();
+    for (const row of rows) {
+      if (!("blob" in row.content)) continue;
+      const refs = byNamespace.get(row.namespace) ?? [];
+      refs.push(row.content.blob);
+      byNamespace.set(row.namespace, refs);
+    }
+    for (const [namespace, refs] of byNamespace) {
+      await this.#chunkStore.prefetch(namespaceOf(namespace), refs, signal);
+    }
+  }
+
+  /** a reset leaves no ownership to judge an owed row by until the catch-up */
+  async #completeBeforeHydrating(signal: AbortSignal): Promise<void> {
+    if (this.#state.isComplete()) return;
+    await this.#counted("swamp.datastore.v3.readmodel.catchup", async () => {
+      await this.#retryAtRiskCopies(signal);
+      return await this.#catchUpFeed(signal, { net: true });
+    });
+  }
+
+  /** every (namespace, key) whose file absPath could be, as written or resolved */
+  async #keysAt(
+    absPath: string,
+    namespaces: readonly string[],
+  ): Promise<{ readonly namespace: string; readonly key: string }[]> {
+    const keyUnder = (root: string, path: string): string | undefined => {
+      if (path === root || !within(path, root)) return undefined;
+      return relative(root, path).split(SEPARATOR).join("/");
+    };
+    const found: { namespace: string; key: string }[] = [];
+    let resolved: string | undefined;
+    for (const namespace of namespaces) {
+      const root = this.#cacheRoot(namespace);
+      let key = keyUnder(root, absPath);
+      if (key === undefined) {
+        resolved ??= await resolveRealPath(absPath);
+        key = keyUnder(await resolveRealPath(root), resolved);
+      }
+      if (key !== undefined) found.push({ namespace, key });
+    }
+    return found;
+  }
+
+  /**
+   * writes each row the state still shows, then forgets them all: a stale row
+   * was replaced by a commit, which wrote or removed its file. Rows are tried
+   * until `until` on the clock; settled counts those forgotten
+   */
+  async #hydrate(
+    rows: readonly OwedFile[],
+    signal: AbortSignal,
+    until = Number.POSITIVE_INFINITY,
+  ): Promise<{ hydrated: number; settled: number }> {
+    return await withSpan(
+      "swamp.datastore.v3.readmodel.hydrate",
+      {},
+      async (span) => {
+        const batch = this.#writeBatch();
+        const written: LoadKey[] = [];
+        const settled: LoadKey[] = [];
+        const unreadable: StoredUnreadableRecord[] = [];
+        const others = await this.#othersJournaled();
+        try {
+          // a few at a time, each group's chunks fetched just before it is
+          // written, so the budget bounds the fetching and the first group
+          // always lands: every pass makes progress
+          for (let i = 0; i < rows.length; i += HYDRATE_GROUP) {
+            if (i > 0 && this.#clock().getTime() >= until) break;
+            const group = rows.slice(i, i + HYDRATE_GROUP);
+            if (group.length > 1) await this.#prefetchOwed(group, signal);
+            for (const row of group) {
+              signal.throwIfAborted();
+              const key = {
+                namespace: row.namespace,
+                record_key: row.recordKey,
+              };
+              settled.push(key);
+              if (this.#owedFile(row.namespace, row.recordKey) === undefined) {
+                continue;
+              }
+              // another live writer's file stands there: its commit or its
+              // recovery decides it, as a catch-up leaves it
+              if (
+                others.some(({ scope }) =>
+                  scope.namespace === row.namespace &&
+                  scopeCovers(scope.scope, row.recordKey)
+                ) && !await this.#nothingAt(row.namespace, row.recordKey)
+              ) {
+                continue;
+              }
+              const path = await this.#target(
+                row.namespace,
+                RecordKey.create(row.recordKey),
+                true,
+                "an owed file",
+              );
+              if (path === undefined) continue;
+              const source = { partition: row.owner, seq: 0 };
+              try {
+                await this.#writeContent(
+                  row.namespace,
+                  row.recordKey,
+                  path,
+                  row.content,
+                  signal,
+                  batch,
+                  source,
+                );
+                written.push(key);
+              } catch (error) {
+                const content = row.content;
+                if (
+                  !("blob" in content) || !isChunkError(error) || signal.aborted
+                ) {
+                  throw error;
+                }
+                unreadable.push(
+                  await this.#unreadable(
+                    row.namespace,
+                    row.recordKey,
+                    withAccess(
+                      { ...source, position: row.mark },
+                      content.access,
+                    ),
+                    content.blob,
+                    error,
+                    signal,
+                  ),
+                );
+              }
+            }
+          }
+          await batch.barrier();
+          await this.#releaseFetched(signal);
+        } finally {
+          batch.discard();
+        }
+        // unsynced like a catch-up's files, so the reboot check covers them
+        this.#state.clearOwed(settled, {
+          unreadable,
+          ...(batch.syncs || this.#boot === undefined
+            ? {}
+            : { unsynced: { keys: written, boot: this.#boot } }),
+        });
+        for (const record of unreadable) warnUnreadable(record);
+        span.setAttributes({
+          "swamp.datastore.v3.readmodel.hydrate.written": written.length,
+          "swamp.datastore.v3.readmodel.hydrate.settled": settled.length,
+          "swamp.datastore.v3.readmodel.hydrate.unreadable": unreadable.length,
+        });
+        return { hydrated: written.length, settled: settled.length };
+      },
+    );
+  }
+
   #exclusive<T>(
     body: () => Promise<T>,
     signal?: AbortSignal,
@@ -2777,6 +3042,8 @@ export class SqliteReadModel implements ReadModel {
   ): Promise<boolean> {
     const batch = new DurableWriteBatch();
     const commits = new Map<number, Commit | undefined>();
+    // owed files found on disk, which hold what the state says once restored
+    const hydrated: LoadKey[] = [];
     try {
       for (const file of files) {
         signal.throwIfAborted();
@@ -2784,6 +3051,14 @@ export class SqliteReadModel implements ReadModel {
         // every commit again: older state may list one, and its file is the
         // checkout's own now
         if (this.#unprojected(file.namespace, file.record_key)) continue;
+        if (
+          file.expect === "present" &&
+          this.#owedFile(file.namespace, file.record_key) !== undefined
+        ) {
+          // absent by design until hydrated, never torn
+          if (await this.#nothingAt(file.namespace, file.record_key)) continue;
+          hydrated.push(file);
+        }
         if (file.expect === "unknown") {
           logger
             .warn`The read model's state has no live record for ${file.record_key}; applying every commit again`;
@@ -2858,6 +3133,7 @@ export class SqliteReadModel implements ReadModel {
         );
       }
       await batch.barrier();
+      this.#state.clearOwed(hydrated);
     } catch (error) {
       if (signal.aborted) throw signal.reason;
       if (error instanceof CheckoutCopyAtRiskError) throw error;
@@ -2946,7 +3222,8 @@ export class SqliteReadModel implements ReadModel {
       const owner = this.#state.loadFile(namespace, record_key);
       if (
         owner !== undefined &&
-        this.#net?.skipsWrite(namespace, record_key, owner.mark) === true
+        (this.#net?.skipsWrite(namespace, record_key, owner.mark) === true ||
+          this.#owesLazily(owner.owner, record_key))
       ) {
         continue;
       }
@@ -3010,6 +3287,7 @@ export class SqliteReadModel implements ReadModel {
         if (this.#net?.skipsWrite(commit.namespace, key, change.cursor)) {
           continue;
         }
+        if (this.#owesLazily(commit.partition.toString(), key)) continue;
         const refs = byNamespace.get(commit.namespace) ?? [];
         refs.push(put.content.blob);
         byNamespace.set(commit.namespace, refs);
@@ -3279,6 +3557,7 @@ export class SqliteReadModel implements ReadModel {
       const touched = new Set<string>();
       const touchedFolded = new FoldedKeys();
       const unreadable = new Map<string, StoredUnreadableRecord>();
+      const owed: OwedFile[] = [];
       const isConfig = commit.partition.kind === "config";
       const recordsBases = isConfig && this.#writerInstance !== undefined &&
         commit.writer.instance !== this.#writerInstance;
@@ -3311,6 +3590,7 @@ export class SqliteReadModel implements ReadModel {
             touchedFolded,
             unreadable,
             ownWork || this.#othersWrite(namespace, key, commit),
+            owed,
           );
         } finally {
           this.#rewritten = undefined;
@@ -3367,11 +3647,16 @@ export class SqliteReadModel implements ReadModel {
           records,
           versions: projection.versions,
           files,
-          unsynced: this.#boot === undefined
-            ? undefined
-            : { keys: touched, boot: this.#boot },
+          // an owed file was not written, so it has nothing to sync
+          unsynced: this.#boot === undefined ? undefined : {
+            keys: owed.length === 0 ? touched : touched.difference(
+              new Set(owed.map((file) => file.recordKey)),
+            ),
+            boot: this.#boot,
+          },
           decided: touched,
           unreadable,
+          owed,
         }));
       for (const record of unreadable.values()) warnUnreadable(record);
       return true;
@@ -3406,6 +3691,7 @@ export class SqliteReadModel implements ReadModel {
     touchedFolded: FoldedKeys,
     unreadable: Map<string, StoredUnreadableRecord>,
     ownWork: boolean,
+    owed: OwedFile[],
   ): Promise<FileOwnership | undefined> {
     const key = change.key.toString();
     const from = `commit ${commit.seq} of ${commit.partition.toString()}`;
@@ -3498,6 +3784,20 @@ export class SqliteReadModel implements ReadModel {
         commit.seq,
         legacyBlobDetail(key, blob.legacyKey.toString()),
       );
+    }
+    // only a path holding nothing is owed, so a file on disk is never stale
+    if (target.existing === undefined && this.#owesLazily(owner, key)) {
+      this.#paths.takeAbsent(path);
+      this.#paths.takeExisting(path);
+      this.#stats?.bump("writes_owed");
+      owed.push({
+        namespace: commit.namespace,
+        recordKey: key,
+        owner: decision.next.owner,
+        mark: decision.next.mark,
+        content: withAccess(change.put.content, change.put.access),
+      });
+      return decision.next;
     }
     try {
       await this.#writeContent(
@@ -3795,6 +4095,20 @@ export class SqliteReadModel implements ReadModel {
   }
 
   /**
+   * only a data version's content file, the one reader that hydrates; its
+   * metadata, latest marker, outputs and every other partition are written
+   */
+  #owesLazily(owner: string, key: string): boolean {
+    if (!this.#lazyModelFiles) return false;
+    if (!DATA_CONTENT_KEY.test(key)) return false;
+    try {
+      return PartitionKey.parse(owner).identity.kind === "model";
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * each step can run again and the state moves last, so a crash anywhere
    * repeats the load; touched keys and names let a retry against a newer base
    * reconcile what an earlier attempt wrote
@@ -3945,9 +4259,14 @@ export class SqliteReadModel implements ReadModel {
     const unreadable: StoredUnreadableRecord[] = [];
     const skipped = new Set<string>();
     const done: LoadKey[] = [];
+    const owed: OwedFile[] = [];
     // a file joins the done list only once its own write has landed, pooled or
     // not, so the list never names one not yet in place
     const recordDone = (force: boolean) => {
+      if (force || owed.length >= LOAD_DONE_FLUSH) {
+        this.#state.oweFiles(owed);
+        owed.length = 0;
+      }
       const written = this.#writtenBuffer;
       if (
         written !== undefined && (force || written.length >= LOAD_DONE_FLUSH)
@@ -3975,6 +4294,10 @@ export class SqliteReadModel implements ReadModel {
         skipped,
         (key) => {
           done.push(key);
+          recordDone(false);
+        },
+        (file) => {
+          owed.push(file);
           recordDone(false);
         },
       );
@@ -4007,6 +4330,7 @@ export class SqliteReadModel implements ReadModel {
     unreadable: StoredUnreadableRecord[],
     skipped: Set<string>,
     landed: (key: LoadKey) => void,
+    owe: (file: OwedFile) => void,
   ): Promise<{ unreadable: StoredUnreadableRecord[]; skipped: Set<string> }> {
     for (const { namespace, record_key } of removals) {
       signal.throwIfAborted();
@@ -4040,18 +4364,19 @@ export class SqliteReadModel implements ReadModel {
           legacyBlobDetail(record_key, content.blob.legacyKey.toString()),
         );
       }
-      const path = await this.#target(
+      const target = await this.#targetOf(
         namespace,
         RecordKey.create(record_key),
         true,
         "the compacted base",
       );
-      if (path === undefined) {
+      if (target === undefined) {
         // A replay never records ownership of a key the guards skip; the
         // fold judged it from the key string alone, so forget it here.
         this.#state.dropLoadFile(namespace, record_key);
         continue;
       }
+      const path = target.path;
       const owner = this.#state.loadFile(namespace, record_key);
       // a later commit of the tail replaces or removes this content before
       // anything reads it: its chunks are never fetched
@@ -4064,6 +4389,24 @@ export class SqliteReadModel implements ReadModel {
         skipped.add(`${namespace}\0${record_key}`);
         this.#stats?.bump("base_writes_skipped");
         if ("blob" in content) this.#stats?.bump("base_chunked_writes_skipped");
+        continue;
+      }
+      // only a path holding nothing is owed, so a file on disk is never stale
+      if (
+        owner !== undefined && target.existing === undefined &&
+        this.#owesLazily(owner.owner, record_key)
+      ) {
+        this.#paths.takeAbsent(path);
+        this.#paths.takeExisting(path);
+        skipped.add(`${namespace}\0${record_key}`);
+        owe({
+          namespace,
+          recordKey: record_key,
+          owner: owner.owner,
+          mark: owner.mark,
+          content,
+        });
+        this.#stats?.bump("base_writes_owed");
         continue;
       }
       const source = { partition: owner?.owner ?? "", seq: 0 };

@@ -158,8 +158,9 @@ export const SERVE_UPSTREAM_COMMANDS: Readonly<
         reason: "creates or rebinds the datastore itself",
       },
       sync: {
-        applies: false,
-        reason: "pulls and pushes against the storage explicitly",
+        applies: true,
+        reason:
+          "a format 3 datastore never syncs; --hydrate writes the files this checkout's copy of serve owes",
       },
       lock: {
         applies: true,

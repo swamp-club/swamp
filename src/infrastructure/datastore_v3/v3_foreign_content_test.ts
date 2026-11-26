@@ -21,6 +21,8 @@ import { assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import { UserError } from "../../domain/errors.ts";
 import { swampPath } from "../persistence/paths.ts";
+import { v3OwedFileHook } from "./lazy_hydration.ts";
+import { fakeLazyHydration } from "./lazy_hydration_test_helpers.ts";
 import { v3ForeignContentFetcher } from "./v3_foreign_content.ts";
 
 const KEY = "data/test/model/m-1/state/1/raw";
@@ -113,5 +115,36 @@ Deno.test("v3ForeignContentFetcher: a refused namespace or key never reaches the
       "a key the read model never materialises",
     );
     assertEquals(asked, 0);
+  });
+});
+
+Deno.test("v3ForeignContentFetcher: a file a lazy checkout owes is hydrated before it is read, and a present one is never asked for", async () => {
+  await withCheckout(async (repoDir) => {
+    const owedPath = join(swampPath(repoDir, "beta"), ...KEY.split("/"));
+    const lazy = fakeLazyHydration({
+      owedPaths: [owedPath],
+      onHydrate: async (absPath) => {
+        await Deno.mkdir(join(absPath, ".."), { recursive: true });
+        await Deno.writeTextFile(absPath, "hydrated");
+      },
+    });
+    const fetcher = v3ForeignContentFetcher(
+      repoDir,
+      { namespace: "alpha" },
+      () => Promise.resolve(undefined),
+      v3OwedFileHook(lazy),
+    );
+
+    assertEquals(
+      new TextDecoder().decode((await fetcher("beta", KEY))!),
+      "hydrated",
+    );
+    assertEquals(lazy.calls.paths.map((p) => p.absPath), [owedPath]);
+
+    assertEquals(
+      new TextDecoder().decode((await fetcher("beta", KEY))!),
+      "hydrated",
+    );
+    assertEquals(lazy.calls.paths.length, 1);
   });
 });
