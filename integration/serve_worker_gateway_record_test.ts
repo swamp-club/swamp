@@ -617,6 +617,7 @@ Deno.test("WorkerGateway on a repo: after shutdown departures and dispose, a tok
       assertEquals(h.gateway.pendingExpiryTimers, 1);
       await h.gateway.recordShutdownDepartures();
       h.gateway.dispose();
+      assertEquals(h.gateway.pendingExpiryTimers, 0);
       assertEquals((await stored(h))?.status, "disconnected");
       const before = await versions();
       assert(before.every((version) => version !== undefined));

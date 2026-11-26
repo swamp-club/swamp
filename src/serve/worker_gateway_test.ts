@@ -4987,10 +4987,12 @@ Deno.test("WorkerGateway: a socket closing after shutdown departures opens no gr
 
 Deno.test("WorkerGateway: a token expiry due while shutdown waits on the tail records nothing", async () => {
   let pushes = 0;
-  const deadlineMs = Date.now() + 40;
+  let deadlineMs = Number.POSITIVE_INFINITY;
   const h = createHarness({
-    readTokenExpiresAt: () =>
-      Promise.resolve(new Date(deadlineMs).toISOString()),
+    readTokenExpiresAt: () => {
+      deadlineMs = Date.now() + 200;
+      return Promise.resolve(new Date(deadlineMs).toISOString());
+    },
     pushWorkerRecords: () => {
       pushes++;
       return Promise.resolve();
@@ -5000,6 +5002,7 @@ Deno.test("WorkerGateway: a token expiry due while shutdown waits on the tail re
   await enroll(workerChannel);
   await h.gateway.settled();
   const pushesBefore = pushes;
+  assertEquals(h.gateway.pendingExpiryTimers, 1);
   const gate = Promise.withResolvers<void>();
   const held = h.gateway.serializeWorkerWrites(() => gate.promise);
 
