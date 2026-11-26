@@ -57,6 +57,7 @@ import {
   flushTwoPhasePush,
   type LockProgressWriter,
   ManagedConfigUnresolvedError,
+  MODEL_LOCK_HEAD_MAX_BACKOFF_MS,
   MODEL_LOCK_MAX_BACKOFF_MS,
   MODEL_LOCK_RETRY_INTERVAL_MS,
   type PerModelLockScan,
@@ -940,6 +941,34 @@ Deno.test("createModelLock - on a durable v3 filesystem datastore that may keep 
       // Every data key is committed, so replay recreates the directories.
       assertEquals(await syncs({ durable: true }), false);
     });
+  });
+});
+
+Deno.test("createModelLock - queues waiters in arrival order only on a v3 filesystem datastore", async () => {
+  await withTempDir(async (dir) => {
+    const lockOf = async (config: DatastoreConfig) =>
+      (await createModelLock(config, "aws-ec2", "my-server")) as FileLock;
+    const v3 = await lockOf({ type: "filesystem", path: dir, format: 3 });
+    assertEquals(v3.fairQueue, true);
+    assertEquals(v3.headMaxBackoffMs, MODEL_LOCK_HEAD_MAX_BACKOFF_MS);
+    assertEquals(v3.maxBackoffMs, MODEL_LOCK_MAX_BACKOFF_MS);
+    for (
+      const config of [
+        { type: "filesystem", path: dir },
+        { type: "filesystem", path: dir, format: 2 },
+      ] as const
+    ) {
+      const lock = await lockOf(config);
+      assertEquals(lock.fairQueue, false, JSON.stringify(config));
+      assertEquals(lock.headMaxBackoffMs, MODEL_LOCK_MAX_BACKOFF_MS);
+    }
+    await initializeRepo(dir);
+    const { datastoreConfig } = await resolveDatastoreForRepo(dir);
+    const runLock = await createWorkflowRunLock(
+      datastoreConfig,
+      crypto.randomUUID(),
+    );
+    assertEquals((runLock as FileLock).fairQueue, false);
   });
 });
 

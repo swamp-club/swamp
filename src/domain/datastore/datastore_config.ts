@@ -52,6 +52,9 @@ export const DEFAULT_DATASTORE_SUBDIRS = [
   "files",
 ] as const;
 
+/** where waiters for a per-behavior lock queue on a v3 filesystem datastore */
+export const LOCK_QUEUES_DIR = "lock-queues";
+
 /**
  * a v3 checkout materialises a namespace at .swamp/<namespace>/, so a namespace
  * may take none of these names; kept in the domain so namespace rules need no
@@ -83,6 +86,7 @@ export const SWAMP_OWNED_DIR_NAMES: readonly string[] = [
     "workspaces",
     "litestream",
     "worker-daemon-cache",
+    LOCK_QUEUES_DIR,
   ]),
 ];
 
