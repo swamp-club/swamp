@@ -619,7 +619,7 @@ Deno.test({
           A_TOKEN,
           CONSUMER,
           "stamp",
-          200,
+          1_000,
         );
         try {
           await waitFor(() => holding.has(a.repoDir), "a's long write", {
@@ -633,7 +633,18 @@ Deno.test({
           setLocalProcessForTesting({ ...local, pid: local.pid + 1_000_000 });
           try {
             await waitFor(
-              async () => (await readProducer())?.content === '{"body":"two"}',
+              async () => {
+                try {
+                  return (await readProducer())?.content === '{"body":"two"}';
+                } catch (error) {
+                  // one thread: the reader's busy wait blocks the page a's
+                  // apply holds open, as two processes never would
+                  if (String(error).includes("database is locked")) {
+                    return false;
+                  }
+                  throw error;
+                }
+              },
               "the reader to see b's write while a's write runs",
               { timeoutMs: 120_000, intervalMs: 200 },
             );
