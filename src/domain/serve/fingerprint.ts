@@ -80,7 +80,7 @@ const POOL_FIELDS = ["workers"] as const;
 /** outside hash(): known only to a running serve */
 const RUNTIME_FIELDS = ["team", "startedAt", "ready"] as const;
 
-/** what a running serve last reported; it never enters hash() or a data version */
+/** left out of hash(); a change here alone never creates a data version */
 export const FingerprintRuntimeSchema = FingerprintSchema.pick({
   team: true,
   startedAt: true,

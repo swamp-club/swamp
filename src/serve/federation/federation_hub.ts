@@ -149,7 +149,7 @@ const CredentialRecordSchema = z.object({
   memberName: z.string(),
 }).strict();
 
-// runtime is absent on a record written before check-ins carried it
+// runtime is optional so a seen record holding only its time still parses
 const SeenRecordSchema = z.object({
   at: z.number().int(),
   runtime: FingerprintRuntimeSchema.optional(),

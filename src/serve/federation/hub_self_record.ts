@@ -44,11 +44,7 @@ export interface HubSelfRecordOptions {
   readonly seen?: HubSelfSeenOptions;
 }
 
-/**
- * the hub's own member record and check-in; only the leading node writes them,
- * since a node that loses the lead shuts down and a follower's reload never
- * refreshes them
- */
+/** the hub's own record and check-in; only the leader writes them, since losing the lead shuts a node down */
 export class HubSelfRecord {
   readonly #hub: Pick<FederationHub, "upsertSelf" | "recordSelfSeen">;
   readonly #fingerprint: () => Promise<Fingerprint>;
@@ -114,6 +110,7 @@ export class HubSelfRecord {
     }
     if (this.#beat !== undefined) return this.#beat;
     const next = this.#pending.then(async () => {
+      if (this.#stopped) return;
       try {
         await this.#hub.recordSelfSeen(seen.instanceId, await seen.runtime());
       } catch (error) {
@@ -129,7 +126,7 @@ export class HubSelfRecord {
     return next;
   }
 
-  /** no write starts after this; one in flight is awaited */
+  /** queues no new write and drops a queued beat; a write in flight is awaited */
   async stop(): Promise<void> {
     this.#stopped = true;
     if (this.#timer !== undefined) clearInterval(this.#timer);

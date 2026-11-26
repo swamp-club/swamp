@@ -239,3 +239,38 @@ Deno.test("HubSelfRecord: a failed beat is logged and the next beat writes", asy
   assertEquals((await selfSeenKeys(t)).length, 1);
   await record.stop();
 });
+
+Deno.test("HubSelfRecord: a beat queued behind a refresh when stop is called never writes", async () => {
+  const t = createTestHub();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => release = resolve);
+  let hold = false;
+  const record = new HubSelfRecord({
+    hub: t.hub,
+    fingerprint: async () => {
+      if (hold) await gate;
+      return hubFingerprint();
+    },
+    seen: {
+      instanceId: InstanceId.create(crypto.randomUUID()),
+      runtime: () => Promise.resolve(RUNNING),
+      intervalMs: 60 * 60 * 1000,
+    },
+  });
+  record.start((start) => start());
+  await record.settled();
+  const before = (await selfSeenKeys(t)).map((key) => t.store.json(key));
+  hold = true;
+  t.clock.now += 30_000;
+  const refreshing = record.refresh();
+  const queued = record.beat();
+  const stopping = record.stop();
+  release();
+  await refreshing;
+  await queued;
+  await stopping;
+  assertEquals(
+    (await selfSeenKeys(t)).map((key) => t.store.json(key)),
+    before,
+  );
+});

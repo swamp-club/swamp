@@ -25,7 +25,7 @@ export interface MemberSighting {
   readonly instanceId: string;
   /** epoch ms */
   readonly at: number;
-  /** absent on a record written before check-ins carried runtime facts */
+  /** null when the stored seen record has no runtime facts */
   readonly runtime: FingerprintRuntime | null;
 }
 

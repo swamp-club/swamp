@@ -121,7 +121,7 @@ const FederationAppDescriptorSchema = descriptorSchema((value) =>
 export type AppDescriptor = z.infer<typeof AppDescriptorSchema>;
 
 export interface AppDescriptorParseOptions {
-  /** the federation gate; off, a gated capability is unknown exactly as before */
+  /** the federation gate; off, a gated capability is refused as unknown */
   readonly federation?: boolean;
 }
 
