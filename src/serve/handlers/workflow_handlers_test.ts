@@ -3149,6 +3149,25 @@ Deno.test("handleWorkflowTriggerSet: writes the catch-up policy into serve.yaml 
   });
 });
 
+Deno.test("handleWorkflowTriggerSet: keeps serve.yaml's version and federation", async () => {
+  await withWorkflowRepo(async (dir, repo) => {
+    await writeServeConfigFile(dir, {
+      version: 2,
+      federation: { hub: "https://hub.example" },
+    });
+    const frames = await triggerSet(workflowEditCtx(dir, repo), {
+      workflowName: "scan-cves",
+      schedule: "0 3 * * *",
+    });
+
+    assertEquals(frames[0].type, "workflow.trigger.set");
+    const config = await readServeConfigFile(dir);
+    assertEquals(config?.version, 2);
+    assertEquals(config?.federation, { hub: "https://hub.example" });
+    assertEquals(config?.triggers?.["scan-cves"], { schedule: "0 3 * * *" });
+  });
+});
+
 Deno.test("handleWorkflowTriggerSet: an entry without a catch-up policy writes none", async () => {
   await withWorkflowRepo(async (dir, repo) => {
     const frames = await triggerSet(workflowEditCtx(dir, repo), {

@@ -42,6 +42,8 @@ import { SERVE_ENV_MAP } from "./serve_env_map.ts";
 import { TOKEN_SECRETS_VAULT_NAME } from "../domain/vaults/control_plane_vault_provider.ts";
 import type { TokenSecretsKeyRef } from "../domain/vaults/token_secrets_key.ts";
 import { validateSinkFilter } from "../domain/serve_audit/mod.ts";
+import { isServeFederationEnabled } from "../domain/serve/federation_gate.ts";
+import { isLoopbackHost } from "../domain/serve/loopback.ts";
 
 /** the path is marked so telemetry removes it exactly */
 function configError(path: string, message: string): UserError {
@@ -106,7 +108,19 @@ export interface TriggerOverrideEntry {
   readonly catchUp?: ScheduleCatchUp;
 }
 
+export interface FederationConfig {
+  readonly role?: "hub";
+  /** normalised without a trailing slash */
+  readonly hub?: string;
+  /** resolved against the repository */
+  readonly "join-token-file"?: string;
+}
+
+export type ServeConfigVersion = 1 | 2;
+
 export interface ServeConfigFile {
+  version?: ServeConfigVersion;
+  federation?: FederationConfig;
   port?: number;
   host?: string;
   auth?: {
@@ -305,6 +319,12 @@ const KNOWN_TOP_LEVEL_KEYS = new Set([
   "token-secrets",
 ]);
 
+const KNOWN_V2_TOP_LEVEL_KEYS: ReadonlySet<string> = new Set([
+  ...KNOWN_TOP_LEVEL_KEYS,
+  "version",
+  "federation",
+]);
+
 const KNOWN_TOKEN_SECRETS_KEYS = new Set(["vault", "key"]);
 
 const KNOWN_AUTH_KEYS = new Set([
@@ -393,21 +413,35 @@ export function loadServeConfig(
 
   const raw = parsed as Record<string, unknown>;
 
-  warnUnknownKeys(raw, KNOWN_TOP_LEVEL_KEYS, path, "");
+  // gate off never reads the version key, so any value there stays an ignored unknown key
+  const version = isServeFederationEnabled((name) => Deno.env.get(name))
+    ? readConfigVersion(raw.version, path)
+    : 1;
+  const policy: UnknownKeyPolicy = version === 2 ? "reject" : "warn";
+
+  checkUnknownKeys(
+    raw,
+    version === 2 ? KNOWN_V2_TOP_LEVEL_KEYS : KNOWN_TOP_LEVEL_KEYS,
+    path,
+    "",
+    policy,
+  );
   if (raw.auth && typeof raw.auth === "object" && !Array.isArray(raw.auth)) {
-    warnUnknownKeys(
+    checkUnknownKeys(
       raw.auth as Record<string, unknown>,
       KNOWN_AUTH_KEYS,
       path,
       "auth.",
+      policy,
     );
   }
   if (raw.tls && typeof raw.tls === "object" && !Array.isArray(raw.tls)) {
-    warnUnknownKeys(
+    checkUnknownKeys(
       raw.tls as Record<string, unknown>,
       KNOWN_TLS_KEYS,
       path,
       "tls.",
+      policy,
     );
   }
 
@@ -416,40 +450,177 @@ export function loadServeConfig(
     tokenSecrets && typeof tokenSecrets === "object" &&
     !Array.isArray(tokenSecrets)
   ) {
-    warnUnknownKeys(
+    checkUnknownKeys(
       tokenSecrets as Record<string, unknown>,
       KNOWN_TOKEN_SECRETS_KEYS,
       path,
       "token-secrets.",
+      policy,
     );
   }
 
-  validateConfigValues(raw, path);
+  validateConfigValues(raw, path, policy);
+
+  if (version === 2 && raw.federation !== undefined) {
+    raw.federation = validateFederationConfig(raw.federation, path, repoDir);
+  }
 
   logger.info`Loaded serve config from ${path}`;
 
   return raw as unknown as ServeConfigFile;
 }
 
-function warnUnknownKeys(
+/** version 1 warns about an unknown key; version 2 refuses it */
+export type UnknownKeyPolicy = "warn" | "reject";
+
+function checkUnknownKeys(
   obj: Record<string, unknown>,
   known: ReadonlySet<string>,
   path: string,
   prefix: string,
+  policy: UnknownKeyPolicy,
 ): void {
   for (const key of Object.keys(obj)) {
-    if (!known.has(key)) {
-      logger.warn(
-        "Unknown key {key} in serve config file {path} — ignoring",
-        { key: `${prefix}${key}`, path },
+    if (known.has(key)) continue;
+    if (policy === "reject") {
+      throw configError(
+        path,
+        `Unknown key ${prefix}${key} in serve config file ${path} (version 2 refuses unknown keys)`,
       );
     }
+    logger.warn(
+      "Unknown key {key} in serve config file {path} — ignoring",
+      { key: `${prefix}${key}`, path },
+    );
   }
+}
+
+const NEWEST_CONFIG_VERSION = 2;
+
+function readConfigVersion(value: unknown, path: string): ServeConfigVersion {
+  if (value === undefined) return 1;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+    throw configError(
+      path,
+      `Invalid version in ${path}: expected 1 or 2, got ${
+        JSON.stringify(value)
+      }`,
+    );
+  }
+  if (value > NEWEST_CONFIG_VERSION) {
+    throw configError(
+      path,
+      `serve.yaml version ${value} needs a newer swamp`,
+    );
+  }
+  return value as ServeConfigVersion;
+}
+
+const KNOWN_FEDERATION_KEYS = new Set(["role", "hub", "join-token-file"]);
+
+function validateFederationConfig(
+  value: unknown,
+  path: string,
+  repoDir: string,
+): FederationConfig {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw configError(
+      path,
+      `Invalid federation in ${path}: expected mapping, got ${
+        yamlTypeName(value)
+      }`,
+    );
+  }
+  const obj = value as Record<string, unknown>;
+  checkUnknownKeys(obj, KNOWN_FEDERATION_KEYS, path, "federation.", "reject");
+  const hasRole = obj.role !== undefined;
+  const hasHub = obj.hub !== undefined;
+  if (hasRole === hasHub) {
+    throw configError(
+      path,
+      `Invalid federation in ${path}: set exactly one of role: hub or hub: <url>`,
+    );
+  }
+  if (hasRole) {
+    if (obj.role !== "hub") {
+      throw configError(
+        path,
+        `Invalid federation.role in ${path}: the only role is hub`,
+      );
+    }
+    if (obj["join-token-file"] !== undefined) {
+      throw configError(
+        path,
+        `Invalid federation.join-token-file in ${path}: a hub joins no hub`,
+      );
+    }
+    return { role: "hub" };
+  }
+  const hub = validateHubUrl(obj.hub, path);
+  const tokenFile = obj["join-token-file"];
+  if (tokenFile === undefined) return { hub };
+  if (typeof tokenFile !== "string" || tokenFile === "") {
+    throw configError(
+      path,
+      `Invalid federation.join-token-file in ${path}: expected a path`,
+    );
+  }
+  return { hub, "join-token-file": resolveServePath(repoDir, tokenFile) };
+}
+
+// the value is never echoed: it may carry credentials
+function validateHubUrl(value: unknown, path: string): string {
+  if (typeof value !== "string") {
+    throw configError(
+      path,
+      `Invalid federation.hub in ${path}: expected a URL string, got ${
+        yamlTypeName(value)
+      }`,
+    );
+  }
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw configError(
+      path,
+      `Invalid federation.hub in ${path}: not a URL`,
+    );
+  }
+  if (url.username !== "" || url.password !== "") {
+    throw configError(
+      path,
+      `Invalid federation.hub in ${path}: credentials are not allowed in the URL`,
+    );
+  }
+  if (url.search !== "" || value.includes("?")) {
+    throw configError(
+      path,
+      `Invalid federation.hub in ${path}: a query string is not allowed`,
+    );
+  }
+  if (url.hash !== "" || value.includes("#")) {
+    throw configError(
+      path,
+      `Invalid federation.hub in ${path}: a fragment is not allowed`,
+    );
+  }
+  const loopback = isLoopbackHost(url.hostname);
+  if (
+    url.protocol !== "https:" && !(url.protocol === "http:" && loopback)
+  ) {
+    throw configError(
+      path,
+      `Invalid federation.hub in ${path}: expected https://, or http:// to a loopback host`,
+    );
+  }
+  return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
 }
 
 function validateConfigValues(
   raw: Record<string, unknown>,
   path: string,
+  policy: UnknownKeyPolicy,
 ): void {
   if (raw.port !== undefined) {
     if (typeof raw.port !== "number" || !Number.isInteger(raw.port)) {
@@ -686,11 +857,15 @@ function validateConfigValues(
     }
     const triggersObj = raw.triggers as Record<string, unknown>;
     for (const [name, entry] of Object.entries(triggersObj)) {
-      validateTriggerOverrideEntry(entry, path, name);
+      validateTriggerOverrideEntry(entry, path, name, policy);
     }
   }
 
-  validateWebhookEntries(raw.webhooks, path);
+  validateWebhookEntries(
+    raw.webhooks,
+    path,
+    policy === "reject" ? "reject" : "ignore",
+  );
 
   validateStringList("trusted-hosts", raw["trusted-hosts"], path);
 
@@ -710,7 +885,7 @@ function validateConfigValues(
   }
 
   if (raw.audit !== undefined) {
-    validateAuditConfig(raw.audit, path);
+    validateAuditConfig(raw.audit, path, policy);
   }
 
   if (raw["token-secrets"] !== undefined) {
@@ -762,9 +937,23 @@ export function parseTokenSecretsKeyConfig(
   return { vault: block.vault!, key: block.key! };
 }
 
+const KNOWN_WEBHOOK_ENTRY_KEYS = new Set([
+  "route",
+  "workflow",
+  "secret",
+  "scheme",
+  "header",
+  "prefix",
+  "config",
+]);
+
+/** version 1 does not check webhook entry keys, so the default ignores them */
+export type WebhookEntryKeyPolicy = "ignore" | "reject";
+
 export function validateWebhookEntries(
   value: unknown,
   path: string,
+  unknownKeys: WebhookEntryKeyPolicy = "ignore",
 ): readonly WebhookConfigEntry[] {
   if (value === undefined) return [];
   if (!Array.isArray(value)) {
@@ -774,7 +963,20 @@ export function validateWebhookEntries(
     );
   }
   for (let i = 0; i < value.length; i++) {
-    validateWebhookEntry(value[i], path, `webhook at index ${i} in ${path}`);
+    validateWebhookEntry(
+      value[i],
+      path,
+      `webhook at index ${i} in ${path}`,
+    );
+    if (unknownKeys === "reject") {
+      checkUnknownKeys(
+        value[i] as Record<string, unknown>,
+        KNOWN_WEBHOOK_ENTRY_KEYS,
+        path,
+        `webhooks[${i}].`,
+        "reject",
+      );
+    }
   }
   return value as WebhookConfigEntry[];
 }
@@ -864,6 +1066,7 @@ export function validateTriggerOverrideEntry(
   entry: unknown,
   path: string,
   workflowName: string,
+  unknownKeys: UnknownKeyPolicy = "warn",
 ): void {
   if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
     throw configError(
@@ -874,6 +1077,12 @@ export function validateTriggerOverrideEntry(
   const obj = entry as Record<string, unknown>;
   for (const key of Object.keys(obj)) {
     if (!KNOWN_TRIGGER_OVERRIDE_KEYS.has(key)) {
+      if (unknownKeys === "reject") {
+        throw configError(
+          path,
+          `Unknown key triggers.${workflowName}.${key} in serve config file ${path} (version 2 refuses unknown keys)`,
+        );
+      }
       logger.warn(
         "Unknown key {key} in trigger override for {workflow} in {path} — ignoring",
         { key, workflow: workflowName, path },
@@ -1059,6 +1268,8 @@ export interface MergedServeOptions {
   reusePort: boolean;
   dashboard: boolean;
   autoResume: boolean;
+  /** set only with the federation gate on and a version 2 file */
+  federation?: FederationConfig;
 }
 
 // resolved once on the merged options so the certificate serve reads and the
@@ -1594,6 +1805,11 @@ export function mergeServeOptions(
       ? config.triggers
       : undefined;
 
+  const federation =
+    isServeFederationEnabled(envLookup) && config?.version === 2
+      ? config.federation
+      : undefined;
+
   return {
     port,
     host,
@@ -1655,6 +1871,7 @@ export function mergeServeOptions(
     reusePort,
     dashboard,
     autoResume,
+    ...(federation !== undefined ? { federation } : {}),
   };
 }
 
@@ -1752,12 +1969,16 @@ const KNOWN_AUDIT_KEYS = new Set([
   "hmac",
 ]);
 
-function validateAuditConfig(audit: unknown, path: string): void {
+function validateAuditConfig(
+  audit: unknown,
+  path: string,
+  policy: UnknownKeyPolicy,
+): void {
   if (typeof audit !== "object" || audit === null || Array.isArray(audit)) {
     throw configError(path, `Invalid audit in ${path}: expected mapping`);
   }
   const obj = audit as Record<string, unknown>;
-  warnUnknownKeys(obj, KNOWN_AUDIT_KEYS, path, "audit.");
+  checkUnknownKeys(obj, KNOWN_AUDIT_KEYS, path, "audit.", policy);
 
   if (obj.stores !== undefined) {
     if (!Array.isArray(obj.stores)) {
@@ -2012,7 +2233,7 @@ function validateAuditConfig(audit: unknown, path: string): void {
     }
     const hmac = obj.hmac as Record<string, unknown>;
     const knownHmacKeys = new Set(["vault", "key", "enabled"]);
-    warnUnknownKeys(hmac, knownHmacKeys, path, "audit.hmac.");
+    checkUnknownKeys(hmac, knownHmacKeys, path, "audit.hmac.", policy);
     if (hmac.vault !== undefined && typeof hmac.vault !== "string") {
       throw configError(
         path,
@@ -2073,9 +2294,21 @@ function validateAuditConfig(audit: unknown, path: string): void {
         );
       }
       if (s.type === "webhook") {
-        warnUnknownKeys(s, knownWebhookKeys, path, `audit.sinks[${i}].`);
+        checkUnknownKeys(
+          s,
+          knownWebhookKeys,
+          path,
+          `audit.sinks[${i}].`,
+          policy,
+        );
       } else if (s.type === "syslog") {
-        warnUnknownKeys(s, knownSyslogKeys, path, `audit.sinks[${i}].`);
+        checkUnknownKeys(
+          s,
+          knownSyslogKeys,
+          path,
+          `audit.sinks[${i}].`,
+          policy,
+        );
       }
       if (s.type === "webhook") {
         if (typeof s.url !== "string") {

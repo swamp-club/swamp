@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { CommandRoute } from "../command_routes.ts";
+import { isServeFederationEnabled } from "../../domain/serve/federation_gate.ts";
 
 // each load is a literal import(): deno compile embeds only literal specifiers,
 // and the order is the group help's listing order
@@ -75,6 +76,27 @@ export const SERVE_ROUTES: readonly CommandRoute[] = [
       (await import("./serve_workspace.ts")).createServeWorkspaceCommand(rest),
   },
 ];
+
+/** registered only with the federation gate on */
+export const SERVE_FEDERATION_ROUTES: readonly CommandRoute[] = [
+  {
+    name: "fingerprint",
+    aliases: [],
+    hidden: false,
+    module: "src/cli/commands/serve_fingerprint.ts",
+    needsFullTree: false,
+    load: async () =>
+      (await import("./serve_fingerprint.ts")).serveFingerprintCommand,
+  },
+];
+
+export function resolveServeRoutes(
+  env: (name: string) => string | undefined,
+): readonly CommandRoute[] {
+  return isServeFederationEnabled(env)
+    ? [...SERVE_ROUTES, ...SERVE_FEDERATION_ROUTES]
+    : SERVE_ROUTES;
+}
 
 export const SERVE_WORKSPACE_ROUTES: readonly CommandRoute[] = [
   {

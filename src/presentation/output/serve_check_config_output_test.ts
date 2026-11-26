@@ -464,3 +464,23 @@ Deno.test("renderServeCheckConfig: json mode has no personal collective key when
   ));
   assertFalse("personalCollectiveWarnings" in output);
 });
+
+Deno.test("renderServeCheckConfig: log mode shows the config version only when reported", () => {
+  const base: ServeCheckConfigData = {
+    passed: true,
+    authMode: "none",
+    entries: [],
+    allowedCollectives: [],
+    wouldStart: true,
+  };
+  const without = stripAnsiCode(
+    captureLogs(() => renderServeCheckConfig(base, "log")),
+  );
+  assertFalse(without.includes("Config version"));
+  const withVersion = stripAnsiCode(
+    captureLogs(() =>
+      renderServeCheckConfig({ ...base, configVersion: 2 }, "log")
+    ),
+  );
+  assertStringIncludes(withVersion, "Config version: 2");
+});

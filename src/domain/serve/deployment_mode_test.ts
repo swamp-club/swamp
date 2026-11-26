@@ -19,6 +19,8 @@
 
 import { assertEquals } from "@std/assert";
 import {
+  classifyDatastore,
+  classifyVaults,
   type DatastoreClassification,
   resolveDeploymentMode,
   type VaultClassification,
@@ -105,4 +107,86 @@ Deno.test("resolveDeploymentMode: remote datastore without control-plane and no 
     result.warnings[0],
     "Update @swamp/s3-datastore for cross-machine durability",
   );
+});
+
+Deno.test("classifyDatastore: no custom type is the filesystem datastore", () => {
+  assertEquals(
+    classifyDatastore({ customType: undefined, hasControlPlane: true }),
+    FILESYSTEM,
+  );
+});
+
+Deno.test("classifyDatastore: a custom type is remote with its control-plane flag", () => {
+  assertEquals(
+    classifyDatastore({
+      customType: "@swamp/s3-datastore",
+      hasControlPlane: false,
+    }),
+    REMOTE_NO_CP,
+  );
+  assertEquals(
+    classifyDatastore({
+      customType: "@swamp/s3-datastore",
+      hasControlPlane: true,
+    }),
+    REMOTE_CP,
+  );
+});
+
+Deno.test("classifyVaults: no vaults is none", () => {
+  assertEquals(classifyVaults([]), VAULT_NONE);
+});
+
+Deno.test("classifyVaults: only local_encryption vaults are local", () => {
+  assertEquals(
+    classifyVaults(["local_encryption", "local_encryption"]),
+    VAULT_LOCAL,
+  );
+});
+
+Deno.test("classifyVaults: the first non-local vault type makes it remote", () => {
+  assertEquals(
+    classifyVaults([
+      "local_encryption",
+      "@swamp/aws-sm-vault",
+      "@swamp/gcp-sm-vault",
+    ]),
+    VAULT_REMOTE,
+  );
+});
+
+Deno.test("classifyDatastore and classifyVaults: give serve's startup modes", () => {
+  const cases: [
+    Parameters<typeof classifyDatastore>[0],
+    string[],
+    string,
+  ][] = [
+    [{ customType: undefined, hasControlPlane: false }, [], "local"],
+    [
+      { customType: "x", hasControlPlane: false },
+      ["@swamp/aws-sm-vault"],
+      "local",
+    ],
+    [{ customType: "x", hasControlPlane: true }, [], "durable"],
+    [
+      { customType: "x", hasControlPlane: true },
+      ["local_encryption"],
+      "durable (limited)",
+    ],
+    [
+      { customType: "x", hasControlPlane: true },
+      ["@swamp/aws-sm-vault"],
+      "durable",
+    ],
+  ];
+  for (const [datastore, vaults, mode] of cases) {
+    assertEquals(
+      resolveDeploymentMode(
+        classifyDatastore(datastore),
+        classifyVaults(vaults),
+      )
+        .mode,
+      mode,
+    );
+  }
 });

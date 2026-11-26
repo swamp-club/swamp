@@ -56,3 +56,43 @@ Deno.test("workflowCommand: has trigger subcommand", async () => {
   const trigger = commands.find((c) => c.getName() === "trigger");
   assertEquals(trigger !== undefined, true);
 });
+
+Deno.test("workflowTriggerRemoveCommand: keeps serve.yaml's version and federation", async () => {
+  const { Command } = await import("@cliffy/command");
+  const { withMockedEnv } = await import(
+    "../../infrastructure/persistence/path_test_helpers.ts"
+  );
+  const { readServeConfigFile, writeServeConfigFile } = await import(
+    "../../serve/serve_config.ts"
+  );
+  const { workflowTriggerRemoveCommand } = await import(
+    "./workflow_trigger_remove.ts"
+  );
+  const dir = await Deno.makeTempDir({ prefix: "swamp-trigger-remove-" });
+  try {
+    await writeServeConfigFile(dir, {
+      version: 2,
+      federation: { role: "hub" },
+      triggers: { "scan-cves": { schedule: "0 3 * * *" } },
+    });
+    await withMockedEnv(
+      { SWAMP_SERVE_URL: undefined, SWAMP_SERVER_URL: undefined },
+      () =>
+        new Command()
+          .throwErrors()
+          .globalOption("--json", "JSON output")
+          .command("remove", workflowTriggerRemoveCommand)
+          .parse(["remove", "scan-cves", "--json", "--repo-dir", dir]),
+    );
+    const config = await readServeConfigFile(dir);
+    assertEquals(config?.version, 2);
+    assertEquals(config?.federation, { role: "hub" });
+    assertEquals(config?.triggers, undefined);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});

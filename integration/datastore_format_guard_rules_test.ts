@@ -128,6 +128,9 @@ const GUARDED_PINNED = [
   "src/cli/commands/doctor_datastores.ts:createRepairDeps",
   "src/cli/commands/doctor_datastores.ts:createUnpushedRepairSetup",
   "src/cli/commands/serve.ts:serveCommand (x8)",
+  // its config comes from resolveDatastoreForRepo; it reads capabilities and
+  // never locks, pulls or pushes
+  "src/cli/commands/serve_fingerprint.ts:fingerprintDatastoreFacts",
   "src/cli/retention_teardown.ts:runRetentionAtCommandEnd",
   "src/cli/managed_config_sync.ts:coordinatedGlobalLock",
   "src/cli/repo_context.ts:acquireModelLocks (x5)",

@@ -31,6 +31,8 @@ import type {
 import type { GrantFileCheckIssue } from "../../domain/access/grant_file_loader.ts";
 
 export interface ServeCheckConfigData {
+  /** reported only with the federation gate on */
+  readonly configVersion?: 1 | 2;
   readonly passed: boolean;
   readonly authMode: "none" | "token" | "oauth";
   readonly oauthProvider?: string;
@@ -132,6 +134,9 @@ export function renderServeCheckConfig(
   }
 
   const lines: string[] = [];
+  if (data.configVersion !== undefined) {
+    lines.push(`${bold(cyan("Config version:"))} ${data.configVersion}`);
+  }
   lines.push(`${bold(cyan("Auth mode:"))} ${bold(data.authMode)}`);
 
   if (data.authMode !== "oauth" || data.oauthProvider === undefined) {

@@ -662,6 +662,12 @@ export {
   type WorkerTokenListItem,
 } from "./worker/list.ts";
 export {
+  serveFingerprint,
+  type ServeFingerprintData,
+  type ServeFingerprintDeps,
+  type ServeFingerprintEvent,
+} from "./serve/fingerprint.ts";
+export {
   createWorkerTokenCreateDeps,
   workerTokenCreate,
   type WorkerTokenCreateData,
