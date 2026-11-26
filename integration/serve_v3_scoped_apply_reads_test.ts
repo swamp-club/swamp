@@ -32,6 +32,10 @@ import { Workflow } from "../src/domain/workflows/workflow.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { SCOPED_FEED_APPLY_MS } from "../src/infrastructure/datastore_v3/scoped_read_model.ts";
 import {
+  localProcess,
+  setLocalProcessForTesting,
+} from "../src/infrastructure/datastore_v3/process_identity.ts";
+import {
   type Client,
   latestOf,
   readCommand,
@@ -623,11 +627,21 @@ Deno.test({
           });
           await stamp(scratch, serve, b, B_TOKEN, PRODUCER, "two");
           if (READER_LAG_BOUND_MS !== undefined) {
-            await waitFor(
-              async () => (await readProducer())?.content === '{"body":"two"}',
-              "the reader to see b's write while a's write runs",
-              { timeoutMs: READER_LAG_BOUND_MS, intervalMs: 200 },
-            );
+            // the reader shares this isolate's pid with a's run, which would
+            // make a's checkout its own to catch up; it reads as another
+            // process does
+            const local = await localProcess();
+            setLocalProcessForTesting({ ...local, pid: local.pid + 1_000_000 });
+            try {
+              await waitFor(
+                async () =>
+                  (await readProducer())?.content === '{"body":"two"}',
+                "the reader to see b's write while a's write runs",
+                { timeoutMs: READER_LAG_BOUND_MS, intervalMs: 200 },
+              );
+            } finally {
+              setLocalProcessForTesting(undefined);
+            }
             assertEquals(long.done(), false, "a's write still ran");
           }
         } finally {
