@@ -191,7 +191,6 @@ interface ResolvedTarget {
   /** the folded path and the folded directories its write would create */
   readonly folded?: string;
   readonly creates: readonly string[];
-  /** the path cache's generation it was resolved in */
   readonly generation: number;
 }
 
@@ -248,7 +247,6 @@ export const DEFAULT_READ_MODEL_PAGE_SIZE = 500;
 const LOAD_DONE_FLUSH = 256;
 /** names a base load holds in memory before committing their catalog rows */
 const BASE_CATALOG_NAMES = 1_000;
-/** base entries staged in one transaction */
 const BASE_STAGE_ENTRIES = 5_000;
 
 export { CATALOG_V3_FILE };
@@ -6204,7 +6202,6 @@ class PathCache {
   readonly #unlistable = new Set<string>();
   #linked = false;
 
-  /** whether a probe this section met a symlink */
   get linked(): boolean {
     return this.#linked;
   }
@@ -6254,7 +6251,6 @@ class PathCache {
     return this.#nothingAt.has(path);
   }
 
-  /** changes whenever the cache is cleared */
   get generation(): number {
     return this.#generation;
   }

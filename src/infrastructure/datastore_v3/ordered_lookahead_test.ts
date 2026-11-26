@@ -81,7 +81,6 @@ Deno.test("OrderedLookahead.take: the next items resolve one at a time while the
   const a = lookahead.take("a", "a");
   await resolver.settle("a");
   assertEquals(await a, "A");
-  // a is taken and not yet done with: b resolves meanwhile, then c
   await resolver.settle("b");
   await resolver.settle("c");
   assertEquals(await lookahead.take("b", "b"), "B");

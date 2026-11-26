@@ -203,7 +203,6 @@ Deno.test("SqliteReadModel.catchUp: a pooled put of data/ß waits for the pooled
   });
 });
 
-/** the property's counterexample: put l/a once l links to a removed a */
 async function playDanglingLink(
   env: V3Env,
   options: Partial<SqliteReadModelOptions>,

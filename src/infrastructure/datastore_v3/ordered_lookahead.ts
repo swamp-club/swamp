@@ -25,7 +25,6 @@ type Outcome<R> =
 const HELD = { kind: "held" } as const;
 
 export interface OrderedLookaheadOptions<T, R> {
-  /** items resolved ahead and not yet taken, at most */
   readonly depth: number;
   readonly resolve: (item: T) => Promise<R>;
   /**
@@ -36,9 +35,7 @@ export interface OrderedLookaheadOptions<T, R> {
   readonly runsAhead: (item: T, pending: readonly R[]) => boolean;
   /** whether the items after item may resolve while its taker works on it */
   readonly schedulesAfter: (item: T) => boolean;
-  /** false makes take resolve the item again */
   readonly fresh: (value: R) => boolean;
-  /** a value resolved ahead that is never handed out */
   readonly discard: (value: R) => void;
 }
 
@@ -98,7 +95,6 @@ export class OrderedLookahead<T, R> {
     return value;
   }
 
-  /** waits for every resolution under way and discards what none took */
   async settle(): Promise<void> {
     await this.#reset();
   }
