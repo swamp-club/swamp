@@ -288,3 +288,41 @@ Deno.test("scanUnreadableVersions: a record whose only version is unreadable has
     assertEquals(finding.modelName, "spec");
   });
 });
+
+Deno.test("scanUnreadableVersions: a raw file the datastore owes is fetched, not reported missing; one it does not owe still is (swamp-club#5108)", async () => {
+  await withFixture(async (f) => {
+    await f.write("owed", 2);
+    await f.write("gone", 2);
+    const owedRaw = join(f.versionDir("owed", 2), "raw");
+    const bytes = await Deno.readFile(owedRaw);
+    await Deno.remove(owedRaw);
+    await Deno.remove(join(f.versionDir("gone", 2), "raw"));
+    const hydrated: string[] = [];
+    const hook = Object.assign(
+      async (absPath: string): Promise<boolean> => {
+        if (absPath !== owedRaw || hydrated.length > 0) return false;
+        await Deno.writeFile(absPath, bytes);
+        hydrated.push(absPath);
+        return true;
+      },
+      { owedOnly: true as const },
+    );
+    const owing = new FileSystemUnifiedDataRepository(
+      f.dir,
+      undefined,
+      f.catalog,
+      undefined,
+      hook,
+    );
+    const found = await scanUnreadableVersions(
+      owing,
+      f.catalog,
+      SOLO_NAMESPACE,
+    );
+    assertEquals(found.map((x) => [x.dataName, x.version, x.reason]), [
+      ["gone", 2, "content_missing"],
+    ]);
+    assertEquals(hydrated, [owedRaw]);
+    assertEquals(await Deno.readFile(owedRaw), bytes);
+  });
+});

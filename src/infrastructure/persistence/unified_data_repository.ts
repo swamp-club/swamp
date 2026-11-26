@@ -4001,9 +4001,12 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     dataName: string,
     version: number,
   ): Promise<number | null> {
-    return await fileSize(
-      this.getContentPath(type, modelId, dataName, version),
-    );
+    const path = this.getContentPath(type, modelId, dataName, version);
+    const size = await fileSize(path);
+    if (size !== null || !isOwedFileHook(this.hydrateFile)) return size;
+    // an owed file was never fetched, not lost
+    if (!await this.hydrateFile(path)) return null;
+    return await fileSize(path);
   }
 
   /**
