@@ -254,7 +254,7 @@ export function watchServeFeed(options: ServeFeedWatchOptions): ServeFeedWatch {
             ? (change as { cursor: number }).cursor
             : Number.POSITIVE_INFINITY
         ),
-      );
+      ) ?? Number.POSITIVE_INFINITY;
       catchUp(
         changes.every((change) => sentHere(change)) ? "local" : "serve",
         wanted,
