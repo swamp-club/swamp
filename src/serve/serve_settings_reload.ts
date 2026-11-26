@@ -163,6 +163,12 @@ export const SETTING_CATALOGUE = {
   trustedHosts: applied("trusted-hosts", "trusted-hosts"),
   verifyOnEnroll: applied("verify-on-enroll", "verify-on-enroll"),
   dispatchEnvAllow: applied("dispatch-env-allow", "dispatch-env-allow"),
+  // applied, a worker enrolled before a key was reserved would keep it
+  reservedWorkerLabels: restart(
+    "reserved-worker-labels",
+    "reserved-worker-labels",
+    "restart serve to change it; every worker then re-enrolls under the new keys",
+  ),
   heartbeatInterval: restart(
     "heartbeat-interval",
     "heartbeat-interval",

@@ -573,6 +573,9 @@ enrollment left, the worker is not already in the pool, and the secret matches
 the current or live predecessor mint (`enrollmentTokenClosed`, `admitsMachine`
 and `presentedTokenMint` in
 `src/domain/models/worker/enrollment_token_model.ts`, which redeem calls too).
+After the secret matches it also skips a worker `workerLabelRefusal` would
+refuse: redeem refuses it without spending a slot, so a definition made for it
+would be one more for every retry with a fresh machine id.
 Then `ensureWorkerDefinition` creates the worker's definition under the
 auto-definition lock, and the turn reads it at its name-derived path. The check
 is advisory: anything it refuses or cannot read leaves the definition to the
@@ -612,6 +615,42 @@ provisioning_. Each token is:
   `{token, machineId}` as often as needed until the lifetime ends. This
   survives a broken control socket and a process restart or reboot: the
   worker returns as the same pool member without a new token.
+
+**Labels a worker carries.** A worker offers its own labels at enrollment, and
+the scheduler matches placement labels by exact value. Left at that, any valid
+token lets its holder enroll with `fleet=k3s-prod` and receive that fleet's
+work. Two opt-in controls contain a leaked token:
+
+- **Bound labels.** `swamp worker token create --label key=value` (the mint
+  method's `labels`) stores labels on the token record. Every worker enrolled
+  with the token carries them, and they are fixed for a mint: `rotate` keeps
+  them, and only a re-mint after a revoke or expiry can change them.
+- **Reserved keys.** Serve's `reserved-worker-labels` names label keys a worker
+  may carry only when its token supplies them. A token supplies its bound
+  labels, and a fleet token that binds no `fleet` also supplies the automatic
+  `fleet=<tokenName>`. The setting needs a restart, so a worker that enrolled
+  before a key was reserved never keeps it: the restart makes every worker
+  enroll again.
+
+`workerLabelRefusal` (`src/domain/models/worker/enrollment_token_model.ts`)
+refuses an offered key that the token binds to another value, and a reserved key
+whose value differs from what the token supplies (or that the token does not
+supply at all). Any other offered key is the worker's own, so with nothing bound
+and nothing reserved a fleet worker's own `fleet` label still displaces the
+automatic one, with a warning, as before. `redeem` runs the check after the
+secret matches, so bound labels and reserved keys reach only a holder of the
+secret. It runs before any binding is written, so a refused worker spends no
+enrollment, and it also applies to a bound machine that reconnects. The gateway
+passes the worker's labels and the reserved keys in force to `redeem`, and gives
+the pool entry `effectiveWorkerLabels`: the automatic fleet label, then the
+worker's labels, then the bound labels. A refusal reaches the worker as the
+permanent `label_conflict`. A worker built before that code existed treats it as
+retryable and stops only when its pre-enrollment retry budget runs out, so
+upgrade workers before binding labels or reserving keys. Each refusal message
+puts its phrase before any quoted key or value, so a quote inside a label cannot
+hide the phrase from `codedRedeemFailure`. A `worker token create --server`
+against a serve too old to record labels fails after printing the token, and
+tells the operator to revoke it.
 
 The token is a built-in **enrollment-token** behavior whose instances are swamp
 data. Its states are `unused → enrolled → expired`, plus `revoked` from any
@@ -2101,8 +2140,8 @@ connection error with two guards:
 - **Permanent failure detection.** `isPermanentEnrollmentFailure`
   (`src/worker/connect.ts`) decides a coded rejection by its code. The gateway
   codes redeem failures (`token_revoked`, `token_expired`, `token_mismatch`,
-  `token_not_found`, `enrollment_allowance_exhausted`), and these plus
-  `protocol_mismatch` and `invalid_token` make up
+  `token_not_found`, `enrollment_allowance_exhausted`, `label_conflict`), and
+  these plus `protocol_mismatch` and `invalid_token` make up
   `PERMANENT_ENROLLMENT_ERROR_CODES` (`src/domain/remote/protocol.ts`). Any
   other coded rejection, such as `token_unreadable` or `token_not_synced`, is
   retried. The gateway looks up the token's definition before `redeem` and runs

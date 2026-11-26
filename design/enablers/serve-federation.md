@@ -244,10 +244,11 @@ never read into it.
 remote-only, verify-on-enroll, dispatch-env-allow names, max-concurrent-runs,
 max-runs-per-principal, max-run-duration, the approve, signal and tag
 explicit-grant flags, grant-reload mode, hot-reload, reuse-port, schedule,
-dashboard, auto-resume, shutdown-drain-timeout, and restricted model types and
-commands. It never covers admins, allowed users or collectives, webhook routes
-or secrets, the OAuth client id or secret, token secrets, any file path, host
-or port. List settings are compared as sets of names.
+dashboard, auto-resume, shutdown-drain-timeout, restricted model types and
+commands, and reserved-worker-labels names (only when set, so a node without the
+setting hashes as before). It never covers admins, allowed users or collectives,
+webhook routes or secrets, the OAuth client id or secret, token secrets, any
+file path, host or port. List settings are compared as sets of names.
 
 `deploymentMode` uses the same classification serve logs at startup. A v3
 datastore has a control plane without opening anything. For an extension

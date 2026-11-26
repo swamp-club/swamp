@@ -28,6 +28,7 @@ import {
   admitsMachine,
   type Binding,
   deliverablePredecessor,
+  effectiveWorkerLabels,
   ENROLLMENT_TOKEN_MODEL_TYPE,
   enrollmentMintFor,
   type EnrollmentToken,
@@ -35,14 +36,19 @@ import {
   enrollmentTokenClosed,
   enrollmentTokenModel,
   EnrollmentTokenSchema,
+  LABEL_CONFLICT_PHRASE,
+  LABEL_RESERVED_PHRASE,
   type MaxEnrollments,
   presentedTokenMint,
   rotatedTokenSecretKey,
   rotationCarryOverCapMs,
   tokenSecretKey,
+  tokenSuppliedLabels,
   WORKER_ROTATED_TOKEN_SECRET_KEY_PREFIX,
+  workerLabelRefusal,
 } from "./enrollment_token_model.ts";
 import { timingSafeEqual } from "../../crypto/timing_safe_equal.ts";
+import { withoutQuotedNames } from "../../remote/protocol.ts";
 import {
   advanceTokenClock,
   createInMemoryWorkerContext,
@@ -1366,4 +1372,285 @@ Deno.test("admitsMachine: a bound machine always, a new one only while a slot is
     ),
     true,
   );
+});
+
+async function mintLabelledToken(
+  labels: Record<string, string>,
+  maxEnrollments: number | "unlimited" = 1,
+  name = "fleet-b",
+) {
+  const harness = createInMemoryWorkerContext(
+    ENROLLMENT_TOKEN_MODEL_TYPE,
+    name,
+  );
+  await enrollmentTokenModel.methods.mint.execute(
+    { durationMs: 60_000, vaultName: "local", maxEnrollments, labels },
+    harness.context,
+  );
+  const plaintext = harness.vault.get(`local/${tokenSecretKey(name)}`)!;
+  return { ...harness, plaintext };
+}
+
+Deno.test("enrollmentTokenModel: mint records the bound labels", async () => {
+  const { store } = await mintLabelledToken({ fleet: "b", region: "eu" });
+  assertEquals(store.get("token-main")!.labels, { fleet: "b", region: "eu" });
+});
+
+Deno.test("enrollmentTokenModel: mint arguments refuse malformed labels", () => {
+  const args = enrollmentTokenModel.methods.mint.arguments;
+  for (
+    const labels of [{ "": "x" }, { "a=b": "x" }, { fleet: "" }]
+  ) {
+    assertEquals(
+      args.safeParse({ durationMs: 1000, vaultName: "local", labels }).success,
+      false,
+      JSON.stringify(labels),
+    );
+  }
+  const parsed = args.parse({ durationMs: 1000, vaultName: "local" }) as {
+    labels: Record<string, string>;
+  };
+  assertEquals(parsed.labels, {});
+});
+
+Deno.test("enrollmentTokenModel: a record minted before bound labels parses with none", () => {
+  const record = EnrollmentTokenSchema.parse({
+    name: "old",
+    state: "unused",
+    createdAt: BASE_ENROLLED_AT,
+    expiresAt: "2026-01-02T00:00:00.000Z",
+    vaultName: "local",
+    secretKey: tokenSecretKey("old"),
+  });
+  assertEquals(record.labels, undefined);
+  assertEquals(tokenSuppliedLabels(record), {});
+});
+
+Deno.test("enrollmentTokenModel: redeem refuses a worker that overrides a bound label and binds nothing", async () => {
+  const { context, store, versions, plaintext } = await mintLabelledToken({
+    fleet: "b",
+  });
+  const versionsBefore = versions.get("token-main");
+  const error = await assertRejects(
+    () =>
+      enrollmentTokenModel.methods.redeem.execute(
+        {
+          presentedToken: plaintext,
+          machineId: "machine-1",
+          offeredLabels: { fleet: "a" },
+          reservedLabelKeys: [],
+        },
+        context,
+      ),
+    Error,
+  );
+  assertStringIncludes(error.message, LABEL_CONFLICT_PHRASE);
+  assertStringIncludes(error.message, "'fleet'");
+  assertEquals(tokenBindings(store), []);
+  assertEquals(store.get("token-main")!.state, "unused");
+  assertEquals(versions.get("token-main"), versionsBefore);
+});
+
+Deno.test("enrollmentTokenModel: redeem accepts the bound value, an absent key and unrelated labels", async () => {
+  const { context, store, plaintext } = await mintLabelledToken(
+    { fleet: "b" },
+    3,
+  );
+  for (
+    const [machineId, offeredLabels] of [
+      ["machine-1", { fleet: "b" }],
+      ["machine-2", {}],
+      ["machine-3", { gpu: "true" }],
+    ] as const
+  ) {
+    await enrollmentTokenModel.methods.redeem.execute(
+      {
+        presentedToken: plaintext,
+        machineId,
+        offeredLabels,
+        reservedLabelKeys: ["fleet"],
+      },
+      context,
+    );
+  }
+  assertEquals(tokenBindings(store).length, 3);
+});
+
+Deno.test("enrollmentTokenModel: a bound machine that reconnects with an overriding label is refused", async () => {
+  const { context, plaintext } = await mintLabelledToken({ fleet: "b" });
+  await enrollmentTokenModel.methods.redeem.execute(
+    {
+      presentedToken: plaintext,
+      machineId: "machine-1",
+      offeredLabels: {},
+      reservedLabelKeys: [],
+    },
+    context,
+  );
+  await assertRejects(
+    () =>
+      enrollmentTokenModel.methods.redeem.execute(
+        {
+          presentedToken: plaintext,
+          machineId: "machine-1",
+          offeredLabels: { fleet: "a" },
+          reservedLabelKeys: [],
+        },
+        context,
+      ),
+    Error,
+    LABEL_CONFLICT_PHRASE,
+  );
+});
+
+Deno.test("enrollmentTokenModel: redeem refuses a reserved label the token does not supply", async () => {
+  const { context, store, plaintext } = await mintToken();
+  await assertRejects(
+    () =>
+      enrollmentTokenModel.methods.redeem.execute(
+        {
+          presentedToken: plaintext,
+          machineId: "machine-1",
+          offeredLabels: { fleet: "a" },
+          reservedLabelKeys: ["fleet"],
+        },
+        context,
+      ),
+    Error,
+    LABEL_RESERVED_PHRASE,
+  );
+  assertEquals(tokenBindings(store), []);
+});
+
+Deno.test("enrollmentTokenModel: a fleet token supplies its own name for a reserved fleet label", async () => {
+  const { context, store, plaintext } = await mintFleetToken("pool", 3);
+  await enrollmentTokenModel.methods.redeem.execute(
+    {
+      presentedToken: plaintext,
+      machineId: "machine-1",
+      offeredLabels: { fleet: "pool" },
+      reservedLabelKeys: ["fleet"],
+    },
+    context,
+  );
+  await assertRejects(
+    () =>
+      enrollmentTokenModel.methods.redeem.execute(
+        {
+          presentedToken: plaintext,
+          machineId: "machine-2",
+          offeredLabels: { fleet: "other" },
+          reservedLabelKeys: ["fleet"],
+        },
+        context,
+      ),
+    Error,
+    LABEL_RESERVED_PHRASE,
+  );
+  assertEquals(tokenBindings(store).length, 1);
+});
+
+Deno.test("enrollmentTokenModel: a wrong secret is refused as a mismatch before any label is judged", async () => {
+  const { context } = await mintLabelledToken({ fleet: "b" }, 1, "tok");
+  const error = await assertRejects(
+    () =>
+      enrollmentTokenModel.methods.redeem.execute(
+        {
+          presentedToken: "wrong",
+          machineId: "machine-1",
+          offeredLabels: { fleet: "a", region: "x" },
+          reservedLabelKeys: ["region"],
+        },
+        context,
+      ),
+    Error,
+  );
+  assertStringIncludes(error.message, "does not match");
+  assertEquals(error.message.includes("fleet"), false);
+  assertEquals(error.message.includes("region"), false);
+});
+
+Deno.test("enrollmentTokenModel: rotate, rebind and prune_bindings keep the bound labels", async () => {
+  const harness = await mintLabelledToken({ fleet: "b" }, 3);
+  await enrollmentTokenModel.methods.redeem.execute(
+    {
+      presentedToken: harness.plaintext,
+      machineId: "machine-1",
+      offeredLabels: {},
+      reservedLabelKeys: [],
+    },
+    harness.context,
+  );
+  const { token } = await rotateToken(harness);
+  assertEquals(token.labels, { fleet: "b" });
+  await enrollmentTokenModel.methods.rebind.execute(
+    { machineIds: ["machine-1"], mint: token.createdAt as string },
+    harness.context,
+  );
+  assertEquals(harness.store.get("token-main")!.labels, { fleet: "b" });
+  await enrollmentTokenModel.methods.prune_bindings.execute(
+    { machineIds: ["machine-1"] },
+    harness.context,
+  );
+  assertEquals(harness.store.get("token-main")!.labels, { fleet: "b" });
+});
+
+Deno.test("effectiveWorkerLabels: bound labels win, then the worker's, then the automatic fleet label", () => {
+  const fleet = { name: "pool", maxEnrollments: 3 as const };
+  assertEquals(
+    effectiveWorkerLabels({ ...fleet, labels: {} }, { gpu: "true" }),
+    { fleet: "pool", gpu: "true" },
+  );
+  assertEquals(
+    effectiveWorkerLabels({ ...fleet, labels: {} }, { fleet: "mine" }),
+    { fleet: "mine" },
+  );
+  assertEquals(
+    effectiveWorkerLabels({ ...fleet, labels: { fleet: "b" } }, {}),
+    { fleet: "b" },
+  );
+  assertEquals(
+    effectiveWorkerLabels(
+      { name: "one", maxEnrollments: 1, labels: undefined },
+      { fleet: "x" },
+    ),
+    { fleet: "x" },
+  );
+});
+
+Deno.test("workerLabelRefusal: a key named like an Object.prototype member is judged by own keys only", () => {
+  const token = { name: "one", maxEnrollments: 1 as const, labels: {} };
+  assertEquals(
+    workerLabelRefusal(token, { constructor: "x", toString: "y" }, []),
+    undefined,
+  );
+  assertEquals(
+    workerLabelRefusal(token, { constructor: "x" }, ["constructor"]),
+    { reason: "reserved", key: "constructor" },
+  );
+});
+
+Deno.test("enrollmentTokenModel: a refusal keeps its phrase when a label key holds a quote", async () => {
+  const { context, plaintext } = await mintLabelledToken({ "it's": "v" });
+  for (
+    const [offeredLabels, reservedLabelKeys, phrase] of [
+      [{ "it's": "w" }, [], LABEL_CONFLICT_PHRASE],
+      [{ "o'clock": "x" }, ["o'clock"], LABEL_RESERVED_PHRASE],
+    ] as const
+  ) {
+    const error = await assertRejects(
+      () =>
+        enrollmentTokenModel.methods.redeem.execute(
+          {
+            presentedToken: plaintext,
+            machineId: "machine-1",
+            offeredLabels,
+            reservedLabelKeys: [...reservedLabelKeys],
+          },
+          context,
+        ),
+      Error,
+    );
+    assertStringIncludes(withoutQuotedNames(error.message), phrase);
+  }
 });

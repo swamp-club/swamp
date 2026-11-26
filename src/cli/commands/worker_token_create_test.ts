@@ -17,7 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import {
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import { Command } from "@cliffy/command";
 import { UserError } from "../../domain/errors.ts";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
@@ -91,6 +96,36 @@ Deno.test("workerTokenCreateCommand: rejects --vault before any repo work", asyn
   );
 });
 
+Deno.test("workerTokenCreateCommand: --label is repeatable", async () => {
+  const { workerTokenCreateCommand } = await import("./worker_token_create.ts");
+  const labelOpt = workerTokenCreateCommand.getOptions().find((o) =>
+    o.name === "label"
+  );
+  assertEquals(labelOpt?.collect, true);
+});
+
+Deno.test("workerTokenCreateCommand: a malformed --label is refused before any repo work", async () => {
+  const { workerTokenCreateCommand } = await import("./worker_token_create.ts");
+  const root = new Command()
+    .globalOption("--json", "JSON output")
+    .command("create", workerTokenCreateCommand);
+  await assertRejects(
+    () =>
+      root.parse([
+        "create",
+        "fleet-a",
+        "--duration",
+        "1d",
+        "--label",
+        "fleet",
+        "--repo-dir",
+        "/nonexistent-swamp-repo",
+      ]),
+    UserError,
+    "expected the form key=value",
+  );
+});
+
 Deno.test("workerTokenCreateCommand: --vault help and example say it needs --server", async () => {
   const { workerTokenCreateCommand } = await import("./worker_token_create.ts");
   const vaultOpt = workerTokenCreateCommand.getOptions().find((o) =>
@@ -105,4 +140,37 @@ Deno.test("workerTokenCreateCommand: --vault help and example say it needs --ser
   for (const example of vaultExamples) {
     assertStringIncludes(example.description, "--server");
   }
+});
+
+Deno.test("assertServeBoundLabels: refuses when an older serve minted the token without the requested labels", async () => {
+  const { assertServeBoundLabels } = await import("./worker_token_create.ts");
+  const error = assertThrows(
+    () =>
+      assertServeBoundLabels(
+        "k3s-prod",
+        "wss://old.example",
+        { fleet: "k3s-prod" },
+        undefined,
+      ),
+    UserError,
+  );
+  assertStringIncludes(
+    error.message,
+    "swamp worker token revoke k3s-prod --server wss://old.example",
+  );
+  assertThrows(
+    () =>
+      assertServeBoundLabels("k3s-prod", "wss://old.example", {
+        fleet: "k3s-prod",
+      }, { fleet: "other" }),
+    UserError,
+  );
+});
+
+Deno.test("assertServeBoundLabels: accepts recorded labels, and no labels asked for whatever the serve sends", async () => {
+  const { assertServeBoundLabels } = await import("./worker_token_create.ts");
+  assertServeBoundLabels("k3s-prod", "wss://s", { fleet: "k3s-prod" }, {
+    fleet: "k3s-prod",
+  });
+  assertServeBoundLabels("ci", "wss://s", {}, undefined);
 });

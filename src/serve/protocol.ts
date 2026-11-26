@@ -1076,6 +1076,7 @@ export interface WorkerTokenCreatePayload {
   durationMs: number;
   vaultName?: string;
   maxEnrollments?: number | "unlimited";
+  labels?: Record<string, string>;
 }
 
 export interface WorkerTokenListPayload {

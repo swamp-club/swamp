@@ -35,6 +35,7 @@ export const SERVE_ENV_MAP: Readonly<Record<string, string>> = {
   verifyOnEnroll: "SWAMP_VERIFY_ON_ENROLL",
   trustedHosts: "SWAMP_TRUSTED_HOSTS",
   dispatchEnvAllow: "SWAMP_DISPATCH_ENV_ALLOW",
+  reservedWorkerLabels: "SWAMP_RESERVED_WORKER_LABELS",
   heartbeatInterval: "SWAMP_HEARTBEAT_INTERVAL",
   staleTtl: "SWAMP_STALE_TTL",
   reconciliationInterval: "SWAMP_RECONCILIATION_INTERVAL",

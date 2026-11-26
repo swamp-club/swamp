@@ -29,6 +29,7 @@ import {
   handleAppRevoke,
 } from "./handlers/app_handlers.ts";
 import { z } from "zod";
+import { TokenLabelsSchema } from "../domain/models/worker/enrollment_token_model.ts";
 import { principalToString } from "../domain/access/principal.ts";
 import {
   type ControlRecording,
@@ -1646,6 +1647,7 @@ const WorkerTokenCreateRequestSchema = z.object({
       z.literal("unlimited"),
     ])
       .optional(),
+    labels: TokenLabelsSchema.optional(),
   }),
 });
 

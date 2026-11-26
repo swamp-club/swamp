@@ -887,6 +887,7 @@ import {
   CLUB_API_KEY_FILE_DESCRIPTION,
   DISPATCH_ENV_ALLOW_HELP,
   OAUTH_CLIENT_SECRET_FILE_DESCRIPTION,
+  RESERVED_WORKER_LABELS_HELP,
   SERVE_CA_CERT_DESCRIPTION,
   SERVE_DESCRIPTION,
 } from "./serve_options.ts";
@@ -2107,6 +2108,10 @@ export const serveCommand = new Command()
     DISPATCH_ENV_ALLOW_HELP,
   )
   .option(
+    "--reserved-worker-labels <keys:string>",
+    RESERVED_WORKER_LABELS_HELP,
+  )
+  .option(
     "--detach-runs",
     "Deprecated — HA mode is now detected automatically based on your datastore configuration. " +
       "This flag is accepted for backwards compatibility but has no effect.",
@@ -2404,6 +2409,7 @@ export const serveCommand = new Command()
       tokenGcSettings,
       groupRefreshMs,
       dispatchEnvAllow,
+      reservedWorkerLabels,
       maxConcurrentRuns,
       maxConcurrentScheduledRuns,
       maxConcurrentWebhookRuns,
@@ -2581,6 +2587,13 @@ export const serveCommand = new Command()
         logger
           .warn`dispatch-env-allow lists ${name}, which never ships to workers`;
       }
+    }
+
+    if (reservedWorkerLabels.length > 0) {
+      logger
+        .info`reserved-worker-labels: a worker may carry ${
+        reservedWorkerLabels.join(", ")
+      } only with the value its enrollment token supplies`;
     }
 
     if (merged.reusePort && Deno.build.os !== "linux") {
@@ -2823,6 +2836,7 @@ export const serveCommand = new Command()
       get verifyOnEnroll() {
         return verifyOnEnroll;
       },
+      reservedLabelKeys: reservedWorkerLabels,
       gatePass: () => {
         const pass = gatePassKeeper?.current();
         return pass ? formatOrchestratorGatePass(pass) : undefined;

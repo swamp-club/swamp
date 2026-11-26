@@ -768,6 +768,30 @@ Deno.test("runWorker: a coded permanent rejection stops the loop", async () => {
   assertEquals(events.at(-1)?.kind, "stopped");
 });
 
+Deno.test("runWorker: a refused label stops the loop instead of retrying", async () => {
+  const events: WorkerStatusEvent[] = [];
+  await assertRejects(
+    () =>
+      runWorker({
+        url: "ws://test:1",
+        token: "ci.s",
+        swampVersion: "1.2.3",
+        onStatus: (event) => events.push(event),
+        createSocket: () =>
+          rejectingEnroll(
+            new RpcError({
+              code: "label_conflict",
+              message:
+                "Enrollment token 'ci': label conflicts with the token: it binds 'fleet' to 'b'; drop that label or offer that value",
+            }),
+          ),
+      }),
+    Error,
+  );
+  assertEquals(events.some((e) => e.kind === "retrying"), false);
+  assertEquals(events.at(-1)?.kind, "stopped");
+});
+
 Deno.test("runWorker: a token name that reads like a reason does not make a retryable rejection permanent", async () => {
   for (
     const error of [

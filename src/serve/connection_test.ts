@@ -4734,6 +4734,22 @@ Deno.test("validateServerRequest accepts worker.token.create with unlimited enro
   );
 });
 
+Deno.test("validateServerRequest accepts worker.token.create with bound labels and refuses malformed ones", () => {
+  const request = (labels: Record<string, string>) =>
+    validateServerRequest({
+      type: "worker.token.create",
+      id: "r1",
+      payload: { name: "wt-1", durationMs: 3600000, labels },
+    });
+  assertEquals(typeof request({ fleet: "k3s-prod" }), "object");
+  assertEquals(typeof request({ "a=b": "x" }), "string");
+  assertEquals(typeof request({ "": "x" }), "string");
+  assertEquals(typeof request({ fleet: "" }), "string");
+  const tooMany: Record<string, string> = {};
+  for (let i = 0; i < 1001; i++) tooMany[`k${i}`] = "v";
+  assertEquals(typeof request(tooMany), "string");
+});
+
 Deno.test("validateServerRequest rejects worker.token.create without durationMs", () => {
   assertEquals(
     typeof validateServerRequest({

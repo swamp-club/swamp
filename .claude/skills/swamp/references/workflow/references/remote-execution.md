@@ -63,6 +63,30 @@ Workers view (`/dashboard/workers` on a serve started with `--dashboard`):
 workers grouped by label, per-slot lease state, and a selector box that shows
 where a step's placement would land.
 
+### Containing a leaked token
+
+A worker sets its own labels, so by default anyone holding any valid token can
+enroll with a fleet's labels and receive that fleet's work. Two opt-in controls
+stop that:
+
+```bash
+# every worker enrolled with this token carries fleet=k3s-prod
+swamp worker token create k3s-prod --duration 24h --max-enrollments unlimited \
+  --label fleet=k3s-prod
+
+# on serve: only a token can give a worker these keys
+swamp serve --reserved-worker-labels fleet,region   # or reserved-worker-labels: [fleet, region] in serve.yaml
+```
+
+A worker that offers a different value for a bound label, or sets a reserved key
+its token does not supply, is refused with `label_conflict` and stops; the
+refusal spends no enrollment. A fleet token that binds no `fleet` supplies its
+own name as `fleet`. Binding contains only the bound token, so reserve every key
+that selects sensitive work. Changing `reserved-worker-labels` needs a serve
+restart, and on HA it belongs on every node. Once a key is reserved, a worker
+that sets it itself is refused, including a fleet worker that relied on keeping
+its own `fleet` label.
+
 ## Placing steps on workers
 
 Placement fields (`target`, `labels`, `platform`, `queueTimeout`) can be set at

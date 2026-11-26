@@ -1212,6 +1212,14 @@ Deno.test("collectServeExtraArgs: forwards --dispatch-env-allow names", () => {
   ]);
 });
 
+Deno.test("collectServeExtraArgs: forwards --reserved-worker-labels, so a daemon re-launch keeps them", () => {
+  assertEquals(
+    collectServeExtraArgs({ reservedWorkerLabels: "fleet,region" }),
+    ["--reserved-worker-labels", "fleet,region"],
+  );
+  assertEquals(collectServeExtraArgs({ reservedWorkerLabels: "" }), []);
+});
+
 Deno.test("collectServeExtraArgs: forwards --max-signal-wait-timeout", () => {
   assertEquals(collectServeExtraArgs({ maxSignalWaitTimeout: "7d" }), [
     "--max-signal-wait-timeout",
@@ -2521,6 +2529,27 @@ Deno.test("serve check-config: a refused route file is named in the json report 
     Deno.exitCode = previousExitCode;
     await Deno.remove(dir, { recursive: true }).catch(() => {});
   }
+});
+
+Deno.test("resolveServeStartupSettings: reserved-worker-labels defaults to none and refuses key=value", () => {
+  assertEquals(
+    resolveServeStartupSettings(mergedServeOptions()).reservedWorkerLabels,
+    [],
+  );
+  assertEquals(
+    resolveServeStartupSettings(
+      mergedServeOptions({ reservedWorkerLabels: " fleet , region ," }),
+    ).reservedWorkerLabels,
+    ["fleet", "region"],
+  );
+  assertThrows(
+    () =>
+      resolveServeStartupSettings(
+        mergedServeOptions({ reservedWorkerLabels: "fleet=a" }),
+      ),
+    UserError,
+    "reserved-worker-labels",
+  );
 });
 
 Deno.test("resolveServeStartupSettings: parses group refresh and dispatch-env-allow, so reload refuses what startup refuses", () => {

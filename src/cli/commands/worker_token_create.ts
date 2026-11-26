@@ -34,6 +34,7 @@ import {
   pushNamespace,
 } from "../../infrastructure/persistence/push_paths.ts";
 import { UserError } from "../../domain/errors.ts";
+import { parseLabels } from "./worker_shared.ts";
 import { runCommandInRootUnit } from "../command_root_unit.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
@@ -60,6 +61,24 @@ import { initializeControlPlaneVaultForCli } from "../control_plane_vault.ts";
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
+/** an older serve drops labels it does not know and mints the token unbound */
+export function assertServeBoundLabels(
+  name: string,
+  server: string,
+  requested: Record<string, string>,
+  recorded: Record<string, string> | undefined,
+): void {
+  const unbound = Object.entries(requested).some(([key, value]) =>
+    !Object.hasOwn(recorded ?? {}, key) || recorded?.[key] !== value
+  );
+  if (unbound) {
+    throw new UserError(
+      `The server minted token '${name}' without the requested labels, so it is too old to bind them. ` +
+        `Revoke the token with 'swamp worker token revoke ${name} --server ${server}' and upgrade serve before minting it again`,
+    );
+  }
+}
+
 export const workerTokenCreateCommand = withRemoteOptions(
   new Command()
     .name("create")
@@ -78,6 +97,10 @@ export const workerTokenCreateCommand = withRemoteOptions(
       "Mint a fleet token for 3 machines",
       "swamp worker token create ci-fleet --duration 24h --max-enrollments 3",
     )
+    .example(
+      "Bind a label every enrolled worker carries and cannot override",
+      "swamp worker token create k3s-prod --duration 24h --max-enrollments unlimited --label fleet=k3s-prod",
+    )
     .arguments("<name:string>")
     .option(
       "--repo-dir <dir:string>",
@@ -95,6 +118,11 @@ export const workerTokenCreateCommand = withRemoteOptions(
     .option(
       "--max-enrollments <n:string>",
       'Maximum machines this token can enroll (positive integer or "unlimited"). Default: 1',
+    )
+    .option(
+      "--label <label:string>",
+      "Bind a label (key=value) that every worker enrolled with this token carries; a worker offering another value for it is refused (repeatable)",
+      { collect: true },
     ),
 ).action(async function (options: AnyOptions, name: string) {
   const cliCtx = createContext(options as GlobalOptions, [
@@ -126,6 +154,8 @@ export const workerTokenCreateCommand = withRemoteOptions(
     }
   }
 
+  const labels = parseLabels(options.label as string[] | undefined);
+
   const server = resolveServeUrl(options.server as string | undefined);
   if (server) {
     const token = await resolveServerTokenFromOptions(
@@ -141,13 +171,14 @@ export const workerTokenCreateCommand = withRemoteOptions(
           durationMs,
           vaultName: options.vault as string | undefined,
           maxEnrollments,
+          ...(Object.keys(labels).length > 0 ? { labels } : {}),
         },
       },
     );
-    renderWorkerTokenCreate(
-      response.data as unknown as WorkerTokenCreateData,
-      cliCtx.outputMode,
-    );
+    const created = response.data as unknown as WorkerTokenCreateData;
+    // rendered first: the plaintext is shown once, even when the check refuses
+    renderWorkerTokenCreate(created, cliCtx.outputMode);
+    assertServeBoundLabels(name, server, labels, created.labels);
     return;
   }
 
@@ -250,6 +281,7 @@ export const workerTokenCreateCommand = withRemoteOptions(
           durationMs,
           vaultName: TOKEN_SECRETS_VAULT_NAME,
           maxEnrollments,
+          labels,
         }),
         withDefaults<WorkerTokenCreateEvent>({
           completed: (event) => {

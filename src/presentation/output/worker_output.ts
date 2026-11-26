@@ -125,6 +125,10 @@ export function renderWorkerTokenCreate(
     ...(data.maxEnrollments !== 1
       ? [`${bold(cyan("Max enrollments:"))} ${data.maxEnrollments}`]
       : []),
+    // an older serve sends no labels
+    ...(Object.keys(data.labels ?? {}).length > 0
+      ? [`${bold(cyan("Labels:"))} ${formatTokenLabels(data.labels)}`]
+      : []),
     `${bold(cyan("Vault:"))} ${data.vaultRef.vaultName} ${
       dim(`(key ${data.vaultRef.secretKey})`)
     }`,
@@ -136,6 +140,13 @@ export function renderWorkerTokenCreate(
     ),
   ];
   writeOutput(lines.join("\n"));
+}
+
+function formatTokenLabels(labels: Record<string, string> | undefined): string {
+  const pairs = Object.entries(labels ?? {}).map(([key, value]) =>
+    `${key}=${value}`
+  );
+  return pairs.length > 0 ? pairs.join(",") : "-";
 }
 
 export function renderWorkerTokenList(
@@ -170,10 +181,11 @@ export function renderWorkerTokenList(
       token.effectiveState,
       token.expiresAt,
       enrollment,
+      formatTokenLabels(token.labels),
     ];
   });
   const lines = tableLines(
-    ["NAME", "STATE", "EXPIRES", "ENROLLMENTS"],
+    ["NAME", "STATE", "EXPIRES", "ENROLLMENTS", "LABELS"],
     rows,
     (column, value) => (column === 1 ? colorTokenState(value) : value),
   );

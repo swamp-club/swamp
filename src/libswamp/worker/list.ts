@@ -50,6 +50,7 @@ export interface WorkerTokenListItem {
   createdAt: string;
   expiresAt: string;
   maxEnrollments: MaxEnrollments;
+  labels: Record<string, string>;
   bindingCount: number;
   bindings: Binding[];
   vaultName: string;
@@ -165,6 +166,7 @@ export async function* workerTokenList(
             createdAt: token.createdAt,
             expiresAt: token.expiresAt,
             maxEnrollments: token.maxEnrollments,
+            labels: token.labels ?? {},
             bindingCount: token.bindings.length,
             bindings: token.bindings,
             vaultName: token.vaultName,
