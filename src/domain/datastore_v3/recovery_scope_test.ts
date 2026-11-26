@@ -18,10 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assert, assertEquals } from "@std/assert";
-import { PartitionKey } from "./partition_key.ts";
+import { PartitionKey, partitionOf } from "./partition_key.ts";
+import { RecordKey } from "./record_key.ts";
 import {
   dataNameOfKey,
   dataNamePrefix,
+  keyBindsToPartition,
   RecoveryScope,
 } from "./recovery_scope.ts";
 import { MODEL_ID, MODEL_TYPE, modelPartition } from "./v3_test_helpers.ts";
@@ -142,4 +144,58 @@ Deno.test("RecoveryScope: a name any writer may have changed is skipped quietly 
   assertEquals(own.addName(name), true);
   assertEquals(own.names(), []);
   assertEquals(own.leftToLiveWriters, true);
+});
+
+const WORKFLOW_ID = "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d";
+const RUN_ID = "2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e";
+const OTHER_ID = "3c4d5e6f-7a8b-4c9d-8e1f-2a3b4c5d6e7f";
+
+Deno.test("keyBindsToPartition: a model partition binds its own aggregate's keys only", () => {
+  const partition = modelPartition();
+  const own = `data/${MODEL_TYPE.normalized}/${MODEL_ID}/out/1/raw`;
+  const other = `data/${MODEL_TYPE.normalized}/${OTHER_ID}/out/1/raw`;
+  assertEquals(keyBindsToPartition(partition, RecordKey.create(own)), true);
+  assertEquals(keyBindsToPartition(partition, RecordKey.create(other)), false);
+});
+
+Deno.test("keyBindsToPartition: a run partition binds its own run's record, step starts and snapshot, not another run's", () => {
+  const partition = partitionOf({
+    kind: "run",
+    workflowId: WORKFLOW_ID,
+    runId: RUN_ID,
+  });
+  const start = `${"a".repeat(64)}.yaml`;
+  const own = [
+    `workflow-runs/${WORKFLOW_ID}/workflow-run-${RUN_ID}.yaml`,
+    `workflow-runs/${WORKFLOW_ID}/starts/${RUN_ID}/${start}`,
+    `workflows-evaluated/runs/${RUN_ID}/evaluated-workflow.yaml`,
+  ];
+  for (const key of own) {
+    assertEquals(keyBindsToPartition(partition, RecordKey.create(key)), true);
+  }
+  const others = [
+    `workflow-runs/${WORKFLOW_ID}/workflow-run-${OTHER_ID}.yaml`,
+    `workflow-runs/${OTHER_ID}/workflow-run-${RUN_ID}.yaml`,
+    `workflow-runs/${WORKFLOW_ID}/starts/${OTHER_ID}/${start}`,
+    `workflows-evaluated/runs/${OTHER_ID}/evaluated-workflow.yaml`,
+    `data/${MODEL_TYPE.normalized}/${MODEL_ID}/out/1/raw`,
+  ];
+  for (const key of others) {
+    assertEquals(keyBindsToPartition(partition, RecordKey.create(key)), false);
+  }
+});
+
+Deno.test("keyBindsToPartition: a config partition binds nothing", () => {
+  const partition = partitionOf({
+    kind: "config",
+    definitionKind: "workflow",
+    name: "deploy",
+  });
+  assertEquals(
+    keyBindsToPartition(
+      partition,
+      RecordKey.create(`workflows/workflow-${WORKFLOW_ID}.yaml`),
+    ),
+    false,
+  );
 });

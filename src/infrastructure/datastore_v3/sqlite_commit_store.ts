@@ -3812,6 +3812,18 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
     }
   }
 
+  baseFileOwnership(
+    namespace: string,
+    key: string,
+  ): Promise<FileOwnership | undefined> {
+    if (this.#closed) return Promise.reject(closedError());
+    try {
+      return Promise.resolve(this.#base.fileOwnership(namespace, key));
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  }
+
   /**
    * The store's last commit position (swamp-club#3482): the highest cursor
    * still accounted for, from the stored commits, else the compaction point,

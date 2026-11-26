@@ -63,6 +63,7 @@ import {
   type CatalogNameKey,
   dataNameOfKey,
   dataNamePrefix,
+  keyBindsToPartition,
   RecoveryScope,
   type ScopedPartition,
 } from "../../domain/datastore_v3/recovery_scope.ts";
@@ -437,6 +438,16 @@ export type RecoveryFallback =
   | "versions_mismatch"
   | "restore_failed"
   | "scope_too_large"
+  | "partition_kind"
+  | "head_moved"
+  | "base_load_staged"
+  | "key_outside_partition"
+  | "unprojected_key"
+  | "shared_key"
+  | "folded_alias"
+  | "path_conflict"
+  | "scope_incomplete"
+  | "base_held"
   | "error";
 
 interface ReprojectCounts {
@@ -525,6 +536,24 @@ export interface RecoverOptions {
    * read again before each repair, so one that starts writing meanwhile is too
    */
   readonly deadInstances?: readonly string[];
+}
+
+export interface PartitionRepairScope {
+  readonly keys: readonly string[];
+  readonly names: readonly string[];
+  readonly minCursor: number;
+}
+
+export interface RepairPartitionOptions {
+  /** where a full rebuild's sweep starts, should the repair need one */
+  readonly since: number;
+  readonly admits: (key: string) => boolean;
+  readonly signal: AbortSignal;
+}
+
+interface KeptKey {
+  record: AppliedRecord | null;
+  file: FileOwnership | undefined;
 }
 
 /** an owed file is fetched only from serve, so offline it stays owed */
@@ -931,6 +960,439 @@ export class SqliteReadModel implements ReadModel {
         }),
       options.signal,
     );
+  }
+
+  // a full rebuild whenever the rollback cannot be shown equal to a replay;
+  // run only under the writer lock
+  repairPartition(
+    namespace: string,
+    partition: PartitionKey,
+    keep: number,
+    scope: PartitionRepairScope,
+    options: RepairPartitionOptions,
+  ): Promise<void> {
+    return this.#exclusive(
+      () =>
+        this.#counted(
+          "swamp.datastore.v3.readmodel.repair_partition",
+          async (span) => {
+            options.signal.throwIfAborted();
+            span.setAttributes({
+              "swamp.datastore.v3.partition": partition.toString(),
+              "swamp.datastore.v3.readmodel.repair_partition.keep": keep,
+              "swamp.datastore.v3.readmodel.repair_partition.keys":
+                scope.keys.length,
+              "swamp.datastore.v3.readmodel.repair_partition.names":
+                scope.names.length,
+            });
+            let fallback: RecoveryFallback;
+            try {
+              await this.#repairPartitionTargeted(
+                namespace,
+                partition,
+                keep,
+                scope,
+                options,
+                span,
+              );
+              span.setAttributes({
+                "swamp.datastore.v3.readmodel.repair_partition.path":
+                  "targeted",
+              });
+              return;
+            } catch (error) {
+              if (!(error instanceof TargetedRecoveryFallback)) {
+                if (options.signal.aborted) throw options.signal.reason;
+                if (!fallsBackToFull(error)) throw error;
+              }
+              fallback = error instanceof TargetedRecoveryFallback
+                ? error.reason
+                : "error";
+              logger
+                .info`Repairing partition ${partition.toString()} alone could not be shown sound (${
+                errorMessage(error)
+              }); rebuilding the whole read model instead`;
+            }
+            span.setAttributes({
+              "swamp.datastore.v3.readmodel.repair_partition.path": "full",
+              "swamp.datastore.v3.readmodel.repair_partition.fallback":
+                fallback,
+            });
+            await this.#recoverFull(
+              namespace,
+              options,
+              span,
+              this.#state.rebuildInProgress(),
+              false,
+              fallback,
+            );
+          },
+        ),
+      options.signal,
+    );
+  }
+
+  async #repairPartitionTargeted(
+    namespace: string,
+    partition: PartitionKey,
+    keep: number,
+    scope: PartitionRepairScope,
+    options: RepairPartitionOptions,
+    span: Span,
+  ): Promise<void> {
+    const signal = options.signal;
+    const owner = partition.toString();
+    const refuse = (reason: RecoveryFallback, detail: string) =>
+      new TargetedRecoveryFallback(reason, detail);
+    if (this.#state.rebuildInProgress() !== undefined) {
+      throw refuse("rebuild_in_progress", "a full rebuild is unfinished");
+    }
+    // a section that reset holds nothing to roll back from
+    if (this.#resetInSection) {
+      throw refuse("state_reset", "the read model's state was reset");
+    }
+    const kind = partition.identity.kind;
+    if (kind !== "model" && kind !== "run") {
+      throw refuse(
+        "partition_kind",
+        `a ${kind} partition may share its keys with another`,
+      );
+    }
+    if (kind === "run" && scope.names.length > 0) {
+      throw refuse("partition_kind", "a run partition names data");
+    }
+    const head = (await this.#commitStore.head(namespace, partition)).seq;
+    if (head !== keep) {
+      throw refuse(
+        "head_moved",
+        `partition ${owner} is at seq ${head} in the copy, not ${keep}`,
+      );
+    }
+    if (this.#state.appliedSeq(namespace, owner) < keep) {
+      throw refuse(
+        "seq_not_reached",
+        `the read model has not applied partition ${owner} to seq ${keep}`,
+      );
+    }
+    if (this.#state.hasStagedLoad()) {
+      throw refuse("base_load_staged", "a base load is part way");
+    }
+    const keys = [...new Set(scope.keys)].sort();
+    for (const key of keys) {
+      let recordKey: RecordKey;
+      try {
+        recordKey = RecordKey.create(key);
+      } catch {
+        throw refuse("key_outside_partition", `${key} is not a record key`);
+      }
+      if (!keyBindsToPartition(partition, recordKey)) {
+        throw refuse(
+          "key_outside_partition",
+          `${key} does not lie in partition ${owner}'s aggregate`,
+        );
+      }
+      if (this.#unprojected(namespace, key)) {
+        throw refuse("unprojected_key", `${key} is not projected`);
+      }
+    }
+    for (const live of this.#state.liveRecordPartitions(namespace, keys)) {
+      if (live.partition !== owner) {
+        throw refuse(
+          "shared_key",
+          `${live.key} is live in partition ${live.partition} too`,
+        );
+      }
+    }
+    for (const key of keys) {
+      const shown = this.#state.fileOwnership(namespace, key);
+      if (shown !== undefined && shown.owner !== owner) {
+        throw refuse(
+          "shared_key",
+          `${key}'s file shows partition ${shown.owner}'s put`,
+        );
+      }
+      if (this.#pathConflictsInState(namespace, key)) {
+        throw refuse(
+          "path_conflict",
+          `${key}'s path is a file's or directory's another key decides`,
+        );
+      }
+    }
+    await this.#foldingOf(this.#cacheRoot(namespace));
+    if (!this.#foldsNothing(namespace)) {
+      const alike = this.#state.keysFoldingLike(namespace, keys);
+      if (alike.length > 0) {
+        throw refuse(
+          "folded_alias",
+          `${alike[0]} folds to the spelling of a key the repair restores`,
+        );
+      }
+    }
+    const scoped = new Set(keys);
+    const outside = this.#state.keysOwnedFrom(
+      namespace,
+      owner,
+      scope.minCursor,
+    ).find((key) => !scoped.has(key));
+    if (outside !== undefined) {
+      throw refuse(
+        "scope_incomplete",
+        `${outside}'s file shows a put of partition ${owner} the repair does not name`,
+      );
+    }
+    const tracking = this.#catalog.dirtyTracking?.();
+    if (scope.names.length > 0 && tracking === undefined) {
+      throw refuse(
+        "dirty_tracking_missing",
+        "the catalog keeps no dirty names",
+      );
+    }
+    const kept = await this.#keptState(
+      namespace,
+      partition,
+      keep,
+      keys,
+      scope.names,
+      signal,
+    );
+    span.setAttributes({
+      "swamp.datastore.v3.readmodel.repair_partition.kept_commits":
+        kept.commits,
+    });
+    // fetched before anything rolls back, so a serve refusal leaves the
+    // projection as it was rather than half restored
+    const blobs = [...kept.keys.values()].flatMap((state) =>
+      state.file?.present === true && state.record?.blob !== undefined &&
+        state.record.blob.legacyKey === undefined
+        ? [state.record.blob]
+        : []
+    );
+    if (blobs.length > 0) {
+      await this.#chunkStore.prefetch(namespaceOf(namespace), blobs, signal);
+    }
+    signal.throwIfAborted();
+    this.#state.rollBackPartition({
+      namespace,
+      partition: owner,
+      keep,
+      records: new Map(
+        [...kept.keys].map(([key, state]) => [key, state.record]),
+      ),
+      versions: new Map(
+        scope.names.map((name) => [name, kept.replay.live.get(name) ?? []]),
+      ),
+      ownership: new Map(
+        [...kept.keys].map(([key, state]) => [key, state.file]),
+      ),
+      minCursor: scope.minCursor,
+    });
+    const counts = { restored: 0 };
+    const restored = await this.#restoreFiles(
+      this.#state.expectedFiles(namespace, keys),
+      { syncMatching: false, rethrowRefusals: true, counts },
+      signal,
+    );
+    // the marker stays, and the full rebuild below resets past it
+    if (!restored) {
+      throw refuse(
+        "restore_failed",
+        "a file could not be put back to what the kept commits say",
+      );
+    }
+    span.setAttributes({
+      "swamp.datastore.v3.readmodel.repair_partition.files_restored":
+        counts.restored,
+    });
+    if (tracking !== undefined && scope.names.length > 0) {
+      const identity = partition.identity;
+      if (identity.kind !== "model") {
+        throw refuse("partition_kind", "only a model partition names data");
+      }
+      const nameKeys: CatalogNameKey[] = scope.names.map((name) => ({
+        namespace,
+        type: identity.type,
+        modelId: identity.id,
+        name,
+      }));
+      // readers wait on #pageInFlight until the catalog is whole again
+      const reprojecting = Promise.withResolvers<void>();
+      this.#pageInFlight = reprojecting.promise;
+      try {
+        this.#catalog.beginBatch();
+        try {
+          tracking.clearNames(nameKeys, options.admits);
+          this.#catalog.apply(namespace, partition, kept.replay.actions);
+          await this.#commitCatalog(signal);
+        } finally {
+          this.#catalog.rollbackBatch();
+        }
+      } finally {
+        this.#pageInFlight = undefined;
+        reprojecting.resolve();
+      }
+    }
+    await this.#tellRecordsChanged(new Map([[namespace, new Set(keys)]]));
+    this.#state.finishPartitionRepair();
+  }
+
+  /** a file or directory of another decided key already claims the path */
+  #pathConflictsInState(namespace: string, key: string): boolean {
+    const segments = key.split("/");
+    for (let i = 1; i < segments.length; i++) {
+      const prefix = segments.slice(0, i).join("/");
+      if (this.#state.fileOwnership(namespace, prefix) !== undefined) {
+        return true;
+      }
+    }
+    return this.#state.decidedKeysUnder(namespace, key).length > 0;
+  }
+
+  /**
+   * the scope keys' records and files and the names' catalog history as an
+   * in-order replay of the store leaves them at `keep`: the compacted base a
+   * fresh read model loads, then the partition's kept commits by feed position
+   */
+  async #keptState(
+    namespace: string,
+    partition: PartitionKey,
+    keep: number,
+    keys: readonly string[],
+    names: readonly string[],
+    signal: AbortSignal,
+  ): Promise<{
+    readonly keys: ReadonlyMap<string, KeptKey>;
+    readonly replay: ReturnType<typeof catalogActionsForNames>;
+    readonly commits: number;
+  }> {
+    const owner = partition.toString();
+    const point = await this.#commitStore.compactionPoint();
+    for (let attempt = 1;; attempt++) {
+      signal.throwIfAborted();
+      const base = await this.#commitStore.readPartitionBase(
+        namespace,
+        partition,
+        names,
+      );
+      const states = new Map<string, KeptKey>();
+      for (const key of keys) {
+        states.set(
+          key,
+          await this.#baseKey(namespace, partition, key, base, point),
+        );
+      }
+      const named = new Set(names);
+      const history: Commit[] = [];
+      let read = 0;
+      try {
+        let from = base.compactedSeq + 1;
+        while (from <= keep) {
+          signal.throwIfAborted();
+          const page = await this.#commitStore.readPartition(
+            namespace,
+            partition,
+            from,
+            this.#pageSize,
+          );
+          if (page.length === 0) break;
+          for (const change of page) {
+            const commit = change.commit;
+            if (commit.seq > keep) break;
+            read++;
+            for (const keyChange of finalKeyStates(commit)) {
+              const key = keyChange.key.toString();
+              const state = states.get(key);
+              if (state === undefined) continue;
+              state.record = appliedRecord(keyChange.put, commit.principal);
+              const decision = decideFile(
+                state.file,
+                owner,
+                change.cursor,
+                keyChange.put !== null,
+              );
+              if (decision.kind !== "keep") state.file = decision.next;
+            }
+            if (
+              named.size > 0 &&
+              catalogNamesOfCommit(commit).some((name) => named.has(name))
+            ) {
+              history.push(commit);
+              if (history.length > this.#targetedCommitsCeiling) {
+                throw new TargetedRecoveryFallback(
+                  "scope_too_large",
+                  `more than ${this.#targetedCommitsCeiling} commits of the repaired names to hold`,
+                );
+              }
+            }
+          }
+          const last = page[page.length - 1].commit.seq;
+          if (last >= keep || page.length < this.#pageSize) break;
+          from = last + 1;
+        }
+      } catch (error) {
+        if (!(error instanceof CommitsCompactedError)) throw error;
+        if (attempt >= BASE_READ_ATTEMPTS) {
+          throw new TargetedRecoveryFallback(
+            "base_compacted",
+            `partition ${owner} kept being compacted while its history was read`,
+          );
+        }
+        continue;
+      }
+      return {
+        keys: states,
+        replay: catalogActionsForNames(base, history, named),
+        commits: read,
+      };
+    }
+  }
+
+  /**
+   * what a base load gives a scope key before any kept commit applies: the
+   * base's file row and record, which a replay stages as they are
+   */
+  async #baseKey(
+    namespace: string,
+    partition: PartitionKey,
+    key: string,
+    base: PartitionBase,
+    point: number,
+  ): Promise<KeptKey> {
+    if (point === 0) return { record: null, file: undefined };
+    const owner = partition.toString();
+    const read = this.#commitStore.baseFileOwnership;
+    if (read === undefined) {
+      throw new TargetedRecoveryFallback(
+        "base_held",
+        "the commit store cannot say what its base shows",
+      );
+    }
+    const file = await read.call(this.#commitStore, namespace, key);
+    const record = base.compactedSeq === 0
+      ? undefined
+      : await this.#commitStore.readBaseRecord(namespace, partition, key);
+    if (file !== undefined && (file.owner !== owner || file.mark > point)) {
+      throw new TargetedRecoveryFallback(
+        "base_held",
+        `the base shows ${key} at another partition's put or past its point`,
+      );
+    }
+    // a base row for a put with no record of it, or the reverse, is not what
+    // a replay builds from
+    if ((file?.present === true) !== (record !== undefined)) {
+      throw new TargetedRecoveryFallback(
+        "base_held",
+        `the base's file and record of ${key} disagree`,
+      );
+    }
+    return {
+      record: record === undefined ? null : withAccess(
+        "blob" in record.content
+          ? { sha256: record.sha256, blob: record.content.blob }
+          : { sha256: record.sha256 },
+        record.access,
+      ),
+      file,
+    };
   }
 
   async #recoverFull(
@@ -2919,8 +3381,16 @@ export class SqliteReadModel implements ReadModel {
         // A catalog rebuilt, invalidated or created afresh holds none of the
         // commits the state says are applied: start over.
         const recorded = this.#state.catalogGeneration();
-        if (recorded !== generation || !this.#catalog.isPopulated()) {
-          if (recorded !== undefined && recorded !== REPLAY_PENDING) {
+        // a partition repair cut short left its projection half rolled back
+        const repairCutShort = this.#state.partitionRepairPending();
+        if (
+          recorded !== generation || !this.#catalog.isPopulated() ||
+          repairCutShort
+        ) {
+          if (repairCutShort) {
+            logger
+              .info`A repair of one partition of this checkout's read model was cut short; applying every commit again`;
+          } else if (recorded !== undefined && recorded !== REPLAY_PENDING) {
             this.#warnOutsideReset(recorded, generation);
           }
           this.#reset(generation);
