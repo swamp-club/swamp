@@ -7586,3 +7586,50 @@ Deno.test("DataQueryService: an unknown field inside a macro body, or a binder u
     'Unknown field "c"',
   );
 });
+
+Deno.test("DataQueryService: cel.bind binds a value for its body in a predicate and in select", () => {
+  using t = setupSboms();
+  const { service } = t;
+  assertEquals(
+    namesOf(service.querySync(
+      "cel.bind(cs, attributes.components, size(cs) == 2)",
+    )),
+    ["image-a"],
+  );
+  assertEquals(
+    namesOf(service.querySync(
+      'cel.bind(cs, attributes.components, cs.exists(c, c.name == "openssl"))',
+    )),
+    ["image-a"],
+  );
+  assertEquals(
+    namesOf(service.querySync(
+      'cel.bind(cs, attributes.components, cel.bind(n, size(cs), n == 1 && cs[0].name == "zlib"))',
+    )),
+    ["image-b"],
+  );
+  const projected = service.querySync('name == "image-b"', {
+    select: 'cel.bind(c, attributes.components[0], c.name + "@" + c.version)',
+  });
+  assertEquals(projected, ["zlib@1.2.13"]);
+});
+
+Deno.test("DataQueryService: an unknown field in a cel.bind init or body, or a bare cel, is still refused", () => {
+  using t = setupSboms();
+  const { service } = t;
+  assertThrows(
+    () => service.querySync("cel.bind(v, bogus, v > 1)"),
+    UserError,
+    'Unknown field "bogus"',
+  );
+  assertThrows(
+    () => service.querySync("cel.bind(v, 1, v == bogus)"),
+    UserError,
+    'Unknown field "bogus"',
+  );
+  assertThrows(
+    () => service.querySync("cel.x == 1"),
+    UserError,
+    'Unknown field "cel"',
+  );
+});

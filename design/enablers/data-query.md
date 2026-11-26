@@ -607,6 +607,12 @@ swamp data query 'modelName == "golden-gce" &&
   attributes.components.exists(c, c.name == "openssl")'
 ```
 
+`cel.bind(name, init, body)` follows the same rule: `name` is in scope only in
+`body`, and `init` is checked like any other expression, since cel-js evaluates
+it outside the binding. `cel` is accepted only as the receiver of a
+three-argument `cel.bind` whose first argument is a name; any other use of `cel`
+is an unknown field.
+
 ## Catalog
 
 A SQLite metadata catalog, `_catalog.db`, backs query performance. It lives in

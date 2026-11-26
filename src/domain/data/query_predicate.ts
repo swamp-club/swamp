@@ -140,6 +140,17 @@ function rootIdentifiers(node: ASTNode, bound: ReadonlySet<string>): string[] {
   if (op === "rcall") {
     const [method, receiver, callArgs] = args as [string, ASTNode, ASTNode[]];
     const binder = callArgs[0];
+    // the init is evaluated outside the binding; cel is only the namespace here
+    if (
+      method === "bind" && receiver?.op === "id" && receiver.args === "cel" &&
+      !bound.has("cel") && callArgs.length === 3 && binder?.op === "id" &&
+      typeof binder.args === "string"
+    ) {
+      return [
+        ...collect(callArgs[1]),
+        ...rootIdentifiers(callArgs[2], new Set(bound).add(binder.args)),
+      ];
+    }
     if (
       BINDING_MACROS.has(method) && binder?.op === "id" &&
       typeof binder.args === "string"

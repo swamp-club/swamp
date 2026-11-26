@@ -707,3 +707,100 @@ Deno.test("validateFieldReferences: still rejects an unknown field inside a macr
     'Unknown field "c"',
   );
 });
+
+Deno.test("collectRootIdentifiers: cel.bind binds its name in the body and skips the cel namespace", () => {
+  assertEquals(rootsOf("cel.bind(v, attributes.version, v > 1)"), [
+    "attributes",
+  ]);
+  assertEquals(
+    rootsOf("cel.bind(v, attributes.components, size(v) == 1)"),
+    ["attributes"],
+  );
+  assertEquals(
+    rootsOf('cel.bind(v, 1, cel.bind(w, v + 1, w == 2 && name == "x"))'),
+    ["name"],
+  );
+});
+
+Deno.test("collectRootIdentifiers: cel.bind collects its init outside the binding", () => {
+  assertEquals(rootsOf("cel.bind(v, v, v)"), ["v"]);
+  assertEquals(rootsOf('cel.bind(name, name, name == "x")'), ["name"]);
+  assertEquals(rootsOf("cel.bind(v, 1, v == 1) && v == 2"), ["v"]);
+});
+
+Deno.test("collectRootIdentifiers: cel.bind composes with list macros", () => {
+  assertEquals(
+    rootsOf('cel.bind(cs, attributes.components, cs.exists(c, c.name == "a"))'),
+    ["attributes"],
+  );
+  assertEquals(
+    rootsOf(
+      "attributes.components.exists(c, cel.bind(n, c.name, n == tags.x))",
+    ),
+    ["attributes", "tags"],
+  );
+});
+
+Deno.test("collectRootIdentifiers: a cel.bind binder named like a field shadows it only in the body", () => {
+  assertEquals(rootsOf('cel.bind(content, "x", content == "x")'), []);
+  assertEquals(
+    rootsOf('cel.bind(content, "x", content == "x") || content == "y"'),
+    ["content"],
+  );
+  assertEquals(
+    referencesContent(ast('cel.bind(content, "x", content == "x")')),
+    false,
+  );
+  assertEquals(
+    referencesContent(ast("cel.bind(v, content.size(), v > 0)")),
+    true,
+  );
+  assertEquals(
+    referencesAttributes(ast("cel.bind(v, 1, attributes.n == v)")),
+    true,
+  );
+});
+
+Deno.test("collectRootIdentifiers: a malformed or shadowed cel.bind still reports cel", () => {
+  assertEquals(rootsOf("cel"), ["cel"]);
+  assertEquals(rootsOf("cel.x == 1"), ["cel"]);
+  assertEquals(rootsOf("cel.bind(v, 1)"), ["cel", "v"]);
+  assertEquals(rootsOf("cel.other(v, 1, v == 1)"), ["cel", "v"]);
+  assertEquals(
+    rootsOf("tags.exists(cel, cel.bind(v, 1, v == 1))"),
+    ["tags", "v"],
+  );
+});
+
+Deno.test("validateFieldReferences: accepts cel.bind and still rejects unknown fields in its init or body", () => {
+  for (
+    const expr of [
+      "cel.bind(v, attributes.version, v > 1)",
+      'cel.bind(cs, attributes.components, cs.exists(c, c.name == "a"))',
+      'cel.bind(v, 1, cel.bind(w, v + 1, w == 2 && name == "x"))',
+    ]
+  ) {
+    validateFieldReferences(collectRootIdentifiers(ast(expr)));
+  }
+  assertThrows(
+    () =>
+      validateFieldReferences(
+        collectRootIdentifiers(ast("cel.bind(v, bogus, v > 1)")),
+      ),
+    UserError,
+    'Unknown field "bogus"',
+  );
+  assertThrows(
+    () =>
+      validateFieldReferences(
+        collectRootIdentifiers(ast("cel.bind(v, 1, v == bogus)")),
+      ),
+    UserError,
+    'Unknown field "bogus"',
+  );
+  assertThrows(
+    () => validateFieldReferences(collectRootIdentifiers(ast("cel.x == 1"))),
+    UserError,
+    'Unknown field "cel"',
+  );
+});
