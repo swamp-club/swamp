@@ -521,6 +521,16 @@ export class WorkerGateway {
   }
 
   dispose(): void {
+    for (const entry of this.#workers.values()) {
+      if (entry.graceTimer !== undefined) {
+        clearTimeout(entry.graceTimer);
+        entry.graceTimer = undefined;
+      }
+      if (entry.expiryTimer !== undefined) {
+        clearTimeout(entry.expiryTimer);
+        entry.expiryTimer = undefined;
+      }
+    }
     this.#sessions.dispose();
   }
 
@@ -1450,6 +1460,12 @@ export class WorkerGateway {
       .length;
   }
 
+  get pendingExpiryTimers(): number {
+    return [...this.#workers.values()].filter((w) =>
+      w.expiryTimer !== undefined
+    ).length;
+  }
+
   async #handleEnroll(
     state: SocketState,
     rawParams: unknown,
@@ -1896,6 +1912,12 @@ export class WorkerGateway {
       return;
     }
 
+    // a stopping serve takes no reconnect, so no window opens for one
+    if (this.#departuresRecorded) {
+      this.#options.onWorkerDisconnected?.(snapshot);
+      return;
+    }
+
     entry.graceTimer = setTimeout(() => {
       entry.graceTimer = undefined;
       if (entry.expiryTimer !== undefined) {
@@ -1915,6 +1937,12 @@ export class WorkerGateway {
 
   #scheduleTokenExpiry(entry: WorkerEntry, deadlineMs: number): void {
     if (Number.isNaN(deadlineMs)) {
+      return;
+    }
+    // a stopping serve records no expiry, so it arms none; a chained wait
+    // ending here drops its spent handle
+    if (this.#departuresRecorded) {
+      entry.expiryTimer = undefined;
       return;
     }
     entry.expiresAtMs = deadlineMs;
@@ -1943,6 +1971,8 @@ export class WorkerGateway {
       return;
     }
     entry.expiryTimer = undefined;
+    // its expire record and departure would land after the store closes
+    if (this.#departuresRecorded) return;
     logger.info("Enrollment token for {worker} expired — disconnecting", {
       worker: workerName,
     });

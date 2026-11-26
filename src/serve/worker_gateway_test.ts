@@ -4951,3 +4951,98 @@ Deno.test("WorkerGateway: a dispatch refused for an unrecorded busy write wakes 
   assertEquals(h.gateway.worker("ci-runner-3")?.status, "idle");
   assertEquals(h.gateway.worker("ci-runner-3")?.activeDispatchIds, []);
 });
+
+Deno.test("WorkerGateway: dispose clears an armed grace window and token expiry", async () => {
+  const h = createHarness({
+    graceWindowMs: 60_000,
+    readTokenExpiresAt: () =>
+      Promise.resolve(new Date(Date.now() + 60_000).toISOString()),
+  });
+  const { workerChannel, dropSocket } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel);
+  dropSocket();
+  await h.gateway.settled();
+  assertEquals(h.gateway.pendingGraceWindows, 1);
+  assertEquals(h.gateway.pendingExpiryTimers, 1);
+
+  h.gateway.dispose();
+  assertEquals(h.gateway.pendingGraceWindows, 0);
+  assertEquals(h.gateway.pendingExpiryTimers, 0);
+});
+
+Deno.test("WorkerGateway: a socket closing after shutdown departures opens no grace window", async () => {
+  const h = createHarness({ graceWindowMs: 60_000 });
+  const { workerChannel, dropSocket } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel);
+  await h.gateway.recordShutdownDepartures();
+  const written = h.transitions.length;
+
+  dropSocket();
+  await h.gateway.settled();
+  assertEquals(h.gateway.pendingGraceWindows, 0);
+  assertEquals(h.transitions.length, written);
+  assertEquals(h.disconnected.length, 1);
+  h.gateway.dispose();
+});
+
+Deno.test("WorkerGateway: a token expiry due while shutdown waits on the tail records nothing", async () => {
+  let pushes = 0;
+  let deadlineMs = Number.POSITIVE_INFINITY;
+  const h = createHarness({
+    readTokenExpiresAt: () => {
+      deadlineMs = Date.now() + 200;
+      return Promise.resolve(new Date(deadlineMs).toISOString());
+    },
+    pushWorkerRecords: () => {
+      pushes++;
+      return Promise.resolve();
+    },
+  });
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel);
+  await h.gateway.settled();
+  const pushesBefore = pushes;
+  assertEquals(h.gateway.pendingExpiryTimers, 1);
+  const gate = Promise.withResolvers<void>();
+  const held = h.gateway.serializeWorkerWrites(() => gate.promise);
+
+  const departures = h.gateway.recordShutdownDepartures();
+  await waitFor(() => Date.now() > deadlineMs + 50, "the expiry deadline");
+  gate.resolve();
+  await held;
+  await departures;
+  await h.gateway.settled();
+
+  assertEquals(h.transitions.filter((t) => t.methodName === "expire"), []);
+  assertEquals(
+    h.transitions.filter((t) => t.inputs.status === "disconnected").length,
+    1,
+  );
+  assertEquals(pushes, pushesBefore + 1);
+  assertEquals(h.removed.length, 0);
+  h.gateway.dispose();
+});
+
+Deno.test("WorkerGateway: an enrollment in flight when shutdown starts arms no token expiry", async () => {
+  const reached = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const h = createHarness({
+    readTokenExpiresAt: async () => {
+      reached.resolve();
+      await release.promise;
+      return new Date(Date.now() + 60_000).toISOString();
+    },
+  });
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  const enrolling = enroll(workerChannel).catch(() => undefined);
+  await reached.promise;
+
+  const departures = h.gateway.recordShutdownDepartures();
+  release.resolve();
+  await enrolling;
+  await departures;
+  await h.gateway.settled();
+
+  assertEquals(h.gateway.pendingExpiryTimers, 0);
+  h.gateway.dispose();
+});
