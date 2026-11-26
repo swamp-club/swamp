@@ -17,8 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { modelRegistry } from "../models/model.ts";
-import { isServeFederationEnabled } from "./federation_gate.ts";
+import { modelRegistry } from "../model.ts";
+import { isServeFederationEnabled } from "../../serve/federation_gate.ts";
 
 export const FEDERATION_MODEL_TYPES: readonly string[] = ["swamp/serve-member"];
 
@@ -28,7 +28,7 @@ export async function registerFederationModelTypes(
 ): Promise<boolean> {
   if (!isServeFederationEnabled(env)) return false;
   const { serveMemberModel } = await import(
-    "../models/serve/serve_member_model.ts"
+    "./serve_member_model.ts"
   );
   // a cached import does not re-run defineModel after invalidateType
   if (!modelRegistry.has(serveMemberModel.type)) {

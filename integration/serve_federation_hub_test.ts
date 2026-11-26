@@ -29,7 +29,7 @@ import { FileSystemControlPlaneStore } from "../src/infrastructure/persistence/f
 import { swampPath } from "../src/infrastructure/persistence/paths.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { FEDERATION_GATE_VARIABLE } from "../src/domain/serve/federation_gate.ts";
-import { registerFederationModelTypes } from "../src/domain/serve/federation_model_types.ts";
+import { registerFederationModelTypes } from "../src/domain/models/serve/federation_model_types.ts";
 import { sampleFingerprintProps } from "../src/domain/serve/federation_test_helpers.ts";
 import {
   SERVE_MEMBER_DATA_NAME,

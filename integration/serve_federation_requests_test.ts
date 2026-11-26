@@ -22,7 +22,7 @@ import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { FileSystemControlPlaneStore } from "../src/infrastructure/persistence/fs_control_plane_store.ts";
 import { swampPath } from "../src/infrastructure/persistence/paths.ts";
 import { FEDERATION_GATE_VARIABLE } from "../src/domain/serve/federation_gate.ts";
-import { registerFederationModelTypes } from "../src/domain/serve/federation_model_types.ts";
+import { registerFederationModelTypes } from "../src/domain/models/serve/federation_model_types.ts";
 import { sampleFingerprintProps } from "../src/domain/serve/federation_test_helpers.ts";
 import { Fingerprint } from "../src/domain/serve/fingerprint.ts";
 import { FederationHub } from "../src/serve/federation/federation_hub.ts";

@@ -33,7 +33,7 @@ import {
 import { CONTROL_PLANE_MODEL_TYPES } from "../src/domain/models/control_plane_types.ts";
 import { modelRegistry } from "../src/domain/models/models.ts";
 import { FEDERATION_GATE_VARIABLE } from "../src/domain/serve/federation_gate.ts";
-import { registerFederationModelTypes } from "../src/domain/serve/federation_model_types.ts";
+import { registerFederationModelTypes } from "../src/domain/models/serve/federation_model_types.ts";
 
 /** Built-in swamp/* types that hold user data; each holds no secret material. */
 const USER_DATA_SWAMP_TYPES: readonly string[] = ["swamp/serve-member"];

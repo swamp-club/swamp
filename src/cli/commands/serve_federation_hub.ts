@@ -25,7 +25,7 @@ import {
   Fingerprint,
   type FingerprintProps,
 } from "../../domain/serve/fingerprint.ts";
-import { registerFederationModelTypes } from "../../domain/serve/federation_model_types.ts";
+import { registerFederationModelTypes } from "../../domain/models/serve/federation_model_types.ts";
 import type { AuditEmitter } from "../../domain/serve_audit/audit_emitter.ts";
 import type { RepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";

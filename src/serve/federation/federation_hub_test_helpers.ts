@@ -18,7 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { ControlPlaneStore } from "../../domain/datastore/control_plane_store.ts";
-import { createInMemoryWorkerContext } from "../../domain/models/worker/worker_test_helpers.ts";
+import { getLogger } from "@logtape/logtape";
+import { generateDataId } from "../../domain/data/data_id.ts";
+import type { DataHandle, MethodContext } from "../../domain/models/model.ts";
 import {
   SERVE_MEMBER_DATA_NAME,
   SERVE_MEMBER_MODEL_TYPE,
@@ -66,19 +68,62 @@ export class MemoryControlPlaneStore implements ControlPlaneStore {
   }
 }
 
+interface MemberHarness {
+  context: MethodContext;
+  store: Map<string, Record<string, unknown>>;
+  versions: Map<string, number>;
+}
+
+function memberHarness(name: string): MemberHarness {
+  const store = new Map<string, Record<string, unknown>>();
+  const versions = new Map<string, number>();
+  const writeResource = (
+    specName: string,
+    dataName: string,
+    data: Record<string, unknown>,
+  ): Promise<DataHandle> => {
+    store.set(dataName, structuredClone(data));
+    const version = (versions.get(dataName) ?? 0) + 1;
+    versions.set(dataName, version);
+    return Promise.resolve({
+      name: dataName,
+      specName,
+      kind: "resource",
+      dataId: generateDataId(),
+      version,
+      size: JSON.stringify(data).length,
+      tags: {},
+      metadata: {} as DataHandle["metadata"],
+    });
+  };
+  const context = {
+    signal: new AbortController().signal,
+    repoDir: "/tmp",
+    modelType: SERVE_MEMBER_MODEL_TYPE,
+    modelId: crypto.randomUUID(),
+    globalArgs: {},
+    definition: { id: "test-id", name, version: 1, tags: {} },
+    methodName: "test",
+    logger: getLogger(["test"]),
+    writeResource,
+    readResource: (dataName: string) =>
+      Promise.resolve(
+        store.has(dataName) ? structuredClone(store.get(dataName)!) : null,
+      ),
+  } as unknown as MethodContext;
+  return { context, store, versions };
+}
+
 /** member records kept by running the real model methods over an in-memory context */
 export class InMemoryMembers implements MemberRecords {
-  readonly #contexts = new Map<
-    string,
-    ReturnType<typeof createInMemoryWorkerContext>
-  >();
+  readonly #contexts = new Map<string, MemberHarness>();
   readonly calls: Array<{ name: string; call: MemberMethodCall }> = [];
 
   readonly run: MemberMethodRunner = async (name, call) => {
     this.calls.push({ name, call });
     let harness = this.#contexts.get(name);
     if (harness === undefined) {
-      harness = createInMemoryWorkerContext(SERVE_MEMBER_MODEL_TYPE, name);
+      harness = memberHarness(name);
       this.#contexts.set(name, harness);
     }
     await serveMemberModel.methods[call.method].execute(

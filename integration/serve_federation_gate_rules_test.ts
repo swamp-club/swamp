@@ -45,7 +45,7 @@ import {
 } from "../src/serve/serve_config.ts";
 import { VERSION } from "../src/infrastructure/runtime/build_info.ts";
 import { modelRegistry } from "../src/domain/models/models.ts";
-import { registerFederationModelTypes } from "../src/domain/serve/federation_model_types.ts";
+import { registerFederationModelTypes } from "../src/domain/models/serve/federation_model_types.ts";
 import { resolveHttpRoute } from "../src/serve/http_request_span.ts";
 import {
   FEDERATION_CHECK_IN_PATH,

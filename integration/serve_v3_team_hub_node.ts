@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { FilesystemDatastoreConfig } from "../src/domain/datastore/datastore_config.ts";
-import { registerFederationModelTypes } from "../src/domain/serve/federation_model_types.ts";
+import { registerFederationModelTypes } from "../src/domain/models/serve/federation_model_types.ts";
 import { Fingerprint } from "../src/domain/serve/fingerprint.ts";
 import { sampleFingerprintProps } from "../src/domain/serve/federation_test_helpers.ts";
 import {

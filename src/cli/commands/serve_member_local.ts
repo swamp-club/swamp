@@ -20,7 +20,7 @@
 import { UserError } from "../../domain/errors.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import { SERVE_MEMBER_MODEL_TYPE } from "../../domain/models/serve/serve_member_names.ts";
-import { registerFederationModelTypes } from "../../domain/serve/federation_model_types.ts";
+import { registerFederationModelTypes } from "../../domain/models/serve/federation_model_types.ts";
 import {
   pushBoundOf,
   pushNamespace,

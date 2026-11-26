@@ -18,9 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { modelRegistry } from "../models/models.ts";
-import { withMockedEnv } from "../../infrastructure/persistence/path_test_helpers.ts";
-import { FEDERATION_GATE_VARIABLE } from "./federation_gate.ts";
+import { modelRegistry } from "../models.ts";
+import { withMockedEnv } from "../../../infrastructure/persistence/path_test_helpers.ts";
+import { FEDERATION_GATE_VARIABLE } from "../../serve/federation_gate.ts";
 import {
   FEDERATION_MODEL_TYPES,
   registerFederationModelTypes,
