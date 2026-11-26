@@ -29,6 +29,7 @@ import {
   type FingerprintSettingsSource,
   type FingerprintWorkers,
 } from "./fingerprint.ts";
+import { isLoopbackHost } from "./loopback.ts";
 
 export interface FingerprintDatastoreFacts {
   /** the extension datastore type; undefined for the filesystem datastore */
@@ -58,31 +59,30 @@ export interface FingerprintCollectorPorts {
   datastore(): Promise<FingerprintDatastoreFacts>;
   vaultTypes(): Promise<readonly string[]>;
   extensions(): Promise<readonly { name: string; version: string }[]>;
-  /** every worker record, whatever its status */
+  /** every readable worker record, whatever its status */
   workers(): Promise<readonly FingerprintWorkerFacts[]>;
-}
-
-const IPV4_LOOPBACK = /^127\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
-
-export function isLoopbackHost(host: string): boolean {
-  if (host === "localhost" || host === "::1" || host === "[::1]") return true;
-  const octets = IPV4_LOOPBACK.exec(host);
-  return octets !== null &&
-    octets.slice(1).every((octet) => Number(octet) <= 255);
 }
 
 export function countWorkers(
   workers: readonly FingerprintWorkerFacts[],
 ): FingerprintWorkers {
-  const byVersion: Record<string, number> = {};
-  const byLabelKey: Record<string, number> = {};
+  // a Map, since label keys are free text and may name Object.prototype members
+  const byVersion = new Map<string, number>();
+  const byLabelKey = new Map<string, number>();
   for (const worker of workers) {
-    byVersion[worker.swampVersion] = (byVersion[worker.swampVersion] ?? 0) + 1;
+    byVersion.set(
+      worker.swampVersion,
+      (byVersion.get(worker.swampVersion) ?? 0) + 1,
+    );
     for (const key of new Set(worker.labelKeys)) {
-      byLabelKey[key] = (byLabelKey[key] ?? 0) + 1;
+      byLabelKey.set(key, (byLabelKey.get(key) ?? 0) + 1);
     }
   }
-  return { total: workers.length, byVersion, byLabelKey };
+  return {
+    total: workers.length,
+    byVersion: Object.fromEntries(byVersion),
+    byLabelKey: Object.fromEntries(byLabelKey),
+  };
 }
 
 const NO_RUNTIME: FingerprintRuntimeFacts = {

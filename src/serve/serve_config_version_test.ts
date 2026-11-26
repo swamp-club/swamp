@@ -44,9 +44,13 @@ function withTempDir<T>(fn: (dir: string) => T): T {
   try {
     return fn(dir);
   } finally {
-    try {
+    if (Deno.build.os === "windows") {
+      try {
+        Deno.removeSync(dir, { recursive: true });
+      } catch { /* EBUSY until V8 releases native handles */ }
+    } else {
       Deno.removeSync(dir, { recursive: true });
-    } catch { /* Windows EBUSY */ }
+    }
   }
 }
 
@@ -382,4 +386,13 @@ Deno.test("loadServeConfig: the hub URL refuses credentials, a query and a fragm
     );
     assertEquals(error.message.includes("hunter2"), false);
   }
+});
+
+Deno.test("loadServeConfig: a non-string hub is refused without echoing it", () => {
+  const error = assertThrows(
+    () => load(GATE_ON, v2({ federation: { hub: 4815162342 } })),
+    Error,
+    "expected a URL string, got number",
+  );
+  assertEquals(error.message.includes("4815162342"), false);
 });

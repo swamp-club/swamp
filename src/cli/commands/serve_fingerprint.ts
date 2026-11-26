@@ -56,8 +56,8 @@ import { renderServeFingerprint } from "../../presentation/output/serve_fingerpr
 type AnyOptions = any;
 
 /**
- * a v3 datastore has a control plane by construction; an extension datastore
- * is asked through its provider, which is read and never synced or locked
+ * a v3 extension datastore has a control plane by construction; a v2 one is
+ * asked through its provider, which is read and never synced or locked
  */
 export async function fingerprintDatastoreFacts(
   resolution: Pick<DatastoreResolutionResult, "datastoreConfig" | "engine">,
@@ -127,11 +127,11 @@ export const serveFingerprintCommand = new Command()
       repoDir,
     );
     const merged = mergeServeOptions(configFile, {}, new Set());
-    const resolution = await resolveDatastoreForRepo(repoDir);
     const { repoContext, lockfilePath } = await requireInitializedRepoReadOnly({
       repoDir,
       outputMode: cliCtx.outputMode,
     });
+    const resolution = await resolveDatastoreForRepo(repoDir);
 
     const libCtx = createLibSwampContext({ logger: cliCtx.logger });
     await consumeStream(

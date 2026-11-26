@@ -22,7 +22,6 @@ import {
   countWorkers,
   FingerprintCollector,
   type FingerprintCollectorPorts,
-  isLoopbackHost,
 } from "./fingerprint_collector.ts";
 import { computeSettingsHash } from "./fingerprint.ts";
 
@@ -150,19 +149,38 @@ Deno.test("countWorkers: counts every record, by version and label key, never va
   );
 });
 
-Deno.test("isLoopbackHost: loopback names and addresses only", () => {
-  for (const host of ["localhost", "127.0.0.1", "127.9.9.9", "::1", "[::1]"]) {
-    assertEquals(isLoopbackHost(host), true, host);
-  }
-  for (
-    const host of [
-      "0.0.0.0",
-      "10.0.0.1",
-      "127.0.0.1.example.com",
-      "::",
-      "127.0.0.256",
-    ]
-  ) {
-    assertEquals(isLoopbackHost(host), false, host);
-  }
+function ownEntries(record: Record<string, number>): [string, number][] {
+  return Object.entries(record).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
+}
+
+Deno.test("countWorkers: label keys and versions named like Object.prototype members count normally", () => {
+  const counted = countWorkers([
+    { swampVersion: "constructor", labelKeys: ["constructor", "__proto__"] },
+    { swampVersion: "toString", labelKeys: ["hasOwnProperty", "__proto__"] },
+  ]);
+  assertEquals(counted.total, 2);
+  assertEquals(ownEntries(counted.byVersion), [
+    ["constructor", 1],
+    ["toString", 1],
+  ]);
+  assertEquals(ownEntries(counted.byLabelKey), [
+    ["__proto__", 2],
+    ["constructor", 1],
+    ["hasOwnProperty", 1],
+  ]);
+});
+
+Deno.test("FingerprintCollector.collect: a worker labelled constructor or __proto__ still gives a fingerprint", async () => {
+  const fingerprint = await new FingerprintCollector(ports({
+    workers: () =>
+      Promise.resolve([
+        { swampVersion: "v1", labelKeys: ["constructor", "__proto__"] },
+      ]),
+  })).collect();
+  const workers = fingerprint.toJSON().workers;
+  assertEquals(workers.total, 1);
+  assertEquals(ownEntries(workers.byLabelKey), [
+    ["__proto__", 1],
+    ["constructor", 1],
+  ]);
 });

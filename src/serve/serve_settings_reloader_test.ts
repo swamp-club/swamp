@@ -144,7 +144,11 @@ Deno.test("createServeSettingsReloader: a version 2 typo refuses the reload and 
     );
     assertEquals(h.calls, []);
   } finally {
-    await Deno.remove(dir, { recursive: true }).catch(() => {});
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
   }
 });
 

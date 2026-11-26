@@ -23,10 +23,22 @@ import { canonicalJson } from "../expressions/expression_references.ts";
 
 const count = z.number().int().nonnegative();
 
+function isCount(value: unknown): boolean {
+  return count.safeParse(value).success;
+}
+
+// z.record drops a __proto__ key, and label keys are free text
+const countsByName = z.custom<Record<string, number>>(
+  (value) =>
+    typeof value === "object" && value !== null && !Array.isArray(value) &&
+    Object.values(value).every(isCount),
+  { message: "expected a mapping of names to counts" },
+).transform((value) => Object.fromEntries(Object.entries(value)));
+
 const WorkersSchema = z.object({
   total: count,
-  byVersion: z.record(z.string(), count),
-  byLabelKey: z.record(z.string(), count),
+  byVersion: countsByName,
+  byLabelKey: countsByName,
 }).strict();
 
 const ExtensionSchema = z.object({
@@ -102,7 +114,7 @@ export class Fingerprint {
     return structuredClone(fields) as FingerprintStaticFields;
   }
 
-  /** sha256 hex of the static fields: it changes only when configuration does */
+  /** changes only when configuration does */
   hash(): string {
     return sha256(canonicalJson(this.staticFields()));
   }
@@ -116,13 +128,10 @@ function sha256(text: string): string {
   return createHash("sha256").update(text).digest("hex");
 }
 
-/**
- * The merged serve settings the settings hash reads, by their merged option
- * names. Admins, allowed users and collectives, webhooks, OAuth client
- * details, token secrets, paths, host and port are deliberately absent.
- */
+/** the merged serve settings the settings hash reads, by their merged option names */
 export interface FingerprintSettingsSource {
   readonly authMode: string;
+  /** a path: only whether it is set reaches the hash */
   readonly certFile?: string;
   readonly remoteOnly: boolean;
   readonly verifyOnEnroll: boolean;

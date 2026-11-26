@@ -89,6 +89,10 @@ Deno.test("workflowTriggerRemoveCommand: keeps serve.yaml's version and federati
     assertEquals(config?.federation, { role: "hub" });
     assertEquals(config?.triggers, undefined);
   } finally {
-    await Deno.remove(dir, { recursive: true }).catch(() => {});
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
   }
 });

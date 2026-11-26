@@ -177,6 +177,10 @@ Deno.test("serveFingerprintCommand: prints a stable fingerprint of a fresh repos
     assertEquals(fingerprint.team, null);
     assertEquals(JSON.stringify(first).includes(dir), false);
   } finally {
-    await Deno.remove(dir, { recursive: true }).catch(() => {});
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
   }
 });

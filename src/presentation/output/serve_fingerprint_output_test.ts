@@ -107,6 +107,6 @@ Deno.test("renderServeFingerprint: log mode shows runtime facts when known", () 
       },
     }, "log")
   ));
-  assertStringIncludes(output, "Team: leader of 3");
+  assertStringIncludes(output, "Team: leader (3 nodes)");
   assertStringIncludes(output, "Ready: true");
 });

@@ -46,11 +46,10 @@ export type ServeFingerprintEvent =
 
 export interface ServeFingerprintDeps
   extends Omit<FingerprintCollectorPorts, "workers"> {
-  /** a data query over this repository */
   queryData(predicate: string): Promise<DataRecord[]>;
 }
 
-// every worker record counts, whatever its status, so a restart leaves the pool unchanged
+// every readable worker record counts, whatever its status, so a restart leaves the pool unchanged
 async function workerFacts(
   deps: ServeFingerprintDeps,
 ): Promise<FingerprintWorkerFacts[]> {

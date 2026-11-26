@@ -169,6 +169,10 @@ Deno.test("workflowTriggerSetCommand: keeps serve.yaml's version and federation"
     assertEquals(config?.federation, { hub: "https://hub.example/swamp" });
     assertEquals(config?.triggers?.["scan-cves"], { schedule: "0 3 * * *" });
   } finally {
-    await Deno.remove(dir, { recursive: true }).catch(() => {});
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
   }
 });

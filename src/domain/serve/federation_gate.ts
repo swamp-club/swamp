@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/** the only name the gate reads; every caller goes through isServeFederationEnabled */
+/** the gate decision is isServeFederationEnabled alone; reload only forwards this value */
 export const FEDERATION_GATE_VARIABLE = "SWAMP_EXPERIMENTAL_FEDERATION";
 
 export function isServeFederationEnabled(

@@ -43,6 +43,7 @@ import { TOKEN_SECRETS_VAULT_NAME } from "../domain/vaults/control_plane_vault_p
 import type { TokenSecretsKeyRef } from "../domain/vaults/token_secrets_key.ts";
 import { validateSinkFilter } from "../domain/serve_audit/mod.ts";
 import { isServeFederationEnabled } from "../domain/serve/federation_gate.ts";
+import { isLoopbackHost } from "../domain/serve/loopback.ts";
 
 /** the path is marked so telemetry removes it exactly */
 function configError(path: string, message: string): UserError {
@@ -412,7 +413,7 @@ export function loadServeConfig(
 
   const raw = parsed as Record<string, unknown>;
 
-  // gate off, or a version 1 file, never reads the version key: invariant 2
+  // gate off never reads the version key, so any value there stays an ignored unknown key
   const version = isServeFederationEnabled((name) => Deno.env.get(name))
     ? readConfigVersion(raw.version, path)
     : 1;
@@ -484,7 +485,7 @@ function checkUnknownKeys(
     if (policy === "reject") {
       throw configError(
         path,
-        `Unknown key ${prefix}${key} in serve config file ${path}`,
+        `Unknown key ${prefix}${key} in serve config file ${path} (version 2 refuses unknown keys)`,
       );
     }
     logger.warn(
@@ -567,21 +568,14 @@ function validateFederationConfig(
   return { hub, "join-token-file": resolveServePath(repoDir, tokenFile) };
 }
 
-const IPV4_LOOPBACK = /^127\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
-
-function isLoopbackHostname(hostname: string): boolean {
-  if (hostname === "localhost" || hostname === "[::1]") return true;
-  const octets = IPV4_LOOPBACK.exec(hostname);
-  return octets !== null &&
-    octets.slice(1).every((octet) => Number(octet) <= 255);
-}
-
 // the value is never echoed: it may carry credentials
 function validateHubUrl(value: unknown, path: string): string {
   if (typeof value !== "string") {
     throw configError(
       path,
-      stringTypeMessage("federation.hub", path, value),
+      `Invalid federation.hub in ${path}: expected a URL string, got ${
+        yamlTypeName(value)
+      }`,
     );
   }
   let url: URL;
@@ -611,7 +605,7 @@ function validateHubUrl(value: unknown, path: string): string {
       `Invalid federation.hub in ${path}: a fragment is not allowed`,
     );
   }
-  const loopback = isLoopbackHostname(url.hostname);
+  const loopback = isLoopbackHost(url.hostname);
   if (
     url.protocol !== "https:" && !(url.protocol === "http:" && loopback)
   ) {
@@ -953,7 +947,7 @@ const KNOWN_WEBHOOK_ENTRY_KEYS = new Set([
   "config",
 ]);
 
-/** version 1 never checked webhook entry keys, so its default ignores them */
+/** version 1 does not check webhook entry keys, so the default ignores them */
 export type WebhookEntryKeyPolicy = "ignore" | "reject";
 
 export function validateWebhookEntries(
@@ -1086,7 +1080,7 @@ export function validateTriggerOverrideEntry(
       if (unknownKeys === "reject") {
         throw configError(
           path,
-          `Unknown key triggers.${workflowName}.${key} in serve config file ${path}`,
+          `Unknown key triggers.${workflowName}.${key} in serve config file ${path} (version 2 refuses unknown keys)`,
         );
       }
       logger.warn(

@@ -98,7 +98,7 @@ export function renderServeFingerprint(
   );
   lines.push(
     `  ${key("Team")} ${
-      f.team === null ? RUNTIME_ONLY : `${f.team.role} of ${f.team.nodes}`
+      f.team === null ? RUNTIME_ONLY : `${f.team.role} (${f.team.nodes} nodes)`
     }`,
   );
   lines.push(`  ${key("Started")} ${f.startedAt ?? RUNTIME_ONLY}`);
