@@ -35,6 +35,7 @@ import {
   confirmV3Replicated,
   ensureV3CopyCurrent,
   holdV3Writer,
+  refreshV3FollowerCopy,
   startV3ReplicationUpkeep,
   v3ClaimCommitLog,
   v3DatastoreFor,
@@ -43,6 +44,7 @@ import {
 } from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
 import {
   acquireV3WriterLock,
+  holdsCurrentV3WriterLease,
   v3WriterFence,
 } from "../src/infrastructure/datastore_v3/v3_writer_lock.ts";
 import {
@@ -55,6 +57,11 @@ import { createNamespaceListDeps } from "../src/libswamp/datastores/namespace_li
 import { commitIn, TEST_TIMINGS } from "./datastore_v3_litestream_helpers.ts";
 import { DatastoreOwner } from "../src/domain/datastore_v3/datastore_owner.ts";
 import { LOADED } from "./graph_worker.ts";
+import { waitFor } from "@swamp-club/swamp-testing";
+import {
+  applyV3LeaderChanges,
+  type LeaderChange,
+} from "../src/infrastructure/datastore_v3/serve_feed.ts";
 
 export type MachineRequest =
   | {
@@ -84,6 +91,7 @@ export type MachineRequest =
     readonly kind: "write";
     readonly commits: number;
     readonly close: boolean;
+    readonly definition?: string;
   }
   | { readonly kind: "close" }
   | { readonly kind: "claim"; readonly address: string }
@@ -105,7 +113,14 @@ export type MachineRequest =
   | { readonly kind: "fence" }
   | { readonly kind: "count" }
   | { readonly kind: "readModel" }
-  | { readonly kind: "warnings" };
+  | { readonly kind: "warnings" }
+  /** the open copy's high-water cursor, without making it current */
+  | { readonly kind: "highWater" }
+  | { readonly kind: "changes"; readonly since: number }
+  /** as a serve follower applies a frame of its leader's feed, once its hold is lost */
+  | { readonly kind: "follow"; readonly changes: readonly LeaderChange[] }
+  /** as a serve follower restores its copy when its feed is not current */
+  | { readonly kind: "refresh" };
 
 export type MachineResponse =
   | { readonly ok: true; readonly value?: unknown }
@@ -282,6 +297,8 @@ async function handle(request: MachineRequest): Promise<unknown> {
         await commitIn(
           { repoDir: init!.repoDir, config: config() },
           request.commits,
+          64,
+          request.definition,
         );
         if (request.close) await closeV3Datastores();
       });
@@ -408,6 +425,36 @@ async function handle(request: MachineRequest): Promise<unknown> {
         };
         await closeV3Datastores();
         return state;
+      });
+    case "highWater":
+      return v3DatastoreFor(init!.repoDir, config()).commitStore
+        .highWaterMark().cursor;
+    case "changes":
+      return await inEnv(async () => {
+        await ensureV3CopyCurrent(init!.repoDir, config(), "read");
+        const changes = await v3DatastoreFor(init!.repoDir, config())
+          .commitStore.changesSince(request.since, 1000);
+        await closeV3Datastores();
+        return changes.map((change) => ({
+          cursor: change.cursor,
+          commit: change.commit.toJSON(),
+        }));
+      });
+    case "follow":
+      return await inEnv(async () => {
+        await waitFor(
+          () => !holdsCurrentV3WriterLease(init!.datastorePath),
+          "this machine to see its writer lease lost",
+        );
+        await applyV3LeaderChanges(init!.repoDir, config(), request.changes);
+      });
+    case "refresh":
+      return await inEnv(async () => {
+        await refreshV3FollowerCopy(init!.repoDir, config());
+        // serve opened the handle at its start, so the refresh catches it up
+        const handle = v3DatastoreFor(init!.repoDir, config());
+        await handle.catchUp();
+        return handle.readModel.cursor();
       });
     case "namespaces":
       return await inEnv(async () => {

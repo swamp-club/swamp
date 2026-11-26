@@ -351,6 +351,7 @@ async function makeV3CopyCurrentNow(
     // the copy's commits the restored lineage lacks are lost: its own, never
     // confirmed, when another checkout wrote first
     let dropped = 0;
+    let diverged = false;
     const install = async (temp: string) => {
       // Only a warning depends on it: a copy that cannot be read (an empty
       // file a reader created) never stops the restore.
@@ -359,6 +360,14 @@ async function makeV3CopyCurrentNow(
       } catch (error) {
         logger
           .debug`Counting the commits a restore drops from ${target} failed: ${error}`;
+      }
+      if (cursor > 0) {
+        try {
+          diverged = divergesThrough(target, temp, cursor);
+        } catch {
+          // unjudged, the read model is rebuilt
+          diverged = true;
+        }
       }
       await replace(temp);
     };
@@ -426,7 +435,7 @@ async function makeV3CopyCurrentNow(
     // unacknowledged commits) the checkout is rebuilt and their files removed;
     // a cursor whose commit the copy lacks counts as moved
     const readModelMoved = cursor > 0 &&
-      (before === undefined || txnAt(target, cursor) !== before);
+      (diverged || before === undefined || txnAt(target, cursor) !== before);
     await writeCopyState(paths, {
       replicaRoot: root.value,
       lineageFence: decision.lineage.fence,
@@ -786,6 +795,64 @@ function droppedCommits(before: string, after: string): number {
       dropped++;
     }
     return dropped;
+  } finally {
+    restored.close();
+    old.close();
+  }
+}
+
+// a follower appends its leader's commits above its own unconfirmed ones, so the
+// commit at the read model's cursor can match while one applied below differs
+function divergesThrough(
+  before: string,
+  after: string,
+  through: number,
+): boolean {
+  try {
+    Deno.statSync(before);
+  } catch {
+    return false;
+  }
+  const old = new DatabaseSync(before, { readOnly: true });
+  const restored = new DatabaseSync(after, { readOnly: true });
+  try {
+    old.exec("PRAGMA busy_timeout=5000");
+    restored.exec("PRAGMA busy_timeout=5000");
+    const oldest = (db: DatabaseSync) =>
+      (db.prepare("SELECT MIN(cursor) AS c FROM commits").get() as {
+        c: number | null;
+      }).c ?? 0;
+    const from = Math.max(oldest(old), oldest(restored));
+    const rows = (db: DatabaseSync) =>
+      (db.prepare(
+        "SELECT cursor, namespace, partition, txn_id FROM commits " +
+          "WHERE cursor >= ? AND cursor <= ? ORDER BY cursor",
+      ).iterate(from, through) as Iterable<{
+        cursor: number;
+        namespace: string;
+        partition: string;
+        txn_id: string;
+      }>)[Symbol.iterator]();
+    const left = rows(old);
+    const right = rows(restored);
+    try {
+      for (;;) {
+        const a = left.next();
+        const b = right.next();
+        if (a.done === true || b.done === true) return a.done !== b.done;
+        if (
+          a.value.cursor !== b.value.cursor ||
+          a.value.namespace !== b.value.namespace ||
+          a.value.partition !== b.value.partition ||
+          a.value.txn_id !== b.value.txn_id
+        ) {
+          return true;
+        }
+      }
+    } finally {
+      left.return?.();
+      right.return?.();
+    }
   } finally {
     restored.close();
     old.close();
