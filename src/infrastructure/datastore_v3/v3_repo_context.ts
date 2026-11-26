@@ -117,7 +117,33 @@ import { BrokenLineageMoveGuard } from "../../domain/datastore_v3/broken_lineage
 import { isLineageBroken } from "../../domain/datastore_v3/replica_verification.ts";
 import { atomicWriteTextFile } from "../persistence/atomic_write.ts";
 import { catalogNamesOfCommit } from "../../domain/datastore_v3/name_history_replay.ts";
-import { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
+import {
+  PartitionKey,
+  partitionOf,
+} from "../../domain/datastore_v3/partition_key.ts";
+
+// EXPERIMENT #5094: ceiling measurement, never merge
+const CEILING_5094 = Deno.env.get("SWAMP_5094_CEILING") === "1";
+
+export type CeilingLockedPartition =
+  | { readonly kind: "model"; readonly type: string; readonly id: string }
+  | { readonly kind: "run"; readonly runId: string };
+
+function ceilingPartitionsOf(
+  handle: V3Datastore,
+  locked: CeilingLockedPartition | undefined,
+): readonly PartitionKey[] {
+  if (locked === undefined) return [];
+  if (locked.kind === "run") {
+    return handle.commitStore.runPartitionsOf(handle.namespace, locked.runId);
+  }
+  if (!isUuid(locked.id)) return [];
+  try {
+    return [PartitionKey.forModel(locked.type, locked.id)];
+  } catch {
+    return [];
+  }
+}
 import { isUuid } from "../../domain/models/model_lookup.ts";
 import type { DirtyNamePin } from "./v3_catalog.ts";
 import {
@@ -1234,6 +1260,7 @@ const caughtUpFromServe = new WeakSet<V3Datastore>();
  * closes
  */
 export function watchV3ServeFeeds(): void {
+  if (CEILING_5094) return;
   for (const handle of [...repoState().opened.values()]) {
     const binding = serveUpstreamAt(handle.datastorePath);
     if (binding === undefined) continue;
@@ -1293,6 +1320,7 @@ export async function catchUpV3HandlesAt(
   options?: CatchUpOptions,
   delivered?: DeliveredCatchUp,
   maxCommits?: number,
+  locked?: CeilingLockedPartition,
 ): Promise<void> {
   const path = resolve(datastorePath);
   const handles = [...repoState().opened.values()].filter((handle) =>
@@ -1308,7 +1336,7 @@ export async function catchUpV3HandlesAt(
             : {}),
           ...(maxCommits !== undefined ? { maxCommits } : {}),
         });
-        if (maxCommits !== undefined) {
+        if (maxCommits !== undefined && !CEILING_5094) {
           await handle.assertReadModelWithin?.(maxCommits);
         }
       } catch (error) {
@@ -1323,6 +1351,16 @@ export async function catchUpV3HandlesAt(
         throw error;
       }
       endDeferral(handle);
+      if (CEILING_5094) {
+        for (const partition of ceilingPartitionsOf(handle, locked)) {
+          await handle.readModel.catchUpPartition(
+            handle.namespace,
+            partition,
+            new AbortController().signal,
+          );
+        }
+        continue;
+      }
       await (handle.catchUpReadModel?.(undefined, options) ??
         handle.catchUp(undefined, options));
     } else {
@@ -2270,7 +2308,15 @@ export async function v3RepositoryFactoryConfig(
       handle.catchUpReadModel !== undefined
     ) {
       caughtUpFromServe.delete(handle);
-      await handle.catchUpReadModel();
+      if (CEILING_5094 && handle.readModel.isComplete()) {
+        await handle.readModel.catchUpPartition(
+          handle.namespace,
+          partitionOf({ kind: "lockfile" }),
+          new AbortController().signal,
+        );
+      } else {
+        await handle.catchUpReadModel();
+      }
     } else {
       await handle.catchUp();
     }

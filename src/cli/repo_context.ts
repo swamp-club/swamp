@@ -318,6 +318,7 @@ import {
   catchUpV3AfterBehaviorLock,
   catchUpV3AfterRunLock,
   catchUpV3HandlesAt,
+  type CeilingLockedPartition,
   endDeferralsAt,
   goServeOfflineAt,
   goServeOfflineAtLock,
@@ -1819,6 +1820,7 @@ function serveLockOf(
   displayKey: string,
   maxWaitMs: number,
   options?: ServeLockHoldOptions,
+  locked?: CeilingLockedPartition,
 ): DistributedLock | undefined {
   if (isCustomDatastoreConfig(config)) return undefined;
   const root = config.path;
@@ -1832,6 +1834,7 @@ function serveLockOf(
         options?.ignoresStop === true ? { ignoresStop: true } : undefined,
         delivered,
         maxCommits,
+        locked,
       );
       nameLockHolder(root);
     },
@@ -2056,6 +2059,7 @@ export async function createModelLock(
     lockKey,
     maxWaitMs,
     options,
+    { kind: "model", type: modelType, id: modelId },
   );
   if (atServe !== undefined) return atServe;
   if (isCustomDatastoreConfig(config)) {
@@ -2131,6 +2135,7 @@ export async function createWorkflowRunLock(
     lockKey,
     maxWaitMs,
     { ignoresStop: true },
+    { kind: "run", runId },
   );
   if (atServe !== undefined) return atServe;
   if (isCustomDatastoreConfig(config)) {
