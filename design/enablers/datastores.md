@@ -3283,6 +3283,49 @@ read and the append run under a per-partition lock keyed by sink, namespace
 and partition, so two units in one process never take the same seq; the lock
 is released on every outcome and its entry dropped when its queue drains.
 
+**Rounds in flight together** (swamp-club#5098). A root sends its pending
+groups through one scheduler, not one flush after another. A round is groups in
+pending order, at most the sink's batch limit, one per partition. A group joins
+only when nothing earlier and still unsettled must land first, unless that
+group is earlier in the same round, which serve applies in order, stopping at
+the first item that does not land. A group must wait for an earlier one when:
+
+- they share a lock key (the partition, or a run id);
+- they came from the same writer: one workflow step (each step runs in a commit
+  origin of its own), or one unit outside a step;
+- the earlier one was recorded before the later one's writer began;
+- the later one is a run group and the earlier one holds data formed with it or
+  before it.
+
+Only writers running at the same time, such as a workflow's parallel steps, are
+independent. Their relative commit order was never defined.
+
+- **How many:** with a serve that takes batches, up to four rounds are in flight
+  (`MAX_BATCHES_IN_FLIGHT`). Their confirmations share serve's syncs, and their
+  per-request work overlaps. Without batches, or offline, one round goes at a
+  time, as before.
+- **One settle at a time:** a single loop sends rounds and handles one settled
+  round completely, refusals and their discards included, before forming
+  another, so a run group is never sent while a refusal is being handled.
+- **Failures:** a flush waits for, and can fail on, every group pending when
+  it was asked, a sibling step's included, as one flush queued behind another
+  did. A failure that is not a refusal fails the flushes whose own try it was,
+  and each is told only once none of its rounds is still out. A flush asked
+  while that send was already out tries the group once more, as a flush queued
+  behind a failed one retried it. A group whose failure no flush retries stays
+  pending, and what depends on it waits for the next flush. A run group waits
+  only on data formed with it or before it, so data a later flush formed never
+  blocks or fails it.
+- **Releases:** a checkpoint's release rides the round holding its last groups
+  only when none of its other groups is still out. Otherwise the lock's release
+  ends the lease.
+- **The sink's gate:** the serve commit sink lets one batch fill at a time,
+  because each slot holds its locks until the batch is sent. A filled batch
+  waits only on serve, so several can be in flight together.
+- **The pacer:** overlap turns the head pacer on, since a sync covering several
+  requests marks contention. Requests that arrive during a sync all join the
+  next, so overlapping rounds share each paced head write.
+
 A pending put may carry a `withdrawn` predicate (swamp-club#4171). The unit asks
 it before storing the put's content, which it then skips, and under that lock,
 on each attempt to append including a seq-gap rebuild, where it drops the put's

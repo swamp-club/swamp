@@ -23,7 +23,8 @@
  * ones stay committed, later ones are not tried
  */
 
-import { withSpan } from "../tracing/tracer.ts";
+import { type Span, withSpan } from "../tracing/tracer.ts";
+import { currentCommitOrigin } from "../../domain/datastore/commit_origin.ts";
 import { dataNameOfKey } from "../../domain/datastore_v3/recovery_scope.ts";
 import {
   intentKindsOfOps,
@@ -144,6 +145,8 @@ export type CommitSink = Pick<CommitStore, "append" | "head"> & {
   ) => Promise<SinkBatch | undefined>;
   /** the most appends one batch takes */
   readonly batchLimit?: number;
+  /** how many rounds may be in flight at once; one when absent */
+  readonly roundsInFlight?: () => number;
 };
 
 interface FlushOptions {
@@ -396,6 +399,44 @@ interface Group {
    */
   readonly expectedSeq?: number;
   readonly principal?: string;
+  /** where its changes came from; none means it depends on everything before */
+  readonly origins?: readonly Origin[];
+}
+
+/**
+ * the writer a batch came from (a workflow step, else the unit), when it began
+ * and when it recorded the batch, on the monotonic clock: only writers running
+ * at the same time are independent
+ */
+interface Origin {
+  readonly unit: object;
+  readonly opened: number;
+  readonly recorded: number;
+}
+
+function dependsOn(
+  earlier: Group,
+  later: Group,
+  keysOf: (group: Group) => ReadonlySet<string>,
+): boolean {
+  // a run record can name only data formed with it or before it
+  if (
+    runRank(later) === 1 && runRank(earlier) === 0 &&
+    earlier.formation <= later.formation
+  ) {
+    return true;
+  }
+  const laterKeys = keysOf(later);
+  for (const key of keysOf(earlier)) if (laterKeys.has(key)) return true;
+  if (earlier.origins === undefined || later.origins === undefined) {
+    return true;
+  }
+  for (const from of earlier.origins) {
+    for (const to of later.origins) {
+      if (from.unit === to.unit || from.recorded <= to.opened) return true;
+    }
+  }
+  return false;
 }
 
 interface CommitLogState {
@@ -407,9 +448,15 @@ interface CommitLogState {
   isOpen(): boolean;
   readonly parent: UnitOfWork | undefined;
   readonly openedAt: number;
+  /** numbers opens and hand-ups across the root's tree */
+  nextSeq(): number;
+  /** the root's child this unit is, or descends from; undefined on the root */
+  readonly originUnit: object | undefined;
+  readonly openedSeq: number;
   adopt(
     batches: readonly (readonly TypedChange[])[],
     versionDirs?: readonly string[],
+    origins?: readonly Origin[],
   ): void;
   /**
    * hands what the unit has staged to its nearest open ancestor and stays open;
@@ -525,6 +572,12 @@ export function createCommitLogUnitOfWork(
   const openedAt = parent === undefined
     ? clock().getTime()
     : states.get(parent)!.openedAt;
+  const nextSeq = (): number => performance.now();
+  const openedSeq = nextSeq();
+  const originToken = {};
+  const originUnit: object | undefined = parent === undefined
+    ? undefined
+    : states.get(parent)!.originUnit ?? originToken;
   /**
    * whether a repository wrote into this unit (a write signal or any recorded
    * change, a committed child's included); only such a unit's dropped work can
@@ -558,6 +611,7 @@ export function createCommitLogUnitOfWork(
    * changes one `stageOps` call recorded; groups split only between them.
    */
   let staged: TypedChange[][] = [];
+  let stagedOrigins: Origin[] = [];
   let pending: Group[] = [];
   /** so a failed end can say what was committed */
   const landed: PartitionKey[] = [];
@@ -580,7 +634,6 @@ export function createCommitLogUnitOfWork(
    * run partitions stay pending
    */
   let refusals: PartitionRefusal[] = [];
-  let flushing: Promise<void> = Promise.resolve();
   /**
    * a refusal whose entries could be neither discarded nor marked abandoned:
    * the unit's end says its changes may still land
@@ -614,7 +667,7 @@ export function createCommitLogUnitOfWork(
       earlier.batch.splice(earlier.batch.indexOf(earlier.change), 1);
       streamPuts.delete(slot);
     }
-    pending = pending.flatMap((group) => {
+    pending = pending.flatMap((group): Group[] => {
       if (inFlight.has(group)) {
         for (const other of group.changes) {
           if ("put" in other && streamPutSlot(other) === slot) {
@@ -633,7 +686,9 @@ export function createCommitLogUnitOfWork(
       });
       if (changes.length === group.changes.length) return [group];
       // A group left empty has nothing to commit; a commit carries an op.
-      return changes.length === 0 ? [] : [{ ...group, changes }];
+      const next = changes.length === 0 ? undefined : { ...group, changes };
+      replaced(group, next);
+      return next === undefined ? [] : [next];
     });
   };
 
@@ -660,7 +715,7 @@ export function createCommitLogUnitOfWork(
    */
   let promoted = false;
 
-  const record = (changes: readonly TypedChange[]): void => {
+  const record = (changes: readonly TypedChange[], from?: Origin): void => {
     requireBatchWithinLimit(changes);
     if (changes.length === 0) return;
     touched = true;
@@ -673,6 +728,25 @@ export function createCommitLogUnitOfWork(
     );
     const batch: TypedChange[] = [];
     staged.push(batch);
+    const step = currentCommitOrigin();
+    const at = nextSeq();
+    if (from !== undefined) stagedOrigins.push(from);
+    else if (step !== undefined) {
+      stagedOrigins.push({
+        unit: step.token,
+        opened: step.opened,
+        recorded: at,
+      });
+    } else if (parent === undefined) {
+      // the root's own write: after everything recorded before it
+      stagedOrigins.push({ unit: {}, opened: at, recorded: at });
+    } else {
+      stagedOrigins.push({
+        unit: originUnit!,
+        opened: openedSeq,
+        recorded: at,
+      });
+    }
     for (const change of changes) {
       if (promoted) {
         for (
@@ -691,151 +765,515 @@ export function createCommitLogUnitOfWork(
     }
   };
 
-  const flush = (flushOptions: FlushOptions = {}): Promise<void> => {
-    const run = flushing.then(async () => {
-      pending = [
-        ...pending,
-        ...formGroups(staged, ++formations, clock().getTime()),
-      ];
+  /** a flush call: settled once every group it waits for has settled */
+  interface FlushWaiter {
+    /** its own groups and those still pending when it was asked */
+    readonly groups: Set<Group>;
+    /** the groups it formed: their first failure fails it */
+    readonly formed: Set<Group>;
+    readonly release?: string;
+    readonly refusedNow: PartitionRefusal[];
+    /** sends started before it was asked do not count against it */
+    readonly askedAtSend: number;
+    readonly span: Span;
+    readonly askedAt: number;
+    readonly rounds: number[];
+    readonly cuts: string[];
+    readonly done: PromiseWithResolvers<void>;
+    /** failed, and told so once none of its rounds is still out */
+    failed?: { readonly error: unknown };
+  }
+  let waiters: FlushWaiter[] = [];
+  /** the last failure of a group still pending, which blocked it */
+  const failures = new Map<Group, unknown>();
+  /** sends a group came back not tried in a row; a stall past the bound */
+  const notTried = new Map<Group, number>();
+  /** numbers each send, so a failure is known to come before or after an ask */
+  let sends = 0;
+  const sentAs = new WeakMap<Group, number>();
+  const lockKeys = new WeakMap<Group, ReadonlySet<string>>();
+  const keysOf = (group: Group): ReadonlySet<string> => {
+    let keys = lockKeys.get(group);
+    if (keys === undefined) {
+      keys = new Set(groupLockKeys(options.namespace, group));
+      lockKeys.set(group, keys);
+    }
+    return keys;
+  };
+  let pumping: Promise<void> | undefined;
+  let rewake = false;
+  /** a flush asked while the loop waits on rounds in flight: form again */
+  let woken = Promise.withResolvers<void>();
+  let wokenAsRound = woken.promise.then(() => undefined);
+
+  const flush = (flushOptions: FlushOptions = {}): Promise<void> =>
+    withSpan("swamp.datastore.v3.commit.flush", {}, async (span) => {
+      const formed = formGroups(
+        staged,
+        stagedOrigins,
+        ++formations,
+        clock().getTime(),
+      );
       staged = [];
+      stagedOrigins = [];
       streamPuts.clear();
+      pending = [...pending, ...formed];
       // Run partitions last (decision 7); a stable sort keeps the rest in
       // the order they were formed, so a partition's splits stay in order.
       pending.sort((a, b) => runRank(a) - runRank(b));
-      const refusedNow: PartitionRefusal[] = [];
-      // A run record may name data a refused partition did not record, so
-      // run groups wait while a refusal is unacknowledged. They sort last,
-      // so the first group not held is the next to append; it is read from
-      // `pending` each time, which staging may change between appends.
-      const held = (group: Group) =>
-        runRank(group) === 1 && refusals.length > 0;
-      while (true) {
-        // a prefix of distinct partitions, stopping at a held group, so they
-        // land as they would one by one
-        const round: Group[] = [];
-        const limit = options.sink.batchLimit ?? Number.POSITIVE_INFINITY;
-        for (const group of pending) {
-          if (
-            round.length >= limit || held(group) ||
-            round.some((other) => other.partition.equals(group.partition))
-          ) {
-            break;
-          }
-          round.push(group);
-        }
-        if (round.length === 0) break;
-        const final = round.length === pending.length;
-        const batch = round.length > 1 ||
-            (final && flushOptions.release !== undefined)
-          ? await options.sink.beginBatch?.(
-            round.length,
-            final && flushOptions.release !== undefined
-              ? { release: flushOptions.release }
-              : undefined,
-          )
-          : undefined;
-        if (batch === undefined) round.splice(1);
-        for (const group of round) inFlight.add(group);
-        let settled: PromiseSettledResult<boolean>[];
-        try {
-          settled = await Promise.allSettled(
-            round.map((group, slot) =>
-              appendGroup(
-                group,
-                options,
-                clock,
-                stored,
-                supersededInFlight,
-                outbox,
-                () => {
-                  queuedAny = true;
-                },
-                batch === undefined ? undefined : { batch, slot },
-              )
-            ),
-          );
-        } finally {
-          for (const group of round) inFlight.delete(group);
-        }
-        // The first failure that is not a refusal stops the flush once the
-        // round's outcomes are recorded; a commit after it was not sent.
-        let stop: { error: unknown } | undefined;
-        for (const [index, group] of round.entries()) {
-          const outcome = settled[index];
-          if (outcome.status === "fulfilled") {
-            pending = pending.filter((other) => other !== group);
-            if (outcome.value) continue;
-            noteCommitted(group, options);
-            noteCommandLanded(group.partition, intentKindsOf(group.changes));
-            if (!landed.some((other) => other.equals(group.partition))) {
-              landed.push(group.partition);
-            }
-            continue;
-          }
-          const error = outcome.reason;
-          // never sent: it stays pending, for this flush to decide on
-          if (error instanceof CommitNotTriedError) continue;
-          // A seq gap only means another append moved the head first; the
-          // group stays pending, is rebuilt at the new head, and the flush
-          // stops as for any other failure.
-          if (
-            !(error instanceof CommitRejectedError) ||
-            error.reason === "seq-gap"
-          ) {
-            stop ??= { error };
-            continue;
-          }
-          // A refused commit can never land as it is: drop it, with the
-          // splits of its partition formed with it (they were staged after
-          // it), and go on, so the partitions staged after it still commit.
-          const dropped = pending.filter((other) =>
-            other === group ||
-            (other.formation === group.formation &&
-              other.partition.equals(group.partition))
-          );
-          pending = pending.filter((other) => !dropped.includes(other));
-          // with the refused entries go the unit's run entries, so a recovery
-          // never lands a run record that names what was refused
-          const lost = await discardEntries(
-            options,
-            outbox,
-            [...dropped, ...pending.filter((other) => runRank(other) === 1)],
-          );
-          if (lost !== undefined && unconfirmed === undefined) {
-            unconfirmed = {
-              cause: error,
-              reason: lost.reason,
-              groups: lost.groups,
-            };
-          }
-          const refusal: PartitionRefusal = {
-            partition: group.partition,
-            reason: error.reason,
-            message: error.message,
-            ...await refusedRecord(error, group.partition, options),
-            versions: dropped.flatMap((other) => recordedVersions(other)),
-          };
-          refusedNow.push(refusal);
-          if (runRank(group) === 0) refusals = [...refusals, refusal];
-          dropWork([group.partition]);
-        }
-        if (stop !== undefined) {
-          // an earlier refusal is never lost behind it: thrown with this as
-          // its cause, the failed group pending for the next flush
-          if (refusedNow.length > 0 || refusals.length > 0) {
-            throw refusedError(refusedNow, stop.error);
-          }
-          throw stop.error;
-        }
+      // what a replay of the round former needs: each group's kind and
+      // partition, the partition as its first index here
+      const firstIndex = new Map<string, number>();
+      span.setAttributes({
+        "swamp.datastore.v3.flush.pending": pending.length,
+        "swamp.datastore.v3.flush.kinds": pending.map((group) =>
+          runRank(group) === 1 ? "run" : "data"
+        ),
+        "swamp.datastore.v3.flush.partitions": pending.map((group, index) => {
+          const key = group.partition.toString();
+          if (!firstIndex.has(key)) firstIndex.set(key, index);
+          return firstIndex.get(key)!;
+        }),
+      });
+      for (const group of pending) {
+        failures.delete(group);
+        notTried.delete(group);
       }
-      // Every flush throws until the refusals are acknowledged, so none is
-      // ever cleared unseen.
-      if (refusedNow.length > 0 || refusals.length > 0) {
-        throw refusedError(refusedNow);
+      const waiter: FlushWaiter = {
+        groups: new Set(pending),
+        formed: new Set(formed),
+        ...(flushOptions.release === undefined
+          ? {}
+          : { release: flushOptions.release }),
+        refusedNow: [],
+        askedAtSend: sends,
+        span,
+        askedAt: clock().getTime(),
+        rounds: [],
+        cuts: [],
+        done: Promise.withResolvers<void>(),
+      };
+      waiters.push(waiter);
+      wake();
+      await waiter.done.promise;
+    });
+
+  /** a group staging rewrote: whoever waited on it waits on its copy */
+  const replaced = (old: Group, next: Group | undefined): void => {
+    for (const waiter of waiters) {
+      if (!waiter.groups.delete(old)) continue;
+      if (next !== undefined) waiter.groups.add(next);
+      if (waiter.formed.delete(old) && next !== undefined) {
+        waiter.formed.add(next);
+      }
+    }
+    if (next === undefined) return;
+    if (failures.has(old)) failures.set(next, failures.get(old));
+    failures.delete(old);
+    const tries = notTried.get(old);
+    if (tries !== undefined) notTried.set(next, tries);
+    notTried.delete(old);
+    const sent = sentAs.get(old);
+    if (sent !== undefined) sentAs.set(next, sent);
+  };
+
+  const wake = (): void => {
+    if (pumping !== undefined) {
+      rewake = true;
+      woken.resolve();
+      return;
+    }
+    // A failure the loop did not expect fails every waiter, so none hangs.
+    pumping = pump().catch((error) => {
+      for (const waiter of waiters) waiter.done.reject(error);
+      waiters = [];
+    }).finally(() => {
+      pumping = undefined;
+      if (rewake) {
+        rewake = false;
+        if (waiters.length > 0) wake();
       }
     });
-    flushing = run.catch(() => {});
-    return run;
+  };
+
+  const pumpIdle = async (): Promise<void> => {
+    while (pumping !== undefined) await pumping;
+  };
+
+  const rejectWaiter = (waiter: FlushWaiter, cause?: unknown): void => {
+    waiters = waiters.filter((other) => other !== waiter);
+    // an earlier refusal is never lost behind a failure: thrown with it as
+    // its cause, the failed group pending for the next flush
+    if (waiter.refusedNow.length > 0 || refusals.length > 0) {
+      waiter.done.reject(refusedError(waiter.refusedNow, cause));
+    } else {
+      waiter.done.reject(cause);
+    }
+  };
+
+  const settleWaiters = (): void => {
+    for (const waiter of [...waiters]) {
+      // a failed flush is told only once nothing of it is still being sent,
+      // so its caller never decides on commits that may yet land
+      if (waiter.failed !== undefined) {
+        if ([...inFlight].some((group) => waiter.groups.has(group))) continue;
+        rejectWaiter(waiter, waiter.failed.error);
+        continue;
+      }
+      if (pending.some((group) => waiter.groups.has(group))) continue;
+      waiters = waiters.filter((other) => other !== waiter);
+      // Every flush throws until the refusals are acknowledged, so none is
+      // ever cleared unseen.
+      if (waiter.refusedNow.length > 0 || refusals.length > 0) {
+        waiter.done.reject(refusedError(waiter.refusedNow));
+      } else {
+        waiter.done.resolve();
+      }
+    }
+  };
+
+  const wanted = (group: Group): boolean =>
+    !failures.has(group) &&
+    waiters.some((waiter) =>
+      waiter.failed === undefined && waiter.groups.has(group)
+    );
+
+  // A run record may name data a refused partition did not record, so run
+  // groups wait while a refusal is unacknowledged.
+  const held = (group: Group) => runRank(group) === 1 && refusals.length > 0;
+
+  /**
+   * the next round: groups in pending order that nothing earlier still
+   * unsettled must land before, unless that comes earlier in this round,
+   * which serve applies in order, stopping at the first that does not land
+   */
+  const formRound = (
+    concurrent: boolean,
+  ):
+    | { readonly round: Group[]; readonly cut: string }
+    | undefined => {
+    const round: Group[] = [];
+    const inRound = new Set<Group>();
+    const limit = options.sink.batchLimit ?? Number.POSITIVE_INFINITY;
+    let cut = "end";
+    // one round at a time stops at the first group that cannot join; several
+    // skip it, so independent groups go ahead
+    const skip = (why: string): boolean => {
+      if (cut === "end") cut = why;
+      return concurrent;
+    };
+    for (let index = 0; index < pending.length; index++) {
+      const group = pending[index];
+      if (round.length >= limit) {
+        cut = "limit";
+        break;
+      }
+      if (inFlight.has(group) || !wanted(group)) {
+        if (concurrent || round.length === 0) continue;
+        break;
+      }
+      if (held(group)) {
+        if (skip("held")) continue;
+        break;
+      }
+      if (round.some((other) => other.partition.equals(group.partition))) {
+        if (skip("partition")) continue;
+        break;
+      }
+      let blocked = false;
+      for (let earlier = 0; earlier < index && !blocked; earlier++) {
+        const other = pending[earlier];
+        blocked = !inRound.has(other) && dependsOn(other, group, keysOf);
+      }
+      if (blocked) {
+        if (skip(runRank(group) === 1 ? "held" : "partition")) continue;
+        break;
+      }
+      round.push(group);
+      inRound.add(group);
+    }
+    // a release rides a checkpoint's last round, so that round waits while
+    // others of the same checkpoint are still out
+    for (const waiter of waiters) {
+      if (waiter.release === undefined || waiter.failed !== undefined) continue;
+      const left = pending.filter((group) => waiter.groups.has(group));
+      const out = left.filter((group) => inFlight.has(group));
+      const rest = left.filter((group) => !inFlight.has(group));
+      if (
+        out.length > 0 && rest.length > 0 &&
+        rest.every((group) => inRound.has(group))
+      ) {
+        // cut at the first, so nothing admitted after it goes without it
+        let first = round.length;
+        for (const group of rest) first = Math.min(first, round.indexOf(group));
+        round.splice(first);
+      }
+    }
+    return round.length === 0 ? undefined : { round, cut };
+  };
+
+  /**
+   * the release a round may carry: a waiter's, when this is its last round;
+   * one per round, and another waiter's lease is ended by its lock instead
+   */
+  const releaseFor = (round: readonly Group[]): string | undefined => {
+    for (const waiter of waiters) {
+      if (waiter.release === undefined) continue;
+      const left = pending.filter((group) => waiter.groups.has(group));
+      if (
+        left.length > 0 &&
+        left.every((group) => round.includes(group) && !inFlight.has(group))
+      ) {
+        return waiter.release;
+      }
+    }
+    return undefined;
+  };
+
+  type SentRound = {
+    readonly id: number;
+    readonly round: readonly Group[];
+    readonly settled: readonly PromiseSettledResult<boolean>[];
+  };
+
+  const sendRound = async (
+    id: number,
+    formed: { readonly round: Group[]; readonly cut: string },
+  ): Promise<SentRound> => {
+    const round = formed.round;
+    let cut = formed.cut;
+    const release = releaseFor(round);
+    // marked before the wait for a batch, so staging never rewrites them
+    for (const group of round) {
+      inFlight.add(group);
+      sentAs.set(group, ++sends);
+    }
+    try {
+      let batch: SinkBatch | undefined;
+      try {
+        batch = round.length > 1 || release !== undefined
+          ? await options.sink.beginBatch?.(
+            round.length,
+            release === undefined ? undefined : { release },
+          )
+          : undefined;
+      } catch (error) {
+        return {
+          id,
+          round,
+          settled: round.map(() => ({ status: "rejected", reason: error })),
+        };
+      }
+      if (batch === undefined && round.length > 1) {
+        cut = "unbatched";
+        for (const group of round.splice(1)) inFlight.delete(group);
+      }
+      for (const waiter of waiters) {
+        if (!round.some((group) => waiter.groups.has(group))) continue;
+        if (waiter.rounds.length === 0) {
+          // how long it waited for a round of its own to go
+          waiter.span.setAttribute(
+            "swamp.datastore.v3.flush.waited_ms",
+            clock().getTime() - waiter.askedAt,
+          );
+        }
+        waiter.rounds.push(round.length);
+        waiter.cuts.push(cut);
+        waiter.span.setAttributes({
+          "swamp.datastore.v3.flush.rounds": waiter.rounds,
+          "swamp.datastore.v3.flush.cuts": waiter.cuts,
+        });
+      }
+      const settled = await Promise.allSettled(
+        round.map((group, slot) =>
+          appendGroup(
+            group,
+            options,
+            clock,
+            stored,
+            supersededInFlight,
+            outbox,
+            () => {
+              queuedAny = true;
+            },
+            batch === undefined ? undefined : { batch, slot },
+          )
+        ),
+      );
+      // still in flight until the loop settles it, so a failed flush waits
+      return { id, round, settled };
+    } catch (error) {
+      for (const group of round) inFlight.delete(group);
+      throw error;
+    }
+  };
+
+  /**
+   * a failure that is not a refusal fails the flushes whose own try it was;
+   * one asked while that send was already out gets a try of its own
+   */
+  const failGroup = (group: Group, error: unknown): void => {
+    const sent = sentAs.get(group) ?? sends;
+    let retry = false;
+    for (const waiter of waiters) {
+      if (!waiter.groups.has(group) || waiter.failed !== undefined) continue;
+      if (waiter.formed.has(group) || sent > waiter.askedAtSend) {
+        waiter.failed = { error };
+      } else {
+        retry = true;
+      }
+    }
+    if (!retry) failures.set(group, error);
+  };
+
+  const settleRound = async (sent: SentRound): Promise<void> => {
+    for (const group of sent.round) inFlight.delete(group);
+    for (const [index, group] of sent.round.entries()) {
+      const outcome = sent.settled[index];
+      if (outcome.status === "fulfilled") {
+        pending = pending.filter((other) => other !== group);
+        notTried.delete(group);
+        if (outcome.value) continue;
+        noteCommitted(group, options);
+        noteCommandLanded(group.partition, intentKindsOf(group.changes));
+        if (!landed.some((other) => other.equals(group.partition))) {
+          landed.push(group.partition);
+        }
+        continue;
+      }
+      const error = outcome.reason;
+      // never sent: it stays pending to go again, unless it keeps stalling
+      if (error instanceof CommitNotTriedError) {
+        const times = (notTried.get(group) ?? 0) + 1;
+        notTried.set(group, times);
+        if (times >= NOT_TRIED_SENDS) failGroup(group, error);
+        continue;
+      }
+      // A seq gap only means another append moved the head first; the group
+      // stays pending and is rebuilt at the new head when sent again.
+      if (
+        !(error instanceof CommitRejectedError) ||
+        error.reason === "seq-gap"
+      ) {
+        failGroup(group, error);
+        continue;
+      }
+      // A refused commit can never land as it is: drop it, with the splits
+      // of its partition formed with it (they were staged after it), and go
+      // on, so the partitions staged after it still commit.
+      const dropped = pending.filter((other) =>
+        other === group ||
+        (other.formation === group.formation &&
+          other.partition.equals(group.partition))
+      );
+      pending = pending.filter((other) => !dropped.includes(other));
+      // with the refused entries go the unit's run entries, so a recovery
+      // never lands a run record that names what was refused
+      const lost = await discardEntries(
+        options,
+        outbox,
+        [
+          ...dropped,
+          ...pending.filter((other) =>
+            runRank(other) === 1 && !inFlight.has(other)
+          ),
+        ],
+      );
+      if (lost !== undefined && unconfirmed === undefined) {
+        unconfirmed = {
+          cause: error,
+          reason: lost.reason,
+          groups: lost.groups,
+        };
+      }
+      const refusal: PartitionRefusal = {
+        partition: group.partition,
+        reason: error.reason,
+        message: error.message,
+        ...await refusedRecord(error, group.partition, options),
+        versions: dropped.flatMap((other) => recordedVersions(other)),
+      };
+      for (const waiter of waiters) {
+        if (dropped.some((other) => waiter.groups.has(other))) {
+          waiter.refusedNow.push(refusal);
+        }
+      }
+      if (runRank(group) === 0) refusals = [...refusals, refusal];
+      dropWork([group.partition]);
+    }
+  };
+
+  /**
+   * One loop sends and settles rounds, one settle at a time, so no two
+   * settles interleave across an await; rounds whose groups are independent
+   * are in flight together, up to what the sink takes.
+   */
+  const pump = async (): Promise<void> => {
+    const sending = new Map<number, Promise<SentRound>>();
+    try {
+      await pumpRounds(sending);
+    } finally {
+      // never left behind: what a round in flight landed is still recorded
+      for (const round of sending.values()) {
+        try {
+          await settleRound(await round);
+        } catch (error) {
+          logger
+            .warn`Recording a v3 commit round after a failure failed: ${error}`;
+        }
+      }
+    }
+  };
+
+  const pumpRounds = async (
+    sending: Map<number, Promise<SentRound>>,
+  ): Promise<void> => {
+    let nextId = 0;
+    while (true) {
+      settleWaiters();
+      const most = Math.max(1, options.sink.roundsInFlight?.() ?? 1);
+      while (sending.size < most) {
+        const formed = formRound(most > 1);
+        if (formed === undefined) break;
+        const id = nextId++;
+        sending.set(id, sendRound(id, formed));
+      }
+      if (sending.size === 0) {
+        // nothing can move: what is left waits on a failure or a refusal
+        for (const waiter of [...waiters]) {
+          if (waiter.failed !== undefined) {
+            rejectWaiter(waiter, waiter.failed.error);
+            continue;
+          }
+          const blockedBy = pending.find((group) =>
+            waiter.groups.has(group) && failures.has(group)
+          ) ?? pending.find((group) =>
+            failures.has(group)
+          );
+          rejectWaiter(
+            waiter,
+            blockedBy !== undefined
+              ? failures.get(blockedBy)
+              : refusals.length > 0 || waiter.refusedNow.length > 0
+              ? undefined
+              : new Error("a flush could not send its commits"),
+          );
+        }
+        return;
+      }
+      const sent = await Promise.race([
+        ...sending.values(),
+        wokenAsRound,
+      ]);
+      if (sent === undefined) {
+        woken = Promise.withResolvers<void>();
+        wokenAsRound = woken.promise.then(() => undefined);
+        rewake = false;
+        continue;
+      }
+      sending.delete(sent.id);
+      await settleRound(sent);
+    }
   };
 
   const refusedError = (
@@ -865,8 +1303,13 @@ export function createCommitLogUnitOfWork(
     isOpen: () => ended === undefined,
     parent,
     openedAt,
-    adopt(batches, dirs = []) {
-      for (const batch of batches) record(batch);
+    nextSeq,
+    originUnit,
+    openedSeq,
+    adopt(batches, dirs = [], origins = []) {
+      for (const [index, batch] of batches.entries()) {
+        record(batch, origins[index]);
+      }
       if (dirs.length > 0) touched = true;
       for (const dir of dirs) versionDirs.push(dir);
     },
@@ -880,8 +1323,9 @@ export function createCommitLogUnitOfWork(
         );
       }
       promoted = true;
-      states.get(target)!.adopt(staged);
+      states.get(target)!.adopt(staged, [], stagedOrigins);
       staged = [];
+      stagedOrigins = [];
       streamPuts.clear();
     },
     skipSuperseded,
@@ -908,8 +1352,9 @@ export function createCommitLogUnitOfWork(
 
   const finish = async (as: "committed" | "abandoned"): Promise<void> => {
     if (as === "abandoned") {
-      await flushing;
+      await pumpIdle();
       staged = [];
+      stagedOrigins = [];
       streamPuts.clear();
       const abandoned = pending;
       pending = [];
@@ -934,8 +1379,9 @@ export function createCommitLogUnitOfWork(
             "were not committed",
         );
       }
-      states.get(target)!.adopt(staged, versionDirs);
+      states.get(target)!.adopt(staged, versionDirs, stagedOrigins);
       staged = [];
+      stagedOrigins = [];
       versionDirs = [];
       streamPuts.clear();
       return;
@@ -948,6 +1394,8 @@ export function createCommitLogUnitOfWork(
         options.endRelease === undefined ? {} : { release: options.endRelease },
       );
     } catch (error) {
+      // what is still being sent lands or fails before the end decides
+      await pumpIdle();
       unlanded = [
         ...pending.map((group) => group.partition),
         ...staged.flat().map((change) => change.partition),
@@ -1422,14 +1870,23 @@ function requireBatchWithinLimit(changes: readonly TypedChange[]): void {
 
 function formGroups(
   batches: readonly (readonly TypedChange[])[],
+  origins: readonly Origin[],
   formation: number,
   formedAt: number,
 ): Group[] {
-  type Forming = { partition: PartitionKey; changes: TypedChange[] };
+  type Forming = {
+    partition: PartitionKey;
+    changes: TypedChange[];
+    origins: Origin[];
+  };
   const groups: Forming[] = [];
   const open = new Map<string, Forming>();
-  for (const batch of batches) {
-    const byPartition = new Map<string, Forming>();
+  for (const [index, batch] of batches.entries()) {
+    const from = origins[index];
+    const byPartition = new Map<
+      string,
+      { partition: PartitionKey; changes: TypedChange[] }
+    >();
     for (const change of batch) {
       const key = change.partition.toString();
       let part = byPartition.get(key);
@@ -1445,11 +1902,14 @@ function formGroups(
         group === undefined ||
         group.changes.length + part.changes.length > MAX_COMMIT_OPS
       ) {
-        group = { partition: part.partition, changes: [] };
+        group = { partition: part.partition, changes: [], origins: [] };
         groups.push(group);
         open.set(key, group);
       }
       for (const change of part.changes) group.changes.push(change);
+      if (from !== undefined && !group.origins.includes(from)) {
+        group.origins.push(from);
+      }
     }
   }
   return groups.map((group) => ({
@@ -1458,6 +1918,13 @@ function formGroups(
     formedAt,
     changes: group.changes,
     formation,
+    // every batch has an origin, or the group depends on everything before it
+    ...(group.origins.length > 0 &&
+        batches.every((batch, index) =>
+          batch.length === 0 || origins[index] !== undefined
+        )
+      ? { origins: group.origins }
+      : {}),
   }));
 }
 
@@ -1498,6 +1965,13 @@ function recordedVersions(
       ? [{ dataId: change.op.metadata.id, version: change.op.metadata.version }]
       : []
   );
+}
+
+function groupLockKeys(namespace: string, group: Group): string[] {
+  return [
+    partitionLockKey(namespace, group.partition),
+    ...runIdLockKeysOf(namespace, intentsOf(group)),
+  ];
 }
 
 function runRank(group: Group): number {
@@ -1632,10 +2106,7 @@ async function appendGroupIn(
     let queued = false;
     let withdrawn = false;
     await partitionLocksOf(options.sink).hold(
-      [
-        partitionLockKey(options.namespace, group.partition),
-        ...runIdLockKeysOf(options.namespace, intentsOf(group)),
-      ],
+      groupLockKeys(options.namespace, group),
       async () => {
         // A seq gap means another writer moved the head between the read and
         // the append; one rebuild at the new head usually lands it.
@@ -2179,6 +2650,9 @@ async function storeAgain(
 }
 
 const SEQ_GAP_ATTEMPTS = 2;
+
+/** sends in a row a group may come back not tried before it counts as failed */
+const NOT_TRIED_SENDS = 3;
 
 async function storePut(
   put: PendingPut,

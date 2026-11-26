@@ -217,6 +217,10 @@ import {
   type LentLocks,
   processLockHolderMarker,
 } from "../datastore/lock_holder_marker.ts";
+import {
+  bindGeneratorToCommitOrigin,
+  newCommitOrigin,
+} from "../datastore/commit_origin.ts";
 import type { OutputRepository } from "../models/repositories.ts";
 import type { RunTrackerRepository } from "../models/run_tracker_repository.ts";
 import { ActiveRun, type ActiveRunStatus } from "../models/active_run.ts";
@@ -6710,21 +6714,26 @@ export class WorkflowExecutionService {
         "job.name": job.name,
       },
     });
+    // its commits form one origin: in order among themselves, and sent
+    // alongside those of steps running at the same time
     const generator = this.#stamped(bindGeneratorToSpan(
       stepSpan,
-      this.runStepInSpan(
-        stepSpan,
-        workflow,
-        run,
-        job,
-        jobRun,
-        stepName,
-        originalStep,
-        forEachVar,
-        expressionContext,
-        options,
-        forEachIndex,
-        forEachTemplate,
+      bindGeneratorToCommitOrigin(
+        newCommitOrigin(),
+        this.runStepInSpan(
+          stepSpan,
+          workflow,
+          run,
+          job,
+          jobRun,
+          stepName,
+          originalStep,
+          forEachVar,
+          expressionContext,
+          options,
+          forEachIndex,
+          forEachTemplate,
+        ),
       ),
     ));
     if (!progress) {

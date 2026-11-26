@@ -43,6 +43,7 @@ import {
   runPut,
   unitOptions,
 } from "./commit_log_test_helpers.ts";
+import { withCapturedSpans } from "../tracing/span_test_helpers.ts";
 
 const MODEL = modelPartition();
 const CONFIG = partitionOf({
@@ -207,4 +208,64 @@ Deno.test("commit-log batches: behind a refusal still unacknowledged, an append 
   assertEquals(sink.landed.map((c) => c.partition.toString()), [
     runPartition().toString(),
   ]);
+});
+
+Deno.test("commit-log batches: a flush's span records its pending groups' kinds and partitions, and each round's size and why it was cut", async () => {
+  await withCapturedSpans(async (spans) => {
+    const sink = new BatchMemorySink();
+    const uow = unit(sink);
+    const half = Math.ceil(MAX_COMMIT_OPS / 2) + 1;
+    for (const prefix of ["a", "b"]) {
+      await uow.stageOps(
+        await Promise.all(
+          Array.from({ length: half }, async (_, i) => ({
+            partition: MODEL,
+            op: await savePut(`${prefix}${i}`, 1),
+          })),
+        ),
+      );
+    }
+    await uow.stageOp({ partition: runPartition(), op: await runPut("r") });
+    await uow.commit();
+    const flushes = spans.filter((span) =>
+      span.name === "swamp.datastore.v3.commit.flush"
+    );
+    assertEquals(flushes.length, 1);
+    const attributes = flushes[0].attributes;
+    assertEquals(attributes["swamp.datastore.v3.flush.pending"], 3);
+    assertEquals(attributes["swamp.datastore.v3.flush.kinds"], [
+      "data",
+      "data",
+      "run",
+    ]);
+    // the model's two splits share the index of its first
+    assertEquals(attributes["swamp.datastore.v3.flush.partitions"], [0, 0, 2]);
+    assertEquals(attributes["swamp.datastore.v3.flush.rounds"], [1, 2]);
+    assertEquals(attributes["swamp.datastore.v3.flush.cuts"], [
+      "partition",
+      "end",
+    ]);
+    assertEquals(
+      typeof attributes["swamp.datastore.v3.flush.waited_ms"],
+      "number",
+    );
+  });
+});
+
+Deno.test("commit-log batches: a flush's span records a round cut at the sink's batch limit", async () => {
+  await withCapturedSpans(async (spans) => {
+    const sink = new BatchMemorySink();
+    sink.batchLimit = 2;
+    const uow = unit(sink);
+    await stageThree(uow);
+    await uow.commit();
+    const flush = spans.find((span) =>
+      span.name === "swamp.datastore.v3.commit.flush"
+    )!;
+    assertEquals(flush.attributes["swamp.datastore.v3.flush.rounds"], [2, 1]);
+    assertEquals(flush.attributes["swamp.datastore.v3.flush.cuts"], [
+      "limit",
+      "end",
+    ]);
+  });
 });

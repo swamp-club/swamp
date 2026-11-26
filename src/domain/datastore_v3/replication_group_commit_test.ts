@@ -19,6 +19,10 @@
 
 import { assertEquals, assertRejects } from "@std/assert";
 import {
+  HEAD_PUBLISH_INTERVAL_MS,
+  HeadPublishPacer,
+} from "./head_publish_pacer.ts";
+import {
   type GroupCommitClock,
   ReplicationGroupCommit,
 } from "./replication_group_commit.ts";
@@ -278,4 +282,51 @@ Deno.test("ReplicationGroupCommit: a caller whose deadline has passed is rejecte
   assertEquals(caller.settled, "rejected");
   assertEquals(syncs.calls.length, 0);
   assertEquals(clock.pending(), 0);
+});
+
+Deno.test("ReplicationGroupCommit: syncing is true only while a sync runs, so a confirm asked then joins the next", async () => {
+  const syncs = manualSyncs();
+  const group = new ReplicationGroupCommit(syncs.sync);
+  assertEquals(group.syncing, false);
+  const first = outcome(group.confirm(1));
+  assertEquals(group.syncing, true);
+  syncs.calls[0].resolve(1);
+  await flush();
+  assertEquals(first.settled, "resolved");
+  assertEquals(group.syncing, false);
+});
+
+Deno.test("ReplicationGroupCommit and HeadPublishPacer together: four overlapping confirms take two head writes, the second paced", async () => {
+  let now = 0;
+  const pacer = new HeadPublishPacer();
+  const writes: number[] = [];
+  const waits: number[] = [];
+  const syncs = manualSyncs();
+  // as syncForRequests: a sync covering several requests marks contention,
+  // and the head waits out the pacer before its write
+  const group = new ReplicationGroupCommit((covering) => {
+    if (covering > 1) pacer.contended(now);
+    const wait = pacer.waitMs(now);
+    waits.push(wait);
+    now += wait;
+    pacer.attempted(now);
+    writes.push(now);
+    return syncs.sync(covering);
+  });
+  const confirms = [1, 2, 3, 4].map((mark) => outcome(group.confirm(mark)));
+  assertEquals(syncs.covering, [1]);
+  now += 300;
+  syncs.calls[0].resolve(1);
+  await flush();
+  assertEquals(syncs.covering, [1, 3]);
+  syncs.calls[1].resolve(4);
+  await flush();
+  assertEquals(confirms.map((one) => one.settled), [
+    "resolved",
+    "resolved",
+    "resolved",
+    "resolved",
+  ]);
+  assertEquals(writes.length, 2);
+  assertEquals(waits, [0, HEAD_PUBLISH_INTERVAL_MS - 300]);
 });

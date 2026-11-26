@@ -109,8 +109,16 @@ export class BatchMemorySink extends MemorySink {
   readonly batches: { partitions: string[]; release?: string }[] = [];
   refuse: (commit: Commit) => Error | undefined = () => undefined;
   batchLimit: number | undefined;
+  roundsInFlight: (() => number) | undefined;
+  /** awaited before a sent batch is applied, so a test holds it in flight */
+  hold: ((partitions: readonly string[]) => Promise<void>) | undefined;
+  batchesInFlight = 0;
+  mostBatchesInFlight = 0;
+  /** awaited before an append is applied, so a test holds one in flight */
+  holdAppend: ((commit: Commit) => Promise<void>) | undefined;
 
   override async append(commit: Commit): Promise<CommitStoreAppendResult> {
+    await this.holdAppend?.(commit);
     const refusal = this.refuse(commit);
     if (refusal !== undefined) {
       this.appendCalls.push(commit.partition.toString());
@@ -133,10 +141,21 @@ export class BatchMemorySink extends MemorySink {
         entry !== undefined && entry !== "skipped"
       );
       if (items.length === 0) return;
+      const partitions = items.map((item) => item.commit.partition.toString());
       this.batches.push({
-        partitions: items.map((item) => item.commit.partition.toString()),
+        partitions,
         ...(options?.release === undefined ? {} : { release: options.release }),
       });
+      this.batchesInFlight++;
+      this.mostBatchesInFlight = Math.max(
+        this.mostBatchesInFlight,
+        this.batchesInFlight,
+      );
+      try {
+        await this.hold?.(partitions);
+      } finally {
+        this.batchesInFlight--;
+      }
       let stopped = false;
       for (const item of items) {
         if (stopped) {

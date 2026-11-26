@@ -290,6 +290,15 @@ type Vouch = "vouched" | "refused" | "undecided";
 
 let commitStageBarrier: ((stage: string) => Promise<void>) | undefined;
 
+// a test advances it inside a stage, so the time counted is exact
+const commitClock = processRuntimeSlot(() => ({
+  now: (): number => performance.now(),
+}));
+
+export function setCommitClockForTesting(now?: () => number): void {
+  commitClock().now = now ?? (() => performance.now());
+}
+
 /** awaited before each named commit stage and before the replication confirm */
 export function setCommitStageBarrierForTesting(
   barrier: ((stage: string) => Promise<void>) | undefined,
@@ -297,15 +306,33 @@ export function setCommitStageBarrierForTesting(
   commitStageBarrier = barrier;
 }
 
+/** serve's own time on a request's commits, not the time spent on the upload */
+interface ServeOwnWork {
+  ms: number;
+}
+
+// these wait on the client's upload, which every deadline allows for apart
+const UPLOAD_STAGES: ReadonlySet<string> = new Set(["envelope", "ingest"]);
+
 /** carries no names or keys */
-function commitStage<T>(stage: string, fn: () => Promise<T>): Promise<T> {
+function commitStage<T>(
+  stage: string,
+  fn: () => Promise<T>,
+  work?: ServeOwnWork,
+): Promise<T> {
   const barrier = commitStageBarrier;
+  const counted = work !== undefined && !UPLOAD_STAGES.has(stage);
   return withSpan(
     `swamp.serve.datastore.commit.${stage}`,
     {},
-    barrier === undefined ? () => fn() : async () => {
-      await barrier(stage);
-      return await fn();
+    async () => {
+      const from = commitClock().now();
+      try {
+        if (barrier !== undefined) await barrier(stage);
+        return await fn();
+      } finally {
+        if (counted) work.ms += commitClock().now() - from;
+      }
     },
   );
 }
@@ -1170,6 +1197,7 @@ class DatastoreApi {
   }
 
   async #commitBatch(req: Request): Promise<Response> {
+    const requestFrom = commitClock().now();
     const reader = new FramedReader(req.body ?? ReadableStream.from([]), {
       maxBytes: MAX_COMMIT_BODY_BYTES,
     });
@@ -1202,6 +1230,7 @@ class DatastoreApi {
     }
     const landed: LandedCommit[] = [];
     let refused: BatchItemReply | undefined;
+    const work: ServeOwnWork = { ms: 0 };
     for (const [index, item] of header.items.entries()) {
       const partition = parsePartition(item.partition);
       let outcome: Response | LandedCommit;
@@ -1213,6 +1242,7 @@ class DatastoreApi {
             partition,
             req.signal,
             index === header.items.length - 1,
+            work,
           );
       } catch (error) {
         this.#deps.ctx.commitHealth?.recordFailure(error);
@@ -1230,6 +1260,7 @@ class DatastoreApi {
       ? undefined
       : await this.#confirmLanded(landed);
     if (unconfirmed === undefined) this.#noteLanded(landed);
+    const replyFrom = commitClock().now();
     const results: BatchItemReply[] = [];
     for (const commit of landed) {
       results.push(
@@ -1242,6 +1273,17 @@ class DatastoreApi {
       );
     }
     if (refused !== undefined) results.push(refused);
+    setActiveSpanAttributes({
+      "swamp.serve.datastore.batch.items": header.items.length,
+      "swamp.serve.datastore.batch.landed": landed.length,
+      "swamp.serve.datastore.batch.own_work_ms": Math.round(work.ms),
+      "swamp.serve.datastore.batch.reply_build_ms": Math.round(
+        commitClock().now() - replyFrom,
+      ),
+      "swamp.serve.datastore.batch.to_reply_ms": Math.round(
+        commitClock().now() - requestFrom,
+      ),
+    });
     // A command's own lease ends with the commits it guarded, once all of them
     // are confirmed; an explicit lease outlives the command and is never ended
     // here.
@@ -1362,9 +1404,12 @@ class DatastoreApi {
     partition: PartitionKey,
     signal: AbortSignal,
     last: boolean,
+    work?: ServeOwnWork,
   ): Promise<Response | LandedCommit> {
+    const stage = <T>(name: string, fn: () => Promise<T>): Promise<T> =>
+      commitStage(name, fn, work);
     // reading the envelope waits on the client's upload
-    const read = await commitStage("envelope", async () => {
+    const read = await stage("envelope", async () => {
       const envelopeLength = await reader.readUint32BE(signal);
       if (envelopeLength > MAX_ENVELOPE_BYTES) {
         await reader.cancel();
@@ -1403,7 +1448,7 @@ class DatastoreApi {
     // once it has arrived, below; this pass refuses early on access alone.
     let authorization;
     try {
-      authorization = await commitStage("authorize", async () => {
+      authorization = await stage("authorize", async () => {
         await this.#catchUp();
         return await authorizeCommit(
           partition,
@@ -1451,7 +1496,7 @@ class DatastoreApi {
     // is committed.
     let provided: Set<string> | Response;
     try {
-      provided = await commitStage(
+      provided = await stage(
         "ingest",
         () =>
           this.#withQueuedChunkSlot(
@@ -1479,12 +1524,12 @@ class DatastoreApi {
     // Content is checked before the section, which guards every record it
     // read; a retry of a commit that landed is answered as it, unjudged.
     let content: ForwardedContentAuthority | undefined;
-    const landedBefore = await commitStage(
+    const landedBefore = await stage(
       "landed_lookup",
       () => landedForwardedCommit(this.#v3, request),
     );
     if (landedBefore === undefined) {
-      await commitStage("content_catch_up", () => this.#catchUp());
+      await stage("content_catch_up", () => this.#catchUp());
       const resolver = memoized(serveResolver(this.#deps.ctx, this.#v3));
       // Possession is decided once, before the content check reads any of
       // it, so a chunk the budget cannot decide is answered as not
@@ -1494,7 +1539,7 @@ class DatastoreApi {
       const possession = this.#commitVouchBudget(uncarried);
       const vouched = new Set<string>();
       const refused = new Set<string>();
-      const undecided = await commitStage("possession", async () => {
+      const undecided = await stage("possession", async () => {
         for (const hash of referenced) {
           if (carried.has(hash)) continue;
           const vouch = await this.#mayReference(hash, possession, resolver);
@@ -1520,7 +1565,7 @@ class DatastoreApi {
         signal: signal,
       });
       content = judging;
-      const checked = await commitStage("content_check", () =>
+      const checked = await stage("content_check", () =>
         authorizeCommit(
           partition,
           ops,
@@ -1542,20 +1587,19 @@ class DatastoreApi {
       ops,
       content,
     );
-    const lockWaitFrom = performance.now();
+    const lockWaitFrom = commitClock().now();
     const landed = await withForwardedSection(
       this.#v3,
       commitClass,
       lockKeys,
       async (held) => {
+        const lockWaitMs = commitClock().now() - lockWaitFrom;
         setActiveSpanAttributes({
-          "swamp.serve.datastore.lock_wait_ms": Math.round(
-            performance.now() - lockWaitFrom,
-          ),
+          "swamp.serve.datastore.lock_wait_ms": Math.round(lockWaitMs),
           "swamp.serve.datastore.commit_class": commitClass,
           "swamp.serve.datastore.lock_keys": lockKeys.length,
         });
-        await commitStage("locked_catch_up", async () => {
+        await stage("locked_catch_up", async () => {
           // Held partitions move only by this append, and exclusive writes not
           // while it runs. A run id is looked up across every workflow's runs,
           // which no partition check covers.
@@ -1567,7 +1611,7 @@ class DatastoreApi {
         });
         // A retry of a commit that landed is answered before proof of
         // possession: its chunks may since have left the upload ledger.
-        const duplicate = await commitStage(
+        const duplicate = await stage(
           "locked_landed_lookup",
           () => landedForwardedCommit(this.#v3, request),
         );
@@ -1576,7 +1620,7 @@ class DatastoreApi {
         // Looked up afresh: a definition retagged during the upload is judged
         // as it is now.
         const resolver = memoized(serveResolver(this.#deps.ctx, this.#v3));
-        const recheck = await commitStage(
+        const recheck = await stage(
           "locked_authorize",
           () =>
             authorizeCommit(
@@ -1591,7 +1635,7 @@ class DatastoreApi {
         // The records the content was judged against must not have moved.
         const judged = content;
         if (
-          !(await commitStage("locked_unchanged", () => judged.unchanged()))
+          !(await stage("locked_unchanged", () => judged.unchanged()))
         ) {
           return { contentChanged: true as const };
         }
@@ -1606,7 +1650,7 @@ class DatastoreApi {
         const underLock = this.#commitVouchBudget(
           referenced.filter((hash) => !carried.has(hash)).length,
         );
-        const notProvided = await commitStage("locked_possession", async () => {
+        const notProvided = await stage("locked_possession", async () => {
           for (const hash of referenced) {
             if (
               carried.has(hash) ||
@@ -1628,7 +1672,7 @@ class DatastoreApi {
         }
         const lease = this.#leaseOpFor(partition, envelope.lease);
         if (lease === "lost") return { leaseLost: true as const };
-        const result = await commitStage("append", async () => {
+        const result = await stage("append", async () => {
           // a request that passed the entry gate before this process stopped
           // appends only while its lease is confirmed by time; a follower takes
           // over no sooner than TTL plus the clock skew after that confirmation

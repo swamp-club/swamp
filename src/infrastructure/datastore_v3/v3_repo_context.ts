@@ -184,7 +184,7 @@ import {
 import type { RepositoryFactoryConfig } from "../persistence/repository_factory.ts";
 import { getSwampLogger } from "../logging/logger.ts";
 import { commandStopSignal } from "../process/shutdown_handlers.ts";
-import { withSpan } from "../tracing/tracer.ts";
+import { setActiveSpanAttributes, withSpan } from "../tracing/tracer.ts";
 import { unreadableContentLookup } from "./unreadable_content_lookup.ts";
 import { assertV3CheckoutJoinable } from "./v3_checkout_join.ts";
 import { v3ForeignContentFetcher } from "./v3_foreign_content.ts";
@@ -3024,8 +3024,11 @@ async function syncAndPublishNow(
     return undefined;
   }
   const pacer = headPacerFor(datastore, use.lineageFence, writerFence);
-  const left = deadlineMs -
-    await waitForHeadPacer(pacer, deadlineMs, signal);
+  const pacerWait = await waitForHeadPacer(pacer, deadlineMs, signal);
+  setActiveSpanAttributes({
+    "swamp.datastore.v3.head.pacer_wait_ms": pacerWait,
+  });
+  const left = deadlineMs - pacerWait;
   // taken before the sync: what the sync covers. A serve that lost its lease
   // meanwhile still publishes this head before its lease check fails; it covers
   // only commits nobody acknowledged
@@ -3207,6 +3210,9 @@ export async function confirmV3Replicated(
     );
     repoState().groupCommits.set(datastore, group);
   }
+  setActiveSpanAttributes({
+    "swamp.datastore.v3.confirm.joined": group.syncing,
+  });
   await group.confirm(mark, deadlineAt);
 }
 

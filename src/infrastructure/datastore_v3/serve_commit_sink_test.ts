@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { waitFor } from "@swamp-club/swamp-testing";
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { ServeNotLeaderError } from "../../domain/datastore_v3/serve_leader.ts";
 import { join } from "@std/path";
@@ -48,6 +49,7 @@ import {
   CARRIED_SEND_ATTEMPTS,
   CommitOutcomeUnknownError,
   createServeCommitSink,
+  MAX_BATCHES_IN_FLIGHT,
   MAX_CARRIED_CHUNKS,
   MAY_LAND_RESENDS,
   SERVE_SEQ_GAP_ATTEMPTS,
@@ -980,6 +982,49 @@ Deno.test("createServeCommitSink: a batch waits until the one before it was sent
     await batch!.skip(0);
     assertEquals(serve.batches, [], "nothing to send, so no request");
     void cache;
+  });
+});
+
+Deno.test("createServeCommitSink: several rounds go at once only with a serve that takes batches", async () => {
+  await withCheckout(({ serve, sink }) => {
+    serve.takesBatches = false;
+    assertEquals(sink.roundsInFlight?.(), 1);
+    serve.takesBatches = true;
+    assertEquals(sink.roundsInFlight?.(), MAX_BATCHES_IN_FLIGHT);
+    return Promise.resolve();
+  });
+});
+
+Deno.test("createServeCommitSink: a batch that has filled waits only on serve, so the next is admitted while it is in flight", async () => {
+  await withCheckout(async ({ serve, sink }) => {
+    serve.takesBatches = true;
+    const held = Promise.withResolvers<void>();
+    let posting = false;
+    serve.beforePost = () => {
+      if (posting) return Promise.resolve();
+      posting = true;
+      return held.promise;
+    };
+    const first = await sink.beginBatch!(1, { release: "lease-1" });
+    const landing = first!.append(
+      0,
+      modelCommit(1, [await savePut("a", 1)]),
+    );
+    await waitFor(() => posting, "the first batch posted");
+    let secondReady = false;
+    const second = sink.beginBatch!(1, { release: "lease-2" }).then(
+      (batch) => {
+        secondReady = true;
+        return batch;
+      },
+    );
+    try {
+      await waitFor(() => secondReady, "the second batch admitted");
+    } finally {
+      held.resolve();
+    }
+    await landing;
+    await (await second)!.skip(0);
   });
 });
 

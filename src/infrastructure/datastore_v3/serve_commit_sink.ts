@@ -87,6 +87,12 @@ export const MAX_BATCH_CARRIED_BYTES = 64 * 1024 * 1024;
  */
 export const MAX_RELEASE_CARRIED_BYTES = 1024 * 1024;
 
+/**
+ * batches sent and not yet answered, per sink, so every unit in the process
+ * shares them; their confirms share serve's syncs
+ */
+export const MAX_BATCHES_IN_FLIGHT = 4;
+
 export const MAX_CARRIED_CHUNKS = 1024;
 
 /**
@@ -726,9 +732,20 @@ export function createServeCommitSink(
     }
   };
 
-  // One batch at a time: each of its commits holds its partition's lock until
-  // the batch is sent, so two filling at once could each wait on the other.
+  // One batch fills at a time: each of its commits holds its partition's lock
+  // until the batch is sent, so two filling at once could each wait on the
+  // other. A filled batch waits only on serve, so several may be in flight.
   let batchGate: Promise<void> = Promise.resolve();
+  let batchesInFlight = 0;
+  let roomFreed = Promise.withResolvers<void>();
+  const waitForRoom = async (most: number): Promise<void> => {
+    while (batchesInFlight >= most) await roomFreed.promise;
+  };
+  const batchLanded = (): void => {
+    batchesInFlight--;
+    roomFreed.resolve();
+    roomFreed = Promise.withResolvers<void>();
+  };
 
   const beginBatch = async (
     slots: number,
@@ -747,10 +764,13 @@ export function createServeCommitSink(
     let open!: () => void;
     batchGate = new Promise<void>((resolve) => open = resolve);
     await previous;
+    await waitForRoom(MAX_BATCHES_IN_FLIGHT);
+    batchesInFlight++;
     const entries: (Waiting | "skipped" | undefined)[] = new Array(slots);
     let settled = 0;
     const settle = async () => {
       if (++settled < slots) return;
+      open();
       try {
         await sendBatch(
           entries.filter((entry): entry is Waiting =>
@@ -759,7 +779,7 @@ export function createServeCommitSink(
           batchOptions?.release,
         );
       } finally {
-        open();
+        batchLanded();
       }
     };
     return {
@@ -872,6 +892,8 @@ export function createServeCommitSink(
       batchGate = new Promise<void>((resolve) => open = resolve);
       await previous;
       try {
+        // recovery sends alone: after every batch in flight has landed
+        await waitForRoom(1);
         const settled = sends.map(() =>
           Promise.withResolvers<CommitStoreAppendResult>()
         );
@@ -940,6 +962,11 @@ export function createServeCommitSink(
     seqGapAttempts: SERVE_SEQ_GAP_ATTEMPTS,
     beginBatch,
     batchLimit: MAX_BATCH_COMMITS,
+    roundsInFlight: () =>
+      client.takesCommitBatches?.() === true &&
+        options.offline?.() === undefined
+        ? MAX_BATCHES_IN_FLIGHT
+        : 1,
     takesStepStarts: () => client.takesStepStarts?.() ?? false,
     queuesOffline: async (partition) => {
       const offline = options.offline?.();

@@ -18,6 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assert, assertEquals } from "@std/assert";
+import {
+  setCommitClockForTesting,
+  setCommitStageBarrierForTesting,
+} from "../src/serve/datastore_api.ts";
+import { withCapturedSpans } from "../src/infrastructure/tracing/span_test_helpers.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { partitionOf } from "../src/domain/datastore_v3/partition_key.ts";
 import { Commit } from "../src/domain/datastore_v3/commit.ts";
@@ -179,6 +184,79 @@ Deno.test({
       assertEquals(batch.results[1].body.parentTxnId, first);
       assertEquals(await headOf(server), 2);
     });
+  },
+});
+
+Deno.test({
+  name:
+    "datastore batch: the request's span records its items, what landed, serve's own work, the reply building and the time to the reply (swamp-club#5098)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withCapturedSpans(async (spans) => {
+      await withServer(writer(), async (server) => {
+        const batch = await postBatch(server, "alice-token", [
+          await saveBody(server, 1, 0),
+          await saveBody(server, 2, 1),
+        ]);
+        assertEquals(batch.status, 200, JSON.stringify(batch.json));
+      });
+      const recorded = spans.filter((span) =>
+        span.attributes["swamp.serve.datastore.batch.items"] !== undefined
+      );
+      assertEquals(recorded.length, 1);
+      const attributes = recorded[0].attributes;
+      assertEquals(attributes["swamp.serve.datastore.batch.items"], 2);
+      assertEquals(attributes["swamp.serve.datastore.batch.landed"], 2);
+      for (
+        const name of ["own_work_ms", "reply_build_ms", "to_reply_ms"]
+      ) {
+        assertEquals(
+          typeof attributes[`swamp.serve.datastore.batch.${name}`],
+          "number",
+          name,
+        );
+      }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "datastore batch: serve's own work counts every commit stage but the envelope and ingest, which wait on the upload (swamp-club#5098)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    let now = 0;
+    setCommitClockForTesting(() => now);
+    setCommitStageBarrierForTesting((stage) => {
+      // the upload is slow; serve's own stages take 1 ms each, append 50
+      if (stage === "envelope" || stage === "ingest") now += 1_000;
+      else if (stage === "append") now += 50;
+      else if (stage !== "confirm_replicated") now += 1;
+      return Promise.resolve();
+    });
+    try {
+      await withCapturedSpans(async (spans) => {
+        await withServer(writer(), async (server) => {
+          const batch = await postBatch(server, "alice-token", [
+            await saveBody(server, 1, 0),
+          ]);
+          assertEquals(batch.status, 200, JSON.stringify(batch.json));
+        });
+        const recorded = spans.find((span) =>
+          span.attributes["swamp.serve.datastore.batch.items"] !== undefined
+        )!;
+        const own = recorded.attributes[
+          "swamp.serve.datastore.batch.own_work_ms"
+        ] as number;
+        assert(own >= 50, `append not counted: ${own}`);
+        assert(own < 1_000, `the upload was counted: ${own}`);
+      });
+    } finally {
+      setCommitStageBarrierForTesting(undefined);
+      setCommitClockForTesting(undefined);
+    }
   },
 });
 

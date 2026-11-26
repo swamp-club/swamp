@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { currentCommitOrigin } from "../datastore/commit_origin.ts";
 import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
 import { EventBus } from "../events/event_bus.ts";
 import type { ModelDataWritten } from "../events/types.ts";
@@ -25454,6 +25455,34 @@ Deno.test("WorkflowExecutionService: a job's parallel steps are all running when
     };
     await runUntilThrown(service.run(workflow.name));
     assertEquals(running.find((count) => count > 0), 32);
+  });
+});
+
+Deno.test("WorkflowExecutionService: each step runs in a commit origin of its own, so parallel steps' commits can go together", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "origin-wf",
+      jobs: [
+        Job.create({ name: "main", steps: [modelStep("a"), modelStep("b")] }),
+      ],
+    });
+    const origins = new Map<string, unknown>();
+    class OriginStepExecutor extends CountingStepExecutor {
+      override execute(step: Step, ctx: StepExecutionContext) {
+        origins.set(ctx.stepName, currentCommitOrigin());
+        return super.execute(step, ctx);
+      }
+    }
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      new OriginStepExecutor(),
+    );
+    await runUntilThrown(service.run(workflow.name));
+    const [a, b] = [origins.get("a"), origins.get("b")];
+    assert(a !== undefined && b !== undefined, "a step ran outside an origin");
+    assert(a !== b, "two steps shared an origin");
   });
 });
 

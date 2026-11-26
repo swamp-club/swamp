@@ -112,6 +112,11 @@ export class ReplicationGroupCommit {
     return true;
   }
 
+  /** a confirm asked while this is true waits for the next sync */
+  get syncing(): boolean {
+    return this.#syncing;
+  }
+
   #next(): void {
     if (this.#syncing) return;
     this.#waiting = this.#waiting.filter((waiter) => !waiter.settled);
