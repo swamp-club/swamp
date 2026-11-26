@@ -4234,6 +4234,13 @@ are, which may lag the feed for other partitions until the writer's next
 catch-up of the whole feed succeeds. That trade is deliberate: finishing it
 would mean replaying over a writer that is still writing.
 
+A scoped writer (below, under serve-mode checkouts) leaves its read model
+complete with its cursor behind, so a reader skips catch-up while it runs and
+reads behaviors the writer did not lock or read as the writer's last whole
+apply left them: at most the writer's interval apply
+(`SCOPED_FEED_APPLY_MS`, 30 seconds) behind while the writer runs, and current
+again at the next command that applies the whole feed.
+
 Each effect is idempotent, so catching up again from the unchanged cursor
 redoes the effects of a crash anywhere. That is not always a repair on its
 own: a replay can overwrite the only good copy of a chunk the datastore lost
@@ -10020,6 +10027,44 @@ files may hold later writes that never committed over those commits, so a
 catch-up while another unit is open puts them back. And a recovery's replay
 never asks: it puts back every file, also when a root that waits on it already
 counts as open.
+
+**Scoped applies (swamp-club#5094).** `model method run` in a serve-member
+checkout (not `--last-evaluated`) applies to its read model only what it
+locks or reads, so a member's write no longer pays for applying every other
+member's commits. The copy still fetches the whole feed; only the read model
+is scoped (`scopeV3ReadModelApplies`, `scoped_read_model.ts`), and only with
+the existing partition catch-up, so the cursor keeps its meaning: every commit
+at or below it is applied, and a partition applied ahead of it is skipped by
+the next whole apply. No schema changes.
+
+- At open the read model applies config, the lockfile and auto-definitions
+  with commits past what it applied (a query over `commits` past the cursor,
+  no body decoded). A read model never completed, or lagging its copy by more
+  than `SCOPED_BACKLOG_MAX` commits (2,000; `SWAMP_V3_SCOPED_BACKLOG_MAX`
+  overrides it) or with its oldest unapplied commit older than
+  `SCOPED_BACKLOG_AGE_MS` (an hour), applies the whole feed instead, before
+  anything is staged. The bound keeps `commits.db` and follow compaction,
+  which stops at the cursor, from growing without end.
+- Under the lock the same decision is made again on the copy the lock just
+  fetched; scoped, the read model applies the locked partitions (a behavior's,
+  or a run's) and the pending config before the acquire resolves. The
+  lock's `maxCommits` counts only those partitions' unapplied commits; a
+  cursor the copy compacted past still loads a base outside the lock.
+- The feed watch becomes a whole catch-up every `SCOPED_FEED_APPLY_MS`, so a
+  short command never pays one and a long one's reads lag by at most that.
+  It is the same catch-up as before, so a commit the command sent while one of
+  its units is open leaves its files alone (`holdsOwnWork`).
+- Reads apply what they read first (`DataReadBarrier`): a read of another
+  behavior through the data repository applies its partition, a read across
+  behaviors (the catalog, `data.query`, a global listing, GC) applies the
+  whole feed unless only the command's own commits are pending, and a CEL
+  expression applies the behaviors it names before its synchronous reads
+  (the whole feed when it reads data it cannot pin to named behaviors). A
+  synchronous read of a partition with unapplied commits throws in tests
+  (`scopedSyncReadTripwireForTesting`).
+
+Workflow runs, data delete and rename, access, workers and serve keep whole
+applies.
 
 **Testing.** `integration/serve_v3_team_forwarding_test.ts` (a commit
 through a follower lands as the caller; the leader decides; an unreachable

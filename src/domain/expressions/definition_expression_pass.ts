@@ -153,6 +153,8 @@ export async function evaluateDefinitionExpressions(
     };
     const values = new Map<string, unknown>();
     for (const expr of batch) {
+      // the check reads the model map synchronously
+      await ctx.data?.applyReads?.(expr.celExpression);
       const missingModel = findMissingModelDependency(expr.celExpression, ctx);
       if (missingModel) {
         const worded = wordedText((w) =>

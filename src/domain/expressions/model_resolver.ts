@@ -293,6 +293,11 @@ export interface DataNamespace {
    * datastores do not yield empty or stale data
    */
   prepare?(expression: string): Promise<void>;
+  /**
+   * the part of prepare a command whose read model applies only part of the
+   * feed needs before any synchronous read of what the expression names
+   */
+  applyReads?(expression: string): Promise<void>;
 }
 
 interface ReadSetState {
@@ -1063,6 +1068,14 @@ export class ModelResolver {
           }) + filter + ` && ns == "${escapeCelString(ownNamespace)}"`
         );
 
+    const applyReads = (expression: string): Promise<void> =>
+      this.applyBeforeEvaluation(
+        expression,
+        (name) =>
+          readSet?.coordsByRef.get(name) !== undefined
+            ? Promise.resolve(readSet.coordsByRef.get(name)!)
+            : resolveIdentities(name),
+      );
     return {
       namespace: ownNamespace,
       readsSoloNamespace:
@@ -1402,17 +1415,12 @@ export class ModelResolver {
       invalidateLatest: (_modelName: string, _dataName: string): void => {
         // No-op — latest() always reads from disk; no cache to invalidate.
       },
+      applyReads,
       prepare: async (expression: string): Promise<void> => {
         for (const name of extractOwnNamespaceDataModelNames(expression)) {
           await resolveIdentities(name);
         }
-        await this.applyBeforeEvaluation(
-          expression,
-          (name) =>
-            readSet?.coordsByRef.get(name) !== undefined
-              ? Promise.resolve(readSet.coordsByRef.get(name)!)
-              : resolveIdentities(name),
-        );
+        await applyReads(expression);
         if (readSet) await this.ensureReadSet(expression, readSet);
       },
     };

@@ -1502,12 +1502,10 @@ export async function catchUpV3HandlesAt(
   );
   for (const handle of handles) {
     if (handle.catchUpForWrite !== undefined) {
-      // a scoped command applies what the lock guards; a read model never
-      // completed applies the whole feed
-      const scoped = scopedHandles().includes(handle) &&
-          handle.readModel.isComplete()
+      const lockedHere = scopedHandles().includes(handle)
         ? lockedPartitionsOf(handle, locked)
         : undefined;
+      let scoped: PartitionKey[] | undefined;
       try {
         await handle.catchUpForWrite(undefined, {
           // a page asked for one copy is that copy's alone
@@ -1516,6 +1514,13 @@ export async function catchUpV3HandlesAt(
             : {}),
           ...(maxCommits !== undefined ? { maxCommits } : {}),
         });
+        // a scoped command applies what the lock guards; a read model never
+        // completed, or lagging past the bound in a copy the lock just
+        // fetched, applies the whole feed before the command stages anything
+        scoped = lockedHere !== undefined &&
+            handle.readModel.isComplete() && !await backlogPastBound(handle)
+          ? lockedHere
+          : undefined;
         if (maxCommits !== undefined && scoped !== undefined) {
           await assertScopedReadModelWithin(handle, maxCommits, scoped);
         } else if (maxCommits !== undefined) {
@@ -1533,6 +1538,12 @@ export async function catchUpV3HandlesAt(
         throw error;
       }
       endDeferral(handle);
+      const marks = repoState().scoped?.locked;
+      if (lockedHere !== undefined && marks !== undefined) {
+        const held = marks.get(handle) ?? new Set<string>();
+        for (const partition of lockedHere) held.add(partition.toString());
+        marks.set(handle, held);
+      }
       if (scoped !== undefined) {
         await applyPartitions(
           handle,
@@ -1541,12 +1552,6 @@ export async function catchUpV3HandlesAt(
             ? new AbortController().signal
             : commandStopSignal(),
         );
-        const marks = repoState().scoped?.locked;
-        if (marks !== undefined) {
-          const held = marks.get(handle) ?? new Set<string>();
-          for (const partition of scoped) held.add(partition.toString());
-          marks.set(handle, held);
-        }
         continue;
       }
       await (handle.catchUpReadModel?.(undefined, options) ??
