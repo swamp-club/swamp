@@ -2374,7 +2374,7 @@ for (const base of [false, true]) {
   Deno.test(
     `SqliteReadModel.catchUp: ${
       base ? "a base load" : "a page"
-    } of new versions resolves each new directory under its parent's resolution, not by a walk up from it (swamp-club#5122)`,
+    } of new versions real-paths each existing directory once and no new one (swamp-club#5122)`,
     async () => {
       await withEnv(async (env) => {
         const names = Array.from({ length: 12 }, (_, i) => `n${i}`);
@@ -2409,7 +2409,9 @@ for (const base of [false, true]) {
           const calls = await countingRealPaths(() =>
             readModel.catchUp(signal())
           );
-          console.log("REALPATH", base, calls);
+          // the cache root, the state directory and, on a page, each name's
+          // directory already there: none per file or per new directory
+          assertEquals(calls, 2 + (base ? 0 : names.length));
         } finally {
           await readModel.close();
         }
