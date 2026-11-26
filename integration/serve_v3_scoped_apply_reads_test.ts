@@ -81,9 +81,7 @@ interface Observation {
 }
 
 let observed: Observation[] = [];
-/** the body each behavior's next `stamp` writes */
 const nextBody = new Map<string, string>();
-/** a run in this checkout waits here once its write is allocated */
 const holds = new Map<string, Promise<void>>();
 const holding = new Set<string>();
 
@@ -243,7 +241,6 @@ async function hold(repoDir: string): Promise<void> {
   await held;
 }
 
-/** holds the next runs in this checkout at their allocated write until released */
 function holdRuns(client: Client): { release: () => void } {
   let release = () => {};
   holds.set(client.repoDir, new Promise<void>((resolve) => release = resolve));

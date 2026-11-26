@@ -1268,7 +1268,6 @@ export function goServeOfflineAtLock(
  */
 const caughtUpFromServe = new WeakSet<V3Datastore>();
 
-/** a lock taken for a behavior or a workflow run, whose partitions it guards */
 export type V3LockedScope =
   | { readonly kind: "model"; readonly type: string; readonly id: string }
   | { readonly kind: "run"; readonly runId: string };

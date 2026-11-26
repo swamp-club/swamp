@@ -681,7 +681,7 @@ export interface ModelDefinition<
    */
   sourceFingerprint?: string;
 
-  /** whether the loaded bundle names a sync data API; unknown when undefined */
+  /** unknown when undefined */
   readsDataSynchronously?: boolean;
 }
 

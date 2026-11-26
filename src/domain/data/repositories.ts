@@ -192,10 +192,9 @@ export interface UnifiedDataRepository {
    */
   beforeWideRead?(): Promise<void>;
 
-  /** as beforeWideRead, for a read of one behavior's data */
   beforeModelRead?(type: ModelTypeInput, modelId: string): Promise<void>;
 
-  /** whether reads run in such a command, so their barriers do anything */
+  /** barriers act only when true */
   readsScoped?(): boolean;
 
   /** tests only: a sync read across behaviors with unapplied commits throws */

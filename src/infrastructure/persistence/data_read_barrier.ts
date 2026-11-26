@@ -26,7 +26,6 @@ import { processRuntimeSlot } from "../runtime/process_runtime.ts";
 export interface DataReadBarrier {
   /** whether any datastore this process reads applies only part of its feed */
   active(): boolean;
-  /** before an async read of one behavior's data */
   beforeModelRead(modelType: string, modelId: string): Promise<void>;
   /** before an async read across behaviors: the catalog, every behavior's data */
   beforeWideRead(): Promise<void>;

@@ -97,11 +97,9 @@ const PRODUCERS = ["producer1", "producer2"] as const;
 
 /** the behavior a sync-reading method reads, by id */
 let readTarget: string | undefined;
-/** a run in this checkout waits here once its write is allocated */
 const holds = new Map<string, Promise<void>>();
 const holding = new Set<string>();
 const seen: { readonly via: string; readonly value: unknown }[] = [];
-/** the body each behavior's next write holds */
 const bodies = new Map<string, string>();
 
 async function write(context: MethodContext, body?: string) {
@@ -452,7 +450,6 @@ async function saveDefinitions(
   );
 }
 
-/** what the member's read model has applied, read from its state file */
 function applied(team: Team, client: Client): {
   readonly cursor: number;
   seqOf(name: string): number;
@@ -489,7 +486,6 @@ function applied(team: Team, client: Client): {
   }
 }
 
-/** each partition's head at serve */
 async function headsAtServe(team: Team): Promise<{
   seqOf(name: string): number;
   configSeqOf(name: string): number;
