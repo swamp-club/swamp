@@ -622,14 +622,33 @@ function applyActions(
   }
   const type = identity.type;
   const modelId = identity.id;
-  for (const action of actions) {
+  // names this apply removed and has written no row of since
+  const emptied = new Set<string>();
+  for (let at = 0; at < actions.length; at++) {
+    const action = actions[at];
     switch (action.kind) {
-      case "upsert-version":
-        writer.upsertNewVersion(
-          catalogRow(namespace, type, modelId, action.metadata),
-        );
+      case "upsert-version": {
+        const name = action.metadata.name;
+        if (!emptied.delete(name)) {
+          writer.upsertNewVersion(
+            catalogRow(namespace, type, modelId, action.metadata),
+          );
+          break;
+        }
+        const rows = [catalogRow(namespace, type, modelId, action.metadata)];
+        for (;;) {
+          const next = actions[at + 1];
+          if (next?.kind !== "upsert-version" || next.metadata.name !== name) {
+            break;
+          }
+          rows.push(catalogRow(namespace, type, modelId, next.metadata));
+          at++;
+        }
+        writer.insertNameRows(rows, computeLatestFlags);
         break;
+      }
       case "remove-version":
+        emptied.delete(action.name);
         writer.removeVersion(
           namespace,
           type,
@@ -641,6 +660,7 @@ function applyActions(
         break;
       case "remove-name":
         writer.remove(namespace, type, modelId, action.name);
+        emptied.add(action.name);
         break;
       case "forward":
         writer.recordRename({
