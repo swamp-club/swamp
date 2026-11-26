@@ -23,7 +23,7 @@ import { ensureDirSync } from "@std/fs";
 import { getLogger } from "@logtape/logtape";
 import type { SharedDatastoreWriteTracker } from "./shared_datastore_write_tracker.ts";
 import { RECORD_KIND_TAG } from "../../domain/data/data.ts";
-import { tagsInKeyOrder } from "../../domain/datastore_v3/op.ts";
+import { tagsInKeyOrder } from "../../domain/data/data_metadata.ts";
 
 const logger = getLogger(["swamp", "persistence", "catalog"]);
 

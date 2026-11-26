@@ -198,3 +198,12 @@ export const DataMetadataSchema = z.object({
 });
 
 export type DataMetadata = z.infer<typeof DataMetadataSchema>;
+
+/** tags as a data-version op holds them, so equal metadata serializes equally */
+export function tagsInKeyOrder(
+  tags: Readonly<Record<string, string>>,
+): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(tags).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+  );
+}
