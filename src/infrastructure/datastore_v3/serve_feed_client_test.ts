@@ -567,7 +567,10 @@ Deno.test("watchServeFeed: a watch stopped while its window is open leaves no ti
   socket.onopen!();
   socket.deliver({ type: "commits.head", id: "head", payload: { cursor: 41 } });
   await waitFor(() => catchUps === 1, "the head's catch-up");
+  await settled();
   socket.deliver(theirs(42));
+  await settled();
+  assertEquals(catchUps, 1);
   // the test's sanitizer fails on the window's timer if stop left it running
   await watch.stop();
   assertEquals(catchUps, 1);
