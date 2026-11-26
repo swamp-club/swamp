@@ -88,6 +88,14 @@ export const SERVE_FEDERATION_ROUTES: readonly CommandRoute[] = [
     load: async () =>
       (await import("./serve_fingerprint.ts")).serveFingerprintCommand,
   },
+  {
+    name: "member",
+    aliases: [],
+    hidden: false,
+    module: "src/cli/commands/serve_member.ts",
+    needsFullTree: false,
+    load: async () => (await import("./serve_member.ts")).serveMemberCommand,
+  },
 ];
 
 export function resolveServeRoutes(
