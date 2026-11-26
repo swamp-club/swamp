@@ -4212,6 +4212,7 @@ Deno.test("SqliteReadModel.hydrateOwedPartition: writes every owed file of the p
     try {
       await readModel.catchUp(signal());
       const owed = readModel.owedCount();
+      assert(owed > 0);
       assertEquals(
         await readModel.hydrateOwedPartition(
           "",
@@ -4336,12 +4337,12 @@ Deno.test("SqliteReadModel.hydrateOwedPath: an owed file whose chunk cannot be r
     try {
       await readModel.catchUp(signal());
       const big = env.contentPath("", "big", 1);
+      const key = dataKey("big", 1).toString();
+      // owed, so the load never read its chunk
+      assertEquals(await readModel.unreadableRecord("", key), undefined);
       assertEquals(await readModel.hydrateOwedPath(big, signal()), "not_owed");
       assertEquals(await readOrAbsent(big), undefined);
-      assert(
-        await readModel.unreadableRecord("", dataKey("big", 1).toString()) !==
-          undefined,
-      );
+      assert(await readModel.unreadableRecord("", key) !== undefined);
     } finally {
       await readModel.close();
     }
