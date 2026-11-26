@@ -2224,6 +2224,39 @@ for (const net of [true, false]) {
   );
 }
 
+Deno.test("SqliteReadModel.catchUp: a base load writes its inline and small chunked files through the write pool (swamp-club#5103)", async () => {
+  await withEnv(async (env) => {
+    const blob = await env.chunkStore.write(
+      SOLO_NAMESPACE,
+      new Uint8Array(20_000).fill(7),
+      signal(),
+    );
+    await env.append(1, "", [await blobPut("a", 1, blob), versionOp("a", 1)]);
+    await env.append(2, "", [await savePut("b", 1), versionOp("b", 1)]);
+    await env.store.compactHistory(2);
+    const readModel = env.open({
+      bootIdentity: () => Promise.resolve("boot-1"),
+    });
+    try {
+      await withCapturedSpans(async (spans) => {
+        await readModel.catchUp(signal());
+        const load = findSpan(spans, "swamp.datastore.v3.readmodel.catchup");
+        const pooled = Number(
+          load.attributes["swamp.datastore.v3.writes_pooled"],
+        );
+        const writes = Number(
+          load.attributes["swamp.datastore.v3.base_writes"],
+        );
+        assertEquals(writes > 0, true);
+        assertEquals(pooled, writes, "every base write went through the pool");
+      });
+    } finally {
+      await readModel.close();
+    }
+    assertEquals(await readOrAbsent(env.contentPath("", "b", 1)), "b@1");
+  });
+});
+
 for (const net of [true, false]) {
   Deno.test(
     `SqliteReadModel.catchUp: a fresh checkout ${

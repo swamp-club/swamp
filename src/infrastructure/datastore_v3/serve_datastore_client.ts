@@ -50,7 +50,10 @@ import { MAX_RECORD_KEY_LENGTH } from "../../domain/datastore_v3/record_key.ts";
 import {
   type ChunkDeclaration,
   ChunkHashMismatchError,
+  decodeChunkBatch,
+  type DecodedChunkBatch,
   encodeCommitBody,
+  MAX_BATCH_CHUNK_BYTES,
 } from "./chunk_ingest.ts";
 import { type Span, withSpan } from "../tracing/tracer.ts";
 import { injectTraceContext } from "../tracing/propagation.ts";
@@ -312,6 +315,7 @@ export const COMMIT_BATCH_FEATURE = "commit-batch";
 export const MAX_BATCH_COMMITS = 16;
 
 export const BASE_DIFFERENCE_FEATURE = "base-difference";
+export const CHUNK_BATCH_FEATURE = "chunk-batch";
 
 /** serve refuses a new run record that does not name the principal it stamps */
 export const RUN_INITIATOR_FEATURE = "run-initiator";
@@ -537,6 +541,8 @@ interface RequestSpec {
   readonly responseBaseMs?: number;
   /** the body carries chunk bytes: from BULK_MIN_BODY_BYTES, the bulk client */
   readonly bulk?: boolean;
+  /** the most the reply may carry, which the deadline allows for like a body */
+  readonly replyBytes?: number;
 }
 
 function isTimeout(error: unknown): boolean {
@@ -548,13 +554,14 @@ function isTimeout(error: unknown): boolean {
  * or a lock call; anything else may wait for that confirmation
  */
 export function answersWithoutConfirm(method: string, path: string): boolean {
-  return method === "GET" || path === "chunks/has" || path === "locks" ||
-    path.startsWith("locks/");
+  return method === "GET" || path === "chunks/has" ||
+    path === "chunks/batch" || path === "locks" || path.startsWith("locks/");
 }
 
 /** safe to send again on a fresh connection: serve changes nothing for it */
 function isReadSpec(spec: RequestSpec): boolean {
-  return spec.method === "GET" || spec.path === "chunks/has";
+  return spec.method === "GET" || spec.path === "chunks/has" ||
+    spec.path === "chunks/batch";
 }
 
 /**
@@ -597,6 +604,7 @@ export class ServeDatastoreClient {
   #takesStepStarts = false;
   #takesCommitBatches = false;
   #takesBaseDifference = false;
+  #takesChunkBatch = false;
   #heardReply = false;
   #initiatorMode: ServeInitiatorMode | undefined;
 
@@ -728,6 +736,43 @@ export class ServeDatastoreClient {
           }
         }
         return bytes;
+      },
+    );
+  }
+
+  /**
+   * many chunks in one request; refused and absent ones come back as missing,
+   * and each returned chunk is checked against its hash
+   */
+  async getChunks(
+    hashes: readonly string[],
+    signal: AbortSignal,
+  ): Promise<DecodedChunkBatch> {
+    return await this.#exchange(
+      {
+        method: "POST",
+        path: "chunks/batch",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ hashes: [...new Set(hashes)] }),
+        replyBytes: MAX_BATCH_CHUNK_BYTES,
+      },
+      signal,
+      async (response) => {
+        if (response.status === 404 || response.status === 405) {
+          // a serve without the route: the caller reads one chunk at a time
+          await response.body?.cancel();
+          this.#takesChunkBatch = false;
+          throw new ChunkBatchUnsupportedError(this.baseUrl);
+        }
+        if (response.status !== 200) {
+          throw await this.#refusal(response, "chunks/batch");
+        }
+        const body = await readBounded(
+          response,
+          "chunks/batch",
+          MAX_BATCH_CHUNK_BYTES + CHUNK_BYTES + 1024 * 1024,
+        );
+        return await decodeChunkBatch(body);
       },
     );
   }
@@ -1604,6 +1649,13 @@ export class ServeDatastoreClient {
       : this.#heardFeature(BASE_DIFFERENCE_FEATURE);
   }
 
+  /** read before each batch read: a takeover to an older serve withdraws it */
+  takesChunkBatch(): boolean {
+    return this.#heardReply
+      ? this.#takesChunkBatch
+      : this.#heardFeature(CHUNK_BATCH_FEATURE);
+  }
+
   /** false until a reply from serve itself has said it takes batches */
   takesCommitBatches(): boolean {
     return this.#takesCommitBatches ||
@@ -1664,7 +1716,7 @@ export class ServeDatastoreClient {
           this.#timeoutSignal(
             serveRequestDeadlineMs(
               this.#timeoutMs,
-              bodyBytesOf(spec.body),
+              bodyBytesOf(spec.body) + (spec.replyBytes ?? 0),
             ),
           ),
           latch,
@@ -1796,6 +1848,7 @@ export class ServeDatastoreClient {
           this.#takesBaseDifference = features.includes(
             BASE_DIFFERENCE_FEATURE,
           );
+          this.#takesChunkBatch = features.includes(CHUNK_BATCH_FEATURE);
           this.#shared.heardFeatures.set(this.#heardKey(), features);
           this.#heardReply = true;
           this.#initiatorMode = initiatorModeOf(
@@ -2005,7 +2058,9 @@ export class ServeDatastoreClient {
 // names its kind of resource, never a partition, chunk, lease or txn id.
 export function routeTemplate(path: string): string {
   const [head, id, ...rest] = path.split("/");
-  if (id === undefined || path === "chunks/has") return path;
+  if (id === undefined || path === "chunks/has" || path === "chunks/batch") {
+    return path;
+  }
   return [head, `{${ROUTE_PARAMS[head] ?? "id"}}`, ...rest].join("/");
 }
 
@@ -2398,4 +2453,12 @@ export function bulkHttpClientOptions(
     poolIdleTimeout: BULK_POOL_IDLE_TIMEOUT_MS,
     ...(caCerts !== undefined ? { caCerts } : {}),
   };
+}
+
+/** serve has no batch chunk read; read one chunk at a time */
+export class ChunkBatchUnsupportedError extends Error {
+  constructor(serveUrl: string) {
+    super(`Serve at ${serveUrl} does not answer batch chunk reads`);
+    this.name = "ChunkBatchUnsupportedError";
+  }
 }
