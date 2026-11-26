@@ -4471,7 +4471,7 @@ Deno.test("SqliteReadModel.hydrateOwedPath: an owed path holding a file another 
         journal.record(
           crypto.randomUUID(),
           "",
-          dirname(dataKey("a", 1).toString()),
+          `data/${MODEL_TYPE.normalized}/${MODEL_ID}/a`,
         );
       } finally {
         journal.close();
