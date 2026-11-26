@@ -26,6 +26,7 @@ import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_se
 import {
   SERVER_TOKEN_MODEL_TYPE,
   ServerTokenSchema,
+  serverTokenSecretFingerprint,
   TOKEN_DATA_NAME,
   verifyServerTokenSecret,
 } from "../domain/models/access/server_token_model.ts";
@@ -39,6 +40,16 @@ import type { ServerTokenRecordRefresh } from "./token_auth.ts";
 const logger = getSwampLogger(["serve", "token-record-refresh"]);
 
 export const TOKEN_RECORD_FETCH_TIMEOUT_MS = 10_000;
+
+/** a refusal is reused this long, so a client retrying a mispaired token never re-fetches */
+export const REFRESH_RETRY_MS = 30_000;
+
+type RefreshOutcome = "adopted" | "refused" | "moved";
+
+export interface TokenRecordRefreshOptions {
+  retryAfterMs?: number;
+  now?: () => number;
+}
 
 /**
  * two writers can publish the same version of a token record, and the cache
@@ -58,6 +69,7 @@ export function serverTokenRecordRefreshOver(
   >,
   // a pull landing between the fetch and the write could leave an older marker
   exclusively: <T>(fn: () => Promise<T>) => Promise<T> = (fn) => fn(),
+  options: TokenRecordRefreshOptions = {},
 ): ServerTokenRecordRefresh | undefined {
   if (!isCustomDatastoreConfig(config) || !config.cachePath) return undefined;
   const fetchContent = syncService?.fetchContent?.bind(syncService);
@@ -81,14 +93,44 @@ export function serverTokenRecordRefreshOver(
       },
     );
   };
-  return (name, secret) => exclusively(() => adopt(name, secret));
+  const retryAfterMs = options.retryAfterMs ?? REFRESH_RETRY_MS;
+  const now = options.now ?? Date.now;
+  const inFlight = new Map<string, Promise<RefreshOutcome>>();
+  // token name and secret fingerprint to when the refusal may be retried
+  const refusedUntil = new Map<string, number>();
 
-  async function adopt(name: string, secret: string): Promise<boolean> {
+  return async (name, secret) => {
+    const key = JSON.stringify([
+      name,
+      await serverTokenSecretFingerprint(secret),
+    ]);
+    if ((refusedUntil.get(key) ?? 0) > now()) return false;
+    const running = inFlight.get(key);
+    if (running !== undefined) return await running === "adopted";
+    const attempt = refresh(name, secret).then((outcome) => {
+      if (outcome === "refused") {
+        const at = now();
+        for (const [k, until] of refusedUntil) {
+          if (until <= at) refusedUntil.delete(k);
+        }
+        refusedUntil.set(key, at + retryAfterMs);
+      }
+      return outcome;
+    }).finally(() => inFlight.delete(key));
+    inFlight.set(key, attempt);
+    return await attempt === "adopted";
+  };
+
+  // the fetch and the pairing check take no sync gate; only an adoption does
+  async function refresh(
+    name: string,
+    secret: string,
+  ): Promise<RefreshOutcome> {
     const definition = await repoContext.definitionRepo.findByName(
       SERVER_TOKEN_MODEL_TYPE,
       name,
     );
-    if (definition === null) return false;
+    if (definition === null) return "refused";
     const repo = repoContext.unifiedDataRepo;
     const latestPath = join(
       repo.getDataNameDir(
@@ -99,12 +141,12 @@ export function serverTokenRecordRefreshOver(
       "latest",
     );
     const marker = await fetch(latestPath);
-    if (marker === null) return false;
+    if (marker === null) return "refused";
     const version = Number.parseInt(
       new TextDecoder().decode(marker).trim(),
       10,
     );
-    if (!Number.isInteger(version) || version < 1) return false;
+    if (!Number.isInteger(version) || version < 1) return "refused";
     const rawPath = repo.getContentPath(
       SERVER_TOKEN_MODEL_TYPE,
       definition.id,
@@ -121,27 +163,39 @@ export function serverTokenRecordRefreshOver(
       fetch(rawPath),
       fetch(metadataPath),
     ]);
-    if (raw === null || metadata === null) return false;
+    if (raw === null || metadata === null) return "refused";
     let record;
     try {
       record = ServerTokenSchema.parse(
         JSON.parse(new TextDecoder().decode(raw)),
       );
       // without a fingerprint nothing proves the pair
-      if (record.secretFingerprint === undefined) return false;
+      if (record.secretFingerprint === undefined) return "refused";
       await verifyServerTokenSecret(record, secret);
     } catch {
-      return false;
+      return "refused";
     }
-    await Deno.mkdir(dirname(rawPath), { recursive: true });
-    await atomicWriteFile(rawPath, raw);
-    await atomicWriteFile(metadataPath, metadata);
-    await atomicWriteFile(latestPath, marker);
-    repoContext.catalogStore.invalidate();
+    const adopted = await exclusively(async () => {
+      // a peer may have published again since the fetch
+      const current = await fetch(latestPath);
+      if (
+        current === null ||
+        new TextDecoder().decode(current).trim() !==
+          new TextDecoder().decode(marker).trim()
+      ) return false;
+      await Deno.mkdir(dirname(rawPath), { recursive: true });
+      await atomicWriteFile(rawPath, raw);
+      await atomicWriteFile(metadataPath, metadata);
+      await atomicWriteFile(latestPath, marker);
+      repoContext.catalogStore.invalidate();
+      return true;
+    });
+    // a peer published again meanwhile: not remembered, the next attempt reads it
+    if (!adopted) return "moved";
     logger.warn(
       "Token {name} had another mint's record in this cache; took the datastore's, which pairs with its secret",
       { name },
     );
-    return true;
+    return "adopted";
   }
 }
