@@ -608,6 +608,26 @@ Deno.test("CachedServeStorage.prefetch: a chunk a batch could not decide is read
   });
 });
 
+Deno.test("CachedServeStorage.prefetch: a batch reply that only defers falls back to single reads instead of asking again (swamp-club#5108)", async () => {
+  const all = await Promise.all(
+    Array.from({ length: 20 }, (_, i) => chunk(`chunk-${i}`)),
+  );
+  const { remote, seen } = batchRemote(
+    new Map(all.map((c) => [c.sha256, c.bytes])),
+    { perCall: 0 },
+  );
+  await withGatedCache(remote, async (cache) => {
+    const report = await cache.prefetch(
+      "_default",
+      all.map((c) => c.sha256),
+      AbortSignal.timeout(10_000),
+    );
+    assertEquals(report.fetched, 20);
+    assertEquals(seen.batches, 1, "the deferring batch is not asked again");
+    assertEquals(seen.singles, 20);
+  });
+});
+
 Deno.test("CachedServeStorage.prefetch: a serve without a batch read is read one chunk at a time (swamp-club#5103)", async () => {
   const all = await Promise.all(
     Array.from({ length: 12 }, (_, i) => chunk(`chunk-${i}`)),
