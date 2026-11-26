@@ -3284,3 +3284,125 @@ Deno.test("CatalogStore.touchedScopes: reads an older swamp's table, without the
     store.close();
   }
 });
+
+function rowsWritten(store: CatalogStore, run: () => void): number {
+  const db = (store as unknown as { db: DatabaseSync }).db;
+  const total = () =>
+    (db.prepare("SELECT total_changes() AS n").get() as { n: number }).n;
+  const before = total();
+  run();
+  return total() - before;
+}
+
+function storedRows(store: CatalogStore): CatalogRow[] {
+  return [...store.iterate()].sort((a, b) =>
+    a.data_name.localeCompare(b.data_name) || a.version - b.version
+  );
+}
+
+Deno.test("CatalogStore.applyInTransaction: insertNameRows writes each row of a name holding none once, flagged as upsertNewVersion flags them (swamp-club#5122)", () => {
+  using oneByOne = makeTempDb();
+  using together = makeTempDb();
+  const expected = new CatalogStore(oneByOne.path);
+  const store = new CatalogStore(together.path);
+  try {
+    const rows = [
+      makeRow({ version: 1 }),
+      makeRow({ version: 2, step_name: "a" }),
+      makeRow({ version: 3, step_name: "b" }),
+      makeRow({ version: 4, step_name: "a" }),
+    ];
+    expected.applyInTransaction((writer) => {
+      for (const row of rows) writer.upsertNewVersion(row);
+    });
+    const written = rowsWritten(
+      store,
+      () =>
+        store.applyInTransaction((writer) =>
+          writer.insertNameRows(rows, computeLatestFlags)
+        ),
+    );
+    assertEquals(storedRows(store), storedRows(expected));
+    assertEquals(written, rows.length);
+  } finally {
+    expected.close();
+    store.close();
+  }
+});
+
+Deno.test("CatalogStore.applyInTransaction: insertNameRows writes the rows of a name holding some as upsertNewVersion does (swamp-club#5122)", () => {
+  using oneByOne = makeTempDb();
+  using together = makeTempDb();
+  const expected = new CatalogStore(oneByOne.path);
+  const store = new CatalogStore(together.path);
+  try {
+    const held = makeRow({ version: 5 });
+    const rows = [makeRow({ version: 3 }), makeRow({ version: 7 })];
+    expected.upsertNewVersion(held);
+    store.upsertNewVersion(held);
+    expected.applyInTransaction((writer) => {
+      for (const row of rows) writer.upsertNewVersion(row);
+    });
+    store.applyInTransaction((writer) =>
+      writer.insertNameRows(rows, computeLatestFlags)
+    );
+    assertEquals(storedRows(store), storedRows(expected));
+  } finally {
+    expected.close();
+    store.close();
+  }
+});
+
+Deno.test("CatalogStore.applyInTransaction: insertNameRows ends the name's forward, keeps a version's last row, and refuses rows of two names (swamp-club#5122)", () => {
+  using tempDb = makeTempDb();
+  const store = new CatalogStore(tempDb.path);
+  try {
+    store.recordRename({
+      namespace: "",
+      type_normalized: "test-model",
+      model_id: "model-001",
+      data_name: "my-data",
+      renamed_to: "elsewhere",
+    });
+    store.applyInTransaction((writer) =>
+      writer.insertNameRows([
+        makeRow({ version: 1, size: 1 }),
+        makeRow({ version: 1, size: 2 }),
+      ], computeLatestFlags)
+    );
+    assertEquals(
+      store.findRenameTarget("", "test-model", "model-001", "my-data"),
+      null,
+    );
+    assertEquals(
+      storedRows(store).map((r) => [r.version, r.size, r.is_latest]),
+      [[1, 2, 1]],
+    );
+    assertThrows(() =>
+      store.applyInTransaction((writer) =>
+        writer.insertNameRows([
+          makeRow({ data_name: "one" }),
+          makeRow({ data_name: "two" }),
+        ], computeLatestFlags)
+      )
+    );
+    assertEquals(storedRows(store).length, 1);
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("CatalogStore: keeps its temporary storage in memory (swamp-club#5122)", () => {
+  using tempDb = makeTempDb();
+  const store = new CatalogStore(tempDb.path);
+  try {
+    const db = (store as unknown as { db: DatabaseSync }).db;
+    assertEquals(
+      (db.prepare("PRAGMA temp_store").get() as { temp_store: number })
+        .temp_store,
+      2,
+    );
+  } finally {
+    store.close();
+  }
+});
