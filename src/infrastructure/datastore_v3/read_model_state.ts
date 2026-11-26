@@ -1663,6 +1663,14 @@ export class ReadModelState {
     );
   }
 
+  /** many in one transaction, as a base load or hydrate lands them */
+  recordWrittenFiles(files: readonly WrittenFile[]): void {
+    if (files.length === 0) return;
+    this.#transaction(() => {
+      for (const file of files) this.recordWrittenFile(file);
+    });
+  }
+
   recordWrittenFile(file: WrittenFile): void {
     this.#transaction(() =>
       this.#db.prepare(

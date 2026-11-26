@@ -1698,3 +1698,22 @@ Deno.test("read model guard: adoption removes a stale temp file a crash mid-copy
     assertEquals(stateRows(env, "SELECT * FROM at_risk_copies"), []);
   });
 });
+
+Deno.test("read model guard: a base load written through the pool keeps a written record for each chunked file, landed together (swamp-club#5108)", async () => {
+  await withV3Env(async (env) => {
+    const v1 = await env.chunkStore.write(SOLO_NAMESPACE, V1, signal());
+    await putK(env, 1, v1);
+    await env.store.compactHistory(Number.MAX_SAFE_INTEGER);
+    await using(
+      open(env, env.storage.inner, {
+        bootIdentity: () => Promise.resolve("boot-1"),
+      }),
+      (model) => model.catchUp(signal()),
+    );
+    assertEquals(await Deno.readFile(fileOf(env, K)), V1);
+    assertEquals(
+      stateRows(env, "SELECT record_key, size FROM written_files"),
+      [{ record_key: K.toString(), size: V1.length }],
+    );
+  });
+});

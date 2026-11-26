@@ -574,6 +574,11 @@ export class SqliteReadModel implements ReadModel {
   ) => Promise<ReadonlySet<string>>;
   readonly #clock: () => Date;
   readonly #recordsWrittenFiles: boolean;
+  /**
+   * written-file records a base load or hydrate holds back to land in one
+   * transaction, instead of one per file
+   */
+  #writtenBuffer: WrittenFile[] | undefined;
   readonly #rename: (from: string, to: string) => Promise<void>;
   readonly #readDir: (dir: string) => AsyncIterable<Deno.DirEntry>;
   readonly #syncDirectory: (dir: string) => Promise<void>;
@@ -4263,6 +4268,12 @@ export class SqliteReadModel implements ReadModel {
         this.#state.oweFiles(owed);
         owed.length = 0;
       }
+      const written = this.#writtenBuffer;
+      if (
+        written !== undefined && (force || written.length >= LOAD_DONE_FLUSH)
+      ) {
+        this.#state.recordWrittenFiles(written.splice(0));
+      }
       if (resume === undefined) return;
       if (!force && done.length < LOAD_DONE_FLUSH) return;
       this.#state.markLoadDone(done, resume);
@@ -4272,6 +4283,7 @@ export class SqliteReadModel implements ReadModel {
       ? undefined
       : [];
     this.#poolFailure = undefined;
+    this.#writtenBuffer = [];
     let result;
     try {
       result = await this.#loadFilesInto(
@@ -4301,6 +4313,11 @@ export class SqliteReadModel implements ReadModel {
     } finally {
       await this.#settlePool();
       this.#pool = undefined;
+      // a record of a file that landed is kept even when the load failed
+      try {
+        this.#state.recordWrittenFiles(this.#writtenBuffer ?? []);
+      } catch { /* a missing record only costs a later re-read */ }
+      this.#writtenBuffer = undefined;
     }
     recordDone(true);
     return result;
@@ -4860,7 +4877,7 @@ export class SqliteReadModel implements ReadModel {
     ) {
       return;
     }
-    this.#state.recordWrittenFile({
+    const file: WrittenFile = {
       namespace,
       recordKey: key,
       blob,
@@ -4869,7 +4886,9 @@ export class SqliteReadModel implements ReadModel {
       dev: info.dev,
       mtime: info.mtime.getTime(),
       ...(info.ctime === null ? {} : { ctime: info.ctime.getTime() }),
-    });
+    };
+    if (this.#writtenBuffer !== undefined) this.#writtenBuffer.push(file);
+    else this.#state.recordWrittenFile(file);
   }
 
   /**
