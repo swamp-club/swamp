@@ -4209,10 +4209,9 @@ export class V3MaintenanceTimer {
   }
 
   /**
-   * one compaction an operator asked for, never beside a tick or a retention
-   * pass; refused unless started and holding the writer lease, since a stopped
-   * timer's signal no longer aborts. Takes only exclusivity: retention holds
-   * the gc mutex while it waits for it
+   * refused unless started and holding the lease: a stopped timer's signal no
+   * longer aborts. Never takes the gc mutex, which retention holds while it
+   * waits for exclusivity here
    */
   async compactNow(
     budgetMs: number,
