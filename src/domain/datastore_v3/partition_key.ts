@@ -183,6 +183,18 @@ export function partitionOf(identity: AggregateIdentity): PartitionKey {
 /** every run partition key sorts at or after `from` and before `to` */
 export const RUN_PARTITION_RANGE = { from: "run--", to: "run-." } as const;
 
+/** every config partition key, the lockfile's among them, sorts in this range */
+export const CONFIG_PARTITION_RANGE = {
+  from: "config--",
+  to: "config-.",
+} as const;
+
+/** every auto-definition partition key sorts in this range */
+export const DEFINITION_PARTITION_RANGE = {
+  from: "definition--",
+  to: "definition-.",
+} as const;
+
 export function runPartitionsPrefix(workflowId: string): string {
   return `run--${canonicalUuid(workflowId, "workflow id")}--`;
 }

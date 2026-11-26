@@ -885,7 +885,11 @@ export class DataQueryService {
   }
 
   async ensurePopulated(): Promise<void> {
-    await this.dataRepo.beforeWideRead?.();
+    // reports and catalog search read the catalog after this; outside a scoped
+    // command it adds no turn before the populated check
+    if (this.dataRepo.readsScoped?.() === true) {
+      await this.dataRepo.beforeWideRead?.();
+    }
     if (this.catalogStore.isPopulated()) return;
     const inFlight = this.backfillInFlight();
     if (inFlight) {

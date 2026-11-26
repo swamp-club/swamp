@@ -17,7 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
+import {
+  CONFIG_PARTITION_RANGE,
+  DEFINITION_PARTITION_RANGE,
+  PartitionKey,
+} from "../../domain/datastore_v3/partition_key.ts";
 import { getSwampLogger } from "../logging/logger.ts";
 import type { SqliteCommitStore } from "./sqlite_commit_store.ts";
 import type { SqliteReadModel } from "./sqlite_read_model.ts";
@@ -54,8 +58,8 @@ export function resolveScopedBacklogMax(): number {
 
 /** config (the lockfile among them) and auto-definitions: every command reads them */
 export const ALWAYS_APPLIED_RANGES = [
-  { from: "config--", to: "config-." },
-  { from: "definition--", to: "definition-." },
+  CONFIG_PARTITION_RANGE,
+  DEFINITION_PARTITION_RANGE,
 ] as const;
 
 const EVERY_PARTITION = [{ from: "", to: "\u{10ffff}" }] as const;
