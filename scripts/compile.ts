@@ -605,6 +605,8 @@ export function compileArgs(
     args.push("--target", options.target);
   }
 
+  // measurement build only (never merged): V8's tick profiler, a log per isolate
+  args.push("--v8-flags=--prof");
   args.push("--output", options.output, inputs.entry);
   return args;
 }
