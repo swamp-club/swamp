@@ -19,6 +19,7 @@
 
 import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
+import { markErrorPaths } from "../../domain/errors.ts";
 import { isProcessGone, processHostIdentity } from "../runtime/process.ts";
 import { processRuntimeSlot } from "../runtime/process_runtime.ts";
 
@@ -265,7 +266,10 @@ export class LockQueue {
       }
       if (!created) {
         if (attempt < MAX_ENQUEUE_ATTEMPTS) continue;
-        throw new Error(`Could not enqueue a wait ticket in ${this.dir}`);
+        throw markErrorPaths(
+          new Error(`Could not enqueue a wait ticket in ${this.dir}`),
+          [this.dir],
+        );
       }
       this.ticket = ticket;
       this.ticketPath = path;
