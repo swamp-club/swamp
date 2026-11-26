@@ -65,11 +65,13 @@ const READER_LAG_BOUND_MS: number | undefined = undefined;
 // alice-token authenticates as user:caller, bob-token as user:bob
 const A_TOKEN = "alice-token";
 const B_TOKEN = "bob-token";
-const GRANTS: readonly GrantSpec[] = ["caller", "bob"].flatMap((user) => [
-  { user, actions: ["read", "write", "run"], kind: "model", pattern: "*" },
-  { user, actions: ["read", "write"], kind: "data", pattern: "*" },
-  { user, actions: ["read", "write", "run"], kind: "workflow", pattern: "*" },
-] satisfies GrantSpec[]);
+const GRANTS: readonly GrantSpec[] = ["caller", "bob"].flatMap((user) =>
+  [
+    { user, actions: ["read", "write", "run"], kind: "model", pattern: "*" },
+    { user, actions: ["read", "write"], kind: "data", pattern: "*" },
+    { user, actions: ["read", "write", "run"], kind: "workflow", pattern: "*" },
+  ] satisfies GrantSpec[]
+);
 
 const CONSUMER = "consumer";
 const PRODUCER = "producer";
@@ -156,7 +158,7 @@ function registerMethods(type: ModelType): void {
         kind: "update",
         arguments: ReadArgs,
         execute: async (args, context) => {
-          for (const [key, value] of Object.entries(args)) {
+          for (const [key, value] of Object.entries(ReadArgs.parse(args))) {
             observe(
               context.repoDir,
               key,
@@ -564,7 +566,8 @@ Deno.test({
           const { busy } = await serve.lockStats();
           waiting = methodRun(scratch, serve, a, A_TOKEN, CONSUMER, "readArg");
           await waitFor(
-            async () => waiting!.done() || (await serve.lockStats()).busy > busy,
+            async () =>
+              waiting!.done() || (await serve.lockStats()).busy > busy,
             "a's run to wait for b's lock",
             { timeoutMs: 120_000, intervalMs: 50 },
           );
@@ -605,8 +608,7 @@ Deno.test({
           scratch,
           a,
           serveEnv(serve, A_TOKEN),
-          (repos) =>
-            latestOf(repos, serve.modelType, producerId, "out"),
+          (repos) => latestOf(repos, serve.modelType, producerId, "out"),
         );
       assertEquals((await readProducer())?.content, '{"body":"one"}');
 
@@ -621,8 +623,7 @@ Deno.test({
           await stamp(scratch, serve, b, B_TOKEN, PRODUCER, "two");
           if (READER_LAG_BOUND_MS !== undefined) {
             await waitFor(
-              async () =>
-                (await readProducer())?.content === '{"body":"two"}',
+              async () => (await readProducer())?.content === '{"body":"two"}',
               "the reader to see b's write while a's write runs",
               { timeoutMs: READER_LAG_BOUND_MS, intervalMs: 200 },
             );
@@ -666,7 +667,10 @@ Deno.test({
             Step.create({
               name: "query",
               task: StepTask.modelMethod(CONSUMER, "queryAll"),
-              dependsOn: [{ step: "cel", condition: TriggerCondition.succeeded() }],
+              dependsOn: [{
+                step: "cel",
+                condition: TriggerCondition.succeeded(),
+              }],
             }),
           ],
         })],
