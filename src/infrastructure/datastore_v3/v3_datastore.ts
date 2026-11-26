@@ -129,7 +129,10 @@ import type { OfflineFlushPort } from "./offline_flush.ts";
 import { createQuarantineDeposit } from "./quarantine_deposit.ts";
 import { ModelChanges } from "../../domain/datastore_v3/repository_changes.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
-import { DataMetadataSchema } from "../../domain/data/data_metadata.ts";
+import {
+  type DataMetadata,
+  DataMetadataSchema,
+} from "../../domain/data/data_metadata.ts";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import type { Commit } from "../../domain/datastore_v3/commit.ts";
 import { CommitsCompactedError } from "../../domain/datastore_v3/commit_store.ts";
@@ -357,6 +360,59 @@ function canonicalPath(path: string): string {
 
 export function v3CacheRoot(repoDir: string, namespace: string): string {
   return namespace === "" ? swampPath(repoDir) : swampPath(repoDir, namespace);
+}
+
+/** a raw file a lazy checkout owes is hydrated first; one that cannot be is left unread */
+export async function compactedVersionInCheckout(
+  readModel: Pick<SqliteReadModel, "recordBytes" | "hydrateOwedPath">,
+  cacheRoot: string,
+  at: {
+    readonly namespace: string;
+    readonly partition: PartitionKey;
+    readonly name: string;
+    readonly version: number;
+  },
+  signal: AbortSignal,
+): Promise<
+  { readonly metadata: DataMetadata; readonly raw?: Uint8Array } | undefined
+> {
+  const identity = at.partition.identity;
+  if (identity.kind !== "model") return undefined;
+  const model = new ModelChanges(ModelType.create(identity.type), identity.id);
+  const keyOf = (file: "metadata.yaml" | "raw") =>
+    model.dataKey(at.name, at.version, file).toString();
+  const read = (file: "metadata.yaml" | "raw") =>
+    readModel.recordBytes(
+      at.namespace,
+      at.partition,
+      keyOf(file),
+      COMPACTED_VERSION_MAX_BYTES,
+    );
+  const metadataFile = await read("metadata.yaml");
+  if (metadataFile === undefined) return undefined;
+  let parsed;
+  try {
+    parsed = DataMetadataSchema.safeParse(
+      parseYaml(new TextDecoder().decode(metadataFile.bytes)),
+    );
+  } catch {
+    return undefined;
+  }
+  if (!parsed.success) return undefined;
+  try {
+    await readModel.hydrateOwedPath(
+      join(cacheRoot, ...keyOf("raw").split("/")),
+      signal,
+    );
+  } catch (error) {
+    logger
+      .debug`Could not hydrate ${at.name}@${at.version} to restate it: ${error}`;
+  }
+  const raw = await read("raw");
+  return {
+    metadata: parsed.data,
+    ...(raw !== undefined ? { raw: raw.bytes } : {}),
+  };
 }
 
 export interface OpenV3DatastoreOptions {
@@ -1246,37 +1302,13 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
         },
         // A compacted version's metadata and raw bytes, as the checkout's
         // files hold them: its time is then its writer's `createdAt`.
-        compactedVersion: async (ns, partition, name, version) => {
-          const identity = partition.identity;
-          if (identity.kind !== "model") return undefined;
-          const model = new ModelChanges(
-            ModelType.create(identity.type),
-            identity.id,
-          );
-          const read = (file: "metadata.yaml" | "raw") =>
-            readModel.recordBytes(
-              ns,
-              partition,
-              model.dataKey(name, version, file).toString(),
-              COMPACTED_VERSION_MAX_BYTES,
-            );
-          const metadataFile = await read("metadata.yaml");
-          if (metadataFile === undefined) return undefined;
-          let parsed;
-          try {
-            parsed = DataMetadataSchema.safeParse(
-              parseYaml(new TextDecoder().decode(metadataFile.bytes)),
-            );
-          } catch {
-            return undefined;
-          }
-          if (!parsed.success) return undefined;
-          const raw = await read("raw");
-          return {
-            metadata: parsed.data,
-            ...(raw !== undefined ? { raw: raw.bytes } : {}),
-          };
-        },
+        compactedVersion: (ns, partition, name, version) =>
+          compactedVersionInCheckout(
+            readModel,
+            v3CacheRoot(options.repoDir, ns),
+            { namespace: ns, partition, name, version },
+            lifetime.signal,
+          ),
       }
       : undefined;
   const baseSink: OutboxCommitSink = serveSink ??
