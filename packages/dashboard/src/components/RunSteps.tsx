@@ -169,7 +169,9 @@ export function skipReasonText(
       return "Skipped: a dependency's condition was not met";
     case "guarded":
       return reason.expression
-        ? `Skipped by its guard: ${reason.expression}`
+        ? `Skipped by its guard: ${reason.expression}${
+          reason.result === undefined ? "" : ` → ${reason.result}`
+        }`
         : "Skipped by its guard";
     case "job_skipped":
       return "Skipped with its job";

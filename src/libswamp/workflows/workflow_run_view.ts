@@ -67,6 +67,7 @@ export interface ApprovalView {
 export interface StepSkipReasonView {
   kind: "dependency" | "guarded" | "job_skipped";
   expression?: string;
+  result?: boolean;
 }
 
 export interface StepRunView {

@@ -115,6 +115,9 @@ export const StepSkipReasonSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("guarded"),
     expression: z.string().optional(),
+    // only a boolean is kept: the record is shared, and a number from data or
+    // a vault is not masked
+    result: z.boolean().optional(),
   }),
   z.object({
     kind: z.literal("dependency"),

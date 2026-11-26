@@ -63,6 +63,45 @@ function suspendedOn(
   };
 }
 
+function guardSkipped(
+  skipReason: NonNullable<
+    WorkflowRunView["jobs"][number]["steps"][number]["skipReason"]
+  >,
+): WorkflowRunView {
+  return {
+    id: "run-1",
+    workflowId: "wf-1",
+    workflowName: "release",
+    status: "succeeded",
+    jobs: [{
+      name: "main",
+      status: "succeeded",
+      steps: [{ name: "respond", status: "skipped", skipReason }],
+    }],
+  };
+}
+
+Deno.test("renderWorkflowRunDisplay: a guard skip shows what the guard returned", () => {
+  const output = captureOutput(() =>
+    renderWorkflowRunDisplay(
+      guardSkipped({ kind: "guarded", expression: "x < 0.5", result: true }),
+      "log",
+    )
+  );
+  assertStringIncludes(output, "-> skipped (guard: x < 0.5 → true)");
+});
+
+Deno.test("renderWorkflowRunDisplay: a guard skip recorded without a result shows only the expression", () => {
+  const output = captureOutput(() =>
+    renderWorkflowRunDisplay(
+      guardSkipped({ kind: "guarded", expression: "x < 0.5" }),
+      "log",
+    )
+  );
+  assertStringIncludes(output, "-> skipped (guard: x < 0.5)");
+  assertEquals(output.includes("→"), false);
+});
+
 Deno.test("renderWorkflowRunDisplay: a step waiting on an open wait shows the wait ID and deadline", () => {
   const output = captureOutput(() =>
     renderWorkflowRunDisplay(

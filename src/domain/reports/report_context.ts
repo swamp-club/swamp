@@ -113,6 +113,7 @@ export interface ModelReportContext extends BaseReportContext {
 export interface StepSkipReasonInfo {
   kind: "dependency" | "guarded" | "job_skipped";
   expression?: string;
+  result?: boolean;
 }
 
 export interface WorkflowReportContext extends BaseReportContext {

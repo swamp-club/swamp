@@ -871,6 +871,16 @@ absent, the step executes normally.
 A truthy guard means **skip**, not run: a guard that finds the data it looks for
 skips the step. A skipped step is not proof the guard matched nothing.
 
+A guard is a skip condition, the inverse of a GitHub Actions `if:`. The same
+expression that makes an `assert` pass makes a guard skip. To run a step only
+when a condition holds, negate it:
+
+```yaml
+# Runs only when the classifier says to respond.
+- name: respond
+  guard: ${{ !data.latest("triage", "classify").attributes.shouldRespond }}
+```
+
 Guard is the workflow-level primitive for idempotent step execution, enabling
 safe workflow resume, re-run, and cron scheduling without re-executing completed
 steps.
@@ -947,7 +957,10 @@ fails the step with a `step_failed` event containing the error message.
 `reason: "guarded"` (vs `"dependency"` for dependency skips). The console
 renderer shows `skipped <step> (guarded) · guard: <expr> → <result>`, where
 `<result>` is what the guard returned (always truthy, since only a truthy guard
-skips). A list or map result shows as a count such as `[3 items]`.
+skips). A list or map result shows as a count such as `[3 items]`. When the
+guard returned a boolean, the run record keeps it as `skipReason.result`, and
+`workflow history get` shows `skipped (guard: <expr> → true)`. Other result
+types are not persisted.
 
 A forEach step whose `forEach.in` resolves to no items emits `step_skipped` with
 `reason: "empty_collection"` and `collectionExpression`, and the console shows

@@ -25,6 +25,7 @@ import {
   JobRun,
   SERVER_RESTART_REASON,
   StepRun,
+  type StepRunData,
   StepSkipReasonSchema,
   STRANDED_STEP_ERROR,
   WorkflowRun,
@@ -152,6 +153,36 @@ Deno.test("StepRun round-trips skipReason through toData/fromData", () => {
     kind: "guarded",
     expression: "changed.size() == 0",
   });
+});
+
+Deno.test("StepRun round-trips a guard result through toData/fromData", () => {
+  const stepRun = StepRun.pending("step1");
+  stepRun.skip({ kind: "guarded", expression: "a < 0.5", result: true });
+
+  const restored = StepRun.fromData(stepRun.toData());
+
+  assertEquals(restored.skipReason, {
+    kind: "guarded",
+    expression: "a < 0.5",
+    result: true,
+  });
+});
+
+Deno.test("StepRun.fromData strips an unknown skipReason key rather than refusing the record", () => {
+  // a newer binary may record a field this one does not know; the run must
+  // still load
+  const data = StepRun.pending("step1").toData();
+  const restored = StepRun.fromData({
+    ...data,
+    status: "skipped",
+    skipReason: {
+      kind: "guarded",
+      expression: "x",
+      future: 1,
+    } as unknown as StepRunData["skipReason"],
+  });
+
+  assertEquals(restored.skipReason, { kind: "guarded", expression: "x" });
 });
 
 Deno.test("StepRun.toData omits skipReason when none was recorded", () => {

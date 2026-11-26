@@ -138,7 +138,11 @@ function renderLogWorkflowRun(data: WorkflowRunView): void {
         const detail = ((r: StepSkipReasonView): string => {
           switch (r.kind) {
             case "guarded":
-              return r.expression ? `guard: ${r.expression}` : "guard";
+              return r.expression
+                ? `guard: ${r.expression}${
+                  r.result === undefined ? "" : ` → ${r.result}`
+                }`
+                : "guard";
             case "dependency":
               return "dependency condition not met";
             case "job_skipped":
