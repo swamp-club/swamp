@@ -122,10 +122,6 @@ Deno.test("isNetworkFailure: an AggregateError counts only when every error in i
   assertEquals(isNetworkFailure(new AggregateError([])), false);
 });
 
-function coded(code: string): Error {
-  return Object.assign(new Error(code), { code });
-}
-
 Deno.test("isAccessDenied: Deno's PermissionDenied and the EACCES, EPERM and EROFS codes (swamp-club#5107)", () => {
   assertEquals(
     isAccessDenied(new Deno.errors.PermissionDenied("Permission denied")),
