@@ -57,6 +57,11 @@ export type MethodExecutionEvent =
     message: string;
   }
   | {
+    /** a tag source set a key the writer stamps itself, so its value was dropped */
+    type: "stamped_tag_ignored";
+    message: string;
+  }
+  | {
     /**
      * A sensitive value read through data stays in the command line because
      * the shell cannot expand an environment variable where it sits.

@@ -23,7 +23,9 @@ Standard tags categorize data:
 Tag keys starting with `_swamp.` (such as `_swamp.kind`, stamped on every
 record) and the `specName` key are reserved for swamp. `behavior validate` and
 `workflow validate` fail on one in a definition, spec, workflow or data output
-override, and a run refuses it, `--tag` included; never write them.
+override, and a run refuses it, `--tag` included; never write them. `modelName`
+is written by swamp too: a value from any of those sources is not written to the
+data, with a warning, so use another key for your own value.
 
 ## Lifetime Types
 

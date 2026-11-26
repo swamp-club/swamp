@@ -48,6 +48,7 @@ import { inputDescriptionPaths } from "../expressions/description_paths.ts";
 import type { DataOutputOverride } from "../models/data_output_override.ts";
 import { FOREIGN_TEMPLATE_WARNING_NAME } from "../models/validation_service.ts";
 import { literalSensitiveGlobalArgsMessage } from "../models/sensitive_field_extractor.ts";
+import { stampedRunTagNotices } from "../models/data_writer.ts";
 import { findForeignTaskText } from "./expression_evaluators.ts";
 import {
   atSteps,
@@ -363,6 +364,9 @@ export class DefaultWorkflowValidationService
     for (const result of await this.validateReservedTags(workflow)) {
       results.push(result);
     }
+    for (const result of this.validateStampedTags(workflow)) {
+      results.push(result);
+    }
 
     for (const result of this.validateDirectGlobalArgLiterals(workflow)) {
       results.push(result);
@@ -479,6 +483,30 @@ export class DefaultWorkflowValidationService
             overloadHint(reason, location.path),
         ),
       );
+    }
+    return results;
+  }
+
+  /** only the data's copy is dropped; the workflow keeps its tags */
+  private validateStampedTags(workflow: Workflow): WorkflowValidationResult[] {
+    const results = stampedRunTagNotices({ tagOverrides: workflow.tags }).map(
+      (notice) => WorkflowValidationResult.warning("Tags", notice.text),
+    );
+    for (const job of workflow.jobs) {
+      for (const step of job.steps) {
+        for (
+          const notice of stampedRunTagNotices({
+            dataOutputOverrides: step.dataOutputOverrides,
+          })
+        ) {
+          results.push(
+            WorkflowValidationResult.warning(
+              `Tags for '${step.name}' in job '${job.name}'`,
+              notice.text,
+            ),
+          );
+        }
+      }
     }
     return results;
   }

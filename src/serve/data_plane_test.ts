@@ -657,6 +657,33 @@ Deno.test("DataPlane: resource write overrides from a worker land on the saved r
   });
 });
 
+Deno.test("DataPlane: a worker write keeps the behavior's modelName over one from the workflow's tags or --tag", async () => {
+  await withHarness(async (h) => {
+    h.dispatches.register({
+      ...activeDispatch(),
+      tagOverrides: { workflow: "wf", modelName: "forged-workflow" },
+      runtimeTags: { modelName: "forged-runtime" },
+    });
+
+    const response = await h.plane.handle(
+      request("/data/resource", {
+        method: "POST",
+        body: JSON.stringify({
+          specName: "result",
+          name: "result",
+          data: { value: "x" },
+        }),
+      }),
+    );
+    assertEquals(response?.status, 200);
+    await response?.body?.cancel();
+
+    const saved = h.stored.get(`${MODEL_TYPE.normalized}/m-1/result`)!.saved!;
+    assertEquals(saved.tags.modelName, "test-def");
+    assertEquals(saved.tags.workflow, "wf");
+  });
+});
+
 Deno.test("DataPlane: a resource write without overrides keeps the spec defaults", async () => {
   await withHarness(async (h) => {
     h.dispatches.register(activeDispatch());

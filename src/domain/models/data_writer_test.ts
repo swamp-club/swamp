@@ -57,6 +57,7 @@ import {
   SENSITIVE_FIELDS_VERSION_TAG,
   SensitiveFieldsTagInvalidError,
   sensitiveVaultReferences,
+  stampedTagWarningsOnce,
 } from "./data_writer.ts";
 import { ModelType } from "./model_type.ts";
 import { ResourceAttributeBudget } from "./resource_attribute_budget.ts";
@@ -6754,4 +6755,163 @@ Deno.test("createResourceReader: with no recorded size, refuses on the byte leng
   const readResource = createResourceReader(repo, modelType, modelId);
   await assertRejects(() => readResource("blob"), ResourceTooLargeToLoadError);
   assertEquals(repo.contentReads, 1);
+});
+
+type StampedSource =
+  | "definition"
+  | "spec"
+  | "write"
+  | "workflow"
+  | "runtime"
+  | "override";
+
+const FORGED = { modelName: "forged-name" };
+
+const STAMPED_SOURCES: Array<{ source: StampedSource; phrase: string }> = [
+  { source: "definition", phrase: "the behavior definition's tags" },
+  { source: "spec", phrase: "the default tags of" },
+  { source: "write", phrase: "the write overrides of" },
+  { source: "workflow", phrase: "the workflow's tags" },
+  { source: "runtime", phrase: "--tag" },
+  { source: "override", phrase: "the data output override for spec" },
+];
+
+function stampedWarnings(events: MethodExecutionEvent[]): string[] {
+  return events.flatMap((e) =>
+    e.type === "stamped_tag_ignored" ? [e.message] : []
+  );
+}
+
+async function writeTwiceFrom(
+  kind: "resource" | "file",
+  source: StampedSource | undefined,
+  definitionName: string | undefined,
+): Promise<{ tags: Record<string, string>[]; events: MethodExecutionEvent[] }> {
+  const events: MethodExecutionEvent[] = [];
+  const tagsFrom = (s: StampedSource) => source === s ? FORGED : undefined;
+  const specName = kind === "resource" ? "item" : "log";
+  const overrides = source === "override"
+    ? [{ specName, tags: FORGED }]
+    : undefined;
+  const tags: Record<string, string>[] = [];
+  if (kind === "resource") {
+    const { writeResource } = createResourceWriter(
+      createMockRepo(),
+      modelType,
+      modelId,
+      { item: { ...testResources.item, tags: tagsFrom("spec") } },
+      tagsFrom("workflow"),
+      overrides,
+      tagsFrom("definition"),
+      tagsFrom("runtime"),
+      definitionName,
+      undefined,
+      undefined,
+      (e) => events.push(e),
+    );
+    for (const value of ["a", "b"]) {
+      const handle = await writeResource(
+        "item",
+        "test-item",
+        { value },
+        { tags: tagsFrom("write") },
+      );
+      tags.push(handle.tags);
+    }
+  } else {
+    const { createFileWriter } = createFileWriterFactory(
+      createMockRepo(),
+      modelType,
+      modelId,
+      { log: { ...testFiles.log, tags: tagsFrom("spec") } },
+      tagsFrom("workflow"),
+      overrides,
+      { onEvent: (e) => events.push(e) },
+      tagsFrom("definition"),
+      tagsFrom("runtime"),
+      definitionName,
+    );
+    for (const value of ["a", "b"]) {
+      const handle = await createFileWriter("log", "test-log", {
+        tags: tagsFrom("write"),
+      }).writeText(value);
+      tags.push(handle.tags);
+    }
+  }
+  return { tags, events };
+}
+
+for (const kind of ["resource", "file"] as const) {
+  for (const { source, phrase } of STAMPED_SOURCES) {
+    Deno.test(`stamped modelName: a ${kind} write keeps the behavior's name over a modelName from the ${source} source, with one warning naming the source and not the value`, async () => {
+      const { tags, events } = await writeTwiceFrom(kind, source, "real-name");
+
+      assertEquals(tags.map((t) => t["modelName"]), ["real-name", "real-name"]);
+      const warnings = stampedWarnings(events);
+      assertEquals(warnings.length, 1, JSON.stringify(warnings));
+      assertStringIncludes(warnings[0], "Tag 'modelName'");
+      assertStringIncludes(warnings[0], phrase);
+      assertStringIncludes(warnings[0], "is not written to the data");
+      assertEquals(warnings[0].includes("forged-name"), false);
+      if (source === "spec" || source === "write") {
+        assertStringIncludes(warnings[0], "type's author must remove it");
+      } else {
+        assertStringIncludes(warnings[0], "Use another key");
+      }
+    });
+  }
+
+  Deno.test(`stamped modelName: a ${kind} write with no source setting modelName gets the behavior's name and no warning`, async () => {
+    const { tags, events } = await writeTwiceFrom(kind, undefined, "real-name");
+
+    assertEquals(tags.map((t) => t["modelName"]), ["real-name", "real-name"]);
+    assertEquals(stampedWarnings(events), []);
+  });
+
+  Deno.test(`stamped modelName: a ${kind} writer without a behavior name stamps nothing and warns about nothing`, async () => {
+    const { events } = await writeTwiceFrom(kind, "workflow", undefined);
+
+    assertEquals(stampedWarnings(events), []);
+  });
+}
+
+Deno.test("stampedTagWarningsOnce: a method's resource and file writers report one stamped-tag source once, and pass other events through", async () => {
+  const events: MethodExecutionEvent[] = [];
+  const shared = stampedTagWarningsOnce((e) => events.push(e));
+  const { writeResource } = createResourceWriter(
+    createMockRepo(),
+    modelType,
+    modelId,
+    testResources,
+    undefined,
+    undefined,
+    undefined,
+    FORGED,
+    "real-name",
+    undefined,
+    undefined,
+    shared,
+  );
+  const { createFileWriter } = createFileWriterFactory(
+    createMockRepo(),
+    modelType,
+    modelId,
+    testFiles,
+    undefined,
+    undefined,
+    { onEvent: shared },
+    undefined,
+    FORGED,
+    "real-name",
+  );
+
+  await writeResource("item", "test-item", { value: "a" });
+  await createFileWriter("log", "test-log").writeText("a");
+  shared?.({ type: "data_name_portability_warning", message: "kept" });
+
+  assertEquals(stampedWarnings(events).length, 1);
+  assertEquals(
+    events.filter((e) => e.type === "data_name_portability_warning").length,
+    1,
+  );
 });

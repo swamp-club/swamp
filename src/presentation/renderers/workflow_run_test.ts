@@ -4423,3 +4423,59 @@ Deno.test("ConsoleWorkflowRunRenderer: a step resumed from a wait in a new clien
 
   assertStringIncludes(lines.join("\n"), "done wait in 1.5s");
 });
+
+const STAMPED_MESSAGE =
+  "Tag 'modelName' from the workflow's tags is not written to the data: swamp records the behavior that wrote the data under that key. Use another key for your own value.";
+
+Deno.test("ConsoleWorkflowRunRenderer: a stamped tag warning shows as a warning line", async () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "test-pipeline",
+  });
+  const events = simpleEvents(makeRunView("succeeded"));
+  const outputAt = events.findIndex((e) => e.kind === "method_output");
+  events.splice(outputAt + 1, 0, {
+    kind: "method_event",
+    jobId: "extract",
+    stepId: "fetch",
+    modelName: "my-api",
+    methodName: "extract",
+    event: { type: "stamped_tag_ignored", message: STAMPED_MESSAGE },
+  });
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(events), renderer.handlers());
+  });
+  const output = lines.join("\n");
+  assertStringIncludes(output, "warning");
+  assertStringIncludes(output, STAMPED_MESSAGE);
+});
+
+Deno.test("JsonWorkflowRunRenderer: a stamped tag warning goes to stderr as one record", () => {
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  const originalLog = console.log;
+  const originalError = console.error;
+  console.log = (msg: string) => stdout.push(msg);
+  console.error = (msg: string) => stderr.push(msg);
+  try {
+    const renderer = createWorkflowRunRenderer("json", {
+      workflowName: "test-pipeline",
+    });
+    renderer.handlers().method_event({
+      kind: "method_event",
+      jobId: "main",
+      stepId: "deploy",
+      modelName: "deploy-shell",
+      methodName: "execute",
+      event: { type: "stamped_tag_ignored", message: STAMPED_MESSAGE },
+    });
+  } finally {
+    console.log = originalLog;
+    console.error = originalError;
+  }
+  assertEquals(stdout.length, 0);
+  assertEquals(stderr.map((line) => JSON.parse(line)), [{
+    warning: "stamped_tag_ignored",
+    modelName: "deploy-shell",
+    message: STAMPED_MESSAGE,
+  }]);
+});

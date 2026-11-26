@@ -925,3 +925,54 @@ Deno.test("ConsoleModelMethodRunRenderer: an artifact past the attribute budget 
     `1 artifact not shown; read one with swamp data query 'modelName == "test-model" && name == "second"' --select content`,
   );
 });
+
+const STAMPED_MESSAGE =
+  "Tag 'modelName' from --tag is not written to the data: swamp records the behavior that wrote the data under that key. Use another key for your own value.";
+
+Deno.test("ConsoleModelMethodRunRenderer: a stamped tag warning shows as a Warning line", () => {
+  const renderer = createModelMethodRunRenderer("log", {
+    modelName: "test-model",
+    methodName: "run",
+  });
+  const lines = captureOutput(() => {
+    renderer.handlers().method_event({
+      kind: "method_event",
+      modelName: "test-model",
+      methodName: "run",
+      event: { type: "stamped_tag_ignored", message: STAMPED_MESSAGE },
+    });
+  });
+  const output = lines.join("\n");
+  assertStringIncludes(output, "Warning");
+  assertStringIncludes(output, STAMPED_MESSAGE);
+});
+
+Deno.test("JsonModelMethodRunRenderer: a stamped tag warning goes to stderr as one record", () => {
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  const originalLog = console.log;
+  const originalError = console.error;
+  console.log = (msg: string) => stdout.push(msg);
+  console.error = (msg: string) => stderr.push(msg);
+  try {
+    const renderer = createModelMethodRunRenderer("json", {
+      modelName: "test-model",
+      methodName: "run",
+    });
+    renderer.handlers().method_event({
+      kind: "method_event",
+      modelName: "test-model",
+      methodName: "run",
+      event: { type: "stamped_tag_ignored", message: STAMPED_MESSAGE },
+    });
+  } finally {
+    console.log = originalLog;
+    console.error = originalError;
+  }
+  assertEquals(stdout.length, 0);
+  assertEquals(stderr.map((line) => JSON.parse(line)), [{
+    warning: "stamped_tag_ignored",
+    modelName: "test-model",
+    message: STAMPED_MESSAGE,
+  }]);
+});

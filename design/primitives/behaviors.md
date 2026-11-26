@@ -1006,7 +1006,7 @@ Lightweight reference to data already persisted:
 | `dataId`   | Unique ID for this data                   |
 | `version`  | Version number of this write              |
 | `size`     | Size of the written content in bytes      |
-| `tags`     | Tags from the writer options, plus the reserved tags the writer stamps (`specName`, `_swamp.kind`, and `_swamp.display` for a `display: false` spec) |
+| `tags`     | Tags from the writer options, plus the reserved tags the writer stamps (`specName`, `_swamp.kind`, and `_swamp.display` for a `display: false` spec) and the stamped `modelName`, which no user tag source can set |
 | `metadata` | Full metadata for the data artifact       |
 | `attributes` | Top-level resource attributes (resource kind only, optional) |
 

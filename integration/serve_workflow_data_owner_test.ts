@@ -17,7 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
+import { z } from "zod";
+import { createResourceWriter } from "../src/domain/models/data_writer.ts";
+import type { ResourceOutputSpec } from "../src/domain/models/model.ts";
+import type { DataRecord } from "../src/domain/data/data_record.ts";
 import type { Grant } from "../src/domain/models/access/grant_model.ts";
 import {
   createServeCtx,
@@ -102,6 +106,74 @@ Deno.test("serve data.get: workflow data whose behavior definition is gone is au
 Deno.test("serve data.get: a deny on a behavior name still refuses its workflow data once the definition is gone", async () => {
   await withServeRepo(async (repo) => {
     await orphanedWorkflowData(repo);
+
+    const denied = await getOrphanLog(repo, [
+      WORKFLOW_READ,
+      dataRead("*"),
+      dataRead("echoer", "deny"),
+    ]);
+    assertEquals(errorFrame(denied)?.error?.code, "unauthorized");
+  });
+});
+
+const RESULT_SPEC: Record<string, ResourceOutputSpec> = {
+  log: {
+    schema: z.object({ value: z.string() }),
+    lifetime: "infinite",
+    garbageCollection: 10,
+  },
+};
+
+/** written by the real writer, with the workflow's tags naming another behavior */
+async function forgedWorkflowData(repo: ServeRepo): Promise<void> {
+  const model = await saveModel(repo, "echoer");
+  const workflow = await saveWorkflow(repo, "orphan-flow", model);
+  const { writeResource } = createResourceWriter(
+    repo.repoContext.unifiedDataRepo,
+    repo.modelType,
+    model.id,
+    RESULT_SPEC,
+    { workflow: workflow.name, modelName: "public-thing" },
+    undefined,
+    undefined,
+    undefined,
+    model.name,
+  );
+  await writeResource("log", "log", { value: "secret output" });
+  const data = await repo.repoContext.unifiedDataRepo.findByName(
+    repo.modelType,
+    model.id,
+    "log",
+  );
+  assert(data);
+  await saveRunWithData(repo, workflow, [data]);
+  await repo.repoContext.definitionRepo.delete(
+    repo.modelType,
+    model.id,
+    model.name,
+  );
+}
+
+Deno.test("serve data.get: a workflow tag naming another behavior does not change the name orphaned data is authorized under", async () => {
+  await withServeRepo(async (repo) => {
+    await forgedWorkflowData(repo);
+
+    const recorded = await repo.repoContext.dataQueryService.query(
+      'name == "log"',
+    ) as DataRecord[];
+    assertEquals(recorded.map((r) => r.modelName), ["echoer"]);
+
+    const forgedGrant = await getOrphanLog(repo, [
+      WORKFLOW_READ,
+      dataRead("public-thing"),
+    ]);
+    assertEquals(errorFrame(forgedGrant)?.error?.code, "unauthorized");
+
+    const realGrant = await getOrphanLog(repo, [
+      WORKFLOW_READ,
+      dataRead("echoer"),
+    ]);
+    assertEquals(errorFrame(realGrant), undefined, JSON.stringify(realGrant));
 
     const denied = await getOrphanLog(repo, [
       WORKFLOW_READ,

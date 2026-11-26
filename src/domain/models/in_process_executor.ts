@@ -43,6 +43,7 @@ import {
   createResourceReader,
   createResourceWriter,
   repoResourceSizePolicy,
+  stampedTagWarningsOnce,
 } from "./data_writer.ts";
 import { DataAccessService } from "../data/data_access_service.ts";
 import {
@@ -199,6 +200,7 @@ export class InProcessExecutor {
 
     const deferred = this.method.rollbackOnFailure === true;
     const outputNames = new ExecutionOutputNames();
+    const writerEvents = stampedTagWarningsOnce(this.context.onEvent);
 
     const {
       writeResource,
@@ -216,7 +218,7 @@ export class InProcessExecutor {
       this.definition.name,
       this.context.vaultService,
       this.methodName,
-      this.context.onEvent,
+      writerEvents,
       this.context.redactor,
       deferred,
       Deno.build.os,
@@ -237,7 +239,7 @@ export class InProcessExecutor {
       files,
       this.context.tagOverrides,
       this.context.dataOutputOverrides,
-      { onEvent: this.context.onEvent },
+      { onEvent: writerEvents },
       this.definition.tags,
       this.context.runtimeTags,
       this.definition.name,
