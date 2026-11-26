@@ -212,8 +212,12 @@ streamed body chunked and drops its `Content-Length`, which the v3 datastore's
 chunk upload requires. `node:http` keeps `Content-Length` and `Host` and does
 not decode the reply. A WebSocket is opened with Deno's client, which sets
 `Host` from the URL, so a child reads the public host from `X-Forwarded-Host`.
-That client cannot see why a child refused a handshake, so a refused upgrade
-reaches the caller as 502.
+That client reports a refused handshake's status only in its error text, so
+the router answers the caller with the child's 4xx or 5xx status and a body of
+its own; the child's body and headers (a `Retry-After`) do not survive, which
+no WebSocket client could read anyway. The child is asked once, so a refused
+credential is never sent twice. A redirect, whose `Location` is lost, and a
+child that never answered both reach the caller as 502.
 
 The worker data plane is HTTP/2 only under TLS and HTTP/1.1 over plain TCP,
 with the same handlers. The hop from the router to a child is plain loopback
@@ -861,10 +865,10 @@ answers. A serve that was given no root address offers no exchange.
   exchanges again before it sends the token; if that fails, the still-valid
   token is used. An expired token that cannot be replaced is not sent. A token
   a workspace refuses before its expiry (deleted, or the workspace rebuilt)
-  gets the usual refusal, not a retry; behind a host that refusal reads as 502,
-  since the router cannot see why a child refused a WebSocket, so a 502 or a
-  401 from a workspace the CLI sent an exchanged token to names signing in to
-  the host again, which replaces the token.
+  gets the usual refusal, not a retry: a 401, which for an exchanged token
+  names signing in to the host again, which replaces the token. An older host's
+  router turned that refusal into 502, so a 502 from a workspace the CLI sent an
+  exchanged token to names the same sign-in.
 - A token stored by `swamp auth server-login` to a workspace's address carries
   no `expiresAt` and is used as it is.
 - An exchanged token records a SHA-256 digest of the host sign-in it came from
@@ -888,8 +892,9 @@ answers. A serve that was given no root address offers no exchange.
   refusing the stored sign-in, the root refusing the code, or the workspace's
   admission lists refusing the principal, which signing in to the host again
   does not cure. Before asking for a code over the WebSocket, whose refusal
-  the host's router hides, the CLI asks the root's HTTP route, which checks the
-  token first and whose status the router passes on. Serve's own 401 there
+  carries only a status, the CLI asks the root's HTTP route, which checks the
+  token first and whose body carries serve's error code and wait. Serve's own
+  401 there
   (its `unauthorized` code, not a proxy's bare 401) is a refused
   host token and costs the root's lockout (five failures a minute per token
   name) one failure per attempt; an accepted token clears the count. A 429
