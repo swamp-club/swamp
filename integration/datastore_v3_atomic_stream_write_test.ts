@@ -353,7 +353,6 @@ Deno.test({
   },
 });
 
-/** counts calls to owner[name] while fn runs, then puts it back */
 async function withCounted(
   owner: object,
   name: string,
