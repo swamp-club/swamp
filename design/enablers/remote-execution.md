@@ -943,10 +943,14 @@ a dispatch still fails, the gateway refuses the dispatch unsent with
 `state_unrecorded`. The step then goes at once to another worker that can take
 it, preferring others for the rest of its scheduling; when that worker is the
 only candidate, the step waits for it until its queue timeout instead of failing
-at once. A step with no queue timeout (`queueTimeout: 0`) fails after
-`MAX_UNRECORDED_REFUSALS` (five) such refusals in a row instead of waiting
-forever; its error names the worker and points to the serve log, which records
-the write error, so serve-local detail never reaches the client.
+at once. A step with no queue timeout (`queueTimeout: 0`) instead fails once no
+matching worker's state could be recorded for at least `MAX_UNRECORDED_REFUSALS`
+(five) refusals spanning `UNRECORDED_GIVE_UP_MS` (one minute), counted from when
+every candidate had refused this way; a dispatch that reaches a worker, which
+was recorded first, starts the count again, so a brief write failure is ridden
+out. Its error names the placement and the last worker and points to the serve
+log, which records the write error, so serve-local detail never reaches the
+client.
 
 **Worker, token and bookkeeping reaping:** `WorkerGcService` runs on the serve
 side 5 minutes after serve starts and then hourly (default grace period 24 h),
