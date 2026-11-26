@@ -440,6 +440,9 @@ export class ReadModelState {
   readonly #upsertOwed: StatementSync;
   readonly #selectLoadCatalog: StatementSync;
   readonly #selectLoadForward: StatementSync;
+  readonly #selectLoadContent: StatementSync;
+  readonly #selectLoadFile: StatementSync;
+  readonly #markLoadDone: StatementSync;
   #closed = false;
   #batchOpen = false;
   /**
@@ -542,6 +545,19 @@ export class ReadModelState {
     this.#selectLoadForward = db.prepare(
       "SELECT renamed_to FROM load_forwards WHERE namespace = ? AND partition = ? AND name = ?",
     );
+    this.#selectLoadContent = db.prepare(
+      "SELECT r.inline, r.blob, r.access FROM load_files AS f JOIN load_records AS r " +
+        "ON r.namespace = f.namespace AND r.partition = f.owner AND r.record_key = f.record_key " +
+        "WHERE f.namespace = ? AND f.record_key = ?",
+    );
+    this.#selectLoadFile = db.prepare(
+      "SELECT owner, mark, present FROM load_files WHERE namespace = ? AND record_key = ?",
+    );
+    this.#markLoadDone = db.prepare(
+      "INSERT OR REPLACE INTO load_done (namespace, record_key, owner, mark, point, boot) " +
+        "SELECT namespace, record_key, owner, mark, ?, ? FROM load_files " +
+        "WHERE namespace = ? AND record_key = ?",
+    );
   }
 
   /** `pid` is recorded when this connection clears the complete mark */
@@ -555,6 +571,9 @@ export class ReadModelState {
       db.exec("PRAGMA busy_timeout=5000");
       useWalJournal(db);
       db.exec("PRAGMA synchronous=FULL");
+      // a batch's savepoint journals stay off disk; they only undo a change
+      // the batch drops, so durability is still the WAL's
+      db.exec("PRAGMA temp_store=MEMORY");
       migrate(db);
       return new ReadModelState(db, options.pid ?? Deno.pid);
     } catch (error) {
@@ -1122,13 +1141,13 @@ export class ReadModelState {
   ): void {
     if (files.length === 0) return;
     this.#transaction(() => {
-      const insert = this.#db.prepare(
-        "INSERT OR REPLACE INTO load_done (namespace, record_key, owner, mark, point, boot) " +
-          "SELECT namespace, record_key, owner, mark, ?, ? FROM load_files " +
-          "WHERE namespace = ? AND record_key = ?",
-      );
       for (const file of files) {
-        insert.run(resume.point, resume.boot, file.namespace, file.record_key);
+        this.#markLoadDone.run(
+          resume.point,
+          resume.boot,
+          file.namespace,
+          file.record_key,
+        );
       }
     });
   }
@@ -1138,11 +1157,7 @@ export class ReadModelState {
     recordKey: string,
   ): RecordContent | undefined {
     this.#requireOpen();
-    const row = this.#db.prepare(
-      "SELECT r.inline, r.blob, r.access FROM load_files AS f JOIN load_records AS r " +
-        "ON r.namespace = f.namespace AND r.partition = f.owner AND r.record_key = f.record_key " +
-        "WHERE f.namespace = ? AND f.record_key = ?",
-    ).get(namespace, recordKey) as
+    const row = this.#selectLoadContent.get(namespace, recordKey) as
       | { inline: string | null; blob: string | null; access: string | null }
       | undefined;
     if (row === undefined) return undefined;
@@ -1168,9 +1183,7 @@ export class ReadModelState {
 
   loadFile(namespace: string, recordKey: string): FileOwnership | undefined {
     this.#requireOpen();
-    const row = this.#db.prepare(
-      "SELECT owner, mark, present FROM load_files WHERE namespace = ? AND record_key = ?",
-    ).get(namespace, recordKey) as
+    const row = this.#selectLoadFile.get(namespace, recordKey) as
       | { owner: string; mark: number; present: number }
       | undefined;
     return row === undefined

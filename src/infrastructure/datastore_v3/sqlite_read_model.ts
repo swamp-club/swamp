@@ -47,6 +47,7 @@ import {
   type CommitChange,
   CommitsCompactedError,
   type CommitStore,
+  type CompactedBaseEntry,
   type PartitionBase,
   type PartitionPageOfNames,
 } from "../../domain/datastore_v3/commit_store.ts";
@@ -198,6 +199,8 @@ export const DEFAULT_READ_MODEL_PAGE_SIZE = 500;
 const LOAD_DONE_FLUSH = 256;
 /** names a base load holds in memory before committing their catalog rows */
 const BASE_CATALOG_NAMES = 1_000;
+/** base entries staged in one transaction */
+const BASE_STAGE_ENTRIES = 5_000;
 
 export { CATALOG_V3_FILE };
 
@@ -4156,6 +4159,8 @@ export class SqliteReadModel implements ReadModel {
       point = undefined;
       let after: string | undefined;
       staged = true;
+      // a crash mid-staging restarts it, so a page need not commit alone
+      let held: CompactedBaseEntry[] = [];
       do {
         signal.throwIfAborted();
         const page = await this.#commitStore.readCompactedBase(
@@ -4169,8 +4174,12 @@ export class SqliteReadModel implements ReadModel {
           break;
         }
         point = page.point;
-        this.#state.stageBase(page.entries);
+        held.push(...page.entries);
         after = page.next;
+        if (held.length >= BASE_STAGE_ENTRIES || after === undefined) {
+          this.#state.stageBase(held);
+          held = [];
+        }
       } while (after !== undefined);
     }
     this.#stats?.bump("base_stage_ms", Math.round(performance.now() - started));
