@@ -26,6 +26,7 @@ import {
 import {
   closeV3Datastores,
   holdV3Writer,
+  type V3DatastoreConfig,
   v3DatastoreConfigOf,
   v3DatastoreFor,
   V3MaintenanceTimer,
