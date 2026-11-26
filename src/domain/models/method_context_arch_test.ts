@@ -44,6 +44,7 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   // `{...} as unknown as MethodContext`. Production code must never do this.
   "src/domain/models/access/access_test_helpers.ts",
   "src/domain/models/worker/worker_test_helpers.ts",
+  "src/serve/federation/federation_hub_test_helpers.ts",
 ]);
 
 // the lookahead excludes indexed-access type references such as `as unknown as
