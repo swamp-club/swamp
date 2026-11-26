@@ -438,6 +438,8 @@ export class ReadModelState {
   readonly #stageFile: StatementSync;
   readonly #deleteOwed: StatementSync;
   readonly #upsertOwed: StatementSync;
+  readonly #selectLoadCatalog: StatementSync;
+  readonly #selectLoadForward: StatementSync;
   #closed = false;
   #batchOpen = false;
   /**
@@ -533,6 +535,12 @@ export class ReadModelState {
     );
     this.#upsertOwed = db.prepare(
       "INSERT OR REPLACE INTO owed_files (namespace, record_key, owner, mark, content, access) VALUES (?, ?, ?, ?, ?, ?)",
+    );
+    this.#selectLoadCatalog = db.prepare(
+      "SELECT metadata FROM load_catalog WHERE namespace = ? AND partition = ? AND name = ? ORDER BY version",
+    );
+    this.#selectLoadForward = db.prepare(
+      "SELECT renamed_to FROM load_forwards WHERE namespace = ? AND partition = ? AND name = ?",
     );
   }
 
@@ -1215,14 +1223,18 @@ export class ReadModelState {
 
   loadCatalogName(name: LoadName): CatalogNameState {
     this.#requireOpen();
-    const rows = (this.#db.prepare(
-      "SELECT metadata FROM load_catalog WHERE namespace = ? AND partition = ? AND name = ? ORDER BY version",
-    ).all(name.namespace, name.partition, name.name) as {
+    const rows = (this.#selectLoadCatalog.all(
+      name.namespace,
+      name.partition,
+      name.name,
+    ) as {
       metadata: string;
     }[]).map((row) => DataMetadataSchema.parse(JSON.parse(row.metadata)));
-    const forward = this.#db.prepare(
-      "SELECT renamed_to FROM load_forwards WHERE namespace = ? AND partition = ? AND name = ?",
-    ).get(name.namespace, name.partition, name.name) as
+    const forward = this.#selectLoadForward.get(
+      name.namespace,
+      name.partition,
+      name.name,
+    ) as
       | { renamed_to: string }
       | undefined;
     return { rows, forward: forward?.renamed_to };
