@@ -251,6 +251,53 @@ Deno.test("V3Catalog: a batch that clears names and replays only their actions w
   }
 });
 
+Deno.test("V3Catalog: a name removed and written again in one apply writes each of its rows once, flagged and forwarded as one at a time leaves them (swamp-club#5122)", () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-v3-catalog-" });
+  try {
+    const catalog = V3Catalog.open(join(dir, "_catalog_v3.db"));
+    try {
+      const upsert = (n: string, version: number) => ({
+        kind: "upsert-version" as const,
+        metadata: DataMetadataSchema.parse(metadata(n, version)),
+      });
+      catalog.apply("", modelPartition(), [upsert("a", 7), upsert("b", 1)]);
+      const written = countRowWrites(catalog);
+      catalog.apply("", modelPartition(), [
+        { kind: "remove-name", name: "a" },
+        { kind: "end-forward", name: "a" },
+        upsert("a", 1),
+        upsert("a", 2),
+        upsert("a", 3),
+        { kind: "forward", name: "a", to: "c" },
+        upsert("b", 2),
+      ]);
+      // a's delete and three inserts; b's insert and its two flag updates
+      assertEquals(written(), 1 + 3 + 3);
+      assertEquals(
+        [...catalog.store.iterate()]
+          .map((r) =>
+            `${r.data_name}@${r.version}:${r.is_latest}${r.is_step_latest}`
+          )
+          .sort(),
+        ["a@1:00", "a@2:00", "a@3:11", "b@1:00", "b@2:11"],
+      );
+      assertEquals(
+        catalog.store.findRenameTarget(
+          "",
+          MODEL_TYPE.normalized,
+          MODEL_ID,
+          "a",
+        ),
+        "c",
+      );
+    } finally {
+      catalog.close();
+    }
+  } finally {
+    removeTempDir(dir);
+  }
+});
+
 function removeTempDir(dir: string): void {
   try {
     Deno.removeSync(dir, { recursive: true });

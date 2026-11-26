@@ -65,6 +65,7 @@ import { CatalogStore } from "../persistence/catalog_store.ts";
 import { FileSystemUnifiedDataRepository } from "../persistence/unified_data_repository.ts";
 import { Data } from "../../domain/data/data.ts";
 import { readModelStateDir } from "./record_path_guard.ts";
+import { ReadModelState } from "./read_model_state.ts";
 import { DurableWriteBatch } from "./atomic_stream_write.ts";
 import {
   SqliteCommitStore,
@@ -4704,6 +4705,121 @@ Deno.test("SqliteReadModel.catchUp: other processes' at-risk copies are listed a
       });
     } finally {
       await readModel.close();
+
+/** a base of these names, two versions each, compacted */
+async function namedBase(env: Env, names: readonly string[]): Promise<void> {
+  let seq = 0;
+  for (const version of [1, 2]) {
+    for (const name of names) {
+      await env.append(++seq, "", [
+        await savePut(name, version),
+        versionOp(name, version),
+      ]);
+    }
+  }
+  await env.store.compactHistory(Number.MAX_SAFE_INTEGER);
+}
+
+function catalogFlags(env: Env): string[] {
+  const db = new DatabaseSync(
+    join(readModelStateDir(env.repoDir), CATALOG_V3_FILE),
+    { readOnly: true },
+  );
+  try {
+    return (db.prepare(
+      "SELECT data_name, version, is_latest, is_step_latest FROM catalog ORDER BY data_name, version",
+    ).all() as {
+      data_name: string;
+      version: number;
+      is_latest: number;
+      is_step_latest: number;
+    }[]).map((r) =>
+      `${r.data_name}@${r.version}:${r.is_latest}${r.is_step_latest}`
+    );
+  } finally {
+    db.close();
+  }
+}
+
+Deno.test("SqliteReadModel.catchUp: a base load writes its names' catalog rows in one batch, not a transaction a name, flagged as a replay flags them (swamp-club#5122)", async () => {
+  await withEnv(async (env) => {
+    const names = ["a", "b", "c", "d"];
+    await namedBase(env, names);
+    const inner = V3Catalog.open(
+      join(readModelStateDir(env.repoDir), CATALOG_V3_FILE),
+    );
+    const counts = { batches: 0, unbatched: 0 };
+    let open = false;
+    const ending = new Set([
+      "commitBatch",
+      "commitBatchInSlices",
+      "rollbackBatch",
+    ]);
+    const catalog = new Proxy(inner, {
+      get(target, property) {
+        const value = Reflect.get(target, property, target);
+        if (typeof value !== "function") return value;
+        return (...args: unknown[]) => {
+          if (property === "beginBatch") {
+            counts.batches++;
+            open = true;
+          } else if (ending.has(String(property))) {
+            open = false;
+          } else if (property === "apply" && !open) {
+            counts.unbatched++;
+          }
+          return value.apply(target, args);
+        };
+      },
+    });
+    const readModel = env.open({ catalog });
+    try {
+      await readModel.catchUp(signal());
+    } finally {
+      await readModel.close();
+    }
+    assertEquals(counts, { batches: 1, unbatched: 0 });
+    assertEquals(
+      catalogFlags(env),
+      names.flatMap((name) => [`${name}@1:00`, `${name}@2:11`]),
+    );
+  });
+});
+
+Deno.test("SqliteReadModel.catchUp: a base load stages many base pages in one transaction (swamp-club#5122)", async () => {
+  await withEnv(async (env) => {
+    const names = ["a", "b", "c", "d", "e"];
+    await namedBase(env, names);
+    const stageBase = ReadModelState.prototype.stageBase;
+    const staged: number[] = [];
+    ReadModelState.prototype.stageBase = function (
+      this: ReadModelState,
+      ...args: Parameters<typeof stageBase>
+    ) {
+      staged.push(args[0].length);
+      return stageBase.apply(this, args);
+    };
+    try {
+      const readModel = env.open({ pageSize: 2 });
+      try {
+        await readModel.catchUp(signal());
+      } finally {
+        await readModel.close();
+      }
+    } finally {
+      ReadModelState.prototype.stageBase = stageBase;
+    }
+    assertEquals(staged.length, 1);
+    assert(staged[0] > 2, `staged ${staged[0]} entries`);
+    assertEquals(
+      catalogFlags(env),
+      names.flatMap((name) => [`${name}@1:00`, `${name}@2:11`]),
+    );
+    for (const name of names) {
+      assertEquals(
+        await readOrAbsent(env.contentPath("", name, 2)),
+        `${name}@2`,
+      );
     }
   });
 });
