@@ -1524,6 +1524,15 @@ What stays different, and why:
 A follower authenticates a per-run cancel and forwards it with the caller's own
 credentials, so the leader decides and records it, on its policy and records.
 
+### Datastore maintenance requests
+
+`datastore.claim`, `datastore.release` and `datastore.history.compact` (`swamp
+datastore compact --history --server`) need `admin` on `access:*`. Serve decides
+this before any other work, so a refused history compaction never waits on the
+maintenance timer. A follower forwards each one to the leader with the caller's
+credentials. The audit log records a history compaction as resource kind
+`datastore`, name `history`.
+
 ### Separation of duties
 
 To forbid self-approval, write a `deny`, once for each subject that holds `run`,
