@@ -4903,7 +4903,6 @@ export class SqliteReadModel implements ReadModel {
         },
       };
       if (pool !== undefined && bytes instanceof Uint8Array) {
-        // a slot frees as soon as any write in the pool lands, not only the oldest
         pruneSettled(pool);
         while (pool.length >= this.#pooledWrites) {
           await Promise.race(pool.map((write) => write.done));

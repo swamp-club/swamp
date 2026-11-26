@@ -5018,6 +5018,9 @@ Deno.test("SqliteReadModel.catchUp: other processes' at-risk copies are listed a
       });
     } finally {
       await readModel.close();
+    }
+  });
+});
 
 /** a base of these names, two versions each, compacted */
 async function namedBase(env: Env, names: readonly string[]): Promise<void> {
