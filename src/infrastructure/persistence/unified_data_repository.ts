@@ -706,6 +706,10 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     return dataReadBarrier()?.active() === true;
   }
 
+  assertWideReadable(): void {
+    dataReadBarrier()?.assertWideReadable();
+  }
+
   async beforeModelRead(type: ModelTypeInput, modelId: string): Promise<void> {
     await dataReadBarrier()?.beforeModelRead(
       coerceModelType(type).normalized,
@@ -1079,6 +1083,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     dataId: DataId,
     version?: number,
   ): Promise<Data | null> {
+    await this.beforeModelRead(type, modelId);
     const dataDir = this.getModelDataDir(type, modelId);
     try {
       for await (const entry of Deno.readDir(dataDir)) {

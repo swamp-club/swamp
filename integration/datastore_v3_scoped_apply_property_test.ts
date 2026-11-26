@@ -39,6 +39,8 @@ import {
 import { RecordKey } from "../src/domain/datastore_v3/record_key.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import { base64 } from "../src/domain/datastore_v3/v3_test_helpers.ts";
+import { DurableWriteBatch } from "../src/infrastructure/datastore_v3/atomic_stream_write.ts";
+import { ProcessRuntime } from "../src/infrastructure/runtime/process_runtime.ts";
 import {
   commitOf,
   observeReadModel,
@@ -235,4 +237,74 @@ Deno.test("scoped apply, property: any mix of partition and whole applies ends a
     ),
     { numRuns: 60 },
   );
+});
+
+class CrashAtBarrier extends DurableWriteBatch {
+  constructor(private readonly crash: { armed: boolean }) {
+    super();
+  }
+  override async barrier(): Promise<void> {
+    if (this.crash.armed) {
+      this.crash.armed = false;
+      throw new Error("injected crash at the barrier");
+    }
+    await super.barrier();
+  }
+}
+
+Deno.test("scoped apply: a process that dies between a partition apply ahead of the cursor and its next whole apply leaves a read model the next process brings to the whole-only result", async () => {
+  const history: CommitSpec[] = [
+    { model: 0, name: 0, save: "one" },
+    { model: 1, name: 0, save: "one" },
+    { config: "v1" },
+    { model: 1, name: 0, save: "two" },
+    { model: 0, name: 1, save: "three" },
+    { model: 1, name: 0 },
+    { model: 2, name: 1, save: "two" },
+  ];
+  let wholeOnly: unknown;
+  await withV3Env(async (env) => {
+    wholeOnly = await observeAfter(env, history, ["whole"]);
+  });
+  await withV3Env(async (env) => {
+    const crash = { armed: false };
+    let crashed: unknown;
+    await new ProcessRuntime(`scoped-${crypto.randomUUID()}`).run(async () => {
+      const readModel = env.openReadModel({
+        pageSize: 2,
+        writeBatch: () => new CrashAtBarrier(crash),
+      });
+      try {
+        let appended = 0;
+        await append(env, history, async () => {
+          if (++appended === 3) await readModel.catchUp(signal());
+        });
+        await readModel.catchUpPartition("", PARTITIONS[1], signal());
+        crash.armed = true;
+        await readModel.catchUp(signal()).catch((error) => crashed = error);
+      } finally {
+        await readModel.close();
+      }
+    });
+    assertEquals(
+      (crashed as Error | undefined)?.message,
+      "injected crash at the barrier",
+    );
+    await new ProcessRuntime(`next-${crypto.randomUUID()}`).run(async () => {
+      const readModel = env.openReadModel({ pageSize: 2 });
+      try {
+        await readModel.catchUp(signal());
+        assertEquals(
+          await observeReadModel(
+            env,
+            readModel,
+            PARTITIONS.map((partition) => ({ namespace: "", partition })),
+          ),
+          wholeOnly,
+        );
+      } finally {
+        await readModel.close();
+      }
+    });
+  });
 });

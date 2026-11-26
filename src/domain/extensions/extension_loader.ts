@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { namesSyncDataReads } from "../models/sync_data_reads.ts";
 import { dirname, join, resolve, SEPARATOR, toFileUrl } from "@std/path";
 import { getLogger } from "@logtape/logtape";
 import { parse as parseYaml } from "@std/yaml";
@@ -704,6 +705,7 @@ export class ExtensionLoader {
       absolutePath: string;
       baseDir: string;
       snapshot: SourceSnapshot | undefined;
+      readsDataSynchronously: boolean;
     }> = [];
     const secondaryFiles: Array<{
       file: string;
@@ -738,7 +740,14 @@ export class ExtensionLoader {
         const module = await this.importBundle(bundled.js, file, baseDir);
 
         if (primaryExport(module, this.adapter)) {
-          primaryFiles.push({ file, module, absolutePath, baseDir, snapshot });
+          primaryFiles.push({
+            file,
+            module,
+            absolutePath,
+            baseDir,
+            snapshot,
+            readsDataSynchronously: namesSyncDataReads(bundled.js),
+          });
         } else if (
           this.adapter.secondaryExportKey &&
           module[this.adapter.secondaryExportKey]
@@ -763,7 +772,14 @@ export class ExtensionLoader {
     };
 
     for (
-      const { file, module, absolutePath, baseDir, snapshot } of primaryFiles
+      const {
+        file,
+        module,
+        absolutePath,
+        baseDir,
+        snapshot,
+        readsDataSynchronously,
+      } of primaryFiles
     ) {
       try {
         const exported = primaryExport(module, this.adapter);
@@ -830,6 +846,7 @@ export class ExtensionLoader {
             extensionName: this.owningExtension(absolutePath),
             sourceFingerprint: fingerprint,
             sourceSnapshot: snapshot,
+            readsDataSynchronously,
           },
         );
         result.loaded.push(file);
@@ -1725,6 +1742,7 @@ export class ExtensionLoader {
         extensionName: this.owningExtension(entry.source_path),
         sourceFingerprint: entry.source_fingerprint || undefined,
         sourceSnapshot: snapshot,
+        ...await bundleReadsDataSynchronously(entry.bundle_path),
       },
     );
   }
@@ -2358,6 +2376,7 @@ export class ExtensionLoader {
             origin: this.originOf(absolutePath),
             extensionName: this.owningExtension(absolutePath),
             sourceFingerprint: effectiveFingerprint,
+            readsDataSynchronously: namesSyncDataReads(js),
             sourceSnapshot: snapshot,
           },
         );
@@ -2939,5 +2958,20 @@ export class ExtensionLoader {
       }
     }
     return files.sort();
+  }
+}
+
+// a bundle that cannot be read leaves it unknown
+async function bundleReadsDataSynchronously(
+  bundlePath: string,
+): Promise<{ readsDataSynchronously?: boolean }> {
+  try {
+    return {
+      readsDataSynchronously: namesSyncDataReads(
+        await Deno.readTextFile(bundlePath),
+      ),
+    };
+  } catch {
+    return {};
   }
 }

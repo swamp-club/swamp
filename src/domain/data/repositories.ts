@@ -198,6 +198,9 @@ export interface UnifiedDataRepository {
   /** whether reads run in such a command, so their barriers do anything */
   readsScoped?(): boolean;
 
+  /** tests only: a sync read across behaviors with unapplied commits throws */
+  assertWideReadable?(): void;
+
   findAllGlobal(options?: FindAllGlobalOptions): Promise<
     Array<{ data: Data; modelType: ModelType; modelId: string }>
   >;

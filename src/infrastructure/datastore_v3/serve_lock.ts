@@ -158,6 +158,8 @@ export interface ServeLockOptions {
    */
   readonly onUnreachable?: (error: ServeUnreachableError) => boolean;
   readonly root?: string;
+  /** after each release, whether or not it reached serve */
+  readonly onReleased?: () => void;
   readonly onLost?: (error: ServeLeaseLapsedError) => void;
   /**
    * the explicit lease this checkout holds on the key, if any: the hold takes
@@ -729,6 +731,7 @@ export class ServeLock implements DistributedLock {
           await this.#release();
         } finally {
           this.#releasing = false;
+          this.#options.onReleased?.();
         }
       },
     );

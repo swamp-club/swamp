@@ -862,7 +862,11 @@ export class ModelResolver {
       return;
     }
     const refs = analyzeExpression(expression);
-    if (refs.unanalyzable || refs.dataWide || refs.runsComputed) {
+    // listVersions reads the catalog by name tag across behaviors, synchronously
+    if (
+      refs.unanalyzable || refs.dataWide || refs.runsComputed ||
+      /\blistVersions\s*\(/.test(expression)
+    ) {
       await dataRepo.beforeWideRead();
       return;
     }

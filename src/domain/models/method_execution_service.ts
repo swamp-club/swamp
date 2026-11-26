@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { mayReadDataSynchronously } from "./sync_data_reads.ts";
 import { StepWithdrawnError } from "../remote/remote_dispatch.ts";
 import { basename } from "@std/path";
 import type { z } from "zod";
@@ -1878,6 +1879,20 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         context.logger.info(
           "Skipping pre-flight checks for remotely-placed step",
         );
+      }
+
+      // a sync read cannot wait for an apply, so a scoped command applies the
+      // whole feed first for code that may make one
+      if (
+        !isRemotePlacement &&
+        context.dataRepository.readsScoped?.() === true &&
+        mayReadDataSynchronously(
+          modelDef,
+          methodName,
+          modelRegistry.isBuiltIn(context.modelType),
+        )
+      ) {
+        await context.dataRepository.beforeWideRead?.();
       }
 
       if (modelDef.checks && isMutatingKind(methodKind) && !isRemotePlacement) {

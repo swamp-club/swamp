@@ -1052,6 +1052,7 @@ export class DataQueryService {
     predicate: string,
     options?: DataQueryOptions,
   ): DataRecord[] | unknown[] {
+    this.dataRepo.assertWideReadable?.();
     if (!this.catalogStore.isPopulated()) {
       this.backfillSync();
     }

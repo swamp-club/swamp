@@ -30,8 +30,8 @@ import type { SqliteReadModel } from "./sqlite_read_model.ts";
 // keeps and what follow compaction waits on
 export const SCOPED_BACKLOG_MAX = 2_000;
 
-/** or once the oldest unapplied commit is this old, however few there are */
-export const SCOPED_BACKLOG_AGE_MS = 60 * 60 * 1000;
+// a reader overlapping back-to-back scoped writers lags by at most this much
+export const SCOPED_BACKLOG_AGE_MS = 2 * 60 * 1000;
 
 // a long command's reads, and other processes', lag by at most this much
 export const SCOPED_FEED_APPLY_MS = 30_000;
@@ -81,6 +81,7 @@ export interface ScopedApplyTarget {
 export async function backlogPastBound(
   target: ScopedApplyTarget,
   now: number = Date.now(),
+  ageMs: number = SCOPED_BACKLOG_AGE_MS,
 ): Promise<boolean> {
   const cursor = target.readModel.cursor();
   if (cursor < await target.commitStore.compactionPoint()) return true;
@@ -91,7 +92,7 @@ export async function backlogPastBound(
   const at = target.commitStore.firstChangeAtSince(cursor);
   if (at === undefined) return false;
   const made = Date.parse(at);
-  return !Number.isFinite(made) || now - made > SCOPED_BACKLOG_AGE_MS;
+  return !Number.isFinite(made) || now - made > ageMs;
 }
 
 function pendingIn(
@@ -179,6 +180,8 @@ export interface PeriodicApply {
 /** a stopped apply is waited for this long, as a stopped feed watch's catch-up is */
 const STOP_WAIT_MS = 500;
 
+export const PERIODIC_FAILURES_WARNED = 3;
+
 // stopping aborts the apply running, so a command's exit never waits on it
 export function startPeriodicApply(options: {
   readonly intervalMs: number;
@@ -190,6 +193,7 @@ export function startPeriodicApply(options: {
   const stopping = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   let running: Promise<void> | undefined;
+  let failures = 0;
   const schedule = () => {
     if (stopping.signal.aborted) return;
     timer = setTimeout(tick, options.intervalMs);
@@ -201,8 +205,16 @@ export function startPeriodicApply(options: {
       await options.ready?.(stopping.signal);
       stopping.signal.throwIfAborted();
       await options.apply(stopping.signal);
+      failures = 0;
     })().catch((error) => {
-      logger.debug`A scoped command's periodic catch-up failed: ${error}`;
+      if (stopping.signal.aborted) return;
+      failures++;
+      if (failures === PERIODIC_FAILURES_WARNED) {
+        logger
+          .warn`A long command's catch-up from serve failed ${failures} times in a row, so what it reads of other behaviors may lag: ${error}`;
+      } else {
+        logger.debug`A scoped command's periodic catch-up failed: ${error}`;
+      }
     }).finally(() => {
       running = undefined;
       schedule();

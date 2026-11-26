@@ -209,6 +209,7 @@ import {
   pendingAlwaysApplied,
   pendingCommitsIn,
   pendingPartitions,
+  SCOPED_BACKLOG_AGE_MS,
   SCOPED_FEED_APPLY_MS,
   startPeriodicApply,
 } from "./scoped_read_model.ts";
@@ -363,6 +364,7 @@ interface RepoContextState {
   /** set while a command applies only the partitions it reads */
   scoped: ScopedCommand | undefined;
   scopedFeedApplyMs: number;
+  scopedBacklogAgeMs: number;
   scopedTripwire: boolean;
 }
 
@@ -372,6 +374,11 @@ interface ScopedCommand {
    * the command's own, which its files already hold
    */
   readonly locked: Map<V3Datastore, Set<string>>;
+  /** what each held lock marked, dropped when it releases */
+  readonly marksOf: Map<
+    V3LockedScope,
+    { readonly handle: V3Datastore; readonly partitions: string[] }[]
+  >;
 }
 
 const repoState = processRuntimeSlot<RepoContextState>(() => ({
@@ -414,6 +421,7 @@ const repoState = processRuntimeSlot<RepoContextState>(() => ({
   },
   scoped: undefined,
   scopedFeedApplyMs: SCOPED_FEED_APPLY_MS,
+  scopedBacklogAgeMs: SCOPED_BACKLOG_AGE_MS,
   scopedTripwire: false,
 }));
 
@@ -1266,8 +1274,39 @@ export type V3LockedScope =
 export function scopeV3ReadModelApplies(): void {
   const state = repoState();
   if (state.scoped !== undefined) return;
-  state.scoped = { locked: new Map() };
+  state.scoped = { locked: new Map(), marksOf: new Map() };
   setDataReadBarrier(scopedReadBarrier());
+}
+
+export function setScopedBacklogAgeMsForTesting(ms: number): Disposable {
+  const state = repoState();
+  const before = state.scopedBacklogAgeMs;
+  state.scopedBacklogAgeMs = ms;
+  return {
+    [Symbol.dispose]: () => {
+      state.scopedBacklogAgeMs = before;
+    },
+  };
+}
+
+/** a released lock's partitions are no longer the command's own */
+export function forgetV3LockedScope(locked: V3LockedScope): void {
+  const scoped = repoState().scoped;
+  const marks = scoped?.marksOf.get(locked);
+  if (scoped === undefined || marks === undefined) return;
+  scoped.marksOf.delete(locked);
+  for (const { handle, partitions } of marks) {
+    const held = scoped.locked.get(handle);
+    for (const partition of partitions) held?.delete(partition);
+  }
+}
+
+function scopedPastBound(handle: V3Datastore): Promise<boolean> {
+  return backlogPastBound(
+    handle,
+    Date.now(),
+    repoState().scopedBacklogAgeMs,
+  );
 }
 
 export function setScopedFeedApplyMsForTesting(ms: number): Disposable {
@@ -1356,11 +1395,7 @@ function scopedReadBarrier(): DataReadBarrier {
       if (partition === undefined) return;
       for (const handle of scopedHandles()) {
         if (lockedHere(handle, partition)) continue;
-        await applyPartitions(
-          handle,
-          [partition],
-          new AbortController().signal,
-        );
+        await applyPartitions(handle, [partition], commandStopSignal());
       }
     },
     async beforeWideRead() {
@@ -1402,7 +1437,7 @@ function scopedReadBarrier(): DataReadBarrier {
  * the lockfile and auto-definitions
  */
 async function applyAtScopedOpen(handle: V3Datastore): Promise<void> {
-  if (!handle.readModel.isComplete() || await backlogPastBound(handle)) {
+  if (!handle.readModel.isComplete() || await scopedPastBound(handle)) {
     await handle.catchUpReadModel!();
     return;
   }
@@ -1494,9 +1529,8 @@ export async function catchUpV3HandlesAt(
   );
   for (const handle of handles) {
     if (handle.catchUpForWrite !== undefined) {
-      const lockedPartitions = scopedHandles().includes(handle)
-        ? lockedPartitionsOf(handle, locked)
-        : undefined;
+      const scopedHandle = scopedHandles().includes(handle);
+      let lockedPartitions: PartitionKey[] | undefined;
       let scoped: PartitionKey[] | undefined;
       try {
         await handle.catchUpForWrite(undefined, {
@@ -1509,8 +1543,12 @@ export async function catchUpV3HandlesAt(
         // a scoped command applies what the lock guards; a read model never
         // completed, or lagging past the bound in a copy the lock just
         // fetched, applies the whole feed before the command stages anything
+        // a run's partitions are named by the commits the copy just fetched
+        lockedPartitions = scopedHandle
+          ? lockedPartitionsOf(handle, locked)
+          : undefined;
         scoped = lockedPartitions !== undefined &&
-            handle.readModel.isComplete() && !await backlogPastBound(handle)
+            handle.readModel.isComplete() && !await scopedPastBound(handle)
           ? lockedPartitions
           : undefined;
         if (maxCommits !== undefined && scoped !== undefined) {
@@ -1530,14 +1568,6 @@ export async function catchUpV3HandlesAt(
         throw error;
       }
       endDeferral(handle);
-      const marks = repoState().scoped?.locked;
-      if (lockedPartitions !== undefined && marks !== undefined) {
-        const held = marks.get(handle) ?? new Set<string>();
-        for (const partition of lockedPartitions) {
-          held.add(partition.toString());
-        }
-        marks.set(handle, held);
-      }
       if (scoped !== undefined) {
         await applyPartitions(
           handle,
@@ -1546,14 +1576,33 @@ export async function catchUpV3HandlesAt(
             ? new AbortController().signal
             : commandStopSignal(),
         );
-        continue;
+      } else {
+        await (handle.catchUpReadModel?.(undefined, options) ??
+          handle.catchUp(undefined, options));
       }
-      await (handle.catchUpReadModel?.(undefined, options) ??
-        handle.catchUp(undefined, options));
+      if (lockedPartitions !== undefined && locked !== undefined) {
+        markLocked(handle, locked, lockedPartitions);
+      }
     } else {
       await handle.catchUp(undefined, options);
     }
   }
+}
+
+function markLocked(
+  handle: V3Datastore,
+  locked: V3LockedScope,
+  partitions: readonly PartitionKey[],
+): void {
+  const scoped = repoState().scoped;
+  if (scoped === undefined) return;
+  const held = scoped.locked.get(handle) ?? new Set<string>();
+  const added = partitions.map(String).filter((key) => !held.has(key));
+  for (const key of added) held.add(key);
+  scoped.locked.set(handle, held);
+  const marks = scoped.marksOf.get(locked) ?? [];
+  marks.push({ handle, partitions: added });
+  scoped.marksOf.set(locked, marks);
 }
 
 /**

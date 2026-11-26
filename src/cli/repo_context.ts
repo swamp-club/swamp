@@ -319,6 +319,7 @@ import {
   catchUpV3AfterRunLock,
   catchUpV3HandlesAt,
   endDeferralsAt,
+  forgetV3LockedScope,
   goServeOfflineAt,
   goServeOfflineAtLock,
   holdV3Writer,
@@ -1853,6 +1854,7 @@ function serveLockOf(
     // registered while held, so the checkout's commits to the partition name
     // the lease
     root,
+    onReleased: () => forgetV3LockedScope(locked),
     ...(options?.onLost === undefined ? {} : { onLost: options.onLost }),
     // an explicit lease this checkout holds on the key is used, not asked for
     // again

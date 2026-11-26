@@ -4237,9 +4237,13 @@ would mean replaying over a writer that is still writing.
 A scoped writer (below, under serve-mode checkouts) leaves its read model
 complete with its cursor behind, so a reader skips catch-up while it runs and
 reads behaviors the writer did not lock or read as the writer's last whole
-apply left them: at most the writer's interval apply
-(`SCOPED_FEED_APPLY_MS`, 30 seconds) behind while the writer runs, and current
-again at the next command that applies the whole feed.
+apply left them. Back-to-back short scoped writers never reach their interval
+apply, so the bound is the backlog bound below: the next scoped write applies
+the whole feed once the oldest unapplied commit is older than
+`SCOPED_BACKLOG_AGE_MS` (two minutes) or more than `SCOPED_BACKLOG_MAX`
+commits wait. A reader overlapping a writer therefore lags by at most that,
+plus the writer's own run, which a long run's interval apply
+(`SCOPED_FEED_APPLY_MS`, 30 seconds) bounds.
 
 Each effect is idempotent, so catching up again from the unchanged cursor
 redoes the effects of a crash anywhere. That is not always a repair on its
@@ -10042,12 +10046,13 @@ the next whole apply. No schema changes.
   no body decoded). A read model never completed, or lagging its copy by more
   than `SCOPED_BACKLOG_MAX` commits (2,000; `SWAMP_V3_SCOPED_BACKLOG_MAX`
   overrides it) or with its oldest unapplied commit older than
-  `SCOPED_BACKLOG_AGE_MS` (an hour), applies the whole feed instead, before
+  `SCOPED_BACKLOG_AGE_MS` (two minutes), applies the whole feed instead, before
   anything is staged. The bound keeps `commits.db` and follow compaction,
   which stops at the cursor, from growing without end.
 - Under the lock the same decision is made again on the copy the lock just
   fetched; scoped, the read model applies the locked partitions (a behavior's,
-  or a run's) and the pending config before the acquire resolves. The
+  or a run's) and the pending config before the acquire resolves, and marks
+  them as the command's own until the lock releases. The
   lock's `maxCommits` counts only those partitions' unapplied commits; a
   cursor the copy compacted past still loads a base outside the lock.
 - The feed watch becomes a whole catch-up every `SCOPED_FEED_APPLY_MS`, so a
@@ -10059,9 +10064,15 @@ the next whole apply. No schema changes.
   behaviors (the catalog, `data.query`, a global listing, GC) applies the
   whole feed unless only the command's own commits are pending, and a CEL
   expression applies the behaviors it names before its synchronous reads
-  (the whole feed when it reads data it cannot pin to named behaviors). A
-  synchronous read of a partition with unapplied commits throws in tests
-  (`scopedSyncReadTripwireForTesting`).
+  (the whole feed when it reads data it cannot pin to named behaviors).
+- A synchronous read from method code cannot wait for an apply, so before a
+  method body (and its checks) runs, a model whose code may call a sync data
+  API (`getContentSync`, `findByNameSync`, `querySync` and the rest) gets a
+  whole apply first. An extension's verdict comes from its loaded bundle's
+  text, recorded when it registers; a built-in type is listed by hand (none
+  calls them); a model with no verdict gets the apply. A synchronous read of
+  a partition with unapplied commits throws in tests
+  (`scopedSyncReadTripwireForTesting`), catching a path the check misses.
 
 Workflow runs, data delete and rename, access, workers and serve keep whole
 applies.

@@ -51,16 +51,25 @@ import { Step } from "../src/domain/workflows/step.ts";
 import { StepTask } from "../src/domain/workflows/step_task.ts";
 import { Workflow } from "../src/domain/workflows/workflow.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
+import { checkpointFrom } from "../src/infrastructure/datastore_v3/commit_log_unit_of_work.ts";
+import { currentUnitOfWork } from "../src/infrastructure/persistence/unit_of_work_scope.ts";
 import { SCOPED_BACKLOG_MAX_ENV_VAR } from "../src/infrastructure/datastore_v3/scoped_read_model.ts";
 import { READ_MODEL_STATE_FILE } from "../src/infrastructure/datastore_v3/sqlite_read_model.ts";
 import { readModelStateDir } from "../src/infrastructure/datastore_v3/record_path_guard.ts";
 import {
   scopedSyncReadTripwireForTesting,
+  setScopedBacklogAgeMsForTesting,
   setScopedFeedApplyMsForTesting,
 } from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
 import {
+  localProcess,
+  setLocalProcessForTesting,
+} from "../src/infrastructure/datastore_v3/process_identity.ts";
+import {
   type Client,
   endCommand,
+  latestOf,
+  readCommand,
   type Scratch,
   type Serve,
   serveEnv,
@@ -97,20 +106,43 @@ let readTarget: string | undefined;
 const holds = new Map<string, Promise<void>>();
 const holding = new Set<string>();
 const seen: { readonly via: string; readonly value: unknown }[] = [];
+/** the body each behavior's next write holds */
+const bodies = new Map<string, string>();
+
+async function write(context: MethodContext, body?: string) {
+  const handle = await context.writeResource!("out", "out", {
+    body: body ?? bodies.get(context.definition.name) ?? crypto.randomUUID(),
+  });
+  const held = holds.get(context.repoDir);
+  if (held !== undefined) {
+    holding.add(context.repoDir);
+    await held;
+  }
+  return { dataHandles: [handle] };
+}
+
+function bodyOf(content: Uint8Array | null): unknown {
+  return content === null
+    ? null
+    : JSON.parse(new TextDecoder().decode(content)).body;
+}
+
+// outside the method body, so the body's own code names no sync data API
+function readWithoutNaming(context: MethodContext): unknown {
+  const repository = context.dataRepository as unknown as Record<
+    string,
+    (...args: unknown[]) => unknown
+  >;
+  const read = ["getContent", "Sync"].join("");
+  return bodyOf(
+    repository[read](context.modelType, readTarget!, "out") as
+      | Uint8Array
+      | null,
+  );
+}
 
 function registerMethods(type: ModelType): void {
   modelRegistry.invalidateType(type);
-  const write = async (context: MethodContext) => {
-    const handle = await context.writeResource!("out", "out", {
-      body: crypto.randomUUID(),
-    });
-    const held = holds.get(context.repoDir);
-    if (held !== undefined) {
-      holding.add(context.repoDir);
-      await held;
-    }
-    return { dataHandles: [handle] };
-  };
   modelRegistry.register({
     type,
     version: "2026.01.01.1",
@@ -131,39 +163,55 @@ function registerMethods(type: ModelType): void {
         execute: (_args, context) => write(context),
       },
       syncPeek: {
-        description: "Reads another behavior synchronously, with no barrier",
+        description: "Reads another behavior through the sync API",
         kind: "update",
         arguments: z.object({}),
         execute: (_args, context) => {
-          const items = context.dataRepository.findAllForModelSync(
-            context.modelType,
-            readTarget!,
-          );
           seen.push({
             via: "syncPeek",
-            value: items.filter((data) => data.name === "out").length,
+            value: bodyOf(
+              context.dataRepository.getContentSync(
+                context.modelType,
+                readTarget!,
+                "out",
+              ),
+            ),
           });
           return write(context);
         },
       },
-      barrierPeek: {
-        description: "Reads another behavior after its async read's barrier",
+      hiddenPeek: {
+        description: "Reads another behavior through code the check misses",
+        kind: "update",
+        arguments: z.object({}),
+        execute: (_args, context) => {
+          seen.push({ via: "hiddenPeek", value: readWithoutNaming(context) });
+          return write(context);
+        },
+      },
+      ownCheckpoint: {
+        description:
+          "Commits a first version mid-run, writes a second, then reads across behaviors",
         kind: "update",
         arguments: z.object({}),
         execute: async (_args, context) => {
-          await context.dataRepository.findAllForModel(
-            context.modelType,
-            readTarget!,
-          );
-          const items = context.dataRepository.findAllForModelSync(
-            context.modelType,
-            readTarget!,
-          );
+          await context.writeResource!("out", "out", { body: "first" });
+          const unit = currentUnitOfWork();
+          if (unit === undefined) throw new Error("no unit is open");
+          if (!await checkpointFrom(unit)) throw new Error("no checkpoint");
+          const second = await write(context, "second");
+          await context.queryData!('name == "out"');
           seen.push({
-            via: "barrierPeek",
-            value: items.filter((data) => data.name === "out").length,
+            via: "ownCheckpoint",
+            value: bodyOf(
+              await context.dataRepository.getContent(
+                context.modelType,
+                context.definition.id,
+                "out",
+              ),
+            ),
           });
-          return write(context);
+          return second;
         },
       },
     },
@@ -177,6 +225,7 @@ type MethodRunRequest = {
   readonly model: string;
   readonly method: string;
   readonly feedApplyMs?: number;
+  readonly backlogAgeMs?: number;
 };
 
 type MethodRunMessage =
@@ -195,6 +244,9 @@ const methodRunHost: ProcessHost<MethodRunRequest, MethodRunMessage> =
       using _interval = request.feedApplyMs === undefined
         ? undefined
         : setScopedFeedApplyMsForTesting(request.feedApplyMs);
+      using _age = request.backlogAgeMs === undefined
+        ? undefined
+        : setScopedBacklogAgeMsForTesting(request.backlogAgeMs);
       let error: string | undefined;
       Deno.exitCode = 0;
       try {
@@ -257,6 +309,7 @@ function methodRun(
   options: {
     readonly env?: Record<string, string>;
     readonly feedApplyMs?: number;
+    readonly backlogAgeMs?: number;
   } = {},
 ): Run {
   let done: Extract<MethodRunMessage, { kind: "done" }> | undefined;
@@ -274,6 +327,9 @@ function methodRun(
     ...(options.feedApplyMs === undefined
       ? {}
       : { feedApplyMs: options.feedApplyMs }),
+    ...(options.backlogAgeMs === undefined
+      ? {}
+      : { backlogAgeMs: options.backlogAgeMs }),
   });
   const result = (async () => {
     try {
@@ -592,7 +648,31 @@ Deno.test({
 
 Deno.test({
   name:
-    "scoped apply: a sync read of another behavior with unapplied commits trips in a test build; one after the async read's barrier reads it current",
+    "scoped apply: a method body that reads another behavior through a sync API reads the version another member just wrote, after a whole apply before the body",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withTeam(async (team) => {
+      const { a, b } = team;
+      readTarget = team.ids[PRODUCERS[0]];
+      try {
+        for (const body of ["one", "two"]) {
+          bodies.set(PRODUCERS[0], body);
+          await runOk(team, b, B_TOKEN, PRODUCERS[0], "stamp");
+          await runOk(team, a, A_TOKEN, CONSUMER, "syncPeek");
+          assertEquals(seen.at(-1), { via: "syncPeek", value: body });
+        }
+      } finally {
+        readTarget = undefined;
+        bodies.clear();
+      }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "scoped apply: a sync read of another behavior the pre-body check misses trips in a test build",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
@@ -604,7 +684,7 @@ Deno.test({
         const exitCode = Deno.exitCode;
         let tripped: { error?: string; exitCode: number };
         try {
-          tripped = await methodRun(team, a, A_TOKEN, CONSUMER, "syncPeek")
+          tripped = await methodRun(team, a, A_TOKEN, CONSUMER, "hiddenPeek")
             .result;
         } finally {
           Deno.exitCode = exitCode;
@@ -614,12 +694,85 @@ Deno.test({
           "A sync read in a scoped command found partition",
         );
         assertEquals(seen, []);
-
-        await runOk(team, a, A_TOKEN, CONSUMER, "barrierPeek");
-        assertEquals(seen, [{ via: "barrierPeek", value: 1 }]);
       } finally {
         readTarget = undefined;
       }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "scoped apply: a whole apply while the run's unit is open, with its own checkpoint sent and not applied, leaves the run's later write in its files",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withTeam(async (team) => {
+      const { a } = team;
+      // another behavior's commit makes the query's barrier apply the whole feed
+      await stampProducers(team);
+      await runOk(team, a, A_TOKEN, CONSUMER, "ownCheckpoint");
+      assertEquals(seen.at(-1), { via: "ownCheckpoint", value: "second" });
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "scoped apply: back-to-back short scoped writes apply the whole feed once the oldest unapplied commit passes the age bound, so a reader overlapping one sees another member's write",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withTeam(async (team) => {
+      const { a, b } = team;
+      const producerId = team.ids[PRODUCERS[0]];
+      bodies.set(PRODUCERS[0], "two");
+      try {
+        await runOk(team, b, B_TOKEN, PRODUCERS[0], "stamp");
+      } finally {
+        bodies.clear();
+      }
+      const readProducer = () =>
+        readCommand(
+          team.scratch,
+          a,
+          serveEnv(team.serve, A_TOKEN),
+          (repos) => latestOf(repos, team.serve.modelType, producerId, "out"),
+        );
+      const sightings: unknown[] = [];
+      const exitCode = Deno.exitCode;
+      try {
+        for (let run = 0; run < 3; run++) {
+          const held = holdRuns(a);
+          const write = methodRun(team, a, A_TOKEN, CONSUMER, "stamp", {
+            backlogAgeMs: 1,
+            feedApplyMs: 3_600_000,
+          });
+          try {
+            await waitFor(() => holding.has(a.repoDir), "a's write to hold", {
+              timeoutMs: 120_000,
+            });
+            // the reader shares this isolate's pid with a's run; it reads as
+            // another process does
+            const local = await localProcess();
+            setLocalProcessForTesting({ ...local, pid: local.pid + 1_000_000 });
+            try {
+              sightings.push((await readProducer())?.content);
+            } finally {
+              setLocalProcessForTesting(undefined);
+            }
+          } finally {
+            held.release();
+            assertEquals(await write.result, { exitCode: 0 });
+          }
+        }
+      } finally {
+        Deno.exitCode = exitCode;
+      }
+      assert(
+        sightings.includes('{"body":"two"}'),
+        `the reader saw ${JSON.stringify(sightings)}`,
+      );
     });
   },
 });

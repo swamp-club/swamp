@@ -72,6 +72,8 @@ export interface RegistrationContext {
   extensionName?: string;
   sourceFingerprint?: string;
   sourceSnapshot?: SourceSnapshot;
+  /** whether the bundle loaded names a sync data API */
+  readsDataSynchronously?: boolean;
 }
 
 /** an add-on's bundle is built from this only when a worker needs it */

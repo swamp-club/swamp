@@ -259,3 +259,31 @@ Deno.test("startPeriodicApply: a command shorter than the interval never applies
   await periodic.stop();
   assertEquals(applies, 0);
 });
+
+Deno.test("backlogPastBound: a copy compacted past the cursor applies everything, and a partition apply over the compaction loads its base", async () => {
+  await withEnv(async (env) => {
+    const now = Date.parse(AT);
+    await save(env, 1);
+    await env.readModel.catchUp(signal());
+    await save(env, 2);
+    await save(env, 3);
+    await env.store.compactHistory(env.store.lastCursor());
+    assertEquals(await backlogPastBound(env, now), true);
+
+    await applyPartitions(env, [MODEL], signal());
+    assertEquals(env.readModel.appliedSeq("", MODEL), 3);
+    await env.readModel.catchUp(signal());
+    assertEquals(env.readModel.appliedSeq("", MODEL), 3);
+  });
+});
+
+Deno.test("backlogPastBound: the age bound passed in replaces the default", async () => {
+  await withEnv(async (env) => {
+    const now = Date.parse(AT);
+    await save(env, 1);
+    await env.readModel.catchUp(signal());
+    await save(env, 2);
+    assertEquals(await backlogPastBound(env, now + 5), false);
+    assertEquals(await backlogPastBound(env, now + 5, 1), true);
+  });
+});

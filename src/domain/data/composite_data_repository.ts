@@ -77,6 +77,10 @@ export class CompositeUnifiedDataRepository implements UnifiedDataRepository {
     return this.persistent.readsScoped?.() === true;
   }
 
+  assertWideReadable(): void {
+    this.persistent.assertWideReadable?.();
+  }
+
   private routeWrite(data: Data): UnifiedDataRepository {
     return data.lifetime === "ephemeral" ? this.ephemeral : this.persistent;
   }

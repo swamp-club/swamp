@@ -944,6 +944,7 @@ export const modelKindAdapter: KindAdapter = {
       : undefined;
     modelDef.extensionName = context.extensionName;
     modelDef.sourceFingerprint = context.sourceFingerprint;
+    modelDef.readsDataSynchronously = context.readsDataSynchronously;
 
     modelDef.bundleSourceFactory = createBundleSourceFactory(
       modelDef.type.normalized,
@@ -992,6 +993,7 @@ export const modelKindAdapter: KindAdapter = {
       : undefined;
     modelDef.extensionName = context.extensionName;
     modelDef.sourceFingerprint = context.sourceFingerprint;
+    modelDef.readsDataSynchronously = context.readsDataSynchronously;
 
     modelDef.bundleSourceFactory = createBundleSourceFactory(
       modelDef.type.normalized,

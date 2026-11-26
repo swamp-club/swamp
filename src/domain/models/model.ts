@@ -675,6 +675,9 @@ export interface ModelDefinition<
    * in ExecutionProvenance to verify which code produced an output
    */
   sourceFingerprint?: string;
+
+  /** whether the loaded bundle names a sync data API; unknown when undefined */
+  readsDataSynchronously?: boolean;
 }
 
 export interface ExtensionMemberSet {
