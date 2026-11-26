@@ -201,7 +201,6 @@ const CLOSE_WAIT_MS = 500;
 
 /** inline writes of a catch-up's page that run at once */
 export const POOLED_WRITES = 16;
-/** blobs up to this size are read whole and written through the pool */
 const POOLED_BLOB_BYTES = 256 * 1024;
 
 interface PooledWrite {

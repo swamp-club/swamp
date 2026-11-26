@@ -2720,7 +2720,6 @@ Deno.test({
   },
 });
 
-/** `POST chunks/batch` for `hashes`, as `token`'s caller */
 async function chunkBatch(
   server: Server,
   hashes: readonly string[],

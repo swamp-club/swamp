@@ -363,8 +363,7 @@ Deno.test({
   sanitizeResources: false,
   fn: async () => {
     await withServer([...writer(), ...bobReadsWebData()], async (server) => {
-      // only raw records, ~7 KB inline each: 1,400 of them pass the 8 MiB
-      // budget long before the 5,000-entry limit
+      // raw records only, sized so the byte budget binds before the entry limit
       const filler = "x".repeat(7000);
       for (let c = 0; c < 4; c++) {
         const ops = [];
