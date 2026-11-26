@@ -48,7 +48,6 @@ import {
 } from "../../domain/datastore_v3/commit.ts";
 import {
   type CommitLogUnitOfWork,
-  CommitStorageUnreadableError,
   CommitUnreachableError,
   type ContentSource,
   type DirectAppendOptions,
@@ -970,12 +969,8 @@ export function createCommitLogUnitOfWork(
       // given up, so nothing of it can land: a commit that never reached the
       // storage says so and a retry is safe; a run whose checkpoint landed is
       // left running instead
-      if (lost === undefined && failedAccessingStorage(error)) {
-        throw new CommitStorageUnreadableError(error, {
-          partly: landed.length > 0,
-        });
-      }
-      if (lost === undefined && failedReachingStorage(error)) {
+      const denied = lost === undefined && failedAccessingStorage(error);
+      if (lost === undefined && (denied || failedReachingStorage(error))) {
         // A run whose record landed earlier and whose latest save did not
         // is left running; one whose saves all landed is not.
         const runs = landed.flatMap((partition) => {
@@ -985,8 +980,11 @@ export function createCommitLogUnitOfWork(
             ? [{ workflowId: identity.workflowId, runId: identity.runId }]
             : [];
         });
-        if (runs.length > 0) throw new RunPartlyCommittedError(error, runs);
+        if (runs.length > 0) {
+          throw new RunPartlyCommittedError(error, runs, { denied });
+        }
         throw new CommitUnreachableError(error, {
+          denied,
           partly: landed.length > 0,
         });
       }

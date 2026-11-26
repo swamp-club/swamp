@@ -250,6 +250,17 @@ export class MayLandLaterError extends UnrecordedEndError {
 
 export const COMMIT_UNREACHABLE_CODE = "datastore_v3_commit_unreachable";
 
+/** the storage refused access, which a retry will not fix: exits 1, not 75 */
+export const COMMIT_STORAGE_UNREADABLE_CODE =
+  "datastore_v3_commit_storage_unreadable";
+
+/** the lead of a storage failure's message: refused access, or unreachable */
+function storageFailureLead(cause: unknown, denied: boolean): string {
+  return denied
+    ? `The datastore's storage could not be read (${messageOf(cause)})`
+    : `Swamp could not reach the datastore's storage (${messageOf(cause)})`;
+}
+
 /**
  * part of the change is committed, so unlike COMMIT_UNREACHABLE_CODE it is not
  * a temporary failure
@@ -258,6 +269,8 @@ export const COMMIT_PARTLY_COMMITTED_CODE =
   "datastore_v3_commit_partly_committed";
 
 interface CommitUnreachableWording {
+  /** the storage refused access rather than being unreachable */
+  readonly denied?: boolean;
   readonly stepsRan?: boolean;
   readonly partly?: boolean;
   readonly failure?: unknown;
@@ -282,23 +295,28 @@ export class CommitUnreachableError extends UserError {
       ? "Its steps had already run, so check anything they changed outside " +
         "swamp"
       : "";
+    const denied = options.denied === true;
+    const usable = denied
+      ? "the datastore's permissions are fixed"
+      : "the datastore is reachable";
     const recheck = options.partly === true
       ? `${
         steps === "" ? "Check" : `${steps}, and check`
-      } what it changed in the datastore once it is reachable before ` +
+      } what it changed in the datastore once ${usable} before ` +
         "running it again."
       : steps === ""
-      ? "Run it again once the datastore is reachable."
-      : `${steps} before running it again once the datastore is reachable.`;
+      ? `Run it again once ${usable}.`
+      : `${steps} before running it again once ${usable}.`;
     const outcome = options.partly === true
       ? "so the rest of this command's changes were not committed; part of " +
         "what this command changed was committed before that and stays " +
         "committed"
       : "so nothing this command changed was committed";
     super(
-      `Swamp could not reach the datastore's storage (${messageOf(cause)}), ` +
-        `${outcome}. ${failed}${recheck}`,
-      options.partly === true
+      `${storageFailureLead(cause, denied)}, ${outcome}. ${failed}${recheck}`,
+      denied
+        ? COMMIT_STORAGE_UNREADABLE_CODE
+        : options.partly === true
         ? COMMIT_PARTLY_COMMITTED_CODE
         : COMMIT_UNREACHABLE_CODE,
     );
@@ -319,32 +337,6 @@ export class CommitUnreachableError extends UserError {
       ...this.#wording,
       failure,
     });
-  }
-}
-
-export const COMMIT_STORAGE_UNREADABLE_CODE =
-  "datastore_v3_commit_storage_unreadable";
-
-/**
- * the storage refused access (its permissions), so nothing of the commit landed
- * or can later; not a temporary failure, so it exits 1 rather than 75
- */
-export class CommitStorageUnreadableError extends UserError {
-  constructor(cause: unknown, options: { readonly partly?: boolean } = {}) {
-    const outcome = options.partly === true
-      ? "so the rest of this command's changes were not committed; part of " +
-        "what this command changed was committed before that and stays " +
-        "committed. Check the datastore's permissions and what this command " +
-        "changed before running it again."
-      : "so nothing this command changed was committed. Check the " +
-        "datastore's permissions, then run the command again.";
-    super(
-      `The datastore's storage could not be read (${messageOf(cause)}), ` +
-        outcome,
-      COMMIT_STORAGE_UNREADABLE_CODE,
-    );
-    this.name = "CommitStorageUnreadableError";
-    this.cause = cause;
   }
 }
 
@@ -389,6 +381,8 @@ export function recoveryNeedsAcknowledgement(run: PartlyCommittedRun): boolean {
 }
 
 interface RunPartlyCommittedWording {
+  /** the storage refused access rather than being unreachable */
+  readonly denied?: boolean;
   readonly stepsRan?: boolean;
   readonly failure?: unknown;
 }
@@ -433,12 +427,14 @@ export class RunPartlyCommittedError extends UserError {
       (recoveryNeedsAcknowledgement(run) ? " --acknowledge-unknown" : "")
     ).join("; ");
     super(
-      `Swamp could not reach the datastore's storage (${messageOf(cause)}), ` +
+      `${storageFailureLead(cause, options.denied === true)}, ` +
         `so this command's end was not committed; ${
           one ? "a workflow run" : `${runs.length} workflow runs`
         } committed up to ${one ? "its" : "their"} last checkpoint in this ` +
         `checkout and ${one ? "is" : "are"} left running. ${failed}${steps}` +
-        `With the datastore reachable, run ${recover} in this checkout to ` +
+        `With the datastore ${
+          options.denied === true ? "readable again" : "reachable"
+        }, run ${recover} in this checkout to ` +
         `settle ${one ? "it" : "them"} and send that progress to the ` +
         `datastore.${inFlight}`,
       RUN_PARTLY_COMMITTED_CODE,

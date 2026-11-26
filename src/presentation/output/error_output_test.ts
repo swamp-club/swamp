@@ -80,10 +80,7 @@ import {
   ReadModelCatchUpUnreachableError,
 } from "../../domain/datastore_v3/read_model.ts";
 import { V3WriterBusyError } from "../../infrastructure/datastore_v3/v3_writer_lock.ts";
-import {
-  COMMIT_STORAGE_UNREADABLE_CODE,
-  CommitStorageUnreadableError,
-} from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
+import { COMMIT_STORAGE_UNREADABLE_CODE } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import {
   ServeLeaseLapsedLatch,
   ServeLeaseLapsedRequestError,
@@ -742,12 +739,33 @@ Deno.test("exitCodeForError: returns 75 for a copy another command is still sett
 });
 
 Deno.test("exitCodeForError: returns 1 for a commit the datastore's permissions refused, not the retry-safe 75 (swamp-club#5107)", () => {
-  const error = new CommitStorageUnreadableError(
+  const error = new CommitUnreachableError(
     new Deno.errors.PermissionDenied("Permission denied (os error 13)"),
+    { denied: true },
   );
   assertEquals(error.code, COMMIT_STORAGE_UNREADABLE_CODE);
   assertEquals(exitCodeForError(error), 1);
   assertEquals(exitCodeForError(error, { commandLanded: false }), 1);
+  assertEquals(exitCodeForError(error.afterStepsRan()), 1);
+  assertStringIncludes(
+    error.afterStepsRan().message,
+    "Its steps had already run",
+  );
+});
+
+Deno.test("RunPartlyCommittedError: a refused run end keeps the recover command and says the storage could not be read (swamp-club#5107)", () => {
+  const error = new RunPartlyCommittedError(
+    new Deno.errors.PermissionDenied("Permission denied (os error 13)"),
+    [{ workflowId: "wf", runId: "run-1" }],
+    { denied: true },
+  );
+  assertStringIncludes(error.message, "storage could not be read");
+  assertStringIncludes(error.message, "swamp workflow recover wf --run run-1");
+  assertStringIncludes(error.message, "With the datastore readable again");
+  assertStringIncludes(
+    error.afterStepsRan().message,
+    "Its steps had already run",
+  );
 });
 
 Deno.test("exitCodeForError: serve's busy lease names serve, keeps code datastore_v3_writer_busy and exits 75 (swamp-club#5107)", () => {

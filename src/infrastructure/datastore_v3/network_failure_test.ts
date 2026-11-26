@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { isNetworkFailure } from "./network_failure.ts";
+import { isAccessDenied, isNetworkFailure } from "./network_failure.ts";
 
 function coded(code: string, message = `connect ${code}`): Error {
   return Object.assign(new Error(message), { code });
@@ -120,4 +120,36 @@ Deno.test("isNetworkFailure: an AggregateError counts only when every error in i
     false,
   );
   assertEquals(isNetworkFailure(new AggregateError([])), false);
+});
+
+function coded(code: string): Error {
+  return Object.assign(new Error(code), { code });
+}
+
+Deno.test("isAccessDenied: Deno's PermissionDenied and the EACCES, EPERM and EROFS codes (swamp-club#5107)", () => {
+  assertEquals(
+    isAccessDenied(new Deno.errors.PermissionDenied("Permission denied")),
+    true,
+  );
+  for (const code of ["EACCES", "EPERM", "EROFS"]) {
+    assertEquals(isAccessDenied(coded(code)), true, code);
+  }
+});
+
+Deno.test("isAccessDenied: a denial wrapped in causes, within the depth bound", () => {
+  let error: Error = new Deno.errors.PermissionDenied("Permission denied");
+  for (let i = 0; i < 3; i++) error = new Error("wrapped", { cause: error });
+  assertEquals(isAccessDenied(error), true);
+  let deep: Error = coded("EACCES");
+  for (let i = 0; i < 64; i++) deep = new Error("wrapped", { cause: deep });
+  assertEquals(isAccessDenied(deep), false);
+});
+
+Deno.test("isAccessDenied: network failures, other codes and non-errors are not denials", () => {
+  assertEquals(isAccessDenied(coded("ECONNRESET")), false);
+  assertEquals(isAccessDenied(coded("ENOENT")), false);
+  assertEquals(isAccessDenied(new Deno.errors.NotFound("gone")), false);
+  assertEquals(isAccessDenied(new Error("plain")), false);
+  assertEquals(isAccessDenied("EACCES"), false);
+  assertEquals(isAccessDenied(undefined), false);
 });

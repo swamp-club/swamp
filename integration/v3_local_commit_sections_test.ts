@@ -1290,7 +1290,7 @@ Deno.test({
             failure !== undefined && "failed" in failure,
             "the cut write must fail",
           );
-          assertStringIncludes(failure.failed, "CommitStorageUnreadableError");
+          assertStringIncludes(failure.failed, "CommitUnreachableError");
           assertStringIncludes(failure.failed, "could not be read");
           assertStringIncludes(
             failure.failed,
@@ -1301,7 +1301,6 @@ Deno.test({
         } finally {
           writer.stop();
         }
-        // the next command, a fresh process, finds nothing of the cut write
         const next = startWriter("next");
         try {
           await opened(next, repos.repoA, repos.modelType.normalized);

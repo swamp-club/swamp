@@ -69,7 +69,7 @@ const ACCESS_DENIED_CODES: ReadonlySet<string> = new Set([
   "EROFS",
 ]);
 
-/** the storage refused this process access, as permissions or a read-only mount do */
+/** permissions, or a read-only mount (EROFS) */
 export function isAccessDenied(error: unknown): boolean {
   let current = error;
   for (let depth = 0; depth < MAX_DEPTH; depth++) {
