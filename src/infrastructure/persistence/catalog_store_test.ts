@@ -3284,3 +3284,53 @@ Deno.test("CatalogStore.touchedScopes: reads an older swamp's table, without the
     store.close();
   }
 });
+
+Deno.test("CatalogStore.holdsNewVersions: true only while upsertNewVersion of every row would change nothing", () => {
+  using tempDb = makeTempDb();
+  const store = new CatalogStore(tempDb.path);
+  try {
+    const first = makeRow({ version: 1 });
+    const second = makeRow({ version: 2, id: "data-uuid-002" });
+    assertEquals(store.holdsNewVersions([]), true);
+    assertEquals(store.holdsNewVersions([first]), false, "no row stored");
+    store.upsertNewVersion(first);
+    store.upsertNewVersion(second);
+    assertEquals(store.holdsNewVersions([first, second]), true);
+    assertEquals(
+      store.holdsNewVersions([{ ...second, size: 257 }]),
+      false,
+      "a column differs",
+    );
+    store.upsert({ ...first, is_latest: 1, is_step_latest: 1 });
+    assertEquals(
+      store.holdsNewVersions([second]),
+      false,
+      "an earlier version still holds the latest flag",
+    );
+    store.upsertNewVersion(second);
+    store.recordRename(makeForward({ data_name: "my-data" }));
+    assertEquals(
+      store.holdsNewVersions([second]),
+      false,
+      "a forward the new latest version would end",
+    );
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("CatalogStore.upsertNewVersion: tagsInKeyOrder stores tags as a data-version op orders them", () => {
+  using tempDb = makeTempDb();
+  const store = new CatalogStore(tempDb.path, { tagsInKeyOrder: true });
+  try {
+    store.upsertNewVersion(
+      makeRow({ tags: '{"type":"resource","2":"b","specName":"result"}' }),
+    );
+    assertEquals(
+      [...store.iterate()].map((row) => row.tags),
+      ['{"2":"b","specName":"result","type":"resource"}'],
+    );
+  } finally {
+    store.close();
+  }
+});
