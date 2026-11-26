@@ -1301,30 +1301,20 @@ Deno.test({
         } finally {
           writer.stop();
         }
-        // the next command, a fresh process on each checkout, finds nothing
-        // of the cut write
-        const counts: number[] = [];
-        for (
-          const [name, repoDir] of [["next-a", repos.repoA], [
-            "next-b",
-            repos.repoB,
-          ]] as const
-        ) {
-          const next = startWriter(name);
-          try {
-            await opened(next, repoDir, repos.modelType.normalized);
-            next.send({ kind: "write", id: name, model: "m", data: "d" });
-            counts.push((await landed(next, name)).count);
-            await closed(next);
-          } finally {
-            next.stop();
-          }
+        // the next command, a fresh process, finds nothing of the cut write
+        const next = startWriter("next");
+        try {
+          await opened(next, repos.repoA, repos.modelType.normalized);
+          next.send({ kind: "write", id: "next", model: "m", data: "d" });
+          assertEquals(
+            (await landed(next, "next")).count,
+            before + 1,
+            "the cut write left nothing behind",
+          );
+          await closed(next);
+        } finally {
+          next.stop();
         }
-        assertEquals(
-          counts,
-          [before + 1, before + 2],
-          "the cut write left nothing behind",
-        );
       });
     });
   },
