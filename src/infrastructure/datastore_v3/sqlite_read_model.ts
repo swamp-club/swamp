@@ -201,6 +201,7 @@ const CLOSE_WAIT_MS = 500;
 
 /** inline writes of a catch-up's page that run at once */
 export const POOLED_WRITES = 16;
+const POOLED_BLOB_BYTES = 256 * 1024;
 
 interface PooledWrite {
   readonly folded: string;
@@ -557,6 +558,11 @@ export class SqliteReadModel implements ReadModel {
   ) => Promise<ReadonlySet<string>>;
   readonly #clock: () => Date;
   readonly #recordsWrittenFiles: boolean;
+  /**
+   * written-file records a base load holds back to land in one transaction,
+   * instead of one per file
+   */
+  #writtenBuffer: WrittenFile[] | undefined;
   readonly #rename: (from: string, to: string) => Promise<void>;
   readonly #readDir: (dir: string) => AsyncIterable<Deno.DirEntry>;
   readonly #syncDirectory: (dir: string) => Promise<void>;
@@ -2953,7 +2959,13 @@ export class SqliteReadModel implements ReadModel {
       "swamp.datastore.v3.readmodel.prefetch",
       {},
       async (span) => {
-        const totals = { requested: 0, fetched: 0, retries: 0, failed: 0 };
+        const totals = {
+          requested: 0,
+          fetched: 0,
+          retries: 0,
+          failed: 0,
+          batches: 0,
+        };
         for (const [namespace, refs] of byNamespace) {
           const report = await this.#chunkStore.prefetch(
             namespaceOf(namespace),
@@ -2965,12 +2977,14 @@ export class SqliteReadModel implements ReadModel {
           totals.fetched += report.fetched;
           totals.retries += report.retries;
           totals.failed += report.failed;
+          totals.batches += report.batches ?? 0;
         }
         span.setAttributes({
           "swamp.datastore.v3.readmodel.prefetch.requested": totals.requested,
           "swamp.datastore.v3.readmodel.prefetch.fetched": totals.fetched,
           "swamp.datastore.v3.readmodel.prefetch.retries": totals.retries,
           "swamp.datastore.v3.readmodel.prefetch.failed": totals.failed,
+          "swamp.datastore.v3.readmodel.prefetch.batches": totals.batches,
         });
       },
     );
@@ -3006,7 +3020,13 @@ export class SqliteReadModel implements ReadModel {
       "swamp.datastore.v3.readmodel.prefetch",
       {},
       async (span) => {
-        const totals = { requested: 0, fetched: 0, retries: 0, failed: 0 };
+        const totals = {
+          requested: 0,
+          fetched: 0,
+          retries: 0,
+          failed: 0,
+          batches: 0,
+        };
         for (const [namespace, refs] of byNamespace) {
           const report = await this.#chunkStore.prefetch(
             namespaceOf(namespace),
@@ -3018,12 +3038,14 @@ export class SqliteReadModel implements ReadModel {
           totals.fetched += report.fetched;
           totals.retries += report.retries;
           totals.failed += report.failed;
+          totals.batches += report.batches ?? 0;
         }
         span.setAttributes({
           "swamp.datastore.v3.readmodel.prefetch.requested": totals.requested,
           "swamp.datastore.v3.readmodel.prefetch.fetched": totals.fetched,
           "swamp.datastore.v3.readmodel.prefetch.retries": totals.retries,
           "swamp.datastore.v3.readmodel.prefetch.failed": totals.failed,
+          "swamp.datastore.v3.readmodel.prefetch.batches": totals.batches,
         });
       },
     );
@@ -3923,12 +3945,25 @@ export class SqliteReadModel implements ReadModel {
     const unreadable: StoredUnreadableRecord[] = [];
     const skipped = new Set<string>();
     const done: LoadKey[] = [];
+    // a file joins the done list only once its own write has landed, pooled or
+    // not, so the list never names one not yet in place
     const recordDone = (force: boolean) => {
+      const written = this.#writtenBuffer;
+      if (
+        written !== undefined && (force || written.length >= LOAD_DONE_FLUSH)
+      ) {
+        this.#state.recordWrittenFiles(written.splice(0));
+      }
       if (resume === undefined) return;
       if (!force && done.length < LOAD_DONE_FLUSH) return;
       this.#state.markLoadDone(done, resume);
       done.length = 0;
     };
+    this.#pool = batch.syncs || this.#recovering || this.#pooledWrites < 2
+      ? undefined
+      : [];
+    this.#poolFailure = undefined;
+    this.#writtenBuffer = [];
     let result;
     try {
       result = await this.#loadFilesInto(
@@ -3943,12 +3978,22 @@ export class SqliteReadModel implements ReadModel {
           recordDone(false);
         },
       );
+      await this.#drainPool();
     } catch (error) {
       // a load cut off keeps what it wrote for the retry; its own error wins
       try {
+        await this.#settlePool();
         recordDone(true);
       } catch { /* the load's error is the one to report */ }
       throw error;
+    } finally {
+      await this.#settlePool();
+      this.#pool = undefined;
+      // a record of a file that landed is kept even when the load failed
+      try {
+        this.#state.recordWrittenFiles(this.#writtenBuffer ?? []);
+      } catch { /* a missing record only costs a later re-read */ }
+      this.#writtenBuffer = undefined;
     }
     recordDone(true);
     return result;
@@ -3961,7 +4006,7 @@ export class SqliteReadModel implements ReadModel {
     signal: AbortSignal,
     unreadable: StoredUnreadableRecord[],
     skipped: Set<string>,
-    wrote: (key: LoadKey) => void,
+    landed: (key: LoadKey) => void,
   ): Promise<{ unreadable: StoredUnreadableRecord[]; skipped: Set<string> }> {
     for (const { namespace, record_key } of removals) {
       signal.throwIfAborted();
@@ -4031,8 +4076,8 @@ export class SqliteReadModel implements ReadModel {
           signal,
           batch,
           source,
+          () => landed({ namespace, record_key }),
         );
-        wrote({ namespace, record_key });
       } catch (error) {
         if (
           !("blob" in content) || !isChunkError(error) || signal.aborted ||
@@ -4138,15 +4183,18 @@ export class SqliteReadModel implements ReadModel {
     signal: AbortSignal,
     batch: DurableWriteBatch,
     source: ChangeSource,
+    landed?: () => void,
   ): Promise<void> {
     await this.#noteRewriting(key, path);
     const intended = "blob" in content ? content.blob : undefined;
     const keep = async () => {
       // The file stays as it is: nothing under the checkout was replaced.
       this.#rewritten?.delete(key);
-      if (!batch.syncs) return;
-      await this.#syncFile(path);
-      batch.touch(dirname(path));
+      if (batch.syncs) {
+        await this.#syncFile(path);
+        batch.touch(dirname(path));
+      }
+      landed?.();
     };
     // a replay runs over files already there: one already holding its inline
     // bytes, read and compared, keeps its access; chunked content is compared
@@ -4191,10 +4239,18 @@ export class SqliteReadModel implements ReadModel {
     const started = performance.now();
     try {
       if (!("inline" in content)) await this.#awaitPrefetched();
+      const pool = this.#pool;
+      const stream = "inline" in content
+        ? undefined
+        : this.#chunkStore.read(namespaceOf(namespace), content.blob, signal);
+      // a small blob is read whole so it can join the pool; a large one streams
       const bytes = "inline" in content
         ? decodeBase64(content.inline)
-        : this.#chunkStore.read(namespaceOf(namespace), content.blob, signal);
-      const pool = this.#pool;
+        : pool !== undefined && content.blob.size <= POOLED_BLOB_BYTES
+        ? await new Response(
+          stats === undefined ? stream : stats.count(stream!),
+        ).bytes()
+        : stream!;
       if (pool !== undefined && bytes instanceof Uint8Array) {
         if (pool.length >= this.#pooledWrites) {
           await pool.shift()!.done;
@@ -4207,6 +4263,20 @@ export class SqliteReadModel implements ReadModel {
           done: batch.write(path, bytes, signal, {
             ...(absentDirectories === undefined ? {} : { absentDirectories }),
             ...(content.access === undefined ? {} : { access: content.access }),
+            written: (info) => {
+              written.info = info;
+            },
+          }).then(async () => {
+            // a pooled chunked file keeps its written record, as one written
+            // directly does, so the next guard need not re-hash it
+            const info = written.info;
+            if (intended !== undefined && info !== undefined) {
+              await this.#time(
+                "note",
+                () => this.#noteWritten(namespace, key, path, intended, info),
+              );
+            }
+            landed?.();
           }).catch((error: unknown) => {
             this.#poolFailure ??= { error };
           }),
@@ -4226,6 +4296,7 @@ export class SqliteReadModel implements ReadModel {
             ...(content.access === undefined ? {} : { access: content.access }),
           },
         );
+        landed?.();
       }
     } catch (error) {
       // A failed write leaves the file as it was. One that only meant to
@@ -4462,7 +4533,7 @@ export class SqliteReadModel implements ReadModel {
     ) {
       return;
     }
-    this.#state.recordWrittenFile({
+    const file: WrittenFile = {
       namespace,
       recordKey: key,
       blob,
@@ -4471,7 +4542,9 @@ export class SqliteReadModel implements ReadModel {
       dev: info.dev,
       mtime: info.mtime.getTime(),
       ...(info.ctime === null ? {} : { ctime: info.ctime.getTime() }),
-    });
+    };
+    if (this.#writtenBuffer !== undefined) this.#writtenBuffer.push(file);
+    else this.#state.recordWrittenFile(file);
   }
 
   /**

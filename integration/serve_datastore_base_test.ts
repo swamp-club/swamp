@@ -337,3 +337,50 @@ Deno.test({
     });
   },
 });
+
+Deno.test({
+  name:
+    "datastore base: a caller asking for 5000 base entries gets them in one page, past the general 1000-entry page (swamp-club#5103)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer([...writer(), ...bobReadsWebData()], async (server) => {
+      const ops = [];
+      for (let i = 0; i < 400; i++) ops.push(...saveOps(server, `n${i}`, 1));
+      await commit(server, ops);
+      await compactAll(server);
+      const all = await readBase(server, "alice-token", 5000);
+      assert(all.entries.length > 1000, `${all.entries.length} entries`);
+      assertEquals(all.pages, 1);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "datastore base: a page stops at its byte budget however many entries were asked for, and the next page goes on (swamp-club#5103)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer([...writer(), ...bobReadsWebData()], async (server) => {
+      // raw records only, sized so the byte budget binds before the entry limit
+      const filler = "x".repeat(7000);
+      for (let c = 0; c < 4; c++) {
+        const ops = [];
+        for (let i = 0; i < 350; i++) {
+          const name = `n${c}-${i}`;
+          const [raw] = saveOps(server, name, 1) as Record<string, unknown>[];
+          ops.push({ ...raw, inline: btoa(filler + name) });
+        }
+        await commit(server, ops);
+      }
+      await compactAll(server);
+      const all = await readBase(server, "alice-token", 5000);
+      assert(all.pages > 1, `${all.pages} pages`);
+      const records = all.entries.filter((e) =>
+        e.kind === "record" && String(e.key).endsWith("/raw")
+      );
+      assertEquals(records.length, 1400);
+    });
+  },
+});

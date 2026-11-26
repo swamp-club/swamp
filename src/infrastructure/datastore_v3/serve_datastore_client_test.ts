@@ -52,14 +52,17 @@ import { withMockedEnv } from "../persistence/path_test_helpers.ts";
 import { findSpan, withCapturedSpans } from "../tracing/span_test_helpers.ts";
 import {
   ChunkHashMismatchError,
+  encodeChunkBatch,
   FramedReader,
   ingestChunk,
 } from "./chunk_ingest.ts";
 import { isNetworkFailure } from "./network_failure.ts";
 import {
+  answersWithoutConfirm,
   BULK_MIN_BODY_BYTES,
   BULK_POOL_IDLE_TIMEOUT_MS,
   bulkHttpClientOptions,
+  ChunkBatchUnsupportedError,
   clearServeUnreachableLatches,
   COMMIT_CONTENT_TYPE,
   DEFAULT_SERVE_TIMEOUT_MS,
@@ -2748,4 +2751,60 @@ Deno.test("ServeDatastoreClient.acquireLock: a refused request is not sent again
     assertEquals(error.sent, "never");
     assertEquals(requests.map((req) => req.method), ["POST"]);
   });
+});
+
+Deno.test("ServeDatastoreClient.getChunks: posts the hashes once each and checks every returned chunk (swamp-club#5103)", async () => {
+  const bytes = new TextEncoder().encode("0123456789");
+  const hash = sha(bytes);
+  const { client, requests } = clientWith(() =>
+    new Response(
+      encodeChunkBatch({
+        chunks: [{ sha256: hash, size: bytes.length }],
+        missing: ["f".repeat(64)],
+        undecided: [],
+        deferred: [],
+      }, [{ bytes }]),
+      { status: 200 },
+    )
+  );
+  const batch = await client.getChunks([hash, hash, "f".repeat(64)], signal());
+  assertEquals(batch.chunks.get(hash), bytes);
+  assertEquals(batch.missing, ["f".repeat(64)]);
+  assertEquals(requests[0].method, "POST");
+  assertEquals(
+    new URL(requests[0].url).pathname.endsWith("/chunks/batch"),
+    true,
+  );
+  assertEquals(await requests[0].json(), { hashes: [hash, "f".repeat(64)] });
+});
+
+Deno.test("ServeDatastoreClient.getChunks: a serve without the route is refused as unsupported, and the feature is withdrawn (swamp-club#5103)", async () => {
+  for (const status of [404, 405]) {
+    resetHeardServeRepliesForTesting();
+    let call = 0;
+    const { client } = clientWith(() => {
+      call++;
+      return call === 1
+        ? new Response("{}", {
+          status: 200,
+          headers: {
+            "x-swamp-datastore-log": "log-a",
+            "x-swamp-datastore-features": "chunk-batch",
+          },
+        })
+        : new Response(null, { status });
+    });
+    await client.hasChunks(["a".repeat(64)], signal()).catch(() => {});
+    assertEquals(client.takesChunkBatch(), true);
+    await assertRejects(
+      () => client.getChunks(["a".repeat(64)], signal()),
+      ChunkBatchUnsupportedError,
+    );
+    assertEquals(client.takesChunkBatch(), false);
+  }
+});
+
+Deno.test("routeTemplate and answersWithoutConfirm: a batch chunk read is named as itself and answered as a read (swamp-club#5103)", () => {
+  assertEquals(routeTemplate("chunks/batch"), "chunks/batch");
+  assertEquals(answersWithoutConfirm("POST", "chunks/batch"), true);
 });

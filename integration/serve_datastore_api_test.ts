@@ -58,6 +58,11 @@ import { ReadModelIncompleteError } from "../src/domain/datastore_v3/read_model.
 import { CommitsCompactedError } from "../src/domain/datastore_v3/commit_store.ts";
 import { createDefinitionId } from "../src/domain/definitions/definition.ts";
 import { swampPath } from "../src/infrastructure/persistence/paths.ts";
+import {
+  CHUNK_BATCH_CONTENT_TYPE,
+  decodeChunkBatch,
+  MAX_BATCH_CHUNK_BYTES,
+} from "../src/infrastructure/datastore_v3/chunk_ingest.ts";
 import type { Grant } from "../src/domain/models/access/grant_model.ts";
 import { grant } from "./serve_request_harness.ts";
 import {
@@ -2711,6 +2716,113 @@ Deno.test({
         () => commitsInFlightForTesting("user:caller") === 0,
         "every commit released",
       );
+    });
+  },
+});
+
+async function chunkBatch(
+  server: Server,
+  hashes: readonly string[],
+  token = "bob-token",
+) {
+  const response = await fetch(`${server.url}/chunks/batch`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}` },
+    body: JSON.stringify({ hashes }),
+  });
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  return {
+    status: response.status,
+    contentType: response.headers.get("content-type"),
+    features: response.headers.get("x-swamp-datastore-features") ?? "",
+    bytes,
+  };
+}
+
+Deno.test({
+  name:
+    "datastore API: POST chunks/batch returns the chunks the caller may read, and lists one it may not read and one that is absent alike as missing (swamp-club#5103)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const absent = await sha256Hex(new TextEncoder().encode("never stored"));
+    await withServer(bobReads("web"), async (server) => {
+      const bytes = new TextEncoder().encode("alpha");
+      const sha = await sharedChunk(server, 1, bytes);
+      const reply = await chunkBatch(server, [sha, absent]);
+      assertEquals(reply.status, 200);
+      assertEquals(reply.contentType, CHUNK_BATCH_CONTENT_TYPE);
+      assert(reply.features.split(",").includes("chunk-batch"));
+      const batch = await decodeChunkBatch(reply.bytes);
+      assertEquals([...batch.chunks.keys()], [sha]);
+      assertEquals(batch.chunks.get(sha), bytes);
+      assertEquals(batch.missing, [absent]);
+      assertEquals(batch.undecided, []);
+      assertEquals(batch.deferred, []);
+    });
+    await withServer(bobReads("nothing-here"), async (server) => {
+      const sha = await sharedChunk(
+        server,
+        1,
+        new TextEncoder().encode("alpha"),
+      );
+      const batch = await decodeChunkBatch(
+        (await chunkBatch(server, [sha, absent])).bytes,
+      );
+      assertEquals(batch.chunks.size, 0);
+      assertEquals(batch.missing, [sha, absent]);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "datastore API: POST chunks/batch defers the chunks past its byte cap, and refuses more than 256 hashes (swamp-club#5103)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(bobReads("web"), async (server) => {
+      const size = 3 * 1024 * 1024;
+      const all: Uint8Array[] = [];
+      const ops: unknown[] = [];
+      for (let i = 0; i < 4; i++) {
+        const bytes = crypto.getRandomValues(new Uint8Array(size / 64))
+          .slice();
+        const big = new Uint8Array(size);
+        for (let o = 0; o < size; o += bytes.length) big.set(bytes, o);
+        big[0] = i;
+        all.push(big);
+        ops.push(...await blobSaveOps(server, `out-${i}`, 1, big));
+      }
+      const shas = await Promise.all(all.map((bytes) => sha256Hex(bytes)));
+      const landed = await post(
+        partitionPath(server),
+        "alice-token",
+        commitBody({
+          expectedSeq: 0,
+          txnId: crypto.randomUUID(),
+          ops,
+          chunks: shas.map((sha256, i) => ({ sha256, size: all[i].length })),
+        }, all),
+      );
+      assertEquals(landed.status, 200, JSON.stringify(landed.json));
+      const batch = await decodeChunkBatch(
+        (await chunkBatch(server, shas)).bytes,
+      );
+      const returned = [...batch.chunks.values()].reduce(
+        (sum, bytes) => sum + bytes.length,
+        0,
+      );
+      assert(returned >= MAX_BATCH_CHUNK_BYTES, "filled up to the cap");
+      assertEquals(batch.chunks.size + batch.deferred.length, 4);
+      assert(batch.deferred.length > 0, "the rest is deferred");
+      assertEquals(batch.missing, []);
+
+      const tooMany = await chunkBatch(
+        server,
+        Array.from({ length: 257 }, (_, i) => i.toString(16).padStart(64, "0")),
+      );
+      assertEquals(tooMany.status, 400);
     });
   },
 });

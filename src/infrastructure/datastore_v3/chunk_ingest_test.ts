@@ -36,7 +36,9 @@ import {
   ChunkSizeInvalidError,
   ChunkTooLargeError,
   ChunkTruncatedError,
+  decodeChunkBatch,
   effectiveChunkLimit,
+  encodeChunkBatch,
   encodeCommitBody,
   FramedReader,
   ingestChunk,
@@ -621,4 +623,82 @@ Deno.test("encodeCommitBody: the length prefix is the envelope's UTF-8 byte coun
   );
   assertEquals(body.subarray(4, 4 + json.byteLength), json);
   assertEquals(body.subarray(4 + json.byteLength), bytesOf(9, 8));
+});
+
+function hexOf(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+Deno.test("decodeChunkBatch: round-trips the chunks and the missing, undecided and deferred lists (swamp-club#5103)", async () => {
+  const a = new TextEncoder().encode("alpha");
+  const b = new Uint8Array(0);
+  const body = encodeChunkBatch({
+    chunks: [{ sha256: hexOf(a), size: a.length }, {
+      sha256: hexOf(b),
+      size: 0,
+    }],
+    missing: ["1".repeat(64)],
+    undecided: ["2".repeat(64)],
+    deferred: ["3".repeat(64)],
+  }, [{ bytes: a }, { bytes: b }]);
+  const batch = await decodeChunkBatch(body);
+  assertEquals([...batch.chunks.entries()], [[hexOf(a), a], [hexOf(b), b]]);
+  assertEquals(batch.missing, ["1".repeat(64)]);
+  assertEquals(batch.undecided, ["2".repeat(64)]);
+  assertEquals(batch.deferred, ["3".repeat(64)]);
+});
+
+Deno.test("decodeChunkBatch: refuses a truncated header, a header past the body, a short chunk, a wrong hash, a malformed hash, a non-list field and trailing bytes (swamp-club#5103)", async () => {
+  const a = new TextEncoder().encode("alpha");
+  const header = (over: Record<string, unknown> = {}) => ({
+    chunks: [{ sha256: hexOf(a), size: a.length }],
+    missing: [],
+    undecided: [],
+    deferred: [],
+    ...over,
+  });
+  const good = encodeChunkBatch(header() as never, [{ bytes: a }]);
+  await assertRejects(
+    () => decodeChunkBatch(good.slice(0, 2)),
+    ChunkTruncatedError,
+  );
+  const pastBody = good.slice();
+  new DataView(pastBody.buffer).setUint32(0, good.length, false);
+  await assertRejects(() => decodeChunkBatch(pastBody), ChunkTruncatedError);
+  await assertRejects(
+    () => decodeChunkBatch(good.slice(0, good.length - 1)),
+    ChunkTruncatedError,
+  );
+  await assertRejects(
+    () =>
+      decodeChunkBatch(
+        encodeChunkBatch(header() as never, [{
+          bytes: new TextEncoder().encode("alphA"),
+        }]),
+      ),
+    ChunkHashMismatchError,
+  );
+  await assertRejects(
+    () =>
+      decodeChunkBatch(
+        encodeChunkBatch(
+          header({ chunks: [{ sha256: "not-hex", size: 5 }] }) as never,
+          [{ bytes: a }],
+        ),
+      ),
+    ChunkHashMalformedError,
+  );
+  await assertRejects(
+    () =>
+      decodeChunkBatch(
+        encodeChunkBatch(header({ missing: "x" }) as never, [{ bytes: a }]),
+      ),
+    ChunkHashMalformedError,
+  );
+  const trailing = new Uint8Array(good.length + 1);
+  trailing.set(good);
+  await assertRejects(
+    () => decodeChunkBatch(trailing),
+    StreamTrailingBytesError,
+  );
 });

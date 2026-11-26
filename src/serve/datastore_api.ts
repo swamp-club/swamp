@@ -29,6 +29,7 @@
  * | `POST chunks/has` | `{hashes}`: the ones serve holds that the caller may reference, touched for GC |
  * | `PUT chunks/{sha256}` | one chunk, to resume a large upload |
  * | `GET chunks/{sha256}` | a chunk's bytes, with `Range` |
+ * | `POST chunks/batch` | `{hashes}`: many chunks' bytes in one framed reply, the rest missing, undecided or deferred |
  * | `POST partitions/{p}/commits` | one commit and its missing chunks, framed: `{seq}` or a conflict |
  * | `GET partitions/{p}/commits?after=&held=` | a partition's commits after a seq; a follower behind `held`, the seq the caller's copy holds, refuses as behind |
  * | `GET changes?cursor=` | every commit since a cursor the caller may read |
@@ -144,11 +145,15 @@ import { ModelType } from "../domain/models/model_type.ts";
 import { createWorkflowRunId } from "../domain/workflows/workflow_id.ts";
 import type { YamlWorkflowRunRepository } from "../infrastructure/persistence/yaml_workflow_run_repository.ts";
 import {
+  CHUNK_BATCH_CONTENT_TYPE,
   ChunkIngestError,
   chunkReadResponse,
+  encodeChunkBatch,
   FramedReader,
   ingestChunk,
   isSha256Hex,
+  MAX_BATCH_CHUNK_BYTES,
+  MAX_BATCH_CHUNK_HASHES,
   parseRange,
 } from "../infrastructure/datastore_v3/chunk_ingest.ts";
 import { CarriedBytesBudget } from "./carried_bytes_budget.ts";
@@ -180,6 +185,7 @@ import type {
 import {
   AUTHORIZE_ONLY_FEATURE,
   BASE_DIFFERENCE_FEATURE,
+  CHUNK_BATCH_FEATURE,
   COMMIT_BATCH_FEATURE,
   LEASE_HOLDER_FEATURE,
   LEASE_OPS_FEATURE,
@@ -263,6 +269,11 @@ export const MAX_QUARANTINE_REQUEST_BYTES =
 export const MAX_HAS_HASHES = 1024;
 /** The largest page of commits or changes. */
 export const MAX_PAGE = 1000;
+/** base entries one page may hold; a reply too large is asked again at half */
+export const MAX_BASE_PAGE = 5000;
+/** a base page stops once its entries pass this many bytes of JSON */
+export const MAX_BASE_PAGE_BYTES = 8 * 1024 * 1024;
+const BASE_STORE_PAGE = 500;
 /** The most feed rows one changes request scans, kept or filtered. */
 export const MAX_CHANGES_SCAN = 10_000;
 /** The most compacted base entries one base request scans, kept or filtered. */
@@ -598,6 +609,7 @@ export function callerReplyHeaders(
         AUTHORIZE_ONLY_FEATURE,
         COMMIT_BATCH_FEATURE,
         BASE_DIFFERENCE_FEATURE,
+        CHUNK_BATCH_FEATURE,
       ].join(","),
     ]];
   }
@@ -611,6 +623,7 @@ export function callerReplyHeaders(
         AUTHORIZE_ONLY_FEATURE,
         COMMIT_BATCH_FEATURE,
         BASE_DIFFERENCE_FEATURE,
+        CHUNK_BATCH_FEATURE,
       ].join(","),
     ],
     [SERVE_DATASTORE_PRINCIPAL_HEADER, encodeURIComponent(principal)],
@@ -618,6 +631,26 @@ export function callerReplyHeaders(
 }
 
 const MAX_AUTHORIZE_BODY_BYTES = 256 * 1024;
+
+/** chunks one batch read asks storage for at once */
+const BATCH_READ_CONCURRENCY = 8;
+
+/**
+ * how many chunks to read next: none once the budget is spent, one until a
+ * chunk's size is known, then as many as the largest seen fits in the budget
+ */
+export function batchReadGroup(
+  budgetLeft: number,
+  largestSeen: number,
+  concurrency: number,
+): number {
+  if (budgetLeft <= 0) return 0;
+  if (largestSeen === 0) return 1;
+  return Math.max(
+    1,
+    Math.min(concurrency, Math.floor(budgetLeft / largestSeen)),
+  );
+}
 const MAX_AUTHORIZED_COMMITS = 16;
 const MAX_AUTHORIZED_OPS = 64;
 
@@ -678,13 +711,14 @@ function followerDatastoreRefusal(
   if (gate === undefined) return undefined;
   // Leases live on the leader, so listing them is the leader's to answer
   const reads = (req.method === "GET" && route.kind !== "locks") ||
-    route.kind === "has";
+    route.kind === "has" || route.kind === "chunkBatch";
   if (gate.role === "leader") {
     // never sent on: a leader that may have been taken over neither answers
     // from its copy nor changes it; one that cannot commit sends writers on to
     // the leader that takes over
     return gate.leadUnconfirmed?.() === true ||
         (req.method !== "GET" && route.kind !== "has" &&
+          route.kind !== "chunkBatch" &&
           ctx.commitHealth?.cannotCommit() !== undefined)
       ? Promise.resolve(
         notLeaderResponse(new ServeNotLeaderError(undefined), false),
@@ -798,6 +832,10 @@ async function answerDatastoreRequest(
         return req.method === "POST"
           ? await api.has(req)
           : methodNotAllowed("POST");
+      case "chunkBatch":
+        return req.method === "POST"
+          ? await api.getChunks(req)
+          : methodNotAllowed("POST");
       case "chunk":
         if (req.method === "PUT") return await api.putChunk(req, route.sha256);
         if (req.method === "GET") return await api.getChunk(req, route.sha256);
@@ -872,7 +910,8 @@ async function answerDatastoreRequest(
           : methodNotAllowed("GET");
     }
   } catch (error) {
-    const writes = req.method !== "GET" && route.kind !== "has";
+    const writes = req.method !== "GET" && route.kind !== "has" &&
+      route.kind !== "chunkBatch";
     if (writes) ctx.commitHealth?.recordFailure(error);
     return (writes ? storageFailureResponse(error, ctx) : undefined) ??
       datastoreErrorResponse(error);
@@ -911,6 +950,92 @@ class DatastoreApi {
     this.#namespace = v3.namespace;
     this.#storageNamespace = storageNamespaceOf(namespaceOf(v3));
     this.#resolver = memoized(serveResolver(deps.ctx, v3));
+  }
+
+  /**
+   * `POST chunks/batch`: many chunks in one reply, decided as `GET chunks`
+   * decides each, under one slot and one vouch budget
+   */
+  async getChunks(req: Request): Promise<Response> {
+    const body = await readJson(req, 256 * 1024);
+    const hashes = (body as { hashes?: unknown })?.hashes;
+    if (
+      !Array.isArray(hashes) || hashes.length > MAX_BATCH_CHUNK_HASHES ||
+      !hashes.every((hash) => typeof hash === "string" && isSha256Hex(hash))
+    ) {
+      return failure(
+        400,
+        "invalid_request",
+        `Body must be {"hashes": [...]} with at most ${MAX_BATCH_CHUNK_HASHES} SHA-256 hex digests`,
+      );
+    }
+    return await this.#withChunkSlot(async () => {
+      const budget = this.#vouchBudget();
+      const chunks: { sha256: string; size: number }[] = [];
+      const carried: { bytes: Uint8Array }[] = [];
+      const missing: string[] = [];
+      const undecided: string[] = [];
+      const deferred: string[] = [];
+      let bytesOut = 0;
+      const readable: string[] = [];
+      for (const sha256 of new Set(hashes as string[])) {
+        const vouch = await this.#mayReference(sha256, budget);
+        if (vouch === "undecided") undecided.push(sha256);
+        else if (vouch === "refused") missing.push(sha256);
+        else readable.push(sha256);
+      }
+      // read a few at a time from storage that may be a bucket, never more
+      // than the byte budget left can take; the cut is made only among
+      // readable chunks, so it says nothing about the others
+      let largest = 0;
+      for (let i = 0; i < readable.length;) {
+        const take = batchReadGroup(
+          MAX_BATCH_CHUNK_BYTES - bytesOut,
+          largest,
+          BATCH_READ_CONCURRENCY,
+        );
+        if (take === 0) {
+          for (const sha256 of readable.slice(i)) deferred.push(sha256);
+          break;
+        }
+        const group = readable.slice(i, i + take);
+        i += group.length;
+        const read = await Promise.all(
+          group.map((sha256) =>
+            this.#v3.storage.get(this.#storageNamespace, sha256, req.signal)
+          ),
+        );
+        for (const [k, bytes] of read.entries()) {
+          const sha256 = group[k];
+          if (bytes === null) {
+            missing.push(sha256);
+            continue;
+          }
+          if (bytesOut >= MAX_BATCH_CHUNK_BYTES) {
+            deferred.push(sha256);
+            continue;
+          }
+          if (await sha256Hex(bytes) !== sha256) {
+            logger.error`Stored chunk ${sha256} does not hold its own bytes`;
+            return failure(500, "chunk_corrupt", "The stored chunk is damaged");
+          }
+          chunks.push({ sha256, size: bytes.byteLength });
+          carried.push({ bytes });
+          bytesOut += bytes.byteLength;
+          largest = Math.max(largest, bytes.byteLength);
+        }
+      }
+      return new Response(
+        encodeChunkBatch({ chunks, missing, undecided, deferred }, carried),
+        {
+          status: 200,
+          headers: {
+            "content-type": CHUNK_BATCH_CONTENT_TYPE,
+            "cache-control": "no-store",
+          },
+        },
+      );
+    });
   }
 
   /** `POST chunks/has`. */
@@ -2015,7 +2140,7 @@ class DatastoreApi {
   async compactedBase(req: Request): Promise<Response> {
     const params = new URL(req.url).searchParams;
     const after = params.get("after") ?? undefined;
-    const limit = pageLimit(params.get("limit"));
+    const limit = pageLimit(params.get("limit"), MAX_BASE_PAGE);
     if (limit === undefined) {
       return failure(400, "invalid_request", "limit must be an integer");
     }
@@ -2026,12 +2151,17 @@ class DatastoreApi {
     let point: number | undefined;
     let scanned = 0;
     let kept = 0;
-    while (kept < limit && scanned < MAX_BASE_SCAN) {
+    let bytes = 0;
+    // read in store pages small enough that the byte budget, checked between
+    // them, bounds what one reply holds while next stays exact
+    while (
+      kept < limit && scanned < MAX_BASE_SCAN && bytes < MAX_BASE_PAGE_BYTES
+    ) {
       let page;
       try {
         page = await store.readCompactedBase(
           next,
-          Math.min(limit - kept, MAX_BASE_SCAN - scanned),
+          Math.min(limit - kept, MAX_BASE_SCAN - scanned, BASE_STORE_PAGE),
         );
       } catch (error) {
         if (!(error instanceof InvalidBasePageTokenError)) throw error;
@@ -2049,7 +2179,9 @@ class DatastoreApi {
         const readable = await this.#readableBaseEntry(entry, announced);
         if (readable === undefined) continue;
         for (const sent of readable) {
-          entries.push(observedBaseEntryToJSON(sent));
+          const json = observedBaseEntryToJSON(sent);
+          bytes += JSON.stringify(json).length;
+          entries.push(json);
         }
         kept++;
       }
@@ -4683,12 +4815,13 @@ function nonNegative(value: string): number | undefined {
   return Number(value);
 }
 
-function pageLimit(value: string | null): number | undefined {
+function pageLimit(
+  value: string | null,
+  max: number = MAX_PAGE,
+): number | undefined {
   if (value === null) return MAX_PAGE;
   const limit = nonNegative(value);
-  return limit === undefined || limit === 0
-    ? undefined
-    : Math.min(limit, MAX_PAGE);
+  return limit === undefined || limit === 0 ? undefined : Math.min(limit, max);
 }
 
 /** A JSON body of at most `maxBytes`; undefined when it is not JSON. */

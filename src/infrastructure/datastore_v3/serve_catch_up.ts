@@ -166,7 +166,7 @@ export class LockCatchUpBehindError extends Error {
   }
 }
 
-export const SERVE_BASE_PAGE = 1000;
+export const SERVE_BASE_PAGE = 5000;
 
 export const BASE_LOAD_ATTEMPTS = 3;
 
