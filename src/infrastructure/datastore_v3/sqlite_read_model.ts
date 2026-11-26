@@ -6139,10 +6139,24 @@ class PathCache {
   async resolveDirectory(dir: string): Promise<string> {
     let real = this.#resolved.get(dir);
     if (real === undefined) {
-      real = await resolveRealPath(dir);
+      real = await this.#resolveUncached(dir);
       this.#resolved.set(dir, real);
     }
     return real;
+  }
+
+  // A missing directory is no link and has no spelling of its own on disk, so
+  // it resolves under its parent's resolution, which the cache keeps.
+  async #resolveUncached(dir: string): Promise<string> {
+    const parent = dirname(dir);
+    if (parent === dir) return await resolveRealPath(dir);
+    try {
+      await Deno.lstat(dir);
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+      return join(await this.resolveDirectory(parent), basename(dir));
+    }
+    return await resolveRealPath(dir);
   }
 
   noteExisting(path: string): void {

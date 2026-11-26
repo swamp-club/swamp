@@ -2353,6 +2353,77 @@ Deno.test("SqliteReadModel.catchUp: a put over a file an earlier put of the page
   });
 });
 
+/** the Deno.realPath calls while fn runs */
+async function countingRealPaths(fn: () => Promise<unknown>): Promise<number> {
+  const deno = Deno as { realPath: typeof Deno.realPath };
+  const original = deno.realPath;
+  let count = 0;
+  deno.realPath = (path) => {
+    count++;
+    return original(path);
+  };
+  try {
+    await fn();
+  } finally {
+    deno.realPath = original;
+  }
+  return count;
+}
+
+for (const base of [false, true]) {
+  Deno.test(
+    `SqliteReadModel.catchUp: ${
+      base ? "a base load" : "a page"
+    } of new versions resolves each new directory under its parent's resolution, not by a walk up from it (swamp-club#5122)`,
+    async () => {
+      await withEnv(async (env) => {
+        const names = Array.from({ length: 12 }, (_, i) => `n${i}`);
+        let seq = 0;
+        for (const name of names) {
+          await env.append(++seq, "", [
+            await savePut(name, 1),
+            versionOp(name, 1),
+          ]);
+        }
+        const options = {
+          netReplay: false,
+          writeBatch: () => new DurableWriteBatch({ sync: false }),
+        };
+        if (!base) {
+          const first = env.open(options);
+          try {
+            await first.catchUp(signal());
+          } finally {
+            await first.close();
+          }
+        }
+        for (const name of names) {
+          await env.append(++seq, "", [
+            await savePut(name, 2),
+            versionOp(name, 2),
+          ]);
+        }
+        if (base) await env.store.compactHistory(seq);
+        const readModel = env.open(options);
+        try {
+          const calls = await countingRealPaths(() =>
+            readModel.catchUp(signal())
+          );
+          console.log("REALPATH", base, calls);
+        } finally {
+          await readModel.close();
+        }
+        for (const name of names) {
+          assertEquals(
+            await readOrAbsent(env.contentPath("", name, 2)),
+            `${name}@2`,
+          );
+        }
+      });
+    },
+  );
+}
+
 Deno.test("SqliteReadModel.catchUp: a base load writes its inline and small chunked files through the write pool (swamp-club#5103)", async () => {
   await withEnv(async (env) => {
     const blob = await env.chunkStore.write(
