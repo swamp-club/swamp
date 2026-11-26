@@ -2243,21 +2243,21 @@ class GatedStorage extends MemoryStorage {
   }
 }
 
-/** the paths Deno.stat is asked about while fn runs */
-async function withStatsSeen<T>(
+/** the paths Deno.lstat is asked about while fn runs */
+async function withLstatsSeen<T>(
   fn: (seen: ReadonlySet<string>) => Promise<T>,
 ): Promise<T> {
-  const deno = Deno as { stat: typeof Deno.stat };
-  const original = deno.stat;
+  const deno = Deno as { lstat: typeof Deno.lstat };
+  const original = deno.lstat;
   const seen = new Set<string>();
-  deno.stat = (path) => {
+  deno.lstat = (path) => {
     seen.add(String(path));
     return original(path);
   };
   try {
     return await fn(seen);
   } finally {
-    deno.stat = original;
+    deno.lstat = original;
   }
 }
 
@@ -2285,7 +2285,7 @@ Deno.test("SqliteReadModel.catchUp: a page resolves the next file's target while
       const m = env.contentPath("", "m", 1);
       // the first segment of m's path that is not there yet: .../m
       const mDir = dirname(dirname(m));
-      await withStatsSeen(async (seen) => {
+      await withLstatsSeen(async (seen) => {
         const caughtUp = readModel.catchUp(signal());
         try {
           await waitFor(() => storage.reading, "k reading its content");
