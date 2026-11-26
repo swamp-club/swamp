@@ -1083,7 +1083,10 @@ control plane, beside the lease, at `_control/lineage/<fence>/`:
   Every 16th writer fence prunes the heads below its own once its sync passed
   the lease check (swamp-club#3803), 16 deletes at a time, at most 64,
   so a lineage that many commands continue does not make every read list one
-  head per command. It keeps the newest head below its own as well: a swamp
+  head per command. A process prunes once per lineage and writer fence, so a
+  long-lived writer such as serve, which keeps one fence for its life, lists
+  the lineage once rather than after every sync (swamp-club#5113). It keeps the
+  newest head below its own as well: a swamp
   before this one, which never lists a lineage again, may have listed the
   heads just before the pruning writer published. A read that finds a listed
   head above the one it reads gone lists the lineage again, up to three times,

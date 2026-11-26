@@ -105,6 +105,7 @@ import {
   v3Replicator,
 } from "./v3_replication.ts";
 import { withSpan, withSyncSpan } from "../../tracing/tracer.ts";
+import { processRuntimeSlot } from "../../runtime/process_runtime.ts";
 import type { V3ReplicaPaths } from "./replica_target_resolver.ts";
 import {
   replicaUnreachableAfterFailure,
@@ -1049,6 +1050,9 @@ export async function publishV3Head(
 
 export const V3_HEAD_PRUNE_EVERY = 16;
 
+// a long-lived writer keeps one fence, so it prunes once, not on every sync
+const prunedHeads = processRuntimeSlot(() => new Set<string>());
+
 /**
  * prunes on every Nth writer fence only, so a writing command pays a list and
  * its deletes once in that many; best-effort: a failure is logged and a later
@@ -1061,6 +1065,9 @@ export async function pruneV3Heads(
 ): Promise<void> {
   if (writerFence % V3_HEAD_PRUNE_EVERY !== 0) return;
   if (v3ReplicaFor(copy.datastorePath) === undefined) return;
+  const key = `${resolve(copy.datastorePath)}\0${lineageFence}\0${writerFence}`;
+  if (prunedHeads().has(key)) return;
+  prunedHeads().add(key);
   try {
     const pruned = await withSpan(
       "swamp.datastore.v3.lineage.prune",

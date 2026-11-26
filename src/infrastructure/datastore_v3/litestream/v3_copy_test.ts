@@ -965,6 +965,46 @@ Deno.test({
 
 Deno.test({
   name:
+    "pruneV3Heads: a long-lived writer prunes its fence's heads once, not on every sync (swamp-club#5113)",
+  ignore: !UNIX,
+  async fn() {
+    await withCopy(async (env) => {
+      await publish(env, 3, { confirmed: true });
+      const registry = lineageRegistryFor(env.copy.datastorePath);
+      const fence = 2 * V3_HEAD_PRUNE_EVERY;
+      const heads = async () =>
+        (await v3ControlPlaneAt(env.copy.datastorePath).list(
+          "lineage/000000000003/",
+        )).filter((key) => key.includes("/head-")).length;
+      for (const writer of [fence - 2, fence - 1, fence]) {
+        await registry.publishHead({
+          fence: 3,
+          txid: "0000000000000002",
+          writerFence: writer,
+          mark: { cursor: 0 },
+          publishedAt: AT,
+        });
+      }
+      await pruneV3Heads(env.copy, 3, fence);
+      const after = await heads();
+      // an older head written after the prune stays: the fence pruned once
+      await registry.publishHead({
+        fence: 3,
+        txid: "0000000000000002",
+        writerFence: fence - 3,
+        mark: { cursor: 0 },
+        publishedAt: AT,
+      });
+      for (let sync = 0; sync < 4; sync++) {
+        await pruneV3Heads(env.copy, 3, fence);
+      }
+      assertEquals(await heads(), after + 1);
+    });
+  },
+});
+
+Deno.test({
+  name:
     "pruneV3Heads: a lineage it cannot prune leaves the publish alone (swamp-club#3803)",
   ignore: !UNIX,
   async fn() {
@@ -978,7 +1018,8 @@ Deno.test({
       assert(lineageDir !== undefined);
       await Deno.chmod(lineageDir, 0o000);
       try {
-        await pruneV3Heads(env.copy, 3, 2 * V3_HEAD_PRUNE_EVERY);
+        // the next fence that prunes: this process pruned the one before
+        await pruneV3Heads(env.copy, 3, 3 * V3_HEAD_PRUNE_EVERY);
       } finally {
         await Deno.chmod(lineageDir, 0o755);
       }
