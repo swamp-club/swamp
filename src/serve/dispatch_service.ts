@@ -56,6 +56,7 @@ import {
 import { ChannelClosedError, RpcError } from "../domain/remote/rpc_channel.ts";
 import {
   describePlacement,
+  eligibleWorkers,
   hasPlacement,
   laneDispatchVerdict,
   type ScheduleDecision,
@@ -114,6 +115,14 @@ export const DEFAULT_QUEUE_TIMEOUT_MS = 600 * 1000;
  * real wake signal is onWorkerEnrolled/onWorkerIdle
  */
 const WAIT_FOREVER_POLL_CAP_MS = 60 * 1000;
+
+/**
+ * a step with no queue timeout and no worker whose state can be recorded fails
+ * after at least this many refusals spanning UNRECORDED_GIVE_UP_MS, rather than
+ * waiting forever; both, so a brief write failure is ridden out
+ */
+export const MAX_UNRECORDED_REFUSALS = 5;
+export const UNRECORDED_GIVE_UP_MS = 60 * 1000;
 
 async function sha256Hex(text: string): Promise<string> {
   const digest = await crypto.subtle.digest(
@@ -217,6 +226,8 @@ export interface DispatchServiceOptions {
   dispatches: DispatchRegistry;
   bundles: BundleRegistry;
   queueTimeoutMs?: number;
+  /** defaults to UNRECORDED_GIVE_UP_MS */
+  unrecordedGiveUpMs?: number;
   runModelMethod?: ModelMethodRunner;
   /** stamped on each lease and queue entry, so another serve's sweep leaves them while this process lives */
   owner?: OrchestratorOwner;
@@ -488,6 +499,9 @@ export class DispatchService {
     let attemptWorker: string | undefined;
     // workers whose state record could not be written for this step
     const unrecordable = new Set<string>();
+    // refusals since every candidate was left unrecordable, reset by a dispatch
+    // that reached a worker, which recorded it first
+    let unrecorded: { since: number; refusals: number } | undefined;
     let failure: unknown;
     try {
       const affinityKey = request.placement.affinityKey;
@@ -658,6 +672,7 @@ export class DispatchService {
                 writtenVersionsOf(error),
               );
             }
+            unrecorded = undefined;
             logger.warn(
               "Worker {worker} lost a no-write dispatch; re-scheduling",
               { worker: workerName },
@@ -698,6 +713,7 @@ export class DispatchService {
               });
               continue;
             }
+            if (error instanceof RpcError) unrecorded = undefined;
             if (refusal === "state_unrecorded") {
               unrecordable.add(workerName);
               // another worker can take it now; only a sole candidate is waited on
@@ -707,6 +723,39 @@ export class DispatchService {
                   dispatchId: lastDispatchId ?? "unknown",
                 });
                 continue;
+              }
+              // a busy worker that never refused may still take the step, so the
+              // count runs only while every candidate is unrecordable; the write
+              // error stays the cause, since its text can name serve-local paths
+              if (
+                deadline === null &&
+                !eligibleWorkers(effectivePlacement, this.#poolSnapshot())
+                  .every((w) => unrecordable.has(w.name))
+              ) {
+                unrecorded = undefined;
+              } else if (deadline === null) {
+                const now = Date.now();
+                unrecorded = {
+                  since: unrecorded?.since ?? now,
+                  refusals: (unrecorded?.refusals ?? 0) + 1,
+                };
+                const giveUpMs = this.#options.unrecordedGiveUpMs ??
+                  UNRECORDED_GIVE_UP_MS;
+                if (
+                  unrecorded.refusals >= MAX_UNRECORDED_REFUSALS &&
+                  now - unrecorded.since >= giveUpMs
+                ) {
+                  throw new Error(
+                    `No worker matching ${
+                      describePlacement(effectivePlacement)
+                    } could have its busy state recorded on ` +
+                      `${unrecorded.refusals} dispatches over ` +
+                      `${Math.round((now - unrecorded.since) / 1000)}s ` +
+                      `(last '${workerName}'), and the step has no queue ` +
+                      `timeout to wait out; the serve log has the write error`,
+                    { cause: error },
+                  );
+                }
               }
             }
             const remaining = deadline !== null

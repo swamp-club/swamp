@@ -33,6 +33,7 @@ import {
   DEFAULT_QUEUE_TIMEOUT_MS,
   type DispatchGateway,
   DispatchService,
+  MAX_UNRECORDED_REFUSALS,
   withWrittenVersions,
   WorkerAffinityLostError,
   WorkerIneligibleError,
@@ -128,6 +129,7 @@ type DispatchBehavior = (
 function createHarness(options?: {
   workers?: WorkerSnapshot[];
   queueTimeoutMs?: number;
+  unrecordedGiveUpMs?: number;
   holdTransition?: (
     methodName: string,
     inputs: Record<string, unknown>,
@@ -189,6 +191,7 @@ function createHarness(options?: {
     dispatches,
     bundles,
     queueTimeoutMs: options?.queueTimeoutMs ?? 2_000,
+    unrecordedGiveUpMs: options?.unrecordedGiveUpMs,
     runModelMethod: (input) => {
       transitions.push({
         typeArg: input.typeArg,
@@ -4256,4 +4259,175 @@ Deno.test("DispatchService: a worker whose state cannot be recorded gives the st
   const result = await h.service.executeRemote(stepRequest());
   assertEquals(result.workerName, "w2");
   assertEquals(h.dispatchCalls.map((c) => c.name), ["w1", "w2"]);
+});
+
+// wakes the step's pool wait so its retries need not sit out the 5 s backstop
+function nudgePool(h: ReturnType<typeof createHarness>): () => void {
+  const timer = setInterval(
+    () => h.service.notifyWorkerIdle(snapshot({ name: "w1" })),
+    1,
+  );
+  return () => clearInterval(timer);
+}
+
+function unrecorded(name: string, cause?: Error): Promise<never> {
+  return Promise.reject(
+    new WorkerNotDispatchableError(
+      name,
+      "state_unrecorded",
+      cause === undefined ? undefined : { cause },
+    ),
+  );
+}
+
+const succeeded = () =>
+  Promise.resolve({
+    status: "success" as const,
+    outputs: [],
+    logs: [],
+    durationMs: 1,
+  });
+
+Deno.test("DispatchService: a step with no queue timeout fails once no worker's state can be recorded for MAX_UNRECORDED_REFUSALS refusals over the give-up time", async () => {
+  const h = createHarness({ queueTimeoutMs: 0, unrecordedGiveUpMs: 0 });
+  const writeError = new Error("No space left at /var/serve/cache/state-main");
+  h.setBehavior((name) => unrecorded(name, writeError));
+  const stop = nudgePool(h);
+  try {
+    const failure = await assertRejects(
+      () => h.service.executeRemote(stepRequest()),
+      Error,
+      `could have its busy state recorded on ${MAX_UNRECORDED_REFUSALS} dispatches`,
+    );
+    assertStringIncludes(failure.message, "(last 'w1')");
+    assertEquals(h.dispatchCalls.length, MAX_UNRECORDED_REFUSALS);
+    assertEquals(failure.message.includes("/var/serve"), false);
+    assertEquals(
+      ((failure.cause as Error).cause as Error).message,
+      writeError.message,
+    );
+  } finally {
+    stop();
+  }
+});
+
+Deno.test("DispatchService: with every worker unrecordable at once, a step with no queue timeout counts only the refusals after the last candidate", async () => {
+  const workers = ["w1", "w2", "w3", "w4", "w5", "w6"].map((name) =>
+    snapshot({ name })
+  );
+  const h = createHarness({
+    workers,
+    queueTimeoutMs: 0,
+    unrecordedGiveUpMs: 0,
+  });
+  h.setBehavior((name) => unrecorded(name));
+  const stop = nudgePool(h);
+  try {
+    await assertRejects(
+      () => h.service.executeRemote(stepRequest()),
+      Error,
+      `on ${MAX_UNRECORDED_REFUSALS} dispatches`,
+    );
+    // one refusal from each worker before the step has no other to try
+    assertEquals(
+      h.dispatchCalls.length,
+      workers.length - 1 + MAX_UNRECORDED_REFUSALS,
+    );
+  } finally {
+    stop();
+  }
+});
+
+Deno.test("DispatchService: a step with no queue timeout rides out MAX_UNRECORDED_REFUSALS quick refusals within the give-up time", async () => {
+  const h = createHarness({ queueTimeoutMs: 0 });
+  let refusals = 0;
+  h.setBehavior((name) =>
+    ++refusals <= MAX_UNRECORDED_REFUSALS + 1 ? unrecorded(name) : succeeded()
+  );
+  const stop = nudgePool(h);
+  try {
+    const result = await h.service.executeRemote(stepRequest());
+    assertEquals(result.workerName, "w1");
+    assertEquals(h.dispatchCalls.length, MAX_UNRECORDED_REFUSALS + 2);
+  } finally {
+    stop();
+  }
+});
+
+Deno.test("DispatchService: a dispatch that reached the worker restarts the unrecorded count, and a gateway refusal of another kind does not", async () => {
+  const h = createHarness({ queueTimeoutMs: 0, unrecordedGiveUpMs: 0 });
+  const script = [
+    ...Array(MAX_UNRECORDED_REFUSALS - 1).fill("unrecorded"),
+    "worker_busy",
+    ...Array(MAX_UNRECORDED_REFUSALS - 1).fill("unrecorded"),
+    "at_capacity",
+    "unrecorded",
+  ];
+  h.setBehavior((name) => {
+    const next = script.shift();
+    if (next === "unrecorded") return unrecorded(name);
+    if (next === "worker_busy") {
+      return Promise.reject(
+        new RpcError({ code: "worker_busy", message: "at capacity" }),
+      );
+    }
+    if (next === "at_capacity") {
+      return Promise.reject(
+        new WorkerNotDispatchableError(name, "at_capacity"),
+      );
+    }
+    return succeeded();
+  });
+  const stop = nudgePool(h);
+  try {
+    await assertRejects(
+      () => h.service.executeRemote(stepRequest()),
+      Error,
+      `on ${MAX_UNRECORDED_REFUSALS} dispatches`,
+    );
+    assertEquals(script, []);
+  } finally {
+    stop();
+  }
+});
+
+Deno.test("DispatchService: a step with a queue timeout keeps waiting past MAX_UNRECORDED_REFUSALS refusals for its sole worker", async () => {
+  const h = createHarness({ queueTimeoutMs: 60_000, unrecordedGiveUpMs: 0 });
+  let refusals = 0;
+  h.setBehavior((name) =>
+    ++refusals <= MAX_UNRECORDED_REFUSALS + 1 ? unrecorded(name) : succeeded()
+  );
+  const stop = nudgePool(h);
+  try {
+    const result = await h.service.executeRemote(stepRequest());
+    assertEquals(result.workerName, "w1");
+    assertEquals(h.dispatchCalls.length, MAX_UNRECORDED_REFUSALS + 2);
+  } finally {
+    stop();
+  }
+});
+
+Deno.test("DispatchService: a step with no queue timeout never gives up while a matching worker that never refused is only busy", async () => {
+  const h = createHarness({
+    workers: [
+      snapshot({ name: "w1" }),
+      snapshot({ name: "w2", status: "busy", activeDispatchIds: ["other"] }),
+    ],
+    queueTimeoutMs: 0,
+    unrecordedGiveUpMs: 0,
+  });
+  h.setBehavior((name) => name === "w1" ? unrecorded(name) : succeeded());
+  const stop = nudgePool(h);
+  try {
+    const step = h.service.executeRemote(stepRequest());
+    await waitFor(
+      () => h.dispatchCalls.length >= MAX_UNRECORDED_REFUSALS + 2,
+      "refusals past the give-up count",
+    );
+    h.pool.set("w2", snapshot({ name: "w2" }));
+    const result = await step;
+    assertEquals(result.workerName, "w2");
+  } finally {
+    stop();
+  }
 });

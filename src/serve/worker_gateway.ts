@@ -316,8 +316,15 @@ export class WorkerNotDispatchableError extends Error {
   readonly workerName: string;
   readonly reason: WorkerNotDispatchableReason;
 
-  constructor(workerName: string, reason: WorkerNotDispatchableReason) {
-    super(`Worker '${workerName}' ${NOT_DISPATCHABLE_PHRASES[reason]}`);
+  constructor(
+    workerName: string,
+    reason: WorkerNotDispatchableReason,
+    options?: ErrorOptions,
+  ) {
+    super(
+      `Worker '${workerName}' ${NOT_DISPATCHABLE_PHRASES[reason]}`,
+      options,
+    );
     this.name = "WorkerNotDispatchableError";
     this.workerName = workerName;
     this.reason = reason;
@@ -1326,7 +1333,9 @@ export class WorkerGateway {
             },
           );
           busyUnrecorded = true;
-          throw new WorkerNotDispatchableError(name, "state_unrecorded");
+          throw new WorkerNotDispatchableError(name, "state_unrecorded", {
+            cause: error,
+          });
         }
       }
 
