@@ -21,7 +21,7 @@
 // or commits would overwrite swamp's own files; the scan is textual, so a name
 // built at runtime gets past it
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertThrows } from "@std/assert";
 import {
   productionSourceFiles,
   repoRelative,
@@ -29,9 +29,11 @@ import {
 } from "./arch_fitness_helpers.ts";
 import { SWAMP_SUBDIRS } from "../src/infrastructure/persistence/paths.ts";
 import {
+  createNamespace,
   isReservedNamespaceName,
   RESERVED_NAMESPACE_NAMES,
 } from "../src/domain/data/namespace.ts";
+import { LOCK_QUEUES_DIR } from "../src/domain/datastore/datastore_config.ts";
 
 const NAMESPACE_SHAPE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/;
 
@@ -119,4 +121,12 @@ Deno.test("fitness: every .swamp/ name in a path literal is a reserved namespace
       "Add them to SWAMP_OWNED_DIR_NAMES in " +
       "src/domain/datastore/datastore_config.ts.",
   );
+});
+
+// the per-behavior lock queue sits at <datastore>/lock-queues/, beside where a
+// namespace of that name would be materialised
+Deno.test("fitness: the lock queue directory is a reserved namespace name", () => {
+  assertEquals(LOCK_QUEUES_DIR, "lock-queues");
+  assert(isReservedNamespaceName(LOCK_QUEUES_DIR));
+  assertThrows(() => createNamespace("lock-queues"), Error, "is reserved");
 });

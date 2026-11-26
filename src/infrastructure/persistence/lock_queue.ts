@@ -20,11 +20,11 @@
 import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
 import { markErrorPaths } from "../../domain/errors.ts";
+import { LOCK_QUEUES_DIR } from "../../domain/datastore/datastore_config.ts";
 import { isProcessGone, processHostIdentity } from "../runtime/process.ts";
 import { processRuntimeSlot } from "../runtime/process_runtime.ts";
 
 export const DEFAULT_TICKET_TTL_MS = 10_000;
-export const LOCK_QUEUES_DIR = "lock-queues";
 const TICKET_SUFFIX = ".ticket";
 const SEQ_DIGITS = 16;
 const MAX_ENQUEUE_ATTEMPTS = 16;
@@ -240,6 +240,7 @@ export class LockQueue {
 
   async enqueue(): Promise<void> {
     this.stopHeartbeat();
+    await this.touching;
     const hostIdHash = await ownHostIdHash();
     for (let attempt = 1;; attempt++) {
       await this.ops.ensureDir(this.dir);

@@ -20,13 +20,13 @@
 import { assert, assertEquals, assertFalse } from "@std/assert";
 import { join } from "@std/path";
 import { waitFor } from "@swamp-club/swamp-testing";
+import { LOCK_QUEUES_DIR } from "../../domain/datastore/datastore_config.ts";
 import {
   compareTickets,
   DEFAULT_TICKET_TTL_MS,
   defaultTicketTtlMs,
   formatTicketName,
   fsLockQueueOps,
-  LOCK_QUEUES_DIR,
   LockQueue,
   lockQueueDir,
   nextSeq,

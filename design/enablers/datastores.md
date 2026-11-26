@@ -73,23 +73,25 @@ one. Only the first live ticket tries the lock, polling at most every 50 ms
 (`MODEL_LOCK_HEAD_MAX_BACKOFF_MS`); the rest poll the queue at the usual cap and
 log the holder once. The head leaves the queue only once its `.lock` exists, so
 a newcomer sees either a queue or a held lock. An uncontended acquire takes the
-lock at once and creates no ticket. A waiter touches its ticket every third of
-a 10 s TTL. A waiter removes a ticket ahead of it at once when the ticket's
+lock at once and creates no ticket. A waiter touches its ticket every third of a
+10 s TTL. A waiter removes a ticket ahead of it at once when the ticket's
 process is gone on this host, and otherwise only once its mtime has stood still
-for the TTL by the waiter's own monotonic clock: no two clocks are compared,
-and a reused pid falls back to the TTL. A waiter whose ticket was removed while
-it was paused queues again at the back. Exclusion is still only the exclusive
-create of `.lock`, so a wrong, stale or ignored ticket can make the order
-unfair but never admit two holders. Across hosts on a shared mount the order is
-best effort, since a mount's attribute cache can delay a ticket or its
-heartbeat. Tickets sit outside `data/` and never end in `.lock`, so
-`datastore lock status` and the structural commands' drain never see them.
-Every exit from the wait, a timeout or an abort included, removes the waiter's
-ticket, and the `LockTimeoutError` is unchanged. `tryAcquire` never queues. v2,
-bucket datastores, the global and workflow-run locks and the v3 writer lease
-keep the unordered retry. In serve mode the behavior's lock is serve's, and its
-lock routes already queue callers in arrival order ("Waiting order" under
-"Team mode: serve's datastore API").
+for the TTL by the waiter's own monotonic clock: no two clocks are compared, and
+a reused pid falls back to the TTL. A waiter whose ticket was removed while it
+was paused queues again at the back. A waiter that crashed on another host costs
+the next arrival up to one ticket TTL (10 s), even when the lock is free.
+Exclusion is still only the exclusive create of `.lock`, so a wrong, stale or
+ignored ticket can make the order unfair but never admit two holders. Across
+hosts on a shared mount the order is best effort, since a mount's attribute
+cache can delay a ticket or its heartbeat. The queue directory name,
+`lock-queues`, is reserved, so no namespace takes it. Tickets sit outside
+`data/` and never end in `.lock`, so `datastore lock status` and the structural
+commands' drain never see them. Every exit from the wait, a timeout or an abort
+included, removes the waiter's ticket, and the `LockTimeoutError` is unchanged.
+`tryAcquire` never queues. v2, bucket datastores, the global and workflow-run
+locks and the v3 writer lease keep the unordered retry. In serve mode the
+behavior's lock is serve's, and its lock routes already queue callers in arrival
+order ("Waiting order" under "Team mode: serve's datastore API").
 
 A failed sync fails the write before anything publishes the version, with a
 `SyncFailedError` naming the file or directory (`Could not sync <path> to

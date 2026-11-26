@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { LOCK_QUEUES_DIR } from "../../domain/datastore/datastore_config.ts";
 import {
   assert,
   assertEquals,
@@ -39,7 +40,6 @@ import {
 import {
   formatTicketName,
   fsLockQueueOps,
-  LOCK_QUEUES_DIR,
   lockQueueDir,
   ownHostIdHash,
 } from "./lock_queue.ts";
