@@ -3921,6 +3921,119 @@ Deno.test("SqliteReadModel.catchUp: a write under a directory a pooled write is 
   });
 });
 
+Deno.test("SqliteReadModel.catchUp: a write that meets a pooled write waits for that one, not for the pool's others", async () => {
+  await withEnv(async (env) => {
+    await env.append(1, "", [await savePut("a", 1), versionOp("a", 1)]);
+    const held = env.contentPath("", "o", 1);
+    const under = env.contentPath("", "n", 2);
+    const batch = new HeldWriteBatch(held);
+    const readModel = env.open({ netReplay: false, writeBatch: () => batch });
+    try {
+      await readModel.catchUp(signal());
+      await env.append(2, "", [
+        await savePut("n", 1),
+        versionOp("n", 1),
+        await savePut("o", 1),
+        versionOp("o", 1),
+        await savePut("n", 2),
+        versionOp("n", 2),
+      ]);
+      const caughtUp = readModel.catchUp(signal());
+      await waitFor(
+        async () => await readOrAbsent(under) === "n@2",
+        "the write under n landing while o's is held",
+      );
+      assertEquals(await readOrAbsent(held), undefined);
+      batch.gate.resolve();
+      await caughtUp;
+      assertEquals(await readOrAbsent(held), "o@1");
+    } finally {
+      batch.gate.resolve();
+      await readModel.close();
+    }
+  });
+});
+
+Deno.test("SqliteReadModel.catchUp: a full pool takes the next write as soon as any of its writes lands", async () => {
+  await withEnv(async (env) => {
+    await env.append(1, "", [await savePut("a", 1), versionOp("a", 1)]);
+    const held = env.contentPath("", "o", 1);
+    const last = env.contentPath("", "q", 1);
+    const batch = new HeldWriteBatch(held);
+    const readModel = env.open({
+      netReplay: false,
+      pooledWrites: 2,
+      writeBatch: () => batch,
+    });
+    try {
+      await readModel.catchUp(signal());
+      await env.append(2, "", [
+        await savePut("o", 1),
+        versionOp("o", 1),
+        await savePut("p", 1),
+        versionOp("p", 1),
+        await savePut("q", 1),
+        versionOp("q", 1),
+      ]);
+      const caughtUp = readModel.catchUp(signal());
+      await waitFor(
+        async () => await readOrAbsent(last) === "q@1",
+        "q written while o holds one of the two slots",
+      );
+      batch.gate.resolve();
+      await caughtUp;
+      assertEquals(await readOrAbsent(held), "o@1");
+    } finally {
+      batch.gate.resolve();
+      await readModel.close();
+    }
+  });
+});
+
+/** records whether each write asked to be told what it wrote */
+class NotingWriteBatch extends DurableWriteBatch {
+  readonly noted = new Map<string, boolean>();
+
+  constructor() {
+    super({ sync: false });
+  }
+
+  override async write(
+    path: string,
+    content: Uint8Array | ReadableStream<Uint8Array>,
+    signal: AbortSignal,
+    options?: Parameters<DurableWriteBatch["write"]>[3],
+  ): Promise<void> {
+    this.noted.set(path, options?.written !== undefined);
+    return await super.write(path, content, signal, options);
+  }
+}
+
+Deno.test("SqliteReadModel.catchUp: only a chunked file's write is asked for what it wrote, as only it is recorded", async () => {
+  await withEnv(async (env) => {
+    const blob = await env.chunkStore.write(
+      SOLO_NAMESPACE,
+      new Uint8Array(20_000).fill(3),
+      signal(),
+    );
+    await env.append(1, "", [
+      await savePut("a", 1),
+      versionOp("a", 1),
+      await blobPut("b", 1, blob),
+      versionOp("b", 1),
+    ]);
+    const batch = new NotingWriteBatch();
+    const readModel = env.open({ writeBatch: () => batch });
+    try {
+      await readModel.catchUp(signal());
+    } finally {
+      await readModel.close();
+    }
+    assertEquals(batch.noted.get(env.contentPath("", "a", 1)), false);
+    assertEquals(batch.noted.get(env.contentPath("", "b", 1)), true);
+  });
+});
+
 /**
  * a catalog that marks each reproject batch, from its clearNames to its
  * rollbackBatch, so a test orders events without reading a clock

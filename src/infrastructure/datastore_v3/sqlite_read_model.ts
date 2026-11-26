@@ -216,7 +216,15 @@ interface PooledWrite {
   readonly folded: string;
   /** directories the write creates, which a later key under them waits for */
   readonly creates: readonly string[];
-  readonly done: Promise<void>;
+  done: Promise<void>;
+  /** set as done resolves, so a full pool drops what has landed */
+  settled: boolean;
+}
+
+function pruneSettled(pool: PooledWrite[]): void {
+  let kept = 0;
+  for (const write of pool) if (!write.settled) pool[kept++] = write;
+  pool.length = kept;
 }
 
 /** case-folded and NFC, as case-insensitive or normalising filesystems compare */
@@ -3492,14 +3500,15 @@ export class SqliteReadModel implements ReadModel {
     const pool = this.#pool;
     if (pool === undefined || pool.length === 0) return;
     const folded = foldPath(path);
-    if (
-      pool.some((write) =>
-        within(folded, write.folded) || within(write.folded, folded) ||
-        write.creates.some((dir) => within(folded, dir))
-      )
-    ) {
-      await this.#drainPool();
-    }
+    const overlapping = pool.filter((write) =>
+      within(folded, write.folded) || within(write.folded, folded) ||
+      write.creates.some((dir) => within(folded, dir))
+    );
+    if (overlapping.length === 0) return;
+    // only the writes this path meets: the others go on in the pool
+    this.#onPoolDrain?.();
+    await Promise.all(overlapping.map((write) => write.done));
+    if (this.#poolFailure !== undefined) throw this.#poolFailure.error;
   }
 
   async #awaitPrefetched(): Promise<void> {
@@ -4615,35 +4624,47 @@ export class SqliteReadModel implements ReadModel {
           stats === undefined ? stream : stats.count(stream!),
         ).bytes()
         : stream!;
+      // an inline file has no written record, so its write need not stat it
+      const noteInfo = intended === undefined ? undefined : {
+        written: (info: Deno.FileInfo) => {
+          written.info = info;
+        },
+      };
       if (pool !== undefined && bytes instanceof Uint8Array) {
-        if (pool.length >= this.#pooledWrites) {
-          await pool.shift()!.done;
-          if (this.#poolFailure !== undefined) throw this.#poolFailure.error;
+        // a slot frees as soon as any write in the pool lands, not only the oldest
+        pruneSettled(pool);
+        while (pool.length >= this.#pooledWrites) {
+          await Promise.race(pool.map((write) => write.done));
+          pruneSettled(pool);
         }
+        if (this.#poolFailure !== undefined) throw this.#poolFailure.error;
         this.#stats?.bump("writes_pooled");
-        pool.push({
+        const entry: PooledWrite = {
           folded: foldPath(path),
           creates: (absentDirectories ?? []).map(foldPath),
-          done: batch.write(path, bytes, signal, {
-            ...(absentDirectories === undefined ? {} : { absentDirectories }),
-            ...(content.access === undefined ? {} : { access: content.access }),
-            written: (info) => {
-              written.info = info;
-            },
-          }).then(async () => {
-            // a pooled chunked file keeps its written record, as one written
-            // directly does, so the next guard need not re-hash it
-            const info = written.info;
-            if (intended !== undefined && info !== undefined) {
-              await this.#time(
-                "note",
-                () => this.#noteWritten(namespace, key, path, intended, info),
-              );
-            }
-            landed?.();
-          }).catch((error: unknown) => {
-            this.#poolFailure ??= { error };
-          }),
+          settled: false,
+          done: Promise.resolve(),
+        };
+        pool.push(entry);
+        entry.done = batch.write(path, bytes, signal, {
+          ...(absentDirectories === undefined ? {} : { absentDirectories }),
+          ...(content.access === undefined ? {} : { access: content.access }),
+          ...noteInfo,
+        }).then(async () => {
+          // a pooled chunked file keeps its written record, as one written
+          // directly does, so the next guard need not re-hash it
+          const info = written.info;
+          if (intended !== undefined && info !== undefined) {
+            await this.#time(
+              "note",
+              () => this.#noteWritten(namespace, key, path, intended, info),
+            );
+          }
+          landed?.();
+        }).catch((error: unknown) => {
+          this.#poolFailure ??= { error };
+        }).finally(() => {
+          entry.settled = true;
         });
       } else {
         await batch.write(
@@ -4654,9 +4675,7 @@ export class SqliteReadModel implements ReadModel {
           signal,
           {
             absentDirectories,
-            written: (info) => {
-              written.info = info;
-            },
+            ...noteInfo,
             ...(content.access === undefined ? {} : { access: content.access }),
           },
         );
