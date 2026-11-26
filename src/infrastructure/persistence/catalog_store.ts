@@ -259,8 +259,8 @@ export interface CatalogWriter {
     dataName: string,
   ): void;
   /**
-   * the rows of one name, flagged by computeFlags when the name holds none,
-   * else written one by one as upsertNewVersion writes them
+   * the rows of one name, flagged by computeFlags when the name holds none and
+   * no version repeats, else written one by one as upsertNewVersion writes them
    */
   insertNameRows(
     rows: readonly CatalogRow[],
@@ -826,22 +826,21 @@ export class CatalogStore {
     if (rows.some((row) => groupKeyOf(row) !== key)) {
       throw new Error("insertNameRows takes the rows of one name");
     }
-    const held = this.#prepareCached(
-      `SELECT 1 FROM catalog WHERE ${DIRTY_NAME_WHERE} LIMIT 1`,
-    ).get(...group);
-    if (held !== undefined) {
+    // a version written twice leaves flags that depend on the order of writes
+    const repeated = new Set(rows.map((row) => row.version)).size < rows.length;
+    const oneByOne = repeated || this.#prepareCached(
+          `SELECT 1 FROM catalog WHERE ${DIRTY_NAME_WHERE} LIMIT 1`,
+        ).get(...group) !== undefined;
+    if (oneByOne) {
       for (const row of rows) this.#upsertNewVersionRows(row);
       return;
     }
-    // a later row of a version replaces an earlier one, as upserts do
-    const fresh = [
-      ...new Map(rows.map((row) => [row.version, {
-        ...row,
-        is_pending: 0,
-        pending_pid: 0,
-        pending_host: "",
-      }])).values(),
-    ];
+    const fresh = rows.map((row) => ({
+      ...row,
+      is_pending: 0,
+      pending_pid: 0,
+      pending_host: "",
+    }));
     computeFlags(fresh);
     // the first row upsertNewVersion writes is latest, which ends any forward
     this.removeRename(group[0], group[1], group[2], group[3]);
