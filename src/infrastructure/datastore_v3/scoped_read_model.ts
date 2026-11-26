@@ -32,7 +32,7 @@ export const SCOPED_BACKLOG_MAX = 2_000;
 
 export const SCOPED_BACKLOG_AGE_MS = 2 * 60 * 1000;
 
-// small, so a slice of other members' writes costs well under a second
+// small, so one slice stays cheap
 export const SCOPED_DRAIN_SLICE = 25;
 
 // a long command's reads, and other processes', lag by at most this much

@@ -1292,7 +1292,6 @@ export function setScopedBacklogAgeMsForTesting(ms: number): Disposable {
   };
 }
 
-/** a released lock's partitions are no longer the command's own */
 export function forgetV3LockedScope(locked: V3LockedScope): void {
   const scoped = repoState().scoped;
   const marks = scoped?.marksOf.get(locked);

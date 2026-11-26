@@ -61,7 +61,6 @@ const AT = "2026-10-11T00:00:00.000Z";
 interface Env extends ScopedApplyTarget {
   readonly store: SqliteCommitStore;
   readonly readModel: SqliteReadModel;
-  /** appends a commit to the partition at its next seq */
   append(
     partition: PartitionKey,
     ops: readonly Op[],

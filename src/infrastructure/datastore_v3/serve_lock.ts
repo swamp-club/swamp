@@ -158,7 +158,6 @@ export interface ServeLockOptions {
    */
   readonly onUnreachable?: (error: ServeUnreachableError) => boolean;
   readonly root?: string;
-  /** after each release, whether or not it reached serve */
   readonly onReleased?: () => void;
   readonly onLost?: (error: ServeLeaseLapsedError) => void;
   /**

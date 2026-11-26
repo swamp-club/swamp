@@ -32,7 +32,6 @@ export interface DataReadBarrier {
   beforeWideRead(): Promise<void>;
   /** a sync read of one behavior's data, which no barrier may precede */
   assertModelReadable(modelType: string, modelId: string): void;
-  /** a sync read across behaviors */
   assertWideReadable(): void;
 }
 
