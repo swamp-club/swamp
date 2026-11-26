@@ -740,12 +740,16 @@ Deno.test({
         );
       assertEquals(await upstreamOf(["serve"]), undefined);
       assertEquals(await upstreamOf(["worker", "start"]), undefined);
-      assertEquals(await upstreamOf(["datastore", "sync"]), undefined);
+      assertEquals(await upstreamOf(["datastore", "gc"]), undefined);
       assertEquals(await upstreamOf(["repo", "upgrade"]), undefined);
       assertEquals(await upstreamOf([]), undefined);
       assertEquals(await upstreamOf(["data", "get"]), "http://127.0.0.1:9");
       assertEquals(
         await upstreamOf(["datastore", "type", "search"]),
+        "http://127.0.0.1:9",
+      );
+      assertEquals(
+        await upstreamOf(["datastore", "sync"]),
         "http://127.0.0.1:9",
       );
 

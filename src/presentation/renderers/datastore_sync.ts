@@ -36,6 +36,10 @@ const syncModeLabels: Record<string, { initial: string; activity: string }> = {
     activity: "Still pulling...",
   },
   sync: { initial: "Syncing with remote...", activity: "Still syncing..." },
+  hydrate: {
+    initial: "Hydrating the files this checkout is owed...",
+    activity: "Still hydrating...",
+  },
 };
 
 export interface DatastoreSyncRenderer {
@@ -100,6 +104,8 @@ class LogDatastoreSyncRenderer implements DatastoreSyncRenderer {
               ? `Pulled ${data.filesPulled} files`
               : "Pull complete",
           );
+        } else if (data.mode === "hydrate") {
+          writeOutput(`Hydrated ${data.filesHydrated ?? 0} files`);
         } else {
           const pulled = data.filesPulled ?? 0;
           const pushed = data.filesPushed ?? 0;

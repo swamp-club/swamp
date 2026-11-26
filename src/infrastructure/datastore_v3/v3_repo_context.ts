@@ -186,6 +186,18 @@ import { getSwampLogger } from "../logging/logger.ts";
 import { commandStopSignal } from "../process/shutdown_handlers.ts";
 import { withSpan } from "../tracing/tracer.ts";
 import { unreadableContentLookup } from "./unreadable_content_lookup.ts";
+import {
+  drainAllOwed,
+  drainOwedWithin,
+  hydrateOwedPartitions,
+  type LazyHydration,
+  lazyHydrationOf,
+  OWED_DRAIN_ABORT_GRACE_MS,
+  OWED_DRAIN_BUDGET_MS,
+  OWED_HYDRATE_TIMEOUT_MS,
+  type OwedDrainReport,
+  v3OwedFileHook,
+} from "./lazy_hydration.ts";
 import { assertV3CheckoutJoinable } from "./v3_checkout_join.ts";
 import { v3ForeignContentFetcher } from "./v3_foreign_content.ts";
 import { isChunkQuarantine } from "../../domain/datastore/datastore_storage.ts";
@@ -238,6 +250,8 @@ export function v3ServeControlPlaneAt(
 /** this process runtime's handles, holds and serve registrations */
 interface RepoContextState {
   readonly opened: Map<string, V3Datastore>;
+  /** the opened handles that owe their checkout model data files, by key */
+  readonly lazyCheckouts: Map<string, LazyCheckoutEntry>;
   /**
    * checkouts this process writes locally on a filesystem datastore: the lease
    * is taken only around each commit
@@ -350,6 +364,7 @@ interface RepoContextState {
 
 const repoState = processRuntimeSlot<RepoContextState>(() => ({
   opened: new Map(),
+  lazyCheckouts: new Map(),
   sectionedWriters: new Map(),
   wholeCommandHoldForTesting: false,
   replications: new Map(),
@@ -387,6 +402,14 @@ const repoState = processRuntimeSlot<RepoContextState>(() => ({
     releaseBoundMs: UNREACHABLE_RELEASE_BOUND_MS,
   },
 }));
+
+interface LazyCheckoutEntry {
+  /** resolved, as the locks and teardown name the datastore */
+  readonly path: string;
+  readonly namespace: string;
+  readonly lazy: LazyHydration;
+  readonly runPartitionsOf: (runId: string) => readonly string[];
+}
 
 /** a follow aborted at close honours it before its install; past this it is left */
 const FOLLOW_CLOSE_WAIT_MS = 5_000;
@@ -614,6 +637,7 @@ export function v3DatastoreFor(
       ...(repoState().serveFollowerCopies.has(key)
         ? { serveFollower: true }
         : {}),
+      ...(lazyModelFilesOf(config) ? { lazyModelFiles: true } : {}),
       writerFence: () => v3WriterFence(config.path),
       liveWriters: () => otherLiveWriters(repoDir),
       commitSection: () => {
@@ -676,8 +700,102 @@ export function v3DatastoreFor(
       },
     });
     repoState().opened.set(key, handle);
+    const opened = handle;
+    const lazy = lazyModelFilesOf(config) ? lazyHydrationOf(opened) : undefined;
+    if (lazy !== undefined) {
+      repoState().lazyCheckouts.set(key, {
+        path: resolve(config.path),
+        namespace: opened.namespace,
+        lazy,
+        runPartitionsOf: (runId) =>
+          opened.commitStore.runPartitionsOf(opened.namespace, runId)
+            .map(String),
+      });
+    }
   }
   return handle;
+}
+
+function lazyModelFilesOf(config: V3DatastoreConfig): boolean {
+  return "lazyModelFiles" in config && config.lazyModelFiles === true;
+}
+
+/** a test's stand-in for a lazy checkout's handle; disposing removes it */
+export function registerV3LazyCheckoutForTesting(
+  key: string,
+  entry: LazyCheckoutEntry,
+): Disposable {
+  repoState().lazyCheckouts.set(key, entry);
+  return {
+    [Symbol.dispose]: () => {
+      repoState().lazyCheckouts.delete(key);
+    },
+  };
+}
+
+function lazyCheckoutsAt(datastorePath: string): LazyCheckoutEntry[] {
+  const path = resolve(datastorePath);
+  return [...repoState().lazyCheckouts.values()].filter((entry) =>
+    entry.path === path
+  );
+}
+
+/** the behavior's owed files are written before work under its lock reads them */
+export async function hydrateV3BehaviorPartition(
+  datastorePath: string,
+  modelType: string,
+  modelId: string,
+): Promise<void> {
+  if (!isUuid(modelId)) return;
+  const entries = lazyCheckoutsAt(datastorePath);
+  if (entries.length === 0) return;
+  const partition = PartitionKey.forModel(modelType, modelId).toString();
+  for (const entry of entries) {
+    await hydrateOwedPartitions(
+      entry.lazy,
+      entry.namespace,
+      [partition],
+      AbortSignal.timeout(OWED_HYDRATE_TIMEOUT_MS),
+    );
+  }
+}
+
+export async function hydrateV3RunPartitions(
+  datastorePath: string,
+  runId: string,
+): Promise<void> {
+  for (const entry of lazyCheckoutsAt(datastorePath)) {
+    await hydrateOwedPartitions(
+      entry.lazy,
+      entry.namespace,
+      entry.runPartitionsOf(runId),
+      AbortSignal.timeout(OWED_HYDRATE_TIMEOUT_MS),
+    );
+  }
+}
+
+/** what the command left owed is written within the budget; the rest waits */
+export async function drainV3OwedAtCommandEnd(
+  budgetMs: number = OWED_DRAIN_BUDGET_MS,
+): Promise<OwedDrainReport> {
+  const lazies = [...repoState().lazyCheckouts.values()].map((entry) =>
+    entry.lazy
+  );
+  if (lazies.length === 0) return { hydrated: 0, left: 0 };
+  return await drainOwedWithin(
+    lazies,
+    budgetMs,
+    AbortSignal.timeout(budgetMs + OWED_DRAIN_ABORT_GRACE_MS),
+  );
+}
+
+export async function drainAllV3Owed(
+  signal: AbortSignal,
+): Promise<OwedDrainReport> {
+  return await drainAllOwed(
+    [...repoState().lazyCheckouts.values()].map((entry) => entry.lazy),
+    signal,
+  );
 }
 
 /**
@@ -1064,6 +1182,7 @@ export async function catchUpV3AfterBehaviorLock(
   if (!isUuid(modelId)) return;
   const partition = PartitionKey.forModel(modelType, modelId);
   await catchUpSectionedPartitions(datastorePath, () => [partition]);
+  await hydrateV3BehaviorPartition(datastorePath, modelType, modelId);
 }
 
 /**
@@ -1078,6 +1197,7 @@ export async function catchUpV3AfterRunLock(
     datastorePath,
     (handle) => handle.commitStore.runPartitionsOf(handle.namespace, runId),
   );
+  await hydrateV3RunPartitions(datastorePath, runId);
 }
 
 async function catchUpSectionedPartitions(
@@ -2172,7 +2292,11 @@ export async function v3RepositoryFactoryConfig(
 ): Promise<
   Pick<
     RepositoryFactoryConfig,
-    "commitLog" | "catalogStore" | "unreadableContent" | "fetchForeignContent"
+    | "commitLog"
+    | "catalogStore"
+    | "unreadableContent"
+    | "fetchForeignContent"
+    | "hydrateFile"
   >
 > {
   if (
@@ -2285,7 +2409,10 @@ export async function v3RepositoryFactoryConfig(
     );
   }
   const unreadableContent = unreadableContentLookup(repoDir, handle.readModel);
+  const lazy = repoState().lazyCheckouts.get(handleKey(repoDir, config))?.lazy;
   return {
+    // a model data file the read model owes is written when first read
+    ...(lazy !== undefined ? { hydrateFile: v3OwedFileHook(lazy) } : {}),
     commitLog: (markDirty, runRepo) =>
       handle.engineFor(markDirty, runRepo, {
         readOnly: options.readOnly === true,
@@ -2664,6 +2791,7 @@ export async function closeV3Datastores(
   const entries = [...repoState().opened.entries()];
   const handles = entries.map(([, handle]) => handle);
   repoState().opened.clear();
+  repoState().lazyCheckouts.clear();
   // whether each checkout that dropped work may recover it now, judged while
   // the lease and copy state are here
   const dropped = entries.flatMap(([key, handle]) =>

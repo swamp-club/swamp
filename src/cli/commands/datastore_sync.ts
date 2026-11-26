@@ -20,6 +20,7 @@
 import { Command } from "@cliffy/command";
 import { consumeStream } from "../../libswamp/stream.ts";
 import {
+  createDatastoreHydrateDeps,
   createDatastoreSyncDeps,
   datastoreSync,
 } from "../../libswamp/datastores/sync.ts";
@@ -40,7 +41,11 @@ import {
   createCatalogStore,
   writeCatalogExport,
 } from "../../infrastructure/persistence/repository_factory.ts";
-import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
+import {
+  DEFAULT_SYNC_TIMEOUT_MS,
+  isCustomDatastoreConfig,
+} from "../../domain/datastore/datastore_config.ts";
+import { drainAllV3Owed } from "../../infrastructure/datastore_v3/v3_repo_context.ts";
 import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -81,12 +86,22 @@ export const datastoreSyncCommand = new Command()
   .example("Pull only", "swamp datastore sync --pull")
   .example("Push only", "swamp datastore sync --push")
   .example("Large one-off sync", "swamp datastore sync --timeout 1800")
+  .example(
+    "Write every file a v3 checkout is owed",
+    "swamp datastore sync --hydrate",
+  )
   .option(
     "--repo-dir <dir:string>",
     "Repository directory (env: SWAMP_REPO_DIR)",
   )
   .option("--pull", "Pull-only mode (fetch all remote data to local cache)")
   .option("--push", "Push-only mode (upload all local cache data to S3)")
+  .option(
+    "--hydrate",
+    "Write every file this format 3 (v3) checkout is owed, so tools reading " +
+      ".swamp/ directly see them all",
+    { conflicts: ["pull", "push"] },
+  )
   .option(
     "-y, --yes",
     "Skip the push preview and upload immediately",
@@ -112,7 +127,9 @@ export const datastoreSyncCommand = new Command()
       ? parseTimeoutFlag(options.timeout)
       : undefined;
 
-    const mode = options.push
+    const mode = options.hydrate
+      ? "hydrate" as const
+      : options.push
       ? "push" as const
       : options.pull
       ? "pull" as const
@@ -123,30 +140,42 @@ export const datastoreSyncCommand = new Command()
     // lease.
     const repoDirOption = resolveRepoDir(options.repoDir);
     const engine = await peekRepoDatastoreEngine(repoDirOption);
-    const { repoDir, datastoreResolver } = mode === "pull" || engine === "v3"
-      ? await requireInitializedRepoReadOnly({
-        repoDir: repoDirOption,
-        outputMode: cliCtx.outputMode,
-      })
-      : await requireInitializedRepo({
-        repoDir: repoDirOption,
-        outputMode: cliCtx.outputMode,
-        skipImplicitSync: true,
-      });
+    const { repoDir, datastoreResolver } =
+      mode === "pull" || mode === "hydrate" || engine === "v3"
+        ? await requireInitializedRepoReadOnly({
+          repoDir: repoDirOption,
+          outputMode: cliCtx.outputMode,
+        })
+        : await requireInitializedRepo({
+          repoDir: repoDirOption,
+          outputMode: cliCtx.outputMode,
+          skipImplicitSync: true,
+        });
 
     const confirm = !!(options.yes || options.confirm);
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = await createDatastoreSyncDeps(repoDir, datastoreResolver, {
-      syncTimeoutMsOverride,
-    });
+    const deps = mode === "hydrate"
+      ? createDatastoreHydrateDeps(
+        engine === "v3"
+          ? async () =>
+            await drainAllV3Owed(
+              AbortSignal.timeout(
+                syncTimeoutMsOverride ?? DEFAULT_SYNC_TIMEOUT_MS,
+              ),
+            )
+          : undefined,
+      )
+      : await createDatastoreSyncDeps(repoDir, datastoreResolver, {
+        syncTimeoutMsOverride,
+      });
     const renderer = createDatastoreSyncRenderer(cliCtx.outputMode);
     await consumeStream(
       datastoreSync(ctx, deps, { mode, confirm }),
       renderer.handlers(),
     );
 
-    if (renderer.previewOnly) {
+    if (renderer.previewOnly || mode === "hydrate") {
       return;
     }
 

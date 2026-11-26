@@ -1050,7 +1050,14 @@ export class DataQueryService {
     predicate: string,
     options?: DataQueryOptions,
   ): DataRecord[] | unknown[] {
-    const matched = this.executeMatch(predicate, options);
+    const matched = this.executeMatch(
+      predicate,
+      options,
+      undefined,
+      undefined,
+      undefined,
+      true,
+    );
     if (matched.violations.length > 0) {
       const [{ record, error }] = matched.violations;
       throw error ?? new BinaryContentPredicateError(record);
@@ -1269,6 +1276,7 @@ export class DataQueryService {
     missingContent?: Map<string, CatalogRow>,
     latestRuns: LatestRuns = NO_LATEST_RUNS,
     models: ResolvedModels = NO_MODELS,
+    synchronous = false,
   ): MatchResult {
     if (options?.after && !options.sort) {
       throw new UserError("A query cursor needs the sort it was made with");
@@ -1678,9 +1686,18 @@ export class DataQueryService {
             row.data_name,
             row.version,
           );
+          let absent = false;
           try {
             Deno.statSync(contentPath);
           } catch {
+            absent = true;
+          }
+          // a synchronous match cannot fill a file the datastore owes, so it
+          // keeps the row, as a lazy v2 datastore's match does
+          if (
+            absent &&
+            !(synchronous && this.dataRepo.contentMayBeOwed?.() === true)
+          ) {
             // the async path ensures it, which fails loudly when the v3
             // datastore could not materialise it; absent content stays dropped
             reportMissing(row)?.();
