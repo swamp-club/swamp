@@ -176,6 +176,11 @@ import {
 } from "../../serve/trigger_audit.ts";
 import { WebhookRejectionCoalescer } from "../../serve/webhook_audit_coalescer.ts";
 import {
+  FEDERATION_HUB_ROUTES,
+  routeFederationRequest,
+} from "../../serve/federation/hub_routes.ts";
+import { buildServeFederationHub } from "./serve_federation_hub.ts";
+import {
   buildWebhookRouteTable,
   createWebhookRouteApplier,
   type WebhookApplyContext,
@@ -5649,6 +5654,29 @@ export const serveCommand = new Command()
       }
     }
 
+    // undefined unless the federation gate is on and this serve is a hub
+    const federationHub = await buildServeFederationHub({
+      env: (name) => Deno.env.get(name),
+      merged,
+      serveYamlVersion: configFile?.version ?? 1,
+      repoDir: resolvedRepoDir,
+      repoContext,
+      store: controlPlaneStore,
+      datastoreConfig,
+      datastoreEngine,
+      lockfilePath: extensionLockfilePath,
+      settings: () => connectionCtx.serveOptions ?? merged,
+      auditEmitter: () => connectionCtx.auditEmitter,
+      instanceId,
+      startedAt: new Date().toISOString(),
+      flush: () => pushChangedToRemote(connectionCtx),
+    });
+    if (federationHub) {
+      const { sweeper, selfRecord } = federationHub;
+      startWhenLeading(() => sweeper.start());
+      selfRecord.start(startWhenLeading);
+    }
+
     let telemetryFlushService: DaemonTelemetryFlushService | null = null;
     const enableSchedule = merged.schedule;
     const webhookFlags: string[] = merged.webhook ?? [];
@@ -7195,6 +7223,13 @@ export const serveCommand = new Command()
         ) {
           followUps.push(followUp);
         }
+        if (federationHub && applied.length > 0) {
+          const { selfRecord } = federationHub;
+          followUps.push({
+            name: "Refreshing the hub's own member record",
+            run: () => selfRecord.refresh(),
+          });
+        }
         if (applied.includes("maxConcurrentWebhookRuns")) {
           followUps.push({
             name: "Starting queued webhook runs",
@@ -7705,6 +7740,26 @@ export const serveCommand = new Command()
           clientAddress(),
         );
         if (dataPlaneResponse) return dataPlaneResponse;
+
+        // members authenticate with their own secret and are not browsers, so
+        // this precedes the no-auth Origin check, as webhooks do
+        if (federationHub) {
+          const federationResponse = await routeFederationRequest(req, {
+            hub: federationHub.hub,
+            clientAddress,
+            audit: federationHub.audit,
+            ...(leaderLink !== undefined
+              ? {
+                leader: {
+                  isFollowing,
+                  forward: (forwarded, forwardOptions) =>
+                    leaderLink.forward(forwarded, forwardOptions),
+                },
+              }
+              : {}),
+          });
+          if (federationResponse) return federationResponse;
+        }
 
         if (req.method === "POST") {
           const webhookResponse = await webhookService.handleRequest(
@@ -8593,7 +8648,7 @@ export const serveCommand = new Command()
         }
 
         return new Response("Not found", { status: 404 });
-      }),
+      }, federationHub ? FEDERATION_HUB_ROUTES : undefined),
     );
     const listen = () => Deno.serve(serveOptions, serveHandler);
     // with reuse-port a process that is not ready must not take a share of
@@ -8833,6 +8888,15 @@ export const serveCommand = new Command()
       if (serverTokenGcService) {
         const service = serverTokenGcService;
         await stages.run("server token GC", () => service.dispose());
+      }
+      // before the lease is released: a sweep or record write in flight finishes
+      if (federationHub) {
+        const { sweeper, selfRecord, hub } = federationHub;
+        await stages.run("federation hub", async () => {
+          await sweeper.stop();
+          await selfRecord.settled();
+          await hub.settled();
+        });
       }
       // Before the heartbeat stops: a claim taken by a pass in flight must
       // still be a live instance's.

@@ -392,6 +392,8 @@ const PINNED_REPO_CONSTRUCTIONS: readonly string[] = [
   "src/cli/commands/serve.ts: serveCommand: YamlVaultConfigRepository",
   // the fingerprint lists vault types exactly as serve's startup probe does
   "src/cli/commands/serve_fingerprint.ts: serveFingerprintCommand: YamlVaultConfigRepository",
+  // a hub's own fingerprint, read as serve fingerprint reads it
+  "src/cli/commands/serve_federation_hub.ts: collectHubFingerprint: YamlVaultConfigRepository",
   "src/cli/commands/workflow_approvals.ts: workflowApprovalsCommand: YamlEvaluatedWorkflowRepository",
   "src/cli/commands/workflow_cancel.ts: workflowCancelCommand: YamlEvaluatedWorkflowRepository",
   "src/cli/commands/workflow_approve.ts: workflowApproveCommand: YamlEvaluatedWorkflowRepository",
@@ -605,6 +607,7 @@ const PINNED_UNHOOKED_WRITERS: readonly string[] = [
   "src/cli/commands/datastore_setup.ts: nudgeVaultMigration: YamlVaultConfigRepository",
   "src/cli/commands/doctor_datastores.ts: createDoctorDatastoresDeps: YamlVaultConfigRepository",
   "src/cli/commands/serve.ts: serveCommand: YamlVaultConfigRepository",
+  "src/cli/commands/serve_federation_hub.ts: collectHubFingerprint: YamlVaultConfigRepository",
   "src/cli/commands/serve_fingerprint.ts: serveFingerprintCommand: YamlVaultConfigRepository",
   "src/cli/datastore_expression_resolver.ts: createEarlyVaults: YamlVaultConfigRepository",
   "src/cli/mod.ts: initTelemetryService: YamlVaultConfigRepository",
