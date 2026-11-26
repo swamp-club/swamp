@@ -28,6 +28,8 @@ import {
 } from "../infrastructure/persistence/path_test_helpers.ts";
 import { FEDERATION_GATE_VARIABLE } from "../domain/serve/federation_gate.ts";
 import {
+  DEFAULT_HUB_NAME,
+  hubName,
   loadServeConfig,
   type ServeConfigFile,
   validateTriggerOverrideEntry,
@@ -293,6 +295,56 @@ Deno.test("loadServeConfig: a hub refuses join-token-file", () => {
       ),
     Error,
     "a hub joins no hub",
+  );
+});
+
+Deno.test("loadServeConfig: a hub may name itself", () => {
+  const config = load(
+    GATE_ON,
+    v2({ federation: { role: "hub", name: "core-1" } }),
+  );
+  assertEquals(config?.federation, { role: "hub", name: "core-1" });
+  assertEquals(hubName(config?.federation ?? {}), "core-1");
+});
+
+Deno.test("hubName: a hub without a name is called hub", () => {
+  const config = load(GATE_ON, v2({ federation: { role: "hub" } }));
+  assertEquals(hubName(config?.federation ?? {}), DEFAULT_HUB_NAME);
+  assertEquals(DEFAULT_HUB_NAME, "hub");
+});
+
+Deno.test("loadServeConfig: federation.name follows the member name rule", () => {
+  const cases: Array<[unknown, string]> = [
+    ["", "must not be empty"],
+    ["a".repeat(65), "at most 64 characters"],
+    ["has space", "may contain only"],
+    ["dot.ted", "may contain only"],
+    [7, "expected a string"],
+  ];
+  for (const [name, message] of cases) {
+    const error = assertThrows(
+      () => load(GATE_ON, v2({ federation: { role: "hub", name } })),
+      Error,
+      message,
+    );
+    assertEquals(error.message.includes("federation.name"), true);
+  }
+  assertEquals(
+    load(GATE_ON, v2({ federation: { role: "hub", name: "a".repeat(64) } }))
+      ?.federation?.name,
+    "a".repeat(64),
+  );
+});
+
+Deno.test("loadServeConfig: a member config refuses federation.name", () => {
+  assertThrows(
+    () =>
+      load(
+        GATE_ON,
+        v2({ federation: { hub: "https://hub.example", name: "edge" } }),
+      ),
+    Error,
+    "Invalid federation.name",
   );
 });
 
