@@ -78,6 +78,16 @@ async function localHubName(options: LocalHubOptions): Promise<string> {
         "Pass --server to ask it.",
     );
   }
+  // serve keeps the hub's tokens in such a datastore's control-plane store, not in .swamp
+  if (
+    isCustomDatastoreConfig(resolution.datastoreConfig) &&
+    resolution.engine !== "v3"
+  ) {
+    throw new UserError(
+      `The hub's join tokens and credentials on a "${resolution.datastoreConfig.type}" datastore are kept in its shared control-plane store. ` +
+        "Pass --server to ask the running hub.",
+    );
+  }
   await registerFederationModelTypes(env);
   return hubName(merged.federation!);
 }

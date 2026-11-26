@@ -19,7 +19,6 @@
 
 import { z } from "zod";
 import type { ControlPlaneStore } from "../../domain/datastore/control_plane_store.ts";
-import type { Principal } from "../../domain/access/principal.ts";
 import { isServeFederationEnabled } from "../../domain/serve/federation_gate.ts";
 import type { Fingerprint } from "../../domain/serve/fingerprint.ts";
 import {
@@ -90,24 +89,11 @@ export type MemberMethodRunner = (
   call: MemberMethodCall,
 ) => Promise<void>;
 
-export interface FederationCaller {
-  readonly principal: Principal | null;
-  readonly sourceIp: string;
-  readonly client?: string;
-}
-
-export interface FederationAdminAudit {
-  tokenCreated(caller: FederationCaller, memberName: string): void;
-  tokenRevoked(caller: FederationCaller, memberName: string): void;
-  memberRemoved(caller: FederationCaller, memberName: string): void;
-}
-
 export interface FederationHubOptions {
   readonly store: ControlPlaneStore;
   readonly hubName: string;
   readonly members: MemberRecords;
   readonly runMemberMethod: MemberMethodRunner;
-  readonly audit?: FederationAdminAudit;
   readonly now?: () => number;
 }
 
@@ -219,7 +205,6 @@ export class FederationHub {
   readonly #store: ControlPlaneStore;
   readonly #members: MemberRecords;
   readonly #run: MemberMethodRunner;
-  readonly #audit: FederationAdminAudit | undefined;
   readonly #now: () => number;
   readonly #tail = new TransitionTail("federation");
   readonly hubName: string;
@@ -228,7 +213,6 @@ export class FederationHub {
     this.#store = options.store;
     this.#members = options.members;
     this.#run = options.runMemberMethod;
-    this.#audit = options.audit;
     this.#now = options.now ?? Date.now;
     this.hubName = MemberName.create(options.hubName).value;
   }
@@ -240,7 +224,6 @@ export class FederationHub {
   async createToken(
     name: string,
     durationMs: number = DEFAULT_JOIN_TOKEN_DURATION_MS,
-    caller?: FederationCaller,
   ): Promise<{ readonly token: JoinTokenView; readonly plaintext: string }> {
     const validName = memberName(name);
     if (validName.value === this.hubName) {
@@ -249,7 +232,7 @@ export class FederationHub {
         `'${validName.value}' is this hub's own name; a member needs another`,
       );
     }
-    const minted = await this.#tail.run("token_create", async () => {
+    return await this.#tail.run("token_create", async () => {
       const now = this.#now();
       let result;
       try {
@@ -266,10 +249,6 @@ export class FederationHub {
         plaintext: result.plaintext,
       };
     });
-    if (caller !== undefined) {
-      this.#audit?.tokenCreated(caller, validName.value);
-    }
-    return minted;
   }
 
   async listTokens(): Promise<JoinTokenView[]> {
@@ -284,12 +263,9 @@ export class FederationHub {
     return views.sort((a, b) => a.memberName.localeCompare(b.memberName));
   }
 
-  async revokeToken(
-    name: string,
-    caller?: FederationCaller,
-  ): Promise<JoinTokenView> {
+  async revokeToken(name: string): Promise<JoinTokenView> {
     const validName = memberName(name);
-    const revoked = await this.#tail.run("token_revoke", async () => {
+    return await this.#tail.run("token_revoke", async () => {
       const token = await this.#readToken(validName);
       if (token === null) {
         throw new FederationHubError(
@@ -310,10 +286,6 @@ export class FederationHub {
       await this.#store.put(tokenKey(validName), encode(next.toJSON()));
       return tokenView(next, now);
     });
-    if (caller !== undefined) {
-      this.#audit?.tokenRevoked(caller, validName.value);
-    }
-    return revoked;
   }
 
   async listMembers(): Promise<ServeMember[]> {
@@ -327,12 +299,9 @@ export class FederationHub {
   }
 
   /** marks the record removed, then drops the credential, so a crash between leaves a removed member */
-  async removeMember(
-    name: string,
-    caller?: FederationCaller,
-  ): Promise<ServeMember> {
+  async removeMember(name: string): Promise<ServeMember> {
     const validName = memberName(name);
-    const removed = await this.#tail.run("member_remove", async () => {
+    return await this.#tail.run("member_remove", async () => {
       const existing = await this.#members.get(validName.value);
       if (existing === null || existing.role === "hub") {
         throw new FederationHubError(
@@ -351,10 +320,6 @@ export class FederationHub {
       await this.#store.delete(credentialKey(member.memberId));
       return member;
     });
-    if (caller !== undefined) {
-      this.#audit?.memberRemoved(caller, validName.value);
-    }
-    return removed;
   }
 
   /** the token is spent before anything else is written, so it is never reusable */

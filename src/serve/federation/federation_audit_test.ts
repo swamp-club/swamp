@@ -44,33 +44,6 @@ function capture(): { events: AuditEvent[]; emitter: AuditEmitter } {
   };
 }
 
-Deno.test("FederationAudit: token and member admin events carry the caller's principal", () => {
-  const { events, emitter } = capture();
-  const audit = new FederationAudit({
-    auditEmitter: () => emitter,
-    instanceId: "serve-1",
-  });
-  const caller = {
-    principal: { kind: "user" as const, id: "alice" },
-    sourceIp: "203.0.113.9",
-    client: "cli",
-  };
-  audit.tokenCreated(caller, "edge-1");
-  audit.tokenRevoked(caller, "edge-1");
-  audit.memberRemoved(caller, "edge-1");
-  assertEquals(events.map((e) => [e.category, e.action, e.resourceName]), [
-    ["admin", FEDERATION_AUDIT_ACTIONS.tokenCreate, "edge-1"],
-    ["admin", FEDERATION_AUDIT_ACTIONS.tokenRevoke, "edge-1"],
-    ["admin", FEDERATION_AUDIT_ACTIONS.memberRemove, "edge-1"],
-  ]);
-  for (const event of events) {
-    assertEquals(event.principalId, "alice");
-    assertEquals(event.initiatedBy, "user:alice");
-    assertEquals(event.sourceIp, "203.0.113.9");
-    assertEquals(event.client, "cli");
-  }
-});
-
 Deno.test("FederationAudit: refused check-ins are coalesced per reason with the suppressed count", () => {
   const { events, emitter } = capture();
   let now = 0;

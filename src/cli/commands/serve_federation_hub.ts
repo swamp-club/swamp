@@ -95,7 +95,6 @@ export async function buildServeFederationHub(
       repoContext: deps.repoContext,
       flush: deps.flush,
     }),
-    audit,
   });
   const selfRecord = new HubSelfRecord({
     hub,

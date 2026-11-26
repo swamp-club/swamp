@@ -27,6 +27,7 @@ import { UserError } from "../../domain/errors.ts";
 import { createLibSwampContext } from "../../libswamp/context.ts";
 import { createRepoInitDeps, repoInit } from "../../libswamp/repo/init.ts";
 import { collect } from "../../libswamp/testing.ts";
+import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
 import { serveMemberCommand } from "./serve_member.ts";
 
 import "../../domain/models/models.ts";
@@ -118,6 +119,50 @@ Deno.test("serve member: local mode refuses unless the gate is on and serve.yaml
       "not a federation hub",
     );
   });
+});
+
+Deno.test("serve member: local mode refuses a v2 custom datastore, whose control plane serve keeps remotely", async () => {
+  const type = `test-member-store-${crypto.randomUUID()}`;
+  datastoreTypeRegistry.register({
+    type,
+    name: "Test member store",
+    description: "A custom datastore for the local member refusal",
+    isBuiltIn: false,
+    createProvider: () => ({
+      createLock: () => ({}),
+      createVerifier: () => ({}),
+      resolveDatastorePath: (repoDir: string) => repoDir,
+    }),
+  } as never);
+  try {
+    await withRepo(HUB_YAML, async (dir) => {
+      const path = join(dir, ".swamp.yaml");
+      const existing = await Deno.readTextFile(path);
+      await Deno.writeTextFile(
+        path,
+        `${existing.trimEnd()}\ndatastore:\n  type: '${type}'\n  config:\n    bucket: b\n`,
+      );
+      for (
+        const args of [
+          ["token", "create", "edge-1"],
+          ["token", "list"],
+          ["token", "revoke", "edge-1"],
+          ["list"],
+          ["get", "edge-1"],
+          ["remove", "edge-1"],
+        ]
+      ) {
+        await assertRejects(
+          () => runJson("1", [...args, "--repo-dir", dir]),
+          UserError,
+          "shared control-plane store. Pass --server",
+          args.join(" "),
+        );
+      }
+    });
+  } finally {
+    datastoreTypeRegistry.invalidateType(type);
+  }
 });
 
 Deno.test({

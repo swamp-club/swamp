@@ -23,20 +23,16 @@ import type {
   AuditOutcome,
 } from "../../domain/serve_audit/audit_event.ts";
 import { buildAuditEvent } from "../../domain/serve_audit/audit_event_builder.ts";
-import { principalToString } from "../../domain/access/principal.ts";
+import {
+  type Principal,
+  principalToString,
+} from "../../domain/access/principal.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { WebhookRejectionCoalescer } from "../webhook_audit_coalescer.ts";
-import type {
-  FederationAdminAudit,
-  FederationCaller,
-} from "./federation_hub.ts";
 
 const logger = getSwampLogger(["serve", "federation", "audit"]);
 
 export const FEDERATION_AUDIT_ACTIONS = {
-  tokenCreate: "federation.token.create",
-  tokenRevoke: "federation.token.revoke",
-  memberRemove: "federation.member.remove",
   join: "federation.member.join",
   checkInRejected: "federation.member.check_in.rejected",
 } as const;
@@ -57,6 +53,12 @@ export interface FederationAuditOptions {
   readonly coalescer?: WebhookRejectionCoalescer;
 }
 
+interface FederationCaller {
+  readonly principal: Principal | null;
+  readonly sourceIp: string;
+  readonly client?: string;
+}
+
 interface FederationAuditEvent {
   readonly category: AuditCategory;
   readonly outcome: AuditOutcome;
@@ -67,43 +69,13 @@ interface FederationAuditEvent {
 }
 
 /** names members and reasons only; a join token or credential never reaches an event */
-export class FederationAudit implements FederationAdminAudit {
+export class FederationAudit {
   readonly #options: FederationAuditOptions;
   readonly #coalescer: WebhookRejectionCoalescer;
 
   constructor(options: FederationAuditOptions) {
     this.#options = options;
     this.#coalescer = options.coalescer ?? new WebhookRejectionCoalescer();
-  }
-
-  tokenCreated(caller: FederationCaller, memberName: string): void {
-    this.#emit({
-      category: "admin",
-      outcome: "success",
-      action: FEDERATION_AUDIT_ACTIONS.tokenCreate,
-      resourceName: memberName,
-      caller,
-    });
-  }
-
-  tokenRevoked(caller: FederationCaller, memberName: string): void {
-    this.#emit({
-      category: "admin",
-      outcome: "success",
-      action: FEDERATION_AUDIT_ACTIONS.tokenRevoke,
-      resourceName: memberName,
-      caller,
-    });
-  }
-
-  memberRemoved(caller: FederationCaller, memberName: string): void {
-    this.#emit({
-      category: "admin",
-      outcome: "success",
-      action: FEDERATION_AUDIT_ACTIONS.memberRemove,
-      resourceName: memberName,
-      caller,
-    });
   }
 
   joined(sourceIp: string, memberName: string): void {

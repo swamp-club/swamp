@@ -24,12 +24,7 @@ import { JoinToken } from "../../domain/serve/join_token.ts";
 import { MemberCredential } from "../../domain/serve/member_credential.ts";
 import { MemberName } from "../../domain/serve/member_name.ts";
 import { MAX_INSTANCES } from "../../domain/serve/serve_member.ts";
-import {
-  type FederationAdminAudit,
-  type FederationCaller,
-  federationHubEnabled,
-  FederationHubError,
-} from "./federation_hub.ts";
+import { federationHubEnabled, FederationHubError } from "./federation_hub.ts";
 import { createTestHub, type TestHub } from "./federation_hub_test_helpers.ts";
 
 const HOUR = 60 * 60 * 1000;
@@ -269,24 +264,13 @@ Deno.test("FederationHub.checkIn: a new instance past the limit is refused and w
   );
 });
 
-Deno.test("FederationHub.removeMember: audits the caller and refuses an unknown name or the hub", async () => {
-  const removed: Array<[FederationCaller, string]> = [];
-  const audit: FederationAdminAudit = {
-    tokenCreated: () => {},
-    tokenRevoked: () => {},
-    memberRemoved: (caller, name) => removed.push([caller, name]),
-  };
-  const t = createTestHub({ audit });
+Deno.test("FederationHub.removeMember: marks the member removed and refuses an unknown name or the hub", async () => {
+  const t = createTestHub();
   await joined(t);
   await t.hub.upsertSelf(sampleFingerprint({ federationRole: "hub" }));
-  const caller: FederationCaller = {
-    principal: { kind: "user", id: "alice" },
-    sourceIp: "203.0.113.9",
-  };
-  const member = await t.hub.removeMember("edge-1", caller);
+  const member = await t.hub.removeMember("edge-1");
   assertEquals(member.status, "removed");
   assertEquals(t.members.raw("edge-1")!.status, "removed");
-  assertEquals(removed, [[caller, "edge-1"]]);
   for (const name of ["nobody", "hub"]) {
     const error = await assertRejects(
       () => t.hub.removeMember(name),
@@ -297,20 +281,11 @@ Deno.test("FederationHub.removeMember: audits the caller and refuses an unknown 
 });
 
 Deno.test("FederationHub.revokeToken and listTokens: only an unused token is revoked; no hash is listed", async () => {
-  const created: string[] = [];
-  const revoked: string[] = [];
-  const t = createTestHub({
-    audit: {
-      tokenCreated: (_c, name) => created.push(name),
-      tokenRevoked: (_c, name) => revoked.push(name),
-      memberRemoved: () => {},
-    },
-  });
-  const caller: FederationCaller = { principal: null, sourceIp: "127.0.0.1" };
-  await t.hub.createToken("a", undefined, caller);
+  const t = createTestHub();
+  await t.hub.createToken("a");
   await t.hub.createToken("b", 1000);
   await joined(t, "c");
-  assertEquals((await t.hub.revokeToken("a", caller)).state, "revoked");
+  assertEquals((await t.hub.revokeToken("a")).state, "revoked");
   const used = await assertRejects(
     () => t.hub.revokeToken("c"),
     FederationHubError,
@@ -328,8 +303,6 @@ Deno.test("FederationHub.revokeToken and listTokens: only an unused token is rev
     [["a", "revoked"], ["b", "expired"], ["c", "used"]],
   );
   for (const token of listed) assertEquals("secretHash" in token, false);
-  assertEquals(created, ["a"]);
-  assertEquals(revoked, ["a"]);
 });
 
 Deno.test("FederationHub.upsertSelf: writes the hub record once, and again only on configuration drift", async () => {
