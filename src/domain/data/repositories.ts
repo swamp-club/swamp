@@ -267,6 +267,12 @@ export interface UnifiedDataRepository {
   ): Promise<ContentAvailability>;
 
   /**
+   * true when an absent content file may be one the datastore owes this
+   * checkout, filled on an async read; a synchronous read must not judge it gone
+   */
+  contentMayBeOwed?(): boolean;
+
+  /**
    * true when the file is not shorter than size, or a recent refresh found the
    * remote's copy short too; always true when the repository cannot hydrate,
    * since nothing would replace the file

@@ -44,12 +44,18 @@ import {
 } from "../../domain/datastore_v3/repository_changes.ts";
 import type { CommitLogUnitOfWork } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import {
+  catchUpV3AfterBehaviorLock,
+  catchUpV3AfterRunLock,
   closeV3Datastores,
   CLOSING_COMPACTION_BUDGET_MS,
   collectChunksQuietly,
   compactQuietly,
   compactRetentionQuietly,
+  drainAllV3Owed,
+  drainV3OwedAtCommandEnd,
   holdV3Writer,
+  hydrateV3BehaviorPartition,
+  registerV3LazyCheckoutForTesting,
   SERVE_CHUNK_VERIFY_BYTES,
   SERVE_COMPACTION_TIMEOUT_MS,
   trackV3LineageCollectionForTesting,
@@ -62,6 +68,9 @@ import {
   wholeCommandHoldForTesting,
 } from "./v3_repo_context.ts";
 import type { V3OwnerCheck } from "./v3_repo_context.ts";
+import { fakeLazyHydration } from "./lazy_hydration_test_helpers.ts";
+import { OWED_DRAIN_BUDGET_MS } from "./lazy_hydration.ts";
+import { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
 import { V3_CACHE_ROOT_ESCAPE_CODE } from "./cache_root_containment.ts";
 import {
   acquireV3WriterLock,
@@ -2022,4 +2031,82 @@ Deno.test("closeV3Datastores: a lineage collection still running never holds the
     finish();
     await hanging;
   }
+});
+
+function lazyCheckout(
+  owed = 0,
+  runPartitions: readonly string[] = [],
+): {
+  path: string;
+  lazy: ReturnType<typeof fakeLazyHydration>;
+  registration: Disposable;
+} {
+  const path = join(Deno.cwd(), `lazy-${crypto.randomUUID()}`);
+  const lazy = fakeLazyHydration({ owed });
+  return {
+    path,
+    lazy,
+    registration: registerV3LazyCheckoutForTesting(crypto.randomUUID(), {
+      path,
+      namespace: "team",
+      lazy,
+      runPartitionsOf: () => runPartitions,
+    }),
+  };
+}
+
+Deno.test("catchUpV3AfterBehaviorLock: hydrates the locked behavior's partition in the lazy checkouts of that datastore only", async () => {
+  const locked = lazyCheckout();
+  const other = lazyCheckout();
+  using _locked = locked.registration;
+  using _other = other.registration;
+  const modelId = crypto.randomUUID();
+
+  await catchUpV3AfterBehaviorLock(locked.path, "test/model", modelId);
+
+  assertEquals(locked.lazy.calls.partitions, [{
+    namespace: "team",
+    partition: PartitionKey.forModel("test/model", modelId).toString(),
+  }]);
+  assertEquals(other.lazy.calls.partitions, []);
+});
+
+Deno.test("hydrateV3BehaviorPartition: a lock named for a behavior, not its id, hydrates nothing", async () => {
+  const locked = lazyCheckout();
+  using _locked = locked.registration;
+  await hydrateV3BehaviorPartition(locked.path, "test/model", "by-name");
+  assertEquals(locked.lazy.calls.partitions, []);
+});
+
+Deno.test("catchUpV3AfterRunLock: hydrates each of the run's partitions", async () => {
+  const locked = lazyCheckout(0, ["run/one", "run/two"]);
+  using _locked = locked.registration;
+  await catchUpV3AfterRunLock(locked.path, crypto.randomUUID());
+  assertEquals(locked.lazy.calls.partitions.map((p) => p.partition), [
+    "run/one",
+    "run/two",
+  ]);
+});
+
+Deno.test("drainV3OwedAtCommandEnd: drains a lazy checkout within the 2 s budget, and asks nothing when none is lazy", async () => {
+  assertEquals(OWED_DRAIN_BUDGET_MS, 2_000);
+  assertEquals(await drainV3OwedAtCommandEnd(), { hydrated: 0, left: 0 });
+  const lazy = lazyCheckout(4);
+  using _lazy = lazy.registration;
+  assertEquals(await drainV3OwedAtCommandEnd(), { hydrated: 4, left: 0 });
+  assertEquals(lazy.lazy.calls.drains.length, 1);
+  assert(lazy.lazy.calls.drains[0] <= OWED_DRAIN_BUDGET_MS);
+  assert(lazy.lazy.calls.drains[0] > 0);
+});
+
+Deno.test("drainAllV3Owed: drains every file the lazy checkouts owe", async () => {
+  const first = lazyCheckout(3);
+  const second = lazyCheckout(2);
+  using _first = first.registration;
+  using _second = second.registration;
+  assertEquals(await drainAllV3Owed(new AbortController().signal), {
+    hydrated: 5,
+    left: 0,
+  });
+  assertEquals(first.lazy.owedCount() + second.lazy.owedCount(), 0);
 });
