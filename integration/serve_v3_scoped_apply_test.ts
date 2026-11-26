@@ -140,7 +140,10 @@ function registerMethods(type: ModelType): void {
             context.modelType,
             readTarget!,
           );
-          seen.push({ via: "syncPeek", value: items.length });
+          seen.push({
+            via: "syncPeek",
+            value: items.filter((data) => data.name === "out").length,
+          });
           return write(context);
         },
       },
@@ -157,7 +160,10 @@ function registerMethods(type: ModelType): void {
             context.modelType,
             readTarget!,
           );
-          seen.push({ via: "barrierPeek", value: items.length });
+          seen.push({
+            via: "barrierPeek",
+            value: items.filter((data) => data.name === "out").length,
+          });
           return write(context);
         },
       },
