@@ -92,7 +92,9 @@ async function append(
   afterEach: () => Promise<void>,
 ): Promise<void> {
   const seqs = new Map<string, number>();
-  const versions = new Map<string, number>();
+  // a removed version is never written again: saves take the next unused one
+  const issued = new Map<string, number>();
+  const live = new Map<string, number[]>();
   for (const spec of history) {
     let partition: PartitionKey;
     const ops: Op[] = [];
@@ -114,10 +116,12 @@ async function append(
       partition = modelPartition(spec.model);
       const name = NAMES[spec.name];
       const at = `${spec.model}/${name}`;
-      const current = versions.get(at) ?? 0;
+      const versions = live.get(at) ?? [];
+      live.set(at, versions);
       if (spec.save !== undefined) {
-        const version = current + 1;
-        versions.set(at, version);
+        const version = (issued.get(at) ?? 0) + 1;
+        issued.set(at, version);
+        versions.push(version);
         ops.push(
           await putOp({
             intent: intentOf(spec.model, { kind: "data.save", name, version }),
@@ -142,8 +146,8 @@ async function append(
           }),
         );
       } else {
-        if (current === 0) continue;
-        versions.set(at, current - 1);
+        const current = versions.pop();
+        if (current === undefined) continue;
         ops.push(tombstoneOp({
           intent: intentOf(spec.model, {
             kind: "data.delete",

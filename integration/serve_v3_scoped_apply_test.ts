@@ -24,7 +24,7 @@
  */
 
 import "../src/domain/models/models.ts";
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { Command } from "@cliffy/command";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { join } from "@std/path";
@@ -605,7 +605,10 @@ Deno.test({
         } finally {
           Deno.exitCode = exitCode;
         }
-        assert(tripped.exitCode !== 0, "the unbarriered sync read trips");
+        assertStringIncludes(
+          tripped.error ?? "",
+          "A sync read in a scoped command found partition",
+        );
         assertEquals(seen, []);
 
         await runOk(team, a, A_TOKEN, CONSUMER, "barrierPeek");
