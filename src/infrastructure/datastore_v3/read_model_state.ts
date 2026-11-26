@@ -1523,6 +1523,28 @@ export class ReadModelState {
     );
   }
 
+  /** many in one transaction, as a base load lands them */
+  recordWrittenFiles(files: readonly WrittenFile[]): void {
+    if (files.length === 0) return;
+    this.#transaction(() => {
+      const insert = this.#db.prepare(
+        "INSERT OR REPLACE INTO written_files (namespace, record_key, blob, size, ino, dev, mtime, ctime) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      );
+      for (const file of files) {
+        insert.run(
+          file.namespace,
+          file.recordKey,
+          JSON.stringify(file.blob.toJSON()),
+          file.size,
+          file.ino,
+          file.dev,
+          file.mtime,
+          file.ctime ?? null,
+        );
+      }
+    });
+  }
+
   recordWrittenFile(file: WrittenFile): void {
     this.#transaction(() =>
       this.#db.prepare(
