@@ -4239,9 +4239,30 @@ Deno.test("SqliteReadModel.hydrateOwedPartition: writes every owed file of the p
   });
 });
 
+Deno.test("SqliteReadModel.drainOwed: a pass whose budget is spent before it writes still writes its first group, so every pass progresses (swamp-club#5108)", async () => {
+  await withEnv(async (env) => {
+    const names = Array.from({ length: 40 }, (_, i) => `n${i}`);
+    await lazyBase(env, names);
+    let now = 0;
+    const readModel = env.open({
+      lazyModelFiles: true,
+      clock: () => new Date(now++),
+    });
+    try {
+      await readModel.catchUp(signal());
+      const owed = readModel.owedCount();
+      const pass = await readModel.drainOwed(3, signal());
+      assert(pass.hydrated > 0, `${pass.hydrated} written`);
+      assertEquals(pass.left, owed - pass.hydrated);
+    } finally {
+      await readModel.close();
+    }
+  });
+});
+
 Deno.test("SqliteReadModel.drainOwed: stops once its budget is spent, and drains the rest when called again (swamp-club#5108)", async () => {
   await withEnv(async (env) => {
-    const names = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"];
+    const names = Array.from({ length: 40 }, (_, i) => `n${i}`);
     await lazyBase(env, names);
     // every reading of the clock is a millisecond later, the lock section's
     // own readings among them
