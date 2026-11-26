@@ -548,6 +548,7 @@ Deno.test("watchServeFeed: stopping the watch drops a catch-up waiting for its w
 
 Deno.test("watchServeFeed: a watch stopped while its window is open leaves no timer behind (swamp-club#5094)", async () => {
   const socket = fakeSocket();
+  const live = new Set<ReturnType<typeof setTimeout>>();
   let catchUps = 0;
   const watch = watchServeFeed({
     target: {
@@ -563,10 +564,17 @@ Deno.test("watchServeFeed: a watch stopped while its window is open leaves no ti
     appliedCursor: () => 40,
     openSocket: () => socket as unknown as WebSocket,
     windowMs: 60_000,
-    // a timer the sanitizer sees: the watch's own is unref'd, which it skips
+    // this Deno's sanitizer does not report a timer left running
     scheduleWindow: (fire, ms) => {
-      const timer = setTimeout(fire, ms);
-      return () => clearTimeout(timer);
+      const timer = setTimeout(() => {
+        live.delete(timer);
+        fire();
+      }, ms);
+      live.add(timer);
+      return () => {
+        live.delete(timer);
+        clearTimeout(timer);
+      };
     },
   });
   socket.onopen!();
@@ -576,7 +584,8 @@ Deno.test("watchServeFeed: a watch stopped while its window is open leaves no ti
   socket.deliver(theirs(42));
   await settled();
   assertEquals(catchUps, 1);
-  // the test's sanitizer fails on the window's timer if stop left it running
+  assertEquals(live.size, 1);
   await watch.stop();
+  assertEquals(live.size, 0);
   assertEquals(catchUps, 1);
 });
