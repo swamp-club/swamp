@@ -275,6 +275,7 @@ console.log("READY " + JSON.stringify({
 
 // s2 never returns: the parent's SIGKILL ends this process.
 await running;
+throw new Error("the workflow run ended; it should block until killed");
 `;
 }
 
