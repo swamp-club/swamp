@@ -10066,13 +10066,16 @@ the next whole apply. No schema changes.
   expression applies the behaviors it names before its synchronous reads
   (the whole feed when it reads data it cannot pin to named behaviors).
 - A synchronous read from method code cannot wait for an apply, so before a
-  method body (and its checks) runs, a model whose code may call a sync data
-  API (`getContentSync`, `findByNameSync`, `querySync` and the rest) gets a
-  whole apply first. An extension's verdict comes from its loaded bundle's
-  text, recorded when it registers; a built-in type is listed by hand (none
-  calls them); a model with no verdict gets the apply. A synchronous read of
-  a partition with unapplied commits throws in tests
-  (`scopedSyncReadTripwireForTesting`), catching a path the check misses.
+  method body (and its checks) runs, code that may call a sync data API
+  (`getContentSync`, `findByNameSync`, `querySync` and the rest) gets a whole
+  apply first. The verdict comes from the loaded bundle's text, recorded when
+  it registers: the model's own for its members, and each extension's for the
+  methods and checks it adds or overrides, on a built-in type too. Built-in
+  members are listed by hand (none calls them), and code with no verdict gets
+  the apply. Post-run reports get one too unless every registered report is
+  built-in. A synchronous read of a partition with unapplied commits throws in
+  tests (`scopedSyncReadTripwireForTesting`), catching a path the check
+  misses.
 
 Workflow runs, data delete and rename, access, workers and serve keep whole
 applies.

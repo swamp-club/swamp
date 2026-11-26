@@ -182,7 +182,7 @@ const STOP_WAIT_MS = 500;
 
 export const PERIODIC_FAILURES_WARNED = 3;
 
-// stopping aborts the apply running, so a command's exit never waits on it
+// stopping aborts the apply running; exit waits on it for at most STOP_WAIT_MS
 export function startPeriodicApply(options: {
   readonly intervalMs: number;
   readonly apply: (signal: AbortSignal) => Promise<unknown>;

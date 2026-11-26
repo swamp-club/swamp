@@ -27,27 +27,40 @@ import {
 
 const TYPE = ModelType.create("@test/sync-reads");
 
+const quiet = () => Promise.resolve({});
+
 function model(
-  execute: (args: unknown, context: unknown) => Promise<unknown>,
-  readsDataSynchronously?: boolean,
+  options: {
+    readonly verdict?: boolean;
+    readonly added?: boolean;
+    readonly check?: boolean;
+  } = {},
 ) {
   return {
     type: TYPE,
     methods: {
-      run: {
-        description: "runs",
+      run: { description: "runs", arguments: z.object({}), execute: quiet },
+      added: {
+        description: "an extension adds it",
         arguments: z.object({}),
-        execute,
-      },
-      other: {
-        description: "reads synchronously",
-        arguments: z.object({}),
-        // deno-lint-ignore no-explicit-any
-        execute: (_args: unknown, context: any) =>
-          Promise.resolve(context.dataRepository.findByNameSync()),
+        execute: quiet,
+        ...(options.added === undefined
+          ? {}
+          : { readsDataSynchronously: options.added }),
       },
     },
-    ...(readsDataSynchronously === undefined ? {} : { readsDataSynchronously }),
+    ...(options.check === undefined ? {} : {
+      checks: {
+        guard: {
+          description: "checks",
+          execute: quiet,
+          readsDataSynchronously: options.check,
+        },
+      },
+    }),
+    ...(options.verdict === undefined
+      ? {}
+      : { readsDataSynchronously: options.verdict }),
   } as unknown as Parameters<typeof mayReadDataSynchronously>[0];
 }
 
@@ -68,18 +81,56 @@ Deno.test("namesSyncDataReads: finds each sync data API by name", () => {
   assertEquals(namesSyncDataReads("ctx.dataRepository.getContent(a)"), false);
 });
 
-Deno.test("mayReadDataSynchronously: a bundle's verdict decides; with none, the method's own code; a built-in type is listed", () => {
-  const quiet = (_args: unknown, _context: unknown) => Promise.resolve({});
+Deno.test("mayReadDataSynchronously: the model's bundle decides, and a model with no verdict may", () => {
   assertEquals(
-    mayReadDataSynchronously(model(quiet, true), "run", false),
+    mayReadDataSynchronously(model({ verdict: true }), "run", false),
     true,
   );
   assertEquals(
-    mayReadDataSynchronously(model(quiet, false), "other", false),
+    mayReadDataSynchronously(model({ verdict: false }), "run", false),
     false,
   );
-  assertEquals(mayReadDataSynchronously(model(quiet), "run", false), false);
-  assertEquals(mayReadDataSynchronously(model(quiet), "other", false), true);
-  assertEquals(mayReadDataSynchronously(model(quiet), "missing", false), true);
-  assertEquals(mayReadDataSynchronously(model(quiet), "other", true), false);
+  assertEquals(mayReadDataSynchronously(model(), "run", false), true);
+  assertEquals(
+    mayReadDataSynchronously(model({ verdict: false }), "missing", false),
+    true,
+  );
+  assertEquals(mayReadDataSynchronously(model(), "run", true), false);
+});
+
+Deno.test("mayReadDataSynchronously: a method or check an extension adds carries its own bundle's verdict, on a built-in type too", () => {
+  for (const builtIn of [true, false]) {
+    assertEquals(
+      mayReadDataSynchronously(
+        model({ verdict: false, added: true }),
+        "added",
+        builtIn,
+      ),
+      true,
+    );
+    assertEquals(
+      mayReadDataSynchronously(
+        model({ verdict: false, added: true }),
+        "run",
+        builtIn,
+      ),
+      false,
+    );
+    assertEquals(
+      mayReadDataSynchronously(
+        model({ verdict: false, check: true }),
+        "run",
+        builtIn,
+      ),
+      true,
+    );
+    assertEquals(
+      mayReadDataSynchronously(
+        model({ verdict: true, added: false }),
+        "added",
+        builtIn,
+      ),
+      false,
+    );
+  }
 });

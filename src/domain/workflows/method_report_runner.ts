@@ -79,6 +79,16 @@ export class MethodReportRunner {
     if (reportRegistry.getAll().length === 0 || !args.reportFilterOptions) {
       return [];
     }
+    // a report's sync reads cannot wait for an apply, and only built-in
+    // reports are known to make none
+    if (
+      args.unifiedDataRepo.readsScoped?.() === true &&
+      reportRegistry.getAll().some(({ name }) =>
+        !reportRegistry.isBuiltIn(name)
+      )
+    ) {
+      await args.unifiedDataRepo.beforeWideRead?.();
+    }
     if (args.status === "succeeded") {
       return await this.runSucceeded(args);
     }

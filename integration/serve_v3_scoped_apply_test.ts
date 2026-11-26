@@ -146,6 +146,8 @@ function registerMethods(type: ModelType): void {
   modelRegistry.register({
     type,
     version: "2026.01.01.1",
+    // as a bundle that names no sync data API records it
+    readsDataSynchronously: false,
     globalArguments: z.object({ tag: z.string().default("") }),
     resources: {
       out: {
@@ -161,24 +163,6 @@ function registerMethods(type: ModelType): void {
         kind: "update",
         arguments: z.object({}),
         execute: (_args, context) => write(context),
-      },
-      syncPeek: {
-        description: "Reads another behavior through the sync API",
-        kind: "update",
-        arguments: z.object({}),
-        execute: (_args, context) => {
-          seen.push({
-            via: "syncPeek",
-            value: bodyOf(
-              context.dataRepository.getContentSync(
-                context.modelType,
-                readTarget!,
-                "out",
-              ),
-            ),
-          });
-          return write(context);
-        },
       },
       hiddenPeek: {
         description: "Reads another behavior through code the check misses",
@@ -216,6 +200,30 @@ function registerMethods(type: ModelType): void {
       },
     },
   });
+  // as an extension whose bundle names one contributes it
+  modelRegistry.applyExtensionMembers(type, {
+    methods: {
+      syncPeek: {
+        readsDataSynchronously: true,
+        description: "Reads another behavior through the sync API",
+        kind: "update",
+        arguments: z.object({}),
+        execute: (_args: unknown, context: MethodContext) => {
+          seen.push({
+            via: "syncPeek",
+            value: bodyOf(
+              context.dataRepository.getContentSync(
+                context.modelType,
+                readTarget!,
+                "out",
+              ),
+            ),
+          });
+          return write(context);
+        },
+      },
+    },
+  }, {});
 }
 
 type MethodRunRequest = {
@@ -648,7 +656,7 @@ Deno.test({
 
 Deno.test({
   name:
-    "scoped apply: a method body that reads another behavior through a sync API reads the version another member just wrote, after a whole apply before the body",
+    "scoped apply: a method an extension adds that reads another behavior through a sync API reads the version another member just wrote, after a whole apply before the body",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {

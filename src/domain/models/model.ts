@@ -537,6 +537,8 @@ export interface CheckDefinition {
   labels?: string[];
   appliesTo?: string[];
   execute(context: MethodContext): Promise<CheckResult>;
+  /** set on a member an extension contributes, from that extension's bundle */
+  readsDataSynchronously?: boolean;
 }
 
 export function isMutatingKind(kind: MethodKind | undefined): boolean {
@@ -547,6 +549,9 @@ export interface MethodDefinition<
   TArgs extends z.ZodTypeAny = z.ZodTypeAny,
 > {
   description: string;
+
+  /** set on a member an extension contributes, from that extension's bundle */
+  readsDataSynchronously?: boolean;
 
   kind?: MethodKind;
 

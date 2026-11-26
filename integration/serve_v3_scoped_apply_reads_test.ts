@@ -127,6 +127,8 @@ function registerMethods(type: ModelType): void {
   modelRegistry.register({
     type,
     version: "2026.01.01.1",
+    // as a bundle that names no sync data API records it
+    readsDataSynchronously: false,
     globalArguments: z.object({ tag: z.string().default("") }),
     resources: {
       out: {

@@ -159,7 +159,6 @@ Deno.test("pendingAlwaysApplied: names config partitions with commits past what 
     );
     assertEquals(await pendingCommitsIn(env, [CONFIG, MODEL]), 2);
 
-    // applied ahead of the cursor, a partition is no longer pending
     await applyPartitions(env, pendingAlwaysApplied(env), signal());
     assertEquals(pendingAlwaysApplied(env), []);
     assertEquals(pendingPartitions(env).map(String), [MODEL.toString()]);
@@ -181,7 +180,6 @@ Deno.test("applyPartitions: applies only the partitions named and leaves the cur
     assertEquals(env.readModel.appliedSeq("", CONFIG), 1);
     assertEquals(env.readModel.appliedSeq("", MODEL), 1);
 
-    // the whole apply after it skips what the partition apply applied
     await env.readModel.catchUp(signal());
     assertEquals(env.readModel.appliedSeq("", MODEL), 2);
     assertEquals(env.readModel.cursor(), env.store.lastCursor());

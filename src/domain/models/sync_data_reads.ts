@@ -31,9 +31,9 @@ export function namesSyncDataReads(code: string): boolean {
 }
 
 /**
- * whether a model's code may read data through the sync APIs, which a command
- * applying only part of the read model cannot bring up to date mid-call;
- * true when it cannot be told
+ * whether the code that runs, the method and the model's checks, may read data
+ * through the sync APIs, which a command applying only part of the read model
+ * cannot bring up to date mid-call; true when it cannot be told
  */
 export function mayReadDataSynchronously(
   model: Pick<
@@ -43,13 +43,10 @@ export function mayReadDataSynchronously(
   methodName: string,
   builtIn: boolean,
 ): boolean {
-  if (builtIn) return BUILT_IN_SYNC_READERS.has(model.type.normalized);
-  if (model.readsDataSynchronously !== undefined) {
-    return model.readsDataSynchronously;
-  }
-  // registered in this process with no bundle: the method's and the checks'
-  // functions are the code that runs
-  const code: string[] = [];
+  // a member an extension contributed carries its own bundle's verdict
+  const inherited = builtIn
+    ? BUILT_IN_SYNC_READERS.has(model.type.normalized)
+    : model.readsDataSynchronously ?? true;
   for (
     const member of [
       model.methods[methodName],
@@ -57,8 +54,7 @@ export function mayReadDataSynchronously(
     ]
   ) {
     if (member === undefined) return true;
-    if (typeof member.execute !== "function") return true;
-    code.push(member.execute.toString());
+    if (member.readsDataSynchronously ?? inherited) return true;
   }
-  return namesSyncDataReads(code.join("\n"));
+  return false;
 }

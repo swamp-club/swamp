@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { namesSyncDataReads } from "../models/sync_data_reads.ts";
 import { z } from "zod";
 import { dirname, join, resolve } from "@std/path";
 import { getLogger } from "@logtape/logtape";
@@ -1018,6 +1019,7 @@ export const modelKindAdapter: KindAdapter = {
     contributor: ExtensionContributor,
     attach?: AttachRecord,
     source?: AddOnSource,
+    readsDataSynchronously?: boolean,
   ): void {
     const parsed = UserExtensionSchema.safeParse(exported);
     if (!parsed.success) {
@@ -1221,6 +1223,17 @@ export const modelKindAdapter: KindAdapter = {
       return;
     }
 
+    // a bundle that could not be read may read data synchronously
+    for (const set of [additions, overrides]) {
+      for (
+        const member of [
+          ...Object.values(set.methods ?? {}),
+          ...Object.values(set.checks ?? {}),
+        ]
+      ) {
+        member.readsDataSynchronously = readsDataSynchronously ?? true;
+      }
+    }
     try {
       modelRegistry.applyExtensionMembers(ext.type, additions, overrides);
     } catch (error) {
@@ -1314,6 +1327,14 @@ export const modelKindAdapter: KindAdapter = {
       );
     }
 
+    let readsDataSynchronously: boolean | undefined;
+    try {
+      readsDataSynchronously = namesSyncDataReads(
+        await Deno.readTextFile(entry.bundle_path),
+      );
+    } catch {
+      readsDataSynchronously = undefined;
+    }
     modelKindAdapter.processSecondaryExport!(
       entry.source_path,
       module.extension,
@@ -1324,6 +1345,7 @@ export const modelKindAdapter: KindAdapter = {
         fingerprint: entry.source_fingerprint ?? "",
       },
       source,
+      readsDataSynchronously,
     );
 
     for (const failure of result.failed) {

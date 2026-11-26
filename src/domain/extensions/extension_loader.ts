@@ -712,6 +712,7 @@ export class ExtensionLoader {
       module: Record<string, unknown>;
       baseDir: string;
       snapshot: SourceSnapshot | undefined;
+      readsDataSynchronously: boolean;
     }> = [];
 
     for (const { file, baseDir } of allFiles) {
@@ -752,7 +753,13 @@ export class ExtensionLoader {
           this.adapter.secondaryExportKey &&
           module[this.adapter.secondaryExportKey]
         ) {
-          secondaryFiles.push({ file, module, baseDir, snapshot });
+          secondaryFiles.push({
+            file,
+            module,
+            baseDir,
+            snapshot,
+            readsDataSynchronously: namesSyncDataReads(bundled.js),
+          });
         }
       } catch (error) {
         result.failed.push({
@@ -873,7 +880,14 @@ export class ExtensionLoader {
         );
       const fingerprintCache = createFreshnessCache();
       for (
-        const { file, module, baseDir, contributor, snapshot } of ranked
+        const {
+          file,
+          module,
+          baseDir,
+          contributor,
+          snapshot,
+          readsDataSynchronously,
+        } of ranked
       ) {
         let fingerprint: string | undefined;
         try {
@@ -898,6 +912,7 @@ export class ExtensionLoader {
               fingerprint,
             },
             await this.addOnSource(resolve(baseDir, file), snapshot),
+            readsDataSynchronously,
           );
         } catch (error) {
           result.failed.push({ file, error: String(error), baseDir });

@@ -158,6 +158,8 @@ export interface KindAdapter {
     contributor: ExtensionContributor,
     attach?: { readonly sourcePath: string; readonly fingerprint: string },
     source?: AddOnSource,
+    /** whether the bundle names a sync data API; unknown when undefined */
+    readsDataSynchronously?: boolean,
   ): void;
 
   findExtensionsForType?(

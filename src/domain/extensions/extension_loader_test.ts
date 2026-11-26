@@ -59,6 +59,7 @@ import {
   modelKindAdapter,
 } from "./model_kind_adapter.ts";
 import { modelRegistry } from "../models/model.ts";
+import { mayReadDataSynchronously } from "../models/sync_data_reads.ts";
 import {
   getExtensionLoadWarnings,
   resetExtensionLoadWarnings,
@@ -1990,3 +1991,95 @@ for (const pulled of [true, false]) {
     }
   });
 }
+
+Deno.test("attachPendingExtensionsForType: a method an extension adds carries whether its bundle names a sync data API, apart from the base type's", async () => {
+  const type = `@test/sync-${crypto.randomUUID().slice(0, 8)}`;
+  const dir = await Deno.makeTempDir({ prefix: "swamp_sync_reads_" });
+  const baseBundle = join(dir, "base.js");
+  const extBundle = join(dir, "ext.js");
+  await Deno.writeTextFile(
+    baseBundle,
+    `const { z } = globalThis.__swamp_zod;
+export const model = {
+  type: "${type}",
+  version: "2026.01.01.1",
+  methods: {
+    get: { description: "get", arguments: z.object({}), execute: async () => ({}) },
+  },
+};
+`,
+  );
+  await Deno.writeTextFile(
+    extBundle,
+    `const { z } = globalThis.__swamp_zod;
+export const extension = {
+  type: "${type}",
+  methods: [{
+    audit: {
+      description: "audit",
+      arguments: z.object({}),
+      execute: async (_a, ctx) => ({ seen: ctx.dataRepository.getContentSync(ctx.modelType, "x", "state") }),
+    },
+  }],
+};
+`,
+  );
+  await Deno.writeTextFile(join(dir, "base.ts"), "");
+  await Deno.writeTextFile(join(dir, "ext.ts"), "");
+  const catalog = new ExtensionCatalogStore(join(dir, "catalog.db"));
+  resetExtensionLoadWarnings();
+  clearAttachedExtensions();
+  try {
+    catalog.upsert({
+      source_path: join(dir, "base.ts"),
+      type_normalized: type,
+      kind: "model",
+      bundle_path: baseBundle,
+      version: "2026.01.01.1",
+      description: "",
+      extends_type: "",
+      source_mtime: "",
+      source_fingerprint: "fp-base",
+    });
+    catalog.upsert({
+      source_path: join(dir, "ext.ts"),
+      type_normalized: type,
+      kind: "extension",
+      bundle_path: extBundle,
+      version: "",
+      description: "",
+      extends_type: type,
+      source_mtime: "",
+      source_fingerprint: "fp-ext",
+    });
+    const loader = new ExtensionLoader(
+      stubDenoRuntime,
+      modelKindAdapter,
+      dir,
+      undefined,
+      new ExtensionRepository({
+        catalog,
+        lockfileRepository: new LockfileRepository(join(dir, "lockfile.json")),
+        repoRoot: dir,
+      }),
+    );
+
+    await loader.loadSingleType(type, {
+      bundlePath: baseBundle,
+      sourcePath: join(dir, "base.ts"),
+    });
+    await loader.attachPendingExtensionsForType(type);
+
+    const merged = modelRegistry.get(type)!;
+    assertEquals(merged.readsDataSynchronously, false);
+    assertEquals(merged.methods.audit?.readsDataSynchronously, true);
+    assertEquals(mayReadDataSynchronously(merged, "audit", false), true);
+    assertEquals(mayReadDataSynchronously(merged, "get", false), false);
+  } finally {
+    catalog.close();
+    clearAttachedExtensions();
+    resetExtensionLoadWarnings();
+    modelRegistry.invalidateType(type);
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
+});

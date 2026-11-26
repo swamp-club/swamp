@@ -373,7 +373,7 @@ interface ScopedCommand {
    * partitions each handle applied under its lock: the commits past them are
    * the command's own, which its files already hold
    */
-  readonly locked: Map<V3Datastore, Set<string>>;
+  readonly locked: Map<V3Datastore, Map<string, number>>;
   /** what each held lock marked, dropped when it releases */
   readonly marksOf: Map<
     V3LockedScope,
@@ -1295,9 +1295,14 @@ export function forgetV3LockedScope(locked: V3LockedScope): void {
   const marks = scoped?.marksOf.get(locked);
   if (scoped === undefined || marks === undefined) return;
   scoped.marksOf.delete(locked);
+  // counted, so a nested lock on the same partition keeps it marked
   for (const { handle, partitions } of marks) {
     const held = scoped.locked.get(handle);
-    for (const partition of partitions) held?.delete(partition);
+    for (const partition of partitions) {
+      const count = (held?.get(partition) ?? 0) - 1;
+      if (count > 0) held?.set(partition, count);
+      else held?.delete(partition);
+    }
   }
 }
 
@@ -1448,10 +1453,8 @@ async function applyAtScopedOpen(handle: V3Datastore): Promise<void> {
   );
 }
 
-/**
- * does nothing for a datastore not read through serve, so serve itself never
- * watches; a scoped command applies the whole feed at an interval, not per frame
- */
+// serve never watches; the watches stop when the datastores close, before
+// anything else closes; a scoped command applies at an interval, not per frame
 export function watchV3ServeFeeds(): void {
   for (const handle of [...repoState().opened.values()]) {
     const binding = serveUpstreamAt(handle.datastorePath);
@@ -1540,13 +1543,12 @@ export async function catchUpV3HandlesAt(
             : {}),
           ...(maxCommits !== undefined ? { maxCommits } : {}),
         });
-        // a scoped command applies what the lock guards; a read model never
-        // completed, or lagging past the bound in a copy the lock just
-        // fetched, applies the whole feed before the command stages anything
         // a run's partitions are named by the commits the copy just fetched
         lockedPartitions = scopedHandle
           ? lockedPartitionsOf(handle, locked)
           : undefined;
+        // past the bound, or never completed, the whole feed applies before
+        // the command stages anything
         scoped = lockedPartitions !== undefined &&
             handle.readModel.isComplete() && !await scopedPastBound(handle)
           ? lockedPartitions
@@ -1596,9 +1598,9 @@ function markLocked(
 ): void {
   const scoped = repoState().scoped;
   if (scoped === undefined) return;
-  const held = scoped.locked.get(handle) ?? new Set<string>();
-  const added = partitions.map(String).filter((key) => !held.has(key));
-  for (const key of added) held.add(key);
+  const held = scoped.locked.get(handle) ?? new Map<string, number>();
+  const added = [...new Set(partitions.map(String))];
+  for (const key of added) held.set(key, (held.get(key) ?? 0) + 1);
   scoped.locked.set(handle, held);
   const marks = scoped.marksOf.get(locked) ?? [];
   marks.push({ handle, partitions: added });
