@@ -69,7 +69,8 @@ export interface WorkspaceSignInNote {
 
 /**
  * an older host's router answers 502 for a workspace that refused the socket,
- * so a server error there may be a refused token signing in to the host again cures
+ * so a server error there may be a refused token signing in to the host again
+ * cures
  */
 export function workspaceTokenRefusalHint(
   note: WorkspaceSignInNote | undefined,

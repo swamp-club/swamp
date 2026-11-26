@@ -135,8 +135,13 @@ export function createWorkspaceRouter(
     );
     if (outcome !== "open") {
       closeQuietly(upstream, 1000, "");
-      logger
-        .info`A WebSocket to the child on port ${port} did not open: ${outcome} ${failure}`;
+      if (failure === "") {
+        logger
+          .info`A WebSocket to the child on port ${port} did not open: ${outcome}`;
+      } else {
+        logger
+          .info`A WebSocket to the child on port ${port} did not open: ${outcome}, ${failure}`;
+      }
       if (outcome === "timeout") {
         return hostReply(504, {
           error: "The workspace did not answer in time.",
@@ -250,8 +255,8 @@ export function createWorkspaceRouter(
   };
 }
 
-// Deno's WebSocket client names a refused handshake's status only in its error
-// text, never its body or headers, so a redirect without Location falls to 502
+// Deno's WebSocket client names a refused handshake's status only in its
+// error text, never its body or headers; a redirect without them falls to 502
 function refusalStatus(failure: string): number | undefined {
   const match = failure.match(/Invalid status code: (\d{3})\b/);
   if (match === null) return undefined;
