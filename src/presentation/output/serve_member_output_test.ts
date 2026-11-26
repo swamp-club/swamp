@@ -204,6 +204,19 @@ Deno.test("renderMemberList and renderMemberGet: json mode carries the live view
   );
 });
 
+Deno.test("renderMemberList and renderMemberGet: a reply without a live view, from an older serve, renders '-' instead of failing", () => {
+  const lines = captured(() =>
+    renderMemberList({ members: [RECORD] }, "log", NOW)
+  ).split("\n");
+  assertEquals(lines[1].split(/\s{2,}/)[3], "-");
+  const get = captured(() => renderMemberGet({ member: RECORD }, "log", NOW));
+  assertStringIncludes(get, "Live:\n  not reported by this server");
+  assertEquals(
+    JSON.parse(captured(() => renderMemberGet({ member: RECORD }, "json"))),
+    { member: RECORD },
+  );
+});
+
 Deno.test("renderMemberRemove: both modes name the member", () => {
   const removed = { ...RECORD, status: "removed" as const };
   assertStringIncludes(

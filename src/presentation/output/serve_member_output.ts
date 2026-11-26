@@ -20,11 +20,9 @@
 import { bold, cyan, dim, green, red, yellow } from "@std/fmt/colors";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { maxOf } from "../../domain/array_extrema.ts";
-import type { MemberListData } from "../../libswamp/serve/member_list.ts";
-import type {
-  MemberData,
-  MemberGetData,
-} from "../../libswamp/serve/member_get.ts";
+import type { MemberData } from "../../libswamp/serve/member_get.ts";
+import type { ServeMemberRecord } from "../../domain/serve/serve_member.ts";
+import type { MemberLiveView } from "../../domain/serve/member_live_view.ts";
 import type { FingerprintRuntime } from "../../domain/serve/fingerprint.ts";
 import { formatDuration } from "./utils/duration_formatter.ts";
 import type { MemberTokenCreateData } from "../../libswamp/serve/member_token_create.ts";
@@ -62,6 +60,9 @@ function table(
     ...rows.map((row) => line(row, color)),
   ];
 }
+
+// a serve from before the live view answers without it, so it may be missing
+type ReportedMember = ServeMemberRecord & { readonly live?: MemberLiveView };
 
 function lastSeen(iso: string | null, now: number): string {
   if (iso === null) return "-";
@@ -159,7 +160,7 @@ export function renderMemberTokenRevoke(
 }
 
 export function renderMemberList(
-  data: MemberListData,
+  data: { readonly members: readonly ReportedMember[] },
   mode: OutputMode,
   now: number = Date.now(),
 ): void {
@@ -180,7 +181,7 @@ export function renderMemberList(
         member.name,
         member.role,
         member.status,
-        lastSeen(member.live.lastSeenAt, now),
+        lastSeen(member.live?.lastSeenAt ?? null, now),
         String(member.instances.length),
         member.fingerprint.swampVersion,
         member.joinedAt,
@@ -191,7 +192,7 @@ export function renderMemberList(
 }
 
 export function renderMemberGet(
-  data: MemberGetData,
+  data: { readonly member: ReportedMember },
   mode: OutputMode,
   now: number = Date.now(),
 ): void {
@@ -233,12 +234,18 @@ export function renderMemberGet(
   // check-ins come from the control-plane store, apart from the record above
   lines.push("");
   lines.push(cyan("Live:"));
+  const live = member.live;
+  if (live === undefined) {
+    lines.push(`  ${dim("not reported by this server")}`);
+    writeOutput(lines.join("\n"));
+    return;
+  }
   lines.push(
-    `  ${key("Last seen")} ${lastSeen(member.live.lastSeenAt, now)}${
-      member.live.lastSeenAt === null ? "" : dim(` (${member.live.lastSeenAt})`)
+    `  ${key("Last seen")} ${lastSeen(live.lastSeenAt, now)}${
+      live.lastSeenAt === null ? "" : dim(` (${live.lastSeenAt})`)
     }`,
   );
-  for (const instance of member.live.instances) {
+  for (const instance of live.instances) {
     lines.push(
       `  ${instance.instanceId} ${lastSeen(instance.lastSeenAt, now)} ${
         dim(`(${runtimeFacts(instance.runtime)})`)
