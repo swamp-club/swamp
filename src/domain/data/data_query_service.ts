@@ -445,7 +445,7 @@ export class DataQueryService {
     options?: LatestRecordOptions,
   ): Promise<DataRecord | null> {
     const includePath = options?.includeContentPath ?? false;
-    await this.dataRepo.beforeWideRead?.();
+    await this.beforeWideRead();
     const populated = this.catalogStore.isPopulated();
     // Every lookup below goes through this one query, so excluded types are
     // dropped in SQL on every path and never shadow another type's row.
@@ -885,11 +885,8 @@ export class DataQueryService {
   }
 
   async ensurePopulated(): Promise<void> {
-    // reports and catalog search read the catalog after this; outside a scoped
-    // command it adds no turn before the populated check
-    if (this.dataRepo.readsScoped?.() === true) {
-      await this.dataRepo.beforeWideRead?.();
-    }
+    // reports and catalog search read the catalog after this
+    await this.beforeWideRead();
     if (this.catalogStore.isPopulated()) return;
     const inFlight = this.backfillInFlight();
     if (inFlight) {
@@ -919,6 +916,13 @@ export class DataQueryService {
         entry.generation === this.catalogStore.generation()
       ? entry.promise
       : undefined;
+  }
+
+  /** outside a scoped command it adds no turn before the catalog is read */
+  private async beforeWideRead(): Promise<void> {
+    if (this.dataRepo.readsScoped?.() === true) {
+      await this.dataRepo.beforeWideRead?.();
+    }
   }
 
   specNameFallback(predicate: string): SpecNameFallback | null {
@@ -954,7 +958,7 @@ export class DataQueryService {
     predicate: string,
     options?: DataQueryOptions,
   ): Promise<DataQueryPage> {
-    await this.dataRepo.beforeWideRead?.();
+    await this.beforeWideRead();
     // Resolved before the catalog is touched, so a query that cannot
     // resolve its runs fails without a backfill.
     const latestRuns = await this.resolveLatestRuns(predicate, options);
