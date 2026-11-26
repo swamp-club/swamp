@@ -58,6 +58,10 @@ import {
   type ServeFederationHubDeps,
 } from "../src/cli/commands/serve_federation_hub.ts";
 import {
+  buildServeFederationMember,
+  type ServeFederationMemberDeps,
+} from "../src/cli/commands/serve_federation_member.ts";
+import {
   serverRequestPayloadFields,
   serverRequestSchemas,
   validateServerRequest,
@@ -78,7 +82,7 @@ await initializeLogging({});
  * the gate off none of them may be reachable.
  */
 export const FEDERATION_SURFACES = {
-  serveSubcommands: ["fingerprint", "member"],
+  serveSubcommands: ["fingerprint", "member", "hub"],
   serveYamlKeys: ["version", "federation"],
   modelTypes: ["swamp/serve-member"],
   httpRoutes: ["/federation/v1/join", "/federation/v1/check-in"],
@@ -90,7 +94,13 @@ export const FEDERATION_SURFACES = {
     "federation.token.list",
     "federation.token.revoke",
   ],
+  memberRequestTypes: ["federation.link.get"],
 } as const;
+
+const EVERY_FEDERATION_REQUEST_TYPE = [
+  ...FEDERATION_SURFACES.requestTypes,
+  ...FEDERATION_SURFACES.memberRequestTypes,
+];
 
 // pinned: the routes every serve has with the gate off; a change here changes every serve
 const SERVE_ROUTE_NAMES = [
@@ -265,8 +275,46 @@ function requestSample(type: string): ServeRequest {
   return {
     type,
     id: "same-id",
-    payload: type.endsWith(".list") ? {} : { name: "edge-1" },
+    payload: type.endsWith(".list") || type === "federation.link.get"
+      ? {}
+      : { name: "edge-1" },
   };
+}
+
+interface Touched {
+  requests: number;
+  storeCalls: number;
+  vaultCalls: number;
+}
+
+// every way a member could reach out: the network, the control-plane store, the vault
+function memberDeps(
+  gate: string | undefined,
+  federation: Record<string, unknown> | undefined,
+): { deps: ServeFederationMemberDeps; touched: Touched } {
+  const touched: Touched = { requests: 0, storeCalls: 0, vaultCalls: 0 };
+  const count = (field: keyof Touched) => () => {
+    touched[field]++;
+    return Promise.reject(new Error("touched"));
+  };
+  const deps = {
+    env: gateEnv(gate),
+    merged: federation === undefined ? {} : { federation },
+    instanceId: crypto.randomUUID(),
+    fetch: count("requests"),
+    store: {
+      get: count("storeCalls"),
+      put: count("storeCalls"),
+      delete: count("storeCalls"),
+      list: count("storeCalls"),
+    },
+    tokenSecrets: {
+      get: count("vaultCalls"),
+      put: count("vaultCalls"),
+      delete: count("vaultCalls"),
+    },
+  } as unknown as ServeFederationMemberDeps;
+  return { deps, touched };
 }
 
 function hubDeps(
@@ -417,21 +465,45 @@ Deno.test("federation gate: with the gate off, no hub is built and the federatio
   }
 });
 
-Deno.test("federation gate: without a hub, the request types are exactly those every serve accepted before federation", () => {
+Deno.test("federation gate: with the gate off, a serve.yaml naming a hub builds no member and makes no outbound request", () => {
+  const { deps, touched } = memberDeps(undefined, {
+    hub: "https://hub.example.com",
+    "join-token-file": "/tmp/join-token.txt",
+  });
+  assertEquals(buildServeFederationMember(deps), undefined);
+  assertEquals(touched, { requests: 0, storeCalls: 0, vaultCalls: 0 });
+});
+
+Deno.test("federation gate: with the gate on and no federation block, or a hub's, no member is built and nothing is touched", () => {
+  for (const federation of [undefined, { role: "hub" }]) {
+    const { deps, touched } = memberDeps("1", federation);
+    assertEquals(buildServeFederationMember(deps), undefined);
+    assertEquals(touched, { requests: 0, storeCalls: 0, vaultCalls: 0 });
+  }
+});
+
+Deno.test("federation gate: building a member touches no store, vault or network until it is started", () => {
+  const { deps, touched } = memberDeps("1", { hub: "https://hub.example.com" });
+  const member = buildServeFederationMember(deps);
+  assert(member !== undefined);
+  assertEquals(touched, { requests: 0, storeCalls: 0, vaultCalls: 0 });
+});
+
+Deno.test("federation gate: without a hub or member, the request types are exactly those every serve accepted before federation", () => {
   assertEquals(
     [...serverRequestPayloadFields().keys()].sort(),
     NON_HUB_REQUEST_TYPES,
   );
   assertEquals(serverRequestSchemas().length, NON_HUB_REQUEST_TYPES.length);
-  for (const type of FEDERATION_SURFACES.requestTypes) {
+  for (const type of EVERY_FEDERATION_REQUEST_TYPE) {
     assert(!serverRequestPayloadFields().has(type), type);
   }
 });
 
-Deno.test("federation gate: without a hub, each federation request type is refused exactly as a made-up type is", async () => {
+Deno.test("federation gate: without a hub or member, each federation request type is refused exactly as a made-up type is", async () => {
   const madeUp = validateServerRequest(requestSample("federation.made.up"));
   assertEquals(typeof madeUp, "string");
-  for (const type of FEDERATION_SURFACES.requestTypes) {
+  for (const type of EVERY_FEDERATION_REQUEST_TYPE) {
     assertEquals(validateServerRequest(requestSample(type)), madeUp, type);
   }
   await withServeRepo(async (repo) => {
@@ -446,7 +518,7 @@ Deno.test("federation gate: without a hub, each federation request type is refus
       (unknown?.error as Record<string, unknown>).code,
       "invalid_request",
     );
-    for (const type of FEDERATION_SURFACES.requestTypes) {
+    for (const type of EVERY_FEDERATION_REQUEST_TYPE) {
       const refused = errorFrame(await sendRequest(ctx, requestSample(type)));
       assertEquals(refused?.error, unknown?.error, type);
     }
@@ -507,6 +579,21 @@ Deno.test("federation gate: with the gate on, a hub registers the member type, r
   for (const type of FEDERATION_SURFACES.requestTypes) {
     const validated = validateServerRequest(requestSample(type), {
       federationHub: true,
+    });
+    assert(typeof validated !== "string", `${type}: ${validated}`);
+  }
+});
+
+Deno.test("federation gate: with the gate on, a member accepts federation.link.get and none of the hub's requests", () => {
+  const onMember = serverRequestPayloadFields({ federationMember: true });
+  assertEquals(
+    [...onMember.keys()].sort(),
+    [...NON_HUB_REQUEST_TYPES, ...FEDERATION_SURFACES.memberRequestTypes]
+      .sort(),
+  );
+  for (const type of FEDERATION_SURFACES.memberRequestTypes) {
+    const validated = validateServerRequest(requestSample(type), {
+      federationMember: true,
     });
     assert(typeof validated !== "string", `${type}: ${validated}`);
   }

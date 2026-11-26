@@ -65,7 +65,7 @@ export const FingerprintSchema = z.object({
   settingsHash: z.string().regex(/^[0-9a-f]{64}$/),
   workers: WorkersSchema,
   team: z.object({
-    role: z.enum(["leader", "follower", "single"]),
+    role: z.enum(["leader", "follower", "peer", "single"]),
     nodes: z.number().int().positive(),
   }).strict().nullable(),
   startedAt: z.string().nullable(),

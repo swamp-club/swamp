@@ -107,3 +107,32 @@ Deno.test("validateServerRequest: a hub bounds the federation payloads", () => {
     );
   }
 });
+
+Deno.test("serverRequestPayloadFields: a member adds federation.link.get and nothing else", () => {
+  const withoutMember = [...serverRequestPayloadFields().keys()];
+  assertEquals(
+    [...serverRequestPayloadFields({ federationMember: true }).keys()].sort(),
+    [...withoutMember, "federation.link.get"].sort(),
+  );
+});
+
+Deno.test("validateServerRequest: federation.link.get is accepted only on a member, and a member refuses the hub's types", () => {
+  const madeUp = validateServerRequest(sample("federation.made.up"));
+  const linkGet = { type: "federation.link.get", id: "request-1", payload: {} };
+  assertEquals(validateServerRequest(linkGet), madeUp);
+  assertEquals(
+    validateServerRequest(linkGet, { federationHub: true }),
+    validateServerRequest(sample("federation.made.up"), {
+      federationHub: true,
+    }),
+  );
+  const validated = validateServerRequest(linkGet, { federationMember: true });
+  assert(typeof validated !== "string", String(validated));
+  for (const type of FEDERATION_TYPES) {
+    assertEquals(
+      typeof validateServerRequest(sample(type), { federationMember: true }),
+      "string",
+      type,
+    );
+  }
+});

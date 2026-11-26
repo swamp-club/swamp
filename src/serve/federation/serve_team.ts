@@ -24,9 +24,14 @@ import {
   InstanceHeartbeatService,
 } from "../instance_heartbeat.ts";
 
-export interface HubTeamFactsOptions {
-  /** true only on a v3 team; every other mode is reported as a single node */
-  readonly teamMode: boolean;
+/**
+ * v3: a team with a leader; v2-shared: v2 serves sharing a remote control
+ * plane, peers with no leader; local: a control plane only this serve reads
+ */
+export type ServeTeamMode = "v3" | "v2-shared" | "local";
+
+export interface ServeTeamFactsOptions {
+  readonly mode: ServeTeamMode;
   readonly following: () => boolean;
   /** where the team's nodes beat; absent, the count is this node alone */
   readonly heartbeats?: ControlPlaneStore;
@@ -34,13 +39,30 @@ export interface HubTeamFactsOptions {
   readonly now?: () => number;
 }
 
-/** counts the nodes cluster.instances would call healthy or degraded */
-export async function hubTeamFacts(
-  options: HubTeamFactsOptions,
+export function serveTeamMode(options: {
+  readonly v3: boolean;
+  readonly hasRemoteControlPlane: boolean;
+}): ServeTeamMode {
+  if (options.v3) return "v3";
+  return options.hasRemoteControlPlane ? "v2-shared" : "local";
+}
+
+/** this node's place in its team, shared by a hub and a member */
+export async function serveTeamFacts(
+  options: ServeTeamFactsOptions,
 ): Promise<FingerprintProps["team"]> {
-  if (!options.teamMode) return { role: "single", nodes: 1 };
-  const role = options.following() ? "follower" : "leader";
-  if (options.heartbeats === undefined) return { role, nodes: 1 };
+  if (options.mode === "local") return { role: "single", nodes: 1 };
+  const nodes = await liveNodes(options);
+  if (options.mode === "v2-shared") {
+    // one live v2 node is a serve on its own, whatever store it uses
+    return nodes >= 2 ? { role: "peer", nodes } : { role: "single", nodes: 1 };
+  }
+  return { role: options.following() ? "follower" : "leader", nodes };
+}
+
+// counts the nodes cluster.instances would call healthy or degraded
+async function liveNodes(options: ServeTeamFactsOptions): Promise<number> {
+  if (options.heartbeats === undefined) return 1;
   const now = (options.now ?? Date.now)();
   const staleTtlMs = options.staleTtlMs ?? DEFAULT_STALE_TTL_MS;
   let nodes = 0;
@@ -52,5 +74,5 @@ export async function hubTeamFacts(
     const age = now - new Date(record.heartbeatAt).getTime();
     if (age <= staleTtlMs) nodes++;
   }
-  return { role, nodes: Math.max(1, nodes) };
+  return Math.max(1, nodes);
 }

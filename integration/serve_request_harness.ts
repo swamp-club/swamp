@@ -215,6 +215,7 @@ export interface ServeCtxOptions {
   hostedWorkspaces?: ConnectionContext["hostedWorkspaces"];
   /** a hub's ctx: federation.* requests validate only with one */
   federationHub?: ConnectionContext["federationHub"];
+  federationMember?: ConnectionContext["federationMember"];
 }
 
 export function createServeCtx(
@@ -260,6 +261,9 @@ export function createServeCtx(
       ? { hostedWorkspaces: options.hostedWorkspaces }
       : {}),
     ...(options.federationHub ? { federationHub: options.federationHub } : {}),
+    ...(options.federationMember
+      ? { federationMember: options.federationMember }
+      : {}),
     ...(grants
       ? {
         policySnapshotLoader: {

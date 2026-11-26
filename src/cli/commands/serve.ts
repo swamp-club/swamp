@@ -180,8 +180,15 @@ import {
   routeFederationRequest,
 } from "../../serve/federation/hub_routes.ts";
 import { buildServeFederationHub } from "./serve_federation_hub.ts";
-import { federationHubEnabled } from "../../serve/federation/federation_hub.ts";
-import { hubTeamFacts } from "../../serve/federation/hub_team.ts";
+import { buildServeFederationMember } from "./serve_federation_member.ts";
+import {
+  federationHubEnabled,
+  federationMemberEnabled,
+} from "../../serve/federation/federation_hub.ts";
+import {
+  serveTeamFacts,
+  serveTeamMode,
+} from "../../serve/federation/serve_team.ts";
 import {
   buildWebhookRouteTable,
   createWebhookRouteApplier,
@@ -2998,6 +3005,10 @@ export const serveCommand = new Command()
               (name) => Deno.env.get(name),
               merged.federation,
             ),
+            federationMember: federationMemberEnabled(
+              (name) => Deno.env.get(name),
+              merged.federation,
+            ),
           }).keys(),
         ),
         isKnownModelType: (type) => modelRegistry.has(type),
@@ -5680,6 +5691,16 @@ export const serveCommand = new Command()
       }
     }
 
+    const serveTeam = () =>
+      serveTeamFacts({
+        mode: serveTeamMode({
+          v3: v3Location !== undefined,
+          hasRemoteControlPlane,
+        }),
+        following: isFollowing,
+        heartbeats: heartbeatStore,
+        staleTtlMs,
+      });
     const federationHub = await buildServeFederationHub({
       env: (name) => Deno.env.get(name),
       merged,
@@ -5694,13 +5715,7 @@ export const serveCommand = new Command()
       auditEmitter: () => connectionCtx.auditEmitter,
       instanceId,
       startedAt: new Date().toISOString(),
-      team: () =>
-        hubTeamFacts({
-          teamMode: v3Location !== undefined,
-          following: isFollowing,
-          heartbeats: heartbeatStore,
-          staleTtlMs,
-        }),
+      team: serveTeam,
       flush: () => pushChangedToRemote(connectionCtx),
     });
     if (federationHub) {
@@ -5708,6 +5723,41 @@ export const serveCommand = new Command()
       connectionCtx.federationHub = federationHub.hub;
       startWhenLeading(() => sweeper.start());
       selfRecord.start(startWhenLeading);
+    }
+    const federationMember = buildServeFederationMember({
+      env: (name) => Deno.env.get(name),
+      merged,
+      serveYamlVersion: configFile?.version ?? 1,
+      repoDir: resolvedRepoDir,
+      repoContext,
+      store: controlPlaneStore,
+      tokenSecrets: tokenSecretsProvider,
+      datastoreConfig,
+      datastoreEngine,
+      lockfilePath: extensionLockfilePath,
+      settings: () => connectionCtx.serveOptions ?? merged,
+      instanceId,
+      startedAt: new Date().toISOString(),
+      caCerts,
+      teamMode: serveTeamMode({
+        v3: v3Location !== undefined,
+        hasRemoteControlPlane,
+      }),
+      team: serveTeam,
+      liveWorkers: () =>
+        workerGateway.workers().filter((worker) => worker.connected).map((
+          worker,
+        ) => ({
+          swampVersion: worker.swampVersion,
+          labelKeys: Object.keys(worker.labels),
+        })),
+      ready: () => isReady && !shuttingDown,
+    });
+    if (federationMember) {
+      connectionCtx.federationMember = {
+        links: federationMember.links,
+        configuredHubUrl: federationMember.hubUrl,
+      };
     }
 
     let telemetryFlushService: DaemonTelemetryFlushService | null = null;
@@ -6934,6 +6984,7 @@ export const serveCommand = new Command()
               requestTypes: new Set(
                 serverRequestPayloadFields({
                   federationHub: federationHub !== undefined,
+                  federationMember: federationMember !== undefined,
                 }).keys(),
               ),
               isKnownModelType: (type) => modelRegistry.has(type),
@@ -8940,6 +8991,10 @@ export const serveCommand = new Command()
           v3Location === undefined ? "left" : "awaited",
         );
       }
+      if (federationMember) {
+        const { service } = federationMember;
+        await stages.run("federation member", () => service.stop(), "left");
+      }
       // Before the heartbeat stops: a claim taken by a pass in flight must
       // still be a live instance's.
       if (continuationSweepService) {
@@ -10377,6 +10432,8 @@ export const serveCommand = new Command()
     if (!shuttingDown) {
       isReady = true;
       logger.info("Startup complete — /ready is now serving 200");
+      // joins and checks in in the background; serve never waits on its hub
+      federationMember?.service.start();
     }
 
     runIndexWarmup.start();

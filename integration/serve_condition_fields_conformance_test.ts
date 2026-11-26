@@ -207,6 +207,7 @@ const CATEGORIES: Record<string, Category> = {
   "federation.token.create": "access",
   "federation.token.list": "access",
   "federation.token.revoke": "access",
+  "federation.link.get": "access",
   "worker.verify": "access",
   "workspace.create": "access",
   "workspace.list": "access",
@@ -234,9 +235,12 @@ const CATEGORIES: Record<string, Category> = {
 };
 
 Deno.test("serve condition-fields conformance: every request type is classified", () => {
-  const types = [...serverRequestPayloadFields({ federationHub: true })].map((
-    [type],
-  ) => type).sort();
+  const types = [
+    ...new Set([
+      ...serverRequestPayloadFields({ federationHub: true }).keys(),
+      ...serverRequestPayloadFields({ federationMember: true }).keys(),
+    ]),
+  ].sort();
   assertEquals(
     types.filter((type) => !CATEGORIES[type]),
     [],

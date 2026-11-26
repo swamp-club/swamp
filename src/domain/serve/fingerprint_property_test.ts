@@ -127,7 +127,7 @@ Deno.test("Fingerprint property: hash never moves with workers or runtime fields
       fc.record({ total: fc.nat(), byVersion: counts, byLabelKey: counts }),
       fc.option(
         fc.record({
-          role: fc.constantFrom("leader", "follower", "single"),
+          role: fc.constantFrom("leader", "follower", "peer", "single"),
           nodes: fc.integer({ min: 1, max: 64 }),
         }),
       ),

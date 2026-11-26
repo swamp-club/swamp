@@ -241,7 +241,28 @@ Deno.test({
       const unchecked: string[] = [];
       const allowed: string[] = [];
       const seen = new Set<string>();
-      for (const schema of serverRequestSchemas({ federationHub: true })) {
+      // a member-only type validates only on a serve that built a member
+      const member = recording(
+        createServeCtx(repo, EVERYTHING, {
+          federationMember: {} as NonNullable<
+            ConnectionContext["federationMember"]
+          >,
+          integrations: {
+            standingOf: () => ({ kind: "active", ceiling: Ceiling.empty() }),
+          },
+        }),
+      );
+      const typeOf = (schema: z.ZodType) =>
+        ((schema as z.ZodObject).shape.type as z.ZodLiteral<string>).value;
+      const hubSchemas = serverRequestSchemas({ federationHub: true });
+      const hubTypes = new Set(hubSchemas.map(typeOf));
+      const walks = [
+        ...hubSchemas.map((schema) => ({ schema, ctx, take })),
+        ...serverRequestSchemas({ federationMember: true })
+          .filter((schema) => !hubTypes.has(typeOf(schema)))
+          .map((schema) => ({ schema, ctx: member.ctx, take: member.take })),
+      ];
+      for (const { schema, ctx, take } of walks) {
         const shape = (schema as z.ZodObject).shape;
         const type = (shape.type as z.ZodLiteral<string>).value;
         seen.add(type);

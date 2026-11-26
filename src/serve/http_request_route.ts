@@ -134,6 +134,7 @@ export async function handleHttpRequest(
   }
   const validated = validateServerRequest(raw, {
     federationHub: deps.ctx.federationHub !== undefined,
+    federationMember: deps.ctx.federationMember !== undefined,
   });
   if (typeof validated === "string") {
     return httpFailure(400, "invalid_request", validated);

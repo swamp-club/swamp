@@ -59,6 +59,14 @@ export function federationHubEnabled(
   return isServeFederationEnabled(env) && federation?.role === "hub";
 }
 
+/** the gate and a version 2 member config together; nothing of a member exists otherwise */
+export function federationMemberEnabled(
+  env: (name: string) => string | undefined,
+  federation: FederationConfig | undefined,
+): boolean {
+  return isServeFederationEnabled(env) && federation?.hub !== undefined;
+}
+
 export interface MemberRecords {
   list(): Promise<ServeMember[]>;
   get(name: string): Promise<ServeMember | null>;

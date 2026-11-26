@@ -24,7 +24,11 @@ import { JoinToken } from "../../domain/serve/join_token.ts";
 import { MemberCredential } from "../../domain/serve/member_credential.ts";
 import { MemberName } from "../../domain/serve/member_name.ts";
 import { MAX_INSTANCES } from "../../domain/serve/serve_member.ts";
-import { federationHubEnabled, FederationHubError } from "./federation_hub.ts";
+import {
+  federationHubEnabled,
+  FederationHubError,
+  federationMemberEnabled,
+} from "./federation_hub.ts";
 import { createTestHub, type TestHub } from "./federation_hub_test_helpers.ts";
 
 const HOUR = 60 * 60 * 1000;
@@ -53,6 +57,17 @@ Deno.test("federationHubEnabled: only with the gate on and role hub", () => {
     federationHubEnabled(on, { hub: "https://hub.example" }),
     false,
   );
+});
+
+Deno.test("federationMemberEnabled: only with the gate on and a hub URL", () => {
+  const on = (name: string) =>
+    name === "SWAMP_EXPERIMENTAL_FEDERATION" ? "1" : undefined;
+  const off = () => undefined;
+  const member = { hub: "https://hub.example" };
+  assertEquals(federationMemberEnabled(on, member), true);
+  assertEquals(federationMemberEnabled(off, member), false);
+  assertEquals(federationMemberEnabled(on, undefined), false);
+  assertEquals(federationMemberEnabled(on, { role: "hub" }), false);
 });
 
 Deno.test("FederationHub.createToken: stores the hash only, under the member's name", async () => {

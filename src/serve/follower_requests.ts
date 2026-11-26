@@ -171,6 +171,7 @@ export const FOLLOWER_READ_REQUESTS: ReadonlySet<string> = new Set([
   "federation.member.list",
   "federation.member.get",
   "federation.token.list",
+  "federation.link.get",
   ...HOST_FOLDER_REQUESTS,
 ]);
 

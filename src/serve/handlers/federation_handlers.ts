@@ -21,6 +21,7 @@ import type { AccessResource } from "../../domain/access/access_decision_service
 import type { Action } from "../../domain/access/action.ts";
 import type { Principal } from "../../domain/access/principal.ts";
 import type { FederationAdminEvent } from "../../libswamp/serve/federation_admin.ts";
+import { hubLinkGet } from "../../libswamp/serve/hub_link_get.ts";
 import { memberGet } from "../../libswamp/serve/member_get.ts";
 import { memberList } from "../../libswamp/serve/member_list.ts";
 import { memberRemove } from "../../libswamp/serve/member_remove.ts";
@@ -235,4 +236,66 @@ export function handleFederationTokenRevoke(
       }),
     (data) => ({ token: data.token }),
   );
+}
+
+/** a member's link to its hub; read on access:swamp/federation, never a secret */
+export async function handleFederationLinkGet(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(
+      socket,
+      requestId,
+      principal,
+      "read",
+      FEDERATION_RESOURCE,
+      ctx,
+    ).allowed
+  ) return;
+  const member = ctx.federationMember;
+  if (member === undefined) {
+    sendError(
+      socket,
+      requestId,
+      "unsupported_operation",
+      "This server is not a federation member",
+    );
+    return;
+  }
+  try {
+    for await (
+      const event of hubLinkGet(handlerLibSwampContext(ctx), {
+        links: member.links,
+        configuredHubUrl: member.configuredHubUrl,
+      })
+    ) {
+      if (event.kind === "error") {
+        sendError(
+          socket,
+          requestId,
+          event.error.code,
+          sanitizeErrorForClient(new Error(event.error.message)),
+        );
+        return;
+      }
+      if (event.kind === "completed") {
+        send(socket, {
+          type: "federation.link.get",
+          id: requestId,
+          payload: { link: event.data },
+        });
+        return;
+      }
+    }
+  } catch (error) {
+    sendError(
+      socket,
+      requestId,
+      "federation_request_failed",
+      sanitizeErrorForClient(error),
+    );
+  }
 }

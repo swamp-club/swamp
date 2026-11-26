@@ -75,6 +75,7 @@ const PINNED = [
   "src/cli/commands/worker_prune.ts :: workerPruneCommand",
   // member remove writes the member's record
   "src/cli/commands/serve_member_local.ts :: withLocalHubForMember",
+  "src/cli/commands/serve_hub_local.ts :: openLocalMember",
   "src/cli/commands/worker_token_create.ts :: workerTokenCreateCommand",
   // Generates and stores the token encryption key on first use.
   "src/cli/commands/worker_token_reveal.ts :: workerTokenRevealCommand",

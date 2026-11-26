@@ -42,7 +42,6 @@ Deno.test("MemberRoster.isNameTaken: a live member holds its name, a removed one
   const roster = new MemberRoster([live, gone]);
   assertEquals(roster.isNameTaken(MemberName.create("edge")), true);
   assertEquals(roster.isNameTaken(MemberName.create("old")), false);
-  assertEquals(roster.liveMemberNamed(MemberName.create("edge")), live);
 });
 
 Deno.test("MemberRoster.isNameTaken: the hub's name, with or without its record", () => {

@@ -30,7 +30,10 @@ import {
   findIneffectiveRestrictions,
 } from "../../domain/access/serve_auth_config.ts";
 import { serverRequestPayloadFields } from "../../serve/connection.ts";
-import { federationHubEnabled } from "../../serve/federation/federation_hub.ts";
+import {
+  federationHubEnabled,
+  federationMemberEnabled,
+} from "../../serve/federation/federation_hub.ts";
 import {
   checkRouteFiles,
   shadowedRouteFileMessage,
@@ -311,6 +314,10 @@ export const checkConfigCommand = new Command()
       requestTypes: new Set(
         serverRequestPayloadFields({
           federationHub: federationHubEnabled(
+            (name) => Deno.env.get(name),
+            merged.federation,
+          ),
+          federationMember: federationMemberEnabled(
             (name) => Deno.env.get(name),
             merged.federation,
           ),

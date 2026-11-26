@@ -673,6 +673,19 @@ export {
   type FederationAdminEvent,
 } from "./serve/federation_admin.ts";
 export {
+  hubLinkGet,
+  type HubLinkGetDeps,
+  type HubLinkGetEvent,
+  type HubLinkReader,
+} from "./serve/hub_link_get.ts";
+export {
+  hubForget,
+  type HubForgetData,
+  type HubForgetDeps,
+  type HubForgetEvent,
+  SERVE_RUNNING_CODE,
+} from "./serve/hub_forget.ts";
+export {
   memberTokenCreate,
   type MemberTokenCreateData,
   type MemberTokenCreateEvent,

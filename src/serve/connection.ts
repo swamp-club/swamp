@@ -246,6 +246,7 @@ import {
   handleWorkerVerify,
 } from "./handlers/admin_handlers.ts";
 import {
+  handleFederationLinkGet,
   handleFederationMemberGet,
   handleFederationMemberList,
   handleFederationMemberRemove,
@@ -1795,6 +1796,17 @@ const FEDERATION_REQUEST_SCHEMAS = [
   FederationTokenRevokeRequestSchema,
 ] as const;
 
+const FederationLinkGetRequestSchema = z.object({
+  type: z.literal("federation.link.get"),
+  id: z.string().min(1).max(256),
+  payload: z.object({}).optional(),
+});
+
+// accepted only by a serve that built a federation member, as the hub's are by a hub
+const FEDERATION_MEMBER_REQUEST_SCHEMAS = [
+  FederationLinkGetRequestSchema,
+] as const;
+
 const ServerRequestSchema = z.discriminatedUnion("type", [
   ServerVersionRequestSchema,
   WorkflowRunRequestSchema,
@@ -1952,15 +1964,31 @@ const HubServerRequestSchema = z.discriminatedUnion("type", [
   ...FEDERATION_REQUEST_SCHEMAS,
 ]);
 
-/** which request schema applies: a serve that built a federation hub also takes federation.* */
+const MemberServerRequestSchema = z.discriminatedUnion("type", [
+  ...ServerRequestSchema.options,
+  ...FEDERATION_MEMBER_REQUEST_SCHEMAS,
+]);
+
+// only for the type below: no serve is both a hub and a member
+const AnyServerRequestSchema = z.discriminatedUnion("type", [
+  ...ServerRequestSchema.options,
+  ...FEDERATION_REQUEST_SCHEMAS,
+  ...FEDERATION_MEMBER_REQUEST_SCHEMAS,
+]);
+
+/**
+ * which request schema applies: a serve that built a federation hub also takes
+ * the hub's federation.* requests, and one that built a member the member's
+ */
 export interface ServerRequestScope {
   readonly federationHub?: boolean;
+  readonly federationMember?: boolean;
 }
 
 function requestSchemaFor(scope: ServerRequestScope) {
-  return scope.federationHub === true
-    ? HubServerRequestSchema
-    : ServerRequestSchema;
+  if (scope.federationHub === true) return HubServerRequestSchema;
+  if (scope.federationMember === true) return MemberServerRequestSchema;
+  return ServerRequestSchema;
 }
 
 /**
@@ -1968,7 +1996,7 @@ function requestSchemaFor(scope: ServerRequestScope) {
  * schema never reaches the handler; connection_schema_parity_test.ts compares
  * this type against ServerRequest
  */
-export type ValidatedServerRequest = z.infer<typeof HubServerRequestSchema>;
+export type ValidatedServerRequest = z.infer<typeof AnyServerRequestSchema>;
 
 export function serverRequestSchemas(
   scope: ServerRequestScope = {},
@@ -2207,6 +2235,7 @@ export function handleMessage(
 
   const validated = validateServerRequest(parsed, {
     federationHub: ctx.federationHub !== undefined,
+    federationMember: ctx.federationMember !== undefined,
   });
   if (typeof validated === "string") {
     sendError(socket, requestId, "invalid_request", validated);
@@ -2424,6 +2453,7 @@ export function handleMessage(
         `Operation '${request.type}' is not supported by this server version`,
       ),
     );
+  const notAFederationMember = notAFederationHub;
 
   // write requests answer once their commits are replicated; see
   // CONFIRMED_WRITE_REQUESTS
@@ -4937,6 +4967,15 @@ export function handleMessage(
         ),
         auditOpts("admin", "server", "*"),
       );
+      break;
+    // validation admits this only on a member; the arm checks again
+    case "federation.link.get":
+      task = ctx.federationMember === undefined
+        ? notAFederationMember()
+        : audited(
+          handleFederationLinkGet(socket, ctx, request.id, principal),
+          auditOpts("admin", "federation", "*"),
+        );
       break;
     // validation admits these only on a hub; the arms check again
     case "federation.member.list":

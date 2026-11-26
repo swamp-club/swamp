@@ -36,10 +36,6 @@ export class MemberRoster {
     this.#live = live;
   }
 
-  liveMemberNamed(name: MemberName): ServeMember | undefined {
-    return this.#live.get(name.value);
-  }
-
   isNameTaken(name: MemberName): boolean {
     return name.value === this.hubName || this.#live.has(name.value);
   }

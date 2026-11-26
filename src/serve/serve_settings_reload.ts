@@ -119,7 +119,7 @@ export const SETTING_CATALOGUE = {
   federation: restart(
     "federation",
     undefined,
-    `${NEW_PROCESS}: the federation role and hub are read once at startup`,
+    `${NEW_PROCESS}: the federation role, hub and name are read once at startup`,
   ),
   // removals apply; an addition reports itself as needing a restart
   admins: applied("auth.admins", "admins"),

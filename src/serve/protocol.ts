@@ -20,6 +20,7 @@
 import type { GateState } from "../domain/workflows/gate_state.ts";
 import type { JoinTokenView } from "../domain/serve/join_token.ts";
 import type { ServeMemberRecord } from "../domain/serve/serve_member.ts";
+import type { HubLinkView } from "../domain/serve/hub_link.ts";
 
 export interface WorkflowRunPayload {
   /** kinds newer than old clients, sent only when listed */
@@ -1548,6 +1549,11 @@ export type ServerRequest =
     type: "federation.token.revoke";
     id: string;
     payload: FederationNamePayload;
+  }
+  | {
+    type: "federation.link.get";
+    id: string;
+    payload?: Record<string, never>;
   };
 
 export interface SerializedEvent {
@@ -2507,6 +2513,10 @@ export interface FederationTokenRevokeResponse {
   token: JoinTokenView;
 }
 
+export interface FederationLinkGetResponse {
+  link: HubLinkView;
+}
+
 export interface FederationMemberListResponse {
   members: ServeMemberRecord[];
 }
@@ -3014,4 +3024,9 @@ export type ServerMessage =
     type: "federation.token.revoke";
     id: string;
     payload: FederationTokenRevokeResponse;
+  }
+  | {
+    type: "federation.link.get";
+    id: string;
+    payload: FederationLinkGetResponse;
   };
