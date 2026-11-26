@@ -111,10 +111,10 @@ const arbBinder = fc.oneof(
   fc.stringMatching(/^[a-z][a-z0-9_]{0,6}$/),
 ).filter((b) => !CEL_RESERVED.has(b));
 
-Deno.test("collectRootIdentifiers: a macro binder is a root only where it is used outside its macro", () => {
+Deno.test("collectRootIdentifiers: a macro or cel.bind binder is a root only where it is used outside its body", () => {
   fc.assert(
     fc.property(
-      fc.constantFrom("all", "exists", "exists_one", "filter", "map"),
+      fc.constantFrom("all", "exists", "exists_one", "filter", "map", "bind"),
       fc.constantFrom("attributes", "tags"),
       arbBinder,
       fc.constantFrom(null, "modelName", "content"),
@@ -123,7 +123,9 @@ Deno.test("collectRootIdentifiers: a macro binder is a root only where it is use
         const body = bodyField === null
           ? `${binder} == ${binder}`
           : `${binder} == ${bodyField}`;
-        const call = `${receiver}.items.${macro}(${binder}, ${body})`;
+        const call = macro === "bind"
+          ? `cel.bind(${binder}, ${receiver}.items, ${body})`
+          : `${receiver}.items.${macro}(${binder}, ${body})`;
         const predicate = macro === "filter" || macro === "map"
           ? `size(${call}) > 0`
           : call;

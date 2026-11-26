@@ -628,3 +628,25 @@ Deno.test("expressionQueryView.predicate: a secret reached through a list macro'
     );
   }
 });
+
+Deno.test("expressionQueryView.predicate: a secret bound through cel.bind refuses when compared, as a direct read does, and a bound plain field answers", () => {
+  const r = tagged();
+  const refused = "cel.bind(p, attributes.password, p == 'x')";
+  const calling = inScope((scope) => {
+    const error = assertThrows(
+      () => view.predicate(refused, program(refused), rowContext(r)),
+      QueryViewRefusal,
+    );
+    assertEquals(error.code, SECRET_OPERATION_UNSUPPORTED);
+    return scope;
+  });
+  assert(calling.faults.length > 0);
+  for (const fault of calling.faults) {
+    assertEquals(fault.code, SECRET_OPERATION_UNSUPPORTED);
+  }
+  const answered = "cel.bind(u, attributes.user, u == 'u')";
+  assertEquals(
+    inScope(() => view.predicate(answered, program(answered), rowContext(r))),
+    true,
+  );
+});
