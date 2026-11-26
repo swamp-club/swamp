@@ -28,7 +28,11 @@ import { FeedDivergedError } from "./sqlite_commit_store.ts";
 import { v3CommitsDbPath } from "./v3_datastore.ts";
 import { holdsCurrentV3WriterLease } from "./v3_writer_lock.ts";
 import { v3ReplicatesAt } from "./v3_datastore_binding.ts";
-import { type V3DatastoreConfig, v3DatastoreFor } from "./v3_repo_context.ts";
+import {
+  v3CopyHoldsUnreplicated,
+  type V3DatastoreConfig,
+  v3DatastoreFor,
+} from "./v3_repo_context.ts";
 
 export { FeedDivergedError };
 
@@ -37,10 +41,16 @@ export interface LeaderChange {
   readonly commit: unknown;
 }
 
+/** @throws while the copy holds commits its lineage never replicated */
 export function v3FollowerCopyCursor(
   repoDir: string,
   config: V3DatastoreConfig,
 ): number {
+  if (v3CopyHoldsUnreplicated(repoDir, config)) {
+    throw new Error(
+      "this node's copy holds commits its lineage never replicated: no leader's feed is followed from it until a restore drops them",
+    );
+  }
   return v3DatastoreFor(repoDir, config).commitStore.highWaterMark().cursor;
 }
 

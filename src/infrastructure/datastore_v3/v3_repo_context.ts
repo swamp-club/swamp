@@ -115,6 +115,7 @@ import {
   V3LineageOutrankedError,
   v3ReplicaCheckOf,
 } from "./litestream/v3_copy.ts";
+import { V3RestoreError } from "./litestream/litestream_restorer.ts";
 import { BrokenLineageMoveGuard } from "../../domain/datastore_v3/broken_lineage_move.ts";
 import { isLineageBroken } from "../../domain/datastore_v3/replica_verification.ts";
 import { atomicWriteTextFile } from "../persistence/atomic_write.ts";
@@ -283,6 +284,11 @@ interface RepoContextState {
   /** restored copies, so their writers restart a lineage */
   readonly restoredCopies: Set<string>;
   /**
+   * following copies read as they were though they hold commits past their
+   * lineage's acknowledged mark: no leader's feed is followed from them
+   */
+  readonly unreplicatedCopies: Set<string>;
+  /**
    * kept across teardowns, so a later lease in the process still finds its copy's
    * lineage
    */
@@ -373,6 +379,7 @@ const repoState = processRuntimeSlot<RepoContextState>(() => ({
   lineageListening: false,
   currentCopies: new Set(),
   restoredCopies: new Set(),
+  unreplicatedCopies: new Set(),
   copiesByDatastore: new Map(),
   releases: [],
   markedCheckouts: new Map(),
@@ -556,13 +563,28 @@ export async function refreshV3FollowerCopy(
     repoState().currentCopies.delete(key);
     // A retake by a lost hold's renewal meanwhile makes the copy the
     // writer's: the refresh then leaves it to the retake's own restore.
-    await ensureV3CopyCurrent(repoDir, config, "read", {
+    const refresh = await ensureV3CopyCurrent(repoDir, config, "read", {
       stillCurrent: () => !holdsCurrentV3WriterLease(config.path),
+      following: true,
       ...(signal !== undefined ? { signal } : {}),
     });
+    // the tick then follows no feed until a restore drops them
+    if (refresh.unreplicatedKept !== undefined) {
+      throw new V3RestoreError(
+        `this node's copy holds commits its lineage never replicated, and the restore that drops them did not run: ${refresh.unreplicatedKept}`,
+      );
+    }
   }
   signal?.throwIfAborted();
   await repoState().opened.get(key)?.catchUp();
+}
+
+/** a following boot or refresh kept unreplicated commits; a restore clears it */
+export function v3CopyHoldsUnreplicated(
+  repoDir: string,
+  config: V3DatastoreConfig,
+): boolean {
+  return repoState().unreplicatedCopies.has(handleKey(repoDir, config));
 }
 
 /**
@@ -879,6 +901,8 @@ export async function ensureV3CopyCurrent(
 
 interface EnsureV3CopyOptions {
   readonly stillCurrent?: () => boolean;
+  /** see decideLocalCopy: only a serve follower's boot and refresh */
+  readonly following?: boolean;
   /** honoured until the restore is installed; the rebuild after it completes */
   readonly signal?: AbortSignal;
 }
@@ -898,7 +922,15 @@ async function ensureV3CopyCurrentNow(
     ...(handle !== undefined ? { openStore: handle.commitStore } : {}),
     lockWaitMs: resolveLockTimeoutMs(),
     ...(options.signal !== undefined ? { signal: options.signal } : {}),
+    ...(options.following === true ? { following: true } : {}),
   });
+  if (options.following === true) {
+    if (refresh.unreplicatedKept !== undefined) {
+      repoState().unreplicatedCopies.add(key);
+    } else {
+      repoState().unreplicatedCopies.delete(key);
+    }
+  }
   const datastore = resolve(config.path);
   const copies = repoState().copiesByDatastore.get(datastore) ?? [];
   if (!copies.some((known) => known.key === key)) {
@@ -1788,12 +1820,12 @@ async function followV3Datastore(
   signal?: AbortSignal,
 ): Promise<void> {
   repoState().serveFollowerCopies.add(handleKey(repoDir, config));
-  await ensureV3CopyCurrent(
-    repoDir,
-    config,
-    "read",
-    signal === undefined ? {} : { signal },
-  );
+  // a restore that fails here leaves the copy read as it was, so serve still
+  // boots; its feed is not followed until a tick's refresh restores it
+  await ensureV3CopyCurrent(repoDir, config, "read", {
+    following: true,
+    ...(signal === undefined ? {} : { signal }),
+  });
   const handle = v3DatastoreFor(repoDir, config);
   const refusal = claimRefusal(
     handle.commitStore.owner(),

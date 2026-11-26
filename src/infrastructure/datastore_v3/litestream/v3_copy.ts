@@ -36,6 +36,7 @@ import {
   type HighWaterMark,
   lineagesKeptForFork,
   type LineageStarted,
+  type LocalCopyDecision,
   mayContinueLineage,
   newestStartedFence,
   outrankingForeignLineage,
@@ -68,6 +69,7 @@ import { readModelStateDir } from "../record_path_guard.ts";
 import { ReadModelState } from "../read_model_state.ts";
 import {
   migrateCommitsDatabase,
+  peekHighWaterCursor,
   SqliteCommitStore,
 } from "../sqlite_commit_store.ts";
 import { READ_MODEL_STATE_FILE } from "../sqlite_read_model.ts";
@@ -189,6 +191,11 @@ export interface V3CopyRefresh {
      */
     readonly readModelMoved: boolean;
   };
+  /**
+   * a following copy that holds commits past the head's acknowledged mark was
+   * read as it is, because the restore that drops them did not run; why
+   */
+  readonly unreplicatedKept?: string;
 }
 
 /**
@@ -230,6 +237,8 @@ export interface V3CopyRefreshOptions {
    * removed and the copy left as it was; after that the refresh runs to its end
    */
   readonly signal?: AbortSignal;
+  /** the copy follows another writer's lineage: see decideLocalCopy */
+  readonly following?: boolean;
 }
 
 /**
@@ -283,7 +292,13 @@ async function makeV3CopyCurrentNow(
   // The cheap check, without any lock: a current copy stops here.
   const published = await registry.read(root);
   refuseForeignLineage(copy, published, root);
-  const first = decideLocalCopy(await localState(paths), published, root);
+  const following = options.following === true;
+  const first = decideLocalCopy(
+    await localState(paths, following),
+    published,
+    root,
+    { following },
+  );
   if (first.kind === "none") {
     // A bucket datastore has no shared commits.db to seed from.
     return options.mode === "write" &&
@@ -302,29 +317,38 @@ async function makeV3CopyCurrentNow(
   let quiesced: (() => void) | undefined;
   try {
     if (!await pollLock(lock, options.lockWaitMs, signal)) {
-      return refuseOrSkip(
-        options.mode,
-        copy,
-        "another swamp process is restoring this checkout's copy",
-        // As the copy stands now: that process may have restored it.
-        { neverRestored: copyNeverRestored(await localState(paths)) },
+      const reason = "another swamp process is restoring this checkout's copy";
+      return keptIfUnreplicated(
+        first,
+        reason,
+        refuseOrSkip(
+          options.mode,
+          copy,
+          reason,
+          // As the copy stands now: that process may have restored it.
+          { neverRestored: copyNeverRestored(await localState(paths)) },
+        ),
       );
     }
     // Another process may have restored while this one waited.
-    const local = await localState(paths);
+    const local = await localState(paths, following);
     const lineagesNow = await registry.read(root);
     refuseForeignLineage(copy, lineagesNow, root);
-    const decision = decideLocalCopy(local, lineagesNow, root);
+    const decision = decideLocalCopy(local, lineagesNow, root, { following });
     if (decision.kind === "none" || decision.kind === "current") return {};
     const neverRestored = copyNeverRestored(local);
     signal?.throwIfAborted();
     try {
       quiesced = await v3Replicator().quiesce(copy.commitsDb);
     } catch (error) {
-      return refuseOrSkip(options.mode, copy, reasonOf(error), {
-        cause: error,
-        neverRestored,
-      });
+      return keptIfUnreplicated(
+        decision,
+        reasonOf(error),
+        refuseOrSkip(options.mode, copy, reasonOf(error), {
+          cause: error,
+          neverRestored,
+        }),
+      );
     }
     signal?.throwIfAborted();
     await ensurePrivateDir(paths);
@@ -422,7 +446,11 @@ async function makeV3CopyCurrentNow(
       // copy unchanged, and so does a reader of a copy that never was: it
       // would read as an empty datastore.
       if (options.mode === "read" && !neverRestored) {
-        return refuseOrSkip("read", copy, messageOf(error), { cause: error });
+        return keptIfUnreplicated(
+          decision,
+          messageOf(error),
+          refuseOrSkip("read", copy, messageOf(error), { cause: error }),
+        );
       }
       // A reader's refusal carries the restore's code whatever stopped it
       // (the binary missing, the install failing).
@@ -712,14 +740,26 @@ function refuseOrSkip(
   return {};
 }
 
-async function localState(paths: ReplicationPaths) {
+async function localState(paths: ReplicationPaths, withHeld = false) {
   if (!await exists(paths.commitsDb)) return undefined;
   const copy = await readCopyState(paths);
   const lineage = await readLineage(paths);
+  const held = withHeld ? peekHighWaterCursor(paths.commitsDb) : undefined;
   return {
     ...(copy !== undefined ? { copy } : {}),
     ...(lineage !== undefined ? { lineage } : {}),
+    ...(held !== undefined ? { held } : {}),
   };
+}
+
+function keptIfUnreplicated(
+  decision: LocalCopyDecision,
+  reason: string,
+  skipped: V3CopyRefresh,
+): V3CopyRefresh {
+  return decision.kind === "unreplicated"
+    ? { ...skipped, unreplicatedKept: reason }
+    : skipped;
 }
 
 async function pollLock(

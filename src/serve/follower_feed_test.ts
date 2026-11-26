@@ -496,3 +496,34 @@ Deno.test("FollowerFeed: a socket that never opened is a connect failure, not th
   assertEquals(t.going(), 0);
   await t.feed.stop();
 });
+
+Deno.test("FollowerFeed: a copy that cannot name its cursor opens no socket and is not current, so the tick restores it first (swamp-club#5145)", async () => {
+  let opened = 0;
+  let asked = 0;
+  const link = {
+    openSocket: () => {
+      opened++;
+      return { socket: new FakeSocket(), leader: leader("x", 1) };
+    },
+  } as unknown as LeaderLink;
+  const feed = new FollowerFeed({
+    link,
+    peerToken: () => Promise.resolve("swamp-peer.k"),
+    copyCursor: () => {
+      asked++;
+      throw new Error("this node's copy holds commits it never replicated");
+    },
+    apply: () => Promise.resolve(),
+    onFresh: () => {},
+  });
+  const followed = leader("a", 1);
+  feed.follow(followed);
+  await waitFor(
+    () => feed.staleReason(followed) === "it failed",
+    "the failure",
+  );
+  assertEquals(asked, 1);
+  assertEquals(opened, 0);
+  assertEquals(feed.current(followed), false);
+  await feed.stop();
+});

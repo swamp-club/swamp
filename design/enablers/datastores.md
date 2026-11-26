@@ -9626,8 +9626,9 @@ recovered, marked or replicated by a follower.
 - `ServeLeadership` (`src/serve/serve_leadership.ts`) tracks the role. On
   every tick (10 s, or just after the holder's lease expires when that is
   sooner) a follower tries the lease once and, when it is busy, restores its
-  copy from the published lineage when it is behind
-  (`refreshV3FollowerCopy`) and reads the leader record. A refresh still
+  copy from the published lineage when it is behind, or holds commits past
+  the head's acknowledged mark that it wrote as leader and never replicated
+  (`refreshV3FollowerCopy`), and reads the leader record. A refresh still
   running when the holder's lease expires runs to its end, and the next tick
   tries the lease (swamp-club#4679, "Phase 4D2" in
   `datastore-litestream.md`), unless it runs 60 s past that lapse, when it
@@ -10133,7 +10134,10 @@ restore (swamp-club#4148). While the feed is current for the leader the record
 names, a tick restores nothing. A new leader (another instance or fence), a
 disconnect, a gap, a divergent commit (`FeedDivergedError`) or a compacted
 cursor stops it: the next tick restores from the published lineage, which
-holds everything the feed sent, and follows again from there. The 30 s
+holds everything the feed sent, and follows again from there. A follower never
+subscribes from commits of its own that no head acknowledged: its boot and
+every refresh restore them away, and a copy whose restore of them failed opens
+no feed. The 30 s
 staleness bound stays. Before a forwarded write's last reply goes back, the
 follower waits (at most 5 s, and not at all while its feed is down) until its
 copy holds the leader's head, so the caller reads its own write from that node

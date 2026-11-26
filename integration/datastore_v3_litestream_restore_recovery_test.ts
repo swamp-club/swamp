@@ -164,3 +164,109 @@ Deno.test({
     });
   },
 });
+
+Deno.test({
+  name:
+    "v3 restore: a leader that restarts as a follower holding a commit it never confirmed restores it away at boot, and a second refresh restores nothing (swamp-club#5145)",
+  ignore,
+  async fn() {
+    await withMachines(async (world) => {
+      const a = await world.machine("a");
+      await a.send({ kind: "write", commits: 2, close: true });
+      // long enough that the crashed holder's lease is still busy at boot
+      await a.send({ kind: "lease", ttlMs: 60_000 });
+      await a.send({ kind: "write", commits: 1, close: false });
+      const own = await a.send({ kind: "highWater" }) as number;
+      await a.stopSidecars();
+      await a.crash();
+      const follower = await world.machine("a2", { checkout: "a" });
+      assertEquals(await follower.send({ kind: "followHold" }), "follower");
+      assertEquals(
+        await follower.send({ kind: "feedCursor" }),
+        own - 1,
+        "the feed starts at the head's acknowledged mark, not the own commit",
+      );
+      const restored = await follower.send({ kind: "copyStateInode" });
+      await follower.send({ kind: "refresh" });
+      assertEquals(
+        await follower.send({ kind: "copyStateInode" }),
+        restored,
+        "a copy just restored is current",
+      );
+      assertEquals(await follower.send({ kind: "feedCursor" }), own - 1);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "v3 restore: a follower refreshed after its own unconfirmed commit takes its new leader's commit at that cursor instead of diverging (swamp-club#5145)",
+  ignore,
+  async fn() {
+    await withMachines(async (world) => {
+      const definition = crypto.randomUUID();
+      const a = await world.machine("a");
+      await a.send({ kind: "write", commits: 2, close: true });
+      await a.send({ kind: "lease", ttlMs: 1_500 });
+      await a.send({ kind: "write", commits: 1, close: false });
+      const own = await a.send({ kind: "highWater" }) as number;
+      await a.stopSidecars();
+      await a.crash();
+      const follower = await world.machine("a2", { checkout: "a" });
+      await follower.send({ kind: "refresh" });
+      assertEquals(await follower.send({ kind: "feedCursor" }), own - 1);
+      const b = await world.machine("b");
+      await b.send({ kind: "write", commits: 1, close: true, definition });
+      await b.send({ kind: "write", commits: 1, close: true });
+      const leader = await b.send({ kind: "changes", since: own - 1 }) as {
+        cursor: number;
+        commit: unknown;
+      }[];
+      assertEquals(leader.map((change) => change.cursor), [own, own + 1]);
+      await follower.send({ kind: "follow", changes: leader });
+      assertEquals(await follower.send({ kind: "feedCursor" }), own + 1);
+      const files = await follower.send({ kind: "files" }) as string[];
+      assert(
+        files.includes(`${definition}.yaml`),
+        "the definition b wrote at the dropped commit's cursor is applied",
+      );
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "v3 restore: a follower whose boot restore of its own unconfirmed commit fails still boots, but neither its feed nor a refresh follows from that commit (swamp-club#5145)",
+  ignore,
+  async fn() {
+    await withMachines(async (world) => {
+      const a = await world.machine("a");
+      await a.send({ kind: "write", commits: 2, close: true });
+      await a.send({ kind: "lease", ttlMs: 60_000 });
+      await a.send({ kind: "write", commits: 1, close: false });
+      const own = await a.send({ kind: "highWater" }) as number;
+      await a.stopSidecars();
+      await a.crash();
+      const follower = await world.machine("a2", {
+        checkout: "a",
+        binaryMissing: true,
+      });
+      assertEquals(await follower.send({ kind: "followHold" }), "follower");
+      assertEquals(
+        await follower.send({ kind: "highWater" }),
+        own,
+        "read as it was",
+      );
+      await assertRejects(
+        () => follower.send({ kind: "feedCursor" }),
+        MachineError,
+        "never replicated",
+      );
+      await assertRejects(
+        () => follower.send({ kind: "refresh" }),
+        MachineError,
+        "never replicated",
+      );
+    });
+  },
+});

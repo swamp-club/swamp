@@ -1203,6 +1203,19 @@ lineage at or past its head, or when it is the copy whose own lineage, not
 yet confirmed, is the newest started. Otherwise it is **missing**, **behind**
 or **foreign**, and is restored. A current copy downloads nothing.
 
+A copy that follows another writer (a serve follower, at boot and on every
+refresh) gets no exemption for its own pending lineage, and is current only
+while its high-water cursor is at or below the head's acknowledged mark. A
+leader feeds its followers only what it published, so anything past the mark
+is this checkout's own, landed but never replicated: the copy is
+**unreplicated** and restored, dropping it, so the follower never follows its
+leader's feed from a cursor the new leader may fill with other commits. A
+restore leaves the copy at the mark and records the head's TXID, so the next
+refresh finds it current. If that restore fails, boot still reads the copy as
+it was, but no feed is followed from it, and the refresh fails until a restore
+drops those commits. A command or a writer keeps such commits: they
+replicate when the checkout's writer continues its lineage.
+
 **The restore** (`restoreV3Copy`) runs the hash-checked binary into a temp
 file beside the copy, with `-txid` set to the head:
 

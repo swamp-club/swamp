@@ -307,6 +307,8 @@ export class FollowerFeed implements FollowerCopyFeed {
   async #open(generation: number): Promise<void> {
     const token = await this.#options.peerToken();
     if (generation !== this.#generation) return;
+    // before the socket: a copy that cannot name its cursor opens none
+    const applied = this.#options.copyCursor();
     const opened = this.#options.link.openSocket("/", {
       authorization: `Bearer ${token}`,
     });
@@ -316,7 +318,7 @@ export class FollowerFeed implements FollowerCopyFeed {
     }
     const socket = opened.socket;
     this.#socket = socket;
-    this.#applied = this.#options.copyCursor();
+    this.#applied = applied;
     let connected = false;
     socket.onopen = () => {
       connected = true;
