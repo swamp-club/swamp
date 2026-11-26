@@ -408,6 +408,20 @@ export interface AppliedCommit {
   readonly owed?: readonly OwedFile[];
 }
 
+/**
+ * one partition's projection as an in-order replay of the commit store leaves
+ * it at `keep`, for the keys and names the dropped commits touched
+ */
+export interface PartitionRollback {
+  readonly namespace: string;
+  readonly partition: string;
+  readonly keep: number;
+  readonly records: ReadonlyMap<string, AppliedRecord | null>;
+  readonly versions: ReadonlyMap<string, readonly LiveDataVersion[]>;
+  readonly ownership: ReadonlyMap<string, FileOwnership | undefined>;
+  readonly minCursor: number;
+}
+
 export class ReadModelState {
   readonly #db: DatabaseSync;
   readonly #pid: number;
@@ -977,6 +991,164 @@ export class ReadModelState {
    */
   forgetFoldedKeys(): void {
     this.#foldedKeys = undefined;
+  }
+
+  // leaves a marker until finishPartitionRepair, so a cut-short repair is
+  // replayed in full; the cursor stays, as a copy never reuses a position
+  rollBackPartition(rollback: PartitionRollback): void {
+    const { namespace, partition, keep, minCursor } = rollback;
+    this.#foldedKeys = undefined;
+    this.#transaction(() => {
+      // a replay leaves no progress row for a partition it applied nothing of
+      if (keep === 0) {
+        this.#db.prepare(
+          "DELETE FROM partition_progress WHERE namespace = ? AND partition = ?",
+        ).run(namespace, partition);
+      } else {
+        this.#upsertApplied.run(namespace, partition, keep);
+      }
+      for (const [key, record] of rollback.records) {
+        if (record === null) {
+          this.#deleteRecord.run(namespace, partition, key);
+        } else {
+          this.#upsertRecord.run(
+            namespace,
+            partition,
+            key,
+            record.sha256,
+            record.blob === undefined
+              ? null
+              : JSON.stringify(record.blob.toJSON()),
+            record.access ?? null,
+            record.writer ?? null,
+          );
+        }
+      }
+      const clearVersions = this.#db.prepare(
+        "DELETE FROM data_versions WHERE namespace = ? AND partition = ? AND name = ?",
+      );
+      for (const [name, versions] of rollback.versions) {
+        clearVersions.run(namespace, partition, name);
+        for (const { version, metadata } of versions) {
+          this.#upsertVersion.run(
+            namespace,
+            partition,
+            name,
+            version,
+            JSON.stringify(metadata),
+          );
+        }
+      }
+      const deleteOwnership = this.#db.prepare(
+        "DELETE FROM materialised_keys WHERE namespace = ? AND record_key = ?",
+      );
+      const deleteUnreadableUnless = this.#db.prepare(
+        "DELETE FROM unreadable_records WHERE namespace = ? AND record_key = ? AND NOT (partition = ? AND position = ?)",
+      );
+      const deleteOwedUnless = this.#db.prepare(
+        "DELETE FROM owed_files WHERE namespace = ? AND record_key = ? AND NOT (owner = ? AND mark = ?)",
+      );
+      for (const [key, file] of rollback.ownership) {
+        if (file === undefined) {
+          deleteOwnership.run(namespace, key);
+        } else {
+          this.#upsertOwnership.run(
+            namespace,
+            key,
+            file.owner,
+            file.mark,
+            file.present ? 1 : 0,
+          );
+        }
+        // what a key's file is owed or unreadable for must be the put it shows
+        if (file?.present === true) {
+          deleteUnreadableUnless.run(namespace, key, file.owner, file.mark);
+          deleteOwedUnless.run(namespace, key, file.owner, file.mark);
+        } else {
+          this.#deleteUnreadable.run(namespace, key);
+          this.#deleteOwed.run(namespace, key);
+        }
+      }
+      this.#db.prepare(
+        "DELETE FROM owed_files WHERE namespace = ? AND owner = ? AND mark >= ?",
+      ).run(namespace, partition, minCursor);
+      this.#db.prepare(
+        "DELETE FROM unreadable_records WHERE namespace = ? AND partition = ? AND seq > ?",
+      ).run(namespace, partition, keep);
+      this.#upsertMeta.run(PARTITION_REPAIR_MARKER, keep);
+    });
+  }
+
+  partitionRepairPending(): boolean {
+    return this.#meta(PARTITION_REPAIR_MARKER) !== undefined;
+  }
+
+  finishPartitionRepair(): void {
+    this.#transaction(() =>
+      this.#db.prepare("DELETE FROM meta WHERE key = ?").run(
+        PARTITION_REPAIR_MARKER,
+      )
+    );
+  }
+
+  // its staged rows decide files a rollback cannot
+  hasStagedLoad(): boolean {
+    this.#requireOpen();
+    return this.#db.prepare(
+      "SELECT 1 FROM load_files UNION ALL SELECT 1 FROM load_progress " +
+        "UNION ALL SELECT 1 FROM load_records UNION ALL SELECT 1 FROM load_touched_keys " +
+        "UNION ALL SELECT 1 FROM load_touched_names LIMIT 1",
+    ).get() !== undefined;
+  }
+
+  liveRecordPartitions(
+    namespace: string,
+    keys: readonly string[],
+  ): { readonly key: string; readonly partition: string }[] {
+    this.#requireOpen();
+    return (this.#db.prepare(
+      "SELECT record_key, partition FROM live_records WHERE namespace = ? " +
+        "AND record_key IN (SELECT value FROM json_each(?)) ORDER BY record_key, partition",
+    ).all(namespace, JSON.stringify(keys)) as {
+      record_key: string;
+      partition: string;
+    }[]).map((row) => ({ key: row.record_key, partition: row.partition }));
+  }
+
+  keysOwnedFrom(namespace: string, owner: string, mark: number): string[] {
+    this.#requireOpen();
+    return (this.#db.prepare(
+      "SELECT record_key FROM materialised_keys WHERE namespace = ? AND owner = ? AND mark >= ? ORDER BY record_key",
+    ).all(namespace, owner, mark) as { record_key: string }[]).map((row) =>
+      row.record_key
+    );
+  }
+
+  /**
+   * keys the state knows, decided or live, spelled otherwise than one of
+   * `keys` but folding to the same spelling
+   */
+  keysFoldingLike(namespace: string, keys: readonly string[]): string[] {
+    this.#requireOpen();
+    const wanted = new Map<string, Set<string>>();
+    for (const key of keys) {
+      const folded = foldSpelling(key);
+      const spellings = wanted.get(folded) ?? new Set<string>();
+      spellings.add(key);
+      wanted.set(folded, spellings);
+    }
+    const found = new Set<string>();
+    const rows = this.#db.prepare(
+      "SELECT record_key FROM materialised_keys WHERE namespace = ?1 " +
+        "UNION SELECT record_key FROM live_records WHERE namespace = ?1",
+    ).all(namespace) as { record_key: string }[];
+    for (const { record_key } of rows) {
+      const spellings = wanted.get(foldSpelling(record_key));
+      if (spellings !== undefined && !spellings.has(record_key)) {
+        found.add(record_key);
+      }
+    }
+    return [...found].sort();
   }
 
   recordSkipped(cursor: number): void {
@@ -1868,6 +2040,8 @@ export class ReadModelState {
 
 /** never a catalog's generation, which starts at 0 and only grows */
 export const REPLAY_PENDING = -1;
+
+const PARTITION_REPAIR_MARKER = "partition_repair";
 
 function migrate(db: DatabaseSync): void {
   const read = () =>
