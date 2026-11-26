@@ -217,7 +217,14 @@ interface PooledWrite {
   /** directories the write creates, which a later key under them waits for */
   readonly creates: readonly string[];
   done: Promise<void>;
+  /** set as done resolves, so a full pool drops what has landed */
   settled: boolean;
+}
+
+function pruneSettled(pool: PooledWrite[]): void {
+  let kept = 0;
+  for (const write of pool) if (!write.settled) pool[kept++] = write;
+  pool.length = kept;
 }
 
 /** case-folded and NFC, as case-insensitive or normalising filesystems compare */
@@ -4624,15 +4631,13 @@ export class SqliteReadModel implements ReadModel {
         },
       };
       if (pool !== undefined && bytes instanceof Uint8Array) {
-        for (let i = 0; i < pool.length;) {
-          if (pool[i].settled) pool.splice(i, 1);
-          else i++;
+        // a slot frees as soon as any write in the pool lands, not only the oldest
+        pruneSettled(pool);
+        while (pool.length >= this.#pooledWrites) {
+          await Promise.race(pool.map((write) => write.done));
+          pruneSettled(pool);
         }
         if (this.#poolFailure !== undefined) throw this.#poolFailure.error;
-        if (pool.length >= this.#pooledWrites) {
-          await pool.shift()!.done;
-          if (this.#poolFailure !== undefined) throw this.#poolFailure.error;
-        }
         this.#stats?.bump("writes_pooled");
         const entry: PooledWrite = {
           folded: foldPath(path),
