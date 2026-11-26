@@ -1667,7 +1667,21 @@ export class ReadModelState {
   recordWrittenFiles(files: readonly WrittenFile[]): void {
     if (files.length === 0) return;
     this.#transaction(() => {
-      for (const file of files) this.recordWrittenFile(file);
+      const insert = this.#db.prepare(
+        "INSERT OR REPLACE INTO written_files (namespace, record_key, blob, size, ino, dev, mtime, ctime) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      );
+      for (const file of files) {
+        insert.run(
+          file.namespace,
+          file.recordKey,
+          JSON.stringify(file.blob.toJSON()),
+          file.size,
+          file.ino,
+          file.dev,
+          file.mtime,
+          file.ctime ?? null,
+        );
+      }
     });
   }
 
