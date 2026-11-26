@@ -502,8 +502,11 @@ swamp-club's `whoami` retries the same way, with the same ceiling and budget, as
 not fail them. A 401 is an answer and is not retried. What runs ahead of every
 command asks once, so commands stay fast when swamp-club is unreachable: the
 auth gate's identity check (`verifyIdentity`) and startup scope resolution
-(`whoami` with `retry: false`). swamp-club's other requests keep a single
-attempt.
+(`whoami` with `retry: false`). swamp-club's other reads that a user's command
+waits on retry the same way: issue get and search, the quest passes, the
+collective token list, and inbox list and get. swamp-club's writes keep a single
+attempt, as do the inbox summary and account-notice polls, which run behind
+every command and are bounded by its signal.
 
 Before each wait one warning names the service, request, reason, wait and count,
 for example

@@ -138,12 +138,15 @@ up the command it runs behind.
 
 The list, get and mark-read calls are for commands the user runs, so they throw
 a `UserError` with a plain message. They name the server's `error` field when
-there is one and never echo a raw response body. `markInboxRead` removes
-duplicate ids, sends them in batches of 100, and returns only the requested ids
-the server confirmed. If a later batch fails, the earlier ones have already been
-applied; marking read is idempotent, so retrying the whole call is safe. An
-optional callback is given each batch's confirmed ids as the server answers, so
-a caller still knows them when a later batch fails.
+there is one and never echo a raw response body. List and get retry a timeout,
+a dropped connection or HTTP 502/503/504 as swamp-club's `whoami` does (see
+"Registry retries" in `design/primitives/extensions.md`); mark-read is a write
+and asks once. `markInboxRead` removes duplicate ids, sends them in batches of
+100, and returns only the requested ids the server confirmed. If a later batch
+fails, the earlier ones have already been applied; marking read is idempotent,
+so retrying the whole call is safe. An optional callback is given each batch's
+confirmed ids as the server answers, so a caller still knows them when a later
+batch fails.
 
 ## How the CLI uses it
 

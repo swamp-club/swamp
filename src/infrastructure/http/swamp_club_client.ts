@@ -743,10 +743,10 @@ export class SwampClubClient {
     if (apiKey) {
       headers["x-api-key"] = apiKey;
     }
-    const res = await this.fetch(`/api/v1/lab/issues/${issueNumber}`, {
-      method: "GET",
-      headers,
-    });
+    const { response: res, outcome } = await this.fetchRetrying(
+      `/api/v1/lab/issues/${issueNumber}`,
+      { method: "GET", headers },
+    );
 
     if (!res.ok) {
       const text = await res.text();
@@ -754,7 +754,9 @@ export class SwampClubClient {
         throw new UserError(`Issue #${issueNumber} not found.`);
       }
       throw new UserError(
-        `Failed to fetch issue #${issueNumber} (HTTP ${res.status}): ${text}`,
+        `Failed to fetch issue #${issueNumber} (HTTP ${res.status})${
+          retriedSuffix(outcome)
+        }: ${text}`,
       );
     }
 
@@ -849,12 +851,17 @@ export class SwampClubClient {
     if (apiKey) {
       headers["x-api-key"] = apiKey;
     }
-    const res = await this.fetch(path, { method: "GET", headers });
+    const { response: res, outcome } = await this.fetchRetrying(path, {
+      method: "GET",
+      headers,
+    });
 
     if (!res.ok) {
       const text = await res.text();
       throw new UserError(
-        `Failed to search issues (HTTP ${res.status}): ${text}`,
+        `Failed to search issues (HTTP ${res.status})${
+          retriedSuffix(outcome)
+        }: ${text}`,
       );
     }
 
@@ -890,7 +897,7 @@ export class SwampClubClient {
     username: string,
     signal?: AbortSignal,
   ): Promise<GenesisPass> {
-    const res = await this.fetch(
+    const { response: res, outcome } = await this.fetchRetrying(
       `/api/u/${encodeURIComponent(username)}/genesis`,
       { method: "GET", headers: {} },
       signal,
@@ -902,7 +909,9 @@ export class SwampClubClient {
         throw new UserError(`No quest pass found for ${username}.`);
       }
       throw new UserError(
-        `Failed to fetch quest pass (HTTP ${res.status}): ${text}`,
+        `Failed to fetch quest pass (HTTP ${res.status})${
+          retriedSuffix(outcome)
+        }: ${text}`,
       );
     }
 
@@ -916,7 +925,7 @@ export class SwampClubClient {
   async fetchGhostGenesisPass(
     signal?: AbortSignal,
   ): Promise<GenesisPass> {
-    const res = await this.fetch(
+    const { response: res, outcome } = await this.fetchRetrying(
       "/api/quest/genesis/ghost",
       { method: "GET", headers: {} },
       signal,
@@ -925,7 +934,9 @@ export class SwampClubClient {
     if (!res.ok) {
       const text = await res.text();
       throw new UserError(
-        `Failed to fetch ghost quest pass (HTTP ${res.status}): ${text}`,
+        `Failed to fetch ghost quest pass (HTTP ${res.status})${
+          retriedSuffix(outcome)
+        }: ${text}`,
       );
     }
 
@@ -993,7 +1004,7 @@ export class SwampClubClient {
     collectiveSlug: string,
     signal?: AbortSignal,
   ): Promise<ListCollectiveTokensResponse> {
-    const res = await this.fetch(
+    const { response: res, outcome } = await this.fetchRetrying(
       `/api/v1/collectives/${encodeURIComponent(collectiveSlug)}/api-tokens`,
       {
         method: "GET",
@@ -1022,7 +1033,9 @@ export class SwampClubClient {
         );
       }
       throw new UserError(
-        `Failed to list collective tokens (HTTP ${res.status}): ${text}`,
+        `Failed to list collective tokens (HTTP ${res.status})${
+          retriedSuffix(outcome)
+        }: ${text}`,
       );
     }
 
@@ -1421,7 +1434,7 @@ export class SwampClubClient {
     }
     if (options.before !== undefined) params.set("before", options.before);
     const query = params.size > 0 ? `?${params}` : "";
-    const res = await this.fetch(
+    const { response: res, outcome } = await this.fetchRetrying(
       `/api/inbox/messages${query}`,
       { method: "GET", headers: { "x-api-key": apiKey } },
       signal,
@@ -1432,6 +1445,7 @@ export class SwampClubClient {
         "list your inbox",
         NO_INBOX_MESSAGE,
         signal,
+        outcome,
       );
     }
     const page = parseInboxMessagePage(await this.readInboxJson(res, signal));
@@ -1446,7 +1460,7 @@ export class SwampClubClient {
     id: string,
     signal?: AbortSignal,
   ): Promise<InboxMessage> {
-    const res = await this.fetch(
+    const { response: res, outcome } = await this.fetchRetrying(
       `/api/inbox/messages/${encodeURIComponent(id)}`,
       { method: "GET", headers: { "x-api-key": apiKey } },
       signal,
@@ -1457,6 +1471,7 @@ export class SwampClubClient {
         `fetch message ${id}`,
         `Message ${id} not found.`,
         signal,
+        outcome,
       );
     }
     const message = parseInboxMessage(await this.readInboxJson(res, signal));
@@ -1531,6 +1546,7 @@ export class SwampClubClient {
     action: string,
     notFoundMessage: string,
     signal?: AbortSignal,
+    outcome?: RetryOutcome,
   ): Promise<UserError> {
     // 401 and 404 need no body, so a stalled one cannot blur them.
     if (res.status === 401) {
@@ -1548,10 +1564,11 @@ export class SwampClubClient {
       return new UserError(INBOX_REQUIRES_USER_MESSAGE);
     }
     const detail = code !== undefined ? sanitizeFieldText(code, 200) : "";
+    const after = retriedSuffix(outcome);
     return new UserError(
       detail
-        ? `Failed to ${action} (HTTP ${res.status}): ${detail}`
-        : `Failed to ${action} (HTTP ${res.status}).`,
+        ? `Failed to ${action} (HTTP ${res.status})${after}: ${detail}`
+        : `Failed to ${action} (HTTP ${res.status})${after}.`,
     );
   }
 
