@@ -27,7 +27,6 @@ import { partitionOf } from "../src/domain/datastore_v3/partition_key.ts";
 import { modelRegistry } from "../src/domain/models/model.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import { V3_REPLICA_ENV } from "../src/infrastructure/datastore_v3/litestream/replica_setting.ts";
-import { hostLitestreamProcesses } from "../src/infrastructure/datastore_v3/litestream/litestream_processes.ts";
 import { ServeCatchUp } from "../src/infrastructure/datastore_v3/serve_catch_up.ts";
 import {
   type AnchorVerdict,
@@ -52,8 +51,9 @@ import {
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpers.ts";
 import {
-  killSidecarAtTeardown,
+  runThenTearDown,
   SIDECAR_TESTS_IGNORED,
+  stopSidecarsAtTeardown,
 } from "./datastore_v3_litestream_helpers.ts";
 import {
   blobSaveOps,
@@ -192,7 +192,7 @@ async function withTeam(fn: (team: Team) => Promise<void>): Promise<void> {
     nodes.push(created);
     return created;
   };
-  try {
+  await runThenTearDown(async () => {
     const a = await node("a");
     const lead = await a.send({ kind: "open", ttlMs: LEASE_TTL_MS }) as Opened;
     assertEquals(lead.role, "writer");
@@ -214,7 +214,7 @@ async function withTeam(fn: (team: Team) => Promise<void>): Promise<void> {
       aOrigin: lead.origin,
       bOrigin: follow.origin,
     });
-  } finally {
+  }, async () => {
     for (const each of [...nodes].reverse()) {
       for (
         const pid of await each.send({ kind: "pids" }).catch(
@@ -225,14 +225,14 @@ async function withTeam(fn: (team: Team) => Promise<void>): Promise<void> {
       }
       await each.send({ kind: "close" }).catch(() => {});
     }
-    for (const worker of workers) worker.terminate();
-    for (const pid of pids) killSidecarAtTeardown(pid);
-    await waitFor(
-      () => [...pids].every((pid) => !hostLitestreamProcesses.isAlive(pid)),
-      "every sidecar to stop",
-    );
-    await Deno.remove(root, { recursive: true }).catch(() => {});
-  }
+    // killed before the Workers that spawned them end, so they get reaped
+    try {
+      await stopSidecarsAtTeardown(pids);
+    } finally {
+      for (const worker of workers) worker.terminate();
+      await Deno.remove(root, { recursive: true }).catch(() => {});
+    }
+  });
 }
 
 interface Reply {

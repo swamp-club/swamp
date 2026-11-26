@@ -53,6 +53,7 @@ import {
   writeReplicaVerification,
 } from "../src/infrastructure/datastore_v3/litestream/replication_files.ts";
 import { normalizeTxid } from "../src/domain/datastore_v3/published_lineage.ts";
+import { processStateOf } from "../src/infrastructure/runtime/process_ancestry.ts";
 import {
   hostLitestreamProcesses,
   isSupervisorFor,
@@ -76,6 +77,92 @@ export function killSidecarAtTeardown(pid: number): void {
   } catch (error) {
     if (!(error instanceof Deno.errors.PermissionDenied)) throw error;
   }
+}
+
+export type SidecarState = "gone" | "zombie" | "running" | "unknown";
+
+export interface SidecarProbe {
+  kill(pid: number): void;
+  state(pid: number): SidecarState;
+  commandLine(pid: number): Promise<string | undefined>;
+  readonly timeoutMs: number;
+}
+
+export const HOST_SIDECAR_PROBE: SidecarProbe = {
+  kill: killSidecarAtTeardown,
+  state(pid) {
+    if (!hostLitestreamProcesses.isAlive(pid)) return "gone";
+    const state = processStateOf(pid);
+    if (state === undefined) return "unknown";
+    return state.zombie ? "zombie" : "running";
+  },
+  commandLine: (pid) => hostLitestreamProcesses.commandLine(pid),
+  timeoutMs: 10_000,
+};
+
+/**
+ * a killed sidecar whose spawning Worker is gone can stay a zombie until
+ * something reaps it; it holds nothing, so it counts as stopped
+ */
+export async function stopSidecarsAtTeardown(
+  pids: Iterable<number>,
+  probe: SidecarProbe = HOST_SIDECAR_PROBE,
+): Promise<void> {
+  const all = [...pids];
+  for (const pid of all) probe.kill(pid);
+  const left = () =>
+    all.filter((pid) => {
+      const state = probe.state(pid);
+      return state === "running" || state === "unknown";
+    });
+  try {
+    await waitFor(() => left().length === 0, "every sidecar to stop", {
+      timeoutMs: probe.timeoutMs,
+    });
+  } catch (error) {
+    const still = left();
+    if (still.length === 0) return;
+    const named = await Promise.all(
+      still.map(async (pid) =>
+        `${pid} ${probe.state(pid)}: ${
+          await probe.commandLine(pid) ?? "command line unreadable"
+        }`
+      ),
+    );
+    throw new Error(
+      `${messageOf(error)}; still running: ${named.join("; ")}`,
+      { cause: error },
+    );
+  }
+}
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** a teardown failure never hides the body's own failure */
+export async function runThenTearDown<T>(
+  body: () => Promise<T>,
+  teardown: () => Promise<void>,
+): Promise<T> {
+  let result: T;
+  try {
+    result = await body();
+  } catch (bodyError) {
+    try {
+      await teardown();
+    } catch (teardownError) {
+      throw new Error(
+        `${messageOf(bodyError)} (teardown also failed: ${
+          messageOf(teardownError)
+        })`,
+        { cause: new AggregateError([bodyError, teardownError]) },
+      );
+    }
+    throw bodyError;
+  }
+  await teardown();
+  return result;
 }
 
 export const LITESTREAM_BINARY = Deno.env.get("SWAMP_LITESTREAM_PATH");

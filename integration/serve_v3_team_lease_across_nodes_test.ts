@@ -21,7 +21,6 @@ import "../src/domain/models/models.ts";
 import { assert, assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { z } from "zod";
-import { waitFor } from "@swamp-club/swamp-testing";
 import type { CommitJSON } from "../src/domain/datastore_v3/commit.ts";
 import { partitionOf } from "../src/domain/datastore_v3/partition_key.ts";
 import { modelRegistry } from "../src/domain/models/model.ts";
@@ -31,15 +30,15 @@ import {
   type ExplicitLease,
 } from "../src/infrastructure/datastore_v3/explicit_model_leases.ts";
 import { V3_REPLICA_ENV } from "../src/infrastructure/datastore_v3/litestream/replica_setting.ts";
-import { hostLitestreamProcesses } from "../src/infrastructure/datastore_v3/litestream/litestream_processes.ts";
 import { ServeDatastoreClient } from "../src/infrastructure/datastore_v3/serve_datastore_client.ts";
 import type { LeaderChange } from "../src/infrastructure/datastore_v3/serve_feed.ts";
 import { initializeV3Datastore } from "../src/infrastructure/datastore_v3/v3_datastore.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpers.ts";
 import {
-  killSidecarAtTeardown,
+  runThenTearDown,
   SIDECAR_TESTS_IGNORED,
+  stopSidecarsAtTeardown,
 } from "./datastore_v3_litestream_helpers.ts";
 import {
   blobSaveOps,
@@ -178,7 +177,7 @@ async function withTeam(
     nodes.push(created);
     return created;
   };
-  try {
+  await runThenTearDown(async () => {
     const leader = await node("leader");
     const lead = await leader.send({ kind: "open" }) as Opened;
     assertEquals(lead.role, "writer");
@@ -215,7 +214,7 @@ async function withTeam(
       ids,
       roots,
     });
-  } finally {
+  }, async () => {
     // the follower first: the leader's close releases the lease
     for (const each of [...nodes].reverse()) {
       for (
@@ -227,15 +226,15 @@ async function withTeam(
       }
       await each.send({ kind: "close" }).catch(() => {});
     }
-    for (const worker of workers) worker.terminate();
-    for (const pid of pids) killSidecarAtTeardown(pid);
-    await waitFor(
-      () => [...pids].every((pid) => !hostLitestreamProcesses.isAlive(pid)),
-      "every sidecar to stop",
-    );
-    modelRegistry.invalidateType(modelType);
-    await Deno.remove(root, { recursive: true }).catch(() => {});
-  }
+    // killed before the Workers that spawned them end, so they get reaped
+    try {
+      await stopSidecarsAtTeardown(pids);
+    } finally {
+      for (const worker of workers) worker.terminate();
+      modelRegistry.invalidateType(modelType);
+      await Deno.remove(root, { recursive: true }).catch(() => {});
+    }
+  });
 }
 
 function clientAt(origin: string, token: string): ServeDatastoreClient {
