@@ -55,6 +55,7 @@ import {
   drainV3OwedAtCommandEnd,
   holdV3Writer,
   hydrateV3BehaviorPartition,
+  hydrateV3RunPartitions,
   registerV3LazyCheckoutForTesting,
   SERVE_CHUNK_VERIFY_BYTES,
   SERVE_COMPACTION_TIMEOUT_MS,
@@ -2069,6 +2070,19 @@ Deno.test("catchUpV3AfterBehaviorLock: hydrates the locked behavior's partition 
     partition: PartitionKey.forModel("test/model", modelId).toString(),
   }]);
   assertEquals(other.lazy.calls.partitions, []);
+});
+
+Deno.test("hydrateV3BehaviorPartition and hydrateV3RunPartitions: an offline or failing hydrate never fails the lock (swamp-club#5108)", async () => {
+  const locked = lazyCheckout(1, ["run-partition"]);
+  using _locked = locked.registration;
+  locked.lazy.hydrateOwedPartition = () =>
+    Promise.reject(new Error("serve unreachable"));
+  await hydrateV3BehaviorPartition(
+    locked.path,
+    "test/model",
+    crypto.randomUUID(),
+  );
+  await hydrateV3RunPartitions(locked.path, "run-1");
 });
 
 Deno.test("hydrateV3BehaviorPartition: a lock named for a behavior, not its id, hydrates nothing", async () => {

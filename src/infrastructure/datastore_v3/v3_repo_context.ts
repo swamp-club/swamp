@@ -751,12 +751,7 @@ export async function hydrateV3BehaviorPartition(
   if (entries.length === 0) return;
   const partition = PartitionKey.forModel(modelType, modelId).toString();
   for (const entry of entries) {
-    await hydrateOwedPartitions(
-      entry.lazy,
-      entry.namespace,
-      [partition],
-      AbortSignal.timeout(OWED_HYDRATE_TIMEOUT_MS),
-    );
+    await hydrateBestEffort(entry.lazy, entry.namespace, [partition]);
   }
 }
 
@@ -765,12 +760,33 @@ export async function hydrateV3RunPartitions(
   runId: string,
 ): Promise<void> {
   for (const entry of lazyCheckoutsAt(datastorePath)) {
-    await hydrateOwedPartitions(
+    await hydrateBestEffort(
       entry.lazy,
       entry.namespace,
       entry.runPartitionsOf(runId),
+    );
+  }
+}
+
+/**
+ * ahead of the work only: an offline or failing hydrate never fails the lock,
+ * since an owed file the work reads hydrates on that read and fails loudly there
+ */
+async function hydrateBestEffort(
+  lazy: LazyHydration,
+  namespace: string,
+  partitions: readonly string[],
+): Promise<void> {
+  try {
+    await hydrateOwedPartitions(
+      lazy,
+      namespace,
+      partitions,
       AbortSignal.timeout(OWED_HYDRATE_TIMEOUT_MS),
     );
+  } catch (error) {
+    logger
+      .debug`Hydrating the locked partition's owed files ahead of the work failed; reads hydrate on demand: ${error}`;
   }
 }
 
