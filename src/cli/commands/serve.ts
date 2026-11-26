@@ -8909,14 +8909,19 @@ export const serveCommand = new Command()
         const service = serverTokenGcService;
         await stages.run("server token GC", () => service.dispose());
       }
-      // before the lease is released: a sweep or record write in flight finishes
+      // on v3 a sweep or record write in flight finishes before the lease is
+      // released, so it never overlaps the next leader's writes
       if (federationHub) {
         const { sweeper, selfRecord, hub } = federationHub;
-        await stages.run("federation hub", async () => {
-          await sweeper.stop();
-          await selfRecord.settled();
-          await hub.settled();
-        });
+        await stages.run(
+          "federation hub",
+          async () => {
+            await sweeper.stop();
+            await selfRecord.settled();
+            await hub.settled();
+          },
+          v3Location === undefined ? "left" : "awaited",
+        );
       }
       // Before the heartbeat stops: a claim taken by a pass in flight must
       // still be a live instance's.

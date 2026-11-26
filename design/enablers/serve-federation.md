@@ -321,8 +321,8 @@ worker records without starting a server or syncing.
 `swamp serve member` sends the `federation.*` requests with `--server`. Without
 it, it opens the store serve uses locally. Local mode refuses unless the gate is
 on and `serve.yaml` is a version 2 hub, on a checkout that writes through
-serve, and on a v2 extension datastore, whose control-plane store serve keeps
-remotely. `token create` prints the join token once.
+serve, and on a v2 extension datastore, where serve may keep the control-plane
+store remotely. `token create` prints the join token once.
 `src/cli/commands/serve_member*.ts`.
 
 ## Units
