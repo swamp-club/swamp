@@ -525,11 +525,6 @@ export interface RecoverOptions {
   readonly deadInstances?: readonly string[];
 }
 
-/**
- * another writer still writes the checkout, and this recovery would have to
- * rebuild it whole or walk it unbounded, under that writer's feet; the next
- * command retries once it is quiet
- */
 /** an owed file is fetched only from serve, so offline it stays owed */
 export class OwedContentOfflineError extends Error {
   constructor() {
@@ -540,6 +535,11 @@ export class OwedContentOfflineError extends Error {
   }
 }
 
+/**
+ * another writer still writes the checkout, and this recovery would have to
+ * rebuild it whole or walk it unbounded, under that writer's feet; the next
+ * command retries once it is quiet
+ */
 export class RecoveryDeferredError extends Error {
   constructor(detail: string) {
     super(detail);
