@@ -2226,6 +2226,133 @@ for (const net of [true, false]) {
   );
 }
 
+/** a storage whose chunk reads, once holding, wait until released */
+class GatedStorage extends MemoryStorage {
+  readonly gate = Promise.withResolvers<void>();
+  holding = false;
+  reading = false;
+
+  override async get(namespace: string, sha256: string, signal: AbortSignal) {
+    if (this.holding) {
+      this.reading = true;
+      await this.gate.promise;
+    }
+    return await super.get(namespace, sha256, signal);
+  }
+}
+
+/** the paths Deno.stat is asked about while fn runs */
+async function withStatsSeen<T>(
+  fn: (seen: ReadonlySet<string>) => Promise<T>,
+): Promise<T> {
+  const deno = Deno as { stat: typeof Deno.stat };
+  const original = deno.stat;
+  const seen = new Set<string>();
+  deno.stat = (path) => {
+    seen.add(String(path));
+    return original(path);
+  };
+  try {
+    return await fn(seen);
+  } finally {
+    deno.stat = original;
+  }
+}
+
+Deno.test("SqliteReadModel.catchUp: a page resolves the next file's target while the file before it still reads its content", async () => {
+  await withEnv(async (env) => {
+    const storage = new GatedStorage();
+    const chunkStore = new ChunkStore(storage);
+    await env.append(1, "", [await savePut("a", 1), versionOp("a", 1)]);
+    const readModel = env.open({
+      chunkStore,
+      netReplay: false,
+      writeBatch: () => new DurableWriteBatch({ sync: false }),
+    });
+    try {
+      // inline content only: no chunk is read
+      await readModel.catchUp(signal());
+      const blob = await chunkStore.write(
+        SOLO_NAMESPACE,
+        new TextEncoder().encode("k as a blob"),
+        signal(),
+      );
+      await env.append(2, "", [await blobPut("k", 1, blob), versionOp("k", 1)]);
+      await env.append(3, "", [await savePut("m", 1), versionOp("m", 1)]);
+      storage.holding = true;
+      const m = env.contentPath("", "m", 1);
+      // the first segment of m's path that is not there yet: .../m
+      const mDir = dirname(dirname(m));
+      await withStatsSeen(async (seen) => {
+        const caughtUp = readModel.catchUp(signal());
+        try {
+          await waitFor(() => storage.reading, "k reading its content");
+          await waitFor(
+            () => seen.has(mDir),
+            "m's target resolved while k's content is still read",
+          );
+        } finally {
+          storage.gate.resolve();
+          await caughtUp;
+        }
+      });
+      assertEquals(await readOrAbsent(m), "m@1");
+      assertEquals(
+        await readOrAbsent(env.contentPath("", "k", 1)),
+        "k as a blob",
+      );
+    } finally {
+      storage.gate.resolve();
+      await readModel.close();
+    }
+  });
+});
+
+Deno.test("SqliteReadModel.catchUp: a put over a file an earlier put of the page is still writing, and a key under it, wait for that write before their targets resolve", async () => {
+  await withEnv(async (env) => {
+    await env.append(1, "", [await savePut("a", 1), versionOp("a", 1)]);
+    const making = env.contentPath("", "n", 1);
+    const batch = new HeldWriteBatch(making);
+    let drained = false;
+    const readModel = env.open({
+      netReplay: false,
+      writeBatch: () => batch,
+      onPoolDrain: () => {
+        drained = true;
+      },
+    });
+    try {
+      await readModel.catchUp(signal());
+      batch.started.length = 0;
+      drained = false;
+      const intent = modelIntent({ kind: "data.save", name: "n", version: 1 });
+      await env.append(2, "", [await savePut("n", 1, "first")]);
+      await env.append(3, "", [await savePut("n", 1, "second")]);
+      // a file and a directory claiming one path: skipped once n is a file
+      await env.append(4, "", [
+        await putOp({
+          intent,
+          key: RecordKey.create(`${dataKey("n", 1).toString()}/under`),
+          inline: base64("under"),
+        }),
+      ]);
+      const caughtUp = readModel.catchUp(signal());
+      try {
+        await waitFor(() => drained, "the page waiting for n's first write");
+        assertEquals(batch.started, [making]);
+      } finally {
+        batch.gate.resolve();
+        await caughtUp;
+      }
+      assertEquals(batch.started, [making, making]);
+      assertEquals(await readOrAbsent(making), "second");
+    } finally {
+      batch.gate.resolve();
+      await readModel.close();
+    }
+  });
+});
+
 Deno.test("SqliteReadModel.catchUp: a base load writes its inline and small chunked files through the write pool (swamp-club#5103)", async () => {
   await withEnv(async (env) => {
     const blob = await env.chunkStore.write(
@@ -3914,133 +4041,6 @@ Deno.test("SqliteReadModel.catchUp: a write under a directory a pooled write is 
       await caughtUp;
       assertEquals(batch.started, [making, under]);
       assertEquals(await readOrAbsent(under), "n@2");
-    } finally {
-      batch.gate.resolve();
-      await readModel.close();
-    }
-  });
-});
-
-/** a storage whose chunk reads, once holding, wait until released */
-class GatedStorage extends MemoryStorage {
-  readonly gate = Promise.withResolvers<void>();
-  holding = false;
-  reading = false;
-
-  override async get(namespace: string, sha256: string, signal: AbortSignal) {
-    if (this.holding) {
-      this.reading = true;
-      await this.gate.promise;
-    }
-    return await super.get(namespace, sha256, signal);
-  }
-}
-
-/** the paths Deno.stat is asked about while fn runs */
-async function withStatsSeen<T>(
-  fn: (seen: ReadonlySet<string>) => Promise<T>,
-): Promise<T> {
-  const deno = Deno as { stat: typeof Deno.stat };
-  const original = deno.stat;
-  const seen = new Set<string>();
-  deno.stat = (path) => {
-    seen.add(String(path));
-    return original(path);
-  };
-  try {
-    return await fn(seen);
-  } finally {
-    deno.stat = original;
-  }
-}
-
-Deno.test("SqliteReadModel.catchUp: a page resolves the next file's target while the file before it still reads its content", async () => {
-  await withEnv(async (env) => {
-    const storage = new GatedStorage();
-    const chunkStore = new ChunkStore(storage);
-    await env.append(1, "", [await savePut("a", 1), versionOp("a", 1)]);
-    const readModel = env.open({
-      chunkStore,
-      netReplay: false,
-      writeBatch: () => new DurableWriteBatch({ sync: false }),
-    });
-    try {
-      // inline content only: no chunk is read
-      await readModel.catchUp(signal());
-      const blob = await chunkStore.write(
-        SOLO_NAMESPACE,
-        new TextEncoder().encode("k as a blob"),
-        signal(),
-      );
-      await env.append(2, "", [await blobPut("k", 1, blob), versionOp("k", 1)]);
-      await env.append(3, "", [await savePut("m", 1), versionOp("m", 1)]);
-      storage.holding = true;
-      const m = env.contentPath("", "m", 1);
-      // the first segment of m's path that is not there yet: .../m
-      const mDir = dirname(dirname(m));
-      await withStatsSeen(async (seen) => {
-        const caughtUp = readModel.catchUp(signal());
-        try {
-          await waitFor(() => storage.reading, "k reading its content");
-          await waitFor(
-            () => seen.has(mDir),
-            "m's target resolved while k's content is still read",
-          );
-        } finally {
-          storage.gate.resolve();
-          await caughtUp;
-        }
-      });
-      assertEquals(await readOrAbsent(m), "m@1");
-      assertEquals(
-        await readOrAbsent(env.contentPath("", "k", 1)),
-        "k as a blob",
-      );
-    } finally {
-      storage.gate.resolve();
-      await readModel.close();
-    }
-  });
-});
-
-Deno.test("SqliteReadModel.catchUp: a put over a file an earlier put of the page is still writing, and a key under it, wait for that write before their targets resolve", async () => {
-  await withEnv(async (env) => {
-    await env.append(1, "", [await savePut("a", 1), versionOp("a", 1)]);
-    const making = env.contentPath("", "n", 1);
-    const batch = new HeldWriteBatch(making);
-    let drained = false;
-    const readModel = env.open({
-      netReplay: false,
-      writeBatch: () => batch,
-      onPoolDrain: () => {
-        drained = true;
-      },
-    });
-    try {
-      await readModel.catchUp(signal());
-      batch.started.length = 0;
-      drained = false;
-      const intent = modelIntent({ kind: "data.save", name: "n", version: 1 });
-      await env.append(2, "", [await savePut("n", 1, "first")]);
-      await env.append(3, "", [await savePut("n", 1, "second")]);
-      // a file and a directory claiming one path: skipped once n is a file
-      await env.append(4, "", [
-        await putOp({
-          intent,
-          key: RecordKey.create(`${dataKey("n", 1).toString()}/under`),
-          inline: base64("under"),
-        }),
-      ]);
-      const caughtUp = readModel.catchUp(signal());
-      try {
-        await waitFor(() => drained, "the page waiting for n's first write");
-        assertEquals(batch.started, [making]);
-      } finally {
-        batch.gate.resolve();
-        await caughtUp;
-      }
-      assertEquals(batch.started, [making, making]);
-      assertEquals(await readOrAbsent(making), "second");
     } finally {
       batch.gate.resolve();
       await readModel.close();
