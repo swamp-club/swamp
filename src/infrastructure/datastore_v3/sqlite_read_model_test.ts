@@ -4238,7 +4238,8 @@ Deno.test("SqliteReadModel.hydrateOwedPartition: writes every owed file of the p
 
 Deno.test("SqliteReadModel.drainOwed: stops once its budget is spent, and drains the rest when called again (swamp-club#5108)", async () => {
   await withEnv(async (env) => {
-    await lazyBase(env, ["a", "b", "c", "d", "e"]);
+    const names = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"];
+    await lazyBase(env, names);
     // every reading of the clock is a millisecond later, the lock section's
     // own readings among them
     let now = 0;
@@ -4259,7 +4260,7 @@ Deno.test("SqliteReadModel.drainOwed: stops once its budget is spent, and drains
       assertEquals(first.left, owed - first.hydrated);
       const rest = await readModel.drainOwed(1_000_000, signal());
       assertEquals(rest, { hydrated: owed - first.hydrated, left: 0 });
-      for (const name of ["a", "b", "c", "d", "e"]) {
+      for (const name of names) {
         assertEquals(
           await readOrAbsent(env.contentPath("", name, 1)),
           `${name}@1`,
