@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStrictEquals } from "@std/assert";
 import { createLibSwampContext } from "../context.ts";
 import { collect } from "../testing.ts";
 import {
@@ -53,7 +53,8 @@ Deno.test("datastoreHistoryCompact: a v3 datastore compacts once, with the conte
       },
     }),
   );
-  assertEquals(signals, [ctx.signal]);
+  assertEquals(signals.length, 1);
+  assertStrictEquals(signals[0], ctx.signal);
   assertEquals(events, [
     { kind: "compacting" },
     { kind: "completed", data: { applies: true, ...outcome } },
