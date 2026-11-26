@@ -33,8 +33,9 @@ import {
   newestStartedFence,
 } from "../src/domain/datastore_v3/published_lineage.ts";
 import {
-  killSidecarAtTeardown,
+  runThenTearDown,
   SIDECAR_TESTS_IGNORED,
+  stopSidecarsAtTeardown,
 } from "./datastore_v3_litestream_helpers.ts";
 import type {
   MachineRequest,
@@ -238,9 +239,7 @@ export async function withMachines(
       );
     },
   };
-  try {
-    await fn(world);
-  } finally {
+  await runThenTearDown(() => fn(world), async () => {
     for (const { worker, pids: remember, abandon } of workers) {
       let timer: ReturnType<typeof setTimeout> | undefined;
       await Promise.race([
@@ -251,15 +250,16 @@ export async function withMachines(
       ]);
       clearTimeout(timer);
       abandon();
+      // ended before the kill: no machine is closed, so work still in flight
+      // could start a sidecar this teardown never hears of
       worker.terminate();
     }
-    for (const pid of pids) killSidecarAtTeardown(pid);
-    await waitFor(
-      () => [...pids].every((pid) => !hostLitestreamProcesses.isAlive(pid)),
-      "every sidecar to stop",
-    );
-    await Deno.remove(root, { recursive: true }).catch(() => {});
-  }
+    try {
+      await stopSidecarsAtTeardown(pids);
+    } finally {
+      await Deno.remove(root, { recursive: true }).catch(() => {});
+    }
+  });
 }
 
 export interface ReadResult {
