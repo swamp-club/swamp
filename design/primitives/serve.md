@@ -735,8 +735,13 @@ with another mint's secret (swamp-club#2482):
   record and the vault secret from different mints, and the boot consistency
   sweep, fetch the datastore's latest record (`serverTokenRecordRefreshOver`)
   and take it in place of the cache's copy, byte for byte, only when it pairs
-  with the secret; authentication then retries once. A v3 datastore has one
-  writer and never needs it.
+  with the secret; authentication then retries once. The fetch and the pairing
+  check take no sync gate; only an adoption takes the exclusive gate, and reads
+  the marker again under it so a pull that landed meanwhile is never undone.
+  Concurrent refreshes for one token and secret share one fetch, and a refusal
+  is reused for `REFRESH_RETRY_MS` (30 s), so a client retrying against a token
+  whose datastore record does not pair either makes no further fetches. A v3
+  datastore has one writer and never needs it.
 - **Reveal through serve.** `access.token.reveal` runs the same reveal as the
   local command on serve, for a caller with `admin` on `access:*`. A follower
   forwards it to the leader, which has applied every mint and rotate, and it is
