@@ -21,6 +21,17 @@ import { resolve } from "@std/path";
 import { UserError } from "../../domain/errors.ts";
 import { redactServerUrl } from "../../domain/auth/server_url.ts";
 
+// record schemas drop this key without an error, so a label using it would vanish
+const RESERVED_LABEL_KEY = "__proto__";
+
+export function assertLabelKeyAllowed(key: string, label: string): void {
+  if (key === RESERVED_LABEL_KEY) {
+    throw new UserError(
+      `Invalid label '${label}' — '${RESERVED_LABEL_KEY}' is a reserved key`,
+    );
+  }
+}
+
 export function parseLabels(
   labelFlags: string[] | undefined,
 ): Record<string, string> {
@@ -32,6 +43,7 @@ export function parseLabels(
         `Invalid label '${flag}' — expected the form key=value`,
       );
     }
+    assertLabelKeyAllowed(flag.slice(0, eq), flag);
     labels[flag.slice(0, eq)] = flag.slice(eq + 1);
   }
   return labels;
@@ -50,6 +62,7 @@ export function parseCommaSeparatedLabels(
         `Invalid label '${trimmed}' in SWAMP_WORKER_LABELS — expected the form key=value`,
       );
     }
+    assertLabelKeyAllowed(trimmed.slice(0, eq), trimmed);
     labels[trimmed.slice(0, eq)] = trimmed.slice(eq + 1);
   }
   return labels;

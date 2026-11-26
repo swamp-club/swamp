@@ -649,8 +649,10 @@ retryable and stops only when its pre-enrollment retry budget runs out, so
 upgrade workers before binding labels or reserving keys. Each refusal message
 puts its phrase before any quoted key or value, so a quote inside a label cannot
 hide the phrase from `codedRedeemFailure`. A `worker token create --server`
-against a serve too old to record labels fails after printing the token, and
-tells the operator to revoke it.
+against a serve too old to record labels fails after printing the token with the
+error code `labels_not_bound`, and tells the operator to revoke it. A label key
+of `__proto__` is refused wherever labels are parsed, because a record schema
+would drop it without an error and the token would bind nothing.
 
 The token is a built-in **enrollment-token** behavior whose instances are swamp
 data. Its states are `unused → enrolled → expired`, plus `revoked` from any

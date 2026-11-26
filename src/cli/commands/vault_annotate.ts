@@ -37,6 +37,7 @@ import {
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
+import { assertLabelKeyAllowed } from "./worker_shared.ts";
 import {
   requestServerResponse,
   resolveServerTokenFromOptions,
@@ -67,6 +68,7 @@ export function parseLabels(
         `Invalid label: key cannot be empty in '${label}'.`,
       );
     }
+    assertLabelKeyAllowed(key, label);
     result[key] = value;
   }
   return result;

@@ -131,3 +131,11 @@ Deno.test("buildVaultAnnotateInput: no annotation fields throws UserError", () =
     "No annotation fields specified",
   );
 });
+
+Deno.test("parseLabels: refuses __proto__, which the annotation would silently drop", () => {
+  assertThrows(
+    () => parseLabels(["team=core", "__proto__=x"]),
+    UserError,
+    "'__proto__' is a reserved key",
+  );
+});

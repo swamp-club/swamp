@@ -75,6 +75,7 @@ export function assertServeBoundLabels(
     throw new UserError(
       `The server minted token '${name}' without the requested labels, so it is too old to bind them. ` +
         `Revoke the token with 'swamp worker token revoke ${name} --server ${server}' and upgrade serve before minting it again`,
+      "labels_not_bound",
     );
   }
 }

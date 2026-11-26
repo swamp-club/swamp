@@ -1407,6 +1407,23 @@ Deno.test("enrollmentTokenModel: mint arguments refuse malformed labels", () => 
       JSON.stringify(labels),
     );
   }
+  // JSON.parse makes __proto__ an own key, as a serve request or method input does
+  assertEquals(
+    args.safeParse({
+      durationMs: 1000,
+      vaultName: "local",
+      labels: JSON.parse('{"__proto__": "x"}'),
+    }).success,
+    false,
+  );
+  assertEquals(
+    args.safeParse({
+      durationMs: 1000,
+      vaultName: "local",
+      labels: { constructor: "x" },
+    }).success,
+    true,
+  );
   const parsed = args.parse({ durationMs: 1000, vaultName: "local" }) as {
     labels: Record<string, string>;
   };
