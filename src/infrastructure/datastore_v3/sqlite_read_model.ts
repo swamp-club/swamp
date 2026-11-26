@@ -381,6 +381,8 @@ export interface SqliteReadModelOptions {
    * default
    */
   readonly lazyModelFiles?: boolean;
+  /** whether the checkout works offline, when an owed file cannot be fetched */
+  readonly offline?: () => boolean;
 }
 
 interface ChangeSource {
@@ -528,6 +530,16 @@ export interface RecoverOptions {
  * rebuild it whole or walk it unbounded, under that writer's feet; the next
  * command retries once it is quiet
  */
+/** an owed file is fetched only from serve, so offline it stays owed */
+export class OwedContentOfflineError extends Error {
+  constructor() {
+    super(
+      "This data has not been fetched from serve yet, and the checkout is offline. It is fetched once serve is reachable again.",
+    );
+    this.name = "OwedContentOfflineError";
+  }
+}
+
 export class RecoveryDeferredError extends Error {
   constructor(detail: string) {
     super(detail);
@@ -597,6 +609,7 @@ export class SqliteReadModel implements ReadModel {
   readonly #targetedShare: number;
   readonly #targetedCommitsCeiling: number;
   readonly #lazyModelFiles: boolean;
+  readonly #offline: () => boolean;
   /**
    * set while recover replays: it puts back every file, so no commit is taken
    * for work the files hold; a root waiting on the recovery counts as open
@@ -713,6 +726,7 @@ export class SqliteReadModel implements ReadModel {
     this.#targetedCommitsCeiling = options.targetedCommitsCeiling ??
       TARGETED_COMMITS_CEILING;
     this.#lazyModelFiles = options.lazyModelFiles === true;
+    this.#offline = options.offline ?? (() => false);
   }
 
   static open(options: SqliteReadModelOptions): SqliteReadModel {
@@ -2610,6 +2624,7 @@ export class SqliteReadModel implements ReadModel {
       candidates.find((c) => this.#state.owedOf(c.namespace, c.key))
     );
     if (found === undefined) return "not_owed";
+    if (this.#offline()) throw new OwedContentOfflineError();
     return await this.#exclusive(async () => {
       await this.#completeBeforeHydrating(signal);
       const owed = this.#state.owedOf(found.namespace, found.key);
@@ -2626,6 +2641,7 @@ export class SqliteReadModel implements ReadModel {
     signal: AbortSignal,
   ): Promise<number> {
     if (this.#state.owedCount() === 0) return Promise.resolve(0);
+    if (this.#offline()) return Promise.reject(new OwedContentOfflineError());
     return this.#exclusive(async () => {
       await this.#completeBeforeHydrating(signal);
       let written = 0;
@@ -2646,6 +2662,9 @@ export class SqliteReadModel implements ReadModel {
     budgetMs: number,
     signal: AbortSignal,
   ): Promise<{ hydrated: number; left: number }> {
+    if (this.#state.owedCount() > 0 && this.#offline()) {
+      throw new OwedContentOfflineError();
+    }
     const until = this.#clock().getTime() + budgetMs;
     let hydrated = 0;
     while (this.#clock().getTime() < until && this.#state.owedCount() > 0) {
@@ -2784,6 +2803,8 @@ export class SqliteReadModel implements ReadModel {
                 ) {
                   throw error;
                 }
+                // offline, a chunk the cache lacks was never fetched, not lost
+                if (this.#offline()) throw new OwedContentOfflineError();
                 unreadable.push(
                   await this.#unreadable(
                     row.namespace,

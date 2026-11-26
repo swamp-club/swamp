@@ -1082,7 +1082,12 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
         ...(options.liveWriters !== undefined
           ? { liveWriters: options.liveWriters }
           : {}),
-        ...(options.lazyModelFiles === true ? { lazyModelFiles: true } : {}),
+        ...(options.lazyModelFiles === true
+          ? {
+            lazyModelFiles: true,
+            offline: () => serveOfflineAt(options.datastorePath) !== undefined,
+          }
+          : {}),
       }),
   );
   // one sink for every engine on this handle, so contexts sharing it queue

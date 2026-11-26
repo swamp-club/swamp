@@ -72,6 +72,7 @@ import {
 } from "./sqlite_commit_store.ts";
 import {
   CATALOG_V3_FILE,
+  OwedContentOfflineError,
   READ_MODEL_LOCK_FILE,
   READ_MODEL_STATE_FILE,
   SqliteReadModel,
@@ -4366,6 +4367,54 @@ Deno.test("SqliteReadModel.hydrateOwedPath: an owed file whose chunk cannot be r
       assertEquals(await readModel.hydrateOwedPath(big, signal()), "not_owed");
       assertEquals(await readOrAbsent(big), undefined);
       assert(await readModel.unreadableRecord("", key) !== undefined);
+    } finally {
+      await readModel.close();
+    }
+  });
+});
+
+Deno.test("SqliteReadModel: offline, owed files stay owed: no hydrate runs, and a chunk the cache lacks is never recorded unreadable (swamp-club#5108)", async () => {
+  await withEnv(async (env) => {
+    await lazyBase(env);
+    let offline = false;
+    const answers: boolean[] = [];
+    const readModel = env.open({
+      lazyModelFiles: true,
+      chunkStore: new ChunkStore(new MemoryStorage()),
+      offline: () => answers.shift() ?? offline,
+    });
+    try {
+      await readModel.catchUp(signal());
+      const big = env.contentPath("", "big", 1);
+      const key = dataKey("big", 1).toString();
+      const owed = readModel.owedCount();
+      assert(owed > 0);
+
+      offline = true;
+      await assertRejects(
+        () => readModel.hydrateOwedPath(big, signal()),
+        OwedContentOfflineError,
+      );
+      await assertRejects(
+        () => readModel.drainOwed(60_000, signal()),
+        OwedContentOfflineError,
+      );
+      await assertRejects(
+        () => readModel.hydrateOwedPartition("", "model:x", signal()),
+        OwedContentOfflineError,
+      );
+      assertEquals(readModel.owedCount(), owed);
+      assertEquals(await readModel.unreadableRecord("", key), undefined);
+
+      // online when the hydrate starts, offline by the time its chunk is read
+      answers.push(false);
+      await assertRejects(
+        () => readModel.hydrateOwedPath(big, signal()),
+        OwedContentOfflineError,
+      );
+      assertEquals(readModel.owedCount(), owed);
+      assertEquals(await readModel.unreadableRecord("", key), undefined);
+      assertEquals(await readOrAbsent(big), undefined);
     } finally {
       await readModel.close();
     }
