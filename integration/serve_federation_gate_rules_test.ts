@@ -147,6 +147,7 @@ const NON_HUB_REQUEST_TYPES = [
   "data.subscribe",
   "data.versions",
   "datastore.claim",
+  "datastore.history.compact",
   "datastore.namespace.list",
   "datastore.release",
   "datastore.setup.extension",

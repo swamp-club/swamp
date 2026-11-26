@@ -198,8 +198,10 @@ generators, tests in `src/libswamp/`) may import names `mod.ts` does not list.
   in-process — repositories on a real temp filesystem, services + event buses,
   port-0 mock servers. Must NOT spawn the CLI as a subprocess.
 - **Architecture fitness tests** (`integration/*_rules_test.ts`,
+  `integration/architecture*_test.ts`, `src/**/*_arch_test.ts`,
   `arch_fitness_helpers.ts`): static rules over the source tree (layer
   boundaries, libswamp encapsulation, json-mode conformance, license headers).
+  Run all of them while iterating, not only in `verify-build`.
 - **Property tests** (`*_property_test.ts`, fast-check): invariants and
   round-trips for parsers, serialization, and data lifecycle.
 - **Contract/conformance tests** (`packages/testing/` suites): run first-party
