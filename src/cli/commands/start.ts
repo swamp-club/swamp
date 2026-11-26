@@ -548,6 +548,8 @@ export const startCommand = new Command()
     "Get from a task to an agent working on it. Opens a local page where you\n" +
       "pick or create a workspace, describe the task, sign in if needed and\n" +
       "pick an agent; Swamp then opens the agent in a new terminal window.\n" +
+      "You can also open the workspace dashboard and switch between registered\n" +
+      "workspaces there.\n" +
       "With --json it only reports your workspaces and agents; it starts\n" +
       "nothing and changes nothing.",
   )

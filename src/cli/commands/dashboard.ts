@@ -209,7 +209,8 @@ export const dashboardCommand = new Command()
   .description(
     "Open this repo's dashboard in your browser, with no swamp serve\n" +
       "running. It shows only this repo and does not add it to your\n" +
-      "swamp start workspaces.",
+      "swamp start workspaces or offer workspace switching. Use swamp start\n" +
+      "to open a dashboard with a workspace switcher.",
   )
   .option("--repo-dir <dir:string>", "Repository directory", {
     default: Deno.env.get("SWAMP_REPO_DIR"),

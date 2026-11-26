@@ -346,7 +346,8 @@ const daemonEnableCommand = new Command()
   )
   .option(
     "--dashboard",
-    "Enable the web dashboard at /dashboard " +
+    "Enable the web dashboard at /dashboard for this repo only, without workspace switching. " +
+      "Use swamp start for local workspace switching " +
       "(env: SWAMP_DASHBOARD)",
   )
   .option(
