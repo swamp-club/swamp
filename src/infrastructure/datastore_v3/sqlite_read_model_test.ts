@@ -65,6 +65,7 @@ import { CatalogStore } from "../persistence/catalog_store.ts";
 import { FileSystemUnifiedDataRepository } from "../persistence/unified_data_repository.ts";
 import { Data } from "../../domain/data/data.ts";
 import { readModelStateDir } from "./record_path_guard.ts";
+import { ReadModelState } from "./read_model_state.ts";
 import { DurableWriteBatch } from "./atomic_stream_write.ts";
 import {
   SqliteCommitStore,
@@ -2227,6 +2228,203 @@ for (const net of [true, false]) {
   );
 }
 
+class GatedStorage extends MemoryStorage {
+  readonly gate = Promise.withResolvers<void>();
+  holding = false;
+  reading = false;
+
+  override async get(namespace: string, sha256: string, signal: AbortSignal) {
+    if (this.holding) {
+      this.reading = true;
+      await this.gate.promise;
+    }
+    return await super.get(namespace, sha256, signal);
+  }
+}
+
+async function withLstatsSeen<T>(
+  fn: (seen: ReadonlySet<string>) => Promise<T>,
+): Promise<T> {
+  const deno = Deno as { lstat: typeof Deno.lstat };
+  const original = deno.lstat;
+  const seen = new Set<string>();
+  deno.lstat = (path) => {
+    seen.add(String(path));
+    return original(path);
+  };
+  try {
+    return await fn(seen);
+  } finally {
+    deno.lstat = original;
+  }
+}
+
+Deno.test("SqliteReadModel.catchUp: a page resolves the next file's target while the file before it still reads its content", async () => {
+  await withEnv(async (env) => {
+    const storage = new GatedStorage();
+    const chunkStore = new ChunkStore(storage);
+    await env.append(1, "", [await savePut("a", 1), versionOp("a", 1)]);
+    const readModel = env.open({
+      chunkStore,
+      netReplay: false,
+      writeBatch: () => new DurableWriteBatch({ sync: false }),
+    });
+    try {
+      // inline content only: no chunk is read
+      await readModel.catchUp(signal());
+      const blob = await chunkStore.write(
+        SOLO_NAMESPACE,
+        new TextEncoder().encode("k as a blob"),
+        signal(),
+      );
+      await env.append(2, "", [await blobPut("k", 1, blob), versionOp("k", 1)]);
+      await env.append(3, "", [await savePut("m", 1), versionOp("m", 1)]);
+      storage.holding = true;
+      const m = env.contentPath("", "m", 1);
+      // the first segment of m's path that is not there yet: .../m
+      const mDir = dirname(dirname(m));
+      await withLstatsSeen(async (seen) => {
+        const caughtUp = readModel.catchUp(signal());
+        try {
+          await waitFor(() => storage.reading, "k reading its content");
+          await waitFor(
+            () => seen.has(mDir),
+            "m's target resolved while k's content is still read",
+          );
+        } finally {
+          storage.gate.resolve();
+          await caughtUp;
+        }
+      });
+      assertEquals(await readOrAbsent(m), "m@1");
+      assertEquals(
+        await readOrAbsent(env.contentPath("", "k", 1)),
+        "k as a blob",
+      );
+    } finally {
+      storage.gate.resolve();
+      await readModel.close();
+    }
+  });
+});
+
+Deno.test("SqliteReadModel.catchUp: a put over a file an earlier put of the page is still writing, and a key under it, wait for that write before their targets resolve", async () => {
+  await withEnv(async (env) => {
+    await env.append(1, "", [await savePut("a", 1), versionOp("a", 1)]);
+    const making = env.contentPath("", "n", 1);
+    const batch = new HeldWriteBatch(making);
+    let drained = false;
+    const readModel = env.open({
+      netReplay: false,
+      writeBatch: () => batch,
+      onPoolDrain: () => {
+        drained = true;
+      },
+    });
+    try {
+      await readModel.catchUp(signal());
+      batch.started.length = 0;
+      drained = false;
+      const intent = modelIntent({ kind: "data.save", name: "n", version: 1 });
+      await env.append(2, "", [await savePut("n", 1, "first")]);
+      await env.append(3, "", [await savePut("n", 1, "second")]);
+      // a file and a directory claiming one path: skipped once n is a file
+      await env.append(4, "", [
+        await putOp({
+          intent,
+          key: RecordKey.create(`${dataKey("n", 1).toString()}/under`),
+          inline: base64("under"),
+        }),
+      ]);
+      const caughtUp = readModel.catchUp(signal());
+      try {
+        await waitFor(() => drained, "the page waiting for n's first write");
+        assertEquals(batch.started, [making]);
+      } finally {
+        batch.gate.resolve();
+        await caughtUp;
+      }
+      assertEquals(batch.started, [making, making]);
+      assertEquals(await readOrAbsent(making), "second");
+    } finally {
+      batch.gate.resolve();
+      await readModel.close();
+    }
+  });
+});
+
+async function countingRealPaths(fn: () => Promise<unknown>): Promise<number> {
+  const deno = Deno as { realPath: typeof Deno.realPath };
+  const original = deno.realPath;
+  let count = 0;
+  deno.realPath = (path) => {
+    count++;
+    return original(path);
+  };
+  try {
+    await fn();
+  } finally {
+    deno.realPath = original;
+  }
+  return count;
+}
+
+for (const base of [false, true]) {
+  Deno.test(
+    `SqliteReadModel.catchUp: ${
+      base ? "a base load" : "a page"
+    } of new versions real-paths each existing directory once and no new one (swamp-club#5122)`,
+    async () => {
+      await withEnv(async (env) => {
+        const names = Array.from({ length: 12 }, (_, i) => `n${i}`);
+        let seq = 0;
+        for (const name of names) {
+          await env.append(++seq, "", [
+            await savePut(name, 1),
+            versionOp(name, 1),
+          ]);
+        }
+        const options = {
+          netReplay: false,
+          writeBatch: () => new DurableWriteBatch({ sync: false }),
+        };
+        if (!base) {
+          const first = env.open(options);
+          try {
+            await first.catchUp(signal());
+          } finally {
+            await first.close();
+          }
+        }
+        for (const name of names) {
+          await env.append(++seq, "", [
+            await savePut(name, 2),
+            versionOp(name, 2),
+          ]);
+        }
+        if (base) await env.store.compactHistory(seq);
+        const readModel = env.open(options);
+        try {
+          const calls = await countingRealPaths(() =>
+            readModel.catchUp(signal())
+          );
+          // the cache root, the state directory and, on a page, each name's
+          // directory already there: none per file or per new directory
+          assertEquals(calls, 2 + (base ? 0 : names.length));
+        } finally {
+          await readModel.close();
+        }
+        for (const name of names) {
+          assertEquals(
+            await readOrAbsent(env.contentPath("", name, 2)),
+            `${name}@2`,
+          );
+        }
+      });
+    },
+  );
+}
+
 Deno.test("SqliteReadModel.catchUp: a base load writes its inline and small chunked files through the write pool (swamp-club#5103)", async () => {
   await withEnv(async (env) => {
     const blob = await env.chunkStore.write(
@@ -3922,6 +4120,118 @@ Deno.test("SqliteReadModel.catchUp: a write under a directory a pooled write is 
   });
 });
 
+Deno.test("SqliteReadModel.catchUp: a write that meets a pooled write waits for that one, not for the pool's others", async () => {
+  await withEnv(async (env) => {
+    await env.append(1, "", [await savePut("a", 1), versionOp("a", 1)]);
+    const held = env.contentPath("", "o", 1);
+    const under = env.contentPath("", "n", 2);
+    const batch = new HeldWriteBatch(held);
+    const readModel = env.open({ netReplay: false, writeBatch: () => batch });
+    try {
+      await readModel.catchUp(signal());
+      await env.append(2, "", [
+        await savePut("n", 1),
+        versionOp("n", 1),
+        await savePut("o", 1),
+        versionOp("o", 1),
+        await savePut("n", 2),
+        versionOp("n", 2),
+      ]);
+      const caughtUp = readModel.catchUp(signal());
+      await waitFor(
+        async () => await readOrAbsent(under) === "n@2",
+        "the write under n landing while o's is held",
+      );
+      assertEquals(await readOrAbsent(held), undefined);
+      batch.gate.resolve();
+      await caughtUp;
+      assertEquals(await readOrAbsent(held), "o@1");
+    } finally {
+      batch.gate.resolve();
+      await readModel.close();
+    }
+  });
+});
+
+Deno.test("SqliteReadModel.catchUp: a full pool takes the next write as soon as any of its writes lands", async () => {
+  await withEnv(async (env) => {
+    await env.append(1, "", [await savePut("a", 1), versionOp("a", 1)]);
+    const held = env.contentPath("", "o", 1);
+    const last = env.contentPath("", "q", 1);
+    const batch = new HeldWriteBatch(held);
+    const readModel = env.open({
+      netReplay: false,
+      pooledWrites: 2,
+      writeBatch: () => batch,
+    });
+    try {
+      await readModel.catchUp(signal());
+      await env.append(2, "", [
+        await savePut("o", 1),
+        versionOp("o", 1),
+        await savePut("p", 1),
+        versionOp("p", 1),
+        await savePut("q", 1),
+        versionOp("q", 1),
+      ]);
+      const caughtUp = readModel.catchUp(signal());
+      await waitFor(
+        async () => await readOrAbsent(last) === "q@1",
+        "q written while o holds one of the two slots",
+      );
+      batch.gate.resolve();
+      await caughtUp;
+      assertEquals(await readOrAbsent(held), "o@1");
+    } finally {
+      batch.gate.resolve();
+      await readModel.close();
+    }
+  });
+});
+
+class NotingWriteBatch extends DurableWriteBatch {
+  readonly noted = new Map<string, boolean>();
+
+  constructor() {
+    super({ sync: false });
+  }
+
+  override async write(
+    path: string,
+    content: Uint8Array | ReadableStream<Uint8Array>,
+    signal: AbortSignal,
+    options?: Parameters<DurableWriteBatch["write"]>[3],
+  ): Promise<void> {
+    this.noted.set(path, options?.written !== undefined);
+    return await super.write(path, content, signal, options);
+  }
+}
+
+Deno.test("SqliteReadModel.catchUp: only a chunked file's write is asked for what it wrote, as only it is recorded", async () => {
+  await withEnv(async (env) => {
+    const blob = await env.chunkStore.write(
+      SOLO_NAMESPACE,
+      new Uint8Array(20_000).fill(3),
+      signal(),
+    );
+    await env.append(1, "", [
+      await savePut("a", 1),
+      versionOp("a", 1),
+      await blobPut("b", 1, blob),
+      versionOp("b", 1),
+    ]);
+    const batch = new NotingWriteBatch();
+    const readModel = env.open({ writeBatch: () => batch });
+    try {
+      await readModel.catchUp(signal());
+    } finally {
+      await readModel.close();
+    }
+    assertEquals(batch.noted.get(env.contentPath("", "a", 1)), false);
+    assertEquals(batch.noted.get(env.contentPath("", "b", 1)), true);
+  });
+});
+
 /**
  * a catalog that marks each reproject batch, from its clearNames to its
  * rollbackBatch, so a test orders events without reading a clock
@@ -4704,6 +5014,124 @@ Deno.test("SqliteReadModel.catchUp: other processes' at-risk copies are listed a
       });
     } finally {
       await readModel.close();
+    }
+  });
+});
+
+/** a base of these names, two versions each, compacted */
+async function namedBase(env: Env, names: readonly string[]): Promise<void> {
+  let seq = 0;
+  for (const version of [1, 2]) {
+    for (const name of names) {
+      await env.append(++seq, "", [
+        await savePut(name, version),
+        versionOp(name, version),
+      ]);
+    }
+  }
+  await env.store.compactHistory(Number.MAX_SAFE_INTEGER);
+}
+
+function catalogFlags(env: Env): string[] {
+  const db = new DatabaseSync(
+    join(readModelStateDir(env.repoDir), CATALOG_V3_FILE),
+    { readOnly: true },
+  );
+  try {
+    return (db.prepare(
+      "SELECT data_name, version, is_latest, is_step_latest FROM catalog ORDER BY data_name, version",
+    ).all() as {
+      data_name: string;
+      version: number;
+      is_latest: number;
+      is_step_latest: number;
+    }[]).map((r) =>
+      `${r.data_name}@${r.version}:${r.is_latest}${r.is_step_latest}`
+    );
+  } finally {
+    db.close();
+  }
+}
+
+Deno.test("SqliteReadModel.catchUp: a base load writes its names' catalog rows in one batch, not a transaction a name, flagged as a replay flags them (swamp-club#5122)", async () => {
+  await withEnv(async (env) => {
+    const names = ["a", "b", "c", "d"];
+    await namedBase(env, names);
+    const inner = V3Catalog.open(
+      join(readModelStateDir(env.repoDir), CATALOG_V3_FILE),
+    );
+    const counts = { batches: 0, unbatched: 0 };
+    let open = false;
+    const ending = new Set([
+      "commitBatch",
+      "commitBatchInSlices",
+      "rollbackBatch",
+    ]);
+    const catalog = new Proxy(inner, {
+      get(target, property) {
+        const value = Reflect.get(target, property, target);
+        if (typeof value !== "function") return value;
+        return (...args: unknown[]) => {
+          if (property === "beginBatch") {
+            counts.batches++;
+            open = true;
+          } else if (ending.has(String(property))) {
+            open = false;
+          } else if (property === "apply" && !open) {
+            counts.unbatched++;
+          }
+          return value.apply(target, args);
+        };
+      },
+    });
+    const readModel = env.open({ catalog });
+    try {
+      await readModel.catchUp(signal());
+    } finally {
+      await readModel.close();
+    }
+    assertEquals(counts, { batches: 1, unbatched: 0 });
+    assertEquals(
+      catalogFlags(env),
+      names.flatMap((name) => [`${name}@1:00`, `${name}@2:11`]),
+    );
+  });
+});
+
+Deno.test("SqliteReadModel.catchUp: a base load stages many base pages in one transaction (swamp-club#5122)", async () => {
+  await withEnv(async (env) => {
+    const names = ["a", "b", "c", "d", "e"];
+    await namedBase(env, names);
+    const stageBase = ReadModelState.prototype.stageBase;
+    const staged: number[] = [];
+    ReadModelState.prototype.stageBase = function (
+      this: ReadModelState,
+      ...args: Parameters<typeof stageBase>
+    ) {
+      staged.push(args[0].length);
+      return stageBase.apply(this, args);
+    };
+    try {
+      const readModel = env.open({ pageSize: 2 });
+      try {
+        await readModel.catchUp(signal());
+      } finally {
+        await readModel.close();
+      }
+    } finally {
+      ReadModelState.prototype.stageBase = stageBase;
+    }
+    assertEquals(staged.length, 1);
+    assert(staged[0] > 2, `staged ${staged[0]} entries`);
+    assertEquals(
+      catalogFlags(env),
+      names.flatMap((name) => [`${name}@1:00`, `${name}@2:11`]),
+    );
+    for (const name of names) {
+      assertEquals(
+        await readOrAbsent(env.contentPath("", name, 2)),
+        `${name}@2`,
+      );
     }
   });
 });

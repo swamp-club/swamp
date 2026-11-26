@@ -60,6 +60,8 @@ export class DurableWriteBatch {
   readonly #syncDirectory: (dir: string) => Promise<void>;
   readonly #held = new Map<string, Deno.FsFile>();
   readonly #dirs = new Set<string>();
+  /** directories this batch made or found, so each is looked for once */
+  readonly #present = new Map<string, Promise<void>>();
 
   constructor(options: DurableWriteBatchOptions = {}) {
     this.#sync = options.sync ?? true;
@@ -88,38 +90,34 @@ export class DurableWriteBatch {
     const tmpPath = join(dir, `.${crypto.randomUUID()}.tmp`);
     let file: Deno.FsFile | undefined;
     let created: string[];
+    // nothing to hold, stat or chmod: one op creates, writes and closes it
+    const whole = content instanceof Uint8Array && !this.#sync &&
+      options.access === undefined && options.written === undefined;
+    const create = async (): Promise<Deno.FsFile | undefined> => {
+      if (!whole) {
+        return await Deno.open(tmpPath, { write: true, createNew: true });
+      }
+      await Deno.writeFile(tmpPath, content, { createNew: true, signal });
+      return undefined;
+    };
     try {
-      created = options.absentDirectories !== undefined
-        ? [...options.absentDirectories]
-        : await missingDirectories(dir);
-      if (created.length > 0) await Deno.mkdir(dir, { recursive: true });
+      created = await this.#ensureDirectory(dir, options.absentDirectories);
       try {
-        file = await Deno.open(tmpPath, { write: true, createNew: true });
+        file = await create();
       } catch (error) {
         // A hint can be stale: the directory was removed since the caller
         // looked. Find what is missing and make it, as without a hint.
         if (!(error instanceof Deno.errors.NotFound)) throw error;
+        this.#present.delete(dir);
         created = await missingDirectories(dir);
         await Deno.mkdir(dir, { recursive: true });
-        file = await Deno.open(tmpPath, { write: true, createNew: true });
+        file = await create();
       }
-      if (content instanceof Uint8Array) {
-        await writeAll(file, content);
-      } else {
-        for await (const piece of content) {
-          signal.throwIfAborted();
-          await writeAll(file, piece);
-        }
+      if (file !== undefined) {
+        await this.#fill(file, tmpPath, content, signal, options);
       }
       signal.throwIfAborted();
-      if (options.access !== undefined && Deno.build.os !== "windows") {
-        // The temp file is this batch's own (created new, under a random
-        // name), so chmod by path cannot follow a link to another file.
-        const created = (await file.stat()).mode ?? 0o666;
-        await Deno.chmod(tmpPath, modeWithAccess(created, options.access));
-      }
-      options.written?.(await file.stat());
-      if (!this.#sync) {
+      if (file !== undefined && !this.#sync) {
         // Nothing to sync, so nothing to hold: close before the rename, as
         // Windows prefers.
         const written = file;
@@ -144,6 +142,73 @@ export class DurableWriteBatch {
     // synced; otherwise a power loss could drop the file with it.
     for (const made of created) this.#dirs.add(dirname(made));
     if (this.#held.size >= this.#maxOpenFiles) await this.#syncHeld();
+  }
+
+  async #fill(
+    file: Deno.FsFile,
+    tmpPath: string,
+    content: Uint8Array | ReadableStream<Uint8Array>,
+    signal: AbortSignal,
+    options: {
+      readonly written?: (info: Deno.FileInfo) => void;
+      readonly access?: FileAccess;
+    },
+  ): Promise<void> {
+    if (content instanceof Uint8Array) {
+      await writeAll(file, content);
+    } else {
+      for await (const piece of content) {
+        signal.throwIfAborted();
+        await writeAll(file, piece);
+      }
+    }
+    signal.throwIfAborted();
+    if (options.access !== undefined && Deno.build.os !== "windows") {
+      // The temp file is this batch's own (created new, under a random
+      // name), so chmod by path cannot follow a link to another file.
+      const created = (await file.stat()).mode ?? 0o666;
+      await Deno.chmod(tmpPath, modeWithAccess(created, options.access));
+    }
+    if (options.written !== undefined) options.written(await file.stat());
+  }
+
+  /**
+   * returns the directories this call made; writes into one directory share
+   * its lookup and mkdir, and a failed one is tried again by the next write
+   */
+  async #ensureDirectory(
+    dir: string,
+    absent: readonly string[] | undefined,
+  ): Promise<string[]> {
+    const known = this.#present.get(dir);
+    if (known !== undefined) {
+      try {
+        await known;
+        return [];
+      } catch {
+        // that write's own error reports it; this one tries for itself
+      }
+    }
+    let created: string[] = [];
+    const making = (async () => {
+      created = absent !== undefined
+        ? [...absent]
+        : await missingDirectories(dir);
+      if (created.length === 0) return;
+      await Deno.mkdir(dir, { recursive: true });
+      // synced even if this write then fails, as other writes may land there
+      if (this.#sync) {
+        for (const made of created) this.#dirs.add(dirname(made));
+      }
+    })();
+    this.#present.set(dir, making);
+    try {
+      await making;
+    } catch (error) {
+      if (this.#present.get(dir) === making) this.#present.delete(dir);
+      throw error;
+    }
+    return created;
   }
 
   get syncs(): boolean {
@@ -183,6 +248,7 @@ export class DurableWriteBatch {
     for (const file of this.#held.values()) file.close();
     this.#held.clear();
     this.#dirs.clear();
+    this.#present.clear();
   }
 
   async #syncHeld(): Promise<void> {

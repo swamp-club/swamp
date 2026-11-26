@@ -423,6 +423,87 @@ Deno.test({
   },
 });
 
+async function countingLstats(
+  paths: ReadonlySet<string>,
+  fn: () => Promise<unknown>,
+): Promise<number> {
+  const deno = Deno as { lstat: typeof Deno.lstat };
+  const original = deno.lstat;
+  let count = 0;
+  deno.lstat = (path) => {
+    if (paths.has(String(path))) count++;
+    return original(path);
+  };
+  try {
+    await fn();
+  } finally {
+    deno.lstat = original;
+  }
+  return count;
+}
+
+Deno.test({
+  name:
+    "read model guard: a page of new files is written without a guard lstat of each, while a file already there is looked at and one changed by hand is read (swamp-club#5122)",
+  // On Windows nothing is recorded, and every file is read.
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withV3Env(async (env) => {
+      const names = ["n1", "n2", "n3", "n4"];
+      const paths = new Set(names.map((name) => fileOf(env, dataKey(name, 1))));
+      let cuts = 0;
+      class CountingChunkStore extends ChunkStore {
+        override refOf(
+          content: Uint8Array | ReadableStream<Uint8Array>,
+          signal: AbortSignal,
+        ) {
+          cuts++;
+          return super.refOf(content, signal);
+        }
+      }
+      const storage = new StatSpyStorage(env.storage.inner);
+      const catchUp = () =>
+        using(
+          env.openReadModel({ chunkStore: new CountingChunkStore(storage) }),
+          (model) => model.catchUp(signal()),
+        );
+      let seq = 0;
+      const putAll = async (text: string) => {
+        for (const name of names) {
+          await env.store.append(commitOf({
+            seq: ++seq,
+            partition: PARTITION,
+            namespace: "",
+            ops: [await savePut(name, 1, `${name} ${text}`)],
+          }));
+        }
+      };
+      await putAll("one");
+      assertEquals(await countingLstats(paths, catchUp), 0);
+      for (const path of paths) {
+        assert((await Deno.readTextFile(path)).endsWith(" one"));
+      }
+      // Each file there is looked at three times: the path-conflict probe
+      // checks it is no link, its target resolution reads where it leads, and
+      // the guard reads it as it stands before the overwrite.
+      await putAll("two");
+      assertEquals(await countingLstats(paths, catchUp), 3 * names.length);
+      for (const path of paths) {
+        assert((await Deno.readTextFile(path)).endsWith(" two"));
+      }
+      const v1 = await env.chunkStore.write(SOLO_NAMESPACE, V1, signal());
+      const v2 = await env.chunkStore.write(SOLO_NAMESPACE, V2, signal());
+      await putK(env, ++seq, v1);
+      await catchUp();
+      await rewriteByHand(env, V2);
+      await putK(env, ++seq, v2);
+      await catchUp();
+      assertEquals(cuts, 1);
+      assertEquals(await Deno.readFile(fileOf(env, K)), V2);
+    });
+  },
+});
+
 Deno.test("read model guard: a file it wrote that another process has since changed is read before its removal, and stores the torn chunk only it holds (swamp-club#3617)", async () => {
   await withV3Env(async (env) => {
     const v1 = await env.chunkStore.write(SOLO_NAMESPACE, V1, signal());

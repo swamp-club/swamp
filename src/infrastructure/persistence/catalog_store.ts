@@ -258,6 +258,14 @@ export interface CatalogWriter {
     modelId: string,
     dataName: string,
   ): void;
+  /**
+   * the rows of one name, flagged by computeFlags when the name holds none and
+   * no version repeats, else written one by one as upsertNewVersion writes them
+   */
+  insertNameRows(
+    rows: readonly CatalogRow[],
+    computeFlags: (rows: CatalogRow[]) => void,
+  ): void;
   recordRename(row: RenameForwardRow): void;
   removeRename(
     namespace: string,
@@ -494,6 +502,9 @@ export class CatalogStore {
     ensureDirSync(dirname(path));
     const db = new DatabaseSync(path);
     db.exec("PRAGMA busy_timeout=5000");
+    // the statement journals the dirty triggers force stay off disk; they only
+    // undo a failed statement, so durability is still the WAL's
+    db.exec("PRAGMA temp_store=MEMORY");
     return db;
   }
 
@@ -803,6 +814,37 @@ export class CatalogStore {
       pending_pid: 0,
       pending_host: "",
     });
+  }
+
+  #insertNameRows(
+    rows: readonly CatalogRow[],
+    computeFlags: (rows: CatalogRow[]) => void,
+  ): void {
+    if (rows.length === 0) return;
+    const group = dataNameArgs(rows[0]);
+    const key = groupKeyOf(rows[0]);
+    if (rows.some((row) => groupKeyOf(row) !== key)) {
+      throw new Error("insertNameRows takes the rows of one name");
+    }
+    // a version written twice leaves flags that depend on the order of writes
+    const repeated = new Set(rows.map((row) => row.version)).size < rows.length;
+    const oneByOne = repeated || this.#prepareCached(
+          `SELECT 1 FROM catalog WHERE ${DIRTY_NAME_WHERE} LIMIT 1`,
+        ).get(...group) !== undefined;
+    if (oneByOne) {
+      for (const row of rows) this.#upsertNewVersionRows(row);
+      return;
+    }
+    const fresh = rows.map((row) => ({
+      ...row,
+      is_pending: 0,
+      pending_pid: 0,
+      pending_host: "",
+    }));
+    computeFlags(fresh);
+    // the first row upsertNewVersion writes is latest, which ends any forward
+    this.removeRename(group[0], group[1], group[2], group[3]);
+    for (const row of fresh) this.upsert(row);
   }
 
   /**
@@ -2322,6 +2364,8 @@ export class CatalogStore {
   ): void {
     const writer: CatalogWriter = {
       upsertNewVersion: (row) => this.#upsertNewVersionRows(row),
+      insertNameRows: (rows, computeFlags) =>
+        this.#insertNameRows(rows, computeFlags),
       removeVersion: (
         namespace,
         typeNormalized,

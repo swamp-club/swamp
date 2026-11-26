@@ -352,3 +352,161 @@ Deno.test({
     });
   },
 });
+
+async function withCounted(
+  owner: object,
+  name: string,
+  fn: (calls: () => number) => Promise<void>,
+): Promise<void> {
+  const slots = owner as Record<string, unknown>;
+  const original = slots[name] as (...args: unknown[]) => unknown;
+  let calls = 0;
+  slots[name] = function (this: unknown, ...args: unknown[]) {
+    calls++;
+    return original.apply(this, args);
+  };
+  try {
+    await fn(() => calls);
+  } finally {
+    slots[name] = original;
+  }
+}
+
+Deno.test("DurableWriteBatch: writes into one new directory share its mkdir, and a later write there looks for nothing", async () => {
+  await withTempDir(async (dir) => {
+    const made = join(dir, "a", "b");
+    const names = ["latest", "metadata.yaml", "out", "raw"];
+    const batch = new DurableWriteBatch({ sync: false });
+    try {
+      await withCounted(Deno, "mkdir", async (mkdirs) => {
+        await withCounted(Deno, "lstat", async (lstats) => {
+          await Promise.all(
+            names.map((name) =>
+              batch.write(join(made, name), new Uint8Array([1]), signal(), {
+                absentDirectories: [made, join(dir, "a")],
+              })
+            ),
+          );
+          await batch.write(join(made, "later"), new Uint8Array([2]), signal());
+          assertEquals(mkdirs(), 1);
+          assertEquals(lstats(), 0);
+        });
+      });
+    } finally {
+      batch.discard();
+    }
+    assertEquals(
+      [...Deno.readDirSync(made)].map((e) => e.name).sort(),
+      [...names, "later"].sort(),
+    );
+  });
+});
+
+Deno.test("DurableWriteBatch: a directory removed after the batch made it is made again", async () => {
+  await withTempDir(async (dir) => {
+    const batch = new DurableWriteBatch({ sync: false });
+    try {
+      await batch.write(join(dir, "a", "raw"), new Uint8Array([1]), signal());
+      await Deno.remove(join(dir, "a"), { recursive: true });
+      await batch.write(join(dir, "a", "next"), new Uint8Array([2]), signal());
+    } finally {
+      batch.discard();
+    }
+    assertEquals(
+      await Deno.readFile(join(dir, "a", "next")),
+      new Uint8Array([2]),
+    );
+  });
+});
+
+Deno.test("DurableWriteBatch: a write with no written callback never stats its temp file", async () => {
+  await withTempDir(async (dir) => {
+    for (const sync of [true, false]) {
+      const batch = new DurableWriteBatch({ sync });
+      const sizes: number[] = [];
+      try {
+        await withCounted(Deno.FsFile.prototype, "stat", async (stats) => {
+          await batch.write(
+            join(dir, `${sync}`, "bytes"),
+            new Uint8Array([1, 2]),
+            signal(),
+          );
+          await batch.write(
+            join(dir, `${sync}`, "stream"),
+            ReadableStream.from([new Uint8Array([3])]),
+            signal(),
+          );
+          assertEquals(stats(), 0);
+          await batch.write(
+            join(dir, `${sync}`, "noted"),
+            new Uint8Array([4, 5, 6]),
+            signal(),
+            { written: (info) => sizes.push(info.size) },
+          );
+          assertEquals(stats(), 1);
+        });
+        await batch.barrier();
+      } finally {
+        batch.discard();
+      }
+      assertEquals(sizes, [3]);
+      assertEquals(
+        await Deno.readFile(join(dir, `${sync}`, "bytes")),
+        new Uint8Array([1, 2]),
+      );
+    }
+  });
+});
+
+Deno.test("DurableWriteBatch: a directory a failed write made is synced with the file another write put there", async () => {
+  await withTempDir(async (dir) => {
+    const synced: string[] = [];
+    const batch = new DurableWriteBatch({
+      syncFile: () => Promise.resolve(),
+      syncDirectory: (path) => {
+        synced.push(path);
+        return Promise.resolve();
+      },
+    });
+    const made = join(dir, "x", "y");
+    try {
+      await assertRejects(() =>
+        batch.write(
+          join(made, "failed"),
+          new ReadableStream<Uint8Array>({
+            pull(controller) {
+              controller.error(new Error("source failed"));
+            },
+          }),
+          signal(),
+        )
+      );
+      await batch.write(join(made, "raw"), new Uint8Array([1]), signal());
+      await batch.barrier();
+    } finally {
+      batch.discard();
+    }
+    assertEquals(synced, [made, join(dir, "x"), dir]);
+  });
+});
+
+Deno.test("DurableWriteBatch: an aborted unsynced write leaves the old file and no temp file", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "a", "raw");
+    const batch = new DurableWriteBatch({ sync: false });
+    try {
+      await batch.write(path, new Uint8Array([1]), signal());
+      const stop = new AbortController();
+      stop.abort();
+      await assertRejects(() =>
+        batch.write(path, new Uint8Array([2]), stop.signal)
+      );
+    } finally {
+      batch.discard();
+    }
+    assertEquals(await Deno.readFile(path), new Uint8Array([1]));
+    assertEquals([...Deno.readDirSync(join(dir, "a"))].map((e) => e.name), [
+      "raw",
+    ]);
+  });
+});
