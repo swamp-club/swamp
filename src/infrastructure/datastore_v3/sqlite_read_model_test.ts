@@ -71,6 +71,7 @@ import {
   type SqliteCommitStoreOptions,
 } from "./sqlite_commit_store.ts";
 import {
+  AT_RISK_LIST_EVERY_MS,
   CATALOG_V3_FILE,
   OwedContentOfflineError,
   READ_MODEL_LOCK_FILE,
@@ -4614,6 +4615,93 @@ Deno.test("SqliteReadModel.catchUp: under lazyModelFiles a tail page owes a new 
       await readModel.catchUp(signal());
       assertEquals(await readOrAbsent(c), "c@1 again");
       assertEquals(await readModel.hydrateOwedPath(c, signal()), "not_owed");
+    } finally {
+      await readModel.close();
+    }
+  });
+});
+
+Deno.test("SqliteReadModel.catchUp: its span times the section's lock wait and checks, the at-risk retry and each part of applying a page (swamp-club#5118)", async () => {
+  await withEnv(async (env) => {
+    await env.append(1, "", [await savePut("b", 1), versionOp("b", 1)]);
+    const readModel = env.open();
+    try {
+      await withCapturedSpans(async (spans) => {
+        await readModel.catchUp(signal());
+        const span = findSpan(spans, "swamp.datastore.v3.readmodel.catchup");
+        for (
+          const name of [
+            "readmodel.lock_wait_ms",
+            "readmodel.open_checks_ms",
+            "at_risk_ms",
+            "apply_ms",
+            "others_journaled_ms",
+            "changes_ms",
+            "pool_ms",
+            "state_commit_ms",
+            "release_ms",
+            "tell_ms",
+            "unreadable_ms",
+          ]
+        ) {
+          assertEquals(
+            typeof span.attributes[`swamp.datastore.v3.${name}`],
+            "number",
+            name,
+          );
+        }
+      });
+    } finally {
+      await readModel.close();
+    }
+  });
+});
+
+Deno.test("SqliteReadModel.catchUp: a catch-up that finds the read model complete and applies nothing writes no completion (swamp-club#5118)", async () => {
+  await withEnv(async (env) => {
+    await env.append(1, "", [await savePut("b", 1), versionOp("b", 1)]);
+    const readModel = env.open();
+    try {
+      await withCapturedSpans(async (spans) => {
+        await readModel.catchUp(signal());
+        await readModel.catchUp(signal());
+        const catchUps = spans.filter((span) =>
+          span.name === "swamp.datastore.v3.readmodel.catchup"
+        );
+        assertEquals(catchUps.length, 2);
+        assertEquals(
+          typeof catchUps[0].attributes["swamp.datastore.v3.complete_ms"],
+          "number",
+        );
+        assertEquals(
+          catchUps[1].attributes["swamp.datastore.v3.complete_ms"],
+          undefined,
+        );
+      });
+      assertEquals(readModel.isComplete(), true);
+    } finally {
+      await readModel.close();
+    }
+  });
+});
+
+Deno.test("SqliteReadModel.catchUp: other processes' at-risk copies are listed at most once per interval (swamp-club#5118)", async () => {
+  await withEnv(async (env) => {
+    let now = Date.parse("2026-11-26T12:00:00Z");
+    const readModel = env.open({ clock: () => new Date(now) });
+    try {
+      await withCapturedSpans(async (spans) => {
+        const listed = () =>
+          spans.filter((span) =>
+            span.name === "swamp.datastore.v3.readmodel.catchup"
+          ).map((span) => span.attributes["swamp.datastore.v3.at_risk_listed"]);
+        await readModel.catchUp(signal());
+        now += AT_RISK_LIST_EVERY_MS - 1;
+        await readModel.catchUp(signal());
+        now += 1;
+        await readModel.catchUp(signal());
+        assertEquals(listed(), [1, undefined, 1]);
+      });
     } finally {
       await readModel.close();
     }
