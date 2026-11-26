@@ -1262,13 +1262,7 @@ export type V3LockedScope =
   | { readonly kind: "model"; readonly type: string; readonly id: string }
   | { readonly kind: "run"; readonly runId: string };
 
-/**
- * `model method run` in a serve-member checkout calls it before its
- * repositories open: its read model applies the partitions it locks or reads,
- * with config, the lockfile and auto-definitions, not the whole feed; the
- * cursor stays where the last whole apply left it. Ends when the datastores
- * close
- */
+// the cursor stays where the last whole apply left it; ends when the datastores close
 export function scopeV3ReadModelApplies(): void {
   const state = repoState();
   if (state.scoped !== undefined) return;
@@ -1421,9 +1415,7 @@ async function applyAtScopedOpen(handle: V3Datastore): Promise<void> {
 
 /**
  * does nothing for a datastore not read through serve, so serve itself never
- * watches; the watches stop when the datastores close, before anything else
- * closes. A scoped command applies the whole feed at an interval instead of
- * at each frame
+ * watches; a scoped command applies the whole feed at an interval, not per frame
  */
 export function watchV3ServeFeeds(): void {
   for (const handle of [...repoState().opened.values()]) {
@@ -1502,7 +1494,7 @@ export async function catchUpV3HandlesAt(
   );
   for (const handle of handles) {
     if (handle.catchUpForWrite !== undefined) {
-      const lockedHere = scopedHandles().includes(handle)
+      const lockedPartitions = scopedHandles().includes(handle)
         ? lockedPartitionsOf(handle, locked)
         : undefined;
       let scoped: PartitionKey[] | undefined;
@@ -1517,9 +1509,9 @@ export async function catchUpV3HandlesAt(
         // a scoped command applies what the lock guards; a read model never
         // completed, or lagging past the bound in a copy the lock just
         // fetched, applies the whole feed before the command stages anything
-        scoped = lockedHere !== undefined &&
+        scoped = lockedPartitions !== undefined &&
             handle.readModel.isComplete() && !await backlogPastBound(handle)
-          ? lockedHere
+          ? lockedPartitions
           : undefined;
         if (maxCommits !== undefined && scoped !== undefined) {
           await assertScopedReadModelWithin(handle, maxCommits, scoped);
@@ -1539,9 +1531,11 @@ export async function catchUpV3HandlesAt(
       }
       endDeferral(handle);
       const marks = repoState().scoped?.locked;
-      if (lockedHere !== undefined && marks !== undefined) {
+      if (lockedPartitions !== undefined && marks !== undefined) {
         const held = marks.get(handle) ?? new Set<string>();
-        for (const partition of lockedHere) held.add(partition.toString());
+        for (const partition of lockedPartitions) {
+          held.add(partition.toString());
+        }
         marks.set(handle, held);
       }
       if (scoped !== undefined) {

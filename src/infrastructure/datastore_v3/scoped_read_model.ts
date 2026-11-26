@@ -26,20 +26,14 @@ import { getSwampLogger } from "../logging/logger.ts";
 import type { SqliteCommitStore } from "./sqlite_commit_store.ts";
 import type { SqliteReadModel } from "./sqlite_read_model.ts";
 
-/**
- * a scoped command's open applies the whole feed past this many unapplied
- * commits: one tail-netted page (under TAIL_NET_MAX_COMMITS) bounds what
- * commits.db keeps and what follow compaction waits on
- */
+// one tail-netted page (under TAIL_NET_MAX_COMMITS) bounds what commits.db
+// keeps and what follow compaction waits on
 export const SCOPED_BACKLOG_MAX = 2_000;
 
 /** or once the oldest unapplied commit is this old, however few there are */
 export const SCOPED_BACKLOG_AGE_MS = 60 * 60 * 1000;
 
-/**
- * a scoped command applies the whole feed this often while it runs, so a long
- * command's reads and other processes' lag by at most this much
- */
+// a long command's reads, and other processes', lag by at most this much
 export const SCOPED_FEED_APPLY_MS = 30_000;
 
 const logger = getSwampLogger(["datastore", "v3", "scoped"]);
@@ -84,7 +78,6 @@ export interface ScopedApplyTarget {
   >;
 }
 
-/** whether the read model lags its copy past the bound a scoped open allows */
 export async function backlogPastBound(
   target: ScopedApplyTarget,
   now: number = Date.now(),
@@ -120,19 +113,16 @@ function pendingIn(
   return pending;
 }
 
-/** config, lockfile and auto-definition partitions with commits not applied */
 export function pendingAlwaysApplied(
   target: ScopedApplyTarget,
 ): PartitionKey[] {
   return pendingIn(target, ALWAYS_APPLIED_RANGES);
 }
 
-/** every partition with commits past the cursor not applied */
 export function pendingPartitions(target: ScopedApplyTarget): PartitionKey[] {
   return pendingIn(target, EVERY_PARTITION);
 }
 
-/** commits of these partitions the copy holds and the read model has not applied */
 export async function pendingCommitsIn(
   target: ScopedApplyTarget,
   partitions: readonly PartitionKey[],
@@ -149,7 +139,6 @@ export async function pendingCommitsIn(
   return pending;
 }
 
-/** whether the copy holds a commit of the partition the read model has not applied */
 export function partitionPending(
   target: ScopedApplyTarget,
   partition: PartitionKey,
@@ -158,7 +147,7 @@ export function partitionPending(
     target.readModel.appliedSeq(target.namespace, partition);
 }
 
-/** applies each partition holding unapplied commits; the cursor stays where it is */
+// the cursor stays where it is
 export async function applyPartitions(
   target: ScopedApplyTarget,
   partitions: readonly PartitionKey[],
@@ -190,11 +179,7 @@ export interface PeriodicApply {
 /** a stopped apply is waited for this long, as a stopped feed watch's catch-up is */
 const STOP_WAIT_MS = 500;
 
-/**
- * runs `apply` every `intervalMs` after the last one settled, the first a whole
- * interval in; stopping aborts the one running, so a command's exit never
- * waits on it
- */
+// stopping aborts the apply running, so a command's exit never waits on it
 export function startPeriodicApply(options: {
   readonly intervalMs: number;
   readonly apply: (signal: AbortSignal) => Promise<unknown>;

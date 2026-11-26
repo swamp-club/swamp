@@ -29,6 +29,7 @@ import {
   setImplicitServeRouting,
 } from "../src/cli/remote_run.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
+import { setScopedFeedApplyMsForTesting } from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
 import { endCommand, withClientEnv } from "./serve_upstream_fixtures.ts";
 import type { ProcessHost } from "./process_host.ts";
 
@@ -41,6 +42,7 @@ export type MethodRunWorkerRequest = {
   readonly modelType: string;
   readonly model: string;
   readonly method: string;
+  readonly feedApplyMs?: number;
 };
 
 export type MethodRunWorkerMessage =
@@ -58,6 +60,9 @@ async function run(
   post: (message: MethodRunWorkerMessage) => void,
 ): Promise<void> {
   await initializeLogging({});
+  using _interval = request.feedApplyMs === undefined
+    ? undefined
+    : setScopedFeedApplyMsForTesting(request.feedApplyMs);
   let error: string | undefined;
   // a process global: sound only while no other command in the isolate fails
   Deno.exitCode = 0;

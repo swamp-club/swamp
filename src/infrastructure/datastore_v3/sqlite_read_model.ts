@@ -720,7 +720,6 @@ export class SqliteReadModel implements ReadModel {
     return this.#state.appliedSeq(namespace, partition.toString());
   }
 
-  /** as appliedSeq, once no page is in flight */
   settledAppliedSeq(
     namespace: string,
     partition: PartitionKey,

@@ -30,7 +30,6 @@ import { StepTask } from "../src/domain/workflows/step_task.ts";
 import { TriggerCondition } from "../src/domain/workflows/trigger_condition.ts";
 import { Workflow } from "../src/domain/workflows/workflow.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
-import { SCOPED_FEED_APPLY_MS } from "../src/infrastructure/datastore_v3/scoped_read_model.ts";
 import {
   localProcess,
   setLocalProcessForTesting,
@@ -60,13 +59,6 @@ import { startProcessHost } from "./process_host.ts";
 
 await initializeLogging({});
 
-/**
- * How long a second process on a member's checkout may read a stale copy of
- * another behavior while the member runs a long write: the scoped command's
- * interval apply, plus slack.
- */
-const READER_LAG_BOUND_MS: number | undefined = SCOPED_FEED_APPLY_MS + 15_000;
-
 // alice-token authenticates as user:caller, bob-token as user:bob
 const A_TOKEN = "alice-token";
 const B_TOKEN = "bob-token";
@@ -88,7 +80,6 @@ interface Observation {
   readonly value: unknown;
 }
 
-/** what each method body saw, in the order it saw it */
 let observed: Observation[] = [];
 /** the body each behavior's next `stamp` writes */
 const nextBody = new Map<string, string>();
@@ -130,7 +121,7 @@ const ReadArgs = z.object({
   found: z.array(z.unknown()).optional(),
 });
 
-/** one type for every behavior here; each method writes so it runs as a write */
+// each method writes, so it runs as a write
 function registerMethods(type: ModelType): void {
   modelRegistry.invalidateType(type);
   modelRegistry.register({
@@ -268,7 +259,6 @@ interface Run {
   readonly result: Promise<{ error?: string; exitCode: number }>;
 }
 
-/** a member's `model method run`, in a ProcessRuntime of its own */
 function methodRun(
   scratch: Scratch,
   serve: Serve,
@@ -276,6 +266,7 @@ function methodRun(
   token: string,
   model: string,
   method: string,
+  feedApplyMs?: number,
 ): Run {
   let done: Extract<MethodRunWorkerMessage, { kind: "done" }> | undefined;
   let failed: string | undefined;
@@ -292,6 +283,7 @@ function methodRun(
       modelType: serve.modelType.normalized,
       model,
       method,
+      ...(feedApplyMs === undefined ? {} : { feedApplyMs }),
     } satisfies MethodRunWorkerRequest,
   );
   const result = (async () => {
@@ -597,7 +589,7 @@ Deno.test({
 
 Deno.test({
   name:
-    "scoped apply reads: a second process reading a member's checkout during the member's long write sees another member's new version within the lag bound",
+    "scoped apply reads: a second process reading a member's checkout during the member's long write sees another member's new version from the write's interval apply",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
@@ -620,30 +612,35 @@ Deno.test({
       const exitCode = Deno.exitCode;
       const held = holdRuns(a);
       try {
-        const long = methodRun(scratch, serve, a, A_TOKEN, CONSUMER, "stamp");
+        const long = methodRun(
+          scratch,
+          serve,
+          a,
+          A_TOKEN,
+          CONSUMER,
+          "stamp",
+          200,
+        );
         try {
           await waitFor(() => holding.has(a.repoDir), "a's long write", {
             timeoutMs: 120_000,
           });
           await stamp(scratch, serve, b, B_TOKEN, PRODUCER, "two");
-          if (READER_LAG_BOUND_MS !== undefined) {
-            // the reader shares this isolate's pid with a's run, which would
-            // make a's checkout its own to catch up; it reads as another
-            // process does
-            const local = await localProcess();
-            setLocalProcessForTesting({ ...local, pid: local.pid + 1_000_000 });
-            try {
-              await waitFor(
-                async () =>
-                  (await readProducer())?.content === '{"body":"two"}',
-                "the reader to see b's write while a's write runs",
-                { timeoutMs: READER_LAG_BOUND_MS, intervalMs: 200 },
-              );
-            } finally {
-              setLocalProcessForTesting(undefined);
-            }
-            assertEquals(long.done(), false, "a's write still ran");
+          // the reader shares this isolate's pid with a's run, which would
+          // make a's checkout its own to catch up; it reads as another
+          // process does
+          const local = await localProcess();
+          setLocalProcessForTesting({ ...local, pid: local.pid + 1_000_000 });
+          try {
+            await waitFor(
+              async () => (await readProducer())?.content === '{"body":"two"}',
+              "the reader to see b's write while a's write runs",
+              { timeoutMs: 120_000, intervalMs: 200 },
+            );
+          } finally {
+            setLocalProcessForTesting(undefined);
           }
+          assertEquals(long.done(), false, "a's write still ran");
         } finally {
           held.release();
           assertEquals(await long.result, { exitCode: 0 });

@@ -96,7 +96,6 @@ let readTarget: string | undefined;
 /** a run in this checkout waits here once its write is allocated */
 const holds = new Map<string, Promise<void>>();
 const holding = new Set<string>();
-/** what each sync-reading method body saw */
 const seen: { readonly via: string; readonly value: unknown }[] = [];
 
 function registerMethods(type: ModelType): void {
@@ -188,7 +187,6 @@ type MethodRunMessage =
   }
   | { readonly kind: "failed"; readonly error: string };
 
-/** a member's `model method run`, with the sync-read tripwire on */
 const methodRunHost: ProcessHost<MethodRunRequest, MethodRunMessage> =
   (post) => (request) => {
     (async () => {

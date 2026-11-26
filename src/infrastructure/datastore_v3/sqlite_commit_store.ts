@@ -2956,10 +2956,6 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
     return Promise.resolve(keys);
   }
 
-  /**
-   * each partition in the key ranges with a commit stored past `cursor`, and
-   * its greatest seq there; reads no commit body
-   */
   partitionHeadsSince(
     namespace: string,
     cursor: number,
@@ -2980,7 +2976,6 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
     ) as { partition: string; seq: number }[];
   }
 
-  /** when the first commit stored past `cursor` was made, if any is */
   firstChangeAtSince(cursor: number): string | undefined {
     this.#assertOpen();
     const row = this.#db.prepare(
@@ -2989,7 +2984,7 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
     return row?.at;
   }
 
-  /** the partition's head seq, 0 for one never written */
+  // 0 for a partition never written
   headSeq(namespace: string, partition: PartitionKey): number {
     this.#assertOpen();
     const row = this.#selectHead.get(namespace, partition.toString()) as

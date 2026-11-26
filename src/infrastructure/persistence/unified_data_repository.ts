@@ -698,10 +698,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     }
   }
 
-  /**
-   * walked in name order at each level so a freshly backfilled catalog has the
-   * same rowid order on every filesystem
-   */
   async beforeWideRead(): Promise<void> {
     await dataReadBarrier()?.beforeWideRead();
   }
@@ -724,6 +720,10 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     );
   }
 
+  /**
+   * walked in name order at each level so a freshly backfilled catalog has the
+   * same rowid order on every filesystem
+   */
   async findAllGlobal(options?: FindAllGlobalOptions): Promise<
     Array<{ data: Data; modelType: ModelType; modelId: string }>
   > {
