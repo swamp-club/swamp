@@ -2274,8 +2274,9 @@ export const serveCommand = new Command()
   )
   .option(
     "--dashboard",
-    "Enable the web dashboard at /dashboard " +
-      "(env: SWAMP_DASHBOARD)",
+    "Enable the web dashboard at /dashboard (env: SWAMP_DASHBOARD). " +
+      "On a standalone serve it shows only this repo, without workspace switching. " +
+      "Use swamp start for local workspace switching.",
   )
   .option(
     "--auto-resume",
