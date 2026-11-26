@@ -18,7 +18,6 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { UserError } from "../errors.ts";
-import { BINDING_MACROS } from "../expressions/vault_call_syntax.ts";
 import { celString } from "./data_query_command.ts";
 import {
   BEHAVIOR_QUERY_FUNCTION,
@@ -85,6 +84,16 @@ export const CEL_BUILTINS = new Set([
   "contains",
   "startsWith",
   "endsWith",
+]);
+
+// a local copy: the expressions context already depends on data, so importing
+// its set would make the two contexts depend on each other
+const BINDING_MACROS: ReadonlySet<string> = new Set([
+  "all",
+  "exists",
+  "exists_one",
+  "filter",
+  "map",
 ]);
 
 export interface ASTNode {
