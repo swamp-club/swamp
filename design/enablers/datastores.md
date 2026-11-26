@@ -9463,16 +9463,24 @@ an admin": kept, never sent again.
 
 A serve-mode checkout's first command loads serve's compacted base. Writing
 every model's data and output files then costs the first command minutes on a
-large datastore, though a command touches a few partitions. So the base load
-writes config, definition and run files as before and records each model
-partition's data and output files as **owed**: logically present, not yet on
-disk.
+large datastore, though a command touches a few partitions. So the base load,
+and every page applied after it, writes as before except a model partition's
+data content files (`data/<type>/<id>/<name>/<version>/raw`), which it records
+as **owed**: logically present, not yet on disk, their chunks not fetched.
+`metadata.yaml`, latest markers, outputs, and config, definition and run files
+are always written, since their readers do not hydrate. A content file is owed
+only when nothing is on disk at its path; one already there is written at
+once.
 
-**The contract.** Files under `.swamp/` for partitions this checkout has not
-touched may be absent until hydrated. Read them through swamp (`data get`,
-`data query`, expressions, methods), which hydrates on read, or run
-`swamp datastore sync --hydrate` to write every owed file, for tools that read
-`.swamp/` directly.
+**The contract.** Data content files under `.swamp/` for partitions this
+checkout has not touched may be absent until hydrated. Read them through swamp
+(`data get`, `data query`, expressions, methods, an extension's async
+`getContent`), which hydrates on read, or run `swamp datastore sync --hydrate`
+to write every owed file, for tools that read `.swamp/` directly. A printed
+`contentPath` may name an owed file not yet on disk, and an extension's
+synchronous `getContentSync` and `getContentPath` cannot hydrate, as with a
+lazy v2 datastore. Switching a checkout to `hydrationStrategy: full` stops new
+owing; files already owed still hydrate on read or on `sync --hydrate`.
 
 **When it applies.** `v3LazyModelFiles` (`lazy_hydration.ts`) decides: a
 serve-mode checkout whose `hydrationStrategy` is unset or `lazy`. A
