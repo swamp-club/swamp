@@ -28,6 +28,7 @@ import {
 } from "../data/mod.ts";
 import type { DataId, OwnerDefinition } from "../data/mod.ts";
 import {
+  findWriterStampedTagKeys,
   RECORD_KIND_TAG,
   SUMMARY_DISPLAY_HIDDEN,
   SUMMARY_DISPLAY_TAG,
@@ -1183,6 +1184,14 @@ export function createResourceWriter(
     runtimeTags,
     dataOutputOverrides,
   );
+  const warnStampedTags = stampedTagWarner(
+    modelType,
+    definitionTags,
+    tagOverrides,
+    runtimeTags,
+    dataOutputOverrides,
+    definitionName ? onEvent : undefined,
+  );
   const writerLogger = getLogger([
     "swamp",
     "data-writer",
@@ -1262,9 +1271,11 @@ export function createResourceWriter(
     let varySuffix: string | undefined;
 
     assertWriteTagsUnreserved("resource", specName, spec.tags, overrides?.tags);
+    warnStampedTags("resource", specName, spec.tags, overrides?.tags);
 
     // tag precedence, lowest to highest: type, definition, spec defaults,
-    // method overrides, specName, workflow, runtime, data output overrides
+    // method overrides, specName, workflow, runtime, data output overrides,
+    // then the writer's own stamps
     const resolvedTags: Record<string, string> = {
       type: "resource",
       ...(definitionTags ?? {}),
@@ -1273,11 +1284,6 @@ export function createResourceWriter(
     };
 
     resolvedTags["specName"] = specName;
-
-    // the modelName tag lets orphan data be recovered
-    if (definitionName) {
-      resolvedTags["modelName"] = definitionName;
-    }
 
     if (tagOverrides) {
       Object.assign(resolvedTags, tagOverrides);
@@ -1318,6 +1324,10 @@ export function createResourceWriter(
 
     // Stamped after every override, so only the writer sets it.
     resolvedTags[RECORD_KIND_TAG] = "resource";
+    // serve authorizes data whose definition is gone under this name
+    if (definitionName) {
+      resolvedTags["modelName"] = definitionName;
+    }
     if (spec.display === false) {
       resolvedTags[SUMMARY_DISPLAY_TAG] = SUMMARY_DISPLAY_HIDDEN;
     }
@@ -1553,6 +1563,28 @@ export function reservedTagRefusal(
   );
 }
 
+/**
+ * the source keeps its own tag, a workflow's or definition's tags still
+ * apply to it for grants and search, so this never says the tag is ignored
+ */
+export function stampedTagNotice(
+  tags: Record<string, string> | undefined,
+  source: (w: BehaviorWords) => string,
+  remedy: (w: BehaviorWords) => string = () =>
+    "Use another key for your own value.",
+): WordedText | undefined {
+  if (!tags) return undefined;
+  const [key] = findWriterStampedTagKeys(tags);
+  if (key === undefined) return undefined;
+  return wordedText((w) =>
+    `Tag '${key}' from ${
+      source(w)
+    } is not written to the data: swamp records the ${w.noun} that wrote the data under that key. ${
+      remedy(w)
+    }`
+  );
+}
+
 export function assertNoReservedTags(
   tags: Record<string, string> | undefined,
   source: (w: BehaviorWords) => string,
@@ -1582,21 +1614,25 @@ export interface RunTagSources {
   }>;
 }
 
-export function reservedRunTagRefusal(
+type TagNotice = (
+  tags: Record<string, string> | undefined,
+  source: (w: BehaviorWords) => string,
+  remedy?: (w: BehaviorWords) => string,
+) => WordedText | undefined;
+
+/** one notice per source that has one, in tag precedence order */
+function runTagNotices(
   sources: RunTagSources,
-): WordedText | undefined {
+  notice: TagNotice,
+): WordedText[] {
   const inType = (w: BehaviorWords) =>
     sources.modelType
       ? ` in ${w.noun} type '${sources.modelType.normalized}'`
       : "";
-  const refusals = [
-    () =>
-      reservedTagRefusal(
-        sources.definitionTags,
-        (w) => `the ${w.noun} definition's tags`,
-      ),
-    ...(sources.specs ?? []).map((spec) => () =>
-      reservedTagRefusal(
+  return [
+    notice(sources.definitionTags, (w) => `the ${w.noun} definition's tags`),
+    ...(sources.specs ?? []).map((spec) =>
+      notice(
         spec.tags,
         (w) =>
           `the default tags of ${spec.kind} spec '${spec.specName}'${
@@ -1605,20 +1641,25 @@ export function reservedRunTagRefusal(
         typeAuthorRemedy,
       )
     ),
-    () => reservedTagRefusal(sources.tagOverrides, () => "the workflow's tags"),
-    () => reservedTagRefusal(sources.runtimeTags, () => "--tag"),
-    ...(sources.dataOutputOverrides ?? []).map((override) => () =>
-      reservedTagRefusal(
+    notice(sources.tagOverrides, () => "the workflow's tags"),
+    notice(sources.runtimeTags, () => "--tag"),
+    ...(sources.dataOutputOverrides ?? []).map((override) =>
+      notice(
         override.tags,
         () => `the data output override for spec '${override.specName}'`,
       )
     ),
-  ];
-  for (const refusal of refusals) {
-    const found = refusal();
-    if (found) return found;
-  }
-  return undefined;
+  ].filter((found): found is WordedText => found !== undefined);
+}
+
+export function reservedRunTagRefusal(
+  sources: RunTagSources,
+): WordedText | undefined {
+  return runTagNotices(sources, reservedTagRefusal)[0];
+}
+
+export function stampedRunTagNotices(sources: RunTagSources): WordedText[] {
+  return runTagNotices(sources, stampedTagNotice);
 }
 
 export function outputSpecTags(
@@ -1679,6 +1720,72 @@ function writeTagsGuard(
         `the write overrides of ${kind} spec '${specName}' in ${w.noun} type '${modelType.normalized}'`,
       typeAuthorRemedy,
     );
+  };
+}
+
+/**
+ * a method's resource and file writers warn independently, so they share this
+ * to report each stamped-tag source once per method run
+ */
+export function stampedTagWarningsOnce(
+  onEvent: ((event: MethodExecutionEvent) => void) | undefined,
+): ((event: MethodExecutionEvent) => void) | undefined {
+  if (!onEvent) return undefined;
+  const reported = new Set<string>();
+  return (event) => {
+    if (event.type === "stamped_tag_ignored") {
+      if (reported.has(event.message)) return;
+      reported.add(event.message);
+    }
+    onEvent(event);
+  };
+}
+
+/**
+ * warns once per source, as the run reports each problem source once; each
+ * step builds its own writers, so a workflow-level source warns per step
+ */
+function stampedTagWarner(
+  modelType: ModelType,
+  definitionTags: Record<string, string> | undefined,
+  tagOverrides: Record<string, string> | undefined,
+  runtimeTags: Record<string, string> | undefined,
+  dataOutputOverrides:
+    | Array<{ specName: string; tags?: Record<string, string> }>
+    | undefined,
+  onEvent: ((event: MethodExecutionEvent) => void) | undefined,
+): (
+  kind: "resource" | "file",
+  specName: string,
+  specTags: Record<string, string> | undefined,
+  overrideTags: Record<string, string> | undefined,
+) => void {
+  const warned = new Set<string>();
+  return (kind, specName, specTags, overrideTags) => {
+    if (!onEvent) return;
+    const notices = [
+      ...stampedRunTagNotices({
+        modelType,
+        definitionTags,
+        specs: [{ kind, specName, tags: specTags }],
+        tagOverrides,
+        runtimeTags,
+        dataOutputOverrides: dataOutputOverrides?.filter((o) =>
+          o.specName === specName
+        ),
+      }),
+      stampedTagNotice(
+        overrideTags,
+        (w) =>
+          `the write overrides of ${kind} spec '${specName}' in ${w.noun} type '${modelType.normalized}'`,
+        typeAuthorRemedy,
+      ),
+    ];
+    for (const notice of notices) {
+      if (!notice || warned.has(notice.text)) continue;
+      warned.add(notice.text);
+      onEvent({ type: "stamped_tag_ignored", message: notice.text });
+    }
   };
 }
 
@@ -2444,6 +2551,14 @@ export function createFileWriterFactory(
     runtimeTags,
     dataOutputOverrides,
   );
+  const warnStampedTags = stampedTagWarner(
+    modelType,
+    definitionTags,
+    tagOverrides,
+    runtimeTags,
+    dataOutputOverrides,
+    definitionName ? callbacks?.onEvent : undefined,
+  );
 
   const createFileWriter = (
     specName: string,
@@ -2482,9 +2597,11 @@ export function createFileWriterFactory(
     let instanceName = name;
 
     assertWriteTagsUnreserved("file", specName, spec.tags, overrides?.tags);
+    warnStampedTags("file", specName, spec.tags, overrides?.tags);
 
     // tag precedence, lowest to highest: type, definition, spec defaults,
-    // method overrides, specName, workflow, runtime, data output overrides
+    // method overrides, specName, workflow, runtime, data output overrides,
+    // then the writer's own stamps
     const resolvedTags: Record<string, string> = {
       type: "file",
       ...(definitionTags ?? {}),
@@ -2493,11 +2610,6 @@ export function createFileWriterFactory(
     };
 
     resolvedTags["specName"] = specName;
-
-    // the modelName tag lets orphan data be recovered
-    if (definitionName) {
-      resolvedTags["modelName"] = definitionName;
-    }
 
     if (tagOverrides) {
       Object.assign(resolvedTags, tagOverrides);
@@ -2530,6 +2642,10 @@ export function createFileWriterFactory(
     }
 
     resolvedTags[RECORD_KIND_TAG] = "file";
+    // serve authorizes data whose definition is gone under this name
+    if (definitionName) {
+      resolvedTags["modelName"] = definitionName;
+    }
     if (spec.display === false) {
       resolvedTags[SUMMARY_DISPLAY_TAG] = SUMMARY_DISPLAY_HIDDEN;
     }

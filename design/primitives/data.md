@@ -221,15 +221,32 @@ stores. Rollback attempts both stores even when one fails
 
 **Tags** are resolved in a fixed order (`data_writer.ts`): the `type`
 auto-tag, the definition's `tags`, the spec's default tags, per-call
-`overrides.tags`, the `specName` and `modelName` auto-tags, then workflow step
-tag overrides (which also feed `ownerDefinition.workflowRunId` etc.). Next come
-runtime tags from `--tag KEY=VALUE` on `swamp behavior run` /
-`swamp workflow run` (`src/cli/commands/model_method_run.ts`,
-`workflow_run.ts`). Last is the definition-level `dataOutputOverrides` for that
-spec: lifetime, GC, tags, vary, vault name (`data_output_override.ts`). After
-every source, each writer stamps `_swamp.kind` (`resource` or `file`,
-`RECORD_KIND_TAG`), and the resource writer adds `_swamp.sensitiveFields` when
-it vaults a field.
+`overrides.tags`, the `specName` auto-tag, then workflow step tag overrides
+(which also feed `ownerDefinition.workflowRunId` etc.). Next come runtime tags
+from `--tag KEY=VALUE` on `swamp behavior run` / `swamp workflow run`
+(`src/cli/commands/model_method_run.ts`, `workflow_run.ts`). Last is the
+definition-level `dataOutputOverrides` for that spec: lifetime, GC, tags, vary,
+vault name (`data_output_override.ts`). After every source, each writer stamps
+`_swamp.kind` (`resource` or `file`, `RECORD_KIND_TAG`) and the `modelName`
+auto-tag, and the resource writer adds `_swamp.sensitiveFields` when it vaults a
+field.
+
+`modelName` is a writer-stamped key (`WRITER_STAMPED_TAG_KEYS` in `data.ts`):
+the catalog's `model_name`, `data query` and serve's authorization of data whose
+definition is gone all name the data by it, so only the writer sets it
+(swamp-club#5135). Unlike a reserved key, a user source that sets it is not
+refused: configurations that set it kept running when it became stamped. The
+value is dropped from the data, and the source keeps its own tag (a workflow's
+or definition's tags still apply to it for grants and search). The drop is
+warned, naming the key and source and never the value
+(`stampedRunTagNotices`): `behavior validate` warns on the definition's tags and
+spec defaults, `workflow validate` on the workflow's tags and each step's data
+output overrides, and a run emits a `stamped_tag_ignored` event once per source
+per method run (`stampedTagWarningsOnce` shares it between a method's resource
+and file writers), so a workflow-level source warns once per writing step. A write
+through serve's data plane is stamped but not warned, as the data plane passes
+no event sink. A writer with no definition name (swamp's own control-plane
+records) stamps no `modelName`.
 
 Tag keys under the `_swamp.` prefix are reserved for swamp. Readers trust them
 as swamp's own: `_swamp.sensitiveFields` chooses which fields resolve vault

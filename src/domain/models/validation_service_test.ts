@@ -25,6 +25,7 @@ import {
   DefaultModelValidationService,
   FOREIGN_TEMPLATE_WARNING_NAME,
   type ModelValidationOptions,
+  STAMPED_TAG_WARNING_NAME,
   UNCHECKED_SECRET_REFERENCES_WARNING_NAME,
   ValidationResult,
 } from "./validation_service.ts";
@@ -3529,6 +3530,68 @@ Deno.test("validateModel: Tags fails on specName in the definition's tags or a s
   assertStringIncludes(
     fromSpec.results.find((r) => r.name === "Tags")?.error ?? "",
     `Tag 'specName' from the default tags of file spec 'log' in behavior type '${testExprModel.type.normalized}'`,
+  );
+});
+
+Deno.test("validateModel: a modelName in the definition's tags or a spec's default tags warns it is not written to the data, and Tags still passes", async () => {
+  const service = new DefaultModelValidationService();
+  const modelDef: ModelDefinition = {
+    ...testExprModel,
+    files: {
+      log: {
+        contentType: "text/plain",
+        lifetime: "infinite",
+        garbageCollection: 5,
+        tags: { modelName: "forged-spec-name" },
+      },
+    },
+  };
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { message: "hello" },
+    tags: { modelName: "forged-definition-name" },
+  });
+
+  const { results, warnings } = await service.validateModel(
+    definition,
+    modelDef,
+  );
+
+  assertEquals(results.find((r) => r.name === "Tags")?.passed, true);
+  const stamped = warnings.filter((w) => w.name === STAMPED_TAG_WARNING_NAME);
+  assertEquals(stamped.length, 2, JSON.stringify(stamped));
+  assertStringIncludes(
+    stamped[0].message,
+    "Tag 'modelName' from the behavior definition's tags is not written to the data",
+  );
+  assertStringIncludes(stamped[0].modelMessage, "the model definition's tags");
+  assertStringIncludes(
+    stamped[1].message,
+    "from the default tags of file spec 'log'",
+  );
+  assertStringIncludes(
+    stamped[1].message,
+    "The behavior type's author must remove it.",
+  );
+  assertEquals(
+    stamped.some((w) => w.message.includes("forged-")),
+    false,
+  );
+});
+
+Deno.test("validateModel: no modelName tag gives no stamped-tag warning", async () => {
+  const service = new DefaultModelValidationService();
+  const { warnings } = await service.validateModel(
+    Definition.create({
+      name: "test-definition",
+      globalArguments: { message: "hello" },
+      tags: { env: "dev", ModelName: "case-variant" },
+    }),
+    testExprModel,
+  );
+  assertEquals(
+    warnings.filter((w) => w.name === STAMPED_TAG_WARNING_NAME),
+    [],
   );
 });
 

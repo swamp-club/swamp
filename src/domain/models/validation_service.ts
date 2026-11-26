@@ -61,7 +61,11 @@ import {
 } from "./definition_upgrade_service.ts";
 import { UserError } from "../errors.ts";
 import { SecretRedactor } from "../secrets/secret_redactor.ts";
-import { outputSpecTags, reservedRunTagRefusal } from "./data_writer.ts";
+import {
+  outputSpecTags,
+  reservedRunTagRefusal,
+  stampedRunTagNotices,
+} from "./data_writer.ts";
 import {
   acceptsMethodArgumentKey,
   coerceMethodArgs,
@@ -135,6 +139,8 @@ export function envVarWarningText(): WordedText {
 export const UNCHECKED_SECRET_REFERENCES_WARNING_NAME =
   "Secret references not checked";
 
+export const STAMPED_TAG_WARNING_NAME = "Tag not written to data";
+
 export class ValidationWarning {
   private constructor(
     readonly name: string,
@@ -159,6 +165,16 @@ export class ValidationWarning {
       undefined,
       message,
       references,
+    );
+  }
+
+  static stampedTag(notice: WordedText): ValidationWarning {
+    return new ValidationWarning(
+      STAMPED_TAG_WARNING_NAME,
+      notice.text,
+      undefined,
+      undefined,
+      notice.modelText,
     );
   }
 
@@ -622,6 +638,11 @@ export class DefaultModelValidationService implements ModelValidationService {
     }
 
     const warnings = [
+      ...stampedRunTagNotices({
+        modelType: modelDef.type,
+        definitionTags: definition.tags,
+        specs: outputSpecTags(modelDef),
+      }).map((notice) => ValidationWarning.stampedTag(notice)),
       ...this.detectEnvVarUsage(definition),
       ...this.foreignTemplateWarnings([
         ...templateScan.foreign.map(({ path, text }) => ({ path, text })),

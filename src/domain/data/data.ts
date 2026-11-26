@@ -84,6 +84,21 @@ export function findReservedTagKey(
 }
 
 /**
+ * tag keys a behavior's writer sets after every user source, so a user value
+ * never reaches the data; accepted with a warning rather than refused, so
+ * configurations that set one keep running
+ */
+export const WRITER_STAMPED_TAG_KEYS: readonly string[] = ["modelName"];
+
+export function findWriterStampedTagKeys(
+  tags: Record<string, string>,
+): string[] {
+  return Object.keys(tags).filter((key) =>
+    WRITER_STAMPED_TAG_KEYS.includes(key)
+  );
+}
+
+/**
  * Printable characters the Windows file API rejects in a file name; it also
  * rejects the control characters U+0001 to U+001F.
  */

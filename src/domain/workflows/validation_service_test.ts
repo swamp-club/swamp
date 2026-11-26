@@ -3563,6 +3563,33 @@ Deno.test("validate: fails a reserved key in a later step's data output override
   assertEquals(results.find((r) => r.name === "Tags"), undefined);
 });
 
+Deno.test("validate: a modelName in the workflow's tags or a step's data output override warns it is not written to the data, without failing", async () => {
+  const results = await service.validate(
+    twoStepWorkflow({
+      tags: { modelName: "forged-workflow-name" },
+      overrideTags: { modelName: "forged-override-name" },
+    }),
+  );
+  const warnings = results.filter((r) => r.warning);
+  const own = warnings.find((r) => r.name === "Tags");
+  const step = warnings.find((r) => r.name === "Tags for 'b' in job 'b'");
+  assertEquals(own?.passed, true);
+  assertStringIncludes(
+    own?.error ?? "",
+    "Tag 'modelName' from the workflow's tags is not written to the data",
+  );
+  assertEquals(step?.passed, true);
+  assertStringIncludes(
+    step?.error ?? "",
+    "from the data output override for spec 'result' is not written to the data",
+  );
+  assertEquals(
+    warnings.some((r) => (r.error ?? "").includes("forged-")),
+    false,
+  );
+  assertEquals(results.every((r) => r.passed), true);
+});
+
 Deno.test("validateStepInputs: fails a step whose type's spec defaults hold a reserved tag", async () => {
   const refusal =
     "Tag '_swamp.sensitiveFields' from the default tags of resource spec 'result' in behavior type 'command/shell' is reserved: tag keys starting with '_swamp.' are written by swamp alone. The behavior type's author must remove it.";
