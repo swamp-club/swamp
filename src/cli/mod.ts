@@ -121,7 +121,6 @@ import { webhookTypeRegistry } from "../domain/webhooks/webhook_type_registry.ts
 import {
   closeV3DatastoresAfterFailure,
   closeV3DatastoresAfterSuccess,
-  drainOwedAtCommandEnd,
   followServeCompactionAtCommandEnd,
 } from "./v3_teardown.ts";
 
@@ -2742,13 +2741,6 @@ async function runInvocation(
         "swamp.cli.teardown.follow_compaction",
         {},
         () => followServeCompactionAtCommandEnd(),
-      );
-      // bounded, and only on a checkout that owes files; before the close,
-      // which forgets the handles
-      await withSpan(
-        "swamp.cli.teardown.hydrate",
-        {},
-        () => drainOwedAtCommandEnd(),
       );
       await withSpan(
         "swamp.cli.teardown.datastores",

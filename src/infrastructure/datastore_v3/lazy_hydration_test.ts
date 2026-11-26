@@ -20,7 +20,6 @@
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import {
   drainAllOwed,
-  drainOwedWithin,
   hydrateOwedPartitions,
   type LazyHydration,
   lazyHydrationOf,
@@ -28,10 +27,7 @@ import {
   v3OwedFileHook,
 } from "./lazy_hydration.ts";
 import { isOwedFileHook } from "../../domain/datastore/datastore_sync_service.ts";
-import {
-  type FakeCalls,
-  fakeLazyHydration,
-} from "./lazy_hydration_test_helpers.ts";
+import { fakeLazyHydration } from "./lazy_hydration_test_helpers.ts";
 
 Deno.test("v3LazyModelFiles: only a serve-mode checkout whose hydrationStrategy is unset or lazy owes files", () => {
   assertEquals(v3LazyModelFiles({ serveUpstream: true }), true);
@@ -95,39 +91,6 @@ Deno.test("hydrateOwedPartitions: hydrates each partition in the namespace", asy
     { namespace: "team", partition: "model/a/1" },
     { namespace: "team", partition: "model/b/2" },
   ]);
-});
-
-Deno.test("drainOwedWithin: checkouts share one budget and those that owe nothing are skipped", async () => {
-  let clock = 0;
-  const ticking = (
-    lazy: LazyHydration & { calls: FakeCalls },
-    takesMs: number,
-  ): LazyHydration & { calls: FakeCalls } => {
-    const drain = lazy.drainOwed;
-    return {
-      ...lazy,
-      drainOwed: async (budgetMs, signal) => {
-        clock += takesMs;
-        return await drain(budgetMs, signal);
-      },
-    };
-  };
-  const idle = fakeLazyHydration({ owed: 0 });
-  const first = ticking(fakeLazyHydration({ owed: 5 }), 1_500);
-  const second = ticking(fakeLazyHydration({ owed: 3, perDrain: 1 }), 500);
-  const third = fakeLazyHydration({ owed: 4 });
-  const report = await drainOwedWithin(
-    [idle, first, second, third],
-    2_000,
-    new AbortController().signal,
-    () => clock,
-  );
-  assertEquals(idle.calls.drains, []);
-  assertEquals(first.calls.drains, [2_000]);
-  assertEquals(second.calls.drains, [500]);
-  // the budget was spent before the third, which keeps all it owes
-  assertEquals(third.calls.drains, []);
-  assertEquals(report, { hydrated: 6, left: 6 });
 });
 
 Deno.test("drainAllOwed: drains every checkout until nothing is owed", async () => {

@@ -9530,9 +9530,10 @@ never reads as absent.
   before the work under them runs (`hydrateV3BehaviorPartition`,
   `hydrateV3RunPartitions`), from the serve lock's `onAcquired` after its
   catch-up and from `catchUpV3AfterBehaviorLock` and `catchUpV3AfterRunLock`.
-- Teardown: `swamp.cli.teardown.hydrate` drains owed files for up to 2 s
-  (`OWED_DRAIN_BUDGET_MS`) before the datastores close; it never fails the
-  command, and what it leaves is hydrated when first read.
+- A command's end hydrates nothing: on a writing member each catch-up owes
+  other members' files, and writing them all at every teardown costs more CPU
+  per write than writing them as they applied. An owed file waits for a read, a
+  lock on its partition, or `swamp datastore sync --hydrate`.
 - `swamp datastore sync --hydrate` drains every owed file and reports the
   count (`{"mode":"hydrate","filesHydrated":N}` in JSON). On a v2 datastore it
   is refused with `hydrate_not_supported`. `datastore sync` takes serve mode

@@ -44,11 +44,6 @@ export interface OwedDrainReport {
   readonly left: number;
 }
 
-export const OWED_DRAIN_BUDGET_MS = 2_000;
-
-/** a file already downloading when the budget ends may finish within this */
-export const OWED_DRAIN_ABORT_GRACE_MS = 3_000;
-
 /** a hydrate downloads chunks, so it is bounded as one sync direction is */
 export const OWED_HYDRATE_TIMEOUT_MS = DEFAULT_SYNC_TIMEOUT_MS;
 
@@ -100,31 +95,6 @@ export async function hydrateOwedPartitions(
     hydrated += await lazy.hydrateOwedPartition(namespace, partition, signal);
   }
   return hydrated;
-}
-
-/** one budget for all: each checkout drains in what those before it left */
-export async function drainOwedWithin(
-  lazies: readonly LazyHydration[],
-  budgetMs: number,
-  signal: AbortSignal,
-  now: () => number = Date.now,
-): Promise<OwedDrainReport> {
-  const deadline = now() + budgetMs;
-  let hydrated = 0;
-  let left = 0;
-  for (const lazy of lazies) {
-    const owed = lazy.owedCount();
-    if (owed === 0) continue;
-    const remaining = deadline - now();
-    if (remaining <= 0 || signal.aborted) {
-      left += owed;
-      continue;
-    }
-    const report = await lazy.drainOwed(remaining, signal);
-    hydrated += report.hydrated;
-    left += report.left;
-  }
-  return { hydrated, left };
 }
 
 /** a pass that leaves as many files owed as before it fails the drain */

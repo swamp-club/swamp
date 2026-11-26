@@ -40,7 +40,6 @@ import {
 import {
   closeV3DatastoresAfterFailure,
   closeV3DatastoresAfterSuccess,
-  drainOwedAtCommandEnd,
   followServeCompactionAtCommandEnd,
 } from "./v3_teardown.ts";
 import { reportedV3Failure } from "../infrastructure/datastore_v3/v3_repo_context.ts";
@@ -289,14 +288,4 @@ Deno.test("followServeCompactionAtCommandEnd: never fails the command, whatever 
     return Promise.resolve();
   });
   assert(ran);
-});
-
-Deno.test("drainOwedAtCommandEnd: drains with the 2 s budget and never fails the command", async () => {
-  const budgets: number[] = [];
-  await drainOwedAtCommandEnd((budgetMs) => {
-    budgets.push(budgetMs);
-    return Promise.resolve({ hydrated: 1, left: 2 });
-  });
-  assertEquals(budgets, [2_000]);
-  await drainOwedAtCommandEnd(() => Promise.reject(new Error("unreachable")));
 });

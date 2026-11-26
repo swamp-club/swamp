@@ -188,12 +188,9 @@ import { withSpan } from "../tracing/tracer.ts";
 import { unreadableContentLookup } from "./unreadable_content_lookup.ts";
 import {
   drainAllOwed,
-  drainOwedWithin,
   hydrateOwedPartitions,
   type LazyHydration,
   lazyHydrationOf,
-  OWED_DRAIN_ABORT_GRACE_MS,
-  OWED_DRAIN_BUDGET_MS,
   OWED_HYDRATE_TIMEOUT_MS,
   type OwedDrainReport,
   v3OwedFileHook,
@@ -794,21 +791,6 @@ async function hydrateBestEffort(
     logger
       .debug`Hydrating the locked partition's owed files ahead of the work failed; reads hydrate on demand: ${error}`;
   }
-}
-
-/** what the command left owed is written within the budget; the rest waits */
-export async function drainV3OwedAtCommandEnd(
-  budgetMs: number = OWED_DRAIN_BUDGET_MS,
-): Promise<OwedDrainReport> {
-  const lazies = [...repoState().lazyCheckouts.values()].map((entry) =>
-    entry.lazy
-  );
-  if (lazies.length === 0) return { hydrated: 0, left: 0 };
-  return await drainOwedWithin(
-    lazies,
-    budgetMs,
-    AbortSignal.timeout(budgetMs + OWED_DRAIN_ABORT_GRACE_MS),
-  );
 }
 
 export async function drainAllV3Owed(
