@@ -76,6 +76,8 @@ import {
   LABEL_RESERVED_PHRASE,
   type MaxEnrollments,
   presentedTokenMint,
+  tokenSuppliedLabels,
+  workerLabelRefusal,
 } from "../domain/models/worker/enrollment_token_model.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import {
@@ -1540,6 +1542,7 @@ export class WorkerGateway {
         name,
         secret,
         params.machineId,
+        { offered: params.labels, reserved: reservedLabelKeys },
         signal,
       )
     );
@@ -1645,11 +1648,15 @@ export class WorkerGateway {
               labels: record.labels,
             };
             const labels = effectiveWorkerLabels(labelSource, params.labels);
+            const automaticFleet = tokenSuppliedLabels({
+              ...labelSource,
+              labels: undefined,
+            }).fleet;
             if (
-              maxEnrollments !== 1 &&
+              automaticFleet !== undefined &&
               !Object.hasOwn(record.labels ?? {}, "fleet") &&
               Object.hasOwn(params.labels, "fleet") &&
-              params.labels.fleet !== name
+              params.labels.fleet !== automaticFleet
             ) {
               logger.warn(
                 "Worker {worker} supplies its own fleet label {fleet}; keeping it instead of auto-injecting {tokenName}",
@@ -2286,6 +2293,10 @@ export class WorkerGateway {
     tokenName: string,
     presented: string,
     machineId: string,
+    labels: {
+      offered: Readonly<Record<string, string>>;
+      reserved: readonly string[];
+    },
     signal: AbortSignal,
   ): Promise<void> {
     const ensure = this.#ensureWorkerDefinition;
@@ -2300,10 +2311,12 @@ export class WorkerGateway {
       const nowMs = Date.now();
       if (enrollmentTokenClosed(record, nowMs) !== null) return;
       if (!admitsMachine(record, machineId)) return;
+      const maxEnrollments =
+        await this.#readTokenMaxEnrollments(tokenName, record) ?? 1;
       const workerName = await workerNameFor(
         tokenName,
         machineId,
-        await this.#readTokenMaxEnrollments(tokenName, record) ?? 1,
+        maxEnrollments,
       );
       if (this.#workers.has(workerName)) return;
       const opened = await presentedTokenMint(
@@ -2313,6 +2326,15 @@ export class WorkerGateway {
         (secretKey) => readTokenSecret(record.vaultName, secretKey, "verify"),
       );
       if (opened === null) return;
+      // redeem refuses this worker without spending a slot, so a definition
+      // made now would be one more per retry with a fresh machine id
+      if (
+        workerLabelRefusal(
+          { name: tokenName, maxEnrollments, labels: record.labels },
+          labels.offered,
+          labels.reserved,
+        ) !== undefined
+      ) return;
       if (state.channel.closed || signal.aborted) return;
       await ensure(workerName);
     } catch (error) {

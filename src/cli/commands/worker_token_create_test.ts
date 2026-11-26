@@ -145,23 +145,32 @@ Deno.test("workerTokenCreateCommand: --vault help and example say it needs --ser
 Deno.test("assertServeBoundLabels: refuses when an older serve minted the token without the requested labels", async () => {
   const { assertServeBoundLabels } = await import("./worker_token_create.ts");
   const error = assertThrows(
-    () => assertServeBoundLabels("k3s-prod", { fleet: "k3s-prod" }, undefined),
+    () =>
+      assertServeBoundLabels(
+        "k3s-prod",
+        "wss://old.example",
+        { fleet: "k3s-prod" },
+        undefined,
+      ),
     UserError,
   );
-  assertStringIncludes(error.message, "swamp worker token revoke k3s-prod");
+  assertStringIncludes(
+    error.message,
+    "swamp worker token revoke k3s-prod --server wss://old.example",
+  );
   assertThrows(
     () =>
-      assertServeBoundLabels("k3s-prod", { fleet: "k3s-prod" }, {
-        fleet: "other",
-      }),
+      assertServeBoundLabels("k3s-prod", "wss://old.example", {
+        fleet: "k3s-prod",
+      }, { fleet: "other" }),
     UserError,
   );
 });
 
 Deno.test("assertServeBoundLabels: accepts recorded labels, and no labels asked for whatever the serve sends", async () => {
   const { assertServeBoundLabels } = await import("./worker_token_create.ts");
-  assertServeBoundLabels("k3s-prod", { fleet: "k3s-prod" }, {
+  assertServeBoundLabels("k3s-prod", "wss://s", { fleet: "k3s-prod" }, {
     fleet: "k3s-prod",
   });
-  assertServeBoundLabels("ci", {}, undefined);
+  assertServeBoundLabels("ci", "wss://s", {}, undefined);
 });

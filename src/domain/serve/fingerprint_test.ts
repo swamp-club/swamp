@@ -138,6 +138,21 @@ Deno.test("computeSettingsHash: list settings are compared as sets of names", ()
   );
 });
 
+Deno.test("computeSettingsHash: reserved-worker-labels joins the hash only when set, so a node missing it shows as drift", () => {
+  assertEquals(
+    computeSettingsHash({ ...SETTINGS, reservedWorkerLabels: "" }),
+    computeSettingsHash(SETTINGS),
+  );
+  assertNotEquals(
+    computeSettingsHash({ ...SETTINGS, reservedWorkerLabels: "fleet" }),
+    computeSettingsHash(SETTINGS),
+  );
+  assertEquals(
+    computeSettingsHash({ ...SETTINGS, reservedWorkerLabels: "region,fleet" }),
+    computeSettingsHash({ ...SETTINGS, reservedWorkerLabels: "fleet, region" }),
+  );
+});
+
 Deno.test("computeSettingsHash: TLS is on or off, never the certificate path", () => {
   assertEquals(
     computeSettingsHash({ ...SETTINGS, certFile: "/a/cert.pem" }),

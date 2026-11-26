@@ -136,6 +136,7 @@ export interface FingerprintSettingsSource {
   readonly remoteOnly: boolean;
   readonly verifyOnEnroll: boolean;
   readonly dispatchEnvAllow?: string;
+  readonly reservedWorkerLabels?: string;
   readonly maxConcurrentRuns?: number;
   readonly maxRunsPerPrincipal?: number;
   readonly maxRunDuration?: string;
@@ -162,7 +163,10 @@ function names(list: string | undefined): string[] {
 
 // copies field by field, so a setting outside the list can never reach the hash
 export function computeSettingsHash(source: FingerprintSettingsSource): string {
+  const reservedWorkerLabels = names(source.reservedWorkerLabels);
   return sha256(canonicalJson({
+    // only when set, so a node without it hashes as it did before the setting
+    ...(reservedWorkerLabels.length > 0 ? { reservedWorkerLabels } : {}),
     authMode: source.authMode,
     tls: !!source.certFile,
     remoteOnly: source.remoteOnly,

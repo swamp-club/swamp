@@ -782,7 +782,7 @@ Deno.test("runWorker: a refused label stops the loop instead of retrying", async
             new RpcError({
               code: "label_conflict",
               message:
-                "Enrollment token 'ci': label 'fleet' conflicts with the token, which binds it to 'b'",
+                "Enrollment token 'ci': label conflicts with the token: it binds 'fleet' to 'b'; drop that label or offer that value",
             }),
           ),
       }),

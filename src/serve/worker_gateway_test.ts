@@ -4849,6 +4849,22 @@ Deno.test("WorkerGateway: a request the token would refuse creates no worker def
       overrides: { findTokenDefinitionId: () => Promise.resolve(null) },
     },
     { label: "no secret reader", overrides: { readTokenSecret: undefined } },
+    {
+      label: "a label the token binds to another value",
+      params: { ...enrollParams, labels: { fleet: "a" } },
+      overrides: {
+        readTokenRecord: (name) =>
+          Promise.resolve({
+            ...mintRecord(name, BASE_MINT),
+            labels: { fleet: "b" },
+          }),
+      },
+    },
+    {
+      label: "a reserved label the token does not supply",
+      params: { ...enrollParams, labels: { fleet: "a" } },
+      overrides: { reservedLabelKeys: ["fleet"] },
+    },
   ];
   for (const { label, params, overrides } of cases) {
     const h = createPrecheckHarness({ overrides });

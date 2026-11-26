@@ -573,6 +573,9 @@ enrollment left, the worker is not already in the pool, and the secret matches
 the current or live predecessor mint (`enrollmentTokenClosed`, `admitsMachine`
 and `presentedTokenMint` in
 `src/domain/models/worker/enrollment_token_model.ts`, which redeem calls too).
+After the secret matches it also skips a worker `workerLabelRefusal` would
+refuse: redeem refuses it without spending a slot, so a definition made for it
+would be one more for every retry with a fresh machine id.
 Then `ensureWorkerDefinition` creates the worker's definition under the
 auto-definition lock, and the turn reads it at its name-derived path. The check
 is advisory: anything it refuses or cannot read leaves the definition to the
@@ -2138,8 +2141,7 @@ connection error with two guards:
   (`src/worker/connect.ts`) decides a coded rejection by its code. The gateway
   codes redeem failures (`token_revoked`, `token_expired`, `token_mismatch`,
   `token_not_found`, `enrollment_allowance_exhausted`, `label_conflict`), and
-  these plus
-  `protocol_mismatch` and `invalid_token` make up
+  these plus `protocol_mismatch` and `invalid_token` make up
   `PERMANENT_ENROLLMENT_ERROR_CODES` (`src/domain/remote/protocol.ts`). Any
   other coded rejection, such as `token_unreadable` or `token_not_synced`, is
   retried. The gateway looks up the token's definition before `redeem` and runs
