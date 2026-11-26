@@ -563,6 +563,11 @@ Deno.test("watchServeFeed: a watch stopped while its window is open leaves no ti
     appliedCursor: () => 40,
     openSocket: () => socket as unknown as WebSocket,
     windowMs: 60_000,
+    // a timer the sanitizer sees: the watch's own is unref'd, which it skips
+    scheduleWindow: (fire, ms) => {
+      const timer = setTimeout(fire, ms);
+      return () => clearTimeout(timer);
+    },
   });
   socket.onopen!();
   socket.deliver({ type: "commits.head", id: "head", payload: { cursor: 41 } });
