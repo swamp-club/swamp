@@ -363,17 +363,15 @@ Deno.test({
   sanitizeResources: false,
   fn: async () => {
     await withServer([...writer(), ...bobReadsWebData()], async (server) => {
-      // 1,400 raw records of ~6 KB inline: past the 8 MiB budget in one page
-      const filler = "x".repeat(6000);
+      // only raw records, ~7 KB inline each: 1,400 of them pass the 8 MiB
+      // budget long before the 5,000-entry limit
+      const filler = "x".repeat(7000);
       for (let c = 0; c < 4; c++) {
         const ops = [];
         for (let i = 0; i < 350; i++) {
           const name = `n${c}-${i}`;
-          const [raw, ...rest] = saveOps(server, name, 1) as Record<
-            string,
-            unknown
-          >[];
-          ops.push({ ...raw, inline: btoa(filler + name) }, ...rest);
+          const [raw] = saveOps(server, name, 1) as Record<string, unknown>[];
+          ops.push({ ...raw, inline: btoa(filler + name) });
         }
         await commit(server, ops);
       }
