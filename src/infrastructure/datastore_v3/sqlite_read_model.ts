@@ -165,6 +165,9 @@ const RECOVERY_SLICE_MS = 50;
 
 const PRESENT_KEYS_PAGE = 1_000;
 
+/** data/<type>/<id>/<name>/<version>/raw; a type may hold a slash */
+const DATA_CONTENT_KEY = /^data\/.+\/[0-9]+\/raw$/;
+
 /** owed files a hydration writes per lock section */
 const OWED_PAGE = 256;
 
@@ -372,8 +375,8 @@ export interface SqliteReadModelOptions {
   /** TARGETED_COMMITS_CEILING by default */
   readonly targetedCommitsCeiling?: number;
   /**
-   * a base load records a model partition's data and output files as owed
-   * rather than writing them; they are written when hydrated. Off by default
+   * a base load records a model partition's data content files as owed rather
+   * than writing them; they are written when hydrated. Off by default
    */
   readonly lazyModelFiles?: boolean;
 }
@@ -4052,10 +4055,13 @@ export class SqliteReadModel implements ReadModel {
     return folding;
   }
 
-  /** config, definition and run partitions are always written */
+  /**
+   * only a data version's content file, the one reader that hydrates; its
+   * metadata, latest marker, outputs and every other partition are written
+   */
   #owesLazily(owner: string, key: string): boolean {
     if (!this.#lazyModelFiles) return false;
-    if (!key.startsWith("data/") && !key.startsWith("outputs/")) return false;
+    if (!DATA_CONTENT_KEY.test(key)) return false;
     try {
       return PartitionKey.parse(owner).identity.kind === "model";
     } catch {

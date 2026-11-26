@@ -4093,7 +4093,7 @@ function stateDb(env: Env): DatabaseSync {
   );
 }
 
-Deno.test("SqliteReadModel.catchUp: a lazy base load writes config files and owes a model's data files, its catalog and state complete (swamp-club#5108)", async () => {
+Deno.test("SqliteReadModel.catchUp: a lazy base load writes config files and owes only a model's data content files, its catalog and state complete (swamp-club#5108)", async () => {
   await withEnv(async (env) => {
     await lazyBase(env);
     const readModel = env.open({ lazyModelFiles: true });
@@ -4106,7 +4106,8 @@ Deno.test("SqliteReadModel.catchUp: a lazy base load writes config files and owe
           undefined,
         );
       }
-      assert(readModel.owedCount() >= 3);
+      // the content files alone: metadata and every other file is written
+      assertEquals(readModel.owedCount(), 3);
       assert(readModel.isComplete());
       const live = await liveKeys(readModel, "");
       for (const name of ["a", "b", "big"]) {

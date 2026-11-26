@@ -420,8 +420,8 @@ export interface OpenV3DatastoreOptions {
    */
   readonly onCommitOutcome?: (outcome: V3CommitOutcome) => void;
   /**
-   * a base load leaves model data and output files owed, written when
-   * hydrated; off by default
+   * a base load leaves data content files owed, written when hydrated; off by
+   * default
    */
   readonly lazyModelFiles?: boolean;
 }
