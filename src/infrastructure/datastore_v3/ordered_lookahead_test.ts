@@ -137,7 +137,6 @@ Deno.test("OrderedLookahead.take: an item that may not run ahead holds the ones 
   await resolver.settle("d");
   assertEquals(await lookahead.take("d", "d"), "D");
   assertEquals(resolver.started, ["a", "b", "c", "d"]);
-  // each is asked about with the item taken last and those resolved ahead
   assertEquals(asked.map(({ item }) => item), ["b", "c", "d"]);
   assertEquals(asked[0].pending, ["A"]);
   assertEquals(asked[1].pending.at(-1), "B");
