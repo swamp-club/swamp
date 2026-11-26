@@ -286,7 +286,7 @@ export class ExtensionAutoResolver {
 
     if (!this.config.allowedCollectives.includes(collective)) {
       logger
-        .debug`Collective '${collective}' not in trusted list, skipping auto-resolution`;
+        .debug`Collective ${collective} not in trusted list, skipping auto-resolution`;
       if (
         ModelType.isUserNamespace(normalizedType) &&
         !this.warnedUntrusted.has(collective)

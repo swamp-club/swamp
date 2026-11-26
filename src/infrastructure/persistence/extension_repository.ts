@@ -651,7 +651,7 @@ function mapStateRowToRowState(row: ExtensionTypeRow): RowState {
       // unknown tag: treat as Indexed with the row's type, and warn to surface
       // schema drift
       logger
-        .warn`Unknown RowState tag "${row.state}" at ${row.source_path}; defaulting to Indexed.`;
+        .warn`Unknown RowState tag ${row.state} at ${row.source_path}; defaulting to Indexed.`;
       return { tag: "Indexed", type: row.type_normalized, bundle };
   }
 }
