@@ -4184,7 +4184,7 @@ Deno.test("SqliteReadModel: a commit replacing or removing an owed file forgets 
       await readModel.catchUp(signal());
       const owed = readModel.owedCount();
       await env.append(seq + 1, "", [
-        await savePut("a", 1, "a@1 replaced"),
+        await savePut("a", 1, "a@1 replaced", undefined, "data.append"),
         versionOp("a", 1),
       ]);
       await env.append(seq + 2, "", [deleteVersion("b", 1)]);
@@ -4239,7 +4239,8 @@ Deno.test("SqliteReadModel.hydrateOwedPartition: writes every owed file of the p
 Deno.test("SqliteReadModel.drainOwed: stops once its budget is spent, and drains the rest when called again (swamp-club#5108)", async () => {
   await withEnv(async (env) => {
     await lazyBase(env, ["a", "b", "c", "d", "e"]);
-    // every reading of the clock is a millisecond later
+    // every reading of the clock is a millisecond later, the lock section's
+    // own readings among them
     let now = 0;
     const readModel = env.open({
       lazyModelFiles: true,
@@ -4252,7 +4253,8 @@ Deno.test("SqliteReadModel.drainOwed: stops once its budget is spent, and drains
         hydrated: 0,
         left: owed,
       });
-      const first = await readModel.drainOwed(3, signal());
+      assert(owed > 8, `${owed}`);
+      const first = await readModel.drainOwed(8, signal());
       assert(first.hydrated > 0 && first.hydrated < owed, `${first.hydrated}`);
       assertEquals(first.left, owed - first.hydrated);
       const rest = await readModel.drainOwed(1_000_000, signal());
