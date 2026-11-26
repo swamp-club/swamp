@@ -2089,6 +2089,13 @@ export {
   type DatastoreGcEvent,
 } from "./datastores/gc.ts";
 export {
+  datastoreCompactHistory,
+  type DatastoreCompactHistoryData,
+  type DatastoreCompactHistoryDeps,
+  type DatastoreCompactHistoryEvent,
+  type DatastoreHistoryCompaction,
+} from "./datastores/compact_history.ts";
+export {
   datastoreClaim,
   type DatastoreClaimCommitLog,
   type DatastoreClaimData,

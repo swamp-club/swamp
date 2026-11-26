@@ -210,6 +210,7 @@ import {
   handleAuditTimeline,
   handleClusterInstances,
   handleDatastoreClaim,
+  handleDatastoreHistoryCompact,
   handleDatastoreNamespaceList,
   handleDatastoreRelease,
   handleDatastoreSetupExtension,
@@ -1258,6 +1259,11 @@ const DatastoreReleaseRequestSchema = z.object({
   id: z.string().min(1).max(256),
 });
 
+const DatastoreHistoryCompactRequestSchema = z.object({
+  type: z.literal("datastore.history.compact"),
+  id: z.string().min(1).max(256),
+});
+
 const VaultMigrateRequestSchema = z.object({
   type: z.literal("vault.migrate"),
   id: z.string().min(1).max(256),
@@ -1818,6 +1824,7 @@ const ServerRequestSchema = z.discriminatedUnion("type", [
   DatastoreSetupExtensionRequestSchema,
   DatastoreClaimRequestSchema,
   DatastoreReleaseRequestSchema,
+  DatastoreHistoryCompactRequestSchema,
   VaultMigrateRequestSchema,
   ExtensionListRequestSchema,
   ExtensionSearchRequestSchema,
@@ -3977,6 +3984,20 @@ export function handleMessage(
           principal,
         ),
         auditOpts("admin", "datastore", "*"),
+      );
+      break;
+    // not confirmed nor sync-gated: a fold changes no record, and its batches
+    // commit under the writer fence; only the maintenance timer orders it
+    case "datastore.history.compact":
+      task = audited(
+        handleDatastoreHistoryCompact(
+          socket,
+          ctx,
+          request.id,
+          controller,
+          principal,
+        ),
+        auditOpts("admin", "datastore", "history"),
       );
       break;
     case "vault.migrate":

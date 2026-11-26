@@ -297,6 +297,21 @@ export interface CompactHistoryOptions {
    * horizon rises past them, so no difference is ever served across the gap
    */
   readonly pruneRemovedBefore?: Date;
+  /**
+   * called after each batch commits with the run's totals so far, so a run
+   * stopped between batches can still say what it folded
+   */
+  readonly onBatch?: (totals: CompactionProgress) => void;
+}
+
+/** What a compaction has folded so far; each batch it counts has committed. */
+export interface CompactionProgress {
+  /** The compaction point after the batch. */
+  readonly point: number;
+  readonly compacted: number;
+  readonly batches: number;
+  readonly released: number;
+  readonly partitions: number;
 }
 
 /** What {@link CommitStore.compactHistory} did. */

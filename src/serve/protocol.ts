@@ -1305,6 +1305,7 @@ export type ServerRequest =
   }
   | { type: "datastore.claim"; id: string; payload: DatastoreClaimPayload }
   | { type: "datastore.release"; id: string }
+  | { type: "datastore.history.compact"; id: string }
   | { type: "vault.migrate"; id: string; payload: VaultMigratePayload }
   | { type: "extension.list"; id: string; payload?: ExtensionListPayload }
   | { type: "app.list"; id: string }
@@ -2186,6 +2187,29 @@ export interface DatastoreReleaseResponse {
   data: { released: boolean; address?: string; claimedAt?: string };
 }
 
+/** see DatastoreCompactHistoryData in libswamp */
+export interface DatastoreHistoryCompactResponse {
+  data:
+    | { applies: false }
+    | {
+      applies: true;
+      outcome: "compacted" | "timed_out";
+      compacted: number;
+      batches: number;
+      released: number;
+      partitions: number;
+      compactedThrough: number;
+      budgetMs?: number;
+    }
+    | {
+      applies: true;
+      outcome: "not_due";
+      eligibleCommits: number;
+      minCommits: number;
+      retainCommits: number;
+    };
+}
+
 export interface DatastoreSetupExtensionResponse {
   data: Record<string, unknown>;
 }
@@ -2686,6 +2710,11 @@ export type ServerMessage =
     type: "datastore.release";
     id: string;
     payload: DatastoreReleaseResponse;
+  }
+  | {
+    type: "datastore.history.compact";
+    id: string;
+    payload: DatastoreHistoryCompactResponse;
   }
   | { type: "vault.migrate"; id: string; payload: VaultMigrateResponse }
   | { type: "extension.list"; id: string; payload: ExtensionListResponse }

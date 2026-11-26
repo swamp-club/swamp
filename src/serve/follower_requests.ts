@@ -45,6 +45,7 @@ export const FOLLOWER_FORWARDED_REQUESTS: ReadonlySet<string> = new Set([
   "workflow.schedule.resume",
   "datastore.claim",
   "datastore.release",
+  "datastore.history.compact",
   "datastore.setup.extension",
   "worker.verify",
   "model.evaluate",

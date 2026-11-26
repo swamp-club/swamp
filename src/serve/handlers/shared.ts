@@ -142,7 +142,10 @@ import {
 } from "../../infrastructure/persistence/push_paths.ts";
 import type { FollowerGate } from "../follower_requests.ts";
 import type { LeaderLink } from "../leader_link.ts";
-import type { V3CommitFeedSource } from "../../infrastructure/datastore_v3/v3_repo_context.ts";
+import type {
+  V3CommitFeedSource,
+  V3HistoryCompactionPort,
+} from "../../infrastructure/datastore_v3/v3_repo_context.ts";
 import type { LeaderSteppingDown } from "../leader_stepping_down.ts";
 import type { CommitHealthPort } from "../leader_commit_health.ts";
 import type { QuarantineStore } from "../../domain/datastore_v3/quarantine.ts";
@@ -389,6 +392,8 @@ export interface ConnectionContext {
   /** the leader's: once it cannot commit, the datastore API takes no writes */
   commitHealth?: CommitHealthPort;
   quarantine?: QuarantineStore;
+  /** the v3 leader's maintenance timer; absent on v2 */
+  v3HistoryCompaction?: V3HistoryCompactionPort;
   explicitLeases?: () => readonly {
     readonly lockKey: string;
     readonly principal: string;
