@@ -1254,10 +1254,11 @@ Deno.test({
       await closeV3Datastores();
       await withMockedEnv(QUICK_LOCK, async () => {
         const writer = startWriter("cut");
+        let before = 0;
         try {
           await opened(writer, repos.repoA, repos.modelType.normalized);
           writer.send({ kind: "write", id: "before", model: "m", data: "d" });
-          const before = await landed(writer, "before");
+          before = (await landed(writer, "before")).count;
           writer.send({
             kind: "write",
             id: "cut",
@@ -1321,7 +1322,7 @@ Deno.test({
         }
         assertEquals(
           counts,
-          [before.count + 1, before.count + 2],
+          [before + 1, before + 2],
           "the cut write left nothing behind",
         );
       });
