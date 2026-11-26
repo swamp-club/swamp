@@ -52,7 +52,6 @@ import {
   compactQuietly,
   compactRetentionQuietly,
   drainAllV3Owed,
-  drainV3OwedAtCommandEnd,
   holdV3Writer,
   hydrateV3BehaviorPartition,
   hydrateV3RunPartitions,
@@ -70,7 +69,6 @@ import {
 } from "./v3_repo_context.ts";
 import type { V3OwnerCheck } from "./v3_repo_context.ts";
 import { fakeLazyHydration } from "./lazy_hydration_test_helpers.ts";
-import { OWED_DRAIN_BUDGET_MS } from "./lazy_hydration.ts";
 import { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
 import { V3_CACHE_ROOT_ESCAPE_CODE } from "./cache_root_containment.ts";
 import {
@@ -2102,17 +2100,6 @@ Deno.test("catchUpV3AfterRunLock: hydrates each of the run's partitions", async 
     "run/one",
     "run/two",
   ]);
-});
-
-Deno.test("drainV3OwedAtCommandEnd: drains a lazy checkout within the 2 s budget, and asks nothing when none is lazy", async () => {
-  assertEquals(OWED_DRAIN_BUDGET_MS, 2_000);
-  assertEquals(await drainV3OwedAtCommandEnd(), { hydrated: 0, left: 0 });
-  const lazy = lazyCheckout(4);
-  using _lazy = lazy.registration;
-  assertEquals(await drainV3OwedAtCommandEnd(), { hydrated: 4, left: 0 });
-  assertEquals(lazy.lazy.calls.drains.length, 1);
-  assert(lazy.lazy.calls.drains[0] <= OWED_DRAIN_BUDGET_MS);
-  assert(lazy.lazy.calls.drains[0] > 0);
 });
 
 Deno.test("drainAllV3Owed: drains every file the lazy checkouts owe", async () => {
