@@ -47,6 +47,7 @@ import {
   type CommitChange,
   CommitsCompactedError,
   type CommitStore,
+  type CompactedBaseEntry,
   type PartitionBase,
   type PartitionPageOfNames,
 } from "../../domain/datastore_v3/commit_store.ts";
@@ -196,6 +197,10 @@ function pageParts(
 export const DEFAULT_READ_MODEL_PAGE_SIZE = 500;
 /** files written between flushes of the done list */
 const LOAD_DONE_FLUSH = 256;
+/** names a base load holds in memory before committing their catalog rows */
+const BASE_CATALOG_NAMES = 1_000;
+/** base entries staged in one transaction */
+const BASE_STAGE_ENTRIES = 5_000;
 
 export { CATALOG_V3_FILE };
 
@@ -4154,6 +4159,8 @@ export class SqliteReadModel implements ReadModel {
       point = undefined;
       let after: string | undefined;
       staged = true;
+      // a crash mid-staging restarts it, so a page need not commit alone
+      let held: CompactedBaseEntry[] = [];
       do {
         signal.throwIfAborted();
         const page = await this.#commitStore.readCompactedBase(
@@ -4167,8 +4174,12 @@ export class SqliteReadModel implements ReadModel {
           break;
         }
         point = page.point;
-        this.#state.stageBase(page.entries);
+        held.push(...page.entries);
         after = page.next;
+        if (held.length >= BASE_STAGE_ENTRIES || after === undefined) {
+          this.#state.stageBase(held);
+          held = [];
+        }
       } while (after !== undefined);
     }
     this.#stats?.bump("base_stage_ms", Math.round(performance.now() - started));
@@ -4222,22 +4233,36 @@ export class SqliteReadModel implements ReadModel {
     const catalogStarted = performance.now();
     const names = this.#state.loadCatalogNames();
     this.#state.touchNames(names);
-    for (const name of names) {
-      signal.throwIfAborted();
-      const partition = PartitionKey.parse(name.partition);
-      if (partition.identity.kind !== "model") continue;
-      const state = this.#state.loadCatalogName(name);
-      this.#catalog.apply(name.namespace, partition, [
-        { kind: "remove-name", name: name.name },
-        { kind: "end-forward", name: name.name },
-        ...state.rows.map((metadata) => ({
-          kind: "upsert-version" as const,
-          metadata,
-        })),
-        ...(state.forward === undefined
-          ? []
-          : [{ kind: "forward" as const, name: name.name, to: state.forward }]),
-      ]);
+    // a crash between groups leaves the load unfinished, and its retry
+    // rewrites every name
+    const slice = new TimeSlice(signal, this.#recoverySliceMs);
+    for (let next = 0; next < names.length;) {
+      this.#catalog.beginBatch();
+      try {
+        const until = Math.min(names.length, next + BASE_CATALOG_NAMES);
+        for (; next < until; next++) {
+          signal.throwIfAborted();
+          if (slice.over) await slice.next();
+          const name = names[next];
+          const partition = PartitionKey.parse(name.partition);
+          if (partition.identity.kind !== "model") continue;
+          const state = this.#state.loadCatalogName(name);
+          this.#catalog.apply(name.namespace, partition, [
+            { kind: "remove-name", name: name.name },
+            { kind: "end-forward", name: name.name },
+            ...state.rows.map((metadata) => ({
+              kind: "upsert-version" as const,
+              metadata,
+            })),
+            ...(state.forward === undefined ? [] : [
+              { kind: "forward" as const, name: name.name, to: state.forward },
+            ]),
+          ]);
+        }
+        await this.#commitCatalog(signal);
+      } finally {
+        this.#catalog.rollbackBatch();
+      }
     }
     this.#stats?.bump("base_names", names.length);
     this.#stats?.bump(
