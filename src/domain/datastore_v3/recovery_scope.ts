@@ -17,7 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { Intent } from "./intent.ts";
+import { bindKey, modelRecordKind } from "./intent_key_paths.ts";
 import { PartitionKey } from "./partition_key.ts";
+import type { RecordKey } from "./record_key.ts";
 
 /** type normalized, model id lowercase */
 export interface CatalogNameKey {
@@ -51,6 +54,30 @@ export function dataNameOfKey(
     };
   }
   return undefined;
+}
+
+/**
+ * whether `key` lies in the partition's own aggregate by the layout serve
+ * binds an op's key to its intent with, so no other partition can write it;
+ * only model and run partitions are judged, the rest never bind
+ */
+export function keyBindsToPartition(
+  partition: PartitionKey,
+  key: RecordKey,
+): boolean {
+  const identity = partition.identity;
+  if (identity.kind === "model") {
+    return modelRecordKind({ type: identity.type, id: identity.id }, key) !==
+      undefined;
+  }
+  if (identity.kind !== "run") return false;
+  const run = { workflowId: identity.workflowId, runId: identity.runId };
+  const intents: readonly Intent[] = [
+    { kind: "run.create", run },
+    { kind: "run-start.save", run },
+    { kind: "run-snapshot.save", run },
+  ];
+  return intents.some((intent) => bindKey(intent, "put", key).ok);
 }
 
 /** the `data/<type>/<id>/<name>` prefix every record key of a data name has */

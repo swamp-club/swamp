@@ -29,13 +29,21 @@ import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { Commit } from "../../domain/datastore_v3/commit.ts";
 import {
   dataKey,
+  deleteVersion,
   MemoryStorage,
   modelPartition,
   savePut,
+  versionOp,
 } from "../../domain/datastore_v3/v3_test_helpers.ts";
+import { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
+import { DatabaseSync } from "node:sqlite";
+import { findSpan, withCapturedSpans } from "../tracing/span_test_helpers.ts";
 import { ChunkStore } from "../../domain/datastore_v3/chunk_store.ts";
-import { readModelStateDir } from "./record_path_guard.ts";
-import { SqliteReadModel } from "./sqlite_read_model.ts";
+import {
+  READ_MODEL_STATE_DIR,
+  readModelStateDir,
+} from "./record_path_guard.ts";
+import { CATALOG_V3_FILE, SqliteReadModel } from "./sqlite_read_model.ts";
 import { v3CacheRoot } from "./v3_datastore.ts";
 import { runPartition, runPut } from "./commit_log_test_helpers.ts";
 import type { ObservedBaseEntry } from "../../domain/datastore_v3/observed_base.ts";
@@ -61,6 +69,7 @@ import {
   ServeUpstreamUpgradeRequiredError,
 } from "./serve_upstream_errors.ts";
 import {
+  type ServeCopyRepair,
   ServeCopyReplacedError,
   ServeUpstreamState,
 } from "./serve_upstream_state.ts";
@@ -1575,7 +1584,10 @@ Deno.test("ServeCatchUp.catchUp: a fresh copy appends a page of commits in share
 interface Repairing {
   readonly catchUp: ServeCatchUp;
   readonly resends: number[];
+  /** every read model repair, whole or of one partition, by its since */
   readonly replays: number[];
+  /** the notes handed to the partition repair */
+  readonly partitionRepairs: ServeCopyRepair[];
 }
 
 /** a catch-up through `serve` that repairs a diverged copy */
@@ -1585,10 +1597,12 @@ function repairing(
   options: {
     readonly resend?: () => Promise<void>;
     readonly rebuild?: (since: number) => Promise<void>;
+    readonly repairPartition?: (repair: ServeCopyRepair) => Promise<void>;
   } = {},
 ): Repairing {
   const resends: number[] = [];
   const replays: number[] = [];
+  const partitionRepairs: ServeCopyRepair[] = [];
   const catchUp = new ServeCatchUp({
     client: serve,
     commitStore: checkout.store,
@@ -1606,10 +1620,15 @@ function repairing(
         replays.push(since);
         await options.rebuild?.(since);
       },
+      repairPartition: async (repair) => {
+        replays.push(repair.since);
+        partitionRepairs.push(repair);
+        await options.repairPartition?.(repair);
+      },
       principal: () => "carol@example.com",
     },
   });
-  return { catchUp, resends, replays };
+  return { catchUp, resends, replays, partitionRepairs };
 }
 
 /**
@@ -1655,18 +1674,18 @@ Deno.test("ServeCatchUp.catchUp: a copy holding another writer's commit serve's 
     assertEquals(state.feedAnchor()?.txnId, "another-3");
     const leader = await newLeader(4);
     leader.land(await other(1, OTHER));
-    const { catchUp, resends, replays } = repairing(leader, {
-      dir,
-      store,
-      state,
-    });
+    const { catchUp, resends, replays, partitionRepairs } = repairing(
+      leader,
+      { dir, store, state },
+    );
 
     await catchUp.catchUp(signal());
 
     assertEquals(await copyTxnIds(store), serveTxnIds(leader));
     assertEquals(await copySeqs(store, OTHER), [1]);
     assertEquals(resends.length, 1, "the outbox was sent first");
-    assertEquals(replays.length, 1, "the read model replays in full");
+    assertEquals(replays.length, 1, "the read model is repaired once");
+    assertEquals(partitionRepairs.length, 1, "for the partition alone");
     assertEquals(state.pendingRepair(), undefined);
     assertEquals(state.feedCursor(), leader.feed.length);
     assertEquals(state.feedAnchor()?.txnId, "other-1");
@@ -1876,7 +1895,11 @@ Deno.test("ServeCatchUp.catchUp: a repair cut short after the drop leaves the cu
       if (cut) throw new Error("power cut");
       return dropped;
     };
-    const { catchUp, replays } = repairing(leader, { dir, store, state });
+    const { catchUp, replays, partitionRepairs } = repairing(leader, {
+      dir,
+      store,
+      state,
+    });
 
     await assertRejects(() => catchUp.catchUp(signal()), Error, "power cut");
 
@@ -1890,11 +1913,16 @@ Deno.test("ServeCatchUp.catchUp: a repair cut short after the drop leaves the cu
 
     assertEquals(await copyTxnIds(store), serveTxnIds(leader));
     assertEquals(state.pendingRepair(), undefined);
-    assertEquals(replays.length, 1, "the read model is rebuilt once dropped");
+    assertEquals(replays.length, 1, "the read model is repaired once dropped");
+    assertEquals(
+      partitionRepairs.map((repair) => repair.scope?.keys),
+      [[dataKey("b3", 1).toString()]],
+      "the resumed note still says what the dropped commits touched",
+    );
   });
 });
 
-Deno.test("ServeCatchUp.catchUp: a repaired copy's read model matches a fresh copy's of the leader (swamp-club#4581)", async () => {
+Deno.test("ServeCatchUp.catchUp: a repaired copy's read model, rolled back for the diverged partition alone, matches a fresh copy's of the leader (swamp-club#4581, swamp-club#5127)", async () => {
   await withCheckout(async ({ dir, store, state }) => {
     const repoDir = join(dir, "repo");
     const readModelOf = (commitStore: SqliteCommitStore, root: string) =>
@@ -1904,6 +1932,7 @@ Deno.test("ServeCatchUp.catchUp: a repaired copy's read model matches a fresh co
         cacheRoot: (ns) => v3CacheRoot(root, ns),
         stateDir: readModelStateDir(root),
         follower: true,
+        lazyModelFiles: true,
       });
     const readModel = readModelOf(store, repoDir);
     const freshDir = join(dir, "fresh");
@@ -1916,30 +1945,95 @@ Deno.test("ServeCatchUp.catchUp: a repaired copy's read model matches a fresh co
     );
     const freshRepo = join(freshDir, "repo");
     const freshModel = readModelOf(freshStore, freshRepo);
+    const saved = async (seq: number, name: string, version: number) =>
+      serveStamped(seq, [
+        await savePut(name, version),
+        versionOp(name, version),
+      ], MODEL);
+    // both leaders hold the same history up to the divergence
+    const shared = [
+      await saved(1, "m1", 1),
+      await saved(2, "m2", 1),
+      serveStamped(1, [await runPut("run 1")], OTHER),
+    ];
     try {
-      await followOldLeader({ dir, store, state }, [await another(3)]);
-      await readModel.catchUp(signal());
-      assertEquals(
-        await Deno.readTextFile(
-          join(
-            v3CacheRoot(repoDir, ""),
-            ...dataKey("b3", 1).toString().split("/"),
-          ),
-        ),
-        "b3@1",
+      const old = new FakeServe();
+      for (const commit of shared) old.land(commit);
+      // the old leader's tail the new one never held: a tombstone, a version
+      // bump of an existing name, and a new name whose content is owed
+      old.land(
+        serveStamped(3, [deleteVersion("m1", 1)], MODEL, "another-3"),
       );
-      const leader = await newLeader(4);
-      const { catchUp } = repairing(leader, { dir, store, state }, {
-        rebuild: async (since) => {
-          await readModel.recover("", {
-            since,
-            admits: () => true,
-            signal: signal(),
-          });
+      old.land(
+        serveStamped(
+          4,
+          [
+            await savePut("m2", 2),
+            versionOp("m2", 2),
+          ],
+          MODEL,
+          "another-4",
+        ),
+      );
+      old.land(
+        serveStamped(
+          5,
+          [
+            await savePut("b5", 1),
+            versionOp("b5", 1),
+          ],
+          MODEL,
+          "another-5",
+        ),
+      );
+      await through(old, { dir, store, state }).catchUp(signal());
+      await readModel.catchUp(signal());
+      assert(readModel.owedCount() > 0, "content files are owed");
+      const leader = new FakeServe();
+      leader.checksAnchors = true;
+      for (const commit of shared) leader.land(commit);
+      for (let seq = 3; seq <= 6; seq++) {
+        leader.land(await saved(seq, `m${seq}`, 1));
+      }
+      const { catchUp, partitionRepairs } = repairing(leader, {
+        dir,
+        store,
+        state,
+      }, {
+        repairPartition: async (repair) => {
+          await readModel.repairPartition(
+            repair.namespace,
+            PartitionKey.parse(repair.partition),
+            repair.fromSeq - 1,
+            repair.scope!,
+            { since: repair.since, admits: () => true, signal: signal() },
+          );
         },
       });
 
-      await catchUp.catchUp(signal());
+      await withCapturedSpans(async (spans) => {
+        await catchUp.catchUp(signal());
+        assertEquals(
+          findSpan(spans, "swamp.datastore.v3.readmodel.repair_partition")
+            .attributes["swamp.datastore.v3.readmodel.repair_partition.path"],
+          "targeted",
+        );
+        assertEquals(
+          spans.filter((span) =>
+            span.name === "swamp.datastore.v3.readmodel.recover.replay"
+          ),
+          [],
+        );
+      });
+      assertEquals(partitionRepairs.map((repair) => repair.scope), [{
+        keys: [
+          dataKey("b5", 1).toString(),
+          dataKey("m1", 1).toString(),
+          dataKey("m2", 2).toString(),
+        ],
+        names: ["b5", "m1", "m2"],
+        minCursor: 4,
+      }]);
       await readModel.catchUp(signal());
       await through(leader, {
         dir: freshDir,
@@ -1948,34 +2042,78 @@ Deno.test("ServeCatchUp.catchUp: a repaired copy's read model matches a fresh co
       }).catchUp(signal());
       await freshModel.catchUp(signal());
 
-      const live = async (model: SqliteReadModel) =>
-        (await model.liveRecords("", MODEL)).map((record) =>
-          record.key.toString()
-        ).sort();
-      assertEquals(await live(readModel), await live(freshModel));
-      for (const key of await live(freshModel)) {
-        assertEquals(
-          await Deno.readTextFile(
-            join(v3CacheRoot(repoDir, ""), ...key.split("/")),
-          ),
-          await Deno.readTextFile(
-            join(v3CacheRoot(freshRepo, ""), ...key.split("/")),
-          ),
+      const projection = async (model: SqliteReadModel, root: string) => {
+        await model.drainOwed(60_000, signal());
+        const records: Record<string, string[]> = {};
+        for (const partition of [MODEL, OTHER]) {
+          records[partition.toString()] = (await model.liveRecords(
+            "",
+            partition,
+          )).map((record) => `${record.key}=${record.sha256}`).sort();
+        }
+        const catalog = new DatabaseSync(
+          join(readModelStateDir(root), CATALOG_V3_FILE),
+          { readOnly: true },
         );
-      }
-      await assertRejects(() =>
-        Deno.stat(
-          join(
-            v3CacheRoot(repoDir, ""),
-            ...dataKey("b3", 1).toString().split("/"),
-          ),
-        ), Deno.errors.NotFound);
+        try {
+          return {
+            records,
+            owed: model.owedCount(),
+            catalog: catalog.prepare(
+              "SELECT data_name, version FROM catalog ORDER BY data_name, version",
+            ).all(),
+            files: await filesUnder(v3CacheRoot(root, "")),
+          };
+        } finally {
+          catalog.close();
+        }
+      };
+      const repaired = await projection(readModel, repoDir);
+      assertEquals(repaired, await projection(freshModel, freshRepo));
+      assertEquals(
+        Object.keys(repaired.files).filter((key) => key.includes("/b5/")),
+        [],
+        "the dropped name's owed content is never hydrated",
+      );
+      assert(
+        Object.keys(repaired.files).some((key) => key.includes("/m1/1/raw")),
+        "the dropped tombstone's file is back",
+      );
     } finally {
       await readModel.close();
       await freshModel.close();
       freshState.close();
       await freshStore.close();
     }
+  });
+});
+
+Deno.test("ServeCatchUp.catchUp: a resumed repair noted by an older swamp, with no scope, rebuilds the read model whole (swamp-club#5127)", async () => {
+  await withCheckout(async ({ dir, store, state }) => {
+    await followOldLeader({ dir, store, state }, [await another(3)]);
+    const leader = await newLeader(4);
+    const drop = store.dropObservedFrom.bind(store);
+    let cut = true;
+    store.dropObservedFrom = async (namespace, partition, fromSeq) => {
+      const dropped = await drop(namespace, partition, fromSeq);
+      if (cut) throw new Error("power cut");
+      return dropped;
+    };
+    const { catchUp, replays, partitionRepairs } = repairing(leader, {
+      dir,
+      store,
+      state,
+    });
+    await assertRejects(() => catchUp.catchUp(signal()), Error, "power cut");
+    const { scope: _scope, ...unscoped } = state.pendingRepair()!;
+    state.beginRepair(unscoped);
+    cut = false;
+
+    await catchUp.catchUp(signal());
+
+    assertEquals(partitionRepairs, []);
+    assertEquals(replays.length, 1, "rebuilt whole");
+    assertEquals(state.pendingRepair(), undefined);
   });
 });
 
@@ -1996,6 +2134,7 @@ Deno.test("ServeCatchUp.catchUp: a diverged commit by this checkout's principal 
         ready: () => true,
         resendOutbox: () => Promise.resolve(),
         rebuildReadModel: () => Promise.resolve(),
+        repairPartition: () => Promise.resolve(),
         principal: () => "bob@example.com",
       },
     });
@@ -2028,6 +2167,7 @@ Deno.test("ServeCatchUp.catchUp: a repair is left to the next catch-up while thi
         ready: () => ready,
         resendOutbox: () => Promise.resolve(),
         rebuildReadModel: () => Promise.resolve(),
+        repairPartition: () => Promise.resolve(),
       },
     });
 
@@ -2092,3 +2232,29 @@ Deno.test("ServeCatchUp.catchUp: with maxCommits, a log compacted past the copy 
     assertEquals(state.feedCursor(), 0);
   });
 });
+
+/** every file under `root` by its path from it, with its text */
+async function filesUnder(root: string): Promise<Record<string, string>> {
+  const files: Record<string, string> = {};
+  const visit = async (dir: string, prefix: string): Promise<void> => {
+    let entries: Deno.DirEntry[];
+    try {
+      entries = await Array.fromAsync(Deno.readDir(dir));
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) return;
+      throw error;
+    }
+    for (const entry of entries) {
+      const rel = prefix === "" ? entry.name : `${prefix}/${entry.name}`;
+      if (rel === READ_MODEL_STATE_DIR) continue;
+      if (entry.isDirectory) await visit(join(dir, entry.name), rel);
+      else if (entry.isFile) {
+        files[rel] = await Deno.readTextFile(join(dir, entry.name));
+      }
+    }
+  };
+  await visit(root, "");
+  return Object.fromEntries(
+    Object.entries(files).sort(([a], [b]) => (a < b ? -1 : 1)),
+  );
+}
