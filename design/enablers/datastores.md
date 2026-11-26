@@ -4123,7 +4123,19 @@ fixed order:
    removed only when empty. Every path passes `assertContainedPath` and the
    symlink check `assertSafePath` makes; within one exclusive section a
    directory's real path and whether it is a directory are looked up once
-   (`PathCache`), and forgotten whenever the read model removes anything.
+   (`PathCache`), and forgotten whenever the read model removes anything,
+   moves a file aside or loses a pooled write. `PathCache` also keeps
+   existence facts, so an absent path costs no probe: a directory an
+   `lstat` found missing holds nothing until the section next creates
+   something, and a directory the section created holds only the names it
+   wrote (or queued; a probe that meets a queued write waits for it). They
+   assume, as the rest of the cache does, that no other process writes into
+   the tree within one section. Names are compared exactly only on a root
+   known to fold no spelling; elsewhere only plain ASCII names are compared,
+   without case. No fact comes from a directory listing, and a path no fact answers
+   is probed. A fact never hides a link: a known kind comes only from an
+   `lstat` that noted any link it met, or from the section's own write, so
+   the pool drains whole and the lookahead holds as soon as a link is seen.
    The temp file gets the put's file access before the rename (see below).
 2. **Catalog.** The projection's actions.
 3. **State.** One transaction holds the index changes, the live versions, the
