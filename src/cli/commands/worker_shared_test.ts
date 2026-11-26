@@ -22,6 +22,7 @@ import { join, resolve } from "@std/path";
 import {
   parseCommaSeparatedLabels,
   parseConcurrency,
+  parseLabels,
   resolveWorkerCacheDir,
   validateMaxDispatches,
   validateOrchestratorUrl,
@@ -39,6 +40,26 @@ Deno.test("parseCommaSeparatedLabels: rejects a fragment without key=value", () 
     UserError,
     "Invalid label 'c' in SWAMP_WORKER_LABELS — expected the form key=value",
   );
+});
+
+Deno.test("parseLabels and parseCommaSeparatedLabels: refuse __proto__, which a record schema would drop", () => {
+  assertThrows(
+    () => parseLabels(["fleet=a", "__proto__=x"]),
+    UserError,
+    "Invalid label '__proto__=x' — '__proto__' is a reserved key",
+  );
+  assertThrows(
+    () => parseCommaSeparatedLabels("fleet=a, __proto__=x"),
+    UserError,
+    "'__proto__' is a reserved key",
+  );
+});
+
+Deno.test("parseLabels: keys named like other Object.prototype members are kept as labels", () => {
+  assertEquals(parseLabels(["constructor=a", "toString=b"]), {
+    constructor: "a",
+    toString: "b",
+  });
 });
 
 Deno.test("validateOrchestratorUrl: accepts ws and wss", () => {

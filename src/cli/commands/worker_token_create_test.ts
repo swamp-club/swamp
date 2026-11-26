@@ -25,6 +25,7 @@ import {
 } from "@std/assert";
 import { Command } from "@cliffy/command";
 import { UserError } from "../../domain/errors.ts";
+import { buildErrorJson } from "../../presentation/output/error_output.ts";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 
 import "../../domain/models/models.ts";
@@ -158,6 +159,8 @@ Deno.test("assertServeBoundLabels: refuses when an older serve minted the token 
     error.message,
     "swamp worker token revoke k3s-prod --server wss://old.example",
   );
+  assertEquals(error.code, "labels_not_bound");
+  assertEquals(buildErrorJson(error).code, "labels_not_bound");
   assertThrows(
     () =>
       assertServeBoundLabels("k3s-prod", "wss://old.example", {

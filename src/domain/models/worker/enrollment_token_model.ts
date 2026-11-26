@@ -61,10 +61,17 @@ export const MaxEnrollmentsSchema = z.union([
 export type MaxEnrollments = z.infer<typeof MaxEnrollmentsSchema>;
 
 /** labels as an operator writes them at mint: `key=value`, so a key holds no '=' */
-export const TokenLabelsSchema = boundedRecord(
+// a record schema skips an own __proto__ key without an error, binding nothing,
+// so the raw object is checked before it is parsed
+export const TokenLabelsSchema = z.custom<Record<string, unknown>>(
+  (input) =>
+    typeof input !== "object" || input === null ||
+    !Object.hasOwn(input, "__proto__"),
+  { message: "'__proto__' is a reserved label key", abort: true },
+).pipe(boundedRecord(
   z.string().min(1).regex(/^[^=]+$/, "a label key cannot contain '='"),
   z.string().min(1),
-);
+));
 
 /** what decides a worker's labels; a fleet token's name doubles as its automatic fleet label */
 export interface TokenLabelSource {

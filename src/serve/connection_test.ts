@@ -4745,6 +4745,7 @@ Deno.test("validateServerRequest accepts worker.token.create with bound labels a
   assertEquals(typeof request({ "a=b": "x" }), "string");
   assertEquals(typeof request({ "": "x" }), "string");
   assertEquals(typeof request({ fleet: "" }), "string");
+  assertEquals(typeof request(JSON.parse('{"__proto__": "x"}')), "string");
   const tooMany: Record<string, string> = {};
   for (let i = 0; i < 1001; i++) tooMany[`k${i}`] = "v";
   assertEquals(typeof request(tooMany), "string");
