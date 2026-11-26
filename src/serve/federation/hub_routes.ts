@@ -80,7 +80,7 @@ export function isFederationHubPath(pathname: string): boolean {
   return FEDERATION_HUB_ROUTES.has(pathname);
 }
 
-// one body for every refused token or credential, so a reply never tells them apart
+// one body for each kind, whatever the reason, so a reply never tells the reasons apart
 const INVALID_JOIN_TOKEN = {
   error: "invalid_join_token",
   message: "The join token is not valid",
@@ -402,8 +402,8 @@ export interface FederationServeDeps {
 }
 
 /**
- * serve's entry: null without a hub or off the federation paths, so such a
- * request falls through to whatever answers it today
+ * serve's entry: null without a hub or off the federation paths, so serve's
+ * other routes answer
  */
 export async function routeFederationRequest(
   req: Request,

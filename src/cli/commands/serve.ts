@@ -5663,7 +5663,6 @@ export const serveCommand = new Command()
       }
     }
 
-    // undefined unless the federation gate is on and this serve is a hub
     const federationHub = await buildServeFederationHub({
       env: (name) => Deno.env.get(name),
       merged,

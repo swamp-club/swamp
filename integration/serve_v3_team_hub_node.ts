@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * a team node's federation hub, wired as serve wires it: every node builds
- * one, a follower forwards /federation/v1 to its leader, and the sweeper and
- * the hub's own record start only when the node leads
- */
-
 import type { FilesystemDatastoreConfig } from "../src/domain/datastore/datastore_config.ts";
 import { registerFederationModelTypes } from "../src/domain/serve/federation_model_types.ts";
 import { Fingerprint } from "../src/domain/serve/fingerprint.ts";

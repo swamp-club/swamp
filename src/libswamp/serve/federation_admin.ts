@@ -75,7 +75,6 @@ export function memberView(member: ServeMember): ServeMemberRecord {
   return member.toJSON();
 }
 
-/** one hub call as resolving, then completed or error, inside its own span */
 export async function* runFederationAdmin<T>(
   spanName: string,
   fallbackCode: string,

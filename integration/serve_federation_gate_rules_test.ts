@@ -92,7 +92,7 @@ export const FEDERATION_SURFACES = {
   ],
 } as const;
 
-// what swamp serve had before federation; a change here changes every serve
+// pinned: the routes every serve has with the gate off; a change here changes every serve
 const SERVE_ROUTE_NAMES = [
   "reload",
   "check-config",

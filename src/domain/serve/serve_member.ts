@@ -206,7 +206,8 @@ export class ServeMember {
 
   /**
    * the change rule: a new data version only for configuration drift, a pool
-   * change, a status change or a different instance set, never runtime fields
+   * change, a status or role change or a different instance set, never runtime
+   * fields
    */
   needsNewVersionFrom(previous: ServeMember | null): boolean {
     if (previous === null) return true;

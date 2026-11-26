@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// registered only through registerFederationModelTypes; models.ts must never import it
+// importing this registers the type: production loads it only through registerFederationModelTypes
 
 import { z } from "zod";
 import {

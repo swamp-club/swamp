@@ -34,7 +34,7 @@ export interface HubTeamFactsOptions {
   readonly now?: () => number;
 }
 
-/** counts nodes as cluster.instances does: a beat within the stale TTL that has not stopped */
+/** counts the nodes cluster.instances would call healthy or degraded */
 export async function hubTeamFacts(
   options: HubTeamFactsOptions,
 ): Promise<FingerprintProps["team"]> {

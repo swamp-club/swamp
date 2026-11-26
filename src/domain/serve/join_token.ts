@@ -86,7 +86,7 @@ export function joinTokenNameOf(wire: unknown): MemberName | undefined {
 
 export interface MintedJoinToken {
   readonly token: JoinToken;
-  /** the only time the plaintext exists outside the member */
+  /** the one copy handed out; the hub keeps only its hash */
   readonly plaintext: string;
 }
 
