@@ -32,9 +32,21 @@ const logger = getSwampLogger(["datastore", "v3", "serve-feed"]);
 const MAX_BACKOFF_MS = 30_000;
 /** a catch-up still writing when the command ends is left to the next one */
 const STOP_WAIT_MS = 500;
+/**
+ * the feed's catch-ups start at most once per window, so a command's reads may
+ * lag other writers by one window more; a quarter second matches the lock
+ * waiters' backoff cap (MODEL_LOCK_MAX_BACKOFF_MS)
+ */
+export const FEED_CATCH_UP_WINDOW_MS = 250;
 
 export interface ServeFeedWatch {
   stop(): Promise<void>;
+  /**
+   * runs `work`, a lock's catch-up of the copy and its read model: a feed
+   * catch-up asked for before it is dropped once it succeeded and reached
+   * every cursor the feed asked for
+   */
+  coveredBy<T>(work: () => Promise<T>): Promise<T>;
 }
 
 export interface ServeFeedWatchOptions {
@@ -57,6 +69,36 @@ export interface ServeFeedWatchOptions {
   readonly ready?: (signal: AbortSignal) => Promise<void>;
   readonly openSocket?: (url: string, headers: Headers) => WebSocket;
   readonly stopWaitMs?: number;
+  /** zero or less starts each catch-up as soon as the last one settled */
+  readonly windowMs?: number;
+  /** returns the cancel */
+  readonly scheduleWindow?: (fire: () => void, ms: number) => () => void;
+}
+
+interface FeedCatchUp {
+  readonly kind: "serve" | "local";
+  readonly wanted: number | undefined;
+  /** the furthest cursor a serve frame asked for */
+  readonly reach: number;
+}
+
+// a serve catch-up includes the local one, so a pending one is never downgraded
+function merged(
+  pending: FeedCatchUp | undefined,
+  next: FeedCatchUp,
+): FeedCatchUp {
+  if (pending === undefined) return next;
+  return {
+    kind: pending.kind === "serve" || next.kind === "serve" ? "serve" : "local",
+    wanted: undefined,
+    reach: Math.max(pending.reach, next.reach),
+  };
+}
+
+function scheduleTimer(fire: () => void, ms: number): () => void {
+  const timer = setTimeout(fire, ms);
+  Deno.unrefTimer(timer);
+  return () => clearTimeout(timer);
 }
 
 export function watchServeFeed(options: ServeFeedWatchOptions): ServeFeedWatch {
@@ -65,7 +107,11 @@ export function watchServeFeed(options: ServeFeedWatchOptions): ServeFeedWatch {
   let backoff = 1_000;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let running: Promise<unknown> | undefined;
-  let again: "serve" | "local" | undefined;
+  let pending: FeedCatchUp | undefined;
+  let closeWindow: (() => void) | undefined;
+  let covering = 0;
+  const windowMs = options.windowMs ?? FEED_CATCH_UP_WINDOW_MS;
+  const scheduleWindow = options.scheduleWindow ?? scheduleTimer;
   const caCerts = options.target.caCerts;
   const httpClient = caCerts !== undefined && caCerts.length > 0
     ? Deno.createHttpClient({ caCerts: [...caCerts] })
@@ -91,26 +137,47 @@ export function watchServeFeed(options: ServeFeedWatchOptions): ServeFeedWatch {
     }
     return await options.catchUp(stopping.signal);
   };
-  // a serve catch-up includes the local one, so a pending one is never downgraded
-  const catchUp = (kind: "serve" | "local" = "serve", wanted?: number) => {
-    if (stopped) return;
-    if (kind === "local" && options.catchUpLocally === undefined) return;
-    if (running !== undefined) {
-      if (again !== "serve") again = kind;
+  const drain = () => {
+    if (
+      stopped || pending === undefined || running !== undefined ||
+      closeWindow !== undefined || covering > 0
+    ) {
       return;
     }
-    const run = kind === "serve"
-      ? serveCatchUp(wanted)
+    const next = pending;
+    pending = undefined;
+    if (windowMs > 0) {
+      closeWindow = scheduleWindow(() => {
+        closeWindow = undefined;
+        drain();
+      }, windowMs);
+    }
+    const run = next.kind === "serve"
+      ? serveCatchUp(next.wanted)
       : options.catchUpLocally!(stopping.signal);
     running = run.catch((error) => {
       logger.debug`Catching up from serve's commit feed failed: ${error}`;
     }).finally(() => {
       running = undefined;
-      const next = again;
-      again = undefined;
-      if (next !== undefined && !stopped) catchUp(next);
+      drain();
     });
   };
+  const catchUp = (kind: "serve" | "local", wanted: number) => {
+    if (stopped) return;
+    if (kind === "local" && options.catchUpLocally === undefined) return;
+    pending = merged(pending, {
+      kind,
+      wanted,
+      reach: kind === "serve" ? wanted : Number.NEGATIVE_INFINITY,
+    });
+    drain();
+  };
+  // the lock's page was read at its grant, so a frame for a later commit may
+  // still precede it here: only the read model and the reach it got are covered
+  const coveredByCursor = (covered: FeedCatchUp): boolean =>
+    covered.kind === "local" ||
+    (options.appliedCursor !== undefined &&
+      options.appliedCursor() >= covered.reach);
 
   const open = () => {
     if (stopped) return;
@@ -209,9 +276,33 @@ export function watchServeFeed(options: ServeFeedWatchOptions): ServeFeedWatch {
 
   open();
   return {
+    async coveredBy<T>(work: () => Promise<T>): Promise<T> {
+      if (stopped) return await work();
+      covering++;
+      const covered = pending;
+      pending = undefined;
+      let done = false;
+      try {
+        const result = await work();
+        done = true;
+        return result;
+      } finally {
+        covering--;
+        if (
+          covered !== undefined && !stopped &&
+          !(done && coveredByCursor(covered))
+        ) {
+          pending = pending === undefined ? covered : merged(covered, pending);
+        }
+        drain();
+      }
+    },
     async stop() {
       stopped = true;
       stopping.abort();
+      pending = undefined;
+      closeWindow?.();
+      closeWindow = undefined;
       if (timer !== undefined) clearTimeout(timer);
       if (socket !== undefined) {
         socket.onopen = null;

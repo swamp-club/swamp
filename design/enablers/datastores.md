@@ -9997,6 +9997,22 @@ writer hold's and the lock's, not four, and a later catch-up that meets the
 command's own commit again in the changes feed appends nothing (`#append`
 skips a seq the copy already holds).
 
+The watch's catch-ups coalesce (swamp-club#5094). One starts at most once per
+window (`FEED_CATCH_UP_WINDOW_MS`, a quarter second, the lock waiters' backoff
+cap): the first frame after a quiet window catches up at once, and every frame
+during the window or during a running catch-up collapses into one catch-up
+when both have ended. A serve catch-up absorbs a local one. So a read in the
+middle of a command may lag another writer's commit by at most one window more
+than before; the reads that decide a write do not, since they follow the
+lock's catch-up. That catch-up (`catchUpV3HandlesAt`) runs through the watch's
+`coveredBy`: while it runs, the watch starts none, and once it succeeds a
+catch-up the feed asked for before it is dropped if the copy reached every
+cursor those frames named. The lock's first page was read at its grant, so a
+frame for a later commit can arrive first; that catch-up still runs. A frame
+arriving during the lock's catch-up runs after it. Stopping the watch cancels
+the window and drops what waits for it, as a catch-up still running at exit is
+left to the next command.
+
 Such a catch-up can run while one of the command's units is open, and the
 feed brings back the commits the command itself sent, a mid-run checkpoint
 among them (swamp-club#4249). The checkout's files already hold those

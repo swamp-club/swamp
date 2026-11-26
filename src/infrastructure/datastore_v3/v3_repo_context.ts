@@ -340,7 +340,10 @@ interface RepoContextState {
   readonly publishListeners: Map<string, Set<() => void>>;
   readonly deferredCollections: Set<string>;
   /** stopped all at once by closeV3Datastores */
-  readonly feedWatches: ServeFeedWatch[];
+  readonly feedWatches: {
+    readonly handle: V3Datastore;
+    readonly watch: ServeFeedWatch;
+  }[];
   readonly commitOutcomeListeners: Set<V3CommitOutcomeListener>;
   /** a follower's copy work in flight, by handle key */
   readonly follows: Map<string, V3FollowInFlight>;
@@ -1237,7 +1240,7 @@ export function watchV3ServeFeeds(): void {
   for (const handle of [...repoState().opened.values()]) {
     const binding = serveUpstreamAt(handle.datastorePath);
     if (binding === undefined) continue;
-    repoState().feedWatches.push(watchServeFeed({
+    const watch = watchServeFeed({
       target: binding.target,
       catchUp: (signal) => handle.catchUp(signal),
       // a writer hold that left its catch-up to the lock holds the feed's
@@ -1264,8 +1267,24 @@ export function watchV3ServeFeeds(): void {
       ...(handle.catchUpReadModel !== undefined
         ? { catchUpLocally: (signal) => handle.catchUpReadModel!(signal) }
         : {}),
-    }));
+    });
+    repoState().feedWatches.push({ handle, watch });
   }
+}
+
+/** the lock's catch-up for `handle` stands in for its feed watches' pending ones */
+async function coveringFeedCatchUps(
+  handle: V3Datastore,
+  work: () => Promise<void>,
+): Promise<void> {
+  const watches = repoState().feedWatches.filter((entry) =>
+    entry.handle === handle
+  );
+  const run = watches.reduceRight<() => Promise<void>>(
+    (inner, { watch }) => () => watch.coveredBy(inner),
+    work,
+  );
+  await run();
 }
 
 /**
@@ -1299,6 +1318,10 @@ export async function catchUpV3HandlesAt(
     resolve(handle.datastorePath) === path
   );
   for (const handle of handles) {
+    await coveringFeedCatchUps(handle, () => catchUpHandleAt(handle));
+  }
+
+  async function catchUpHandleAt(handle: V3Datastore): Promise<void> {
     if (handle.catchUpForWrite !== undefined) {
       try {
         await handle.catchUpForWrite(undefined, {
@@ -2640,7 +2663,7 @@ export async function closeV3Datastores(
     {},
     () =>
       Promise.all(
-        repoState().feedWatches.splice(0).map((watch) => watch.stop()),
+        repoState().feedWatches.splice(0).map(({ watch }) => watch.stop()),
       ),
   );
   closeServeLockClients();

@@ -192,6 +192,8 @@ async function catchUpsFor(
         socket.addEventListener("close", () => closed = true);
         return socket;
       },
+      // which frames ask for a catch-up, not how they coalesce
+      windowMs: 0,
       ...options,
     });
     try {
@@ -385,4 +387,188 @@ Deno.test("watchServeFeed: a frame dispatched after stop reads nothing the comma
   assertEquals(reads, 0);
   assertEquals(catchUps, 0);
   assertEquals(socket.sent, []);
+});
+
+// the stubs settle at once, so every continuation has run by the next task:
+// what has not started by then never will
+const settled = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+function fakeSocket() {
+  return {
+    readyState: WebSocket.OPEN as number,
+    onopen: null as null | (() => void),
+    onmessage: null as null | ((event: { data: string }) => void),
+    onclose: null as null | (() => void),
+    onerror: null as null | (() => void),
+    sent: [] as string[],
+    send(data: string) {
+      this.sent.push(data);
+    },
+    close() {
+      this.readyState = WebSocket.CLOSING;
+    },
+    deliver(frame: unknown) {
+      this.onmessage?.({ data: JSON.stringify(frame) });
+    },
+  };
+}
+
+// windows open and close only when the test says
+function manualWindows() {
+  const open: { fire: () => void; cancelled: boolean }[] = [];
+  return {
+    open,
+    schedule(fire: () => void): () => void {
+      const window = { fire, cancelled: false };
+      open.push(window);
+      return () => window.cancelled = true;
+    },
+    closeLast() {
+      const window = open.at(-1)!;
+      assertEquals(window.cancelled, false);
+      window.fire();
+    },
+  };
+}
+
+function watchFake(applied: { cursor: number }) {
+  const socket = fakeSocket();
+  const windows = manualWindows();
+  const counts = { catchUps: 0 };
+  const watch = watchServeFeed({
+    target: {
+      serverUrl: "http://127.0.0.1:1",
+      token: undefined,
+      caCerts: undefined,
+      extraHeaders: {},
+    },
+    catchUp: () => {
+      counts.catchUps++;
+      return Promise.resolve();
+    },
+    appliedCursor: () => applied.cursor,
+    openSocket: () => socket as unknown as WebSocket,
+    scheduleWindow: (fire) => windows.schedule(fire),
+  });
+  socket.onopen!();
+  socket.deliver({ type: "commits.head", id: "head", payload: { cursor: 41 } });
+  return { socket, windows, counts, watch };
+}
+
+Deno.test("watchServeFeed: feed frames within one window start one catch-up when it closes, and frames after it one more (swamp-club#5094)", async () => {
+  const applied = { cursor: 40 };
+  const { socket, windows, counts, watch } = watchFake(applied);
+  try {
+    await waitFor(() => counts.catchUps === 1, "the head's catch-up");
+    for (let cursor = 42; cursor <= 46; cursor++) {
+      socket.deliver(theirs(cursor));
+    }
+    await settled();
+    assertEquals(counts.catchUps, 1);
+    windows.closeLast();
+    await waitFor(() => counts.catchUps === 2, "the window's one catch-up");
+    for (let cursor = 47; cursor <= 49; cursor++) {
+      socket.deliver(theirs(cursor));
+    }
+    await settled();
+    assertEquals(counts.catchUps, 2);
+    windows.closeLast();
+    await waitFor(() => counts.catchUps === 3, "the next window's catch-up");
+    // a window that closes with nothing asked for starts nothing, and the
+    // next frame catches up at once
+    windows.closeLast();
+    await settled();
+    assertEquals(counts.catchUps, 3);
+    socket.deliver(theirs(50));
+    await waitFor(() => counts.catchUps === 4, "a frame after a quiet window");
+  } finally {
+    await watch.stop();
+  }
+});
+
+Deno.test("watchServeFeed: a lock's catch-up that reaches every cursor the feed asked for stands in for the feed's pending catch-up; one that falls short leaves it to run (swamp-club#5094)", async () => {
+  for (const reaches of [true, false]) {
+    const applied = { cursor: 40 };
+    const { socket, windows, counts, watch } = watchFake(applied);
+    try {
+      await waitFor(() => counts.catchUps === 1, "the head's catch-up");
+      applied.cursor = 41;
+      socket.deliver(theirs(42));
+      socket.deliver(theirs(43));
+      let locks = 0;
+      await watch.coveredBy(() => {
+        locks++;
+        // the lock's page was read before serve committed 43
+        applied.cursor = reaches ? 43 : 42;
+        return Promise.resolve();
+      });
+      windows.closeLast();
+      await settled();
+      assertEquals(locks, 1);
+      assertEquals(counts.catchUps, reaches ? 1 : 2);
+    } finally {
+      await watch.stop();
+    }
+  }
+});
+
+Deno.test("watchServeFeed: frames that arrive while a lock catches up wait for it and are not covered by it (swamp-club#5094)", async () => {
+  const applied = { cursor: 40 };
+  const { socket, windows, counts, watch } = watchFake(applied);
+  try {
+    await waitFor(() => counts.catchUps === 1, "the head's catch-up");
+    windows.closeLast();
+    const lock = Promise.withResolvers<void>();
+    const covering = watch.coveredBy(() => lock.promise);
+    socket.deliver(theirs(42));
+    await settled();
+    assertEquals(counts.catchUps, 1);
+    applied.cursor = 41;
+    lock.resolve();
+    await covering;
+    await waitFor(() => counts.catchUps === 2, "the frame's own catch-up");
+  } finally {
+    await watch.stop();
+  }
+});
+
+Deno.test("watchServeFeed: stopping the watch drops a catch-up waiting for its window and cancels the window (swamp-club#5094)", async () => {
+  const applied = { cursor: 40 };
+  const { socket, windows, counts, watch } = watchFake(applied);
+  await waitFor(() => counts.catchUps === 1, "the head's catch-up");
+  socket.deliver(theirs(42));
+  await settled();
+  assertEquals(counts.catchUps, 1);
+  await watch.stop();
+  assertEquals(windows.open.at(-1)!.cancelled, true);
+  windows.open.at(-1)!.fire();
+  await settled();
+  assertEquals(counts.catchUps, 1);
+});
+
+Deno.test("watchServeFeed: a watch stopped while its window is open leaves no timer behind (swamp-club#5094)", async () => {
+  const socket = fakeSocket();
+  let catchUps = 0;
+  const watch = watchServeFeed({
+    target: {
+      serverUrl: "http://127.0.0.1:1",
+      token: undefined,
+      caCerts: undefined,
+      extraHeaders: {},
+    },
+    catchUp: () => {
+      catchUps++;
+      return Promise.resolve();
+    },
+    appliedCursor: () => 40,
+    openSocket: () => socket as unknown as WebSocket,
+    windowMs: 60_000,
+  });
+  socket.onopen!();
+  socket.deliver({ type: "commits.head", id: "head", payload: { cursor: 41 } });
+  await waitFor(() => catchUps === 1, "the head's catch-up");
+  socket.deliver(theirs(42));
+  // the test's sanitizer fails on the window's timer if stop left it running
+  await watch.stop();
+  assertEquals(catchUps, 1);
 });
