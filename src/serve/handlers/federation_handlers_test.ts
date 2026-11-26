@@ -23,10 +23,16 @@ import { PolicySnapshot } from "../../domain/access/policy_snapshot.ts";
 import { createConditionEvaluator } from "../../domain/access/policy_snapshot_loader.ts";
 import type { Principal } from "../../domain/access/principal.ts";
 import type { Grant } from "../../domain/models/access/grant_model.ts";
-import { createTestHub } from "../federation/federation_hub_test_helpers.ts";
+import {
+  createTestHub,
+  MemoryControlPlaneStore,
+} from "../federation/federation_hub_test_helpers.ts";
+import { HubLink } from "../../domain/serve/hub_link.ts";
+import { HubLinkStore } from "../federation/hub_link_store.ts";
 import type { ConnectionContext } from "./shared.ts";
 import {
   FEDERATION_RESOURCE,
+  handleFederationLinkGet,
   handleFederationMemberList,
   handleFederationTokenCreate,
   handleFederationTokenList,
@@ -73,6 +79,21 @@ function context(
     },
     ...(federationHub ? { federationHub } : {}),
   } as unknown as ConnectionContext;
+}
+
+async function memberLink(): Promise<
+  NonNullable<ConnectionContext["federationMember"]>
+> {
+  const links = new HubLinkStore(new MemoryControlPlaneStore());
+  await links.writeLink(
+    HubLink.unjoined().beginJoin("https://hub.example.com").received({
+      memberId: crypto.randomUUID(),
+      memberName: "edge",
+      hubName: "central",
+      joinedAt: "2026-11-26T12:00:00.000Z",
+    }).joined(),
+  );
+  return { links, configuredHubUrl: "https://hub.example.com" };
 }
 
 function frame(ws: { sent: string[] }): Record<string, unknown> {
@@ -148,4 +169,42 @@ Deno.test("handleFederationTokenList: without a hub on the ctx it answers unsupp
     (frame(ws).error as Record<string, unknown>).code,
     "unsupported_operation",
   );
+});
+
+Deno.test("handleFederationLinkGet: read on swamp/federation returns the link and never a credential", async () => {
+  const ws = socket();
+  const ctx = {
+    ...context([grantOn(FEDERATION_RESOURCE.name, ["read"])]),
+    federationMember: await memberLink(),
+  } as ConnectionContext;
+  await handleFederationLinkGet(ws, ctx, "r1", OPERATOR);
+  const reply = frame(ws);
+  assertEquals(reply.type, "federation.link.get");
+  const link = (reply.payload as { link: Record<string, unknown> }).link;
+  assertEquals(link.state, "joined");
+  assertEquals(link.hubName, "central");
+  assertEquals(ws.sent[0].includes("swfm1."), false);
+});
+
+Deno.test("handleFederationLinkGet: refused without read on swamp/federation", async () => {
+  const ws = socket();
+  const ctx = {
+    ...context([grantOn("swamp/other", ["read"])]),
+    federationMember: await memberLink(),
+  } as ConnectionContext;
+  await handleFederationLinkGet(ws, ctx, "r1", OPERATOR);
+  assertEquals(frame(ws).type, "error");
+});
+
+Deno.test("handleFederationLinkGet: a serve that is not a member says so", async () => {
+  const ws = socket();
+  await handleFederationLinkGet(
+    ws,
+    context([grantOn(FEDERATION_RESOURCE.name, ["read"])]),
+    "r1",
+    OPERATOR,
+  );
+  const reply = frame(ws) as { type: string; error: { code: string } };
+  assertEquals(reply.type, "error");
+  assertEquals(reply.error.code, "unsupported_operation");
 });

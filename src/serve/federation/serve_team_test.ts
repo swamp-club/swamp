@@ -19,7 +19,7 @@
 
 import { assertEquals } from "@std/assert";
 import { MemoryControlPlaneStore } from "./federation_hub_test_helpers.ts";
-import { hubTeamFacts } from "./hub_team.ts";
+import { serveTeamFacts, serveTeamMode } from "./serve_team.ts";
 
 const NOW = Date.parse("2026-11-26T12:00:00.000Z");
 
@@ -43,36 +43,84 @@ async function beat(
   );
 }
 
-Deno.test("hubTeamFacts: outside a team the hub is one node on its own", async () => {
-  assertEquals(
-    await hubTeamFacts({ teamMode: false, following: () => true }),
-    { role: "single", nodes: 1 },
-  );
-});
-
-Deno.test("hubTeamFacts: in a team it counts nodes beating within the stale TTL, never a stopped one", async () => {
+async function teamOfFour(): Promise<MemoryControlPlaneStore> {
   const store = new MemoryControlPlaneStore();
   await beat(store, "a", 1_000);
   await beat(store, "b", 30_000);
   await beat(store, "c", 200_000);
   await beat(store, "d", 1_000, true);
+  return store;
+}
+
+Deno.test("serveTeamMode: v3 is a team, a v2 remote control plane is shared, anything else is local", () => {
+  assertEquals(serveTeamMode({ v3: true, hasRemoteControlPlane: true }), "v3");
   assertEquals(
-    await hubTeamFacts({
-      teamMode: true,
+    serveTeamMode({ v3: false, hasRemoteControlPlane: true }),
+    "v2-shared",
+  );
+  assertEquals(
+    serveTeamMode({ v3: false, hasRemoteControlPlane: false }),
+    "local",
+  );
+});
+
+Deno.test("serveTeamFacts: a local serve is one node on its own", async () => {
+  assertEquals(
+    await serveTeamFacts({
+      mode: "local",
+      following: () => true,
+      heartbeats: await teamOfFour(),
+      now: () => NOW,
+    }),
+    { role: "single", nodes: 1 },
+  );
+});
+
+Deno.test("serveTeamFacts: in a v3 team it counts nodes beating within the stale TTL, never a stopped one", async () => {
+  assertEquals(
+    await serveTeamFacts({
+      mode: "v3",
       following: () => false,
-      heartbeats: store,
+      heartbeats: await teamOfFour(),
       staleTtlMs: 90_000,
       now: () => NOW,
     }),
     { role: "leader", nodes: 2 },
   );
   assertEquals(
-    await hubTeamFacts({
-      teamMode: true,
+    await serveTeamFacts({
+      mode: "v3",
       following: () => true,
       heartbeats: new MemoryControlPlaneStore(),
       now: () => NOW,
     }),
     { role: "follower", nodes: 1 },
+  );
+});
+
+Deno.test("serveTeamFacts: v2 serves sharing a control plane are peers counted from live heartbeats", async () => {
+  assertEquals(
+    await serveTeamFacts({
+      mode: "v2-shared",
+      following: () => false,
+      heartbeats: await teamOfFour(),
+      staleTtlMs: 90_000,
+      now: () => NOW,
+    }),
+    { role: "peer", nodes: 2 },
+  );
+});
+
+Deno.test("serveTeamFacts: a v2 serve alone on a shared control plane is single", async () => {
+  const store = new MemoryControlPlaneStore();
+  await beat(store, "a", 1_000);
+  assertEquals(
+    await serveTeamFacts({
+      mode: "v2-shared",
+      following: () => false,
+      heartbeats: store,
+      now: () => NOW,
+    }),
+    { role: "single", nodes: 1 },
   );
 });

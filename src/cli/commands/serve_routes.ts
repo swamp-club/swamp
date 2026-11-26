@@ -96,6 +96,14 @@ export const SERVE_FEDERATION_ROUTES: readonly CommandRoute[] = [
     needsFullTree: false,
     load: async () => (await import("./serve_member.ts")).serveMemberCommand,
   },
+  {
+    name: "hub",
+    aliases: [],
+    hidden: false,
+    module: "src/cli/commands/serve_hub.ts",
+    needsFullTree: false,
+    load: async () => (await import("./serve_hub.ts")).serveHubCommand,
+  },
 ];
 
 export function resolveServeRoutes(

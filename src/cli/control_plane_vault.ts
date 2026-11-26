@@ -46,7 +46,7 @@ export async function initializeControlPlaneVaultForCli(
   repoDir: string,
   syncService?: DatastoreSyncService,
   options?: ControlPlaneVaultCliOptions,
-): Promise<ControlPlaneVaultInitResult> {
+): Promise<ControlPlaneVaultInitResult & { store: ControlPlaneStore }> {
   const caps = syncService?.capabilities?.();
   const hasRemote = !!(caps?.controlPlane && syncService?.controlPlaneStore);
 
@@ -89,9 +89,10 @@ export async function initializeControlPlaneVaultForCli(
 
   // Token commands never migrate: running serve instances still hold the
   // co-located key, and serve migrates when it restarts with the block.
-  return await initializeControlPlaneVault(store, hasRemote, {
+  const result = await initializeControlPlaneVault(store, hasRemote, {
     tokenSecretsKey,
     vaultService: () => VaultService.fromRepository(repoDir),
     migrate: false,
   });
+  return { ...result, store };
 }

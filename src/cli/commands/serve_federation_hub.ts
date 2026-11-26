@@ -20,20 +20,13 @@
 import type { ControlPlaneStore } from "../../domain/datastore/control_plane_store.ts";
 import type { DatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import type { DatastoreEngine } from "../../domain/datastore/datastore_format.ts";
-import type { DataRecord } from "../../domain/data/data_record.ts";
-import {
+import type {
   Fingerprint,
-  type FingerprintProps,
+  FingerprintProps,
 } from "../../domain/serve/fingerprint.ts";
 import { registerFederationModelTypes } from "../../domain/models/serve/federation_model_types.ts";
 import type { AuditEmitter } from "../../domain/serve_audit/audit_emitter.ts";
 import type { RepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
-import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
-import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
-import { VERSION } from "../../infrastructure/runtime/build_info.ts";
-import { createLibSwampContext } from "../../libswamp/context.ts";
-import { userErrorFromSwampError } from "../../libswamp/errors.ts";
-import { serveFingerprint } from "../../libswamp/serve/fingerprint.ts";
 import { hubName, type MergedServeOptions } from "../../serve/serve_config.ts";
 import { FederationAudit } from "../../serve/federation/federation_audit.ts";
 import {
@@ -46,7 +39,7 @@ import {
   repoMemberRecords,
 } from "../../serve/federation/member_record_store.ts";
 import { MemberStatusSweeper } from "../../serve/federation/member_status_sweeper.ts";
-import { fingerprintDatastoreFacts } from "./serve_fingerprint.ts";
+import { collectServeFingerprint } from "./serve_federation_fingerprint.ts";
 
 export interface ServeFederationHubDeps {
   readonly env: (name: string) => string | undefined;
@@ -108,51 +101,13 @@ export async function buildServeFederationHub(
   };
 }
 
-// read as `swamp serve fingerprint` reads it, plus what only a running serve knows
 async function collectHubFingerprint(
   deps: ServeFederationHubDeps,
 ): Promise<Fingerprint> {
-  let fingerprint: Fingerprint | undefined;
-  for await (
-    const event of serveFingerprint(createLibSwampContext(), {
-      buildVersion: () => VERSION,
-      platform: () => ({ platform: Deno.build.os, arch: Deno.build.arch }),
-      settings: deps.settings,
-      serveYamlVersion: () => deps.serveYamlVersion,
-      federationRole: () => "hub",
-      datastore: () =>
-        fingerprintDatastoreFacts(
-          {
-            datastoreConfig: deps.datastoreConfig,
-            engine: deps.datastoreEngine,
-          },
-          deps.repoDir,
-        ),
-      vaultTypes: async () =>
-        (await new YamlVaultConfigRepository(deps.repoDir).findAll())
-          .map((vault) => vault.type),
-      extensions: async () =>
-        Object.entries(
-          (await LockfileRepository.create(deps.lockfilePath)).getAllEntries(),
-        ).map(([name, entry]) => ({ name, version: entry.version })),
-      queryData: async (predicate) =>
-        await deps.repoContext.dataQueryService.query(predicate, {
-          loadAttributes: true,
-        }) as DataRecord[],
-    })
-  ) {
-    if (event.kind === "error") throw userErrorFromSwampError(event.error);
-    if (event.kind === "completed") {
-      fingerprint = Fingerprint.create({
-        ...event.data.fingerprint,
-        team: await deps.team(),
-        startedAt: deps.startedAt,
-        ready: true,
-      });
-    }
-  }
-  if (fingerprint === undefined) {
-    throw new Error("The hub's fingerprint was not collected");
-  }
-  return fingerprint;
+  return await collectServeFingerprint(deps, {
+    role: "hub",
+    team: await deps.team(),
+    startedAt: deps.startedAt,
+    ready: true,
+  });
 }
