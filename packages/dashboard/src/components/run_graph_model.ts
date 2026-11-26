@@ -49,7 +49,7 @@ export interface StepRunLike {
   completedAt?: string;
   duration?: number;
   allowedFailure?: boolean;
-  skipReason?: { kind: string; expression?: string };
+  skipReason?: { kind: string; expression?: string; result?: boolean };
   nestedRun?: { workflowName: string; runId: string; detached?: boolean };
   approval?: { status: string };
   wait?: unknown;

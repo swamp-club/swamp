@@ -6844,6 +6844,49 @@ Deno.test("guard: a guarded skip persists its reason and expression on the run",
       reason?.kind === "guarded" ? reason.expression : undefined,
       "true",
     );
+    assertEquals(reason?.kind === "guarded" ? reason.result : undefined, true);
+  });
+});
+
+Deno.test("guard: a guarded skip records no result when the guard returned a number", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+
+    const workflow = Workflow.create({
+      name: "guard-number-wf",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "guarded-number",
+              task: StepTask.model("test-model", "run"),
+              guard: "${{ 38 }}",
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      catalogStore,
+    );
+
+    for await (const _ of service.run(workflow.name)) { /* drain */ }
+
+    const runs = await runRepo.findAllByWorkflowId(workflow.id);
+    const step = runs[0].getJob("job1")?.getStep("guarded-number");
+    assertEquals(step?.status, "skipped");
+    assertEquals(step?.skipReason, { kind: "guarded", expression: "38" });
   });
 });
 

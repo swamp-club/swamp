@@ -3811,7 +3811,9 @@ steps:
 
 A step can declare a `guard`, a CEL expression evaluated before the step runs.
 A truthy guard skips the step (already done). A falsy or absent guard lets it
-run normally.
+run normally. A guard is a skip condition, not a run condition: the inverse of
+a GitHub Actions `if:`, and of an `assert`, which passes on the same truthy
+value.
 
 Guard is the workflow-level primitive for idempotent steps. It makes resume,
 re-run, and cron scheduling safe without re-running completed steps.
@@ -3937,7 +3939,11 @@ In `--json` mode, each guarded skip writes a line with both fields to stderr:
 ```
 
 stdout holds only the run document, where each guard-skipped step carries
-`skipReason: {"kind": "guarded", "expression": ...}`. The renderer writes
+`skipReason: {"kind": "guarded", "expression": ..., "result": true}`. Only a
+boolean result is persisted: the run record is shared through the datastore,
+and a number, text or record from repo or vault data is not masked there.
+`workflow history get`, the verification summary report and the dashboard append
+`→ true` to the expression when the result is recorded. The renderer writes
 through `unguardedConsole` (`src/domain/models/console_guard.ts`), so these
 lines never pass through the console guard of a concurrently running method.
 

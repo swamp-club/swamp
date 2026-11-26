@@ -43,7 +43,9 @@ function describeSkipReason(reason: StepSkipReasonInfo | undefined): string {
   switch (reason.kind) {
     case "guarded":
       return reason.expression
-        ? `guard: ${reason.expression}`
+        ? `guard: ${reason.expression}${
+          reason.result === undefined ? "" : ` → ${reason.result}`
+        }`
         // Bare "guard", matching the run display exactly. The two surfaces
         // report the same fact and a reader comparing them should not have to
         // decide whether two different phrasings mean two different things.

@@ -2001,6 +2001,8 @@ export interface StepRunView {
   skipReason?: {
     kind: "dependency" | "guarded" | "job_skipped";
     expression?: string;
+    /** On a guarded skip whose guard returned a boolean. */
+    result?: boolean;
   };
   /** `workflow_changed`: a failed-run resume reset the step; start a new run. */
   failureKind?: "workflow_changed";

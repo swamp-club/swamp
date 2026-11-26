@@ -416,6 +416,32 @@ Deno.test("verificationSummaryReport: a guard skip and a deselected group are di
   assertEquals(gate.skippedByKind, { guarded: 2, job_skipped: 1 });
 });
 
+Deno.test("verificationSummaryReport: a guard skip shows what the guard returned, as the run display does", async () => {
+  const ctx = makeWorkflowContext({
+    stepExecutions: [
+      makeStepExecution({
+        jobName: "reviews",
+        stepName: "ux-review",
+        status: "skipped",
+        skipReason: {
+          kind: "guarded",
+          expression: "changedFiles.size() == 0",
+          result: true,
+        },
+      }),
+    ],
+  });
+
+  const result = await verificationSummaryReport.execute(ctx);
+
+  assertStringIncludes(
+    result.markdown,
+    "guard: changedFiles.size() == 0 → true",
+  );
+  const steps = result.json.steps as Array<Record<string, unknown>>;
+  assertEquals(steps[0].reason, "guard: changedFiles.size() == 0 → true");
+});
+
 Deno.test("verificationSummaryReport: a skip with no recorded reason says so", async () => {
   const ctx = makeWorkflowContext({
     stepExecutions: [

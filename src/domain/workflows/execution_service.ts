@@ -6976,7 +6976,11 @@ export class WorkflowExecutionService {
         if (guardResult) {
           guardLogger
             .debug`Step ${stepName} guard skipped: ${guardCel} → ${guardResult}`;
-          stepRun.skip({ kind: "guarded", expression: guardCel });
+          stepRun.skip({
+            kind: "guarded",
+            expression: guardCel,
+            ...(typeof guardResult === "boolean" && { result: guardResult }),
+          });
           stepSpan.setAttribute("step.status", "skipped");
           stepSpan.setAttribute("step.skip.reason", "guarded");
           stepSpan.end();

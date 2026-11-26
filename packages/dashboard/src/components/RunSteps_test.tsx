@@ -19,9 +19,14 @@
 
 /** @jsxRuntime automatic */
 /** @jsxImportSource react */
-import { assert, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { renderToStaticMarkup } from "react-dom/server";
-import { type ApprovalInfo, type StepContext, StepList } from "./RunSteps.tsx";
+import {
+  type ApprovalInfo,
+  skipReasonText,
+  type StepContext,
+  StepList,
+} from "./RunSteps.tsx";
 
 const DECIDED_AT = "2026-11-12T15:00:00.000Z";
 
@@ -120,4 +125,18 @@ Deno.test("StepList: a decision names who decided by the username serve recorded
   });
   assertStringIncludes(rejectedText, "Rejected by user:alice at ");
   assert(!rejectedText.includes("0f3a-sub"));
+});
+
+Deno.test("skipReasonText: a guard skip shows what the guard returned", () => {
+  assertEquals(
+    skipReasonText({ kind: "guarded", expression: "x < 0.5", result: true }),
+    "Skipped by its guard: x < 0.5 → true",
+  );
+});
+
+Deno.test("skipReasonText: a guard skip recorded without a result shows only the expression", () => {
+  assertEquals(
+    skipReasonText({ kind: "guarded", expression: "x < 0.5" }),
+    "Skipped by its guard: x < 0.5",
+  );
 });
