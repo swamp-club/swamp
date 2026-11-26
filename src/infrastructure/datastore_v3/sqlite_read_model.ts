@@ -4749,7 +4749,7 @@ export class SqliteReadModel implements ReadModel {
     // bytes, read and compared, keeps its access; chunked content is compared
     // by the guard below
     if (
-      "inline" in content && this.#replaying &&
+      "inline" in content && this.#replaying && !this.#paths.nothingAt(path) &&
       await this.#time(
         "guard",
         () => holdsBytes(path, decodeBase64(content.inline)),

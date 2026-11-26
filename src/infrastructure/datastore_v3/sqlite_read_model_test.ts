@@ -3976,12 +3976,14 @@ Deno.test("SqliteReadModel.catchUp: a page resolves the next file's target while
       await env.append(3, "", [await savePut("m", 1), versionOp("m", 1)]);
       storage.holding = true;
       const m = env.contentPath("", "m", 1);
+      // the first segment of m's path that is not there yet: .../m
+      const mDir = dirname(dirname(m));
       await withStatsSeen(async (seen) => {
         const caughtUp = readModel.catchUp(signal());
         try {
           await waitFor(() => storage.reading, "k reading its content");
           await waitFor(
-            () => seen.has(m),
+            () => seen.has(mDir),
             "m's target resolved while k's content is still read",
           );
         } finally {
