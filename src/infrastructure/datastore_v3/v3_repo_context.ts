@@ -3796,7 +3796,7 @@ export async function v3CompactionBlocker(
   return undefined;
 }
 
-/** an operator's compaction gets a minute, as serve's hourly one does */
+// same budget as serve's hourly compaction
 export const HISTORY_COMPACT_BUDGET_MS = 60_000;
 
 /**

@@ -2187,7 +2187,6 @@ export interface DatastoreReleaseResponse {
   data: { released: boolean; address?: string; claimedAt?: string };
 }
 
-/** see DatastoreCompactHistoryData in libswamp */
 export interface DatastoreHistoryCompactResponse {
   data:
     | { applies: false }
