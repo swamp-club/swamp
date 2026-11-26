@@ -217,8 +217,103 @@ Deno.test("FederationHub.checkIn: records the instance once, then writes only th
   assertEquals(t.members.version("edge-1"), 2);
   assertEquals(
     t.store.json(`federation/seen/${parsed.memberId}/${instance.value}`),
-    { at: t.clock.now },
+    { at: t.clock.now, runtime: { team: null, startedAt: null, ready: null } },
   );
+});
+
+const RUNNING = {
+  team: { role: "leader" as const, nodes: 2 },
+  startedAt: "2026-11-26T11:00:00.000Z",
+  ready: true,
+};
+
+Deno.test("FederationHub.checkIn: runtime facts go to the seen record and never make a data version", async () => {
+  const t = createTestHub();
+  const { credential } = await joined(t);
+  const parsed = MemberCredential.parse(credential);
+  const instance = InstanceId.create(crypto.randomUUID());
+  await t.hub.checkIn(parsed, instance, sampleFingerprint());
+  const version = t.members.version("edge-1");
+  for (let i = 0; i < 4; i++) {
+    t.clock.now += 30_000;
+    const outcome = await t.hub.checkIn(
+      parsed,
+      instance,
+      sampleFingerprint({
+        ...RUNNING,
+        team: { role: "leader", nodes: i + 1 },
+        ready: i % 2 === 0,
+      }),
+    );
+    assertEquals(outcome, { kind: "checked-in", changed: false });
+  }
+  assertEquals(t.members.version("edge-1"), version);
+  assertEquals(
+    t.store.json(`federation/seen/${parsed.memberId}/${instance.value}`),
+    {
+      at: t.clock.now,
+      runtime: { ...RUNNING, team: { role: "leader", nodes: 4 }, ready: false },
+    },
+  );
+});
+
+Deno.test("FederationHub.sightings: reads both seen shapes, grouped by member", async () => {
+  const t = createTestHub();
+  const { credential, memberId } = await joined(t);
+  const parsed = MemberCredential.parse(credential);
+  const fresh = InstanceId.create(crypto.randomUUID());
+  await t.hub.checkIn(parsed, fresh, sampleFingerprint(RUNNING));
+  const old = InstanceId.create(crypto.randomUUID());
+  await t.store.put(
+    `federation/seen/${memberId}/${old.value}`,
+    new TextEncoder().encode(JSON.stringify({ at: t.clock.now - 1000 })),
+  );
+  await t.store.put(
+    `federation/seen/${memberId}/${crypto.randomUUID()}`,
+    new TextEncoder().encode(JSON.stringify({ at: 1, extra: true })),
+  );
+  const all = await t.hub.sightings();
+  const sorted = [...all.get(memberId)!].sort((a, b) => b.at - a.at);
+  assertEquals(sorted, [
+    { instanceId: fresh.value, at: t.clock.now, runtime: RUNNING },
+    { instanceId: old.value, at: t.clock.now - 1000, runtime: null },
+  ]);
+  assertEquals([...(await t.hub.sightings(memberId)).keys()], [memberId]);
+  assertEquals(
+    (await t.hub.sightings(crypto.randomUUID())).size,
+    0,
+  );
+});
+
+Deno.test("FederationHub.recordSelfSeen: writes nothing before the hub's record exists, then its own seen record", async () => {
+  const t = createTestHub();
+  const instance = InstanceId.create(crypto.randomUUID());
+  assertEquals(await t.hub.recordSelfSeen(instance, RUNNING), false);
+  assertEquals(await t.store.list("federation/seen/"), []);
+  await t.hub.upsertSelf(sampleFingerprint({ federationRole: "hub" }));
+  assertEquals(await t.hub.recordSelfSeen(instance, RUNNING), true);
+  const hubId = t.members.raw("hub")!.memberId;
+  assertEquals(
+    t.store.json(`federation/seen/${hubId}/${instance.value}`),
+    { at: t.clock.now, runtime: RUNNING },
+  );
+  assertEquals(t.members.version("hub"), 1);
+});
+
+Deno.test("FederationHub.sweep: keeps the hub's own seen record until the TTL, and leaves the hub's status alone", async () => {
+  const t = createTestHub();
+  await t.hub.upsertSelf(sampleFingerprint({ federationRole: "hub" }));
+  const instance = InstanceId.create(crypto.randomUUID());
+  await t.hub.recordSelfSeen(instance, RUNNING);
+  const hubId = t.members.raw("hub")!.memberId;
+  const key = `federation/seen/${hubId}/${instance.value}`;
+  t.clock.now += 20 * 60 * 1000;
+  assertEquals(await t.hub.sweep(), { membersWritten: 0, seenKeysDeleted: 0 });
+  assert(t.store.entries.has(key));
+  assertEquals(t.members.raw("hub")!.status, "online");
+  t.clock.now += 24 * HOUR;
+  assertEquals(await t.hub.sweep(), { membersWritten: 0, seenKeysDeleted: 1 });
+  assertEquals(t.store.entries.has(key), false);
 });
 
 Deno.test("FederationHub.checkIn: a wrong secret, an orphan credential and a removed member are unauthorized", async () => {

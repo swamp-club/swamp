@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { isServeFederationEnabled } from "../../domain/serve/federation_gate.ts";
 import {
   basename,
   dirname,
@@ -104,6 +105,9 @@ export class FilesystemAppCatalog implements AppCatalog {
         const descriptor = parseAppDescriptor(
           await Deno.readTextFile(path),
           path,
+          {
+            federation: isServeFederationEnabled((name) => Deno.env.get(name)),
+          },
         );
         const root = dirname(path);
         if (origin === "extension") {

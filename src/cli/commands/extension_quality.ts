@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { isServeFederationEnabled } from "../../domain/serve/federation_gate.ts";
 import { appBundleFiles } from "../../domain/extensions/extension_app_bundle.ts";
 import { Command } from "@cliffy/command";
 import { dirname } from "@std/path";
@@ -234,7 +235,11 @@ export const extensionQualityCommand = new Command()
             workflowFilePaths: resolved.workflowFiles.map((w) => w.sourcePath),
             additionalFilePaths: [
               ...resolved.additionalFilePaths,
-              ...await appBundleFiles(resolved.manifest, resolved.appsDir),
+              ...await appBundleFiles(resolved.manifest, resolved.appsDir, {
+                federation: isServeFederationEnabled((name) =>
+                  Deno.env.get(name)
+                ),
+              }),
             ],
             binaryFilePaths: resolved.binaryFilePaths,
             skillFilePaths: resolved.allSkillFiles,

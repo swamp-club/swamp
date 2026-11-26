@@ -66,6 +66,26 @@ import {
   serverRequestSchemas,
   validateServerRequest,
 } from "../src/serve/connection.ts";
+import { exposedRequestTypes } from "../packages/app-sdk/capabilities.ts";
+import { consumeStream } from "../src/libswamp/stream.ts";
+import { createLibSwampContext } from "../src/libswamp/context.ts";
+import {
+  appApprove,
+  type AppDeps,
+  appLaunch,
+  type AppLaunchData,
+  appList,
+  type AppListData,
+} from "../src/libswamp/apps/apps.ts";
+import {
+  APP_SOURCE_DIR,
+  parseAppDescriptor,
+} from "../src/domain/apps/app_descriptor.ts";
+import { initializeControlPlaneVault } from "../src/domain/vaults/control_plane_vault_init.ts";
+import { ControlPlaneAppApprovalRepository } from "../src/infrastructure/persistence/control_plane_app_store.ts";
+import { FilesystemAppCatalog } from "../src/infrastructure/persistence/filesystem_app_catalog.ts";
+import { FileSystemControlPlaneStore } from "../src/infrastructure/persistence/fs_control_plane_store.ts";
+import { VaultAppLaunchKey } from "../src/serve/app_launch_key.ts";
 import {
   createServeCtx,
   errorFrame,
@@ -95,6 +115,7 @@ export const FEDERATION_SURFACES = {
     "federation.token.revoke",
   ],
   memberRequestTypes: ["federation.link.get"],
+  appCapabilities: ["federation:read"],
 } as const;
 
 const EVERY_FEDERATION_REQUEST_TYPE = [
@@ -597,4 +618,123 @@ Deno.test("federation gate: with the gate on, a member accepts federation.link.g
     });
     assert(typeof validated !== "string", `${type}: ${validated}`);
   }
+});
+
+const FEDERATION_APP_YAML = `name: "@acme/hub"
+title: Hub
+bridge: 1
+capabilities: [${FEDERATION_SURFACES.appCapabilities.join(", ")}, data:read]
+`;
+
+async function withFederationApp(
+  fn: (deps: AppDeps & { launchKey: VaultAppLaunchKey }) => Promise<void>,
+): Promise<void> {
+  const repoDir = await Deno.makeTempDir({ prefix: "swamp-federation-app-" });
+  try {
+    const app = join(repoDir, APP_SOURCE_DIR, "hub");
+    await Deno.mkdir(join(app, "dist"), { recursive: true });
+    await Deno.writeTextFile(join(app, "app.yaml"), FEDERATION_APP_YAML);
+    await Deno.writeTextFile(join(app, "dist", "index.html"), "<html>");
+    const store = new FileSystemControlPlaneStore(join(repoDir, ".swamp"));
+    const { provider } = await initializeControlPlaneVault(store, false);
+    await fn({
+      catalog: new FilesystemAppCatalog({ repoDir }),
+      approvals: new ControlPlaneAppApprovalRepository(store),
+      launchKey: new VaultAppLaunchKey(provider),
+      now: () => new Date("2026-11-26T12:00:00.000Z"),
+    });
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(repoDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(repoDir, { recursive: true });
+    }
+  }
+}
+
+async function finish<T>(
+  stream: AsyncIterable<
+    { kind: "completed"; data: T } | {
+      kind: "error";
+      error: { message: string };
+    }
+  >,
+): Promise<{ data?: T; error?: string }> {
+  let result: { data?: T; error?: string } = {};
+  await consumeStream(stream, {
+    completed: (event) => {
+      result = { data: event.data };
+    },
+    error: (event) => {
+      result = { error: event.error.message };
+    },
+  });
+  return result;
+}
+
+Deno.test("federation gate: with the gate off, an app.yaml naming federation:read is refused as an unknown capability", () => {
+  withMockedEnv(GATE_OFF, () => {
+    let message = "";
+    try {
+      parseAppDescriptor(FEDERATION_APP_YAML, "app.yaml");
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    assertEquals(message, "app.yaml: capabilities.0: Unknown capability");
+  });
+  for (const capability of FEDERATION_SURFACES.appCapabilities) {
+    assertEquals(
+      [...exposedRequestTypes()].some((type) => type.startsWith("federation.")),
+      false,
+      capability,
+    );
+  }
+});
+
+Deno.test("federation gate: with the gate off, a federation:read app is a catalog problem, never listed, approved or launched", async () => {
+  await withFederationApp(async (deps) => {
+    await withMockedEnv(GATE_OFF, async () => {
+      const ctx = createLibSwampContext();
+      const listed = await finish<AppListData>(appList(ctx, deps));
+      assertEquals(listed.data!.apps, []);
+      assertEquals(listed.data!.problems.length, 1);
+      assert(
+        listed.data!.problems[0].message.includes("Unknown capability"),
+        listed.data!.problems[0].message,
+      );
+      const approved = await finish(
+        appApprove(ctx, deps, { name: "@acme/hub", approvedBy: "user:op" }),
+      );
+      assert(approved.error !== undefined);
+      const launched = await finish<AppLaunchData>(
+        appLaunch(ctx, deps, { name: "@acme/hub" }),
+      );
+      assertEquals(launched.data, undefined);
+    });
+  });
+});
+
+Deno.test("federation gate: with the gate on, the same app lists, approves and launches with federation:read", async () => {
+  await withFederationApp(async (deps) => {
+    await withMockedEnv(GATE_ON, async () => {
+      const ctx = createLibSwampContext();
+      const listed = await finish<AppListData>(appList(ctx, deps));
+      assertEquals(listed.data!.problems, []);
+      assertEquals(listed.data!.apps[0].capabilities, [
+        "federation:read",
+        "data:read",
+      ]);
+      const approved = await finish(
+        appApprove(ctx, deps, { name: "@acme/hub", approvedBy: "user:op" }),
+      );
+      assertEquals(approved.error, undefined);
+      const launched = await finish<AppLaunchData>(
+        appLaunch(ctx, deps, { name: "@acme/hub" }),
+      );
+      assertEquals(launched.data!.capabilities, [
+        "federation:read",
+        "data:read",
+      ]);
+    });
+  });
 });

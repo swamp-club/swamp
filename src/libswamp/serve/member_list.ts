@@ -18,16 +18,16 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { LibSwampContext } from "../context.ts";
-import type { ServeMemberRecord } from "../../domain/serve/serve_member.ts";
+import type { ServeMemberLiveRecord } from "../../domain/serve/member_live_view.ts";
 import {
   type FederationAdminDeps,
   type FederationAdminEvent,
-  memberView,
+  memberLiveRecord,
   runFederationAdmin,
 } from "./federation_admin.ts";
 
 export interface MemberListData {
-  readonly members: ServeMemberRecord[];
+  readonly members: ServeMemberLiveRecord[];
 }
 
 export type MemberListEvent = FederationAdminEvent<MemberListData>;
@@ -39,8 +39,12 @@ export function memberList(
   return runFederationAdmin(
     "swamp.serve.member.list",
     "member_list_failed",
-    async () => ({
-      members: (await deps.admin.listMembers()).map(memberView),
-    }),
+    async () => {
+      const members = await deps.admin.listMembers();
+      const sightings = await deps.admin.sightings();
+      return {
+        members: members.map((member) => memberLiveRecord(member, sightings)),
+      };
+    },
   );
 }

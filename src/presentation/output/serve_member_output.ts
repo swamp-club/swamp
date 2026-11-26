@@ -21,7 +21,12 @@ import { bold, cyan, dim, green, red, yellow } from "@std/fmt/colors";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { maxOf } from "../../domain/array_extrema.ts";
 import type { MemberListData } from "../../libswamp/serve/member_list.ts";
-import type { MemberData } from "../../libswamp/serve/member_get.ts";
+import type {
+  MemberData,
+  MemberGetData,
+} from "../../libswamp/serve/member_get.ts";
+import type { FingerprintRuntime } from "../../domain/serve/fingerprint.ts";
+import { formatDuration } from "./utils/duration_formatter.ts";
 import type { MemberTokenCreateData } from "../../libswamp/serve/member_token_create.ts";
 import type { MemberTokenListData } from "../../libswamp/serve/member_token_list.ts";
 import type { MemberTokenRevokeData } from "../../libswamp/serve/member_token_revoke.ts";
@@ -56,6 +61,29 @@ function table(
     line(headers, (_c, v) => bold(v)),
     ...rows.map((row) => line(row, color)),
   ];
+}
+
+function lastSeen(iso: string | null, now: number): string {
+  if (iso === null) return "-";
+  const ageMs = now - Date.parse(iso);
+  if (ageMs < 1000) return "just now";
+  return `${formatDuration(Math.floor(ageMs / 1000) * 1000)} ago`;
+}
+
+function runtimeFacts(runtime: FingerprintRuntime | null): string {
+  if (runtime === null) return "no runtime reported";
+  const team = runtime.team === null
+    ? "no team"
+    : `${runtime.team.role} of ${runtime.team.nodes}`;
+  const started = runtime.startedAt === null
+    ? "start unknown"
+    : `started ${runtime.startedAt}`;
+  const ready = runtime.ready === null
+    ? "readiness unknown"
+    : runtime.ready
+    ? "ready"
+    : "not ready";
+  return `${team}, ${started}, ${ready}`;
 }
 
 function colorState(state: string): string {
@@ -133,6 +161,7 @@ export function renderMemberTokenRevoke(
 export function renderMemberList(
   data: MemberListData,
   mode: OutputMode,
+  now: number = Date.now(),
 ): void {
   if (mode === "json") return json(data);
   if (data.members.length === 0) {
@@ -146,11 +175,12 @@ export function renderMemberList(
   }
   writeOutput(
     table(
-      ["NAME", "ROLE", "STATUS", "INSTANCES", "SWAMP", "JOINED"],
+      ["NAME", "ROLE", "STATUS", "LAST SEEN", "INSTANCES", "SWAMP", "JOINED"],
       data.members.map((member) => [
         member.name,
         member.role,
         member.status,
+        lastSeen(member.live.lastSeenAt, now),
         String(member.instances.length),
         member.fingerprint.swampVersion,
         member.joinedAt,
@@ -160,7 +190,11 @@ export function renderMemberList(
   );
 }
 
-export function renderMemberGet(data: MemberData, mode: OutputMode): void {
+export function renderMemberGet(
+  data: MemberGetData,
+  mode: OutputMode,
+  now: number = Date.now(),
+): void {
   if (mode === "json") return json(data);
   const member = data.member;
   const f = member.fingerprint;
@@ -193,6 +227,21 @@ export function renderMemberGet(data: MemberData, mode: OutputMode): void {
         dim(
           `(swamp ${instance.swampVersion}, first seen ${instance.firstSeen})`,
         )
+      }`,
+    );
+  }
+  // check-ins come from the control-plane store, apart from the record above
+  lines.push("");
+  lines.push(cyan("Live:"));
+  lines.push(
+    `  ${key("Last seen")} ${lastSeen(member.live.lastSeenAt, now)}${
+      member.live.lastSeenAt === null ? "" : dim(` (${member.live.lastSeenAt})`)
+    }`,
+  );
+  for (const instance of member.live.instances) {
+    lines.push(
+      `  ${instance.instanceId} ${lastSeen(instance.lastSeenAt, now)} ${
+        dim(`(${runtimeFacts(instance.runtime)})`)
       }`,
     );
   }

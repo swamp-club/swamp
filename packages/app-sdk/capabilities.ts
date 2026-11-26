@@ -28,9 +28,17 @@ export const APP_READ_CAPABILITIES = [
 
 export type AppReadCapability = typeof APP_READ_CAPABILITIES[number];
 
+/**
+ * Reads behind an experimental gate. Serve accepts one in `app.yaml` only
+ * while the gate is on, so a grant never carries it otherwise.
+ */
+export const GATED_APP_READ_CAPABILITIES = ["federation:read"] as const;
+
+export type GatedAppReadCapability = typeof GATED_APP_READ_CAPABILITIES[number];
+
 /** Requests each capability lets through; anything absent is refused. */
 export const CAPABILITY_REQUESTS: Readonly<
-  Record<AppReadCapability, readonly string[]>
+  Record<AppReadCapability | GatedAppReadCapability, readonly string[]>
 > = {
   "runs:read": [
     "workflow.run.search",
@@ -59,6 +67,7 @@ export const CAPABILITY_REQUESTS: Readonly<
   ],
   "health:read": [],
   "workers:read": ["worker.list"],
+  "federation:read": ["federation.member.list", "federation.member.get"],
 };
 
 /** The one write an app can be granted, for the workflows it names. */
@@ -96,10 +105,23 @@ export function isAppReadCapability(
   return (APP_READ_CAPABILITIES as readonly string[]).includes(value);
 }
 
+/** A gated read, which `app.yaml` may name only while its gate is on. */
+export function isGatedAppReadCapability(
+  value: string,
+): value is GatedAppReadCapability {
+  return (GATED_APP_READ_CAPABILITIES as readonly string[]).includes(value);
+}
+
 /** Every request type some capability can reach, for the fitness tests. */
-export function exposedRequestTypes(): ReadonlySet<string> {
+export function exposedRequestTypes(
+  options: { readonly gated?: boolean } = {},
+): ReadonlySet<string> {
+  const capabilities: readonly (AppReadCapability | GatedAppReadCapability)[] =
+    options.gated === true
+      ? [...APP_READ_CAPABILITIES, ...GATED_APP_READ_CAPABILITIES]
+      : APP_READ_CAPABILITIES;
   return new Set([
-    ...Object.values(CAPABILITY_REQUESTS).flat(),
+    ...capabilities.flatMap((capability) => CAPABILITY_REQUESTS[capability]),
     ...ALWAYS_ALLOWED_REQUESTS,
     RUN_REQUEST,
     METHOD_REQUEST,
@@ -186,9 +208,10 @@ export function decideAppRequest(
     };
   }
   for (const capability of grant.capabilities) {
+    // own keys only, so a name like __proto__ reaches nothing
     if (
-      isAppReadCapability(capability) &&
-      CAPABILITY_REQUESTS[capability].includes(type)
+      Object.hasOwn(CAPABILITY_REQUESTS, capability) &&
+      CAPABILITY_REQUESTS[capability as AppReadCapability].includes(type)
     ) {
       return { allowed: true };
     }

@@ -123,6 +123,8 @@ export async function startTeamHubNode(options: {
         selfWrites++;
         return hub.upsertSelf(fingerprint);
       },
+      recordSelfSeen: (instanceId, runtime) =>
+        hub.recordSelfSeen(instanceId, runtime),
     },
     fingerprint: () =>
       Promise.resolve(

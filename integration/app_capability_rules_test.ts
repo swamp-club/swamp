@@ -56,7 +56,15 @@ const EXPOSED_TO_APPS = [
   "workflow.search",
 ] as const;
 
-type Exposed = typeof EXPOSED_TO_APPS[number];
+// what the federation gate adds; serve offers federation:read only with it on
+const GATED_EXPOSED_TO_APPS = [
+  "federation.member.get",
+  "federation.member.list",
+] as const;
+
+type Exposed =
+  | typeof EXPOSED_TO_APPS[number]
+  | typeof GATED_EXPOSED_TO_APPS[number];
 
 // every type an app can send is one the client declares
 const _everyExposedTypeIsInTheClient: Exposed extends
@@ -72,6 +80,26 @@ void _everyExposedTypeIsInServe;
 Deno.test("app capabilities: the exposed set is exactly this list", () => {
   // pinned exactly; a type not listed is refused by default
   assertEquals([...exposedRequestTypes()].sort(), [...EXPOSED_TO_APPS].sort());
+});
+
+Deno.test("app capabilities: with the federation gate on, the exposed set adds only the two member reads", () => {
+  assertEquals(
+    [...exposedRequestTypes({ gated: true })].sort(),
+    [...EXPOSED_TO_APPS, ...GATED_EXPOSED_TO_APPS].sort(),
+  );
+});
+
+Deno.test("app capabilities: federation:read reaches the member reads and never a token or a removal", () => {
+  assertEquals([...CAPABILITY_REQUESTS["federation:read"]].sort(), [
+    "federation.member.get",
+    "federation.member.list",
+  ]);
+  for (const type of Object.values(CAPABILITY_REQUESTS).flat()) {
+    assert(
+      !/^federation\.(token\.|member\.remove$|link\.)/.test(type),
+      type,
+    );
+  }
 });
 
 Deno.test("app capabilities: no capability reaches a secret or the access layer", () => {

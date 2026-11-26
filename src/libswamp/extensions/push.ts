@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { isServeFederationEnabled } from "../../domain/serve/federation_gate.ts";
 import {
   type AppBundle,
   duplicateAppFolder,
@@ -1221,7 +1222,9 @@ export async function extensionPushPrepare(
   for (const app of input.manifest.apps) {
     try {
       appBundles.push(
-        await readAppBundle(join(input.appsDir, app), input.manifest.name),
+        await readAppBundle(join(input.appsDir, app), input.manifest.name, {
+          federation: isServeFederationEnabled((name) => Deno.env.get(name)),
+        }),
       );
     } catch (error) {
       failGate(
@@ -3580,6 +3583,7 @@ async function createArchive(
       const bundle = await readAppBundle(
         join(input.appsDir, app),
         input.manifest.name,
+        { federation: isServeFederationEnabled((name) => Deno.env.get(name)) },
       ).catch(() => null);
       if (bundle === null) continue;
       for (const [index, file] of bundle.files.entries()) {

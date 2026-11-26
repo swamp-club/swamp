@@ -30,6 +30,7 @@ import {
   APP_DESCRIPTOR_FILE,
   appCollective,
   type AppDescriptor,
+  type AppDescriptorParseOptions,
   parseAppDescriptor,
 } from "../apps/app_descriptor.ts";
 import { realAppBuildDir } from "../apps/app_build_dir.ts";
@@ -76,6 +77,7 @@ export interface AppBundle {
 export async function readAppBundle(
   appDir: string,
   extensionName: string,
+  options: AppDescriptorParseOptions = {},
 ): Promise<AppBundle> {
   const descriptorPath = join(appDir, APP_DESCRIPTOR_FILE);
   let text: string;
@@ -87,7 +89,7 @@ export async function readAppBundle(
       [appDir],
     );
   }
-  const descriptor = parseAppDescriptor(text, descriptorPath);
+  const descriptor = parseAppDescriptor(text, descriptorPath, options);
   const owner = extensionName.slice(1).split("/")[0];
   if (appCollective(descriptor.name) !== owner) {
     throw new UserError(
@@ -199,11 +201,16 @@ export function duplicateAppFolder(apps: readonly string[]): string | null {
 export async function appBundleFiles(
   manifest: { readonly name: string; readonly apps: readonly string[] },
   appsDir: string,
+  options: AppDescriptorParseOptions = {},
 ): Promise<string[]> {
   const files: string[] = [];
   for (const app of manifest.apps) {
     try {
-      const bundle = await readAppBundle(join(appsDir, app), manifest.name);
+      const bundle = await readAppBundle(
+        join(appsDir, app),
+        manifest.name,
+        options,
+      );
       for (const file of bundle.files) files.push(file);
     } catch {
       // Push's own gate reports it; a key only has to change with the content.

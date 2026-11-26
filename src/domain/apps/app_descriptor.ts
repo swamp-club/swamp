@@ -19,7 +19,10 @@
 
 import { parse as parseYaml } from "@std/yaml";
 import { z } from "zod";
-import { isAppReadCapability } from "@swamp-club/app-sdk/capabilities";
+import {
+  isAppReadCapability,
+  isGatedAppReadCapability,
+} from "@swamp-club/app-sdk/capabilities";
 import { BRIDGE_VERSION } from "@swamp-club/app-sdk/bridge";
 import { markErrorPaths, UserError } from "../errors.ts";
 import { PlatformFieldSchema } from "./app_platform.ts";
@@ -89,29 +92,43 @@ const MethodGrantSchema = z.strictObject({
   methods: entry.methods ?? [],
 }));
 
-export const AppDescriptorSchema = z.strictObject({
-  name: AppNameSchema,
-  title: z.string().min(1).max(100),
-  entry: safeEntry.default("dist/index.html"),
-  bridge: z.literal(BRIDGE_VERSION),
-  // left out of the capability key, so a platform bump never sends an app back for approval
-  platform: PlatformFieldSchema.default(1),
-  capabilities: z.array(
-    z.string().refine(isAppReadCapability, "Unknown capability"),
-  ).max(20).default([]),
-  run: z.array(z.string().min(1).max(200)).max(50).default([]),
-  methods: z.array(MethodGrantSchema).max(50).default([]).refine(
-    (methods) =>
-      new Set(methods.map((m) => m.behavior)).size === methods.length,
-    "methods lists a behavior more than once",
-  ),
-});
+function descriptorSchema(acceptsCapability: (value: string) => boolean) {
+  return z.strictObject({
+    name: AppNameSchema,
+    title: z.string().min(1).max(100),
+    entry: safeEntry.default("dist/index.html"),
+    bridge: z.literal(BRIDGE_VERSION),
+    // left out of the capability key, so a platform bump never sends an app back for approval
+    platform: PlatformFieldSchema.default(1),
+    capabilities: z.array(
+      z.string().refine(acceptsCapability, "Unknown capability"),
+    ).max(20).default([]),
+    run: z.array(z.string().min(1).max(200)).max(50).default([]),
+    methods: z.array(MethodGrantSchema).max(50).default([]).refine(
+      (methods) =>
+        new Set(methods.map((m) => m.behavior)).size === methods.length,
+      "methods lists a behavior more than once",
+    ),
+  });
+}
+
+export const AppDescriptorSchema = descriptorSchema(isAppReadCapability);
+
+const FederationAppDescriptorSchema = descriptorSchema((value) =>
+  isAppReadCapability(value) || isGatedAppReadCapability(value)
+);
 
 export type AppDescriptor = z.infer<typeof AppDescriptorSchema>;
+
+export interface AppDescriptorParseOptions {
+  /** the federation gate; off, a gated capability is unknown exactly as before */
+  readonly federation?: boolean;
+}
 
 export function parseAppDescriptor(
   text: string,
   source: string,
+  options: AppDescriptorParseOptions = {},
 ): AppDescriptor {
   let value: unknown;
   try {
@@ -126,7 +143,10 @@ export function parseAppDescriptor(
       [source],
     );
   }
-  const parsed = AppDescriptorSchema.safeParse(value);
+  const schema = options.federation === true
+    ? FederationAppDescriptorSchema
+    : AppDescriptorSchema;
+  const parsed = schema.safeParse(value);
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
     throw markErrorPaths(

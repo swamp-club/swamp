@@ -56,6 +56,13 @@ const MEMBER = ServeMember.join({
   now: NOW,
 });
 
+const INSTANCE = "00000000-0000-4000-8000-000000000001";
+const RUNTIME = {
+  team: { role: "single" as const, nodes: 1 },
+  startedAt: new Date(NOW - 1000).toISOString(),
+  ready: true,
+};
+
 function fakeAdmin(calls: string[] = []): FederationAdmin {
   return {
     createToken: (name, durationMs) => {
@@ -72,6 +79,16 @@ function fakeAdmin(calls: string[] = []): FederationAdmin {
     listMembers: () => Promise.resolve([MEMBER]),
     getMember: (name) => Promise.resolve(name === "edge-1" ? MEMBER : null),
     removeMember: () => Promise.resolve(MEMBER.remove(NOW).member),
+    sightings: (memberId) => {
+      calls.push(`sightings ${memberId ?? "*"}`);
+      return Promise.resolve(
+        new Map([[MEMBER.memberId, [{
+          instanceId: INSTANCE,
+          at: NOW,
+          runtime: RUNTIME,
+        }]]]),
+      );
+    },
   };
 }
 
@@ -127,25 +144,48 @@ Deno.test("memberTokenList and memberTokenRevoke: answer from the hub and keep i
   assertEquals(last.error.code, "not_found");
 });
 
-Deno.test("memberList, memberGet and memberRemove: return member records", async () => {
-  const listed = await collect(memberList(ctx, { admin: fakeAdmin() }));
+const LIVE = {
+  lastSeenAt: new Date(NOW).toISOString(),
+  instances: [{
+    instanceId: INSTANCE,
+    lastSeenAt: new Date(NOW).toISOString(),
+    runtime: RUNTIME,
+  }],
+};
+
+Deno.test("memberList and memberGet: each record carries its live view; memberRemove does not", async () => {
+  const calls: string[] = [];
+  const listed = await collect(memberList(ctx, { admin: fakeAdmin(calls) }));
   assertEquals(listed[1], {
     kind: "completed",
-    data: { members: [MEMBER.toJSON()] },
+    data: { members: [{ ...MEMBER.toJSON(), live: LIVE }] },
   });
   const got = await collect(
-    memberGet(ctx, { admin: fakeAdmin() }, { name: "edge-1" }),
+    memberGet(ctx, { admin: fakeAdmin(calls) }, { name: "edge-1" }),
   );
   assertEquals(got[1], {
     kind: "completed",
-    data: { member: MEMBER.toJSON() },
+    data: { member: { ...MEMBER.toJSON(), live: LIVE } },
   });
+  assertEquals(calls, ["sightings *", `sightings ${MEMBER.memberId}`]);
   const removed = await collect(
     memberRemove(ctx, { admin: fakeAdmin() }, { name: "edge-1" }),
   );
   const done = removed[1];
   if (done.kind !== "completed") throw new Error("not completed");
   assertEquals(done.data.member.status, "removed");
+  assertEquals("live" in done.data.member, false);
+});
+
+Deno.test("memberList: a member that never checked in has an empty live view", async () => {
+  const admin: FederationAdmin = {
+    ...fakeAdmin(),
+    sightings: () => Promise.resolve(new Map()),
+  };
+  const listed = await collect(memberList(ctx, { admin }));
+  const done = listed[1];
+  if (done.kind !== "completed") throw new Error("not completed");
+  assertEquals(done.data.members[0].live, { lastSeenAt: null, instances: [] });
 });
 
 Deno.test("memberGet: a missing member is not_found; an unexpected failure keeps a generic code", async () => {

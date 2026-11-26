@@ -151,6 +151,29 @@ Deno.test("AppBroker: a reply returns under the app's own id", async () => {
   assertEquals(framesFor("a")[0].payload, 1);
 });
 
+Deno.test("AppBroker: federation:read lets federation.member.list through; without it the app is refused", async () => {
+  const allowed = setup({ capabilities: ["federation:read"], run: [] });
+  await allowed.post({ type: "federation.member.list", id: "a" });
+  assertEquals(allowed.sent.length, 1);
+  assertEquals(allowed.sent[0].frame.type, "federation.member.list");
+
+  const refused = setup({ capabilities: ["data:read"], run: [] });
+  await refused.post({ type: "federation.member.list", id: "b" });
+  assertEquals(refused.sent.length, 0);
+  assertEquals(
+    (refused.framesFor("b")[0].error as { code: string }).code,
+    "app_capability_denied",
+  );
+
+  const removal = setup({ capabilities: ["federation:read"], run: [] });
+  await removal.post({
+    type: "federation.member.remove",
+    id: "c",
+    payload: { name: "edge-1" },
+  });
+  assertEquals(removal.sent.length, 0);
+});
+
 Deno.test("AppBroker: an id the app picks never travels, so it cannot name a run", async () => {
   const runId = crypto.randomUUID();
   const { sent, post } = setup({ capabilities: ["runs:read"], run: [] });

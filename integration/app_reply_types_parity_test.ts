@@ -121,6 +121,14 @@ const _replies: {
     WorkflowHistoryLogsCompletedData
   >;
   workerList: Same<client.WorkerListReply["data"], WorkerListData>;
+  federationMemberList: Same<
+    client.FederationMemberListReply,
+    ServeMessagePayload<"federation.member.list">
+  >;
+  federationMemberGet: Same<
+    client.FederationMemberGetReply,
+    ServeMessagePayload<"federation.member.get">
+  >;
   serverVersion: Same<
     client.ServerVersionReply,
     ServeMessagePayload<"server.version">
@@ -143,6 +151,8 @@ const _replies: {
   workflowHistoryGet: true,
   workflowHistoryLogs: true,
   workerList: true,
+  federationMemberList: true,
+  federationMemberGet: true,
   serverVersion: true,
 };
 
@@ -265,6 +275,8 @@ const APP_REQUEST_TYPES: Record<client.AppRequestType, true> = {
   "model.search": true,
   "model.get": true,
   "worker.list": true,
+  "federation.member.list": true,
+  "federation.member.get": true,
   "server.version": true,
 };
 

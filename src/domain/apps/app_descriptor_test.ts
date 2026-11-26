@@ -267,3 +267,37 @@ Deno.test("appFolderName: takes the last segment of the name", () => {
   assertEquals(appFolderName("@acme/cost"), "cost");
   assertEquals(appFolderName("@acme/tools/cost"), "cost");
 });
+
+const FEDERATION_APP = `
+name: "@acme/hub"
+title: Hub
+bridge: 1
+capabilities: [federation:read, data:read]
+`;
+
+Deno.test("parseAppDescriptor: federation:read is an unknown capability unless the federation gate is on", () => {
+  for (const options of [undefined, {}, { federation: false }]) {
+    assertThrows(
+      () => parseAppDescriptor(FEDERATION_APP, "app.yaml", options),
+      UserError,
+      "app.yaml: capabilities.0: Unknown capability",
+    );
+  }
+  const descriptor = parseAppDescriptor(FEDERATION_APP, "app.yaml", {
+    federation: true,
+  });
+  assertEquals(descriptor.capabilities, ["federation:read", "data:read"]);
+});
+
+Deno.test("parseAppDescriptor: the gate admits only gated capabilities, never an unknown name", () => {
+  assertThrows(
+    () =>
+      parseAppDescriptor(
+        FEDERATION_APP.replace("federation:read", "federation:write"),
+        "app.yaml",
+        { federation: true },
+      ),
+    UserError,
+    "Unknown capability",
+  );
+});

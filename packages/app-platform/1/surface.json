@@ -1,5 +1,5 @@
 {
-  "minor": 4,
+  "minor": 5,
   "exports": {
     "sdk": [
       "APP_READY_MESSAGE",
@@ -66,7 +66,18 @@
       "ExtensionRmPayload",
       "ExtensionSearchPayload",
       "FanOutGatePrompt",
+      "FederationMember",
+      "FederationMemberFingerprint",
+      "FederationMemberGetPayload",
+      "FederationMemberGetReply",
+      "FederationMemberInstance",
+      "FederationMemberListReply",
+      "FederationMemberLiveInstance",
+      "FederationMemberLiveView",
+      "FederationMemberRuntime",
       "FollowDataChanges",
+      "GATED_APP_READ_CAPABILITIES",
+      "GatedAppReadCapability",
       "HistorySkippedWorkflow",
       "HostMessage",
       "IDLE_METHOD_RUN",

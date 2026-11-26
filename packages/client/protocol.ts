@@ -880,6 +880,16 @@ export type ServerRequest =
   | { type: "data.subscribe"; id: string; payload: DataSubscribePayload }
   // Server admin
   | { type: "worker.list"; id: string; payload?: WorkerListPayload }
+  | {
+    type: "federation.member.list";
+    id: string;
+    payload?: Record<string, never>;
+  }
+  | {
+    type: "federation.member.get";
+    id: string;
+    payload: FederationMemberGetPayload;
+  }
   | { type: "worker.queue.list"; id: string }
   | { type: "worker.lease.list"; id: string; payload?: WorkerLeaseListPayload }
   | { type: "datastore.status"; id: string }
@@ -1129,6 +1139,16 @@ export type ServerMessage =
   | { type: "run.interrupted"; id: string; payload: RunInterruptedReply }
   // Server admin responses
   | { type: "worker.list"; id: string; payload: DataResponse }
+  | {
+    type: "federation.member.list";
+    id: string;
+    payload: FederationMemberListReply;
+  }
+  | {
+    type: "federation.member.get";
+    id: string;
+    payload: FederationMemberGetReply;
+  }
   | { type: "worker.queue.list"; id: string; payload: DataResponse }
   | { type: "worker.lease.list"; id: string; payload: DataResponse }
   | { type: "datastore.status"; id: string; payload: DataResponse }
@@ -2195,6 +2215,89 @@ export interface WorkerListReply {
   data: WorkerListData;
 }
 
+// federation.member.list, federation.member.get (behind the federation gate)
+
+/** What a running serve last reported; never part of the member's record history. */
+export interface FederationMemberRuntime {
+  team: {
+    role: "leader" | "follower" | "peer" | "single";
+    nodes: number;
+  } | null;
+  startedAt: string | null;
+  ready: boolean | null;
+}
+
+export interface FederationMemberLiveInstance {
+  instanceId: string;
+  lastSeenAt: string;
+  /** null on a check-in recorded before check-ins carried runtime facts */
+  runtime: FederationMemberRuntime | null;
+}
+
+export interface FederationMemberLiveView {
+  /** the freshest instance's, or null when none has checked in */
+  lastSeenAt: string | null;
+  /** freshest first */
+  instances: FederationMemberLiveInstance[];
+}
+
+export interface FederationMemberFingerprint {
+  swampVersion: string;
+  platform: string;
+  arch: string;
+  serveYamlVersion: 1 | 2;
+  deploymentMode: "local" | "durable" | "durable (limited)";
+  datastoreKind: string;
+  datastoreFormat: "v2" | "v3";
+  vaultKinds: string[];
+  authMode: "none" | "token" | "oauth";
+  tls: boolean;
+  remoteOnly: boolean;
+  loopbackOnly: boolean;
+  federationRole: "hub" | "member" | "none";
+  extensions: { name: string; version: string }[];
+  settingsHash: string;
+  workers: {
+    total: number;
+    byVersion: Record<string, number>;
+    byLabelKey: Record<string, number>;
+  };
+  team: FederationMemberRuntime["team"];
+  startedAt: string | null;
+  ready: boolean | null;
+}
+
+export interface FederationMemberInstance {
+  instanceId: string;
+  swampVersion: string;
+  firstSeen: string;
+}
+
+/** A member's record, as its data versions hold it, with its live view beside it. */
+export interface FederationMember {
+  memberId: string;
+  name: string;
+  role: "member" | "hub";
+  status: "online" | "stale" | "offline" | "removed";
+  fingerprint: FederationMemberFingerprint;
+  instances: FederationMemberInstance[];
+  joinedAt: string;
+  removedAt?: string;
+  live: FederationMemberLiveView;
+}
+
+export interface FederationMemberGetPayload {
+  name: string;
+}
+
+export interface FederationMemberListReply {
+  members: FederationMember[];
+}
+
+export interface FederationMemberGetReply {
+  member: FederationMember;
+}
+
 // run.attach
 
 export type RunAttachKind = "workflow-run" | "workflow-resume" | "method-run";
@@ -2291,6 +2394,16 @@ export interface AppRequestMap {
   "worker.list": {
     payload: WorkerListPayload | undefined;
     reply: WorkerListReply;
+  };
+  /** Needs `federation:read`, which serve offers only behind the federation gate. Added in platform 1.5. */
+  "federation.member.list": {
+    payload: Record<string, never> | undefined;
+    reply: FederationMemberListReply;
+  };
+  /** Needs `federation:read`, which serve offers only behind the federation gate. Added in platform 1.5. */
+  "federation.member.get": {
+    payload: FederationMemberGetPayload;
+    reply: FederationMemberGetReply;
   };
   "server.version": {
     payload: ServerVersionPayload | undefined;

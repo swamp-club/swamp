@@ -80,6 +80,15 @@ const POOL_FIELDS = ["workers"] as const;
 /** outside hash(): known only to a running serve */
 const RUNTIME_FIELDS = ["team", "startedAt", "ready"] as const;
 
+/** what a running serve last reported; it never enters hash() or a data version */
+export const FingerprintRuntimeSchema = FingerprintSchema.pick({
+  team: true,
+  startedAt: true,
+  ready: true,
+});
+
+export type FingerprintRuntime = z.infer<typeof FingerprintRuntimeSchema>;
+
 export type FingerprintStaticFields = Omit<
   FingerprintProps,
   typeof POOL_FIELDS[number] | typeof RUNTIME_FIELDS[number]
@@ -112,6 +121,14 @@ export class Fingerprint {
     const fields: Record<string, unknown> = { ...this.props };
     for (const key of [...POOL_FIELDS, ...RUNTIME_FIELDS]) delete fields[key];
     return structuredClone(fields) as FingerprintStaticFields;
+  }
+
+  runtime(): FingerprintRuntime {
+    return structuredClone({
+      team: this.props.team,
+      startedAt: this.props.startedAt,
+      ready: this.props.ready,
+    });
   }
 
   /** changes only when configuration does */
