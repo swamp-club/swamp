@@ -2719,6 +2719,7 @@ export class SqliteReadModel implements ReadModel {
         const written: LoadKey[] = [];
         const settled: LoadKey[] = [];
         const unreadable: StoredUnreadableRecord[] = [];
+        const others = await this.#othersJournaled();
         try {
           if (rows.length > 1) await this.#prefetchOwed(rows, signal);
           for (const row of rows) {
@@ -2727,6 +2728,16 @@ export class SqliteReadModel implements ReadModel {
             const key = { namespace: row.namespace, record_key: row.recordKey };
             settled.push(key);
             if (this.#owedFile(row.namespace, row.recordKey) === undefined) {
+              continue;
+            }
+            // another live writer's file stands there: its commit or its
+            // recovery decides it, as a catch-up leaves it
+            if (
+              others.some(({ scope }) =>
+                scope.namespace === row.namespace &&
+                scopeCovers(scope.scope, row.recordKey)
+              ) && !await this.#nothingAt(row.namespace, row.recordKey)
+            ) {
               continue;
             }
             const path = await this.#target(

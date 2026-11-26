@@ -4453,3 +4453,38 @@ Deno.test("SqliteReadModel.recover: a targeted recovery takes owed files as abse
     assertEquals(await readOrAbsent(env.contentPath("", "n0", 1)), undefined);
   });
 });
+
+Deno.test("SqliteReadModel.hydrateOwedPath: an owed path holding a file another live writer journaled is left to that writer (swamp-club#5108)", async () => {
+  await withEnv(async (env) => {
+    await lazyBase(env);
+    const readModel = env.open({
+      lazyModelFiles: true,
+      liveWriters: () => Promise.resolve(new Map([["other", "cli-2"]])),
+    });
+    try {
+      await readModel.catchUp(signal());
+      const journal = new TouchedScopeJournal(
+        join(readModelStateDir(env.repoDir), CATALOG_V3_FILE),
+        "other",
+      );
+      try {
+        journal.record(
+          crypto.randomUUID(),
+          "",
+          dirname(dataKey("a", 1).toString()),
+        );
+      } finally {
+        journal.close();
+      }
+      const a = env.contentPath("", "a", 1);
+      await writeLocal(a, "the other writer's");
+      assertEquals(await readModel.hydrateOwedPath(a, signal()), "not_owed");
+      assertEquals(await readOrAbsent(a), "the other writer's");
+      const b = env.contentPath("", "b", 1);
+      assertEquals(await readModel.hydrateOwedPath(b, signal()), "hydrated");
+      assertEquals(await readOrAbsent(b), "b@1");
+    } finally {
+      await readModel.close();
+    }
+  });
+});
