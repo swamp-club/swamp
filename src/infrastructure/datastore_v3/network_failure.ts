@@ -63,6 +63,25 @@ export function isNetworkFailure(error: unknown): boolean {
   return false;
 }
 
+const ACCESS_DENIED_CODES: ReadonlySet<string> = new Set([
+  "EACCES",
+  "EPERM",
+  "EROFS",
+]);
+
+/** permissions, or a read-only mount (EROFS) */
+export function isAccessDenied(error: unknown): boolean {
+  let current = error;
+  for (let depth = 0; depth < MAX_DEPTH; depth++) {
+    if (!(current instanceof Error)) return false;
+    if (current instanceof Deno.errors.PermissionDenied) return true;
+    const code = (current as { code?: unknown }).code;
+    if (typeof code === "string" && ACCESS_DENIED_CODES.has(code)) return true;
+    current = current.cause;
+  }
+  return false;
+}
+
 function isNetworkError(error: Error): boolean {
   if (error.name === "TimeoutError") return true;
   const code = (error as { code?: unknown }).code;

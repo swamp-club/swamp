@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { copy, exists, walk } from "@std/fs";
 import { DatabaseSync } from "node:sqlite";
 import { join } from "@std/path";
@@ -1238,6 +1238,83 @@ Deno.test({
         live.stop();
         next.stop();
       }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "v3 local commit sections: a datastore made unreadable mid-command ends the commit with a named error, and nothing of it lands (swamp-club#5107)",
+  // root reads through any mode, and Windows has no POSIX modes
+  ignore: Deno.build.os === "windows" || Deno.uid() === 0,
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withV3RowRepos({}, async (repos, datastorePath) => {
+      await closeV3Datastores();
+      await withMockedEnv(QUICK_LOCK, async () => {
+        const writer = startWriter("cut");
+        let before = 0;
+        try {
+          await opened(writer, repos.repoA, repos.modelType.normalized);
+          writer.send({ kind: "write", id: "before", model: "m", data: "d" });
+          before = (await landed(writer, "before")).count;
+          writer.send({
+            kind: "write",
+            id: "cut",
+            model: "m",
+            data: "d",
+            pause: true,
+          });
+          await writer.seen(
+            (m) => "paused" in m && m.paused === "cut",
+            "the write is under way",
+          );
+          const mode = (await Deno.stat(datastorePath)).mode! & 0o777;
+          await Deno.chmod(datastorePath, 0o000);
+          try {
+            writer.send({ kind: "resume", id: "cut" });
+            await waitFor(
+              () =>
+                writer.messages.some((m) =>
+                  "failed" in m || ("written" in m && m.written === "cut")
+                ),
+              "the cut write ended",
+              { timeoutMs: 60_000 },
+            );
+          } finally {
+            await Deno.chmod(datastorePath, mode);
+          }
+          const failure = writer.messages.find((m) => "failed" in m);
+          assert(
+            failure !== undefined && "failed" in failure,
+            "the cut write must fail",
+          );
+          assertStringIncludes(failure.failed, "CommitUnreachableError");
+          assertStringIncludes(failure.failed, "could not be read");
+          assertStringIncludes(
+            failure.failed,
+            "nothing this command changed was committed",
+          );
+          writer.messages.splice(0);
+          await closed(writer);
+        } finally {
+          writer.stop();
+        }
+        const next = startWriter("next");
+        try {
+          await opened(next, repos.repoA, repos.modelType.normalized);
+          next.send({ kind: "write", id: "next", model: "m", data: "d" });
+          assertEquals(
+            (await landed(next, "next")).count,
+            before + 1,
+            "the cut write left nothing behind",
+          );
+          await closed(next);
+        } finally {
+          next.stop();
+        }
+      });
     });
   },
 });

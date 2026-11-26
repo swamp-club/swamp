@@ -100,7 +100,8 @@ import {
 import { getSwampLogger } from "../logging/logger.ts";
 import { inUserConfigEdit } from "./config_edit_scope.ts";
 import type { RecordLastChange } from "./record_last_change.ts";
-import { isNetworkFailure } from "./network_failure.ts";
+import { UserError } from "../../domain/errors.ts";
+import { isAccessDenied, isNetworkFailure } from "./network_failure.ts";
 import {
   type HeldPartitionLocks,
   partitionLockKey,
@@ -968,7 +969,8 @@ export function createCommitLogUnitOfWork(
       // given up, so nothing of it can land: a commit that never reached the
       // storage says so and a retry is safe; a run whose checkpoint landed is
       // left running instead
-      if (lost === undefined && failedReachingStorage(error)) {
+      const denied = lost === undefined && failedAccessingStorage(error);
+      if (lost === undefined && (denied || failedReachingStorage(error))) {
         // A run whose record landed earlier and whose latest save did not
         // is left running; one whose saves all landed is not.
         const runs = landed.flatMap((partition) => {
@@ -978,8 +980,11 @@ export function createCommitLogUnitOfWork(
             ? [{ workflowId: identity.workflowId, runId: identity.runId }]
             : [];
         });
-        if (runs.length > 0) throw new RunPartlyCommittedError(error, runs);
+        if (runs.length > 0) {
+          throw new RunPartlyCommittedError(error, runs, { denied });
+        }
         throw new CommitUnreachableError(error, {
+          denied,
           partly: landed.length > 0,
         });
       }
@@ -1780,9 +1785,17 @@ async function appendGroupIn(
     return false;
   };
   try {
-    return options.commitSection === undefined
-      ? await land()
-      : await options.commitSection(land);
+    if (options.commitSection === undefined) return await land();
+    let entered = false;
+    try {
+      return await options.commitSection(() => {
+        entered = true;
+        return land();
+      });
+    } catch (error) {
+      // the section's lease was never taken, so nothing of the commit was sent
+      throw entered ? error : sectionUntaken(error);
+    }
   } finally {
     await unstage();
   }
@@ -2032,6 +2045,21 @@ function storagePhase(error: unknown): unknown {
     storagePhaseErrors.add(error);
   }
   return error;
+}
+
+const untakenSectionErrors = new WeakSet<object>();
+
+function sectionUntaken(error: unknown): unknown {
+  if (typeof error === "object" && error !== null) {
+    untakenSectionErrors.add(error);
+  }
+  return error;
+}
+
+function failedAccessingStorage(error: unknown): boolean {
+  return typeof error === "object" && error !== null &&
+    (storagePhaseErrors.has(error) || untakenSectionErrors.has(error)) &&
+    !(error instanceof UserError) && isAccessDenied(error);
 }
 
 export function failedReachingStorage(error: unknown): boolean {
