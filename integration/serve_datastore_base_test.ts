@@ -340,7 +340,7 @@ Deno.test({
 
 Deno.test({
   name:
-    "datastore base: a page holds more than the general 1000-entry page, up to the base page limit (swamp-club#5103)",
+    "datastore base: a caller asking for 5000 base entries gets them in one page, past the general 1000-entry page (swamp-club#5103)",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
@@ -352,6 +352,38 @@ Deno.test({
       const all = await readBase(server, "alice-token", 5000);
       assert(all.entries.length > 1000, `${all.entries.length} entries`);
       assertEquals(all.pages, 1);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "datastore base: a page stops at its byte budget however many entries were asked for, and the next page goes on (swamp-club#5103)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer([...writer(), ...bobReadsWebData()], async (server) => {
+      // 1,400 raw records of ~6 KB inline: past the 8 MiB budget in one page
+      const filler = "x".repeat(6000);
+      for (let c = 0; c < 4; c++) {
+        const ops = [];
+        for (let i = 0; i < 350; i++) {
+          const name = `n${c}-${i}`;
+          const [raw, ...rest] = saveOps(server, name, 1) as Record<
+            string,
+            unknown
+          >[];
+          ops.push({ ...raw, inline: btoa(filler + name) }, ...rest);
+        }
+        await commit(server, ops);
+      }
+      await compactAll(server);
+      const all = await readBase(server, "alice-token", 5000);
+      assert(all.pages > 1, `${all.pages} pages`);
+      const records = all.entries.filter((e) =>
+        e.kind === "record" && String(e.key).endsWith("/raw")
+      );
+      assertEquals(records.length, 1400);
     });
   },
 });

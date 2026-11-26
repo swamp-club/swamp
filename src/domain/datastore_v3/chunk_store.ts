@@ -208,7 +208,6 @@ export interface PrefetchReport {
   failed: number;
   /** batch reads sent, when the storage reads many chunks per request */
   batches?: number;
-  /** chunks a batch read answered as missing */
   missing?: number;
 }
 

@@ -29,6 +29,7 @@
  * | `POST chunks/has` | `{hashes}`: the ones serve holds that the caller may reference, touched for GC |
  * | `PUT chunks/{sha256}` | one chunk, to resume a large upload |
  * | `GET chunks/{sha256}` | a chunk's bytes, with `Range` |
+ * | `POST chunks/batch` | `{hashes}`: many chunks' bytes in one framed reply, the rest missing, undecided or deferred |
  * | `POST partitions/{p}/commits` | one commit and its missing chunks, framed: `{seq}` or a conflict |
  * | `GET partitions/{p}/commits?after=&held=` | a partition's commits after a seq; a follower behind `held`, the seq the caller's copy holds, refuses as behind |
  * | `GET changes?cursor=` | every commit since a cursor the caller may read |
@@ -270,6 +271,9 @@ export const MAX_HAS_HASHES = 1024;
 export const MAX_PAGE = 1000;
 /** base entries one page may hold; a reply too large is asked again at half */
 export const MAX_BASE_PAGE = 5000;
+/** a base page stops once its entries pass this many bytes of JSON */
+export const MAX_BASE_PAGE_BYTES = 8 * 1024 * 1024;
+const BASE_STORE_PAGE = 500;
 /** The most feed rows one changes request scans, kept or filtered. */
 export const MAX_CHANGES_SCAN = 10_000;
 /** The most compacted base entries one base request scans, kept or filtered. */
@@ -630,6 +634,23 @@ const MAX_AUTHORIZE_BODY_BYTES = 256 * 1024;
 
 /** chunks one batch read asks storage for at once */
 const BATCH_READ_CONCURRENCY = 8;
+
+/**
+ * how many chunks to read next: none once the budget is spent, one until a
+ * chunk's size is known, then as many as the largest seen fits in the budget
+ */
+export function batchReadGroup(
+  budgetLeft: number,
+  largestSeen: number,
+  concurrency: number,
+): number {
+  if (budgetLeft <= 0) return 0;
+  if (largestSeen === 0) return 1;
+  return Math.max(
+    1,
+    Math.min(concurrency, Math.floor(budgetLeft / largestSeen)),
+  );
+}
 const MAX_AUTHORIZED_COMMITS = 16;
 const MAX_AUTHORIZED_OPS = 64;
 
@@ -963,14 +984,22 @@ class DatastoreApi {
         else if (vouch === "refused") missing.push(sha256);
         else readable.push(sha256);
       }
-      // read a few at a time from storage that may be a bucket; the cut is
-      // made only among readable chunks, so it says nothing about the others
-      for (let i = 0; i < readable.length; i += BATCH_READ_CONCURRENCY) {
-        if (bytesOut >= MAX_BATCH_CHUNK_BYTES) {
+      // read a few at a time from storage that may be a bucket, never more
+      // than the byte budget left can take; the cut is made only among
+      // readable chunks, so it says nothing about the others
+      let largest = 0;
+      for (let i = 0; i < readable.length;) {
+        const take = batchReadGroup(
+          MAX_BATCH_CHUNK_BYTES - bytesOut,
+          largest,
+          BATCH_READ_CONCURRENCY,
+        );
+        if (take === 0) {
           for (const sha256 of readable.slice(i)) deferred.push(sha256);
           break;
         }
-        const group = readable.slice(i, i + BATCH_READ_CONCURRENCY);
+        const group = readable.slice(i, i + take);
+        i += group.length;
         const read = await Promise.all(
           group.map((sha256) =>
             this.#v3.storage.get(this.#storageNamespace, sha256, req.signal)
@@ -993,6 +1022,7 @@ class DatastoreApi {
           chunks.push({ sha256, size: bytes.byteLength });
           carried.push({ bytes });
           bytesOut += bytes.byteLength;
+          largest = Math.max(largest, bytes.byteLength);
         }
       }
       return new Response(
@@ -2121,12 +2151,17 @@ class DatastoreApi {
     let point: number | undefined;
     let scanned = 0;
     let kept = 0;
-    while (kept < limit && scanned < MAX_BASE_SCAN) {
+    let bytes = 0;
+    // read in store pages small enough that the byte budget, checked between
+    // them, bounds what one reply holds while next stays exact
+    while (
+      kept < limit && scanned < MAX_BASE_SCAN && bytes < MAX_BASE_PAGE_BYTES
+    ) {
       let page;
       try {
         page = await store.readCompactedBase(
           next,
-          Math.min(limit - kept, MAX_BASE_SCAN - scanned),
+          Math.min(limit - kept, MAX_BASE_SCAN - scanned, BASE_STORE_PAGE),
         );
       } catch (error) {
         if (!(error instanceof InvalidBasePageTokenError)) throw error;
@@ -2144,7 +2179,9 @@ class DatastoreApi {
         const readable = await this.#readableBaseEntry(entry, announced);
         if (readable === undefined) continue;
         for (const sent of readable) {
-          entries.push(observedBaseEntryToJSON(sent));
+          const json = observedBaseEntryToJSON(sent);
+          bytes += JSON.stringify(json).length;
+          entries.push(json);
         }
         kept++;
       }

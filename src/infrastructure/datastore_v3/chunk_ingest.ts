@@ -424,7 +424,6 @@ function toBody(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
 }
 
 export const CHUNK_BATCH_CONTENT_TYPE = "application/vnd.swamp.chunks+v1";
-/** hashes one batch read may name */
 export const MAX_BATCH_CHUNK_HASHES = 256;
 /** chunk bytes one batch read returns; the rest of the asked hashes are deferred */
 export const MAX_BATCH_CHUNK_BYTES = 8 * 1024 * 1024;

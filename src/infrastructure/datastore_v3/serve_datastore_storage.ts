@@ -73,7 +73,6 @@ type ChunkClient =
   >
   & Partial<Pick<ServeDatastoreClient, "getChunks" | "takesChunkBatch">>;
 
-/** a storage that can read many chunks in one round trip */
 export interface BatchReadingStorage {
   /** undefined when the other side has no batch read */
   getMany(
@@ -368,15 +367,20 @@ export class CachedServeStorage extends FileSystemStorage
         }
         report.batches = (report.batches ?? 0) + 1;
         if (result === "failed") {
-          // read one at a time later, as before batches, unless serve stopped
+          // read one at a time later, unless serve stopped
           for (const hash of batch) singly.push(hash);
           failingInARow++;
           continue;
         }
         failingInARow = 0;
         for (const [sha256, bytes] of result.chunks) {
-          await this.#keepFetched(namespace, sha256, bytes, signal);
-          report.fetched++;
+          try {
+            await this.#keepFetched(namespace, sha256, bytes, signal);
+            report.fetched++;
+          } catch {
+            // its read fetches it again and reports why
+            report.failed++;
+          }
         }
         for (const hash of result.deferred) queue.push(hash);
         // a shared vouch budget may run out: each of these gets its own read
@@ -396,7 +400,7 @@ export class CachedServeStorage extends FileSystemStorage
       ),
     );
     if (stop || failingInARow >= PREFETCH_STOP_AFTER) {
-      report.failed += queue.length + singly.length;
+      report.failed += queue.length;
       return "stop";
     }
     return unsupported ? queue.concat(singly) : singly;

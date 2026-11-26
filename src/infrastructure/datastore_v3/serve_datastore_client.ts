@@ -315,7 +315,6 @@ export const COMMIT_BATCH_FEATURE = "commit-batch";
 export const MAX_BATCH_COMMITS = 16;
 
 export const BASE_DIFFERENCE_FEATURE = "base-difference";
-/** serve answers POST chunks/batch with many chunks in one reply */
 export const CHUNK_BATCH_FEATURE = "chunk-batch";
 
 /** serve refuses a new run record that does not name the principal it stamps */

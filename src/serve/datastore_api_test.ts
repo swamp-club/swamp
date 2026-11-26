@@ -40,7 +40,11 @@ import {
   TxnIdReusedError,
 } from "../infrastructure/datastore_v3/forwarded_commit.ts";
 import { ChunkHashMismatchError } from "../infrastructure/datastore_v3/chunk_ingest.ts";
-import { callerReplyHeaders, datastoreErrorResponse } from "./datastore_api.ts";
+import {
+  batchReadGroup,
+  callerReplyHeaders,
+  datastoreErrorResponse,
+} from "./datastore_api.ts";
 import {
   datastoreRouteTemplate,
   matchDatastoreRoute,
@@ -314,4 +318,13 @@ Deno.test("matchDatastoreRoute: the base index and a partition's base are their 
     resolveHttpRoute("/api/v1/datastore/ns/base/partition"),
     "/api/v1/datastore/{namespace}/base/partition",
   );
+});
+
+Deno.test("batchReadGroup: one read until a chunk's size is known, then what the budget left holds, never more than the concurrency (swamp-club#5103)", () => {
+  const MiB = 1024 * 1024;
+  assertEquals(batchReadGroup(8 * MiB, 0, 8), 1);
+  assertEquals(batchReadGroup(8 * MiB, 40 * 1024, 8), 8);
+  assertEquals(batchReadGroup(5 * MiB, 3 * MiB, 8), 1);
+  assertEquals(batchReadGroup(-1, 16 * MiB, 8), 0);
+  assertEquals(batchReadGroup(0, 1, 8), 0);
 });
