@@ -27,6 +27,8 @@ import { dirname, join } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
 import {
   isPrimaryWorkflowFileName,
+  parseWorkflowYamlCached,
+  workflowYamlParsesForTesting,
   YamlWorkflowRepository,
 } from "./yaml_workflow_repository.ts";
 import { registerManagedConfig } from "./paths.ts";
@@ -1116,5 +1118,46 @@ Deno.test("YamlWorkflowRepository.findAllListings: a file rewritten in place at 
     assertEquals((await Deno.stat(path)).size, original.size);
 
     assertEquals((await repo.findAllListings()).map((l) => l.name), ["wf-b"]);
+  });
+});
+
+Deno.test("parseWorkflowYamlCached: the same text at a path is parsed once, an edit is parsed again, and each caller gets its own copy (swamp-club#5118)", () => {
+  const path = `/workflows/${crypto.randomUUID()}.yaml`;
+  const text = "name: w\ntrigger:\n  inputs:\n    nested:\n      value: 1\n";
+  const before = workflowYamlParsesForTesting();
+  const first = parseWorkflowYamlCached(path, text) as unknown as {
+    trigger: { inputs: { nested: { value: number } } };
+  };
+  const second = parseWorkflowYamlCached(path, text) as unknown as {
+    trigger: { inputs: { nested: { value: number } } };
+  };
+  assertEquals(workflowYamlParsesForTesting(), before + 1);
+  first.trigger.inputs.nested.value = 2;
+  assertEquals(second.trigger.inputs.nested.value, 1);
+  const third = parseWorkflowYamlCached(path, text) as unknown as {
+    trigger: { inputs: { nested: { value: number } } };
+  };
+  assertEquals(third.trigger.inputs.nested.value, 1);
+  parseWorkflowYamlCached(path, text.replace("value: 1", "value: 3"));
+  assertEquals(workflowYamlParsesForTesting(), before + 2);
+});
+
+Deno.test("YamlWorkflowRepository.findById reads an edited definition at once, and a changed result never reaches the next caller (swamp-club#5118)", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRepository(dir);
+    const workflow = createTestWorkflow("cached-workflow");
+    await repo.save(workflow);
+    const first = await repo.findById(workflow.id);
+    first!.addJob(
+      Job.create({ name: "extra", steps: [...first!.jobs[0].steps] }),
+    );
+    const second = await repo.findById(workflow.id);
+    assertEquals(second!.jobs.length, 1);
+    const renamed = Workflow.fromData({
+      ...workflow.toData(),
+      description: "edited",
+    });
+    await repo.save(renamed);
+    assertEquals((await repo.findById(workflow.id))!.description, "edited");
   });
 });
