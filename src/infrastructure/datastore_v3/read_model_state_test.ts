@@ -310,6 +310,56 @@ Deno.test("ReadModelState.stageBase: prepares no statement however many entries 
   }
 });
 
+Deno.test("ReadModelState: a base load's per-file and per-name reads and its done list prepare no statement however many they read (swamp-club#5122)", async () => {
+  await withStatePath((path) => {
+    const state = ReadModelState.open(path);
+    try {
+      const names = 20;
+      state.stageBase(baseEntries(names));
+      const partition = modelPartition().toString();
+      const prepare = DatabaseSync.prototype.prepare;
+      let prepared = 0;
+      DatabaseSync.prototype.prepare = function (
+        this: DatabaseSync,
+        ...args: Parameters<typeof prepare>
+      ) {
+        prepared++;
+        return prepare.apply(this, args);
+      };
+      const read: unknown[] = [];
+      try {
+        for (let i = 0; i < names; i++) {
+          const key = `data/name-${i}/1/raw`;
+          read.push(
+            state.loadContent("", key),
+            state.loadFile("", key),
+            state.loadCatalogName({
+              namespace: "",
+              partition,
+              name: `name-${i}`,
+            }).forward,
+          );
+          state.markLoadDone([{ namespace: "", record_key: key }], {
+            point: 1,
+            boot: "b",
+          });
+        }
+      } finally {
+        DatabaseSync.prototype.prepare = prepare;
+      }
+      assertEquals(prepared, 0);
+      assertEquals(read.slice(0, 3), [
+        { inline: "eA==" },
+        { owner: partition, mark: 1, present: true },
+        "name-0-new",
+      ]);
+      assertEquals(state.loadDoneCount({ point: 1, boot: "b" }), names);
+    } finally {
+      state.close();
+    }
+  });
+});
+
 Deno.test("ReadModelState.presentKeyCount: counts a namespace's present keys as presentKeys lists them (swamp-club#4702)", async () => {
   await withStatePath((path) => {
     const state = ReadModelState.open(path);
