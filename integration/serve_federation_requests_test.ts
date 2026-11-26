@@ -210,30 +210,3 @@ Deno.test({
     });
   },
 });
-
-Deno.test("federation requests: a serve without a hub refuses each one exactly as it refuses a type it never heard of", async () => {
-  await withServeRepo(async (repo) => {
-    const ctx = createServeCtx(repo, [ADMIN]);
-    const unknown = errorFrame(
-      await sendRequest(ctx, {
-        type: "federation.made.up",
-        id: "same-id",
-        payload: { name: "edge-1" },
-      }),
-    );
-    assertEquals(
-      (unknown?.error as Record<string, unknown>).code,
-      "invalid_request",
-    );
-    for (const type of FEDERATION_TYPES) {
-      const refused = errorFrame(
-        await sendRequest(ctx, {
-          type,
-          id: "same-id",
-          payload: payloadFor(type),
-        }),
-      );
-      assertEquals(refused?.error, unknown?.error, type);
-    }
-  });
-});

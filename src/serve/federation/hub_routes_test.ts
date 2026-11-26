@@ -18,6 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { configure, type LogRecord, reset } from "@logtape/logtape";
+import { withCapturedSpans } from "../../infrastructure/tracing/span_test_helpers.ts";
+import { traceHttpRequests } from "../http_request_span.ts";
 import { sampleFingerprintProps } from "../../domain/serve/federation_test_helpers.ts";
 import {
   checkFailedAttempts,
@@ -29,6 +32,7 @@ import { VERSION } from "../../infrastructure/runtime/build_info.ts";
 import { createTestHub, type TestHub } from "./federation_hub_test_helpers.ts";
 import {
   FEDERATION_CHECK_IN_PATH,
+  FEDERATION_HUB_ROUTES,
   FEDERATION_JOIN_PATH,
   handleFederationRequest,
   MAX_CAPABILITIES,
@@ -497,4 +501,67 @@ Deno.test("routeFederationRequest: the leading node answers itself", async () =>
   );
   assertEquals(response?.status, 200);
   await response?.body?.cancel();
+});
+
+Deno.test("handleFederationRequest: no join token or credential secret reaches a span or a log", async () => {
+  resetRateLimitState();
+  const records: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => records.push(record) },
+    loggers: [{ category: [], lowestLevel: "debug", sinks: ["capture"] }],
+    reset: true,
+  });
+  try {
+    await withCapturedSpans(async (spans) => {
+      const t = createTestHub();
+      const ip = address();
+      const served = traceHttpRequests(
+        async (req) => await call(t, req, ip),
+        FEDERATION_HUB_ROUTES,
+      );
+      const info = {
+        remoteAddr: { transport: "tcp", hostname: ip, port: 1234 },
+        completed: Promise.resolve(),
+      } as unknown as Deno.ServeHandlerInfo;
+      const { plaintext } = await t.hub.createToken("edge-1");
+      const joined = await served(
+        post(FEDERATION_JOIN_PATH, joinBody(plaintext)),
+        info,
+      );
+      const { credential } = await joined.json();
+      const reused = await served(
+        post(FEDERATION_JOIN_PATH, joinBody(plaintext)),
+        info,
+      );
+      assertEquals(reused.status, 401);
+      await reused.body?.cancel();
+      const checkedIn = await served(checkIn(credential), info);
+      assertEquals(checkedIn.status, 200);
+      await checkedIn.body?.cancel();
+      const forged = `${credential.slice(0, -4)}AAAA`;
+      const refused = await served(checkIn(forged), info);
+      assertEquals(refused.status, 401);
+      await refused.body?.cancel();
+      await t.hub.settled();
+
+      assert(spans.length >= 4, `${spans.length} spans`);
+      const telemetry = JSON.stringify([
+        spans.map((span) => [span.name, span.attributes, span.events]),
+        records.map((r) => [r.category, r.message, r.properties]),
+      ]);
+      for (
+        const secret of [
+          plaintext,
+          plaintext.split(".")[1],
+          credential,
+          credential.split(".")[2],
+          forged.split(".")[2],
+        ]
+      ) {
+        assert(!telemetry.includes(secret), "a secret reached telemetry");
+      }
+    });
+  } finally {
+    await reset();
+  }
 });
