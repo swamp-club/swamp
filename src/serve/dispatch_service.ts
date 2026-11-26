@@ -56,6 +56,7 @@ import {
 import { ChannelClosedError, RpcError } from "../domain/remote/rpc_channel.ts";
 import {
   describePlacement,
+  eligibleWorkers,
   hasPlacement,
   laneDispatchVerdict,
   type ScheduleDecision,
@@ -723,8 +724,16 @@ export class DispatchService {
                 });
                 continue;
               }
-              // the write error stays the cause: its text can name serve-local paths
-              if (deadline === null) {
+              // a busy worker that never refused may still take the step, so the
+              // count runs only while every candidate is unrecordable; the write
+              // error stays the cause, since its text can name serve-local paths
+              if (
+                deadline === null &&
+                !eligibleWorkers(effectivePlacement, this.#poolSnapshot())
+                  .every((w) => unrecordable.has(w.name))
+              ) {
+                unrecorded = undefined;
+              } else if (deadline === null) {
                 const now = Date.now();
                 unrecorded = {
                   since: unrecorded?.since ?? now,

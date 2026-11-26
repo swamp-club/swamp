@@ -4406,3 +4406,28 @@ Deno.test("DispatchService: a step with a queue timeout keeps waiting past MAX_U
     stop();
   }
 });
+
+Deno.test("DispatchService: a step with no queue timeout never gives up while a matching worker that never refused is only busy", async () => {
+  const h = createHarness({
+    workers: [
+      snapshot({ name: "w1" }),
+      snapshot({ name: "w2", status: "busy", activeDispatchIds: ["other"] }),
+    ],
+    queueTimeoutMs: 0,
+    unrecordedGiveUpMs: 0,
+  });
+  h.setBehavior((name) => name === "w1" ? unrecorded(name) : succeeded());
+  const stop = nudgePool(h);
+  try {
+    const step = h.service.executeRemote(stepRequest());
+    await waitFor(
+      () => h.dispatchCalls.length >= MAX_UNRECORDED_REFUSALS + 2,
+      "refusals past the give-up count",
+    );
+    h.pool.set("w2", snapshot({ name: "w2" }));
+    const result = await step;
+    assertEquals(result.workerName, "w2");
+  } finally {
+    stop();
+  }
+});
