@@ -1834,6 +1834,12 @@ export const MODEL_LOCK_RETRY_INTERVAL_MS = 25;
 export const MODEL_LOCK_MAX_BACKOFF_MS = 250;
 
 /**
+ * on a v3 filesystem datastore only the queue's head tries a behavior's lock,
+ * so it alone polls this often and takes a released lock first
+ */
+export const MODEL_LOCK_HEAD_MAX_BACKOFF_MS = 50;
+
+/**
  * other machines pick data versions from their own copies, so only serve's lock
  * keeps them and serve's runs apart; once held, the checkout catches up from
  * serve first
@@ -2098,6 +2104,9 @@ export async function createModelLock(
     maxBackoffMs: MODEL_LOCK_MAX_BACKOFF_MS,
     syncCreatedDirectories: resolveDurableWrites(datastoreConfig) &&
       (config.format !== 3 || mayKeepDataLocal(config)),
+    ...(config.format === 3
+      ? { fairQueue: true, headMaxBackoffMs: MODEL_LOCK_HEAD_MAX_BACKOFF_MS }
+      : {}),
   });
   if (config.format !== 3) return lock;
   return catchingUpOnAcquire(

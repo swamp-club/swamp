@@ -53,3 +53,27 @@ Deno.test("FileLock: satisfies the lock timeout conformance contract", async () 
     );
   });
 });
+
+Deno.test("FileLock with fairQueue: satisfies distributed lock conformance contract", async () => {
+  await withTempDir(async (dir) => {
+    const lock = new FileLock(dir, {
+      ttlMs: 5000,
+      maxWaitMs: 2000,
+      fairQueue: true,
+    });
+    await assertLockConformance(lock);
+  });
+});
+
+Deno.test("FileLock with fairQueue: satisfies the lock timeout conformance contract", async () => {
+  await withTempDir(async (dir) => {
+    await assertLockTimeoutConformance(({ maxWaitMs }) =>
+      new FileLock(dir, {
+        ttlMs: 5000,
+        maxWaitMs,
+        retryIntervalMs: 50,
+        fairQueue: true,
+      })
+    );
+  });
+});

@@ -36,6 +36,13 @@ import { makeDirectories } from "./make_directories.ts";
 import { syncDirectoryStrict } from "./sync_directory.ts";
 import { getSwampLogger } from "../logging/logger.ts";
 import { isProcessGone } from "../runtime/process.ts";
+import {
+  defaultTicketTtlMs,
+  fsLockQueueOps,
+  LockQueue,
+  lockQueueDir,
+  type LockQueueOps,
+} from "./lock_queue.ts";
 import { currentRunProgress } from "../../domain/remote/run_progress.ts";
 import {
   observeDiagnosticPhase,
@@ -75,6 +82,14 @@ export interface FileLockOptions extends LockOptions {
    * itself, so waiting is not news on every attempt
    */
   contentionLogLevel?: "warn" | "debug";
+  /**
+   * waiters take the lock in arrival order through a ticket queue beside it;
+   * only the queue's head tries the lock, so it alone polls at headMaxBackoffMs
+   */
+  fairQueue?: boolean;
+  headMaxBackoffMs?: number;
+  /** how long a queued ticket's heartbeat may stand still before it is dead */
+  ticketTtlMs?: number;
 }
 
 /**
@@ -284,6 +299,12 @@ export class FileLock implements DistributedLock {
   private readonly diagnosticKind: "auto_definition" | "file";
   readonly syncCreatedDirectories: boolean;
   private readonly contentionLogLevel: "warn" | "debug";
+  readonly fairQueue: boolean;
+  readonly headMaxBackoffMs: number;
+  private readonly ticketTtlMs: number;
+  private readonly basePath: string;
+  private readonly namespace: string | undefined;
+  private readonly lockFile: string;
   private heartbeatId: ReturnType<typeof setInterval> | undefined;
   private held = false;
   private releasing = false;
@@ -295,9 +316,13 @@ export class FileLock implements DistributedLock {
     basePath: string,
     options?: FileLockOptions,
     private readonly ops: LockFileOps = fsLockFileOps,
+    private readonly queueOps: LockQueueOps = fsLockQueueOps,
   ) {
     const lockFile = options?.lockKey ?? DEFAULT_LOCK_PATH;
     const ns = options?.namespace;
+    this.basePath = basePath;
+    this.namespace = ns;
+    this.lockFile = lockFile;
     this.lockPath = ns
       ? join(basePath, ns, lockFile)
       : join(basePath, lockFile);
@@ -310,6 +335,9 @@ export class FileLock implements DistributedLock {
     this.diagnosticKind = options?.diagnosticKind ?? "file";
     this.syncCreatedDirectories = options?.syncCreatedDirectories ?? false;
     this.contentionLogLevel = options?.contentionLogLevel ?? "warn";
+    this.fairQueue = options?.fairQueue ?? false;
+    this.headMaxBackoffMs = options?.headMaxBackoffMs ?? this.maxBackoffMs;
+    this.ticketTtlMs = options?.ticketTtlMs ?? defaultTicketTtlMs();
   }
 
   private async ensureLockDir(): Promise<void> {
@@ -362,6 +390,23 @@ export class FileLock implements DistributedLock {
     await this.ensureLockDir();
 
     const nonce = crypto.randomUUID();
+    if (this.fairQueue) {
+      const queue = new LockQueue(
+        await lockQueueDir(this.basePath, this.namespace, this.lockFile),
+        this.ticketTtlMs,
+        this.queueOps,
+      );
+      if (await queue.isEmpty() && await this.tryCreate(nonce)) return;
+      await this.acquireQueued(
+        queue,
+        nonce,
+        startTime,
+        details,
+        attempts,
+        signal,
+      );
+      return;
+    }
     let contentionLogged = false;
     let retryCount = 0;
     let currentBackoff = this.retryIntervalMs;
@@ -379,17 +424,7 @@ export class FileLock implements DistributedLock {
       }
 
       if (await this.tryCreate(nonce)) {
-        if (retryCount > 0) {
-          const waitMs = Date.now() - startTime;
-          const logger = getSwampLogger(["datastore", "lock"]);
-          if (this.contentionLogLevel === "debug") {
-            logger
-              .debug`Acquired lock ${this.lockPath} after ${retryCount} retries (${waitMs}ms)`;
-          } else {
-            logger
-              .info`Acquired lock ${this.lockPath} after ${retryCount} retries (${waitMs}ms)`;
-          }
-        }
+        this.logAcquired(retryCount, startTime);
         return;
       }
 
@@ -403,15 +438,7 @@ export class FileLock implements DistributedLock {
         : undefined;
 
       if (holder !== "unreadable" && !contentionLogged) {
-        const ageMs = Date.now() - new Date(holder.acquiredAt).getTime();
-        const logger = getSwampLogger(["datastore", "lock"]);
-        if (this.contentionLogLevel === "debug") {
-          logger
-            .debug`Waiting for lock ${this.lockPath} held by ${holder.holder} (pid ${holder.pid}, acquired ${ageMs}ms ago)`;
-        } else {
-          logger
-            .warn`Waiting for lock ${this.lockPath} held by ${holder.holder} (pid ${holder.pid}, acquired ${ageMs}ms ago)`;
-        }
+        this.logWaiting(holder);
         contentionLogged = true;
       }
 
@@ -424,6 +451,103 @@ export class FileLock implements DistributedLock {
       );
       if (sleepMs > 0) await sleepUnlessAborted(sleepMs, signal);
       currentBackoff = nextBackoffMs;
+    }
+  }
+
+  /**
+   * the ticket is left only once the lock file exists, so a newcomer sees a
+   * queue or a held lock, never a gap it can take the lock through first
+   */
+  private async acquireQueued(
+    queue: LockQueue,
+    nonce: string,
+    startTime: number,
+    details: { holderRunId?: string },
+    attempts: { retries: number },
+    signal: AbortSignal | undefined,
+  ): Promise<void> {
+    let contentionLogged = false;
+    let retryCount = 0;
+    let currentBackoff = this.retryIntervalMs;
+    let wasHead = false;
+    await queue.enqueue();
+    try {
+      while (true) {
+        signal?.throwIfAborted();
+        const elapsed = Date.now() - startTime;
+        if (elapsed >= this.maxWaitMs) {
+          const existing = await this.readLockFile();
+          throw markErrorPaths(
+            new LockTimeoutError(this.lockPath, existing, elapsed),
+            [this.lockPath],
+          );
+        }
+
+        const position = await queue.headCheck();
+        let holder: "cleared" | "unreadable" | LockInfo | null;
+        if (position.head) {
+          if (!wasHead) currentBackoff = this.retryIntervalMs;
+          wasHead = true;
+          if (await this.tryCreate(nonce)) {
+            this.logAcquired(retryCount, startTime);
+            return;
+          }
+          holder = await this.clearStaleHolder();
+        } else {
+          wasHead = false;
+          const state = await this.ops.readState(this.lockPath, this.ttlMs);
+          holder = state.kind === "readable" ? state.info : null;
+        }
+        retryCount++;
+        attempts.retries = retryCount;
+        if (holder === "cleared") continue;
+        if (holder !== null && holder !== "unreadable") {
+          details.holderRunId = holder.nonce
+            ? observedOwners.get(holder.nonce)
+            : undefined;
+          if (!contentionLogged) {
+            this.logWaiting(holder);
+            contentionLogged = true;
+          }
+        }
+
+        const remaining = this.maxWaitMs - (Date.now() - startTime);
+        const { sleepMs, nextBackoffMs } = nextBackoffSleep(
+          currentBackoff,
+          Math.random(),
+          remaining,
+          position.head ? this.headMaxBackoffMs : this.maxBackoffMs,
+        );
+        if (sleepMs > 0) await sleepUnlessAborted(sleepMs, signal);
+        currentBackoff = nextBackoffMs;
+      }
+    } finally {
+      await queue.leave();
+    }
+  }
+
+  private logAcquired(retryCount: number, startTime: number): void {
+    if (retryCount === 0) return;
+    const waitMs = Date.now() - startTime;
+    const logger = getSwampLogger(["datastore", "lock"]);
+    if (this.contentionLogLevel === "debug") {
+      logger
+        .debug`Acquired lock ${this.lockPath} after ${retryCount} retries (${waitMs}ms)`;
+    } else {
+      logger
+        .info`Acquired lock ${this.lockPath} after ${retryCount} retries (${waitMs}ms)`;
+    }
+  }
+
+  private logWaiting(holder: LockInfo): void {
+    const ageMs = Date.now() - new Date(holder.acquiredAt).getTime();
+    const logger = getSwampLogger(["datastore", "lock"]);
+    if (this.contentionLogLevel === "debug") {
+      logger
+        .debug`Waiting for lock ${this.lockPath} held by ${holder.holder} (pid ${holder.pid}, acquired ${ageMs}ms ago)`;
+    } else {
+      logger
+        .warn`Waiting for lock ${this.lockPath} held by ${holder.holder} (pid ${holder.pid}, acquired ${ageMs}ms ago)`;
     }
   }
 

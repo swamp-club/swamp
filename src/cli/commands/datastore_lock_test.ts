@@ -18,13 +18,22 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assert, assertEquals, assertRejects } from "@std/assert";
-import { join } from "@std/path";
+import { dirname, join } from "@std/path";
+import { waitFor } from "@swamp-club/swamp-testing";
 import { Command } from "@cliffy/command";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { RepoService } from "../../domain/repo/repo_service.ts";
 import { UserError } from "../../domain/errors.ts";
 import { createDatastoreLock } from "../../infrastructure/persistence/datastore_global_lock.ts";
+import { FileLock } from "../../infrastructure/persistence/file_lock.ts";
+import {
+  formatTicketName,
+  fsLockQueueOps,
+  lockQueueDir,
+} from "../../infrastructure/persistence/lock_queue.ts";
+import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
+import { modelLockKey } from "../../libswamp/datastores/lock.ts";
 import { createModelLock, resolveDatastoreForRepo } from "../repo_context.ts";
 import { VERSION } from "../../infrastructure/runtime/build_info.ts";
 
@@ -119,3 +128,97 @@ for (const flag of ["--behavior", "--model"]) {
     },
   });
 }
+
+async function statusDocuments(dir: string): Promise<unknown[]> {
+  const { datastoreLockCommand } = await import("./datastore_lock.ts");
+  const printed: string[] = [];
+  const originalLog = console.log;
+  console.log = (...args: unknown[]) => printed.push(args.join(" "));
+  try {
+    await new Command()
+      .globalOption("--json", "JSON output")
+      .command("lock", datastoreLockCommand)
+      .parse(["lock", "status", "--repo-dir", dir, "--json"]);
+  } finally {
+    console.log = originalLog;
+  }
+  return printed.map((text) => JSON.parse(text));
+}
+
+// swamp-uat reads one document per lock; a waiter's ticket must not add one
+Deno.test({
+  name:
+    "datastore lock status: --json prints the same documents while runs are queued for a behavior's lock",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withRepo(async (dir) => {
+      const { datastoreConfig } = await resolveDatastoreForRepo(dir);
+      if (isCustomDatastoreConfig(datastoreConfig)) {
+        throw new Error("expected a filesystem datastore");
+      }
+      const modelId = crypto.randomUUID();
+      const lockKey = modelLockKey(
+        datastoreConfig.namespace,
+        "aws-ec2",
+        modelId,
+      );
+      // a holder that never rewrites its file, so both reads see one record
+      const lockPath = join(datastoreConfig.path, lockKey);
+      await Deno.mkdir(dirname(lockPath), { recursive: true });
+      await Deno.writeTextFile(
+        lockPath,
+        JSON.stringify({
+          holder: "run@this-host",
+          hostname: "this-host",
+          pid: Deno.pid,
+          acquiredAt: new Date().toISOString(),
+          ttlMs: 600_000,
+          nonce: crypto.randomUUID(),
+        }),
+      );
+      const before = await statusDocuments(dir);
+      assert(
+        before.some((doc) => JSON.stringify(doc).includes(modelId)),
+        "the behavior's lock is listed",
+      );
+
+      const queueDir = await lockQueueDir(
+        datastoreConfig.path,
+        undefined,
+        lockKey,
+      );
+      await Deno.mkdir(queueDir, { recursive: true });
+      await Deno.writeTextFile(
+        join(
+          queueDir,
+          formatTicketName({
+            seq: 1,
+            hostIdHash: "ffffffff",
+            pid: 1,
+            nonce: "0".repeat(32),
+          }),
+        ),
+        "",
+      );
+      const waiter = new FileLock(datastoreConfig.path, {
+        lockKey,
+        fairQueue: true,
+        retryIntervalMs: 10,
+        maxWaitMs: 120_000,
+      });
+      const abort = new AbortController();
+      const waiting = waiter.acquire(abort.signal);
+      try {
+        await waitFor(
+          async () => ((await fsLockQueueOps.list(queueDir)) ?? []).length >= 2,
+          "the waiter queued",
+        );
+        assertEquals(await statusDocuments(dir), before);
+      } finally {
+        abort.abort(new Error("done"));
+        await assertRejects(() => waiting);
+      }
+    });
+  },
+});

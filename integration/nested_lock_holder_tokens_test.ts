@@ -20,7 +20,8 @@
 // two runs in one process hold per-model locks at once; a nested swamp started
 // by run A must skip A's lock and still wait on B's
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
+import { waitFor } from "@swamp-club/swamp-testing";
 import { walk } from "@std/fs";
 import { join } from "@std/path";
 import {
@@ -47,6 +48,12 @@ import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpers.ts";
 import { VERSION } from "../src/infrastructure/runtime/build_info.ts";
 import { buildRunnerEnvironment } from "../src/worker/dispatch_handler.ts";
+import { FileLock } from "../src/infrastructure/persistence/file_lock.ts";
+import {
+  fsLockQueueOps,
+  lockQueueDir,
+} from "../src/infrastructure/persistence/lock_queue.ts";
+import { modelLockKey } from "../src/libswamp/datastores/lock.ts";
 
 await initializeLogging({});
 
@@ -484,3 +491,85 @@ Deno.test("nested lock holder tokens: a child of a run requested through --serve
     });
   });
 });
+
+// a run waiting in a behavior's queue leaves a ticket beside the lock; the
+// nested run's view of which lock files exist and whose they are is unchanged
+Deno.test("nested lock holder tokens: a run queued for a held lock changes no lock file a child reads", async () => {
+  await withTempDir(async (repoDir) => {
+    await initRepo(repoDir);
+    const { datastoreConfig } = await resolveDatastoreForRepo(repoDir);
+    if (isCustomDatastoreConfig(datastoreConfig)) {
+      throw new Error("expected a filesystem datastore");
+    }
+    const modelA = crypto.randomUUID();
+    const modelB = crypto.randomUUID();
+    const models = [modelA, modelB];
+    const lockKeyB = modelLockKey(
+      datastoreConfig.namespace,
+      "test/nested-lock",
+      modelB,
+    );
+    const queueDir = await lockQueueDir(
+      datastoreConfig.path,
+      undefined,
+      lockKeyB,
+    );
+
+    await withMockedEnv({ [SWAMP_LOCK_HOLDER_TOKENS]: undefined }, async () => {
+      const lockFor = (modelId: string) =>
+        acquireModelLocks(datastoreConfig, [
+          { modelType: "test/nested-lock", modelId },
+        ], repoDir);
+      const lockA = await lockFor(modelA);
+      const lockB = await lockFor(modelB);
+      const queued = new FileLock(datastoreConfig.path, {
+        lockKey: lockKeyB,
+        fairQueue: true,
+        retryIntervalMs: 10,
+        maxWaitMs: 120_000,
+      });
+      const abort = new AbortController();
+      let waiting: Promise<void> | undefined;
+      try {
+        const env = await runUnderModelLocks(lockA, () =>
+          Promise.resolve({
+            [SWAMP_LOCK_ANCESTOR_PIDS]: String(Deno.pid),
+            ...processLockHolderMarker.childLockEnv(),
+          }));
+        const before = await lockFilesByModel(datastoreConfig.path, models);
+        const lockFilesBefore = await allLockFiles(datastoreConfig.path);
+        waiting = queued.acquire(abort.signal);
+        await waitFor(
+          async () => ((await fsLockQueueOps.list(queueDir)) ?? []).length > 0,
+          "the waiter queued",
+        );
+
+        assertEquals(
+          await allLockFiles(datastoreConfig.path),
+          lockFilesBefore,
+        );
+        const during = await lockFilesByModel(datastoreConfig.path, models);
+        assertEquals(during, before);
+        assertEquals(childRelations(env, during), {
+          [modelA]: "ancestor",
+          [modelB]: "ancestor-other-run",
+        });
+      } finally {
+        abort.abort(new Error("done"));
+        if (waiting !== undefined) await assertRejects(() => waiting!);
+        await lockB.flush();
+        await lockA.flush();
+      }
+    });
+  });
+});
+
+async function allLockFiles(root: string): Promise<string[]> {
+  const paths: string[] = [];
+  for await (
+    const entry of walk(root, { includeDirs: false, match: [/\.lock$/] })
+  ) {
+    paths.push(entry.path);
+  }
+  return paths.sort();
+}

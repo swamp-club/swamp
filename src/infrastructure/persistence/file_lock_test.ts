@@ -36,6 +36,13 @@ import {
   nextBackoffSleep,
   reclaimClaimName,
 } from "./file_lock.ts";
+import {
+  formatTicketName,
+  fsLockQueueOps,
+  LOCK_QUEUES_DIR,
+  lockQueueDir,
+  ownHostIdHash,
+} from "./lock_queue.ts";
 import type { LockInfo } from "../../domain/datastore/distributed_lock.ts";
 import {
   lockSkipping,
@@ -1597,4 +1604,252 @@ Deno.test("FileLock.tryAcquire: a claim whose write fails is removed, and the st
       await waiter.release();
     }
   });
+});
+
+async function queuedTickets(queueDir: string): Promise<string[]> {
+  return ((await fsLockQueueOps.list(queueDir)) ?? []).map((t) => t.name)
+    .sort();
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await Deno.stat(path);
+    return true;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return false;
+    throw error;
+  }
+}
+
+const FAIR = { ttlMs: 30_000, retryIntervalMs: 10, fairQueue: true } as const;
+
+Deno.test("FileLock fairQueue: an uncontended acquire takes the lock without a queue directory", async () => {
+  await withTempDir(async (dir) => {
+    const lock = new FileLock(dir, FAIR);
+    await lock.acquire();
+    try {
+      assert(lock.heldNonce !== undefined);
+      assertEquals(await pathExists(join(dir, LOCK_QUEUES_DIR)), false);
+    } finally {
+      await lock.release();
+    }
+  });
+});
+
+Deno.test("FileLock: a lock without fairQueue never creates lock-queues, even when it waits", async () => {
+  await withTempDir(async (dir) => {
+    const holder = new FileLock(dir, { ttlMs: 30_000 });
+    await holder.acquire();
+    try {
+      const waiter = new FileLock(dir, {
+        ttlMs: 30_000,
+        retryIntervalMs: 10,
+        maxWaitMs: 100,
+      });
+      assertEquals(waiter.fairQueue, false);
+      await assertRejects(() => waiter.acquire(), LockTimeoutError);
+      assertEquals(await pathExists(join(dir, LOCK_QUEUES_DIR)), false);
+    } finally {
+      await holder.release();
+    }
+  });
+});
+
+Deno.test("FileLock fairQueue: a timeout removes the waiter's ticket and reports the same LockTimeoutError", async () => {
+  await withTempDir(async (dir) => {
+    const holder = new FileLock(dir, { ttlMs: 30_000 });
+    await holder.acquire();
+    try {
+      const waiter = new FileLock(dir, { ...FAIR, maxWaitMs: 150 });
+      const error = await assertRejects(
+        () => waiter.acquire(),
+        LockTimeoutError,
+      );
+      assertEquals(error.lockKey, join(dir, ".datastore.lock"));
+      assertEquals(error.holder?.nonce, holder.heldNonce);
+      assertEquals(error.code, "lock_timeout");
+      const queueDir = await lockQueueDir(dir, undefined, ".datastore.lock");
+      assertEquals(await queuedTickets(queueDir), []);
+    } finally {
+      await holder.release();
+    }
+  });
+});
+
+Deno.test("FileLock fairQueue: an abort removes the waiter's ticket and leaves the holder's lock alone", async () => {
+  await withTempDir(async (dir) => {
+    const holder = new FileLock(dir, { ttlMs: 30_000 });
+    await holder.acquire();
+    try {
+      const queueDir = await lockQueueDir(dir, undefined, ".datastore.lock");
+      const waiter = new FileLock(dir, { ...FAIR, maxWaitMs: 60_000 });
+      const abort = new AbortController();
+      const waiting = waiter.acquire(abort.signal);
+      await waitFor(
+        async () => (await queuedTickets(queueDir)).length === 1,
+        "the waiter queued",
+      );
+      abort.abort(new Error("run cancelled"));
+      await assertRejects(() => waiting, Error, "run cancelled");
+      assertEquals(await queuedTickets(queueDir), []);
+      assertEquals((await holder.inspect())?.nonce, holder.heldNonce);
+    } finally {
+      await holder.release();
+    }
+  });
+});
+
+Deno.test("FileLock fairQueue: waiters take a released lock in the order they queued", async () => {
+  await withTempDir(async (dir) => {
+    const holder = new FileLock(dir, { ttlMs: 30_000 });
+    await holder.acquire();
+    const queueDir = await lockQueueDir(dir, undefined, ".datastore.lock");
+    const order: number[] = [];
+    const waits: Promise<void>[] = [];
+    try {
+      for (let i = 0; i < 4; i++) {
+        const waiter = new FileLock(dir, { ...FAIR, maxWaitMs: 60_000 });
+        waits.push(
+          waiter.acquire().then(async () => {
+            order.push(i);
+            await waiter.release();
+          }),
+        );
+        await waitFor(
+          async () => (await queuedTickets(queueDir)).length === i + 1,
+          `waiter ${i} queued`,
+        );
+      }
+    } finally {
+      await holder.release();
+      await Promise.all(waits);
+    }
+    assertEquals(order, [0, 1, 2, 3]);
+    assertEquals(await pathExists(queueDir), false);
+  });
+});
+
+Deno.test("FileLock fairQueue: a waiter whose ticket is removed queues again and still takes the lock", async () => {
+  await withTempDir(async (dir) => {
+    const holder = new FileLock(dir, { ttlMs: 30_000 });
+    await holder.acquire();
+    const queueDir = await lockQueueDir(dir, undefined, ".datastore.lock");
+    const waiter = new FileLock(dir, { ...FAIR, maxWaitMs: 60_000 });
+    const waiting = waiter.acquire();
+    let released = false;
+    try {
+      await waitFor(
+        async () => (await queuedTickets(queueDir)).length === 1,
+        "the waiter queued",
+      );
+      const [first] = await queuedTickets(queueDir);
+      await Deno.remove(join(queueDir, first));
+      await waitFor(async () => {
+        const now = await queuedTickets(queueDir);
+        return now.length === 1 && now[0] !== first;
+      }, "the waiter queued again");
+      await holder.release();
+      released = true;
+      await waiting;
+      assert(waiter.heldNonce !== undefined);
+      await waiter.release();
+    } finally {
+      if (!released) await holder.release();
+      await waiting.catch(() => {});
+    }
+  });
+});
+
+Deno.test("FileLock fairQueue: a ticket ahead whose process is gone on this host is skipped without waiting out its TTL", async () => {
+  await withTempDir(async (dir) => {
+    const queueDir = await lockQueueDir(dir, undefined, ".datastore.lock");
+    await Deno.mkdir(queueDir, { recursive: true });
+    const dead = formatTicketName({
+      seq: 1,
+      hostIdHash: await ownHostIdHash(),
+      pid: 999_999,
+      nonce: "a".repeat(32),
+    });
+    await Deno.writeTextFile(join(queueDir, dead), "");
+    // a TTL far past the wait proves the pid alone removed the ticket
+    const lock = new FileLock(
+      dir,
+      { ...FAIR, maxWaitMs: 30_000, ticketTtlMs: 3_600_000 },
+      fsLockFileOps,
+      { ...fsLockQueueOps, processGone: (pid) => pid === 999_999 },
+    );
+    await lock.acquire();
+    try {
+      assertEquals(await pathExists(join(queueDir, dead)), false);
+    } finally {
+      await lock.release();
+    }
+  });
+});
+
+Deno.test("FileLock fairQueue: a ticket ahead from another host whose heartbeat stopped is skipped after its TTL", async () => {
+  await withTempDir(async (dir) => {
+    const queueDir = await lockQueueDir(dir, undefined, ".datastore.lock");
+    await Deno.mkdir(queueDir, { recursive: true });
+    const own = await ownHostIdHash();
+    const foreign = formatTicketName({
+      seq: 1,
+      hostIdHash: own === "ffffffff" ? "eeeeeeee" : "ffffffff",
+      pid: Deno.pid,
+      nonce: "a".repeat(32),
+    });
+    await Deno.writeTextFile(join(queueDir, foreign), "");
+    const lock = new FileLock(dir, {
+      ...FAIR,
+      maxWaitMs: 30_000,
+      ticketTtlMs: 100,
+    });
+    await lock.acquire();
+    try {
+      assertEquals(await pathExists(join(queueDir, foreign)), false);
+    } finally {
+      await lock.release();
+    }
+  });
+});
+
+Deno.test("FileLock fairQueue: the head clears a stale holder and takes the lock", async () => {
+  await withTempDir(async (dir) => {
+    await Deno.writeTextFile(
+      join(dir, ".datastore.lock"),
+      JSON.stringify(staleRecord(crypto.randomUUID())),
+    );
+    const lock = new FileLock(dir, { ...FAIR, maxWaitMs: 30_000 });
+    await lock.acquire();
+    try {
+      assertEquals((await lock.inspect())?.pid, Deno.pid);
+      const queueDir = await lockQueueDir(dir, undefined, ".datastore.lock");
+      assertEquals(await queuedTickets(queueDir), []);
+    } finally {
+      await lock.release();
+    }
+  });
+});
+
+Deno.test("FileLock fairQueue: tryAcquire never queues", async () => {
+  await withTempDir(async (dir) => {
+    const holder = new FileLock(dir, { ttlMs: 30_000 });
+    await holder.acquire();
+    try {
+      const lock = new FileLock(dir, FAIR);
+      assertEquals(await lock.tryAcquire(), false);
+      assertEquals(await pathExists(join(dir, LOCK_QUEUES_DIR)), false);
+    } finally {
+      await holder.release();
+    }
+  });
+});
+
+Deno.test("FileLock: headMaxBackoffMs defaults to maxBackoffMs", () => {
+  assertEquals(new FileLock("/x", { maxBackoffMs: 77 }).headMaxBackoffMs, 77);
+  assertEquals(
+    new FileLock("/x", { maxBackoffMs: 77, headMaxBackoffMs: 5 })
+      .headMaxBackoffMs,
+    5,
+  );
 });
