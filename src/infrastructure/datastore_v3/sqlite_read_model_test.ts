@@ -4279,7 +4279,7 @@ Deno.test("SqliteReadModel.drainOwed: stops once its budget is spent, and drains
         left: owed,
       });
       assert(owed > 8, `${owed}`);
-      const first = await readModel.drainOwed(8, signal());
+      const first = await readModel.drainOwed(3, signal());
       assert(first.hydrated > 0 && first.hydrated < owed, `${first.hydrated}`);
       assertEquals(first.left, owed - first.hydrated);
       const rest = await readModel.drainOwed(1_000_000, signal());
