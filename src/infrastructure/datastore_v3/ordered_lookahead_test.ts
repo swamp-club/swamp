@@ -84,7 +84,6 @@ Deno.test("OrderedLookahead.take: the next items resolve one at a time while the
   // a is taken and not yet done with: b resolves meanwhile, then c
   await resolver.settle("b");
   await resolver.settle("c");
-  assertEquals(resolver.started, ["a", "b", "c"]);
   assertEquals(await lookahead.take("b", "b"), "B");
   await resolver.settle("d");
   assertEquals(await lookahead.take("c", "c"), "C");
@@ -92,6 +91,28 @@ Deno.test("OrderedLookahead.take: the next items resolve one at a time while the
   assertEquals(resolver.started, ["a", "b", "c", "d"]);
   assertEquals(resolver.mostAtOnce(), 1);
   await lookahead.settle();
+});
+
+Deno.test("OrderedLookahead.take: with depth items resolved ahead, nothing more resolves until the next take", async () => {
+  const resolver = deferredResolver();
+  const { lookahead } = lookaheadOf(["a", "b", "c", "d"], resolver.resolve);
+  const a = lookahead.take("a", "a");
+  await resolver.settle("a");
+  await a;
+  await resolver.settle("b");
+  await resolver.settle("c");
+  // settle waits for every resolution under way, so it ends only if d never
+  // started
+  let idle = false;
+  const settled = lookahead.settle().then(() => {
+    idle = true;
+  });
+  await waitFor(
+    () => idle || resolver.started.length > 3,
+    "the lookahead idle or resolving d",
+  );
+  assertEquals(resolver.started, ["a", "b", "c"]);
+  await settled;
 });
 
 Deno.test("OrderedLookahead.take: an item that may not run ahead holds the ones after it, and resolves by its take once nothing else is resolving", async () => {
