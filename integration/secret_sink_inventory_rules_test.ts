@@ -384,7 +384,6 @@ const NOT_A_SINK: Record<string, Record<string, string>> = {
     "src/infrastructure/update/cron_scheduler.ts: readCrontabForUser": TOOLING,
     "src/infrastructure/update/cron_scheduler.ts: writeCrontab": TOOLING,
     "src/infrastructure/update/cron_scheduler.ts: writeCrontabForUser": TOOLING,
-    "src/infrastructure/update/http_update_checker.ts: extractZip": TOOLING,
     "src/infrastructure/update/http_update_checker.ts: removeQuarantine":
       TOOLING,
     "src/infrastructure/update/launchd_scheduler.ts: LaunchdScheduler": TOOLING,

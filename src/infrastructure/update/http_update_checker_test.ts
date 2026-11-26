@@ -42,6 +42,7 @@ import {
 } from "../persistence/abandoned_temp_files.ts";
 import { UserError } from "../../domain/errors.ts";
 import { withMockedFetch } from "@swamp-club/swamp-testing";
+import { buildZip, type TestZipEntry } from "../archive/zip_test_helpers.ts";
 
 Deno.test("stable URL is constructed correctly for darwin aarch64", () => {
   const platform = Platform.from("darwin", "aarch64");
@@ -152,6 +153,113 @@ async function buildFakeSwampTarball(): Promise<{
   const body = bytes.buffer as ArrayBuffer;
   return { body, checksum };
 }
+
+const ZIP_PAYLOAD = new TextEncoder().encode("MZ fake swamp.exe ".repeat(4096));
+const ORIGINAL_BINARY = "original swamp.exe";
+
+async function installFromZip(
+  entries: TestZipEntry[],
+  signal?: (tempRoot: string, binaryPath: string) => AbortSignal,
+): Promise<{ result: unknown; installed: Uint8Array }> {
+  const tempDir = await Deno.makeTempDir({ prefix: "swamp-update-zip-" });
+  try {
+    const zip = await buildZip(entries);
+    const checksum = await computeChecksum(zip);
+    const binaryPath = join(tempDir, "swamp.exe");
+    await Deno.writeTextFile(binaryPath, ORIGINAL_BINARY);
+    const tempRoot = join(tempDir, "tmp");
+    await Deno.mkdir(tempRoot);
+
+    const server = Deno.serve(
+      { port: 0, onListen: () => {} },
+      () => new Response(zip.slice()),
+    );
+    try {
+      const checker = new HttpUpdateChecker({ tempRoot });
+      let result: unknown;
+      try {
+        await checker.downloadAndInstall(
+          `http://localhost:${server.addr.port}/swamp.zip`,
+          binaryPath,
+          checksum,
+          { signal: signal?.(tempRoot, binaryPath) },
+        );
+      } catch (error) {
+        result = error;
+      }
+      return { result, installed: await Deno.readFile(binaryPath) };
+    } finally {
+      await server.shutdown();
+    }
+  } finally {
+    try {
+      await Deno.remove(tempDir, { recursive: true });
+    } catch {
+      // Windows occasionally throws EBUSY when V8 hasn't released file
+      // handles. Best-effort cleanup.
+    }
+  }
+}
+
+Deno.test("HttpUpdateChecker.downloadAndInstall: installs swamp.exe from a zip without PowerShell", async () => {
+  const { result, installed } = await installFromZip([
+    { name: "swamp.exe", data: ZIP_PAYLOAD },
+  ]);
+  assertEquals(result, undefined);
+  assertEquals(installed, ZIP_PAYLOAD);
+});
+
+Deno.test("HttpUpdateChecker.downloadAndInstall: a zip without swamp.exe is a UserError naming the cause", async () => {
+  const { result, installed } = await installFromZip([
+    { name: "other.exe", data: ZIP_PAYLOAD },
+  ]);
+  assertInstanceOf(result, UserError);
+  assertStringIncludes(
+    result.message,
+    "Failed to extract update: archive has no entry named swamp.exe",
+  );
+  assertEquals(new TextDecoder().decode(installed), ORIGINAL_BINARY);
+});
+
+Deno.test("HttpUpdateChecker.downloadAndInstall: a corrupt zip entry is a UserError and leaves swamp.exe untouched", async () => {
+  const { result, installed } = await installFromZip([
+    { name: "swamp.exe", data: ZIP_PAYLOAD, crc32: 0xdeadbeef },
+  ]);
+  assertInstanceOf(result, UserError);
+  assertStringIncludes(result.message, "failed its CRC-32 check");
+  assertEquals(new TextDecoder().decode(installed), ORIGINAL_BINARY);
+});
+
+Deno.test("HttpUpdateChecker.downloadAndInstall: an abort during zip extraction rejects with its reason, not a UserError", async () => {
+  const reason = new Error("cancelled during extraction");
+  let extracting = false;
+  const { result, installed } = await installFromZip(
+    [{ name: "swamp.exe", data: ZIP_PAYLOAD, method: 0 }],
+    (tempRoot) => {
+      const controller = new AbortController();
+      const signal = controller.signal;
+      const check = signal.throwIfAborted.bind(signal);
+      // abort once extraction has written its first chunk
+      signal.throwIfAborted = () => {
+        for (const dir of Deno.readDirSync(tempRoot)) {
+          try {
+            if (Deno.statSync(join(tempRoot, dir.name, "swamp.exe")).size > 0) {
+              extracting = true;
+              controller.abort(reason);
+            }
+          } catch {
+            // not extracting yet
+          }
+        }
+        check();
+      };
+      return signal;
+    },
+  );
+  assertEquals(extracting, true, "the abort landed during extraction");
+  assertEquals(result, reason);
+  assertEquals(new TextDecoder().decode(installed), ORIGINAL_BINARY);
+});
 
 Deno.test({
   name:

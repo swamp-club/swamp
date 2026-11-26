@@ -34,7 +34,10 @@ import { markErrorPaths } from "../../domain/errors.ts";
  * DecompressionStream is typed to emit BufferSource, which UntarStream rejects;
  * at runtime every chunk is a Uint8Array, so wrap to satisfy the TS lib types
  */
-function toUint8ArrayStream(): TransformStream<BufferSource, Uint8Array> {
+export function toUint8ArrayStream(): TransformStream<
+  BufferSource,
+  Uint8Array
+> {
   return new TransformStream({
     transform(chunk, controller) {
       if (chunk instanceof Uint8Array) {

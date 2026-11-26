@@ -32,6 +32,7 @@ import {
 } from "../../domain/update/integrity.ts";
 import { computeChecksum } from "../../domain/models/checksum.ts";
 import { extractTarGz } from "../archive/tar_archive.ts";
+import { extractZipEntry } from "../archive/zip_archive.ts";
 import {
   removeAbandonedTempDirs,
   removeAbandonedTempFiles,
@@ -72,27 +73,6 @@ const denoFileOps: BinaryFileOps = {
 };
 
 type AttemptResult<T> = { ok: true; value: T } | { ok: false; reason: string };
-
-async function extractZip(
-  archivePath: string,
-  destDir: string,
-): Promise<void> {
-  const cmd = new Deno.Command("powershell.exe", {
-    args: [
-      "-NoProfile",
-      "-NonInteractive",
-      "-Command",
-      `Expand-Archive -Path '${archivePath}' -DestinationPath '${destDir}' -Force`,
-    ],
-    stdout: "null",
-    stderr: "piped",
-  });
-  const result = await cmd.output();
-  if (!result.success) {
-    const stderr = new TextDecoder().decode(result.stderr);
-    throw new Error(`Expand-Archive failed: ${stderr}`);
-  }
-}
 
 /**
  * files fetched are tagged com.apple.quarantine and Gatekeeper SIGKILLs
@@ -442,10 +422,16 @@ export class HttpUpdateChecker implements UpdateChecker {
       const actualChecksum = await computeChecksum(archiveBytes);
       verifyChecksum(expectedChecksum, actualChecksum);
 
+      const binaryFilename = isZip ? "swamp.exe" : "swamp";
+      const extractedBinary = join(tempDir, binaryFilename);
+
       if (isZip) {
         try {
-          await extractZip(archivePath, tempDir);
+          await extractZipEntry(archivePath, binaryFilename, extractedBinary, {
+            signal,
+          });
         } catch (error: unknown) {
+          if (signal?.aborted) throw signal.reason;
           const message = error instanceof Error
             ? error.message
             : String(error);
@@ -463,8 +449,6 @@ export class HttpUpdateChecker implements UpdateChecker {
         }
       }
 
-      const binaryFilename = isZip ? "swamp.exe" : "swamp";
-      const extractedBinary = `${tempDir}/${binaryFilename}`;
       try {
         await Deno.stat(extractedBinary);
       } catch {
