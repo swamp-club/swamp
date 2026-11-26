@@ -31,9 +31,13 @@ import type {
 } from "../src/domain/datastore/datastore_storage.ts";
 import { FileSystemStorage } from "../src/infrastructure/persistence/fs_datastore_storage.ts";
 import { swampPath } from "../src/infrastructure/persistence/paths.ts";
-import { SqliteCommitStore } from "../src/infrastructure/datastore_v3/sqlite_commit_store.ts";
+import {
+  SqliteCommitStore,
+  type SqliteCommitStoreOptions,
+} from "../src/infrastructure/datastore_v3/sqlite_commit_store.ts";
 import {
   CATALOG_V3_FILE,
+  READ_MODEL_STATE_FILE,
   SqliteReadModel,
   type SqliteReadModelOptions,
 } from "../src/infrastructure/datastore_v3/sqlite_read_model.ts";
@@ -98,10 +102,11 @@ export interface V3Env {
 
 export async function withV3Env(
   fn: (env: V3Env) => Promise<void>,
+  storeOptions: SqliteCommitStoreOptions = {},
 ): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-read-model-" });
   const repoDir = join(dir, "repo");
-  const store = SqliteCommitStore.open(join(dir, "commits.db"));
+  const store = SqliteCommitStore.open(join(dir, "commits.db"), storeOptions);
   const storage = new SmallChunkStorage(
     new FileSystemStorage(join(dir, "datastore")),
   );
@@ -174,6 +179,37 @@ export function readCatalog(path: string): {
       "SELECT * FROM catalog_renames ORDER BY namespace, type_normalized, model_id, data_name",
     ).all() as Record<string, unknown>[];
     return { rows, renames };
+  } finally {
+    db.close();
+  }
+}
+
+// leaves out what is not derived: the user's filter and edit bases, and the
+// records of how files were written
+export function readStateTables(
+  stateDir: string,
+  tables: readonly string[] = [
+    "partition_progress",
+    "live_records",
+    "data_versions",
+    "materialised_keys",
+    "owed_files",
+    "unreadable_records",
+  ],
+): Record<string, Record<string, unknown>[]> {
+  const db = new DatabaseSync(join(stateDir, READ_MODEL_STATE_FILE), {
+    readOnly: true,
+  });
+  try {
+    return Object.fromEntries(
+      tables.map((table) => [
+        table,
+        db.prepare(`SELECT * FROM ${table} ORDER BY 1, 2, 3`).all() as Record<
+          string,
+          unknown
+        >[],
+      ]),
+    );
   } finally {
     db.close();
   }

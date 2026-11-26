@@ -614,7 +614,7 @@ Deno.test("ServeUpstreamState: a file from before run initiators upgrades with n
     const db = new DatabaseSync(path);
     db.exec(`${UNDO_ACKNOWLEDGEMENTS} DROP TABLE initiator`);
     db.exec(
-      `PRAGMA user_version = ${SERVE_UPSTREAM_STATE_SCHEMA_VERSION - 2}`,
+      `PRAGMA user_version = 5`,
     );
     db.close();
     const state = ServeUpstreamState.open(path);
@@ -688,7 +688,7 @@ Deno.test("ServeUpstreamState: acknowledged commits are kept per partition, and 
     const db = new DatabaseSync(path);
     db.exec(
       `${UNDO_ACKNOWLEDGEMENTS}
-       PRAGMA user_version = ${SERVE_UPSTREAM_STATE_SCHEMA_VERSION - 1};`,
+       PRAGMA user_version = 6;`,
     );
     db.close();
     const before = Date.now();
@@ -697,6 +697,48 @@ Deno.test("ServeUpstreamState: acknowledged commits are kept per partition, and 
       const from = migrated.acknowledgedFrom();
       assert(from !== undefined && from >= before - 1000, String(from));
       assertEquals(migrated.feedCursor(), 3);
+    } finally {
+      migrated.close();
+    }
+  });
+});
+
+Deno.test("ServeUpstreamState: a repair note keeps what the dropped commits touched, and a note from before the scope was kept reads back without one (swamp-club#5127)", async () => {
+  await withTempDir((dir) => {
+    const path = join(dir, "serve_upstream.db");
+    const state = ServeUpstreamState.open(path);
+    const repair = {
+      namespace: "",
+      partition: "model/a",
+      fromSeq: 5,
+      serveHead: 7,
+      since: 1000,
+      scope: {
+        keys: ["data/t/1/a/1/raw", "data/t/1/a/latest"],
+        names: ["a"],
+        minCursor: 40,
+      },
+    };
+    try {
+      state.beginRepair(repair);
+      assertEquals(state.pendingRepair(), repair);
+      state.resetFeedForRepair();
+      assertEquals(state.pendingRepair(), { ...repair, dropped: true });
+    } finally {
+      state.close();
+    }
+    // a note file from before the scope columns existed
+    const db = new DatabaseSync(path);
+    db.exec(
+      `ALTER TABLE repair DROP COLUMN min_cursor;
+       ALTER TABLE repair DROP COLUMN scope;
+       PRAGMA user_version = 7;`,
+    );
+    db.close();
+    const migrated = ServeUpstreamState.open(path);
+    try {
+      const { scope: _scope, ...unscoped } = repair;
+      assertEquals(migrated.pendingRepair(), { ...unscoped, dropped: true });
     } finally {
       migrated.close();
     }

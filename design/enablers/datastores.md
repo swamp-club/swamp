@@ -8946,9 +8946,46 @@ that happens.
   a lost acknowledged write and fails as `serve_acknowledged_commit_lost`,
   dropping nothing. The drop and the feed reset are recorded in a durable
   repair note before anything changes, so an interrupted repair finishes on
-  the next catch-up; the read model is then rebuilt in full. A `behind` copy
-  during the seconds after a takeover is never repaired: the leader's head
-  is not yet past it.
+  the next catch-up. A `behind` copy during the seconds after a takeover is
+  never repaired: the leader's head is not yet past it.
+- **The read model after a repair** (swamp-club#5127). The note also keeps
+  what the dropped commits touched: their record keys, data names and lowest
+  feed position. The read model rolls only that partition back to the copy's
+  kept head, in one lock section, where it used to rebuild in full:
+  - In one state transaction it sets the partition's applied seq, and puts
+    back the touched keys' live records and file ownership and the touched
+    names' versions. Ownership is `decideFile` folded over the base row a
+    replay loads and then the partition's kept ops on the key, in feed
+    order. Owed and unreadable rows the dropped commits left go too.
+  - It then puts the touched keys' files back, re-projects the touched names'
+    catalog rows, and tells the run indexes those records changed. Serve's
+    replacement commits arrive by the next catch-up, and a copy never reuses
+    a dropped commit's position, so they land past the read model's cursor.
+  - The transaction leaves a marker until the files and catalog are done. A
+    lock section that finds the marker resets and replays every commit, so a
+    repair cut short is never read half done. The noted repair then runs
+    again, finds the state reset, and rebuilds in full.
+  - It rebuilds the whole read model, as before, whenever the rollback
+    cannot be shown to equal an in-order replay. Each case is recorded on
+    the `readmodel.repair_partition` span:
+    - a partition other than a model's or a run's, since config partitions
+      share keys across renames;
+    - a touched key outside the partition's aggregate by serve's binding
+      layout, live in another partition, or shown at another partition's
+      put;
+    - on a filesystem that folds case or Unicode spellings, a touched key
+      spelled like another key the state knows;
+    - a key whose path another decided key's file or directory claims;
+    - a file of the partition at or past the lowest dropped position that
+      the note does not name;
+    - a base load part way, an unfinished full rebuild, a state reset in the
+      same section, a copy head other than the kept one, or a read model
+      that has not applied the partition to it;
+    - a compacted base whose row for a key is another partition's, or whose
+      file row and record disagree;
+    - a kept file that cannot be put back.
+  - A note from an older swamp keeps no scope, and its repair rebuilds in
+    full.
 - **Refused.** Another log id, a head below the commit's seq, or another
   `txnId` at that seq that the repair did not resolve, fails the command with
   `serve_upstream_diverged`.
