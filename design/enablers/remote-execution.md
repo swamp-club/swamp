@@ -934,8 +934,9 @@ another waits is dropped, since the one waiting carries every write made before
 it starts. Shutdown writes and publishes the departure of every worker still
 connected before it disposes the gateway, while the store is open. From then on
 the gateway refuses enrollments (`serve_stopping`, which workers retry), writes
-no other status and reasserts nothing, and the socket closes that follow when
-the listener stops write nothing more: a
+no other status and reasserts nothing, arms no token expiry or grace window and
+records no expiry, and the socket closes that follow when the listener stops
+write nothing more; disposing the gateway clears the timers already armed. A
 departure written after the store closes is lost, and an unpublished one is lost
 to the next model-lock pull, which replaces the cache's latest markers with the
 remote's. If the busy write before

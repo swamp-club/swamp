@@ -55,7 +55,9 @@ import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
 import {
   QUIET_REASSERT_INTERVAL_MS,
   WorkerGateway,
+  type WorkerGatewayOptions,
 } from "../src/serve/worker_gateway.ts";
+import { ENROLLMENT_TOKEN_MODEL_TYPE } from "../src/domain/models/worker/enrollment_token_model.ts";
 import {
   methodRunnerWorkerStatusStore,
   WorkerStatusLedger,
@@ -107,6 +109,7 @@ async function mintToken(
 async function withGateway(
   fn: (h: Harness) => Promise<void>,
   holdPushes?: Promise<void>,
+  options: Partial<WorkerGatewayOptions> = {},
 ): Promise<void> {
   const repoDir = await Deno.makeTempDir({ prefix: "swamp-gateway-record-" });
   const initEvents = await collect(
@@ -141,6 +144,7 @@ async function withGateway(
       pushes++;
       await holdPushes;
     },
+    ...options,
   });
   try {
     const name = `w-${crypto.randomUUID().slice(0, 8)}`;
@@ -579,4 +583,59 @@ Deno.test("WorkerGateway on a repo: a record a dead serve left is restored from 
     assertEquals(await h.gateway.reassertConnected(), 1);
     assertEquals((await stored(h))?.instanceUuid, live);
   });
+});
+
+Deno.test("WorkerGateway on a repo: after shutdown departures and dispose, a token expiry and socket close write nothing", async () => {
+  let deadlineMs = Number.POSITIVE_INFINITY;
+  await withGateway(
+    async (h) => {
+      const { channel, drop } = connectWorker(h.gateway);
+      await enroll(channel, h.token, crypto.randomUUID());
+      await h.gateway.settled();
+      const definition = await h.repoContext.definitionRepo.findByName(
+        WORKER_MODEL_TYPE,
+        workerDefinitionName(h.name),
+      );
+      const tokenDefinition = await h.repoContext.definitionRepo.findByName(
+        ENROLLMENT_TOKEN_MODEL_TYPE,
+        h.name,
+      );
+      assert(definition !== null && tokenDefinition !== null);
+      const versions = async () => [
+        (await h.repoContext.unifiedDataRepo.findByName(
+          WORKER_MODEL_TYPE,
+          definition.id,
+          WORKER_STATE_DATA_NAME,
+        ))?.version,
+        (await h.repoContext.unifiedDataRepo.findByName(
+          ENROLLMENT_TOKEN_MODEL_TYPE,
+          tokenDefinition.id,
+          "token-main",
+        ))?.version,
+      ];
+
+      assertEquals(h.gateway.pendingExpiryTimers, 1);
+      await h.gateway.recordShutdownDepartures();
+      h.gateway.dispose();
+      assertEquals((await stored(h))?.status, "disconnected");
+      const before = await versions();
+      assert(before.every((version) => version !== undefined));
+      const pushesBefore = h.pushes();
+
+      drop();
+      await waitFor(() => Date.now() > deadlineMs + 100, "the expiry deadline");
+      await h.gateway.settled();
+      assertEquals(await versions(), before);
+      assertEquals(h.pushes(), pushesBefore);
+      assertEquals(h.gateway.pendingGraceWindows, 0);
+      assertEquals(h.gateway.pendingExpiryTimers, 0);
+    },
+    undefined,
+    {
+      readTokenExpiresAt: () => {
+        deadlineMs = Date.now() + 1_000;
+        return Promise.resolve(new Date(deadlineMs).toISOString());
+      },
+    },
+  );
 });
