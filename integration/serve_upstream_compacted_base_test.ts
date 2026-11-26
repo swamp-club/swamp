@@ -84,7 +84,7 @@ async function saveVersions(
 async function hydrateAll(
   scratch: Scratch,
   client: Client,
-  env: Record<string, string>,
+  env: Record<string, string | undefined>,
 ): Promise<void> {
   await readCommand(
     scratch,
