@@ -143,6 +143,8 @@ export interface ReadModelCatalog {
 /** past this many version rows a reconcile is split by name across transactions */
 export const RECONCILE_ROWS_PER_TRANSACTION = 1_000;
 
+const STORED_CHECK_ROWS = 64;
+
 type HeldStep =
   | {
     readonly kind: "actions";
@@ -238,6 +240,7 @@ export class V3Catalog implements ReadModelCatalog, CatalogDirtyTracking {
   }
 
   #applySteps(steps: readonly HeldStep[]): void {
+    if (this.#storedAlready(steps)) return;
     this.#store.applyInTransaction((writer) => {
       for (let index = 0; index < steps.length; index++) {
         const step = steps[index];
@@ -278,6 +281,33 @@ export class V3Catalog implements ReadModelCatalog, CatalogDirtyTracking {
         }
       }
     }, { committed: true });
+  }
+
+  /**
+   * a page of new versions the catalog already holds, as the checkout's own
+   * commit finds the rows its write upserted, needs no write transaction
+   */
+  #storedAlready(steps: readonly HeldStep[]): boolean {
+    const rows: CatalogRow[] = [];
+    for (const step of steps) {
+      if (step.kind !== "actions") return false;
+      const identity = step.partition.identity;
+      if (identity.kind !== "model") return false;
+      for (const action of step.actions) {
+        if (action.kind !== "upsert-version") return false;
+        // past this many rows the look may cost more than the write it saves
+        if (rows.length === STORED_CHECK_ROWS) return false;
+        rows.push(
+          catalogRow(
+            step.namespace,
+            identity.type,
+            identity.id,
+            action.metadata,
+          ),
+        );
+      }
+    }
+    return this.#store.holdsNewVersions(rows);
   }
 
   dirtyTracking(): CatalogDirtyTracking {
@@ -387,7 +417,7 @@ export class V3Catalog implements ReadModelCatalog, CatalogDirtyTracking {
     const held = this.#held;
     if (held === undefined) throw new Error("No catalog batch is open");
     this.#held = undefined;
-    if (held.length === 0) return;
+    if (held.length === 0 || this.#storedAlready(held)) return;
     const writes = this.#writes(held);
     let next = 0;
     while (next < writes.length) {

@@ -412,6 +412,89 @@ const DIRTY_TRACKING_SQL = `
 }
 `;
 
+const GROUP_WHERE =
+  "namespace = ? AND type_normalized = ? AND model_id = ? AND data_name = ?";
+const STEP_SCOPE = "(step_name = ? OR ? = '' OR step_name = '')";
+
+const UPSERT_COLUMNS = [
+  "namespace",
+  "type_normalized",
+  "model_id",
+  "data_name",
+  "id",
+  "version",
+  "is_latest",
+  "is_step_latest",
+  "model_name",
+  "spec_name",
+  "data_type",
+  "content_type",
+  "lifetime",
+  "garbage_collection",
+  "lifecycle",
+  "owner_type",
+  "streaming",
+  "size",
+  "created_at",
+  "tags",
+  "owner_ref",
+  "workflow_run_id",
+  "workflow_name",
+  "job_name",
+  "step_name",
+  "source",
+  "is_pending",
+  "pending_pid",
+  "pending_host",
+] as const;
+
+function upsertArgs(row: CatalogRow): (string | number)[] {
+  return [
+    row.namespace,
+    row.type_normalized,
+    row.model_id,
+    row.data_name,
+    row.id,
+    row.version,
+    row.is_latest,
+    row.is_step_latest,
+    row.model_name,
+    row.spec_name,
+    row.data_type,
+    row.content_type,
+    row.lifetime,
+    row.garbage_collection,
+    row.lifecycle,
+    row.owner_type,
+    row.streaming,
+    row.size,
+    row.created_at,
+    row.tags,
+    row.owner_ref,
+    row.workflow_run_id,
+    row.workflow_name,
+    row.job_name,
+    row.step_name,
+    row.source,
+    row.is_pending ?? 0,
+    row.pending_pid ?? 0,
+    row.pending_host ?? "",
+  ];
+}
+
+function groupArgs(row: CatalogRow): string[] {
+  return [row.namespace, row.type_normalized, row.model_id, row.data_name];
+}
+
+const UNHELD_DIRTY_WHERE =
+  "WHERE NOT EXISTS (SELECT 1 FROM catalog_dirty_pins AS p " +
+  "WHERE p.namespace = catalog_dirty.namespace AND p.type_normalized = catalog_dirty.type_normalized " +
+  "AND p.model_id = catalog_dirty.model_id AND p.data_name = catalog_dirty.data_name)";
+const UNTOUCHED_DIRTY_AND =
+  " AND NOT EXISTS (SELECT 1 FROM catalog_touched AS t WHERE t.namespace = catalog_dirty.namespace " +
+  "AND t.type_normalized = catalog_dirty.type_normalized AND t.model_id = catalog_dirty.model_id " +
+  "AND t.data_name = catalog_dirty.data_name)";
+
 const CLEAR_PAGE_ROWS = 500;
 
 const DIRTY_NAME_WHERE =
@@ -691,45 +774,10 @@ export class CatalogStore {
    */
   upsert(row: CatalogRow): void {
     const stmt = this.#prepareCached(`
-      INSERT OR REPLACE INTO catalog (
-        namespace, type_normalized, model_id, data_name, id, version, is_latest, is_step_latest, model_name,
-        spec_name, data_type, content_type, lifetime, garbage_collection, lifecycle, owner_type,
-        streaming, size, created_at, tags,
-        owner_ref, workflow_run_id, workflow_name, job_name, step_name, source,
-        is_pending, pending_pid, pending_host
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT OR REPLACE INTO catalog (${UPSERT_COLUMNS.join(", ")})
+      VALUES (${UPSERT_COLUMNS.map(() => "?").join(", ")})
     `);
-    stmt.run(
-      row.namespace,
-      row.type_normalized,
-      row.model_id,
-      row.data_name,
-      row.id,
-      row.version,
-      row.is_latest,
-      row.is_step_latest,
-      row.model_name,
-      row.spec_name,
-      row.data_type,
-      row.content_type,
-      row.lifetime,
-      row.garbage_collection,
-      row.lifecycle,
-      row.owner_type,
-      row.streaming,
-      row.size,
-      row.created_at,
-      row.tags,
-      row.owner_ref,
-      row.workflow_run_id,
-      row.workflow_name,
-      row.job_name,
-      row.step_name,
-      row.source,
-      row.is_pending ?? 0,
-      row.pending_pid ?? 0,
-      row.pending_host ?? "",
-    );
+    stmt.run(...upsertArgs(row));
   }
 
   /**
@@ -748,20 +796,14 @@ export class CatalogStore {
     }
   }
 
-  #upsertNewVersionRows(row: CatalogRow): void {
-    const group = [
-      row.namespace,
-      row.type_normalized,
-      row.model_id,
-      row.data_name,
-    ];
-    const groupWhere =
-      "namespace = ? AND type_normalized = ? AND model_id = ? AND data_name = ?";
-    const stepScope = "(step_name = ? OR ? = '' OR step_name = '')";
+  #newVersionFlags(
+    row: CatalogRow,
+  ): { isLatest: number; isStepLatest: number } {
+    const group = groupArgs(row);
     const scope = [row.step_name, row.step_name];
     const higherFlagged = this.#prepareCached(
       `SELECT 1 FROM catalog
-       WHERE ${groupWhere} AND version > ?
+       WHERE ${GROUP_WHERE} AND version > ?
          AND (is_latest = 1 OR is_step_latest = 1)
        LIMIT 1`,
     ).get(...group, row.version);
@@ -770,19 +812,25 @@ export class CatalogStore {
     // counts too, and flags agree once it is promoted or rolled back
     const higherInScope = this.#prepareCached(
       `SELECT 1 FROM catalog
-       WHERE ${groupWhere} AND version > ? AND ${stepScope}
+       WHERE ${GROUP_WHERE} AND version > ? AND ${STEP_SCOPE}
        LIMIT 1`,
     ).get(...group, row.version, ...scope);
     const isLatest = higherFlagged ? 0 : 1;
-    const isStepLatest = isLatest || !higherInScope ? 1 : 0;
+    return { isLatest, isStepLatest: isLatest || !higherInScope ? 1 : 0 };
+  }
+
+  #upsertNewVersionRows(row: CatalogRow): void {
+    const group = groupArgs(row);
+    const scope = [row.step_name, row.step_name];
+    const { isLatest, isStepLatest } = this.#newVersionFlags(row);
     // the planner would range over every earlier version by primary key
     this.#prepareCached(
       `UPDATE catalog INDEXED BY idx_catalog_is_latest SET is_latest = 0
-       WHERE ${groupWhere} AND version < ? AND is_latest = 1`,
+       WHERE ${GROUP_WHERE} AND version < ? AND is_latest = 1`,
     ).run(...group, row.version);
     this.#prepareCached(
       `UPDATE catalog SET is_step_latest = 0
-       WHERE ${groupWhere} AND version < ? AND ${stepScope}
+       WHERE ${GROUP_WHERE} AND version < ? AND ${STEP_SCOPE}
          AND is_step_latest = 1`,
     ).run(...group, row.version, ...scope);
     // A new latest version makes the name active again, so any rename
@@ -803,6 +851,62 @@ export class CatalogStore {
       pending_pid: 0,
       pending_host: "",
     });
+  }
+
+  /**
+   * whether upsertNewVersion of every row, in order, would change nothing,
+   * judged in one read snapshot
+   */
+  holdsNewVersions(rows: readonly CatalogRow[]): boolean {
+    if (rows.length === 0) return true;
+    this.db.exec("BEGIN");
+    try {
+      return rows.every((row) => this.#holdsNewVersion(row));
+    } finally {
+      this.db.exec("COMMIT");
+    }
+  }
+
+  // each write #upsertNewVersionRows would make, found already made
+  #holdsNewVersion(row: CatalogRow): boolean {
+    const group = groupArgs(row);
+    const scope = [row.step_name, row.step_name];
+    const { isLatest, isStepLatest } = this.#newVersionFlags(row);
+    if (
+      this.#prepareCached(
+          `SELECT 1 FROM catalog INDEXED BY idx_catalog_is_latest
+           WHERE ${GROUP_WHERE} AND version < ? AND is_latest = 1 LIMIT 1`,
+        ).get(...group, row.version) !== undefined ||
+      this.#prepareCached(
+          `SELECT 1 FROM catalog
+           WHERE ${GROUP_WHERE} AND version < ? AND ${STEP_SCOPE}
+             AND is_step_latest = 1 LIMIT 1`,
+        ).get(...group, row.version, ...scope) !== undefined
+    ) {
+      return false;
+    }
+    if (
+      isLatest &&
+      this.#prepareCached(
+          `SELECT 1 FROM catalog_renames WHERE ${GROUP_WHERE}`,
+        ).get(...group) !== undefined
+    ) {
+      return false;
+    }
+    return this.#prepareCached(
+      `SELECT 1 FROM catalog WHERE ${
+        UPSERT_COLUMNS.map((column) => `${column} = ?`).join(" AND ")
+      }`,
+    ).get(
+      ...upsertArgs({
+        ...row,
+        is_latest: isLatest,
+        is_step_latest: isStepLatest,
+        is_pending: 0,
+        pending_pid: 0,
+        pending_host: "",
+      }),
+    ) !== undefined;
   }
 
   /**
@@ -1946,6 +2050,23 @@ export class CatalogStore {
     }
   }
 
+  // one statement, so one snapshot, holds both looks
+  #releasesAny(touched: boolean, instance: string | undefined): boolean {
+    const touchedRows = !touched
+      ? "0"
+      : instance === undefined
+      ? "EXISTS (SELECT 1 FROM catalog_touched)"
+      : "EXISTS (SELECT 1 FROM catalog_touched WHERE instance = ?)";
+    const row = this.#prepareCached(
+      `SELECT ${touchedRows} OR EXISTS (SELECT 1 FROM catalog_dirty ${UNHELD_DIRTY_WHERE}${
+        touched ? UNTOUCHED_DIRTY_AND : ""
+      }) AS releases`,
+    ).get(...(touched && instance !== undefined ? [instance] : [])) as
+      | { releases: number }
+      | undefined;
+    return row?.releases !== 0;
+  }
+
   /**
    * a clean teardown's: pins the names of commits not landed yet, drops the
    * pins of landed ones, and forgets every dirty name no pin holds
@@ -1959,6 +2080,12 @@ export class CatalogStore {
     if (!this.#hasDirtyTable()) return;
     const touched = this.#hasTable("catalog_touched");
     if (touched && instance !== undefined) ensureTouchedInstanceColumn(this.db);
+    if (
+      pins.length === 0 && landed.length === 0 &&
+      !this.#releasesAny(touched, instance)
+    ) {
+      return;
+    }
     this.db.exec("BEGIN IMMEDIATE");
     try {
       if (touched) {
@@ -1995,14 +2122,9 @@ export class CatalogStore {
       );
       for (const l of landed) unpin.run(l.partition, l.txn_id);
       this.db.exec(
-        "DELETE FROM catalog_dirty WHERE NOT EXISTS (SELECT 1 FROM catalog_dirty_pins AS p " +
-          "WHERE p.namespace = catalog_dirty.namespace AND p.type_normalized = catalog_dirty.type_normalized " +
-          "AND p.model_id = catalog_dirty.model_id AND p.data_name = catalog_dirty.data_name)" +
-          (touched
-            ? " AND NOT EXISTS (SELECT 1 FROM catalog_touched AS t WHERE t.namespace = catalog_dirty.namespace " +
-              "AND t.type_normalized = catalog_dirty.type_normalized AND t.model_id = catalog_dirty.model_id " +
-              "AND t.data_name = catalog_dirty.data_name)"
-            : ""),
+        `DELETE FROM catalog_dirty ${UNHELD_DIRTY_WHERE}${
+          touched ? UNTOUCHED_DIRTY_AND : ""
+        }`,
       );
       this.db.exec("COMMIT");
     } catch (error) {
