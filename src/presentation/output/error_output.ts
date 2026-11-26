@@ -54,6 +54,8 @@ import {
 } from "../../domain/datastore_v3/writer_lease.ts";
 import {
   CATCH_UP_UNREACHABLE_CODE,
+  DATABASE_BUSY_CODE,
+  DatabaseBusyError,
   READ_MODEL_BUSY_CODE,
 } from "../../domain/datastore_v3/read_model.ts";
 import {
@@ -127,6 +129,7 @@ const MAY_LAND_OUTAGE_CODES: ReadonlySet<string> = new Set([
   SERVE_NOT_LEADER_CODE,
   V3_STORAGE_UNREACHABLE_CODE,
   CATCH_UP_UNREACHABLE_CODE,
+  DATABASE_BUSY_CODE,
 ]);
 
 /** keyed on the top-level code, so a wrapper is covered; lease-lost keeps its own */
@@ -163,6 +166,37 @@ const FENCED_NOTHING_COMMITTED: ReadonlySet<WriterFencedReason> = new Set([
   "released",
   "copy-restoring",
 ]);
+
+// SQLITE_BUSY and SQLITE_LOCKED, by their primary result code
+const SQLITE_BUSY_CODES: ReadonlySet<number> = new Set([5, 6]);
+
+/**
+ * a SQLite busy wait that ran out, under plain wrappers only: an error with its
+ * own code or meaning (may land, partly committed) keeps it
+ */
+function databaseBusyOf(error: unknown): DatabaseBusyError | undefined {
+  if (error instanceof DatabaseBusyError) return error;
+  let current = error;
+  for (let depth = 0; depth < 8; depth++) {
+    if (!(current instanceof Error)) return undefined;
+    const code = (current as { code?: unknown }).code;
+    if (code === "ERR_SQLITE_ERROR") {
+      const errcode = (current as { errcode?: unknown }).errcode;
+      const busy = typeof errcode === "number"
+        ? SQLITE_BUSY_CODES.has(errcode & 0xff)
+        : /database (table )?is locked/i.test(current.message);
+      return busy ? new DatabaseBusyError(error) : undefined;
+    }
+    if (current instanceof UserError || typeof code === "string") {
+      return undefined;
+    }
+    if (/database (table )?is locked/i.test(current.message)) {
+      return new DatabaseBusyError(error);
+    }
+    current = current.cause;
+  }
+  return undefined;
+}
 
 /** a lost or lapsed lease, as the coded error the user is shown */
 function leaseErrorOf(error: unknown): Error | undefined {
@@ -281,7 +315,9 @@ export function exitCodeForError(
   error: unknown,
   context: ErrorPresentationContext = {},
 ): number {
-  if (mayLandRelabelOf(error, context) !== undefined) return 1;
+  if (mayLandRelabelOf(databaseBusyOf(error) ?? error, context) !== undefined) {
+    return 1;
+  }
   const nothingLanded = context.commandLanded === false;
   if (isLapsedServeRequest(error)) {
     return context.commandLanded === true ? 1 : 75;
@@ -309,6 +345,14 @@ export function exitCodeForError(
   if (code === V3_WRITER_BUSY_CODE) return 75;
   // Another process's catch-up outlasted the wait: nothing was read.
   if (code === READ_MODEL_BUSY_CODE) return 75;
+  // Another process held the database past SQLite's busy wait: this step
+  // changed nothing, though an earlier commit of the command may have.
+  if (databaseBusyOf(error) !== undefined) {
+    return context.commandLanded === true ||
+        context.commandMayHaveLanded === true
+      ? 1
+      : 75;
+  }
   // A commit given up because the storage was unreachable: nothing of it
   // landed, though an earlier commit of the command may have.
   if (code === COMMIT_UNREACHABLE_CODE) {
@@ -421,11 +465,12 @@ export function renderError(
   surface: CommandSurface = "behavior",
   context: ErrorPresentationContext = {},
 ): void {
-  const relabelled = mayLandRelabelOf(error, context);
+  const busy = databaseBusyOf(error);
+  const relabelled = mayLandRelabelOf(busy ?? error, context);
   // a refused stale config edit is the user's to resolve, not a crash
   const leaseError = relabelled === undefined ? leaseErrorOf(error) : undefined;
   const err = relabelled ?? configEditConflictOf(error) ?? leaseError ??
-    runInitiatorMismatchOf(error) ??
+    runInitiatorMismatchOf(error) ?? busy ??
     (error instanceof Error ? error : new Error(String(error)));
   const message = messageFor(err, surface);
   // A certificate-store failure is an environment problem the user can fix,
