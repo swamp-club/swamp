@@ -968,6 +968,7 @@ Deno.test({
             WRITER,
           );
           assert(writer !== null);
+          // read through swamp, as the lazy contract asks: each read hydrates
           const found: [string, string][] = [];
           for (let i = 0; i < 4; i++) {
             const data = await repos.unifiedDataRepo.findByName(
@@ -976,24 +977,20 @@ Deno.test({
               `big-${i}`,
             );
             assert(data !== null);
-            found.push([
-              `${i}`,
-              repos.unifiedDataRepo.getContentPath(
-                member.serve.modelType,
-                writer.id,
-                `big-${i}`,
-                data.version,
-              ),
-            ]);
+            const content = await repos.unifiedDataRepo.getContent(
+              member.serve.modelType,
+              writer.id,
+              `big-${i}`,
+              data.version,
+            );
+            assert(content !== null);
+            found.push([`${i}`, new TextDecoder().decode(content)]);
           }
           return found;
         },
       );
-      for (const [i, path] of paths) {
-        assertEquals(
-          JSON.parse(await Deno.readTextFile(path)),
-          { body: i.repeat(CHUNKED_BYTES) },
-        );
+      for (const [i, text] of paths) {
+        assertEquals(JSON.parse(text), { body: i.repeat(CHUNKED_BYTES) });
       }
     });
   },
