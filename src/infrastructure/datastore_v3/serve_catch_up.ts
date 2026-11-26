@@ -28,6 +28,7 @@ import { join } from "@std/path";
 import { resolveLockTimeoutMs } from "../../domain/datastore/datastore_config.ts";
 import { Commit } from "../../domain/datastore_v3/commit.ts";
 import type { HeadIdentity } from "../../domain/datastore_v3/commit_outbox.ts";
+import { catalogNamesOfCommit } from "../../domain/datastore_v3/name_history_replay.ts";
 import { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
 import { getSwampLogger } from "../logging/logger.ts";
 import type {
@@ -55,6 +56,7 @@ import {
   type ServeCopyAccess,
   type ServeCopyRepair,
   type ServeFeedAnchor,
+  type ServeRepairScope,
   type ServeUpstreamState,
 } from "./serve_upstream_state.ts";
 import {
@@ -194,9 +196,15 @@ export interface ServeCopyRepairPort {
   resendOutbox(signal: AbortSignal): Promise<void>;
   /**
    * the read model's full rebuild, sweeping files no commit owns written from
-   * `since`; the seam for a targeted rebuild of the repaired partition
+   * `since`, for a note that does not say what the dropped commits touched
    */
   rebuildReadModel(since: number, signal: AbortSignal): Promise<void>;
+  /**
+   * rolls the read model's projection of the repaired partition back to the
+   * copy's kept head, for a note with a scope; it rebuilds whole when it
+   * cannot show the rollback equals a replay
+   */
+  repairPartition(repair: ServeCopyRepair, signal: AbortSignal): Promise<void>;
   /** the principal this checkout writes as, when serve named it */
   principal?(): string | undefined;
 }
@@ -1054,7 +1062,8 @@ export class ServeCatchUp {
         serve.head,
       );
     }
-    const stamped = copy.commits.filter((commit) => commit.seq >= first.seq)
+    const dropping = copy.commits.filter((commit) => commit.seq >= first.seq);
+    const stamped = dropping
       .map((commit) => Date.parse(commit.at))
       .filter((at) => Number.isFinite(at));
     const planned: ServeCopyRepair = {
@@ -1066,6 +1075,7 @@ export class ServeCatchUp {
       since: stamped.length === 0
         ? 0
         : Math.max(0, minOf(stamped)! - ACKNOWLEDGED_CLOCK_SLACK_MS),
+      scope: repairScope(dropping, copy.cursors),
     };
     this.#state.beginRepair(planned);
     const removed = await this.#applyRepair(planned, repair, signal);
@@ -1120,7 +1130,11 @@ export class ServeCatchUp {
       }
       this.#state.resetFeedForRepair();
     }
-    await port.rebuildReadModel(repair.since, signal);
+    if (repair.scope === undefined) {
+      await port.rebuildReadModel(repair.since, signal);
+    } else {
+      await port.repairPartition(repair, signal);
+    }
     this.#state.finishRepair();
     return removed;
   }
@@ -1189,8 +1203,13 @@ export class ServeCatchUp {
   async #copyCommits(
     namespace: string,
     partition: PartitionKey,
-  ): Promise<{ readonly from: number; readonly commits: readonly Commit[] }> {
+  ): Promise<{
+    readonly from: number;
+    readonly commits: readonly Commit[];
+    readonly cursors: ReadonlyMap<number, number>;
+  }> {
     const commits: Commit[] = [];
+    const cursors = new Map<number, number>();
     let from = 1;
     let next = 1;
     for (;;) {
@@ -1213,8 +1232,11 @@ export class ServeCatchUp {
         }
         throw error;
       }
-      if (page.length === 0) return { from, commits };
-      for (const change of page) commits.push(change.commit);
+      if (page.length === 0) return { from, commits, cursors };
+      for (const change of page) {
+        commits.push(change.commit);
+        cursors.set(change.commit.seq, change.cursor);
+      }
       next = page[page.length - 1].commit.seq + 1;
     }
   }
@@ -1451,6 +1473,31 @@ function repairAttributes(
     "swamp.datastore.v3.repair.from_seq": repair.fromSeq,
     "swamp.datastore.v3.repair.serve_head": repair.serveHead,
   };
+}
+
+/** what the commits a repair drops touched: their keys, names and first position */
+function repairScope(
+  dropping: readonly Commit[],
+  cursors: ReadonlyMap<number, number>,
+): ServeRepairScope | undefined {
+  const keys = new Set<string>();
+  const names = new Set<string>();
+  const positions: number[] = [];
+  for (const commit of dropping) {
+    const cursor = cursors.get(commit.seq);
+    // a commit read without its position cannot bound the rollback
+    if (cursor === undefined) return undefined;
+    positions.push(cursor);
+    for (const op of commit.ops) {
+      if (op.kind === "put" || op.kind === "tombstone") {
+        keys.add(op.key.toString());
+      }
+    }
+    for (const name of catalogNamesOfCommit(commit)) names.add(name);
+  }
+  const minCursor = minOf(positions);
+  if (minCursor === undefined) return undefined;
+  return { keys: [...keys].sort(), names: [...names].sort(), minCursor };
 }
 
 /**

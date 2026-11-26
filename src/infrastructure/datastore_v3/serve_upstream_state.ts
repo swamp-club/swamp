@@ -133,6 +133,10 @@ const MIGRATIONS: readonly string[] = [
    ALTER TABLE copy ADD COLUMN acks_from INTEGER;
    UPDATE copy SET acks_from = CAST(unixepoch('subsec') * 1000 AS INTEGER)
      WHERE EXISTS (SELECT 1 FROM feed);`,
+  // what a repair's dropped commits touched, so the read model repairs only
+  // that; NULL, as an older swamp's note leaves it, rebuilds it whole
+  `ALTER TABLE repair ADD COLUMN min_cursor INTEGER;
+   ALTER TABLE repair ADD COLUMN scope TEXT;`,
 ];
 
 /**
@@ -151,6 +155,16 @@ export interface ServeCopyRepair {
   readonly since: number;
   /** the commits are dropped and the feed reset; the read model is not yet rebuilt */
   readonly dropped?: boolean;
+  /** what the dropped commits touched; absent, the read model is rebuilt whole */
+  readonly scope?: ServeRepairScope;
+}
+
+/** the record keys and data names a repair's dropped commits touched */
+export interface ServeRepairScope {
+  readonly keys: readonly string[];
+  readonly names: readonly string[];
+  /** the lowest feed position of a dropped commit */
+  readonly minCursor: number;
 }
 
 export interface ServeFeedAnchor {
@@ -429,7 +443,8 @@ export class ServeUpstreamState {
   pendingRepair(): ServeCopyRepair | undefined {
     this.#assertOpen();
     const row = this.#db.prepare(
-      `SELECT namespace, partition, from_seq, serve_head, since, dropped
+      `SELECT namespace, partition, from_seq, serve_head, since, dropped,
+         min_cursor, scope
        FROM repair WHERE id = 1`,
     ).get() as {
       namespace: string;
@@ -438,14 +453,19 @@ export class ServeUpstreamState {
       serve_head: number;
       since: number;
       dropped: number;
+      min_cursor: number | null;
+      scope: string | null;
     } | undefined;
-    return row === undefined ? undefined : {
+    if (row === undefined) return undefined;
+    const scope = repairScopeOf(row.min_cursor, row.scope);
+    return {
       namespace: row.namespace,
       partition: row.partition,
       fromSeq: row.from_seq,
       serveHead: row.serve_head,
       since: row.since,
       ...(row.dropped !== 0 ? { dropped: true } : {}),
+      ...(scope === undefined ? {} : { scope }),
     };
   }
 
@@ -462,13 +482,19 @@ export class ServeUpstreamState {
       this.#assertSameCopy();
       this.#db.prepare(
         `INSERT OR REPLACE INTO repair (id, namespace, partition, from_seq,
-           serve_head, since, dropped) VALUES (1, ?, ?, ?, ?, ?, 0)`,
+           serve_head, since, dropped, min_cursor, scope)
+         VALUES (1, ?, ?, ?, ?, ?, 0, ?, ?)`,
       ).run(
         repair.namespace,
         repair.partition,
         repair.fromSeq,
         repair.serveHead,
         repair.since,
+        repair.scope?.minCursor ?? null,
+        repair.scope === undefined ? null : JSON.stringify({
+          keys: repair.scope.keys,
+          names: repair.scope.names,
+        }),
       );
       this.#db.exec("UPDATE copy SET repairs = repairs + 1 WHERE id = 1");
     });
@@ -840,4 +866,26 @@ function migrate(db: DatabaseSync, path: string): void {
     }
     throw error;
   }
+}
+
+// a scope that does not read back whole is none: the repair rebuilds in full
+function repairScopeOf(
+  minCursor: number | null,
+  text: string | null,
+): ServeRepairScope | undefined {
+  if (minCursor === null || text === null) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  const { keys, names } = (parsed ?? {}) as {
+    keys?: unknown;
+    names?: unknown;
+  };
+  const strings = (value: unknown): value is string[] =>
+    Array.isArray(value) && value.every((item) => typeof item === "string");
+  if (!strings(keys) || !strings(names)) return undefined;
+  return { keys, names, minCursor };
 }
