@@ -153,6 +153,7 @@ import {
 import { writerInstance } from "./writer_instance.ts";
 import { isNetworkFailure } from "./network_failure.ts";
 import { TimeSlice } from "../persistence/scan_permits.ts";
+import { OrderedLookahead } from "./ordered_lookahead.ts";
 
 export const UNSYNCED_SYNC_BATCH = 500;
 
@@ -171,9 +172,57 @@ const DATA_CONTENT_KEY = /^data\/.+\/[0-9]+\/raw$/;
 /** owed files a hydration writes per lock section */
 const OWED_PAGE = 256;
 
+/** files whose targets are resolved ahead of the one being written, at most */
+const TARGET_LOOKAHEAD = 16;
+
+type Target = { path: string; existing?: string };
+
+interface TargetItem {
+  readonly namespace: string;
+  readonly key: string;
+  readonly recordKey?: RecordKey;
+  readonly isPut: boolean;
+  readonly source: string;
+}
+
+interface ResolvedTarget {
+  readonly target: Target | undefined;
+  /** the folded path and the folded directories its write would create */
+  readonly folded?: string;
+  readonly creates: readonly string[];
+  /** the path cache's generation it was resolved in */
+  readonly generation: number;
+}
+
 // a page of large commits commits its state in parts this size, so no one
 // transaction's commit writes the whole page
 const PAGE_OPS = 5_000;
+
+function pageTargetKey(cursor: number, key: string): string {
+  return `${cursor}\0${key}`;
+}
+
+function pageTarget(commit: Commit, change: KeyChange): TargetItem {
+  return {
+    namespace: commit.namespace,
+    key: change.key.toString(),
+    recordKey: change.key,
+    isPut: change.put !== null,
+    source: `commit ${commit.seq} of ${commit.partition.toString()}`,
+  };
+}
+
+/** the page's key changes in the order its commits materialise them */
+function pageTargets(
+  page: readonly CommitChange[],
+): { key: string; item: TargetItem }[] {
+  return page.flatMap(({ cursor, commit }) =>
+    finalKeyStates(commit).map((change) => ({
+      key: pageTargetKey(cursor, change.key.toString()),
+      item: pageTarget(commit, change),
+    }))
+  );
+}
 
 /** consecutive parts of at most PAGE_OPS ops; a larger commit stands alone */
 function pageParts(
@@ -663,6 +712,8 @@ export class SqliteReadModel implements ReadModel {
   #poolFailure: { readonly error: unknown } | undefined;
   /** the page's chunk prefetch, which a write that reads a chunk waits for */
   #prefetched: Promise<unknown> | undefined;
+  /** the targets of a page's or a base load's next files, resolved ahead */
+  #targets: OrderedLookahead<TargetItem, ResolvedTarget> | undefined;
   /** pages the tail net plan read, applied before the store is read again */
   #readAhead: (readonly CommitChange[])[] = [];
   readonly #paths = new PathCache();
@@ -3415,11 +3466,18 @@ export class SqliteReadModel implements ReadModel {
         // the page's batches already stay open across awaits; readers wait on
         // #pageInFlight and writers on #exclusive
         const slice = new TimeSlice(signal, this.#recoverySliceMs);
-        for (const change of page) {
-          signal.throwIfAborted();
-          if (slice.over) await slice.next();
-          if (await this.#apply(change, advance, signal, batch)) applied++;
-          met.push(change.commit);
+        this.#targets = this.#lookahead(() => pageTargets(page), signal);
+        try {
+          for (const change of page) {
+            signal.throwIfAborted();
+            if (slice.over) await slice.next();
+            if (await this.#apply(change, advance, signal, batch)) applied++;
+            met.push(change.commit);
+          }
+        } finally {
+          const targets = this.#targets;
+          this.#targets = undefined;
+          await targets?.settle();
         }
         await this.#awaitPrefetched();
         await this.#drainPool();
@@ -3719,7 +3777,10 @@ export class SqliteReadModel implements ReadModel {
     const target = await this.#time(
       "target",
       () =>
-        this.#targetOf(commit.namespace, change.key, change.put !== null, from),
+        this.#takeTarget(
+          pageTargetKey(position, key),
+          pageTarget(commit, change),
+        ),
     );
     if (target === undefined) return undefined;
     const path = target.path;
@@ -3949,6 +4010,85 @@ export class SqliteReadModel implements ReadModel {
     return (await this.#targetOf(namespace, recordKey, isPut, source))?.path;
   }
 
+  /**
+   * only with the write pool: a target resolves ahead only when no file before
+   * it still to land meets its path, so it finds what it would find in turn
+   */
+  #lookahead(
+    entries: () => readonly {
+      readonly key: string;
+      readonly item: TargetItem;
+    }[],
+    signal: AbortSignal,
+  ): OrderedLookahead<TargetItem, ResolvedTarget> | undefined {
+    if (this.#pool === undefined) return undefined;
+    return new OrderedLookahead(entries(), {
+      depth: TARGET_LOOKAHEAD,
+      resolve: (item) => this.#resolveTarget(item),
+      runsAhead: (item, pending) =>
+        !signal.aborted && item.isPut &&
+        !this.#meetsUnlanded(item, pending),
+      // a removal can take emptied directories with it
+      schedulesAfter: (item) => item.isPut,
+      fresh: (resolved) => resolved.generation === this.#paths.generation,
+      discard: ({ target }) => {
+        if (target === undefined) return;
+        this.#paths.takeAbsent(target.path);
+        this.#paths.takeExisting(target.path);
+      },
+    });
+  }
+
+  async #resolveTarget(item: TargetItem): Promise<ResolvedTarget> {
+    const generation = this.#paths.generation;
+    const target = await this.#targetOf(
+      item.namespace,
+      item.recordKey ?? RecordKey.create(item.key),
+      item.isPut,
+      item.source,
+    );
+    if (target === undefined) return { target, creates: [], generation };
+    return {
+      target,
+      folded: foldPath(target.path),
+      creates: (this.#paths.absentOf(target.path) ?? []).map(foldPath),
+      generation,
+    };
+  }
+
+  /** as #drainOverlapping meets a pooled write, and files not yet pooled too */
+  #meetsUnlanded(
+    item: TargetItem,
+    pending: readonly ResolvedTarget[],
+  ): boolean {
+    const folded = foldPath(
+      join(this.#cacheRoot(item.namespace), ...item.key.split("/")),
+    );
+    const meets = (other: string, creates: readonly string[]) =>
+      within(folded, other) || within(other, folded) ||
+      creates.some((dir) => within(folded, dir));
+    return pending.some((p) =>
+      p.folded !== undefined && meets(p.folded, p.creates)
+    ) || (this.#pool ?? []).some((write) => meets(write.folded, write.creates));
+  }
+
+  /** the target the lookahead resolved for key, or one resolved now */
+  async #takeTarget(
+    key: string,
+    item: TargetItem,
+  ): Promise<Target | undefined> {
+    const targets = this.#targets;
+    if (targets === undefined) {
+      return await this.#targetOf(
+        item.namespace,
+        item.recordKey ?? RecordKey.create(item.key),
+        item.isPut,
+        item.source,
+      );
+    }
+    return (await targets.take(key, item)).target;
+  }
+
   async #targetOf(
     namespace: string,
     recordKey: RecordKey,
@@ -3967,6 +4107,7 @@ export class SqliteReadModel implements ReadModel {
     assertContainedPath(key, root);
     const segments = key.split("/");
     const path = join(root, ...segments);
+    this.#paths.noteNothingAt(path, false);
     await this.#drainOverlapping(path);
     // A file and a directory claiming one path is permanent: retrying would
     // block every later commit. A put is skipped like a refused key, and stays
@@ -4005,7 +4146,10 @@ export class SqliteReadModel implements ReadModel {
       for (let i = segments.length - 1; i >= missingFrom; i--) {
         absent.push(join(root, ...segments.slice(0, i)));
       }
-      if (isPut) this.#paths.noteAbsent(path, absent);
+      if (isPut) {
+        this.#paths.noteAbsent(path, absent);
+        this.#paths.noteNothingAt(path, true);
+      }
     }
     if (!within(resolved, await this.#paths.resolveDirectory(root))) {
       throw new PathTraversalError(path, root, resolved);
@@ -4372,6 +4516,49 @@ export class SqliteReadModel implements ReadModel {
       );
     }
     await this.#prefetchBaseChunks(writes, signal);
+    const baseItem = (namespace: string, record_key: string): TargetItem => ({
+      namespace,
+      key: record_key,
+      isPut: true,
+      source: "the compacted base",
+    });
+    this.#targets = this.#lookahead(
+      () =>
+        writes.map(({ namespace, record_key }) => ({
+          key: `${namespace}\0${record_key}`,
+          item: baseItem(namespace, record_key),
+        })),
+      signal,
+    );
+    try {
+      await this.#loadWrites(
+        writes,
+        batch,
+        signal,
+        unreadable,
+        skipped,
+        landed,
+        owe,
+        baseItem,
+      );
+    } finally {
+      const targets = this.#targets;
+      this.#targets = undefined;
+      await targets?.settle();
+    }
+    return { unreadable, skipped };
+  }
+
+  async #loadWrites(
+    writes: readonly LoadKey[],
+    batch: DurableWriteBatch,
+    signal: AbortSignal,
+    unreadable: StoredUnreadableRecord[],
+    skipped: Set<string>,
+    landed: (key: LoadKey) => void,
+    owe: (file: OwedFile) => void,
+    baseItem: (namespace: string, record_key: string) => TargetItem,
+  ): Promise<void> {
     for (const { namespace, record_key } of writes) {
       signal.throwIfAborted();
       const content = this.#state.loadContent(namespace, record_key);
@@ -4385,11 +4572,9 @@ export class SqliteReadModel implements ReadModel {
           legacyBlobDetail(record_key, content.blob.legacyKey.toString()),
         );
       }
-      const target = await this.#targetOf(
-        namespace,
-        RecordKey.create(record_key),
-        true,
-        "the compacted base",
+      const target = await this.#takeTarget(
+        `${namespace}\0${record_key}`,
+        baseItem(namespace, record_key),
       );
       if (target === undefined) {
         // A replay never records ownership of a key the guards skip; the
@@ -4469,7 +4654,6 @@ export class SqliteReadModel implements ReadModel {
         );
       }
     }
-    return { unreadable, skipped };
   }
 
   /**
@@ -4500,6 +4684,7 @@ export class SqliteReadModel implements ReadModel {
     source: ChangeSource,
   ): Promise<void> {
     // a removal can take emptied directories with it
+    await this.#targets?.settle();
     await this.#drainPool();
     await this.#noteRewriting(key, path);
     await this.#guardExisting(
@@ -4840,6 +5025,9 @@ export class SqliteReadModel implements ReadModel {
     ) {
       return "skipped";
     }
+    // Target resolution just found nothing there; an existing file is always
+    // looked at again, as it stands just before its overwrite.
+    if (!removal && !force && this.#paths.nothingAt(path)) return undefined;
     let file: Deno.FsFile;
     try {
       const info = await Deno.lstat(path);
@@ -5878,6 +6066,8 @@ class PathCache {
   readonly #resolved = new Map<string, string>();
   readonly #absent = new Map<string, readonly string[]>();
   readonly #existing = new Set<string>();
+  readonly #nothingAt = new Set<string>();
+  #generation = 0;
   /** kept for one page at most, and forgotten whenever a write adds a name */
   readonly #listings = new Map<string, ListedNames | "unchecked">();
   /** warned about once each, across sections */
@@ -5906,7 +6096,27 @@ class PathCache {
   takeAbsent(path: string): readonly string[] | undefined {
     const dirs = this.#absent.get(path);
     this.#absent.delete(path);
+    this.#nothingAt.delete(path);
     return dirs;
+  }
+
+  absentOf(path: string): readonly string[] | undefined {
+    return this.#absent.get(path);
+  }
+
+  /** set by a put's target resolution, until its write takes the path */
+  noteNothingAt(path: string, nothing: boolean): void {
+    if (nothing) this.#nothingAt.add(path);
+    else this.#nothingAt.delete(path);
+  }
+
+  nothingAt(path: string): boolean {
+    return this.#nothingAt.has(path);
+  }
+
+  /** changes whenever the cache is cleared */
+  get generation(): number {
+    return this.#generation;
   }
 
   /**
@@ -5991,7 +6201,9 @@ class PathCache {
     this.#resolved.clear();
     this.#absent.clear();
     this.#existing.clear();
+    this.#nothingAt.clear();
     this.#listings.clear();
+    this.#generation++;
   }
 }
 
