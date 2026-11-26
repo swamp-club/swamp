@@ -4327,7 +4327,7 @@ export class SqliteReadModel implements ReadModel {
           break;
         }
         point = page.point;
-        held.push(...page.entries);
+        for (const entry of page.entries) held.push(entry);
         after = page.next;
         if (held.length >= BASE_STAGE_ENTRIES || after === undefined) {
           this.#state.stageBase(held);
