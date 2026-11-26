@@ -186,6 +186,18 @@ export interface UnifiedDataRepository {
   /** the resource writer's size limits; absent means the defaults */
   resolveResourceSizePolicy?(): Promise<ResourceSizePolicy>;
 
+  /**
+   * a command whose read model applies only part of the feed applies what a
+   * read across behaviors needs first; nothing outside such a command
+   */
+  beforeWideRead?(): Promise<void>;
+
+  /** as beforeWideRead, for a read of one behavior's data */
+  beforeModelRead?(type: ModelTypeInput, modelId: string): Promise<void>;
+
+  /** whether reads run in such a command, so their barriers do anything */
+  readsScoped?(): boolean;
+
   findAllGlobal(options?: FindAllGlobalOptions): Promise<
     Array<{ data: Data; modelType: ModelType; modelId: string }>
   >;

@@ -121,6 +121,7 @@ import {
   versionsBeyondKeep,
 } from "../../domain/data/keep_last_versions.ts";
 import { currentDiagnosticTally } from "../../domain/diagnostics/diagnostic_phase.ts";
+import { dataReadBarrier } from "./data_read_barrier.ts";
 import {
   describeUnreadableVersionReason,
   type LatestMarkerState,
@@ -701,9 +702,32 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
    * walked in name order at each level so a freshly backfilled catalog has the
    * same rowid order on every filesystem
    */
+  async beforeWideRead(): Promise<void> {
+    await dataReadBarrier()?.beforeWideRead();
+  }
+
+  readsScoped(): boolean {
+    return dataReadBarrier()?.active() === true;
+  }
+
+  async beforeModelRead(type: ModelTypeInput, modelId: string): Promise<void> {
+    await dataReadBarrier()?.beforeModelRead(
+      coerceModelType(type).normalized,
+      modelId,
+    );
+  }
+
+  private assertModelReadable(type: ModelTypeInput, modelId: string): void {
+    dataReadBarrier()?.assertModelReadable(
+      coerceModelType(type).normalized,
+      modelId,
+    );
+  }
+
   async findAllGlobal(options?: FindAllGlobalOptions): Promise<
     Array<{ data: Data; modelType: ModelType; modelId: string }>
   > {
+    await this.beforeWideRead();
     const results: Array<
       { data: Data; modelType: ModelType; modelId: string }
     > = [];
@@ -726,6 +750,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   ): Promise<
     Array<{ data: Data; modelType: ModelType; modelId: string }>
   > {
+    await this.beforeWideRead();
     const modelType = coerceModelType(type);
     const typeDir = this.getTypeDir(modelType);
     const results: Array<
@@ -769,6 +794,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   async findAllGlobalSince(
     cutoff: Date,
   ): Promise<Array<{ data: Data; modelType: ModelType; modelId: string }>> {
+    await this.beforeWideRead();
     const results: Array<
       { data: Data; modelType: ModelType; modelId: string }
     > = [];
@@ -832,8 +858,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     }
   }
 
-  iterateDataNames(): AsyncIterable<DataNameKey> {
-    return this.walkDataNames(this.getBaseDir(), []);
+  async *iterateDataNames(): AsyncIterable<DataNameKey> {
+    await this.beforeWideRead();
+    yield* this.walkDataNames(this.getBaseDir(), []);
   }
 
   private async *walkDataNames(
@@ -953,13 +980,14 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     return false;
   }
 
-  findByName(
+  async findByName(
     type: ModelTypeInput,
     modelId: string,
     dataName: string,
     version?: number,
   ): Promise<Data | null> {
-    return this.findByNameWithDepth(
+    await this.beforeModelRead(type, modelId);
+    return await this.findByNameWithDepth(
       coerceModelType(type),
       modelId,
       dataName,
@@ -1076,6 +1104,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     modelId: string,
     dataName: string,
   ): Promise<number[]> {
+    await this.beforeModelRead(type, modelId);
     const dataNameDir = this.getDataNameDir(type, modelId, dataName);
     const versions: number[] = [];
 
@@ -1107,6 +1136,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       logger
         .debug`findAllForModel called with model name ${modelId} instead of a UUID — use context.readModelData(${modelId}) for cross-model access by name`;
     }
+    await this.beforeModelRead(type, modelId);
     return await this.collectModelData(coerceModelType(type), modelId);
   }
 
@@ -1118,6 +1148,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       logger
         .debug`iterateForModel called with model name ${modelId} instead of a UUID — use context.readModelData(${modelId}) for cross-model access by name`;
     }
+    await this.beforeModelRead(type, modelId);
     const coerced = coerceModelType(type);
     let dataNames: string[];
     try {
@@ -1530,6 +1561,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     dataName: string,
     version?: number,
   ): AsyncIterable<Uint8Array> {
+    await this.beforeModelRead(type, modelId);
     const versionToRead = version ??
       await this.getLatestVersion(type, modelId, dataName);
     if (versionToRead === null) return;
@@ -1575,6 +1607,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       logger
         .debug`getContent called with model name ${modelId} instead of a UUID — use context.readModelData(${modelId}) for cross-model access by name`;
     }
+    await this.beforeModelRead(type, modelId);
     type = coerceModelType(type);
     const versionToRead = version ??
       await this.getLatestVersion(type, modelId, dataName);
@@ -1616,6 +1649,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     version: number,
     maxBytes: number,
   ): Promise<Uint8Array | null> {
+    await this.beforeModelRead(type, modelId);
     type = coerceModelType(type);
     const contentPath = this.getContentPath(type, modelId, dataName, version);
     await this.assertModelReadPath(contentPath, type, modelId);
@@ -1654,6 +1688,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     version?: number,
     knownSize?: number,
   ): Promise<ContentAvailability> {
+    await this.beforeModelRead(type, modelId);
     if (!this.hydrateFile && !this.unreadableContent) return "current";
     const modelType = coerceModelType(type);
     const versionToRead = version ??
@@ -2748,6 +2783,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     modelId: string,
     dataName: string,
   ): number | null {
+    this.assertModelReadable(type, modelId);
     const latestPath = join(
       this.getDataNameDir(type, modelId, dataName),
       "latest",
@@ -2776,6 +2812,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     dataName: string,
     version?: number,
   ): Data | null {
+    this.assertModelReadable(type, modelId);
     return this.findByNameSyncWithDepth(type, modelId, dataName, version, 0);
   }
 
@@ -2831,6 +2868,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     modelId: string,
     dataName: string,
   ): number[] {
+    this.assertModelReadable(type, modelId);
     const dataNameDir = this.getDataNameDir(type, modelId, dataName);
     const versions: number[] = [];
 
@@ -2860,6 +2898,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     dataName: string,
     version?: number,
   ): Uint8Array | null {
+    this.assertModelReadable(type, modelId);
     const versionToRead = version ??
       this.getLatestVersionSync(type, modelId, dataName);
     if (versionToRead === null) return null;
@@ -2886,6 +2925,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   findAllForModelSync(type: ModelType, modelId: string): Data[] {
+    this.assertModelReadable(type, modelId);
     return this.collectModelDataSync(type, modelId);
   }
 
@@ -2937,6 +2977,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   findAllGlobalSync(options?: FindAllGlobalOptions): Array<
     { data: Data; modelType: ModelType; modelId: string }
   > {
+    dataReadBarrier()?.assertWideReadable();
     const results: Array<
       { data: Data; modelType: ModelType; modelId: string }
     > = [];
@@ -2949,6 +2990,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     modelName: string,
     dataName: string,
   ): Promise<Array<{ data: Data; modelType: ModelType; modelId: string }>> {
+    await this.beforeWideRead();
     const results: Array<
       { data: Data; modelType: ModelType; modelId: string }
     > = [];
@@ -3087,6 +3129,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     modelId: string,
     options?: { dryRun?: boolean },
   ): Promise<GarbageCollectionResult> {
+    await this.beforeModelRead(type, modelId);
     const dryRun = options?.dryRun ?? false;
     let versionsRemoved = 0;
     let bytesReclaimed = 0;
@@ -3120,6 +3163,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   async collectDeclaredGarbageBatch(
     options: DeclaredGarbageBatchOptions,
   ): Promise<DeclaredGarbageBatchResult> {
+    await this.beforeWideRead();
     const result: DeclaredGarbageBatchResult = {
       versionsRemoved: 0,
       bytesReclaimed: 0,

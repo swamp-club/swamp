@@ -839,6 +839,58 @@ export class ModelResolver {
   }
 
   /**
+   * a command whose read model applies only part of the feed applies each
+   * behavior the expression names before its synchronous reads; a read it
+   * cannot pin to named behaviors applies the whole feed
+   */
+  private async applyBeforeEvaluation(
+    expression: string,
+    coordsOf: (name: string) => Promise<ModelCoordinates[]>,
+  ): Promise<void> {
+    const dataRepo = this.dataRepo;
+    if (
+      dataRepo?.readsScoped?.() !== true ||
+      dataRepo.beforeModelRead === undefined ||
+      dataRepo.beforeWideRead === undefined ||
+      !/\b(?:model|data|file)\b/.test(expression)
+    ) {
+      return;
+    }
+    const refs = analyzeExpression(expression);
+    if (refs.unanalyzable || refs.dataWide || refs.runsComputed) {
+      await dataRepo.beforeWideRead();
+      return;
+    }
+    for (const name of refs.dataTargets) {
+      const coords = parseNamespacedModelName(name).namespace === undefined
+        ? await coordsOf(name)
+        : [];
+      // read by its name tag across behaviors
+      if (coords.length === 0) {
+        await dataRepo.beforeWideRead();
+        return;
+      }
+      for (const { modelType, modelId } of coords) {
+        await dataRepo.beforeModelRead(modelType, modelId);
+      }
+      // the model map with no data under its coordinates scans every behavior
+      if (refs.syncDataReads.has(name)) {
+        let held = false;
+        for (const { modelType, modelId } of coords) {
+          if ((await dataRepo.findAllForModel(modelType, modelId)).length > 0) {
+            held = true;
+            break;
+          }
+        }
+        if (!held) {
+          await dataRepo.beforeWideRead();
+          return;
+        }
+      }
+    }
+  }
+
+  /**
    * ensures only what synchronous readers read (text resources, files of the
    * specs read), once per context; loaded maps get changed items; a download
    * error fails the evaluation, as it fails data get
@@ -1354,6 +1406,13 @@ export class ModelResolver {
         for (const name of extractOwnNamespaceDataModelNames(expression)) {
           await resolveIdentities(name);
         }
+        await this.applyBeforeEvaluation(
+          expression,
+          (name) =>
+            readSet?.coordsByRef.get(name) !== undefined
+              ? Promise.resolve(readSet.coordsByRef.get(name)!)
+              : resolveIdentities(name),
+        );
         if (readSet) await this.ensureReadSet(expression, readSet);
       },
     };

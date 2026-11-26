@@ -30,6 +30,7 @@ import { StepTask } from "../src/domain/workflows/step_task.ts";
 import { TriggerCondition } from "../src/domain/workflows/trigger_condition.ts";
 import { Workflow } from "../src/domain/workflows/workflow.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
+import { SCOPED_FEED_APPLY_MS } from "../src/infrastructure/datastore_v3/scoped_read_model.ts";
 import {
   type Client,
   latestOf,
@@ -57,10 +58,10 @@ await initializeLogging({});
 
 /**
  * How long a second process on a member's checkout may read a stale copy of
- * another behavior while the member runs a long write. Undefined waits for
- * the write to end; set it to the scoped feed-watch apply interval plus slack.
+ * another behavior while the member runs a long write: the scoped command's
+ * interval apply, plus slack.
  */
-const READER_LAG_BOUND_MS: number | undefined = undefined;
+const READER_LAG_BOUND_MS: number | undefined = SCOPED_FEED_APPLY_MS + 15_000;
 
 // alice-token authenticates as user:caller, bob-token as user:bob
 const A_TOKEN = "alice-token";

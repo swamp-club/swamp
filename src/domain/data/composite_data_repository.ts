@@ -65,6 +65,18 @@ export class CompositeUnifiedDataRepository implements UnifiedDataRepository {
       Promise.resolve(ResourceSizePolicy.DEFAULT);
   }
 
+  async beforeWideRead(): Promise<void> {
+    await this.persistent.beforeWideRead?.();
+  }
+
+  async beforeModelRead(type: ModelTypeInput, modelId: string): Promise<void> {
+    await this.persistent.beforeModelRead?.(type, modelId);
+  }
+
+  readsScoped(): boolean {
+    return this.persistent.readsScoped?.() === true;
+  }
+
   private routeWrite(data: Data): UnifiedDataRepository {
     return data.lifetime === "ephemeral" ? this.ephemeral : this.persistent;
   }

@@ -136,7 +136,10 @@ import {
   isUnpublishedDataError,
   type WrittenVersion,
 } from "../../domain/datastore/datastore_sync_service.ts";
-import { watchV3ServeFeeds } from "../../infrastructure/datastore_v3/v3_repo_context.ts";
+import {
+  scopeV3ReadModelApplies,
+  watchV3ServeFeeds,
+} from "../../infrastructure/datastore_v3/v3_repo_context.ts";
 import {
   DEFAULT_STALE_TTL_MS,
   RunTrackerStore,
@@ -407,6 +410,9 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
           "method",
           "run",
         ]);
+        // in a serve-member checkout the read model applies what the run
+        // locks or reads; --last-evaluated judges the whole read model
+        if (options.lastEvaluated !== true) scopeV3ReadModelApplies();
         const {
           repoDir,
           repoContext,

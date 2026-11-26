@@ -445,6 +445,7 @@ export class DataQueryService {
     options?: LatestRecordOptions,
   ): Promise<DataRecord | null> {
     const includePath = options?.includeContentPath ?? false;
+    await this.dataRepo.beforeWideRead?.();
     const populated = this.catalogStore.isPopulated();
     // Every lookup below goes through this one query, so excluded types are
     // dropped in SQL on every path and never shadow another type's row.
@@ -884,6 +885,7 @@ export class DataQueryService {
   }
 
   async ensurePopulated(): Promise<void> {
+    await this.dataRepo.beforeWideRead?.();
     if (this.catalogStore.isPopulated()) return;
     const inFlight = this.backfillInFlight();
     if (inFlight) {

@@ -202,6 +202,20 @@ import {
   serveOfflineAt,
 } from "./serve_offline.ts";
 import { type ServeFeedWatch, watchServeFeed } from "./serve_feed_client.ts";
+import {
+  applyPartitions,
+  backlogPastBound,
+  partitionPending,
+  pendingAlwaysApplied,
+  pendingCommitsIn,
+  pendingPartitions,
+  SCOPED_FEED_APPLY_MS,
+  startPeriodicApply,
+} from "./scoped_read_model.ts";
+import {
+  type DataReadBarrier,
+  setDataReadBarrier,
+} from "../persistence/data_read_barrier.ts";
 import { processRuntimeSlot } from "../runtime/process_runtime.ts";
 
 const logger = getSwampLogger(["datastore", "v3"]);
@@ -346,6 +360,18 @@ interface RepoContextState {
   readonly follows: Map<string, V3FollowInFlight>;
   followWorkForTesting: ((signal: AbortSignal) => Promise<void>) | undefined;
   teardownTiming: { probeGraceMs: number; releaseBoundMs: number };
+  /** set while a command applies only the partitions it reads */
+  scoped: ScopedCommand | undefined;
+  scopedFeedApplyMs: number;
+  scopedTripwire: boolean;
+}
+
+interface ScopedCommand {
+  /**
+   * partitions each handle applied under its lock: the commits past them are
+   * the command's own, which its files already hold
+   */
+  readonly locked: Map<V3Datastore, Set<string>>;
 }
 
 const repoState = processRuntimeSlot<RepoContextState>(() => ({
@@ -386,6 +412,9 @@ const repoState = processRuntimeSlot<RepoContextState>(() => ({
     probeGraceMs: STORAGE_PROBE_GRACE_MS,
     releaseBoundMs: UNREACHABLE_RELEASE_BOUND_MS,
   },
+  scoped: undefined,
+  scopedFeedApplyMs: SCOPED_FEED_APPLY_MS,
+  scopedTripwire: false,
 }));
 
 /** a follow aborted at close honours it before its install; past this it is left */
@@ -1228,33 +1257,205 @@ export function goServeOfflineAtLock(
  */
 const caughtUpFromServe = new WeakSet<V3Datastore>();
 
+/** a lock taken for a behavior or a workflow run, whose partitions it guards */
+export type V3LockedScope =
+  | { readonly kind: "model"; readonly type: string; readonly id: string }
+  | { readonly kind: "run"; readonly runId: string };
+
+/**
+ * `model method run` in a serve-member checkout calls it before its
+ * repositories open: its read model applies the partitions it locks or reads,
+ * with config, the lockfile and auto-definitions, not the whole feed; the
+ * cursor stays where the last whole apply left it. Ends when the datastores
+ * close
+ */
+export function scopeV3ReadModelApplies(): void {
+  const state = repoState();
+  if (state.scoped !== undefined) return;
+  state.scoped = { locked: new Map() };
+  setDataReadBarrier(scopedReadBarrier());
+}
+
+export function setScopedFeedApplyMsForTesting(ms: number): Disposable {
+  const state = repoState();
+  const before = state.scopedFeedApplyMs;
+  state.scopedFeedApplyMs = ms;
+  return {
+    [Symbol.dispose]: () => {
+      state.scopedFeedApplyMs = before;
+    },
+  };
+}
+
+/** a sync read of a partition with unapplied commits throws, in a scoped command */
+export function scopedSyncReadTripwireForTesting(): Disposable {
+  const state = repoState();
+  state.scopedTripwire = true;
+  return {
+    [Symbol.dispose]: () => {
+      state.scopedTripwire = false;
+    },
+  };
+}
+
+export class ScopedSyncReadError extends Error {
+  constructor(detail: string) {
+    super(`A sync read in a scoped command found ${detail} unapplied`);
+    this.name = "ScopedSyncReadError";
+  }
+}
+
+/** a serve member's writer copy, in a scoped command */
+function scopedHandles(): V3Datastore[] {
+  if (repoState().scoped === undefined) return [];
+  return [...repoState().opened.values()].filter((handle) =>
+    handle.catchUpForWrite !== undefined &&
+    serveUpstreamAt(handle.datastorePath) !== undefined
+  );
+}
+
+function lockedHere(handle: V3Datastore, partition: PartitionKey): boolean {
+  return repoState().scoped?.locked.get(handle)?.has(partition.toString()) ===
+    true;
+}
+
+function modelPartitionOf(
+  modelType: string,
+  modelId: string,
+): PartitionKey | undefined {
+  if (!isUuid(modelId)) return undefined;
+  try {
+    return PartitionKey.forModel(modelType, modelId.toLowerCase());
+  } catch {
+    return undefined;
+  }
+}
+
+function lockedPartitionsOf(
+  handle: V3Datastore,
+  locked: V3LockedScope | undefined,
+): PartitionKey[] {
+  if (locked === undefined) return [];
+  if (locked.kind === "run") {
+    return [
+      ...handle.commitStore.runPartitionsOf(handle.namespace, locked.runId),
+    ];
+  }
+  const partition = modelPartitionOf(locked.type, locked.id);
+  return partition === undefined ? [] : [partition];
+}
+
+/**
+ * another behavior's partition is applied before it is read; a read across
+ * behaviors applies the whole feed, unless only the command's own commits are
+ * pending
+ */
+function scopedReadBarrier(): DataReadBarrier {
+  const othersPending = (handle: V3Datastore) =>
+    pendingPartitions(handle).filter((partition) =>
+      !lockedHere(handle, partition)
+    );
+  return {
+    active: () => scopedHandles().length > 0,
+    async beforeModelRead(modelType, modelId) {
+      const partition = modelPartitionOf(modelType, modelId);
+      if (partition === undefined) return;
+      for (const handle of scopedHandles()) {
+        if (lockedHere(handle, partition)) continue;
+        await applyPartitions(
+          handle,
+          [partition],
+          new AbortController().signal,
+        );
+      }
+    },
+    async beforeWideRead() {
+      for (const handle of scopedHandles()) {
+        if (othersPending(handle).length === 0) continue;
+        // as the feed watch's whole catch-up: a commit of this command met
+        // while one of its units is open leaves its files alone
+        await (handle.catchUpReadModel?.() ?? handle.catchUp());
+      }
+    },
+    assertModelReadable(modelType, modelId) {
+      if (!repoState().scopedTripwire) return;
+      const partition = modelPartitionOf(modelType, modelId);
+      if (partition === undefined) return;
+      for (const handle of scopedHandles()) {
+        if (lockedHere(handle, partition)) continue;
+        if (partitionPending(handle, partition)) {
+          throw new ScopedSyncReadError(`partition ${partition}`);
+        }
+      }
+    },
+    assertWideReadable() {
+      if (!repoState().scopedTripwire) return;
+      for (const handle of scopedHandles()) {
+        const pending = othersPending(handle).filter((partition) =>
+          partition.kind === "model"
+        );
+        if (pending.length > 0) {
+          throw new ScopedSyncReadError(`partitions ${pending.join(", ")}`);
+        }
+      }
+    },
+  };
+}
+
+/**
+ * a scoped command's open: the whole feed when the read model never completed
+ * or lags past the bound, before anything is staged; otherwise only config,
+ * the lockfile and auto-definitions
+ */
+async function applyAtScopedOpen(handle: V3Datastore): Promise<void> {
+  if (!handle.readModel.isComplete() || await backlogPastBound(handle)) {
+    await handle.catchUpReadModel!();
+    return;
+  }
+  await applyPartitions(
+    handle,
+    pendingAlwaysApplied(handle),
+    new AbortController().signal,
+  );
+}
+
 /**
  * does nothing for a datastore not read through serve, so serve itself never
  * watches; the watches stop when the datastores close, before anything else
- * closes
+ * closes. A scoped command applies the whole feed at an interval instead of
+ * at each frame
  */
 export function watchV3ServeFeeds(): void {
   for (const handle of [...repoState().opened.values()]) {
     const binding = serveUpstreamAt(handle.datastorePath);
     if (binding === undefined) continue;
+    // a writer hold that left its catch-up to the lock holds the feed's
+    // until the lock's has applied
+    const ready = async (signal: AbortSignal) => {
+      const deferred = repoState().deferredCatchUps.get(handle);
+      if (deferred === undefined) return;
+      signal.throwIfAborted();
+      await Promise.race([
+        deferred.promise,
+        new Promise<void>((_, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), {
+            once: true,
+          });
+        }),
+      ]);
+    };
+    if (scopedHandles().includes(handle)) {
+      repoState().feedWatches.push(startPeriodicApply({
+        intervalMs: repoState().scopedFeedApplyMs,
+        ready,
+        apply: (signal) => handle.catchUp(signal),
+      }));
+      continue;
+    }
     repoState().feedWatches.push(watchServeFeed({
       target: binding.target,
       catchUp: (signal) => handle.catchUp(signal),
-      // a writer hold that left its catch-up to the lock holds the feed's
-      // until the lock's has applied
-      ready: async (signal) => {
-        const deferred = repoState().deferredCatchUps.get(handle);
-        if (deferred === undefined) return;
-        signal.throwIfAborted();
-        await Promise.race([
-          deferred.promise,
-          new Promise<void>((_, reject) => {
-            signal.addEventListener("abort", () => reject(signal.reason), {
-              once: true,
-            });
-          }),
-        ]);
-      },
+      ready,
       ...(handle.serveFeedCursor !== undefined
         ? { appliedCursor: () => handle.serveFeedCursor!() }
         : {}),
@@ -1293,6 +1494,7 @@ export async function catchUpV3HandlesAt(
   options?: CatchUpOptions,
   delivered?: DeliveredCatchUp,
   maxCommits?: number,
+  locked?: V3LockedScope,
 ): Promise<void> {
   const path = resolve(datastorePath);
   const handles = [...repoState().opened.values()].filter((handle) =>
@@ -1300,6 +1502,12 @@ export async function catchUpV3HandlesAt(
   );
   for (const handle of handles) {
     if (handle.catchUpForWrite !== undefined) {
+      // a scoped command applies what the lock guards; a read model never
+      // completed applies the whole feed
+      const scoped = scopedHandles().includes(handle) &&
+          handle.readModel.isComplete()
+        ? lockedPartitionsOf(handle, locked)
+        : undefined;
       try {
         await handle.catchUpForWrite(undefined, {
           // a page asked for one copy is that copy's alone
@@ -1308,7 +1516,9 @@ export async function catchUpV3HandlesAt(
             : {}),
           ...(maxCommits !== undefined ? { maxCommits } : {}),
         });
-        if (maxCommits !== undefined) {
+        if (maxCommits !== undefined && scoped !== undefined) {
+          await assertScopedReadModelWithin(handle, maxCommits, scoped);
+        } else if (maxCommits !== undefined) {
           await handle.assertReadModelWithin?.(maxCommits);
         }
       } catch (error) {
@@ -1323,12 +1533,47 @@ export async function catchUpV3HandlesAt(
         throw error;
       }
       endDeferral(handle);
+      if (scoped !== undefined) {
+        await applyPartitions(
+          handle,
+          [...scoped, ...pendingAlwaysApplied(handle)],
+          options?.ignoresStop === true
+            ? new AbortController().signal
+            : commandStopSignal(),
+        );
+        const marks = repoState().scoped?.locked;
+        if (marks !== undefined) {
+          const held = marks.get(handle) ?? new Set<string>();
+          for (const partition of scoped) held.add(partition.toString());
+          marks.set(handle, held);
+        }
+        continue;
+      }
       await (handle.catchUpReadModel?.(undefined, options) ??
         handle.catchUp(undefined, options));
     } else {
       await handle.catchUp(undefined, options);
     }
   }
+}
+
+/**
+ * as assertReadModelWithin, counting only the partitions a scoped command
+ * applies under its lock; a cursor compacted past still loads a base outside it
+ */
+async function assertScopedReadModelWithin(
+  handle: V3Datastore,
+  maxCommits: number,
+  locked: readonly PartitionKey[],
+): Promise<void> {
+  if (handle.readModel.cursor() < await handle.commitStore.compactionPoint()) {
+    throw new LockCatchUpBehindError(undefined);
+  }
+  const pending = await pendingCommitsIn(handle, [
+    ...locked,
+    ...pendingAlwaysApplied(handle),
+  ]);
+  if (pending > maxCommits) throw new LockCatchUpBehindError(pending);
 }
 
 async function takeV3WriterHold(
@@ -2270,7 +2515,8 @@ export async function v3RepositoryFactoryConfig(
       handle.catchUpReadModel !== undefined
     ) {
       caughtUpFromServe.delete(handle);
-      await handle.catchUpReadModel();
+      if (scopedHandles().includes(handle)) await applyAtScopedOpen(handle);
+      else await handle.catchUpReadModel();
     } else {
       await handle.catchUp();
     }
@@ -2643,6 +2889,10 @@ export async function closeV3Datastores(
         repoState().feedWatches.splice(0).map((watch) => watch.stop()),
       ),
   );
+  if (repoState().scoped !== undefined) {
+    repoState().scoped = undefined;
+    setDataReadBarrier(undefined);
+  }
   closeServeLockClients();
   let unreachable = options.storageUnreachable === true;
   // Serve's shutdown deadline, kept for the release once the sync's turn

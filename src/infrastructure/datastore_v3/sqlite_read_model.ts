@@ -715,6 +715,21 @@ export class SqliteReadModel implements ReadModel {
     return this.#state.cursor();
   }
 
+  /** the partition's last seq this read model applied, a page in flight included */
+  appliedSeq(namespace: string, partition: PartitionKey): number {
+    return this.#state.appliedSeq(namespace, partition.toString());
+  }
+
+  /** as appliedSeq, once no page is in flight */
+  settledAppliedSeq(
+    namespace: string,
+    partition: PartitionKey,
+  ): Promise<number> {
+    return this.#afterPage(() =>
+      this.#state.appliedSeq(namespace, partition.toString())
+    );
+  }
+
   /** false until a catch-up has reached the end of the feed */
   isComplete(): boolean {
     return this.#state.isComplete();

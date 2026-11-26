@@ -476,6 +476,8 @@ export class DefaultDataLifecycleService implements DataLifecycleService {
     };
     const repo = this.dataRepo;
     if (!repo.findVersionsCreatedBefore) return result;
+    // the sync latest-version reads below judge every behavior's versions
+    await repo.beforeWideRead?.();
 
     // Names already settled (deleted whole, or skipped) and versions already
     // counted. A dry run deletes nothing, so later pages list them again.

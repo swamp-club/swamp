@@ -2956,6 +2956,48 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
     return Promise.resolve(keys);
   }
 
+  /**
+   * each partition in the key ranges with a commit stored past `cursor`, and
+   * its greatest seq there; reads no commit body
+   */
+  partitionHeadsSince(
+    namespace: string,
+    cursor: number,
+    ranges: readonly { readonly from: string; readonly to: string }[],
+  ): readonly { readonly partition: string; readonly seq: number }[] {
+    this.#assertOpen();
+    if (ranges.length === 0) return [];
+    const within = ranges.map(() => "(partition >= ? AND partition < ?)")
+      .join(" OR ");
+    return this.#db.prepare(
+      "SELECT partition, MAX(seq) AS seq FROM commits " +
+        `WHERE cursor > ? AND namespace = ? AND (${within}) ` +
+        "GROUP BY partition ORDER BY partition",
+    ).all(
+      cursor,
+      namespace,
+      ...ranges.flatMap((range) => [range.from, range.to]),
+    ) as { partition: string; seq: number }[];
+  }
+
+  /** when the first commit stored past `cursor` was made, if any is */
+  firstChangeAtSince(cursor: number): string | undefined {
+    this.#assertOpen();
+    const row = this.#db.prepare(
+      "SELECT at FROM commits WHERE cursor > ? ORDER BY cursor LIMIT 1",
+    ).get(cursor) as { at: string } | undefined;
+    return row?.at;
+  }
+
+  /** the partition's head seq, 0 for one never written */
+  headSeq(namespace: string, partition: PartitionKey): number {
+    this.#assertOpen();
+    const row = this.#selectHead.get(namespace, partition.toString()) as
+      | { seq: number }
+      | undefined;
+    return row?.seq ?? 0;
+  }
+
   /** a run's partition names its workflow too, which a lock on the run lacks */
   runPartitionsOf(namespace: string, runId: string): readonly PartitionKey[] {
     this.#assertOpen();

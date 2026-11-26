@@ -327,6 +327,7 @@ import {
   v3BucketNamespacedStoreAt,
   type V3DatastoreConfig,
   v3DatastoreConfigOf,
+  type V3LockedScope,
   type V3OwnerCheck,
   v3RepositoryFactoryConfig,
   v3ServeControlPlaneAt,
@@ -1818,7 +1819,8 @@ function serveLockOf(
   serveKey: string,
   displayKey: string,
   maxWaitMs: number,
-  options?: ServeLockHoldOptions,
+  options: ServeLockHoldOptions | undefined,
+  locked: V3LockedScope,
 ): DistributedLock | undefined {
   if (isCustomDatastoreConfig(config)) return undefined;
   const root = config.path;
@@ -1832,6 +1834,7 @@ function serveLockOf(
         options?.ignoresStop === true ? { ignoresStop: true } : undefined,
         delivered,
         maxCommits,
+        locked,
       );
       nameLockHolder(root);
     },
@@ -2056,6 +2059,7 @@ export async function createModelLock(
     lockKey,
     maxWaitMs,
     options,
+    { kind: "model", type: modelType, id: modelId },
   );
   if (atServe !== undefined) return atServe;
   if (isCustomDatastoreConfig(config)) {
@@ -2131,6 +2135,7 @@ export async function createWorkflowRunLock(
     lockKey,
     maxWaitMs,
     { ignoresStop: true },
+    { kind: "run", runId },
   );
   if (atServe !== undefined) return atServe;
   if (isCustomDatastoreConfig(config)) {
