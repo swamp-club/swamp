@@ -594,6 +594,19 @@ Functions: latestRun("<workflow>"), model("<model name or definition id>"),
   behavior("<behavior name or definition id>")
 ```
 
+The list macros `all`, `exists`, `exists_one`, `filter` and `map` bind a name
+that is in scope only inside the macro body, so it is not checked as a field
+there. The macro's receiver and every other identifier in the body are still
+checked, and the bound name used outside its macro is an unknown field. A bound
+name that matches a field shadows that field inside the body, as cel-js
+evaluates it. This lets a predicate search a list stored in a record's
+attributes, such as the components of a CycloneDX SBOM:
+
+```
+swamp data query 'modelName == "golden-gce" &&
+  attributes.components.exists(c, c.name == "openssl")'
+```
+
 ## Catalog
 
 A SQLite metadata catalog, `_catalog.db`, backs query performance. It lives in
