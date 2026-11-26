@@ -6025,18 +6025,29 @@ async function pathConflict(
     const prefix = join(root, ...segments.slice(0, i));
     if (i < segments.length && paths.isDirectory(prefix)) continue;
     let info: Deno.FileInfo;
+    let linked = false;
+    const at = segments.slice(0, i).join("/");
     try {
       info = await Deno.lstat(prefix);
       if (info.isSymlink) {
+        linked = true;
         paths.noteLink();
         info = await Deno.stat(prefix);
       }
     } catch (error) {
-      if (error instanceof Deno.errors.NotFound) return { missingFrom: i };
-      throw error;
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+      // mkdir cannot replace a link to nothing, so every retry would fail
+      if (linked && i < segments.length) {
+        return {
+          conflict: {
+            kind: "under-file",
+            reason: `${at} is a link to nothing, so it cannot hold a record`,
+          },
+        };
+      }
+      return { missingFrom: i };
     }
     if (info.isDirectory) paths.markDirectory(prefix);
-    const at = segments.slice(0, i).join("/");
     if (i < segments.length && !info.isDirectory) {
       return {
         conflict: {

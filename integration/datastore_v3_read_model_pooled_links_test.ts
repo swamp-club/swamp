@@ -19,7 +19,7 @@
 
 import { assertEquals } from "@std/assert";
 import { join, relative } from "@std/path";
-import { putOp } from "../src/domain/datastore_v3/op.ts";
+import { putOp, tombstoneOp } from "../src/domain/datastore_v3/op.ts";
 import { RecordKey } from "../src/domain/datastore_v3/record_key.ts";
 import {
   base64,
@@ -201,4 +201,74 @@ Deno.test("SqliteReadModel.catchUp: a pooled put of data/ß waits for the pooled
       `end ${join("SS", "a")}`,
     ]);
   });
+});
+
+/** the property's counterexample: put l/a once l links to a removed a */
+async function playDanglingLink(
+  env: V3Env,
+  options: Partial<SqliteReadModelOptions>,
+): Promise<unknown> {
+  await Deno.mkdir(dataPath(env), { recursive: true });
+  await Deno.symlink("a", dataPath(env, "l"), { type: "dir" });
+  const intent = (kind: "data.save" | "data.delete") =>
+    modelIntent({ kind, name: "n", version: 1 });
+  const put = async (key: string) =>
+    await putOp({
+      intent: intent("data.save"),
+      key: RecordKey.create(key),
+      inline: base64("p"),
+    });
+  const remove = (key: string) =>
+    tombstoneOp({ intent: intent("data.delete"), key: RecordKey.create(key) });
+  const commits = [
+    [await put("data/a")],
+    [remove("data/a/a")],
+    [remove("data/l"), remove("data/A")],
+    [remove("data/a"), await put("data/l/a")],
+    [remove("data/a")],
+  ];
+  for (const [i, ops] of commits.entries()) {
+    await env.store.append(
+      commitOf({ seq: i + 1, partition: PARTITION, namespace: "", ops }),
+    );
+  }
+  const readModel = env.openReadModel({
+    pageSize: 2,
+    spellingFolding: "canonical",
+    bootIdentity: () => Promise.resolve("boot-1"),
+    ...options,
+  });
+  try {
+    let outcome = "ok";
+    try {
+      await readModel.catchUp(AbortSignal.timeout(30_000));
+    } catch (error) {
+      outcome = (error as Error).message;
+    }
+    const index = (await readModel.liveRecords("", PARTITION)).map((record) =>
+      record.key.toString()
+    );
+    return { outcome, index, tree: await snapshot(dataPath(env)) };
+  } finally {
+    await readModel.close();
+  }
+}
+
+Deno.test({
+  name:
+    "SqliteReadModel.catchUp: a put under a link to nothing is skipped and stays indexed, pooled or one at a time, rather than failing every catch-up",
+  // directory symlinks need a privilege on Windows
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const expected = {
+      outcome: "ok",
+      index: ["data/l/a"],
+      tree: { "data/l": "link:a" },
+    };
+    for (const options of [{ pooledWrites: 1 }, {}]) {
+      await withV3Env(async (env) => {
+        assertEquals(await playDanglingLink(env, options), expected);
+      });
+    }
+  },
 });
