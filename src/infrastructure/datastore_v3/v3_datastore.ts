@@ -991,7 +991,7 @@ function openFilterChecked(
   const catalogStore = withSyncSpan(
     "swamp.datastore.v3.open.catalog",
     {},
-    () => new CatalogStore(v3CatalogPath(repoDir)),
+    () => new CatalogStore(v3CatalogPath(repoDir), { tagsInKeyOrder: true }),
   );
   const readModel = withSyncSpan(
     "swamp.datastore.v3.open.read_model",

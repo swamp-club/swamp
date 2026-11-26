@@ -281,6 +281,15 @@ export function tombstoneOp(props: {
 
 const MAX_REPORTED_METADATA_ISSUES = 10;
 
+/** tags as a data-version op holds them, so equal metadata serializes equally */
+export function tagsInKeyOrder(
+  tags: Readonly<Record<string, string>>,
+): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(tags).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+  );
+}
+
 export function dataVersionOp(props: {
   key: RecordKey;
   metadata: unknown;
@@ -295,14 +304,8 @@ export function dataVersionOp(props: {
       }`,
     );
   }
-  // Tags in key order, so equal metadata serializes equally; frozen, so the
-  // op cannot change after a commit holds it.
-  const tags = Object.fromEntries(
-    Object.entries(parsed.data.tags).sort((
-      [a],
-      [b],
-    ) => (a < b ? -1 : a > b ? 1 : 0)),
-  );
+  // frozen, so the op cannot change after a commit holds it
+  const tags = tagsInKeyOrder(parsed.data.tags);
   return DataVersionOp.build(
     BUILD,
     requireKey(props.key),

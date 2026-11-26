@@ -23,6 +23,7 @@ import { ensureDirSync } from "@std/fs";
 import { getLogger } from "@logtape/logtape";
 import type { SharedDatastoreWriteTracker } from "./shared_datastore_write_tracker.ts";
 import { RECORD_KIND_TAG } from "../../domain/data/data.ts";
+import { tagsInKeyOrder } from "../../domain/datastore_v3/op.ts";
 
 const logger = getLogger(["swamp", "persistence", "catalog"]);
 
@@ -192,6 +193,11 @@ export interface CatalogStoreOptions {
    * repositories, whose writes then invalidate this catalog
    */
   writeTracker?: SharedDatastoreWriteTracker;
+  /**
+   * upsertNewVersion stores tags as a v3 commit carries them, so applying the
+   * checkout's own commit finds its rows already written
+   */
+  tagsInKeyOrder?: boolean;
 }
 
 function rowKey(row: {
@@ -557,6 +563,7 @@ export class CatalogStore {
   private db: DatabaseSync;
   private readonly dbPath: string;
   private readonly writeTracker?: SharedDatastoreWriteTracker;
+  readonly #tagsInKeyOrder: boolean;
   private closed = false;
   // statements of the current connection only: one prepared on a closed
   // connection throws when run
@@ -565,6 +572,7 @@ export class CatalogStore {
   constructor(dbPath: string, options: CatalogStoreOptions = {}) {
     this.dbPath = dbPath;
     this.writeTracker = options.writeTracker;
+    this.#tagsInKeyOrder = options.tagsInKeyOrder === true;
     this.db = this.openConnection(dbPath);
     this.initializeWithRetry();
   }
@@ -786,9 +794,17 @@ export class CatalogStore {
    * so concurrent writers serialize
    */
   upsertNewVersion(row: CatalogRow): void {
+    const stored = this.#tagsInKeyOrder
+      ? {
+        ...row,
+        tags: JSON.stringify(
+          tagsInKeyOrder(JSON.parse(row.tags) as Record<string, string>),
+        ),
+      }
+      : row;
     this.db.exec("BEGIN IMMEDIATE");
     try {
-      this.#upsertNewVersionRows(row);
+      this.#upsertNewVersionRows(stored);
       this.db.exec("COMMIT");
     } catch (error) {
       this.db.exec("ROLLBACK");
