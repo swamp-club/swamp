@@ -9524,7 +9524,10 @@ never reads as absent.
   command, and what it leaves is hydrated when first read.
 - `swamp datastore sync --hydrate` drains every owed file and reports the
   count (`{"mode":"hydrate","filesHydrated":N}` in JSON). On a v2 datastore it
-  is refused with `hydrate_not_supported`.
+  is refused with `hydrate_not_supported`. `datastore sync` takes serve mode
+  (`SERVE_UPSTREAM_COMMANDS`) so `--hydrate` reaches the copy that owes the
+  files; without the flag it refuses a format 3 datastore as before, now
+  without binding its storage.
 
 ### Team mode: leader election and followers (datastore rework Phase 5)
 
