@@ -362,11 +362,7 @@ export function v3CacheRoot(repoDir: string, namespace: string): string {
   return namespace === "" ? swampPath(repoDir) : swampPath(repoDir, namespace);
 }
 
-/**
- * a compacted version's metadata and raw bytes, as the checkout's files hold
- * them: its time is then its writer's `createdAt`. A raw file a lazy checkout
- * owes is hydrated first; one that cannot be is left unread, as never held
- */
+/** a raw file a lazy checkout owes is hydrated first; one that cannot be is left unread */
 export async function compactedVersionInCheckout(
   readModel: Pick<SqliteReadModel, "recordBytes" | "hydrateOwedPath">,
   cacheRoot: string,
