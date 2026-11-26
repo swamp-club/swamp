@@ -207,6 +207,7 @@ const NESTED_RUN_EXEMPT = [
   "src/libswamp/worker/token_revoke.ts",
   "src/libswamp/worker/token_rotate.ts",
   "src/serve/dispatch_service.ts",
+  "src/serve/federation/member_record_store.ts",
   "src/serve/handlers/admin_handlers.ts",
   "src/serve/worker_gateway.ts",
 ];

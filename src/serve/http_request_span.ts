@@ -64,10 +64,15 @@ const DATA_PLANE_ROOT_PATTERN = /^\/(data|bundle)(?:\/|$)/;
 
 /**
  * unknown paths return undefined, including operator webhook routes, which may
- * carry a secret segment, and scanner paths
+ * carry a secret segment, and scanner paths; extraRoutes are fixed paths only
+ * some serves answer
  */
-export function resolveHttpRoute(pathname: string): string | undefined {
+export function resolveHttpRoute(
+  pathname: string,
+  extraRoutes?: ReadonlySet<string>,
+): string | undefined {
   if (EXACT_ROUTES.has(pathname)) return pathname;
+  if (extraRoutes?.has(pathname)) return pathname;
   if (CANCEL_RUN_PATTERN.test(pathname)) return "/api/v1/cancel/{kind}/{id}";
   if (pathname.startsWith("/dashboard/")) return "/dashboard/*";
   const datastore = matchDatastoreRoute(pathname);
@@ -105,8 +110,9 @@ export function withHttpServerSpan(
   req: Request,
   handle: () => Response | Promise<Response>,
   options: ServerSpanOptions = {},
+  extraRoutes?: ReadonlySet<string>,
 ): Promise<Response> {
-  const route = resolveHttpRoute(new URL(req.url).pathname);
+  const route = resolveHttpRoute(new URL(req.url).pathname, extraRoutes);
   const method = KNOWN_METHODS.has(req.method) ? req.method : "_OTHER";
   const name = route ? `${method} ${route}` : method;
   const attributes: Record<string, string> = {
@@ -134,12 +140,13 @@ export function withHttpServerSpan(
  */
 export function traceHttpRequests<A extends Deno.Addr = Deno.Addr>(
   handler: Deno.ServeHandler<A>,
+  extraRoutes?: ReadonlySet<string>,
 ): Deno.ServeHandler<A> {
   return (req, info) => {
     if (isWebSocketUpgrade(req)) return handler(req, info);
     if (matchDatastoreRoute(new URL(req.url).pathname) !== undefined) {
       return handler(req, info);
     }
-    return withHttpServerSpan(req, () => handler(req, info));
+    return withHttpServerSpan(req, () => handler(req, info), {}, extraRoutes);
   };
 }

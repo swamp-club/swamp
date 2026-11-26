@@ -20,7 +20,10 @@
 // registered only through registerFederationModelTypes; models.ts must never import it
 
 import { z } from "zod";
-import { ModelType } from "../model_type.ts";
+import {
+  SERVE_MEMBER_DATA_NAME,
+  SERVE_MEMBER_MODEL_TYPE,
+} from "./serve_member_names.ts";
 import {
   defineModel,
   type MethodContext,
@@ -35,9 +38,7 @@ import {
   ServeMemberRecordSchema,
 } from "../../serve/serve_member.ts";
 
-export const SERVE_MEMBER_MODEL_TYPE = ModelType.create("swamp/serve-member");
-
-export const SERVE_MEMBER_DATA_NAME = "member-main";
+export { SERVE_MEMBER_DATA_NAME, SERVE_MEMBER_MODEL_TYPE };
 
 async function readMember(context: MethodContext): Promise<ServeMember | null> {
   const raw = await context.readResource!(SERVE_MEMBER_DATA_NAME);

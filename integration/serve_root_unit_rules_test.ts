@@ -270,6 +270,9 @@ const PINNED_SERVE_ROOT_ENTRY_POINTS: readonly string[] = [
   // batch or collection makes in a finally is the root's flush
   "src/serve/bookkeeping_gc.ts: reapBatch",
   "src/serve/server_token_gc_deps.ts: createServerTokenGcDeps",
+  // a federation hub's member record writes, from its HTTP routes, the
+  // leader's sweeper timer and its own-record refresh, never inside a root
+  "src/serve/federation/member_record_store.ts: repoMemberMethodRunner",
   // serve shutdown's run interrupts: the push of the interrupted records is the
   // root's flush, bounded by one deadline
   "src/serve/shutdown_interrupt.ts: interruptShutdownRuns",
