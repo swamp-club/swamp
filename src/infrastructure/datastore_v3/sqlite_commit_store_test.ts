@@ -61,6 +61,7 @@ import { catalogNamesOfCommit } from "../../domain/datastore_v3/name_history_rep
 import {
   CommitsCompactedError,
   CommitStoreCorruptError,
+  type CompactionProgress,
   InvalidBasePageTokenError,
   ObservedDropRefusedError,
 } from "../../domain/datastore_v3/commit_store.ts";
@@ -2417,6 +2418,56 @@ Deno.test("SqliteCommitStore.compactHistory: a budget spent inside a batch stops
       })
     );
     assertEquals((await store.history()).compactedThrough, 2);
+  });
+});
+
+Deno.test("SqliteCommitStore.compactHistory: onBatch hears each committed batch's running totals, and the last matches the report", async () => {
+  await withStore(async (store) => {
+    await interleavedHistory(store);
+    const heard: CompactionProgress[] = [];
+    const report = await store.compactHistory(Number.MAX_SAFE_INTEGER, {
+      batchSize: 2,
+      onBatch: (totals) => heard.push(totals),
+    });
+    assertEquals(heard.map((t) => t.batches), [1, 2, 3]);
+    assertEquals(heard.map((t) => t.compacted), [2, 4, 6]);
+    assertEquals(heard.map((t) => t.point), [2, 4, 6]);
+    const last = heard.at(-1)!;
+    assertEquals(
+      {
+        point: last.point,
+        compacted: last.compacted,
+        batches: last.batches,
+        released: last.released,
+        partitions: last.partitions,
+      },
+      {
+        point: report.point,
+        compacted: report.compacted,
+        batches: report.batches,
+        released: report.released,
+        partitions: report.partitions,
+      },
+    );
+  });
+});
+
+Deno.test("SqliteCommitStore.compactHistory: a run stopped by its budget has told onBatch what its committed batches folded", async () => {
+  await withStore(async (store) => {
+    await interleavedHistory(store);
+    const heard: CompactionProgress[] = [];
+    await assertRejects(() =>
+      store.compactHistory(Number.MAX_SAFE_INTEGER, {
+        batchSize: 2,
+        signal: budgetOf(2),
+        onBatch: (totals) => heard.push(totals),
+      })
+    );
+    assertEquals(heard.at(-1)?.compacted, 2);
+    assertEquals(
+      heard.at(-1)?.point,
+      (await store.history()).compactedThrough,
+    );
   });
 });
 
