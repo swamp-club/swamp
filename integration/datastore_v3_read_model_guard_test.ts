@@ -484,10 +484,11 @@ Deno.test({
       for (const path of paths) {
         assert((await Deno.readTextFile(path)).endsWith(" one"));
       }
-      // Each file there is looked at twice: its target resolution reads where
-      // it leads, and the guard reads it as it stands before the overwrite.
+      // Each file there is looked at three times: the path-conflict probe
+      // checks it is no link, its target resolution reads where it leads, and
+      // the guard reads it as it stands before the overwrite.
       await putAll("two");
-      assertEquals(await countingLstats(paths, catchUp), 2 * names.length);
+      assertEquals(await countingLstats(paths, catchUp), 3 * names.length);
       for (const path of paths) {
         assert((await Deno.readTextFile(path)).endsWith(" two"));
       }
