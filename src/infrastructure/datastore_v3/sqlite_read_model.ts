@@ -375,8 +375,9 @@ export interface SqliteReadModelOptions {
   /** TARGETED_COMMITS_CEILING by default */
   readonly targetedCommitsCeiling?: number;
   /**
-   * a base load records a model partition's data content files as owed rather
-   * than writing them; they are written when hydrated. Off by default
+   * a base load and a catch-up record a model partition's data content files
+   * as owed rather than writing them; they are written when hydrated. Off by
+   * default
    */
   readonly lazyModelFiles?: boolean;
 }
@@ -3271,6 +3272,7 @@ export class SqliteReadModel implements ReadModel {
         if (this.#net?.skipsWrite(commit.namespace, key, change.cursor)) {
           continue;
         }
+        if (this.#owesLazily(commit.partition.toString(), key)) continue;
         const refs = byNamespace.get(commit.namespace) ?? [];
         refs.push(put.content.blob);
         byNamespace.set(commit.namespace, refs);
@@ -3540,6 +3542,7 @@ export class SqliteReadModel implements ReadModel {
       const touched = new Set<string>();
       const touchedFolded = new FoldedKeys();
       const unreadable = new Map<string, StoredUnreadableRecord>();
+      const owed: OwedFile[] = [];
       const isConfig = commit.partition.kind === "config";
       const recordsBases = isConfig && this.#writerInstance !== undefined &&
         commit.writer.instance !== this.#writerInstance;
@@ -3572,6 +3575,7 @@ export class SqliteReadModel implements ReadModel {
             touchedFolded,
             unreadable,
             ownWork || this.#othersWrite(namespace, key, commit),
+            owed,
           );
         } finally {
           this.#rewritten = undefined;
@@ -3628,11 +3632,16 @@ export class SqliteReadModel implements ReadModel {
           records,
           versions: projection.versions,
           files,
-          unsynced: this.#boot === undefined
-            ? undefined
-            : { keys: touched, boot: this.#boot },
+          // an owed file was not written, so it has nothing to sync
+          unsynced: this.#boot === undefined ? undefined : {
+            keys: owed.length === 0 ? touched : touched.difference(
+              new Set(owed.map((file) => file.recordKey)),
+            ),
+            boot: this.#boot,
+          },
           decided: touched,
           unreadable,
+          owed,
         }));
       for (const record of unreadable.values()) warnUnreadable(record);
       return true;
@@ -3667,6 +3676,7 @@ export class SqliteReadModel implements ReadModel {
     touchedFolded: FoldedKeys,
     unreadable: Map<string, StoredUnreadableRecord>,
     ownWork: boolean,
+    owed: OwedFile[],
   ): Promise<FileOwnership | undefined> {
     const key = change.key.toString();
     const from = `commit ${commit.seq} of ${commit.partition.toString()}`;
@@ -3759,6 +3769,20 @@ export class SqliteReadModel implements ReadModel {
         commit.seq,
         legacyBlobDetail(key, blob.legacyKey.toString()),
       );
+    }
+    // only a path holding nothing is owed, so a file on disk is never stale
+    if (target.existing === undefined && this.#owesLazily(owner, key)) {
+      this.#paths.takeAbsent(path);
+      this.#paths.takeExisting(path);
+      this.#stats?.bump("writes_owed");
+      owed.push({
+        namespace: commit.namespace,
+        recordKey: key,
+        owner: decision.next.owner,
+        mark: decision.next.mark,
+        content: withAccess(change.put.content, change.put.access),
+      });
+      return decision.next;
     }
     try {
       await this.#writeContent(

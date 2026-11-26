@@ -404,6 +404,8 @@ export interface AppliedCommit {
    */
   readonly decided?: ReadonlySet<string>;
   readonly unreadable?: ReadonlyMap<string, StoredUnreadableRecord>;
+  /** puts left unwritten, owed after the decided keys forget theirs */
+  readonly owed?: readonly OwedFile[];
 }
 
 export class ReadModelState {
@@ -435,6 +437,7 @@ export class ReadModelState {
   readonly #stageForward: StatementSync;
   readonly #stageFile: StatementSync;
   readonly #deleteOwed: StatementSync;
+  readonly #upsertOwed: StatementSync;
   #closed = false;
   #batchOpen = false;
   /**
@@ -527,6 +530,9 @@ export class ReadModelState {
     );
     this.#deleteOwed = db.prepare(
       "DELETE FROM owed_files WHERE namespace = ? AND record_key = ?",
+    );
+    this.#upsertOwed = db.prepare(
+      "INSERT OR REPLACE INTO owed_files (namespace, record_key, owner, mark, content, access) VALUES (?, ?, ?, ?, ?, ?)",
     );
   }
 
@@ -896,6 +902,7 @@ export class ReadModelState {
         for (const record of commit.unreadable?.values() ?? []) {
           this.#insertUnreadable(record);
         }
+        for (const row of commit.owed ?? []) this.#insertOwed(row);
         this.#upsertApplied.run(commit.namespace, commit.partition, commit.seq);
         if (commit.unsynced !== undefined && commit.unsynced.keys.size > 0) {
           this.#markUnsynced(
@@ -1318,25 +1325,24 @@ export class ReadModelState {
   oweFiles(rows: readonly OwedFile[]): void {
     if (rows.length === 0) return;
     this.#transaction(() => {
-      const insert = this.#db.prepare(
-        "INSERT OR REPLACE INTO owed_files (namespace, record_key, owner, mark, content, access) VALUES (?, ?, ?, ?, ?, ?)",
-      );
-      for (const row of rows) {
-        const content = row.content;
-        insert.run(
-          row.namespace,
-          row.recordKey,
-          row.owner,
-          row.mark,
-          JSON.stringify(
-            "blob" in content
-              ? { blob: content.blob.toJSON() }
-              : { inline: content.inline },
-          ),
-          content.access ?? null,
-        );
-      }
+      for (const row of rows) this.#insertOwed(row);
     });
+  }
+
+  #insertOwed(row: OwedFile): void {
+    const content = row.content;
+    this.#upsertOwed.run(
+      row.namespace,
+      row.recordKey,
+      row.owner,
+      row.mark,
+      JSON.stringify(
+        "blob" in content
+          ? { blob: content.blob.toJSON() }
+          : { inline: content.inline },
+      ),
+      content.access ?? null,
+    );
   }
 
   owedOf(namespace: string, recordKey: string): OwedFile | undefined {

@@ -32,6 +32,7 @@ import type { BlobRef } from "../../domain/datastore_v3/blob_ref.ts";
 import {
   dataVersionOp,
   type Op,
+  type PutOp,
   putOp,
   tombstoneOp,
 } from "../../domain/datastore_v3/op.ts";
@@ -4192,11 +4193,11 @@ Deno.test("SqliteReadModel: a commit replacing or removing an owed file forgets 
       await readModel.catchUp(signal());
       const a = env.contentPath("", "a", 1);
       const b = env.contentPath("", "b", 1);
-      assertEquals(await readOrAbsent(a), "a@1 replaced");
+      // a's file was absent, so its new put is owed in place of the old one
+      assertEquals(await readOrAbsent(a), undefined);
       assertEquals(await readOrAbsent(b), undefined);
-      // the version op re-puts a's metadata too
-      assert(readModel.owedCount() <= owed - 2);
-      assertEquals(await readModel.hydrateOwedPath(a, signal()), "not_owed");
+      assertEquals(readModel.owedCount(), owed - 1);
+      assertEquals(await readModel.hydrateOwedPath(a, signal()), "hydrated");
       assertEquals(await readModel.hydrateOwedPath(b, signal()), "not_owed");
       assertEquals(await readOrAbsent(a), "a@1 replaced");
       assertEquals(await readOrAbsent(b), undefined);
@@ -4484,6 +4485,65 @@ Deno.test("SqliteReadModel.hydrateOwedPath: an owed path holding a file another 
       const b = env.contentPath("", "b", 1);
       assertEquals(await readModel.hydrateOwedPath(b, signal()), "hydrated");
       assertEquals(await readOrAbsent(b), "b@1");
+    } finally {
+      await readModel.close();
+    }
+  });
+});
+
+function metadataPut(name: string, version: number): Promise<PutOp> {
+  return putOp({
+    intent: modelIntent({ kind: "data.save", name, version }),
+    key: RecordKey.create(
+      `data/${MODEL_TYPE.normalized}/${MODEL_ID}/${name}/${version}/metadata.yaml`,
+    ),
+    inline: base64(`name: ${name}\n`),
+  });
+}
+
+Deno.test("SqliteReadModel.catchUp: under lazyModelFiles a tail page owes a new content file and writes its metadata; hydrated, it holds the put's bytes, and a put over a file on disk is written at once (swamp-club#5108)", async () => {
+  await withEnv(async (env) => {
+    const seq = await lazyBase(env);
+    const readModel = env.open({ lazyModelFiles: true });
+    try {
+      await readModel.catchUp(signal());
+      const owed = readModel.owedCount();
+      const blob = await env.chunkStore.write(
+        SOLO_NAMESPACE,
+        new Uint8Array(30_000).fill(9),
+        signal(),
+      );
+      await env.append(seq + 1, "", [
+        await savePut("c", 1),
+        await metadataPut("c", 1),
+        versionOp("c", 1),
+      ]);
+      await env.append(seq + 2, "", [
+        await blobPut("d", 1, blob),
+        versionOp("d", 1),
+      ]);
+      await readModel.catchUp(signal());
+      const c = env.contentPath("", "c", 1);
+      const d = env.contentPath("", "d", 1);
+      assertEquals(await readOrAbsent(c), undefined);
+      assertEquals(await readOrAbsent(d), undefined);
+      assertEquals(
+        await readOrAbsent(join(dirname(c), "metadata.yaml")),
+        "name: c\n",
+      );
+      assertEquals(readModel.owedCount(), owed + 2);
+      assertEquals(await readModel.hydrateOwedPath(c, signal()), "hydrated");
+      assertEquals(await readOrAbsent(c), "c@1");
+      assertEquals(await readModel.hydrateOwedPath(d, signal()), "hydrated");
+      assertEquals(await Deno.readFile(d), new Uint8Array(30_000).fill(9));
+
+      await env.append(seq + 3, "", [
+        await savePut("c", 1, "c@1 again", undefined, "data.append"),
+        versionOp("c", 1),
+      ]);
+      await readModel.catchUp(signal());
+      assertEquals(await readOrAbsent(c), "c@1 again");
+      assertEquals(await readModel.hydrateOwedPath(c, signal()), "not_owed");
     } finally {
       await readModel.close();
     }
