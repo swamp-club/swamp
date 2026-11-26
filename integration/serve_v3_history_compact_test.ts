@@ -23,7 +23,6 @@ import {
   modelCommit,
   versionOp,
 } from "../src/domain/datastore_v3/v3_test_helpers.ts";
-import type { V3DatastoreConfig } from "../src/infrastructure/datastore_v3/v3_datastore.ts";
 import {
   closeV3Datastores,
   holdV3Writer,
