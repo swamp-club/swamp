@@ -539,3 +539,104 @@ Deno.test("published lineage: a zombie that publishes its head late acknowledges
   assertEquals([...world.exposed], ["c1"]);
   assertEquals(freshRestore(world), ["c2"]);
 });
+
+const arbHeadedLineages = fc.record({
+  fence: fc.integer({ min: 1, max: 50 }),
+  txid: fc.integer({ min: 1, max: 1_000_000 }),
+  mark: fc.nat(10_000),
+  ownPending: fc.option(fc.integer({ min: 1, max: 20 }), { nil: undefined }),
+}).map(({ fence, txid, mark, ownPending }) => {
+  const started = {
+    fence,
+    holder: "me@host",
+    replicaRoot: ROOT,
+    startedAt: AT,
+  };
+  const lineages: PublishedLineage[] = [{
+    fence,
+    started,
+    confirmed: { fence, txid: txidOf(txid), confirmedAt: AT },
+    head: {
+      fence,
+      txid: txidOf(txid),
+      writerFence: fence,
+      mark: { cursor: mark },
+      publishedAt: AT,
+    },
+  }];
+  const lineage: ReplicationLineage | undefined = ownPending === undefined
+    ? undefined
+    : {
+      replicaRoot: ROOT,
+      lineageFence: fence + ownPending,
+      lastFence: fence + ownPending,
+      previousLineages: [],
+    };
+  if (lineage !== undefined) {
+    lineages.push({
+      fence: lineage.lineageFence,
+      started: { ...started, fence: lineage.lineageFence },
+    });
+  }
+  return { lineages, lineage, current: lineages[0] as CompleteLineage };
+});
+
+Deno.test("decideLocalCopy: a copy as a restore leaves it is current, following or not, so the next refresh restores nothing (swamp-club#5145)", () => {
+  fc.assert(
+    fc.property(
+      arbHeadedLineages,
+      fc.nat(10_000),
+      fc.boolean(),
+      ({ lineages, lineage, current }, below, following) => {
+        const restored: LocalCopyState = {
+          replicaRoot: ROOT,
+          lineageFence: current.fence,
+          txid: current.head.txid,
+        };
+        const held = Math.min(below, current.head.mark.cursor);
+        assertEquals(
+          decideLocalCopy(
+            { copy: restored, held, ...(lineage ? { lineage } : {}) },
+            lineages,
+            ReplicaRoot.of(ROOT),
+            { following },
+          ),
+          { kind: "current" },
+        );
+      },
+    ),
+  );
+});
+
+Deno.test("decideLocalCopy: a following copy past the head's mark, or of unknown high-water, is never current (swamp-club#5145)", () => {
+  fc.assert(
+    fc.property(
+      arbHeadedLineages,
+      fc.option(fc.integer({ min: 1, max: 10_000 }), { nil: undefined }),
+      fc.nat(1_000),
+      ({ lineages, lineage, current }, past, ahead) => {
+        const copy: LocalCopyState = {
+          replicaRoot: ROOT,
+          lineageFence: current.fence,
+          txid: txidOf(
+            Number(BigInt(`0x${current.head.txid}`)) + ahead,
+          ),
+        };
+        const decision = decideLocalCopy(
+          {
+            copy,
+            ...(past === undefined
+              ? {}
+              : { held: current.head.mark.cursor + past }),
+            ...(lineage ? { lineage } : {}),
+          },
+          lineages,
+          ReplicaRoot.of(ROOT),
+          { following: true },
+        );
+        assert(decision.kind !== "current", JSON.stringify(decision));
+        assertEquals(decision.kind, "unreplicated");
+      },
+    ),
+  );
+});

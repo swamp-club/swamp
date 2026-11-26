@@ -233,6 +233,75 @@ Deno.test("decideLocalCopy: a writer's own newest pending lineage is current", (
   );
 });
 
+Deno.test("decideLocalCopy: a following copy holding commits past the head's mark restores them away; a writer's or reader's keeps them (swamp-club#5145)", () => {
+  // The head acknowledges cursor 5: commits 6 and 7 are this checkout's own,
+  // landed but never replicated.
+  const lineages = [published(3, { confirmed: 2, head: 5 })];
+  const copy = { replicaRoot: ROOT, lineageFence: 3, txid: txid(5) };
+  const decision = decideLocalCopy(
+    { copy, held: 7 },
+    lineages,
+    ReplicaRoot.of(ROOT),
+    { following: true },
+  );
+  assertEquals(decision.kind, "unreplicated");
+  if (decision.kind === "unreplicated") {
+    assertEquals(decision.lineage.head.mark.cursor, 5);
+  }
+  // they replicate when this checkout's writer continues its lineage
+  assertEquals(
+    decideLocalCopy({ copy, held: 7 }, lineages, ReplicaRoot.of(ROOT)),
+    { kind: "current" },
+  );
+});
+
+Deno.test("decideLocalCopy: a following copy at or below the head's mark is current, so a restore is not repeated (swamp-club#5145)", () => {
+  const lineages = [published(3, { confirmed: 2, head: 5 })];
+  const copy = { replicaRoot: ROOT, lineageFence: 3, txid: txid(5) };
+  for (const held of [5, 3, 0]) {
+    assertEquals(
+      decideLocalCopy({ copy, held }, lineages, ReplicaRoot.of(ROOT), {
+        following: true,
+      }),
+      { kind: "current" },
+    );
+  }
+});
+
+Deno.test("decideLocalCopy: a following copy whose high-water cannot be read restores (swamp-club#5145)", () => {
+  const lineages = [published(3, { confirmed: 2, head: 5 })];
+  const copy = { replicaRoot: ROOT, lineageFence: 3, txid: txid(5) };
+  assertEquals(
+    decideLocalCopy({ copy }, lineages, ReplicaRoot.of(ROOT), {
+      following: true,
+    }).kind,
+    "unreplicated",
+  );
+});
+
+Deno.test("decideLocalCopy: a following copy gets no exemption for its own newest pending lineage (swamp-club#5145)", () => {
+  const lineages = [published(3, { confirmed: 2, head: 5 }), published(8)];
+  const copy = { replicaRoot: ROOT, lineageFence: 3, txid: txid(5) };
+  assertEquals(
+    decideLocalCopy(
+      { copy, lineage: own(8, 9), held: 9 },
+      lineages,
+      ReplicaRoot.of(ROOT),
+      { following: true },
+    ).kind,
+    "unreplicated",
+  );
+  assertEquals(
+    decideLocalCopy(
+      { copy: { ...copy, txid: txid(4) }, lineage: own(8, 9), held: 9 },
+      lineages,
+      ReplicaRoot.of(ROOT),
+      { following: true },
+    ).kind,
+    "behind",
+  );
+});
+
 Deno.test("currentLineage: a confirmed lineage without a head is not the current state", () => {
   // Its writer crashed between the head and the confirmation, or a record
   // was lost: the lineage before it still holds every acknowledged commit.

@@ -142,33 +142,41 @@ export type LocalCopyDecision =
   | { readonly kind: "none" }
   | { readonly kind: "current" }
   | {
-    readonly kind: "missing" | "behind" | "foreign";
+    readonly kind: "missing" | "behind" | "foreign" | "unreplicated";
     readonly lineage: CompleteLineage;
   };
 
 /**
  * also current when its own writer's newer lineage is unconfirmed and still the
  * newest started: a head published on an older lineage since came from a fenced
- * writer and does not make the copy behind
+ * writer and does not make the copy behind; a following copy gets no such
+ * exemption, and past the head's mark it holds only its own unreplicated commits
  */
 export function decideLocalCopy(
   local: {
     readonly copy?: LocalCopyState;
     readonly lineage?: ReplicationLineage;
+    /** the copy's high-water cursor, read only when following */
+    readonly held?: number;
   } | undefined,
   lineages: readonly PublishedLineage[],
   replicaRoot: ReplicaRoot,
+  options: { readonly following?: boolean } = {},
 ): LocalCopyDecision {
   const current = currentLineage(lineages, replicaRoot);
   if (current === undefined) return { kind: "none" };
   const head = current.head;
-  const restore = (kind: "missing" | "behind" | "foreign") => ({
+  const restore = (
+    kind: "missing" | "behind" | "foreign" | "unreplicated",
+  ) => ({
     kind,
     lineage: current,
   });
   if (local === undefined) return restore("missing");
+  const following = options.following === true;
   const own = local.lineage;
   if (
+    !following &&
     own !== undefined && replicaRoot.matches(own.replicaRoot) &&
     own.lineageFence > current.fence &&
     newestStartedFence(lineages, replicaRoot) === own.lineageFence
@@ -182,9 +190,13 @@ export function decideLocalCopy(
   ) {
     return restore("foreign");
   }
-  return compareTxid(copy.txid, head.txid) >= 0
-    ? { kind: "current" }
-    : restore("behind");
+  if (compareTxid(copy.txid, head.txid) < 0) return restore("behind");
+  if (
+    following && (local.held === undefined || local.held > head.mark.cursor)
+  ) {
+    return restore("unreplicated");
+  }
+  return { kind: "current" };
 }
 
 /**

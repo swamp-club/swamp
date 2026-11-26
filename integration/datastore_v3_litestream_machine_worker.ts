@@ -61,6 +61,7 @@ import { waitFor } from "@swamp-club/swamp-testing";
 import {
   applyV3LeaderChanges,
   type LeaderChange,
+  v3FollowerCopyCursor,
 } from "../src/infrastructure/datastore_v3/serve_feed.ts";
 
 export type MachineRequest =
@@ -120,7 +121,13 @@ export type MachineRequest =
   /** as a serve follower applies a frame of its leader's feed, once its hold is lost */
   | { readonly kind: "follow"; readonly changes: readonly LeaderChange[] }
   /** as a serve follower restores its copy when its feed is not current */
-  | { readonly kind: "refresh" };
+  | { readonly kind: "refresh" }
+  /** as serve's boot takes its hold in team mode: the lease, or follow it */
+  | { readonly kind: "followHold" }
+  /** the cursor a serve follower's commit feed subscribes from */
+  | { readonly kind: "feedCursor" }
+  /** copy.json's inode, which every restore replaces */
+  | { readonly kind: "copyStateInode" };
 
 export type MachineResponse =
   | { readonly ok: true; readonly value?: unknown }
@@ -456,6 +463,22 @@ async function handle(request: MachineRequest): Promise<unknown> {
         await handle.catchUp();
         return handle.readModel.cursor();
       });
+    case "followHold":
+      return await inEnv(() =>
+        holdV3Writer(config(), init!.repoDir, {
+          follow: true,
+          ownerCheck: { as: "serve", address: undefined },
+        })
+      );
+    case "feedCursor":
+      return v3FollowerCopyCursor(init!.repoDir, config());
+    case "copyStateInode":
+      return (await Deno.stat(
+        (await replicationPathsFor(
+          v3CommitsDbPath(init!.datastorePath, init!.repoDir),
+          init!.privateRoot,
+        )).copy,
+      )).ino;
     case "namespaces":
       return await inEnv(async () => {
         const deps = await createNamespaceListDeps(config(), init!.repoDir);
