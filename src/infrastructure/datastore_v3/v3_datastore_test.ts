@@ -677,6 +677,50 @@ Deno.test("openV3Datastore: compactIfDue folds commits written moments ago once 
   });
 });
 
+Deno.test("openV3Datastore: compactHistoryNow says how far a history short of the floor is, then folds one that reaches it, reporting each batch", async () => {
+  await withTempDir(async (dir) => {
+    const datastorePath = join(dir, "datastore");
+    await initializeV3Datastore(datastorePath, "test");
+    const now = Date.parse("2030-01-01T00:00:00.000Z");
+    const handle = openV3Datastore({
+      repoDir: join(dir, "a"),
+      datastorePath,
+      clock: () => new Date(now),
+    });
+    const signal = () => new AbortController().signal;
+    const commit = async (seq: number) =>
+      modelCommit(seq, [await savePut("a", seq), versionOp("a", seq)], {
+        at: new Date(now - 60_000).toISOString(),
+      });
+    try {
+      for (let seq = 1; seq <= 2800; seq++) {
+        await handle.commitStore.append(await commit(seq));
+      }
+      assertEquals(await handle.compactHistoryNow(signal()), {
+        due: false,
+        eligibleCommits: 300,
+        minCommits: 500,
+        retainCommits: 2500,
+      });
+      for (let seq = 2801; seq <= 3100; seq++) {
+        await handle.commitStore.append(await commit(seq));
+      }
+      const batches: number[] = [];
+      const run = await handle.compactHistoryNow(
+        signal(),
+        (totals) => batches.push(totals.compacted),
+      );
+      assert(run.due);
+      assertEquals(run.report.compacted, 600);
+      assertEquals(run.report.point, 600);
+      assertEquals(batches, [250, 500, 600]);
+      assertEquals(await handle.compactIfDue(signal()), undefined);
+    } finally {
+      await handle.close();
+    }
+  });
+});
+
 Deno.test("openV3Datastore: dropped work is recovered only once no unit of the checkout is open (swamp-club#3553)", async () => {
   await withTempDir(async (dir) => {
     const datastorePath = join(dir, "datastore");

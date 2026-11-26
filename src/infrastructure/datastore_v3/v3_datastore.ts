@@ -76,12 +76,15 @@ import {
 } from "../../domain/datastore_v3/commit_outbox.ts";
 import type {
   CommitStore,
+  CompactionProgress,
   CompactionReport,
 } from "../../domain/datastore_v3/commit_store.ts";
 import {
   compactionBound,
   compactionTarget,
   DEFAULT_COMPACTION_POLICY,
+  type HistoryCompactionRun,
+  notDueRun,
   retentionOf,
 } from "../../domain/datastore_v3/compaction_policy.ts";
 import type { CommitWriter } from "../../domain/datastore_v3/commit.ts";
@@ -810,6 +813,14 @@ export interface V3Datastore {
    * writer's
    */
   compactIfDue(signal: AbortSignal): Promise<CompactionReport | undefined>;
+  /**
+   * compactIfDue for an operator who asked: says how far off a run that is not
+   * due is. Run only while this process holds the writer lock
+   */
+  compactHistoryNow(
+    signal: AbortSignal,
+    onBatch?: (totals: CompactionProgress) => void,
+  ): Promise<HistoryCompactionRun>;
   /**
    * never folds a commit inside the default policy's last day; a remove is
    * folded, and its chunks released, only once older than the bound. Run only
@@ -1642,35 +1653,46 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
 
   // a local writer between commits holds no lease, so compaction takes its own
   // section, as the writer-only work it is
-  const compact = (
+  const compact = async (
     signal: AbortSignal,
     now: Date,
     before?: Date,
   ): Promise<CompactionReport | undefined> => {
+    const run = await compactRun(signal, now, before);
+    return run.due ? run.report : undefined;
+  };
+
+  const compactRun = (
+    signal: AbortSignal,
+    now: Date,
+    before?: Date,
+    onBatch?: (totals: CompactionProgress) => void,
+  ): Promise<HistoryCompactionRun> => {
     const section = options.commitSection?.();
     return section === undefined
-      ? compactHeld(signal, now, before)
-      : section(() => compactHeld(signal, now, before));
+      ? compactHeld(signal, now, before, onBatch)
+      : section(() => compactHeld(signal, now, before, onBatch));
   };
 
   const compactHeld = async (
     signal: AbortSignal,
     now: Date,
     before?: Date,
-  ): Promise<CompactionReport | undefined> => {
+    onBatch?: (totals: CompactionProgress) => void,
+  ): Promise<HistoryCompactionRun> => {
     const policy = DEFAULT_COMPACTION_POLICY;
-    const through = compactionTarget(
-      await commitStore.compactionStatus(retentionOf(policy, now, before)),
-      policy,
-      before,
+    const candidate = await commitStore.compactionStatus(
+      retentionOf(policy, now, before),
     );
-    if (through === undefined) return undefined;
+    const through = compactionTarget(candidate, policy, before);
+    if (through === undefined) return notDueRun(candidate, policy, before);
     const fence = options.writerFence?.();
     return await withSpan("swamp.datastore.v3.compact", {}, async (span) => {
       const report = await commitStore.compactHistory(through, {
         signal,
         clock,
         ...(fence !== undefined ? { fence } : {}),
+        ...(onBatch !== undefined ? { onBatch } : {}),
         // No retry, from a unit or the outbox, is older than the bound.
         pruneTxnsBefore: new Date(now.getTime() - COMPACTED_TXN_RETENTION_MS),
         pruneRemovedBefore: new Date(now.getTime() - policy.retainMs),
@@ -1681,7 +1703,7 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
         report.partitions ?? 0,
       );
       span.setAttribute("swamp.datastore.v3.compact.batches", report.batches);
-      return report;
+      return { due: true, report };
     });
   };
 
@@ -2173,6 +2195,9 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
     },
     compactIfDue(signal) {
       return compact(signal, clock());
+    },
+    compactHistoryNow(signal, onBatch) {
+      return compactRun(signal, clock(), undefined, onBatch);
     },
     async compactBefore(cutoff, signal) {
       const now = clock();

@@ -5060,6 +5060,9 @@ export const serveCommand = new Command()
         ...(v3Location !== undefined
           ? { quarantine: datastoreQuarantine }
           : {}),
+        ...(v3Maintenance !== undefined
+          ? { v3HistoryCompaction: v3Maintenance }
+          : {}),
         explicitLeases: () =>
           datastoreApiLocks.list().filter((lease) => lease.explicit).map((
             lease,

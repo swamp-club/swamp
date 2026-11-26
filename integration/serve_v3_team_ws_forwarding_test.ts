@@ -438,3 +438,44 @@ Deno.test({
     });
   },
 });
+
+Deno.test({
+  name:
+    "team ws forwarding: a history compaction sent to the follower runs on the leader with the caller's credential, and its answer comes back",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const data = {
+      applies: true,
+      outcome: "compacted",
+      compacted: 600,
+      batches: 3,
+      released: 0,
+      partitions: 1,
+      compactedThrough: 600,
+    };
+    await withLeader((leader, frame) => {
+      if (frame.type !== "datastore.history.compact") return;
+      leader.socket.send(JSON.stringify({
+        type: "datastore.history.compact",
+        id: frame.id,
+        payload: { data },
+      }));
+    }, async (address, sockets) => {
+      await withFollower(address, async (connect) => {
+        const client = await connect();
+        const request = { type: "datastore.history.compact", id: "compact-1" };
+        client.send(JSON.stringify(request));
+        await waitFor(() => client.frames.length === 1, "the leader's answer");
+        assertEquals(client.frames[0], {
+          type: "datastore.history.compact",
+          id: "compact-1",
+          payload: { data },
+        });
+        assertEquals(sockets.length, 1);
+        assertEquals(sockets[0].auth, "Bearer alice.secret");
+        assertEquals(JSON.parse(sockets[0].received[0]), request);
+      });
+    });
+  },
+});

@@ -3520,6 +3520,13 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
       expected = rows[next - 1].cursor;
     }
     totals.batches++;
+    options.onBatch?.({
+      point: this.#point(),
+      compacted: totals.compacted,
+      batches: totals.batches,
+      released: totals.released,
+      partitions: totals.partitions.size,
+    });
     return true;
   }
 

@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { CompactionReport } from "./commit_store.ts";
+
 export interface CompactionPolicy {
   readonly minCommits: number;
   readonly retainCommits: number;
@@ -97,3 +99,60 @@ export function compactionTarget(
   const minCommits = before === undefined ? policy.minCommits : 1;
   return candidate.commits >= minCommits ? candidate.through : undefined;
 }
+
+/**
+ * one compaction asked for now: either nothing reached the policy's floor, with
+ * how far off it is, or what the fold did
+ */
+export type HistoryCompactionRun =
+  | {
+    readonly due: false;
+    /** commits the policy would fold, short of minCommits */
+    readonly eligibleCommits: number;
+    readonly minCommits: number;
+    readonly retainCommits: number;
+  }
+  | { readonly due: true; readonly report: CompactionReport };
+
+/**
+ * a candidate compactionTarget found not due, against the floor it missed; with
+ * a retention cutoff that floor is one commit and no newest ones are kept
+ */
+export function notDueRun(
+  candidate: CompactionCandidate,
+  policy: CompactionPolicy,
+  before?: Date,
+): HistoryCompactionRun {
+  return {
+    due: false,
+    eligibleCommits: candidate.commits,
+    minCommits: before === undefined ? policy.minCommits : 1,
+    retainCommits: before === undefined ? policy.retainCommits : 0,
+  };
+}
+
+/** what a history compaction folded; each batch it counts committed */
+export interface HistoryCompactionTotals {
+  readonly compacted: number;
+  readonly batches: number;
+  readonly released: number;
+  readonly partitions: number;
+  readonly compactedThrough: number;
+}
+
+/**
+ * an operator's compaction: folded, out of budget with what it folded kept, or
+ * not due and why
+ */
+export type HistoryCompactionOutcome =
+  | ({ readonly outcome: "compacted" } & HistoryCompactionTotals)
+  | (
+    & { readonly outcome: "timed_out"; readonly budgetMs: number }
+    & HistoryCompactionTotals
+  )
+  | {
+    readonly outcome: "not_due";
+    readonly eligibleCommits: number;
+    readonly minCommits: number;
+    readonly retainCommits: number;
+  };

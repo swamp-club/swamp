@@ -5295,6 +5295,30 @@ production compacted until the opt-in wired it into the writer
    - `compactHistory(through)` runs on the single writer (solo, or the serve
      leader): a writing CLI command at teardown, and serve hourly
      (swamp-club#3279).
+   - An operator can also run one now with `swamp datastore compact
+     --history` (swamp-club#5130). It uses the same policy and has no
+     `--force`: dropping the 2,500-commit floor would send lagging members to
+     full base loads. A run that is not due says how many commits are
+     eligible against the 500 needed. The run gets a 60 s budget. Each batch
+     commits on its own, so a run that runs out of budget reports what it
+     folded so far (`onBatch`) as `timed_out`.
+     - **Locally** it runs under the command's writer lease and fence. A
+       sectioned filesystem writer takes its own commit section. It is
+       refused wherever the closing compaction is skipped
+       (`v3CompactionBlocker`): with no writer hold, on a serve-upstream
+       checkout (which is told to add `--server`), and when the Litestream
+       sidecar is gone.
+     - **Through serve** (`--server`, or the implicit serve address) it is
+       the `datastore.history.compact` request. A follower forwards it to
+       the leader. The leader runs it through
+       `V3MaintenanceTimer.compactNow`, which refuses (`not_leader`) unless
+       the timer is started and holds the writer lease. It runs inside
+       `runExclusive`, so never beside a tick or a retention pass. It waits
+       up to 15 s for them, then answers `maintenance_busy`. It takes neither
+       the gc mutex nor the sync gate, because a retention pass holds the
+       mutex while it waits for exclusivity. Stopping the timer aborts a run
+       in flight. Members install the newer base afterwards, as after an
+       hourly tick.
 6. **Run records.** `resolveRunArtifact` (`run_artifact_resolution.ts`)
    resolves a run's `dataArtifacts` ref (dataId, name, version). It returns
    the live version only when it is evidently what the ref's producer wrote,
@@ -11524,7 +11548,11 @@ datastore extensions, close it.
 - `swamp datastore type search`: search the registry for datastore extension
   types (`src/cli/commands/datastore_type_search.ts`).
 - `swamp datastore compact`: checkpoint the WAL and vacuum `_catalog.db`
-  (`datastore_compact.ts`).
+  (`datastore_compact.ts`). Only that: `--server` and `--token` are refused
+  without `--history`, and the command never routes to serve.
+- `swamp datastore compact --history`: fold a v3 datastore's history now,
+  directly or through serve (`compact_history.ts`). See "v3 history
+  compaction", "When it runs".
 - `swamp datastore claim --address <url>` and `swamp datastore release`: make
   serve a v3 datastore's owner, so direct writers refuse, and remove the
   claim (`datastore_claim.ts`, `datastore_release.ts`). See "Team mode:
@@ -11964,6 +11992,7 @@ no answer is unreachable; no datastore extension is loaded (swamp-club#4281).
 | `src/presentation/renderers/datastore_lock.ts` | `swamp datastore lock` rendering |
 | `src/presentation/renderers/datastore_setup.ts` | `swamp datastore setup` rendering |
 | `src/presentation/renderers/datastore_compact.ts` | `swamp datastore compact` rendering |
+| `src/presentation/renderers/datastore_compact_history.ts` | `swamp datastore compact --history` rendering |
 | `src/presentation/renderers/datastore_claim.ts` | `swamp datastore claim` rendering |
 | `src/presentation/renderers/datastore_release.ts` | `swamp datastore release` rendering |
 | `src/presentation/renderers/datastore_migrate_index.ts` | `swamp datastore migrate-index` rendering |

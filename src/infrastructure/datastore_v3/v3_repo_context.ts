@@ -56,7 +56,9 @@ import {
 import {
   compactionBound,
   DEFAULT_COMPACTION_POLICY,
+  type HistoryCompactionOutcome,
 } from "../../domain/datastore_v3/compaction_policy.ts";
+import type { CompactionProgress } from "../../domain/datastore_v3/commit_store.ts";
 import type { ChunkCollectionReport } from "../../domain/datastore_v3/chunk_collector.ts";
 import {
   acquireV3WriterLock,
@@ -2809,19 +2811,12 @@ export async function closeV3Datastores(
   // lock: compaction is the single writer's
   await withSpan("swamp.datastore.v3.close.compact", {}, async () => {
     for (const handle of unreachable ? [] : handles) {
-      if (!holdsV3WriterLock(handle.datastorePath)) continue;
-      // a copy of serve's log is serve's to compact; folding it at exit stalls
-      // every member at once
-      if (serveUpstreamAt(handle.datastorePath) !== undefined) continue;
-      // a sidecar already gone (signalled with this process) replicates nothing
-      // more, so no commit is made that no replica could hold
-      const use = repoState().replications.get(resolve(handle.datastorePath))
-        ?.[0];
-      if (use !== undefined && !await use.probe()) {
+      const blocker = await v3CompactionBlocker(handle);
+      if (blocker === "sidecar_gone") {
         logger
           .debug`Not compacting the v3 datastore at ${handle.datastorePath} at close: its Litestream sidecar is gone`;
-        continue;
       }
+      if (blocker !== undefined) continue;
       await compactQuietly(handle, CLOSING_COMPACTION_BUDGET_MS);
     }
   });
@@ -3754,6 +3749,167 @@ export function startV3ReplicationUpkeep(
   };
 }
 
+export type V3CompactionBlocker =
+  | "serve_upstream"
+  | "no_writer_hold"
+  | "sidecar_gone";
+
+/** why this process may not fold the handle's history now; undefined when it may */
+export async function v3CompactionBlocker(
+  handle: V3Datastore,
+): Promise<V3CompactionBlocker | undefined> {
+  // a copy of serve's log is serve's to compact; folding it at exit stalls
+  // every member at once
+  if (serveUpstreamAt(handle.datastorePath) !== undefined) {
+    return "serve_upstream";
+  }
+  // a sectioned writer holds the lease only inside a section, which a
+  // compaction takes for itself
+  const sectioned = [...repoState().opened].some(([key, opened]) =>
+    opened === handle && repoState().sectionedWriters.has(key)
+  );
+  if (!sectioned && !holdsV3WriterLock(handle.datastorePath)) {
+    return "no_writer_hold";
+  }
+  // a sidecar already gone (signalled with this process) replicates nothing
+  // more, so no commit is made that no replica could hold
+  const use = repoState().replications.get(resolve(handle.datastorePath))?.[0];
+  if (use !== undefined && !await use.probe()) return "sidecar_gone";
+  return undefined;
+}
+
+// same budget as serve's hourly compaction
+export const HISTORY_COMPACT_BUDGET_MS = 60_000;
+
+/**
+ * a request waiting out a tick or retention pass longer than this is answered
+ * busy, well inside a client's request timeout
+ */
+export const SERVE_HISTORY_COMPACT_WAIT_MS = 15_000;
+
+/**
+ * a spent budget is an outcome, with the batches it folded kept; an abort from
+ * `stop` and any failure are thrown
+ */
+export async function compactHistoryReporting(
+  handle: V3Datastore,
+  budgetMs: number,
+  stop?: AbortSignal,
+): Promise<HistoryCompactionOutcome> {
+  const budget = AbortSignal.timeout(budgetMs);
+  let progress: CompactionProgress | undefined;
+  try {
+    const run = await handle.compactHistoryNow(
+      withStop(budget, stop),
+      (totals) => {
+        progress = totals;
+      },
+    );
+    if (!run.due) {
+      return {
+        outcome: "not_due",
+        eligibleCommits: run.eligibleCommits,
+        minCommits: run.minCommits,
+        retainCommits: run.retainCommits,
+      };
+    }
+    return {
+      outcome: "compacted",
+      compacted: run.report.compacted,
+      batches: run.report.batches,
+      released: run.report.released,
+      partitions: run.report.partitions ?? 0,
+      compactedThrough: run.report.point,
+    };
+  } catch (error) {
+    if (stop?.aborted && isBudgetAbort(error, stop.reason)) throw error;
+    if (!budget.aborted || !isBudgetAbort(error, budget.reason)) throw error;
+    return {
+      outcome: "timed_out",
+      budgetMs,
+      compacted: progress?.compacted ?? 0,
+      batches: progress?.batches ?? 0,
+      released: progress?.released ?? 0,
+      partitions: progress?.partitions ?? 0,
+      compactedThrough: progress?.point ??
+        await handle.commitStore.compactionPoint(),
+    };
+  }
+}
+
+function compactionBlockerMessage(
+  blocker: V3CompactionBlocker,
+  datastorePath: string,
+): string {
+  switch (blocker) {
+    case "serve_upstream":
+      return `This checkout writes the v3 datastore at ${datastorePath} ` +
+        "through swamp serve, which compacts its history: run " +
+        "`swamp datastore compact --history --server <url>`. Nothing was " +
+        "changed.";
+    case "no_writer_hold":
+      return "This command does not hold the writer lease of the v3 " +
+        `datastore at ${datastorePath}, so it cannot compact its history. ` +
+        "Nothing was changed.";
+    case "sidecar_gone":
+      return `The Litestream sidecar of the v3 datastore at ${datastorePath} ` +
+        "is gone, so a compaction would commit what no replica holds. Run " +
+        "the command again once the sidecar is back. Nothing was changed.";
+  }
+}
+
+/**
+ * the CLI's compaction, under the writer lease and fence its command holds;
+ * refused wherever the closing compaction is skipped
+ */
+export async function compactV3HistoryNow(
+  repoDir: string,
+  config: V3DatastoreConfig,
+  budgetMs: number = HISTORY_COMPACT_BUDGET_MS,
+  signal?: AbortSignal,
+): Promise<HistoryCompactionOutcome> {
+  const handle = v3DatastoreFor(repoDir, config);
+  const blocker = await v3CompactionBlocker(handle);
+  if (blocker !== undefined) {
+    throw new UserError(
+      compactionBlockerMessage(blocker, config.path),
+      `history_compact_${blocker}`,
+    );
+  }
+  return await compactHistoryReporting(handle, budgetMs, signal);
+}
+
+export class V3MaintenanceBusyError extends UserError {
+  constructor(waitMs: number) {
+    super(
+      `Serve's datastore maintenance was still running after ${waitMs} ms, ` +
+        "so nothing was compacted. Try again shortly.",
+      "maintenance_busy",
+    );
+    this.name = "V3MaintenanceBusyError";
+  }
+}
+
+export class V3MaintenanceNotLeadingError extends UserError {
+  constructor() {
+    super(
+      "This serve does not lead its v3 datastore now, so it cannot compact " +
+        "its history. Nothing was compacted. Try again.",
+      "not_leader",
+    );
+    this.name = "V3MaintenanceNotLeadingError";
+  }
+}
+
+/** serve's on-demand history compaction, as a connection sees it */
+export interface V3HistoryCompactionPort {
+  compactNow(
+    budgetMs: number,
+    signal: AbortSignal,
+    waitMs?: number,
+  ): Promise<HistoryCompactionOutcome>;
+}
+
 /**
  * each batch commits on its own, so a backlog an upgrade leaves is folded a
  * budget at a time over the next writers rather than at the end of one command
@@ -4032,6 +4188,36 @@ export class V3MaintenanceTimer {
       this.#running = undefined;
     });
     return await work;
+  }
+
+  /**
+   * refused unless started and holding the lease: a stopped timer's signal no
+   * longer aborts. Never takes the gc mutex, which retention holds while it
+   * waits for exclusivity here
+   */
+  async compactNow(
+    budgetMs: number,
+    signal: AbortSignal,
+    waitMs: number = SERVE_HISTORY_COMPACT_WAIT_MS,
+  ): Promise<HistoryCompactionOutcome> {
+    if (
+      this.#timer === undefined || !holdsV3WriterLock(this.handle.datastorePath)
+    ) {
+      throw new V3MaintenanceNotLeadingError();
+    }
+    const stop = this.#stopping.signal;
+    const stopOrCancel = AbortSignal.any([signal, stop]);
+    let ran = false;
+    const outcome = await this.runExclusive(
+      () => {
+        ran = true;
+        return compactHistoryReporting(this.handle, budgetMs, stopOrCancel);
+      },
+      AbortSignal.any([stopOrCancel, AbortSignal.timeout(waitMs)]),
+    );
+    if (ran) return outcome!;
+    stopOrCancel.throwIfAborted();
+    throw new V3MaintenanceBusyError(waitMs);
   }
 
   async stop(): Promise<void> {

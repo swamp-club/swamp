@@ -43,6 +43,11 @@ import type { ConnectionContext } from "./connection.ts";
 import type { ServerRequest } from "./protocol.ts";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import { UserError } from "../domain/errors.ts";
+import {
+  HISTORY_COMPACT_BUDGET_MS,
+  V3MaintenanceBusyError,
+  V3MaintenanceNotLeadingError,
+} from "../infrastructure/datastore_v3/v3_repo_context.ts";
 import { WorkflowSchemaError } from "../domain/workflows/workflow_schema_error.ts";
 import {
   LockTimeoutError,
@@ -5725,6 +5730,123 @@ Deno.test("handleMessage: a datastore.release from a non-admin is refused", asyn
   const frame = JSON.parse(mock.sent[0]);
   assertEquals(frame.type, "error");
   assertEquals(frame.error.code, "unauthorized");
+});
+
+const HISTORY_ADMIN = () =>
+  makeGrant({
+    subject: { kind: "user", name: "adam" },
+    resource: { kind: "access", pattern: "*" },
+    actions: ["admin"],
+  });
+
+async function historyCompactFrame(
+  ctx: ConnectionContext,
+): Promise<{
+  type: string;
+  payload?: { data: unknown };
+  error?: { code: string; message: string };
+}> {
+  const mock = createMockSocket();
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    new Map<string, AbortController>(),
+    makeEvent(
+      JSON.stringify({ type: "datastore.history.compact", id: "compact-1" }),
+    ),
+    testPrincipal,
+  );
+  await waitFor(() => mock.sent.length > 0, "history compaction answered");
+  return JSON.parse(mock.sent[0]);
+}
+
+Deno.test("handleMessage: a datastore.history.compact from a non-admin is refused before it compacts, and audited as datastore history", async () => {
+  const audit: AuditEvent[] = [];
+  let asked = 0;
+  using ctx = {
+    ...makeCtx(modeTokenConfig, []),
+    instanceId: "inst-1",
+    auditEmitter: { emit: (event: AuditEvent) => audit.push(event) },
+    v3HistoryCompaction: {
+      compactNow: () => {
+        asked++;
+        return Promise.reject(new Error("not reached"));
+      },
+    },
+  } as unknown as ConnectionContext & Disposable;
+  const frame = await historyCompactFrame(ctx);
+  assertEquals(frame.type, "error");
+  assertEquals(frame.error?.code, "unauthorized");
+  assertEquals(asked, 0);
+  await waitFor(
+    () => audit.some((e) => e.action === "datastore.history.compact"),
+    "compaction audited",
+  );
+  for (
+    const event of audit.filter((e) => e.action === "datastore.history.compact")
+  ) {
+    assertEquals(event.resourceKind, "datastore");
+    assertEquals(event.resourceName, "history");
+  }
+});
+
+Deno.test("handleMessage: an admin's datastore.history.compact on a v2 serve answers that it does not apply", async () => {
+  using ctx = {
+    ...makeCtx(modeTokenConfig, [HISTORY_ADMIN()]),
+    instanceId: "inst-1",
+  } as unknown as ConnectionContext & Disposable;
+  const frame = await historyCompactFrame(ctx);
+  assertEquals(frame.type, "datastore.history.compact");
+  assertEquals(frame.payload?.data, { applies: false });
+});
+
+Deno.test("handleMessage: an admin's datastore.history.compact runs one compaction with the operator's budget and answers its outcome", async () => {
+  const budgets: number[] = [];
+  using ctx = {
+    ...makeCtx(modeTokenConfig, [HISTORY_ADMIN()]),
+    instanceId: "inst-1",
+    v3HistoryCompaction: {
+      compactNow: (budgetMs: number) => {
+        budgets.push(budgetMs);
+        return Promise.resolve({
+          outcome: "not_due",
+          eligibleCommits: 12,
+          minCommits: 500,
+          retainCommits: 2500,
+        });
+      },
+    },
+  } as unknown as ConnectionContext & Disposable;
+  const frame = await historyCompactFrame(ctx);
+  assertEquals(frame.type, "datastore.history.compact");
+  assertEquals(frame.payload?.data, {
+    applies: true,
+    outcome: "not_due",
+    eligibleCommits: 12,
+    minCommits: 500,
+    retainCommits: 2500,
+  });
+  assertEquals(budgets, [HISTORY_COMPACT_BUDGET_MS]);
+});
+
+Deno.test("handleMessage: a datastore.history.compact refused by the maintenance timer answers maintenance_busy or not_leader, and a failure is sanitized", async () => {
+  for (
+    const [error, code] of [
+      [new V3MaintenanceBusyError(15_000), "maintenance_busy"],
+      [new V3MaintenanceNotLeadingError(), "not_leader"],
+      [new DOMException("stopped", "AbortError"), "cancelled"],
+      [new Error("boom"), "datastore_history_compact_failed"],
+    ] as const
+  ) {
+    using ctx = {
+      ...makeCtx(modeTokenConfig, [HISTORY_ADMIN()]),
+      instanceId: "inst-1",
+      v3HistoryCompaction: { compactNow: () => Promise.reject(error) },
+    } as unknown as ConnectionContext & Disposable;
+    const frame = await historyCompactFrame(ctx);
+    assertEquals(frame.type, "error");
+    assertEquals(frame.error?.code, code, String(error));
+  }
 });
 
 Deno.test("validateServerRequest: data.query accepts a sort and a cursor (swamp-club#4177)", () => {

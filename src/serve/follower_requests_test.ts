@@ -153,6 +153,24 @@ Deno.test("follower requests: attaching to a run goes to the leader, the commit 
   assertEquals(FOLLOWER_READ_REQUESTS.has("commits.head"), true);
 });
 
+Deno.test("follower requests: a history compaction goes to the leader, which alone maintains the datastore", () => {
+  assertEquals(
+    FOLLOWER_FORWARDED_REQUESTS.has("datastore.history.compact"),
+    true,
+  );
+  assertEquals(FOLLOWER_READ_REQUESTS.has("datastore.history.compact"), false);
+  const refusal = followerRefusal(
+    "datastore.history.compact",
+    gate("follower"),
+  );
+  assertInstanceOf(refusal, ServeNotLeaderError);
+  assertEquals(refusal.reads, false);
+  assertEquals(
+    followerRefusal("datastore.history.compact", gate("leader")),
+    undefined,
+  );
+});
+
 Deno.test("followerRefusal: a version check for the leader is forwarded, and only on a follower", () => {
   const follower: FollowerGate = {
     role: "follower",

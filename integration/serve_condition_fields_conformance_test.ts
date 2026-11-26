@@ -182,6 +182,7 @@ const CATEGORIES: Record<string, Category> = {
   "cluster.instances": "access",
   "datastore.claim": "access",
   "datastore.release": "access",
+  "datastore.history.compact": "access",
   "datastore.status": "access",
   "doctor.datastores": "access",
   "doctor.extensions": "access",

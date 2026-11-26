@@ -282,10 +282,15 @@ import {
   inspectV3ReplicaRestorable,
 } from "../../infrastructure/datastore_v3/v3_content_inspection.ts";
 import {
+  HISTORY_COMPACT_BUDGET_MS,
   v3ClaimCommitLog,
   v3DatastoreConfigOf,
   v3DatastoreFor,
 } from "../../infrastructure/datastore_v3/v3_repo_context.ts";
+import {
+  datastoreHistoryCompact,
+  type DatastoreHistoryCompactData,
+} from "../../libswamp/datastores/compact_history.ts";
 import {
   datastoreClaim,
   type DatastoreClaimData,
@@ -867,6 +872,80 @@ export async function handleDatastoreRelease(
       socket,
       requestId,
       claimErrorCode(error, "datastore_release_failed"),
+      sanitizeErrorForClient(error),
+    );
+  }
+}
+
+/**
+ * one history compaction on the leader, through its maintenance timer's
+ * exclusivity only: never the gc mutex or sync gate, which retention holds
+ * while it waits for that exclusivity
+ */
+export async function handleDatastoreHistoryCompact(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  controller: AbortController,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "admin", {
+      kind: "access",
+      name: "*",
+      fields: {},
+    }, ctx).allowed
+  ) return;
+
+  const compaction = ctx.v3HistoryCompaction;
+  try {
+    let result: DatastoreHistoryCompactData | undefined;
+    await consumeStream(
+      datastoreHistoryCompact(
+        handlerLibSwampContext(ctx, { signal: controller.signal }),
+        compaction === undefined ? {} : {
+          compact: (signal) =>
+            compaction.compactNow(HISTORY_COMPACT_BUDGET_MS, signal),
+        },
+      ),
+      {
+        compacting: () => {},
+        completed: (e) => {
+          result = e.data;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+    send(socket, {
+      type: "datastore.history.compact",
+      id: requestId,
+      payload: { data: result! },
+    });
+  } catch (error) {
+    if (
+      error instanceof UserError &&
+      (error.code === "maintenance_busy" || error.code === "not_leader")
+    ) {
+      sendError(socket, requestId, error.code, error.message);
+      return;
+    }
+    if (
+      controller.signal.aborted ||
+      (error instanceof DOMException && error.name === "AbortError")
+    ) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+    sendError(
+      socket,
+      requestId,
+      "datastore_history_compact_failed",
       sanitizeErrorForClient(error),
     );
   }
