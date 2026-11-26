@@ -2552,13 +2552,14 @@ Deno.test("isTransientAppendFailure: a may-land serve could not confirm even whe
 
 Deno.test("compactedVersionInCheckout: a raw file a lazy checkout owes is hydrated before it is read, so the version can be restated", async () => {
   const cacheRoot = join("checkout", ".swamp");
+  const modelId = crypto.randomUUID();
   const partition = partitionOf({
     kind: "model",
     type: ModelType.create("test/model"),
-    id: "m-1",
+    id: modelId,
   });
-  const metadataKey = "data/test/model/m-1/state/3/metadata.yaml";
-  const rawKey = "data/test/model/m-1/state/3/raw";
+  const metadataKey = `data/test/model/${modelId}/state/3/metadata.yaml`;
+  const rawKey = `data/test/model/${modelId}/state/3/raw`;
   const rawPath = join(cacheRoot, ...rawKey.split("/"));
   const metadata = new TextEncoder().encode(stringifyYaml({
     name: "state",
