@@ -38,7 +38,6 @@ export interface WorkerTokenCreateData {
   token: string;
   expiresAt: string;
   maxEnrollments: MaxEnrollments;
-  /** labels every worker enrolled with the token carries */
   labels: Record<string, string>;
   vaultRef: { vaultName: string; secretKey: string };
 }

@@ -2832,15 +2832,19 @@ Deno.test("WorkerGateway: redeem rejections reach the worker coded, whatever the
       "enrollment_allowance_exhausted",
     ],
     [
-      "Enrollment token 'ci': label 'fleet' conflicts with the token, which binds it to 'b'",
+      "Enrollment token 'ci': label conflicts with the token: it binds 'fleet' to 'b'; drop that label or offer that value",
       "label_conflict",
     ],
     [
-      "Enrollment token 'ci': label 'fleet' is reserved by the orchestrator and this token does not supply it",
+      "Enrollment token 'ci': label is reserved by the orchestrator: only a token can supply 'fleet'; drop that label, or enroll with a token minted with --label",
       "label_conflict",
     ],
     [
-      "Enrollment token 'ci': label 'has expired' conflicts with the token, which binds it to 'does not match'",
+      "Enrollment token 'ci': label conflicts with the token: it binds 'has expired' to 'does not match'; drop that label or offer that value",
+      "label_conflict",
+    ],
+    [
+      "Enrollment token 'ci': label conflicts with the token: it binds 'it's' to 'v'; drop that label or offer that value",
       "label_conflict",
     ],
   ];

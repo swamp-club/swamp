@@ -97,7 +97,6 @@ Deno.test({
   fn: async () => {
     await using fleet = await Fleet.start({ reservedLabelKeys: ["fleet"] });
     await fleet.addWorker("w-a", { tokenLabels: FLEET_A });
-    // a worker without the reserved key still enrolls on an unbound token
     await fleet.addWorker("w-plain", { labels: { region: "eu" } });
     assertEquals(fleet.gateway.worker("w-plain")?.labels, { region: "eu" });
 

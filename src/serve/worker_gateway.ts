@@ -109,7 +109,7 @@ const TOKEN_DATA_NAME = "token-main";
  * redeem_failed with a generic message: a vault error names serve's paths
  */
 const REDEEM_FAILURE_CODES: readonly [string, string][] = [
-  // first: a refused label's key and value are the worker's own text
+  // first, so a label key or value that reads like another reason cannot recode it
   [LABEL_CONFLICT_PHRASE, "label_conflict"],
   [LABEL_RESERVED_PHRASE, "label_conflict"],
   ["has been revoked", "token_revoked"],
@@ -1648,7 +1648,8 @@ export class WorkerGateway {
             if (
               maxEnrollments !== 1 &&
               !Object.hasOwn(record.labels ?? {}, "fleet") &&
-              Object.hasOwn(params.labels, "fleet")
+              Object.hasOwn(params.labels, "fleet") &&
+              params.labels.fleet !== name
             ) {
               logger.warn(
                 "Worker {worker} supplies its own fleet label {fleet}; keeping it instead of auto-injecting {tokenName}",

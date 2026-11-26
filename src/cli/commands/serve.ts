@@ -2584,9 +2584,9 @@ export const serveCommand = new Command()
 
     if (reservedWorkerLabels.length > 0) {
       logger
-        .info`reserved-worker-labels: a worker that sets ${
+        .info`reserved-worker-labels: a worker may carry ${
         reservedWorkerLabels.join(", ")
-      } itself is refused; only its enrollment token can supply them`;
+      } only with the value its enrollment token supplies`;
     }
 
     if (merged.reusePort && Deno.build.os !== "linux") {

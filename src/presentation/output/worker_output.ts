@@ -125,7 +125,8 @@ export function renderWorkerTokenCreate(
     ...(data.maxEnrollments !== 1
       ? [`${bold(cyan("Max enrollments:"))} ${data.maxEnrollments}`]
       : []),
-    ...(Object.keys(data.labels).length > 0
+    // an older serve sends no labels
+    ...(Object.keys(data.labels ?? {}).length > 0
       ? [`${bold(cyan("Labels:"))} ${formatTokenLabels(data.labels)}`]
       : []),
     `${bold(cyan("Vault:"))} ${data.vaultRef.vaultName} ${
@@ -141,8 +142,10 @@ export function renderWorkerTokenCreate(
   writeOutput(lines.join("\n"));
 }
 
-function formatTokenLabels(labels: Record<string, string>): string {
-  const pairs = Object.entries(labels).map(([key, value]) => `${key}=${value}`);
+function formatTokenLabels(labels: Record<string, string> | undefined): string {
+  const pairs = Object.entries(labels ?? {}).map(([key, value]) =>
+    `${key}=${value}`
+  );
   return pairs.length > 0 ? pairs.join(",") : "-";
 }
 

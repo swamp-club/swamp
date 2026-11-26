@@ -641,7 +641,13 @@ enrollment, and it also applies to a bound machine that reconnects. The gateway
 passes the worker's labels and the reserved keys in force to `redeem`, and gives
 the pool entry `effectiveWorkerLabels`: the automatic fleet label, then the
 worker's labels, then the bound labels. A refusal reaches the worker as the
-permanent `label_conflict`.
+permanent `label_conflict`. A worker built before that code existed treats it as
+retryable and stops only when its pre-enrollment retry budget runs out, so
+upgrade workers before binding labels or reserving keys. Each refusal message
+puts its phrase before any quoted key or value, so a quote inside a label cannot
+hide the phrase from `codedRedeemFailure`. A `worker token create --server`
+against a serve too old to record labels fails after printing the token, and
+tells the operator to revoke it.
 
 The token is a built-in **enrollment-token** behavior whose instances are swamp
 data. Its states are `unused → enrolled → expired`, plus `revoked` from any

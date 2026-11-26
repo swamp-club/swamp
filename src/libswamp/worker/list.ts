@@ -50,7 +50,6 @@ export interface WorkerTokenListItem {
   createdAt: string;
   expiresAt: string;
   maxEnrollments: MaxEnrollments;
-  /** labels every worker enrolled with the token carries */
   labels: Record<string, string>;
   bindingCount: number;
   bindings: Binding[];

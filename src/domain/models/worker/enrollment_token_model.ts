@@ -70,7 +70,6 @@ export const TokenLabelsSchema = boundedRecord(
 export interface TokenLabelSource {
   name: string;
   maxEnrollments: MaxEnrollments;
-  /** absent on a record minted before tokens could bind labels */
   labels?: Readonly<Record<string, string>>;
 }
 
@@ -132,19 +131,21 @@ export function workerLabelRefusal(
   return undefined;
 }
 
-export const LABEL_CONFLICT_PHRASE = "conflicts with the token";
-export const LABEL_RESERVED_PHRASE = "is reserved by the orchestrator";
+// each phrase precedes every quoted key and value, so a quote inside one cannot
+// swallow the phrase when quoted spans are stripped for matching
+export const LABEL_CONFLICT_PHRASE = "label conflicts with the token";
+export const LABEL_RESERVED_PHRASE = "label is reserved by the orchestrator";
 
 function labelRefusalMessage(
   tokenName: string,
   refusal: WorkerLabelRefusal,
 ): string {
   if (refusal.reason === "bound") {
-    return `Enrollment token '${tokenName}': label '${refusal.key}' ${LABEL_CONFLICT_PHRASE}, which binds it to '${refusal.boundValue}'`;
+    return `Enrollment token '${tokenName}': ${LABEL_CONFLICT_PHRASE}: it binds '${refusal.key}' to '${refusal.boundValue}'; drop that label or offer that value`;
   }
   return refusal.suppliedValue === undefined
-    ? `Enrollment token '${tokenName}': label '${refusal.key}' ${LABEL_RESERVED_PHRASE} and this token does not supply it`
-    : `Enrollment token '${tokenName}': label '${refusal.key}' ${LABEL_RESERVED_PHRASE} and this token supplies '${refusal.suppliedValue}'`;
+    ? `Enrollment token '${tokenName}': ${LABEL_RESERVED_PHRASE}: only a token can supply '${refusal.key}'; drop that label, or enroll with a token minted with --label`
+    : `Enrollment token '${tokenName}': ${LABEL_RESERVED_PHRASE}: this token supplies '${refusal.key}' as '${refusal.suppliedValue}'; drop that label or offer that value`;
 }
 
 const BindingSchema = z.object({

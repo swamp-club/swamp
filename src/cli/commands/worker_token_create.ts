@@ -61,6 +61,23 @@ import { initializeControlPlaneVaultForCli } from "../control_plane_vault.ts";
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
+/** an older serve drops labels it does not know and mints the token unbound */
+export function assertServeBoundLabels(
+  name: string,
+  requested: Record<string, string>,
+  recorded: Record<string, string> | undefined,
+): void {
+  const unbound = Object.entries(requested).some(([key, value]) =>
+    !Object.hasOwn(recorded ?? {}, key) || recorded?.[key] !== value
+  );
+  if (unbound) {
+    throw new UserError(
+      `The server minted token '${name}' without the requested labels, so it is too old to bind them. ` +
+        `Revoke the token with 'swamp worker token revoke ${name} --server <url>' and upgrade serve before minting it again`,
+    );
+  }
+}
+
 export const workerTokenCreateCommand = withRemoteOptions(
   new Command()
     .name("create")
@@ -153,14 +170,14 @@ export const workerTokenCreateCommand = withRemoteOptions(
           durationMs,
           vaultName: options.vault as string | undefined,
           maxEnrollments,
-          labels,
+          ...(Object.keys(labels).length > 0 ? { labels } : {}),
         },
       },
     );
-    renderWorkerTokenCreate(
-      response.data as unknown as WorkerTokenCreateData,
-      cliCtx.outputMode,
-    );
+    const created = response.data as unknown as WorkerTokenCreateData;
+    // rendered first: the plaintext is shown once, even when the check refuses
+    renderWorkerTokenCreate(created, cliCtx.outputMode);
+    assertServeBoundLabels(name, labels, created.labels);
     return;
   }
 

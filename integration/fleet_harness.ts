@@ -822,7 +822,7 @@ export class Fleet implements AsyncDisposable {
     return records[0]?.attributes?.status;
   }
 
-  /** How many machines the named token has bound, from its durable record. */
+  /** read from the durable record, not the gateway's pool */
   async tokenBindingCount(name: string): Promise<number> {
     const records = await this.repoContext.dataQueryService.query(
       `modelType == "${ENROLLMENT_TOKEN_MODEL_TYPE.normalized}" && ` +

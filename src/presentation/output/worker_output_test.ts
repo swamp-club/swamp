@@ -90,6 +90,27 @@ Deno.test("renderWorkerTokenCreate: log mode lists bound labels only when the to
   assertStringIncludes(bound, "Labels: fleet=k3s-prod,region=eu");
 });
 
+Deno.test("renderWorkerTokenCreate and renderWorkerTokenList: an older serve's data without labels still renders", () => {
+  const { labels: _created, ...olderCreate } = createData;
+  const created = stripAnsiCode(
+    captureLogs(() =>
+      renderWorkerTokenCreate(
+        olderCreate as unknown as WorkerTokenCreateData,
+        "log",
+      )
+    ),
+  );
+  assertStringIncludes(created, "swamp-token-plaintext");
+  const olderList = {
+    ...tokenListData,
+    tokens: tokenListData.tokens.map(({ labels: _listed, ...token }) => token),
+  } as unknown as WorkerTokenListData;
+  const listed = stripAnsiCode(
+    captureLogs(() => renderWorkerTokenList(olderList, "log")),
+  );
+  assertStringIncludes(listed, "ci-runner-3");
+});
+
 Deno.test("renderWorkerTokenCreate: json mode emits the structured record", () => {
   const output = captureLogs(() => renderWorkerTokenCreate(createData, "json"));
   const parsed = JSON.parse(output) as WorkerTokenCreateData;

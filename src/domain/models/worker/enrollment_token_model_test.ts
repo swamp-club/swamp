@@ -48,6 +48,7 @@ import {
   workerLabelRefusal,
 } from "./enrollment_token_model.ts";
 import { timingSafeEqual } from "../../crypto/timing_safe_equal.ts";
+import { withoutQuotedNames } from "../../remote/protocol.ts";
 import {
   advanceTokenClock,
   createInMemoryWorkerContext,
@@ -1627,4 +1628,29 @@ Deno.test("workerLabelRefusal: a key named like an Object.prototype member is ju
     workerLabelRefusal(token, { constructor: "x" }, ["constructor"]),
     { reason: "reserved", key: "constructor" },
   );
+});
+
+Deno.test("enrollmentTokenModel: a refusal keeps its phrase when a label key holds a quote", async () => {
+  const { context, plaintext } = await mintLabelledToken({ "it's": "v" });
+  for (
+    const [offeredLabels, reservedLabelKeys, phrase] of [
+      [{ "it's": "w" }, [], LABEL_CONFLICT_PHRASE],
+      [{ "o'clock": "x" }, ["o'clock"], LABEL_RESERVED_PHRASE],
+    ] as const
+  ) {
+    const error = await assertRejects(
+      () =>
+        enrollmentTokenModel.methods.redeem.execute(
+          {
+            presentedToken: plaintext,
+            machineId: "machine-1",
+            offeredLabels,
+            reservedLabelKeys: [...reservedLabelKeys],
+          },
+          context,
+        ),
+      Error,
+    );
+    assertStringIncludes(withoutQuotedNames(error.message), phrase);
+  }
 });
