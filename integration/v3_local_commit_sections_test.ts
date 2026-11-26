@@ -1296,16 +1296,34 @@ Deno.test({
             "nothing this command changed was committed",
           );
           writer.messages.splice(0);
-          writer.send({ kind: "write", id: "after", model: "m", data: "d" });
-          assertEquals(
-            (await landed(writer, "after")).count,
-            before.count + 1,
-            "the cut write left nothing behind",
-          );
           await closed(writer);
         } finally {
           writer.stop();
         }
+        // the next command, a fresh process on each checkout, finds nothing
+        // of the cut write
+        const counts: number[] = [];
+        for (
+          const [name, repoDir] of [["next-a", repos.repoA], [
+            "next-b",
+            repos.repoB,
+          ]] as const
+        ) {
+          const next = startWriter(name);
+          try {
+            await opened(next, repoDir, repos.modelType.normalized);
+            next.send({ kind: "write", id: name, model: "m", data: "d" });
+            counts.push((await landed(next, name)).count);
+            await closed(next);
+          } finally {
+            next.stop();
+          }
+        }
+        assertEquals(
+          counts,
+          [before.count + 1, before.count + 2],
+          "the cut write left nothing behind",
+        );
       });
     });
   },
