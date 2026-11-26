@@ -239,6 +239,8 @@ const UNREADABLE_RETRIES = 32;
 
 export const RETRY_INTERVAL_MS = 60 * 60 * 1000;
 
+export const AT_RISK_LIST_EVERY_MS = 10_000;
+
 /**
  * a crash mid-copy leaves a temp file that adoption removes after this long;
  * one this process is still writing is never removed
@@ -584,6 +586,7 @@ export class SqliteReadModel implements ReadModel {
     hashes: readonly string[],
   ) => Promise<ReadonlySet<string>>;
   readonly #clock: () => Date;
+  #atRiskListedAt: number | undefined;
   readonly #recordsWrittenFiles: boolean;
   /**
    * written-file records a base load or hydrate holds back to land in one
@@ -760,8 +763,16 @@ export class SqliteReadModel implements ReadModel {
   catchUp(signal: AbortSignal): Promise<CatchUpResult> {
     return this.#exclusive(
       () =>
-        this.#counted("swamp.datastore.v3.readmodel.catchup", async () => {
-          await this.#retryAtRiskCopies(signal);
+        this.#counted("swamp.datastore.v3.readmodel.catchup", async (span) => {
+          if (this.#sectionOpen !== undefined) {
+            span.setAttributes({
+              "swamp.datastore.v3.readmodel.lock_wait_ms":
+                this.#sectionOpen.lockWaitMs,
+              "swamp.datastore.v3.readmodel.open_checks_ms":
+                this.#sectionOpen.checksMs,
+            });
+          }
+          await this.#time("at_risk", () => this.#retryAtRiskCopies(signal));
           return await this.#catchUpFeed(signal, { net: true });
         }),
       signal,
@@ -1827,7 +1838,10 @@ export class SqliteReadModel implements ReadModel {
         this.#netBase = true;
         this.#net = await this.#planNetReplay(signal);
       } else {
-        this.#net = await this.#planTailNet(signal);
+        this.#net = await this.#time(
+          "tail_plan",
+          () => this.#planTailNet(signal),
+        );
       }
     }
     try {
@@ -2073,6 +2087,7 @@ export class SqliteReadModel implements ReadModel {
   }
 
   async #catchUpFeedRun(signal: AbortSignal): Promise<CatchUpResult> {
+    const wasComplete = this.#state.isComplete();
     let applied = 0;
     let loadedBase: number | undefined;
     const slice = new TimeSlice(signal, this.#recoverySliceMs);
@@ -2112,15 +2127,20 @@ export class SqliteReadModel implements ReadModel {
         continue;
       }
       for (const part of pageParts(page)) {
-        applied += await this.#applyPage(part, true, signal);
+        applied += await this.#time(
+          "apply",
+          () => this.#applyPage(part, true, signal),
+        );
       }
       if (page.length < this.#pageSize) break;
     }
-    await this.#retryUnreadable(signal);
+    await this.#time("unreadable", () => this.#retryUnreadable(signal));
     // The whole feed is applied: the index holds every live record. This is
     // its own transaction; a crash before it leaves the index marked
     // incomplete until the next catch-up, which only delays reads.
-    this.#state.markComplete();
+    if (!wasComplete || applied > 0 || loadedBase !== undefined) {
+      this.#timeSync("complete", () => this.#state.markComplete());
+    }
     return { applied, cursor: this.#state.cursor() };
   }
 
@@ -3383,7 +3403,9 @@ export class SqliteReadModel implements ReadModel {
     signal: AbortSignal,
   ): Promise<number> {
     if (page.length === 0) return 0;
-    this.#othersWork = this.#recovering ? [] : await this.#othersJournaled();
+    this.#othersWork = this.#recovering
+      ? []
+      : await this.#time("others_journaled", () => this.#othersJournaled());
     this.#paths.forgetListings();
     const batch = this.#writeBatch();
     this.#state.beginBatch();
@@ -3418,11 +3440,18 @@ export class SqliteReadModel implements ReadModel {
         for (const change of page) {
           signal.throwIfAborted();
           if (slice.over) await slice.next();
-          if (await this.#apply(change, advance, signal, batch)) applied++;
+          if (
+            await this.#time(
+              "changes",
+              () => this.#apply(change, advance, signal, batch),
+            )
+          ) applied++;
           met.push(change.commit);
         }
-        await this.#awaitPrefetched();
-        await this.#drainPool();
+        await this.#time("pool", async () => {
+          await this.#awaitPrefetched();
+          await this.#drainPool();
+        });
       } catch (error) {
         await prefetched;
         // with a pooled write lost, which commits' files landed is unknown:
@@ -3452,15 +3481,15 @@ export class SqliteReadModel implements ReadModel {
         await new Promise((resolve) => setTimeout(resolve, 0));
         signal.throwIfAborted();
       }
-      this.#state.commitBatch();
+      this.#timeSync("state_commit", () => this.#state.commitBatch());
       tellOwnWorkApplied();
-      await this.#releaseFetched(signal);
+      await this.#time("release", () => this.#releaseFetched(signal));
       if (this.#stats !== undefined) {
         this.#stats.pages++;
         this.#stats.commits += applied;
       }
       this.#pageChanges = undefined;
-      await this.#tellRecordsChanged(changes);
+      await this.#time("tell", () => this.#tellRecordsChanged(changes));
       return applied;
     } finally {
       await this.#settlePool();
@@ -5085,12 +5114,19 @@ export class SqliteReadModel implements ReadModel {
    */
   async #retryAtRiskCopies(signal: AbortSignal): Promise<void> {
     if (this.#atRiskRefused) return;
-    try {
-      await this.#adoptAtRiskCopies();
-    } catch (error) {
-      logger.warn`Cannot list the read model's at-risk copies: ${error}`;
-    }
     const now = this.#clock().getTime();
+    if (
+      this.#atRiskListedAt === undefined ||
+      now - this.#atRiskListedAt >= AT_RISK_LIST_EVERY_MS
+    ) {
+      this.#atRiskListedAt = now;
+      this.#stats?.bump("at_risk_listed");
+      try {
+        await this.#adoptAtRiskCopies();
+      } catch (error) {
+        logger.warn`Cannot list the read model's at-risk copies: ${error}`;
+      }
+    }
     const due = this.#state.atRiskDue(
       AT_RISK_RETRIES,
       now - RETRY_INTERVAL_MS,

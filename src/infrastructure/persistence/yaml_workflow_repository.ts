@@ -37,6 +37,7 @@ import { getLogger } from "@logtape/logtape";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { isIoError } from "./io_errors.ts";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
+import { processRuntimeSlot } from "../runtime/process_runtime.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import { assertSafePath } from "./safe_path.ts";
 import { readDirSorted } from "./sorted_dir_entries.ts";
@@ -70,6 +71,38 @@ import {
 } from "../../domain/events/types.ts";
 
 const logger = getLogger(["workflow-repo"]);
+
+// the same text parses to the same data; a caller gets its own copy, since a
+// Workflow shares values the schema passes through unchanged
+const PARSED_WORKFLOWS_KEPT = 256;
+const parsedWorkflows = processRuntimeSlot(() => ({
+  entries: new Map<string, { readonly text: string; readonly data: unknown }>(),
+  parses: 0,
+}));
+
+export function workflowYamlParsesForTesting(): number {
+  return parsedWorkflows().parses;
+}
+
+export function parseWorkflowYamlCached(
+  path: string,
+  text: string,
+): WorkflowData | null {
+  const cache = parsedWorkflows();
+  const parsed = cache.entries;
+  let entry = parsed.get(path);
+  if (entry === undefined || entry.text !== text) {
+    cache.parses++;
+    entry = { text, data: parseYaml(text) };
+    if (parsed.size >= PARSED_WORKFLOWS_KEPT) {
+      parsed.delete(parsed.keys().next().value!);
+    }
+  } else {
+    parsed.delete(path);
+  }
+  parsed.set(path, entry);
+  return structuredClone(entry.data) as WorkflowData | null;
+}
 
 interface CachedListing {
   fingerprint: RecordFingerprint;
@@ -123,7 +156,7 @@ export class YamlWorkflowRepository implements WorkflowRepository {
     const legacyPath = this.getLegacyPath(id);
     try {
       const content = await Deno.readTextFile(legacyPath);
-      const data = parseYaml(content) as WorkflowData | null;
+      const data = parseWorkflowYamlCached(legacyPath, content);
       if (data) {
         const workflow = Workflow.fromData(data);
         if (workflow.id === id) {
@@ -141,7 +174,7 @@ export class YamlWorkflowRepository implements WorkflowRepository {
     if (cachedPath && cachedPath !== legacyPath) {
       try {
         const content = await Deno.readTextFile(cachedPath);
-        const data = parseYaml(content) as WorkflowData | null;
+        const data = parseWorkflowYamlCached(cachedPath, content);
         if (data) {
           const workflow = Workflow.fromData(data);
           if (workflow.id === id) return workflow;
@@ -169,7 +202,7 @@ export class YamlWorkflowRepository implements WorkflowRepository {
       const namePath = this.getNamePath(name);
       try {
         const content = await Deno.readTextFile(namePath);
-        const data = parseYaml(content) as WorkflowData | null;
+        const data = parseWorkflowYamlCached(namePath, content);
         if (data) {
           const workflow = Workflow.fromData(data);
           if (workflow.name !== name) {
