@@ -81,6 +81,10 @@ import {
 } from "../../domain/datastore_v3/read_model.ts";
 import { V3WriterBusyError } from "../../infrastructure/datastore_v3/v3_writer_lock.ts";
 import {
+  COMMIT_STORAGE_UNREADABLE_CODE,
+  CommitStorageUnreadableError,
+} from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
+import {
   ServeLeaseLapsedLatch,
   ServeLeaseLapsedRequestError,
   ServeUnreachableError,
@@ -735,6 +739,26 @@ Deno.test("exitCodeForError: a request the command's own lapsed lease stopped ex
 
 Deno.test("exitCodeForError: returns 75 for a copy another command is still setting up (swamp-club#4253)", () => {
   assertEquals(exitCodeForError(new V3CopySetupRacedError("/repo/copy")), 75);
+});
+
+Deno.test("exitCodeForError: returns 1 for a commit the datastore's permissions refused, not the retry-safe 75 (swamp-club#5107)", () => {
+  const error = new CommitStorageUnreadableError(
+    new Deno.errors.PermissionDenied("Permission denied (os error 13)"),
+  );
+  assertEquals(error.code, COMMIT_STORAGE_UNREADABLE_CODE);
+  assertEquals(exitCodeForError(error), 1);
+  assertEquals(exitCodeForError(error, { commandLanded: false }), 1);
+});
+
+Deno.test("exitCodeForError: serve's busy lease names serve, keeps code datastore_v3_writer_busy and exits 75 (swamp-club#5107)", () => {
+  const error = new V3WriterBusyError(
+    "/data/v3",
+    new LockTimeoutError("_control/writer", null, 0),
+    { heldByServe: true },
+  );
+  assertStringIncludes(error.message, "swamp serve");
+  assertEquals(error.code, "datastore_v3_writer_busy");
+  assertEquals(exitCodeForError(error), 75);
 });
 
 Deno.test("exitCodeForError: returns 75 for LockTimeoutError", () => {
