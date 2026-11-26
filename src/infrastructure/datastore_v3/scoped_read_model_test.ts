@@ -285,3 +285,21 @@ Deno.test("backlogPastBound: the age bound passed in replaces the default", asyn
     assertEquals(await backlogPastBound(env, now + 5, 1), true);
   });
 });
+
+Deno.test("catchUpSlice: applies at most the slice past the cursor and moves the cursor past it, and slices reach the whole feed", async () => {
+  await withEnv(async (env) => {
+    await save(env, 1);
+    await env.readModel.catchUp(signal());
+    const start = env.readModel.cursor();
+    for (let version = 2; version <= 40; version++) await save(env, version);
+
+    await env.readModel.catchUpSlice(signal(), 17);
+    assertEquals(env.readModel.cursor() - start, 17);
+    assertEquals(env.readModel.appliedSeq("", MODEL), 18);
+
+    while (env.readModel.cursor() < env.store.lastCursor()) {
+      await env.readModel.catchUpSlice(signal(), 17);
+    }
+    assertEquals(env.readModel.appliedSeq("", MODEL), 40);
+  });
+});

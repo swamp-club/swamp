@@ -26,12 +26,14 @@ import { getSwampLogger } from "../logging/logger.ts";
 import type { SqliteCommitStore } from "./sqlite_commit_store.ts";
 import type { SqliteReadModel } from "./sqlite_read_model.ts";
 
-// one tail-netted page (under TAIL_NET_MAX_COMMITS) bounds what commits.db
-// keeps and what follow compaction waits on
+// past either bound a scoped command drains a slice at its end, which keeps
+// commits.db, and what follow compaction waits on, from growing without end
 export const SCOPED_BACKLOG_MAX = 2_000;
 
-// a reader overlapping back-to-back scoped writers lags by at most this much
 export const SCOPED_BACKLOG_AGE_MS = 2 * 60 * 1000;
+
+// small, so a slice of other members' writes costs well under a second
+export const SCOPED_DRAIN_SLICE = 25;
 
 // a long command's reads, and other processes', lag by at most this much
 export const SCOPED_FEED_APPLY_MS = 30_000;

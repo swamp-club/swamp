@@ -745,6 +745,30 @@ export class SqliteReadModel implements ReadModel {
     );
   }
 
+  /**
+   * applies at most `maxCommits` past the cursor, tail-netted over exactly
+   * those commits, and advances the cursor past them
+   */
+  catchUpSlice(
+    signal: AbortSignal,
+    maxCommits: number,
+  ): Promise<CatchUpResult> {
+    return this.#exclusive(
+      () =>
+        this.#counted(
+          "swamp.datastore.v3.readmodel.catchup_slice",
+          async () => {
+            await this.#retryAtRiskCopies(signal);
+            return await this.#catchUpFeed(signal, {
+              net: true,
+              limit: maxCommits,
+            });
+          },
+        ),
+      signal,
+    );
+  }
+
   #time<T>(phase: string, fn: () => Promise<T>): Promise<T> {
     return this.#stats === undefined ? fn() : this.#stats.time(phase, fn);
   }
@@ -1795,18 +1819,18 @@ export class SqliteReadModel implements ReadModel {
   /** a recovery is never a net replay, since it replays over files already there */
   async #catchUpFeed(
     signal: AbortSignal,
-    options: { readonly net?: boolean } = {},
+    options: { readonly net?: boolean; readonly limit?: number } = {},
   ): Promise<CatchUpResult> {
     if (options.net === true && this.#netReplay) {
-      if (this.#state.cursor() === 0) {
+      if (this.#state.cursor() === 0 && options.limit === undefined) {
         this.#netBase = true;
         this.#net = await this.#planNetReplay(signal);
       } else {
-        this.#net = await this.#planTailNet(signal);
+        this.#net = await this.#planTailNet(signal, options.limit);
       }
     }
     try {
-      return await this.#catchUpFeedNow(signal);
+      return await this.#catchUpFeedNow(signal, options.limit);
     } finally {
       this.#net = undefined;
       this.#netBase = false;
@@ -1856,7 +1880,10 @@ export class SqliteReadModel implements ReadModel {
    * key replaces, never a removal, and only of a key whose path holds nothing
    * the read model does not own; undefined when there is nothing to net
    */
-  #planTailNet(signal: AbortSignal): Promise<NetReplayPlan | undefined> {
+  #planTailNet(
+    signal: AbortSignal,
+    limit?: number,
+  ): Promise<NetReplayPlan | undefined> {
     return withSpan(
       "swamp.datastore.v3.readmodel.tail_net_plan",
       {},
@@ -1878,7 +1905,13 @@ export class SqliteReadModel implements ReadModel {
           try {
             page = await this.#time(
               "feed",
-              () => this.#commitStore.changesSince(cursor, this.#pageSize),
+              () =>
+                this.#commitStore.changesSince(
+                  cursor,
+                  limit === undefined
+                    ? this.#pageSize
+                    : Math.min(this.#pageSize, limit - tail.length),
+                ),
             );
           } catch (error) {
             if (error instanceof CommitsCompactedError) return undefined;
@@ -1895,6 +1928,7 @@ export class SqliteReadModel implements ReadModel {
             cursor = change.cursor;
           }
           if (tail.length > TAIL_NET_MAX_COMMITS) return undefined;
+          if (limit !== undefined && tail.length >= limit) break;
           if (page.length < this.#pageSize) break;
         }
         span.setAttribute("swamp.datastore.v3.commits", tail.length);
@@ -2027,17 +2061,25 @@ export class SqliteReadModel implements ReadModel {
     return plan;
   }
 
-  async #catchUpFeedNow(signal: AbortSignal): Promise<CatchUpResult> {
+  async #catchUpFeedNow(
+    signal: AbortSignal,
+    limit?: number,
+  ): Promise<CatchUpResult> {
     this.#catchUpTouched = new Set();
     try {
-      return await this.#catchUpFeedRun(signal);
+      return await this.#catchUpFeedRun(signal, limit);
     } finally {
       this.#catchUpTouched = undefined;
     }
   }
 
-  async #catchUpFeedRun(signal: AbortSignal): Promise<CatchUpResult> {
+  async #catchUpFeedRun(
+    signal: AbortSignal,
+    limit?: number,
+  ): Promise<CatchUpResult> {
     let applied = 0;
+    // a slice stops at its limit: the net plan covered those commits alone
+    let read = 0;
     let loadedBase: number | undefined;
     const slice = new TimeSlice(signal, this.#recoverySliceMs);
     for (;;) {
@@ -2050,7 +2092,9 @@ export class SqliteReadModel implements ReadModel {
           () =>
             this.#commitStore.changesSince(
               this.#state.cursor(),
-              this.#pageSize,
+              limit === undefined
+                ? this.#pageSize
+                : Math.min(this.#pageSize, limit - read),
             ),
         );
       } catch (error) {
@@ -2077,6 +2121,10 @@ export class SqliteReadModel implements ReadModel {
       }
       for (const part of pageParts(page)) {
         applied += await this.#applyPage(part, true, signal);
+      }
+      read += page.length;
+      if (limit !== undefined && read >= limit) {
+        return { applied, cursor: this.#state.cursor() };
       }
       if (page.length < this.#pageSize) break;
     }

@@ -53,6 +53,7 @@ import { readModelStateDir } from "../src/infrastructure/datastore_v3/record_pat
 import {
   scopedSyncReadTripwireForTesting,
   setScopedBacklogAgeMsForTesting,
+  setScopedDrainSliceForTesting,
   setScopedFeedApplyMsForTesting,
 } from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
 import {
@@ -228,6 +229,7 @@ type MethodRunRequest = {
   readonly method: string;
   readonly feedApplyMs?: number;
   readonly backlogAgeMs?: number;
+  readonly drainSlice?: number;
 };
 
 type MethodRunMessage =
@@ -249,6 +251,9 @@ const methodRunHost: ProcessHost<MethodRunRequest, MethodRunMessage> =
       using _age = request.backlogAgeMs === undefined
         ? undefined
         : setScopedBacklogAgeMsForTesting(request.backlogAgeMs);
+      using _slice = request.drainSlice === undefined
+        ? undefined
+        : setScopedDrainSliceForTesting(request.drainSlice);
       let error: string | undefined;
       Deno.exitCode = 0;
       try {
@@ -312,6 +317,7 @@ function methodRun(
     readonly env?: Record<string, string>;
     readonly feedApplyMs?: number;
     readonly backlogAgeMs?: number;
+    readonly drainSlice?: number;
   } = {},
 ): Run {
   let done: Extract<MethodRunMessage, { kind: "done" }> | undefined;
@@ -332,6 +338,9 @@ function methodRun(
     ...(options.backlogAgeMs === undefined
       ? {}
       : { backlogAgeMs: options.backlogAgeMs }),
+    ...(options.drainSlice === undefined
+      ? {}
+      : { drainSlice: options.drainSlice }),
   });
   const result = (async () => {
     try {
@@ -358,7 +367,10 @@ async function runOk(
   token: string,
   model: string,
   method: string,
-  options?: { readonly env?: Record<string, string> },
+  options?: {
+    readonly env?: Record<string, string>;
+    readonly drainSlice?: number;
+  },
 ): Promise<void> {
   const exitCode = Deno.exitCode;
   try {
@@ -563,45 +575,82 @@ Deno.test({
 
 Deno.test({
   name:
-    "scoped apply: a member whose read model lags past the backlog bound applies the whole feed when its method run opens, before its unit commits",
+    "scoped apply: a scoped write over a backlog past the bound applies none of it in front of its work, under the lock too, and at most a slice once its work is done",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
-    for (const bound of [undefined, "1"]) {
-      await withTeam(async (team) => {
-        const { a } = team;
-        const before = applied(team, a);
-        await stampProducers(team);
-        const exitCode = Deno.exitCode;
-        const held = holdRuns(a);
+    await withTeam(async (team) => {
+      const { a } = team;
+      const before = applied(team, a);
+      await stampProducers(team);
+      const exitCode = Deno.exitCode;
+      const held = holdRuns(a);
+      let during: ReturnType<typeof applied> | undefined;
+      try {
+        const run = methodRun(team, a, A_TOKEN, CONSUMER, "stamp", {
+          env: { [SCOPED_BACKLOG_MAX_ENV_VAR]: "1" },
+          drainSlice: 3,
+        });
         try {
-          const run = methodRun(team, a, A_TOKEN, CONSUMER, "stamp", {
-            env: bound === undefined
-              ? {}
-              : { [SCOPED_BACKLOG_MAX_ENV_VAR]: bound },
+          await waitFor(() => holding.has(a.repoDir), "a's write to hold", {
+            timeoutMs: 120_000,
           });
-          try {
-            await waitFor(() => holding.has(a.repoDir), "a's write to hold", {
-              timeoutMs: 120_000,
-            });
-            const during = applied(team, a);
-            for (const name of PRODUCERS) {
-              if (bound === undefined) {
-                assertEquals(during.seqOf(name), before.seqOf(name), name);
-              } else {
-                assert(during.seqOf(name) > before.seqOf(name), name);
-              }
-            }
-          } finally {
-            held.release();
-            assertEquals(await run.result, { exitCode: 0 });
+          during = applied(team, a);
+          for (const name of PRODUCERS) {
+            assertEquals(during.seqOf(name), before.seqOf(name), name);
           }
+          assertEquals(during.cursor, before.cursor);
         } finally {
           held.release();
-          Deno.exitCode = exitCode;
+          assertEquals(await run.result, { exitCode: 0 });
         }
-      });
-    }
+      } finally {
+        held.release();
+        Deno.exitCode = exitCode;
+      }
+      const after = applied(team, a);
+      const drained = after.cursor - during!.cursor;
+      assert(drained > 0 && drained <= 3, `drained ${drained} commits`);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "scoped apply: successive scoped writes past the bound drain the backlog to nothing, and a reader then sees every behavior",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withTeam(async (team) => {
+      const { a } = team;
+      await stampProducers(team);
+      const drained = async () => {
+        const at = applied(team, a);
+        const heads = await headsAtServe(team);
+        return [CONSUMER, ...PRODUCERS].every((name) =>
+          at.seqOf(name) === heads.seqOf(name)
+        );
+      };
+      let runs = 0;
+      while (!await drained()) {
+        assert(runs < 20, `not drained after ${runs} runs`);
+        await runOk(team, a, A_TOKEN, CONSUMER, "stamp", {
+          env: { [SCOPED_BACKLOG_MAX_ENV_VAR]: "1" },
+          drainSlice: 6,
+        });
+        runs++;
+      }
+      for (const name of PRODUCERS) {
+        const latest = await readCommand(
+          team.scratch,
+          a,
+          serveEnv(team.serve, A_TOKEN),
+          (repos) =>
+            latestOf(repos, team.serve.modelType, team.ids[name], "out"),
+        );
+        assert(latest !== undefined && latest !== null, name);
+      }
+    });
   },
 });
 
@@ -721,7 +770,7 @@ Deno.test({
 
 Deno.test({
   name:
-    "scoped apply: back-to-back short scoped writes apply the whole feed once the oldest unapplied commit passes the age bound, so a reader overlapping one sees another member's write",
+    "scoped apply: back-to-back short scoped writes drain the backlog at their ends once the oldest unapplied commit passes the age bound, so a reader overlapping a later one sees another member's write",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
@@ -749,6 +798,7 @@ Deno.test({
           const write = methodRun(team, a, A_TOKEN, CONSUMER, "stamp", {
             backlogAgeMs: 1,
             feedApplyMs: 3_600_000,
+            drainSlice: 1_000,
           });
           try {
             await waitFor(() => holding.has(a.repoDir), "a's write to hold", {

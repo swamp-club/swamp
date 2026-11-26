@@ -4238,12 +4238,12 @@ A scoped writer (below, under serve-mode checkouts) leaves its read model
 complete with its cursor behind, so a reader skips catch-up while it runs and
 reads behaviors the writer did not lock or read as the writer's last whole
 apply left them. Back-to-back short scoped writers never reach their interval
-apply, so the bound is the backlog bound below: the next scoped write applies
-the whole feed once the oldest unapplied commit is older than
-`SCOPED_BACKLOG_AGE_MS` (two minutes) or more than `SCOPED_BACKLOG_MAX`
-commits wait. A reader overlapping a writer therefore lags by at most that,
-plus the writer's own run, which a long run's interval apply
-(`SCOPED_FEED_APPLY_MS`, 30 seconds) bounds.
+apply; past the backlog bound below (the oldest unapplied commit older than
+`SCOPED_BACKLOG_AGE_MS`, two minutes, or more than `SCOPED_BACKLOG_MAX`
+commits waiting) each one drains a slice of the backlog when its work is done.
+A reader overlapping such writers lags by the backlog those slices have not
+drained yet; a reader with no writer live, and every unscoped command, applies
+the whole feed and sees everything.
 
 Each effect is idempotent, so catching up again from the unchanged cursor
 redoes the effects of a crash anywhere. That is not always a repair on its
@@ -10043,18 +10043,21 @@ the next whole apply. No schema changes.
 
 - At open the read model applies config, the lockfile and auto-definitions
   with commits past what it applied (a query over `commits` past the cursor,
-  no body decoded). A read model never completed, or lagging its copy by more
-  than `SCOPED_BACKLOG_MAX` commits (2,000; `SWAMP_V3_SCOPED_BACKLOG_MAX`
-  overrides it) or with its oldest unapplied commit older than
-  `SCOPED_BACKLOG_AGE_MS` (two minutes), applies the whole feed instead, before
-  anything is staged. The bound keeps `commits.db` and follow compaction,
-  which stops at the cursor, from growing without end.
-- Under the lock the same decision is made again on the copy the lock just
-  fetched; scoped, the read model applies the locked partitions (a behavior's,
+  no body decoded). Only a read model never completed applies the whole feed
+  there, or one whose cursor the copy compacted past, where a partition apply
+  cannot run (counted by the `scoped_behind_compaction` span).
+- Under the lock the read model applies the locked partitions (a behavior's,
   or a run's) and the pending config before the acquire resolves, and marks
-  them as the command's own until the lock releases. The
-  lock's `maxCommits` counts only those partitions' unapplied commits; a
-  cursor the copy compacted past still loads a base outside the lock.
+  them as the command's own until the lock releases. It never applies the
+  whole feed under the lease, but for the same two cases. The lock's
+  `maxCommits` counts only those partitions' unapplied commits.
+- A backlog is never applied in front of a write. Past the bound
+  (`SCOPED_BACKLOG_MAX` commits, 2,000, which `SWAMP_V3_SCOPED_BACKLOG_MAX`
+  overrides, or `SCOPED_BACKLOG_AGE_MS`, two minutes), a scoped command drains
+  at most `SCOPED_DRAIN_SLICE` commits when the datastores close, once its
+  units are closed and its locks released: a tail-netted slice that moves the
+  cursor on, so successive commands drain the backlog and `commits.db` and
+  follow compaction, which stops at the cursor, never grow without end.
 - The feed watch becomes a whole catch-up every `SCOPED_FEED_APPLY_MS`, so a
   short command never pays one and a long one's reads lag by at most that.
   It is the same catch-up as before, so a commit the command sent while one of

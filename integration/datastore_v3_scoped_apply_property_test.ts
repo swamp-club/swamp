@@ -163,7 +163,7 @@ async function append(
   }
 }
 
-type Step = "none" | "whole" | number;
+type Step = "none" | "whole" | "slice" | number;
 
 const signal = () => AbortSignal.timeout(30_000);
 
@@ -178,6 +178,7 @@ async function observeAfter(
     await append(env, history, async () => {
       const next = plan.length === 0 ? "none" : plan[step++ % plan.length];
       if (next === "whole") await readModel.catchUp(signal());
+      else if (next === "slice") await readModel.catchUpSlice(signal(), 2);
       else if (next !== "none") {
         await readModel.catchUpPartition("", PARTITIONS[next], signal());
       }
@@ -208,13 +209,13 @@ const arbCommit: fc.Arbitrary<CommitSpec> = fc.oneof(
 
 const arbPlan = fc.array(
   fc.oneof(
-    fc.constantFrom<Step>("none", "whole"),
+    fc.constantFrom<Step>("none", "whole", "slice"),
     fc.integer({ min: 0, max: PARTITIONS.length - 1 }),
   ),
   { minLength: 1, maxLength: 8 },
 );
 
-Deno.test("scoped apply, property: any mix of partition and whole applies ends as whole applies alone do, in files, catalog and live index", async () => {
+Deno.test("scoped apply, property: any mix of partition applies, bounded slices and whole applies ends as whole applies alone do, in files, catalog and live index", async () => {
   await fc.assert(
     fc.asyncProperty(
       fc.array(arbCommit, { minLength: 1, maxLength: 12 }),

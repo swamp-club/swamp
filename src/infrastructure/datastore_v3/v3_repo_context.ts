@@ -210,6 +210,7 @@ import {
   pendingCommitsIn,
   pendingPartitions,
   SCOPED_BACKLOG_AGE_MS,
+  SCOPED_DRAIN_SLICE,
   SCOPED_FEED_APPLY_MS,
   startPeriodicApply,
 } from "./scoped_read_model.ts";
@@ -365,6 +366,7 @@ interface RepoContextState {
   scoped: ScopedCommand | undefined;
   scopedFeedApplyMs: number;
   scopedBacklogAgeMs: number;
+  scopedDrainSlice: number;
   scopedTripwire: boolean;
 }
 
@@ -422,6 +424,7 @@ const repoState = processRuntimeSlot<RepoContextState>(() => ({
   scoped: undefined,
   scopedFeedApplyMs: SCOPED_FEED_APPLY_MS,
   scopedBacklogAgeMs: SCOPED_BACKLOG_AGE_MS,
+  scopedDrainSlice: SCOPED_DRAIN_SLICE,
   scopedTripwire: false,
 }));
 
@@ -1306,6 +1309,56 @@ export function forgetV3LockedScope(locked: V3LockedScope): void {
   }
 }
 
+async function behindCompaction(handle: V3Datastore): Promise<boolean> {
+  return handle.readModel.cursor() <
+    await handle.commitStore.compactionPoint();
+}
+
+// a partition apply cannot run below the compaction point; the span counts
+// how often a scoped command pays a whole apply for it
+function wholeBehindCompaction(apply: () => Promise<void>): Promise<void> {
+  return withSpan(
+    "swamp.datastore.v3.readmodel.scoped_behind_compaction",
+    {},
+    apply,
+  );
+}
+
+/**
+ * past the backlog bound, a scoped command applies at most a slice of the
+ * feed once its own work is done; each slice moves the cursor on
+ */
+async function drainScopedBacklog(): Promise<void> {
+  for (const handle of scopedHandles()) {
+    try {
+      if (!handle.readModel.isComplete() || !await scopedPastBound(handle)) {
+        continue;
+      }
+      if (await behindCompaction(handle)) {
+        await wholeBehindCompaction(() => handle.catchUpReadModel!());
+        continue;
+      }
+      await handle.readModel.catchUpSlice(
+        commandStopSignal(),
+        repoState().scopedDrainSlice,
+      );
+    } catch (error) {
+      logger.debug`Draining the scoped read model's backlog failed: ${error}`;
+    }
+  }
+}
+
+export function setScopedDrainSliceForTesting(commits: number): Disposable {
+  const state = repoState();
+  const before = state.scopedDrainSlice;
+  state.scopedDrainSlice = commits;
+  return {
+    [Symbol.dispose]: () => {
+      state.scopedDrainSlice = before;
+    },
+  };
+}
+
 function scopedPastBound(handle: V3Datastore): Promise<boolean> {
   return backlogPastBound(
     handle,
@@ -1436,14 +1489,14 @@ function scopedReadBarrier(): DataReadBarrier {
   };
 }
 
-/**
- * a scoped command's open: the whole feed when the read model never completed
- * or lags past the bound, before anything is staged; otherwise only config,
- * the lockfile and auto-definitions
- */
+// a lagging read model is drained at the end of commands, never in front of one
 async function applyAtScopedOpen(handle: V3Datastore): Promise<void> {
-  if (!handle.readModel.isComplete() || await scopedPastBound(handle)) {
+  if (!handle.readModel.isComplete()) {
     await handle.catchUpReadModel!();
+    return;
+  }
+  if (await behindCompaction(handle)) {
+    await wholeBehindCompaction(() => handle.catchUpReadModel!());
     return;
   }
   await applyPartitions(
@@ -1535,6 +1588,7 @@ export async function catchUpV3HandlesAt(
       const scopedHandle = scopedHandles().includes(handle);
       let lockedPartitions: PartitionKey[] | undefined;
       let scoped: PartitionKey[] | undefined;
+      let behind = false;
       try {
         await handle.catchUpForWrite(undefined, {
           // a page asked for one copy is that copy's alone
@@ -1547,10 +1601,12 @@ export async function catchUpV3HandlesAt(
         lockedPartitions = scopedHandle
           ? lockedPartitionsOf(handle, locked)
           : undefined;
-        // past the bound, or never completed, the whole feed applies before
-        // the command stages anything
+        // only a read model never completed, or one the copy compacted past,
+        // applies the whole feed under the lease
+        behind = lockedPartitions !== undefined &&
+          await behindCompaction(handle);
         scoped = lockedPartitions !== undefined &&
-            handle.readModel.isComplete() && !await scopedPastBound(handle)
+            handle.readModel.isComplete() && !behind
           ? lockedPartitions
           : undefined;
         if (maxCommits !== undefined && scoped !== undefined) {
@@ -1577,6 +1633,11 @@ export async function catchUpV3HandlesAt(
           options?.ignoresStop === true
             ? new AbortController().signal
             : commandStopSignal(),
+        );
+      } else if (behind) {
+        await wholeBehindCompaction(() =>
+          handle.catchUpReadModel?.(undefined, options) ??
+            handle.catchUp(undefined, options)
         );
       } else {
         await (handle.catchUpReadModel?.(undefined, options) ??
@@ -2940,6 +3001,8 @@ export async function closeV3Datastores(
       ),
   );
   if (repoState().scoped !== undefined) {
+    // the command's units are closed and its locks released
+    await drainScopedBacklog();
     repoState().scoped = undefined;
     setDataReadBarrier(undefined);
   }
