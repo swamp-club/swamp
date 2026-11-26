@@ -786,7 +786,8 @@ import { auditTakenSignals } from "../../serve/signal_delivery.ts";
 import { FilesystemDatastoreVerifier } from "../../infrastructure/persistence/filesystem_datastore_verifier.ts";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import {
-  type DatastoreClassification,
+  classifyDatastore,
+  classifyVaults,
   resolveDeploymentMode,
   type VaultClassification,
 } from "../../domain/serve/deployment_mode.ts";
@@ -2978,26 +2979,21 @@ export const serveCommand = new Command()
       }
     }
 
-    const datastoreClass: DatastoreClassification =
+    const datastoreClass = classifyDatastore(
       isCustomDatastoreConfig(datastoreConfig)
         ? {
-          kind: "remote",
-          type: datastoreConfig.type,
+          customType: datastoreConfig.type,
           hasControlPlane: v3Location !== undefined ||
             !!syncService?.capabilities?.().controlPlane,
         }
-        : { kind: "filesystem" };
+        : { customType: undefined, hasControlPlane: false },
+    );
 
     let vaultClass: VaultClassification = { kind: "none" };
     try {
       const vaultRepo = new YamlVaultConfigRepository(resolvedRepoDir);
       const vaults = await vaultRepo.findAll();
-      if (vaults.length > 0) {
-        const remoteVault = vaults.find((v) => v.type !== "local_encryption");
-        vaultClass = remoteVault
-          ? { kind: "remote", type: remoteVault.type }
-          : { kind: "local" };
-      }
+      vaultClass = classifyVaults(vaults.map((v) => v.type));
     } catch (e: unknown) {
       logger.warn("Could not probe vault configuration: {error}", {
         error: e instanceof Error ? e.message : String(e),

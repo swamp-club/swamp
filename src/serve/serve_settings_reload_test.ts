@@ -325,3 +325,34 @@ Deno.test("timedServiceReloadReasons: scheduling, the scheduled-run limit and th
   ]);
   assertEquals(report.needsRestart, []);
 });
+
+Deno.test("diffServeSettings: with the federation gate off, a federation change reports nothing", () => {
+  const report = diff({ version: 2 }, {
+    version: 2,
+    federation: { role: "hub" },
+  });
+  assertEquals(report, { applied: [], needsRestart: [], overridden: [] });
+});
+
+Deno.test("diffServeSettings: with the federation gate on, a federation change needs a restart", () => {
+  const report = diff(
+    { version: 2 },
+    { version: 2, federation: { role: "hub" } },
+    [],
+    { SWAMP_EXPERIMENTAL_FEDERATION: "1" },
+  );
+  assertEquals(report.applied, []);
+  assertEquals(report.overridden, []);
+  assertEquals(report.needsRestart.map((r) => r.setting), ["federation"]);
+  assertStringIncludes(report.needsRestart[0].reason, "read once at startup");
+});
+
+Deno.test("diffServeSettings: with the gate on, federation in a version 1 file is not a setting", () => {
+  const report = diff(
+    {},
+    { federation: { role: "hub" } },
+    [],
+    { SWAMP_EXPERIMENTAL_FEDERATION: "1" },
+  );
+  assertEquals(report.needsRestart, []);
+});

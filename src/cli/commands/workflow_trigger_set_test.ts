@@ -128,3 +128,47 @@ Deno.test("workflowTriggerSetCommand: has catch-up options", async () => {
   assertEquals(names.includes("catch-up"), true);
   assertEquals(names.includes("catch-up-max-delay"), true);
 });
+
+Deno.test("workflowTriggerSetCommand: keeps serve.yaml's version and federation", async () => {
+  const { Command } = await import("@cliffy/command");
+  const { withMockedEnv } = await import(
+    "../../infrastructure/persistence/path_test_helpers.ts"
+  );
+  const { readServeConfigFile, writeServeConfigFile } = await import(
+    "../../serve/serve_config.ts"
+  );
+  const { workflowTriggerSetCommand } = await import(
+    "./workflow_trigger_set.ts"
+  );
+  const dir = await Deno.makeTempDir({ prefix: "swamp-trigger-set-" });
+  try {
+    await writeServeConfigFile(dir, {
+      version: 2,
+      federation: { hub: "https://hub.example/swamp" },
+      port: 9000,
+    });
+    await withMockedEnv(
+      { SWAMP_SERVE_URL: undefined, SWAMP_SERVER_URL: undefined },
+      () =>
+        new Command()
+          .throwErrors()
+          .globalOption("--json", "JSON output")
+          .command("set", workflowTriggerSetCommand)
+          .parse([
+            "set",
+            "scan-cves",
+            "--schedule",
+            "0 3 * * *",
+            "--json",
+            "--repo-dir",
+            dir,
+          ]),
+    );
+    const config = await readServeConfigFile(dir);
+    assertEquals(config?.version, 2);
+    assertEquals(config?.federation, { hub: "https://hub.example/swamp" });
+    assertEquals(config?.triggers?.["scan-cves"], { schedule: "0 3 * * *" });
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
+});

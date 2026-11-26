@@ -19,7 +19,10 @@
 
 import { assertEquals, assertRejects } from "@std/assert";
 import type { MergedServeOptions, ServeConfigFile } from "./serve_config.ts";
-import { mergeServeOptions } from "./serve_config.ts";
+import { loadServeConfig, mergeServeOptions } from "./serve_config.ts";
+import { join } from "@std/path";
+import { withMockedEnv } from "../infrastructure/persistence/path_test_helpers.ts";
+import { FEDERATION_GATE_VARIABLE } from "../domain/serve/federation_gate.ts";
 import {
   type AppliedSettingKey,
   continuationSweepReloadReason,
@@ -117,6 +120,32 @@ Deno.test("createServeSettingsReloader: a file startup would refuse changes noth
     "positive integer",
   );
   assertEquals(h.calls, []);
+});
+
+Deno.test("createServeSettingsReloader: a version 2 typo refuses the reload and changes nothing", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-reload-v2-" });
+  try {
+    await Deno.mkdir(join(dir, ".swamp"), { recursive: true });
+    await Deno.writeTextFile(
+      join(dir, ".swamp", "serve.yaml"),
+      "version: 2\ndashbord: true\n",
+    );
+    const h = harness({ "max-concurrent-runs": 5 }, {
+      load: () => loadServeConfig(undefined, dir),
+    });
+    await withMockedEnv(
+      { [FEDERATION_GATE_VARIABLE]: "1" },
+      () =>
+        assertRejects(
+          () => createServeSettingsReloader(h.deps)(reload),
+          Error,
+          "Unknown key dashbord",
+        ),
+    );
+    assertEquals(h.calls, []);
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
 });
 
 Deno.test("createServeSettingsReloader: a prepare failure changes nothing", async () => {

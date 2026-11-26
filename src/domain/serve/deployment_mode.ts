@@ -72,3 +72,29 @@ export function resolveDeploymentMode(
 
   return { mode: "durable", warnings: [] };
 }
+
+export function classifyDatastore(input: {
+  /** the extension datastore type; undefined for the filesystem datastore */
+  readonly customType: string | undefined;
+  readonly hasControlPlane: boolean;
+}): DatastoreClassification {
+  return input.customType !== undefined
+    ? {
+      kind: "remote",
+      type: input.customType,
+      hasControlPlane: input.hasControlPlane,
+    }
+    : { kind: "filesystem" };
+}
+
+const LOCAL_VAULT_TYPE = "local_encryption";
+
+export function classifyVaults(
+  vaultTypes: readonly string[],
+): VaultClassification {
+  if (vaultTypes.length === 0) return { kind: "none" };
+  const remote = vaultTypes.find((type) => type !== LOCAL_VAULT_TYPE);
+  return remote !== undefined ? { kind: "remote", type: remote } : {
+    kind: "local",
+  };
+}

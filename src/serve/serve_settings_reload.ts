@@ -23,6 +23,7 @@ import {
   type ServeConfigFile,
 } from "./serve_config.ts";
 import { SERVE_ENV_MAP } from "./serve_env_map.ts";
+import { FEDERATION_GATE_VARIABLE } from "../domain/serve/federation_gate.ts";
 
 export type SettingReloadClass =
   | "applied"
@@ -114,6 +115,11 @@ export const SETTING_CATALOGUE = {
     "hot-reload",
     "hot-reload",
     `${NEW_PROCESS}: the signal handler is installed at startup`,
+  ),
+  federation: restart(
+    "federation",
+    undefined,
+    `${NEW_PROCESS}: the federation role and hub are read once at startup`,
   ),
   // removals apply; an addition reports itself as needing a restart
   admins: applied("auth.admins", "admins"),
@@ -246,10 +252,15 @@ function applied(setting: string, flag?: string): AppliedEntry {
 
 function restart(
   setting: string,
-  flag: string,
+  flag: string | undefined,
   reason: string,
 ): SettingCatalogueEntry {
-  return { setting, flag, reloadClass: "restart", reason };
+  return {
+    setting,
+    ...(flag !== undefined ? { flag } : {}),
+    reloadClass: "restart",
+    reason,
+  };
 }
 
 export interface SettingsReloadReport {
@@ -287,8 +298,11 @@ export interface SettingChanges {
 export function classifyServeSettingChanges(
   input: SettingsDiffInput,
 ): SettingChanges {
+  // only the federation gate reaches the merge; env overrides are judged below
+  const gateOnly = (name: string) =>
+    name === FEDERATION_GATE_VARIABLE ? input.envLookup(name) : undefined;
   const fileOnly = (config: ServeConfigFile | null) =>
-    mergeServeOptions(config, {}, new Set(), () => undefined);
+    mergeServeOptions(config, {}, new Set(), gateOnly);
   const before = fileOnly(input.before);
   const after = fileOnly(input.after);
 

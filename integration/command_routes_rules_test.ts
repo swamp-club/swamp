@@ -47,6 +47,7 @@ import {
   ACCESS_TOKEN_ROUTES,
 } from "../src/cli/commands/access_routes.ts";
 import {
+  SERVE_FEDERATION_ROUTES,
   SERVE_ROUTES,
   SERVE_WORKSPACE_ROUTES,
 } from "../src/cli/commands/serve_routes.ts";
@@ -143,6 +144,15 @@ const GROUP_TABLES: readonly GroupTable[] = [
   },
 ];
 
+/** rows registered only behind an experimental gate, absent from the default tree */
+const GATED_TABLES: readonly GroupTable[] = [
+  {
+    path: ["serve"],
+    file: "src/cli/commands/serve_routes.ts",
+    routes: SERVE_FEDERATION_ROUTES,
+  },
+];
+
 function childrenOf(node: AnyCommand) {
   const visible = new Set(node.getCommands(false));
   return node.getCommands(true).map((command) => ({
@@ -202,9 +212,10 @@ Deno.test("command routes: each route's module is the file its load imports", as
 });
 
 Deno.test("command routes: each group row's module is the file its load imports", async () => {
-  const files = [...new Set(GROUP_TABLES.map((table) => table.file))];
+  const allTables = [...GROUP_TABLES, ...GATED_TABLES];
+  const files = [...new Set(allTables.map((table) => table.file))];
   for (const file of files) {
-    const tables = GROUP_TABLES.filter((table) => table.file === file);
+    const tables = allTables.filter((table) => table.file === file);
     const path = join(ROOT, file);
     const imported = findModuleReferences(path, await Deno.readTextFile(path))
       .filter((reference) => reference.kind === "dynamic")
@@ -406,6 +417,7 @@ Deno.test("command routes: a serve subcommand path never reaches serve.ts static
   const entries = [
     "src/cli/commands/serve_group.ts",
     ...SERVE_ROUTES.map((route) => route.module),
+    ...SERVE_FEDERATION_ROUTES.map((route) => route.module),
   ];
   const reaching: string[] = [];
   for (const entry of entries) {

@@ -82,6 +82,7 @@ import type { RepoMarkerData } from "../../infrastructure/persistence/repo_marke
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { webhookRouteExtensionDirs } from "./serve_startup_settings.ts";
+import { isServeFederationEnabled } from "../../domain/serve/federation_gate.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -296,6 +297,9 @@ export const checkConfigCommand = new Command()
       options,
       parseExplicitFlags(Deno.args),
     );
+    const versionReport = isServeFederationEnabled((name) => Deno.env.get(name))
+      ? { configVersion: configFile?.version ?? 1 }
+      : {};
 
     // judged without loading the model registry so this stays read-only and
     // offline: a bare type is checked against built-in types only, serve checks
@@ -357,6 +361,7 @@ export const checkConfigCommand = new Command()
         checkedMode === "oauth")
     ) {
       renderServeCheckConfig({
+        ...versionReport,
         passed: false,
         authMode: checkedMode,
         entries: [],
@@ -406,6 +411,7 @@ export const checkConfigCommand = new Command()
         offersSignInExchange: false,
       });
       renderServeCheckConfig({
+        ...versionReport,
         passed: starts && routeFilesLoad,
         authMode: authConfig.mode,
         entries: [],
@@ -503,6 +509,7 @@ export const checkConfigCommand = new Command()
       grantsLoad && routeFilesLoad;
 
     renderServeCheckConfig({
+      ...versionReport,
       passed,
       authMode: authConfig.mode,
       oauthProvider: providerUrl,
