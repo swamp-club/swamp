@@ -690,13 +690,14 @@ function followerDatastoreRefusal(
   if (gate === undefined) return undefined;
   // Leases live on the leader, so listing them is the leader's to answer
   const reads = (req.method === "GET" && route.kind !== "locks") ||
-    route.kind === "has";
+    route.kind === "has" || route.kind === "chunkBatch";
   if (gate.role === "leader") {
     // never sent on: a leader that may have been taken over neither answers
     // from its copy nor changes it; one that cannot commit sends writers on to
     // the leader that takes over
     return gate.leadUnconfirmed?.() === true ||
         (req.method !== "GET" && route.kind !== "has" &&
+          route.kind !== "chunkBatch" &&
           ctx.commitHealth?.cannotCommit() !== undefined)
       ? Promise.resolve(
         notLeaderResponse(new ServeNotLeaderError(undefined), false),
@@ -888,7 +889,8 @@ async function answerDatastoreRequest(
           : methodNotAllowed("GET");
     }
   } catch (error) {
-    const writes = req.method !== "GET" && route.kind !== "has";
+    const writes = req.method !== "GET" && route.kind !== "has" &&
+      route.kind !== "chunkBatch";
     if (writes) ctx.commitHealth?.recordFailure(error);
     return (writes ? storageFailureResponse(error, ctx) : undefined) ??
       datastoreErrorResponse(error);
@@ -965,7 +967,7 @@ class DatastoreApi {
       // made only among readable chunks, so it says nothing about the others
       for (let i = 0; i < readable.length; i += BATCH_READ_CONCURRENCY) {
         if (bytesOut >= MAX_BATCH_CHUNK_BYTES) {
-          deferred.push(...readable.slice(i));
+          for (const sha256 of readable.slice(i)) deferred.push(sha256);
           break;
         }
         const group = readable.slice(i, i + BATCH_READ_CONCURRENCY);

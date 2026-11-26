@@ -35,6 +35,7 @@ import {
   storageNamespaceOf,
 } from "./serve_datastore_storage.ts";
 import { FakeServe, removeTempDir } from "./serve_upstream_test_helpers.ts";
+import { ChunkBatchUnsupportedError } from "./serve_datastore_client.ts";
 import {
   ServeRateLimitedError,
   ServeUnreachableError,
@@ -623,6 +624,99 @@ Deno.test("CachedServeStorage.prefetch: a serve without a batch read is read one
     );
     assertEquals(report.fetched, 12);
     assertEquals(seen.singles, 12);
+  });
+});
+
+Deno.test("ServeChunkStorage.getMany: undefined for another namespace, a serve without the feature, or one that refuses the route (swamp-club#5103)", async () => {
+  const a = "a".repeat(64);
+  const batch = {
+    chunks: new Map(),
+    missing: [a],
+    undecided: [],
+    deferred: [],
+  };
+  const client = (takes: boolean, fail?: Error) => ({
+    namespace: "_default",
+    hasChunks: () => Promise.resolve(new Set<string>()),
+    getChunk: () => Promise.resolve(null),
+    putChunk: () => Promise.resolve(),
+    takesChunkBatch: () => takes,
+    getChunks: () => fail ? Promise.reject(fail) : Promise.resolve(batch),
+  });
+  const of = (c: ReturnType<typeof client>) =>
+    new ServeChunkStorage(
+      c as unknown as ConstructorParameters<typeof ServeChunkStorage>[0],
+    );
+  assertEquals(await of(client(true)).getMany("_default", [a], live()), batch);
+  assertEquals(await of(client(true)).getMany("other", [a], live()), undefined);
+  assertEquals(
+    await of(client(false)).getMany("_default", [a], live()),
+    undefined,
+  );
+  assertEquals(
+    await of(client(true, new ChunkBatchUnsupportedError("http://s")))
+      .getMany("_default", [a], live()),
+    undefined,
+  );
+});
+
+Deno.test("CachedServeStorage.prefetch: an unreachable serve stops batch reads at once; a 429 is retried; a failed batch's chunks are read one at a time (swamp-club#5103)", async () => {
+  const all = await Promise.all(
+    Array.from({ length: 10 }, (_, i) => chunk(`chunk-${i}`)),
+  );
+  const chunks = new Map(all.map((c) => [c.sha256, c.bytes]));
+  const remoteWith = (fail: (call: number) => Error | undefined) => {
+    const seen = { batches: 0, singles: 0 };
+    const remote = {
+      getMany(_namespace: string, hashes: readonly string[]) {
+        seen.batches++;
+        const error = fail(seen.batches);
+        if (error !== undefined) return Promise.reject(error);
+        return Promise.resolve({
+          chunks: new Map(hashes.map((h) => [h, chunks.get(h)!])),
+          missing: [],
+          undecided: [],
+          deferred: [],
+        });
+      },
+      get(_namespace: string, sha256: string) {
+        seen.singles++;
+        return Promise.resolve(chunks.get(sha256) ?? null);
+      },
+      has: () => Promise.resolve(new Set<string>()),
+    } as unknown as DatastoreStorage;
+    return { remote, seen };
+  };
+  const hashes = all.map((c) => c.sha256);
+
+  const unreachable = remoteWith(() =>
+    new ServeUnreachableError("http://s", "never", new Error("down"))
+  );
+  await withGatedCache(unreachable.remote, async (cache) => {
+    const report = await cache.prefetch("_default", hashes, live());
+    assertEquals(report.fetched, 0);
+    assertEquals(unreachable.seen.batches, 1);
+    assertEquals(unreachable.seen.singles, 0, "nothing read singly after");
+  });
+
+  const limited = remoteWith((call) =>
+    call === 1
+      ? new ServeRateLimitedError("rate_limited", "slots full", 0)
+      : undefined
+  );
+  await withGatedCache(limited.remote, async (cache) => {
+    const report = await cache.prefetch("_default", hashes, live());
+    assertEquals(report.fetched, 10);
+    assertEquals(report.retries, 1);
+  });
+
+  const broken = remoteWith((call) =>
+    call === 1 ? new Error("bad batch") : undefined
+  );
+  await withGatedCache(broken.remote, async (cache) => {
+    const report = await cache.prefetch("_default", hashes, live());
+    assertEquals(report.fetched, 10);
+    assertEquals(broken.seen.singles, 10, "the failed batch was read singly");
   });
 });
 

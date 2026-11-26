@@ -948,17 +948,21 @@ Deno.test({
         );
         fetches = spans.filter((span) =>
           span.name === REQUEST_SPAN &&
-          span.attributes["http.route"] === "chunks/{sha256}"
+          (span.attributes["http.route"] === "chunks/{sha256}" ||
+            span.attributes["http.route"] === "chunks/batch")
         );
         for (const span of spans) {
           parentNames.set(span.spanContext().spanId, span.name);
         }
       });
-      assertEquals(fetches.length, 4);
-      // all fetched ahead, together, before the page applied any of them
+      // all four fetched ahead in one batch read, before the page applied any
+      assertEquals(
+        fetches.map((span) => span.attributes["http.route"]),
+        ["chunks/batch"],
+      );
       assertEquals(
         fetches.map((span) => parentNames.get(parentIdOf(span))),
-        Array(4).fill("swamp.datastore.v3.readmodel.prefetch"),
+        ["swamp.datastore.v3.readmodel.prefetch"],
       );
       assertEquals(await copyChunkFiles(member.client.repoDir), 0);
       const paths = await readCommand(

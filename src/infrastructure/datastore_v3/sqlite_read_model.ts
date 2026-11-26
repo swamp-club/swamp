@@ -4174,10 +4174,11 @@ export class SqliteReadModel implements ReadModel {
     const keep = async () => {
       // The file stays as it is: nothing under the checkout was replaced.
       this.#rewritten?.delete(key);
+      if (batch.syncs) {
+        await this.#syncFile(path);
+        batch.touch(dirname(path));
+      }
       landed?.();
-      if (!batch.syncs) return;
-      await this.#syncFile(path);
-      batch.touch(dirname(path));
     };
     // a replay runs over files already there: one already holding its inline
     // bytes, read and compared, keeps its access; chunked content is compared
@@ -4246,7 +4247,21 @@ export class SqliteReadModel implements ReadModel {
           done: batch.write(path, bytes, signal, {
             ...(absentDirectories === undefined ? {} : { absentDirectories }),
             ...(content.access === undefined ? {} : { access: content.access }),
-          }).then(() => landed?.(), (error: unknown) => {
+            written: (info) => {
+              written.info = info;
+            },
+          }).then(async () => {
+            // a pooled chunked file keeps its written record, as one written
+            // directly does, so the next guard need not re-hash it
+            const info = written.info;
+            if (intended !== undefined && info !== undefined) {
+              await this.#time(
+                "note",
+                () => this.#noteWritten(namespace, key, path, intended, info),
+              );
+            }
+            landed?.();
+          }).catch((error: unknown) => {
             this.#poolFailure ??= { error };
           }),
         });

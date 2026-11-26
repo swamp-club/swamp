@@ -192,7 +192,7 @@ const PREFETCH_CONCURRENCY = 8;
 export const PREFETCH_BATCH_HASHES = 128;
 /** tries for a chunk serve refused with 429 because its chunk slots were full */
 export const PREFETCH_ATTEMPTS = 3;
-/** chunks failing in a row before the prefetch gives up on serve */
+/** chunks, or batch reads, failing in a row before the prefetch gives up on serve */
 export const PREFETCH_STOP_AFTER = 3;
 const PREFETCH_RETRY_MS = 200;
 
@@ -363,12 +363,13 @@ export class CachedServeStorage extends FileSystemStorage
         const result = await fetchBatch(batch);
         if (result === undefined) {
           unsupported = true;
-          queue.unshift(...batch);
+          for (const hash of batch) singly.push(hash);
           return;
         }
         report.batches = (report.batches ?? 0) + 1;
         if (result === "failed") {
-          report.failed += batch.length;
+          // read one at a time later, as before batches, unless serve stopped
+          for (const hash of batch) singly.push(hash);
           failingInARow++;
           continue;
         }
@@ -377,9 +378,9 @@ export class CachedServeStorage extends FileSystemStorage
           await this.#keepFetched(namespace, sha256, bytes, signal);
           report.fetched++;
         }
-        queue.push(...result.deferred);
+        for (const hash of result.deferred) queue.push(hash);
         // a shared vouch budget may run out: each of these gets its own read
-        singly.push(...result.undecided);
+        for (const hash of result.undecided) singly.push(hash);
         report.missing = (report.missing ?? 0) + result.missing.length;
       }
     };
@@ -394,8 +395,11 @@ export class CachedServeStorage extends FileSystemStorage
         worker,
       ),
     );
-    if (stop || failingInARow >= PREFETCH_STOP_AFTER) return "stop";
-    return unsupported ? [...queue, ...singly] : singly;
+    if (stop || failingInARow >= PREFETCH_STOP_AFTER) {
+      report.failed += queue.length + singly.length;
+      return "stop";
+    }
+    return unsupported ? queue.concat(singly) : singly;
   }
 
   async #keepFetched(

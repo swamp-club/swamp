@@ -52,6 +52,10 @@ await initializeLogging({});
 
 Deno.test("matchDatastoreRoute: each route, with its segments decoded once", () => {
   const partition = modelPartition().toString();
+  assertEquals(matchDatastoreRoute("/api/v1/datastore/ns/chunks/batch"), {
+    kind: "chunkBatch",
+    namespace: "ns",
+  });
   assertEquals(matchDatastoreRoute("/api/v1/datastore/_default/chunks/has"), {
     kind: "has",
     namespace: "_default",
@@ -257,6 +261,7 @@ Deno.test("callerReplyHeaders: a token serve names the caller's principal, encod
       "authorize-only",
       "commit-batch",
       "base-difference",
+      "chunk-batch",
     ],
   );
   // a header value the Fetch API accepts
@@ -274,6 +279,7 @@ Deno.test("callerReplyHeaders: a serve without authentication names no principal
       "authorize-only",
       "commit-batch",
       "base-difference",
+      "chunk-batch",
     ],
   );
 });
