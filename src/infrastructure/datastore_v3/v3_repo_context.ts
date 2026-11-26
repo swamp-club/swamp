@@ -2410,9 +2410,10 @@ export async function v3RepositoryFactoryConfig(
   }
   const unreadableContent = unreadableContentLookup(repoDir, handle.readModel);
   const lazy = repoState().lazyCheckouts.get(handleKey(repoDir, config))?.lazy;
+  const hydrateOwed = lazy !== undefined ? v3OwedFileHook(lazy) : undefined;
   return {
     // a model data file the read model owes is written when first read
-    ...(lazy !== undefined ? { hydrateFile: v3OwedFileHook(lazy) } : {}),
+    ...(hydrateOwed !== undefined ? { hydrateFile: hydrateOwed } : {}),
     commitLog: (markDirty, runRepo) =>
       handle.engineFor(markDirty, runRepo, {
         readOnly: options.readOnly === true,
@@ -2427,6 +2428,7 @@ export async function v3RepositoryFactoryConfig(
       repoDir,
       config,
       unreadableContent,
+      hydrateOwed,
     ),
   };
 }

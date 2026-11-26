@@ -25,7 +25,10 @@
 import { isAbsolute, join, relative, SEPARATOR } from "@std/path";
 import type { ForeignContentFetcher } from "../../domain/data/repositories.ts";
 import { isReservedNamespaceName } from "../../domain/data/namespace.ts";
-import type { UnreadableContentLookup } from "../../domain/datastore/datastore_sync_service.ts";
+import type {
+  OwedFileHook,
+  UnreadableContentLookup,
+} from "../../domain/datastore/datastore_sync_service.ts";
 import { RecordKey } from "../../domain/datastore_v3/record_key.ts";
 import { datastoreKeyFilter, v3CacheRoot } from "./v3_datastore.ts";
 import { readModelStateDir, refusedKeyReason } from "./record_path_guard.ts";
@@ -45,6 +48,7 @@ export function v3ForeignContentFetcher(
   repoDir: string,
   layout: V3ForeignContentLayout,
   unreadableContent: UnreadableContentLookup,
+  hydrateOwed?: OwedFileHook,
 ): ForeignContentFetcher {
   const own = layout.namespace ?? "";
   const admits = datastoreKeyFilter(layout.directories, layout.exclude);
@@ -72,6 +76,10 @@ export function v3ForeignContentFetcher(
     const root = v3CacheRoot(repoDir, namespace);
     if (refusedKeyReason(key, root, stateDir) !== undefined) return null;
     const path = join(root, ...relPath.split("/"));
+    // a lazy checkout's read model may owe another namespace's file too
+    if (hydrateOwed !== undefined && !(await existsAt(path))) {
+      await hydrateOwed(path);
+    }
     const unreadable = await unreadableContent(path);
     if (unreadable !== undefined) throw unreadable;
     const real = await realPathOrNull(path);
@@ -87,6 +95,16 @@ export function v3ForeignContentFetcher(
     }
   };
   return Object.assign(read, { readsSoloNamespace: true });
+}
+
+async function existsAt(path: string): Promise<boolean> {
+  try {
+    await Deno.lstat(path);
+    return true;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return false;
+    throw error;
+  }
 }
 
 function isSafePathSegment(segment: string): boolean {
