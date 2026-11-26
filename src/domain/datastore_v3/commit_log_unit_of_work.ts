@@ -322,6 +322,32 @@ export class CommitUnreachableError extends UserError {
   }
 }
 
+export const COMMIT_STORAGE_UNREADABLE_CODE =
+  "datastore_v3_commit_storage_unreadable";
+
+/**
+ * the storage refused access (its permissions), so nothing of the commit landed
+ * or can later; not a temporary failure, so it exits 1 rather than 75
+ */
+export class CommitStorageUnreadableError extends UserError {
+  constructor(cause: unknown, options: { readonly partly?: boolean } = {}) {
+    const outcome = options.partly === true
+      ? "so the rest of this command's changes were not committed; part of " +
+        "what this command changed was committed before that and stays " +
+        "committed. Check the datastore's permissions and what this command " +
+        "changed before running it again."
+      : "so nothing this command changed was committed. Check the " +
+        "datastore's permissions, then run the command again.";
+    super(
+      `The datastore's storage could not be read (${messageOf(cause)}), ` +
+        outcome,
+      COMMIT_STORAGE_UNREADABLE_CODE,
+    );
+    this.name = "CommitStorageUnreadableError";
+    this.cause = cause;
+  }
+}
+
 /**
  * a direct append that did not land after its bounded retry; refused when the
  * datastore refused it rather than being unreachable
