@@ -240,7 +240,7 @@ export async function withMachines(
     },
   };
   await runThenTearDown(() => fn(world), async () => {
-    for (const { pids: remember } of workers) {
+    for (const { worker, pids: remember, abandon } of workers) {
       let timer: ReturnType<typeof setTimeout> | undefined;
       await Promise.race([
         remember().catch(() => {}),
@@ -249,15 +249,14 @@ export async function withMachines(
         }),
       ]);
       clearTimeout(timer);
+      abandon();
+      // ended before the kill: no machine is closed, so work still in flight
+      // could start a sidecar this teardown never hears of
+      worker.terminate();
     }
-    // killed before the Workers that spawned them end, so they get reaped
     try {
       await stopSidecarsAtTeardown(pids);
     } finally {
-      for (const { worker, abandon } of workers) {
-        abandon();
-        worker.terminate();
-      }
       await Deno.remove(root, { recursive: true }).catch(() => {});
     }
   });

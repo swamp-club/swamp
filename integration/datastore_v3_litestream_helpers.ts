@@ -88,7 +88,7 @@ export interface SidecarProbe {
   readonly timeoutMs: number;
 }
 
-export const HOST_SIDECAR_PROBE: SidecarProbe = {
+const HOST_SIDECAR_PROBE: SidecarProbe = {
   kill: killSidecarAtTeardown,
   state(pid) {
     if (!hostLitestreamProcesses.isAlive(pid)) return "gone";
