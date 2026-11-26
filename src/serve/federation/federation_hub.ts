@@ -31,7 +31,7 @@ import {
   JoinToken,
   JoinTokenError,
   joinTokenNameOf,
-  type JoinTokenRecord,
+  type JoinTokenView,
 } from "../../domain/serve/join_token.ts";
 import { MemberCredential } from "../../domain/serve/member_credential.ts";
 import { MemberName, MemberNameError } from "../../domain/serve/member_name.ts";
@@ -124,9 +124,6 @@ export class FederationHubError extends Error {
     this.name = "FederationHubError";
   }
 }
-
-/** a token as listed: never its hash */
-export type JoinTokenView = Omit<JoinTokenRecord, "secretHash">;
 
 export type JoinOutcome =
   | {

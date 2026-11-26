@@ -18,6 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { GateState } from "../domain/workflows/gate_state.ts";
+import type { JoinTokenView } from "../domain/serve/join_token.ts";
+import type { ServeMemberRecord } from "../domain/serve/serve_member.ts";
 
 export interface WorkflowRunPayload {
   /** kinds newer than old clients, sent only when listed */
@@ -1093,6 +1095,15 @@ export interface WorkerTokenRevealPayload {
   name: string;
 }
 
+export interface FederationTokenCreatePayload {
+  name: string;
+  durationMs?: number;
+}
+
+export interface FederationNamePayload {
+  name: string;
+}
+
 export interface DataGcPayload {
   dryRun?: boolean;
 }
@@ -1504,6 +1515,37 @@ export type ServerRequest =
     type: "serve.config";
     id: string;
     payload?: ServeConfigPayload;
+  }
+  // accepted only by a serve that built a federation hub; see validateServerRequest
+  | {
+    type: "federation.member.list";
+    id: string;
+    payload?: Record<string, never>;
+  }
+  | {
+    type: "federation.member.get";
+    id: string;
+    payload: FederationNamePayload;
+  }
+  | {
+    type: "federation.member.remove";
+    id: string;
+    payload: FederationNamePayload;
+  }
+  | {
+    type: "federation.token.create";
+    id: string;
+    payload: FederationTokenCreatePayload;
+  }
+  | {
+    type: "federation.token.list";
+    id: string;
+    payload?: Record<string, never>;
+  }
+  | {
+    type: "federation.token.revoke";
+    id: string;
+    payload: FederationNamePayload;
   };
 
 export interface SerializedEvent {
@@ -2427,6 +2469,28 @@ export interface WorkerTokenRevealResponse {
   data: Record<string, unknown>;
 }
 
+export interface FederationTokenCreateResponse {
+  token: JoinTokenView;
+  /** <name>.<secret>; the hub keeps only its hash, so this is the one copy */
+  joinToken: string;
+}
+
+export interface FederationTokenListResponse {
+  tokens: JoinTokenView[];
+}
+
+export interface FederationTokenRevokeResponse {
+  token: JoinTokenView;
+}
+
+export interface FederationMemberListResponse {
+  members: ServeMemberRecord[];
+}
+
+export interface FederationMemberResponse {
+  member: ServeMemberRecord;
+}
+
 export interface DataGcResponse {
   data: Record<string, unknown>;
 }
@@ -2891,4 +2955,34 @@ export type ServerMessage =
     type: "serve.config";
     id: string;
     payload: ServeConfigResponse;
+  }
+  | {
+    type: "federation.member.list";
+    id: string;
+    payload: FederationMemberListResponse;
+  }
+  | {
+    type: "federation.member.get";
+    id: string;
+    payload: FederationMemberResponse;
+  }
+  | {
+    type: "federation.member.remove";
+    id: string;
+    payload: FederationMemberResponse;
+  }
+  | {
+    type: "federation.token.create";
+    id: string;
+    payload: FederationTokenCreateResponse;
+  }
+  | {
+    type: "federation.token.list";
+    id: string;
+    payload: FederationTokenListResponse;
+  }
+  | {
+    type: "federation.token.revoke";
+    id: string;
+    payload: FederationTokenRevokeResponse;
   };

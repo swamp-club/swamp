@@ -231,6 +231,8 @@ Deno.test({
       const { ctx, take } = recording(
         createServeCtx(repo, EVERYTHING, {
           activeRunRegistry: registry,
+          // authorization refuses before a federation handler reaches the hub
+          federationHub: {} as NonNullable<ConnectionContext["federationHub"]>,
           integrations: {
             standingOf: () => ({ kind: "active", ceiling: Ceiling.empty() }),
           },
@@ -239,7 +241,7 @@ Deno.test({
       const unchecked: string[] = [];
       const allowed: string[] = [];
       const seen = new Set<string>();
-      for (const schema of serverRequestSchemas()) {
+      for (const schema of serverRequestSchemas({ federationHub: true })) {
         const shape = (schema as z.ZodObject).shape;
         const type = (shape.type as z.ZodLiteral<string>).value;
         seen.add(type);

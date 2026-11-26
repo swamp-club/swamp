@@ -50,6 +50,7 @@ import {
   handleFederationRequest,
 } from "../src/serve/federation/hub_routes.ts";
 import { resetRateLimitState } from "../src/serve/rate_limiter.ts";
+import { VERSION as BUILD_VERSION } from "../src/infrastructure/runtime/build_info.ts";
 import { staticImportClosure } from "./arch_fitness_helpers.ts";
 import "../src/domain/models/models.ts";
 
@@ -195,7 +196,11 @@ Deno.test("federation hub: a member joins and checks in; its token is spent; its
   assertEquals(joined.status, 200);
   const reply = await joined.json();
   assertEquals(reply.memberName, "edge-1");
-  assertEquals(reply.hub, "central");
+  assertEquals(reply.hub, {
+    name: "central",
+    swampVersion: BUILD_VERSION,
+    protocolVersion: 1,
+  });
   assertEquals(reply.checkInIntervalSeconds, 30);
 
   assertEquals(await status(await new FakeMember(h.url).join(plaintext)), 401);
@@ -203,7 +208,11 @@ Deno.test("federation hub: a member joins and checks in; its token is spent; its
   const checkedIn = await member.checkIn();
   assertEquals(checkedIn.status, 200);
   assertEquals(await checkedIn.json(), {
-    hub: "central",
+    hub: {
+      name: "central",
+      swampVersion: BUILD_VERSION,
+      protocolVersion: 1,
+    },
     checkInIntervalSeconds: 30,
     jobs: [],
   });

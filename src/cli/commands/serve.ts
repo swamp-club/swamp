@@ -180,6 +180,8 @@ import {
   routeFederationRequest,
 } from "../../serve/federation/hub_routes.ts";
 import { buildServeFederationHub } from "./serve_federation_hub.ts";
+import { federationHubEnabled } from "../../serve/federation/federation_hub.ts";
+import { hubTeamFacts } from "../../serve/federation/hub_team.ts";
 import {
   buildWebhookRouteTable,
   createWebhookRouteApplier,
@@ -2976,7 +2978,14 @@ export const serveCommand = new Command()
       const findings = findIneffectiveRestrictions({
         restrictedModelTypes: merged.restrictedModelTypes,
         restrictedCommands: merged.restrictedCommands,
-        requestTypes: new Set(serverRequestPayloadFields().keys()),
+        requestTypes: new Set(
+          serverRequestPayloadFields({
+            federationHub: federationHubEnabled(
+              (name) => Deno.env.get(name),
+              merged.federation,
+            ),
+          }).keys(),
+        ),
         isKnownModelType: (type) => modelRegistry.has(type),
       });
       for (const finding of findings) {
@@ -5669,10 +5678,18 @@ export const serveCommand = new Command()
       auditEmitter: () => connectionCtx.auditEmitter,
       instanceId,
       startedAt: new Date().toISOString(),
+      team: () =>
+        hubTeamFacts({
+          teamMode: v3Location !== undefined,
+          following: isFollowing,
+          heartbeats: heartbeatStore,
+          staleTtlMs,
+        }),
       flush: () => pushChangedToRemote(connectionCtx),
     });
     if (federationHub) {
       const { sweeper, selfRecord } = federationHub;
+      connectionCtx.federationHub = federationHub.hub;
       startWhenLeading(() => sweeper.start());
       selfRecord.start(startWhenLeading);
     }
@@ -6898,7 +6915,11 @@ export const serveCommand = new Command()
             const finding of findIneffectiveRestrictions({
               restrictedModelTypes: next.restrictedModelTypes,
               restrictedCommands: next.restrictedCommands,
-              requestTypes: new Set(serverRequestPayloadFields().keys()),
+              requestTypes: new Set(
+                serverRequestPayloadFields({
+                  federationHub: federationHub !== undefined,
+                }).keys(),
+              ),
               isKnownModelType: (type) => modelRegistry.has(type),
             })
           ) {

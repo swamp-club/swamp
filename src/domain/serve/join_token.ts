@@ -56,6 +56,9 @@ export const JoinTokenRecordSchema = z.object({
 
 export type JoinTokenRecord = z.infer<typeof JoinTokenRecordSchema>;
 
+/** a token as listed: never its hash */
+export type JoinTokenView = Omit<JoinTokenRecord, "secretHash">;
+
 export class JoinTokenError extends Error {
   constructor(message: string) {
     super(message);

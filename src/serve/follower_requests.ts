@@ -67,6 +67,9 @@ export const FOLLOWER_FORWARDED_REQUESTS: ReadonlySet<string> = new Set([
   "access.delegation.list",
   // only the leader holds the delegation store, which confirms its own writes
   "access.delegation.end",
+  // control-plane writes, ordered by the leader's federation transitions
+  "federation.token.create",
+  "federation.token.revoke",
 ]);
 
 /**
@@ -164,6 +167,9 @@ export const FOLLOWER_READ_REQUESTS: ReadonlySet<string> = new Set([
   "datastore.namespace.list",
   "cluster.instances",
   "serve.config",
+  "federation.member.list",
+  "federation.member.get",
+  "federation.token.list",
   ...HOST_FOLDER_REQUESTS,
 ]);
 

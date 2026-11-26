@@ -200,6 +200,12 @@ const CATEGORIES: Record<string, Category> = {
   "worker.token.revoke": "access",
   "worker.token.rotate": "access",
   "worker.token.reveal": "access",
+  "federation.member.list": "access",
+  "federation.member.get": "access",
+  "federation.member.remove": "access",
+  "federation.token.create": "access",
+  "federation.token.list": "access",
+  "federation.token.revoke": "access",
   "worker.verify": "access",
   "workspace.create": "access",
   "workspace.list": "access",
@@ -227,7 +233,9 @@ const CATEGORIES: Record<string, Category> = {
 };
 
 Deno.test("serve condition-fields conformance: every request type is classified", () => {
-  const types = [...serverRequestPayloadFields()].map(([type]) => type).sort();
+  const types = [...serverRequestPayloadFields({ federationHub: true })].map((
+    [type],
+  ) => type).sort();
   assertEquals(
     types.filter((type) => !CATEGORIES[type]),
     [],
@@ -787,7 +795,7 @@ Deno.test("serve condition-fields conformance: vault requests are classified und
     CONDITION_FIELDS.vault.map((f) => `${f.name}:${f.role}`),
     ["name:resource", "key:request", "client:request"],
   );
-  const vaultTypes = [...serverRequestPayloadFields()]
+  const vaultTypes = [...serverRequestPayloadFields({ federationHub: true })]
     .map(([type]) => type)
     .filter((type) => type.startsWith("vault.") && type !== "vault.type.search")
     .filter((type) => type !== "vault.audit-trail")

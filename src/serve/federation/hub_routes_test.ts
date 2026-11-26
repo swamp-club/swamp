@@ -25,6 +25,7 @@ import {
   resetRateLimitState,
 } from "../rate_limiter.ts";
 import type { ForwardOptions } from "../leader_link.ts";
+import { VERSION } from "../../infrastructure/runtime/build_info.ts";
 import { createTestHub, type TestHub } from "./federation_hub_test_helpers.ts";
 import {
   FEDERATION_CHECK_IN_PATH,
@@ -100,7 +101,7 @@ async function join(t: TestHub, ip: string, name = "edge-1") {
     memberId: string;
     memberName: string;
     credential: string;
-    hub: string;
+    hub: { name: string; swampVersion: string; protocolVersion: number };
     checkInIntervalSeconds: number;
   };
 }
@@ -135,7 +136,11 @@ Deno.test("handleFederationRequest: join replies with the member, its credential
   const t = createTestHub({ hubName: "central" });
   const reply = await join(t, address());
   assertEquals(reply.memberName, "edge-1");
-  assertEquals(reply.hub, "central");
+  assertEquals(reply.hub, {
+    name: "central",
+    swampVersion: VERSION,
+    protocolVersion: 1,
+  });
   assertEquals(reply.checkInIntervalSeconds, 30);
   assert(reply.credential.startsWith(`swfm1.${reply.memberId}.`));
 });
@@ -237,7 +242,7 @@ Deno.test("handleFederationRequest: capabilities are capped and unknown ones ign
   const fine = await call(t, checkIn(reply.credential), address());
   assertEquals(fine.status, 200);
   assertEquals(await fine.json(), {
-    hub: "hub",
+    hub: { name: "hub", swampVersion: VERSION, protocolVersion: 1 },
     checkInIntervalSeconds: 30,
     jobs: [],
   });

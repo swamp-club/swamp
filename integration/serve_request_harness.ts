@@ -213,6 +213,8 @@ export interface ServeCtxOptions {
   authMode?: "token" | "oauth";
   resolvedUserNames?: ConnectionContext["resolvedUserNames"];
   hostedWorkspaces?: ConnectionContext["hostedWorkspaces"];
+  /** a hub's ctx: federation.* requests validate only with one */
+  federationHub?: ConnectionContext["federationHub"];
 }
 
 export function createServeCtx(
@@ -257,6 +259,7 @@ export function createServeCtx(
     ...(options.hostedWorkspaces
       ? { hostedWorkspaces: options.hostedWorkspaces }
       : {}),
+    ...(options.federationHub ? { federationHub: options.federationHub } : {}),
     ...(grants
       ? {
         policySnapshotLoader: {

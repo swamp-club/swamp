@@ -34,6 +34,7 @@ import {
 } from "../../domain/serve/member_credential.ts";
 import { CHECK_IN_INTERVAL_SECONDS } from "../../domain/serve/serve_member.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import { VERSION } from "../../infrastructure/runtime/build_info.ts";
 import {
   checkIpBurst,
   failedAttemptKey,
@@ -59,6 +60,21 @@ export const FEDERATION_PROTOCOL_VERSION = 1;
 export const MAX_FEDERATION_BODY_BYTES = 64 * 1024;
 export const MAX_CAPABILITIES = 64;
 const MAX_ISSUES_SHOWN = 3;
+
+/** who answered, carried by every join and check-in reply */
+export interface HubIdentity {
+  readonly name: string;
+  readonly swampVersion: string;
+  readonly protocolVersion: typeof FEDERATION_PROTOCOL_VERSION;
+}
+
+export function hubIdentity(hub: Pick<FederationHub, "hubName">): HubIdentity {
+  return {
+    name: hub.hubName,
+    swampVersion: VERSION,
+    protocolVersion: FEDERATION_PROTOCOL_VERSION,
+  };
+}
 
 export function isFederationHubPath(pathname: string): boolean {
   return FEDERATION_HUB_ROUTES.has(pathname);
@@ -281,7 +297,7 @@ async function handleJoin(
         memberId: outcome.memberId,
         memberName: outcome.memberName,
         credential: outcome.credential,
-        hub: deps.hub.hubName,
+        hub: hubIdentity(deps.hub),
         checkInIntervalSeconds: CHECK_IN_INTERVAL_SECONDS,
       });
   }
@@ -364,7 +380,7 @@ async function handleCheckIn(
       });
     case "checked-in":
       return json(200, {
-        hub: deps.hub.hubName,
+        hub: hubIdentity(deps.hub),
         checkInIntervalSeconds: CHECK_IN_INTERVAL_SECONDS,
         jobs: [],
       });

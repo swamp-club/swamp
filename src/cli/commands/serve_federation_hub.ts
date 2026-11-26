@@ -21,7 +21,10 @@ import type { ControlPlaneStore } from "../../domain/datastore/control_plane_sto
 import type { DatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import type { DatastoreEngine } from "../../domain/datastore/datastore_format.ts";
 import type { DataRecord } from "../../domain/data/data_record.ts";
-import { Fingerprint } from "../../domain/serve/fingerprint.ts";
+import {
+  Fingerprint,
+  type FingerprintProps,
+} from "../../domain/serve/fingerprint.ts";
 import { registerFederationModelTypes } from "../../domain/serve/federation_model_types.ts";
 import type { AuditEmitter } from "../../domain/serve_audit/audit_emitter.ts";
 import type { RepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
@@ -60,6 +63,8 @@ export interface ServeFederationHubDeps {
   readonly auditEmitter: () => AuditEmitter | undefined;
   readonly instanceId: string;
   readonly startedAt: string;
+  /** this node's place in its team, read each time the fingerprint is */
+  readonly team: () => Promise<FingerprintProps["team"]>;
   readonly flush: () => Promise<void>;
 }
 
@@ -141,6 +146,7 @@ async function collectHubFingerprint(
     if (event.kind === "completed") {
       fingerprint = Fingerprint.create({
         ...event.data.fingerprint,
+        team: await deps.team(),
         startedAt: deps.startedAt,
         ready: true,
       });
