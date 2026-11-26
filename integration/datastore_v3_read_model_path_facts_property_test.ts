@@ -174,7 +174,6 @@ async function plant(env: V3Env, tree: readonly Entry[]): Promise<void> {
   }
 }
 
-/** the tree as lstat sees it, links unfollowed */
 async function snapshot(env: V3Env): Promise<Record<string, string>> {
   const seen: Record<string, string> = {};
   const visit = async (dir: string, rel: string): Promise<void> => {
@@ -261,7 +260,6 @@ async function opOf(op: Run["steps"][number]["ops"][number]): Promise<Op> {
     : tombstoneOp({ intent: intent("data.delete"), key });
 }
 
-/** what one side saw after each catch-up */
 async function play(
   env: V3Env,
   run: Run,

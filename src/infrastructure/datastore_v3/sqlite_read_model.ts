@@ -6270,15 +6270,9 @@ class FoldedKeys {
 }
 
 /**
- * directories are remembered so a page of many files under one resolves and
- * stats it once; cleared on any removal, any moveAside, a failed pooled write
- * and at the start of every section, as another process may change the tree.
- *
- * It also keeps existence facts, so a path known absent costs no probe: a
- * directory an lstat found missing holds nothing until this section creates
- * something, and a directory this section created holds only the names it
- * wrote, as no other process writes into it within the section. A fact is
- * never a directory listing, and a path no fact answers is probed as before.
+ * cleared on any removal, moveAside, failed pooled write and section start; a
+ * missing or created-names fact is dropped when the section creates anything,
+ * and no other process writes into the tree within one section
  */
 class PathCache {
   readonly #kinds = new Map<string, PathKind>();
@@ -6328,11 +6322,7 @@ class PathCache {
     this.#kinds.set(path, kind);
   }
 
-  /**
-   * what is known of path without a probe; exactSpelling only where the root
-   * is known to fold no spelling, else names are compared as a folding
-   * filesystem might join them
-   */
+  /** exactSpelling only where the root folds no spelling; elsewhere names compare as a folding filesystem might join them */
   facts(path: string, exactSpelling: boolean): PathFact | undefined {
     if (!this.#factsOn) return undefined;
     const kind = this.#kinds.get(path);

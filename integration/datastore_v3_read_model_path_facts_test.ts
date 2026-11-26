@@ -96,7 +96,6 @@ interface Probes {
   lstats: Map<string, number>;
 }
 
-/** counts Deno.stat and Deno.lstat of paths under root, and those finding nothing, while fn runs */
 async function countingProbes(
   root: string,
   fn: () => Promise<unknown>,
