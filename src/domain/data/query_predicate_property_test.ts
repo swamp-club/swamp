@@ -23,6 +23,7 @@ import { Environment } from "cel-js";
 import {
   type ASTNode,
   collectModelReferences,
+  collectRootIdentifiers,
   extractModelCall,
 } from "./query_predicate.ts";
 
@@ -76,6 +77,65 @@ Deno.test("extractModelCall: finds a model() conjunct under any AND nesting", ()
           ? [call.expr, ...others]
           : [...others, call.expr];
         assertEquals(extractModelCall(ast(terms.join(" && "))), call.ref);
+      },
+    ),
+  );
+});
+
+const CEL_RESERVED = new Set([
+  "as",
+  "break",
+  "const",
+  "continue",
+  "else",
+  "false",
+  "for",
+  "function",
+  "if",
+  "import",
+  "in",
+  "let",
+  "loop",
+  "package",
+  "namespace",
+  "null",
+  "return",
+  "true",
+  "var",
+  "void",
+  "while",
+]);
+
+const arbBinder = fc.oneof(
+  fc.constantFrom("c", "content", "name", "attributes", "tags", "x1"),
+  fc.stringMatching(/^[a-z][a-z0-9_]{0,6}$/),
+).filter((b) => !CEL_RESERVED.has(b));
+
+Deno.test("collectRootIdentifiers: a macro binder is a root only where it is used outside its macro", () => {
+  fc.assert(
+    fc.property(
+      fc.constantFrom("all", "exists", "exists_one", "filter", "map"),
+      fc.constantFrom("attributes", "tags"),
+      arbBinder,
+      fc.constantFrom(null, "modelName", "content"),
+      fc.boolean(),
+      (macro, receiver, binder, bodyField, useOutside) => {
+        const body = bodyField === null
+          ? `${binder} == ${binder}`
+          : `${binder} == ${bodyField}`;
+        const call = `${receiver}.items.${macro}(${binder}, ${body})`;
+        const predicate = macro === "filter" || macro === "map"
+          ? `size(${call}) > 0`
+          : call;
+        const expr = useOutside ? `${predicate} && ${binder} == 1` : predicate;
+
+        const expected = new Set<string>([receiver]);
+        if (bodyField !== null && bodyField !== binder) expected.add(bodyField);
+        if (useOutside) expected.add(binder);
+        assertEquals(
+          [...new Set(collectRootIdentifiers(ast(expr)))].sort(),
+          [...expected].sort(),
+        );
       },
     ),
   );

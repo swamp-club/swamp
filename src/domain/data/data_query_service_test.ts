@@ -7445,3 +7445,144 @@ Deno.test("DataQueryService: select content counts the fetched bytes of foreign 
 
   catalog.close();
 });
+
+const sbom = (...components: Array<{ name: string; version: string }>) =>
+  text(JSON.stringify({ bomFormat: "CycloneDX", components }));
+
+function setupSboms(): ReturnType<typeof setupWithContent> {
+  return setupWithContent([
+    {
+      name: "image-a",
+      contentType: "application/json",
+      bytes: sbom(
+        { name: "openssl", version: "3.0.13" },
+        { name: "zlib", version: "1.3" },
+      ),
+    },
+    {
+      name: "image-b",
+      contentType: "application/json",
+      bytes: sbom({ name: "zlib", version: "1.2.13" }),
+    },
+  ]);
+}
+
+const namesOf = (results: unknown) =>
+  (results as DataRecord[]).map((r) => r.name).sort();
+
+Deno.test("DataQueryService: list macros over attributes find the records whose list holds a match", () => {
+  using t = setupSboms();
+  const { service } = t;
+  assertEquals(
+    namesOf(service.querySync(
+      'modelName == "ingest" && attributes.components.exists(c, c.name == "openssl")',
+    )),
+    ["image-a"],
+  );
+  assertEquals(
+    namesOf(service.querySync(
+      'attributes.components.exists(c, c.name == "openssl" && c.version.startsWith("3."))',
+    )),
+    ["image-a"],
+  );
+  assertEquals(
+    namesOf(service.querySync(
+      'attributes.components.exists(c, c.name == "curl")',
+    )),
+    [],
+  );
+  assertEquals(
+    namesOf(service.querySync(
+      'attributes.components.all(c, c.name == "zlib")',
+    )),
+    ["image-b"],
+  );
+  assertEquals(
+    namesOf(service.querySync(
+      'attributes.components.exists_one(c, c.name == "zlib")',
+    )),
+    ["image-a", "image-b"],
+  );
+  assertEquals(
+    namesOf(service.querySync(
+      'size(attributes.components.filter(c, c.name == "zlib" && c.version == "1.3")) > 0',
+    )),
+    ["image-a"],
+  );
+  assertEquals(
+    namesOf(service.querySync(
+      'attributes.components.map(c, c.name).exists(n, n == "openssl")',
+    )),
+    ["image-a"],
+  );
+  assertEquals(
+    namesOf(service.querySync(
+      'attributes.components.exists(c, c.name == "zlib") && attributes.components.exists(c, c.version == "1.2.13")',
+    )),
+    ["image-b"],
+  );
+});
+
+Deno.test("DataQueryService: a list macro projects in select", () => {
+  using t = setupSboms();
+  const results = t.service.querySync('name == "image-a"', {
+    select: "attributes.components.map(c, c.name)",
+  });
+  assertEquals(results, [["openssl", "zlib"]]);
+});
+
+Deno.test("DataQueryService: a macro over the tags map binds its keys", () => {
+  using t = setupSboms();
+  assertEquals(
+    namesOf(t.service.querySync('tags.exists(k, k == "specName")')),
+    ["image-a", "image-b"],
+  );
+  assertEquals(
+    namesOf(t.service.querySync('tags.exists(k, k == "missing")')),
+    [],
+  );
+});
+
+Deno.test("DataQueryService: a binder named like a field shadows it inside the macro and the field still loads when read outside", () => {
+  using t = setupSboms();
+  const { service } = t;
+  assertEquals(
+    namesOf(service.querySync(
+      'attributes.components.exists(content, content.name == "openssl")',
+    )),
+    ["image-a"],
+  );
+  assertEquals(
+    namesOf(service.querySync(
+      'attributes.components.exists(content, content.name == "zlib") && content.components.size() == 1',
+    )),
+    ["image-b"],
+  );
+  assertEquals(
+    namesOf(service.querySync(
+      'tags.exists(k, k == "specName" && content.components.exists(c, c.name == "openssl"))',
+    )),
+    ["image-a"],
+  );
+});
+
+Deno.test("DataQueryService: an unknown field inside a macro body, or a binder used outside its macro, is still refused", () => {
+  using t = setupSboms();
+  const { service } = t;
+  assertThrows(
+    () =>
+      service.querySync(
+        "attributes.components.exists(c, bogus == c.name)",
+      ),
+    UserError,
+    'Unknown field "bogus"',
+  );
+  assertThrows(
+    () =>
+      service.querySync(
+        'attributes.components.exists(c, c.name == "zlib") && c.name == "zlib"',
+      ),
+    UserError,
+    'Unknown field "c"',
+  );
+});

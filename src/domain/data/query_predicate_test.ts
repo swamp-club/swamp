@@ -26,6 +26,7 @@ import {
   calledModelFunctions,
   collectLatestRunWorkflows,
   collectModelReferences,
+  collectRootIdentifiers,
   extractModelCall,
   extractModelNameEquality,
   extractStringEquality,
@@ -33,6 +34,8 @@ import {
   extractWorkflowRunIdLatestRun,
   MAX_MODEL_REFERENCES,
   QUERY_FIELDS,
+  referencesAttributes,
+  referencesContent,
   selectReadsContent,
   validateFieldReferences,
 } from "./query_predicate.ts";
@@ -575,5 +578,132 @@ Deno.test("validateFieldReferences: the unknown-field message lists behavior()",
     () => validateFieldReferences(["bogus"]),
     UserError,
     'model("<model name or definition id>"), behavior("<behavior name or definition id>")',
+  );
+});
+
+function rootsOf(expr: string): string[] {
+  return [...new Set(collectRootIdentifiers(ast(expr)))].sort();
+}
+
+Deno.test("collectRootIdentifiers: a macro's bound name is not a root inside its body", () => {
+  for (
+    const expr of [
+      'attributes.components.exists(c, c.name == "openssl")',
+      "attributes.components.all(c, has(c.name))",
+      'attributes.components.exists_one(c, c.name == "openssl")',
+      'attributes.components.filter(c, c.name == "openssl")',
+      "attributes.components.map(c, c.name)",
+      'attributes.components.map(c, c.name != "", c.version)',
+    ]
+  ) {
+    assertEquals(rootsOf(expr), ["attributes"], expr);
+  }
+});
+
+Deno.test("collectRootIdentifiers: a macro still collects its receiver", () => {
+  assertEquals(rootsOf('tags.exists(k, k == "env")'), ["tags"]);
+  assertEquals(
+    rootsOf('modelName == "golden" && size(attributes.c.filter(x, x > 1)) > 0'),
+    ["attributes", "modelName"],
+  );
+});
+
+Deno.test("collectRootIdentifiers: other roots inside a macro body are still collected", () => {
+  assertEquals(
+    rootsOf("attributes.components.exists(c, bogus == c.name)"),
+    ["attributes", "bogus"],
+  );
+  assertEquals(
+    rootsOf("tags.exists(k, content.contains(k))"),
+    ["content", "tags"],
+  );
+});
+
+Deno.test("collectRootIdentifiers: a bound name used outside its macro is a root", () => {
+  assertEquals(
+    rootsOf('tags.exists(c, c == "x") && c == "y"'),
+    ["c", "tags"],
+  );
+  assertEquals(
+    rootsOf('[c].exists(c, c == "x")'),
+    ["c"],
+  );
+});
+
+Deno.test("collectRootIdentifiers: nested macros scope each binder to its own body", () => {
+  assertEquals(
+    rootsOf("attributes.a.exists(x, x.b.exists(y, y == x.c))"),
+    ["attributes"],
+  );
+  assertEquals(
+    rootsOf("attributes.a.exists(x, x.b.exists(y, y == x)) && y == 1"),
+    ["attributes", "y"],
+  );
+  assertEquals(
+    rootsOf("attributes.a.exists(x, x > 0) && attributes.b.all(x, x > 0)"),
+    ["attributes"],
+  );
+});
+
+Deno.test("collectRootIdentifiers: a binder named like a field shadows it only inside the body", () => {
+  assertEquals(rootsOf('tags.exists(content, content == "a")'), ["tags"]);
+  assertEquals(
+    rootsOf('tags.exists(content, content == "a") || content == "b"'),
+    ["content", "tags"],
+  );
+  assertEquals(
+    referencesContent(ast('tags.exists(content, content == "a")')),
+    false,
+  );
+  assertEquals(
+    referencesContent(
+      ast('tags.exists(content, content == "a") || content.contains("b")'),
+    ),
+    true,
+  );
+  assertEquals(
+    referencesAttributes(ast("tags.exists(k, attributes[k] == 1)")),
+    true,
+  );
+});
+
+Deno.test("collectRootIdentifiers: a method that binds nothing collects every argument", () => {
+  assertEquals(rootsOf("name.contains(x)"), ["name", "x"]);
+  assertEquals(rootsOf("name.startsWith(modelName)"), ["modelName", "name"]);
+});
+
+Deno.test("validateFieldReferences: accepts list macros over query fields", () => {
+  for (
+    const expr of [
+      'modelName == "golden-gce" && attributes.components.exists(c, c.name == "openssl")',
+      'attributes.components.all(c, c.version != "")',
+      'tags.exists_one(k, k == "env")',
+      'size(attributes.components.filter(c, c.name == "zlib")) > 0',
+      'attributes.components.map(c, c.name).exists(n, n == "openssl")',
+      "attributes.a.exists(x, x.b.exists(y, y == x.c))",
+    ]
+  ) {
+    validateFieldReferences(collectRootIdentifiers(ast(expr)));
+  }
+});
+
+Deno.test("validateFieldReferences: still rejects an unknown field inside a macro body", () => {
+  assertThrows(
+    () =>
+      validateFieldReferences(
+        collectRootIdentifiers(
+          ast("attributes.components.exists(c, bogus == c.name)"),
+        ),
+      ),
+    UserError,
+    'Unknown field "bogus"',
+  );
+  assertThrows(
+    () =>
+      validateFieldReferences(
+        collectRootIdentifiers(ast('tags.exists(c, c == "x") && c == "y"')),
+      ),
+    UserError,
+    'Unknown field "c"',
   );
 });

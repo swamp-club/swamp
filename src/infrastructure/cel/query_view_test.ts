@@ -584,3 +584,47 @@ Deno.test("expressionQueryView.projection: a refusal propagates, absorbed or not
     );
   });
 });
+
+Deno.test("expressionQueryView.predicate: a secret reached through a list macro's bound name refuses as a direct read does, and a secret-free macro answers", () => {
+  const r = record(
+    { list: [REF_A, "b"], password: REF_B, items: [{ k: "a" }] },
+    pathsTag("list.0", "password"),
+  );
+  for (
+    const expression of [
+      "attributes.list.exists(c, c == 'b')",
+      "attributes.list.exists(c, c == attributes.password)",
+      "attributes.list.all(c, c != 'x')",
+      "size(attributes.list.filter(c, c == 'b')) > 0",
+    ]
+  ) {
+    const calling = inScope((scope) => {
+      const error = assertThrows(
+        () => view.predicate(expression, program(expression), rowContext(r)),
+        QueryViewRefusal,
+        undefined,
+        expression,
+      );
+      assertEquals(error.code, SECRET_OPERATION_UNSUPPORTED, expression);
+      return scope;
+    });
+    assert(calling.faults.length > 0, expression);
+    for (const fault of calling.faults) {
+      assertEquals(fault.code, SECRET_OPERATION_UNSUPPORTED, expression);
+    }
+  }
+  for (
+    const expression of [
+      "attributes.items.exists(c, c.k == 'a')",
+      "attributes.list.map(c, c).size() == 2",
+    ]
+  ) {
+    assertEquals(
+      inScope(() =>
+        view.predicate(expression, program(expression), rowContext(r))
+      ),
+      true,
+      expression,
+    );
+  }
+});

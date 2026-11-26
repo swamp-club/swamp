@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { UserError } from "../errors.ts";
+import { BINDING_MACROS } from "../expressions/vault_call_syntax.ts";
 import { celString } from "./data_query_command.ts";
 import {
   BEHAVIOR_QUERY_FUNCTION,
@@ -92,60 +93,75 @@ export interface ASTNode {
 }
 
 export function collectRootIdentifiers(node: ASTNode): string[] {
+  return rootIdentifiers(node, new Set());
+}
+
+// a name bound by a comprehension macro is a variable inside its body, not a
+// record field; cel-js shadows a field of the same name there
+function rootIdentifiers(node: ASTNode, bound: ReadonlySet<string>): string[] {
+  const collect = (n: ASTNode) => rootIdentifiers(n, bound);
   if (!node || typeof node !== "object" || !("op" in node)) return [];
 
   const { op, args } = node;
 
   if (op === "id") {
-    return [args as string];
+    return bound.has(args as string) ? [] : [args as string];
   }
 
   // Member access: only recurse into the receiver (args[0]), not the
   // field name (args[1] is a string, not an ASTNode)
   if (op === "." || op === ".?") {
     const arr = args as [ASTNode, string];
-    return collectRootIdentifiers(arr[0]);
+    return collect(arr[0]);
   }
 
   if (op === "[]" || op === "[?]") {
     const arr = args as [ASTNode, ASTNode];
     return [
-      ...collectRootIdentifiers(arr[0]),
-      ...collectRootIdentifiers(arr[1]),
+      ...collect(arr[0]),
+      ...collect(arr[1]),
     ];
   }
 
   if (op === "call") {
     const arr = args as [string, ASTNode[]];
-    return arr[1].flatMap(collectRootIdentifiers);
+    return arr[1].flatMap(collect);
   }
 
   if (op === "rcall") {
-    const arr = args as [string, ASTNode, ASTNode[]];
-    return [
-      ...collectRootIdentifiers(arr[1]),
-      ...arr[2].flatMap(collectRootIdentifiers),
-    ];
+    const [method, receiver, callArgs] = args as [string, ASTNode, ASTNode[]];
+    const binder = callArgs[0];
+    if (
+      BINDING_MACROS.has(method) && binder?.op === "id" &&
+      typeof binder.args === "string"
+    ) {
+      const inner = new Set(bound).add(binder.args);
+      return [
+        ...collect(receiver),
+        ...callArgs.slice(1).flatMap((a) => rootIdentifiers(a, inner)),
+      ];
+    }
+    return [...collect(receiver), ...callArgs.flatMap(collect)];
   }
 
   if (op === "?:") {
     const arr = args as [ASTNode, ASTNode, ASTNode];
-    return arr.flatMap(collectRootIdentifiers);
+    return arr.flatMap(collect);
   }
 
   if (op === "!_" || op === "-_") {
-    return collectRootIdentifiers(args as ASTNode);
+    return collect(args as ASTNode);
   }
 
   if (op === "list") {
-    return (args as ASTNode[]).flatMap(collectRootIdentifiers);
+    return (args as ASTNode[]).flatMap(collect);
   }
 
   if (op === "map") {
     const entries = args as Array<[ASTNode, ASTNode]>;
     return entries.flatMap(([key, value]) => [
-      ...collectRootIdentifiers(key),
-      ...collectRootIdentifiers(value),
+      ...collect(key),
+      ...collect(value),
     ]);
   }
 
@@ -156,7 +172,7 @@ export function collectRootIdentifiers(node: ASTNode): string[] {
   if (Array.isArray(args)) {
     return (args as unknown[]).flatMap((a) => {
       if (a && typeof a === "object" && "op" in (a as ASTNode)) {
-        return collectRootIdentifiers(a as ASTNode);
+        return collect(a as ASTNode);
       }
       return [];
     });
