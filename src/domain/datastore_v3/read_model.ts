@@ -267,6 +267,20 @@ export class ReadModelIncompleteError extends Error {
 /** a temporary failure, so it exits 75 (EX_TEMPFAIL) as lock contention does */
 export const READ_MODEL_BUSY_CODE = "datastore_v3_read_model_busy";
 
+/** SQLite's own busy wait ran out: as temporary as the lock contention above */
+export const DATABASE_BUSY_CODE = "datastore_v3_database_busy";
+
+export class DatabaseBusyError extends UserError {
+  constructor(cause: unknown) {
+    super(
+      "Another swamp process is holding this checkout's datastore database and did not release it in time. This step changed nothing; run the command again once that process has finished.",
+      DATABASE_BUSY_CODE,
+    );
+    this.name = "DatabaseBusyError";
+    this.cause = cause;
+  }
+}
+
 export class ReadModelBusyError extends UserError {
   constructor(waitedMs: number) {
     super(

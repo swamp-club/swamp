@@ -17,10 +17,15 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assertEquals,
+  assertNotEquals,
+  assertStringIncludes,
+} from "@std/assert";
 import {
   AppendUnrecordedError,
   COMMIT_LEASE_LOST_CODE,
+  COMMIT_MAY_LAND_CODE,
   COMMIT_PARTLY_COMMITTED_CODE,
   CommitLeaseLostError,
   CommitUnreachableError,
@@ -1876,5 +1881,74 @@ Deno.test("exitCodeForError: a not-leader reply marked inFlight exits 1, since t
       exitCodeForError(reply({ inFlight: "true" }), context),
       landed === true ? 1 : 75,
     );
+  }
+});
+
+function sqliteError(message: string, errcode: number): Error {
+  return Object.assign(new Error(message), {
+    code: "ERR_SQLITE_ERROR",
+    errcode,
+  });
+}
+
+Deno.test("renderError: a SQLite busy wait that ran out is a coded, retryable refusal, even under a wrapping error", () => {
+  const logs: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => logs.push(args.join(" "));
+  try {
+    const busy = sqliteError("database is locked", 5);
+    renderError(
+      new Error("opening the checkout failed", { cause: busy }),
+      "json",
+    );
+    const json = JSON.parse(logs[0]);
+    assertEquals(json.code, "datastore_v3_database_busy");
+    assertEquals(json.stack, undefined);
+    assertStringIncludes(json.error, "run the command again");
+  } finally {
+    console.error = originalError;
+  }
+});
+
+Deno.test("exitCodeForError: a SQLite busy wait exits 75 when nothing of the command landed, 1 when something did, and other SQLite errors are left alone", () => {
+  const busy = sqliteError("database is locked", 5);
+  assertEquals(exitCodeForError(busy), 75);
+  assertEquals(exitCodeForError(busy, { commandLanded: false }), 75);
+  assertEquals(exitCodeForError(busy, { commandLanded: true }), 1);
+  // extended result code SQLITE_BUSY_SNAPSHOT (517) is still busy
+  assertEquals(exitCodeForError(sqliteError("busy", 517)), 75);
+  assertEquals(exitCodeForError(sqliteError("disk I/O error", 10)), 1);
+});
+
+Deno.test("exitCodeForError and renderError: an error with its own meaning keeps it over a SQLite busy cause, and a command that may have landed exits 1", () => {
+  const busy = sqliteError("database is locked", 5);
+  const mayLand = new MayLandLaterError(busy, new Error("outbox"));
+  assertEquals(exitCodeForError(mayLand), 1);
+  assertEquals(exitCodeForError(busy, { commandMayHaveLanded: true }), 1);
+  const logs: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => logs.push(args.join(" "));
+  try {
+    renderError(mayLand, "json");
+    const json = JSON.parse(logs[0]);
+    assertNotEquals(json.code, "datastore_v3_database_busy");
+  } finally {
+    console.error = originalError;
+  }
+});
+
+Deno.test("renderError: a SQLite busy wait in a command that may have landed is told as an unknown outcome, not as a retry", () => {
+  const logs: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => logs.push(args.join(" "));
+  try {
+    renderError(sqliteError("database is locked", 5), "json", "behavior", {
+      commandMayHaveLanded: true,
+    });
+    const json = JSON.parse(logs[0]);
+    assertEquals(json.code, COMMIT_MAY_LAND_CODE);
+    assertStringIncludes(json.error, "unknown");
+  } finally {
+    console.error = originalError;
   }
 });
