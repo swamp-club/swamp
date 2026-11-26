@@ -26,6 +26,7 @@ import {
 } from "@std/assert";
 import { join, SEPARATOR } from "@std/path";
 import { configure, type LogRecord, reset } from "@logtape/logtape";
+import { waitFor } from "@swamp-club/swamp-testing";
 import { Commit } from "../../domain/datastore_v3/commit.ts";
 import {
   dataKey,
@@ -71,7 +72,10 @@ import {
   SERVE_URL,
   serveStamped,
 } from "./serve_upstream_test_helpers.ts";
-import { SqliteCommitStore } from "./sqlite_commit_store.ts";
+import {
+  ObservedBaseStaging,
+  SqliteCommitStore,
+} from "./sqlite_commit_store.ts";
 import { ObservedDropRefusedError } from "../../domain/datastore_v3/commit_store.ts";
 
 const MODEL = modelPartition();
@@ -986,9 +990,9 @@ Deno.test("ServeCatchUp.catchUp: a base load cut off part-way resumes from its l
     await catchUp.catchUp(signal());
     const resumedFrom = serve.baseReads[firstRun].after;
     assertEquals(
-      resumedFrom !== undefined,
-      true,
-      "the second load pages on instead of starting over",
+      resumedFrom,
+      "2",
+      "the second load pages on from the last staged page",
     );
     assertEquals((await store.head("", MODEL)).seq, 3);
     assertEquals(state.feedCursor(), 3);
@@ -1126,6 +1130,184 @@ Deno.test("ServeCatchUp.catchUp: a load cut off between pages leaves the copy un
     await catchUp.catchUp(signal());
     assertEquals((await store.head("", MODEL)).seq, 3);
     assertEquals(state.feedCursor(), 3);
+  });
+});
+
+/** records each staged page; restored by the returned function */
+function watchStaging(onAdd: (page: number) => void): () => void {
+  const add = ObservedBaseStaging.prototype.add;
+  let page = 0;
+  ObservedBaseStaging.prototype.add = function (entries, progress) {
+    add.call(this, entries, progress);
+    onAdd(page++);
+  };
+  return () => {
+    ObservedBaseStaging.prototype.add = add;
+  };
+}
+
+/** a run whose outcome is read later, never left to reject unwatched */
+function watchRun(promise: Promise<unknown>) {
+  const outcome: { settled: boolean; error?: unknown } = { settled: false };
+  const done = promise.then(
+    () => {
+      outcome.settled = true;
+    },
+    (error) => {
+      outcome.settled = true;
+      outcome.error = error;
+    },
+  );
+  return { outcome, done };
+}
+
+/** replies to `page` only when its read is cancelled and `release` resolves */
+function hangBasePage(serve: FakeServe, page: number, release: Promise<void>) {
+  const state = { running: 0, cancelled: false };
+  const compactedBase = serve.compactedBase.bind(serve);
+  serve.compactedBase = async (after, namespace, signal, limit) => {
+    const n = serve.baseReads.length;
+    state.running++;
+    try {
+      const reply = await compactedBase(after, namespace, signal, limit);
+      if (n !== page) return reply;
+      await new Promise<void>((_, reject) => {
+        signal.addEventListener("abort", () => {
+          state.cancelled = true;
+          reject(signal.reason);
+        }, { once: true });
+      }).catch(async (error) => {
+        await release;
+        throw error;
+      });
+      return reply;
+    } finally {
+      state.running--;
+    }
+  };
+  return state;
+}
+
+Deno.test("ServeCatchUp.catchUp: the base load asks for the next page before it stages the one it has", async () => {
+  await withCheckout(async ({ store, state, serve, catchUp }) => {
+    for (let seq = 1; seq <= 3; seq++) serve.land(await other(seq));
+    await compactServe(serve, 3);
+    serve.basePageSize = 1;
+    const events: string[] = [];
+    const staged = Promise.withResolvers<void>();
+    const compactedBase = serve.compactedBase.bind(serve);
+    serve.compactedBase = async (after, namespace, signal, limit) => {
+      const n = serve.baseReads.length;
+      events.push(`request ${n}`);
+      const reply = await compactedBase(after, namespace, signal, limit);
+      // the second page is still in flight while the first is staged
+      if (n === 1) await staged.promise;
+      events.push(`reply ${n}`);
+      return reply;
+    };
+    const restore = watchStaging((page) => {
+      events.push(`stage ${page}`);
+      staged.resolve();
+    });
+    try {
+      await catchUp.catchUp(signal());
+    } finally {
+      restore();
+    }
+    assertEquals(events.slice(0, 5), [
+      "request 0",
+      "reply 0",
+      "request 1",
+      "stage 0",
+      "reply 1",
+    ]);
+    for (let page = 0; page < 3; page++) {
+      assert(
+        events.indexOf(`request ${page + 1}`) < events.indexOf(`stage ${page}`),
+        `page ${page + 1} is asked for before page ${page} is staged`,
+      );
+    }
+    assertEquals(events.at(-1), "stage 3");
+    assertEquals((await store.head("", MODEL)).seq, 3);
+    assertEquals(state.feedCursor(), 3);
+  });
+});
+
+Deno.test("ServeCatchUp.catchUp: an abort while the next base page is in flight cancels it, waits for it, and leaves the staged pages to resume", async () => {
+  await withCheckout(async ({ dir, store, state, serve, catchUp }) => {
+    for (let seq = 1; seq <= 3; seq++) serve.land(await other(seq));
+    await compactServe(serve, 3);
+    serve.basePageSize = 1;
+    const release = Promise.withResolvers<void>();
+    const read = hangBasePage(serve, 1, release.promise);
+    const abort = new AbortController();
+    const restore = watchStaging(() => abort.abort(new Error("cut off")));
+    const run = watchRun(catchUp.catchUp(abort.signal));
+    try {
+      await waitFor(() => read.cancelled, "the read ahead is cancelled");
+      assertEquals(
+        run.outcome.settled,
+        false,
+        "the load waits for the read ahead",
+      );
+      release.resolve();
+      await run.done;
+      assert(run.outcome.error !== undefined, "the load fails");
+    } finally {
+      release.resolve();
+      restore();
+      await run.done;
+    }
+    assertEquals(read.running, 0);
+    assertEquals(await store.compactionPoint(), 0);
+    assertEquals(
+      stagingFiles(dir).every((name) =>
+        name.startsWith(RESUMABLE_STAGING_FILE)
+      ),
+      true,
+    );
+
+    serve.compactedBase = FakeServe.prototype.compactedBase.bind(serve);
+    const firstRun = serve.baseReads.length;
+    await catchUp.catchUp(signal());
+    assertEquals(serve.baseReads[firstRun].after, "1");
+    assertEquals((await store.head("", MODEL)).seq, 3);
+    assertEquals(state.feedCursor(), 3);
+  });
+});
+
+Deno.test("ServeCatchUp.catchUp: a page that fails to stage cancels the read ahead and waits for it before the load fails", async () => {
+  await withCheckout(async ({ dir, store, serve, catchUp }) => {
+    for (let seq = 1; seq <= 3; seq++) serve.land(await other(seq));
+    await compactServe(serve, 3);
+    serve.basePageSize = 1;
+    const release = Promise.withResolvers<void>();
+    const read = hangBasePage(serve, 1, release.promise);
+    const add = ObservedBaseStaging.prototype.add;
+    ObservedBaseStaging.prototype.add = () => {
+      throw new Error("disk full");
+    };
+    const run = watchRun(catchUp.catchUp(signal()));
+    try {
+      await waitFor(() => read.cancelled, "the read ahead is cancelled");
+      assertEquals(
+        run.outcome.settled,
+        false,
+        "the load waits for the read ahead",
+      );
+      release.resolve();
+      await run.done;
+      assertInstanceOf(run.outcome.error, Error);
+      assertStringIncludes(run.outcome.error.message, "disk full");
+    } finally {
+      release.resolve();
+      ObservedBaseStaging.prototype.add = add;
+      await run.done;
+    }
+    assertEquals(read.running, 0);
+    assertEquals(serve.baseReads.length, 2);
+    assertEquals(await store.compactionPoint(), 0);
+    assertEquals(stagingFiles(dir), []);
   });
 });
 
