@@ -66,6 +66,30 @@ Deno.test("FederationAudit: refused check-ins are coalesced per reason with the 
   }
 });
 
+Deno.test("FederationAudit: rate-limited join refusals are coalesced; other join refusals are each audited", () => {
+  const { events, emitter } = capture();
+  let now = 0;
+  const audit = new FederationAudit({
+    auditEmitter: () => emitter,
+    coalescer: new WebhookRejectionCoalescer({ now: () => now }),
+  });
+  for (let i = 0; i < 3; i++) audit.joinRefused("10.0.0.1", "invalid_token");
+  for (let i = 0; i < 25; i++) audit.joinRefused("10.0.0.1", "rate_limited");
+  now += 60_000;
+  audit.joinRefused("10.0.0.1", "rate_limited");
+  assertEquals(events.map((e) => e.detail), [
+    "reason=invalid_token",
+    "reason=invalid_token",
+    "reason=invalid_token",
+    "reason=rate_limited",
+    "reason=rate_limited suppressed=24",
+  ]);
+  for (const event of events) {
+    assertEquals(event.action, FEDERATION_AUDIT_ACTIONS.join);
+    assertEquals(event.outcome, "failure");
+  }
+});
+
 Deno.test("FederationAudit: no emitter, no event and no error", () => {
   const audit = new FederationAudit({ auditEmitter: () => undefined });
   audit.joined("10.0.0.1", "edge-1");

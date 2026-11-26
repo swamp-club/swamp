@@ -45,6 +45,7 @@ export type CheckInRefusalReason =
   | "rate_limited";
 
 const CHECK_IN_ROUTE = "federation-check-in";
+const JOIN_ROUTE = "federation-join";
 
 export interface FederationAuditOptions {
   /** read per event, since serve may build its emitter after the hub */
@@ -88,19 +89,30 @@ export class FederationAudit {
     });
   }
 
-  /** memberName is the name a token claimed, when it had the token's shape */
+  /**
+   * memberName is the name a token claimed, when it had the token's shape;
+   * rate-limited refusals are coalesced, so a flood cannot grow the trail
+   */
   joinRefused(
     sourceIp: string,
     reason: JoinRefusalReason,
     memberName?: string,
   ): void {
+    let detail = `reason=${reason}`;
+    if (reason === "rate_limited") {
+      const admission = this.#coalescer.admit(JOIN_ROUTE, reason);
+      if (!admission.emit) return;
+      if (admission.suppressed > 0) {
+        detail = `${detail} suppressed=${admission.suppressed}`;
+      }
+    }
     this.#emit({
       category: "auth",
       outcome: "failure",
       action: FEDERATION_AUDIT_ACTIONS.join,
       resourceName: memberName ?? "unknown",
       caller: { principal: null, sourceIp },
-      detail: `reason=${reason}`,
+      detail,
     });
   }
 
