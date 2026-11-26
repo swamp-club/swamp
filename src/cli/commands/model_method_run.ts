@@ -449,7 +449,7 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
           const autoGc = marker?.autoGc === true;
 
           ctx.logger
-            .debug`Running method '${methodName}' on model: ${modelIdOrName}`;
+            .debug`Running method ${methodName} on model: ${modelIdOrName}`;
 
           const stdinContent = options.stdin ? await readStdin() : null;
           let stdinItems: Record<string, unknown>[] | null = null;

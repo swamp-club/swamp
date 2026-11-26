@@ -162,7 +162,7 @@ export class VaultService {
         const renamedTo = RENAMED_VAULT_TYPES[vaultType.toLowerCase()];
         if (renamedTo) {
           getLogger("vaults")
-            .warn`Vault '${vaultConfig.name}' uses deprecated type '${vaultType}'. Automatically remapping to '${renamedTo}'. Update your vault config to use type: ${renamedTo}`;
+            .warn`Vault ${vaultConfig.name} uses deprecated type ${vaultType}. Automatically remapping to ${renamedTo}. Update your vault config to use type: ${renamedTo}`;
           vaultType = renamedTo;
         }
 
@@ -187,7 +187,7 @@ export class VaultService {
           getLogger("vaults").warn`${error.message}`;
         } else {
           getLogger("vaults")
-            .warn`Failed to load vault '${vaultConfig.name}': ${error}`;
+            .warn`Failed to load vault ${vaultConfig.name}: ${error}`;
         }
       }
     }

@@ -28,6 +28,7 @@ import { join } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
+import { textFormatter } from "../../infrastructure/logging/log_format.ts";
 import { VaultService } from "./vault_service.ts";
 import { vaultTypeRegistry } from "./vault_type_registry.ts";
 import type { VaultAuditEntry } from "./vault_audit_entry.ts";
@@ -589,6 +590,8 @@ Deno.test("VaultService - refresh-aware get", async (t) => {
 
 async function capturingVaultWarnings(
   fn: () => Promise<void>,
+  render: (record: LogRecord) => string = (record) =>
+    record.message.map(String).join(""),
 ): Promise<string[]> {
   const records: LogRecord[] = [];
   await configure({
@@ -605,7 +608,7 @@ async function capturingVaultWarnings(
     await reset();
     await initializeLogging({});
   }
-  return records.map((record) => record.message.map(String).join(""));
+  return records.map(render);
 }
 
 Deno.test("VaultService.get: refresh warnings carry neither the command's output nor the cause", async () => {
@@ -793,6 +796,41 @@ Deno.test("VaultService - fromRepository auto-remaps renamed vault types", async
       }
     },
   );
+});
+
+Deno.test("VaultService.fromRepository: the renamed-type warning quotes each name once", async () => {
+  const tempDir = await Deno.makeTempDir();
+  try {
+    const vaultDir = join(tempDir, "vaults", "aws-sm");
+    await ensureDir(vaultDir);
+    await Deno.writeTextFile(
+      join(vaultDir, "test-vault-id.yaml"),
+      stringifyYaml({
+        id: "test-vault-id",
+        name: "legacy-secrets",
+        type: "aws-sm",
+        config: { region: "us-east-1" },
+        createdAt: new Date().toISOString(),
+      }),
+    );
+
+    const formatter = textFormatter();
+    const lines = await capturingVaultWarnings(async () => {
+      await VaultService.fromRepository(tempDir);
+    }, (record) => formatter(record));
+
+    const remap = lines.find((line) => line.includes("deprecated type"));
+    assertStringIncludes(
+      remap ?? "",
+      'Vault "legacy-secrets" uses deprecated type "aws-sm". ' +
+        'Automatically remapping to "@swamp/aws-sm".',
+    );
+    for (const line of lines) {
+      assertEquals(line.includes(`'"`), false, line);
+    }
+  } finally {
+    await Deno.remove(tempDir, { recursive: true });
+  }
 });
 
 Deno.test("VaultService - fromRepository wires audit repository even without auditReads", async () => {
