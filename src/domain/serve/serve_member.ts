@@ -132,7 +132,6 @@ function statusFor(ageMs: number): MemberStatus {
   return "offline";
 }
 
-/** a member serve's record on the hub: who it is, how it is set up, how it is doing */
 export class ServeMember {
   private constructor(
     private readonly record: Omit<

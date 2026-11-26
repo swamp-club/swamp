@@ -61,7 +61,7 @@ export const MAX_FEDERATION_BODY_BYTES = 64 * 1024;
 export const MAX_CAPABILITIES = 64;
 const MAX_ISSUES_SHOWN = 3;
 
-/** who answered, carried by every join and check-in reply */
+/** carried only by successful join and check-in replies */
 export interface HubIdentity {
   readonly name: string;
   readonly swampVersion: string;

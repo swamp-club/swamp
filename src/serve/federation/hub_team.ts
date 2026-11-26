@@ -25,7 +25,7 @@ import {
 } from "../instance_heartbeat.ts";
 
 export interface HubTeamFactsOptions {
-  /** true only on a v3 team: other modes run one node */
+  /** true only on a v3 team; every other mode is reported as a single node */
   readonly teamMode: boolean;
   readonly following: () => boolean;
   /** where the team's nodes beat; absent, the count is this node alone */
