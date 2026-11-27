@@ -39,6 +39,7 @@ import {
 import type { ServeTeamMode } from "../../serve/federation/serve_team.ts";
 import {
   collectServeFingerprint,
+  FingerprintFactsCache,
   type ServeFingerprintSources,
 } from "./serve_federation_fingerprint.ts";
 
@@ -81,6 +82,7 @@ export function buildServeFederationMember(
   try {
     const hubUrl = federation!.hub!;
     const links = new HubLinkStore(deps.store);
+    const facts = new FingerprintFactsCache();
     const service = new MemberCheckInService({
       hubUrl,
       ...(federation!["join-token-file"] !== undefined
@@ -101,7 +103,7 @@ export function buildServeFederationMember(
           startedAt: deps.startedAt,
           ready: deps.ready(),
           ...memberWorkers(deps),
-        }),
+        }, facts),
       ...(deps.schedule !== undefined ? { schedule: deps.schedule } : {}),
     });
     return { service, links, hubUrl };

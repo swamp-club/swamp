@@ -304,6 +304,8 @@ export const CHECK_IN_RESULTS = [
   "refused",
   "join_refused",
   "name_taken",
+  "mismatched",
+  "not_joining",
 ] as const;
 
 export type CheckInResult = typeof CHECK_IN_RESULTS[number];

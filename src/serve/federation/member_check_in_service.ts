@@ -151,14 +151,20 @@ export class MemberCheckInService {
       await this.#options.links.pruneInstances(this.#instanceId);
     });
     await this.#saveInstance();
+    let unreadableLogged = false;
     while (!this.#aborted) {
       let step: Step;
       try {
         step = await this.#nextStep();
+        unreadableLogged = false;
       } catch (error) {
-        logger.warn("Federation member could not reach its link: {error}", {
-          error: messageOf(error),
-        });
+        // a corrupt link fails every retry alike: once until it reads again
+        if (!unreadableLogged) {
+          unreadableLogged = true;
+          logger.warn("Federation member could not reach its link: {error}", {
+            error: messageOf(error),
+          });
+        }
         step = { kind: "wait", delayMs: this.#backoff() };
       }
       if (step.kind === "stop") return;
@@ -193,7 +199,8 @@ export class MemberCheckInService {
       }
       case "mismatched": {
         await this.#writeLinkIfChanged(decision.link);
-        this.#logOnce("rejected", () =>
+        await this.#record("mismatched");
+        this.#logOnce("mismatched", () =>
           logger.error(
             "Not joining: this serve already belongs to the hub at {joined}, and serve.yaml names another. Stop serve and run swamp serve hub forget --yes to leave it",
             { joined: hostOf(decision.link.hubUrl) },
@@ -223,6 +230,9 @@ export class MemberCheckInService {
       }
       await this.#writeLinkIfChanged(decision.link);
       if (decision.action === "idle") {
+        await this.#record(
+          decision.link.state === "refused" ? "refused" : "not_joining",
+        );
         this.#logOnce(
           decision.link.state === "refused" ? "refused" : "waiting",
           () =>

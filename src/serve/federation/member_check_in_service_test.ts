@@ -357,7 +357,7 @@ Deno.test("MemberCheckInService: a refused join token is logged once and not ret
   }
 });
 
-Deno.test("MemberCheckInService: without a join-token-file an unjoined member makes no request", async () => {
+Deno.test("MemberCheckInService: without a join-token-file an unjoined member makes no request and records why", async () => {
   const store = new AtomicMemoryStore();
   const hub = fastHub();
   const node = await memberNode(store, hub, {});
@@ -366,6 +366,7 @@ Deno.test("MemberCheckInService: without a join-token-file an unjoined member ma
     await ticks(node, 3);
     assertEquals(hub.joins.length, 0);
     assertEquals(hub.checkIns.length, 0);
+    assertEquals((await instanceOf(node))?.result, "not_joining");
   } finally {
     await node.service.stop();
   }
@@ -418,6 +419,7 @@ Deno.test("MemberCheckInService: a different hub URL from the joined one makes n
     assertEquals(hub.checkIns.length, calls);
     assertEquals(hub.joins.length, 1);
     assert((await moved.credentials.read()) !== undefined);
+    assertEquals((await instanceOf(moved))?.result, "mismatched");
   } finally {
     await moved.service.stop();
   }
@@ -827,5 +829,45 @@ Deno.test("MemberCheckInService: a refusal waits for the join claim before delet
     assertEquals(await node.credentials.read(), undefined);
   } finally {
     await node.service.stop();
+  }
+});
+
+Deno.test("MemberCheckInService: a corrupt link record warns once, not on every backoff", async () => {
+  const records: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => records.push(record) },
+    loggers: [{
+      category: ["serve"],
+      lowestLevel: "debug",
+      sinks: ["capture"],
+    }],
+    reset: true,
+  });
+  try {
+    const store = new AtomicMemoryStore();
+    store.entries.set(
+      HUB_LINK_KEY,
+      new TextEncoder().encode(JSON.stringify({ state: "joined" })),
+    );
+    const hub = fastHub();
+    const node = await memberNode(store, hub, { token: hub.mintToken() });
+    let reads = 0;
+    const readLink = node.links.readLink.bind(node.links);
+    node.links.readLink = () => {
+      reads++;
+      return readLink();
+    };
+    node.service.start();
+    try {
+      await waitFor(() => reads >= 4, "several retries");
+    } finally {
+      await node.service.stop();
+    }
+    const warnings = records.filter((r) =>
+      r.message.join("").includes("could not reach its link")
+    );
+    assertEquals(warnings.length, 1);
+  } finally {
+    await reset();
   }
 });

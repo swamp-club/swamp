@@ -41,7 +41,10 @@ import {
   repoMemberRecords,
 } from "../../serve/federation/member_record_store.ts";
 import { MemberStatusSweeper } from "../../serve/federation/member_status_sweeper.ts";
-import { collectServeFingerprint } from "./serve_federation_fingerprint.ts";
+import {
+  collectServeFingerprint,
+  FingerprintFactsCache,
+} from "./serve_federation_fingerprint.ts";
 
 export interface ServeFederationHubDeps {
   readonly env: (name: string) => string | undefined;
@@ -93,9 +96,10 @@ export async function buildServeFederationHub(
       flush: deps.flush,
     }),
   });
+  const facts = new FingerprintFactsCache();
   const selfRecord = new HubSelfRecord({
     hub,
-    fingerprint: () => collectHubFingerprint(deps),
+    fingerprint: () => collectHubFingerprint(deps, facts),
     seen: {
       instanceId: InstanceId.create(deps.instanceId),
       runtime: () => hubRuntime(deps),
@@ -122,6 +126,7 @@ export async function hubRuntime(
 
 async function collectHubFingerprint(
   deps: ServeFederationHubDeps,
+  facts: FingerprintFactsCache,
 ): Promise<Fingerprint> {
   const { team, ready } = await hubRuntime(deps);
   return await collectServeFingerprint(deps, {
@@ -129,5 +134,5 @@ async function collectHubFingerprint(
     team,
     startedAt: deps.startedAt,
     ready: ready ?? false,
-  });
+  }, facts);
 }
