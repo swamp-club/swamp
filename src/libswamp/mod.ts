@@ -684,6 +684,7 @@ export {
   type HubForgetDeps,
   type HubForgetEvent,
   SERVE_RUNNING_CODE,
+  serveRunningRefusal,
 } from "./serve/hub_forget.ts";
 export {
   memberTokenCreate,

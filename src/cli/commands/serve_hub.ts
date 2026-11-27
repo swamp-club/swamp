@@ -91,7 +91,7 @@ export const serveHubCommand = withRemoteOptions(
           renderHubLink({ link: event.data }, cliCtx.outputMode);
         },
         error: (event) => {
-          throw new UserError(event.error.message);
+          throw new UserError(event.error.message, event.error.code);
         },
       }),
     );

@@ -24,6 +24,7 @@ import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { withMockedEnv } from "../../infrastructure/persistence/path_test_helpers.ts";
 import { FileSystemControlPlaneStore } from "../../infrastructure/persistence/fs_control_plane_store.ts";
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
+import { UserError } from "../../domain/errors.ts";
 import { FEDERATION_GATE_VARIABLE } from "../../domain/serve/federation_gate.ts";
 import { HubLink } from "../../domain/serve/hub_link.ts";
 import { MemberCredential } from "../../domain/serve/member_credential.ts";
@@ -31,7 +32,10 @@ import { ControlPlaneVaultProvider } from "../../domain/vaults/control_plane_vau
 import { createLibSwampContext } from "../../libswamp/context.ts";
 import { createRepoInitDeps, repoInit } from "../../libswamp/repo/init.ts";
 import { collect } from "../../libswamp/testing.ts";
-import { HubLinkStore } from "../../serve/federation/hub_link_store.ts";
+import {
+  HUB_LINK_KEY,
+  HubLinkStore,
+} from "../../serve/federation/hub_link_store.ts";
 import { MemberCredentialVault } from "../../serve/federation/member_credential_vault.ts";
 import { serveHubCommand } from "./serve_hub.ts";
 
@@ -231,5 +235,39 @@ Deno.test("serve hub forget: clears the link and the credential once serve stopp
     assertEquals((await member.links.readLink()).state, "unjoined");
     assertEquals(await member.links.listInstances(), []);
     assertEquals(await member.credentials.read(), undefined);
+  });
+});
+
+Deno.test("serve hub forget: a running serve is refused before the repository is opened to write", async () => {
+  await withRepo(MEMBER_YAML, async (dir) => {
+    const member = await joined(dir);
+    await member.links.writeInstance(
+      instance(new Date().toISOString(), null),
+    );
+    // opening to write would fail on this key; the refusal comes first
+    await Deno.writeTextFile(
+      join(dir, ".swamp", "serve.yaml"),
+      `${MEMBER_YAML}token-secrets:\n  vault: missing-vault\n  key: missing-key\n`,
+    );
+    const error = await assertRejects(
+      () => run("1", ["forget", "--yes", "--repo-dir", dir]),
+      UserError,
+      "Stop it first",
+    );
+    assertEquals(error.code, "serve_running");
+  });
+});
+
+Deno.test("serve hub: an unreadable link keeps its error code in JSON mode", async () => {
+  await withRepo(MEMBER_YAML, async (dir) => {
+    await new FileSystemControlPlaneStore(swampPath(dir)).put(
+      HUB_LINK_KEY,
+      new TextEncoder().encode("{}"),
+    );
+    const error = await assertRejects(
+      () => run("1", ["--repo-dir", dir]),
+      UserError,
+    );
+    assertEquals(error.code, "hub_link_get_failed");
   });
 });

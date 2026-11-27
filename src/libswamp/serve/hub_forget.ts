@@ -51,6 +51,25 @@ export type HubForgetEvent =
 
 export const SERVE_RUNNING_CODE = "serve_running";
 
+/** the refusal while a serve on the link checked in recently, else undefined */
+export function serveRunningRefusal(
+  instances: readonly HubLinkInstance[],
+  now: number,
+): SwampError | undefined {
+  const running = instances.filter((instance) =>
+    isInstanceAlive(instance, now)
+  );
+  if (running.length === 0) return undefined;
+  const minutes = INSTANCE_ALIVE_WINDOW_MS / 60_000;
+  return {
+    code: SERVE_RUNNING_CODE,
+    message:
+      `A serve for this repository checked in within the last ${minutes} minutes (${
+        plural(running.length, "instance")
+      }). Stop it first. If it stopped without shutting down, wait ${minutes} minutes and retry.`,
+  };
+}
+
 /** clears the link and the credential, refused while a serve on this link is running */
 export async function* hubForget(
   _ctx: LibSwampContext,
@@ -62,22 +81,12 @@ export async function* hubForget(
     (async function* (): AsyncGenerator<HubForgetEvent> {
       yield { kind: "resolving" };
       try {
-        const now = (deps.now ?? Date.now)();
-        const running = (await deps.links.listInstances()).filter((instance) =>
-          isInstanceAlive(instance, now)
+        const refusal = serveRunningRefusal(
+          await deps.links.listInstances(),
+          (deps.now ?? Date.now)(),
         );
-        if (running.length > 0) {
-          const minutes = INSTANCE_ALIVE_WINDOW_MS / 60_000;
-          yield {
-            kind: "error",
-            error: {
-              code: SERVE_RUNNING_CODE,
-              message:
-                `A serve for this repository checked in within the last ${minutes} minutes (${
-                  plural(running.length, "instance")
-                }). Stop it first. If it stopped without shutting down, wait ${minutes} minutes and retry.`,
-            },
-          };
+        if (refusal !== undefined) {
+          yield { kind: "error", error: refusal };
           return;
         }
         // best effort: forget is how a link record that no longer parses is cleared
