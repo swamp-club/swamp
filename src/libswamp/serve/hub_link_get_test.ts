@@ -39,7 +39,10 @@ function instance(): HubLinkInstance {
 }
 
 Deno.test("hubLinkGet: reports the link, the configured hub and every instance", async () => {
-  const link = HubLink.unjoined().beginJoin("https://hub.example.com").received(
+  const link = HubLink.unjoined().beginJoin(
+    "https://hub.example.com",
+    crypto.randomUUID(),
+  ).received(
     {
       memberId: MEMBER_ID,
       memberName: "edge",
@@ -86,4 +89,23 @@ Deno.test("hubLinkGet: a store failure is an error event, never a rejection", as
   const error = events.find((e) => e.kind === "error");
   assert(error?.kind === "error");
   assertEquals(error.error.code, "hub_link_get_failed");
+});
+
+Deno.test("hubLinkGet: a joining link's joinId is never reported", async () => {
+  const joinId = crypto.randomUUID();
+  const link = HubLink.unjoined().beginJoin("https://hub.example.com", joinId);
+  const events = [];
+  for await (
+    const event of hubLinkGet(createLibSwampContext(), {
+      links: {
+        readLink: () => Promise.resolve(link),
+        listInstances: () => Promise.resolve([]),
+      },
+      configuredHubUrl: "https://hub.example.com",
+    })
+  ) events.push(event);
+  const completed = events.find((e) => e.kind === "completed");
+  assert(completed?.kind === "completed");
+  assertEquals(completed.data.state, "joining");
+  assert(!JSON.stringify(events).includes(joinId));
 });

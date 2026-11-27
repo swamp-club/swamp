@@ -88,6 +88,10 @@ export class FakeHub {
   readonly tokens = new Set<string>();
   readonly removed = new Set<string>();
   readonly joins: string[] = [];
+  readonly joinIds: string[] = [];
+  /** joins the hub accepts, then answers as if the reply were lost */
+  dropReplies = 0;
+  readonly #spent = new Map<string, { joinId: string; memberId: string }>();
   readonly checkIns: { memberId: string; instanceId: string }[] = [];
   readonly scriptedJoins: HubOutcome<JoinReply>[] = [];
   readonly scriptedCheckIns: HubOutcome<CheckInReply>[] = [];
@@ -107,11 +111,11 @@ export class FakeHub {
 
   client(): MemberCheckInServiceOptions["client"] {
     return {
-      join: (token) => {
+      join: (token, joinId) => {
         const hook = this.beforeJoin;
         this.beforeJoin = undefined;
         hook?.();
-        return Promise.resolve(this.#join(token));
+        return Promise.resolve(this.#join(token, joinId));
       },
       checkIn: async (credential, instanceId) => {
         const hook = this.beforeCheckIn;
@@ -125,12 +129,28 @@ export class FakeHub {
     };
   }
 
-  #join(token: string): HubOutcome<JoinReply> {
+  #join(token: string, joinId: string): HubOutcome<JoinReply> {
     this.joins.push(token);
+    this.joinIds.push(joinId);
     const scripted = this.scriptedJoins.shift();
     if (scripted !== undefined) return scripted;
-    if (!this.tokens.delete(token)) return { kind: "unauthorized" };
-    const memberId = crypto.randomUUID();
+    const spent = this.#spent.get(token);
+    let memberId: string;
+    if (this.tokens.delete(token)) {
+      memberId = crypto.randomUUID();
+      this.#spent.set(token, { joinId, memberId });
+    } else if (
+      spent !== undefined && spent.joinId === joinId &&
+      !this.removed.has(spent.memberId)
+    ) {
+      memberId = spent.memberId;
+    } else {
+      return { kind: "unauthorized" };
+    }
+    if (this.dropReplies > 0) {
+      this.dropReplies--;
+      return { kind: "unreachable" };
+    }
     return {
       kind: "ok",
       value: {

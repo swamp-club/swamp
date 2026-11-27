@@ -71,7 +71,10 @@ Deno.test("HubLinkStore: an unwritten link is unjoined, and a written one reads 
   const store = new MemoryControlPlaneStore();
   const links = new HubLinkStore(store);
   assertEquals((await links.readLink()).state, "unjoined");
-  const link = HubLink.unjoined().beginJoin("https://hub.example.com")
+  const link = HubLink.unjoined().beginJoin(
+    "https://hub.example.com",
+    crypto.randomUUID(),
+  )
     .received(MEMBER).joined();
   await links.writeLink(link);
   assertEquals((await links.readLink()).toJSON(), link.toJSON());
@@ -136,7 +139,10 @@ Deno.test("HubLinkStore.clear: removes the link, every instance and the claim", 
   const store = new AtomicStore();
   const links = new HubLinkStore(store, () => NOW);
   await links.writeLink(
-    HubLink.unjoined().beginJoin("https://hub.example.com"),
+    HubLink.unjoined().beginJoin(
+      "https://hub.example.com",
+      crypto.randomUUID(),
+    ),
   );
   await links.writeInstance(instance(A, "2026-11-26T12:00:00.000Z"));
   await links.claimJoin(A);

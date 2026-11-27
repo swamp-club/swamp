@@ -29,7 +29,12 @@ import { MemberName } from "./member_name.ts";
 const NOW = Date.parse("2026-11-26T12:00:00.000Z");
 
 type Command =
-  | { kind: "use"; withTrueSecret: boolean; at: number }
+  | {
+    kind: "use";
+    withTrueSecret: boolean;
+    withFirstJoinId: boolean;
+    at: number;
+  }
   | { kind: "revoke"; at: number };
 
 const command = (durationMs: number): fc.Arbitrary<Command> =>
@@ -37,6 +42,7 @@ const command = (durationMs: number): fc.Arbitrary<Command> =>
     fc.record({
       kind: fc.constant("use" as const),
       withTrueSecret: fc.boolean(),
+      withFirstJoinId: fc.boolean(),
       at: fc.integer({ min: 0, max: durationMs * 2 }),
     }),
     fc.record({
@@ -45,7 +51,7 @@ const command = (durationMs: number): fc.Arbitrary<Command> =>
     }),
   );
 
-Deno.test("JoinToken property: a token admits at most one join, never after expiry or revoke", () => {
+Deno.test("JoinToken property: a token admits at most one join, and replays only its own joinId before expiry", () => {
   fc.assert(
     fc.property(
       fc.integer({ min: 1, max: MAX_JOIN_TOKEN_DURATION_MS }).chain((d) =>
@@ -59,8 +65,10 @@ Deno.test("JoinToken property: a token admits at most one join, never after expi
           NOW,
         );
         const wrong = JoinToken.mint(name, durationMs, NOW).plaintext;
+        const firstJoinId = crypto.randomUUID();
         let token = minted;
         let joins = 0;
+        let joinedAs: string | undefined;
         for (const cmd of commands) {
           const at = NOW + cmd.at;
           const before = token.stateAt(at);
@@ -68,15 +76,23 @@ Deno.test("JoinToken property: a token admits at most one join, never after expi
             const used = JoinToken.use(
               token,
               cmd.withTrueSecret ? plaintext : wrong,
+              cmd.withFirstJoinId ? firstJoinId : crypto.randomUUID(),
               crypto.randomUUID(),
               at,
             );
-            if (used.ok) {
+            if (used.kind === "first-use") {
               joins++;
               assertEquals(before, "unused");
               assertEquals(cmd.withTrueSecret, true);
               assertEquals(at < NOW + durationMs, true);
               token = used.token;
+              joinedAs = cmd.withFirstJoinId ? used.token.memberId : undefined;
+            } else if (used.kind === "replay") {
+              assertEquals(before, "used");
+              assertEquals(cmd.withTrueSecret, true);
+              assertEquals(cmd.withFirstJoinId, true);
+              assertEquals(at < NOW + durationMs, true);
+              assertEquals(used.memberId, joinedAs);
             }
           } else {
             try {
@@ -107,8 +123,14 @@ Deno.test("JoinToken property: a terminal state never changes", () => {
       );
       const revoked = token.revoke(NOW);
       assertEquals(
-        JoinToken.use(revoked, plaintext, crypto.randomUUID(), NOW + later).ok,
-        false,
+        JoinToken.use(
+          revoked,
+          plaintext,
+          crypto.randomUUID(),
+          crypto.randomUUID(),
+          NOW + later,
+        ).kind,
+        "refused",
       );
       assertEquals(revoked.stateAt(NOW + later), "revoked");
       assertEquals(revoked.expire(NOW + later), undefined);

@@ -35,7 +35,11 @@ const HOUR = 60 * 60 * 1000;
 
 async function joined(t: TestHub, name = "edge-1") {
   const { plaintext } = await t.hub.createToken(name);
-  const outcome = await t.hub.join(plaintext, sampleFingerprint());
+  const outcome = await t.hub.join(
+    plaintext,
+    crypto.randomUUID(),
+    sampleFingerprint(),
+  );
   if (outcome.kind !== "joined") throw new Error(outcome.kind);
   return { ...outcome, plaintext };
 }
@@ -109,7 +113,11 @@ Deno.test("FederationHub.join: spends the token, then writes the credential hash
   const t = createTestHub();
   const { plaintext } = await t.hub.createToken("edge-1");
   t.store.puts.length = 0;
-  const outcome = await t.hub.join(plaintext, sampleFingerprint());
+  const outcome = await t.hub.join(
+    plaintext,
+    crypto.randomUUID(),
+    sampleFingerprint(),
+  );
   assertEquals(outcome.kind, "joined");
   if (outcome.kind !== "joined") return;
   assertEquals(t.store.puts, [
@@ -156,7 +164,7 @@ Deno.test("FederationHub.join: a used, wrong, expired, revoked, missing or malfo
   ];
   for (const token of presented) {
     assertEquals(
-      await t.hub.join(token, sampleFingerprint()),
+      await t.hub.join(token, crypto.randomUUID(), sampleFingerprint()),
       { kind: "invalid-token" },
       String(token),
     );
@@ -171,10 +179,13 @@ Deno.test("FederationHub.join: a live member's name is taken and the token stays
   const t = createTestHub();
   await joined(t, "edge-1");
   const { plaintext } = await t.hub.createToken("edge-1");
-  assertEquals(await t.hub.join(plaintext, sampleFingerprint()), {
-    kind: "name-taken",
-    memberName: "edge-1",
-  });
+  assertEquals(
+    await t.hub.join(plaintext, crypto.randomUUID(), sampleFingerprint()),
+    {
+      kind: "name-taken",
+      memberName: "edge-1",
+    },
+  );
   const token = t.store.json("federation/tokens/edge-1") as Record<
     string,
     unknown
@@ -193,10 +204,133 @@ Deno.test("FederationHub.join: the hub's own name is refused even with a token f
     "federation/tokens/central",
     new TextEncoder().encode(JSON.stringify(minted.token.toJSON())),
   );
-  assertEquals(await t.hub.join(minted.plaintext, sampleFingerprint()), {
-    kind: "name-taken",
-    memberName: "central",
-  });
+  assertEquals(
+    await t.hub.join(
+      minted.plaintext,
+      crypto.randomUUID(),
+      sampleFingerprint(),
+    ),
+    {
+      kind: "name-taken",
+      memberName: "central",
+    },
+  );
+});
+
+Deno.test("FederationHub.join: a replay with the same joinId re-credentials the same member", async () => {
+  const t = createTestHub();
+  const { plaintext } = await t.hub.createToken("edge-1");
+  const joinId = crypto.randomUUID();
+  const first = await t.hub.join(plaintext, joinId, sampleFingerprint());
+  if (first.kind !== "joined") throw new Error(first.kind);
+  assertEquals(first.replayed, false);
+  t.store.puts.length = 0;
+  const replay = await t.hub.join(plaintext, joinId, sampleFingerprint());
+  if (replay.kind !== "joined") throw new Error(replay.kind);
+  assertEquals(replay.replayed, true);
+  assertEquals(replay.memberId, first.memberId);
+  assertEquals(replay.memberName, "edge-1");
+  assert(replay.credential !== first.credential);
+  assertEquals(t.store.puts, [`federation/credentials/${first.memberId}`]);
+  assertEquals(
+    t.members.calls.filter((c) => c.call.method === "join").length,
+    1,
+  );
+  const instance = InstanceId.create(crypto.randomUUID());
+  assertEquals(
+    await t.hub.checkIn(
+      MemberCredential.parse(first.credential),
+      instance,
+      sampleFingerprint(),
+    ),
+    { kind: "unauthorized" },
+  );
+  assertEquals(
+    (await t.hub.checkIn(
+      MemberCredential.parse(replay.credential),
+      instance,
+      sampleFingerprint(),
+    )).kind,
+    "checked-in",
+  );
+  assert(!storedText(t).includes(joinId));
+});
+
+Deno.test("FederationHub.join: a replay with another joinId, after expiry or after removal is refused", async () => {
+  const t = createTestHub();
+  const { plaintext } = await t.hub.createToken("edge-1", 1000);
+  const joinId = crypto.randomUUID();
+  const first = await t.hub.join(plaintext, joinId, sampleFingerprint());
+  assertEquals(first.kind, "joined");
+  assertEquals(
+    await t.hub.join(plaintext, crypto.randomUUID(), sampleFingerprint()),
+    { kind: "invalid-token" },
+  );
+  await t.hub.removeMember("edge-1");
+  assertEquals(
+    await t.hub.join(plaintext, joinId, sampleFingerprint()),
+    { kind: "invalid-token" },
+  );
+
+  const later = createTestHub();
+  const minted = await later.hub.createToken("edge-2", 1000);
+  await later.hub.join(minted.plaintext, joinId, sampleFingerprint());
+  later.clock.now += 1000;
+  assertEquals(
+    await later.hub.join(minted.plaintext, joinId, sampleFingerprint()),
+    { kind: "invalid-token" },
+  );
+});
+
+Deno.test("FederationHub.join: a replay never re-credentials a member that joined under another id", async () => {
+  const t = createTestHub();
+  const { plaintext } = await t.hub.createToken("edge-1");
+  const joinId = crypto.randomUUID();
+  const first = await t.hub.join(plaintext, joinId, sampleFingerprint());
+  if (first.kind !== "joined") throw new Error(first.kind);
+  const token = t.store.json("federation/tokens/edge-1") as Record<
+    string,
+    unknown
+  >;
+  await t.store.put(
+    "federation/tokens/edge-1",
+    new TextEncoder().encode(
+      JSON.stringify({ ...token, memberId: crypto.randomUUID() }),
+    ),
+  );
+  assertEquals(
+    await t.hub.join(plaintext, joinId, sampleFingerprint()),
+    { kind: "invalid-token" },
+  );
+});
+
+Deno.test("FederationHub.join: a replay finishes a join the hub stopped before recording", async () => {
+  const t = createTestHub();
+  const { plaintext } = await t.hub.createToken("edge-1");
+  const joinId = crypto.randomUUID();
+  const memberId = crypto.randomUUID();
+  const stored = JoinToken.fromJSON(t.store.json("federation/tokens/edge-1"));
+  const spent = JoinToken.use(stored, plaintext, joinId, memberId, t.clock.now);
+  if (spent.kind !== "first-use") throw new Error(spent.kind);
+  await t.store.put(
+    "federation/tokens/edge-1",
+    new TextEncoder().encode(JSON.stringify(spent.token.toJSON())),
+  );
+  const replay = await t.hub.join(plaintext, joinId, sampleFingerprint());
+  if (replay.kind !== "joined") throw new Error(replay.kind);
+  assertEquals(replay.memberId, memberId);
+  assertEquals(replay.replayed, true);
+  assertEquals(t.members.raw("edge-1")?.memberId, memberId);
+});
+
+Deno.test("FederationHub.listTokens: never shows a hash", async () => {
+  const t = createTestHub();
+  const { plaintext } = await t.hub.createToken("edge-1");
+  await t.hub.join(plaintext, crypto.randomUUID(), sampleFingerprint());
+  const [view] = await t.hub.listTokens();
+  assertEquals(view.state, "used");
+  assertEquals("secretHash" in view, false);
+  assertEquals("joinIdHash" in view, false);
 });
 
 Deno.test("FederationHub.checkIn: records the instance once, then writes only the seen time", async () => {

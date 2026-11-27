@@ -32,7 +32,11 @@ import { MemberStatusSweeper } from "./member_status_sweeper.ts";
 
 async function joinAndCheckIn(t: TestHub, name = "edge-1") {
   const { plaintext } = await t.hub.createToken(name);
-  const joined = await t.hub.join(plaintext, sampleFingerprint());
+  const joined = await t.hub.join(
+    plaintext,
+    crypto.randomUUID(),
+    sampleFingerprint(),
+  );
   if (joined.kind !== "joined") throw new Error(joined.kind);
   const credential = MemberCredential.parse(joined.credential);
   const instance = InstanceId.create(crypto.randomUUID());

@@ -267,7 +267,11 @@ Deno.test({
             "edge-1",
             async (hub) => {
               const { plaintext } = await hub.createToken("edge-1");
-              const joined = await hub.join(plaintext, sampleFingerprint());
+              const joined = await hub.join(
+                plaintext,
+                crypto.randomUUID(),
+                sampleFingerprint(),
+              );
               if (joined.kind !== "joined") throw new Error(joined.kind);
               const outcome = await hub.checkIn(
                 MemberCredential.parse(joined.credential),

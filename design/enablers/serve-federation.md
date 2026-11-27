@@ -55,8 +55,8 @@ running jobs on members, and a hub of hubs.
 7. **Fingerprints are allowlisted.** No hostnames, IPs, ports, paths, usernames,
    grants, secrets or hashes of secrets leave a serve.
 8. Members own their data. Nothing a member stores is sent to the hub.
-9. The hub stores only hashes of join tokens and credentials. A member keeps its
-   credential in its encrypted control-plane vault.
+9. The hub stores only hashes of join tokens, join ids and credentials. A member
+   keeps its credential in its encrypted control-plane vault.
 
 ## The experimental gate
 
@@ -171,7 +171,9 @@ days at most. Its states are `unused`, `used`, `expired` and `revoked`. It is a
 separate type from worker enrollment tokens, so a join token can never admit a
 worker. It is not a model type. Only its hash is stored, in the hub's
 control-plane store at `federation/tokens/<name>`, whose history is its audit
-trail. Its wire form is `<name>.<secret>`.
+trail. Its wire form is `<name>.<secret>`. On first use it also records the
+hash of the join's `joinId`, which lets that member, and only that member,
+replay the join (see "Protocol"). Its reader ignores fields it does not know.
 
 A member credential has the wire form `swfm1.<memberId>.<secret>`. Its sha256
 hash is kept at `federation/credentials/<memberId>` in the control-plane store
@@ -209,7 +211,9 @@ record, with role `hub`, written only by the leading node.
 
 Every token and member write on the hub runs on one `federation` transition
 tail. Join verifies the token, checks the name, marks the token used, then
-writes the credential and the member record, so a token is never reusable.
+writes the credential and the member record, so a token is never reusable. A
+replay replaces the member's credential and writes no record; when the record
+is missing because the hub stopped mid-join, the replay writes it.
 Remove marks the record removed, then deletes the credential.
 `src/domain/serve/`, `src/serve/federation/`.
 
@@ -217,7 +221,9 @@ Remove marks the record removed, then deletes the credential.
 
 A member's `HubLink` holds the hub URL, its member id and name, the hub's name
 and when it joined, in one of five states: `unjoined`, `joining`, `joined`,
-`refused` or `mismatched`. It holds no secret. It lives in the member's
+`refused` or `mismatched`. A `joining` link also holds the `joinId` of its open
+join, which with the join token could replay it, so no view, log or audit event
+shows it; a settled link holds none. It lives in the member's
 control-plane store at `federation/link/record`, beside the store a rebuilt
 instance on the same datastore reads, so a rebuild is the same member. Each
 instance's last attempt, result, backoff and an `aliveAt` time go under
@@ -240,7 +246,13 @@ it. At start it decides from the link, the stored credential and `serve.yaml`:
 A join or the removal of a stray credential runs only under the join claim,
 `federation/member/join-claim`, taken with `putIfAbsent` and taken over once it
 is two minutes old. Nodes that lose it look for the credential every 5 seconds.
-The join reply is recorded on the link before the credential is stored, so a
+Before a join request leaves, the member writes the link as `joining` with a
+new `joinId`, a lower-case UUID. A start that finds a `joining` link with no
+credential of its own retries that join with the stored `joinId`, even if
+`serve.yaml` now names another hub URL, and so does a node taking over a stale
+join claim. A lost or unusable reply, a `5xx`, a `429` or a shutdown keeps the
+`joining` link and retries with backoff; only a `401` or `409` abandons it. The
+join reply is recorded on the link before the credential is stored, so a
 restart between the two still finds a credential that is its own. Once the hub
 has spent the token, those writes are retried a few times within seconds, even
 through a shutdown, since losing them loses the membership. A join refused
@@ -333,11 +345,16 @@ fails with a named error rather than guess the mode.
 Plain HTTPS JSON on serve's existing listener. It is mounted only on a hub with
 the gate on.
 
-- `POST /federation/v1/join` takes `{ joinToken, fingerprint, protocolVersion,
-  capabilities }`. It returns `{ memberId, memberName, credential, hub,
-  checkInIntervalSeconds }`. The token is consumed atomically. A used, expired,
-  revoked or missing token gets the same 401. A name held by a live member gets
-  409.
+- `POST /federation/v1/join` takes `{ joinToken, joinId, fingerprint,
+  protocolVersion, capabilities }`. It returns `{ memberId, memberName,
+  credential, hub, checkInIntervalSeconds }`. `joinId` is required, a
+  lower-case UUID the member chose; without it the join gets 400 naming it. The
+  token is consumed atomically, and its record keeps the hash of `joinId`. A
+  join with a used token and the same `joinId`, before the token expires and
+  while the member it created is not removed, is a replay: it gets the same
+  reply with a new credential for the same member, and the old credential stops
+  working. Any other used, expired, revoked or missing token gets the same 401.
+  A name held by a live member gets 409.
 - `POST /federation/v1/check-in` takes `Authorization: Bearer <credential>` and
   `{ instanceId, fingerprint, protocolVersion, capabilities }`. It returns
   `{ hub, checkInIntervalSeconds, jobs: [] }`. `jobs` is reserved for slice 2
@@ -358,8 +375,9 @@ the gate on.
 - In team mode a follower forwards the body to its leader, which applies every
   federation write. A refusal names no leader, since the caller is not
   authenticated.
-- Audit events for join and check-in are `auth` events. They never carry a
-  token or credential, and refused check-ins are coalesced per reason.
+- Audit events for join and check-in are `auth` events. A replay is its own
+  `federation.member.join.replayed` event. They never carry a token, credential
+  or `joinId`, and refused check-ins are coalesced per reason.
 
 ## Access
 
@@ -453,6 +471,7 @@ minutes, so a serve stopped without shutting down blocks it that long.
 | Span routes for `/federation/v1/*` only on a hub                     | The fixed route table stays as before. Elsewhere those paths are unknown and carry no route.                                                                    |
 | No new v3 write intents                                              | Member writes are model-method `data.save` writes, and token and credential writes are control-plane writes, admin by type.                                     |
 | Join spends the token first; remove marks the record first           | A crash never leaves a reusable token or a credential for a removed member.                                                                                     |
+| Join is idempotent through a member-chosen `joinId`                  | A lost reply must not need an operator. Replay needs the token and the private `joinId`, and rotating the credential settles a reply lost twice.                |
 | The leader alone writes the hub's own record and sweeps              | A follower that wrote too would add versions and race the leader. Its `team` field comes from the running team.                                                 |
 | No hub of hubs                                                       | A product decision. A later roll-up stays possible because the rule lives in config validation, not the protocol.                                               |
 | The member joins and checks in in the background                     | Serve's readiness, runs and workers never depend on a hub being up.                                                                                             |

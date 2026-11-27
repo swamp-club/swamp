@@ -130,6 +130,8 @@ export type JoinOutcome =
     readonly memberId: string;
     readonly memberName: string;
     readonly credential: string;
+    /** a lost reply asked for again: the same member, with a new credential */
+    readonly replayed: boolean;
   }
   | { readonly kind: "invalid-token" }
   | { readonly kind: "name-taken"; readonly memberName: string };
@@ -212,7 +214,8 @@ function memberName(input: unknown): MemberName {
 }
 
 function tokenView(token: JoinToken, now: number): JoinTokenView {
-  const { secretHash: _hash, ...view } = token.toJSON();
+  const { secretHash: _hash, joinIdHash: _joinIdHash, ...view } = token
+    .toJSON();
   return { ...view, state: token.stateAt(now) };
 }
 
@@ -341,22 +344,33 @@ export class FederationHub {
     });
   }
 
-  /** the token is spent before anything else is written, so it is never reusable */
-  join(presented: unknown, fingerprint: Fingerprint): Promise<JoinOutcome> {
+  /**
+   * the token is spent before anything else is written, so it is never
+   * reusable; a replay re-credentials the member that token created and no other
+   */
+  join(
+    presented: unknown,
+    joinId: string,
+    fingerprint: Fingerprint,
+  ): Promise<JoinOutcome> {
     const name = joinTokenNameOf(presented);
     if (name === undefined) {
       return Promise.resolve({ kind: "invalid-token" });
     }
     return this.#tail.run("member_join", async () => {
       const now = this.#now();
-      const memberId = crypto.randomUUID();
       const use = JoinToken.use(
         await this.#readToken(name),
         presented,
-        memberId,
+        joinId,
+        crypto.randomUUID(),
         now,
       );
-      if (!use.ok) return { kind: "invalid-token" };
+      if (use.kind === "refused") return { kind: "invalid-token" };
+      if (use.kind === "replay") {
+        return await this.#replay(name, use.memberId, fingerprint, now);
+      }
+      const memberId = use.token.memberId!;
       const roster = new MemberRoster(
         await this.#members.list(),
         this.hubName,
@@ -365,30 +379,82 @@ export class FederationHub {
         return { kind: "name-taken", memberName: name.value };
       }
       await this.#store.put(tokenKey(name), encode(use.token.toJSON()));
-      const credential = MemberCredential.issue(memberId);
-      await this.#store.put(
-        credentialKey(memberId),
-        encode({ hash: credential.hash(), memberName: name.value }),
-      );
-      await this.#run(name.value, {
-        method: "join",
-        inputs: {
-          memberId,
-          role: "member",
-          fingerprint: fingerprint.toJSON() as unknown as Record<
-            string,
-            unknown
-          >,
-          joinedAt: new Date(now).toISOString(),
-        },
-      });
-      return {
-        kind: "joined",
-        memberId,
-        memberName: name.value,
-        credential: credential.toWire(),
-      };
+      return await this.#admit(name, memberId, fingerprint, now, false);
     });
+  }
+
+  // a hub that stopped before writing the member record finishes that join here
+  async #replay(
+    name: MemberName,
+    memberId: string,
+    fingerprint: Fingerprint,
+    now: number,
+  ): Promise<JoinOutcome> {
+    const existing = await this.#members.get(name.value);
+    if (existing === null) {
+      const roster = new MemberRoster(
+        await this.#members.list(),
+        this.hubName,
+      );
+      if (roster.isNameTaken(name)) return { kind: "invalid-token" };
+      return await this.#admit(name, memberId, fingerprint, now, true);
+    }
+    if (
+      existing.memberId !== memberId || existing.role !== "member" ||
+      existing.isRemoved
+    ) {
+      return { kind: "invalid-token" };
+    }
+    const credential = await this.#issueCredential(name, memberId);
+    return {
+      kind: "joined",
+      memberId,
+      memberName: name.value,
+      credential: credential.toWire(),
+      replayed: true,
+    };
+  }
+
+  async #admit(
+    name: MemberName,
+    memberId: string,
+    fingerprint: Fingerprint,
+    now: number,
+    replayed: boolean,
+  ): Promise<JoinOutcome> {
+    const credential = await this.#issueCredential(name, memberId);
+    await this.#run(name.value, {
+      method: "join",
+      inputs: {
+        memberId,
+        role: "member",
+        fingerprint: fingerprint.toJSON() as unknown as Record<
+          string,
+          unknown
+        >,
+        joinedAt: new Date(now).toISOString(),
+      },
+    });
+    return {
+      kind: "joined",
+      memberId,
+      memberName: name.value,
+      credential: credential.toWire(),
+      replayed,
+    };
+  }
+
+  // replaces any earlier credential, so only the newest one checks in
+  async #issueCredential(
+    name: MemberName,
+    memberId: string,
+  ): Promise<MemberCredential> {
+    const credential = MemberCredential.issue(memberId);
+    await this.#store.put(
+      credentialKey(memberId),
+      encode({ hash: credential.hash(), memberName: name.value }),
+    );
+    return credential;
   }
 
   async checkIn(

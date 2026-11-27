@@ -102,6 +102,7 @@ export class MemberCheckInService {
   #liveness: Promise<void> | undefined;
   #intervalSeconds = DEFAULT_CHECK_IN_INTERVAL_SECONDS;
   #lastLogged: CheckInResult | "joined" | undefined;
+  #joinRetryLogged = false;
 
   constructor(options: MemberCheckInServiceOptions) {
     this.#options = options;
@@ -251,10 +252,15 @@ export class MemberCheckInService {
         ));
       return { kind: "stop" };
     }
-    const joining = previous.beginJoin(this.#options.hubUrl);
+    // written before the request leaves, so a lost reply is replayed, never re-joined
+    const joining = previous.beginJoin(
+      this.#options.hubUrl,
+      crypto.randomUUID(),
+    );
     await this.#options.links.writeLink(joining);
     const outcome = await this.#options.client.join(
       token,
+      joining.joinId!,
       await this.#options.fingerprint(),
     );
     this.#instance = {
@@ -280,20 +286,21 @@ export class MemberCheckInService {
       );
       this.#intervalSeconds = this.#clamp(reply.checkInIntervalSeconds);
       this.#lastLogged = "joined";
+      this.#joinRetryLogged = false;
       logger.info("Joined hub {hub} as member {member}", {
         hub: reply.hub.name,
         member: reply.memberName,
       });
       return { kind: "check-in", credential: reply.credential };
     }
-    await this.#rollBackJoin(previous);
     if (outcome.kind === "stopped") return { kind: "stop" };
     if (outcome.kind === "unauthorized") {
       // a token spent by another node that joined meanwhile is no refusal
       const now = await this.#options.links.readLink();
-      if (now.memberId !== null && now.state !== "refused") {
+      if (now.holdsCredential) {
         return { kind: "wait", delayMs: this.#schedule.joinWaitMs };
       }
+      await this.#abandonJoin(previous);
       await this.#record("join_refused");
       this.#logOnce("join_refused", () =>
         logger.error(
@@ -302,6 +309,7 @@ export class MemberCheckInService {
       return { kind: "stop" };
     }
     if (outcome.kind === "conflict") {
+      await this.#abandonJoin(previous);
       await this.#record("name_taken");
       this.#logOnce("name_taken", () =>
         logger.error(
@@ -309,14 +317,25 @@ export class MemberCheckInService {
         ));
       return { kind: "stop" };
     }
+    // the hub may have accepted the join: keep the joinId and replay it
+    if (!this.#joinRetryLogged) {
+      this.#joinRetryLogged = true;
+      logger.warn(
+        "No usable join reply from the hub ({result}); retrying the same join with backoff",
+        { result: resultOf(outcome) },
+      );
+    }
     return { kind: "wait", delayMs: await this.#failed(outcome) };
   }
 
-  // another node may have joined meanwhile: undo only a joining record with no reply yet, which the join claim makes ours
-  async #rollBackJoin(previous: HubLink): Promise<void> {
+  // another node may have joined meanwhile: undo only a joining record, which
+  // the join claim makes ours; a join retried from joining starts afresh
+  async #abandonJoin(previous: HubLink): Promise<void> {
     const stored = await this.#options.links.readLink();
-    if (stored.state === "joining" && stored.memberId === null) {
-      await this.#options.links.writeLink(previous);
+    if (stored.state === "joining") {
+      await this.#options.links.writeLink(
+        previous.state === "joining" ? stored.abandonJoin() : previous,
+      );
     }
   }
 

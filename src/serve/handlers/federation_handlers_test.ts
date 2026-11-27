@@ -90,12 +90,13 @@ async function memberLink(): Promise<
 > {
   const links = new HubLinkStore(new MemoryControlPlaneStore());
   await links.writeLink(
-    HubLink.unjoined().beginJoin("https://hub.example.com").received({
-      memberId: crypto.randomUUID(),
-      memberName: "edge",
-      hubName: "central",
-      joinedAt: "2026-11-26T12:00:00.000Z",
-    }).joined(),
+    HubLink.unjoined().beginJoin("https://hub.example.com", crypto.randomUUID())
+      .received({
+        memberId: crypto.randomUUID(),
+        memberName: "edge",
+        hubName: "central",
+        joinedAt: "2026-11-26T12:00:00.000Z",
+      }).joined(),
   );
   return { links, configuredHubUrl: "https://hub.example.com" };
 }
@@ -216,7 +217,11 @@ Deno.test("handleFederationLinkGet: a serve that is not a member says so", async
 Deno.test("handleFederationMemberGet: a reader gets the record with its live view; without read on swamp/federation it is refused", async () => {
   const t = createTestHub();
   const { plaintext } = await t.hub.createToken("edge-1");
-  const joined = await t.hub.join(plaintext, sampleFingerprint());
+  const joined = await t.hub.join(
+    plaintext,
+    crypto.randomUUID(),
+    sampleFingerprint(),
+  );
   if (joined.kind !== "joined") throw new Error(joined.kind);
   const instance = InstanceId.create(crypto.randomUUID());
   const runtime = {

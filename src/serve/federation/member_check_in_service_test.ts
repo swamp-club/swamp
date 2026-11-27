@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assert, assertEquals } from "@std/assert";
+import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { join } from "@std/path";
 import { MemberCredential } from "../../domain/serve/member_credential.ts";
@@ -173,6 +174,7 @@ Deno.test("MemberCheckInService: a 401 for an old credential leaves a newer memb
       await node.links.writeLink(
         (await node.links.readLink()).refuse().beginJoin(
           "https://hub.example.com",
+          crypto.randomUUID(),
         ).received({
           memberId: newer.memberId,
           memberName: "edge",
@@ -485,5 +487,179 @@ Deno.test("readJoinTokenFile: trims the token and refuses a missing, empty or ov
     assertEquals(await readJoinTokenFile(path), undefined);
   } finally {
     await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("MemberCheckInService: the joinId is stored before the join request leaves", async () => {
+  const store = new AtomicMemoryStore();
+  const hub = fastHub();
+  const node = await memberNode(store, hub, { token: hub.mintToken() });
+  let storedAtRequest: string | null | undefined;
+  hub.beforeJoin = () => {
+    const bytes = store.entries.get(HUB_LINK_KEY);
+    storedAtRequest = bytes === undefined
+      ? undefined
+      : JSON.parse(new TextDecoder().decode(bytes)).joinId;
+  };
+  node.service.start();
+  try {
+    await waitFor(() => hub.checkIns.length >= 1, "a check-in");
+    assertEquals(storedAtRequest, hub.joinIds[0]);
+    assertEquals((await node.links.readLink()).joinId, null);
+  } finally {
+    await node.service.stop();
+  }
+});
+
+Deno.test("MemberCheckInService: a lost join reply is replayed with the same joinId and joins as one member", async () => {
+  const store = new AtomicMemoryStore();
+  const hub = fastHub();
+  hub.dropReplies = 2;
+  const node = await memberNode(store, hub, { token: hub.mintToken() });
+  node.service.start();
+  try {
+    await waitFor(() => hub.checkIns.length >= 1, "a check-in");
+    assertEquals(hub.joins.length, 3);
+    assertEquals(new Set(hub.joinIds).size, 1);
+    const link = await node.links.readLink();
+    assertEquals(link.state, "joined");
+    assertEquals(
+      new Set(hub.checkIns.map((c) => c.memberId)),
+      new Set([link.memberId!]),
+    );
+  } finally {
+    await node.service.stop();
+  }
+});
+
+Deno.test("MemberCheckInService: shutdown mid-join keeps the joinId, and the next start replays it", async () => {
+  const store = new AtomicMemoryStore();
+  const hub = fastHub();
+  const token = hub.mintToken();
+  hub.dropReplies = 1;
+  const first = await memberNode(store, hub, { token });
+  first.service.start();
+  await waitFor(() => hub.joins.length >= 1, "a join");
+  await first.service.stop();
+  const left = await first.links.readLink();
+  assertEquals(left.state, "joining");
+  assertEquals(left.joinId, hub.joinIds[0]);
+
+  const second = await memberNode(store, hub, { token });
+  second.service.start();
+  try {
+    await waitFor(() => hub.checkIns.length >= 1, "a check-in");
+    assertEquals(new Set(hub.joinIds).size, 1);
+    assertEquals((await second.links.readLink()).state, "joined");
+  } finally {
+    await second.service.stop();
+  }
+});
+
+Deno.test("MemberCheckInService: a node taking over the join replays the joinId already in the shared link", async () => {
+  const store = new AtomicMemoryStore();
+  const hub = fastHub();
+  const token = hub.mintToken();
+  hub.dropReplies = 1;
+  const first = await memberNode(store, hub, { token });
+  first.service.start();
+  await waitFor(() => hub.joins.length >= 1, "a join");
+  await first.service.stop();
+  const second = await memberNode(store, hub, { token });
+  second.service.start();
+  try {
+    await waitFor(() => hub.checkIns.length >= 1, "a check-in");
+    assertEquals(hub.joinIds.length >= 2, true);
+    assertEquals(new Set(hub.joinIds).size, 1);
+  } finally {
+    await second.service.stop();
+  }
+});
+
+Deno.test("MemberCheckInService: a refused replay ends unjoined after one attempt, even with a recorded reply", async () => {
+  for (const recorded of [false, true]) {
+    const store = new AtomicMemoryStore();
+    const hub = fastHub();
+    const links = (await memberNode(store, hub)).links;
+    let joining = (await links.readLink()).beginJoin(
+      "https://hub.example.com",
+      crypto.randomUUID(),
+    );
+    if (recorded) {
+      joining = joining.received({
+        memberId: crypto.randomUUID(),
+        memberName: "edge",
+        hubName: "central",
+        joinedAt: new Date().toISOString(),
+      });
+    }
+    await links.writeLink(joining);
+    const node = await memberNode(store, hub, { token: "edge.expired" });
+    node.service.start();
+    try {
+      await waitFor(
+        async () => (await instanceOf(node))?.result === "join_refused",
+        "join refused",
+      );
+      await ticks(node, 3);
+      assertEquals(hub.joins.length, 1);
+      assertEquals(hub.joinIds[0], joining.joinId);
+      const link = await node.links.readLink();
+      assertEquals(link.state, "unjoined");
+      assertEquals(link.joinId, null);
+    } finally {
+      await node.service.stop();
+    }
+  }
+});
+
+Deno.test("MemberCheckInService: a 409 on join abandons the joinId", async () => {
+  const store = new AtomicMemoryStore();
+  const hub = fastHub();
+  hub.scriptedJoins.push({ kind: "conflict", error: "name_taken" });
+  const node = await memberNode(store, hub, { token: hub.mintToken() });
+  node.service.start();
+  try {
+    await waitFor(
+      async () => (await instanceOf(node))?.result === "name_taken",
+      "name taken",
+    );
+    assertEquals((await node.links.readLink()).state, "unjoined");
+  } finally {
+    await node.service.stop();
+  }
+});
+
+Deno.test("MemberCheckInService: neither the token nor the joinId reaches a log line", async () => {
+  const records: string[] = [];
+  await configure({
+    sinks: {
+      capture: (record: LogRecord) => records.push(JSON.stringify(record)),
+    },
+    loggers: [{
+      category: ["serve"],
+      lowestLevel: "debug",
+      sinks: ["capture"],
+    }],
+    reset: true,
+  });
+  try {
+    const store = new AtomicMemoryStore();
+    const hub = fastHub();
+    hub.dropReplies = 1;
+    const token = hub.mintToken();
+    const node = await memberNode(store, hub, { token });
+    node.service.start();
+    try {
+      await waitFor(() => hub.checkIns.length >= 1, "a check-in");
+    } finally {
+      await node.service.stop();
+    }
+    const text = records.join("\n");
+    assert(text.includes("retrying the same join"));
+    assert(!text.includes(hub.joinIds[0]));
+    assert(!text.includes(token));
+  } finally {
+    await reset();
   }
 });

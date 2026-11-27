@@ -132,6 +132,7 @@ Deno.test({
 
       const joined = await hub.join(
         created.joinToken,
+        crypto.randomUUID(),
         Fingerprint.create(sampleFingerprintProps()),
       );
       assertEquals(joined.kind, "joined");

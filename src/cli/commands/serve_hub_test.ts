@@ -104,7 +104,7 @@ async function joined(dir: string): Promise<Member> {
   const links = new HubLinkStore(store);
   const credential = MemberCredential.issue(crypto.randomUUID());
   await links.writeLink(
-    HubLink.unjoined().beginJoin(HUB).received({
+    HubLink.unjoined().beginJoin(HUB, crypto.randomUUID()).received({
       memberId: credential.memberId,
       memberName: "edge",
       hubName: "central",

@@ -63,6 +63,7 @@ function joinBody(joinToken: unknown, extra: Record<string, unknown> = {}) {
     capabilities: [],
     fingerprint: sampleFingerprintProps(),
     joinToken,
+    joinId: crypto.randomUUID(),
     ...extra,
   };
 }
@@ -180,6 +181,102 @@ Deno.test("handleFederationRequest: every refused join token gets the same 401 b
     bodies.add(text);
   }
   assertEquals(bodies.size, 1);
+});
+
+Deno.test("handleFederationRequest: a join without a lower-case UUID joinId gives 400 and is not a failed attempt", async () => {
+  resetRateLimitState();
+  const t = createTestHub();
+  const { plaintext } = await t.hub.createToken("edge-1");
+  const ip = address();
+  const id = crypto.randomUUID();
+  for (const joinId of [undefined, 42, "x", id.toUpperCase()]) {
+    const response = await call(
+      t,
+      post(FEDERATION_JOIN_PATH, joinBody(plaintext, { joinId })),
+      ip,
+    );
+    assertEquals(response.status, 400);
+    assertEquals(await response.json(), {
+      error: "invalid_request",
+      message: "joinId: expected a lower-case UUID",
+    });
+  }
+  assertEquals(
+    checkFailedAttempts(failedAttemptKey(null, ip, "federation-join")).allowed,
+    true,
+  );
+  const token = t.store.json("federation/tokens/edge-1") as Record<
+    string,
+    unknown
+  >;
+  assertEquals(token.state, "unused");
+});
+
+Deno.test("handleFederationRequest: a replay with the same joinId replies as the first join did, with a new credential", async () => {
+  resetRateLimitState();
+  const t = createTestHub({ hubName: "central" });
+  const { plaintext } = await t.hub.createToken("edge-1");
+  const joinId = crypto.randomUUID();
+  const send = async () => {
+    const response = await call(
+      t,
+      post(FEDERATION_JOIN_PATH, joinBody(plaintext, { joinId })),
+      address(),
+    );
+    assertEquals(response.status, 200);
+    return await response.json() as Record<string, unknown>;
+  };
+  const first = await send();
+  const replay = await send();
+  assert(first.credential !== replay.credential);
+  const { credential: _a, ...firstRest } = first;
+  const { credential: _b, ...replayRest } = replay;
+  assertEquals(replayRest, firstRest);
+});
+
+Deno.test("handleFederationRequest: a refused replay is the same 401 as a made-up token and counts as a failed attempt", async () => {
+  resetRateLimitState();
+  const t = createTestHub();
+  const { plaintext } = await t.hub.createToken("edge-1");
+  const joinId = crypto.randomUUID();
+  const ip = address();
+  const first = await call(
+    t,
+    post(FEDERATION_JOIN_PATH, joinBody(plaintext, { joinId })),
+    ip,
+  );
+  assertEquals(first.status, 200);
+  await first.body?.cancel();
+  const refused = await call(
+    t,
+    post(FEDERATION_JOIN_PATH, joinBody(plaintext)),
+    ip,
+  );
+  const madeUp = await call(
+    t,
+    post(FEDERATION_JOIN_PATH, joinBody(`edge-1.${"A".repeat(43)}`)),
+    address(),
+  );
+  assertEquals(refused.status, 401);
+  assertEquals(await refused.text(), await madeUp.text());
+  await t.hub.removeMember("edge-1");
+  const afterRemove = await call(
+    t,
+    post(FEDERATION_JOIN_PATH, joinBody(plaintext, { joinId })),
+    ip,
+  );
+  assertEquals(afterRemove.status, 401);
+  await afterRemove.body?.cancel();
+  const key = failedAttemptKey(null, ip, "federation-join");
+  for (let i = 0; i < 3; i++) {
+    const again = await call(
+      t,
+      post(FEDERATION_JOIN_PATH, joinBody(plaintext)),
+      ip,
+    );
+    await again.body?.cancel();
+  }
+  assertEquals(checkFailedAttempts(key).allowed, false);
 });
 
 Deno.test("handleFederationRequest: a live member's name gives 409", async () => {

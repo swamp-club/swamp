@@ -58,6 +58,8 @@ function json(status: number, body: unknown, headers: HeadersInit = {}) {
   return new Response(JSON.stringify(body), { status, headers });
 }
 
+const JOIN_ID = crypto.randomUUID();
+
 function joinReply(memberId = crypto.randomUUID()) {
   const credential = MemberCredential.issue(memberId);
   return {
@@ -75,7 +77,7 @@ function joinReply(memberId = crypto.randomUUID()) {
 Deno.test("HubClient.join: posts the protocol body to the hub's join path, never following a redirect", async () => {
   const { body, credential } = joinReply();
   const { client, sent } = clientWith(() => json(200, body));
-  const outcome = await client.join("edge.secret", FINGERPRINT);
+  const outcome = await client.join("edge.secret", JOIN_ID, FINGERPRINT);
   assertEquals(outcome.kind, "ok");
   if (outcome.kind === "ok") {
     assertEquals(outcome.value.credential.toWire(), credential.toWire());
@@ -86,6 +88,7 @@ Deno.test("HubClient.join: posts the protocol body to the hub's join path, never
   assertEquals(new Headers(sent[0].init.headers).get("authorization"), null);
   assertEquals(JSON.parse(sent[0].init.body as string), {
     joinToken: "edge.secret",
+    joinId: JOIN_ID,
     fingerprint: FINGERPRINT.toJSON(),
     protocolVersion: 1,
     capabilities: [],
@@ -103,7 +106,7 @@ Deno.test("HubClient.join: a reply whose credential is malformed or names anothe
     ]
   ) {
     const { client } = clientWith(() => json(200, reply));
-    assertEquals(await client.join("t", FINGERPRINT), {
+    assertEquals(await client.join("t", JOIN_ID, FINGERPRINT), {
       kind: "rejected",
       status: 200,
     });
@@ -184,7 +187,9 @@ Deno.test("HubClient: a network error is unreachable", async () => {
   const { client } = clientWith(() => {
     throw new TypeError("connection refused");
   });
-  assertEquals(await client.join("t", FINGERPRINT), { kind: "unreachable" });
+  assertEquals(await client.join("t", JOIN_ID, FINGERPRINT), {
+    kind: "unreachable",
+  });
 });
 
 function hangingFetch(): typeof fetch {
@@ -200,15 +205,19 @@ Deno.test("HubClient: a hub that never answers times out as unreachable", async 
     fetch: hangingFetch(),
     timeoutMs: 10,
   });
-  assertEquals(await client.join("t", FINGERPRINT), { kind: "unreachable" });
+  assertEquals(await client.join("t", JOIN_ID, FINGERPRINT), {
+    kind: "unreachable",
+  });
 });
 
 Deno.test("HubClient.dispose: aborts a request in flight, and later calls stop at once", async () => {
   const client = new HubClient({ hubUrl: HUB, fetch: hangingFetch() });
-  const pending = client.join("t", FINGERPRINT);
+  const pending = client.join("t", JOIN_ID, FINGERPRINT);
   client.dispose();
   assertEquals(await pending, { kind: "stopped" });
-  assertEquals(await client.join("t", FINGERPRINT), { kind: "stopped" });
+  assertEquals(await client.join("t", JOIN_ID, FINGERPRINT), {
+    kind: "stopped",
+  });
 });
 
 Deno.test("HubClient: builds its own HTTP client only with CA roots, once, and closes it on dispose", async () => {
@@ -226,14 +235,14 @@ Deno.test("HubClient: builds its own HTTP client only with CA roots, once, and c
       },
     },
   );
-  await client.join("t", FINGERPRINT);
-  await client.join("t", FINGERPRINT);
+  await client.join("t", JOIN_ID, FINGERPRINT);
+  await client.join("t", JOIN_ID, FINGERPRINT);
   assertEquals(created, 1);
   assert(sent.every((s) => s.init.client === fake));
   client.dispose();
   assertEquals(closed, 1);
 
   const plain = clientWith(() => json(401, {}));
-  await plain.client.join("t", FINGERPRINT);
+  await plain.client.join("t", JOIN_ID, FINGERPRINT);
   assertEquals(plain.sent[0].init.client, undefined);
 });

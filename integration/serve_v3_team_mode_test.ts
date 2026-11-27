@@ -418,7 +418,12 @@ Deno.test("serve team mode: a gated hub applies a member's join and check-in sen
     const fingerprint = sampleFingerprintProps();
     const joined = await fetch(`${follower}/federation/v1/join`, {
       method: "POST",
-      body: JSON.stringify({ protocolVersion: 1, fingerprint, joinToken }),
+      body: JSON.stringify({
+        protocolVersion: 1,
+        fingerprint,
+        joinToken,
+        joinId: crypto.randomUUID(),
+      }),
     });
     assertEquals(joined.status, 200);
     const { memberId, credential } = await joined.json();
