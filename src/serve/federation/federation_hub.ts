@@ -244,6 +244,10 @@ export class FederationHub {
     return this.#tail.settled();
   }
 
+  now(): number {
+    return this.#now();
+  }
+
   async createToken(
     name: string,
     durationMs: number = DEFAULT_JOIN_TOKEN_DURATION_MS,

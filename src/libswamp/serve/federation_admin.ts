@@ -43,6 +43,8 @@ export interface FederationAdmin {
   removeMember(name: string): Promise<ServeMember>;
   /** last check-ins by memberId, or only that member's */
   sightings(memberId?: string): Promise<Map<string, MemberSighting[]>>;
+  /** the hub's clock, which a reply's relative times are read against */
+  now(): number;
 }
 
 export interface FederationAdminDeps {

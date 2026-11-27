@@ -24,7 +24,6 @@ import type { MemberData } from "../../libswamp/serve/member_get.ts";
 import type { ServeMemberRecord } from "../../domain/serve/serve_member.ts";
 import type { MemberLiveView } from "../../domain/serve/member_live_view.ts";
 import type { FingerprintRuntime } from "../../domain/serve/fingerprint.ts";
-import { formatDuration } from "./utils/duration_formatter.ts";
 import type { MemberTokenCreateData } from "../../libswamp/serve/member_token_create.ts";
 import type { MemberTokenListData } from "../../libswamp/serve/member_token_list.ts";
 import type { MemberTokenRevokeData } from "../../libswamp/serve/member_token_revoke.ts";
@@ -64,11 +63,32 @@ function table(
 // a serve from before the live view answers without it, so it may be missing
 type ReportedMember = ServeMemberRecord & { readonly live?: MemberLiveView };
 
+const UNITS: readonly [string, number][] = [
+  ["d", 24 * 60 * 60 * 1000],
+  ["h", 60 * 60 * 1000],
+  ["m", 60 * 1000],
+  ["s", 1000],
+];
+
+/** the largest whole unit: 2d, not 50h 3m 2s */
+function largestUnit(ms: number): string {
+  for (const [unit, size] of UNITS) {
+    if (ms >= size) return `${Math.floor(ms / size)}${unit}`;
+  }
+  return "0s";
+}
+
+// measured against the hub's clock, so the CLI's own clock skew never shows
 function lastSeen(iso: string | null, now: number): string {
   if (iso === null) return "-";
   const ageMs = now - Date.parse(iso);
-  if (ageMs < 1000) return "just now";
-  return `${formatDuration(Math.floor(ageMs / 1000) * 1000)} ago`;
+  if (Math.abs(ageMs) < 1000) return "just now";
+  return ageMs < 0 ? `in ${largestUnit(-ageMs)}` : `${largestUnit(ageMs)} ago`;
+}
+
+function clockOf(data: { readonly now?: string }, fallback: number): number {
+  const hubNow = data.now === undefined ? NaN : Date.parse(data.now);
+  return Number.isNaN(hubNow) ? fallback : hubNow;
 }
 
 function runtimeFacts(runtime: FingerprintRuntime | null): string {
@@ -160,11 +180,12 @@ export function renderMemberTokenRevoke(
 }
 
 export function renderMemberList(
-  data: { readonly members: readonly ReportedMember[] },
+  data: { readonly members: readonly ReportedMember[]; readonly now?: string },
   mode: OutputMode,
-  now: number = Date.now(),
+  localNow: number = Date.now(),
 ): void {
   if (mode === "json") return json(data);
+  const now = clockOf(data, localNow);
   if (data.members.length === 0) {
     writeOutput([
       "No members found.",
@@ -192,11 +213,12 @@ export function renderMemberList(
 }
 
 export function renderMemberGet(
-  data: { readonly member: ReportedMember },
+  data: { readonly member: ReportedMember; readonly now?: string },
   mode: OutputMode,
-  now: number = Date.now(),
+  localNow: number = Date.now(),
 ): void {
   if (mode === "json") return json(data);
+  const now = clockOf(data, localNow);
   const member = data.member;
   const f = member.fingerprint;
   const lines = [

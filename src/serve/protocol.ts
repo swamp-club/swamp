@@ -2520,10 +2520,13 @@ export interface FederationLinkGetResponse {
 
 export interface FederationMemberListResponse {
   members: ServeMemberLiveRecord[];
+  /** the hub's time when it answered; absent from a serve that predates it */
+  now?: string;
 }
 
 export interface FederationMemberGetResponse {
   member: ServeMemberLiveRecord;
+  now?: string;
 }
 
 /** remove answers with the record alone */
