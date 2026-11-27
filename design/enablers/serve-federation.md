@@ -57,6 +57,15 @@ running jobs on members, and a hub of hubs.
 8. Members own their data. Nothing a member stores is sent to the hub.
 9. The hub stores only hashes of join tokens, join ids and credentials. A member
    keeps its credential in its encrypted control-plane vault.
+10. **Strings from another serve are escaped at the terminal.** Every string a
+    member or the hub supplied passes through `escapeControlCharacters` before
+    log-mode output prints it (`serve member list`, `get` and `remove`,
+    `serve hub` and `serve hub forget`). Stored records keep the value exactly
+    as received, and join and check-in never refuse a value for a control
+    character. JSON output is left to `JSON.stringify`, which escapes C0
+    characters but not DEL or C1. No source scan enforces this, since a regex
+    cannot tell a remote string from a local one; the renderers' property test
+    is the guard.
 
 ## The experimental gate
 
