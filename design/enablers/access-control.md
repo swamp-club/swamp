@@ -2254,7 +2254,9 @@ who wants grants to bound runs turns on `--steps-require-explicit-grant`
 - The check rides on the run scope the vault rule uses, so it covers direct,
   scheduled, webhook and resumed runs, nested children, and steps placed on a
   worker (judged on serve before dispatch). A lane step is judged on its
-  authored behavior name, not the per-worker copy it runs as. A resume is held
+  authored behavior name, not the per-worker copy it runs as. A step that
+  names a behavior by id is judged on that behavior's name and tags, as a
+  served edit is. A resume is held
   to both the run's recorded principal and the resumer's grants; a run with no
   recorded principal, or a revoked token, is refused every step.
 - It is read at each step, so a reload applies to the next step of runs in
