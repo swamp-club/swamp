@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { getLogger } from "@logtape/logtape";
 import {
@@ -124,10 +124,14 @@ Deno.test("localAppDeps: a v2 custom datastore is sent to the server", async () 
         path,
         `${existing.trimEnd()}\ndatastore:\n  type: '${type}'\n  config:\n    bucket: b\n  managedConfig: true\n`,
       );
-      await assertRejects(
+      const error = await assertRejects(
         () => localAppDeps(dir, "log", getLogger(["test"])),
         UserError,
         "through the server",
+      );
+      assertStringIncludes(
+        error.message,
+        "may be kept in its shared control-plane store",
       );
     });
   } finally {
