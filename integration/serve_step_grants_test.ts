@@ -660,3 +660,148 @@ Deno.test({
       ctx: { detached: true },
     }),
 });
+
+Deno.test({
+  name:
+    "serve step grants: a type execution step naming a behavior by id is judged on that behavior's name",
+  ...SANITIZE,
+  fn: () =>
+    withVaultScopeFixture(async (f) => {
+      await readers(f);
+      stepsRequireGrant(f);
+      const other = await f.repo.repoContext.definitionRepo.findByNameGlobal(
+        "other-model",
+      );
+      assert(other);
+      const run = await runAs(
+        f,
+        workflowOf(
+          "probe-by-id-wf",
+          step(
+            "direct",
+            StepTask.directExecution(
+              f.type.normalized,
+              other.definition.id,
+              "read",
+              { value: "ran-other-by-id" },
+            ),
+          ),
+        ),
+        U,
+      );
+      assertStringIncludes(
+        stepOf(run, "main", "direct").error ?? "",
+        "explicitly denied 'run' on model:other-model",
+      );
+      assertEquals(f.seen, []);
+    }, {
+      grants: [
+        ...probeGrants(),
+        grant("user:u", "model", "*", ["read", "run"]),
+        grant("user:u", "model", "other-model", ["read", "run"], "deny"),
+      ],
+    }),
+});
+
+Deno.test({
+  name:
+    "serve step grants: a type execution step naming a behavior by id is judged on that behavior's tags",
+  ...SANITIZE,
+  fn: () =>
+    withVaultScopeFixture(async (f) => {
+      stepsRequireGrant(f);
+      const tagged = await saveDefinition(f, "tagged-model", {
+        tags: { team: "ops" },
+        methods: { read: { arguments: { value: "ran-tagged" } } },
+      });
+      const run = await runAs(
+        f,
+        workflowOf(
+          "probe-tagged-wf",
+          step(
+            "direct",
+            StepTask.directExecution(
+              f.type.normalized,
+              tagged.id,
+              "read",
+              { value: "ran-tagged-by-id" },
+            ),
+          ),
+        ),
+        U,
+      );
+      assertStringIncludes(
+        stepOf(run, "main", "direct").error ?? "",
+        "explicitly denied 'run' on model:tagged-model",
+      );
+      assertEquals(f.seen, []);
+    }, {
+      grants: [
+        ...probeGrants(),
+        grant("user:u", "model", "*", ["read", "run"]),
+        {
+          ...grant("user:u", "model", "*", ["run"], "deny"),
+          condition: 'tags.team == "ops"',
+        },
+      ],
+    }),
+});
+
+Deno.test({
+  name:
+    "serve step grants: a type execution step spelling its type with @ is judged on the behavior the resolver adopts",
+  ...SANITIZE,
+  fn: () =>
+    withVaultScopeFixture(async (f) => {
+      await readers(f);
+      stepsRequireGrant(f);
+      const tagged = await saveDefinition(f, "tagged-model", {
+        tags: { team: "ops" },
+        methods: { read: { arguments: { value: "ran-tagged" } } },
+      });
+      const other = await f.repo.repoContext.definitionRepo.findByNameGlobal(
+        "other-model",
+      );
+      assert(other);
+      // registered without @, which the resolver strips to adopt
+      const atType = `@${f.type.normalized}`;
+      const run = await runAs(
+        f,
+        workflowOf(
+          "probe-at-wf",
+          step(
+            "by-id",
+            StepTask.directExecution(atType, other.definition.id, "read", {
+              value: "ran-other-by-id",
+            }),
+          ),
+          step(
+            "by-name",
+            StepTask.directExecution(atType, tagged.name, "read", {
+              value: "ran-tagged-by-name",
+            }),
+          ),
+        ),
+        U,
+      );
+      assertStringIncludes(
+        stepOf(run, "main", "by-id").error ?? "",
+        "explicitly denied 'run' on model:other-model",
+      );
+      assertStringIncludes(
+        stepOf(run, "main", "by-name").error ?? "",
+        "explicitly denied 'run' on model:tagged-model",
+      );
+      assertEquals(f.seen, []);
+    }, {
+      grants: [
+        ...probeGrants(),
+        grant("user:u", "model", "*", ["read", "run"]),
+        grant("user:u", "model", "other-model", ["read", "run"], "deny"),
+        {
+          ...grant("user:u", "model", "*", ["run"], "deny"),
+          condition: 'tags.team == "ops"',
+        },
+      ],
+    }),
+});

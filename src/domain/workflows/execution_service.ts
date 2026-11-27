@@ -2077,17 +2077,23 @@ export class DefaultStepExecutor implements StepExecutor {
             : undefined,
         )
         : task.modelName;
-      // judged on the authored name, before the resolver can save a definition
+      // judged on the definition the resolver would adopt, matched by name or
+      // id, before it can save one; one of another type is refused there
       const authoredName = task.modelName;
-      await checkStepAccess(async () => ({
-        kind: "behavior",
-        name: authoredName,
-        modelType: ModelType.create(typeArg).normalized,
-        tags: (await findDefinitionByIdOrName(definitionRepo, authoredName))
-          ?.definition.tags ?? {},
-        methodName,
-        typeExecution: true,
-      }));
+      await checkStepAccess(async () => {
+        const found = await findDefinitionByIdOrName(
+          definitionRepo,
+          authoredName,
+        );
+        return {
+          kind: "behavior",
+          name: found?.definition.name ?? authoredName,
+          modelType: ModelType.create(typeArg).normalized,
+          tags: found?.definition.tags ?? {},
+          methodName,
+          typeExecution: true,
+        };
+      });
       task = { ...task, ...inlined.data };
       authoredForDirect = inlined.authored;
       for (const field of ["inputs", "globalArgs"] as const) {
