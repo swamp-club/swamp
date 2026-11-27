@@ -1517,40 +1517,34 @@ export class DefaultWorkflowValidationService
     const requiredInputs = schema?.required ?? [];
     const inputKeys = new Set(Object.keys(inputs ?? {}));
     const missing = requiredInputs.filter((arg) => !inputKeys.has(arg));
-    if (missing.length > 0) {
-      return [
-        WorkflowValidationResult.fail(
-          checkName,
-          `Missing required workflow inputs: ${missing.join(", ")}`,
-        ),
+    const service = new InputValidationService();
+    // the same key check the run applies when it hands inputs to the child,
+    // reported beside a missing input so an args:json key explains a missing args
+    const undeclared = schema && inputs
+      ? service.undeclaredInputs(inputs, schema)
+      : [];
+    if (missing.length > 0 || undeclared.length > 0) {
+      const problems = [
+        ...(missing.length > 0
+          ? [`Missing required workflow inputs: ${missing.join(", ")}`]
+          : []),
+        ...undeclared.map((e) => e.message),
       ];
+      return [WorkflowValidationResult.fail(checkName, problems.join("; "))];
     }
 
-    // the same key check the run applies when it hands inputs to the child
-    if (schema && inputs) {
-      const service = new InputValidationService();
-      const undeclared = service.undeclaredInputs(inputs, schema);
-      if (undeclared.length > 0) {
-        return [
-          WorkflowValidationResult.fail(
-            checkName,
-            undeclared.map((e) => e.message).join("; "),
-          ),
-        ];
-      }
-      const ignored = schema.additionalProperties === undefined
-        ? [...inputKeys].filter((key) => !service.declaresInput(key, schema))
-        : [];
-      if (ignored.length > 0) {
-        return [
-          WorkflowValidationResult.warning(
-            checkName,
-            `Workflow "${nested.name}" declares no input(s) named ${
-              ignored.join(", ")
-            }`,
-          ),
-        ];
-      }
+    const ignored = schema && schema.additionalProperties === undefined
+      ? [...inputKeys].filter((key) => !service.declaresInput(key, schema))
+      : [];
+    if (ignored.length > 0) {
+      return [
+        WorkflowValidationResult.warning(
+          checkName,
+          `Passes input(s) workflow "${nested.name}" does not declare: ${
+            ignored.join(", ")
+          } (the child still receives them)`,
+        ),
+      ];
     }
 
     return [WorkflowValidationResult.pass(checkName)];

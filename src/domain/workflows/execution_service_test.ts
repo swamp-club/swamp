@@ -1920,23 +1920,28 @@ async function runNestedHandoff(
       ],
     });
     await workflowRepo.save(parent);
-    const service = new WorkflowExecutionService(
-      workflowRepo,
-      runRepo,
-      tempDir,
-      executor,
-      undefined,
-      new CatalogStore(join(tempDir, "_catalog.db")),
-    );
-    for await (const event of service.run(parent.name)) {
-      if (event.kind === "step_failed" && event.stepId === "call-child") {
-        failures.push({
-          error: event.error,
-          allowedFailure: event.allowedFailure,
-        });
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    try {
+      const service = new WorkflowExecutionService(
+        workflowRepo,
+        runRepo,
+        tempDir,
+        executor,
+        undefined,
+        catalogStore,
+      );
+      for await (const event of service.run(parent.name)) {
+        if (event.kind === "step_failed" && event.stepId === "call-child") {
+          failures.push({
+            error: event.error,
+            allowedFailure: event.allowedFailure,
+          });
+        }
       }
+      childRan = executor.executedSteps.includes("job1/child-step");
+    } finally {
+      catalogStore.close();
     }
-    childRan = executor.executedSteps.includes("job1/child-step");
   });
   return { failures, childRan };
 }

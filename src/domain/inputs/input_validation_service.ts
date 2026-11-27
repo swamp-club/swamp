@@ -52,7 +52,7 @@ export function jsonSuffixedInputBase(
 
 export function jsonSuffixHint(base: string): string {
   return `the ${JSON_SUFFIX} suffix only works in command-line arguments; ` +
-    `give ${base} its value directly, as a YAML mapping or list`;
+    `elsewhere give ${base} its value directly, under its own name`;
 }
 
 /**

@@ -1470,7 +1470,7 @@ Deno.test("validateStepInputs: warns on an undeclared key for a nested workflow 
   assertEquals(result?.warning, true);
   assertStringIncludes(
     result?.error ?? "",
-    'Workflow "child" declares no input(s) named extra',
+    'Passes input(s) workflow "child" does not declare: extra (the child still receives them)',
   );
 });
 
@@ -1486,6 +1486,26 @@ Deno.test("validateStepInputs: no warning for undeclared keys to a nested workfl
     assertEquals(result?.passed, true);
     assertEquals(result?.warning, false);
   }
+});
+
+Deno.test("validateStepInputs: a :json key for a required input is explained beside the missing input", async () => {
+  const result = await nestedInputResult(
+    { ...objectArgsChild, required: ["args"] },
+    { operation: "x", "args:json": "{}" },
+  );
+  assertEquals(result?.passed, false);
+  assertStringIncludes(
+    result?.error ?? "",
+    "Missing required workflow inputs: args",
+  );
+  assertStringIncludes(result?.error ?? "", "give args its value directly");
+});
+
+Deno.test("validateStepInputs: warns on every key to a nested workflow with an empty input schema", async () => {
+  const result = await nestedInputResult({}, { a: 1, b: 2 });
+  assertEquals(result?.passed, true);
+  assertEquals(result?.warning, true);
+  assertStringIncludes(result?.error ?? "", "does not declare: a, b");
 });
 
 Deno.test("validateStepInputs: declared keys to a nested workflow without required inputs pass", async () => {
