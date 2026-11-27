@@ -1012,9 +1012,14 @@ task:
   workflowIdOrName: child-workflow
   inputs: # Optional: pass inputs to the child workflow
     key: value
+    config: # objects and lists as YAML, never `config:json: '{...}'`
+      port: 8080
 ```
 
-Nested workflows have a max depth of 10 and cycle detection is enforced.
+Nested workflows have a max depth of 10 and cycle detection is enforced. Input
+keys are checked against the child's input schema before it starts: a
+`name:json` key is refused (the suffix only works with `--input`), as is any
+undeclared key when the child sets `additionalProperties: false`.
 
 **`manual_approval`** - Suspend workflow and wait for operator approval:
 

@@ -132,6 +132,33 @@ Deno.test("routeInputsBySchema: rejects unknown keys", () => {
   }
 });
 
+Deno.test("routeInputsBySchema: a :json key for a valid input gets the command-line hint, other unknown keys do not", () => {
+  const modelDef = createTestModelDef(
+    z.object({ region: z.string() }),
+    { run: z.object({ env: z.record(z.string(), z.string()) }) },
+  );
+
+  const result = routeInputsBySchema(
+    { "env:json": '{"TOKEN":"hunter2"}', "region:json": '"x"', bogus: "v" },
+    "run",
+    modelDef,
+  );
+
+  assertEquals("error" in result, true);
+  if ("error" in result) {
+    const message = result.error.message;
+    assertStringIncludes(
+      message,
+      "Unknown input(s): env:json, region:json, bogus",
+    );
+    assertStringIncludes(message, "env:json: the :json suffix only works");
+    assertStringIncludes(message, "give env its value directly");
+    assertStringIncludes(message, "give region its value directly");
+    assertEquals(message.includes("give bogus"), false);
+    assertEquals(message.includes("hunter2"), false);
+  }
+});
+
 Deno.test("routeInputsBySchema: returns error for unknown method", () => {
   const modelDef = createTestModelDef(
     z.object({ region: z.string() }),

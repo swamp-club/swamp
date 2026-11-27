@@ -8464,6 +8464,31 @@ export class WorkflowExecutionService {
     }));
     if (childWorkflow?.inputs) {
       const validationService = new InputValidationService();
+      const undeclared = typeof evaluatedInputs === "object" &&
+          evaluatedInputs !== null && !Array.isArray(evaluatedInputs)
+        ? validationService.undeclaredInputs(
+          evaluatedInputs,
+          childWorkflow.inputs,
+        )
+        : [];
+      if (undeclared.length > 0) {
+        const errorMessage =
+          `Inputs for workflow "${childWorkflow.name}" do not match its input schema: ` +
+          undeclared.map((e) => e.message).join("; ");
+        stepRun.fail(errorMessage);
+        if (allowFailure) {
+          stepRun.markAllowedFailure();
+        }
+        yield {
+          kind: "step_failed",
+          jobId: job.name,
+          stepId: stepName,
+          runId: run.id,
+          error: errorMessage,
+          allowedFailure: allowFailure || undefined,
+        };
+        return;
+      }
       evaluatedInputs = validationService.applyDefaults(
         evaluatedInputs ?? {},
         childWorkflow.inputs,

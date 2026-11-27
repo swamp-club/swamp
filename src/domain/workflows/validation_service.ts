@@ -32,6 +32,7 @@ import {
 import { isEnrollmentTokenType } from "../models/worker/enrollment_token_model.ts";
 import { describePlacement } from "../remote/scheduler.ts";
 import { createWorkflowId } from "./workflow_id.ts";
+import { InputValidationService } from "../inputs/input_validation_service.ts";
 import { schemaExpressions } from "./signal_wait.ts";
 import {
   CyclicDependencyError,
@@ -1512,11 +1513,8 @@ export class DefaultWorkflowValidationService
       ];
     }
 
-    const requiredInputs = nested.inputs?.required ?? [];
-    if (requiredInputs.length === 0) {
-      return [WorkflowValidationResult.pass(checkName)];
-    }
-
+    const schema = nested.inputs;
+    const requiredInputs = schema?.required ?? [];
     const inputKeys = new Set(Object.keys(inputs ?? {}));
     const missing = requiredInputs.filter((arg) => !inputKeys.has(arg));
     if (missing.length > 0) {
@@ -1526,6 +1524,33 @@ export class DefaultWorkflowValidationService
           `Missing required workflow inputs: ${missing.join(", ")}`,
         ),
       ];
+    }
+
+    // the same key check the run applies when it hands inputs to the child
+    if (schema && inputs) {
+      const service = new InputValidationService();
+      const undeclared = service.undeclaredInputs(inputs, schema);
+      if (undeclared.length > 0) {
+        return [
+          WorkflowValidationResult.fail(
+            checkName,
+            undeclared.map((e) => e.message).join("; "),
+          ),
+        ];
+      }
+      const ignored = schema.additionalProperties === undefined
+        ? [...inputKeys].filter((key) => !service.declaresInput(key, schema))
+        : [];
+      if (ignored.length > 0) {
+        return [
+          WorkflowValidationResult.warning(
+            checkName,
+            `Workflow "${nested.name}" declares no input(s) named ${
+              ignored.join(", ")
+            }`,
+          ),
+        ];
+      }
     }
 
     return [WorkflowValidationResult.pass(checkName)];

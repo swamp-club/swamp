@@ -33,6 +33,28 @@ export interface InputValidationResult {
   errors: InputValidationError[];
 }
 
+const JSON_SUFFIX = ":json";
+
+/**
+ * the input a `name:json` key was meant for: `:json` is parsed only from
+ * command-line arguments, so anywhere else the key arrives verbatim
+ */
+export function jsonSuffixedInputBase(
+  key: string,
+  isInput: (name: string) => boolean,
+): string | undefined {
+  if (!key.endsWith(JSON_SUFFIX) || key.length <= JSON_SUFFIX.length) {
+    return undefined;
+  }
+  const base = key.slice(0, -JSON_SUFFIX.length);
+  return isInput(base) ? base : undefined;
+}
+
+export function jsonSuffixHint(base: string): string {
+  return `the ${JSON_SUFFIX} suffix only works in command-line arguments; ` +
+    `give ${base} its value directly, as a YAML mapping or list`;
+}
+
 /**
  * under serve's untrusted argument policy each array and object walk stops
  * after its first failing entry, so an oversized remote input cannot collect
@@ -87,27 +109,41 @@ export class InputValidationService {
   ): InputValidationError[] {
     const errors: InputValidationError[] = [];
 
-    const properties = schema.properties ?? schema;
-
     for (const [key, value] of Object.entries(inputs)) {
-      // Own properties only: an input named after an Object.prototype member
-      // (constructor, __proto__) is not a declared input.
-      const propSchema = Object.hasOwn(properties, key)
-        ? properties[key] as JsonSchemaProperty | undefined
-        : undefined;
+      const propSchema = declaredProperty(schema, key);
       if (propSchema) {
         const propErrors = this.validateProperty(key, value, propSchema);
         for (const error of propErrors) errors.push(error);
-      } else if (schema.additionalProperties === false) {
-        errors.push({
-          path: key,
-          message: `${key} is not a valid input property`,
-        });
+      } else {
+        const error = undeclaredKeyError(key, schema);
+        if (error) errors.push(error);
       }
       if (errors.length > 0 && stopsAtFirstFailingArgument()) break;
     }
 
     return errors;
+  }
+
+  /**
+   * judges keys only: values handed to a nested workflow can still be
+   * expressions the child resolves, which a type check would refuse
+   */
+  undeclaredInputs(
+    inputs: Record<string, unknown>,
+    schema: InputsSchema,
+  ): InputValidationError[] {
+    const errors: InputValidationError[] = [];
+    for (const key of Object.keys(inputs)) {
+      if (declaredProperty(schema, key)) continue;
+      const error = undeclaredKeyError(key, schema);
+      if (error) errors.push(error);
+      if (errors.length > 0 && stopsAtFirstFailingArgument()) break;
+    }
+    return errors;
+  }
+
+  declaresInput(key: string, schema: InputsSchema): boolean {
+    return declaredProperty(schema, key) !== undefined;
   }
 
   getMissingRequiredInputs(
@@ -357,4 +393,38 @@ export class InputValidationService {
 
     return errors;
   }
+}
+
+function declaredProperty(
+  schema: InputsSchema,
+  key: string,
+): JsonSchemaProperty | undefined {
+  const properties = schema.properties ?? schema;
+  // Own properties only: an input named after an Object.prototype member
+  // (constructor, __proto__) is not a declared input.
+  const propSchema = Object.hasOwn(properties, key)
+    ? properties[key] as JsonSchemaProperty | undefined
+    : undefined;
+  return propSchema || undefined;
+}
+
+// names the key, never its value: a value meant as JSON can carry credentials
+function undeclaredKeyError(
+  key: string,
+  schema: InputsSchema,
+): InputValidationError | undefined {
+  const base = jsonSuffixedInputBase(
+    key,
+    (name) => declaredProperty(schema, name) !== undefined,
+  );
+  if (base !== undefined) {
+    return {
+      path: key,
+      message: `${key} is not an input: ${jsonSuffixHint(base)}`,
+    };
+  }
+  if (schema.additionalProperties === false) {
+    return { path: key, message: `${key} is not a valid input property` };
+  }
+  return undefined;
 }
