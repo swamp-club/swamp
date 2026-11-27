@@ -40,7 +40,9 @@ type AnyOptions = any;
 
 export const serveHubForgetCommand = new Command()
   .name("forget")
-  .description("Forget this serve's hub link and member credential")
+  .description(
+    "Forget this serve's hub link and member credential, so it can join a hub again",
+  )
   .example(
     "Forget the hub link (stop serve first: forget is refused while it runs)",
     "swamp serve hub forget --yes",

@@ -48,6 +48,7 @@ function objectOf<T extends z.ZodRawShape>(shape: T, mode: ObjectMode) {
   }
 }
 
+// adding a field is an architecture decision: the allowlist is the contract
 function fingerprintSchema(mode: ObjectMode) {
   return objectOf({
     swampVersion: z.string(),
@@ -81,7 +82,6 @@ function fingerprintSchema(mode: ObjectMode) {
   }, mode);
 }
 
-// adding a field is an architecture decision: the allowlist is the contract
 export const FingerprintSchema = fingerprintSchema("strict");
 
 /** what a hub accepts from a member: a newer member's unknown fields are dropped, never stored */
@@ -142,13 +142,11 @@ export class Fingerprint {
     return Fingerprint.create(json);
   }
 
-  /** a member's report: fields outside this hub's contract are dropped */
   static fromWire(input: unknown): Fingerprint {
     const props = normalized(FingerprintWireSchema.parse(input));
     return new Fingerprint(props, props);
   }
 
-  /** a stored record's fingerprint: unknown fields are kept for the rewrite, and read by nothing */
   static fromRecord(input: unknown): Fingerprint {
     const stored = FingerprintRecordSchema.parse(input);
     return new Fingerprint(

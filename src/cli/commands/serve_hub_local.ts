@@ -144,7 +144,7 @@ async function openHubLinkReading(
   };
 }
 
-/** a running serve is refused before the repository is opened to write, so it never meets the writer's lock */
+/** where there is a writer lease, a running serve is refused before the open, so it never meets the lock */
 export async function openLocalHubLinkForForget(
   options: LocalMemberOptions,
 ): Promise<{ links: HubLinkStore; credentials: MemberCredentialVault }> {

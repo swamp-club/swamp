@@ -420,6 +420,8 @@ export class FederationHub {
       return { kind: "invalid-token" };
     }
     const credential = await this.#issueCredential(name, memberId);
+    // a join whose admittedAt write failed gets it now
+    await this.#markAdmitted(name, now);
     return {
       kind: "joined",
       memberId,

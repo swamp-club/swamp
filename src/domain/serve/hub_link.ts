@@ -72,10 +72,9 @@ const UNJOINED: HubLinkProps = {
 };
 
 /**
- * a member's link to its one hub; a joining link holds its joinId, and a joined
- * one keeps it until a check-in confirms the stored credential, so a node whose
- * credential a stalled node overwrote can replay the join once. Once settled,
- * only a joined or mismatched link holds a credential
+ * a joined link keeps its joinId until a check-in confirms the stored credential,
+ * so an overwritten one is healed by one replay; once settled, only a joined or
+ * mismatched link holds a credential
  */
 export class HubLink {
   private constructor(private readonly props: HubLinkProps) {}
@@ -215,7 +214,6 @@ export class HubLink {
     return new HubLink({ ...this.props, joinId: null });
   }
 
-  /** a joined link whose join may still be replayed */
   get replayable(): boolean {
     return this.props.state === "joined" && this.props.joinId !== null;
   }

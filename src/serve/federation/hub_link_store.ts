@@ -56,7 +56,7 @@ function instanceKey(instanceId: string): string {
   return `${HUB_LINK_INSTANCES_PREFIX}${InstanceId.create(instanceId).value}`;
 }
 
-/** a member's link records in its control-plane store; only a joining link holds its joinId */
+/** a member's link records in its control-plane store; only a joining or joined link holds its joinId */
 export class HubLinkStore {
   readonly #store: ControlPlaneStore;
   readonly #now: () => number;
@@ -143,7 +143,7 @@ export class HubLinkStore {
     const stale = current === undefined ||
       this.#now() - Date.parse(current.claimedAt) > JOIN_CLAIM_STALE_MS;
     if (!stale) return false;
-    // delete only the claim judged stale: one another node took over meanwhile stays
+    // the re-read narrows, but does not close, the window for deleting another node's takeover
     const again = await this.#store.get(JOIN_CLAIM_KEY);
     if (again === null || !sameBytes(again, seen)) return false;
     await this.#store.delete(JOIN_CLAIM_KEY);
@@ -152,7 +152,6 @@ export class HubLinkStore {
     return (await this.#readClaim())?.instanceId === id;
   }
 
-  /** whether this instance still holds the join claim, checked before the hub is called */
   async holdsJoin(instanceId: string): Promise<boolean> {
     return (await this.#readClaim())?.instanceId ===
       InstanceId.create(instanceId).value;

@@ -28,6 +28,7 @@ import {
 import type { RepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
+import { resolveEffectiveVaultsDir } from "../../infrastructure/persistence/paths.ts";
 import { VERSION } from "../../infrastructure/runtime/build_info.ts";
 import { createLibSwampContext } from "../../libswamp/context.ts";
 import { userErrorFromSwampError } from "../../libswamp/errors.ts";
@@ -54,12 +55,12 @@ export interface StaticFingerprintFacts {
 
 /**
  * the reads behind a fingerprint's static fields, kept until settings reload
- * (a new settings object) or the lockfile changes; pool and runtime fields are
- * read every time
+ * (a new settings object), the lockfile changes or a vault type is added; pool
+ * and runtime fields are read every time
  */
 export class FingerprintFactsCache {
   #settings: MergedServeOptions | undefined;
-  #lockfileMtime: number | null | undefined;
+  #mtimes: string | undefined;
   #facts: Promise<StaticFingerprintFacts> | undefined;
 
   async facts(
@@ -67,13 +68,17 @@ export class FingerprintFactsCache {
     read: () => Promise<StaticFingerprintFacts>,
   ): Promise<StaticFingerprintFacts> {
     const settings = sources.settings();
-    const mtime = await lockfileMtime(sources.lockfilePath);
+    // a vault type is a directory under the vaults dir, so adding one moves its mtime
+    const mtimes = JSON.stringify([
+      await mtimeOf(sources.lockfilePath),
+      await mtimeOf(resolveEffectiveVaultsDir(sources.repoDir)),
+    ]);
     if (
       this.#facts === undefined || settings !== this.#settings ||
-      mtime !== this.#lockfileMtime
+      mtimes !== this.#mtimes
     ) {
       this.#settings = settings;
-      this.#lockfileMtime = mtime;
+      this.#mtimes = mtimes;
       this.#facts = read();
     }
     const facts = this.#facts;
@@ -87,7 +92,7 @@ export class FingerprintFactsCache {
   }
 }
 
-async function lockfileMtime(path: string): Promise<number | null> {
+async function mtimeOf(path: string): Promise<number | null> {
   try {
     return (await Deno.stat(path)).mtime?.getTime() ?? null;
   } catch {

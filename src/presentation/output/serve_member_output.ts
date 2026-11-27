@@ -78,14 +78,15 @@ function largestUnit(ms: number): string {
   return "0s";
 }
 
-// measured against the hub's clock, so the CLI's own clock skew never shows
 function lastSeen(iso: string | null, now: number): string {
   if (iso === null) return "-";
   const ageMs = now - Date.parse(iso);
+  if (Number.isNaN(ageMs)) return "-";
   if (Math.abs(ageMs) < 1000) return "just now";
   return ageMs < 0 ? `in ${largestUnit(-ageMs)}` : `${largestUnit(ageMs)} ago`;
 }
 
+// the hub's clock, so the CLI's own clock skew never shows; a serve that predates now falls back to ours
 function clockOf(data: { readonly now?: string }, fallback: number): number {
   const hubNow = data.now === undefined ? NaN : Date.parse(data.now);
   return Number.isNaN(hubNow) ? fallback : hubNow;

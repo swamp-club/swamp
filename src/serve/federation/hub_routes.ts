@@ -206,7 +206,6 @@ async function readFederationBody(req: Request): Promise<ParsedBody> {
 function fingerprintOf(
   body: Record<string, unknown>,
 ): { ok: true; fingerprint: Fingerprint } | { ok: false; response: Response } {
-  // a newer member's extra fields are dropped here, so they are never stored
   const parsed = parseUntrusted(FingerprintWireSchema, body.fingerprint);
   if (!parsed.success) {
     return {

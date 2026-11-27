@@ -103,7 +103,7 @@ export class MemberCheckInService {
   #intervalSeconds = DEFAULT_CHECK_IN_INTERVAL_SECONDS;
   #lastLogged: CheckInResult | "joined" | undefined;
   #joinRetryLogged = false;
-  /** the credential this node's own replay got, which is never replayed again */
+  /** the credential this node's own replay got: a 401 on it starts no further replay */
   #rejoined: MemberCredential | undefined;
 
   constructor(options: MemberCheckInServiceOptions) {
@@ -446,7 +446,6 @@ export class MemberCheckInService {
     }
   }
 
-  // another node of this member stored a newer credential: check in with it
   async #storedReplacement(
     credential: MemberCredential,
   ): Promise<Step | undefined> {
@@ -461,7 +460,7 @@ export class MemberCheckInService {
   }
 
   // a stalled node stored a credential the hub had already replaced: the join
-  // replays once with the stored joinId; undefined when the hub refuses it
+  // replays once with the stored joinId; undefined sends the caller on to refuse
   async #rejoin(link: HubLink): Promise<Step | undefined> {
     const token = await (this.#options.readJoinToken ?? readJoinTokenFile)(
       this.#options.joinTokenFile!,
@@ -509,7 +508,6 @@ export class MemberCheckInService {
       ));
   }
 
-  // the first check-in with the stored credential confirms the join
   async #nameHub(credential: MemberCredential, hubName: string): Promise<void> {
     const link = await this.#options.links.readLink();
     if (link.memberId !== credential.memberId || !link.checksIn) return;

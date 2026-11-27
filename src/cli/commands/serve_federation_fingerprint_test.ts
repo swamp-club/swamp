@@ -32,13 +32,14 @@ const FACTS: StaticFingerprintFacts = {
   extensions: [],
 };
 
-Deno.test("FingerprintFactsCache: reads once, and again after a settings reload or a lockfile change", async () => {
+Deno.test("FingerprintFactsCache: reads once, and again after a settings reload, a lockfile change or a new vault type", async () => {
   const dir = await Deno.makeTempDir();
   try {
     const lockfilePath = join(dir, "upstream_extensions.json");
     await Deno.writeTextFile(lockfilePath, "{}");
     let settings = {} as MergedServeOptions;
     const sources = {
+      repoDir: dir,
       lockfilePath,
       settings: () => settings,
     } as ServeFingerprintSources;
@@ -59,6 +60,14 @@ Deno.test("FingerprintFactsCache: reads once, and again after a settings reload 
     await cache.facts(sources, read);
     await cache.facts(sources, read);
     assertEquals(reads, 3);
+    await Deno.mkdir(join(dir, "vaults", "@acme/new-vault"), {
+      recursive: true,
+    });
+    const vaults = join(dir, "vaults");
+    const laterStill = new Date(Date.now() + 120_000);
+    await Deno.utime(vaults, laterStill, laterStill);
+    await cache.facts(sources, read);
+    assertEquals(reads, 4);
   } finally {
     if (Deno.build.os === "windows") {
       await Deno.remove(dir, { recursive: true }).catch(() => {});
@@ -72,6 +81,7 @@ Deno.test("FingerprintFactsCache: a failed read is not kept", async () => {
   const dir = await Deno.makeTempDir();
   try {
     const sources = {
+      repoDir: dir,
       lockfilePath: join(dir, "missing.json"),
       settings: () => ({}) as MergedServeOptions,
     } as ServeFingerprintSources;

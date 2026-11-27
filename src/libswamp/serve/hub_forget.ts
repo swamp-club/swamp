@@ -51,7 +51,7 @@ export type HubForgetEvent =
 
 export const SERVE_RUNNING_CODE = "serve_running";
 
-/** the refusal while a serve on the link checked in recently, else undefined */
+/** a serve that refreshed aliveAt within the window, in any link state, is running */
 export function serveRunningRefusal(
   instances: readonly HubLinkInstance[],
   now: number,

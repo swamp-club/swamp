@@ -254,3 +254,20 @@ Deno.test("renderMemberList and renderMemberGet: ages are read against the hub's
   );
   assertStringIncludes(behind, "Last seen: in 56s");
 });
+
+Deno.test("renderMemberList: a last-seen time that does not parse shows '-', never 0s ago", () => {
+  const list = captured(() =>
+    renderMemberList(
+      {
+        members: [{
+          ...MEMBER,
+          live: { lastSeenAt: "garbage", instances: [] },
+        }],
+      },
+      "log",
+      NOW,
+    )
+  );
+  assertEquals(list.includes("0s ago"), false);
+  assertEquals(list.split("\n")[1].split(/\s{2,}/)[3], "-");
+});

@@ -96,7 +96,6 @@ export type JoinTokenUse =
   | {
     readonly kind: "replay";
     readonly memberId: string;
-    /** the member record was written; a replay that finds none must not recreate it */
     readonly admitted: boolean;
   }
   | { readonly kind: "refused" };

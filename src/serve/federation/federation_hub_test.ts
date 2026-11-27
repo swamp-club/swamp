@@ -695,3 +695,29 @@ Deno.test("FederationHub.sightings and sweep: read at most 8 seen records at a t
   await t.hub.sweep();
   assertEquals(peak, 8);
 });
+
+Deno.test("FederationHub.join: a replay marks a token admitted when its first admittedAt write was lost", async () => {
+  const t = createTestHub();
+  const { plaintext } = await t.hub.createToken("edge-1");
+  const joinId = crypto.randomUUID();
+  assertEquals(
+    (await t.hub.join(plaintext, joinId, sampleFingerprint())).kind,
+    "joined",
+  );
+  const token = t.store.json("federation/tokens/edge-1") as Record<
+    string,
+    unknown
+  >;
+  delete token.admittedAt;
+  await t.store.put(
+    "federation/tokens/edge-1",
+    new TextEncoder().encode(JSON.stringify(token)),
+  );
+  assertEquals(
+    (await t.hub.join(plaintext, joinId, sampleFingerprint())).kind,
+    "joined",
+  );
+  assert(
+    JoinToken.fromJSON(t.store.json("federation/tokens/edge-1")).admittedAt,
+  );
+});
