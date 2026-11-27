@@ -216,6 +216,9 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
   if (options.tagRequiresExplicitGrant) {
     args.push("--tag-requires-explicit-grant");
   }
+  if (options.stepsRequireExplicitGrant) {
+    args.push("--steps-require-explicit-grant");
+  }
   if (options.keepOauthClientInVault) {
     args.push("--keep-oauth-client-in-vault");
   }
@@ -754,6 +757,7 @@ export function resolveServeStartupSettings(
     approveRequiresExplicitGrant: merged.approveRequiresExplicitGrant,
     signalRequiresExplicitGrant: merged.signalRequiresExplicitGrant,
     tagRequiresExplicitGrant: merged.tagRequiresExplicitGrant,
+    stepsRequireExplicitGrant: merged.stepsRequireExplicitGrant,
   });
 
   assertOffLoopbackSecurity(merged.host, tlsEnabled, authConfig.mode);

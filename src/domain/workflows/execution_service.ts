@@ -476,6 +476,7 @@ import {
 import { StepStartUnrecordedError } from "./step_start.ts";
 import { RunSaveHorizon } from "./run_save_horizon.ts";
 import {
+  checkStepAccess,
   currentVaultAccess,
   runGeneratorWithVaultAccess,
   RunVaultAccess,
@@ -2076,6 +2077,17 @@ export class DefaultStepExecutor implements StepExecutor {
             : undefined,
         )
         : task.modelName;
+      // judged on the authored name, before the resolver can save a definition
+      const authoredName = task.modelName;
+      await checkStepAccess(async () => ({
+        kind: "behavior",
+        name: authoredName,
+        modelType: ModelType.create(typeArg).normalized,
+        tags: (await findDefinitionByIdOrName(definitionRepo, authoredName))
+          ?.definition.tags ?? {},
+        methodName,
+        typeExecution: true,
+      }));
       task = { ...task, ...inlined.data };
       authoredForDirect = inlined.authored;
       for (const field of ["inputs", "globalArgs"] as const) {
@@ -2215,6 +2227,14 @@ export class DefaultStepExecutor implements StepExecutor {
       originalDefinition = lookupResult.definition;
       modelType = lookupResult.type;
       storedDefinition = true;
+      await checkStepAccess(() => ({
+        kind: "behavior",
+        name: lookupResult.definition.name,
+        modelType: lookupResult.type.normalized,
+        tags: lookupResult.definition.tags,
+        methodName: task.methodName,
+        typeExecution: false,
+      }));
       authoredFromDefinition = collectAuthoredExpressions(
         originalDefinition.toData(),
       );
@@ -8431,6 +8451,11 @@ export class WorkflowExecutionService {
     // workflowRun() libswamp layer does this, but nested invocations
     // bypass it entirely and call run() directly.
     const childWorkflow = await this.lookupWorkflow(task.workflowIdOrName);
+    await checkStepAccess(() => ({
+      kind: "workflow",
+      name: childWorkflow?.name ?? task.workflowIdOrName,
+      tags: childWorkflow?.tags ?? {},
+    }));
     if (childWorkflow?.inputs) {
       const validationService = new InputValidationService();
       evaluatedInputs = validationService.applyDefaults(

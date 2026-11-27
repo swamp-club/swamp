@@ -239,6 +239,7 @@ async function suspendAtGate(
     approveRequiresExplicitGrant,
     signalRequiresExplicitGrant: false,
     tagRequiresExplicitGrant: false,
+    stepsRequireExplicitGrant: false,
   };
   const ctx = {
     repoDir: resolved,

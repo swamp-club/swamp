@@ -606,6 +606,7 @@ async function createSyncRepo(dir: string, managedConfig: boolean) {
       approveRequiresExplicitGrant: false,
       signalRequiresExplicitGrant: false,
       tagRequiresExplicitGrant: false,
+      stepsRequireExplicitGrant: false,
     },
   } as ConnectionContext;
   const cleanup = () => repoContext.catalogStore.close();

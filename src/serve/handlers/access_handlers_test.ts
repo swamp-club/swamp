@@ -159,6 +159,7 @@ function createCtx(
       approveRequiresExplicitGrant: false,
       signalRequiresExplicitGrant: false,
       tagRequiresExplicitGrant: false,
+      stepsRequireExplicitGrant: false,
     },
   };
 }
@@ -317,6 +318,7 @@ function createReloadCtx(
       approveRequiresExplicitGrant: false,
       signalRequiresExplicitGrant: false,
       tagRequiresExplicitGrant: false,
+      stepsRequireExplicitGrant: false,
     },
   };
 }

@@ -70,6 +70,8 @@ import {
 import { RunSensitiveValues } from "../secrets/run_sensitive_values.ts";
 import type { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
+import { checkStepAccess } from "../vaults/run_vault_access.ts";
+import type { StepAccessTarget } from "../vaults/run_step_access.ts";
 import { InputValidationService } from "../inputs/input_validation_service.ts";
 import {
   extractSensitiveFieldValues,
@@ -334,6 +336,17 @@ export class ModelInvocationService {
 
     if (isRunModelByType(options)) {
       methodName = options.method;
+      // before the lookup, which saves a new definition under the name
+      const refused = await this.#refusedStep(async () => ({
+        kind: "behavior",
+        name: options.name,
+        modelType: ModelType.create(options.modelType).normalized,
+        tags: (await this.#deps.commonDeps.definitionRepository
+          .findByNameGlobal(options.name))?.definition.tags ?? {},
+        methodName: options.method,
+        typeExecution: true,
+      }));
+      if (refused) return refused;
       const resolved = await this.#resolveByType(options);
       if (!isResolveSuccess(resolved)) return resolved as RunModelResult;
       definition = resolved.definition;
@@ -344,6 +357,16 @@ export class ModelInvocationService {
       if (!isResolveSuccess(resolved)) return resolved as RunModelResult;
       definition = resolved.definition;
       modelDef = resolved.modelDef;
+      const target = resolved.definition;
+      const refused = await this.#refusedStep(() => ({
+        kind: "behavior",
+        name: target.name,
+        modelType: resolved.modelDef.type.normalized,
+        tags: target.tags,
+        methodName: options.method,
+        typeExecution: false,
+      }));
+      if (refused) return refused;
     }
 
     const targetType = modelDef.type.normalized;
@@ -802,6 +825,19 @@ export class ModelInvocationService {
     }
 
     return { ok: true, definition, modelDef };
+  }
+
+  async #refusedStep(
+    target: () => StepAccessTarget | Promise<StepAccessTarget>,
+  ): Promise<RunModelResult | null> {
+    try {
+      await checkStepAccess(target);
+      return null;
+    } catch (error) {
+      // a target that cannot be built refuses as a failed lookup would
+      const message = error instanceof Error ? error.message : String(error);
+      return { ok: false, error: { message } };
+    }
   }
 
   async #checkAuthorization(

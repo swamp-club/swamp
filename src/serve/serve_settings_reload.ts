@@ -153,6 +153,10 @@ export const SETTING_CATALOGUE = {
     "auth.tag-requires-explicit-grant",
     "tag-requires-explicit-grant",
   ),
+  stepsRequireExplicitGrant: applied(
+    "auth.steps-require-explicit-grant",
+    "steps-require-explicit-grant",
+  ),
   schedule: applied("schedule", "schedule"),
   grantsFile: applied("grants-file", "grants-file"),
   grantsDir: applied("grants-dir", "grants-dir"),

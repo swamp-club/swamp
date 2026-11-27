@@ -3779,3 +3779,54 @@ Deno.test("loadServeConfig: webhook-routes-dir must be a string", async () => {
     await Deno.remove(dir, { recursive: true }).catch(() => {});
   }
 });
+
+Deno.test("mergeServeOptions: steps-require-explicit-grant defaults to false", () => {
+  const merged = mergeServeOptions(
+    null,
+    {},
+    new Set<string>(),
+    () => undefined,
+  );
+  assertEquals(merged.stepsRequireExplicitGrant, false);
+});
+
+Deno.test("mergeServeOptions: steps-require-explicit-grant CLI flag wins over config and env", () => {
+  const merged = mergeServeOptions(
+    { auth: { "steps-require-explicit-grant": false } },
+    { stepsRequireExplicitGrant: true },
+    new Set(["steps-require-explicit-grant"]),
+    (name: string) =>
+      name === "SWAMP_STEPS_REQUIRE_EXPLICIT_GRANT" ? "false" : undefined,
+  );
+  assertEquals(merged.stepsRequireExplicitGrant, true);
+});
+
+Deno.test("mergeServeOptions: steps-require-explicit-grant env var wins over config when CLI not explicit", () => {
+  const merged = mergeServeOptions(
+    { auth: { "steps-require-explicit-grant": false } },
+    {},
+    new Set<string>(),
+    (name: string) =>
+      name === "SWAMP_STEPS_REQUIRE_EXPLICIT_GRANT" ? "true" : undefined,
+  );
+  assertEquals(merged.stepsRequireExplicitGrant, true);
+});
+
+Deno.test("loadServeConfig: reads auth.steps-require-explicit-grant", () => {
+  withTempDir((dir) => {
+    writeConfig(dir, { auth: { "steps-require-explicit-grant": true } });
+    const config = loadServeConfig(undefined, dir);
+    assertEquals(config?.auth?.["steps-require-explicit-grant"], true);
+  });
+});
+
+Deno.test("loadServeConfig: non-boolean auth.steps-require-explicit-grant produces error", () => {
+  withTempDir((dir) => {
+    writeConfig(dir, { auth: { "steps-require-explicit-grant": "true" } });
+    assertThrows(
+      () => loadServeConfig(undefined, dir),
+      Error,
+      "Invalid auth.steps-require-explicit-grant",
+    );
+  });
+});

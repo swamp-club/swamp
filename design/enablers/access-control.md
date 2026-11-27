@@ -240,7 +240,8 @@ see [Workflow execution context](#workflow-execution-context). A ceiling allowin
 `run` should name specific workflows.
 
 - **Steps and child runs** have no ceiling, so a nested workflow runs even if the
-  ceiling does not name it.
+  ceiling does not name it. `--steps-require-explicit-grant` judges steps
+  against the principal's grants, not its integration ceiling.
 - **Vault use during a run** has no ceiling, in line with the rule that client
   conditions never narrow a run. That includes an admin person's reach to reserved
   vaults, if a stored workflow asks for one. Workflow run inputs stay inert, so an
@@ -2235,6 +2236,32 @@ parent called it.
 Vault operations are the exception: once the policy holds a vault grant, each
 one in the run is judged against the triggering principal by the run-time rule
 in [Vaults](#vaults).
+
+So by default a deny on a behavior or workflow does not stop a run that
+reaches it through a step, and neither does a deny for `service:scheduler` or
+`service:webhook` on a behavior a scheduled or webhook run calls. An operator
+who wants grants to bound runs turns on `--steps-require-explicit-grant`
+(config `auth.steps-require-explicit-grant`, env
+`SWAMP_STEPS_REQUIRE_EXPLICIT_GRANT`, off by default):
+
+- Each step's behavior, each nested workflow, each `model.method` call in a
+  guard or assert, and each `runModel` call a method makes is judged against
+  the run's triggering principal before it runs, with the checks a direct run
+  makes: `admin` on `access:*` for a restricted or control-plane type,
+  otherwise `run` on `model:<name>` (and on the type, for a step that names a
+  type to execute) or on `workflow:<name>`. A refusal fails the step before
+  its method runs and writes a denied `execution` audit event.
+- The check rides on the run scope the vault rule uses, so it covers direct,
+  scheduled, webhook and resumed runs, nested children, and steps placed on a
+  worker (judged on serve before dispatch). A lane step is judged on its
+  authored behavior name, not the per-worker copy it runs as. A resume is held
+  to both the run's recorded principal and the resumer's grants; a run with no
+  recorded principal, or a revoked token, is refused every step.
+- It is read at each step, so a reload applies to the next step of runs in
+  flight, including runs suspended at a gate. Local CLI runs, and serve under
+  `--auth-mode none`, have no run scope and are not checked.
+- `swamp access check` and `can-i` judge a request, not the steps a run will
+  reach.
 
 The reason is that the operator who wrote the workflow chose which behaviors it
 calls, and a `run` grant delegates that choice. Per-behavior grants would force

@@ -72,6 +72,7 @@ const modeNone: ServeAuthConfig = {
   approveRequiresExplicitGrant: false,
   signalRequiresExplicitGrant: false,
   tagRequiresExplicitGrant: false,
+  stepsRequireExplicitGrant: false,
 };
 
 type Cut = "boundary" | "mid-step";

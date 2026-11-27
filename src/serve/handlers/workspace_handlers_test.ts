@@ -96,6 +96,7 @@ function authConfig(mode: ServeAuthConfig["mode"]): ServeAuthConfig {
     approveRequiresExplicitGrant: false,
     signalRequiresExplicitGrant: false,
     tagRequiresExplicitGrant: false,
+    stepsRequireExplicitGrant: false,
   };
 }
 

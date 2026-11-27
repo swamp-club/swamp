@@ -25,6 +25,12 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { UserError } from "../errors.ts";
+import {
+  StepAccessDeniedError,
+  type StepAccessDeniedHook,
+  type StepAccessTarget,
+  type StepPrincipalPolicy,
+} from "./run_step_access.ts";
 
 export type VaultAction = "read" | "write";
 
@@ -121,6 +127,9 @@ export interface RunVaultAccessOptions {
   allowedVaults?: Iterable<string>;
   allowListSource?: string;
   onDenied?: VaultAccessDeniedHook;
+  /** absent unless serve holds a run's steps to its principal */
+  stepPolicy?: StepPrincipalPolicy;
+  onStepDenied?: StepAccessDeniedHook;
 }
 
 export class VaultAccessDeniedError extends UserError {
@@ -145,6 +154,11 @@ interface AllowList {
   readonly source?: string;
 }
 
+interface StepPolicyEntry {
+  readonly policy: StepPrincipalPolicy;
+  readonly onDenied?: StepAccessDeniedHook;
+}
+
 interface DeniedHookEntry {
   readonly hook: VaultAccessDeniedHook;
   readonly seen: Set<string>;
@@ -155,6 +169,7 @@ export class RunVaultAccess {
     readonly policies: readonly VaultPrincipalPolicy[],
     private readonly allowLists: readonly AllowList[],
     private readonly deniedHooks: readonly DeniedHookEntry[],
+    private readonly stepPolicies: readonly StepPolicyEntry[] = [],
   ) {}
 
   static create(options: RunVaultAccessOptions): RunVaultAccess {
@@ -167,6 +182,9 @@ export class RunVaultAccess {
         }]
         : [],
       options.onDenied ? [{ hook: options.onDenied, seen: new Set() }] : [],
+      options.stepPolicy
+        ? [{ policy: options.stepPolicy, onDenied: options.onStepDenied }]
+        : [],
     );
   }
 
@@ -194,7 +212,34 @@ export class RunVaultAccess {
       [...this.policies, ...inner.policies],
       [...this.allowLists, ...inner.allowLists],
       [...this.deniedHooks, ...inner.deniedHooks],
+      [...this.stepPolicies, ...inner.stepPolicies],
     );
+  }
+
+  get holdsSteps(): boolean {
+    return this.stepPolicies.some(({ policy }) => policy.active?.() ?? true);
+  }
+
+  /** every step policy in the chain must allow; with none, a step runs */
+  async checkStep(target: StepAccessTarget): Promise<void> {
+    for (const { policy, onDenied } of this.stepPolicies) {
+      const decision = await policy.decide(target);
+      if (decision.allowed) continue;
+      const denial = {
+        target,
+        principal: policy.principal,
+        ...(decision.grantId !== undefined
+          ? { grantId: decision.grantId }
+          : {}),
+        reason: decision.reason,
+        ...(decision.required !== undefined
+          ? { required: decision.required }
+          : {}),
+      };
+      // only the refusing policy's hook, so one audit event names its principal
+      await onDenied?.(denial);
+      throw new StepAccessDeniedError(denial);
+    }
   }
 
   async decide(
@@ -308,6 +353,14 @@ export function runWithVaultAccess<T>(
 
 export function currentVaultAccess(): RunVaultAccess | undefined {
   return ambientVaultAccess.getStore() ?? undefined;
+}
+
+export async function checkStepAccess(
+  target: () => StepAccessTarget | Promise<StepAccessTarget>,
+): Promise<void> {
+  const access = currentVaultAccess();
+  if (!access?.holdsSteps) return;
+  await access.checkStep(await target());
 }
 
 /**

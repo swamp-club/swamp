@@ -216,6 +216,7 @@ async function withRepo(fn: (repo: Repo) => Promise<void>): Promise<void> {
             approveRequiresExplicitGrant: false,
             signalRequiresExplicitGrant: false,
             tagRequiresExplicitGrant: false,
+            stepsRequireExplicitGrant: false,
           },
           auditEmitter: emitter,
           instanceId: "instance-1",

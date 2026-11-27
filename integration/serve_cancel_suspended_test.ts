@@ -196,6 +196,7 @@ async function suspendAtGate(repoDir: string): Promise<Harness> {
     approveRequiresExplicitGrant: false,
     signalRequiresExplicitGrant: false,
     tagRequiresExplicitGrant: false,
+    stepsRequireExplicitGrant: false,
   };
   const audit: AuditEvent[] = [];
   const registry = new ActiveRunRegistry();

@@ -168,6 +168,7 @@ function createEditCtx(
       approveRequiresExplicitGrant: false,
       signalRequiresExplicitGrant: false,
       tagRequiresExplicitGrant: false,
+      stepsRequireExplicitGrant: false,
     },
   } as ConnectionContext;
 }

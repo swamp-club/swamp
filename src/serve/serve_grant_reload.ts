@@ -108,6 +108,7 @@ type GrantSettingKey =
   | "approveRequiresExplicitGrant"
   | "signalRequiresExplicitGrant"
   | "tagRequiresExplicitGrant"
+  | "stepsRequireExplicitGrant"
   | "grantReload"
   | "grantsFile"
   | "grantsDir"
@@ -149,7 +150,8 @@ export function createGrantSettingsReload(deps: GrantSettingsReloadDeps) {
     key:
       | "approveRequiresExplicitGrant"
       | "signalRequiresExplicitGrant"
-      | "tagRequiresExplicitGrant",
+      | "tagRequiresExplicitGrant"
+      | "stepsRequireExplicitGrant",
   ): SettingApplyResult => {
     authConfig[key] = startup.authConfig[key];
     deps.policySnapshotLoader.setDecisionOptions({
@@ -172,6 +174,9 @@ export function createGrantSettingsReload(deps: GrantSettingsReloadDeps) {
       applyExplicitGrantRule(startup, "signalRequiresExplicitGrant"),
     tagRequiresExplicitGrant: ({ startup }) =>
       applyExplicitGrantRule(startup, "tagRequiresExplicitGrant"),
+    // read by each run's step policy at decision time, so the next step sees it
+    stepsRequireExplicitGrant: ({ startup }) =>
+      applyExplicitGrantRule(startup, "stepsRequireExplicitGrant"),
     // the poller starts or pauses in a follow-up
     grantReload: ({ startup }) => {
       deps.policySnapshotLoader.setMode(startup.grantReloadMode);

@@ -198,3 +198,14 @@ Deno.test("Fingerprint.fromRecord: keeps a newer hub's fields for the rewrite, o
   assertEquals(record.equals(Fingerprint.create(props)), true);
   assertThrows(() => Fingerprint.fromRecord({ ...props, platform: undefined }));
 });
+
+Deno.test("computeSettingsHash: steps-require-explicit-grant joins the hash only when on, so nodes without it keep their hash", () => {
+  assertEquals(
+    computeSettingsHash({ ...SETTINGS, stepsRequireExplicitGrant: false }),
+    computeSettingsHash(SETTINGS),
+  );
+  assertNotEquals(
+    computeSettingsHash({ ...SETTINGS, stepsRequireExplicitGrant: true }),
+    computeSettingsHash(SETTINGS),
+  );
+});

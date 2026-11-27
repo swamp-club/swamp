@@ -40,6 +40,8 @@ export interface ServeAuthConfig {
   approveRequiresExplicitGrant: boolean;
   signalRequiresExplicitGrant: boolean;
   tagRequiresExplicitGrant: boolean;
+  /** a run's steps are judged against its principal, as a direct run is */
+  stepsRequireExplicitGrant: boolean;
 }
 
 const VALID_AUTH_MODES: ReadonlySet<string> = new Set([
@@ -63,6 +65,7 @@ export interface ServeAuthConfigInput {
   approveRequiresExplicitGrant?: boolean;
   signalRequiresExplicitGrant?: boolean;
   tagRequiresExplicitGrant?: boolean;
+  stepsRequireExplicitGrant?: boolean;
 }
 
 /**
@@ -174,6 +177,7 @@ export function buildServeAuthConfig(
     approveRequiresExplicitGrant: input.approveRequiresExplicitGrant ?? false,
     signalRequiresExplicitGrant: input.signalRequiresExplicitGrant ?? false,
     tagRequiresExplicitGrant: input.tagRequiresExplicitGrant ?? false,
+    stepsRequireExplicitGrant: input.stepsRequireExplicitGrant ?? false,
   };
 }
 

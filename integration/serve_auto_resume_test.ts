@@ -57,6 +57,7 @@ const modeNone: ServeAuthConfig = {
   approveRequiresExplicitGrant: false,
   signalRequiresExplicitGrant: false,
   tagRequiresExplicitGrant: false,
+  stepsRequireExplicitGrant: false,
 };
 
 function gatedWorkflow(name: string, autoResume?: boolean): Workflow {

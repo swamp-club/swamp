@@ -296,7 +296,8 @@ keyed by child step name:
   workflow. To keep a shared child from being started directly, withhold `run`
   on it (or deny it) and give it no schedule or webhook trigger; nested calls
   still work. There is no "only callable from" setting, and local CLI runs do no
-  authorization.
+  authorization. With `--steps-require-explicit-grant` serve instead needs `run`
+  on each child and behavior the run reaches (see the serve guide).
 - **Vaults.** Vault operations in the child are judged against the principal
   that started the parent, and the child's `vaults:` list is intersected with
   the parent's, so a parent that declares `vaults:` must list every vault the
