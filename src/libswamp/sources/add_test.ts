@@ -200,7 +200,7 @@ Deno.test("sourceAdd: rejects concrete path that resolves to zero kinds", async 
   const error = findError(events);
   assertEquals(error?.kind, "error");
   if (error?.kind === "error") {
-    assertStringIncludes(error.error.message, "No extensions found");
+    assertStringIncludes(error.error.message, "No extensions or apps found");
     assertStringIncludes(error.error.message, "/empty");
   }
   assertEquals(deps.written, null);
@@ -221,7 +221,7 @@ Deno.test("sourceAdd: rejection names apps among what it looked for", async () =
   const error = findError(events);
   assertEquals(error?.kind, "error");
   if (error?.kind === "error") {
-    assertStringIncludes(error.error.message, "No extensions found");
+    assertStringIncludes(error.error.message, "No extensions or apps found");
     assertStringIncludes(
       error.error.message,
       "extensions/apps/<folder>/app.yaml",
@@ -461,7 +461,10 @@ Deno.test("sourceAdd e2e: --only mismatch against models-only source is rejected
 async function writeApp(sourceDir: string): Promise<void> {
   const appDir = join(sourceDir, "extensions", "apps", "hello");
   await Deno.mkdir(appDir, { recursive: true });
-  await Deno.writeTextFile(join(appDir, "app.yaml"), "name: '@acme/hello'\n");
+  await Deno.writeTextFile(
+    join(appDir, "app.yaml"),
+    "name: '@acme/hello'\ntitle: Hello\nbridge: 1\ncapabilities: [runs:read]\n",
+  );
 }
 
 Deno.test("sourceAdd e2e: an apps-only extension is added", async () => {

@@ -176,7 +176,7 @@ export class FilesystemAppCatalog implements AppCatalog {
   }
 }
 
-/** whether `sourceDir` holds an app the catalog would load from a mounted source */
+/** presence only: the app.yaml may still be refused when the catalog loads it */
 export async function hasAppDescriptors(sourceDir: string): Promise<boolean> {
   try {
     return (await descriptorsIn(join(sourceDir, APP_SOURCE_DIR))).length > 0;

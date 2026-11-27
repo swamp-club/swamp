@@ -159,8 +159,8 @@ export async function* sourceAdd(
         yield {
           kind: "error",
           error: validationFailed(
-            `No extensions found under glob '${path}'. ` +
-              `All ${cachedExpansions.length} matched path(s) lack either ` +
+            `No extensions or apps found under glob '${path}'. ` +
+              `All ${cachedExpansions.length} matched path(s) lack ` +
               `'extensions/<kind>/' subdirectories, files declaring ` +
               `extension exports (model, vault, datastore, ` +
               `report, or workflow), or an app at ` +
@@ -175,11 +175,11 @@ export async function* sourceAdd(
       yield {
         kind: "error",
         error: validationFailed(
-          `No extensions found at '${path}'. ` +
-            `Expected either 'extensions/<kind>/' subdirectories (where ` +
+          `No extensions or apps found at '${path}'. ` +
+            `Expected one of: 'extensions/<kind>/' subdirectories (where ` +
             `<kind> is one of ${probed.join(", ")}), files declaring ` +
-            `extension exports (model, vault, datastore, report) ` +
-            `or workflow YAML directly in the path, OR an app at ` +
+            `extension exports (model, vault, datastore, report) or ` +
+            `workflow YAML directly in the path, or an app at ` +
             `'extensions/apps/<folder>/app.yaml'.`,
         ),
       };

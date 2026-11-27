@@ -90,7 +90,10 @@ Deno.test("sourceList: concrete path that exists but resolves to zero kinds → 
 async function writeApp(sourceDir: string): Promise<void> {
   const appDir = join(sourceDir, "extensions", "apps", "hello");
   await Deno.mkdir(appDir, { recursive: true });
-  await Deno.writeTextFile(join(appDir, "app.yaml"), "name: '@acme/hello'\n");
+  await Deno.writeTextFile(
+    join(appDir, "app.yaml"),
+    "name: '@acme/hello'\ntitle: Hello\nbridge: 1\ncapabilities: [runs:read]\n",
+  );
 }
 
 Deno.test("sourceList: an apps-only source is valid with hasApps and no kinds", async () => {

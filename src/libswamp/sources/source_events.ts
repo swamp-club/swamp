@@ -40,7 +40,7 @@ export interface SourceListEntry {
   status: "valid" | "path_not_found" | "no_extensions";
   /**
    * extension kinds this source contributes, from the same resolver used at
-   * load time; populated when status is valid and sorted by EXTENSION_KINDS
+   * load time; populated when the source resolves at least one kind and sorted by EXTENSION_KINDS
    * order so output is stable. Optional so older JSON consumers keep working
    */
   resolvedKinds?: ExtensionKind[];

@@ -21,10 +21,7 @@ import type { SwampSource } from "../../domain/repo/swamp_sources.ts";
 import { expandSourcePaths } from "../../infrastructure/persistence/swamp_sources_repository.ts";
 import { hasAppDescriptors } from "../../infrastructure/persistence/filesystem_app_catalog.ts";
 
-/**
- * apps are not an extension kind and the catalog ignores `only`, so a source
- * holding one contributes something whatever kinds it resolves to
- */
+/** the app catalog ignores `only`, so apps count even when no kind resolves */
 export async function resolveSourceHasApps(
   source: SwampSource,
   baseDir: string,

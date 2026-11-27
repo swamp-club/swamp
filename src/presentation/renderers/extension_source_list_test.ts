@@ -81,7 +81,7 @@ Deno.test("extension_source_list renderer: shows apps for a source that has apps
       },
     });
   });
-  assertEquals(lines.some((line) => line.trim() === "apps"), true);
+  assertEquals(lines.some((line) => line.trim() === "contributes apps"), true);
   assertEquals(lines.join("\n").includes("kinds:"), false);
 });
 
@@ -125,7 +125,7 @@ Deno.test("extension_source_list renderer: no_extensions status shows message + 
     });
   });
   const joined = lines.join("\n");
-  assertStringIncludes(joined, "no extensions found");
+  assertStringIncludes(joined, "no extensions or apps found");
   assertStringIncludes(joined, "swamp extension source rm /c");
 });
 
