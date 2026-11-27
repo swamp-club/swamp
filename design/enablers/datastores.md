@@ -9816,8 +9816,33 @@ under the same txnId when it is absent, and serve answers a re-send of a
 landed txnId from the commit it landed, so the write lands once. Any `503`
 may-land is re-sent under its txnId up to twice before the commit fails
 (swamp-club#5089); one still unconfirmed is never counted landed from a read
-of serve's partition in that command, whose read route is not bounded by the
-published mark, and its failure is not retried under a new txnId.
+of serve's partition in that command, and its failure is not retried under a
+new txnId.
+
+Once serve has answered a commit may-land, from the single route or as an item
+of `POST commits`, the member's sink keeps its outcome unknown until serve
+settles it: a later re-send that serve answers with the commit (landed or
+duplicate) lands it, and one serve refuses after looking its txnId up
+(`stale_seq`, a `409` refusing the commit as it stands, a `403`) fails it as
+that refusal. Any other answer, such as `serve_not_leader` from a node that
+lost the lead before taking the re-send, or a re-send that never reaches
+serve, ends the command may-land (exit 1, outbox entry kept), never as
+nothing changed and never as landed from the copy, which a catch-up may have
+brought the commit into (swamp-club#5160).
+
+A leader whose datastore replicates pages `GET changes` and
+`GET partitions/{p}/commits` only up to its published mark, the bound its
+WebSocket feed already keeps, so no member's copy takes a commit the next
+leader may never have. Past the mark `GET changes` answers `more: false`, as
+a follower's bounded page does, and the partition route answers the head at
+the mark, never below the seq the caller says it holds (`held`, else
+`after`), which the caller would read as a rewind. A datastore that does not
+replicate pages to its head as before. A member's own landed commit still
+reaches its copy from the commit's reply, which serve sends only once the
+commit is confirmed. Nothing waits on the leader's feed reaching its head:
+the feed's catch-up ends at `more: false`, the lock's catch-up page is one
+page, and a seq gap rebuilds on the `stale_seq` head within
+`SERVE_SEQ_GAP_ATTEMPTS`.
 
 With two nodes on one host, a test arrangement, the follower was not seen to
 take a stopped leader's lease before the leader resumed; across hosts the

@@ -68,6 +68,7 @@ import {
   ChunkNotCachedError,
   ServeChunksMissingError,
   ServeCommitMayLandError,
+  ServeCommitRefusedError,
   ServeStaleSeqError,
   ServeUnreachableError,
   ServeUpstreamDivergedError,
@@ -215,6 +216,8 @@ export function createServeCommitSink(
   // serve landed these and could not confirm them, even when re-sent: only
   // serve's answer to the same txnId may count them landed, never a read-back
   const mayLandTxns = new Set<string>();
+  // serve answered these may-land and has not settled them since
+  const mayLandAnswered = new Set<string>();
   const noteNeverSent = (txnId: string): void => {
     if (!mayHaveRunTxns.has(txnId)) neverSent.add(txnId);
   };
@@ -303,6 +306,30 @@ export function createServeCommitSink(
     if (error instanceof ServeNotLeaderError) stopSends(error);
   };
 
+  const noteMayLandAnswered = (commit: Commit): void => {
+    mayLandAnswered.add(commit.txnId);
+    mayHaveRunTxns.add(commit.txnId);
+  };
+
+  /**
+   * a later failure of a send serve answered may-land leaves its outcome
+   * unknown, unless serve refused it after looking its txnId up, which a
+   * commit it holds is answered before
+   */
+  const settleMayLand = (commit: Commit, error: unknown): void => {
+    if (!mayLandAnswered.delete(commit.txnId)) return;
+    if (error instanceof ServeCommitMayLandError) return;
+    if (
+      error instanceof CommitRejectedError ||
+      error instanceof ServeCommitRefusedError
+    ) {
+      mayHaveRunTxns.delete(commit.txnId);
+      return;
+    }
+    mayLandTxns.add(commit.txnId);
+    noteCommandMayHaveLanded(commit.partition, intentKindsOfOps(commit.ops));
+  };
+
   const stopSends = (error: unknown): void => {
     sendsStopped ??= { cause: error };
     latchServeUnreachable(client.baseUrl, error);
@@ -333,6 +360,7 @@ export function createServeCommitSink(
             latchServeUnreachable(client.baseUrl, error);
           }
           if (mayHaveRun(error)) noteMayHaveRun(commit, error);
+          settleMayLand(commit, error);
           throw error;
         }
       },
@@ -399,6 +427,8 @@ export function createServeCommitSink(
   ): Promise<CommitStoreAppendResult> => {
     neverSent.delete(commit.txnId);
     mayHaveRunTxns.delete(commit.txnId);
+    mayLandAnswered.delete(commit.txnId);
+    mayLandTxns.delete(commit.txnId);
     carriedFailures.delete(commit.txnId);
     catchUp.recordLanded?.(commit.namespace, commit.partition, commit.txnId);
     if (leaseId !== undefined && options.onLeasedCommit !== undefined) {
@@ -494,6 +524,7 @@ export function createServeCommitSink(
           break;
         } catch (error) {
           if (!(error instanceof ServeCommitMayLandError)) throw error;
+          noteMayLandAnswered(commit);
           if (resends > 0) continue;
           mayLandTxns.add(commit.txnId);
           throw error;
@@ -704,6 +735,9 @@ export function createServeCommitSink(
           outcome.error instanceof ServeCommitMayLandError
         ) {
           // as the single route resends them: alone, once
+          if (outcome.error instanceof ServeCommitMayLandError) {
+            noteMayLandAnswered(entry.commit);
+          }
           entry.resolve(
             await underLease(
               entry.commit,
