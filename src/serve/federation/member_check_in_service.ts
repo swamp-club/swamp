@@ -321,7 +321,8 @@ export class MemberCheckInService {
     if (!this.#joinRetryLogged) {
       this.#joinRetryLogged = true;
       logger.warn(
-        "No usable join reply from the hub; retrying the same join with backoff",
+        "No usable join reply from the hub ({result}); retrying the same join with backoff",
+        { result: resultOf(outcome) },
       );
     }
     return { kind: "wait", delayMs: await this.#failed(outcome) };

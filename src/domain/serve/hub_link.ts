@@ -99,10 +99,9 @@ export class HubLink {
     if (props.state === "joining" && props.hubUrl === null) {
       throw new HubLinkError("A joining hub link needs a hub");
     }
-    if (props.state === "joining" && joinIdOf(props.joinId) === undefined) {
-      throw new HubLinkError(
-        "A joining hub link needs a lower-case UUID joinId",
-      );
+    // a joining record from before joinId reads with none; its retry takes a fresh one
+    if (props.joinId !== null && joinIdOf(props.joinId) === undefined) {
+      throw new HubLinkError("A hub link's joinId must be a lower-case UUID");
     }
     if (props.state !== "joining" && props.joinId !== null) {
       throw new HubLinkError(`A ${props.state} hub link holds no joinId`);
@@ -157,10 +156,10 @@ export class HubLink {
    */
   beginJoin(hubUrl: string, freshJoinId: string): HubLink {
     this.#expect(["unjoined", "refused", "joining"], "begin a join");
-    const joinId = this.props.state === "joining"
+    const joinId = this.props.state === "joining" && this.props.joinId !== null
       ? this.props.joinId
       : joinIdOf(freshJoinId);
-    if (joinId === undefined || joinId === null) {
+    if (joinId === undefined) {
       throw new HubLinkError("A join needs a lower-case UUID joinId");
     }
     return new HubLink({ ...UNJOINED, state: "joining", hubUrl, joinId });

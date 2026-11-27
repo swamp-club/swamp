@@ -197,11 +197,11 @@ Deno.test("HubLink: a settled link holds no joinId; abandonJoin starts afresh", 
   assertThrows(() => joinedLink().abandonJoin(), HubLinkError);
 });
 
-Deno.test("HubLink.fromJSON: a joining link needs a joinId, a settled one holds none, and an older record reads without one", () => {
+Deno.test("HubLink.fromJSON: a joinId must be a lower-case UUID, a settled link holds none, and an older record reads without one", () => {
   const joining = HubLink.unjoined().beginJoin(HUB, crypto.randomUUID());
   assertEquals(HubLink.fromJSON(joining.toJSON()).toJSON(), joining.toJSON());
   assertThrows(
-    () => HubLink.fromJSON({ ...joining.toJSON(), joinId: null }),
+    () => HubLink.fromJSON({ ...joining.toJSON(), joinId: "NOT-A-UUID" }),
     HubLinkError,
   );
   assertThrows(
@@ -260,4 +260,22 @@ Deno.test("isInstanceAlive: alive within the window and not stopped", () => {
     ),
     false,
   );
+});
+
+Deno.test("HubLink: a joining record from before joinId loads, completes with its credential, and retries with a fresh joinId", () => {
+  const { joinId: _id, ...legacy } = HubLink.unjoined().beginJoin(
+    HUB,
+    crypto.randomUUID(),
+  ).received(MEMBER).toJSON();
+  const loaded = HubLink.fromJSON(legacy);
+  assertEquals(loaded.state, "joining");
+  assertEquals(loaded.joinId, null);
+  const completed = decideStart(loaded, {
+    configuredHubUrl: HUB,
+    credentialMemberId: MEMBER_ID,
+    hasJoinToken: false,
+  });
+  assertEquals(completed.link.state, "joined");
+  const fresh = crypto.randomUUID();
+  assertEquals(loaded.beginJoin(HUB, fresh).joinId, fresh);
 });
