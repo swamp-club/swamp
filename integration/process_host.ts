@@ -30,7 +30,10 @@ export type ProcessHost<Request, Message> = (
 
 export interface ProcessHostHandle<Request> {
   postMessage(request: Request): void;
-  /** aborts the host's `stopped` signal; its later messages are dropped */
+  /**
+   * aborts the host's `stopped` signal and drops its later messages; services
+   * a hosted serve started keep running, so a test ends a serve with its stop()
+   */
   terminate(): void;
 }
 

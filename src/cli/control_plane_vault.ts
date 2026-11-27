@@ -87,8 +87,8 @@ export async function initializeControlPlaneVaultForCli(
   const tokenSecretsKey: TokenSecretsKeyRef | undefined =
     parseTokenSecretsKeyConfig(serveConfig, SERVE_CONFIG_PATH);
 
-  // Token commands never migrate: running serve instances still hold the
-  // co-located key, and serve migrates when it restarts with the block.
+  // the CLI never migrates the key, since a running serve still holds the
+  // co-located one; serve migrates when it restarts with the block
   const result = await initializeControlPlaneVault(store, hasRemote, {
     tokenSecretsKey,
     vaultService: () => VaultService.fromRepository(repoDir),
