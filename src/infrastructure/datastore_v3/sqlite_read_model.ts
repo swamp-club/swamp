@@ -6271,8 +6271,8 @@ class FoldedKeys {
 
 /**
  * cleared on any removal, moveAside, failed pooled write and section start; a
- * missing or created-names fact is dropped when the section creates anything,
- * and no other process writes into the tree within one section
+ * missing-directory fact is also dropped when the section creates anything;
+ * no other process writes into the tree within one section
  */
 class PathCache {
   readonly #kinds = new Map<string, PathKind>();
