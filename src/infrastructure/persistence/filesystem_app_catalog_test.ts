@@ -24,6 +24,7 @@ import {
   APP_DEV_DIR,
   APP_DEV_HEARTBEAT_MS,
   FilesystemAppCatalog,
+  hasAppDescriptors,
   writeDevRegistration,
 } from "./filesystem_app_catalog.ts";
 
@@ -326,5 +327,24 @@ Deno.test("FilesystemAppCatalog: a collective is matched whole", async () => {
     );
     const { apps } = await new FilesystemAppCatalog({ repoDir }).list();
     assertEquals(apps, []);
+  });
+});
+
+Deno.test("hasAppDescriptors: true only when a folder under extensions/apps holds an app.yaml", async () => {
+  await withRepo(async (dir) => {
+    assertEquals(await hasAppDescriptors(join(dir, "missing")), false);
+    assertEquals(await hasAppDescriptors(dir), false);
+    await Deno.mkdir(join(dir, APP_SOURCE_DIR, "empty"), { recursive: true });
+    assertEquals(await hasAppDescriptors(dir), false);
+    await addLocalApp(dir, "hello", "@acme/hello");
+    assertEquals(await hasAppDescriptors(dir), true);
+  });
+});
+
+Deno.test("hasAppDescriptors: a file where a source folder is expected has no apps", async () => {
+  await withRepo(async (dir) => {
+    const file = join(dir, "not-a-dir");
+    await Deno.writeTextFile(file, "");
+    assertEquals(await hasAppDescriptors(file), false);
   });
 });

@@ -176,6 +176,16 @@ export class FilesystemAppCatalog implements AppCatalog {
   }
 }
 
+/** whether `sourceDir` holds an app the catalog would load from a mounted source */
+export async function hasAppDescriptors(sourceDir: string): Promise<boolean> {
+  try {
+    return (await descriptorsIn(join(sourceDir, APP_SOURCE_DIR))).length > 0;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotADirectory) return false;
+    throw error;
+  }
+}
+
 async function descriptorsIn(appsDir: string): Promise<string[]> {
   const paths: string[] = [];
   try {

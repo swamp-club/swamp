@@ -44,6 +44,8 @@ export interface SourceListEntry {
    * order so output is stable. Optional so older JSON consumers keep working
    */
   resolvedKinds?: ExtensionKind[];
+  /** apps sit outside the kinds and `only`, so they are reported apart */
+  hasApps?: boolean;
 }
 
 export interface SourceListData {

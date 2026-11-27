@@ -36,6 +36,7 @@ function createTestDeps(
   options: {
     existing?: SwampSourcesConfig | null;
     resolveKinds?: (source: SwampSource) => ExtensionKind[];
+    hasApps?: (source: SwampSource) => boolean;
     expandSource?: (source: SwampSource) => SwampSource[];
     defaultKindDirs?: string[];
   } = {},
@@ -49,6 +50,7 @@ function createTestDeps(
     },
     resolveKinds: (source) =>
       Promise.resolve(options.resolveKinds?.(source) ?? ["models"]),
+    hasApps: (source) => Promise.resolve(options.hasApps?.(source) ?? false),
     expandSource: (source) =>
       Promise.resolve(options.expandSource?.(source) ?? [source]),
     resolveSkills: () => Promise.resolve([]),
@@ -204,6 +206,42 @@ Deno.test("sourceAdd: rejects concrete path that resolves to zero kinds", async 
   assertEquals(deps.written, null);
 });
 
+Deno.test("sourceAdd: accepts a concrete path that holds only apps", async () => {
+  const deps = createTestDeps({ resolveKinds: () => [], hasApps: () => true });
+  const events = await collectEvents(sourceAdd(ctx, deps, "/apps-only"));
+
+  assertEquals(findCompleted(events)?.kind, "completed");
+  assertEquals(deps.written, { sources: [{ path: "/apps-only" }] });
+});
+
+Deno.test("sourceAdd: rejection names apps among what it looked for", async () => {
+  const deps = createTestDeps({ resolveKinds: () => [], hasApps: () => false });
+  const events = await collectEvents(sourceAdd(ctx, deps, "/nothing"));
+
+  const error = findError(events);
+  assertEquals(error?.kind, "error");
+  if (error?.kind === "error") {
+    assertStringIncludes(error.error.message, "No extensions found");
+    assertStringIncludes(
+      error.error.message,
+      "extensions/apps/<folder>/app.yaml",
+    );
+  }
+  assertEquals(deps.written, null);
+});
+
+Deno.test("sourceAdd: accepts apps under --only, since the app catalog ignores only", async () => {
+  const deps = createTestDeps({ resolveKinds: () => [], hasApps: () => true });
+  const events = await collectEvents(
+    sourceAdd(ctx, deps, "/apps-only", ["vaults"]),
+  );
+
+  assertEquals(findCompleted(events)?.kind, "completed");
+  assertEquals(deps.written, {
+    sources: [{ path: "/apps-only", only: ["vaults"] }],
+  });
+});
+
 Deno.test("sourceAdd: rejection names probed kinds so --only mismatches are self-diagnosable", async () => {
   const deps = createTestDeps({ resolveKinds: () => [] });
   const events = await collectEvents(
@@ -272,6 +310,34 @@ Deno.test("sourceAdd: rejects glob with expansions but zero kinds", async () => 
     assertStringIncludes(error.error.message, "2");
   }
   assertEquals(deps.written, null);
+});
+
+Deno.test("sourceAdd: accepts glob when only an app makes it contribute", async () => {
+  const deps = createTestDeps({
+    resolveKinds: () => [],
+    hasApps: () => true,
+    expandSource: () => [{ path: "/matched/a" }, { path: "/matched/b" }],
+  });
+  const events = await collectEvents(sourceAdd(ctx, deps, "/matched/*"));
+
+  assertEquals(findCompleted(events)?.kind, "completed");
+});
+
+Deno.test("sourceAdd: glob rejection names apps among what each path lacks", async () => {
+  const deps = createTestDeps({
+    resolveKinds: () => [],
+    expandSource: () => [{ path: "/matched/a" }],
+  });
+  const events = await collectEvents(sourceAdd(ctx, deps, "/matched/*"));
+
+  const error = findError(events);
+  assertEquals(error?.kind, "error");
+  if (error?.kind === "error") {
+    assertStringIncludes(
+      error.error.message,
+      "extensions/apps/<folder>/app.yaml",
+    );
+  }
 });
 
 Deno.test("sourceAdd: accepts glob when at least one expansion contributes kinds", async () => {
@@ -389,6 +455,58 @@ Deno.test("sourceAdd e2e: --only mismatch against models-only source is rejected
     if (error?.kind === "error") {
       assertStringIncludes(error.error.message, "vaults");
     }
+  });
+});
+
+async function writeApp(sourceDir: string): Promise<void> {
+  const appDir = join(sourceDir, "extensions", "apps", "hello");
+  await Deno.mkdir(appDir, { recursive: true });
+  await Deno.writeTextFile(join(appDir, "app.yaml"), "name: '@acme/hello'\n");
+}
+
+Deno.test("sourceAdd e2e: an apps-only extension is added", async () => {
+  await withTempRepo(async (repo) => {
+    const src = join(repo, "apps-only");
+    await writeApp(src);
+    const deps = await createSourceAddDeps(repo);
+    const events = await collectEvents(sourceAdd(ctx, deps, src));
+    assertEquals(findCompleted(events)?.kind, "completed");
+  });
+});
+
+Deno.test("sourceAdd e2e: a relative apps-only path resolves from the repository", async () => {
+  await withTempRepo(async (repo) => {
+    await writeApp(join(repo, "rel-apps"));
+    const deps = await createSourceAddDeps(repo);
+    const events = await collectEvents(sourceAdd(ctx, deps, "rel-apps"));
+    assertEquals(findCompleted(events)?.kind, "completed");
+  });
+});
+
+Deno.test("sourceAdd e2e: an apps folder without an app.yaml is still rejected", async () => {
+  await withTempRepo(async (repo) => {
+    const src = join(repo, "no-descriptor");
+    await Deno.mkdir(join(src, "extensions", "apps", "hello"), {
+      recursive: true,
+    });
+    const deps = await createSourceAddDeps(repo);
+    const events = await collectEvents(sourceAdd(ctx, deps, src));
+    assertEquals(findError(events)?.kind, "error");
+  });
+});
+
+Deno.test("sourceAdd e2e: a source with models and apps is added as before", async () => {
+  await withTempRepo(async (repo) => {
+    const src = join(repo, "models-and-apps");
+    await Deno.mkdir(join(src, "extensions", "models"), { recursive: true });
+    await Deno.writeTextFile(
+      join(src, "extensions", "models", "m.ts"),
+      'export const model = { type: "@r/m" };',
+    );
+    await writeApp(src);
+    const deps = await createSourceAddDeps(repo);
+    const events = await collectEvents(sourceAdd(ctx, deps, src));
+    assertEquals(findCompleted(events)?.kind, "completed");
   });
 });
 

@@ -617,8 +617,8 @@ swamp extension source rm "~/code/swamp-extensions/model/aws/*"
 ```
 
 `swamp extension source add` fails with a clear error if the path contributes no
-extensions, so misconfigured paths are caught at add time rather than silently
-ignored. After adding, verify the source loaded:
+extensions or apps, so misconfigured paths are caught at add time rather than
+silently ignored. After adding, verify the source loaded:
 
 ```bash
 swamp extension source list --json  # Confirm the new source appears

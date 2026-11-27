@@ -88,6 +88,9 @@ class LogSourceListRenderer implements Renderer<SourceListEvent> {
                 ),
               );
             }
+            if (source.hasApps) {
+              writeOutput(dim("    apps"));
+            }
             if (source.expandedPaths.length > 1) {
               writeOutput(
                 dim(`    ${source.expandedPaths.length} extension roots`),

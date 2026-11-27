@@ -41,11 +41,13 @@ import {
   type ResolvedSkill,
   resolveSourceSkills,
 } from "./source_skills.ts";
+import { resolveSourceHasApps } from "./source_apps.ts";
 
 export interface SourceAddDeps {
   readSources: () => Promise<SwampSourcesConfig | null>;
   writeSources: (config: SwampSourcesConfig) => Promise<void>;
   resolveKinds: (source: SwampSource) => Promise<ExtensionKind[]>;
+  hasApps: (source: SwampSource) => Promise<boolean>;
   expandSource: (source: SwampSource) => Promise<SwampSource[]>;
   resolveSkills: (sourcePath: string) => Promise<ResolvedSkill[]>;
   copySkills: (skills: ResolvedSkill[]) => Promise<string[]>;
@@ -74,6 +76,7 @@ export async function createSourceAddDeps(
     writeSources: (config) => writeSwampSources(repoDir, config),
     resolveKinds: (source) =>
       resolveExtensionKindsForSource(source, sourceBaseDir),
+    hasApps: (source) => resolveSourceHasApps(source, sourceBaseDir),
     expandSource: (source) =>
       expandSourcePaths({ sources: [source] }, repoDir, sourceBaseDir),
     resolveSkills: (sourcePath) =>
@@ -149,7 +152,7 @@ export async function* sourceAdd(
   const isGlob = isGlobPattern(path);
   let cachedExpansions: SwampSource[] | undefined;
   const resolvedKinds = await deps.resolveKinds(tentative);
-  if (resolvedKinds.length === 0) {
+  if (resolvedKinds.length === 0 && !(await deps.hasApps(tentative))) {
     if (isGlob) {
       cachedExpansions = await deps.expandSource(tentative);
       if (cachedExpansions.length > 0) {
@@ -158,9 +161,10 @@ export async function* sourceAdd(
           error: validationFailed(
             `No extensions found under glob '${path}'. ` +
               `All ${cachedExpansions.length} matched path(s) lack either ` +
-              `'extensions/<kind>/' subdirectories or files declaring ` +
+              `'extensions/<kind>/' subdirectories, files declaring ` +
               `extension exports (model, vault, datastore, ` +
-              `report, or workflow). Check the target paths or remove ` +
+              `report, or workflow), or an app at ` +
+              `'extensions/apps/<folder>/app.yaml'. Check the target paths or remove ` +
               `the source.`,
           ),
         };
@@ -173,9 +177,10 @@ export async function* sourceAdd(
         error: validationFailed(
           `No extensions found at '${path}'. ` +
             `Expected either 'extensions/<kind>/' subdirectories (where ` +
-            `<kind> is one of ${probed.join(", ")}) OR files declaring ` +
+            `<kind> is one of ${probed.join(", ")}), files declaring ` +
             `extension exports (model, vault, datastore, report) ` +
-            `or workflow YAML directly in the path.`,
+            `or workflow YAML directly in the path, OR an app at ` +
+            `'extensions/apps/<folder>/app.yaml'.`,
         ),
       };
       return;
