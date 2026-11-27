@@ -34,7 +34,7 @@ import {
   V3ReplicationError,
   V3ReplicationUnavailableError,
 } from "../src/domain/datastore_v3/litestream_replication.ts";
-import { join } from "@std/path";
+import { basename, join, relative } from "@std/path";
 import { waitFor } from "@swamp-club/swamp-testing";
 import {
   bytesUnder,
@@ -822,6 +822,39 @@ async function replicaFiles(dir: string): Promise<Set<string>> {
   return names;
 }
 
+// .tmp: an upload a SIGKILL cut short
+const LTX_NAME = /^([0-9a-f]{16})-([0-9a-f]{16})\.ltx(\.tmp)?$/;
+
+function maxTxidOf(path: string): bigint | undefined {
+  const match = LTX_NAME.exec(basename(path));
+  return match === null ? undefined : BigInt(`0x${match[2]}`);
+}
+
+/**
+ * the files written after `before` that are not a rewrite of what the lineage
+ * already held: TXIDs order only within one lineage, so any new file outside
+ * it counts
+ */
+function newDataSince(
+  before: Set<string>,
+  after: Set<string>,
+  lineage: string,
+): string[] {
+  let held: bigint | undefined;
+  for (const path of before) {
+    if (relative(lineage, path).startsWith("..")) continue;
+    const txid = maxTxidOf(path);
+    if (txid !== undefined && (held === undefined || txid > held)) held = txid;
+  }
+  assert(held !== undefined, "the lineage held replicated commits");
+  return [...after].filter((path) => {
+    if (before.has(path)) return false;
+    if (relative(lineage, path).startsWith("..")) return true;
+    const txid = maxTxidOf(path);
+    return txid === undefined || txid > held;
+  });
+}
+
 function sidecarGone(presence: {
   supervisorPid: number;
   litestreamPid?: number;
@@ -873,11 +906,16 @@ Deno.test({
           "the owned sidecar to stop once its owner is gone",
           { timeoutMs: 5_000 },
         );
-        const after = await replicaFiles(env.replicaRoot);
+        // a compaction may land in the tick before the owner is judged gone;
+        // it rewrites only commits the lineage held
         assertEquals(
-          [...after].filter((name) => !atDeath.has(name)),
+          newDataSince(
+            atDeath,
+            await replicaFiles(env.replicaRoot),
+            replicaPathFor(env.replicaRoot, presence.lineageFence),
+          ),
           [],
-          "nothing is uploaded after the owner died",
+          "nothing newer than the lineage held is uploaded after the owner died",
         );
         assertEquals(await presenceOf(env), undefined);
       });
