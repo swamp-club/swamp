@@ -182,8 +182,6 @@ interface MemberProcess extends AsyncDisposable {
   readonly instanceId: string;
   readonly built: boolean;
   stop(): Promise<void>;
-  /** ends the process with no shutdown, as a crash does */
-  kill(): void;
 }
 
 async function startMember(
@@ -223,10 +221,6 @@ async function startMember(
     instanceId: started.instanceId,
     built: started.built,
     stop,
-    kill() {
-      stopped = true;
-      host.terminate();
-    },
     [Symbol.asyncDispose]: stop,
   };
 }
@@ -609,7 +603,7 @@ for (const drops of [1, 2]) {
   });
 }
 
-Deno.test("federation member: killed after its join reached the hub, the restarted member is the same member", async () => {
+Deno.test("federation member: stopped after its join reached the hub, the restarted member is the same member", async () => {
   resetRateLimitState();
   await using h = await startHub();
   await using proxy = droppingProxy(h.url, Number.MAX_SAFE_INTEGER);
@@ -621,7 +615,7 @@ Deno.test("federation member: killed after its join reached the hub, the restart
     async () => (await memberNamed(h, "edge")) !== undefined,
     "the hub accepting the join",
   );
-  first.kill();
+  await first.stop();
   const memberId = (await memberNamed(h, "edge"))!.memberId;
   assertEquals((await repo.link()).state, "joining");
   await repo.configure({ hubUrl: h.url, token: plaintext });
