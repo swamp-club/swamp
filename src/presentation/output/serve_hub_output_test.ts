@@ -21,6 +21,10 @@ import { assert, assertEquals } from "@std/assert";
 import { stripAnsiCode } from "@std/fmt/colors";
 import type { HubLinkView } from "../../domain/serve/hub_link.ts";
 import { renderHubForget, renderHubLink } from "./serve_hub_output.ts";
+import {
+  assertNoControlCharacters,
+  captureRaw,
+} from "./terminal_output_test_helpers.ts";
 
 function capture(fn: () => void): string {
   const lines: string[] = [];
@@ -109,4 +113,28 @@ Deno.test("renderHubLink: a joining link shows its last attempt and next retry, 
   ));
   assert(out.includes("no reply yet, last attempt 2026-11-26T12:00:30.000Z"));
   assert(!out.includes("no check-in yet"));
+});
+
+Deno.test("renderHubLink and renderHubForget: control characters the hub sent print escaped, and JSON is unchanged", () => {
+  const hostile: HubLinkView = {
+    ...VIEW,
+    hubName: "central\x1b]0;pwned\x07",
+    memberName: "edge\x1b[2K",
+  };
+  const link = captureRaw(() => renderHubLink({ link: hostile }, "log"));
+  assertNoControlCharacters(link);
+  assert(stripAnsiCode(link).includes("central\\x1b]0;pwned\\x07"));
+  assert(stripAnsiCode(link).includes("edge\\x1b[2K"));
+  assertEquals(
+    captureRaw(() => renderHubLink({ link: hostile }, "json")),
+    JSON.stringify({ link: hostile }, null, 2),
+  );
+  const forget = captureRaw(() =>
+    renderHubForget(
+      { forgot: true, hubUrl: "https://hub\x07", memberName: "edge\x1b[2K" },
+      "log",
+    )
+  );
+  assertNoControlCharacters(forget);
+  assert(stripAnsiCode(forget).includes("https://hub\\x07 as edge\\x1b[2K"));
 });

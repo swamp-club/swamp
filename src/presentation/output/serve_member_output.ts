@@ -20,6 +20,8 @@
 import { bold, cyan, dim, green, red, yellow } from "@std/fmt/colors";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { maxOf } from "../../domain/array_extrema.ts";
+// a member sent these strings; log mode escapes them, JSON.stringify escapes JSON
+import { escapeControlCharacters as shown } from "../../domain/control_characters.ts";
 import type { MemberData } from "../../libswamp/serve/member_get.ts";
 import type { ServeMemberRecord } from "../../domain/serve/serve_member.ts";
 import type { MemberLiveView } from "../../domain/serve/member_live_view.ts";
@@ -96,10 +98,10 @@ function runtimeFacts(runtime: FingerprintRuntime | null): string {
   if (runtime === null) return "no runtime reported";
   const team = runtime.team === null
     ? "no team"
-    : `${runtime.team.role} of ${runtime.team.nodes}`;
+    : `${shown(runtime.team.role)} of ${runtime.team.nodes}`;
   const started = runtime.startedAt === null
     ? "start unknown"
-    : `started ${runtime.startedAt}`;
+    : `started ${shown(runtime.startedAt)}`;
   const ready = runtime.ready === null
     ? "readiness unknown"
     : runtime.ready
@@ -200,13 +202,13 @@ export function renderMemberList(
     table(
       ["NAME", "ROLE", "STATUS", "LAST SEEN", "INSTANCES", "SWAMP", "JOINED"],
       data.members.map((member) => [
-        member.name,
-        member.role,
-        member.status,
+        shown(member.name),
+        shown(member.role),
+        shown(member.status),
         lastSeen(member.live?.lastSeenAt ?? null, now),
         String(member.instances.length),
-        member.fingerprint.swampVersion,
-        member.joinedAt,
+        shown(member.fingerprint.swampVersion),
+        shown(member.joinedAt),
       ]),
       (column, value) => column === 2 ? colorState(value) : value,
     ).join("\n"),
@@ -223,23 +225,27 @@ export function renderMemberGet(
   const member = data.member;
   const f = member.fingerprint;
   const lines = [
-    `${key("Member")} ${bold(member.name)} ${dim(`(${member.role})`)}`,
-    `${key("Status")} ${colorState(member.status)}`,
-    `${key("Member id")} ${member.memberId}`,
-    `${key("Joined")} ${member.joinedAt}`,
+    `${key("Member")} ${bold(shown(member.name))} ${
+      dim(`(${shown(member.role)})`)
+    }`,
+    `${key("Status")} ${colorState(shown(member.status))}`,
+    `${key("Member id")} ${shown(member.memberId)}`,
+    `${key("Joined")} ${shown(member.joinedAt)}`,
   ];
   if (member.removedAt !== undefined) {
-    lines.push(`${key("Removed")} ${member.removedAt}`);
+    lines.push(`${key("Removed")} ${shown(member.removedAt)}`);
   }
   lines.push("");
   lines.push(cyan("Fingerprint:"));
-  lines.push(`  ${key("Swamp version")} ${f.swampVersion}`);
-  lines.push(`  ${key("Platform")} ${f.platform}/${f.arch}`);
-  lines.push(`  ${key("Mode")} ${f.deploymentMode}`);
+  lines.push(`  ${key("Swamp version")} ${shown(f.swampVersion)}`);
+  lines.push(`  ${key("Platform")} ${shown(f.platform)}/${shown(f.arch)}`);
+  lines.push(`  ${key("Mode")} ${shown(f.deploymentMode)}`);
   lines.push(
-    `  ${key("Datastore")} ${f.datastoreKind} ${dim(`(${f.datastoreFormat})`)}`,
+    `  ${key("Datastore")} ${shown(f.datastoreKind)} ${
+      dim(`(${shown(f.datastoreFormat)})`)
+    }`,
   );
-  lines.push(`  ${key("Auth mode")} ${f.authMode}`);
+  lines.push(`  ${key("Auth mode")} ${shown(f.authMode)}`);
   lines.push("");
   lines.push(cyan("Instances:"));
   if (member.instances.length === 0) {
@@ -247,9 +253,11 @@ export function renderMemberGet(
   }
   for (const instance of member.instances) {
     lines.push(
-      `  ${instance.instanceId} ${
+      `  ${shown(instance.instanceId)} ${
         dim(
-          `(swamp ${instance.swampVersion}, first seen ${instance.firstSeen})`,
+          `(swamp ${shown(instance.swampVersion)}, first seen ${
+            shown(instance.firstSeen)
+          })`,
         )
       }`,
     );
@@ -265,12 +273,12 @@ export function renderMemberGet(
   }
   lines.push(
     `  ${key("Last seen")} ${lastSeen(live.lastSeenAt, now)}${
-      live.lastSeenAt === null ? "" : dim(` (${live.lastSeenAt})`)
+      live.lastSeenAt === null ? "" : dim(` (${shown(live.lastSeenAt)})`)
     }`,
   );
   for (const instance of live.instances) {
     lines.push(
-      `  ${instance.instanceId} ${lastSeen(instance.lastSeenAt, now)} ${
+      `  ${shown(instance.instanceId)} ${lastSeen(instance.lastSeenAt, now)} ${
         dim(`(${runtimeFacts(instance.runtime)})`)
       }`,
     );
@@ -281,7 +289,7 @@ export function renderMemberGet(
 export function renderMemberRemove(data: MemberData, mode: OutputMode): void {
   if (mode === "json") return json(data);
   writeOutput([
-    `${green(checkmark)} Member ${bold(data.member.name)} removed.`,
+    `${green(checkmark)} Member ${bold(shown(data.member.name))} removed.`,
     dim(
       "Its credential no longer checks in; the record is kept, marked removed.",
     ),

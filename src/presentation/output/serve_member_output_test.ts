@@ -36,6 +36,10 @@ import {
   renderMemberTokenList,
   renderMemberTokenRevoke,
 } from "./serve_member_output.ts";
+import {
+  assertNoControlCharacters,
+  captureRaw,
+} from "./terminal_output_test_helpers.ts";
 
 await initializeLogging({});
 
@@ -323,4 +327,44 @@ Deno.test("renderMemberList and renderMemberGet: a fingerprint value this swamp 
     JSON.parse(captured(() => renderMemberList({ members: [member] }, "json"))),
     { members: [member] },
   );
+});
+
+Deno.test("renderMemberGet: control characters a member sent in its fingerprint and runtime print escaped, and JSON is unchanged", () => {
+  const hostile = {
+    ...MEMBER,
+    fingerprint: { ...MEMBER.fingerprint, platform: "linux\x1b[2J" },
+    live: {
+      ...MEMBER.live,
+      instances: [{
+        ...MEMBER.live.instances[0],
+        runtime: {
+          team: { role: "leader\x07", nodes: 2 },
+          startedAt: null,
+          ready: true,
+        },
+      }],
+    },
+  };
+  const out = captureRaw(() =>
+    renderMemberGet({ member: hostile }, "log", NOW)
+  );
+  assertNoControlCharacters(out);
+  assertStringIncludes(stripAnsiCode(out), "Platform: linux\\x1b[2J/");
+  assertStringIncludes(stripAnsiCode(out), "leader\\x07 of 2");
+  const json = captureRaw(() => renderMemberGet({ member: hostile }, "json"));
+  assertEquals(json, JSON.stringify({ member: hostile }, null, 2));
+});
+
+Deno.test("renderMemberList: an escaped swampVersion keeps the columns after it aligned", () => {
+  const hostile = {
+    ...MEMBER,
+    fingerprint: { ...MEMBER.fingerprint, swampVersion: "1.0\x07" },
+  };
+  const out = captureRaw(() =>
+    renderMemberList({ members: [hostile] }, "log", NOW)
+  );
+  assertNoControlCharacters(out);
+  const [header, row] = stripAnsiCode(out).split("\n");
+  assertStringIncludes(row, "1.0\\x07");
+  assertEquals(row.indexOf(hostile.joinedAt), header.indexOf("JOINED"));
 });

@@ -19,6 +19,8 @@
 
 import { bold, cyan, dim, green, red, yellow } from "@std/fmt/colors";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
+// the hub sent these strings; log mode escapes them, JSON.stringify escapes JSON
+import { escapeControlCharacters as shown } from "../../domain/control_characters.ts";
 import type {
   HubLinkInstance,
   HubLinkState,
@@ -62,13 +64,13 @@ const STATE_HINTS: Record<HubLinkState, string | undefined> = {
 
 function instanceLine(instance: HubLinkInstance): string {
   const status = instance.stoppedAt !== null
-    ? dim(`stopped ${instance.stoppedAt}`)
+    ? dim(`stopped ${shown(instance.stoppedAt)}`)
     : instance.result === "ok"
-    ? green(`ok, last check-in ${instance.lastSuccessAt}`)
+    ? green(`ok, last check-in ${shown(String(instance.lastSuccessAt))}`)
     : instance.result === null && instance.lastAttemptAt === null
     ? dim("no check-in yet")
     : yellow(
-      `${instance.result ?? "no reply yet"}${
+      `${shown(instance.result ?? "no reply yet")}${
         instance.consecutiveFailures === 1
           ? " (1 failure)"
           : instance.consecutiveFailures > 1
@@ -76,15 +78,15 @@ function instanceLine(instance: HubLinkInstance): string {
           : ""
       }${
         instance.lastAttemptAt !== null
-          ? `, last attempt ${instance.lastAttemptAt}`
+          ? `, last attempt ${shown(instance.lastAttemptAt)}`
           : ""
       }${
         instance.nextAttemptAt !== null
-          ? `, next attempt ${instance.nextAttemptAt}`
+          ? `, next attempt ${shown(instance.nextAttemptAt)}`
           : ""
       }`,
     );
-  return `  ${instance.instanceId}  ${status}`;
+  return `  ${shown(instance.instanceId)}  ${status}`;
 }
 
 export function renderHubLink(
@@ -94,20 +96,24 @@ export function renderHubLink(
   if (mode === "json") return json(data);
   const link = data.link;
   const lines = [
-    `${key("Hub")} ${link.hubUrl ?? link.configuredHubUrl}${
-      link.hubName !== null ? ` (${bold(link.hubName)})` : ""
+    `${key("Hub")} ${shown(link.hubUrl ?? link.configuredHubUrl)}${
+      link.hubName !== null ? ` (${bold(shown(link.hubName))})` : ""
     }`,
   ];
   if (link.hubUrl !== null && link.hubUrl !== link.configuredHubUrl) {
-    lines.push(`${key("serve.yaml names")} ${link.configuredHubUrl}`);
+    lines.push(`${key("serve.yaml names")} ${shown(link.configuredHubUrl)}`);
   }
   lines.push(`${key("State")} ${colorState(link.state)}`);
   if (link.memberName !== null) {
     lines.push(
-      `${key("Member")} ${bold(link.memberName)} ${dim(link.memberId ?? "")}`,
+      `${key("Member")} ${bold(shown(link.memberName))} ${
+        dim(shown(link.memberId ?? ""))
+      }`,
     );
   }
-  if (link.joinedAt !== null) lines.push(`${key("Joined")} ${link.joinedAt}`);
+  if (link.joinedAt !== null) {
+    lines.push(`${key("Joined")} ${shown(link.joinedAt)}`);
+  }
   lines.push(key("Instances"));
   if (link.instances.length === 0) lines.push(dim("  none"));
   for (const instance of link.instances) lines.push(instanceLine(instance));
@@ -123,8 +129,10 @@ export function renderHubForget(data: HubForgetData, mode: OutputMode): void {
     return;
   }
   writeOutput([
-    `${green("✓")} Forgot the link to ${data.hubUrl ?? "its hub"}${
-      data.memberName !== null ? ` as ${bold(data.memberName)}` : ""
+    `${green("✓")} Forgot the link to ${
+      data.hubUrl === null ? "its hub" : shown(data.hubUrl)
+    }${
+      data.memberName !== null ? ` as ${bold(shown(data.memberName))}` : ""
     }, and its credential.`,
     dim(
       "Set federation.hub and a join-token-file in serve.yaml, then start serve, to join a hub again.",
