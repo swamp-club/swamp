@@ -24,6 +24,7 @@ import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
 import { carryModelWording } from "../../domain/behavior_wording.ts";
+import { escapeControlCharactersInText } from "../../domain/control_characters.ts";
 import {
   prettyJsonChunks,
   type Sink,
@@ -35,6 +36,14 @@ import {
 export interface ModelOutputDataRenderOptions {
   /** receives the JSON document, or in log mode only a JSON value; stdout when unset */
   sink?: Sink;
+  isTerminal?: () => boolean;
+}
+
+function* mapChunks(
+  chunks: Iterable<string>,
+  map: (text: string) => string,
+): Generator<string> {
+  for (const chunk of chunks) yield map(chunk);
 }
 
 class LogModelOutputDataRenderer implements Renderer<ModelOutputDataEvent> {
@@ -44,16 +53,21 @@ class LogModelOutputDataRenderer implements Renderer<ModelOutputDataEvent> {
     return {
       resolving: () => {},
       completed: async (e) => {
+        // piped bytes stay exact; only a terminal gets the escaped form
+        const shown =
+          (this.options.isTerminal ?? (() => Deno.stdout.isTerminal()))()
+            ? escapeControlCharactersInText
+            : (text: string) => text;
         if (e.data.contentEncoding === "base64") {
           console.log(
             dim("(binary data — use --json to get it base64-encoded)"),
           );
         } else if (typeof e.data.data === "string") {
-          console.log(e.data.data);
+          console.log(shown(e.data.data));
         } else {
           // in pieces: indented, the value can pass V8's string limit
           await writeTextChunks(
-            withNewline(prettyJsonChunks(e.data.data)),
+            withNewline(mapChunks(prettyJsonChunks(e.data.data), shown)),
             this.options.sink,
           );
         }

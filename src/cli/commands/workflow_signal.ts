@@ -70,6 +70,7 @@ import {
 } from "../../domain/workflows/signal_wait.ts";
 import { normalizeWaitId } from "../../domain/workflows/signal_wait_records.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
+import { escapeControlCharacters } from "../../domain/control_characters.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -143,6 +144,7 @@ export function renderSignalResult(
     console.log(JSON.stringify(data));
     return;
   }
+  const resumeCommand = escapeControlCharacters(data.resumeCommand);
   if (data.key === undefined) {
     cliCtx.logger
       .info`Signalled step ${data.stepName} in workflow ${data.workflowName}`;
@@ -155,10 +157,12 @@ export function renderSignalResult(
   if (cliCtx.verbosity === "quiet") return;
   if (data.duplicate) {
     writeOutput(
-      `A signal with this idempotency key was already received at ${data.signal.receivedAt} and settled the wait. This one was not delivered again.` +
+      `A signal with this idempotency key was already received at ${
+        escapeControlCharacters(data.signal.receivedAt)
+      } and settled the wait. This one was not delivered again.` +
         // The reply that was lost is where the sender would have read this.
         (data.awaitingResume
-          ? ` If the run was not resumed since: ${data.resumeCommand}`
+          ? ` If the run was not resumed since: ${resumeCommand}`
           : ""),
     );
     return;
@@ -168,10 +172,10 @@ export function renderSignalResult(
     // it to a wait that was open already. Only the run tells the two apart.
     writeOutput(
       data.awaitingResume
-        ? `The step's wait took the signal while its run was suspended. swamp serve resumes the run by itself where auto-resume applies. Otherwise: ${data.resumeCommand}`
+        ? `The step's wait took the signal while its run was suspended. swamp serve resumes the run by itself where auto-resume applies. Otherwise: ${resumeCommand}`
         : !data.runRecordAvailable
         ? `The step's wait took the signal. This host has no copy of the run, so it cannot tell whether the run went on by itself. ` +
-          `Check with "swamp workflow waits", and if the run is suspended resume it where it is: ${data.resumeCommand}`
+          `Check with "swamp workflow waits", and if the run is suspended resume it where it is: ${resumeCommand}`
         : "The step took the signal, and its run has nothing to resume: it went on without waiting, or it still waits on something else.",
     );
     return;
@@ -179,11 +183,11 @@ export function renderSignalResult(
   // The step shows as waiting until the resume applies the signal.
   writeOutput(
     data.awaitingResume
-      ? `swamp serve resumes the run by itself where auto-resume applies. Otherwise: ${data.resumeCommand}`
+      ? `swamp serve resumes the run by itself where auto-resume applies. Otherwise: ${resumeCommand}`
       : !data.runRecordAvailable
       ? `This host has no copy of the run, so it cannot tell whether the run still waits on something else. ` +
-        `Check with "swamp workflow waits", then resume where the run is: ${data.resumeCommand}`
-      : `The run still waits on something else. Once that settles: ${data.resumeCommand}`,
+        `Check with "swamp workflow waits", then resume where the run is: ${resumeCommand}`
+      : `The run still waits on something else. Once that settles: ${resumeCommand}`,
   );
 }
 
@@ -209,7 +213,9 @@ export function renderPendingSignalResult(
   if (cliCtx.verbosity === "quiet") return;
   if (data.duplicate) {
     writeOutput(
-      `A signal with this idempotency key was already received at ${data.signal.receivedAt} and is the one held. Nothing more was stored.`,
+      `A signal with this idempotency key was already received at ${
+        escapeControlCharacters(data.signal.receivedAt)
+      } and is the one held. Nothing more was stored.`,
     );
     return;
   }
@@ -222,8 +228,12 @@ export function renderPendingSignalResult(
   if (last?.settledAs === "accepted") {
     writeOutput(
       `The last wait under the key was settled by ${
-        last.receipt ? `signal ${last.receipt.id}` : "a signal"
-      } at ${last.settledAt}. If this is a retry of a signal sent at about that time, the first one landed and this one is held for the next run.`,
+        last.receipt
+          ? `signal ${escapeControlCharacters(last.receipt.id)}`
+          : "a signal"
+      } at ${
+        escapeControlCharacters(last.settledAt)
+      }. If this is a retry of a signal sent at about that time, the first one landed and this one is held for the next run.`,
     );
   }
 }
@@ -344,7 +354,9 @@ export function renderRemoteSignalResult(
   if (cliCtx.verbosity === "quiet") return;
   if (data.duplicate) {
     writeOutput(
-      `A signal with this idempotency key was already received at ${data.signal.receivedAt} and settled the wait. This one was not delivered again.`,
+      `A signal with this idempotency key was already received at ${
+        escapeControlCharacters(data.signal.receivedAt)
+      } and settled the wait. This one was not delivered again.`,
     );
     return;
   }
@@ -372,7 +384,9 @@ export function renderAcceptedSignalResult(
   if (cliCtx.verbosity === "quiet") return;
   if (data.duplicate) {
     writeOutput(
-      `A signal with this idempotency key was already received at ${data.signal.receivedAt}. Nothing more was done with this one.`,
+      `A signal with this idempotency key was already received at ${
+        escapeControlCharacters(data.signal.receivedAt)
+      }. Nothing more was done with this one.`,
     );
     return;
   }

@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { bold, dim, green, red } from "@std/fmt/colors";
+import { escapeControlCharacters } from "../../domain/control_characters.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type { AuditVerifyResponse } from "../../serve/protocol.ts";
 import type { OutputMode } from "./output.ts";
@@ -33,32 +34,34 @@ export function renderAuditVerify(
 
   if (data.valid) {
     writeOutput(
-      `${green("✓")} ${
-        bold("Chain integrity verified")
-      }: ${data.eventsChecked} events checked`,
+      `${green("✓")} ${bold("Chain integrity verified")}: ${
+        escapeControlCharacters(String(data.eventsChecked))
+      } events checked`,
     );
-    if (data.message) writeOutput(dim(data.message));
+    if (data.message) writeOutput(dim(escapeControlCharacters(data.message)));
   } else {
     writeOutput(
       `${red("✗")} ${bold("Chain integrity broken")} at sequence ${
-        data.brokenAt ?? "unknown"
-      }: ${data.eventsChecked} events checked`,
+        escapeControlCharacters(String(data.brokenAt ?? "unknown"))
+      }: ${escapeControlCharacters(String(data.eventsChecked))} events checked`,
     );
-    if (data.message) writeOutput(dim(data.message));
+    if (data.message) writeOutput(dim(escapeControlCharacters(data.message)));
   }
 
   if (data.hmacChecked !== undefined) {
     if (data.hmacValid) {
       writeOutput(
-        `${green("✓")} ${
-          bold("HMAC integrity verified")
-        }: ${data.hmacChecked} events checked`,
+        `${green("✓")} ${bold("HMAC integrity verified")}: ${
+          escapeControlCharacters(String(data.hmacChecked))
+        } events checked`,
       );
     } else {
       writeOutput(
         `${red("✗")} ${bold("HMAC integrity failed")}: ${
-          data.hmacFailed ?? 0
-        } of ${data.hmacChecked} events failed verification`,
+          escapeControlCharacters(String(data.hmacFailed ?? 0))
+        } of ${
+          escapeControlCharacters(String(data.hmacChecked))
+        } events failed verification`,
       );
     }
   }

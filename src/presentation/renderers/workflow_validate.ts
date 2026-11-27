@@ -30,6 +30,10 @@ import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
+import {
+  escapeControlCharacters,
+  escapeControlCharactersInText,
+} from "../../domain/control_characters.ts";
 
 const checkmark = "\u2713";
 const cross = "\u2717";
@@ -42,16 +46,20 @@ function formatValidationLines(
   const lines: string[] = [];
   for (const v of validations) {
     if (v.warning) {
-      lines.push(`  ${yellow(warningSign)} ${v.name}`);
+      lines.push(`  ${yellow(warningSign)} ${escapeControlCharacters(v.name)}`);
       if (v.error) {
-        lines.push(`    ${yellow(arrow)} ${v.error}`);
+        lines.push(
+          `    ${yellow(arrow)} ${escapeControlCharactersInText(v.error)}`,
+        );
       }
     } else if (v.passed) {
-      lines.push(`  ${green(checkmark)} ${v.name}`);
+      lines.push(`  ${green(checkmark)} ${escapeControlCharacters(v.name)}`);
     } else {
-      lines.push(`  ${red(cross)} ${v.name}`);
+      lines.push(`  ${red(cross)} ${escapeControlCharacters(v.name)}`);
       if (v.error) {
-        lines.push(`    ${red(arrow)} ${v.error}`);
+        lines.push(
+          `    ${red(arrow)} ${escapeControlCharactersInText(v.error)}`,
+        );
       }
     }
   }
@@ -122,7 +130,9 @@ class LogWorkflowValidateRenderer implements WorkflowValidateRenderer {
     this._passed = data.passed;
     const lines: string[] = [];
     lines.push(
-      `${bold(cyan("Validating:"))} ${bold(data.workflowName)}`,
+      `${bold(cyan("Validating:"))} ${
+        bold(escapeControlCharacters(data.workflowName))
+      }`,
     );
     lines.push(...formatValidationLines(data.validations));
 
@@ -150,7 +160,7 @@ class LogWorkflowValidateRenderer implements WorkflowValidateRenderer {
 
     for (const workflow of data.workflows) {
       lines.push("");
-      lines.push(bold(cyan(workflow.workflowName)));
+      lines.push(bold(cyan(escapeControlCharacters(workflow.workflowName))));
       lines.push(...formatValidationLines(workflow.validations));
       lines.push(formatResult(workflow.passed, "Result"));
     }

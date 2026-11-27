@@ -19,6 +19,7 @@
 
 import { renderMermaidAscii } from "@vercel/beautiful-mermaid";
 import type { WorkflowGetData } from "../../libswamp/workflows/get.ts";
+import { escapeControlCharacters } from "../../domain/control_characters.ts";
 
 const ASCII_OPTIONS = { paddingX: 2, paddingY: 1, boxBorderPadding: 0 };
 
@@ -35,7 +36,7 @@ function taskLabel(task: { type: string; [key: string]: unknown }): string {
     case "wait_for_signal":
       return "signal";
     default:
-      return task.type;
+      return escapeControlCharacters(task.type);
   }
 }
 
@@ -45,7 +46,7 @@ function buildJobDiagram(data: WorkflowGetData): string {
   for (const [i, job] of data.jobs.entries()) {
     const id = `j${i}`;
     ids.set(job.name, id);
-    lines.push(`  ${id}[${job.name}]`);
+    lines.push(`  ${id}[${escapeControlCharacters(job.name)}]`);
   }
   for (const job of data.jobs) {
     for (const dep of job.dependsOn) {
@@ -64,7 +65,9 @@ function buildStepDiagram(job: WorkflowGetData["jobs"][number]): string {
   const ids = new Map<string, string>();
   for (const [i, step] of job.steps.entries()) {
     const id = `s${i}`;
-    const label = `${step.name} - ${taskLabel(step.task)}`;
+    const label = `${escapeControlCharacters(step.name)} - ${
+      taskLabel(step.task)
+    }`;
     ids.set(step.name, id);
     lines.push(`  ${id}[${label}]`);
   }
@@ -88,7 +91,7 @@ export function renderWorkflowGraph(
   const jobCount = data.jobs.length;
   const stepCount = data.jobs.reduce((n, j) => n + j.steps.length, 0);
   lines.push(
-    `Workflow: ${data.name} (${jobCount} ${
+    `Workflow: ${escapeControlCharacters(data.name)} (${jobCount} ${
       jobCount === 1 ? "job" : "jobs"
     }, ${stepCount} ${stepCount === 1 ? "step" : "steps"})`,
   );
@@ -105,7 +108,7 @@ export function renderWorkflowGraph(
     const hasStepDeps = job.steps.some((s) => s.dependsOn.length > 0);
     if (!hasStepDeps) continue;
     lines.push("");
-    lines.push(`Job: ${job.name}`);
+    lines.push(`Job: ${escapeControlCharacters(job.name)}`);
     lines.push(renderMermaidAscii(buildStepDiagram(job), ASCII_OPTIONS));
   }
 

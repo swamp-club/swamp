@@ -19,6 +19,7 @@
 
 import type { Logger } from "@logtape/logtape";
 import { escapeLogTemplate } from "../../infrastructure/logging/logger.ts";
+import { escapeControlCharactersInText } from "../../domain/control_characters.ts";
 
 export type LogTextLevel = "info" | "warn" | "error";
 
@@ -33,6 +34,9 @@ export function logTextBlock(
   indent: string,
 ): void {
   for (const line of text.replace(/(\r?\n)+$/, "").split(/\r?\n/)) {
-    logger[level](escapeLogTemplate(`${indent}${line}`));
+    // the formatter prints a message's literal text raw, so the line is escaped here
+    logger[level](
+      escapeLogTemplate(`${indent}${escapeControlCharactersInText(line)}`),
+    );
   }
 }

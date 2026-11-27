@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { stripAnsiCode } from "@std/fmt/colors";
+import { hasControlCharacter } from "../../domain/control_characters.ts";
 import {
   assertEquals,
   assertNotEquals,
@@ -1948,6 +1950,37 @@ Deno.test("renderError: a SQLite busy wait in a command that may have landed is 
     const json = JSON.parse(logs[0]);
     assertEquals(json.code, COMMIT_MAY_LAND_CODE);
     assertStringIncludes(json.error, "unknown");
+  } finally {
+    console.error = originalError;
+  }
+});
+
+Deno.test("renderError: escapes control characters in a UserError message and keeps its line breaks", () => {
+  const logs: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => logs.push(args.join(" "));
+  const hostile = "refused by serve\x1b]0;owned\x07\r\nline two \x1b[2J\x9b";
+  try {
+    renderError(new UserError(hostile));
+    const out = stripAnsiCode(logs.join("\n"));
+    assertStringIncludes(
+      out,
+      "refused by serve\\x1b]0;owned\\x07\nline two \\x1b[2J\\x9b",
+    );
+    assertEquals(hasControlCharacter(out.replaceAll("\n", "")), false);
+  } finally {
+    console.error = originalError;
+  }
+});
+
+Deno.test("renderError: json mode keeps a UserError message exactly as given", () => {
+  const logs: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => logs.push(args.join(" "));
+  const hostile = "refused\x1b[2J\x9b";
+  try {
+    renderError(new UserError(hostile), "json");
+    assertEquals(JSON.parse(logs.join("\n")).error, hostile);
   } finally {
     console.error = originalError;
   }

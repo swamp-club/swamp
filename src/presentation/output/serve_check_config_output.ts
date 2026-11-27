@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { bold, cyan, dim, green, red, yellow } from "@std/fmt/colors";
+import { escapeControlCharacters as esc } from "../../domain/control_characters.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type {
   AccessListCheckEntry,
@@ -112,15 +113,21 @@ function entryLines(
 ): string[] {
   return entries.map((e) =>
     e.status === "resolved"
-      ? `  ${green(CHECKMARK)} ${e.entry} ${dim(`${ARROW} ${e.sub}`)}`
-      : `  ${red(CROSS)} ${e.entry} ${red(`${ARROW} not found on ${provider}`)}`
+      ? `  ${green(CHECKMARK)} ${esc(e.entry)} ${
+        dim(`${ARROW} ${esc(String(e.sub))}`)
+      }`
+      : `  ${red(CROSS)} ${esc(e.entry)} ${
+        red(`${ARROW} not found on ${provider}`)
+      }`
   );
 }
 
 function grantIssueLocation(issue: GrantFileCheckIssue): string {
-  return issue.entry !== undefined
-    ? `${issue.file} entry ${issue.entry}`
-    : issue.file;
+  return esc(
+    issue.entry !== undefined
+      ? `${issue.file} entry ${issue.entry}`
+      : issue.file,
+  );
 }
 
 export function renderServeCheckConfig(
@@ -135,14 +142,16 @@ export function renderServeCheckConfig(
 
   const lines: string[] = [];
   if (data.configVersion !== undefined) {
-    lines.push(`${bold(cyan("Config version:"))} ${data.configVersion}`);
+    lines.push(
+      `${bold(cyan("Config version:"))} ${esc(String(data.configVersion))}`,
+    );
   }
-  lines.push(`${bold(cyan("Auth mode:"))} ${bold(data.authMode)}`);
+  lines.push(`${bold(cyan("Auth mode:"))} ${bold(esc(data.authMode))}`);
 
   if (data.authMode !== "oauth" || data.oauthProvider === undefined) {
     lines.push(dim("  No usernames to resolve in this mode."));
   } else {
-    const provider = data.oauthProvider;
+    const provider = esc(data.oauthProvider);
     lines.push(`${bold(cyan("OAuth provider:"))} ${provider}`);
 
     const admins = data.entries.filter((e) => e.kind === "admin");
@@ -161,10 +170,12 @@ export function renderServeCheckConfig(
     if (data.allowedCollectives.length > 0) {
       lines.push("");
       lines.push(
-        `${cyan("Allowed collectives:")} ${data.allowedCollectives.join(", ")}`,
+        `${cyan("Allowed collectives:")} ${
+          esc(data.allowedCollectives.join(", "))
+        }`,
       );
       for (const personal of data.personalCollectiveWarnings ?? []) {
-        lines.push(`  ${yellow("!")} ${personal.message}`);
+        lines.push(`  ${yellow("!")} ${esc(personal.message)}`);
       }
     }
   }
@@ -172,7 +183,7 @@ export function renderServeCheckConfig(
   if (data.refusal !== undefined) {
     lines.push("");
     lines.push(`${red(CROSS)} ${red("swamp serve would refuse to start:")}`);
-    lines.push(`  ${data.refusal}`);
+    lines.push(`  ${esc(data.refusal)}`);
   }
 
   const adminWarnings = data.adminWarnings ?? [];
@@ -180,7 +191,7 @@ export function renderServeCheckConfig(
     lines.push("");
     lines.push(cyan("Admin warnings:"));
     for (const warning of adminWarnings) {
-      lines.push(`  ${yellow("!")} ${warning.message}`);
+      lines.push(`  ${yellow("!")} ${esc(warning.message)}`);
     }
   }
 
@@ -189,7 +200,7 @@ export function renderServeCheckConfig(
     lines.push("");
     lines.push(cyan("Restriction warnings:"));
     for (const warning of warnings) {
-      lines.push(`  ${yellow("!")} ${warning.message}`);
+      lines.push(`  ${yellow("!")} ${esc(warning.message)}`);
     }
   }
 
@@ -198,7 +209,7 @@ export function renderServeCheckConfig(
     lines.push("");
     lines.push(cyan("Webhook warnings:"));
     for (const warning of webhookWarnings) {
-      lines.push(`  ${yellow("!")} ${warning.message}`);
+      lines.push(`  ${yellow("!")} ${esc(warning.message)}`);
     }
   }
 
@@ -208,10 +219,10 @@ export function renderServeCheckConfig(
     lines.push("");
     lines.push(cyan("Webhook route file errors:"));
     if (routesDirError !== undefined) {
-      lines.push(`  ${red(CROSS)} ${routesDirError}`);
+      lines.push(`  ${red(CROSS)} ${esc(routesDirError)}`);
     }
     for (const error of routeFileErrors) {
-      lines.push(`  ${red(CROSS)} ${error.message}`);
+      lines.push(`  ${red(CROSS)} ${esc(error.message)}`);
     }
   }
 
@@ -224,7 +235,9 @@ export function renderServeCheckConfig(
     lines.push("");
     lines.push(
       `${cyan("Grant files:")} ${
-        dim(`${data.grantFilesChecked} file(s) checked, no problems`)
+        dim(
+          `${esc(String(data.grantFilesChecked))} file(s) checked, no problems`,
+        )
       }`,
     );
   } else if (grantErrors.length > 0 || grantWarnings.length > 0) {
@@ -233,17 +246,17 @@ export function renderServeCheckConfig(
       data.grantFilesChecked === undefined
         ? cyan("Grant files:")
         : `${cyan("Grant files:")} ${
-          dim(`${data.grantFilesChecked} file(s) checked`)
+          dim(`${esc(String(data.grantFilesChecked))} file(s) checked`)
         }`,
     );
     for (const issue of grantErrors) {
       lines.push(
-        `  ${red(CROSS)} ${grantIssueLocation(issue)}: ${issue.message}`,
+        `  ${red(CROSS)} ${grantIssueLocation(issue)}: ${esc(issue.message)}`,
       );
     }
     for (const issue of grantWarnings) {
       lines.push(
-        `  ${yellow("!")} ${grantIssueLocation(issue)}: ${issue.message}`,
+        `  ${yellow("!")} ${grantIssueLocation(issue)}: ${esc(issue.message)}`,
       );
     }
   }
@@ -252,14 +265,14 @@ export function renderServeCheckConfig(
   if (tokenKey) {
     lines.push("");
     lines.push(
-      `${
-        bold(cyan("Token secrets key:"))
-      } vault ${tokenKey.vault}, key ${tokenKey.key}`,
+      `${bold(cyan("Token secrets key:"))} vault ${esc(tokenKey.vault)}, key ${
+        esc(tokenKey.key)
+      }`,
     );
     lines.push(
       tokenKey.status === "ok"
         ? `  ${green(CHECKMARK)} resolves to a usable 32-byte key`
-        : `  ${red(CROSS)} ${red(tokenKey.error ?? "not usable")}`,
+        : `  ${red(CROSS)} ${red(esc(tokenKey.error ?? "not usable"))}`,
     );
   }
 

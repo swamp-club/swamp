@@ -25,6 +25,10 @@
 
 import { UserError } from "../domain/errors.ts";
 import { writeHeldOutput } from "./committed_output.ts";
+import {
+  escapeControlCharacters,
+  escapeControlCharactersInText,
+} from "../domain/control_characters.ts";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -83,10 +87,13 @@ export async function promptChoice(
   assertInteractiveStdin();
   writeHeldOutput();
   while (true) {
-    await Deno.stderr.write(encoder.encode(`${message}\n`));
+    await Deno.stderr.write(
+      encoder.encode(`${escapeControlCharactersInText(message)}\n`),
+    );
+    // a choice can carry registry text; the raw value is still what is returned
     for (let i = 0; i < choices.length; i++) {
       await Deno.stderr.write(
-        encoder.encode(`  ${i + 1}. ${choices[i]}\n`),
+        encoder.encode(`  ${i + 1}. ${escapeControlCharacters(choices[i])}\n`),
       );
     }
     const response = await promptLine("> ");

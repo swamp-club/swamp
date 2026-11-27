@@ -33,6 +33,10 @@ import { ROW_STATE_TAGS } from "../../domain/extensions/row_state.ts";
 import { UserError } from "../../domain/errors.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type { OutputMode } from "../output/output.ts";
+import {
+  escapeControlCharacters as esc,
+  escapeControlCharactersInText,
+} from "../../domain/control_characters.ts";
 
 export interface DoctorExtensionsRenderer {
   handlers(): EventHandlers<DoctorExtensionsEvent>;
@@ -68,7 +72,7 @@ function remedyLine(m: DoctorMissingExtension): string {
       return "Run 'swamp extension install' to restore it.";
     case "deleteAndAutoResolve":
       return `Delete ${
-        m.removeToReinstall?.join(", ") ?? m.expectedPath
+        m.removeToReinstall?.map(esc).join(", ") ?? esc(m.expectedPath)
       } and the auto-resolver reinstalls it on next use.`;
     case "nextUse":
       return "The auto-resolver installs it the next time one of its types is needed.";
@@ -80,10 +84,12 @@ function missingExtensionLines(
   bullet: string,
 ): string[] {
   const more = m.missingFileCount - m.missingFiles.length;
-  const files = m.missingFiles.join(", ") +
+  const files = m.missingFiles.map(esc).join(", ") +
     (more > 0 ? dim(` (+${more} more)`) : "");
   return [
-    `  ${bullet} ${bold(m.name)}  ${m.state}  ${dim(m.expectedPath)}`,
+    `  ${bullet} ${bold(esc(m.name))}  ${esc(m.state)}  ${
+      dim(esc(m.expectedPath))
+    }`,
     `    ${dim("missing:")} ${files}`,
     `    ${dim("→")} ${remedyLine(m)}`,
   ];
@@ -160,9 +166,9 @@ function renderAggregateStateLog(
 
   writeOutput("");
   for (const agg of report.aggregates) {
-    const originTag = dim(`[${agg.origin}]`);
+    const originTag = dim(`[${esc(agg.origin)}]`);
     writeOutput(
-      `  ${bold(agg.name)}${dim("@")}${agg.version} ${originTag}  ${
+      `  ${bold(esc(agg.name))}${dim("@")}${esc(agg.version)} ${originTag}  ${
         dim(`${agg.sourceCount} source(s)`)
       }`,
     );
@@ -184,12 +190,16 @@ function renderAggregateStateLog(
     for (const detail of report.sourceDetails) {
       const colorFn = stateColor(detail.stateTag);
       const fp = detail.fingerprint
-        ? dim(` fp:${detail.fingerprint.slice(0, 12)}`)
+        ? dim(` fp:${esc(detail.fingerprint.slice(0, 12))}`)
         : "";
-      const bp = detail.bundlePath ? dim(` bundle:${detail.bundlePath}`) : "";
-      const le = detail.lastError ? dim(`: ${detail.lastError}`) : "";
+      const bp = detail.bundlePath
+        ? dim(` bundle:${esc(detail.bundlePath)}`)
+        : "";
+      const le = detail.lastError
+        ? dim(`: ${escapeControlCharactersInText(detail.lastError)}`)
+        : "";
       writeOutput(
-        `  ${dim(detail.kind)} ${detail.sourcePath}  ${
+        `  ${dim(detail.kind)} ${esc(detail.sourcePath)}  ${
           colorFn(detail.stateTag)
         }${le}${fp}${bp}`,
       );
@@ -204,8 +214,8 @@ function renderAggregateStateLog(
     );
     for (const orphan of report.catalogOrphans) {
       writeOutput(
-        `  ${yellow("•")} ${orphan.sourcePath}  ${
-          dim(`[${orphan.extensionName}]`)
+        `  ${yellow("•")} ${esc(orphan.sourcePath)}  ${
+          dim(`[${esc(orphan.extensionName)}]`)
         } ${red(orphan.stateTag)}`,
       );
     }
@@ -219,8 +229,8 @@ function renderAggregateStateLog(
     );
     for (const orphan of report.bundleOrphans) {
       writeOutput(
-        `  ${yellow("•")} ${orphan.repoRelativePath}  ${
-          dim(`[${orphan.bundleDir}]`)
+        `  ${yellow("•")} ${esc(orphan.repoRelativePath)}  ${
+          dim(`[${esc(orphan.bundleDir)}]`)
         }`,
       );
     }
@@ -270,8 +280,8 @@ function renderRepairLog(report: RepairReport): void {
         : op.kind === "pulled-extension-repulled"
         ? dim("[pull]")
         : dim("[file]");
-    writeOutput(`  ${icon} ${label} ${op.path}`);
-    writeOutput(`     ${dim(op.reason)}`);
+    writeOutput(`  ${icon} ${label} ${esc(op.path)}`);
+    writeOutput(`     ${dim(esc(op.reason))}`);
   }
 
   if (report.mode === "dry-run") {
@@ -316,7 +326,9 @@ class LogDoctorExtensionsRenderer implements DoctorExtensionsRenderer {
           writeOutput("");
           for (const [registry, message] of e.report.loaderErrors) {
             writeOutput(
-              `    ${red("•")} ${registry} loader error: ${message}`,
+              `    ${red("•")} ${registry} loader error: ${
+                escapeControlCharactersInText(message)
+              }`,
             );
           }
         }
@@ -332,12 +344,12 @@ class LogDoctorExtensionsRenderer implements DoctorExtensionsRenderer {
             writeOutput("");
             for (const detail of failureDetails) {
               const errorSuffix = detail.lastError
-                ? `: ${detail.lastError}`
+                ? `: ${escapeControlCharactersInText(detail.lastError)}`
                 : "";
               writeOutput(
-                `    ${yellow("•")} ${dim(detail.kind)} ${detail.sourcePath} ${
-                  red(detail.stateTag)
-                }${errorSuffix}`,
+                `    ${yellow("•")} ${dim(detail.kind)} ${
+                  esc(detail.sourcePath)
+                } ${red(detail.stateTag)}${errorSuffix}`,
               );
             }
           }
@@ -360,9 +372,9 @@ class LogDoctorExtensionsRenderer implements DoctorExtensionsRenderer {
             byExt.set(orphan.extensionName, list);
           }
           for (const [extName, paths] of byExt) {
-            writeOutput(`    ${dim(extName)}`);
+            writeOutput(`    ${dim(esc(extName))}`);
             for (const p of paths) {
-              writeOutput(`      ${yellow("•")} ${p}`);
+              writeOutput(`      ${yellow("•")} ${esc(p)}`);
             }
           }
           writeOutput(
@@ -384,13 +396,17 @@ class LogDoctorExtensionsRenderer implements DoctorExtensionsRenderer {
           );
           for (const c of e.report.memberCollisions) {
             writeOutput(
-              `    ${yellow("•")} ${c.type} ${c.memberKind} '${c.name}'`,
+              `    ${yellow("•")} ${esc(c.type)} ${c.memberKind} '${
+                esc(c.name)
+              }'`,
             );
             writeOutput(
-              `      ${dim("wins:")} ${c.winner ?? "the base behavior"}`,
+              `      ${dim("wins:")} ${
+                c.winner === null ? "the base behavior" : esc(c.winner)
+              }`,
             );
             for (const loser of c.losers) {
-              writeOutput(`      ${dim("not registered:")} ${loser}`);
+              writeOutput(`      ${dim("not registered:")} ${esc(loser)}`);
             }
           }
         }
@@ -409,10 +425,12 @@ class LogDoctorExtensionsRenderer implements DoctorExtensionsRenderer {
           );
           for (const w of warnings) {
             writeOutput(
-              `    ${yellow("•")} ${w.sourcePath} ${dim(`[${w.category}]`)}`,
+              `    ${yellow("•")} ${esc(w.sourcePath)} ${
+                dim(`[${w.category}]`)
+              }`,
             );
             writeOutput(
-              `      ${dim(w.message)}`,
+              `      ${dim(esc(w.message))}`,
             );
           }
         }
@@ -425,7 +443,7 @@ class LogDoctorExtensionsRenderer implements DoctorExtensionsRenderer {
                   e.report.rescanSkipped.repairSkipped ? " and repairs" : ""
                 }:`,
               )
-            } ${e.report.rescanSkipped.reason}`,
+            } ${esc(e.report.rescanSkipped.reason)}`,
           );
         }
 
@@ -437,13 +455,13 @@ class LogDoctorExtensionsRenderer implements DoctorExtensionsRenderer {
           writeOutput(`\n${bold(cyan("Recent Transitions"))}`);
           for (const t of e.report.recentTransitions) {
             const from = t.fromState
-              ? stateColor(t.fromState)(t.fromState)
+              ? stateColor(t.fromState)(esc(t.fromState))
               : dim("(new)");
-            const to = stateColor(t.toState)(t.toState);
+            const to = stateColor(t.toState)(esc(t.toState));
             writeOutput(
-              `  ${t.source.canonicalPath}  ${from} ${dim("→")} ${to}`,
+              `  ${esc(t.source.canonicalPath)}  ${from} ${dim("→")} ${to}`,
             );
-            writeOutput(`    ${dim(t.reason)}`);
+            writeOutput(`    ${dim(esc(t.reason))}`);
           }
         }
 

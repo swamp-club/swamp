@@ -33,6 +33,10 @@ import type {
 import { createSearchListRenderer } from "./search_result_list.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
+import {
+  escapeControlCharacters as esc,
+  escapeControlCharactersInText,
+} from "../../domain/control_characters.ts";
 import { renderInteractivePicker } from "./components/search_picker.tsx";
 import { renderMarkdownToTerminal } from "../markdown_renderer.ts";
 
@@ -184,14 +188,14 @@ function renderReportResultLine(
   const source = item.workflowName ?? item.modelName;
   return (
     <Text>
-      {`${item.reportName} `}
-      <Text color="cyan">{source}</Text>
-      {` ${item.reportScope}`}
+      {`${esc(item.reportName)} `}
+      <Text color="cyan">{esc(source)}</Text>
+      {` ${esc(item.reportScope)}`}
       {item.varySuffix
-        ? <Text color="yellow">{` [${item.varySuffix}]`}</Text>
+        ? <Text color="yellow">{` [${esc(item.varySuffix)}]`}</Text>
         : null}
       <Text dimColor>
-        {` v${item.version} ${formatRelativeTime(item.createdAt)}`}
+        {` v${esc(String(item.version))} ${formatRelativeTime(item.createdAt)}`}
       </Text>
     </Text>
   );
@@ -206,38 +210,38 @@ function renderReportPreview(
   const innerWidth = Math.max(10, width - 1);
   if (!detail) {
     const lines: React.ReactElement[] = [
-      <Text key="name" bold wrap="truncate-end">{item.reportName}</Text>,
+      <Text key="name" bold wrap="truncate-end">{esc(item.reportName)}</Text>,
       <Text key="scope" dimColor wrap="truncate-end">
-        scope: {item.reportScope}
+        scope: {esc(item.reportScope)}
       </Text>,
       <Text key="model" dimColor wrap="truncate-end">
-        model: {item.modelName}
+        model: {esc(item.modelName)}
       </Text>,
       <Text key="type" dimColor wrap="truncate-end">
-        type: {item.modelType}
+        type: {esc(item.modelType)}
       </Text>,
     ];
     if (item.workflowName) {
       lines.push(
         <Text key="wf" dimColor wrap="truncate-end">
-          workflow: {item.workflowName}
+          workflow: {esc(item.workflowName)}
         </Text>,
       );
     }
     lines.push(
       <Text key="version" dimColor wrap="truncate-end">
-        version: {item.version}
+        version: {esc(String(item.version))}
       </Text>,
     );
     lines.push(
       <Text key="created" dimColor wrap="truncate-end">
-        created: {item.createdAt}
+        created: {esc(item.createdAt)}
       </Text>,
     );
     if (item.varySuffix) {
       lines.push(
         <Text key="variant" dimColor wrap="truncate-end">
-          variant: {item.varySuffix}
+          variant: {esc(item.varySuffix)}
         </Text>,
       );
     }
@@ -249,14 +253,14 @@ function renderReportPreview(
   }
 
   const lines: React.ReactElement[] = [
-    <Text key="name" bold wrap="truncate-end">{detail.reportName}</Text>,
+    <Text key="name" bold wrap="truncate-end">{esc(detail.reportName)}</Text>,
     <Text key="meta" dimColor wrap="truncate-end">
-      scope: {detail.reportScope} | model: {detail.modelName} | v
-      {detail.version}
+      scope: {esc(detail.reportScope)} | model: {esc(detail.modelName)} | v
+      {esc(String(detail.version))}
     </Text>,
     <Text key="spacer" />,
   ];
-  const bodyLines = detail.markdown.split("\n");
+  const bodyLines = escapeControlCharactersInText(detail.markdown).split("\n");
   for (let i = 0; i < bodyLines.length; i++) {
     lines.push(
       <Text key={`b-${i}`} wrap="truncate-end">{bodyLines[i]}</Text>,
@@ -275,27 +279,29 @@ function renderReportScrollback(
 ): string {
   if (!detail) {
     const lines: string[] = [
-      item.reportName,
-      `scope: ${item.reportScope}`,
-      `model: ${item.modelName} (${item.modelType})`,
+      esc(item.reportName),
+      `scope: ${esc(item.reportScope)}`,
+      `model: ${esc(item.modelName)} (${esc(item.modelType)})`,
     ];
 
     if (item.workflowName) {
-      lines.push(`workflow: ${item.workflowName}`);
+      lines.push(`workflow: ${esc(item.workflowName)}`);
     }
 
-    lines.push(`version: ${item.version}`);
-    lines.push(`created: ${item.createdAt}`);
+    lines.push(`version: ${esc(String(item.version))}`);
+    lines.push(`created: ${esc(item.createdAt)}`);
 
     if (item.varySuffix) {
-      lines.push(`variant: ${item.varySuffix}`);
+      lines.push(`variant: ${esc(item.varySuffix)}`);
     }
 
     return lines.join("\n");
   }
 
   const lines: string[] = [
-    `${detail.reportName} (${detail.reportScope}) v${detail.version}`,
+    `${esc(detail.reportName)} (${esc(detail.reportScope)}) v${
+      esc(String(detail.version))
+    }`,
     "",
     renderMarkdownToTerminal(detail.markdown),
   ];

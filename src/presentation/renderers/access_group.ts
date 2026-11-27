@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { escapeControlCharacters } from "../../domain/control_characters.ts";
 import type { Group } from "../../domain/models/access/group_model.ts";
 import type { AccessGroupIdpEntry } from "../../serve/protocol.ts";
 import type { OutputMode } from "../output/output.ts";
@@ -28,7 +29,7 @@ export interface AccessGroupListRenderer {
 }
 
 function formatPrincipal(p: { kind: string; id: string }): string {
-  return `${p.kind}:${p.id}`;
+  return escapeControlCharacters(`${p.kind}:${p.id}`);
 }
 
 class LogAccessGroupListRenderer implements AccessGroupListRenderer {
@@ -44,21 +45,22 @@ class LogAccessGroupListRenderer implements AccessGroupListRenderer {
     writeOutput(header);
 
     for (const group of groups) {
-      const name = group.name.padEnd(30);
+      const name = escapeControlCharacters(group.name).padEnd(30);
       const members = String(group.members.length).padEnd(8);
       const createdBy = formatPrincipal(group.createdBy).padEnd(20);
-      const createdAt = group.createdAt.slice(0, 10);
+      const createdAt = escapeControlCharacters(group.createdAt).slice(0, 10);
       writeOutput(`${name}  ${members}  ${createdBy}  ${createdAt}`);
     }
   }
 
   renderMembers(group: Group): void {
+    const name = escapeControlCharacters(group.name);
     if (group.members.length === 0) {
-      writeOutput(`Group "${group.name}" has no members.`);
+      writeOutput(`Group "${name}" has no members.`);
       return;
     }
 
-    writeOutput(`Members of "${group.name}":`);
+    writeOutput(`Members of "${name}":`);
     for (const member of group.members) {
       writeOutput(`  ${formatPrincipal(member)}`);
     }
@@ -103,9 +105,10 @@ class LogAccessGroupIdpRenderer implements AccessGroupIdpRenderer {
     writeOutput(header);
 
     for (const group of groups) {
-      const name = group.name.padEnd(40);
-      const count = String(group.activeTokenCount).padEnd(14);
-      const lastSeen = group.lastSeenAt.slice(0, 10);
+      const name = escapeControlCharacters(group.name).padEnd(40);
+      const count = escapeControlCharacters(String(group.activeTokenCount))
+        .padEnd(14);
+      const lastSeen = escapeControlCharacters(group.lastSeenAt).slice(0, 10);
       writeOutput(`${name}  ${count}  ${lastSeen}`);
     }
   }

@@ -26,6 +26,7 @@ import type { EventHandlers } from "../../libswamp/stream.ts";
 import { UserError } from "../../domain/errors.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type { OutputMode } from "../output/output.ts";
+import { escapeControlCharacters } from "../../domain/control_characters.ts";
 
 export type DoctorVaultsStatus = "pass" | "fail";
 
@@ -46,7 +47,11 @@ function renderUnresolvedLog(data: DoctorVaultsData): void {
     } ${dim("(type schema unavailable — install the extension to scan them)")}`,
   );
   for (const u of data.unresolved) {
-    writeOutput(`    ${yellow("•")} ${u.definitionName} ${dim(`[${u.type}]`)}`);
+    writeOutput(
+      `    ${yellow("•")} ${escapeControlCharacters(u.definitionName)} ${
+        dim(`[${escapeControlCharacters(u.type)}]`)
+      }`,
+    );
   }
 }
 
@@ -58,7 +63,9 @@ function renderFallbackWarningLog(data: DoctorVaultsData): void {
   writeOutput(
     `\n${yellow("⚠")} ${
       bold(
-        `Sensitive outputs without a vault of their own are stored in '${warning.fallbackVault}'`,
+        `Sensitive outputs without a vault of their own are stored in '${
+          escapeControlCharacters(warning.fallbackVault)
+        }'`,
       )
     }${
       warning.unregisteredDefaultVault === undefined
@@ -69,19 +76,25 @@ function renderFallbackWarningLog(data: DoctorVaultsData): void {
   if (warning.unregisteredDefaultVault !== undefined) {
     writeOutput(
       dim(
-        `  defaultVault in .swamp.yaml names '${warning.unregisteredDefaultVault}', which is not a vault in this repository.`,
+        `  defaultVault in .swamp.yaml names '${
+          escapeControlCharacters(warning.unregisteredDefaultVault)
+        }', which is not a vault in this repository.`,
       ),
     );
   }
   writeOutput(
     dim(
       `  Without a registered default vault, swamp uses the first of ${warning.userVaults.length} vaults by vault type, then id (the order of 'swamp vault list'): ${
-        warning.userVaults.join(", ")
+        warning.userVaults.map(escapeControlCharacters).join(", ")
       }.`,
     ),
   );
   for (const d of warning.definitions) {
-    writeOutput(`    ${yellow("•")} ${d.definitionName} ${dim(`[${d.type}]`)}`);
+    writeOutput(
+      `    ${yellow("•")} ${escapeControlCharacters(d.definitionName)} ${
+        dim(`[${escapeControlCharacters(d.type)}]`)
+      }`,
+    );
   }
   writeOutput(
     dim(
@@ -135,9 +148,9 @@ class LogDoctorVaultsRenderer implements DoctorVaultsRenderer {
 
         for (const finding of data.findings) {
           writeOutput(
-            `    ${red("•")} ${bold(finding.definitionName)} ${
-              dim(`[${finding.type}]`)
-            }`,
+            `    ${red("•")} ${
+              bold(escapeControlCharacters(finding.definitionName))
+            } ${dim(`[${escapeControlCharacters(finding.type)}]`)}`,
           );
         }
 

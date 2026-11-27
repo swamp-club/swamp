@@ -23,6 +23,10 @@ import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
 import { carryModelWording } from "../../domain/behavior_wording.ts";
+import {
+  escapeControlCharacters,
+  escapeControlCharactersInText,
+} from "../../domain/control_characters.ts";
 
 class LogModelMethodHistoryLogsRenderer
   implements Renderer<ModelMethodHistoryLogsEvent> {
@@ -33,20 +37,22 @@ class LogModelMethodHistoryLogsRenderer
         switch (e.data.type) {
           case "log":
             for (const line of e.data.log.lines) {
-              console.log(line);
+              console.log(escapeControlCharactersInText(line));
             }
             break;
           case "no_log_file":
             console.log(
               `No log file recorded for run ${
-                e.data.info.outputId.slice(0, 8)
+                escapeControlCharacters(e.data.info.outputId.slice(0, 8))
               }. ` +
                 `This run predates log file tracking.`,
             );
             break;
           case "empty_log":
             console.log(
-              `Log file not found or empty: ${e.data.info.path}`,
+              `Log file not found or empty: ${
+                escapeControlCharacters(e.data.info.path)
+              }`,
             );
             break;
         }

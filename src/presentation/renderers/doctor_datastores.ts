@@ -41,6 +41,7 @@ import { describeUnreadableVersionReason } from "../../domain/data/unreadable_da
 import {
   escapeControlCharacters,
   escapeControlCharactersInMessage,
+  escapeControlCharactersInText,
 } from "../../domain/control_characters.ts";
 
 import type { UnpushedFilesSummary } from "../../domain/datastore/datastore_sync_service.ts";
@@ -97,14 +98,20 @@ export function retentionDetailLines(summary: RetentionCheckSummary): string[] {
     if (kind.watermark) {
       lines.push(
         dim(
-          `    last pass ${kind.watermark.lastPassAt}, cutoff ${kind.watermark.cutoff}, ${
+          `    last pass ${
+            escapeControlCharacters(kind.watermark.lastPassAt)
+          }, cutoff ${escapeControlCharacters(kind.watermark.cutoff)}, ${
             kind.watermark.complete ? "complete" : "incomplete"
           }`,
         ),
       );
     }
     for (const item of kind.items) {
-      lines.push(`    ${red("•")} ${item.id} ${dim(item.at)}`);
+      lines.push(
+        `    ${red("•")} ${escapeControlCharacters(item.id)} ${
+          dim(escapeControlCharacters(item.at))
+        }`,
+      );
     }
     if (kind.overdue > kind.items.length) {
       lines.push(
@@ -146,15 +153,17 @@ export function v3ContentDetailLines(summary: V3ContentSummary): string[] {
     lines.push(`\n${red("Unreadable records:")}`);
     for (const record of summary.unreadable) {
       lines.push(
-        `  ${bold(record.recordKey)}${
-          record.namespace === "" ? "" : dim(` [${record.namespace}]`)
+        `  ${bold(escapeControlCharacters(record.recordKey))}${
+          record.namespace === ""
+            ? ""
+            : dim(` [${escapeControlCharacters(record.namespace)}]`)
         }: ${
           record.chunk === undefined
             ? "a chunk of its content"
-            : `chunk ${record.chunk}`
-        } is ${record.reason}`,
+            : `chunk ${escapeControlCharacters(record.chunk)}`
+        } is ${escapeControlCharacters(record.reason)}`,
       );
-      lines.push(dim(`    ${record.advice}`));
+      lines.push(dim(`    ${escapeControlCharacters(record.advice)}`));
     }
     more(summary.unreadableRecords, summary.unreadable.length);
   }
@@ -162,8 +171,10 @@ export function v3ContentDetailLines(summary: V3ContentSummary): string[] {
     lines.push(`\n${red("Checkout files held aside:")}`);
     for (const copy of summary.atRisk) {
       lines.push(
-        `  ${bold(copy.recordKey || copy.sha256)}${
-          copy.namespace === "" ? "" : dim(` [${copy.namespace}]`)
+        `  ${bold(escapeControlCharacters(copy.recordKey || copy.sha256))}${
+          copy.namespace === ""
+            ? ""
+            : dim(` [${escapeControlCharacters(copy.namespace)}]`)
         }: ${copy.size.toLocaleString()} bytes`,
       );
     }
@@ -174,11 +185,15 @@ export function v3ContentDetailLines(summary: V3ContentSummary): string[] {
     lines.push(`\n${red("Torn chunks:")}`);
     for (const chunk of summary.torn) {
       lines.push(
-        `  ${bold(chunk.sha256)}${
-          chunk.namespace === "" ? "" : dim(` [${chunk.namespace}]`)
-        }: ${chunk.size.toLocaleString()} of ${chunk.expectedSize.toLocaleString()} bytes, named by ${chunk.recordKey}`,
+        `  ${bold(escapeControlCharacters(chunk.sha256))}${
+          chunk.namespace === ""
+            ? ""
+            : dim(` [${escapeControlCharacters(chunk.namespace)}]`)
+        }: ${chunk.size.toLocaleString()} of ${chunk.expectedSize.toLocaleString()} bytes, named by ${
+          escapeControlCharacters(chunk.recordKey)
+        }`,
       );
-      lines.push(dim(`    ${chunk.advice}`));
+      lines.push(dim(`    ${escapeControlCharacters(chunk.advice)}`));
     }
     more(summary.tornChunks, summary.torn.length);
   }
@@ -220,8 +235,8 @@ export function unreadableVersionsDetailLines(
   const lines: string[] = [`\n${red("Unreadable data versions:")}`];
   for (const finding of summary.findings) {
     const record = `${
-      finding.modelName || finding.modelId
-    }/${finding.dataName}`;
+      escapeControlCharacters(finding.modelName || finding.modelId)
+    }/${escapeControlCharacters(finding.dataName)}`;
     const which = finding.version === null
       ? "latest marker"
       : `version ${finding.version}`;
@@ -352,10 +367,14 @@ class LogDoctorDatastoresRenderer implements DoctorDatastoresRenderer {
 
         for (const finding of data.healthFindings) {
           if (finding.passed) {
-            writeOutput(`${green("✓")} ${finding.message}`);
+            writeOutput(
+              `${green("✓")} ${escapeControlCharactersInText(finding.message)}`,
+            );
           } else {
             this.overallStatus = "fail";
-            writeOutput(`${red("✗")} ${finding.message}`);
+            writeOutput(
+              `${red("✗")} ${escapeControlCharactersInText(finding.message)}`,
+            );
           }
         }
 
@@ -367,7 +386,7 @@ class LogDoctorDatastoresRenderer implements DoctorDatastoresRenderer {
           for (const ns of cf.foreignNamespaces) {
             writeOutput(
               `  Foreign ${
-                bold(`"${ns.namespace}"`)
+                bold(`"${escapeControlCharacters(ns.namespace)}"`)
               }: ${ns.objectCount.toLocaleString()} objects`,
             );
           }
@@ -416,7 +435,7 @@ class LogDoctorDatastoresRenderer implements DoctorDatastoresRenderer {
             for (const s of cc.shortfalls) {
               writeOutput(
                 `  ${
-                  bold(s.typeNormalized)
+                  bold(escapeControlCharacters(s.typeNormalized))
                 }: ${s.catalogRecords.toLocaleString()} indexed of ${s.diskRecords.toLocaleString()} on disk`,
               );
             }
@@ -467,9 +486,9 @@ class LogDoctorDatastoresRenderer implements DoctorDatastoresRenderer {
           );
           for (const finding of data.vaultMismatchFindings) {
             writeOutput(
-              `    ${yellow("•")} ${finding.vaultName} ${
-                dim(`[${finding.vaultType}]`)
-              }`,
+              `    ${yellow("•")} ${
+                escapeControlCharacters(finding.vaultName)
+              } ${dim(`[${escapeControlCharacters(finding.vaultType)}]`)}`,
             );
           }
           writeOutput(
@@ -621,7 +640,9 @@ class LogRepairDatastoresRenderer implements RepairDatastoresRenderer {
         writeOutput(`\n${bold("Namespace contamination cleanup:")}`);
         for (const ns of e.contamination.foreignNamespaces) {
           writeOutput(
-            `  Delete ${ns.objectCount.toLocaleString()} objects under ${e.namespace}/${ns.namespace}/`,
+            `  Delete ${ns.objectCount.toLocaleString()} objects under ${e.namespace}/${
+              escapeControlCharacters(ns.namespace)
+            }/`,
           );
         }
         writeOutput(
@@ -642,7 +663,9 @@ class LogRepairDatastoresRenderer implements RepairDatastoresRenderer {
       },
       step: (e) => {
         writeOutput(
-          `  ${dim(`[${e.step}/${e.total}]`)} ${e.description}`,
+          `  ${dim(`[${e.step}/${e.total}]`)} ${
+            escapeControlCharacters(e.description)
+          }`,
         );
       },
       completed: (e) => {
@@ -791,7 +814,7 @@ class LogUnpushedFilesRepairRenderer implements UnpushedFilesRepairRenderer {
         }
       },
       step: (e) => {
-        writeOutput(`  ${e.description}`);
+        writeOutput(`  ${escapeControlCharacters(e.description)}`);
       },
       completed: (e) => {
         this.overallStatus = repairedStatus(e.summary);
@@ -824,7 +847,9 @@ class LogUnpushedFilesRepairRenderer implements UnpushedFilesRepairRenderer {
       },
       not_supported: (e) => {
         this.overallStatus = "not_supported";
-        writeOutput(`${yellow("⚠")} ${e.message}`);
+        writeOutput(
+          `${yellow("⚠")} ${escapeControlCharactersInText(e.message)}`,
+        );
       },
       error: (e) => {
         this.overallStatus = "fail";
@@ -903,7 +928,9 @@ export function renderUnpushedFilesCheckFailure(
   mode: OutputMode,
   message: string,
 ): void {
-  if (mode === "log") writeOutput(`${red("✗")} ${message}`);
+  if (mode === "log") {
+    writeOutput(`${red("✗")} ${escapeControlCharactersInText(message)}`);
+  }
 }
 
 export function createUnpushedFilesRepairRenderer(
@@ -944,7 +971,7 @@ class LogUnmigratedDataRepairRenderer implements UnmigratedDataRepairRenderer {
         writeOutput(dim("\n  Run with -y to proceed."));
       },
       step: (e) => {
-        writeOutput(`  ${e.description}`);
+        writeOutput(`  ${escapeControlCharacters(e.description)}`);
       },
       completed: (e) => {
         this.overallStatus = "pass";
@@ -1036,7 +1063,11 @@ function unreadableRecordLine(
   record: UnreadableRecordRepair,
   verb: { remove: string; reset: string },
 ): string {
-  const name = bold(`${record.modelName || record.modelId}/${record.dataName}`);
+  const name = bold(
+    `${escapeControlCharacters(record.modelName || record.modelId)}/${
+      escapeControlCharacters(record.dataName)
+    }`,
+  );
   const parts: string[] = [];
   if (record.removeVersions.length > 0) {
     parts.push(
@@ -1091,7 +1122,7 @@ class LogUnreadableVersionsRepairRenderer
         writeOutput(dim("\n  Run with -y to proceed."));
       },
       step: (e) => {
-        writeOutput(`  ${e.description}`);
+        writeOutput(`  ${escapeControlCharacters(e.description)}`);
       },
       completed: (e) => {
         this.overallStatus = "pass";
@@ -1199,7 +1230,7 @@ const FOREIGN_ROWS_NOTICE =
 function surplusLines(surplus: ReadonlyArray<CatalogSurplus>): string[] {
   return surplus.map((s) =>
     `  ${
-      bold(s.typeNormalized)
+      bold(escapeControlCharacters(s.typeNormalized))
     }: ${s.catalogRecords.toLocaleString()} record(s) of ${s.dataNames.toLocaleString()} data name(s)`
   );
 }
@@ -1219,7 +1250,9 @@ class LogCatalogIndexRepairRenderer implements CatalogIndexRepairRenderer {
           writeOutput(`\n${bold("Catalog index rebuild:")}`);
           for (const s of completeness.shortfalls) {
             writeOutput(
-              `  ${s.typeNormalized}: index ${s.catalogRecords.toLocaleString()} of ${s.diskRecords.toLocaleString()} record(s) on disk`,
+              `  ${
+                escapeControlCharacters(s.typeNormalized)
+              }: index ${s.catalogRecords.toLocaleString()} of ${s.diskRecords.toLocaleString()} record(s) on disk`,
             );
           }
           if (completeness.surplus.length > 0) {
@@ -1247,7 +1280,7 @@ class LogCatalogIndexRepairRenderer implements CatalogIndexRepairRenderer {
         writeOutput(dim("\n  Run with -y to proceed."));
       },
       step: (e) => {
-        writeOutput(`  ${e.description}`);
+        writeOutput(`  ${escapeControlCharacters(e.description)}`);
       },
       completed: (e) => {
         this.overallStatus = "pass";
@@ -1381,7 +1414,7 @@ class LogCatalogDuplicateLatestRepairRenderer
         writeOutput(dim("\n  Run with -y to repair."));
       },
       step: (e) => {
-        writeOutput(`  ${e.description}`);
+        writeOutput(`  ${escapeControlCharacters(e.description)}`);
       },
       completed: (e) => {
         this.overallStatus = "pass";

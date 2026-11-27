@@ -87,3 +87,20 @@ Deno.test("logTextBlock: prints braces verbatim, whichever of them a line has (s
     assertEquals(logs[i].endsWith(`: ${line}`), true, logs[i]);
   }
 });
+
+Deno.test("logTextBlock: escapes control characters in each line but keeps tabs", () => {
+  const raw: string[] = [];
+  const original = console.info;
+  console.info = (...args: unknown[]) => raw.push(args.map(String).join(" "));
+  try {
+    logTextBlock(logger, "info", "ok\tdone\x1b]0;owned\x07 \x1b[2J\x9b", "");
+  } finally {
+    console.info = original;
+  }
+  const out = stripAnsiCode(raw.join("\n"));
+  assertEquals(
+    out.includes("ok\tdone\\x1b]0;owned\\x07 \\x1b[2J\\x9b"),
+    true,
+    out,
+  );
+});

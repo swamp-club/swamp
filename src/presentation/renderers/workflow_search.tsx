@@ -32,6 +32,10 @@ import type {
 } from "./search_renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
+import {
+  escapeControlCharacters as esc,
+  escapeControlCharactersInText,
+} from "../../domain/control_characters.ts";
 import { renderInteractivePicker } from "./components/search_picker.tsx";
 import { renderMarkdownToTerminal } from "../markdown_renderer.ts";
 import { createSearchListRenderer } from "./search_result_list.ts";
@@ -179,10 +183,10 @@ export function createWorkflowSearchRenderer(
 function renderWorkflowResultLine(
   item: WorkflowSearchItem,
 ): React.ReactElement {
-  const desc = item.description ? ` ${item.description}` : "";
+  const desc = item.description ? ` ${esc(item.description)}` : "";
   return (
     <Text>
-      {`${item.name} `}
+      {`${esc(item.name)} `}
       <Text dimColor>{`(${item.jobCount} jobs)${desc}`}</Text>
     </Text>
   );
@@ -197,11 +201,11 @@ function renderWorkflowPreview(
   const innerWidth = Math.max(10, width - 1);
   if (!detail) {
     const lines: React.ReactElement[] = [
-      <Text key="name" bold wrap="truncate-end">{item.name}</Text>,
+      <Text key="name" bold wrap="truncate-end">{esc(item.name)}</Text>,
     ];
     if (item.description) {
       lines.push(
-        <Text key="desc" wrap="truncate-end">{item.description}</Text>,
+        <Text key="desc" wrap="truncate-end">{esc(item.description)}</Text>,
       );
     }
     lines.push(
@@ -217,10 +221,10 @@ function renderWorkflowPreview(
   }
 
   const lines: React.ReactElement[] = [
-    <Text key="name" bold wrap="truncate-end">{detail.name}</Text>,
+    <Text key="name" bold wrap="truncate-end">{esc(detail.name)}</Text>,
     <Text key="spacer" />,
   ];
-  const yamlLines = detail.yaml.split("\n");
+  const yamlLines = escapeControlCharactersInText(detail.yaml).split("\n");
   for (let i = 0; i < yamlLines.length; i++) {
     lines.push(
       <Text key={`y-${i}`} wrap="truncate-end">{yamlLines[i]}</Text>,
@@ -238,7 +242,7 @@ function renderWorkflowScrollback(
   detail: WorkflowPreviewDetail | undefined,
 ): string {
   if (!detail) {
-    return `${item.name} (${item.jobCount} jobs)`;
+    return `${esc(item.name)} (${item.jobCount} jobs)`;
   }
 
   return renderMarkdownToTerminal(

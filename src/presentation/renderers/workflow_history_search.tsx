@@ -37,6 +37,10 @@ import type {
 import { createSearchListRenderer } from "./search_result_list.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
+import {
+  escapeControlCharacters as esc,
+  escapeControlCharactersInText,
+} from "../../domain/control_characters.ts";
 import { renderInteractivePicker } from "./components/search_picker.tsx";
 import { writeReapedRunsLine } from "./workflow_run_search.tsx";
 import { inputPairs } from "./run_input_pairs.ts";
@@ -180,11 +184,9 @@ function writeSkippedWorkflowsLines(
 ): void {
   for (const { workflowName, runId, reason } of skipped ?? []) {
     writeOutput(
-      `${
-        red(`Left out workflow ${workflowName}:`)
-      } the record of run ${runId} cannot be read: ${reason}. ${
-        dim("See 'swamp run doctor'.")
-      }`,
+      `${red(`Left out workflow ${esc(workflowName)}:`)} the record of run ${
+        esc(runId)
+      } cannot be read: ${esc(reason)}. ${dim("See 'swamp run doctor'.")}`,
     );
   }
 }
@@ -228,14 +230,16 @@ function renderHistoryResultLine(
     ? `${(item.duration / 1000).toFixed(1)}s`
     : "";
   const tagStr = item.tags && Object.keys(item.tags).length > 0
-    ? Object.entries(item.tags).map(([k, v]) => `${k}=${v}`).join(", ")
+    ? Object.entries(item.tags).map(([k, v]) => `${esc(k)}=${esc(v)}`).join(
+      ", ",
+    )
     : "";
   const inputStr = inputPairs(item).join(", ");
 
   return (
     <Text>
-      {`${item.workflowName} `}
-      <Text color={statusColor}>{`[${item.status}]`}</Text>
+      {`${esc(item.workflowName)} `}
+      <Text color={statusColor}>{`[${esc(item.status)}]`}</Text>
       {` ${dateStr}`}
       {durationStr ? ` ${durationStr}` : ""}
       {tagStr ? <Text color="cyan">{` [${tagStr}]`}</Text> : null}
@@ -263,14 +267,18 @@ function renderHistoryPreview(
       ? `${(item.duration / 1000).toFixed(1)}s`
       : "";
     const tagStr = item.tags && Object.keys(item.tags).length > 0
-      ? Object.entries(item.tags).map(([k, v]) => `${k}=${v}`).join(", ")
+      ? Object.entries(item.tags).map(([k, v]) => `${esc(k)}=${esc(v)}`).join(
+        ", ",
+      )
       : "";
 
     const lines: React.ReactElement[] = [
-      <Text key="name" bold wrap="truncate-end">{item.workflowName}</Text>,
-      <Text key="run" dimColor wrap="truncate-end">run: {item.runId}</Text>,
+      <Text key="name" bold wrap="truncate-end">{esc(item.workflowName)}</Text>,
+      <Text key="run" dimColor wrap="truncate-end">
+        run: {esc(item.runId)}
+      </Text>,
       <Text key="status" wrap="truncate-end">
-        status: <Text color={statusColor}>{item.status}</Text>
+        status: <Text color={statusColor}>{esc(item.status)}</Text>
       </Text>,
       <Text key="started" dimColor wrap="truncate-end">
         started: {dateStr}
@@ -316,10 +324,10 @@ function renderHistoryPreview(
     : "";
 
   const lines: React.ReactElement[] = [
-    <Text key="name" bold wrap="truncate-end">{detail.workflowName}</Text>,
-    <Text key="run" dimColor wrap="truncate-end">run: {detail.id}</Text>,
+    <Text key="name" bold wrap="truncate-end">{esc(detail.workflowName)}</Text>,
+    <Text key="run" dimColor wrap="truncate-end">run: {esc(detail.id)}</Text>,
     <Text key="status" wrap="truncate-end">
-      status: <Text color={statusColor}>{detail.status}</Text>
+      status: <Text color={statusColor}>{esc(detail.status)}</Text>
     </Text>,
   ];
   if (durationStr) {
@@ -344,7 +352,8 @@ function renderHistoryPreview(
       lines.push(
         <Text key={`job-${job.name}`} wrap="truncate-end">
           {"  "}
-          <Text color={jobColor}>{jobIcon}</Text> <Text bold>{job.name}</Text>
+          <Text color={jobColor}>{jobIcon}</Text>{" "}
+          <Text bold>{esc(job.name)}</Text>
           <Text dimColor>{jobDur}</Text>
         </Text>,
       );
@@ -355,11 +364,18 @@ function renderHistoryPreview(
           ? ` (${formatDurationSec(step.duration)})`
           : "";
         lines.push(
-          <Text key={`step-${job.name}-${step.name}`} wrap="truncate-end">
+          <Text
+            key={`step-${job.name}-${step.name}`}
+            wrap="truncate-end"
+          >
             {"    "}
-            <Text color={stepColor}>{stepIcon}</Text> {step.name}
+            <Text color={stepColor}>{stepIcon}</Text> {esc(step.name)}
             <Text dimColor>{stepDur}</Text>
-            {step.error && <Text color="red">- {step.error}</Text>}
+            {step.error && (
+              <Text color="red">
+                - {escapeControlCharactersInText(step.error)}
+              </Text>
+            )}
           </Text>,
         );
       }
@@ -385,12 +401,14 @@ function renderHistoryScrollback(
       ? `${(item.duration / 1000).toFixed(1)}s`
       : "";
     const tagStr = item.tags && Object.keys(item.tags).length > 0
-      ? Object.entries(item.tags).map(([k, v]) => `${k}=${v}`).join(", ")
+      ? Object.entries(item.tags).map(([k, v]) => `${esc(k)}=${esc(v)}`).join(
+        ", ",
+      )
       : "";
 
     const lines: string[] = [
-      `${item.workflowName} [${item.status}]`,
-      `run: ${item.runId}`,
+      `${esc(item.workflowName)} [${esc(item.status)}]`,
+      `run: ${esc(item.runId)}`,
       `started: ${dateStr}`,
     ];
 
@@ -416,8 +434,8 @@ function renderHistoryScrollback(
     : "";
 
   const lines: string[] = [
-    `${detail.workflowName} [${detail.status}]`,
-    `run: ${detail.id}`,
+    `${esc(detail.workflowName)} [${esc(detail.status)}]`,
+    `run: ${esc(detail.id)}`,
   ];
 
   if (durationStr) {
@@ -432,14 +450,16 @@ function renderHistoryScrollback(
       const jobDur = job.duration !== undefined
         ? ` (${formatDurationSec(job.duration)})`
         : "";
-      lines.push(`  ${jobIcon} ${job.name}${jobDur}`);
+      lines.push(`  ${jobIcon} ${esc(job.name)}${jobDur}`);
       for (const step of job.steps) {
         const stepIcon = STATUS_ICONS[step.status] ?? " ";
         const stepDur = step.duration !== undefined
           ? ` (${formatDurationSec(step.duration)})`
           : "";
-        const stepErr = step.error ? ` - ${step.error}` : "";
-        lines.push(`    ${stepIcon} ${step.name}${stepDur}${stepErr}`);
+        const stepErr = step.error
+          ? ` - ${escapeControlCharactersInText(step.error)}`
+          : "";
+        lines.push(`    ${stepIcon} ${esc(step.name)}${stepDur}${stepErr}`);
       }
     }
   }

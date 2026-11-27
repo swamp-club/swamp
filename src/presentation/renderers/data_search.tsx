@@ -33,6 +33,10 @@ import { createSearchListRenderer } from "./search_result_list.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
 import { quoteShellWord } from "../../domain/shell_word.ts";
+import {
+  escapeControlCharacters as esc,
+  escapeControlCharactersInText,
+} from "../../domain/control_characters.ts";
 import { renderInteractivePicker } from "./components/search_picker.tsx";
 import { renderMarkdownToTerminal } from "../markdown_renderer.ts";
 
@@ -212,24 +216,26 @@ function buildMetadataElements(item: DataSearchItem): React.ReactElement[] {
   const tagEntries = Object.entries(item.tags);
   const elements: React.ReactElement[] = [
     <Text key="name" bold wrap="truncate-end">
-      {item.name} <Text dimColor>v{item.version}</Text>
+      {esc(item.name)} <Text dimColor>v{item.version}</Text>
     </Text>,
     <Text key="spacer" />,
     <Text key="model" dimColor wrap="truncate-end">
-      Model: {item.modelName} ({item.modelType})
+      Model: {esc(item.modelName)} ({esc(item.modelType)})
     </Text>,
     <Text key="ct" dimColor wrap="truncate-end">
-      Content Type: {item.contentType}
+      Content Type: {esc(item.contentType)}
     </Text>,
     <Text key="size" dimColor wrap="truncate-end">
       Size: {formatSize(item.size)}
     </Text>,
     <Text key="lifetime" dimColor wrap="truncate-end">
-      Lifetime: {item.lifetime}
+      Lifetime: {esc(item.lifetime)}
     </Text>,
-    <Text key="type" dimColor wrap="truncate-end">Type: {item.type}</Text>,
+    <Text key="type" dimColor wrap="truncate-end">
+      Type: {esc(item.type)}
+    </Text>,
     <Text key="owner" dimColor wrap="truncate-end">
-      Owner: {item.ownerType} {item.ownerRef}
+      Owner: {esc(item.ownerType)} {esc(item.ownerRef)}
     </Text>,
   ];
 
@@ -243,21 +249,21 @@ function buildMetadataElements(item: DataSearchItem): React.ReactElement[] {
   if (item.workflowTag) {
     elements.push(
       <Text key="wf" dimColor wrap="truncate-end">
-        Workflow: {item.workflowTag}
+        Workflow: {esc(item.workflowTag)}
       </Text>,
     );
   }
   if (item.jobTag) {
     elements.push(
       <Text key="job" dimColor wrap="truncate-end">
-        Job: {item.jobTag}
+        Job: {esc(item.jobTag)}
       </Text>,
     );
   }
   if (item.stepTag) {
     elements.push(
       <Text key="step" dimColor wrap="truncate-end">
-        Step: {item.stepTag}
+        Step: {esc(item.stepTag)}
       </Text>,
     );
   }
@@ -265,7 +271,7 @@ function buildMetadataElements(item: DataSearchItem): React.ReactElement[] {
   if (tagEntries.length > 0) {
     elements.push(
       <Text key="tags" dimColor wrap="truncate-end">
-        Tags: {tagEntries.map(([k, v]) => `${k}=${v}`).join(", ")}
+        Tags: {tagEntries.map(([k, v]) => `${esc(k)}=${esc(v)}`).join(", ")}
       </Text>,
     );
   }
@@ -282,9 +288,9 @@ function buildMetadataElements(item: DataSearchItem): React.ReactElement[] {
 function renderDataResultLine(item: DataSearchItem): React.ReactElement {
   return (
     <Text>
-      {`${item.name} `}
+      {`${esc(item.name)} `}
       <Text dimColor>
-        {`${item.contentType} ${formatSize(item.size)} ${
+        {`${esc(item.contentType)} ${formatSize(item.size)} ${
           formatRelativeTime(item.createdAt)
         }`}
       </Text>
@@ -303,7 +309,9 @@ function renderDataPreview(
 
   if (detail && detail.content) {
     elements.push(<Text key="content-spacer" />);
-    const contentLines = detail.content.split("\n");
+    const contentLines = escapeControlCharactersInText(detail.content).split(
+      "\n",
+    );
     for (let i = 0; i < contentLines.length; i++) {
       elements.push(
         <Text key={`c-${i}`} wrap="truncate-end">{contentLines[i]}</Text>,
@@ -318,7 +326,7 @@ function renderDataPreview(
   } else if (detail && !detail.content) {
     elements.push(
       <Text key="binary" dimColor wrap="truncate-end">
-        (binary data at {detail.contentPath})
+        (binary data at {esc(detail.contentPath)})
       </Text>,
     );
   }
@@ -338,7 +346,8 @@ function renderDataScrollback(
 
   if (detail?.content) {
     const note = truncationNote(item, detail);
-    return metadata + "\n" + detail.content + (note ? "\n" + note : "");
+    return metadata + "\n" + escapeControlCharactersInText(detail.content) +
+      (note ? "\n" + note : "");
   }
 
   return metadata;

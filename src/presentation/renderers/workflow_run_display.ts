@@ -69,7 +69,7 @@ function formatTimestamp(iso: string | undefined): string {
 }
 
 function renderLogWorkflowRun(data: WorkflowRunView): void {
-  writeOutput(`Workflow: ${data.workflowName} (Run ID: ${data.id})`);
+  writeOutput(`Workflow: ${esc(data.workflowName)} (Run ID: ${esc(data.id)})`);
   if (data.startedAt) {
     writeOutput(`Started:  ${formatTimestamp(data.startedAt)}`);
   }
@@ -81,7 +81,9 @@ function renderLogWorkflowRun(data: WorkflowRunView): void {
     const durationSuffix = job.duration !== undefined
       ? ` (${job.duration}ms)`
       : "";
-    writeOutput(`  ${statusIcon(job.status)} ${job.name}${durationSuffix}`);
+    writeOutput(
+      `  ${statusIcon(job.status)} ${esc(job.name)}${durationSuffix}`,
+    );
 
     for (const step of job.steps) {
       const stepDuration = step.duration !== undefined
@@ -90,39 +92,45 @@ function renderLogWorkflowRun(data: WorkflowRunView): void {
       const stepIcon = step.status === "failed" && step.allowedFailure
         ? "\u26A0"
         : statusIcon(step.status);
-      writeOutput(`    ${stepIcon} ${step.name}${stepDuration}`);
+      writeOutput(`    ${stepIcon} ${esc(step.name)}${stepDuration}`);
 
       if (step.nestedRun && step.status === "waiting_approval") {
         writeOutput(
-          `      -> waiting on nested run ${step.nestedRun.runId} of workflow ${step.nestedRun.workflowName}`,
+          `      -> waiting on nested run ${
+            esc(step.nestedRun.runId)
+          } of workflow ${esc(step.nestedRun.workflowName)}`,
         );
       } else if (step.wait?.receipt && step.status === "waiting") {
         writeOutput(
-          `      -> signal ${step.wait.receipt.id} received for wait ${step.wait.id}${
-            keySuffix(step.wait.key)
-          } from ${
+          `      -> signal ${esc(step.wait.receipt.id)} received for wait ${
+            esc(step.wait.id)
+          }${keySuffix(step.wait.key)} from ${
             escapeControlCharacters(step.wait.receipt.submittedBy)
-          } at ${step.wait.receipt.receivedAt}${
+          } at ${esc(step.wait.receipt.receivedAt)}${
             heldSuffix(step.wait.receipt)
           }; a resume applies it`,
         );
       } else if (step.wait && step.status === "waiting") {
         writeOutput(
-          `      -> waiting for signal ${step.wait.id}${
+          `      -> waiting for signal ${esc(step.wait.id)}${
             keySuffix(step.wait.key)
-          } until ${step.wait.deadline}`,
+          } until ${esc(step.wait.deadline)}`,
         );
       } else if (step.wait?.receipt?.heldAsPending) {
         writeOutput(
-          `      -> signal ${step.wait.receipt.id} received for wait ${step.wait.id}${
-            keySuffix(step.wait.key)
-          } from ${
+          `      -> signal ${esc(step.wait.receipt.id)} received for wait ${
+            esc(step.wait.id)
+          }${keySuffix(step.wait.key)} from ${
             escapeControlCharacters(step.wait.receipt.submittedBy)
-          } at ${step.wait.receipt.receivedAt}${heldSuffix(step.wait.receipt)}`,
+          } at ${esc(step.wait.receipt.receivedAt)}${
+            heldSuffix(step.wait.receipt)
+          }`,
         );
       } else if (step.nestedRun?.detached) {
         writeOutput(
-          `      -> nested run ${step.nestedRun.runId} of workflow ${step.nestedRun.workflowName} was detached when the run ended`,
+          `      -> nested run ${esc(step.nestedRun.runId)} of workflow ${
+            esc(step.nestedRun.workflowName)
+          } was detached when the run ended`,
         );
       }
 
@@ -139,8 +147,8 @@ function renderLogWorkflowRun(data: WorkflowRunView): void {
           switch (r.kind) {
             case "guarded":
               return r.expression
-                ? `guard: ${r.expression}${
-                  r.result === undefined ? "" : ` → ${r.result}`
+                ? `guard: ${esc(r.expression)}${
+                  r.result === undefined ? "" : ` → ${esc(String(r.result))}`
                 }`
                 : "guard";
             case "dependency":
@@ -205,7 +213,7 @@ function renderLogWorkflowRun(data: WorkflowRunView): void {
   if (continuation?.refused !== undefined && data.status === "interrupted") {
     writeOutput(
       yellow(
-        `Not continued automatically (${continuation.refused.reason}): ${
+        `Not continued automatically (${esc(continuation.refused.reason)}): ${
           escapeControlCharacters(continuation.refused.message)
         }`,
       ),
@@ -264,7 +272,7 @@ function renderLogWorkflowRun(data: WorkflowRunView): void {
   writeOutput(colorize(resultText));
 
   if (data.path) {
-    writeOutput(`Saved to: ${data.path}`);
+    writeOutput(`Saved to: ${esc(data.path)}`);
   }
 }
 
@@ -378,9 +386,9 @@ function gateLines(gate: FanOutGateRunView): string[] {
   } else if (gate.status === "held") {
     text = dim("not reached");
   } else {
-    text = gate.status === "failed" ? red("failed") : gate.status;
+    text = gate.status === "failed" ? red("failed") : esc(gate.status);
   }
-  const lines = [`        ${gate.kind}: ${text}`];
+  const lines = [`        ${esc(gate.kind)}: ${text}`];
   if (gate.approval?.reason) {
     lines.push(`          Reason: ${esc(gate.approval.reason)}`);
   }
@@ -389,7 +397,9 @@ function gateLines(gate: FanOutGateRunView): string[] {
 
 function haltLine(halt: FanOutHaltRunView, attempt: number): string {
   if (halt.reason === "gate_rejected") {
-    return `        ${halt.gate} gate rejected: held ${workerList(halt.held)}`;
+    return `        ${esc(halt.gate)} gate rejected: held ${
+      workerList(halt.held)
+    }`;
   }
   return `        attempt ${attempt}: ${red("budget spent")} in batch ${
     halt.batch + 1

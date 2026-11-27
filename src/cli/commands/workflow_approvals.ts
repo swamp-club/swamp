@@ -77,13 +77,14 @@ function cancelCommand(
   run: { workflowName: string; runId: string; serveStarted: boolean },
   target: string,
 ): string {
-  if (target) return `swamp workflow cancel --run ${run.runId}${target}`;
+  const runId = quoteShellWord(run.runId);
+  if (target) return `swamp workflow cancel --run ${runId}${target}`;
   if (run.serveStarted) {
-    return `swamp workflow cancel --run ${run.runId} --server <url>`;
+    return `swamp workflow cancel --run ${runId} --server <url>`;
   }
   return `swamp workflow cancel ${
     quoteShellWord(run.workflowName)
-  } --run ${run.runId}`;
+  } --run ${runId}`;
 }
 
 function renderExpired(
@@ -220,6 +221,7 @@ export function renderApprovals(
         const quiet = cliCtx.verbosity === "quiet";
         const workflow = quoteShellWord(item.workflowName);
         const step = quoteShellWord(item.stepName);
+        const runId = quoteShellWord(item.runId);
         // A serve instance fetches a parent record it does not hold before
         // it decides, so a record missing there may only not be local yet.
         const parentGone = item.parentMissing === true && server === undefined;
@@ -238,14 +240,14 @@ export function renderApprovals(
           }
         } else if (!quiet) {
           writeOutput(
-            `  swamp workflow approve ${workflow} ${step} --run ${item.runId}${target}`,
+            `  swamp workflow approve ${workflow} ${step} --run ${runId}${target}`,
           );
           writeOutput(
-            `  swamp workflow reject  ${workflow} ${step} --run ${item.runId}${target}`,
+            `  swamp workflow reject  ${workflow} ${step} --run ${runId}${target}`,
           );
           if (item.canResume !== false) {
             writeOutput(
-              `  After approval: swamp workflow resume ${workflow} --run ${item.runId}${target}`,
+              `  After approval: swamp workflow resume ${workflow} --run ${runId}${target}`,
             );
           }
         }
@@ -298,7 +300,7 @@ export function renderApprovals(
                 escapeControlCharacters(item.parentRun.workflowName)
               }: once this run finishes, swamp workflow resume ${
                 quoteShellWord(item.parentRun.workflowName)
-              } --run ${item.parentRun.runId}${target}`,
+              } --run ${quoteShellWord(item.parentRun.runId)}${target}`,
             );
           }
         }

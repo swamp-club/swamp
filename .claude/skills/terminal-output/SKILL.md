@@ -95,6 +95,33 @@ and `writeOutput()` coexist and when to use each.
 **Key rule:** Render functions use `writeOutput()` for user-facing output, never
 LogTape. LogTape is for debug/operational logging only.
 
+## Remote Text
+
+Escape every string a remote party supplied before it reaches the terminal: the
+extension registry, swamp-club, a serve read with `--server`, workers, a shared
+datastore, and output an extension's methods or reports produced. Raw control
+characters can fake or hide output, set the window title, or write links.
+
+- Escape the value, never a finished line: apply the helper before colour,
+  padding, width measurement or truncation, or the ANSI codes print as text.
+- Single-line fields (names, ids, versions, tags): `escapeControlCharacters`
+  from `src/domain/control_characters.ts`.
+- Text printed across lines (bodies, errors, log lines, method output):
+  `escapeControlCharactersInText`, which keeps newline and tab and turns CRLF
+  into newline.
+- Values interpolated into a LogTape template or `{prop}` are already escaped. A
+  string passed as the message itself is not, so pass remote text as a value.
+- Markdown renderers, `renderError`, `logTextBlock` and `PipeWriter` escape
+  their inputs already.
+- Raw content meant for piping (`model output data`, `vault read`) is escaped
+  only when stdout is a terminal, so piped bytes stay exact.
+- JSON mode prints raw values and relies on `JSON.stringify`. JSON shown in log
+  mode goes through `escapeControlCharactersInText`, since `JSON.stringify`
+  leaves DEL and C1 raw.
+- Test with a property test that puts control characters in every remote field
+  and asserts each value appears escaped (see
+  `src/presentation/output/serve_federation_output_property_test.ts`).
+
 ## Color Scheme
 
 Import from `@std/fmt/colors`. Whether colors are emitted at all is decided once

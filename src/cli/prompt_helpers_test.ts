@@ -20,6 +20,10 @@
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { UserError } from "../domain/errors.ts";
 import {
+  escapeControlCharacters,
+  hasControlCharacter,
+} from "../domain/control_characters.ts";
+import {
   promptChoice,
   promptConfirmation,
   promptLine,
@@ -418,6 +422,20 @@ Deno.test("promptNumberedChoice: throws UserError on non-interactive stdin befor
       "stdin is not a terminal",
     );
     assertEquals(io.written, []);
+  } finally {
+    io.restore();
+  }
+});
+
+Deno.test("promptChoice: shows choices with control characters escaped and returns the raw choice", async () => {
+  const hostile = "@evil/ext\x1b]0;owned\x07 \x1b[2J\x9b";
+  const io = stubIO("1\n");
+  try {
+    const result = await promptChoice("Pick one:", [hostile, "beta"]);
+    assertEquals(result, hostile);
+    const output = io.written.join("");
+    assertStringIncludes(output, `1. ${escapeControlCharacters(hostile)}`);
+    assertEquals(hasControlCharacter(output.replaceAll("\n", "")), false);
   } finally {
     io.restore();
   }

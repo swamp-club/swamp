@@ -27,6 +27,10 @@ import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
 import { carryModelWording } from "../../domain/behavior_wording.ts";
 import {
+  escapeControlCharacters as esc,
+  escapeControlCharactersInText,
+} from "../../domain/control_characters.ts";
+import {
   type CommandSurface,
   DEFAULT_COMMAND_SURFACE,
   surfaceNoun,
@@ -50,10 +54,11 @@ export function formatSchemaType(
   type: string | string[] | undefined,
 ): string | undefined {
   if (type === undefined) return undefined;
+  // schemas come from extension code
   if (Array.isArray(type)) {
-    return type.join(" | ");
+    return type.map(esc).join(" | ");
   }
-  return type;
+  return esc(type);
 }
 
 export function formatSchemaAttributes(
@@ -63,17 +68,19 @@ export function formatSchemaAttributes(
   const s = schema as JsonSchemaObject & { $error?: string; message?: string };
   if (s.$error) {
     return [
-      `${indent}${yellow("⚠")} ${dim(s.message ?? "Schema unavailable")}`,
+      `${indent}${yellow("⚠")} ${dim(esc(s.message ?? "Schema unavailable"))}`,
     ];
   }
   if (!s.properties) return [];
 
   const required = new Set(s.required ?? []);
   return Object.entries(s.properties).map(([name, prop]) => {
-    const parts = [name];
+    const parts = [esc(name)];
     const formatted = formatSchemaType(prop.type);
     if (formatted) parts.push(dim(`(${formatted})`));
-    if (prop.enum) parts.push(dim(`[${prop.enum.join(", ")}]`));
+    if (prop.enum) {
+      parts.push(dim(`[${prop.enum.map((v) => esc(String(v))).join(", ")}]`));
+    }
     if (required.has(name)) parts.push(dim("*required"));
     if (prop.data === true) parts.push(dim("data"));
     return `${indent}${parts.join(" ")}`;
@@ -82,9 +89,8 @@ export function formatSchemaAttributes(
 
 export function formatMethodKind(method: MethodDescribeData): string {
   if (!method.kind) return "";
-  const label = method.kindSource === "inferred"
-    ? `${method.kind}, inferred`
-    : method.kind;
+  const kind = esc(method.kind);
+  const label = method.kindSource === "inferred" ? `${kind}, inferred` : kind;
   return ` ${dim(`(${label})`)}`;
 }
 
@@ -92,9 +98,9 @@ export function formatMethodLines(methods: MethodDescribeData[]): string[] {
   const lines: string[] = [];
   for (const method of methods) {
     lines.push(
-      `  ${bold(cyan(method.name))}${formatMethodKind(method)} ${
+      `  ${bold(cyan(esc(method.name)))}${formatMethodKind(method)} ${
         dim("-")
-      } ${method.description}`,
+      } ${escapeControlCharactersInText(method.description)}`,
     );
 
     const methodAttrs = formatSchemaAttributes(
@@ -113,12 +119,15 @@ function formatRecord(
   record: Record<string, unknown>,
   indent: string,
 ): string[] {
+  // JSON.stringify leaves DEL and C1 characters as they are
   return Object.entries(record).map(([key, value]) =>
-    `${indent}${key}: ${
+    `${indent}${esc(key)}: ${
       dim(
-        value !== null && typeof value === "object"
-          ? JSON.stringify(value)
-          : String(value),
+        esc(
+          value !== null && typeof value === "object"
+            ? JSON.stringify(value)
+            : String(value),
+        ),
       )
     }`
   );
@@ -134,15 +143,21 @@ class LogModelGetRenderer implements Renderer<ModelGetEvent> {
       completed: (e) => {
         const data = e.data;
         const lines = [
-          `${bold(cyan("Name:"))} ${bold(data.name)} ${dim(`(${data.type})`)}`,
+          `${bold(cyan("Name:"))} ${bold(esc(data.name))} ${
+            dim(`(${esc(data.type)})`)
+          }`,
         ];
 
         if (data.description) {
-          lines.push(`${bold(cyan("Description:"))} ${data.description}`);
+          lines.push(
+            `${bold(cyan("Description:"))} ${
+              escapeControlCharactersInText(data.description)
+            }`,
+          );
         }
 
         lines.push(
-          `${bold(cyan("ID:"))} ${dim(data.id)}`,
+          `${bold(cyan("ID:"))} ${dim(esc(data.id))}`,
           `${bold(cyan("Version:"))} ${data.version}`,
         );
 
@@ -168,7 +183,9 @@ class LogModelGetRenderer implements Renderer<ModelGetEvent> {
           lines.push("");
           lines.push(
             bold(cyan("Type Version:")) +
-              ` ${data.typeVersion ?? dim("not recorded")}`,
+              ` ${
+                data.typeVersion ? esc(data.typeVersion) : dim("not recorded")
+              }`,
           );
           // Only worth showing when it differs — otherwise it is noise.
           if (
@@ -177,7 +194,7 @@ class LogModelGetRenderer implements Renderer<ModelGetEvent> {
           ) {
             lines.push(
               bold(cyan("Current Type Version:")) +
-                ` ${data.currentTypeVersion}`,
+                ` ${esc(data.currentTypeVersion)}`,
             );
           }
           if (data.staleness === "upgradable") {
@@ -233,7 +250,7 @@ class LogModelGetRenderer implements Renderer<ModelGetEvent> {
           lines.push("");
           lines.push(bold(cyan("Configured Method Arguments:")));
           for (const [name, method] of Object.entries(data.configuredMethods)) {
-            lines.push(`  ${bold(cyan(name))}:`);
+            lines.push(`  ${bold(cyan(esc(name)))}:`);
             lines.push(...formatRecord(method.arguments, "    "));
           }
         }

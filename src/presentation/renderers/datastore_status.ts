@@ -25,6 +25,10 @@ import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
+import {
+  escapeControlCharacters,
+  escapeControlCharactersInText,
+} from "../../domain/control_characters.ts";
 
 function stateLabel(state: "offline" | "rejected" | "quarantined"): string {
   switch (state) {
@@ -47,10 +51,10 @@ class LogDatastoreStatusRenderer implements Renderer<DatastoreStatusEvent> {
 
         const lines = [
           bold("Datastore Status"),
-          `  Type:    ${data.type}`,
+          `  Type:    ${escapeControlCharacters(data.type)}`,
         ];
         if (data.path) {
-          lines.push(`  Path:    ${data.path}`);
+          lines.push(`  Path:    ${escapeControlCharacters(data.path)}`);
         }
         if (data.format !== undefined) {
           lines.push(`  Format:  ${data.format} (v3 commit log)`);
@@ -66,11 +70,21 @@ class LogDatastoreStatusRenderer implements Renderer<DatastoreStatusEvent> {
           }ms)`,
         );
         if (!data.healthy) {
-          lines.push(`  Error:   ${data.message}`);
+          lines.push(
+            `  Error:   ${escapeControlCharactersInText(data.message)}`,
+          );
         }
-        lines.push(`  Dirs:    ${data.directories.join(", ")}`);
+        lines.push(
+          `  Dirs:    ${
+            data.directories.map(escapeControlCharacters).join(", ")
+          }`,
+        );
         if (data.exclude && data.exclude.length > 0) {
-          lines.push(`  Exclude: ${data.exclude.join(", ")}`);
+          lines.push(
+            `  Exclude: ${
+              data.exclude.map(escapeControlCharacters).join(", ")
+            }`,
+          );
         }
         if (data.explicitLeases !== undefined) {
           lines.push("");
@@ -80,9 +94,9 @@ class LogDatastoreStatusRenderer implements Renderer<DatastoreStatusEvent> {
           }
           for (const lease of data.explicitLeases) {
             lines.push(
-              `  ${lease.lockKey} ${
-                dim("-")
-              } ${lease.holder}, until ${lease.expiresAt}`,
+              `  ${escapeControlCharacters(lease.lockKey)} ${dim("-")} ${
+                escapeControlCharacters(lease.holder)
+              }, until ${escapeControlCharacters(lease.expiresAt)}`,
             );
           }
         }
@@ -94,9 +108,11 @@ class LogDatastoreStatusRenderer implements Renderer<DatastoreStatusEvent> {
           }
           for (const lease of data.heldLeases) {
             lines.push(
-              `  ${lease.lockKey} ${
+              `  ${escapeControlCharacters(lease.lockKey)} ${
                 dim("-")
-              } fence ${lease.fence}, until ${lease.expiresAt}`,
+              } fence ${lease.fence}, until ${
+                escapeControlCharacters(lease.expiresAt)
+              }`,
             );
           }
         }
@@ -105,23 +121,29 @@ class LogDatastoreStatusRenderer implements Renderer<DatastoreStatusEvent> {
           lines.push(bold("Saved In This Checkout"));
           for (const entry of data.outbox) {
             lines.push(
-              `  ${stateLabel(entry.state)} ${entry.partition} ${
-                dim(`(${entry.txnId}, saved ${entry.savedAt})`)
+              `  ${stateLabel(entry.state)} ${
+                escapeControlCharacters(entry.partition)
+              } ${
+                dim(
+                  `(${escapeControlCharacters(entry.txnId)}, saved ${
+                    escapeControlCharacters(entry.savedAt)
+                  })`,
+                )
               }`,
             );
             for (const write of entry.writes ?? []) {
               if (write.name === undefined) continue;
               lines.push(
-                `    ${write.behavior} ${
-                  bold(write.name)
+                `    ${escapeControlCharacters(write.behavior)} ${
+                  bold(escapeControlCharacters(write.name))
                 } version ${write.version} ${dim("did not land")}`,
               );
             }
             if (entry.reason !== undefined) {
-              lines.push(`    ${dim(entry.reason)}`);
+              lines.push(`    ${dim(escapeControlCharacters(entry.reason))}`);
             }
             if (entry.next !== undefined) {
-              lines.push(`    ${entry.next}`);
+              lines.push(`    ${escapeControlCharacters(entry.next)}`);
             } else if (entry.code === RUN_INITIATOR_MISMATCH_CODE) {
               lines.push(
                 "    This run record was refused for its initiator: an older " +
@@ -144,26 +166,28 @@ class LogDatastoreStatusRenderer implements Renderer<DatastoreStatusEvent> {
               ? red("discarded")
               : green("accepted");
             lines.push(
-              `  ${state} ${change.txnId} ${
+              `  ${state} ${escapeControlCharacters(change.txnId)} ${
                 dim("-")
-              } ${change.partition} by ${change.author}`,
+              } ${escapeControlCharacters(change.partition)} by ${
+                escapeControlCharacters(change.author)
+              }`,
             );
             lines.push(
               change.state === "held"
-                ? `    ${dim(change.reason)}`
+                ? `    ${dim(escapeControlCharacters(change.reason))}`
                 : change.state === "discarded"
                 ? `    ${
                   dim(
-                    `discarded by ${change.discardedBy ?? "an admin"} at ${
-                      change.discardedAt ?? "?"
-                    }`,
+                    `discarded by ${
+                      escapeControlCharacters(change.discardedBy ?? "an admin")
+                    } at ${escapeControlCharacters(change.discardedAt ?? "?")}`,
                   )
                 }`
                 : `    ${
                   dim(
-                    `accepted by ${change.acceptedBy ?? "an admin"} at ${
-                      change.acceptedAt ?? "?"
-                    }`,
+                    `accepted by ${
+                      escapeControlCharacters(change.acceptedBy ?? "an admin")
+                    } at ${escapeControlCharacters(change.acceptedAt ?? "?")}`,
                   )
                 }`,
             );
@@ -177,7 +201,11 @@ class LogDatastoreStatusRenderer implements Renderer<DatastoreStatusEvent> {
         if (data.serveSectionAbsent !== undefined) {
           lines.push("");
           lines.push(
-            dim(`Serve's leases and quarantine: ${data.serveSectionAbsent}`),
+            dim(
+              `Serve's leases and quarantine: ${
+                escapeControlCharacters(data.serveSectionAbsent)
+              }`,
+            ),
           );
         }
 

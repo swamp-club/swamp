@@ -34,6 +34,10 @@ import type {
 import { createSearchListRenderer } from "./search_result_list.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
+import {
+  escapeControlCharacters as esc,
+  escapeControlCharactersInText,
+} from "../../domain/control_characters.ts";
 import { carryModelWording } from "../../domain/behavior_wording.ts";
 import { renderInteractivePicker } from "./components/search_picker.tsx";
 import type { CommandSurface } from "../command_surface.ts";
@@ -218,14 +222,14 @@ export function createModelOutputSearchRenderer(
 function renderOutputResultLine(
   item: ModelOutputSearchItem,
 ): React.ReactElement {
-  const methodLabel = ` ${item.methodName}`;
-  const statusLabel = ` [${item.status}]`;
+  const methodLabel = ` ${esc(item.methodName)}`;
+  const statusLabel = ` [${esc(item.status)}]`;
   const durationLabel = item.durationMs !== undefined
     ? ` (${formatDuration(item.durationMs)})`
     : undefined;
   return (
     <Text>
-      {item.modelName ?? item.definitionId.slice(0, 8)}
+      {esc(item.modelName ?? item.definitionId.slice(0, 8))}
       <Text color="cyan">{methodLabel}</Text>
       <Text color={getStatusColor(item.status)}>{statusLabel}</Text>
       {durationLabel !== undefined && <Text dimColor>{durationLabel}</Text>}
@@ -243,16 +247,19 @@ function renderOutputPreview(
   if (!detail) {
     const displayName = item.modelName ?? item.definitionId;
     const lines: React.ReactElement[] = [
-      <Text key="name" bold wrap="truncate-end">{displayName}</Text>,
-      <Text key="type" dimColor wrap="truncate-end">type: {item.type}</Text>,
+      <Text key="name" bold wrap="truncate-end">{esc(displayName)}</Text>,
+      <Text key="type" dimColor wrap="truncate-end">
+        type: {esc(item.type)}
+      </Text>,
       <Text key="method" wrap="truncate-end">
-        method: <Text color="cyan">{item.methodName}</Text>
+        method: <Text color="cyan">{esc(item.methodName)}</Text>
       </Text>,
       <Text key="status" wrap="truncate-end">
-        status: <Text color={getStatusColor(item.status)}>{item.status}</Text>
+        status:{" "}
+        <Text color={getStatusColor(item.status)}>{esc(item.status)}</Text>
       </Text>,
       <Text key="started" dimColor wrap="truncate-end">
-        started: {item.startedAt}
+        started: {esc(item.startedAt)}
       </Text>,
     ];
     if (item.durationMs !== undefined) {
@@ -264,7 +271,7 @@ function renderOutputPreview(
     }
     lines.push(
       <Text key="defId" dimColor wrap="truncate-end">
-        definitionId: {item.definitionId}
+        definitionId: {esc(item.definitionId)}
       </Text>,
     );
     return (
@@ -276,22 +283,25 @@ function renderOutputPreview(
 
   const displayName = detail.modelName ?? detail.definitionId;
   const lines: React.ReactElement[] = [
-    <Text key="name" bold wrap="truncate-end">{displayName}</Text>,
-    <Text key="type" dimColor wrap="truncate-end">type: {detail.type}</Text>,
+    <Text key="name" bold wrap="truncate-end">{esc(displayName)}</Text>,
+    <Text key="type" dimColor wrap="truncate-end">
+      type: {esc(detail.type)}
+    </Text>,
     <Text key="method" wrap="truncate-end">
-      method: <Text color="cyan">{detail.methodName}</Text>
+      method: <Text color="cyan">{esc(detail.methodName)}</Text>
     </Text>,
     <Text key="status" wrap="truncate-end">
-      status: <Text color={getStatusColor(detail.status)}>{detail.status}</Text>
+      status:{" "}
+      <Text color={getStatusColor(detail.status)}>{esc(detail.status)}</Text>
     </Text>,
     <Text key="started" dimColor wrap="truncate-end">
-      started: {detail.startedAt}
+      started: {esc(detail.startedAt)}
     </Text>,
   ];
   if (detail.completedAt) {
     lines.push(
       <Text key="completed" dimColor wrap="truncate-end">
-        completed: {detail.completedAt}
+        completed: {esc(detail.completedAt)}
       </Text>,
     );
   }
@@ -316,30 +326,30 @@ function renderOutputPreview(
   );
   lines.push(
     <Text key="prov-trigger" dimColor wrap="truncate-end">
-      {`  triggeredBy: ${detail.provenance.triggeredBy}`}
+      {`  triggeredBy: ${esc(detail.provenance.triggeredBy)}`}
     </Text>,
   );
   lines.push(
     <Text key="prov-ver" dimColor wrap="truncate-end">
-      {`  modelVersion: ${detail.provenance.modelVersion}`}
+      {`  modelVersion: ${esc(detail.provenance.modelVersion)}`}
     </Text>,
   );
   lines.push(
     <Text key="prov-hash" dimColor wrap="truncate-end">
-      {`  definitionHash: ${detail.provenance.definitionHash}`}
+      {`  definitionHash: ${esc(detail.provenance.definitionHash)}`}
     </Text>,
   );
   if (detail.provenance.workflowId) {
     lines.push(
       <Text key="prov-wf" dimColor wrap="truncate-end">
-        {`  workflow: ${detail.provenance.workflowId}`}
+        {`  workflow: ${esc(detail.provenance.workflowId)}`}
       </Text>,
     );
   }
   if (detail.provenance.stepName) {
     lines.push(
       <Text key="prov-step" dimColor wrap="truncate-end">
-        {`  step: ${detail.provenance.stepName}`}
+        {`  step: ${esc(detail.provenance.stepName)}`}
       </Text>,
     );
   }
@@ -354,7 +364,7 @@ function renderOutputPreview(
     for (const a of detail.artifacts.dataArtifacts) {
       lines.push(
         <Text key={`art-${a.dataId}`} dimColor wrap="truncate-end">
-          {`  ${a.name} v${a.version}`}
+          {`  ${esc(a.name)} v${esc(String(a.version))}`}
         </Text>,
       );
     }
@@ -367,7 +377,7 @@ function renderOutputPreview(
     );
     lines.push(
       <Text key="err-msg" color="red" wrap="truncate-end">
-        {`  ${detail.error.message}`}
+        {`  ${escapeControlCharactersInText(detail.error.message)}`}
       </Text>,
     );
   }
@@ -386,29 +396,29 @@ function renderOutputScrollback(
   if (!detail) {
     const displayName = item.modelName ?? item.definitionId;
     const lines: string[] = [
-      `${displayName} - ${item.methodName} [${item.status}]`,
-      `type: ${item.type}`,
-      `started: ${item.startedAt}`,
+      `${esc(displayName)} - ${esc(item.methodName)} [${esc(item.status)}]`,
+      `type: ${esc(item.type)}`,
+      `started: ${esc(item.startedAt)}`,
     ];
 
     if (item.durationMs !== undefined) {
       lines.push(`duration: ${formatDuration(item.durationMs)}`);
     }
 
-    lines.push(`definitionId: ${item.definitionId}`);
+    lines.push(`definitionId: ${esc(item.definitionId)}`);
 
     return lines.join("\n");
   }
 
   const displayName = detail.modelName ?? detail.definitionId;
   const lines: string[] = [
-    `${displayName} - ${detail.methodName} [${detail.status}]`,
-    `type: ${detail.type}`,
-    `started: ${detail.startedAt}`,
+    `${esc(displayName)} - ${esc(detail.methodName)} [${esc(detail.status)}]`,
+    `type: ${esc(detail.type)}`,
+    `started: ${esc(detail.startedAt)}`,
   ];
 
   if (detail.completedAt) {
-    lines.push(`completed: ${detail.completedAt}`);
+    lines.push(`completed: ${esc(detail.completedAt)}`);
   }
   if (detail.durationMs !== undefined) {
     lines.push(`duration: ${formatDuration(detail.durationMs)}`);
@@ -417,26 +427,26 @@ function renderOutputScrollback(
 
   lines.push("");
   lines.push("Provenance:");
-  lines.push(`  triggeredBy: ${detail.provenance.triggeredBy}`);
-  lines.push(`  modelVersion: ${detail.provenance.modelVersion}`);
+  lines.push(`  triggeredBy: ${esc(detail.provenance.triggeredBy)}`);
+  lines.push(`  modelVersion: ${esc(detail.provenance.modelVersion)}`);
   if (detail.provenance.workflowId) {
-    lines.push(`  workflow: ${detail.provenance.workflowId}`);
+    lines.push(`  workflow: ${esc(detail.provenance.workflowId)}`);
   }
   if (detail.provenance.stepName) {
-    lines.push(`  step: ${detail.provenance.stepName}`);
+    lines.push(`  step: ${esc(detail.provenance.stepName)}`);
   }
 
   if (detail.artifacts && detail.artifacts.dataArtifacts.length > 0) {
     lines.push("");
     lines.push("Artifacts:");
     for (const a of detail.artifacts.dataArtifacts) {
-      lines.push(`  ${a.name} v${a.version}`);
+      lines.push(`  ${esc(a.name)} v${esc(String(a.version))}`);
     }
   }
 
   if (detail.error) {
     lines.push("");
-    lines.push(`Error: ${detail.error.message}`);
+    lines.push(`Error: ${escapeControlCharactersInText(detail.error.message)}`);
   }
 
   return lines.join("\n");

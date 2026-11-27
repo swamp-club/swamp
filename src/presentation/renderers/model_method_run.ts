@@ -45,6 +45,10 @@ import {
   DEFAULT_COMMAND_SURFACE,
   surfaceNoun,
 } from "../command_surface.ts";
+import {
+  escapeControlCharacters,
+  escapeControlCharactersInText,
+} from "../../domain/control_characters.ts";
 
 export interface ModelMethodRunRenderOpts {
   modelName: string;
@@ -87,15 +91,19 @@ class ConsoleModelMethodRunRenderer implements ModelMethodRunRenderer {
         writeGutterLine(
           "Created",
           STATUS_COLORS.info,
-          `${e.definitionName} ${dim(`(${e.modelType})`)}`,
+          `${escapeControlCharacters(e.definitionName)} ${
+            dim(`(${escapeControlCharacters(e.modelType)})`)
+          }`,
         );
-        writeContentLine(dim(`at ${e.definitionPath}`));
+        writeContentLine(
+          dim(`at ${escapeControlCharacters(e.definitionPath)}`),
+        );
       },
       global_args_updated: (e) => {
         writeGutterLine(
           "Updated",
           STATUS_COLORS.info,
-          `global arguments on ${e.definitionName}`,
+          `global arguments on ${escapeControlCharacters(e.definitionName)}`,
         );
       },
       model_resolved: (e) => {
@@ -104,7 +112,9 @@ class ConsoleModelMethodRunRenderer implements ModelMethodRunRenderer {
         writeGutterLine(
           "Resolved",
           STATUS_COLORS.info,
-          `${e.modelName} ${dim(`(${e.modelType})`)}`,
+          `${escapeControlCharacters(e.modelName)} ${
+            dim(`(${escapeControlCharacters(e.modelType)})`)
+          }`,
         );
       },
       env_var_warning: (e) => {
@@ -116,27 +126,34 @@ class ConsoleModelMethodRunRenderer implements ModelMethodRunRenderer {
           } definition`,
         );
         for (const detail of e.envVars) {
-          writeContentLine(`${detail.path} uses ${detail.envVar}`);
+          writeContentLine(
+            `${escapeControlCharacters(detail.path)} uses ${
+              escapeControlCharacters(detail.envVar)
+            }`,
+          );
         }
-        writeContentLine(messageFor(e, this.surface));
+        writeContentLine(
+          escapeControlCharactersInText(messageFor(e, this.surface)),
+        );
       },
       evaluating_expressions: () => {},
       executing: (e) => {
         writeGutterLine(
           "Executing",
           STATUS_COLORS.info,
-          e.methodName,
+          escapeControlCharacters(e.methodName),
           formatTimestamp(),
         );
       },
       method_output: (e) => {
+        const line = escapeControlCharactersInText(e.line);
         if (this.quiet) {
-          this.outputBuffer.push(e.line);
+          this.outputBuffer.push(line);
           if (this.outputBuffer.length > QUIET_BUFFER_LIMIT) {
             this.outputBuffer.shift();
           }
         } else {
-          writeContentLine(e.line);
+          writeContentLine(line);
         }
       },
       method_event: (e) => {
@@ -145,21 +162,33 @@ class ConsoleModelMethodRunRenderer implements ModelMethodRunRenderer {
             writeGutterLine(
               "Stored",
               STATUS_COLORS.dim,
-              `'${e.event.fieldPath}' in vault '${e.event.vaultName}'`,
+              `'${escapeControlCharacters(e.event.fieldPath)}' in vault '${
+                escapeControlCharacters(e.event.vaultName)
+              }'`,
             );
             break;
           case "schema_validation_warning":
             writeGutterLine(
               "Warning",
               STATUS_COLORS.warn,
-              `Resource '${e.event.specName}' (instance '${e.event.instanceName}') data does not match schema: ${e.event.error}`,
+              `Resource '${
+                escapeControlCharacters(e.event.specName)
+              }' (instance '${
+                escapeControlCharacters(e.event.instanceName)
+              }') data does not match schema: ${
+                escapeControlCharactersInText(e.event.error)
+              }`,
             );
             break;
           case "vault_single_quote_warning":
           case "sensitive_value_in_command_line":
           case "data_name_portability_warning":
           case "stamped_tag_ignored":
-            writeGutterLine("Warning", STATUS_COLORS.warn, e.event.message);
+            writeGutterLine(
+              "Warning",
+              STATUS_COLORS.warn,
+              escapeControlCharactersInText(e.event.message),
+            );
             break;
         }
       },
@@ -175,14 +204,20 @@ class ConsoleModelMethodRunRenderer implements ModelMethodRunRenderer {
         );
         if (frame === undefined) return;
         writeBlankLine();
-        writeGutterLine("Report", STATUS_COLORS.info, e.reportName);
+        writeGutterLine(
+          "Report",
+          STATUS_COLORS.info,
+          escapeControlCharacters(e.reportName),
+        );
         writeOutput(frame);
       },
       report_failed: (e) => {
         writeGutterLine(
           "Warning",
           STATUS_COLORS.warn,
-          `Report ${e.reportName} failed: ${e.error}`,
+          `Report ${escapeControlCharacters(e.reportName)} failed: ${
+            escapeControlCharactersInText(e.error)
+          }`,
         );
       },
       completed: (e) => {
@@ -196,12 +231,16 @@ class ConsoleModelMethodRunRenderer implements ModelMethodRunRenderer {
           writeGutterLine(
             "Failed",
             STATUS_COLORS.error,
-            `${e.run.methodName} on ${e.run.modelName}${duration}`,
+            `${escapeControlCharacters(e.run.methodName)} on ${
+              escapeControlCharacters(e.run.modelName)
+            }${duration}`,
             formatTimestamp(),
           );
           if (e.run.logFile) {
             writeBlankLine();
-            writeContentLine(dim(`Full output: ${e.run.logFile}`));
+            writeContentLine(
+              dim(`Full output: ${escapeControlCharacters(e.run.logFile)}`),
+            );
           }
         } else {
           writeBlankLine();
@@ -211,7 +250,9 @@ class ConsoleModelMethodRunRenderer implements ModelMethodRunRenderer {
           writeGutterLine(
             "Completed",
             STATUS_COLORS.success,
-            `${e.run.methodName} on ${e.run.modelName} succeeded${duration}`,
+            `${escapeControlCharacters(e.run.methodName)} on ${
+              escapeControlCharacters(e.run.modelName)
+            } succeeded${duration}`,
             formatTimestamp(),
           );
           this.renderDataArtifacts(e.run.dataArtifacts, {
@@ -223,12 +264,16 @@ class ConsoleModelMethodRunRenderer implements ModelMethodRunRenderer {
       },
       cancelled: (e) => {
         this._failed = true;
-        const reason = e.reason ? `: ${e.reason}` : "";
+        const reason = e.reason
+          ? `: ${escapeControlCharactersInText(e.reason)}`
+          : "";
         writeBlankLine();
         writeGutterLine(
           "Cancelled",
           STATUS_COLORS.warn,
-          `${e.run.methodName} on ${e.run.modelName}${reason}`,
+          `${escapeControlCharacters(e.run.methodName)} on ${
+            escapeControlCharacters(e.run.modelName)
+          }${reason}`,
           formatTimestamp(),
         );
       },

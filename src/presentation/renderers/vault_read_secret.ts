@@ -23,6 +23,7 @@ import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
+import { escapeControlCharactersInText } from "../../domain/control_characters.ts";
 
 const encoder = new TextEncoder();
 
@@ -57,7 +58,7 @@ class LogVaultReadSecretRenderer implements Renderer<VaultReadSecretEvent> {
       resolving: () => {},
       completed: (e) => {
         if (this.#isTerminal()) {
-          writeOutput(e.data.value);
+          writeOutput(escapeControlCharactersInText(e.data.value));
         } else {
           writeAllToStdout(encoder.encode(e.data.value));
         }

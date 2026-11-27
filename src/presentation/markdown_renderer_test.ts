@@ -26,6 +26,10 @@ import {
   renderUntrustedMarkdownToTerminal,
   truncateMarkdownTableCells,
 } from "./markdown_renderer.ts";
+import {
+  escapeControlCharacters,
+  hasControlCharacter,
+} from "../domain/control_characters.ts";
 
 Deno.test("renderMarkdownToTerminal - renders heading", () => {
   const result = renderMarkdownToTerminal("# Hello World");
@@ -352,4 +356,33 @@ Deno.test("renderMarkdownToTerminal: body cells and prose keep printing literal 
   assertStringIncludes(result, "it's a & b");
   const [, body] = tableRowCells(result);
   assertEquals(body, ["'*' accts", "a & b", '<x> "q"', "'c'", "<"]);
+});
+
+const HOSTILE = "title\x1b]0;owned\x07 \x1b[2Jcleared \x9b31m\x7f";
+
+Deno.test("renderMarkdownToTerminal: escapes control characters in the source and still renders it", () => {
+  const result = renderMarkdownToTerminal(`# Heading\n\n**bold** ${HOSTILE}`);
+  assertStringIncludes(result, escapeControlCharacters(HOSTILE));
+  assert(!hasControlCharacter(stripAnsiCode(result).replaceAll("\n", "")));
+  assert(!result.includes("**bold**"), "the markdown is still rendered");
+});
+
+Deno.test("renderMarkdownToTerminal: CRLF source renders as plain line breaks", () => {
+  const result = stripAnsiCode(renderMarkdownToTerminal("one\r\n\r\ntwo"));
+  assert(!result.includes("\\x0d"), result);
+  assertStringIncludes(result, "one");
+  assertStringIncludes(result, "two");
+});
+
+Deno.test("renderUntrustedMarkdownToTerminal: escapes control characters in the source", () => {
+  const result = renderUntrustedMarkdownToTerminal(HOSTILE);
+  assertStringIncludes(result, escapeControlCharacters(HOSTILE));
+  assert(!hasControlCharacter(stripAnsiCode(result).replaceAll("\n", "")));
+});
+
+Deno.test("renderMarkdownPlain: escapes control characters but newline and tab", () => {
+  assertEquals(
+    renderMarkdownPlain(`a\tb\r\n${HOSTILE}`),
+    `a\tb\n${escapeControlCharacters(HOSTILE)}`,
+  );
 });

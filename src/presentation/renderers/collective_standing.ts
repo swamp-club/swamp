@@ -19,6 +19,8 @@
 
 import type { WhoamiCollectiveEntitlement } from "../../libswamp/auth/whoami.ts";
 import { bold, dim } from "@std/fmt/colors";
+import { maxOf } from "../../domain/array_extrema.ts";
+import { escapeControlCharacters as esc } from "../../domain/control_characters.ts";
 
 function runningTrial(
   trial: NonNullable<WhoamiCollectiveEntitlement["trial"]>,
@@ -28,7 +30,7 @@ function runningTrial(
   // Render the server's day count as given — it is elapsed-based and so
   // timezone-independent. Recomputing from endsAt locally would reintroduce
   // exactly the zone bug the server avoided. The date is only a hint.
-  const ends = trial.endsAt ? ` (ends ${trial.endsAt.slice(0, 10)})` : "";
+  const ends = trial.endsAt ? ` (ends ${esc(trial.endsAt.slice(0, 10))})` : "";
   return `trial: ${days} ${unit} left${ends}`;
 }
 
@@ -39,9 +41,9 @@ function runningTrial(
  */
 export function standing(entitlement: WhoamiCollectiveEntitlement): string {
   if (entitlement.plan !== undefined && entitlement.plan !== "free") {
-    const name = entitlement.planName ?? entitlement.plan;
+    const name = esc(entitlement.planName ?? entitlement.plan);
     const status = entitlement.subscriptionStatus;
-    return status ? `${name}  ${dim(status)}` : name;
+    return status ? `${name}  ${dim(esc(status))}` : name;
   }
 
   const trial = entitlement.trial;
@@ -55,12 +57,13 @@ export function collectiveLines(
   entitlements: WhoamiCollectiveEntitlement[],
 ): string[] {
   if (entitlements.length === 0) return [];
-  const slugWidth = Math.max(...entitlements.map((c) => c.slug.length));
+  const slugs = entitlements.map((c) => esc(c.slug));
+  const slugWidth = maxOf(slugs.map((slug) => slug.length)) ?? 0;
 
-  return entitlements.map((c) => {
+  return entitlements.map((c, i) => {
     const said = standing(c);
     return said
-      ? `  ${bold(c.slug.padEnd(slugWidth))}  ${said}`
-      : `  ${bold(c.slug)}`;
+      ? `  ${bold(slugs[i].padEnd(slugWidth))}  ${said}`
+      : `  ${bold(slugs[i])}`;
   });
 }

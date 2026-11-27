@@ -24,6 +24,7 @@ import type { OutputMode } from "../output/output.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
 import { carryModelWording } from "../../domain/behavior_wording.ts";
+import { escapeControlCharacters } from "../../domain/control_characters.ts";
 
 class LogModelEditRenderer implements Renderer<ModelEditEvent> {
   handlers(): EventHandlers<ModelEditEvent> {
@@ -84,7 +85,7 @@ class LogModelEditRenderer implements Renderer<ModelEditEvent> {
           );
         }
         for (const warning of data.warnings ?? []) {
-          logger.warn(warning);
+          logger.warn(escapeControlCharacters(warning));
         }
       },
       error: (e) => {

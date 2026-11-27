@@ -39,6 +39,10 @@ import {
 } from "../output/json_stream.ts";
 import { Table } from "@cliffy/table";
 import { bold, dim } from "@std/fmt/colors";
+import {
+  escapeControlCharacters,
+  escapeControlCharactersInText,
+} from "../../domain/control_characters.ts";
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes}B`;
@@ -103,7 +107,9 @@ function renderDefaultTable(
       String(r.version),
       formatSize(r.size),
     ];
-    return hasNamespace ? [r.namespace, ...base] : base;
+    return (hasNamespace ? [r.namespace, ...base] : base).map(
+      escapeControlCharacters,
+    );
   });
 
   const table = new Table()
@@ -296,8 +302,12 @@ function* valuesPlainChunks(
     if (i > 0) yield separator;
     const v = values[i];
     if (v === null || v === undefined) continue;
-    if (typeof v === "object") yield* prettyJsonChunks(v);
-    else yield String(v);
+    // JSON.stringify leaves DEL and C1 raw
+    if (typeof v === "object") {
+      for (const chunk of prettyJsonChunks(v)) {
+        yield escapeControlCharactersInText(chunk);
+      }
+    } else yield escapeControlCharactersInText(String(v));
   }
   if (data.limited) {
     yield `\n\nShowing ${data.total} results (limit reached)`;
@@ -381,7 +391,9 @@ export function createDataQueryRenderer(
         }
         if (event.data.nextCursor) {
           trailer.push(
-            `\nNext page: re-run with --cursor ${event.data.nextCursor}\n`,
+            `\nNext page: re-run with --cursor ${
+              escapeControlCharacters(event.data.nextCursor)
+            }\n`,
           );
         }
         await writeTextChunks(trailer, options.sink);

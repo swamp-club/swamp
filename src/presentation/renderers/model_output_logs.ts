@@ -23,6 +23,7 @@ import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
 import { carryModelWording } from "../../domain/behavior_wording.ts";
+import { escapeControlCharactersInText } from "../../domain/control_characters.ts";
 
 class LogModelOutputLogsRenderer implements Renderer<ModelOutputLogsEvent> {
   handlers(): EventHandlers<ModelOutputLogsEvent> {
@@ -30,7 +31,7 @@ class LogModelOutputLogsRenderer implements Renderer<ModelOutputLogsEvent> {
       resolving: () => {},
       completed: (e) => {
         for (const line of e.data.lines) {
-          console.log(line);
+          console.log(escapeControlCharactersInText(line));
         }
       },
       error: (e) => {

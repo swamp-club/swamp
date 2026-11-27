@@ -29,6 +29,7 @@ import { UserError } from "../../domain/errors.ts";
 import { bold, cyan } from "@std/fmt/colors";
 import { collectiveLines } from "./collective_standing.ts";
 import { renderAccountNotice } from "./account_notice.ts";
+import { escapeControlCharacters as esc } from "../../domain/control_characters.ts";
 
 const SUBSCRIPTION_START_COMMAND = "swamp subscription start";
 
@@ -46,8 +47,12 @@ export function callToActionLabel(plan: string | null): string | undefined {
 
 function identityLine(status: SubscriptionStatusView): string {
   return status.collectiveToken
-    ? `Collective token: ${status.collectiveSlug} on ${status.serverUrl}`
-    : `${status.username} (${status.email}) on ${status.serverUrl}`;
+    ? `Collective token: ${esc(status.collectiveSlug ?? "")} on ${
+      esc(status.serverUrl)
+    }`
+    : `${esc(status.username ?? "")} (${esc(status.email ?? "")}) on ${
+      esc(status.serverUrl)
+    }`;
 }
 
 class LogSubscriptionStatusRenderer
@@ -68,7 +73,7 @@ class LogSubscriptionStatusRenderer
         }
 
         if (status.planName) {
-          writeOutput(`${bold(cyan("Plan:"))} ${bold(status.planName)}`);
+          writeOutput(`${bold(cyan("Plan:"))} ${bold(esc(status.planName))}`);
         }
         writeOutput(cyan("Collectives:"));
         writeOutput(collectiveLines(status.collectives).join("\n"));

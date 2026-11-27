@@ -22,6 +22,7 @@ import type { EventHandlers } from "../../libswamp/stream.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
+import { escapeControlCharacters as esc } from "../../domain/control_characters.ts";
 
 class LogAuthLogoutRenderer implements Renderer<AuthLogoutEvent> {
   handlers(): EventHandlers<AuthLogoutEvent> {
@@ -32,7 +33,11 @@ class LogAuthLogoutRenderer implements Renderer<AuthLogoutEvent> {
           console.log("Not currently authenticated.");
           return;
         }
-        console.log(`Logged out ${data.username} from ${data.serverUrl}`);
+        console.log(
+          `Logged out ${esc(data.username ?? "")} from ${
+            esc(data.serverUrl ?? "")
+          }`,
+        );
         if (data.keyRevocation === "revoked") {
           console.log(`Revoked the stored API key on ${data.serverUrl}.`);
         } else if (data.keyRevocation === "already_invalid") {

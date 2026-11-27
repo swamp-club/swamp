@@ -32,6 +32,7 @@ import { SignalRefusedUserError } from "../../domain/workflows/signal_refused_us
 import type { OutputMode } from "./output.ts";
 import type { CommandSurface } from "../command_surface.ts";
 import { messageFor } from "../../domain/behavior_wording.ts";
+import { escapeControlCharactersInText } from "../../domain/control_characters.ts";
 import {
   ConfigEditConflictError,
   configEditConflictOf,
@@ -499,7 +500,10 @@ export function renderError(
   }
 
   if (err instanceof UserError || certStoreHint) {
-    console.error(`\n${red(bold("Error:"))} ${message}`);
+    // a UserError message can carry server, registry or datastore text
+    console.error(
+      `\n${red(bold("Error:"))} ${escapeControlCharactersInText(message)}`,
+    );
   } else if (err instanceof ValidationError) {
     logger.fatal("Error: {message}", { message });
   } else {
@@ -507,6 +511,8 @@ export function renderError(
   }
 
   if (hint) {
-    console.error(`\n${yellow(bold("Hint:"))} ${dim(hint)}`);
+    console.error(
+      `\n${yellow(bold("Hint:"))} ${dim(escapeControlCharactersInText(hint))}`,
+    );
   }
 }

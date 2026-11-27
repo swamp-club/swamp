@@ -46,10 +46,10 @@ export function parentResumeCommand(
   remote?: ThroughServe,
 ): string {
   return remote
-    ? `swamp workflow resume ${
-      quoteShellWord(parent.workflowName)
-    } --run ${parent.runId}${formatCommandTarget({ server: remote.server })}`
-    : parent.resumeCommand;
+    ? `swamp workflow resume ${quoteShellWord(parent.workflowName)} --run ${
+      quoteShellWord(parent.runId)
+    }${formatCommandTarget({ server: remote.server })}`
+    : escapeControlCharacters(parent.resumeCommand);
 }
 
 function detachedCancelCommand(
@@ -57,10 +57,10 @@ function detachedCancelCommand(
   remote?: ThroughServe,
 ): string {
   return remote
-    ? `swamp workflow cancel ${
-      quoteShellWord(child.workflowName)
-    } --run ${child.runId}${formatCommandTarget({ server: remote.server })}`
-    : child.cancelCommand;
+    ? `swamp workflow cancel ${quoteShellWord(child.workflowName)} --run ${
+      quoteShellWord(child.runId)
+    }${formatCommandTarget({ server: remote.server })}`
+    : escapeControlCharacters(child.cancelCommand);
 }
 
 export function renderDetachedNestedRuns(
@@ -74,7 +74,7 @@ export function renderDetachedNestedRuns(
       .warn`Nested run ${child.runId} of workflow ${child.workflowName} was left unfinished.`;
     if (cliCtx.verbosity !== "quiet") {
       writeOutput(
-        `Cancel nested run ${child.runId} with: ${
+        `Cancel nested run ${escapeControlCharacters(child.runId)} with: ${
           detachedCancelCommand(child, remote)
         }`,
       );
@@ -106,7 +106,7 @@ export function renderAwaitingParent(
 ): void {
   if (cliCtx.outputMode === "json" || cliCtx.verbosity === "quiet") return;
   writeOutput(
-    `Parent run ${parent.runId} of workflow ${
+    `Parent run ${escapeControlCharacters(parent.runId)} of workflow ${
       escapeControlCharacters(parent.workflowName)
     } waits on this run. Resume it with: ${
       parentResumeCommand(parent, remote)

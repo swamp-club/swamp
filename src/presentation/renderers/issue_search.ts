@@ -24,6 +24,7 @@ import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
 import { bold, cyan, dim } from "@std/fmt/colors";
+import { escapeControlCharacters as esc } from "../../domain/control_characters.ts";
 
 const MAX_TITLE_WIDTH = 60;
 
@@ -49,11 +50,11 @@ class LogIssueSearchRenderer implements Renderer<IssueSearchEvent> {
 
         for (const issue of d.issues) {
           const num = cyan(`#${issue.number}`);
-          const title = truncate(issue.title, MAX_TITLE_WIDTH);
+          const title = truncate(esc(issue.title), MAX_TITLE_WIDTH);
           const meta = dim(
-            `${padEnd(issue.type, 8)} ${
-              padEnd(issue.status, 12)
-            } ${issue.author}`,
+            `${padEnd(esc(issue.type), 8)} ${padEnd(esc(issue.status), 12)} ${
+              esc(issue.author)
+            }`,
           );
           writeOutput(
             `${bold(num)}  ${padEnd(title, MAX_TITLE_WIDTH)}  ${meta}`,

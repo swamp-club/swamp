@@ -189,3 +189,24 @@ Deno.test("canPromptForConfig: only in log mode without --yes and with a termina
     Deno.stdin.isTerminal = original;
   }
 });
+
+Deno.test("promptForMissingConfigFields: escapes control characters in field names and descriptions from the registry", async () => {
+  const { asked, notes, io } = scriptedIO({});
+  const hostile: VaultConfigField[] = [
+    {
+      name: "vault\x1b[2J",
+      type: "string",
+      description: "pick\x1b]0;owned\x07",
+      required: true,
+    },
+    { name: "n\x9b", type: "number", required: true },
+  ];
+
+  await promptForMissingConfigFields("@evil/vault\x07", hostile, {}, io);
+
+  assertEquals(asked, ["vault\\x1b[2J (pick\\x1b]0;owned\\x07): "]);
+  assertEquals(notes, [
+    "@evil/vault\\x07 needs these config fields. Press Enter to leave one unset.",
+    "Pass with --config: n\\x9b (number).",
+  ]);
+});

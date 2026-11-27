@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { bold, dim, green, yellow } from "@std/fmt/colors";
+import { escapeControlCharacters } from "../../domain/control_characters.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type { AuditRotateKeyResponse } from "../../serve/protocol.ts";
 import type { OutputMode } from "./output.ts";
@@ -37,14 +38,14 @@ export function renderAuditRotateKey(
         bold("HMAC is not enabled")
       } — no key rotation performed`,
     );
-    if (data.message) writeOutput(dim(data.message));
+    if (data.message) writeOutput(dim(escapeControlCharacters(data.message)));
     return;
   }
 
   writeOutput(
-    `${green("✓")} ${
-      bold("HMAC key rotated")
-    }: version ${data.previousVersion} → ${data.newVersion}`,
+    `${green("✓")} ${bold("HMAC key rotated")}: version ${
+      escapeControlCharacters(String(data.previousVersion))
+    } → ${escapeControlCharacters(String(data.newVersion))}`,
   );
-  if (data.message) writeOutput(dim(data.message));
+  if (data.message) writeOutput(dim(escapeControlCharacters(data.message)));
 }

@@ -17,11 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
+import fc from "fast-check";
 import {
   CONTROL_CHARACTER_CLASS,
   escapeControlCharacters,
   escapeControlCharactersInMessage,
+  escapeControlCharactersInText,
   hasControlCharacter,
 } from "./control_characters.ts";
 
@@ -96,5 +98,28 @@ Deno.test("escapeControlCharactersInMessage: keeps line feeds and escapes every 
   assertEquals(
     escapeControlCharactersInMessage("a\n\u001b[2Jb\rc"),
     "a\n\\x1b[2Jb\\x0dc",
+  );
+});
+
+Deno.test("escapeControlCharactersInText: keeps newline and tab and escapes every other control character", () => {
+  assertEquals(
+    escapeControlCharactersInText("a\n\tb\u001b[2J\u0007\u007f\u009bc"),
+    "a\n\tb\\x1b[2J\\x07\\x7f\\x9bc",
+  );
+});
+
+Deno.test("escapeControlCharactersInText: turns CRLF and a lone CR into a newline", () => {
+  assertEquals(
+    escapeControlCharactersInText("one\r\ntwo\rthree\n"),
+    "one\ntwo\nthree\n",
+  );
+});
+
+Deno.test("escapeControlCharactersInText: output holds no control character but newline and tab", () => {
+  fc.assert(
+    fc.property(fc.string({ unit: "binary" }), (value) => {
+      const escaped = escapeControlCharactersInText(value);
+      assert(!hasControlCharacter(escaped.replace(/[\n\t]/g, "")));
+    }),
   );
 });

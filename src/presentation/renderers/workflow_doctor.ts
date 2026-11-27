@@ -27,6 +27,10 @@ import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
+import {
+  escapeControlCharacters,
+  escapeControlCharactersInText,
+} from "../../domain/control_characters.ts";
 
 export interface WorkflowDoctorRenderer extends Renderer<DoctorWorkflowsEvent> {
   readonly overallStatus: DoctorWorkflowsReport["overallStatus"];
@@ -63,18 +67,24 @@ class LogWorkflowDoctorRenderer implements WorkflowDoctorRenderer {
           this.headerPrinted = true;
         }
         const r = e.result;
-        const label = r.name ?? dim(r.file);
+        const label = r.name != null
+          ? escapeControlCharacters(r.name)
+          : dim(escapeControlCharacters(r.file));
         if (r.status === "pass") {
           writeOutput(`  ${green("✓")} ${label}`);
         } else if (r.status === "warn") {
           writeOutput(`  ${yellow("⚠")} ${label}`);
           if (r.warning) {
-            writeOutput(`    ${yellow("→")} ${r.warning}`);
+            writeOutput(
+              `    ${yellow("→")} ${escapeControlCharactersInText(r.warning)}`,
+            );
           }
         } else {
           writeOutput(`  ${red("✗")} ${label}`);
           if (r.error) {
-            writeOutput(`    ${red("→")} ${r.error}`);
+            writeOutput(
+              `    ${red("→")} ${escapeControlCharactersInText(r.error)}`,
+            );
           }
         }
       },

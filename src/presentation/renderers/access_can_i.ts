@@ -17,7 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { maxOf } from "../../domain/array_extrema.ts";
 import { integrationRefusalReason } from "../../domain/access/grant_based_access_decision_service.ts";
+import { escapeControlCharacters } from "../../domain/control_characters.ts";
 import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import {
@@ -73,6 +75,9 @@ class LogAccessCanIRenderer implements AccessCanIRenderer {
   }
 
   #renderSpecificCheck(result: AccessCanIResult): void {
+    const principal = escapeControlCharacters(result.principal);
+    const action = escapeControlCharacters(result.query!.action);
+    const resource = escapeControlCharacters(result.query!.resource);
     const note = approvalPolicyNote(
       result.query!.action,
       result.decisions,
@@ -89,9 +94,7 @@ class LogAccessCanIRenderer implements AccessCanIRenderer {
 
     if (result.decisions.length === 0) {
       writeOutput(
-        `DENY (implicit) — no matching grants for ${result.principal} ${
-          result.query!.action
-        } ${result.query!.resource}`,
+        `DENY (implicit) — no matching grants for ${principal} ${action} ${resource}`,
       );
       if (note) writeOutput(note);
       const runLines = runVaultAccessLines(result.runVaultAccess);
@@ -106,16 +109,16 @@ class LogAccessCanIRenderer implements AccessCanIRenderer {
     const reason = integrationRefusalReason(first.grantId);
     if (reason) {
       writeOutput(
-        `DENY: ${reason} (${result.query!.action} → ${result.query!.resource})`,
+        `DENY: ${reason} (${action} → ${resource})`,
       );
       return;
     }
-    const effect = first.effect.toUpperCase();
-    const via = `grant ${first.grantId.slice(0, 8)}…`;
+    const effect = escapeControlCharacters(first.effect.toUpperCase());
+    const via = `grant ${escapeControlCharacters(first.grantId).slice(0, 8)}…`;
     writeOutput(
-      `${effect} via ${via} (${first.via} → ${result.query!.action} → ${
-        result.query!.resource
-      })${impliedMarker(first)}${
+      `${effect} via ${via} (${
+        escapeControlCharacters(first.via)
+      } → ${action} → ${resource})${impliedMarker(first)}${
         first.dependsOn
           ? " (depends on the run)"
           : result.decisions.some((d) => d.effect === "deny" && d.dependsOn)
@@ -128,14 +131,18 @@ class LogAccessCanIRenderer implements AccessCanIRenderer {
       writeOutput("");
       writeOutput("All matching grants:");
       for (const d of result.decisions) {
-        const e = d.effect.toUpperCase().padEnd(5);
-        const g = d.grantId.slice(0, 8);
+        const e = escapeControlCharacters(d.effect.toUpperCase()).padEnd(5);
+        const g = escapeControlCharacters(d.grantId).slice(0, 8);
         const cond = d.condition
-          ? ` [when: ${d.condition}]${
+          ? ` [when: ${escapeControlCharacters(d.condition)}]${
             d.dependsOn ? " (depends on the run)" : ""
           }`
           : "";
-        writeOutput(`  ${e}  ${g}…  via ${d.via}${cond}${impliedMarker(d)}`);
+        writeOutput(
+          `  ${e}  ${g}…  via ${escapeControlCharacters(d.via)}${cond}${
+            impliedMarker(d)
+          }`,
+        );
       }
     }
 
@@ -151,26 +158,30 @@ class LogAccessCanIRenderer implements AccessCanIRenderer {
   }
 
   #renderEnumeration(result: AccessCanIResult): void {
+    const principal = escapeControlCharacters(result.principal);
     if (result.decisions.length === 0) {
-      writeOutput(`No matching grants for ${result.principal}`);
+      writeOutput(`No matching grants for ${principal}`);
       return;
     }
 
-    const resourceWidth = Math.max(
-      ...result.decisions.map((d) => d.resource.length),
+    const resources = result.decisions.map((d) =>
+      escapeControlCharacters(d.resource)
     );
+    const resourceWidth = maxOf(resources.map((r) => r.length)) ?? 0;
 
-    writeOutput(`Permissions for ${result.principal}:`);
-    for (const decision of result.decisions) {
+    writeOutput(`Permissions for ${principal}:`);
+    result.decisions.forEach((decision, i) => {
       const marker = decision.effect === "allow" ? "✓" : "✗";
-      const via = `(via ${decision.via})`;
-      const cond = decision.condition ? ` [when: ${decision.condition}]` : "";
+      const via = `(via ${escapeControlCharacters(decision.via)})`;
+      const cond = decision.condition
+        ? ` [when: ${escapeControlCharacters(decision.condition)}]`
+        : "";
       writeOutput(
-        `${decision.resource.padEnd(resourceWidth + 2)} ${
-          decision.action.padEnd(7)
+        `${resources[i].padEnd(resourceWidth + 2)} ${
+          escapeControlCharacters(decision.action).padEnd(7)
         } ${marker} ${via}${cond}${impliedMarker(decision)}`,
       );
-    }
+    });
 
     const notes = [
       impliedApproveListingNote(

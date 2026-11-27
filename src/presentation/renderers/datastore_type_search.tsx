@@ -30,6 +30,10 @@ import type { SearchRenderer } from "./search_renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
 import { renderInteractivePicker } from "./components/search_picker.tsx";
+import {
+  escapeControlCharacters,
+  escapeControlCharactersInText,
+} from "../../domain/control_characters.ts";
 
 function filterDatastoreTypes(
   types: DatastoreTypeSearchItem[],
@@ -120,9 +124,20 @@ export function createDatastoreTypeSearchRenderer(
   }
 }
 
+// extension-authored type metadata
+function escapedItem(item: DatastoreTypeSearchItem): DatastoreTypeSearchItem {
+  return {
+    ...item,
+    type: escapeControlCharacters(item.type),
+    name: escapeControlCharacters(item.name),
+    description: escapeControlCharacters(item.description),
+  };
+}
+
 function renderDatastoreTypeResultLine(
-  item: DatastoreTypeSearchItem,
+  rawItem: DatastoreTypeSearchItem,
 ): React.ReactElement {
+  const item = escapedItem(rawItem);
   return (
     <Text>
       {item.type} <Text dimColor>- {item.name}</Text>
@@ -131,11 +146,12 @@ function renderDatastoreTypeResultLine(
 }
 
 function renderDatastoreTypePreview(
-  item: DatastoreTypeSearchItem,
+  rawItem: DatastoreTypeSearchItem,
   _detail: DatastoreTypeSearchItem | undefined,
   width: number,
   _height: number,
 ): React.ReactElement {
+  const item = escapedItem(rawItem);
   const innerWidth = Math.max(10, width - 1);
   return (
     <Box flexDirection="column" marginLeft={1} width={innerWidth}>
@@ -146,9 +162,12 @@ function renderDatastoreTypePreview(
   );
 }
 
-function renderDatastoreTypeScrollback(
-  item: DatastoreTypeSearchItem,
+export function renderDatastoreTypeScrollback(
+  rawItem: DatastoreTypeSearchItem,
   _detail: DatastoreTypeSearchItem | undefined,
 ): string {
-  return `${item.type} - ${item.name}\n${item.description}`;
+  const item = escapedItem(rawItem);
+  return `${item.type} - ${item.name}\n${
+    escapeControlCharactersInText(rawItem.description)
+  }`;
 }

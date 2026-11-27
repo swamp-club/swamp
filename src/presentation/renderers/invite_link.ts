@@ -24,6 +24,7 @@ import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
 import { dim } from "@std/fmt/colors";
+import { escapeControlCharacters } from "../../domain/control_characters.ts";
 
 /**
  * log mode splits streams on purpose: the URL alone on stdout, all prose on
@@ -43,7 +44,7 @@ class LogInviteLinkRenderer implements Renderer<InviteLinkEvent> {
         // stdout: the link, bare and uncoloured, so a pipeline can consume it.
         // Emitted before the quiet check — `-q` suppresses the commentary, not
         // the thing the user asked for.
-        writeOutput(e.data.url);
+        writeOutput(escapeControlCharacters(e.data.url));
 
         // the note is non-essential so -q silences it; it uses console.error
         // directly because the logger would stamp designed prose with a

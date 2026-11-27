@@ -34,6 +34,15 @@ import {
   getSwampLogger,
   writeOutput,
 } from "../../infrastructure/logging/logger.ts";
+import {
+  escapeControlCharacters,
+  escapeControlCharactersInText,
+} from "../../domain/control_characters.ts";
+
+// JSON.stringify leaves DEL and C1 raw
+function* escapedChunks(chunks: Iterable<string>): Generator<string> {
+  for (const chunk of chunks) yield escapeControlCharactersInText(chunk);
+}
 
 function formatSize(bytes?: number): string {
   if (bytes === undefined) return "unknown";
@@ -99,28 +108,49 @@ class LogDataGetRenderer implements Renderer<DataGetEvent> {
         for (const warning of data.warnings ?? []) {
           // Braces escaped so a name containing {…} is printed, not read as
           // a LogTape placeholder; a tagged template would quote the text.
-          logger.warn(warning.replaceAll("{", "{{").replaceAll("}", "}}"));
+          logger.warn(
+            escapeControlCharacters(warning).replaceAll("{", "{{").replaceAll(
+              "}",
+              "}}",
+            ),
+          );
         }
-        writeOutput(`Data: ${data.name} (v${data.version})`);
-        writeOutput(`Behavior: ${data.modelName} (${data.modelType})`);
         writeOutput(
-          `Content: ${data.contentType}, ${formatSize(data.size)}`,
+          `Data: ${escapeControlCharacters(data.name)} (v${
+            escapeControlCharacters(String(data.version))
+          })`,
         );
         writeOutput(
-          `Lifetime: ${data.lifetime} | GC: ${data.garbageCollection}`,
+          `Behavior: ${escapeControlCharacters(data.modelName)} (${
+            escapeControlCharacters(data.modelType)
+          })`,
+        );
+        writeOutput(
+          `Content: ${escapeControlCharacters(data.contentType)}, ${
+            formatSize(data.size)
+          }`,
+        );
+        writeOutput(
+          `Lifetime: ${escapeControlCharacters(data.lifetime)} | GC: ${
+            escapeControlCharacters(String(data.garbageCollection))
+          }`,
         );
 
         const tagEntries = Object.entries(data.tags);
         if (tagEntries.length > 0) {
-          const tagStr = tagEntries.map(([k, v]) => `${k}=${v}`).join(", ");
+          const tagStr = tagEntries.map(([k, v]) =>
+            `${escapeControlCharacters(k)}=${escapeControlCharacters(v)}`
+          ).join(", ");
           writeOutput(`Tags: ${tagStr}`);
         }
 
         writeOutput(
-          `Owner: ${data.ownerDefinition.ownerType} (${data.ownerDefinition.ownerRef})`,
+          `Owner: ${escapeControlCharacters(data.ownerDefinition.ownerType)} (${
+            escapeControlCharacters(data.ownerDefinition.ownerRef)
+          })`,
         );
-        writeOutput(`Created: ${data.createdAt}`);
-        writeOutput(`Path: ${data.contentPath}`);
+        writeOutput(`Created: ${escapeControlCharacters(data.createdAt)}`);
+        writeOutput(`Path: ${escapeControlCharacters(data.contentPath)}`);
 
         if (data.content !== undefined) {
           writeOutput("");
@@ -136,16 +166,16 @@ class LogDataGetRenderer implements Renderer<DataGetEvent> {
             try {
               parsed = JSON.parse(data.content);
             } catch {
-              writeOutput(data.content);
+              writeOutput(escapeControlCharactersInText(data.content));
               return;
             }
             // in pieces: indented, the document can pass V8's string limit
             await writeTextChunks(
-              withNewline(prettyJsonChunks(parsed)),
+              withNewline(escapedChunks(prettyJsonChunks(parsed))),
               this.options.sink,
             );
           } else {
-            writeOutput(data.content);
+            writeOutput(escapeControlCharactersInText(data.content));
           }
         }
       },

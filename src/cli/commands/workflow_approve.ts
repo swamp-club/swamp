@@ -55,6 +55,7 @@ import {
   renderAwaitingParent,
 } from "./nested_run_hints.ts";
 import { quoteShellWord } from "../../domain/shell_word.ts";
+import { escapeControlCharacters } from "../../domain/control_characters.ts";
 import { RunTrackerStore } from "../../infrastructure/persistence/run_tracker_store.ts";
 import {
   SWAMP_SUBDIRS,
@@ -147,9 +148,9 @@ export function renderApproveResult(
         data.ownerResumes === true
           ? "If you started this run"
           : "After approval"
-      }: swamp workflow resume ${
-        quoteShellWord(data.workflowName)
-      } --run ${data.runId}${target}`,
+      }: swamp workflow resume ${quoteShellWord(data.workflowName)} --run ${
+        quoteShellWord(data.runId)
+      }${target}`,
     );
   }
   const parent = data.awaitingParent;
@@ -159,7 +160,9 @@ export function renderApproveResult(
         ? `Once it finishes, resume the parent run unless serve resumes it automatically: ${
           parentResumeCommand(parent, remote)
         }`
-        : `Once it finishes, resume the parent run: ${parent.resumeCommand}`,
+        : `Once it finishes, resume the parent run: ${
+          escapeControlCharacters(parent.resumeCommand)
+        }`,
     );
   }
 }

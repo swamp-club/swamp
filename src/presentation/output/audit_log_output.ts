@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { bold, dim, green, red, yellow } from "@std/fmt/colors";
+import { escapeControlCharacters } from "../../domain/control_characters.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type { AuditQueryResponse } from "../../serve/protocol.ts";
 import type { OutputMode } from "./output.ts";
@@ -61,16 +62,19 @@ function outcomeColor(outcome: string): string {
 }
 
 function formatEventRow(e: Record<string, string>): string {
-  const time = formatTimestamp(e.timestamp ?? "");
-  const outcome = outcomeColor(e.outcome ?? "");
-  const category = e.category ?? "";
-  const action = e.action ?? "";
-  const principal = e.principalId ?? "";
-  const resource = `${e.resourceKind ?? ""}:${e.resourceName ?? ""}`;
-  const client = e.client ?? "";
+  const time = escapeControlCharacters(formatTimestamp(e.timestamp ?? ""));
+  const rawOutcome = escapeControlCharacters(e.outcome ?? "");
+  const outcome = outcomeColor(rawOutcome);
+  const category = escapeControlCharacters(e.category ?? "");
+  const action = escapeControlCharacters(e.action ?? "");
+  const principal = escapeControlCharacters(e.principalId ?? "");
+  const resource = escapeControlCharacters(
+    `${e.resourceKind ?? ""}:${e.resourceName ?? ""}`,
+  );
+  const client = escapeControlCharacters(e.client ?? "");
 
   return `${dim(time.padEnd(COL_WIDTHS[0]))}  ${
-    outcome.padEnd(COL_WIDTHS[1] + (outcome.length - (e.outcome ?? "").length))
+    outcome.padEnd(COL_WIDTHS[1] + (outcome.length - rawOutcome.length))
   }  ${category.padEnd(COL_WIDTHS[2])}  ${action.padEnd(COL_WIDTHS[3])}  ${
     principal.padEnd(COL_WIDTHS[4])
   }  ${resource.padEnd(COL_WIDTHS[5])}  ${client}`.trimEnd();
@@ -119,12 +123,20 @@ export function renderAuditLog(
     if (data.cursor) {
       writeOutput(
         dim(
-          `Showing ${data.events.length} of ${data.total} events — next page: --cursor ${data.cursor}`,
+          `Showing ${data.events.length} of ${
+            escapeControlCharacters(String(data.total))
+          } events — next page: --cursor ${
+            escapeControlCharacters(data.cursor)
+          }`,
         ),
       );
     } else {
       writeOutput(
-        dim(`Showing ${data.events.length} of ${data.total} events`),
+        dim(
+          `Showing ${data.events.length} of ${
+            escapeControlCharacters(String(data.total))
+          } events`,
+        ),
       );
     }
   }

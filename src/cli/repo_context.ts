@@ -348,6 +348,10 @@ import {
 import { resolveSourceBaseDirs } from "../infrastructure/persistence/git_worktree.ts";
 import type { ExtensionWorkflowRepository } from "../infrastructure/persistence/extension_workflow_repository.ts";
 import { importCheckoutControlPlane } from "../infrastructure/persistence/checkout_control_plane_import.ts";
+import {
+  escapeControlCharacters,
+  escapeControlCharactersInText,
+} from "../domain/control_characters.ts";
 
 const sourceWorkflowDirCache = new Map<string, string[]>();
 export async function getSourceWorkflowDirs(
@@ -2989,7 +2993,11 @@ export async function reclaimModelLocks(
         announced = true;
         write(
           yellow(
-            `A structural command held by ${info.holder} (pid ${info.pid}) is still working under a lock this run handed down — waiting for it to finish...`,
+            `A structural command held by ${
+              escapeControlCharacters(info.holder)
+            } (pid ${
+              escapeControlCharacters(String(info.pid))
+            }) is still working under a lock this run handed down — waiting for it to finish...`,
           ),
         );
       }
@@ -3575,7 +3583,9 @@ async function waitForGlobalLockRelease(
   if (globalInfo) {
     write(
       yellow(
-        `Global lock held by ${globalInfo.holder} — waiting for structural command to finish...`,
+        `Global lock held by ${
+          escapeControlCharacters(globalInfo.holder)
+        } — waiting for structural command to finish...`,
       ),
     );
     // timeout after 2x TTL prevents indefinite hangs if staleness detection
@@ -3595,7 +3605,9 @@ async function waitForGlobalLockRelease(
           if (Date.now() - acquiredAt > info.ttlMs) {
             write(
               dim(
-                `Global lock held by ${info.holder} appears stale (exceeded TTL of ${info.ttlMs}ms) — proceeding`,
+                `Global lock held by ${
+                  escapeControlCharacters(info.holder)
+                } appears stale (exceeded TTL of ${info.ttlMs}ms) — proceeding`,
               ),
             );
             await tryForceReleaseStaleLock(globalLock, info);
@@ -3635,7 +3647,9 @@ async function liveGlobalLockHolder(
   if (Date.now() - new Date(info.acquiredAt).getTime() > info.ttlMs) {
     write(
       dim(
-        `Global lock held by ${info.holder} appears stale (exceeded TTL of ${info.ttlMs}ms) — proceeding`,
+        `Global lock held by ${
+          escapeControlCharacters(info.holder)
+        } appears stale (exceeded TTL of ${info.ttlMs}ms) — proceeding`,
       ),
     );
     await tryForceReleaseStaleLock(globalLock, info);
@@ -3692,7 +3706,9 @@ export async function pullModelsUnlocked(
   if (globalInfo) {
     write(
       dim(
-        `Global lock held by ${globalInfo.holder} — running on this host's data without pulling`,
+        `Global lock held by ${
+          escapeControlCharacters(globalInfo.holder)
+        } — running on this host's data without pulling`,
       ),
     );
     return false;
@@ -3716,7 +3732,9 @@ export async function pullModelsUnlocked(
       if (holder?.hostname === hostname()) {
         write(
           dim(
-            `Behavior ${modelType}/${modelId} is locked by ${holder.holder} — running on this host's data without pulling`,
+            `Behavior ${modelType}/${modelId} is locked by ${
+              escapeControlCharacters(holder.holder)
+            } — running on this host's data without pulling`,
           ),
         );
         continue;
@@ -3959,7 +3977,9 @@ export async function acquireModelLocks(
       if (postAcquireGlobalInfo) {
         write(
           dim(
-            `Global lock acquired by ${postAcquireGlobalInfo.holder} during per-model lock acquisition — releasing and retrying`,
+            `Global lock acquired by ${
+              escapeControlCharacters(postAcquireGlobalInfo.holder)
+            } during per-model lock acquisition — releasing and retrying`,
           ),
         );
         await release();
@@ -3983,7 +4003,9 @@ export async function acquireModelLocks(
               if (Date.now() - acquiredAt > info.ttlMs) {
                 write(
                   dim(
-                    `Global lock held by ${info.holder} appears stale (exceeded TTL of ${info.ttlMs}ms) — proceeding`,
+                    `Global lock held by ${
+                      escapeControlCharacters(info.holder)
+                    } appears stale (exceeded TTL of ${info.ttlMs}ms) — proceeding`,
                   ),
                 );
                 await tryForceReleaseStaleLock(globalLock, info);
@@ -4036,7 +4058,11 @@ export async function acquireModelLocks(
         } catch (error) {
           const msg = error instanceof Error ? error.message : String(error);
           write(
-            dim(`Failed to pull behavior data from datastore: ${msg}`),
+            dim(
+              `Failed to pull behavior data from datastore: ${
+                escapeControlCharactersInText(msg)
+              }`,
+            ),
           );
           throw new Error(
             `Datastore sync failed: could not pull data for ${modelType}/${modelId}: ${msg}`,
@@ -4787,7 +4813,11 @@ export async function writeCatalogExportIfNeeded(
       );
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
-      write(yellow(`Catalog export write failed: ${msg}`));
+      write(
+        yellow(
+          `Catalog export write failed: ${escapeControlCharactersInText(msg)}`,
+        ),
+      );
     }
   }
 }

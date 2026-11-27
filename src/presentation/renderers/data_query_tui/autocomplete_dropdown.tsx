@@ -21,6 +21,7 @@
 import React from "react";
 import { Box, Text } from "ink";
 import type { CompletionItem } from "../../../domain/data/autocomplete_provider.ts";
+import { escapeControlCharacters } from "../../../domain/control_characters.ts";
 
 const MAX_VISIBLE = 8;
 
@@ -43,7 +44,14 @@ export function AutocompleteDropdown(
       items.length - MAX_VISIBLE,
     ),
   );
-  const visibleItems = items.slice(visibleStart, visibleStart + MAX_VISIBLE);
+  const visibleItems = items.slice(visibleStart, visibleStart + MAX_VISIBLE)
+    .map((item) => ({
+      ...item,
+      label: escapeControlCharacters(item.label),
+      detail: item.detail === undefined
+        ? undefined
+        : escapeControlCharacters(item.detail),
+    }));
 
   const maxLabelWidth = Math.max(...visibleItems.map((i) => i.label.length));
   const boxWidth = Math.max(

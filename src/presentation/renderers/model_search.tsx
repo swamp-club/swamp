@@ -34,6 +34,7 @@ import type {
 import { createSearchListRenderer } from "./search_result_list.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
+import { escapeControlCharacters as esc } from "../../domain/control_characters.ts";
 import { carryModelWording } from "../../domain/behavior_wording.ts";
 import {
   type PickerResult,
@@ -235,7 +236,7 @@ export function createModelSearchRenderer(
 function renderModelResultLine(item: ModelSearchItem): React.ReactElement {
   return (
     <Text>
-      {item.name} <Text dimColor>({item.type})</Text>
+      {esc(item.name)} <Text dimColor>({esc(item.type)})</Text>
     </Text>
   );
 }
@@ -250,17 +251,19 @@ function renderModelPreview(
   if (!detail) {
     return (
       <Box flexDirection="column" marginLeft={1} width={innerWidth}>
-        <Text bold wrap="truncate-end">{item.name}</Text>
-        <Text dimColor wrap="truncate-end">type: {item.type}</Text>
+        <Text bold wrap="truncate-end">{esc(item.name)}</Text>
+        <Text dimColor wrap="truncate-end">type: {esc(item.type)}</Text>
       </Box>
     );
   }
 
   const lines: React.ReactElement[] = [
-    <Text key="name" bold wrap="truncate-end">{detail.name}</Text>,
-    <Text key="type" dimColor wrap="truncate-end">type: {detail.type}</Text>,
+    <Text key="name" bold wrap="truncate-end">{esc(detail.name)}</Text>,
+    <Text key="type" dimColor wrap="truncate-end">
+      type: {esc(detail.type)}
+    </Text>,
     <Text key="version" dimColor wrap="truncate-end">
-      version: {detail.version}
+      version: {esc(String(detail.version))}
     </Text>,
   ];
 
@@ -273,8 +276,8 @@ function renderModelPreview(
       lines.push(
         <Text key={`m-${method.name}`} wrap="truncate-end">
           {INDENT_2}
-          <Text color="cyan" bold>{method.name}</Text>
-          <Text dimColor>- {method.description}</Text>
+          <Text color="cyan" bold>{esc(method.name)}</Text>
+          <Text dimColor>- {esc(method.description)}</Text>
         </Text>,
       );
 
@@ -299,10 +302,14 @@ function renderModelPreview(
             lines.push(
               <Text key={`a-${method.name}-${name}`} wrap="truncate-end">
                 {"      "}
-                {name}
+                {esc(name)}
                 {formatted ? <Text dimColor>({formatted})</Text> : null}
                 {prop.enum
-                  ? <Text dimColor>[{prop.enum.join(", ")}]</Text>
+                  ? (
+                    <Text dimColor>
+                      [{prop.enum.map(String).map(esc).join(", ")}]
+                    </Text>
+                  )
                   : null}
                 {required.has(name) ? <Text dimColor>*required</Text> : null}
               </Text>,
@@ -325,11 +332,11 @@ function renderModelScrollback(
   detail: ModelGetData | undefined,
 ): string {
   if (!detail) {
-    return `${item.name} (${item.type})`;
+    return `${esc(item.name)} (${esc(item.type)})`;
   }
 
   const lines: string[] = [
-    `${detail.name} (${detail.type}) v${detail.version}`,
+    `${esc(detail.name)} (${esc(detail.type)}) v${esc(String(detail.version))}`,
   ];
 
   if (detail.methods && detail.methods.length > 0) {

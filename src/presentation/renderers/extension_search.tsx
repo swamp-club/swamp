@@ -33,6 +33,10 @@ import { createSearchListRenderer } from "./search_result_list.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
 import { renderInteractivePicker } from "./components/search_picker.tsx";
+import {
+  escapeControlCharacters as esc,
+  escapeControlCharactersInText,
+} from "../../domain/control_characters.ts";
 
 const EM_DASH = "\u2014";
 
@@ -143,6 +147,30 @@ export function createExtensionSearchRenderer(
 
 const DESCRIPTION_MAX = 60;
 
+function escOrNull<T extends string | null | undefined>(value: T): T {
+  return (typeof value === "string" ? esc(value) : value) as T;
+}
+
+// every field is registry- or author-supplied
+function escapedItem(item: ExtensionSearchItem): ExtensionSearchItem {
+  return {
+    ...item,
+    name: esc(item.name),
+    description: esc(item.description),
+    repository: escOrNull(item.repository),
+    latestVersion: escOrNull(item.latestVersion),
+    latestRc: escOrNull(item.latestRc),
+    latestBeta: escOrNull(item.latestBeta),
+    platforms: item.platforms.map(esc),
+    labels: item.labels.map(esc),
+    contentTypes: item.contentTypes.map(esc),
+    createdAt: esc(item.createdAt),
+    updatedAt: esc(item.updatedAt),
+    deprecationReason: escOrNull(item.deprecationReason),
+    supersededBy: escOrNull(item.supersededBy),
+  };
+}
+
 function versionLabel(item: ExtensionSearchItem): string {
   return item.latestVersion
     ? item.latestVersion
@@ -154,8 +182,9 @@ function versionLabel(item: ExtensionSearchItem): string {
 }
 
 function renderExtensionResultLine(
-  item: ExtensionSearchItem,
+  rawItem: ExtensionSearchItem,
 ): React.ReactElement {
+  const item = escapedItem(rawItem);
   const truncatedDesc = item.description.length > DESCRIPTION_MAX
     ? item.description.slice(0, DESCRIPTION_MAX) + "\u2026"
     : item.description;
@@ -178,11 +207,12 @@ function renderExtensionResultLine(
 }
 
 function renderExtensionPreview(
-  item: ExtensionSearchItem,
+  rawItem: ExtensionSearchItem,
   _detail: ExtensionSearchItem | undefined,
   width: number,
   _height: number,
 ): React.ReactElement {
+  const item = escapedItem(rawItem);
   const innerWidth = Math.max(10, width - 1);
   const lines: React.ReactElement[] = [
     <Text key="name" wrap="truncate-end">
@@ -279,15 +309,16 @@ function renderExtensionPreview(
 }
 
 function renderExtensionScrollback(
-  item: ExtensionSearchItem,
+  rawItem: ExtensionSearchItem,
   _detail: ExtensionSearchItem | undefined,
 ): string {
+  const item = escapedItem(rawItem);
   const lines: string[] = [
     `${item.name} ${versionLabel(item)}`,
   ];
 
-  if (item.description) {
-    lines.push(item.description);
+  if (rawItem.description) {
+    lines.push(escapeControlCharactersInText(rawItem.description));
   }
 
   if (item.platforms.length > 0) {

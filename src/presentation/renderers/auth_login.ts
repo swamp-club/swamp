@@ -28,6 +28,7 @@ import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
 import { Spinner } from "../spinner.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
+import { escapeControlCharacters as esc } from "../../domain/control_characters.ts";
 
 interface CardRow {
   label: string;
@@ -102,11 +103,11 @@ function renderDeviceVerification(
   verificationUri: string,
   verificationUriComplete?: string,
 ): void {
-  const url = verificationUriComplete ?? verificationUri;
+  const url = esc(verificationUriComplete ?? verificationUri);
   const lines = renderCard(
     bold("Verify your device"),
     [[
-      { label: "Code", value: bold(yellow(userCode)) },
+      { label: "Code", value: bold(yellow(esc(userCode))) },
       { label: "URL", value: url },
     ]],
   );
@@ -120,18 +121,18 @@ function renderDeviceVerification(
 
 function renderAuthLoginSuccess(data: AuthLoginData): void {
   const identity: CardRow[] = [
-    { label: "User", value: bold(`@${data.username}`) },
+    { label: "User", value: bold(`@${esc(data.username)}`) },
   ];
   if (data.name) {
-    identity.push({ label: "Name", value: data.name });
+    identity.push({ label: "Name", value: esc(data.name) });
   }
   if (data.email) {
-    identity.push({ label: "Email", value: data.email });
+    identity.push({ label: "Email", value: esc(data.email) });
   }
 
   const session: CardRow[] = [
-    { label: "Server", value: data.serverUrl },
-    { label: "Key", value: maskApiKey(data.apiKey) },
+    { label: "Server", value: esc(data.serverUrl) },
+    { label: "Key", value: maskApiKey(esc(data.apiKey)) },
   ];
 
   const lines = renderCard(

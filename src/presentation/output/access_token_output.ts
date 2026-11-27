@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { bold, cyan, dim, green, red, yellow } from "@std/fmt/colors";
+import { escapeControlCharacters } from "../../domain/control_characters.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type { ServerTokenCreateData } from "../../libswamp/access/token_create.ts";
 import type { ServerTokenListData } from "../../libswamp/access/token_list.ts";
@@ -30,9 +31,10 @@ const checkmark = "✓";
 
 function tableLines(
   headers: string[],
-  rows: string[][],
+  rawRows: string[][],
   colorCell?: (columnIndex: number, value: string) => string,
 ): string[] {
+  const rows = rawRows.map((row) => row.map(escapeControlCharacters));
   const widths = headers.map((header, i) =>
     Math.max(header.length, ...rows.map((row) => row[i].length))
   );
@@ -76,15 +78,19 @@ export function renderServerTokenCreate(
     return;
   }
   const lines = [
-    `${bold(cyan("Token:"))} ${bold(data.name)}`,
-    `${bold(cyan("Principal:"))} ${data.principalId}`,
-    `${bold(cyan("Expires:"))} ${data.expiresAt}`,
-    `${bold(cyan("Vault:"))} ${data.vaultRef.vaultName} ${
-      dim(`(key ${data.vaultRef.secretKey})`)
-    }`,
+    `${bold(cyan("Token:"))} ${bold(escapeControlCharacters(data.name))}`,
+    `${bold(cyan("Principal:"))} ${escapeControlCharacters(data.principalId)}`,
+    `${bold(cyan("Expires:"))} ${escapeControlCharacters(data.expiresAt)}`,
+    `${bold(cyan("Vault:"))} ${
+      escapeControlCharacters(data.vaultRef.vaultName)
+    } ${dim(`(key ${escapeControlCharacters(data.vaultRef.secretKey)})`)}`,
     "",
     `Retrieve the token with: ${
-      bold(`swamp access token reveal ${data.name}${commandTarget} --yes`)
+      bold(
+        `swamp access token reveal ${
+          escapeControlCharacters(data.name)
+        }${commandTarget} --yes`,
+      )
     }`,
   ];
   writeOutput(lines.join("\n"));
@@ -133,12 +139,20 @@ export function renderServerTokenRevoke(
     return;
   }
   if (data.alreadyRevoked) {
-    writeOutput(`Token ${bold(data.name)} was already revoked.`);
+    writeOutput(
+      `Token ${bold(escapeControlCharacters(data.name))} was already revoked.`,
+    );
     return;
   }
-  const lines = [`${green(checkmark)} Token ${bold(data.name)} revoked.`];
+  const lines = [
+    `${green(checkmark)} Token ${
+      bold(escapeControlCharacters(data.name))
+    } revoked.`,
+  ];
   if (data.revokedAt) {
-    lines.push(`${bold(cyan("Revoked at:"))} ${data.revokedAt}`);
+    lines.push(
+      `${bold(cyan("Revoked at:"))} ${escapeControlCharacters(data.revokedAt)}`,
+    );
   }
   writeOutput(lines.join("\n"));
 }
@@ -153,15 +167,21 @@ export function renderServerTokenRotate(
     return;
   }
   const lines = [
-    `${green(checkmark)} Token ${bold(data.name)} rotated.`,
-    `${bold(cyan("Principal:"))} ${data.principalId}`,
-    `${bold(cyan("Expires:"))} ${data.expiresAt}`,
-    `${bold(cyan("Vault:"))} ${data.vaultRef.vaultName} ${
-      dim(`(key ${data.vaultRef.secretKey})`)
-    }`,
+    `${green(checkmark)} Token ${
+      bold(escapeControlCharacters(data.name))
+    } rotated.`,
+    `${bold(cyan("Principal:"))} ${escapeControlCharacters(data.principalId)}`,
+    `${bold(cyan("Expires:"))} ${escapeControlCharacters(data.expiresAt)}`,
+    `${bold(cyan("Vault:"))} ${
+      escapeControlCharacters(data.vaultRef.vaultName)
+    } ${dim(`(key ${escapeControlCharacters(data.vaultRef.secretKey)})`)}`,
     "",
     `Retrieve the new token with: ${
-      bold(`swamp access token reveal ${data.name}${commandTarget} --yes`)
+      bold(
+        `swamp access token reveal ${
+          escapeControlCharacters(data.name)
+        }${commandTarget} --yes`,
+      )
     }`,
   ];
   writeOutput(lines.join("\n"));
@@ -182,12 +202,14 @@ export function renderServerTokenReveal(
     );
     return;
   }
-  writeOutput(`${bold(cyan("Token:"))} ${bold(data.name)}`);
+  writeOutput(
+    `${bold(cyan("Token:"))} ${bold(escapeControlCharacters(data.name))}`,
+  );
   if (data.expired) {
     writeOutput(yellow("Warning: this token has expired."));
   }
   // Secret goes directly to stdout — never through the logger.
-  console.log(`\n  ${bold(data.token)}\n`);
+  console.log(`\n  ${bold(escapeControlCharacters(data.token))}\n`);
   writeOutput(
     yellow("Store this token securely — do not share it in logs or messages."),
   );

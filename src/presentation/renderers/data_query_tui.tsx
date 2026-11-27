@@ -41,6 +41,7 @@ import {
 } from "../../domain/data/autocomplete_provider.ts";
 import { determineCursorContext } from "../../domain/data/cel_cursor_context.ts";
 import { renderQueryResultsTerminal } from "./data_query.ts";
+import { escapeControlCharactersInText } from "../../domain/control_characters.ts";
 
 export interface InteractiveQueryDeps {
   queryDeps: DataQueryDeps;
@@ -158,7 +159,9 @@ function DataQueryTUI(
     ? Math.min(completions.length, 8)
     : 0;
 
-  const errorText = queryState.error;
+  const errorText = queryState.error
+    ? escapeControlCharactersInText(queryState.error)
+    : queryState.error;
   const errorLines = errorText ? errorText.split("\n").length : 0;
 
   const layout = computeQueryTuiLayout(

@@ -29,6 +29,7 @@ import type {
 import type { EventHandlers } from "../../libswamp/stream.ts";
 import type { OutputMode } from "../output/output.ts";
 import type { Renderer } from "../renderer.ts";
+import { escapeControlCharacters } from "../../domain/control_characters.ts";
 
 function holdOf(ms: number): string {
   return ms % 60_000 === 0 ? `${ms / 60_000}m` : `${Math.round(ms / 1000)}s`;
@@ -36,12 +37,16 @@ function holdOf(ms: number): string {
 
 function leaseLines(lease: ModelLeaseView, indent: string): string[] {
   return [
-    `${indent}${bold(cyan("Lock:"))}    ${lease.lockKey}`,
+    `${indent}${bold(cyan("Lock:"))}    ${
+      escapeControlCharacters(lease.lockKey)
+    }`,
     `${indent}${bold(cyan("Fence:"))}   ${lease.fence}`,
     `${indent}${bold(cyan("Hold:"))}    ${holdOf(lease.holdMs)} ${
       dim("(renewed by each command in this checkout)")
     }`,
-    `${indent}${bold(cyan("Expires:"))} ${lease.expiresAt}`,
+    `${indent}${bold(cyan("Expires:"))} ${
+      escapeControlCharacters(lease.expiresAt)
+    }`,
   ];
 }
 
@@ -53,8 +58,8 @@ class LogAcquireRenderer implements Renderer<ModelLeaseAcquireEvent> {
         writeOutput(
           [
             `${bold(cyan(data.existing ? "Lease renewed:" : "Lease held:"))} ${
-              bold(data.behavior.name)
-            } ${dim(`(${data.behavior.type})`)}`,
+              bold(escapeControlCharacters(data.behavior.name))
+            } ${dim(`(${escapeControlCharacters(data.behavior.type)})`)}`,
             ...leaseLines(data, "  "),
           ].join("\n"),
         );
@@ -73,9 +78,15 @@ class LogReleaseRenderer implements Renderer<ModelLeaseReleaseEvent> {
         const data = e.data;
         writeOutput(
           data.released
-            ? `${bold(cyan("Lease released:"))} ${bold(data.behavior.name)}`
+            ? `${bold(cyan("Lease released:"))} ${
+              bold(escapeControlCharacters(data.behavior.name))
+            }`
             : `${bold(cyan("Lease:"))} ${
-              dim(`this checkout holds none on ${data.behavior.name}`)
+              dim(
+                `this checkout holds none on ${
+                  escapeControlCharacters(data.behavior.name)
+                }`,
+              )
             }`,
         );
       },

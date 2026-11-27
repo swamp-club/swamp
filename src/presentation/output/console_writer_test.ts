@@ -767,3 +767,23 @@ Deno.test("renderDataBox: a newline in an artifact name or source keeps the head
     true,
   );
 });
+
+Deno.test("PipeWriter: escapes control characters in names, step paths, models, methods, reasons and expressions it is given raw", () => {
+  const evil = "x\x1b[2J\x9b";
+  const shown = "x\\x1b[2J\\x9b";
+  const pipe = new PipeWriter([evil, "a"]);
+  const lines = [
+    pipe.line(evil, "content"),
+    pipe.stepLine(evil, evil, evil, evil, "12:00"),
+    pipe.skippedLine(evil, evil, evil),
+    pipe.skippedStepLine(evil, evil, evil, evil, evil),
+    pipe.waitingLine(evil, evil),
+  ];
+  for (const line of lines) {
+    // deno-lint-ignore no-control-regex
+    const plain = line.replace(/\x1b\[[0-9;]*m/g, "");
+    assert(!hasControlCharacter(plain), JSON.stringify(plain));
+    assert(plain.includes(shown), JSON.stringify(plain));
+  }
+  assertEquals(pipe.maxWidth, shown.length);
+});
