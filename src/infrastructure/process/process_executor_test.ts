@@ -1141,3 +1141,55 @@ Deno.test({
       assertEquals(aliveAtTerminate, false);
     }),
 });
+
+/** a stream of n chunks of one short line each, read without an event-loop turn */
+function chunkedLines(n: number): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  let i = 0;
+  return new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (i === n) controller.close();
+      else controller.enqueue(encoder.encode(`line${i++}\n`));
+    },
+  });
+}
+
+Deno.test("streamLines: a timer set before a long stream fires while it is read (swamp-club#5158)", async () => {
+  const total = 100;
+  let read = 0;
+  let readWhenTimerFired: number | undefined;
+  setTimeout(() => {
+    readWhenTimerFired = read;
+  }, 0);
+  await streamLines(chunkedLines(total), () => {
+    const until = performance.now() + 1;
+    while (performance.now() < until) { /* a line's logging work */ }
+    read++;
+  });
+  assertEquals(read, total);
+  assertEquals(
+    readWhenTimerFired !== undefined && readWhenTimerFired < total,
+    true,
+    `the timer fired after ${readWhenTimerFired} of ${total} lines`,
+  );
+});
+
+Deno.test("streamLines: the next chunk waits for the consumer's backpressure (swamp-club#5158)", async () => {
+  let release!: () => void;
+  const behind = new Promise<void>((resolve) => release = resolve);
+  let pressure: Promise<void> | undefined = behind;
+  const lines: string[] = [];
+  const reading = streamLines(
+    chunkedLines(3),
+    (line) => lines.push(line),
+    undefined,
+    { backpressure: () => pressure },
+  );
+  await waitFor(() => lines.length === 1, "the first chunk");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assertEquals(lines, ["line0"], "the second chunk waits");
+  pressure = undefined;
+  release();
+  await reading;
+  assertEquals(lines, ["line0", "line1", "line2"]);
+});

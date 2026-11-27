@@ -18,13 +18,23 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { AsyncQueue } from "./async_queue.ts";
+import { asOutputBackpressure } from "../../domain/models/method_events.ts";
 
+/**
+ * push returns the queue's backpressure: a promise while the consumer is far
+ * behind, which a producer that can wait (a process's output) awaits
+ */
 export async function* withEventBridge<TEvent, TResult>(
-  fn: (push: (event: TEvent) => void) => Promise<TResult>,
+  fn: (
+    push: (event: TEvent) => Promise<void> | undefined,
+  ) => Promise<TResult>,
 ): AsyncGenerator<TEvent, TResult> {
   const queue = new AsyncQueue<TEvent>();
   let result!: TResult;
-  const promise = fn((event) => queue.push(event))
+  const promise = fn((event) => {
+    queue.push(event);
+    return asOutputBackpressure(queue.belowHighWater());
+  })
     .then((r) => {
       result = r;
     })

@@ -71,6 +71,7 @@ import {
   resetUnrenewedLeasesForTesting,
 } from "./explicit_model_leases.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
+import { AsyncQueue } from "../stream/async_queue.ts";
 
 await initializeLogging({});
 
@@ -1617,4 +1618,40 @@ Deno.test("ServeLock.acquire: an acquire that fails for good lets what waited on
   await held.acquire();
   await held.release();
   assertEquals(gaveUp, 1);
+});
+
+Deno.test("ServeLock: keeps renewing while a large stream of buffered events drains (swamp-club#5158)", async () => {
+  resetServeLeasesForTesting();
+  const serve = new FakeServe();
+  serve.fence = 2;
+  const lost: Error[] = [];
+  const subject = lock(serve, {
+    root: ROOT,
+    ttlMs: 300,
+    onLost: (error) => lost.push(error),
+  });
+  await subject.acquire();
+  const renewals = () =>
+    serve.calls.filter((call) => call.startsWith("renew")).length;
+  try {
+    const before = renewals();
+    const queue = new AsyncQueue<number>();
+    for (let i = 0; i < 50_000; i++) queue.push(i);
+    queue.close();
+    let renewedDuringDrain = 0;
+    let busy = 0;
+    for await (const item of queue) {
+      // each event costs a little synchronous work, as a line's logging does
+      for (let i = 0; i < 8_000; i++) busy += i % 7;
+      if (item === 49_999) renewedDuringDrain = renewals() - before;
+    }
+    assert(busy > 0);
+    assert(
+      renewedDuringDrain >= 1,
+      `renewals during the drain: ${renewedDuringDrain}`,
+    );
+    assertEquals(lost, []);
+  } finally {
+    await subject.release();
+  }
 });
