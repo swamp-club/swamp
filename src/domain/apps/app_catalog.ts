@@ -39,7 +39,7 @@ export interface AppCatalogProblem {
 
 export interface AppCatalogListing {
   readonly apps: readonly InstalledApp[];
-  /** Descriptors that could not be read; one bad app never hides the rest. */
+  /** Descriptors or folders that could not be read; one never hides the rest. */
   readonly problems: readonly AppCatalogProblem[];
 }
 

@@ -348,3 +348,178 @@ Deno.test("hasAppDescriptors: a file where a source folder is expected has no ap
     assertEquals(await hasAppDescriptors(file), false);
   });
 });
+
+// chmod cannot deny a read to root, and Windows has no mode bits
+const cannotDenyRead = Deno.build.os === "windows" || Deno.uid() === 0;
+
+async function whileUnreadable<T>(
+  dir: string,
+  body: () => Promise<T>,
+): Promise<T> {
+  await Deno.chmod(dir, 0o000);
+  try {
+    return await body();
+  } finally {
+    await Deno.chmod(dir, 0o755);
+  }
+}
+
+async function addPulledApp(
+  repoDir: string,
+  extension: string,
+  folder: string,
+  name: string,
+): Promise<string> {
+  const root = join(repoDir, ".swamp", "pulled-extensions", "@acme", extension);
+  await addApp(root, folder, name);
+  await Deno.writeTextFile(
+    join(root, "manifest.yaml"),
+    `manifestVersion: 1\nname: "@acme/${extension}"\nversion: "1"\napps: [apps/${folder}]\n`,
+  );
+  return root;
+}
+
+const names = (apps: readonly { descriptor: { name: string } }[]) =>
+  apps.map((app) => app.descriptor.name);
+
+Deno.test({
+  name:
+    "FilesystemAppCatalog: an unreadable source apps folder is a problem, not a crash",
+  ignore: cannotDenyRead,
+  fn: async () => {
+    await withRepo(async (repoDir) => {
+      await addLocalApp(repoDir, "cost", "@acme/cost");
+      const source = join(repoDir, "mounted");
+      await addLocalApp(source, "other", "@acme/other");
+      const appsDir = join(source, APP_SOURCE_DIR);
+      const { apps, problems } = await whileUnreadable(
+        appsDir,
+        () =>
+          new FilesystemAppCatalog({
+            repoDir,
+            sourceDirs: () => Promise.resolve([source]),
+          }).list(),
+      );
+      assertEquals(names(apps), ["@acme/cost"]);
+      assertEquals(problems.map((problem) => problem.path), [appsDir]);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "FilesystemAppCatalog: an unreadable repo apps folder still lists a source's apps",
+  ignore: cannotDenyRead,
+  fn: async () => {
+    await withRepo(async (repoDir) => {
+      await addLocalApp(repoDir, "cost", "@acme/cost");
+      const source = join(repoDir, "mounted");
+      await addLocalApp(source, "other", "@acme/other");
+      const appsDir = join(repoDir, APP_SOURCE_DIR);
+      const { apps, problems } = await whileUnreadable(
+        appsDir,
+        () =>
+          new FilesystemAppCatalog({
+            repoDir,
+            sourceDirs: () => Promise.resolve([source]),
+          }).list(),
+      );
+      assertEquals(names(apps), ["@acme/other"]);
+      assertEquals(problems.map((problem) => problem.path), [appsDir]);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "FilesystemAppCatalog: an app folder it cannot search is a problem, not a missing app",
+  ignore: cannotDenyRead,
+  fn: async () => {
+    await withRepo(async (repoDir) => {
+      await addLocalApp(repoDir, "cost", "@acme/cost");
+      const source = join(repoDir, "mounted");
+      await addLocalApp(source, "locked", "@acme/locked");
+      const appDir = join(source, APP_SOURCE_DIR, "locked");
+      await whileUnreadable(appDir, async () => {
+        const { apps, problems } = await new FilesystemAppCatalog({
+          repoDir,
+          sourceDirs: () => Promise.resolve([source]),
+        }).list();
+        assertEquals(names(apps), ["@acme/cost"]);
+        assertEquals(problems.map((problem) => problem.path), [
+          join(appDir, "app.yaml"),
+        ]);
+        assertEquals(await hasAppDescriptors(source), false);
+      });
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "FilesystemAppCatalog: an unreadable pulled extension never hides another's apps",
+  ignore: cannotDenyRead,
+  fn: async () => {
+    await withRepo(async (repoDir) => {
+      const broken = await addPulledApp(repoDir, "a", "cost", "@acme/cost");
+      await addPulledApp(repoDir, "b", "other", "@acme/other");
+      const appsDir = join(broken, "apps");
+      const { apps, problems } = await whileUnreadable(
+        appsDir,
+        () => new FilesystemAppCatalog({ repoDir }).list(),
+      );
+      assertEquals(names(apps), ["@acme/other"]);
+      assertEquals(problems.map((problem) => problem.path), [appsDir]);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "FilesystemAppCatalog: a source that is a file is a problem, not a crash",
+  // Windows reports a path through a file as not found
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withRepo(async (repoDir) => {
+      await addLocalApp(repoDir, "cost", "@acme/cost");
+      const file = join(repoDir, "not-a-dir");
+      await Deno.writeTextFile(file, "");
+      const { apps, problems } = await new FilesystemAppCatalog({
+        repoDir,
+        sourceDirs: () => Promise.resolve([file]),
+      }).list();
+      assertEquals(names(apps), ["@acme/cost"]);
+      assertEquals(problems.map((problem) => problem.path), [
+        join(file, APP_SOURCE_DIR),
+      ]);
+    });
+  },
+});
+
+Deno.test("FilesystemAppCatalog: a pulled app.yaml link is found, a linked folder is not entered", async () => {
+  await withRepo(async (repoDir) => {
+    const root = join(repoDir, ".swamp", "pulled-extensions", "@acme", "ext");
+    await Deno.mkdir(join(root, "apps", "cost"), { recursive: true });
+    const real = join(repoDir, "real");
+    await addApp(real, "cost", "@acme/cost");
+    await addApp(real, "linked", "@acme/linked");
+    await Deno.symlink(
+      join(real, "apps", "cost", "app.yaml"),
+      join(root, "apps", "cost", "app.yaml"),
+      { type: "file" },
+    );
+    await Deno.symlink(
+      join(real, "apps", "linked"),
+      join(root, "apps", "linked"),
+      { type: "dir" },
+    );
+    await Deno.writeTextFile(
+      join(root, "manifest.yaml"),
+      'manifestVersion: 1\nname: "@acme/ext"\nversion: "1"\napps: [apps/cost, apps/linked]\n',
+    );
+    const { apps, problems } = await new FilesystemAppCatalog({ repoDir })
+      .list();
+    assertEquals(names(apps), ["@acme/cost"]);
+    assertEquals(problems, []);
+  });
+});
