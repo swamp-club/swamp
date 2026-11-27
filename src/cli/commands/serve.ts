@@ -212,6 +212,7 @@ import {
   type AuditConfigChanges,
   auditPolicyFrom,
   diffAuditConfig,
+  runningAuditConfig,
 } from "../../serve/serve_audit_reload.ts";
 import {
   emitServeConfigNotLanded,
@@ -6969,6 +6970,7 @@ export const serveCommand = new Command()
       }
       return followUps;
     };
+    let runningAudit = parseAuditConfig(configFile);
     const settingsReloader = createServeSettingsReloader<
       ServeStartupSettings,
       ReloadPrepared
@@ -6985,11 +6987,11 @@ export const serveCommand = new Command()
         ),
       // startup's own checks, so a file startup would refuse changes nothing
       resolve: resolveServeStartupSettings,
-      prepare: async ({ file, merged: next, startup }, toApply, before) => {
+      prepare: async ({ file, merged: next, startup }, toApply) => {
         const prepared: ReloadPrepared = {};
         const nextAudit = parseAuditConfig(file);
         prepared.audit = {
-          changes: diffAuditConfig(parseAuditConfig(before), nextAudit),
+          changes: diffAuditConfig(runningAudit, nextAudit),
           config: nextAudit,
         };
         if (
@@ -7278,6 +7280,13 @@ export const serveCommand = new Command()
       // only what was applied, so the config and health views never show a
       // value this process has not adopted
       afterCommit: ({ merged: nextMerged }, applied, prepared) => {
+        if (prepared.audit) {
+          runningAudit = runningAuditConfig(
+            runningAudit,
+            prepared.audit.config,
+            prepared.audit.changes,
+          );
+        }
         serveOptionsBeforeReload = connectionCtx.serveOptions ?? merged;
         const live = overlayAppliedSettings(
           serveOptionsBeforeReload,

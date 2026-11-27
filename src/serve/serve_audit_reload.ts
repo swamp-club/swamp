@@ -97,6 +97,28 @@ export function diffAuditConfig(
   return { applied, needsRestart };
 }
 
+/** the audit block this process runs once a reload commits: only what reload applied moves */
+export function runningAuditConfig(
+  running: AuditConfig | null,
+  next: AuditConfig | null,
+  changes: AuditConfigChanges,
+): AuditConfig | null {
+  if (running === null || next === null) return running;
+  const applied = new Set(changes.applied);
+  return {
+    ...running,
+    ...(applied.has("audit.policy")
+      ? {
+        policyDefaultLevel: next.policyDefaultLevel,
+        policyRules: next.policyRules,
+      }
+      : {}),
+    ...(applied.has("audit.alerts") ? { alerts: next.alerts } : {}),
+    ...(applied.has("audit.fail-open") ? { failOpen: next.failOpen } : {}),
+    ...(applied.has("audit.sinks") ? { sinks: next.sinks } : {}),
+  };
+}
+
 /** the policy startup and reload both build from the audit block */
 export function auditPolicyFrom(config: AuditConfig): AuditPolicy {
   return new AuditPolicy(

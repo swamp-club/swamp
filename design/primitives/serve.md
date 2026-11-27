@@ -2317,7 +2317,13 @@ gone. After a crash, the reconciliation loop handles the dead instance once
 
   Each changed setting is reported as applied, needs restart (with the
   reason), or overridden by the startup flag or environment variable that
-  pins it; a setting only partly applied is listed under both. The class of
+  pins it; a setting only partly applied is listed under both. A reload
+  compares the file against the configuration the process is running, not
+  the file the last reload read: only what commit applied takes the file's
+  value, so a setting that needs a restart, is overridden, or whose follow-up
+  did not fully land is reported on every reload until serve restarts or the
+  file changes back. The audit block keeps its own running copy the same way
+  (`runningAuditConfig`). The class of
   every setting is in `SETTING_CATALOGUE`. Applied: the dashboard and internal
   API, run, webhook-run and signal-wait limits, queue, idle, drain and
   listener-grace timeouts, auto-resume, triggers, webhooks and the routes
