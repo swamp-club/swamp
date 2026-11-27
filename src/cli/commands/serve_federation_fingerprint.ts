@@ -46,6 +46,70 @@ export interface ServeFingerprintSources {
   readonly settings: () => MergedServeOptions;
 }
 
+export interface StaticFingerprintFacts {
+  readonly datastore: Awaited<ReturnType<typeof fingerprintDatastoreFacts>>;
+  readonly extensions: readonly { name: string; version: string }[];
+}
+
+/** the datastore and extension reads, kept until settings reload (a new settings object) or the lockfile changes */
+export class FingerprintFactsCache {
+  #settings: MergedServeOptions | undefined;
+  #lockfileMtime: number | null | undefined;
+  #facts: Promise<StaticFingerprintFacts> | undefined;
+
+  async facts(
+    sources: ServeFingerprintSources,
+    read: () => Promise<StaticFingerprintFacts>,
+  ): Promise<StaticFingerprintFacts> {
+    const settings = sources.settings();
+    const mtime = await lockfileMtime(sources.lockfilePath);
+    if (
+      this.#facts === undefined || settings !== this.#settings ||
+      mtime !== this.#lockfileMtime
+    ) {
+      this.#settings = settings;
+      this.#lockfileMtime = mtime;
+      this.#facts = read();
+    }
+    const facts = this.#facts;
+    try {
+      return await facts;
+    } catch (error) {
+      // a failed read is not kept, so the next call tries again
+      if (this.#facts === facts) this.#facts = undefined;
+      throw error;
+    }
+  }
+}
+
+async function lockfileMtime(path: string): Promise<number | null> {
+  try {
+    return (await Deno.stat(path)).mtime?.getTime() ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function readStaticFacts(
+  sources: ServeFingerprintSources,
+): Promise<StaticFingerprintFacts> {
+  const [datastore, extensions] = await Promise.all([
+    fingerprintDatastoreFacts(
+      {
+        datastoreConfig: sources.datastoreConfig,
+        engine: sources.datastoreEngine,
+      },
+      sources.repoDir,
+    ),
+    (async () =>
+      Object.entries(
+        (await LockfileRepository.create(sources.lockfilePath))
+          .getAllEntries(),
+      ).map(([name, entry]) => ({ name, version: entry.version })))(),
+  ]);
+  return { datastore, extensions };
+}
+
 export interface ServeRuntimeFacts {
   readonly role: "hub" | "member";
   readonly team: FingerprintProps["team"];
@@ -59,7 +123,9 @@ export interface ServeRuntimeFacts {
 export async function collectServeFingerprint(
   sources: ServeFingerprintSources,
   runtime: ServeRuntimeFacts,
+  cache: FingerprintFactsCache = new FingerprintFactsCache(),
 ): Promise<Fingerprint> {
+  const facts = await cache.facts(sources, () => readStaticFacts(sources));
   let fingerprint: Fingerprint | undefined;
   for await (
     const event of serveFingerprint(createLibSwampContext(), {
@@ -68,22 +134,12 @@ export async function collectServeFingerprint(
       settings: sources.settings,
       serveYamlVersion: () => sources.serveYamlVersion,
       federationRole: () => runtime.role,
-      datastore: () =>
-        fingerprintDatastoreFacts(
-          {
-            datastoreConfig: sources.datastoreConfig,
-            engine: sources.datastoreEngine,
-          },
-          sources.repoDir,
-        ),
+      datastore: () => Promise.resolve(facts.datastore),
+      // vault configs are read every time: a type added or removed has no cheap signal
       vaultTypes: async () =>
         (await new YamlVaultConfigRepository(sources.repoDir).findAll())
           .map((vault) => vault.type),
-      extensions: async () =>
-        Object.entries(
-          (await LockfileRepository.create(sources.lockfilePath))
-            .getAllEntries(),
-        ).map(([name, entry]) => ({ name, version: entry.version })),
+      extensions: () => Promise.resolve(facts.extensions),
       // workers counted by the caller need no datastore read
       queryData: async (predicate) =>
         runtime.workers !== undefined

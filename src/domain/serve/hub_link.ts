@@ -28,7 +28,7 @@ export type HubLinkState =
   | "refused"
   | "mismatched";
 
-const HubLinkSchema = z.object({
+const hubLinkFields = {
   state: z.enum(["unjoined", "joining", "joined", "refused", "mismatched"]),
   hubUrl: z.string().nullable(),
   memberId: z.string().nullable(),
@@ -37,9 +37,14 @@ const HubLinkSchema = z.object({
   joinedAt: z.string().nullable(),
   /** with the join token, enough to replay the join, so no view shows it */
   joinId: z.string().nullable().default(null),
-}).strict();
+};
 
-export type HubLinkProps = z.infer<typeof HubLinkSchema>;
+// every node of a member team reads this: unknown keys are read past and written back
+const HubLinkSchema = z.looseObject(hubLinkFields);
+
+const HubLinkFields = z.strictObject(hubLinkFields);
+
+export type HubLinkProps = z.infer<typeof HubLinkFields>;
 
 /** what a join reply says about the member, never its credential */
 export interface JoinedMember {
@@ -67,8 +72,9 @@ const UNJOINED: HubLinkProps = {
 };
 
 /**
- * a member's link to its one hub; only a joining link holds its joinId, and
- * once settled, only a joined or mismatched link holds a credential
+ * a joined link keeps its joinId until a check-in confirms the stored credential,
+ * so an overwritten one is healed by one replay; once settled, only a joined or
+ * mismatched link holds a credential
  */
 export class HubLink {
   private constructor(private readonly props: HubLinkProps) {}
@@ -103,7 +109,10 @@ export class HubLink {
     if (props.joinId !== null && joinIdOf(props.joinId) === undefined) {
       throw new HubLinkError("A hub link's joinId must be a lower-case UUID");
     }
-    if (props.state !== "joining" && props.joinId !== null) {
+    if (
+      props.state !== "joining" && props.state !== "joined" &&
+      props.joinId !== null
+    ) {
       throw new HubLinkError(`A ${props.state} hub link holds no joinId`);
     }
     return new HubLink({ ...props, memberId });
@@ -189,13 +198,24 @@ export class HubLink {
     });
   }
 
-  /** once the credential is stored */
+  /** once the credential is stored; the joinId stays until confirmed() */
   joined(): HubLink {
     this.#expect(["joining", "mismatched"], "mark joined");
     if (this.props.memberId === null) {
       throw new HubLinkError("A hub link cannot be joined before a join reply");
     }
-    return new HubLink({ ...this.props, state: "joined", joinId: null });
+    return new HubLink({ ...this.props, state: "joined" });
+  }
+
+  /** a check-in succeeded with the stored credential: the join can no longer be replayed */
+  confirmed(): HubLink {
+    this.#expect(["joined"], "confirm");
+    if (this.props.joinId === null) return this;
+    return new HubLink({ ...this.props, joinId: null });
+  }
+
+  get replayable(): boolean {
+    return this.props.state === "joined" && this.props.joinId !== null;
   }
 
   withHubName(hubName: string): HubLink {
@@ -205,12 +225,12 @@ export class HubLink {
 
   refuse(): HubLink {
     this.#expect(["joined", "mismatched"], "refuse");
-    return new HubLink({ ...this.props, state: "refused" });
+    return new HubLink({ ...this.props, state: "refused", joinId: null });
   }
 
   mismatch(): HubLink {
     this.#expect(["joined"], "mark mismatched");
-    return new HubLink({ ...this.props, state: "mismatched" });
+    return new HubLink({ ...this.props, state: "mismatched", joinId: null });
   }
 
   #expect(states: readonly HubLinkState[], action: string): void {
@@ -282,24 +302,42 @@ export const CHECK_IN_RESULTS = [
   "refused",
   "join_refused",
   "name_taken",
+  "mismatched",
+  "not_joining",
 ] as const;
 
 export type CheckInResult = typeof CHECK_IN_RESULTS[number];
 
-export const HubLinkInstanceSchema = z.object({
+const instanceFields = {
   instanceId: z.string(),
   startedAt: z.string(),
   /** refreshed while serve runs, whatever the link state */
   aliveAt: z.string(),
   lastAttemptAt: z.string().nullable(),
   lastSuccessAt: z.string().nullable(),
-  result: z.enum(CHECK_IN_RESULTS).nullable(),
   consecutiveFailures: z.number().int().nonnegative(),
   nextAttemptAt: z.string().nullable(),
   stoppedAt: z.string().nullable(),
-}).strict();
+};
 
-export type HubLinkInstance = z.infer<typeof HubLinkInstanceSchema>;
+/** what this serve writes: only results it knows */
+export const HubLinkInstanceSchema = z.looseObject({
+  ...instanceFields,
+  result: z.enum(CHECK_IN_RESULTS).nullable(),
+});
+
+/** what any serve on the link reads: a newer serve's result reads as written */
+export const HubLinkInstanceRecordSchema = z.looseObject({
+  ...instanceFields,
+  result: z.string().nullable(),
+});
+
+const HubLinkInstanceFields = z.strictObject({
+  ...instanceFields,
+  result: z.string().nullable(),
+});
+
+export type HubLinkInstance = z.infer<typeof HubLinkInstanceFields>;
 
 /** a serve on this link counts as running while it refreshed aliveAt within this window */
 export const INSTANCE_ALIVE_WINDOW_MS = 2 * 60 * 1000;

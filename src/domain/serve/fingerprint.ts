@@ -35,42 +35,60 @@ const countsByName = z.custom<Record<string, number>>(
   { message: "expected a mapping of names to counts" },
 ).transform((value) => Object.fromEntries(Object.entries(value)));
 
-const WorkersSchema = z.object({
-  total: count,
-  byVersion: countsByName,
-  byLabelKey: countsByName,
-}).strict();
+type ObjectMode = "strict" | "strip" | "loose";
 
-const ExtensionSchema = z.object({
-  name: z.string(),
-  version: z.string(),
-}).strict();
+function objectOf<T extends z.ZodRawShape>(shape: T, mode: ObjectMode) {
+  switch (mode) {
+    case "strict":
+      return z.strictObject(shape);
+    case "strip":
+      return z.object(shape);
+    case "loose":
+      return z.looseObject(shape);
+  }
+}
 
 // adding a field is an architecture decision: the allowlist is the contract
-export const FingerprintSchema = z.object({
-  swampVersion: z.string(),
-  platform: z.string(),
-  arch: z.string(),
-  serveYamlVersion: z.union([z.literal(1), z.literal(2)]),
-  deploymentMode: z.enum(["local", "durable", "durable (limited)"]),
-  datastoreKind: z.string(),
-  datastoreFormat: z.enum(["v2", "v3"]),
-  vaultKinds: z.array(z.string()),
-  authMode: z.enum(["none", "token", "oauth"]),
-  tls: z.boolean(),
-  remoteOnly: z.boolean(),
-  loopbackOnly: z.boolean(),
-  federationRole: z.enum(["hub", "member", "none"]),
-  extensions: z.array(ExtensionSchema),
-  settingsHash: z.string().regex(/^[0-9a-f]{64}$/),
-  workers: WorkersSchema,
-  team: z.object({
-    role: z.enum(["leader", "follower", "peer", "single"]),
-    nodes: z.number().int().positive(),
-  }).strict().nullable(),
-  startedAt: z.string().nullable(),
-  ready: z.boolean().nullable(),
-}).strict();
+function fingerprintSchema(mode: ObjectMode) {
+  return objectOf({
+    swampVersion: z.string(),
+    platform: z.string(),
+    arch: z.string(),
+    serveYamlVersion: z.union([z.literal(1), z.literal(2)]),
+    deploymentMode: z.enum(["local", "durable", "durable (limited)"]),
+    datastoreKind: z.string(),
+    datastoreFormat: z.enum(["v2", "v3"]),
+    vaultKinds: z.array(z.string()),
+    authMode: z.enum(["none", "token", "oauth"]),
+    tls: z.boolean(),
+    remoteOnly: z.boolean(),
+    loopbackOnly: z.boolean(),
+    federationRole: z.enum(["hub", "member", "none"]),
+    extensions: z.array(
+      objectOf({ name: z.string(), version: z.string() }, mode),
+    ),
+    settingsHash: z.string().regex(/^[0-9a-f]{64}$/),
+    workers: objectOf({
+      total: count,
+      byVersion: countsByName,
+      byLabelKey: countsByName,
+    }, mode),
+    team: objectOf({
+      role: z.enum(["leader", "follower", "peer", "single"]),
+      nodes: z.number().int().positive(),
+    }, mode).nullable(),
+    startedAt: z.string().nullable(),
+    ready: z.boolean().nullable(),
+  }, mode);
+}
+
+export const FingerprintSchema = fingerprintSchema("strict");
+
+/** what a hub accepts from a member: a newer member's unknown fields are dropped, never stored */
+export const FingerprintWireSchema = fingerprintSchema("strip");
+
+/** a stored record's fingerprint: a newer hub's unknown fields are read past and kept */
+export const FingerprintRecordSchema = fingerprintSchema("loose");
 
 export type FingerprintProps = z.infer<typeof FingerprintSchema>;
 export type FingerprintWorkers = FingerprintProps["workers"];
@@ -80,8 +98,8 @@ const POOL_FIELDS = ["workers"] as const;
 /** outside hash(): known only to a running serve */
 const RUNTIME_FIELDS = ["team", "startedAt", "ready"] as const;
 
-/** left out of hash(); a change here alone never creates a data version */
-export const FingerprintRuntimeSchema = FingerprintSchema.pick({
+/** left out of hash(); a change here alone never creates a data version. Seen records hold it, so unknown keys drop */
+export const FingerprintRuntimeSchema = FingerprintWireSchema.pick({
   team: true,
   startedAt: true,
   ready: true,
@@ -94,26 +112,55 @@ export type FingerprintStaticFields = Omit<
   typeof POOL_FIELDS[number] | typeof RUNTIME_FIELDS[number]
 >;
 
+function normalized(props: FingerprintProps): FingerprintProps {
+  return {
+    ...props,
+    vaultKinds: [...new Set(props.vaultKinds)].sort(),
+    extensions: [...props.extensions].sort((a, b) =>
+      a.name < b.name ? -1 : a.name > b.name ? 1 : 0
+    ),
+  };
+}
+
 export class Fingerprint {
-  private constructor(private readonly props: FingerprintProps) {}
+  /**
+   * props holds the contract fields only; stored is what toJSON writes, which
+   * for a record read from a newer hub also carries the fields it added
+   */
+  private constructor(
+    private readonly props: FingerprintProps,
+    private readonly stored: unknown,
+  ) {}
 
   /** refuses a missing field or any field outside the contract */
   static create(input: unknown): Fingerprint {
-    const parsed = FingerprintSchema.parse(input);
-    return new Fingerprint({
-      ...parsed,
-      vaultKinds: [...new Set(parsed.vaultKinds)].sort(),
-      extensions: [...parsed.extensions].sort((a, b) =>
-        a.name < b.name ? -1 : a.name > b.name ? 1 : 0
-      ),
-    });
+    const props = normalized(FingerprintSchema.parse(input));
+    return new Fingerprint(props, props);
   }
 
   static fromJSON(json: unknown): Fingerprint {
     return Fingerprint.create(json);
   }
 
+  static fromWire(input: unknown): Fingerprint {
+    const props = normalized(FingerprintWireSchema.parse(input));
+    return new Fingerprint(props, props);
+  }
+
+  static fromRecord(input: unknown): Fingerprint {
+    const stored = FingerprintRecordSchema.parse(input);
+    return new Fingerprint(
+      normalized(FingerprintWireSchema.parse(stored)),
+      stored,
+    );
+  }
+
   toJSON(): FingerprintProps {
+    return structuredClone(this.stored) as FingerprintProps;
+  }
+
+  /** the contract fields alone, whatever a record carried beside them */
+  fields(): FingerprintProps {
     return structuredClone(this.props);
   }
 

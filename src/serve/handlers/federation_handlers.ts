@@ -130,7 +130,7 @@ export function handleFederationMemberList(
     "read",
     "federation.member.list",
     (deps) => memberList(handlerLibSwampContext(ctx), deps),
-    (data) => ({ members: data.members }),
+    (data) => ({ members: data.members, now: data.now }),
   );
 }
 
@@ -150,7 +150,7 @@ export function handleFederationMemberGet(
     "federation.member.get",
     (deps) =>
       memberGet(handlerLibSwampContext(ctx), deps, { name: payload.name }),
-    (data) => ({ member: data.member }),
+    (data) => ({ member: data.member, now: data.now }),
   );
 }
 

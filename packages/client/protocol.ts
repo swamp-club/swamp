@@ -2292,10 +2292,13 @@ export interface FederationMemberGetPayload {
 
 export interface FederationMemberListReply {
   members: FederationMember[];
+  /** the hub's time when it answered; absent from a serve that predates it */
+  now?: string;
 }
 
 export interface FederationMemberGetReply {
   member: FederationMember;
+  now?: string;
 }
 
 // run.attach

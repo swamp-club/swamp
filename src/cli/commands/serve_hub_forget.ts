@@ -41,9 +41,12 @@ type AnyOptions = any;
 export const serveHubForgetCommand = new Command()
   .name("forget")
   .description(
-    "Forget this serve's hub link and member credential, so it can join a hub again; refused while serve runs",
+    "Forget this serve's hub link and member credential, so it can join a hub again",
   )
-  .example("Forget the hub link", "swamp serve hub forget --yes")
+  .example(
+    "Forget the hub link (stop serve first: forget is refused while it runs)",
+    "swamp serve hub forget --yes",
+  )
   .option("-y, --yes", "Skip the confirmation prompt")
   .option(
     "--repo-dir <dir:string>",

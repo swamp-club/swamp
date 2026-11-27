@@ -150,7 +150,14 @@ Deno.test("HubSelfRecord: a beat moves the hub's last-seen time; a follower neve
     }).at,
     t.clock.now,
   );
-  assertEquals(t.members.version("hub"), 1);
+  // the join, then the record listing the leader's instance; beats add none
+  assertEquals(t.members.version("hub"), 2);
+  assertEquals(
+    (t.members.raw("hub")!.instances as { instanceId: string }[]).map((i) =>
+      i.instanceId
+    ),
+    [instanceId.value],
+  );
   await leader.stop();
 });
 
@@ -273,4 +280,40 @@ Deno.test("HubSelfRecord: a beat queued behind a refresh when stop is called nev
     (await selfSeenKeys(t)).map((key) => t.store.json(key)),
     before,
   );
+});
+
+Deno.test("HubSelfRecord: after a restart or a new leader, the hub has one seen record and its record lists that instance", async () => {
+  const t = createTestHub();
+  const lead = async (instanceId: InstanceId) => {
+    const record = new HubSelfRecord({
+      hub: t.hub,
+      fingerprint: () => Promise.resolve(hubFingerprint()),
+      seen: {
+        instanceId,
+        runtime: () => Promise.resolve(RUNNING),
+        intervalMs: 60 * 60 * 1000,
+      },
+    });
+    record.start((start) => start());
+    await record.settled();
+    await record.beat();
+    await record.stop();
+  };
+  const first = InstanceId.create(crypto.randomUUID());
+  await lead(first);
+  const second = InstanceId.create(crypto.randomUUID());
+  t.clock.now += 30_000;
+  await lead(second);
+  const hubId = t.members.raw("hub")!.memberId;
+  assertEquals(await selfSeenKeys(t), [
+    `federation/seen/${hubId}/${second.value}`,
+  ]);
+  assertEquals(
+    (t.members.raw("hub")!.instances as { instanceId: string }[]).map((i) =>
+      i.instanceId
+    ),
+    [second.value],
+  );
+  const sightings = await t.hub.sightings(hubId as string);
+  assertEquals(sightings.get(hubId as string)?.length, 1);
 });

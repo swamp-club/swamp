@@ -28,6 +28,8 @@ import {
 
 export interface MemberListData {
   readonly members: ServeMemberLiveRecord[];
+  /** the hub's time when it answered */
+  readonly now: string;
 }
 
 export type MemberListEvent = FederationAdminEvent<MemberListData>;
@@ -44,6 +46,7 @@ export function memberList(
       const sightings = await deps.admin.sightings();
       return {
         members: members.map((member) => memberLiveRecord(member, sightings)),
+        now: new Date(deps.admin.now()).toISOString(),
       };
     },
   );

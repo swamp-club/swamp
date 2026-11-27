@@ -211,7 +211,8 @@ export function decideAppRequest(
     // own keys only, so a name like __proto__ reaches nothing
     if (
       Object.hasOwn(CAPABILITY_REQUESTS, capability) &&
-      CAPABILITY_REQUESTS[capability as AppReadCapability].includes(type)
+      CAPABILITY_REQUESTS[capability as keyof typeof CAPABILITY_REQUESTS]
+        .includes(type)
     ) {
       return { allowed: true };
     }

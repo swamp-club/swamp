@@ -172,3 +172,34 @@ Deno.test("computeSettingsHash property: excluded settings never move the hash",
     ),
   );
 });
+
+const extraKey = fc.string({ minLength: 1, maxLength: 12 }).filter((key) =>
+  !(key in sampleProps())
+);
+
+Deno.test("Fingerprint: extra keys never change the contract fields or the hash, and a record keeps them", () => {
+  fc.assert(
+    fc.property(
+      fc.dictionary(extraKey, fc.jsonValue(), { maxKeys: 5 }),
+      (extras) => {
+        const props = sampleProps();
+        const input = { ...props, ...extras };
+        const plain = Fingerprint.create(props);
+        const wire = Fingerprint.fromWire(input);
+        const record = Fingerprint.fromRecord(input);
+        assertEquals(wire.toJSON(), plain.toJSON());
+        assertEquals(record.fields(), plain.toJSON());
+        assertEquals(record.hash(), plain.hash());
+        assertEquals(wire.hash(), plain.hash());
+        const kept = record.toJSON() as unknown as Record<string, unknown>;
+        for (const key of Object.keys(extras)) {
+          if (key === "__proto__") continue;
+          assertEquals(
+            JSON.stringify(kept[key]),
+            JSON.stringify(input[key as keyof typeof input]),
+          );
+        }
+      },
+    ),
+  );
+});

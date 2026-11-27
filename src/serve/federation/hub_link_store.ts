@@ -22,6 +22,7 @@ import type { ControlPlaneStore } from "../../domain/datastore/control_plane_sto
 import {
   HubLink,
   type HubLinkInstance,
+  HubLinkInstanceRecordSchema,
   HubLinkInstanceSchema,
 } from "../../domain/serve/hub_link.ts";
 import { InstanceId } from "../../domain/serve/instance_id.ts";
@@ -38,7 +39,7 @@ export const HUB_LINK_INSTANCE_TTL_MS = 24 * 60 * 60 * 1000;
 const JoinClaimSchema = z.object({
   instanceId: z.string(),
   claimedAt: z.string(),
-}).strict();
+});
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -55,7 +56,7 @@ function instanceKey(instanceId: string): string {
   return `${HUB_LINK_INSTANCES_PREFIX}${InstanceId.create(instanceId).value}`;
 }
 
-/** a member's link records in its control-plane store; only a joining link holds its joinId */
+/** a member's link records in its control-plane store; only a joining or joined link holds its joinId */
 export class HubLinkStore {
   readonly #store: ControlPlaneStore;
   readonly #now: () => number;
@@ -135,15 +136,25 @@ export class HubLinkStore {
       claimedAt: new Date(this.#now()).toISOString(),
     });
     if (await this.#createIfAbsent(claim, id)) return true;
-    const current = await this.#readClaim();
+    const seen = await this.#store.get(JOIN_CLAIM_KEY);
+    if (seen === null) return false;
+    const current = parseClaim(seen);
     if (current?.instanceId === id) return true;
     const stale = current === undefined ||
       this.#now() - Date.parse(current.claimedAt) > JOIN_CLAIM_STALE_MS;
     if (!stale) return false;
+    // the re-read narrows, but does not close, the window for deleting another node's takeover
+    const again = await this.#store.get(JOIN_CLAIM_KEY);
+    if (again === null || !sameBytes(again, seen)) return false;
     await this.#store.delete(JOIN_CLAIM_KEY);
     if (!await this.#createIfAbsent(claim, id)) return false;
     // another node may have deleted and taken the claim between our steps
     return (await this.#readClaim())?.instanceId === id;
+  }
+
+  async holdsJoin(instanceId: string): Promise<boolean> {
+    return (await this.#readClaim())?.instanceId ===
+      InstanceId.create(instanceId).value;
   }
 
   async releaseJoin(instanceId: string): Promise<void> {
@@ -173,12 +184,7 @@ export class HubLinkStore {
 
   async #readClaim(): Promise<z.infer<typeof JoinClaimSchema> | undefined> {
     const bytes = await this.#store.get(JOIN_CLAIM_KEY);
-    if (bytes === null) return undefined;
-    try {
-      return JoinClaimSchema.parse(decode(bytes));
-    } catch {
-      return undefined;
-    }
+    return bytes === null ? undefined : parseClaim(bytes);
   }
 }
 
@@ -188,9 +194,23 @@ export interface FederationMemberLink {
   readonly configuredHubUrl: string;
 }
 
+function parseClaim(
+  bytes: Uint8Array,
+): z.infer<typeof JoinClaimSchema> | undefined {
+  try {
+    return JoinClaimSchema.parse(decode(bytes));
+  } catch {
+    return undefined;
+  }
+}
+
+function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+  return a.length === b.length && a.every((byte, i) => byte === b[i]);
+}
+
 function parseInstance(bytes: Uint8Array): HubLinkInstance | undefined {
   try {
-    return HubLinkInstanceSchema.parse(decode(bytes));
+    return HubLinkInstanceRecordSchema.parse(decode(bytes));
   } catch {
     return undefined;
   }

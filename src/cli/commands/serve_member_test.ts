@@ -238,10 +238,12 @@ Deno.test({
         UserError,
         "at most 30d",
       );
-      assertEquals(
-        await runJson("1", ["list", "--repo-dir", dir]),
-        { members: [] },
-      );
+      const members = await runJson("1", ["list", "--repo-dir", dir]) as {
+        members: unknown[];
+        now: string;
+      };
+      assertEquals(members.members, []);
+      assertEquals(Number.isNaN(Date.parse(members.now)), false);
     });
   },
 });

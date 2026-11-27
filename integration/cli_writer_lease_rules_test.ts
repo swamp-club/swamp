@@ -73,9 +73,10 @@ const PINNED = [
   "src/cli/commands/vault_put.ts :: vaultPutCommand",
   "src/cli/commands/vault_remove.ts :: vaultRemoveCommand",
   "src/cli/commands/worker_prune.ts :: workerPruneCommand",
+  // hub forget clears the link and the member credential
+  "src/cli/commands/serve_hub_local.ts :: openLocalMember",
   // member remove writes the member's record
   "src/cli/commands/serve_member_local.ts :: withLocalHubForMember",
-  "src/cli/commands/serve_hub_local.ts :: openLocalMember",
   "src/cli/commands/worker_token_create.ts :: workerTokenCreateCommand",
   // Generates and stores the token encryption key on first use.
   "src/cli/commands/worker_token_reveal.ts :: workerTokenRevealCommand",

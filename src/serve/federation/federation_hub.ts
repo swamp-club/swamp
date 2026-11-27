@@ -48,6 +48,7 @@ import {
 } from "../../domain/serve/serve_member.ts";
 import type { FederationConfig } from "../serve_config.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import { mapBounded } from "../../infrastructure/persistence/scan_permits.ts";
 import { TransitionTail } from "../transition_tail.ts";
 
 const logger = getSwampLogger(["serve", "federation"]);
@@ -55,6 +56,8 @@ const logger = getSwampLogger(["serve", "federation"]);
 const TOKENS_PREFIX = "federation/tokens/";
 const CREDENTIALS_PREFIX = "federation/credentials/";
 const SEEN_PREFIX = "federation/seen/";
+// a remote control plane answers each read in a round trip; no new store API is needed
+const SEEN_READ_CONCURRENCY = 8;
 
 /** the gate and a version 2 hub config together; nothing federation exists otherwise */
 export function federationHubEnabled(
@@ -146,16 +149,17 @@ export interface SweepReport {
   readonly seenKeysDeleted: number;
 }
 
+// control-plane records several swamp versions read ignore fields they do not know
 const CredentialRecordSchema = z.object({
   hash: z.string().regex(/^[0-9a-f]{64}$/),
   memberName: z.string(),
-}).strict();
+});
 
 // runtime is optional so a seen record holding only its time still parses
 const SeenRecordSchema = z.object({
   at: z.number().int(),
   runtime: FingerprintRuntimeSchema.optional(),
-}).strict();
+});
 
 type SeenRecord = z.infer<typeof SeenRecordSchema>;
 
@@ -186,8 +190,11 @@ function credentialKey(memberId: string): string {
   return `${CREDENTIALS_PREFIX}${memberIdSegment(memberId)}`;
 }
 
-function seenKey(memberId: string, instanceId: InstanceId): string {
-  return `${SEEN_PREFIX}${memberIdSegment(memberId)}/${instanceId.value}`;
+/** without an instance, the prefix of every seen key of that member */
+function seenKey(memberId: string, instanceId?: InstanceId): string {
+  return `${SEEN_PREFIX}${memberIdSegment(memberId)}/${
+    instanceId?.value ?? ""
+  }`;
 }
 
 function parseSeenKey(
@@ -211,12 +218,6 @@ function memberName(input: unknown): MemberName {
     }
     throw error;
   }
-}
-
-function tokenView(token: JoinToken, now: number): JoinTokenView {
-  const { secretHash: _hash, joinIdHash: _joinIdHash, ...view } = token
-    .toJSON();
-  return { ...view, state: token.stateAt(now) };
 }
 
 /**
@@ -243,6 +244,10 @@ export class FederationHub {
     return this.#tail.settled();
   }
 
+  now(): number {
+    return this.#now();
+  }
+
   async createToken(
     name: string,
     durationMs: number = DEFAULT_JOIN_TOKEN_DURATION_MS,
@@ -267,7 +272,7 @@ export class FederationHub {
       }
       await this.#store.put(tokenKey(validName), encode(result.token.toJSON()));
       return {
-        token: tokenView(result.token, now),
+        token: result.token.view(now),
         plaintext: result.plaintext,
       };
     });
@@ -280,7 +285,7 @@ export class FederationHub {
       const name = key.slice(TOKENS_PREFIX.length);
       if (MemberName.problem(name) !== undefined) continue;
       const token = await this.#readToken(MemberName.create(name));
-      if (token !== null) views.push(tokenView(token, now));
+      if (token !== null) views.push(token.view(now));
     }
     return views.sort((a, b) => a.memberName.localeCompare(b.memberName));
   }
@@ -306,7 +311,7 @@ export class FederationHub {
         throw error;
       }
       await this.#store.put(tokenKey(validName), encode(next.toJSON()));
-      return tokenView(next, now);
+      return next.view(now);
     });
   }
 
@@ -368,7 +373,13 @@ export class FederationHub {
       );
       if (use.kind === "refused") return { kind: "invalid-token" };
       if (use.kind === "replay") {
-        return await this.#replay(name, use.memberId, fingerprint, now);
+        return await this.#replay(
+          name,
+          use.memberId,
+          use.admitted,
+          fingerprint,
+          now,
+        );
       }
       const memberId = use.token.memberId!;
       const roster = new MemberRoster(
@@ -383,15 +394,18 @@ export class FederationHub {
     });
   }
 
-  // a hub that stopped before writing the member record finishes that join here
+  // a hub that stopped before writing the member record finishes that join
+  // here; once admitted, a missing record was deleted and stays gone
   async #replay(
     name: MemberName,
     memberId: string,
+    admitted: boolean,
     fingerprint: Fingerprint,
     now: number,
   ): Promise<JoinOutcome> {
     const existing = await this.#members.get(name.value);
     if (existing === null) {
+      if (admitted) return { kind: "invalid-token" };
       const roster = new MemberRoster(
         await this.#members.list(),
         this.hubName,
@@ -406,6 +420,8 @@ export class FederationHub {
       return { kind: "invalid-token" };
     }
     const credential = await this.#issueCredential(name, memberId);
+    // a join whose admittedAt write failed gets it now
+    await this.#markAdmitted(name, now);
     return {
       kind: "joined",
       memberId,
@@ -435,6 +451,7 @@ export class FederationHub {
         joinedAt: new Date(now).toISOString(),
       },
     });
+    await this.#markAdmitted(name, now);
     return {
       kind: "joined",
       memberId,
@@ -442,6 +459,15 @@ export class FederationHub {
       credential: credential.toWire(),
       replayed,
     };
+  }
+
+  async #markAdmitted(name: MemberName, now: number): Promise<void> {
+    const token = await this.#readToken(name);
+    if (token === null || token.state !== "used") return;
+    const admitted = token.admit(now);
+    if (admitted !== token) {
+      await this.#store.put(tokenKey(name), encode(admitted.toJSON()));
+    }
   }
 
   // replaces any earlier credential, so only the newest one checks in
@@ -493,10 +519,14 @@ export class FederationHub {
     });
   }
 
-  /** the hub's own record: written by the leader only, and only on change */
-  upsertSelf(fingerprint: Fingerprint): Promise<{ changed: boolean }> {
+  /** the hub's own record, listing the leader's instance: written by the leader only, and only on change */
+  upsertSelf(
+    fingerprint: Fingerprint,
+    instanceId?: InstanceId,
+  ): Promise<{ changed: boolean }> {
     return this.#tail.run("hub_record", async () => {
-      const existing = await this.#members.get(this.hubName);
+      let existing = await this.#members.get(this.hubName);
+      let created = false;
       if (existing === null || existing.isRemoved) {
         await this.#run(this.hubName, {
           method: "join",
@@ -510,7 +540,11 @@ export class FederationHub {
             joinedAt: new Date(this.#now()).toISOString(),
           },
         });
-        return { changed: true };
+        created = true;
+        existing = await this.#members.get(this.hubName);
+        if (existing === null || instanceId === undefined) {
+          return { changed: true };
+        }
       }
       if (existing.role !== "hub") {
         logger.warn(
@@ -519,14 +553,19 @@ export class FederationHub {
         );
         return { changed: false };
       }
-      const { member, changed } = existing.withFingerprint(fingerprint);
+      let { member, changed } = existing.withFingerprint(fingerprint);
+      if (instanceId !== undefined) {
+        const listed = member.withHubInstance(instanceId, this.#now());
+        member = listed.member;
+        changed ||= listed.changed;
+      }
       if (changed) {
         await this.#run(this.hubName, {
           method: "record",
           inputs: { record: member.toJSON() },
         });
       }
-      return { changed };
+      return { changed: changed || created };
     });
   }
 
@@ -539,7 +578,12 @@ export class FederationHub {
       const self = await this.#members.get(this.hubName);
       if (self === null || self.isRemoved || self.role !== "hub") return false;
       const seen: SeenRecord = { at: this.#now(), runtime };
-      await this.#store.put(seenKey(self.memberId, instanceId), encode(seen));
+      const own = seenKey(self.memberId, instanceId);
+      await this.#store.put(own, encode(seen));
+      // one hub instance: a restart or a new leader takes over the hub's presence
+      for (const key of await this.#store.list(seenKey(self.memberId))) {
+        if (key !== own) await this.#store.delete(key);
+      }
       return true;
     });
   }
@@ -550,11 +594,9 @@ export class FederationHub {
       ? SEEN_PREFIX
       : `${SEEN_PREFIX}${memberIdSegment(memberId)}/`;
     const byMember = new Map<string, MemberSighting[]>();
-    for (const key of await this.#store.list(prefix)) {
+    for (const { key, seen } of await this.#readAllSeen(prefix)) {
       const parsed = parseSeenKey(key);
-      if (parsed === undefined) continue;
-      const seen = await this.#readSeen(key);
-      if (seen === undefined) continue;
+      if (parsed === undefined || seen === undefined) continue;
       const list = byMember.get(parsed.memberId) ?? [];
       list.push({
         instanceId: parsed.instanceId,
@@ -577,10 +619,12 @@ export class FederationHub {
         await this.#store.delete(key);
         seenKeysDeleted++;
       };
-      for (const key of await this.#store.list(SEEN_PREFIX)) {
+      for (
+        const { key, seen: record } of await this.#readAllSeen(SEEN_PREFIX)
+      ) {
         const parsed = parseSeenKey(key);
         if (parsed === undefined) continue;
-        const at = (await this.#readSeen(key))?.at;
+        const at = record?.at;
         if (at === undefined || now - at >= INSTANCE_TTL_MS) {
           await drop(key);
           continue;
@@ -649,6 +693,18 @@ export class FederationHub {
     } catch {
       return null;
     }
+  }
+
+  async #readAllSeen(
+    prefix: string,
+  ): Promise<{ key: string; seen: SeenRecord | undefined }[]> {
+    const keys = (await this.#store.list(prefix)).filter((key) =>
+      parseSeenKey(key) !== undefined
+    );
+    return await mapBounded(keys, SEEN_READ_CONCURRENCY, async (key) => ({
+      key,
+      seen: await this.#readSeen(key),
+    }));
   }
 
   async #readSeen(key: string): Promise<SeenRecord | undefined> {

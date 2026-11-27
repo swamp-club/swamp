@@ -40,7 +40,7 @@ export const JoinTokenStateSchema = z.enum([
 
 export type JoinTokenState = z.infer<typeof JoinTokenStateSchema>;
 
-export const JoinTokenRecordSchema = z.object({
+const joinTokenFields = {
   memberName: z.string().refine((value) =>
     MemberName.problem(value) === undefined
   ),
@@ -54,12 +54,30 @@ export const JoinTokenRecordSchema = z.object({
   secretHash: z.string().regex(/^[0-9a-f]{64}$/),
   /** sha256 hex of the joinId the first join sent, so only that member can replay */
   joinIdHash: z.string().regex(/^[0-9a-f]{64}$/).optional(),
-});
+  /** set once the member record exists, so a replay never recreates a deleted member */
+  admittedAt: z.string().datetime().optional(),
+};
 
-export type JoinTokenRecord = z.infer<typeof JoinTokenRecordSchema>;
+// every hub of a team reads and rewrites it: unknown keys are read past and kept
+export const JoinTokenRecordSchema = z.looseObject(joinTokenFields);
+
+const JoinTokenRecordFields = z.strictObject(joinTokenFields);
+
+export type JoinTokenRecord = z.infer<typeof JoinTokenRecordFields>;
 
 /** a token as listed: never a hash */
 export type JoinTokenView = Omit<JoinTokenRecord, "secretHash" | "joinIdHash">;
+
+const VIEW_FIELDS = [
+  "memberName",
+  "state",
+  "createdAt",
+  "expiresAt",
+  "usedAt",
+  "memberId",
+  "revokedAt",
+  "admittedAt",
+] as const satisfies readonly (keyof JoinTokenView)[];
 
 export class JoinTokenError extends Error {
   constructor(message: string) {
@@ -75,7 +93,11 @@ export class JoinTokenError extends Error {
  */
 export type JoinTokenUse =
   | { readonly kind: "first-use"; readonly token: JoinToken }
-  | { readonly kind: "replay"; readonly memberId: string }
+  | {
+    readonly kind: "replay";
+    readonly memberId: string;
+    readonly admitted: boolean;
+  }
   | { readonly kind: "refused" };
 
 const REFUSED: JoinTokenUse = { kind: "refused" };
@@ -170,7 +192,11 @@ export class JoinToken {
       state === "used" && joinIdHash !== undefined && usedBy !== undefined &&
       now < Date.parse(token.expiresAt) && matchesHash(joinId, joinIdHash)
     ) {
-      return { kind: "replay", memberId: usedBy };
+      return {
+        kind: "replay",
+        memberId: usedBy,
+        admitted: token.record.admittedAt !== undefined,
+      };
     }
     return REFUSED;
   }
@@ -220,6 +246,33 @@ export class JoinToken {
       return undefined;
     }
     return new JoinToken({ ...this.record, state: "expired" });
+  }
+
+  /** once the member record is written; idempotent */
+  admit(now: number): JoinToken {
+    if (this.record.state !== "used") {
+      throw new JoinTokenError(
+        `Join token for '${this.memberName}' is ${this.record.state}; only a used token admits a member`,
+      );
+    }
+    if (this.record.admittedAt !== undefined) return this;
+    return new JoinToken({
+      ...this.record,
+      admittedAt: new Date(now).toISOString(),
+    });
+  }
+
+  get admittedAt(): string | undefined {
+    return this.record.admittedAt;
+  }
+
+  /** what a listing shows: the known fields only, never a hash or a newer hub's field */
+  view(now: number): JoinTokenView {
+    const view: Record<string, unknown> = {};
+    for (const key of VIEW_FIELDS) {
+      if (this.record[key] !== undefined) view[key] = this.record[key];
+    }
+    return { ...view, state: this.stateAt(now) } as JoinTokenView;
   }
 
   toJSON(): JoinTokenRecord {

@@ -229,10 +229,59 @@ Deno.test("ServeMember.fromJSON: round-trips and holds no credential or lastSeen
     "instanceId",
     "swampVersion",
   ]);
-  assertThrows(() => ServeMember.fromJSON({ ...json, credentialHash: "x" }));
   assertThrows(() => ServeMember.fromJSON({ ...json, name: "a.b" }));
+  assertThrows(() => ServeMember.fromJSON({ ...json, status: undefined }));
 });
 
 Deno.test("ServeMember.needsNewVersionFrom: a first write always does", () => {
   assertEquals(joined().needsNewVersionFrom(null), true);
+});
+
+function newerRecord(member: ServeMember): Record<string, unknown> {
+  const json = member.toJSON();
+  return {
+    ...json,
+    later: "x",
+    fingerprint: { ...json.fingerprint, laterField: true },
+    instances: json.instances.map((i) => ({ ...i, later: 1 })),
+  };
+}
+
+Deno.test("ServeMember.fromJSON: a newer hub's record reads, and a rewrite that keeps the fingerprint keeps its fields", () => {
+  const id = InstanceId.create(crypto.randomUUID());
+  const record = newerRecord(checkedIn(joined(), id).member);
+  const member = ServeMember.fromJSON(record);
+  const stale = member.applySeen(
+    new Map([[id.value, NOW]]),
+    NOW + STALE_AFTER_MS,
+  );
+  assertEquals(stale.changed, true);
+  assertEquals(stale.member.toJSON() as unknown, {
+    ...record,
+    status: "stale",
+  });
+  const removed = member.remove(NOW).member.toJSON() as unknown as Record<
+    string,
+    unknown
+  >;
+  assertEquals(removed.later, "x");
+  assertEquals(
+    (removed.fingerprint as Record<string, unknown>).laterField,
+    true,
+  );
+});
+
+Deno.test("ServeMember.checkIn: a newer hub's unknown fingerprint fields never create a version, and a replaced fingerprint carries only known fields", () => {
+  const id = InstanceId.create(crypto.randomUUID());
+  const member = ServeMember.fromJSON(
+    newerRecord(checkedIn(joined(), id).member),
+  );
+  const same = member.checkIn(id, sampleFingerprint(), NOW + 1000);
+  assertEquals(same.ok && same.changed, false);
+  const other = InstanceId.create(crypto.randomUUID());
+  const next = member.checkIn(other, sampleFingerprint(), NOW + 1000);
+  if (!next.ok) throw new Error(next.refusal);
+  const json = next.member.toJSON() as unknown as Record<string, unknown>;
+  assertEquals(json.later, "x");
+  assertEquals("laterField" in (json.fingerprint as object), false);
 });

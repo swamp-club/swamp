@@ -65,14 +65,18 @@ function instanceLine(instance: HubLinkInstance): string {
     ? dim(`stopped ${instance.stoppedAt}`)
     : instance.result === "ok"
     ? green(`ok, last check-in ${instance.lastSuccessAt}`)
-    : instance.result === null
+    : instance.result === null && instance.lastAttemptAt === null
     ? dim("no check-in yet")
     : yellow(
-      `${instance.result}${
+      `${instance.result ?? "no reply yet"}${
         instance.consecutiveFailures === 1
           ? " (1 failure)"
           : instance.consecutiveFailures > 1
           ? ` (${instance.consecutiveFailures} failures)`
+          : ""
+      }${
+        instance.lastAttemptAt !== null
+          ? `, last attempt ${instance.lastAttemptAt}`
           : ""
       }${
         instance.nextAttemptAt !== null

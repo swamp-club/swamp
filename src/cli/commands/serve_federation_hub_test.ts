@@ -23,6 +23,7 @@ import { FEDERATION_GATE_VARIABLE } from "../../domain/serve/federation_gate.ts"
 import type { MergedServeOptions } from "../../serve/serve_config.ts";
 import {
   buildServeFederationHub,
+  hubRuntime,
   type ServeFederationHubDeps,
 } from "./serve_federation_hub.ts";
 
@@ -54,4 +55,21 @@ Deno.test("buildServeFederationHub: builds and registers nothing with the gate o
     );
     assertEquals(modelRegistry.has("swamp/serve-member"), registered);
   }
+});
+
+Deno.test("hubRuntime: the hub reports serve's own readiness, read each time", async () => {
+  let ready = false;
+  const runtime = () =>
+    hubRuntime({
+      team: () => Promise.resolve(null),
+      startedAt: "2026-11-26T11:00:00.000Z",
+      ready: () => ready,
+    });
+  assertEquals((await runtime()).ready, false);
+  ready = true;
+  assertEquals(await runtime(), {
+    team: null,
+    startedAt: "2026-11-26T11:00:00.000Z",
+    ready: true,
+  });
 });

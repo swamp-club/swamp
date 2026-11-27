@@ -137,8 +137,8 @@ Deno.test("handleFederationTokenCreate: a grant naming swamp/federation with adm
   assertEquals((await hub.listTokens()).map((t) => t.memberName), ["edge-1"]);
 });
 
-Deno.test("handleFederationMemberList: a reader lists; a grant on another access resource does not reach it", async () => {
-  const { hub } = createTestHub();
+Deno.test("handleFederationMemberList: a reader lists, with the hub's time; a grant on another access resource does not reach it", async () => {
+  const { hub, clock } = createTestHub();
   const reader = socket();
   await handleFederationMemberList(
     reader,
@@ -149,7 +149,7 @@ Deno.test("handleFederationMemberList: a reader lists; a grant on another access
   assertEquals(frame(reader), {
     type: "federation.member.list",
     id: "r1",
-    payload: { members: [] },
+    payload: { members: [], now: new Date(clock.now).toISOString() },
   });
 
   const other = socket();
@@ -245,11 +245,12 @@ Deno.test("handleFederationMemberGet: a reader gets the record with its live vie
   );
   const reply = frame(reader) as {
     type: string;
-    payload: { member: { name: string; live: unknown } };
+    payload: { member: { name: string; live: unknown }; now: string };
   };
   assertEquals(reply.type, "federation.member.get");
   assertEquals(reply.payload.member.name, "edge-1");
   const seenAt = new Date(t.clock.now).toISOString();
+  assertEquals(reply.payload.now, seenAt);
   assertEquals(reply.payload.member.live, {
     lastSeenAt: seenAt,
     instances: [{ instanceId: instance.value, lastSeenAt: seenAt, runtime }],

@@ -37,6 +37,8 @@ export interface MemberData {
 
 export interface MemberGetData {
   readonly member: ServeMemberLiveRecord;
+  /** the hub's time when it answered */
+  readonly now: string;
 }
 
 export type MemberGetEvent = FederationAdminEvent<MemberGetData>;
@@ -59,7 +61,10 @@ export function memberGet(
         throw new MemberNotFoundError(`No member named '${input.name}'`);
       }
       const sightings = await deps.admin.sightings(member.memberId);
-      return { member: memberLiveRecord(member, sightings) };
+      return {
+        member: memberLiveRecord(member, sightings),
+        now: new Date(deps.admin.now()).toISOString(),
+      };
     },
   );
 }

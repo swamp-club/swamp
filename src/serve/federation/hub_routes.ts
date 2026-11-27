@@ -24,7 +24,7 @@ import {
 } from "../../domain/untrusted_parse.ts";
 import {
   Fingerprint,
-  FingerprintSchema,
+  FingerprintWireSchema,
 } from "../../domain/serve/fingerprint.ts";
 import { InstanceId } from "../../domain/serve/instance_id.ts";
 import { joinIdOf, joinTokenNameOf } from "../../domain/serve/join_token.ts";
@@ -206,14 +206,14 @@ async function readFederationBody(req: Request): Promise<ParsedBody> {
 function fingerprintOf(
   body: Record<string, unknown>,
 ): { ok: true; fingerprint: Fingerprint } | { ok: false; response: Response } {
-  const parsed = parseUntrusted(FingerprintSchema, body.fingerprint);
+  const parsed = parseUntrusted(FingerprintWireSchema, body.fingerprint);
   if (!parsed.success) {
     return {
       ok: false,
       response: badRequest(describeIssues("fingerprint", parsed.error.issues)),
     };
   }
-  return { ok: true, fingerprint: Fingerprint.fromJSON(parsed.data) };
+  return { ok: true, fingerprint: Fingerprint.fromWire(parsed.data) };
 }
 
 export interface FederationRouteDeps {

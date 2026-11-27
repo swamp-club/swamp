@@ -31,7 +31,9 @@ import {
   mergeServeOptions,
 } from "../../serve/serve_config.ts";
 import { initializeControlPlaneVaultForCli } from "../control_plane_vault.ts";
+import { serveRunningRefusal } from "../../libswamp/serve/hub_forget.ts";
 import {
+  type DatastoreResolutionResult,
   localAppControlPlane,
   requireInitializedRepoReadOnly,
   requireInitializedRepoUnlocked,
@@ -50,7 +52,10 @@ export interface LocalMemberOptions {
 const env = (name: string) => Deno.env.get(name);
 
 /** the hub serve.yaml names, or a refusal unless the gate is on and serve.yaml is a version 2 member */
-async function localMemberHubUrl(options: LocalMemberOptions): Promise<string> {
+function localMemberHubUrl(
+  options: LocalMemberOptions,
+  resolution: DatastoreResolutionResult,
+): string {
   const merged = mergeServeOptions(
     loadServeConfig(options.config, options.repoDir),
     {},
@@ -63,7 +68,6 @@ async function localMemberHubUrl(options: LocalMemberOptions): Promise<string> {
         (options.forget ? "" : " Pass --server to ask a running member."),
     );
   }
-  const resolution = await resolveDatastoreForRepo(options.repoDir);
   if (resolution.serveUpstream !== undefined) {
     throw new UserError(
       options.forget
@@ -78,11 +82,14 @@ async function localMemberHubUrl(options: LocalMemberOptions): Promise<string> {
  * the link records and credential in the control-plane store serve uses,
  * remote ones included; forget writes there, so this opens the repo to write
  */
-async function openLocalMember(options: LocalMemberOptions): Promise<{
+async function openLocalMember(
+  options: LocalMemberOptions,
+  resolution: DatastoreResolutionResult,
+): Promise<{
   readonly link: FederationMemberLink;
   readonly credentials: MemberCredentialVault;
 }> {
-  const configuredHubUrl = await localMemberHubUrl(options);
+  const configuredHubUrl = localMemberHubUrl(options, resolution);
   const { repoDir, repoContext, datastoreConfig, syncService } =
     await requireInitializedRepoUnlocked({
       repoDir: options.repoDir,
@@ -107,15 +114,26 @@ async function openLocalMember(options: LocalMemberOptions): Promise<{
 export async function openLocalHubLink(
   options: LocalMemberOptions,
 ): Promise<FederationMemberLink> {
-  const resolution = await resolveDatastoreForRepo(options.repoDir);
-  // only a v2 extension datastore's sync service reaches its remote control plane; v2 holds no writer lease
-  if (
-    isCustomDatastoreConfig(resolution.datastoreConfig) &&
-    resolution.engine !== "v3"
-  ) {
-    return (await openLocalMember(options)).link;
+  return await openHubLinkReading(
+    options,
+    await resolveDatastoreForRepo(options.repoDir),
+  );
+}
+
+// only a v2 extension datastore's sync service reaches its remote control plane; v2 holds no writer lease
+function readsThroughSync(resolution: DatastoreResolutionResult): boolean {
+  return isCustomDatastoreConfig(resolution.datastoreConfig) &&
+    resolution.engine !== "v3";
+}
+
+async function openHubLinkReading(
+  options: LocalMemberOptions,
+  resolution: DatastoreResolutionResult,
+): Promise<FederationMemberLink> {
+  if (readsThroughSync(resolution)) {
+    return (await openLocalMember(options, resolution)).link;
   }
-  const configuredHubUrl = await localMemberHubUrl(options);
+  const configuredHubUrl = localMemberHubUrl(options, resolution);
   const { repoDir } = await requireInitializedRepoReadOnly({
     repoDir: options.repoDir,
     outputMode: options.outputMode,
@@ -126,9 +144,21 @@ export async function openLocalHubLink(
   };
 }
 
+/** where there is a writer lease, a running serve is refused before the open, so it never meets the lock */
 export async function openLocalHubLinkForForget(
   options: LocalMemberOptions,
 ): Promise<{ links: HubLinkStore; credentials: MemberCredentialVault }> {
-  const { link, credentials } = await openLocalMember(options);
+  const resolution = await resolveDatastoreForRepo(options.repoDir);
+  if (!readsThroughSync(resolution)) {
+    const reading = await openHubLinkReading(options, resolution);
+    const refusal = serveRunningRefusal(
+      await reading.links.listInstances(),
+      Date.now(),
+    );
+    if (refusal !== undefined) {
+      throw new UserError(refusal.message, refusal.code);
+    }
+  }
+  const { link, credentials } = await openLocalMember(options, resolution);
   return { links: link.links, credentials };
 }

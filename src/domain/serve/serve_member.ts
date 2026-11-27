@@ -19,7 +19,11 @@
 
 import { z } from "zod";
 import { canonicalJson } from "../expressions/expression_references.ts";
-import { Fingerprint, FingerprintSchema } from "./fingerprint.ts";
+import {
+  Fingerprint,
+  FingerprintRecordSchema,
+  FingerprintSchema,
+} from "./fingerprint.ts";
 import { type InstanceId, normalizedUuid } from "./instance_id.ts";
 import { MemberName } from "./member_name.ts";
 
@@ -43,28 +47,41 @@ export type MemberStatus = z.infer<typeof MemberStatusSchema>;
 
 const uuid = z.string().refine((value) => normalizedUuid(value) === value);
 
-const InstanceRecordSchema = z.object({
+const instanceFields = {
   instanceId: uuid,
   swampVersion: z.string(),
   firstSeen: z.string().datetime(),
-}).strict();
+};
 
-export type InstanceRecord = z.infer<typeof InstanceRecordSchema>;
+const InstanceRecordFields = z.strictObject(instanceFields);
+
+export type InstanceRecord = z.infer<typeof InstanceRecordFields>;
 
 // lastSeen and the credential hash live in the control-plane store, so an
 // unchanged check-in leaves this record, and its data version, alone
-export const ServeMemberRecordSchema = z.object({
+const memberFields = {
   memberId: uuid,
   name: z.string().refine((value) => MemberName.problem(value) === undefined),
   role: MemberRoleSchema,
   status: MemberStatusSchema,
-  fingerprint: FingerprintSchema,
-  instances: z.array(InstanceRecordSchema).max(MAX_INSTANCES),
   joinedAt: z.string().datetime(),
   removedAt: z.string().datetime().optional(),
-}).strict();
+};
 
-export type ServeMemberRecord = z.output<typeof ServeMemberRecordSchema>;
+const ServeMemberRecordFields = z.strictObject({
+  ...memberFields,
+  fingerprint: FingerprintSchema,
+  instances: z.array(InstanceRecordFields).max(MAX_INSTANCES),
+});
+
+/** every hub of a team reads this: unknown keys from a newer hub are read past and written back */
+export const ServeMemberRecordSchema = z.looseObject({
+  ...memberFields,
+  fingerprint: FingerprintRecordSchema,
+  instances: z.array(z.looseObject(instanceFields)).max(MAX_INSTANCES),
+});
+
+export type ServeMemberRecord = z.output<typeof ServeMemberRecordFields>;
 
 export class Instance {
   private constructor(private readonly record: InstanceRecord) {}
@@ -165,8 +182,8 @@ export class ServeMember {
       json,
     );
     return new ServeMember(
-      rest,
-      Fingerprint.fromJSON(fingerprint),
+      rest as Omit<ServeMemberRecord, "instances" | "fingerprint">,
+      Fingerprint.fromRecord(fingerprint),
       instances.map((record) => Instance.fromRecord(record)),
     );
   }
@@ -211,8 +228,8 @@ export class ServeMember {
   needsNewVersionFrom(previous: ServeMember | null): boolean {
     if (previous === null) return true;
     return this.fingerprint.hash() !== previous.fingerprint.hash() ||
-      canonicalJson(this.fingerprint.toJSON().workers) !==
-        canonicalJson(previous.fingerprint.toJSON().workers) ||
+      canonicalJson(this.fingerprint.fields().workers) !==
+        canonicalJson(previous.fingerprint.fields().workers) ||
       this.status !== previous.status ||
       this.record.role !== previous.record.role ||
       canonicalJson(this.instanceIds()) !==
@@ -225,7 +242,7 @@ export class ServeMember {
     now: number,
   ): CheckInResult {
     if (this.isRemoved) return { ok: false, refusal: "removed" };
-    const swampVersion = fingerprint.toJSON().swampVersion;
+    const swampVersion = fingerprint.fields().swampVersion;
     const known = this.instances.some((i) => i.instanceId === instanceId.value);
     if (!known && this.instances.length >= MAX_INSTANCES) {
       return { ok: false, refusal: "instance-limit" };
@@ -252,6 +269,28 @@ export class ServeMember {
     if (this.isRemoved) return { member: this, changed: false };
     const next = new ServeMember(this.record, fingerprint, this.instances);
     return next.needsNewVersionFrom(this)
+      ? { member: next, changed: true }
+      : { member: this, changed: false };
+  }
+
+  /** the hub's own record lists the one leader serving it now */
+  withHubInstance(
+    instanceId: InstanceId,
+    now: number,
+  ): { member: ServeMember; changed: boolean } {
+    if (this.isRemoved || this.record.role !== "hub") {
+      return { member: this, changed: false };
+    }
+    const swampVersion = this.fingerprint.fields().swampVersion;
+    const current = this.instances.find((i) =>
+      i.instanceId === instanceId.value
+    );
+    const instance = current === undefined
+      ? Instance.first(instanceId, swampVersion, now)
+      : current.withSwampVersion(swampVersion);
+    const next = new ServeMember(this.record, this.fingerprint, [instance]);
+    return next.needsNewVersionFrom(this) ||
+        current?.swampVersion !== swampVersion
       ? { member: next, changed: true }
       : { member: this, changed: false };
   }

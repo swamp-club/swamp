@@ -92,7 +92,7 @@ Deno.test("JoinToken.use: the same token and joinId on a used token replay its m
     crypto.randomUUID(),
     NOW + DEFAULT_JOIN_TOKEN_DURATION_MS - 1,
   );
-  assertEquals(replay, { kind: "replay", memberId });
+  assertEquals(replay, { kind: "replay", memberId, admitted: false });
 });
 
 Deno.test("JoinToken.use: a replay with another joinId, a wrong secret or after expiry is refused", () => {
@@ -186,13 +186,17 @@ Deno.test("JoinToken.expire: records expiry once it has passed", () => {
   );
 });
 
-Deno.test("JoinToken.fromJSON: round-trips and ignores unknown fields", () => {
+Deno.test("JoinToken.fromJSON: round-trips, and keeps a newer hub's unknown fields for the rewrite but never in a view", () => {
   const { token } = minted();
   assertEquals(JoinToken.fromJSON(token.toJSON()).toJSON(), token.toJSON());
+  const newer = JoinToken.fromJSON({ ...token.toJSON(), later: "x" });
+  assertEquals(newer.toJSON() as unknown, { ...token.toJSON(), later: "x" });
   assertEquals(
-    JoinToken.fromJSON({ ...token.toJSON(), later: "x" }).toJSON(),
-    token.toJSON(),
+    (newer.revoke(NOW).toJSON() as unknown as Record<string, unknown>).later,
+    "x",
   );
+  assertEquals("later" in newer.view(NOW), false);
+  assertEquals("secretHash" in newer.view(NOW), false);
   assertThrows(() =>
     JoinToken.fromJSON({ ...token.toJSON(), secretHash: "x" })
   );
@@ -213,4 +217,26 @@ Deno.test("joinTokenNameOf: reads the claimed name from a well-formed token only
   ) {
     assertEquals(joinTokenNameOf(wire), undefined);
   }
+});
+
+const ADMIT_MEMBER = crypto.randomUUID();
+
+Deno.test("JoinToken.admit: only a used token, once; a replay reports whether it was admitted", () => {
+  const { token, plaintext } = minted();
+  assertThrows(() => token.admit(NOW), JoinTokenError);
+  const spent = JoinToken.use(token, plaintext, JOIN_ID, ADMIT_MEMBER, NOW);
+  if (spent.kind !== "first-use") throw new Error(spent.kind);
+  const before = JoinToken.use(
+    spent.token,
+    plaintext,
+    JOIN_ID,
+    ADMIT_MEMBER,
+    NOW,
+  );
+  assertEquals(before.kind === "replay" && before.admitted, false);
+  const admitted = spent.token.admit(NOW + 1);
+  assertEquals(admitted.admittedAt, new Date(NOW + 1).toISOString());
+  assertEquals(admitted.admit(NOW + 2), admitted);
+  const after = JoinToken.use(admitted, plaintext, JOIN_ID, ADMIT_MEMBER, NOW);
+  assertEquals(after.kind === "replay" && after.admitted, true);
 });

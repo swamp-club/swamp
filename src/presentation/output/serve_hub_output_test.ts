@@ -67,7 +67,11 @@ Deno.test("renderHubLink: log mode names the hub, the hub serve.yaml names, the 
   assert(out.includes("https://hub.example.com (central)"));
   assert(out.includes("serve.yaml names: https://other.example.com"));
   assert(out.includes("State: mismatched"));
-  assert(out.includes("unreachable (3 failures), next attempt"));
+  assert(
+    out.includes(
+      "unreachable (3 failures), last attempt 2026-11-26T12:00:30.000Z, next attempt 2026-11-26T12:02:30.000Z",
+    ),
+  );
   assert(out.includes("swamp serve hub forget --yes"));
 });
 
@@ -77,4 +81,32 @@ Deno.test("renderHubForget: says when there was nothing to forget", () => {
       renderHubForget({ forgot: false, hubUrl: null, memberName: null }, "log")
     ).includes("no hub link"),
   );
+});
+
+Deno.test("renderHubLink: a joining link shows its last attempt and next retry, and an attempt with no reply yet", () => {
+  const instance = VIEW.instances[0];
+  const joining: HubLinkView = {
+    ...VIEW,
+    state: "joining",
+    hubUrl: VIEW.configuredHubUrl,
+    memberName: null,
+    memberId: null,
+    joinedAt: null,
+    instances: [
+      { ...instance, result: "server_error", consecutiveFailures: 1 },
+      {
+        ...instance,
+        instanceId: "1f1c2a4e-1111-4222-8333-944445555666",
+        result: null,
+        consecutiveFailures: 0,
+        nextAttemptAt: null,
+      },
+    ],
+  };
+  const out = capture(() => renderHubLink({ link: joining }, "log"));
+  assert(out.includes(
+    "server_error (1 failure), last attempt 2026-11-26T12:00:30.000Z, next attempt 2026-11-26T12:02:30.000Z",
+  ));
+  assert(out.includes("no reply yet, last attempt 2026-11-26T12:00:30.000Z"));
+  assert(!out.includes("no check-in yet"));
 });

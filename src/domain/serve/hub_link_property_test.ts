@@ -95,16 +95,23 @@ Deno.test("decideStart property: a link that keeps a credential is the credentia
   }));
 });
 
-Deno.test("decideStart property: an unsettled join keeps its joinId, and a settled link holds none", () => {
+Deno.test("decideStart property: a join keeps its joinId until confirmed, and only a joining or joined link holds one", () => {
   fc.assert(fc.property(linkArb, factsArb, (link, facts) => {
     const decision = decideStart(link, facts);
-    if (link.state === "joining" && decision.link.state === "joining") {
+    if (
+      link.state === "joining" &&
+      (decision.link.state === "joining" || decision.link.state === "joined")
+    ) {
       assertEquals(decision.link.joinId, link.joinId);
     }
-    assertEquals(
-      decision.link.joinId === null,
-      decision.link.state !== "joining",
-    );
+    if (
+      decision.link.state !== "joining" && decision.link.state !== "joined"
+    ) {
+      assertEquals(decision.link.joinId, null);
+    }
+    if (decision.link.state === "joining") {
+      assert(decision.link.joinId !== null);
+    }
   }));
 });
 

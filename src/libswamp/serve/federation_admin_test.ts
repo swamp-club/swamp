@@ -79,6 +79,7 @@ function fakeAdmin(calls: string[] = []): FederationAdmin {
     listMembers: () => Promise.resolve([MEMBER]),
     getMember: (name) => Promise.resolve(name === "edge-1" ? MEMBER : null),
     removeMember: () => Promise.resolve(MEMBER.remove(NOW).member),
+    now: () => NOW + 5000,
     sightings: (memberId) => {
       calls.push(`sightings ${memberId ?? "*"}`);
       return Promise.resolve(
@@ -153,19 +154,25 @@ const LIVE = {
   }],
 };
 
-Deno.test("memberList and memberGet: each record carries its live view; memberRemove does not", async () => {
+Deno.test("memberList and memberGet: each record carries its live view and the hub's time; memberRemove does not", async () => {
   const calls: string[] = [];
   const listed = await collect(memberList(ctx, { admin: fakeAdmin(calls) }));
   assertEquals(listed[1], {
     kind: "completed",
-    data: { members: [{ ...MEMBER.toJSON(), live: LIVE }] },
+    data: {
+      members: [{ ...MEMBER.toJSON(), live: LIVE }],
+      now: new Date(NOW + 5000).toISOString(),
+    },
   });
   const got = await collect(
     memberGet(ctx, { admin: fakeAdmin(calls) }, { name: "edge-1" }),
   );
   assertEquals(got[1], {
     kind: "completed",
-    data: { member: { ...MEMBER.toJSON(), live: LIVE } },
+    data: {
+      member: { ...MEMBER.toJSON(), live: LIVE },
+      now: new Date(NOW + 5000).toISOString(),
+    },
   });
   assertEquals(calls, ["sightings *", `sightings ${MEMBER.memberId}`]);
   const removed = await collect(

@@ -103,6 +103,8 @@ export class MemberCheckInService {
   #intervalSeconds = DEFAULT_CHECK_IN_INTERVAL_SECONDS;
   #lastLogged: CheckInResult | "joined" | undefined;
   #joinRetryLogged = false;
+  /** the credential this node's own replay got: a 401 on it starts no further replay */
+  #rejoined: MemberCredential | undefined;
 
   constructor(options: MemberCheckInServiceOptions) {
     this.#options = options;
@@ -149,14 +151,20 @@ export class MemberCheckInService {
       await this.#options.links.pruneInstances(this.#instanceId);
     });
     await this.#saveInstance();
+    let unreadableLogged = false;
     while (!this.#aborted) {
       let step: Step;
       try {
         step = await this.#nextStep();
+        unreadableLogged = false;
       } catch (error) {
-        logger.warn("Federation member could not reach its link: {error}", {
-          error: messageOf(error),
-        });
+        // warns once per run of failures, whatever the cause
+        if (!unreadableLogged) {
+          unreadableLogged = true;
+          logger.warn("Federation member could not reach its link: {error}", {
+            error: messageOf(error),
+          });
+        }
         step = { kind: "wait", delayMs: this.#backoff() };
       }
       if (step.kind === "stop") return;
@@ -191,7 +199,8 @@ export class MemberCheckInService {
       }
       case "mismatched": {
         await this.#writeLinkIfChanged(decision.link);
-        this.#logOnce("rejected", () =>
+        await this.#record("mismatched");
+        this.#logOnce("mismatched", () =>
           logger.error(
             "Not joining: this serve already belongs to the hub at {joined}, and serve.yaml names another. Stop serve and run swamp serve hub forget --yes to leave it",
             { joined: hostOf(decision.link.hubUrl) },
@@ -221,6 +230,9 @@ export class MemberCheckInService {
       }
       await this.#writeLinkIfChanged(decision.link);
       if (decision.action === "idle") {
+        await this.#record(
+          decision.link.state === "refused" ? "refused" : "not_joining",
+        );
         this.#logOnce(
           decision.link.state === "refused" ? "refused" : "waiting",
           () =>
@@ -251,6 +263,11 @@ export class MemberCheckInService {
           { max: MAX_JOIN_TOKEN_BYTES },
         ));
       return { kind: "stop" };
+    }
+    // two nodes can both take over a stale claim: the one that lost it waits quietly
+    if (!await this.#options.links.holdsJoin(this.#instanceId)) {
+      await this.#record("waiting");
+      return { kind: "wait", delayMs: this.#schedule.joinWaitMs };
     }
     // written before the request leaves, so a lost reply is replayed, never re-joined
     const joining = previous.beginJoin(
@@ -295,9 +312,13 @@ export class MemberCheckInService {
     }
     if (outcome.kind === "stopped") return { kind: "stop" };
     if (outcome.kind === "unauthorized") {
-      // a token spent by another node that joined meanwhile is no refusal
+      // a token spent by another node that joined, or took the claim, meanwhile is no refusal
       const now = await this.#options.links.readLink();
-      if (now.holdsCredential) {
+      if (
+        now.holdsCredential ||
+        !await this.#options.links.holdsJoin(this.#instanceId)
+      ) {
+        await this.#record("waiting");
         return { kind: "wait", delayMs: this.#schedule.joinWaitMs };
       }
       await this.#abandonJoin(previous);
@@ -355,7 +376,8 @@ export class MemberCheckInService {
     }
   }
 
-  async #checkInLoop(credential: MemberCredential): Promise<void> {
+  async #checkInLoop(initial: MemberCredential): Promise<void> {
+    let credential = initial;
     while (!this.#aborted) {
       let delayMs: number;
       try {
@@ -366,8 +388,11 @@ export class MemberCheckInService {
         );
         if (outcome.kind === "stopped") return;
         if (outcome.kind === "unauthorized") {
-          await this.#refused(credential);
-          return;
+          const next = await this.#afterRefusal(credential);
+          if (next.kind === "stop") return;
+          if (next.kind === "check-in") credential = next.credential;
+          await this.#sleep(next.kind === "wait" ? next.delayMs : 0);
+          continue;
         }
         if (outcome.kind === "ok") {
           this.#intervalSeconds = this.#clamp(
@@ -389,14 +414,87 @@ export class MemberCheckInService {
     }
   }
 
-  // only the link and credential of the member that was refused; a newer join is left alone
+  // another node may have replaced the credential; past taking that up, all runs under the join claim
+  async #afterRefusal(credential: MemberCredential): Promise<Step> {
+    const adopted = await this.#storedReplacement(credential);
+    if (adopted !== undefined) return adopted;
+    const links = this.#options.links;
+    if (!await links.claimJoin(this.#instanceId)) {
+      await this.#record("waiting");
+      return { kind: "wait", delayMs: this.#schedule.joinWaitMs };
+    }
+    try {
+      const again = await this.#storedReplacement(credential);
+      if (again !== undefined) return again;
+      const link = await links.readLink();
+      if (
+        link.replayable && link.memberId === credential.memberId &&
+        this.#rejoined?.toWire() !== credential.toWire() &&
+        this.#options.joinTokenFile !== undefined
+      ) {
+        const replayed = await this.#rejoin(link);
+        if (replayed !== undefined) return replayed;
+      }
+      await this.#refused(credential);
+      return { kind: "stop" };
+    } finally {
+      await links.releaseJoin(this.#instanceId);
+    }
+  }
+
+  async #storedReplacement(
+    credential: MemberCredential,
+  ): Promise<Step | undefined> {
+    const stored = await this.#options.credentials.read();
+    if (
+      stored === undefined || stored.memberId !== credential.memberId ||
+      stored.toWire() === credential.toWire()
+    ) {
+      return undefined;
+    }
+    return { kind: "check-in", credential: stored };
+  }
+
+  // a stalled node stored a credential the hub had already replaced: the join
+  // replays once with the stored joinId; undefined sends the caller on to refuse
+  async #rejoin(link: HubLink): Promise<Step | undefined> {
+    const token = await (this.#options.readJoinToken ?? readJoinTokenFile)(
+      this.#options.joinTokenFile!,
+    );
+    if (token === undefined) return undefined;
+    const outcome = await this.#options.client.join(
+      token,
+      link.joinId!,
+      await this.#options.fingerprint(),
+    );
+    if (outcome.kind === "stopped") return { kind: "stop" };
+    if (outcome.kind !== "ok") {
+      if (outcome.kind === "unauthorized" || outcome.kind === "conflict") {
+        return undefined;
+      }
+      return { kind: "wait", delayMs: await this.#failed(outcome) };
+    }
+    const reply = outcome.value;
+    if (reply.memberId !== link.memberId) return undefined;
+    await this.#retrying(() =>
+      this.#options.credentials.store(reply.credential)
+    );
+    this.#rejoined = reply.credential;
+    logger.info("Joined hub {hub} again with a new credential", {
+      hub: reply.hub.name,
+    });
+    return { kind: "check-in", credential: reply.credential };
+  }
+
+  // only the link and credential of the member that was refused; runs under the
+  // join claim, and a newer join is left alone
   async #refused(credential: MemberCredential): Promise<void> {
     const link = await this.#options.links.readLink();
     if (link.memberId === credential.memberId && link.holdsCredential) {
       await this.#options.links.writeLink(link.refuse());
     }
     const stored = await this.#options.credentials.read();
-    if (stored?.memberId === credential.memberId) {
+    if (stored?.toWire() === credential.toWire()) {
       await this.#options.credentials.delete();
     }
     await this.#record("refused");
@@ -409,7 +507,12 @@ export class MemberCheckInService {
   async #nameHub(credential: MemberCredential, hubName: string): Promise<void> {
     const link = await this.#options.links.readLink();
     if (link.memberId !== credential.memberId || !link.checksIn) return;
-    await this.#writeLinkIfChanged(link.withHubName(hubName));
+    let next = link.withHubName(hubName);
+    if (next.replayable) {
+      const stored = await this.#options.credentials.read();
+      if (stored?.toWire() === credential.toWire()) next = next.confirmed();
+    }
+    await this.#writeLinkIfChanged(next);
   }
 
   async #succeeded(delayMs: number): Promise<void> {

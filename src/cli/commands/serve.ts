@@ -5702,6 +5702,11 @@ export const serveCommand = new Command()
         heartbeats: heartbeatStore,
         staleTtlMs,
       });
+    // declared before the federation services, whose first beat may read them
+    let isReady = false;
+    // Set when SIGTERM/SIGINT starts the shutdown; /ready reports 503 from
+    // then on so load balancers stop routing here while runs drain.
+    let shuttingDown = false;
     const federationHub = await buildServeFederationHub({
       env: (name) => Deno.env.get(name),
       merged,
@@ -5717,6 +5722,7 @@ export const serveCommand = new Command()
       instanceId,
       startedAt: new Date().toISOString(),
       team: serveTeam,
+      ready: () => isReady && !shuttingDown,
       flush: () => pushChangedToRemote(connectionCtx),
     });
     if (federationHub) {
@@ -6703,10 +6709,6 @@ export const serveCommand = new Command()
       wsUpgradeOpts.idleTimeout = wsIdleTimeoutSeconds;
     }
 
-    let isReady = false;
-    // Set when SIGTERM/SIGINT starts the shutdown; /ready reports 503 from
-    // then on so load balancers stop routing here while runs drain.
-    let shuttingDown = false;
     let enableInternalApi = merged.enableInternalApi;
     const serverStartedAt = Date.now();
     setTokenRefusalNodeState(() => ({

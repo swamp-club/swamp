@@ -186,7 +186,7 @@ Deno.test("renderMemberGet: a Live section apart from the record's instances, on
   );
   assertStringIncludes(
     live,
-    `${OLD_INSTANCE} 2m 5s ago (no runtime reported)`,
+    `${OLD_INSTANCE} 2m ago (no runtime reported)`,
   );
   assertEquals(live.split(INSTANCE).length, 2);
   const never = captured(() =>
@@ -227,4 +227,47 @@ Deno.test("renderMemberRemove: both modes name the member", () => {
     JSON.parse(captured(() => renderMemberRemove({ member: removed }, "json"))),
     { member: removed },
   );
+});
+
+Deno.test("renderMemberList and renderMemberGet: ages are read against the hub's time, in the largest unit, and a later time is never just now", () => {
+  const hubNow = new Date(NOW).toISOString();
+  const skewed = NOW + 50 * 60 * 60 * 1000;
+  const list = captured(() =>
+    renderMemberList({ members: [MEMBER], now: hubNow }, "log", skewed)
+  );
+  assertStringIncludes(list, "online  4s ago");
+  const days = captured(() =>
+    renderMemberList(
+      {
+        members: [MEMBER],
+        now: new Date(NOW + 50 * 60 * 60 * 1000).toISOString(),
+      },
+      "log",
+    )
+  );
+  assertStringIncludes(days, "online  2d ago");
+  const behind = captured(() =>
+    renderMemberGet(
+      { member: MEMBER, now: new Date(NOW - 60_000).toISOString() },
+      "log",
+    )
+  );
+  assertStringIncludes(behind, "Last seen: in 56s");
+});
+
+Deno.test("renderMemberList: a last-seen time that does not parse shows '-', never 0s ago", () => {
+  const list = captured(() =>
+    renderMemberList(
+      {
+        members: [{
+          ...MEMBER,
+          live: { lastSeenAt: "garbage", instances: [] },
+        }],
+      },
+      "log",
+      NOW,
+    )
+  );
+  assertEquals(list.includes("0s ago"), false);
+  assertEquals(list.split("\n")[1].split(/\s{2,}/)[3], "-");
 });
