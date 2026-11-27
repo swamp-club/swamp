@@ -102,7 +102,8 @@ function memberOf(m: MemberFields): Member {
       lastSeenAt: m.lastSeenAt,
       instances: [{
         instanceId: m.liveInstanceId,
-        lastSeenAt: m.lastSeenAt,
+        // runtime facts print only for a live instance, so it checked in just now
+        lastSeenAt: new Date(NOW - 1_000).toISOString(),
         runtime: {
           team: { role: m.teamRole, nodes: 2 },
           startedAt: m.startedAt,

@@ -145,7 +145,7 @@ export interface JoinProps {
 
 export type Liveness = "live" | "stale" | "offline";
 
-/** an instance's state from its last check-in age; a member's status is its freshest instance's */
+// shared by member status and each instance's state, so the two never disagree on thresholds
 export function livenessFor(ageMs: number): Liveness {
   if (ageMs < STALE_AFTER_MS) return "live";
   if (ageMs < OFFLINE_AFTER_MS) return "stale";
