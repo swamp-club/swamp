@@ -190,17 +190,131 @@ Deno.test("renderMemberGet: a Live section apart from the record's instances, on
   assertStringIncludes(live, "Last seen: 4s ago (2026-11-26T11:59:56.000Z)");
   assertStringIncludes(
     live,
-    `${INSTANCE} 4s ago (leader of 2, started 2026-11-26T11:00:00.000Z, ready)`,
+    `${INSTANCE} live 4s ago (leader of 2, started 2026-11-26T11:00:00.000Z, ready)`,
   );
-  assertStringIncludes(
-    live,
-    `${OLD_INSTANCE} 2m ago (no runtime reported)`,
-  );
+  assertEquals(live.endsWith(`${OLD_INSTANCE} stale 2m ago`), true);
   assertEquals(live.split(INSTANCE).length, 2);
   const never = captured(() =>
     renderMemberGet({ member: NEVER_SEEN }, "log", NOW)
   );
   assertStringIncludes(never, "Last seen: -");
+});
+
+const RESTARTED_INSTANCE = "00000000-0000-4000-8000-000000000003";
+
+const RESTARTED = {
+  ...RECORD,
+  live: {
+    lastSeenAt: new Date(NOW - 5_000).toISOString(),
+    instances: [
+      { at: 5_000, id: INSTANCE },
+      { at: 120_000, id: OLD_INSTANCE },
+      { at: 19 * 60 * 60 * 1000, id: RESTARTED_INSTANCE },
+    ].map(({ at, id }) => ({
+      instanceId: id,
+      lastSeenAt: new Date(NOW - at).toISOString(),
+      runtime: {
+        team: null,
+        startedAt: "2026-11-26T00:00:00.000Z",
+        ready: true,
+      },
+    })),
+  },
+};
+
+function instancesColumn(out: string, row = 1): string {
+  return out.split("\n")[row].split(/\s{2,}/)[4];
+}
+
+Deno.test("renderMemberList: INSTANCES counts live instances only, 0 when none is live, '-' without a live view", () => {
+  assertEquals(
+    instancesColumn(
+      captured(() => renderMemberList({ members: [RESTARTED] }, "log", NOW)),
+    ),
+    "1",
+  );
+  const noneLive = {
+    ...RESTARTED,
+    live: { ...RESTARTED.live, instances: RESTARTED.live.instances.slice(1) },
+  };
+  assertEquals(
+    instancesColumn(
+      captured(() => renderMemberList({ members: [noneLive] }, "log", NOW)),
+    ),
+    "0",
+  );
+  assertEquals(
+    instancesColumn(
+      captured(() => renderMemberList({ members: [RECORD] }, "log", NOW)),
+    ),
+    "-",
+  );
+  const unparsed = {
+    ...RESTARTED,
+    live: {
+      ...RESTARTED.live,
+      instances: [{ ...RESTARTED.live.instances[0], lastSeenAt: "garbage" }],
+    },
+  };
+  assertEquals(
+    instancesColumn(
+      captured(() => renderMemberList({ members: [unparsed] }, "log", NOW)),
+    ),
+    "0",
+  );
+});
+
+Deno.test("renderMemberGet: labels each instance live, stale or offline, and shows runtime facts only for a live one", () => {
+  const get = captured(() =>
+    renderMemberGet({ member: RESTARTED }, "log", NOW)
+  );
+  const live = get.slice(get.indexOf("Live:"));
+  assertStringIncludes(
+    live,
+    `${INSTANCE} live 5s ago (no team, started 2026-11-26T00:00:00.000Z, ready)`,
+  );
+  assertStringIncludes(live, `${OLD_INSTANCE} stale 2m ago\n`);
+  assertStringIncludes(live, `${RESTARTED_INSTANCE} offline 19h ago`);
+  assertEquals(live.split("ready").length, 2);
+  const instances = get.slice(get.indexOf("Instances:"), get.indexOf("Live:"));
+  assertEquals(instances.includes("live"), false);
+});
+
+Deno.test("renderMemberList and renderMemberGet: an instance's state is read against the hub's time, not the CLI's", () => {
+  const hubNow = new Date(NOW).toISOString();
+  const cliAhead = NOW + 60 * 60 * 1000;
+  assertEquals(
+    instancesColumn(
+      captured(() =>
+        renderMemberList({ members: [RESTARTED], now: hubNow }, "log", cliAhead)
+      ),
+    ),
+    "1",
+  );
+  assertEquals(
+    instancesColumn(
+      captured(() =>
+        renderMemberList({ members: [RESTARTED] }, "log", cliAhead)
+      ),
+    ),
+    "0",
+  );
+  const get = captured(() =>
+    renderMemberGet({ member: RESTARTED, now: hubNow }, "log", cliAhead)
+  );
+  assertStringIncludes(get, `${INSTANCE} live 5s ago`);
+});
+
+Deno.test("renderMemberList and renderMemberGet: json output is the reply as given, whatever its instances' states", () => {
+  const now = new Date(NOW).toISOString();
+  assertEquals(
+    captured(() => renderMemberList({ members: [RESTARTED], now }, "json")),
+    JSON.stringify({ members: [RESTARTED], now }, null, 2),
+  );
+  assertEquals(
+    captured(() => renderMemberGet({ member: RESTARTED, now }, "json")),
+    JSON.stringify({ member: RESTARTED, now }, null, 2),
+  );
 });
 
 Deno.test("renderMemberList and renderMemberGet: json mode carries the live view", () => {

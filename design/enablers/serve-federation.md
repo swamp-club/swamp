@@ -230,6 +230,12 @@ members going stale until the old leader is replaced. Every reader since ignores
 fields it does not know. Each reply carries the hub's `now`, which
 `swamp serve member` reads ages against.
 
+Each instance in the live view is `live`, `stale` or `offline` by the member
+status thresholds below, decided by the same domain function as member status.
+`swamp serve member list` counts only live instances, and `get` shows runtime
+facts only for a live one. The record's own instance list is history: it keeps
+an instance for 24 hours after it stops.
+
 An instance id must be a UUID before any key is built from it. A member has at
 most 64 live instances. An instance unseen for 24 hours is pruned.
 

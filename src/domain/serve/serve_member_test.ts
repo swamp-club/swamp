@@ -24,6 +24,7 @@ import { MemberName } from "./member_name.ts";
 import {
   CHECK_IN_INTERVAL_SECONDS,
   INSTANCE_TTL_MS,
+  livenessFor,
   MAX_INSTANCES,
   OFFLINE_AFTER_MS,
   ServeMember,
@@ -126,6 +127,16 @@ Deno.test("ServeMember.checkIn: the 65th instance is refused", () => {
   );
   const known = InstanceId.create(member.instances[0].instanceId);
   assertEquals(member.checkIn(known, sampleFingerprint(), NOW).ok, true);
+});
+
+Deno.test("livenessFor: live under STALE_AFTER_MS, stale under OFFLINE_AFTER_MS, then offline", () => {
+  assertEquals(livenessFor(0), "live");
+  assertEquals(livenessFor(-60_000), "live");
+  assertEquals(livenessFor(STALE_AFTER_MS - 1), "live");
+  assertEquals(livenessFor(STALE_AFTER_MS), "stale");
+  assertEquals(livenessFor(OFFLINE_AFTER_MS - 1), "stale");
+  assertEquals(livenessFor(OFFLINE_AFTER_MS), "offline");
+  assertEquals(livenessFor(INSTANCE_TTL_MS), "offline");
 });
 
 Deno.test("ServeMember.applySeen: online, stale, offline by the freshest instance", () => {
