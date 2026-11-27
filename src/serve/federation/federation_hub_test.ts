@@ -109,7 +109,7 @@ Deno.test("FederationHub.createToken: refuses the hub's name, an invalid name an
   assertEquals(t.store.entries.size, 0);
 });
 
-Deno.test("FederationHub.join: spends the token, then writes the credential hash, then the record", async () => {
+Deno.test("FederationHub.join: spends the token, then writes the credential hash, then the record, then marks the token admitted", async () => {
   const t = createTestHub();
   const { plaintext } = await t.hub.createToken("edge-1");
   t.store.puts.length = 0;
@@ -123,6 +123,7 @@ Deno.test("FederationHub.join: spends the token, then writes the credential hash
   assertEquals(t.store.puts, [
     "federation/tokens/edge-1",
     `federation/credentials/${outcome.memberId}`,
+    "federation/tokens/edge-1",
   ]);
   assertEquals(t.members.calls.map((c) => c.call.method), ["join"]);
   const token = t.store.json("federation/tokens/edge-1") as Record<
@@ -131,6 +132,7 @@ Deno.test("FederationHub.join: spends the token, then writes the credential hash
   >;
   assertEquals(token.state, "used");
   assertEquals(token.memberId, outcome.memberId);
+  assertEquals(token.admittedAt, new Date(t.clock.now).toISOString());
   const credential = MemberCredential.parse(outcome.credential);
   assertEquals(credential.memberId, outcome.memberId);
   const stored = t.store.json(
@@ -321,6 +323,27 @@ Deno.test("FederationHub.join: a replay finishes a join the hub stopped before r
   assertEquals(replay.memberId, memberId);
   assertEquals(replay.replayed, true);
   assertEquals(t.members.raw("edge-1")?.memberId, memberId);
+  assert(
+    JoinToken.fromJSON(t.store.json("federation/tokens/edge-1")).admittedAt,
+  );
+});
+
+Deno.test("FederationHub.join: a replay against a deleted member record is refused once the join was admitted", async () => {
+  const t = createTestHub();
+  const { plaintext } = await t.hub.createToken("edge-1");
+  const joinId = crypto.randomUUID();
+  const first = await t.hub.join(plaintext, joinId, sampleFingerprint());
+  assertEquals(first.kind, "joined");
+  assertEquals(
+    JoinToken.fromJSON(t.store.json("federation/tokens/edge-1")).admittedAt,
+    new Date(t.clock.now).toISOString(),
+  );
+  t.members.deleteRaw("edge-1");
+  assertEquals(
+    await t.hub.join(plaintext, joinId, sampleFingerprint()),
+    { kind: "invalid-token" },
+  );
+  assertEquals(t.members.raw("edge-1"), undefined);
 });
 
 Deno.test("FederationHub.listTokens: never shows a hash", async () => {

@@ -363,7 +363,13 @@ export class FederationHub {
       );
       if (use.kind === "refused") return { kind: "invalid-token" };
       if (use.kind === "replay") {
-        return await this.#replay(name, use.memberId, fingerprint, now);
+        return await this.#replay(
+          name,
+          use.memberId,
+          use.admitted,
+          fingerprint,
+          now,
+        );
       }
       const memberId = use.token.memberId!;
       const roster = new MemberRoster(
@@ -378,15 +384,18 @@ export class FederationHub {
     });
   }
 
-  // a hub that stopped before writing the member record finishes that join here
+  // a hub that stopped before writing the member record finishes that join
+  // here; once admitted, a missing record was deleted and stays gone
   async #replay(
     name: MemberName,
     memberId: string,
+    admitted: boolean,
     fingerprint: Fingerprint,
     now: number,
   ): Promise<JoinOutcome> {
     const existing = await this.#members.get(name.value);
     if (existing === null) {
+      if (admitted) return { kind: "invalid-token" };
       const roster = new MemberRoster(
         await this.#members.list(),
         this.hubName,
@@ -430,6 +439,7 @@ export class FederationHub {
         joinedAt: new Date(now).toISOString(),
       },
     });
+    await this.#markAdmitted(name, now);
     return {
       kind: "joined",
       memberId,
@@ -437,6 +447,15 @@ export class FederationHub {
       credential: credential.toWire(),
       replayed,
     };
+  }
+
+  async #markAdmitted(name: MemberName, now: number): Promise<void> {
+    const token = await this.#readToken(name);
+    if (token === null || token.state !== "used") return;
+    const admitted = token.admit(now);
+    if (admitted !== token) {
+      await this.#store.put(tokenKey(name), encode(admitted.toJSON()));
+    }
   }
 
   // replaces any earlier credential, so only the newest one checks in

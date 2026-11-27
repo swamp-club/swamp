@@ -218,3 +218,25 @@ Deno.test("joinTokenNameOf: reads the claimed name from a well-formed token only
     assertEquals(joinTokenNameOf(wire), undefined);
   }
 });
+
+const ADMIT_MEMBER = crypto.randomUUID();
+
+Deno.test("JoinToken.admit: only a used token, once; a replay reports whether it was admitted", () => {
+  const { token, plaintext } = minted();
+  assertThrows(() => token.admit(NOW), JoinTokenError);
+  const spent = JoinToken.use(token, plaintext, JOIN_ID, ADMIT_MEMBER, NOW);
+  if (spent.kind !== "first-use") throw new Error(spent.kind);
+  const before = JoinToken.use(
+    spent.token,
+    plaintext,
+    JOIN_ID,
+    ADMIT_MEMBER,
+    NOW,
+  );
+  assertEquals(before.kind === "replay" && before.admitted, false);
+  const admitted = spent.token.admit(NOW + 1);
+  assertEquals(admitted.admittedAt, new Date(NOW + 1).toISOString());
+  assertEquals(admitted.admit(NOW + 2), admitted);
+  const after = JoinToken.use(admitted, plaintext, JOIN_ID, ADMIT_MEMBER, NOW);
+  assertEquals(after.kind === "replay" && after.admitted, true);
+});

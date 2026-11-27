@@ -159,6 +159,11 @@ export class InMemoryMembers implements MemberRecords {
     harness.store.set(SERVE_MEMBER_DATA_NAME, structuredClone(record));
   }
 
+  /** deletes the record's data, as an operator's data delete would */
+  deleteRaw(name: string): void {
+    this.#contexts.get(name)?.store.delete(SERVE_MEMBER_DATA_NAME);
+  }
+
   raw(name: string): Record<string, unknown> | undefined {
     return this.#contexts.get(name)?.store.get(SERVE_MEMBER_DATA_NAME);
   }
