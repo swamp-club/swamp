@@ -220,12 +220,13 @@ swamp workflow schedule resume nightly-gc
 
 `--until` takes a duration (`30m`, `2h`, `1d`, `1w`) or an ISO-8601 time with
 `Z` or an offset (a time without one is refused, since it would be read in the
-server's zone). The pause is kept in the datastore's control-plane store by
-workflow id, so it survives `workflow edit`, `serve reload` and restarts, and
-serve logs each skipped fire with the reason. With `--server` the caller needs
-`write` on the workflow. Without it, the commands work on a filesystem datastore
-and serve picks up the pause at its next fire; for a custom datastore, use
-`--server`.
+server's zone). The pause is kept by workflow id in the control-plane store
+serve uses: the datastore's own on a v3 datastore or a custom datastore that
+provides one, otherwise the repository's `.swamp`. It survives `workflow edit`,
+`serve reload` and restarts, and serve logs each skipped fire with the reason.
+With `--server` the caller needs `write` on the workflow. Without it, the
+commands work on a filesystem datastore and serve picks up the pause at its next
+fire; for a custom datastore, use `--server`.
 
 The signature scheme is set per endpoint on `swamp serve`'s `--webhook` flag:
 `<route>:<workflow>:<secret>[:<scheme>[:<header>[:<prefix>]]]`, where `scheme`

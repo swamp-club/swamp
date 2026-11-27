@@ -48,7 +48,7 @@ export async function localWorkflowScheduleDeps(
   const { datastoreConfig, engine } = await resolveDatastoreForRepo(repoDir);
   if (isCustomDatastoreConfig(datastoreConfig) && engine !== "v3") {
     throw new UserError(
-      `Schedule pauses of a "${datastoreConfig.type}" datastore are kept in its shared control-plane store. ` +
+      `Schedule pauses of a "${datastoreConfig.type}" datastore may be kept in its shared control-plane store. ` +
         "Pause and resume through the server instead: add --server <url>, or set SWAMP_SERVE_URL.",
     );
   }

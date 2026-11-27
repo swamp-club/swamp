@@ -1507,8 +1507,8 @@ skips are audited as `workflow.schedule.fire` and `workflow.schedule.skipped`
 editing its definition or `serve.yaml` (swamp-club#3522). A pause is a
 `SchedulePause` record (`src/domain/workflows/schedule_pause.ts`) in the
 control-plane store, at `schedule-pauses/<workflow id>`
-(`ControlPlaneSchedulePauseRepository`), so every instance sharing the
-datastore sees it, and it survives `workflow edit` (a rename keeps the id),
+(`ControlPlaneSchedulePauseRepository`), so every instance sharing that store
+sees it, and it survives `workflow edit` (a rename keeps the id),
 `serve reload` and restarts. It records the reason (at most 500 characters, no
 control characters), who paused it, when, and an optional `until`: a duration
 or an ISO-8601 time with `Z` or an offset (a zone-less time would be read in
