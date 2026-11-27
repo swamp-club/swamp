@@ -236,3 +236,44 @@ Deno.test("MemberRoster property: admitting through the roster keeps one live me
     }),
   );
 });
+
+const KNOWN_KEYS = new Set([
+  "memberId",
+  "name",
+  "role",
+  "status",
+  "fingerprint",
+  "instances",
+  "joinedAt",
+  "removedAt",
+]);
+
+Deno.test("ServeMember.fromJSON: any extra keys round-trip through read and write, known fields intact", () => {
+  fc.assert(
+    fc.property(
+      fc.dictionary(
+        fc.string({ minLength: 1, maxLength: 12 }).filter((key) =>
+          !KNOWN_KEYS.has(key)
+        ),
+        fc.jsonValue(),
+        { maxKeys: 5 },
+      ),
+      (extras) => {
+        const member = ServeMember.join({
+          memberId: crypto.randomUUID(),
+          name: MemberName.create("edge-1"),
+          role: "member",
+          fingerprint: sampleFingerprint(),
+          now: NOW,
+        });
+        const input = JSON.parse(
+          JSON.stringify({ ...member.toJSON(), ...extras }),
+        );
+        const read = ServeMember.fromJSON(input);
+        assertEquals(read.toJSON(), input);
+        assertEquals(read.memberId, member.memberId);
+        assertEquals(read.needsNewVersionFrom(member), false);
+      },
+    ),
+  );
+});

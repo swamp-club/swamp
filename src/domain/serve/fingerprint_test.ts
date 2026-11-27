@@ -163,3 +163,38 @@ Deno.test("computeSettingsHash: TLS is on or off, never the certificate path", (
     computeSettingsHash(SETTINGS),
   );
 });
+
+function withExtras(props: FingerprintProps): Record<string, unknown> {
+  return {
+    ...props,
+    later: "x",
+    extensions: props.extensions.map((e) => ({ ...e, later: 1 })),
+    workers: { ...props.workers, later: 2 },
+    team: { role: "leader", nodes: 2, later: 3 },
+  };
+}
+
+Deno.test("Fingerprint.fromWire: drops unknown fields at every level and validates the known ones", () => {
+  const props = {
+    ...sampleProps(),
+    team: { role: "leader" as const, nodes: 2 },
+  };
+  const wire = Fingerprint.fromWire(withExtras(props));
+  assertEquals(wire.toJSON(), Fingerprint.create(props).toJSON());
+  assertEquals(wire.hash(), Fingerprint.create(props).hash());
+  assertThrows(() => Fingerprint.fromWire({ ...props, platform: 1 }));
+  assertThrows(() => Fingerprint.create(withExtras(props)));
+});
+
+Deno.test("Fingerprint.fromRecord: keeps a newer hub's fields for the rewrite, outside fields() and hash()", () => {
+  const props = {
+    ...sampleProps(),
+    team: { role: "leader" as const, nodes: 2 },
+  };
+  const record = Fingerprint.fromRecord(withExtras(props));
+  assertEquals(record.toJSON() as unknown, withExtras(props));
+  assertEquals(record.fields(), Fingerprint.create(props).toJSON());
+  assertEquals(record.hash(), Fingerprint.create(props).hash());
+  assertEquals(record.equals(Fingerprint.create(props)), true);
+  assertThrows(() => Fingerprint.fromRecord({ ...props, platform: undefined }));
+});

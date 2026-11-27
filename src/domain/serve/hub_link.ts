@@ -28,7 +28,7 @@ export type HubLinkState =
   | "refused"
   | "mismatched";
 
-const HubLinkSchema = z.object({
+const hubLinkFields = {
   state: z.enum(["unjoined", "joining", "joined", "refused", "mismatched"]),
   hubUrl: z.string().nullable(),
   memberId: z.string().nullable(),
@@ -37,9 +37,14 @@ const HubLinkSchema = z.object({
   joinedAt: z.string().nullable(),
   /** with the join token, enough to replay the join, so no view shows it */
   joinId: z.string().nullable().default(null),
-}).strict();
+};
 
-export type HubLinkProps = z.infer<typeof HubLinkSchema>;
+// every node of a member team reads this: unknown keys are read past and written back
+const HubLinkSchema = z.looseObject(hubLinkFields);
+
+const HubLinkFields = z.strictObject(hubLinkFields);
+
+export type HubLinkProps = z.infer<typeof HubLinkFields>;
 
 /** what a join reply says about the member, never its credential */
 export interface JoinedMember {
@@ -286,20 +291,36 @@ export const CHECK_IN_RESULTS = [
 
 export type CheckInResult = typeof CHECK_IN_RESULTS[number];
 
-export const HubLinkInstanceSchema = z.object({
+const instanceFields = {
   instanceId: z.string(),
   startedAt: z.string(),
   /** refreshed while serve runs, whatever the link state */
   aliveAt: z.string(),
   lastAttemptAt: z.string().nullable(),
   lastSuccessAt: z.string().nullable(),
-  result: z.enum(CHECK_IN_RESULTS).nullable(),
   consecutiveFailures: z.number().int().nonnegative(),
   nextAttemptAt: z.string().nullable(),
   stoppedAt: z.string().nullable(),
-}).strict();
+};
 
-export type HubLinkInstance = z.infer<typeof HubLinkInstanceSchema>;
+/** what this serve writes: only results it knows */
+export const HubLinkInstanceSchema = z.looseObject({
+  ...instanceFields,
+  result: z.enum(CHECK_IN_RESULTS).nullable(),
+});
+
+/** what any serve on the link reads: a newer serve's result reads as written */
+export const HubLinkInstanceRecordSchema = z.looseObject({
+  ...instanceFields,
+  result: z.string().nullable(),
+});
+
+const HubLinkInstanceFields = z.strictObject({
+  ...instanceFields,
+  result: z.string().nullable(),
+});
+
+export type HubLinkInstance = z.infer<typeof HubLinkInstanceFields>;
 
 /** a serve on this link counts as running while it refreshed aliveAt within this window */
 export const INSTANCE_ALIVE_WINDOW_MS = 2 * 60 * 1000;

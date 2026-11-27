@@ -146,16 +146,17 @@ export interface SweepReport {
   readonly seenKeysDeleted: number;
 }
 
+// control-plane records several swamp versions read ignore fields they do not know
 const CredentialRecordSchema = z.object({
   hash: z.string().regex(/^[0-9a-f]{64}$/),
   memberName: z.string(),
-}).strict();
+});
 
 // runtime is optional so a seen record holding only its time still parses
 const SeenRecordSchema = z.object({
   at: z.number().int(),
   runtime: FingerprintRuntimeSchema.optional(),
-}).strict();
+});
 
 type SeenRecord = z.infer<typeof SeenRecordSchema>;
 
@@ -213,12 +214,6 @@ function memberName(input: unknown): MemberName {
   }
 }
 
-function tokenView(token: JoinToken, now: number): JoinTokenView {
-  const { secretHash: _hash, joinIdHash: _joinIdHash, ...view } = token
-    .toJSON();
-  return { ...view, state: token.stateAt(now) };
-}
-
 /**
  * the hub's side of federation; it keeps no credential index in memory, so a
  * node that becomes leader, or a write from the local CLI, needs no refresh
@@ -267,7 +262,7 @@ export class FederationHub {
       }
       await this.#store.put(tokenKey(validName), encode(result.token.toJSON()));
       return {
-        token: tokenView(result.token, now),
+        token: result.token.view(now),
         plaintext: result.plaintext,
       };
     });
@@ -280,7 +275,7 @@ export class FederationHub {
       const name = key.slice(TOKENS_PREFIX.length);
       if (MemberName.problem(name) !== undefined) continue;
       const token = await this.#readToken(MemberName.create(name));
-      if (token !== null) views.push(tokenView(token, now));
+      if (token !== null) views.push(token.view(now));
     }
     return views.sort((a, b) => a.memberName.localeCompare(b.memberName));
   }
@@ -306,7 +301,7 @@ export class FederationHub {
         throw error;
       }
       await this.#store.put(tokenKey(validName), encode(next.toJSON()));
-      return tokenView(next, now);
+      return next.view(now);
     });
   }
 

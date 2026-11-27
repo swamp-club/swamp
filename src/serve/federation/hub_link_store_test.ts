@@ -155,3 +155,55 @@ Deno.test("HubLinkStore.clear: removes the link, every instance and the claim", 
     [],
   );
 });
+
+Deno.test("HubLinkStore: records from a newer serve read, keep their fields on rewrite, and are not pruned", async () => {
+  const store = new MemoryControlPlaneStore();
+  const links = new HubLinkStore(store, () => NOW);
+  const encode = (value: unknown) =>
+    new TextEncoder().encode(JSON.stringify(value));
+  const joined = HubLink.unjoined().beginJoin(
+    "https://hub",
+    crypto.randomUUID(),
+  )
+    .received(MEMBER).joined();
+  await store.put(HUB_LINK_KEY, encode({ ...joined.toJSON(), later: "x" }));
+  const read = await links.readLink();
+  assertEquals(read.state, "joined");
+  await links.writeLink(read.refuse());
+  const rewritten = JSON.parse(
+    new TextDecoder().decode((await store.get(HUB_LINK_KEY))!),
+  );
+  assertEquals(rewritten.later, "x");
+  assertEquals(rewritten.state, "refused");
+
+  const newer = {
+    ...instance(B, "2026-11-26T11:59:00.000Z"),
+    result: "a_later_result",
+    later: 1,
+  };
+  await store.put(`${HUB_LINK_INSTANCES_PREFIX}${B}`, encode(newer));
+  assertEquals(await links.pruneInstances(A), 0);
+  assertEquals((await links.readInstance(B))?.result, "a_later_result");
+  assertEquals(
+    (await links.listInstances()).map((i) => i.instanceId),
+    [B],
+  );
+
+  await store.put(
+    JOIN_CLAIM_KEY,
+    encode({ instanceId: B, claimedAt: new Date(NOW).toISOString(), later: 1 }),
+  );
+  assertEquals(await links.claimJoin(A), false);
+});
+
+Deno.test("HubLinkStore: a record missing a known field is still unreadable", async () => {
+  const store = new MemoryControlPlaneStore();
+  const links = new HubLinkStore(store, () => NOW);
+  const { aliveAt: _aliveAt, ...broken } = instance(B, "2026-11-26T11:59:00Z");
+  await store.put(
+    `${HUB_LINK_INSTANCES_PREFIX}${B}`,
+    new TextEncoder().encode(JSON.stringify(broken)),
+  );
+  assertEquals(await links.listInstances(), []);
+  assertEquals(await links.pruneInstances(A), 1);
+});

@@ -22,6 +22,7 @@ import type { ControlPlaneStore } from "../../domain/datastore/control_plane_sto
 import {
   HubLink,
   type HubLinkInstance,
+  HubLinkInstanceRecordSchema,
   HubLinkInstanceSchema,
 } from "../../domain/serve/hub_link.ts";
 import { InstanceId } from "../../domain/serve/instance_id.ts";
@@ -38,7 +39,7 @@ export const HUB_LINK_INSTANCE_TTL_MS = 24 * 60 * 60 * 1000;
 const JoinClaimSchema = z.object({
   instanceId: z.string(),
   claimedAt: z.string(),
-}).strict();
+});
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -190,7 +191,7 @@ export interface FederationMemberLink {
 
 function parseInstance(bytes: Uint8Array): HubLinkInstance | undefined {
   try {
-    return HubLinkInstanceSchema.parse(decode(bytes));
+    return HubLinkInstanceRecordSchema.parse(decode(bytes));
   } catch {
     return undefined;
   }

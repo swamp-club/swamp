@@ -149,6 +149,16 @@ export class InMemoryMembers implements MemberRecords {
     return this.#contexts.get(name)?.versions.get(SERVE_MEMBER_DATA_NAME) ?? 0;
   }
 
+  /** writes a record as another hub would, bypassing the model */
+  setRaw(name: string, record: Record<string, unknown>): void {
+    let harness = this.#contexts.get(name);
+    if (harness === undefined) {
+      harness = memberHarness(name);
+      this.#contexts.set(name, harness);
+    }
+    harness.store.set(SERVE_MEMBER_DATA_NAME, structuredClone(record));
+  }
+
   raw(name: string): Record<string, unknown> | undefined {
     return this.#contexts.get(name)?.store.get(SERVE_MEMBER_DATA_NAME);
   }

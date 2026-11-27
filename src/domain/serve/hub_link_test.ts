@@ -69,7 +69,7 @@ Deno.test("HubLink: a joined link cannot begin another join; a refused one can",
   assertEquals(rejoining.memberId, null);
 });
 
-Deno.test("HubLink.fromJSON: round-trips and refuses a link with no member, a non-UUID member id or an extra key", () => {
+Deno.test("HubLink.fromJSON: round-trips, keeps a newer serve's unknown key, and refuses a link with no member or a non-UUID member id", () => {
   const link = joinedLink();
   assertEquals(HubLink.fromJSON(link.toJSON()).toJSON(), link.toJSON());
   assertThrows(
@@ -80,7 +80,9 @@ Deno.test("HubLink.fromJSON: round-trips and refuses a link with no member, a no
     () => HubLink.fromJSON({ ...link.toJSON(), memberId: "edge" }),
     HubLinkError,
   );
-  assertThrows(() => HubLink.fromJSON({ ...link.toJSON(), credential: "x" }));
+  const newer = HubLink.fromJSON({ ...link.toJSON(), later: "x" });
+  assertEquals((newer.refuse().toJSON() as Record<string, unknown>).later, "x");
+  assertThrows(() => HubLink.fromJSON({ ...link.toJSON(), state: "gone" }));
 });
 
 Deno.test("decideStart: a joined link with its credential and the same hub checks in", () => {

@@ -352,25 +352,6 @@ Deno.test("handleFederationRequest: capabilities are capped and unknown ones ign
 Deno.test("handleFederationRequest: a fingerprint refusal names the path and echoes nothing the caller sent", async () => {
   resetRateLimitState();
   const t = createTestHub();
-  const response = await call(
-    t,
-    post(
-      FEDERATION_JOIN_PATH,
-      joinBody("x", {
-        fingerprint: {
-          ...sampleFingerprintProps(),
-          leakedHostname: "secret-host.internal",
-        },
-      }),
-    ),
-    address(),
-  );
-  assertEquals(response.status, 400);
-  const text = await response.text();
-  assertStringIncludes(text, "fingerprint");
-  assertStringIncludes(text, "unknown field");
-  assert(!text.includes("leakedHostname"), text);
-  assert(!text.includes("secret-host"), text);
   const wrongType = await call(
     t,
     post(
@@ -661,4 +642,43 @@ Deno.test("handleFederationRequest: no join token or credential secret reaches a
   } finally {
     await reset();
   }
+});
+
+Deno.test("handleFederationRequest: a newer member's unknown fingerprint fields are accepted, dropped and never versioned", async () => {
+  resetRateLimitState();
+  const t = createTestHub();
+  const ip = address();
+  const newer = {
+    ...sampleFingerprintProps(),
+    leakedHostname: "secret-host.internal",
+    workers: { total: 0, byVersion: {}, byLabelKey: {}, later: 1 },
+  };
+  const { plaintext } = await t.hub.createToken("edge-1");
+  const joinResponse = await call(
+    t,
+    post(FEDERATION_JOIN_PATH, joinBody(plaintext, { fingerprint: newer })),
+    ip,
+  );
+  assertEquals(joinResponse.status, 200);
+  const { credential } = await joinResponse.json();
+  const instanceId = crypto.randomUUID();
+  assertEquals(
+    (await call(t, checkIn(credential, checkInBody(instanceId)), ip)).status,
+    200,
+  );
+  const version = t.members.version("edge-1");
+  const response = await call(
+    t,
+    checkIn(credential, checkInBody(instanceId, { fingerprint: newer })),
+    ip,
+  );
+  assertEquals(response.status, 200);
+  assertEquals(t.members.version("edge-1"), version);
+  const stored = JSON.stringify([
+    t.members.raw("edge-1"),
+    [...t.store.entries.values()].map((b) => new TextDecoder().decode(b)),
+  ]);
+  assert(!stored.includes("leakedHostname"), stored);
+  assert(!stored.includes("secret-host"), stored);
+  assert(!stored.includes('"later"'), stored);
 });
