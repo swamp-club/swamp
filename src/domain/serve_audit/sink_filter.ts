@@ -73,7 +73,11 @@ export function parseSinkFilter(
   };
 }
 
-const FILTER_KEYS: readonly string[] = ["categories", "tier", "outcomes"];
+export const FILTER_KEYS: readonly string[] = [
+  "categories",
+  "tier",
+  "outcomes",
+];
 const FILTER_TIERS: readonly string[] = ["management", "data", "all"];
 
 function addListProblems(
