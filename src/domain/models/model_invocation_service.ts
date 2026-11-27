@@ -71,10 +71,7 @@ import { RunSensitiveValues } from "../secrets/run_sensitive_values.ts";
 import type { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import { checkStepAccess } from "../vaults/run_vault_access.ts";
-import {
-  StepAccessDeniedError,
-  type StepAccessTarget,
-} from "../vaults/run_step_access.ts";
+import type { StepAccessTarget } from "../vaults/run_step_access.ts";
 import { InputValidationService } from "../inputs/input_validation_service.ts";
 import {
   extractSensitiveFieldValues,
@@ -837,8 +834,9 @@ export class ModelInvocationService {
       await checkStepAccess(target);
       return null;
     } catch (error) {
-      if (!(error instanceof StepAccessDeniedError)) throw error;
-      return { ok: false, error: { message: error.message } };
+      // a target that cannot be built refuses as a failed lookup would
+      const message = error instanceof Error ? error.message : String(error);
+      return { ok: false, error: { message } };
     }
   }
 

@@ -434,6 +434,23 @@ Deno.test("RunVaultAccess.checkStep: a narrowed scope holds the step to every po
   assertEquals(error.denial.principal, "user:resumer");
 });
 
+Deno.test("RunVaultAccess.checkStep: only the refusing policy's hook is called", async () => {
+  const heard: string[] = [];
+  const access = RunVaultAccess.create({
+    stepPolicy: stepPolicy("user:run", () => false),
+    onStepDenied: () => {
+      heard.push("run");
+    },
+  }).narrowedBy(RunVaultAccess.create({
+    stepPolicy: stepPolicy("user:resumer", () => true),
+    onStepDenied: () => {
+      heard.push("resumer");
+    },
+  }));
+  await assertRejects(() => access.checkStep(BEHAVIOR), StepAccessDeniedError);
+  assertEquals(heard, ["run"]);
+});
+
 Deno.test("checkStepAccess: builds no target outside a scope or when every policy is inactive", async () => {
   let built = 0;
   const target = () => {

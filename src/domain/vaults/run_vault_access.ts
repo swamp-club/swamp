@@ -154,6 +154,11 @@ interface AllowList {
   readonly source?: string;
 }
 
+interface StepPolicyEntry {
+  readonly policy: StepPrincipalPolicy;
+  readonly onDenied?: StepAccessDeniedHook;
+}
+
 interface DeniedHookEntry {
   readonly hook: VaultAccessDeniedHook;
   readonly seen: Set<string>;
@@ -164,8 +169,7 @@ export class RunVaultAccess {
     readonly policies: readonly VaultPrincipalPolicy[],
     private readonly allowLists: readonly AllowList[],
     private readonly deniedHooks: readonly DeniedHookEntry[],
-    private readonly stepPolicies: readonly StepPrincipalPolicy[] = [],
-    private readonly stepDeniedHooks: readonly StepAccessDeniedHook[] = [],
+    private readonly stepPolicies: readonly StepPolicyEntry[] = [],
   ) {}
 
   static create(options: RunVaultAccessOptions): RunVaultAccess {
@@ -178,8 +182,9 @@ export class RunVaultAccess {
         }]
         : [],
       options.onDenied ? [{ hook: options.onDenied, seen: new Set() }] : [],
-      options.stepPolicy ? [options.stepPolicy] : [],
-      options.onStepDenied ? [options.onStepDenied] : [],
+      options.stepPolicy
+        ? [{ policy: options.stepPolicy, onDenied: options.onStepDenied }]
+        : [],
     );
   }
 
@@ -208,17 +213,16 @@ export class RunVaultAccess {
       [...this.allowLists, ...inner.allowLists],
       [...this.deniedHooks, ...inner.deniedHooks],
       [...this.stepPolicies, ...inner.stepPolicies],
-      [...this.stepDeniedHooks, ...inner.stepDeniedHooks],
     );
   }
 
   get holdsSteps(): boolean {
-    return this.stepPolicies.some((policy) => policy.active?.() ?? true);
+    return this.stepPolicies.some(({ policy }) => policy.active?.() ?? true);
   }
 
   /** every step policy in the chain must allow; with none, a step runs */
   async checkStep(target: StepAccessTarget): Promise<void> {
-    for (const policy of this.stepPolicies) {
+    for (const { policy, onDenied } of this.stepPolicies) {
       const decision = await policy.decide(target);
       if (decision.allowed) continue;
       const denial = {
@@ -228,8 +232,12 @@ export class RunVaultAccess {
           ? { grantId: decision.grantId }
           : {}),
         reason: decision.reason,
+        ...(decision.required !== undefined
+          ? { required: decision.required }
+          : {}),
       };
-      for (const hook of this.stepDeniedHooks) await hook(denial);
+      // only the refusing policy's hook, so one audit event names its principal
+      await onDenied?.(denial);
       throw new StepAccessDeniedError(denial);
     }
   }
@@ -347,10 +355,6 @@ export function currentVaultAccess(): RunVaultAccess | undefined {
   return ambientVaultAccess.getStore() ?? undefined;
 }
 
-/**
- * holds what a run is about to execute to the ambient run's principal; the
- * target is built only when a policy will judge it
- */
 export async function checkStepAccess(
   target: () => StepAccessTarget | Promise<StepAccessTarget>,
 ): Promise<void> {

@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * the serve layer implements the policy from the triggering principal's
- * grants; the domain never sees grants. Carried by the run's RunVaultAccess
- * scope, so every entry site that holds a run to its principal holds its steps
- */
-
 import { UserError } from "../errors.ts";
 
 export type StepAccessTarget =
@@ -42,10 +36,18 @@ export type StepAccessTarget =
     readonly tags: Readonly<Record<string, string>>;
   };
 
+/** what a refused step lacked, so an audit names that requirement */
+export interface StepRequirement {
+  readonly action: string;
+  readonly kind: string;
+  readonly name: string;
+}
+
 export interface StepAccessDecision {
   readonly allowed: boolean;
   readonly grantId?: string;
   readonly reason: string;
+  readonly required?: StepRequirement;
 }
 
 export interface StepPrincipalPolicy {
@@ -62,6 +64,7 @@ export interface StepAccessDenial {
   readonly principal: string;
   readonly grantId?: string;
   readonly reason: string;
+  readonly required?: StepRequirement;
 }
 
 export type StepAccessDeniedHook = (

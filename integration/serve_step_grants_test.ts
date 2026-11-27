@@ -307,6 +307,11 @@ Deno.test({
         "does not have 'admin' on access:*",
       );
       assertEquals(f.seen, []);
+      const [denial] = stepDenials(f.audits);
+      assertEquals(
+        [denial.decision?.action, denial.decision?.resourceKind],
+        ["admin", "access"],
+      );
     }, { grants: probeGrants() }),
 });
 
@@ -554,6 +559,11 @@ Deno.test({
         "is refused for user:u: does not have 'run' on model:other-model",
       );
       assertEquals(f.seen, []);
+      // one event, under the run's principal, not the resumer's
+      assertEquals(
+        stepDenials(f.audits).map((e) => e.principalId),
+        ["u"],
+      );
     }, {
       grants: [
         ...probeGrants(),
@@ -585,4 +595,68 @@ Deno.test({
       assertEquals(run.status, "succeeded");
       assertEquals(f.seen, ["ran-by-id"]);
     }, { grants: probeGrants() }),
+});
+
+Deno.test({
+  name:
+    "serve step grants: a step refused on a resume by another principal writes one audit event, under the run's principal",
+  ...SANITIZE,
+  fn: () =>
+    withVaultScopeFixture(async (f) => {
+      await readers(f);
+      const workflow = Workflow.create({
+        name: "probe-resumed-wf",
+        jobs: steps(
+          Step.create({ name: "gate", task: StepTask.manualApproval("ok?") }),
+          Step.create({
+            name: "other",
+            task: StepTask.model("other-model", "read"),
+            dependsOn: [{
+              step: "gate",
+              condition: TriggerCondition.succeeded(),
+            }],
+          }),
+        ),
+      });
+      await f.repo.repoContext.workflowRepo.save(workflow);
+      await sendAs(
+        f.ctx,
+        "workflow.run",
+        { workflowIdOrName: workflow.name },
+        U,
+      );
+      const suspended = await f.repo.repoContext.workflowRunRepo
+        .findLatestByWorkflowId(createWorkflowId(workflow.id));
+      assertEquals(suspended?.status, "suspended");
+      stepsRequireGrant(f);
+      await sendAs(f.ctx, "workflow.approve", {
+        workflowIdOrName: workflow.name,
+        runId: suspended!.id,
+        stepName: "gate",
+      }, ROOT);
+      await sendAs(f.ctx, "workflow.resume", {
+        workflowIdOrName: workflow.name,
+        runId: suspended!.id,
+      }, ROOT);
+      let run: WorkflowRun | null = null;
+      await waitFor(async () => {
+        run = await loadRun(f, workflow, suspended!.id);
+        return run?.status === "succeeded" || run?.status === "failed";
+      }, "the resumed run finished");
+      assert(run);
+      assertStringIncludes(
+        stepOf(run, "main", "other").error ?? "",
+        "is refused for user:u",
+      );
+      assertEquals(
+        stepDenials(f.audits).map((e) => e.principalId),
+        ["u"],
+      );
+    }, {
+      grants: [
+        ...probeGrants(),
+        grant("user:u", "workflow", "probe-*", ["approve"]),
+      ],
+      ctx: { detached: true },
+    }),
 });

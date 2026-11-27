@@ -726,6 +726,8 @@ export function emitRunStepDenial(
     ? "workflow.run"
     : "model.method.run";
   const resourceKind = target.kind === "workflow" ? "workflow" : "model";
+  const required = denial.required ??
+    { action: "run", kind: resourceKind, name: target.name };
   const detail = [
     runId !== undefined ? `run=${runId}` : undefined,
     `step=${stepTargetLabel(target)}`,
@@ -755,9 +757,9 @@ export function emitRunStepDenial(
       requestId: runId ?? crypto.randomUUID(),
       detail,
       decision: {
-        action: "run",
-        resourceKind,
-        resourceName: target.name,
+        action: required.action,
+        resourceKind: required.kind,
+        resourceName: required.name,
         effect: "deny",
         grantId: denial.grantId ?? null,
         principalGroups: inputs.source === "missing" ? [] : [

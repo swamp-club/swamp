@@ -17,13 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * a run's steps are judged as a direct run would be: a restricted or
- * control-plane type needs admin on access:*, any other behavior run on
- * model:<name> (and on its type for a type execution), a nested workflow run
- * on workflow:<name>. Client conditions never narrow a run, as for vaults.
- */
-
 import type {
   AccessPrincipal,
   AccessResource,
@@ -122,8 +115,7 @@ function requirements(
     ["run", { kind: "model", name: target.name, fields }],
   ];
   if (target.typeExecution) {
-    // a type carries no tags; every field is present so a conditional deny
-    // decides on it rather than failing closed
+    // every field present, so a conditional deny decides rather than fails closed
     needed.push(["run", {
       kind: "model",
       name: target.modelType,
@@ -149,12 +141,18 @@ function decideOne(
     return { allowed: true, grantId: decision.grantId, reason: "allowed" };
   }
   const on = `${resource.kind}:${resource.name}`;
+  const required = { action, kind: resource.kind, name: resource.name };
   if (decision?.effect === "deny") {
     return {
       allowed: false,
       grantId: decision.grantId,
       reason: `explicitly denied '${action}' on ${on}`,
+      required,
     };
   }
-  return { allowed: false, reason: `does not have '${action}' on ${on}` };
+  return {
+    allowed: false,
+    reason: `does not have '${action}' on ${on}`,
+    required,
+  };
 }
