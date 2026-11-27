@@ -2073,6 +2073,14 @@ export const serveCommand = new Command()
       "(env: SWAMP_TAG_REQUIRES_EXPLICIT_GRANT)",
   )
   .option(
+    "--steps-require-explicit-grant",
+    "Judge each step a workflow run reaches (its behavior, a nested workflow, " +
+      "a model.method or runModel call) against the principal that started the " +
+      "run, as a direct run is judged; a run grant on the workflow alone no " +
+      "longer covers them. Off by default. Requires --auth-mode token or oauth " +
+      "(env: SWAMP_STEPS_REQUIRE_EXPLICIT_GRANT)",
+  )
+  .option(
     "--keep-oauth-client-in-vault",
     "Leave oauth-client-id and oauth-client-secret in the user vault when " +
       "moving OAuth secrets into the datastore, so a vault seeded with them " +
@@ -2546,6 +2554,15 @@ export const serveCommand = new Command()
     ) {
       logger.warn(
         "--tag-requires-explicit-grant is set but --auth-mode is {mode} — tag policy will have no effect",
+        { mode: authConfig.mode },
+      );
+    }
+
+    if (
+      authConfig.mode === "none" && authConfig.stepsRequireExplicitGrant
+    ) {
+      logger.warn(
+        "--steps-require-explicit-grant is set but --auth-mode is {mode} — step policy will have no effect",
         { mode: authConfig.mode },
       );
     }
@@ -7232,6 +7249,8 @@ export const serveCommand = new Command()
           grantSettingsReload.appliers.signalRequiresExplicitGrant,
         tagRequiresExplicitGrant:
           grantSettingsReload.appliers.tagRequiresExplicitGrant,
+        stepsRequireExplicitGrant:
+          grantSettingsReload.appliers.stepsRequireExplicitGrant,
         grantReload: grantSettingsReload.appliers.grantReload,
         grantsFile: grantSettingsReload.appliers.grantsFile,
         grantsDir: grantSettingsReload.appliers.grantsDir,

@@ -631,6 +631,7 @@ const modeNone: ServeAuthConfig = {
   approveRequiresExplicitGrant: false,
   signalRequiresExplicitGrant: false,
   tagRequiresExplicitGrant: false,
+  stepsRequireExplicitGrant: false,
 };
 
 function exitCodeWorkflow(name: string): Workflow {

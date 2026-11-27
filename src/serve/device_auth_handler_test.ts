@@ -80,6 +80,7 @@ function makeMockDeps(
       approveRequiresExplicitGrant: false,
       signalRequiresExplicitGrant: false,
       tagRequiresExplicitGrant: false,
+      stepsRequireExplicitGrant: false,
     },
     repoDir: "/tmp/test-repo",
     repoContext: {} as RepositoryContext,

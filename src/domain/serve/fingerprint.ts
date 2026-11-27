@@ -207,6 +207,7 @@ export interface FingerprintSettingsSource {
   readonly approveRequiresExplicitGrant: boolean;
   readonly signalRequiresExplicitGrant: boolean;
   readonly tagRequiresExplicitGrant: boolean;
+  readonly stepsRequireExplicitGrant?: boolean;
   readonly grantReload: string;
   readonly hotReload: boolean;
   readonly reusePort: boolean;
@@ -231,6 +232,9 @@ export function computeSettingsHash(source: FingerprintSettingsSource): string {
   return sha256(canonicalJson({
     // only when set, so a node without it hashes as it did before the setting
     ...(reservedWorkerLabels.length > 0 ? { reservedWorkerLabels } : {}),
+    ...(source.stepsRequireExplicitGrant
+      ? { stepsRequireExplicitGrant: true }
+      : {}),
     authMode: source.authMode,
     tls: !!source.certFile,
     remoteOnly: source.remoteOnly,

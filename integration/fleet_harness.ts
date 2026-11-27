@@ -674,6 +674,7 @@ export class Fleet implements AsyncDisposable {
         approveRequiresExplicitGrant: false,
         signalRequiresExplicitGrant: false,
         tagRequiresExplicitGrant: false,
+        stepsRequireExplicitGrant: false,
       },
       activeRunRegistry: new ActiveRunRegistry(),
       serveOptions: { autoResume } as MergedServeOptions,

@@ -57,6 +57,7 @@ function authConfig(mode: "none" | "token"): ServeAuthConfig {
     approveRequiresExplicitGrant: false,
     signalRequiresExplicitGrant: false,
     tagRequiresExplicitGrant: false,
+    stepsRequireExplicitGrant: false,
   };
 }
 

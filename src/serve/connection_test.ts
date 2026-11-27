@@ -1093,6 +1093,7 @@ const modeNoneConfig: ServeAuthConfig = {
   approveRequiresExplicitGrant: false,
   signalRequiresExplicitGrant: false,
   tagRequiresExplicitGrant: false,
+  stepsRequireExplicitGrant: false,
 };
 
 const modeTokenConfig: ServeAuthConfig = {
@@ -1107,6 +1108,7 @@ const modeTokenConfig: ServeAuthConfig = {
   approveRequiresExplicitGrant: false,
   signalRequiresExplicitGrant: false,
   tagRequiresExplicitGrant: false,
+  stepsRequireExplicitGrant: false,
 };
 
 const testPrincipal: Principal = { kind: "user", id: "adam" };
@@ -1872,6 +1874,7 @@ const restrictedConfig: ServeAuthConfig = {
   approveRequiresExplicitGrant: false,
   signalRequiresExplicitGrant: false,
   tagRequiresExplicitGrant: false,
+  stepsRequireExplicitGrant: false,
 };
 
 Deno.test("restrictedModelTypes: non-admin denied run on restricted type", async () => {
@@ -2022,6 +2025,7 @@ const restrictedCommandConfig: ServeAuthConfig = {
   approveRequiresExplicitGrant: false,
   signalRequiresExplicitGrant: false,
   tagRequiresExplicitGrant: false,
+  stepsRequireExplicitGrant: false,
 };
 
 Deno.test("restrictedCommands: non-admin denied on restricted command", async () => {

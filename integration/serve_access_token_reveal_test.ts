@@ -154,6 +154,7 @@ async function withTokenRepo(
         approveRequiresExplicitGrant: false,
         signalRequiresExplicitGrant: false,
         tagRequiresExplicitGrant: false,
+        stepsRequireExplicitGrant: false,
       },
       instanceId: "instance-1",
     });

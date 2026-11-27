@@ -603,6 +603,7 @@ function oauthAuthConfig(mode: "oauth" | "token" = "oauth"): ServeAuthConfig {
     approveRequiresExplicitGrant: false,
     signalRequiresExplicitGrant: false,
     tagRequiresExplicitGrant: false,
+    stepsRequireExplicitGrant: false,
   };
 }
 

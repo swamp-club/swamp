@@ -67,6 +67,7 @@ const AUTH_CONFIG: ServeAuthConfig & { oauthClientId: string } = {
   approveRequiresExplicitGrant: false,
   signalRequiresExplicitGrant: false,
   tagRequiresExplicitGrant: false,
+  stepsRequireExplicitGrant: false,
 };
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {

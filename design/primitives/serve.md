@@ -84,6 +84,7 @@ without it the default file is optional.
 | `--approve-requires-explicit-grant` / `auth.approve-requires-explicit-grant` | `SWAMP_APPROVE_REQUIRES_EXPLICIT_GRANT` | `false` | Opt-in; changes on reload |
 | `--signal-requires-explicit-grant` / `auth.signal-requires-explicit-grant` | `SWAMP_SIGNAL_REQUIRES_EXPLICIT_GRANT` | `false` | Opt-in; changes on reload |
 | `--tag-requires-explicit-grant` / `auth.tag-requires-explicit-grant` | `SWAMP_TAG_REQUIRES_EXPLICIT_GRANT` | `false` | Opt-in; changes on reload |
+| `--steps-require-explicit-grant` / `auth.steps-require-explicit-grant` | `SWAMP_STEPS_REQUIRE_EXPLICIT_GRANT` | `false` | Opt-in; changes on reload, at a run's next step |
 | `--group-refresh-interval` / `auth.group-refresh-interval` | `SWAMP_GROUP_REFRESH_INTERVAL` | 4 h | OAuth only; `0` disables |
 | `--grants-file`, `--grants-dir`, `--grant-reload` | `SWAMP_GRANTS_FILE`, `_DIR` | unset, unset, `manual` | Relative paths resolve against the repository, from any source; `auto` starts a `GrantsDirectoryPoller` (30 s); `manual` holds grant-file changes until `access reload`, while a grant or group behavior run through serve applies before it is answered; a source startup would refuse (invalid, unreadable or missing) keeps its stored grants. All three change on reload (see Reload) |
 | `--no-schedule` / `schedule` | — | `true` | Disables cron triggers. A reload turns scheduling on or off: off drains the scheduler (queued runs stay pending for replay, runs in flight finish), on builds a new one with the file's triggers. A reload that arrives before boot has replayed pending runs is reported as not applied, and the next reload applies it |
@@ -129,6 +130,11 @@ Table notes:
   passes (swamp-club#3085, see "Actions" in access-control.md). Turn it on
   when grants read tags in conditions and members may write the resources
   they cover. Every replica must share the value.
+- `--steps-require-explicit-grant`: each step a run reaches is judged against
+  the principal that started it, as a direct run is (see "Workflow execution
+  context" in access-control.md); a `run` grant on the workflow alone no
+  longer covers its behaviors and nested workflows. It joins the settings hash
+  only when on, so every replica must share the value.
 - The worker timeouts are covered in remote-execution. Related built-in
   defaults: 60 s reconnection grace (`DEFAULT_GRACE_WINDOW_MS`,
   `src/serve/worker_gateway.ts`) and 600 s queue ceiling

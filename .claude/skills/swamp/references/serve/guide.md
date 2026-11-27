@@ -72,6 +72,16 @@ stored as `model:`. Audit filters likewise accept `behavior.*` actions (e.g.
 match the stored `model.*` / `model:` events. A `behaviour:` selector is
 refused.
 
+By default `run` on a workflow covers the whole run: its steps' behaviors and
+nested workflows are not checked, so a deny on them (including one for
+`service:scheduler` or `service:webhook`) does not stop a run that reaches them.
+Start serve with `--steps-require-explicit-grant` (config
+`auth.steps-require-explicit-grant`) to judge each step, nested workflow,
+`model.method` guard call and `runModel` call against the principal that started
+the run, as a direct run is judged; grant `run` on the behaviors your workflows
+call. `access check` and `can-i` judge the request only, not the steps a run
+reaches.
+
 Scheduled runs act as `service:scheduler` and webhook runs as `service:webhook`
 (recorded as the run's `initiatedBy`). Both may `run` any workflow unless a deny
 grant matches, so restrict them with deny grants (e.g. `deny run` on

@@ -222,6 +222,7 @@ const searchAuthBase: Omit<ServeAuthConfig, "mode"> = {
   approveRequiresExplicitGrant: false,
   signalRequiresExplicitGrant: false,
   tagRequiresExplicitGrant: false,
+  stepsRequireExplicitGrant: false,
 };
 
 const searchPrincipal: Principal = { kind: "user", id: "reader" };

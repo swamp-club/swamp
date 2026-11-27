@@ -62,4 +62,5 @@ export const SERVE_ENV_MAP: Readonly<Record<string, string>> = {
   keepOauthClientInVault: "SWAMP_KEEP_OAUTH_CLIENT_IN_VAULT",
   signalRequiresExplicitGrant: "SWAMP_SIGNAL_REQUIRES_EXPLICIT_GRANT",
   tagRequiresExplicitGrant: "SWAMP_TAG_REQUIRES_EXPLICIT_GRANT",
+  stepsRequireExplicitGrant: "SWAMP_STEPS_REQUIRE_EXPLICIT_GRANT",
 };

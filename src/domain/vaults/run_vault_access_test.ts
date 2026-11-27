@@ -25,6 +25,13 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import {
+  type StepAccessDenial,
+  StepAccessDeniedError,
+  type StepAccessTarget,
+  type StepPrincipalPolicy,
+} from "./run_step_access.ts";
+import {
+  checkStepAccess,
   currentVaultAccess,
   runGeneratorWithVaultAccess,
   RunVaultAccess,
@@ -362,4 +369,113 @@ Deno.test("RunVaultAccess.check: with keyUnknown a workflow list and another pol
     VaultAccessDeniedError,
   );
   assertEquals(refused.denial.principal, "user:other");
+});
+
+const BEHAVIOR: StepAccessTarget = {
+  kind: "behavior",
+  name: "other-model",
+  modelType: "command/shell",
+  tags: {},
+  methodName: "execute",
+  typeExecution: false,
+};
+
+function stepPolicy(
+  principal: string,
+  allows: (target: StepAccessTarget) => boolean,
+  active = true,
+): StepPrincipalPolicy {
+  return {
+    principal,
+    active: () => active,
+    decide: (target) =>
+      allows(target)
+        ? { allowed: true, reason: "granted" }
+        : { allowed: false, grantId: "g-deny", reason: "denied by test" },
+  };
+}
+
+Deno.test("RunVaultAccess.checkStep: a refusal names the target and principal and calls the hook", async () => {
+  const denials: StepAccessDenial[] = [];
+  const access = RunVaultAccess.create({
+    stepPolicy: stepPolicy("user:u", () => false),
+    onStepDenied: (denial) => {
+      denials.push(denial);
+    },
+  });
+  const error = await assertRejects(
+    () => access.checkStep(BEHAVIOR),
+    StepAccessDeniedError,
+  );
+  assertStringIncludes(
+    error.message,
+    "Running behavior 'other-model' (method 'execute') is refused for user:u: denied by test",
+  );
+  assertEquals(denials.map((d) => [d.principal, d.grantId]), [[
+    "user:u",
+    "g-deny",
+  ]]);
+});
+
+Deno.test("RunVaultAccess.checkStep: a narrowed scope holds the step to every policy", async () => {
+  const outer = RunVaultAccess.create({
+    stepPolicy: stepPolicy("user:run", () => true),
+  });
+  const narrowed = outer.narrowedBy(
+    RunVaultAccess.create({
+      stepPolicy: stepPolicy("user:resumer", () => false),
+    }),
+  );
+  await outer.checkStep(BEHAVIOR);
+  const error = await assertRejects(
+    () => narrowed.checkStep(BEHAVIOR),
+    StepAccessDeniedError,
+  );
+  assertEquals(error.denial.principal, "user:resumer");
+});
+
+Deno.test("checkStepAccess: builds no target outside a scope or when every policy is inactive", async () => {
+  let built = 0;
+  const target = () => {
+    built++;
+    return BEHAVIOR;
+  };
+  await checkStepAccess(target);
+  await runWithVaultAccess(
+    RunVaultAccess.create({
+      stepPolicy: stepPolicy("user:u", () => false, false),
+    }),
+    () => checkStepAccess(target),
+  );
+  await runWithVaultAccess(
+    RunVaultAccess.create({ allowedVaults: ["erp"] }),
+    () => checkStepAccess(target),
+  );
+  assertEquals(built, 0);
+  await assertRejects(
+    () =>
+      runWithVaultAccess(
+        RunVaultAccess.create({
+          stepPolicy: stepPolicy("user:u", () => false),
+        }),
+        () => checkStepAccess(target),
+      ),
+    StepAccessDeniedError,
+  );
+  assertEquals(built, 1);
+});
+
+Deno.test("checkStepAccess: a nested scope keeps the outer step policy", async () => {
+  const outer = RunVaultAccess.create({
+    stepPolicy: stepPolicy("user:u", () => false),
+  });
+  await assertRejects(
+    () =>
+      runWithVaultAccess(outer, () =>
+        runWithVaultAccess(
+          RunVaultAccess.create({ allowedVaults: ["erp"] }),
+          () => checkStepAccess(() => BEHAVIOR),
+        )),
+    StepAccessDeniedError,
+  );
 });

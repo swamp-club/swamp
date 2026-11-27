@@ -111,6 +111,7 @@ Deno.test("diffServeSettings: grant reload mode, grant sources and the explicit-
         "approve-requires-explicit-grant": true,
         "signal-requires-explicit-grant": true,
         "tag-requires-explicit-grant": true,
+        "steps-require-explicit-grant": true,
       },
     } as unknown as ServeConfigFile,
   );
@@ -118,6 +119,7 @@ Deno.test("diffServeSettings: grant reload mode, grant sources and the explicit-
   assertEquals([...report.applied].sort(), [
     "auth.approve-requires-explicit-grant",
     "auth.signal-requires-explicit-grant",
+    "auth.steps-require-explicit-grant",
     "auth.tag-requires-explicit-grant",
     "grant-reload",
     "grants-dir",

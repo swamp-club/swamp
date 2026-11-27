@@ -141,6 +141,7 @@ export interface ServeConfigFile {
     "approve-requires-explicit-grant"?: boolean;
     "signal-requires-explicit-grant"?: boolean;
     "tag-requires-explicit-grant"?: boolean;
+    "steps-require-explicit-grant"?: boolean;
     "keep-oauth-client-in-vault"?: boolean;
   };
   tls?: {
@@ -347,6 +348,7 @@ const KNOWN_AUTH_KEYS = new Set([
   "approve-requires-explicit-grant",
   "signal-requires-explicit-grant",
   "tag-requires-explicit-grant",
+  "steps-require-explicit-grant",
   "keep-oauth-client-in-vault",
 ]);
 
@@ -845,6 +847,7 @@ function validateConfigValues(
         "approve-requires-explicit-grant",
         "signal-requires-explicit-grant",
         "tag-requires-explicit-grant",
+        "steps-require-explicit-grant",
         "keep-oauth-client-in-vault",
       ]
     ) {
@@ -1283,6 +1286,7 @@ export interface MergedServeOptions {
   approveRequiresExplicitGrant: boolean;
   signalRequiresExplicitGrant: boolean;
   tagRequiresExplicitGrant: boolean;
+  stepsRequireExplicitGrant: boolean;
   keepOauthClientInVault: boolean;
   trustProxy: boolean;
   wsIdleTimeout?: string;
@@ -1835,6 +1839,13 @@ export function mergeServeOptions(
     false,
   );
 
+  const stepsRequireExplicitGrant = resolveBoolean(
+    "steps-require-explicit-grant",
+    cliOptions.stepsRequireExplicitGrant as boolean,
+    config?.auth?.["steps-require-explicit-grant"],
+    false,
+  );
+
   const dashboard = resolveBoolean(
     "dashboard",
     cliOptions.dashboard as boolean,
@@ -1894,6 +1905,7 @@ export function mergeServeOptions(
     approveRequiresExplicitGrant,
     signalRequiresExplicitGrant,
     tagRequiresExplicitGrant,
+    stepsRequireExplicitGrant,
     keepOauthClientInVault,
     trustProxy,
     wsIdleTimeout,

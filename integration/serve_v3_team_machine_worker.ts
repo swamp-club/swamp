@@ -307,6 +307,7 @@ async function handle(request: TeamNodeRequest): Promise<unknown> {
             approveRequiresExplicitGrant: false,
             signalRequiresExplicitGrant: false,
             tagRequiresExplicitGrant: false,
+            stepsRequireExplicitGrant: false,
           },
           commitFeed: v3CommitFeedSource(repoDir, config()),
           ...(request.feed.steppingDown ? { steppingDown: stepping } : {}),

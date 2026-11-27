@@ -64,6 +64,7 @@ const modeNone: ServeAuthConfig = {
   approveRequiresExplicitGrant: false,
   signalRequiresExplicitGrant: false,
   tagRequiresExplicitGrant: false,
+  stepsRequireExplicitGrant: false,
 };
 
 const TEST = { sanitizeOps: false, sanitizeResources: false };

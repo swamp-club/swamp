@@ -1283,6 +1283,16 @@ Deno.test("collectServeExtraArgs: omits --signal-requires-explicit-grant when no
   assertEquals(args.includes("--signal-requires-explicit-grant"), false);
 });
 
+Deno.test("collectServeExtraArgs: forwards --steps-require-explicit-grant", () => {
+  const args = collectServeExtraArgs({ stepsRequireExplicitGrant: true });
+  assertEquals(args, ["--steps-require-explicit-grant"]);
+});
+
+Deno.test("collectServeExtraArgs: omits --steps-require-explicit-grant when not set", () => {
+  const args = collectServeExtraArgs({});
+  assertEquals(args.includes("--steps-require-explicit-grant"), false);
+});
+
 Deno.test("collectServeExtraArgs: forwards --tag-requires-explicit-grant", () => {
   const args = collectServeExtraArgs({ tagRequiresExplicitGrant: true });
   assertEquals(args, ["--tag-requires-explicit-grant"]);

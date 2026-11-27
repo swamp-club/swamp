@@ -217,6 +217,7 @@ async function withHarness(fn: (h: Harness) => Promise<void>): Promise<void> {
       approveRequiresExplicitGrant: false,
       signalRequiresExplicitGrant: false,
       tagRequiresExplicitGrant: false,
+      stepsRequireExplicitGrant: false,
     };
     const instanceId = crypto.randomUUID();
     const audit: AuditEvent[] = [];

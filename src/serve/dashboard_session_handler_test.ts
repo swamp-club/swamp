@@ -111,6 +111,7 @@ const deviceAuthDeps: DeviceAuthDeps = {
     approveRequiresExplicitGrant: false,
     signalRequiresExplicitGrant: false,
     tagRequiresExplicitGrant: false,
+    stepsRequireExplicitGrant: false,
   },
   repoDir: "/test",
   repoContext: {} as RepositoryContext,

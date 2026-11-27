@@ -404,6 +404,7 @@ export const checkConfigCommand = new Command()
       approveRequiresExplicitGrant: merged.approveRequiresExplicitGrant,
       signalRequiresExplicitGrant: merged.signalRequiresExplicitGrant,
       tagRequiresExplicitGrant: merged.tagRequiresExplicitGrant,
+      stepsRequireExplicitGrant: merged.stepsRequireExplicitGrant,
     });
 
     const tokenSecretsKey = await checkTokenSecretsKey(

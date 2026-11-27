@@ -480,6 +480,7 @@ const LOGIN_AUTH_CONFIG: DeviceAuthDeps["authConfig"] = {
   approveRequiresExplicitGrant: false,
   signalRequiresExplicitGrant: false,
   tagRequiresExplicitGrant: false,
+  stepsRequireExplicitGrant: false,
 };
 
 const LOGIN_DEPS: DeviceAuthDeps = {

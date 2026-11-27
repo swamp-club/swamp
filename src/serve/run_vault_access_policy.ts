@@ -43,6 +43,7 @@ import { resourceSelectorMatches } from "../domain/access/resource_selector.ts";
 import {
   type RunTriggeringPrincipal,
   RunVaultAccess,
+  type RunVaultAccessOptions,
   type RunVaultMethod,
   type VaultAccessDecision,
   type VaultAccessDenial,
@@ -63,6 +64,14 @@ import {
 } from "./handlers/shared.ts";
 import { readServerTokenRecord } from "./token_auth.ts";
 import { displayPrincipal } from "./known_usernames.ts";
+import {
+  ServeRunStepPolicy,
+  type StepRules,
+} from "./run_step_access_policy.ts";
+import {
+  type StepAccessDenial,
+  stepTargetLabel,
+} from "../domain/vaults/run_step_access.ts";
 
 const logger = getSwampLogger(["serve", "run-vault-access"]);
 
@@ -378,6 +387,15 @@ export class ServeRunVaultPolicy implements VaultPrincipalPolicy {
     return decision;
   }
 
+  /** null once the run's principal is unknown or its token no longer valid */
+  accessPrincipal(): Promise<AccessPrincipal | null> {
+    return this.#accessPrincipal();
+  }
+
+  get unavailableReason(): string {
+    return this.#unavailableReason();
+  }
+
   #unavailableReason(): string {
     return this.#inputs.source === "missing"
       ? "the run recorded no triggering principal (started on an older release or saved by an older replica)"
@@ -476,6 +494,8 @@ export class ServeRunVaultPolicy implements VaultPrincipalPolicy {
 }
 
 export interface RunVaultScopeContext extends RunVaultPolicyDeps {
+  /** absent: a run's steps are never judged */
+  readonly stepRules?: () => StepRules;
   readonly auditEmitter?: AuditEmitter;
   readonly instanceId?: string;
   readonly resolvedUserNames?: Readonly<Record<string, string>>;
@@ -494,8 +514,14 @@ export function runVaultScopeContext(
     | "tokenAdmission"
   >,
 ): RunVaultScopeContext {
+  const authConfig = ctx.authConfig;
   return {
     authMode: ctx.authConfig.mode,
+    // the live config a reload writes to
+    stepRules: () => ({
+      stepsRequireExplicitGrant: authConfig.stepsRequireExplicitGrant,
+      restrictedModelTypes: authConfig.restrictedModelTypes,
+    }),
     policySnapshotLoader: ctx.policySnapshotLoader,
     readTokenRecord: (name) => readServerTokenRecord(ctx.repoContext, name),
     admission: ctx.tokenAdmission ?? null,
@@ -580,6 +606,7 @@ export function createRunVaultScope(
     policy,
     onDenied: (denial) =>
       emitRunVaultDenial(ctx, inputs, policy.principal, denial, scope.runId),
+    ...runStepPolicy(ctx, policy, inputs, () => scope.runId),
   });
   return scope as ServeRunVaultScope;
 }
@@ -635,6 +662,7 @@ export function resumeRunVaultScope(
     principal: resumerPolicy.principal,
     decide: (...args) => resumerPolicy.decide(...args),
   };
+  const runId = () => scope.runId;
   const scope: { access?: RunVaultAccess; runId?: string } = { runId: run.id };
   scope.access = RunVaultAccess.create({
     policy: runPolicy,
@@ -650,8 +678,98 @@ export function resumeRunVaultScope(
         scope.runId,
       );
     },
-  }).narrowedBy(RunVaultAccess.create({ policy: narrowing }));
+    ...runStepPolicy(ctx, runPolicy, runInputs, runId),
+  }).narrowedBy(
+    RunVaultAccess.create({
+      policy: narrowing,
+      ...runStepPolicy(ctx, resumerPolicy, resumer, runId),
+    }),
+  );
   return scope as ServeRunVaultScope;
+}
+
+function runStepPolicy(
+  ctx: RunVaultScopeContext,
+  principalOf: ServeRunVaultPolicy,
+  inputs: RunPrincipalInputs,
+  runId: () => string | undefined,
+): Pick<RunVaultAccessOptions, "stepPolicy" | "onStepDenied"> {
+  if (!ctx.stepRules) return {};
+  return {
+    stepPolicy: new ServeRunStepPolicy(
+      {
+        policySnapshotLoader: ctx.policySnapshotLoader,
+        stepRules: ctx.stepRules,
+      },
+      principalOf,
+    ),
+    onStepDenied: (denial) =>
+      emitRunStepDenial(ctx, inputs, principalOf.principal, denial, runId()),
+  };
+}
+
+/** audit must never break a run, so a failure is logged and dropped */
+export function emitRunStepDenial(
+  ctx: Pick<
+    RunVaultScopeContext,
+    "auditEmitter" | "instanceId" | "resolvedUserNames"
+  >,
+  inputs: RunPrincipalInputs,
+  principalLabel: string,
+  denial: StepAccessDenial,
+  runId: string | undefined,
+): void {
+  if (!ctx.auditEmitter) return;
+  const principal = inputs.source === "missing" ? undefined : inputs.principal;
+  const target = denial.target;
+  const action = target.kind === "workflow"
+    ? "workflow.run"
+    : "model.method.run";
+  const resourceKind = target.kind === "workflow" ? "workflow" : "model";
+  const detail = [
+    runId !== undefined ? `run=${runId}` : undefined,
+    `step=${stepTargetLabel(target)}`,
+    `reason=${denial.reason}`,
+  ].filter((part): part is string => part !== undefined).join(" ");
+  try {
+    ctx.auditEmitter.emit(buildAuditEvent({
+      instanceId: ctx.instanceId ?? "unknown",
+      category: "execution",
+      stage: "response",
+      outcome: "denied",
+      action,
+      resourceKind,
+      resourceName: target.name,
+      principalKind: principal?.kind ?? "unknown",
+      principalId: principal?.id ?? principalLabel,
+      initiatedBy: principal
+        ? displayPrincipal(principal, ctx.resolvedUserNames)
+        : principalLabel,
+      actor: resolveActorIdentity(
+        principal ?? null,
+        ctx.resolvedUserNames,
+        undefined,
+      ),
+      client: inputs.source === "missing" ? undefined : inputs.client,
+      sourceIp: "127.0.0.1",
+      requestId: runId ?? crypto.randomUUID(),
+      detail,
+      decision: {
+        action: "run",
+        resourceKind,
+        resourceName: target.name,
+        effect: "deny",
+        grantId: denial.grantId ?? null,
+        principalGroups: inputs.source === "missing" ? [] : [
+          ...inputs.idpGroups,
+        ],
+      },
+    }));
+  } catch (error) {
+    logger.warn("Failed to emit run step denial audit event: {error}", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
 
 /** audit must never break a run, so a failure is logged and dropped */

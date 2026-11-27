@@ -169,6 +169,7 @@ function makeCtx(
       approveRequiresExplicitGrant: false,
       signalRequiresExplicitGrant: false,
       tagRequiresExplicitGrant: false,
+      stepsRequireExplicitGrant: false,
     },
   };
 }

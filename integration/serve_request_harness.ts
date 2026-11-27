@@ -235,6 +235,7 @@ export function createServeCtx(
     approveRequiresExplicitGrant: false,
     signalRequiresExplicitGrant: false,
     tagRequiresExplicitGrant: options.tagRequiresExplicitGrant ?? false,
+    stepsRequireExplicitGrant: false,
   };
   return {
     repoDir: repo.repoDir,

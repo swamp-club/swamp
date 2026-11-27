@@ -110,6 +110,7 @@ const AUTH: ServeAuthConfig = {
   approveRequiresExplicitGrant: false,
   signalRequiresExplicitGrant: false,
   tagRequiresExplicitGrant: false,
+  stepsRequireExplicitGrant: false,
 };
 
 function mockSocket(): WebSocket & { sent: string[] } {
