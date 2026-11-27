@@ -232,21 +232,16 @@ export interface ReasonWithoutOutcome {
   readonly reasonWithoutOutcome: string;
 }
 
-function reasonOf(error: unknown): string {
+function reasonOf(error: unknown): { text: string; stated: boolean } {
   let current = error;
   for (let depth = 0; depth < MAX_CAUSE_DEPTH; depth++) {
     const own = (current as Partial<ReasonWithoutOutcome> | undefined)
       ?.reasonWithoutOutcome;
-    if (typeof own === "string") return own;
+    if (typeof own === "string") return { text: own, stated: true };
     if (!(current instanceof Error)) break;
     current = current.cause;
   }
-  return messageOf(error);
-}
-
-function asSentence(text: string): string {
-  const trimmed = text.trim().replace(/\.+$/, "");
-  return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
+  return { text: messageOf(error).trim().replace(/\.+$/, ""), stated: false };
 }
 
 /**
@@ -257,11 +252,18 @@ function asSentence(text: string): string {
 export class MayLandLaterError extends UnrecordedEndError {
   constructor(cause: unknown, readonly reason: unknown) {
     const why = cause === undefined ? undefined : reasonOf(cause);
-    const unrecorded = reasonOf(reason);
-    const failed = why === undefined ? "" : `${asSentence(why)}. `;
-    const because = why !== undefined && unrecorded === why
+    const unrecorded = reasonOf(reason).text;
+    // only a reason worded here starts a sentence recased; a cause's own words are kept
+    const failed = why === undefined
+      ? ""
+      : `${
+        why.stated
+          ? why.text.charAt(0).toUpperCase() + why.text.slice(1)
+          : why.text
+      }. `;
+    const because = why !== undefined && unrecorded === why.text
       ? ", for the same reason,"
-      : ` (${unrecorded.trim().replace(/\.+$/, "")}),`;
+      : ` (${unrecorded}),`;
     super(
       `${failed}Swamp could not record that this change must not be ` +
         `committed${because} so it may already be in the v3 datastore, or ` +

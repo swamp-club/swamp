@@ -430,7 +430,7 @@ Deno.test("MayLandLaterError: a cause or reason that is not a serve request keep
   );
   assertEquals(
     error.message.startsWith(
-      "Disk full. Swamp could not record that this change must not be committed (the outbox is read-only), so it may",
+      "disk full. Swamp could not record that this change must not be committed (the outbox is read-only), so it may",
     ),
     true,
     error.message,
