@@ -27,7 +27,6 @@ import {
   SEPARATOR,
 } from "@std/path";
 import { parse as parseYaml } from "@std/yaml";
-import { walk } from "@std/fs";
 import { UserError } from "../../domain/errors.ts";
 import {
   APP_DESCRIPTOR_FILE,
@@ -52,6 +51,7 @@ const PULLED_APPS_DIR = "apps";
 export const APP_DEV_DIR = "app-dev";
 
 const MAX_APP_SEARCH_DEPTH = 8;
+const PULLED_DESCRIPTOR = /[\\/]apps[\\/][^\\/]+[\\/]app\.yaml$/;
 
 export interface AppCatalogRoots {
   readonly repoDir: string;
@@ -79,6 +79,13 @@ function isLoopbackUrl(value: string): boolean {
   } catch {
     return false;
   }
+}
+
+function problemAt(path: string, error: unknown): AppCatalogProblem {
+  return {
+    path,
+    message: error instanceof Error ? error.message : String(error),
+  };
 }
 
 async function exists(path: string): Promise<boolean> {
@@ -123,28 +130,32 @@ export class FilesystemAppCatalog implements AppCatalog {
           ...(version !== undefined ? { version } : {}),
         });
       } catch (error) {
-        problems.push({
-          path,
-          message: error instanceof Error ? error.message : String(error),
-        });
+        problems.push(problemAt(path, error));
       }
     };
-
-    for (
-      const path of await descriptorsIn(
-        join(this.roots.repoDir, APP_SOURCE_DIR),
-      )
-    ) {
-      await add(path, "local");
-    }
-    for (const dir of await this.roots.sourceDirs?.() ?? []) {
-      for (const path of await descriptorsIn(join(dir, APP_SOURCE_DIR))) {
-        await add(path, "source");
+    const addFolder = async (
+      appsDir: string,
+      origin: AppOrigin,
+    ): Promise<void> => {
+      let paths: string[];
+      try {
+        paths = await descriptorsIn(appsDir, problems);
+      } catch (error) {
+        problems.push(problemAt(appsDir, error));
+        return;
       }
+      for (const path of paths) await add(path, origin);
+    };
+
+    await addFolder(join(this.roots.repoDir, APP_SOURCE_DIR), "local");
+    for (const dir of await this.roots.sourceDirs?.() ?? []) {
+      await addFolder(join(dir, APP_SOURCE_DIR), "source");
     }
     // sorted, so which copy wins never depends on directory order
     const pulled: string[] = [];
-    for await (const path of pulledDescriptors(pulledRoot)) pulled.push(path);
+    for await (const path of pulledDescriptors(pulledRoot, problems)) {
+      pulled.push(path);
+    }
     for (const path of pulled.sort()) {
       await add(path, "extension", versionOf(path));
     }
@@ -186,13 +197,23 @@ export async function hasAppDescriptors(sourceDir: string): Promise<boolean> {
   }
 }
 
-async function descriptorsIn(appsDir: string): Promise<string[]> {
+/** without `problems`, an app folder that cannot be searched counts as no app */
+async function descriptorsIn(
+  appsDir: string,
+  problems?: AppCatalogProblem[],
+): Promise<string[]> {
   const paths: string[] = [];
   try {
     for await (const entry of Deno.readDir(appsDir)) {
       if (!entry.isDirectory) continue;
       const path = join(appsDir, entry.name, APP_DESCRIPTOR_FILE);
-      if (await exists(path)) paths.push(path);
+      try {
+        if ((await Deno.lstat(path)).isFile) paths.push(path);
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) {
+          problems?.push(problemAt(path, error));
+        }
+      }
     }
   } catch (error) {
     if (!(error instanceof Deno.errors.NotFound)) throw error;
@@ -200,20 +221,30 @@ async function descriptorsIn(appsDir: string): Promise<string[]> {
   return paths.sort();
 }
 
-async function* pulledDescriptors(pulledRoot: string): AsyncGenerator<string> {
+// walks as @std/fs walk did (links matched, never entered), but an unreadable
+// folder is a problem rather than the end of the walk
+async function* pulledDescriptors(
+  dir: string,
+  problems: AppCatalogProblem[],
+  depth = MAX_APP_SEARCH_DEPTH,
+): AsyncGenerator<string> {
+  if (depth < 1) return;
+  const entries: Deno.DirEntry[] = [];
   try {
-    for await (
-      const entry of walk(pulledRoot, {
-        maxDepth: MAX_APP_SEARCH_DEPTH,
-        includeDirs: false,
-        followSymlinks: false,
-        match: [/[\\/]apps[\\/][^\\/]+[\\/]app\.yaml$/],
-      })
-    ) {
-      yield entry.path;
-    }
+    for await (const entry of Deno.readDir(dir)) entries.push(entry);
   } catch (error) {
-    if (!(error instanceof Deno.errors.NotFound)) throw error;
+    if (!(error instanceof Deno.errors.NotFound)) {
+      problems.push(problemAt(dir, error));
+    }
+    return;
+  }
+  for (const entry of entries) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory) {
+      yield* pulledDescriptors(path, problems, depth - 1);
+    } else if (PULLED_DESCRIPTOR.test(path)) {
+      yield path;
+    }
   }
 }
 
