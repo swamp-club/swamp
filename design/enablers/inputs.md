@@ -284,6 +284,14 @@ shorthand and the `\@` escape do not apply. A parse failure is a hard error. If
 `--input key:json=...` and a YAML `--input-file` set the same key, the CLI
 value wins (the usual deepMerge precedence).
 
+The suffix is parsed only from command-line arguments (`src/cli/input_parser.ts`).
+YAML has native mappings and lists, so a workflow step's `inputs`, a nested
+workflow's `inputs` and an `--input-file` give the value directly. Anywhere
+else, `config:json` would arrive as a literal key and the input `config` would
+silently take its default, so input validation refuses a `name:json` key whose
+`name` is a declared input and says to pass the value directly
+(`InputValidationService` in `src/domain/inputs/input_validation_service.ts`).
+
 ### Arrays
 
 Array inputs can come from:

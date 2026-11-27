@@ -1878,6 +1878,132 @@ Deno.test("workflow step applies child workflow's input defaults", async () => {
   });
 });
 
+async function runNestedHandoff(
+  childInputs: Record<string, unknown>,
+  inputs: Record<string, unknown>,
+  allowFailure = false,
+) {
+  const failures: { error?: string; allowedFailure?: boolean }[] = [];
+  let childRan = false;
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+    await workflowRepo.save(Workflow.create({
+      name: "handoff-child",
+      inputs: childInputs,
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "child-step",
+              task: StepTask.modelMethod("some-model", "run", {}),
+            }),
+          ],
+        }),
+      ],
+    }));
+    const parent = Workflow.create({
+      name: "handoff-parent",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "call-child",
+              task: StepTask.workflow("handoff-child", inputs),
+              allowFailure,
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(parent);
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    try {
+      const service = new WorkflowExecutionService(
+        workflowRepo,
+        runRepo,
+        tempDir,
+        executor,
+        undefined,
+        catalogStore,
+      );
+      for await (const event of service.run(parent.name)) {
+        if (event.kind === "step_failed" && event.stepId === "call-child") {
+          failures.push({
+            error: event.error,
+            allowedFailure: event.allowedFailure,
+          });
+        }
+      }
+      childRan = executor.executedSteps.includes("job1/child-step");
+    } finally {
+      catalogStore.close();
+    }
+  });
+  return { failures, childRan };
+}
+
+const handoffChildInputs = {
+  properties: {
+    operation: { type: "string" },
+    args: { type: "object", default: {} },
+  },
+  required: ["operation"],
+};
+
+Deno.test("workflow step: a :json input key fails the step at the handoff with a hint, before the child runs", async () => {
+  const { failures, childRan } = await runNestedHandoff(handoffChildInputs, {
+    operation: "manageService",
+    "args:json": '{"unit":"some-unit","secret":"hunter2"}',
+  });
+  assertEquals(failures.length, 1);
+  assertStringIncludes(
+    failures[0].error!,
+    'Inputs for workflow "handoff-child"',
+  );
+  assertStringIncludes(failures[0].error!, "args:json is not an input");
+  assertStringIncludes(failures[0].error!, "give args its value directly");
+  assertEquals(failures[0].error!.includes("hunter2"), false);
+  assertEquals(childRan, false);
+});
+
+Deno.test("workflow step: an undeclared input key fails the step at the handoff when the child is strict", async () => {
+  const { failures, childRan } = await runNestedHandoff(
+    { ...handoffChildInputs, additionalProperties: false },
+    { operation: "x", extra: "y" },
+  );
+  assertEquals(failures.length, 1);
+  assertStringIncludes(
+    failures[0].error!,
+    "extra is not a valid input property",
+  );
+  assertEquals(childRan, false);
+});
+
+Deno.test("workflow step: an undeclared input key still reaches a child that is not strict", async () => {
+  const { failures, childRan } = await runNestedHandoff(handoffChildInputs, {
+    operation: "x",
+    extra: "y",
+    args: { unit: "some-unit" },
+  });
+  assertEquals(failures, []);
+  assertEquals(childRan, true);
+});
+
+Deno.test("workflow step: a handoff refusal under allowFailure is marked allowed", async () => {
+  const { failures, childRan } = await runNestedHandoff(
+    handoffChildInputs,
+    { operation: "x", "args:json": "{}" },
+    true,
+  );
+  assertEquals(failures.length, 1);
+  assertEquals(failures[0].allowedFailure, true);
+  assertEquals(childRan, false);
+});
+
 Deno.test("WorkflowExecutionService: every run save is checkpointed after it is saved, a nested child run's included (swamp-club#3587)", async () => {
   await withTempDir(async (tempDir) => {
     const workflowRepo = new InMemoryWorkflowRepository();

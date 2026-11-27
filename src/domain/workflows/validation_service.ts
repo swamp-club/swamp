@@ -32,6 +32,7 @@ import {
 import { isEnrollmentTokenType } from "../models/worker/enrollment_token_model.ts";
 import { describePlacement } from "../remote/scheduler.ts";
 import { createWorkflowId } from "./workflow_id.ts";
+import { InputValidationService } from "../inputs/input_validation_service.ts";
 import { schemaExpressions } from "./signal_wait.ts";
 import {
   CyclicDependencyError,
@@ -1512,18 +1513,36 @@ export class DefaultWorkflowValidationService
       ];
     }
 
-    const requiredInputs = nested.inputs?.required ?? [];
-    if (requiredInputs.length === 0) {
-      return [WorkflowValidationResult.pass(checkName)];
-    }
-
+    const schema = nested.inputs;
+    const requiredInputs = schema?.required ?? [];
     const inputKeys = new Set(Object.keys(inputs ?? {}));
     const missing = requiredInputs.filter((arg) => !inputKeys.has(arg));
-    if (missing.length > 0) {
+    const service = new InputValidationService();
+    // the same key check the run applies when it hands inputs to the child,
+    // reported beside a missing input so an args:json key explains a missing args
+    const undeclared = schema && inputs
+      ? service.undeclaredInputs(inputs, schema)
+      : [];
+    if (missing.length > 0 || undeclared.length > 0) {
+      const problems = [
+        ...(missing.length > 0
+          ? [`Missing required workflow inputs: ${missing.join(", ")}`]
+          : []),
+        ...undeclared.map((e) => e.message),
+      ];
+      return [WorkflowValidationResult.fail(checkName, problems.join("; "))];
+    }
+
+    const ignored = schema && schema.additionalProperties === undefined
+      ? [...inputKeys].filter((key) => !service.declaresInput(key, schema))
+      : [];
+    if (ignored.length > 0) {
       return [
-        WorkflowValidationResult.fail(
+        WorkflowValidationResult.warning(
           checkName,
-          `Missing required workflow inputs: ${missing.join(", ")}`,
+          `Passes input(s) workflow "${nested.name}" does not declare: ${
+            ignored.join(", ")
+          } (the child still receives them)`,
         ),
       ];
     }

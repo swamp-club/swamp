@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { InputValidationService } from "./input_validation_service.ts";
 import type { InputsSchema } from "../definitions/definition.ts";
 import { setProcessArgumentParsePolicy } from "../untrusted_parse.ts";
@@ -666,4 +666,118 @@ Deno.test("InputValidationService.validate passes valid input under the untruste
       true,
     );
   });
+});
+
+const objectArgs: InputsSchema = {
+  properties: {
+    operation: { type: "string" },
+    args: { type: "object", default: {} },
+  },
+};
+
+Deno.test("InputValidationService.validate refuses a :json key whose base name is a declared input, with the hint", () => {
+  const value = '{"password":"hunter2"}';
+  for (
+    const schema of [objectArgs, { ...objectArgs, additionalProperties: false }]
+  ) {
+    const result = validationService.validate(
+      { operation: "x", "args:json": value },
+      schema,
+    );
+    assertEquals(result.valid, false);
+    assertEquals(result.errors.length, 1);
+    assertEquals(result.errors[0].path, "args:json");
+    assertStringIncludes(result.errors[0].message, "args:json is not an input");
+    assertStringIncludes(
+      result.errors[0].message,
+      "give args its value directly",
+    );
+    assertEquals(result.errors[0].message.includes("hunter2"), false);
+  }
+});
+
+Deno.test("InputValidationService.validate refuses a :json key against a schema written without the properties wrapper", () => {
+  const schema = {
+    args: { type: "object" },
+  } as unknown as InputsSchema;
+  const result = validationService.validate({ "args:json": "{}" }, schema);
+  assertEquals(result.valid, false);
+  assertStringIncludes(
+    result.errors[0].message,
+    "give args its value directly",
+  );
+});
+
+Deno.test("InputValidationService.validate ignores a :json key whose base name is not declared, unless the schema is strict", () => {
+  assertEquals(
+    validationService.validate({ "other:json": "{}" }, objectArgs).valid,
+    true,
+  );
+  const strict = validationService.validate(
+    { "other:json": "{}" },
+    { ...objectArgs, additionalProperties: false },
+  );
+  assertEquals(strict.errors.map((e) => e.message), [
+    "other:json is not a valid input property",
+  ]);
+});
+
+Deno.test("InputValidationService.validate accepts an input literally declared with a :json name", () => {
+  const schema: InputsSchema = {
+    properties: {
+      args: { type: "object" },
+      "args:json": { type: "string" },
+    },
+    additionalProperties: false,
+  };
+  assertEquals(
+    validationService.validate({ "args:json": "{}" }, schema).valid,
+    true,
+  );
+});
+
+Deno.test("InputValidationService.undeclaredInputs judges keys only, never values", () => {
+  const strict: InputsSchema = { ...objectArgs, additionalProperties: false };
+  assertEquals(
+    validationService.undeclaredInputs(
+      { operation: 42, args: "${{ vault.get('v', 'k') }}" },
+      strict,
+    ),
+    [],
+  );
+  assertEquals(
+    validationService.undeclaredInputs({ "args:json": "{}", extra: 1 }, strict)
+      .map((e) => e.path),
+    ["args:json", "extra"],
+  );
+  assertEquals(
+    validationService.undeclaredInputs({ extra: 1 }, objectArgs),
+    [],
+  );
+});
+
+Deno.test("InputValidationService.undeclaredInputs stops at the first undeclared input under the untrusted policy", () => {
+  const inputs = Object.fromEntries(
+    Array.from({ length: 1_000 }, (_, i) => [`k${i}:json`, "x"]),
+  );
+  const schema: InputsSchema = {
+    properties: Object.fromEntries(
+      Array.from({ length: 1_000 }, (_, i) => [`k${i}`, { type: "object" }]),
+    ),
+  };
+  withUntrustedPolicy(() => {
+    assertEquals(
+      validationService.undeclaredInputs(inputs, schema).length,
+      1,
+    );
+  });
+});
+
+Deno.test("InputValidationService.declaresInput matches own declared inputs only", () => {
+  assertEquals(validationService.declaresInput("args", objectArgs), true);
+  assertEquals(validationService.declaresInput("args:json", objectArgs), false);
+  assertEquals(
+    validationService.declaresInput("constructor", objectArgs),
+    false,
+  );
 });

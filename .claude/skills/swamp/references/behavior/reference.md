@@ -168,6 +168,8 @@ How a `--global-arg` value is typed (same parser as `--input`):
 
 - `key=value` passes a string.
 - `key:json=<json>` passes the JSON-parsed value: `'tags:json=["a","b"]'`.
+  Command line only: in YAML (step `inputs`, `--input-file`) write the value as
+  a mapping or list; a `key:json` key there is refused.
 - `key=@path` passes the file's contents verbatim, trailing newline included.
   `\@` gives a literal `@`; a scoped name such as `@scope/name` passes through.
 - At create, a string in a **top-level** field is coerced to the type the type's

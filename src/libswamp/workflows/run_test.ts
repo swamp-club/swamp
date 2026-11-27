@@ -1204,6 +1204,74 @@ Deno.test("workflowRun yields error for missing required input", async () => {
   }
 });
 
+Deno.test("workflowRun refuses an input file's :json key with the command-line hint", async () => {
+  const workflow = Workflow.create({
+    name: "json-key-wf",
+    inputs: {
+      properties: {
+        args: { type: "object", default: {} },
+      },
+    },
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({ name: "step1", task: StepTask.model("m", "run") }),
+        ],
+      }),
+    ],
+  });
+
+  const deps = createTestDeps(workflow, []);
+  const ctx = createLibSwampContext();
+  const events = await collect(workflowRun(ctx, deps, {
+    workflowIdOrName: "json-key-wf",
+    inputs: { "args:json": '{"unit":"u"}' },
+  }));
+
+  const last = events[events.length - 1];
+  assertEquals(last.kind, "error");
+  if (last.kind === "error") {
+    assertEquals(last.error.code, "input_validation_failed");
+    assertStringIncludes(last.error.message, "args:json is not an input");
+    assertStringIncludes(last.error.message, "give args its value directly");
+  }
+});
+
+Deno.test("workflowRun passes an object input given under its own name", async () => {
+  const workflow = Workflow.create({
+    name: "json-key-ok-wf",
+    inputs: {
+      properties: {
+        args: { type: "object", default: {} },
+      },
+    },
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({ name: "step1", task: StepTask.model("m", "run") }),
+        ],
+      }),
+    ],
+  });
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  run.complete();
+
+  const captured: { options?: Record<string, unknown> } = {};
+  const deps = createTestDepsWithCapture(workflow, [
+    { kind: "completed", run },
+  ], captured);
+  const ctx = createLibSwampContext();
+  await collect(workflowRun(ctx, deps, {
+    workflowIdOrName: "json-key-ok-wf",
+    inputs: { args: { unit: "u" } },
+  }));
+
+  assertEquals(captured.options?.inputs, { args: { unit: "u" } });
+});
+
 Deno.test("workflowRun applies default values from schema", async () => {
   const workflow = Workflow.create({
     name: "defaults-wf",

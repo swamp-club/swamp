@@ -2659,7 +2659,16 @@ Steps with dynamic inputs (a single `${{ ... }}` expression as the whole
 `inputs` value) or dynamic behavior references are skipped, since neither can be
 analysed statically. A nested-workflow step whose target workflow cannot be
 found reports its input check as "skipped", not failed
-(`src/domain/workflows/validation_service.ts`). The validator also checks
+(`src/domain/workflows/validation_service.ts`).
+
+A nested-workflow step's input keys are checked against the child's input
+schema. A `name:json` key whose `name` the child declares fails (the `:json`
+suffix is command-line only), as does any undeclared key when the child sets
+`additionalProperties: false`. An undeclared key to a child that leaves
+`additionalProperties` unset is a warning: the child still receives it. The run
+applies the same key check when it hands inputs to the child, and fails the
+step before the child starts. It checks keys only, because a value there can
+still be an expression the child resolves. The validator also checks
 placement fields (`queueTimeout`, `affinity`, `writes` without a placement) and
 the assert-`expr` interpolation rule above.
 

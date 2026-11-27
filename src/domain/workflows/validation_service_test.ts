@@ -1386,6 +1386,137 @@ Deno.test("validateStepInputs: nested workflow with no required inputs passes", 
   assertEquals(inputResult?.passed, true);
 });
 
+async function nestedInputResult(
+  childInputs: Record<string, unknown> | undefined,
+  inputs: Record<string, unknown>,
+) {
+  const child = Workflow.create({
+    name: "child",
+    inputs: childInputs,
+    jobs: [
+      Job.create({
+        name: "deploy",
+        steps: [
+          Step.create({ name: "run", task: StepTask.model("test", "run") }),
+        ],
+      }),
+    ],
+  });
+  const svc = new DefaultWorkflowValidationService(
+    undefined,
+    mockWorkflowRepo({ child }),
+  );
+  const workflow = Workflow.create({
+    name: "test",
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "step1",
+            task: StepTask.workflow("child", inputs),
+          }),
+        ],
+      }),
+    ],
+  });
+  const results = await svc.validate(workflow);
+  return results.find((r) => r.name.includes("Step inputs"));
+}
+
+const objectArgsChild = {
+  properties: {
+    operation: { type: "string" },
+    args: { type: "object", default: {} },
+  },
+};
+
+Deno.test("validateStepInputs: fails on a :json key whose base name the nested workflow declares, with the hint", async () => {
+  const result = await nestedInputResult(objectArgsChild, {
+    operation: "x",
+    "args:json": "{}",
+  });
+  assertEquals(result?.passed, false);
+  assertStringIncludes(result?.error ?? "", "args:json is not an input");
+  assertStringIncludes(result?.error ?? "", "give args its value directly");
+});
+
+Deno.test("validateStepInputs: fails on a :json key for a nested workflow written without the properties wrapper", async () => {
+  const result = await nestedInputResult({ args: { type: "object" } }, {
+    "args:json": "{}",
+  });
+  assertEquals(result?.passed, false);
+  assertStringIncludes(result?.error ?? "", "give args its value directly");
+});
+
+Deno.test("validateStepInputs: fails on an undeclared key for a strict nested workflow", async () => {
+  const result = await nestedInputResult(
+    { ...objectArgsChild, additionalProperties: false },
+    { operation: "x", extra: "y" },
+  );
+  assertEquals(result?.passed, false);
+  assertStringIncludes(
+    result?.error ?? "",
+    "extra is not a valid input property",
+  );
+});
+
+Deno.test("validateStepInputs: warns on an undeclared key for a nested workflow that leaves additionalProperties unset", async () => {
+  const result = await nestedInputResult(objectArgsChild, {
+    operation: "x",
+    extra: "y",
+  });
+  assertEquals(result?.passed, true);
+  assertEquals(result?.warning, true);
+  assertStringIncludes(
+    result?.error ?? "",
+    'Passes input(s) workflow "child" does not declare: extra (the child still receives them)',
+  );
+});
+
+Deno.test("validateStepInputs: no warning for undeclared keys to a nested workflow that allows them or declares no inputs", async () => {
+  for (
+    const childInputs of [
+      { ...objectArgsChild, additionalProperties: true },
+      { ...objectArgsChild, additionalProperties: { type: "string" } },
+      undefined,
+    ]
+  ) {
+    const result = await nestedInputResult(childInputs, { extra: "y" });
+    assertEquals(result?.passed, true);
+    assertEquals(result?.warning, false);
+  }
+});
+
+Deno.test("validateStepInputs: a :json key for a required input is explained beside the missing input", async () => {
+  const result = await nestedInputResult(
+    { ...objectArgsChild, required: ["args"] },
+    { operation: "x", "args:json": "{}" },
+  );
+  assertEquals(result?.passed, false);
+  assertStringIncludes(
+    result?.error ?? "",
+    "Missing required workflow inputs: args",
+  );
+  assertStringIncludes(result?.error ?? "", "give args its value directly");
+});
+
+Deno.test("validateStepInputs: warns on every key to a nested workflow with an empty input schema", async () => {
+  const result = await nestedInputResult({}, { a: 1, b: 2 });
+  assertEquals(result?.passed, true);
+  assertEquals(result?.warning, true);
+  assertStringIncludes(result?.error ?? "", "does not declare: a, b");
+});
+
+Deno.test("validateStepInputs: declared keys to a nested workflow without required inputs pass", async () => {
+  const result = await nestedInputResult(objectArgsChild, {
+    operation: "x",
+    args: { unit: "u" },
+  });
+  assertEquals(result?.passed, true);
+  assertEquals(result?.warning, false);
+});
+
 Deno.test("validateStepInputs: direct-execution step with resolved type and valid inputs passes", async () => {
   const resolver = mockResolverWithType({
     "type:@swamp/test/model.deploy": {

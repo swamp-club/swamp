@@ -1726,6 +1726,35 @@ Deno.test("modelMethodRun: an --input override replacing the failed argument let
   assertEquals(executed, ["run"]);
 });
 
+Deno.test("modelMethodRun: a definition input given under a :json key is refused with the command-line hint", async () => {
+  const definition = Definition.create({
+    name: "json-key-model",
+    inputs: {
+      type: "object",
+      properties: { config: { type: "object" } },
+    },
+    methods: { run: { arguments: { key: "value" } } },
+  });
+  const events = await collect(
+    modelMethodRun(
+      createLibSwampContext(),
+      createTestDeps(definition, createTestModelDef("run")),
+      {
+        ...createTestInput("json-key-model", "run"),
+        inputs: { "config:json": '{"port":8080}' },
+      },
+    ),
+  );
+
+  const last = events[events.length - 1];
+  assertEquals(last.kind, "error");
+  if (last.kind === "error") {
+    assertEquals(last.error.code, "input_validation_failed");
+    assertStringIncludes(last.error.message, "config:json is not an input");
+    assertStringIncludes(last.error.message, "give config its value directly");
+  }
+});
+
 Deno.test("modelMethodRun: schema-declared inputs contribute authored expressions to the runtime pass", async () => {
   const definition = Definition.create({
     name: "schema-input-model",

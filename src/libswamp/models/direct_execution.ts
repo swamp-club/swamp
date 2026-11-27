@@ -69,6 +69,10 @@ import {
   withheldSensitiveTextLine,
 } from "../../domain/models/sensitive_field_extractor.ts";
 import { DefaultModelValidationService } from "../../domain/models/validation_service.ts";
+import {
+  jsonSuffixedInputBase,
+  jsonSuffixHint,
+} from "../../domain/inputs/input_validation_service.ts";
 import type { SwampError } from "../errors.ts";
 import { validationFailed, wordedSwampError } from "../errors.ts";
 import { wordedText } from "../../domain/behavior_wording.ts";
@@ -163,10 +167,18 @@ export function routeInputsBySchema(
 
   if (unknownKeys.length > 0) {
     const allValid = [...methodKeys, ...globalKeys];
+    const hints = unknownKeys.flatMap((key) => {
+      const base = jsonSuffixedInputBase(
+        key,
+        (name) => methodKeys.has(name) || globalKeys.has(name),
+      );
+      return base === undefined ? [] : [`${key}: ${jsonSuffixHint(base)}`];
+    });
     return {
       error: validationFailed(
         `Unknown input(s): ${unknownKeys.join(", ")}. ` +
-          `Valid inputs are: ${allValid.join(", ") || "none"}`,
+          `Valid inputs are: ${allValid.join(", ") || "none"}` +
+          hints.map((hint) => `. ${hint}`).join(""),
       ),
     };
   }
