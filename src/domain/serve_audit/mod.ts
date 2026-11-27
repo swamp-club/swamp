@@ -82,6 +82,7 @@ export {
 export type { AuditStore } from "./audit_store.ts";
 
 export {
+  FILTER_KEYS,
   matchesSinkFilter,
   parseSinkFilter,
   type SinkFilterConfig,

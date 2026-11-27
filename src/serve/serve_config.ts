@@ -41,7 +41,7 @@ import type { VerifierConfig } from "./webhook_verifiers.ts";
 import { SERVE_ENV_MAP } from "./serve_env_map.ts";
 import { TOKEN_SECRETS_VAULT_NAME } from "../domain/vaults/control_plane_vault_provider.ts";
 import type { TokenSecretsKeyRef } from "../domain/vaults/token_secrets_key.ts";
-import { validateSinkFilter } from "../domain/serve_audit/mod.ts";
+import { FILTER_KEYS, validateSinkFilter } from "../domain/serve_audit/mod.ts";
 import { isServeFederationEnabled } from "../domain/serve/federation_gate.ts";
 import { MemberName } from "../domain/serve/member_name.ts";
 import { isLoopbackHost } from "../domain/serve/loopback.ts";
@@ -2024,6 +2024,69 @@ const KNOWN_AUDIT_KEYS = new Set([
   "hmac",
 ]);
 
+const KNOWN_AUDIT_STORE_KEYS = new Set([
+  "target",
+  "type",
+  "config",
+  "retention",
+]);
+const KNOWN_AUDIT_RETENTION_KEYS = new Set(["days"]);
+const KNOWN_AUDIT_POLICY_KEYS = new Set(["default-level", "rules"]);
+const KNOWN_AUDIT_POLICY_RULE_KEYS = new Set([
+  "category",
+  "action",
+  "tier",
+  "level",
+  "hmac",
+]);
+const KNOWN_AUDIT_WAL_KEYS = new Set(["directory", "max-size"]);
+const KNOWN_AUDIT_ALERT_KEYS = new Set([
+  "name",
+  "description",
+  "match",
+  "threshold",
+  "action",
+]);
+const KNOWN_AUDIT_ALERT_MATCH_KEYS = new Set([
+  "category",
+  "action",
+  "outcome",
+  "principal",
+]);
+const KNOWN_AUDIT_ALERT_THRESHOLD_KEYS = new Set(["count", "window-seconds"]);
+const KNOWN_AUDIT_ALERT_ACTION_KEYS = new Set(["type", "url"]);
+const KNOWN_AUDIT_SINK_AUTH_KEYS = new Set([
+  "type",
+  "token",
+  "value",
+  "password",
+  "header-name",
+]);
+const KNOWN_AUDIT_SINK_BATCH_KEYS = new Set(["size", "interval-ms"]);
+const KNOWN_AUDIT_SINK_RETRY_KEYS = new Set(["max-attempts", "backoff-ms"]);
+const KNOWN_AUDIT_SINK_FILTER_KEYS: ReadonlySet<string> = new Set(FILTER_KEYS);
+
+// acts only under "reject", so it adds no version 1 warnings; non-mappings are skipped
+function rejectUnknownKeys(
+  value: unknown,
+  known: ReadonlySet<string>,
+  path: string,
+  prefix: string,
+  policy: UnknownKeyPolicy,
+): void {
+  if (policy !== "reject") return;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return;
+  }
+  checkUnknownKeys(
+    value as Record<string, unknown>,
+    known,
+    path,
+    prefix,
+    "reject",
+  );
+}
+
 function validateAuditConfig(
   audit: unknown,
   path: string,
@@ -2054,6 +2117,13 @@ function validateAuditConfig(
         );
       }
       const storeObj = entry as Record<string, unknown>;
+      rejectUnknownKeys(
+        storeObj,
+        KNOWN_AUDIT_STORE_KEYS,
+        path,
+        `audit.stores[${i}].`,
+        policy,
+      );
       if (typeof storeObj.target !== "string" || !storeObj.target) {
         throw configError(
           path,
@@ -2096,6 +2166,13 @@ function validateAuditConfig(
           );
         }
         const retention = storeObj.retention as Record<string, unknown>;
+        rejectUnknownKeys(
+          retention,
+          KNOWN_AUDIT_RETENTION_KEYS,
+          path,
+          `audit.stores[${i}].retention.`,
+          policy,
+        );
         if (
           typeof retention.days !== "number" ||
           !Number.isInteger(retention.days) ||
@@ -2129,7 +2206,14 @@ function validateAuditConfig(
         `Invalid audit.policy in ${path}: expected mapping`,
       );
     }
-    const policy = obj.policy as Record<string, unknown>;
+    const policyBlock = obj.policy as Record<string, unknown>;
+    rejectUnknownKeys(
+      policyBlock,
+      KNOWN_AUDIT_POLICY_KEYS,
+      path,
+      "audit.policy.",
+      policy,
+    );
     const validLevels = new Set([
       "none",
       "metadata",
@@ -2137,31 +2221,38 @@ function validateAuditConfig(
       "requestResponse",
     ]);
     if (
-      policy["default-level"] !== undefined &&
-      (typeof policy["default-level"] !== "string" ||
-        !validLevels.has(policy["default-level"]))
+      policyBlock["default-level"] !== undefined &&
+      (typeof policyBlock["default-level"] !== "string" ||
+        !validLevels.has(policyBlock["default-level"]))
     ) {
       throw configError(
         path,
         `Invalid audit.policy.default-level in ${path}: expected one of none, metadata, request, requestResponse`,
       );
     }
-    if (policy.rules !== undefined) {
-      if (!Array.isArray(policy.rules)) {
+    if (policyBlock.rules !== undefined) {
+      if (!Array.isArray(policyBlock.rules)) {
         throw configError(
           path,
           `Invalid audit.policy.rules in ${path}: expected array`,
         );
       }
       const validTiers = new Set(["management", "data"]);
-      for (let i = 0; i < policy.rules.length; i++) {
-        const rule = policy.rules[i] as Record<string, unknown>;
+      for (let i = 0; i < policyBlock.rules.length; i++) {
+        const rule = policyBlock.rules[i] as Record<string, unknown>;
         if (typeof rule !== "object" || rule === null || Array.isArray(rule)) {
           throw configError(
             path,
             `Invalid audit.policy.rules[${i}] in ${path}: expected object`,
           );
         }
+        rejectUnknownKeys(
+          rule,
+          KNOWN_AUDIT_POLICY_RULE_KEYS,
+          path,
+          `audit.policy.rules[${i}].`,
+          policy,
+        );
         if (
           typeof rule.level !== "string" || !validLevels.has(rule.level)
         ) {
@@ -2211,6 +2302,7 @@ function validateAuditConfig(
       throw configError(path, `Invalid audit.wal in ${path}: expected mapping`);
     }
     const wal = obj.wal as Record<string, unknown>;
+    rejectUnknownKeys(wal, KNOWN_AUDIT_WAL_KEYS, path, "audit.wal.", policy);
     if (wal.directory !== undefined && typeof wal.directory !== "string") {
       throw configError(
         path,
@@ -2381,6 +2473,30 @@ function validateAuditConfig(
           );
         }
       }
+      if (s.type === "webhook") {
+        for (
+          const [key, known] of [
+            ["auth", KNOWN_AUDIT_SINK_AUTH_KEYS],
+            ["batch", KNOWN_AUDIT_SINK_BATCH_KEYS],
+            ["retry", KNOWN_AUDIT_SINK_RETRY_KEYS],
+          ] as const
+        ) {
+          rejectUnknownKeys(
+            s[key],
+            known,
+            path,
+            `audit.sinks[${i}].${key}.`,
+            policy,
+          );
+        }
+      }
+      rejectUnknownKeys(
+        s.filter,
+        KNOWN_AUDIT_SINK_FILTER_KEYS,
+        path,
+        `audit.sinks[${i}].filter.`,
+        policy,
+      );
       for (const problem of validateSinkFilter(s)) {
         logger.warn(
           "Audit sink entry {entry} in serve config file {path}: {problem}. The sink still filters as written",
@@ -2420,6 +2536,13 @@ function validateAuditConfig(
         );
       }
       const a = alert as Record<string, unknown>;
+      rejectUnknownKeys(
+        a,
+        KNOWN_AUDIT_ALERT_KEYS,
+        path,
+        `audit.alerts[${i}].`,
+        policy,
+      );
       if (typeof a.name !== "string" || a.name.length === 0) {
         throw configError(
           path,
@@ -2432,6 +2555,13 @@ function validateAuditConfig(
           `Invalid audit.alerts[${i}].match in ${path}: required object`,
         );
       }
+      rejectUnknownKeys(
+        a.match,
+        KNOWN_AUDIT_ALERT_MATCH_KEYS,
+        path,
+        `audit.alerts[${i}].match.`,
+        policy,
+      );
       if (typeof a.threshold !== "object" || a.threshold === null) {
         throw configError(
           path,
@@ -2439,6 +2569,13 @@ function validateAuditConfig(
         );
       }
       const threshold = a.threshold as Record<string, unknown>;
+      rejectUnknownKeys(
+        threshold,
+        KNOWN_AUDIT_ALERT_THRESHOLD_KEYS,
+        path,
+        `audit.alerts[${i}].threshold.`,
+        policy,
+      );
       if (
         typeof threshold.count !== "number" ||
         !Number.isInteger(threshold.count) || threshold.count <= 0
@@ -2464,6 +2601,13 @@ function validateAuditConfig(
         );
       }
       const action = a.action as Record<string, unknown>;
+      rejectUnknownKeys(
+        action,
+        KNOWN_AUDIT_ALERT_ACTION_KEYS,
+        path,
+        `audit.alerts[${i}].action.`,
+        policy,
+      );
       if (action.type !== "webhook" && action.type !== "log") {
         throw configError(
           path,

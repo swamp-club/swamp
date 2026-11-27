@@ -105,6 +105,83 @@ function v2(extra: Record<string, unknown>): Record<string, unknown> {
   return { version: 2, ...extra };
 }
 
+const STORE = { target: "t", retention: { days: 7 } };
+const POLICY = {
+  "default-level": "metadata",
+  rules: [{ category: "auth", level: "request" }],
+};
+const WAL = { directory: "wal", "max-size": "10MB" };
+const ALERT = {
+  name: "a",
+  match: { category: "auth" },
+  threshold: { count: 1, "window-seconds": 60 },
+  action: { type: "log" },
+};
+const WEBHOOK_SINK = {
+  type: "webhook",
+  url: "https://a.example",
+  auth: { type: "bearer", token: "t" },
+  batch: { size: 10, "interval-ms": 100 },
+  retry: { "max-attempts": 3, "backoff-ms": 10 },
+  filter: { tier: "all" },
+};
+const SYSLOG_SINK = { type: "syslog", host: "h", port: 514 };
+
+const AUDIT_TYPOS: [Record<string, unknown>, string][] = [
+  [
+    { stores: [STORE, { ...STORE, retension: 1 }] },
+    "audit.stores[1].retension",
+  ],
+  [
+    { stores: [{ ...STORE, retention: { days: 7, dayz: 1 } }] },
+    "audit.stores[0].retention.dayz",
+  ],
+  [{ policy: { ...POLICY, rule: [] } }, "audit.policy.rule"],
+  [
+    { policy: { rules: [{ level: "request", catgory: "auth" }] } },
+    "audit.policy.rules[0].catgory",
+  ],
+  [{ wal: { ...WAL, max_size: "1GB" } }, "audit.wal.max_size"],
+  [{ alerts: [ALERT, { ...ALERT, thresold: {} }] }, "audit.alerts[1].thresold"],
+  [
+    { alerts: [{ ...ALERT, match: { outcom: "failure" } }] },
+    "audit.alerts[0].match.outcom",
+  ],
+  [
+    {
+      alerts: [{
+        ...ALERT,
+        threshold: { count: 1, "window-seconds": 60, window: 1 },
+      }],
+    },
+    "audit.alerts[0].threshold.window",
+  ],
+  [
+    { alerts: [{ ...ALERT, action: { type: "log", ulr: "x" } }] },
+    "audit.alerts[0].action.ulr",
+  ],
+  [
+    { sinks: [{ ...WEBHOOK_SINK, auth: { type: "bearer", tokne: "t" } }] },
+    "audit.sinks[0].auth.tokne",
+  ],
+  [
+    { sinks: [{ ...WEBHOOK_SINK, batch: { size: 10, interval: 100 } }] },
+    "audit.sinks[0].batch.interval",
+  ],
+  [
+    { sinks: [{ ...WEBHOOK_SINK, retry: { "max-attempt": 3 } }] },
+    "audit.sinks[0].retry.max-attempt",
+  ],
+  [
+    { sinks: [{ ...WEBHOOK_SINK, filter: { tiers: "all" } }] },
+    "audit.sinks[0].filter.tiers",
+  ],
+  [
+    { sinks: [{ ...SYSLOG_SINK, filter: { outcome: ["failure"] } }] },
+    "audit.sinks[0].filter.outcome",
+  ],
+];
+
 Deno.test("loadServeConfig: gate off, version and federation are unknown keys that are ignored", async () => {
   const keys = await unknownKeyWarnings(() => {
     const config = load(GATE_OFF, {
@@ -219,6 +296,70 @@ Deno.test("loadServeConfig: version 2 refuses an unknown key at every closed map
   ];
   for (const [extra, message] of cases) {
     assertThrows(() => load(GATE_ON, v2(extra)), Error, message);
+  }
+  for (const [audit, key] of AUDIT_TYPOS) {
+    assertThrows(
+      () => load(GATE_ON, v2({ audit })),
+      Error,
+      `Unknown key ${key} in`,
+    );
+  }
+});
+
+Deno.test("loadServeConfig: version 2 accepts every known key in the audit mappings", () => {
+  const config = load(
+    GATE_ON,
+    v2({
+      audit: {
+        stores: [STORE],
+        policy: {
+          ...POLICY,
+          rules: [{
+            ...POLICY.rules[0],
+            tier: "data",
+            action: "x",
+            hmac: true,
+          }],
+        },
+        wal: WAL,
+        alerts: [{
+          ...ALERT,
+          description: "d",
+          match: {
+            category: "auth",
+            action: "x",
+            outcome: "failure",
+            principal: "p",
+          },
+          action: { type: "webhook", url: "https://a.example" },
+        }],
+        sinks: [
+          {
+            ...WEBHOOK_SINK,
+            auth: { type: "header", value: "v", "header-name": "X-Key" },
+            filter: {
+              categories: ["auth"],
+              tier: "all",
+              outcomes: ["failure"],
+            },
+          },
+          { ...WEBHOOK_SINK, auth: { type: "basic", password: "p" } },
+          { ...SYSLOG_SINK, filter: { tier: "data" } },
+        ],
+      },
+    }),
+  );
+  assertEquals(config?.version, 2);
+});
+
+Deno.test("loadServeConfig: version 1 adds no unknown-key warnings for the audit mappings", async () => {
+  for (const env of [GATE_ON, GATE_OFF]) {
+    for (const [audit] of AUDIT_TYPOS) {
+      const keys = await unknownKeyWarnings(() => {
+        load(env, { audit });
+      });
+      assertEquals(keys, [], JSON.stringify(audit));
+    }
   }
 });
 
