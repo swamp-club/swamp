@@ -23,6 +23,7 @@ import {
   COMMIT_MAY_LAND_CODE,
   COMMIT_PARTLY_COMMITTED_CODE,
   COMMIT_UNREACHABLE_CODE,
+  MayLandLaterError,
   RUN_PARTLY_COMMITTED_CODE,
 } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { CommitsCompactedError } from "../../domain/datastore_v3/commit_store.ts";
@@ -50,6 +51,8 @@ import {
   ServeCommitRejectedError,
   ServeCommitsCompactedError,
   serveErrorFromReply,
+  ServeLeaseLapsedLatch,
+  ServeLeaseLapsedRequestError,
   ServePreconditionFailedError,
   ServeRateLimitedError,
   ServeStaleSeqError,
@@ -384,4 +387,52 @@ Deno.test("serveErrorFromReply: 503 serve_not_leader in flight says the request 
   }, SERVE_URL);
   assertInstanceOf(plain, ServeNotLeaderError);
   assertEquals(plain.inFlight, false);
+});
+
+Deno.test("MayLandLaterError: over a lapsed lease, states one outcome and never says the datastore was not changed (swamp-club#5176)", () => {
+  const latch = new ServeLeaseLapsedLatch("data/command/shell/x/.lock");
+  const request = (route: string, bodyBytes: number) =>
+    new ServeLeaseLapsedRequestError(
+      "http://127.0.0.1:9191",
+      "never",
+      latch,
+      { route, bodyBytes },
+    );
+  const error = new MayLandLaterError(
+    undefined,
+    request("GET partitions/{partition}/commits", 0),
+  ).during(request("POST chunks/has", 1_700));
+  assertEquals(error.code, COMMIT_MAY_LAND_CODE);
+  for (const claim of ["was not changed", "Run the command again", ".."]) {
+    assertEquals(
+      error.message.includes(claim),
+      false,
+      `the message says "${claim}": ${error.message}`,
+    );
+  }
+  assertEquals(
+    error.message.startsWith(
+      "This command's lease on data/command/shell/x/.lock at serve lapsed unrenewed. ",
+    ),
+    true,
+    error.message,
+  );
+  assertEquals(
+    error.message.match(/may already be in the v3 datastore/g)?.length,
+    1,
+  );
+});
+
+Deno.test("MayLandLaterError: a cause or reason that is not a serve request keeps its own words (swamp-club#5176)", () => {
+  const error = new MayLandLaterError(
+    new Error("disk full."),
+    new Error("the outbox is read-only"),
+  );
+  assertEquals(
+    error.message.startsWith(
+      "disk full. Swamp could not record that this change must not be committed (the outbox is read-only), so it may",
+    ),
+    true,
+    error.message,
+  );
 });
