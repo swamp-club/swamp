@@ -19,6 +19,7 @@
 
 import { z } from "zod";
 import { normalizedUuid } from "./instance_id.ts";
+import { joinIdOf } from "./join_token.ts";
 
 export type HubLinkState =
   | "unjoined"
@@ -34,6 +35,8 @@ const HubLinkSchema = z.object({
   memberName: z.string().nullable(),
   hubName: z.string().nullable(),
   joinedAt: z.string().nullable(),
+  /** with the join token, enough to replay the join, so no view shows it */
+  joinId: z.string().nullable().default(null),
 }).strict();
 
 export type HubLinkProps = z.infer<typeof HubLinkSchema>;
@@ -60,11 +63,12 @@ const UNJOINED: HubLinkProps = {
   memberName: null,
   hubName: null,
   joinedAt: null,
+  joinId: null,
 };
 
 /**
- * a member's link to its one hub; it holds no secret, and once settled, only a
- * joined or mismatched link holds a credential
+ * a member's link to its one hub; only a joining link holds its joinId, and
+ * once settled, only a joined or mismatched link holds a credential
  */
 export class HubLink {
   private constructor(private readonly props: HubLinkProps) {}
@@ -94,6 +98,14 @@ export class HubLink {
     }
     if (props.state === "joining" && props.hubUrl === null) {
       throw new HubLinkError("A joining hub link needs a hub");
+    }
+    if (props.state === "joining" && joinIdOf(props.joinId) === undefined) {
+      throw new HubLinkError(
+        "A joining hub link needs a lower-case UUID joinId",
+      );
+    }
+    if (props.state !== "joining" && props.joinId !== null) {
+      throw new HubLinkError(`A ${props.state} hub link holds no joinId`);
     }
     return new HubLink({ ...props, memberId });
   }
@@ -126,6 +138,10 @@ export class HubLink {
     return this.props.joinedAt;
   }
 
+  get joinId(): string | null {
+    return this.props.joinId;
+  }
+
   get checksIn(): boolean {
     return this.props.state === "joined";
   }
@@ -134,10 +150,26 @@ export class HubLink {
     return this.props.state === "joined" || this.props.state === "mismatched";
   }
 
-  /** a refused or unjoined link may join any hub: a refused one is already dead */
-  beginJoin(hubUrl: string): HubLink {
+  /**
+   * a refused or unjoined link may join any hub: a refused one is already dead.
+   * A joining link keeps its joinId, so the retry replays the join the hub may
+   * already have accepted
+   */
+  beginJoin(hubUrl: string, freshJoinId: string): HubLink {
     this.#expect(["unjoined", "refused", "joining"], "begin a join");
-    return new HubLink({ ...UNJOINED, state: "joining", hubUrl });
+    const joinId = this.props.state === "joining"
+      ? this.props.joinId
+      : joinIdOf(freshJoinId);
+    if (joinId === undefined || joinId === null) {
+      throw new HubLinkError("A join needs a lower-case UUID joinId");
+    }
+    return new HubLink({ ...UNJOINED, state: "joining", hubUrl, joinId });
+  }
+
+  /** the hub refused the join for good; a later join starts afresh */
+  abandonJoin(): HubLink {
+    this.#expect(["joining"], "abandon a join");
+    return HubLink.unjoined();
   }
 
   /** the join reply, recorded before the credential is stored */
@@ -164,7 +196,7 @@ export class HubLink {
     if (this.props.memberId === null) {
       throw new HubLinkError("A hub link cannot be joined before a join reply");
     }
-    return new HubLink({ ...this.props, state: "joined" });
+    return new HubLink({ ...this.props, state: "joined", joinId: null });
   }
 
   withHubName(hubName: string): HubLink {
@@ -211,9 +243,10 @@ export function decideStart(stored: HubLink, facts: StartFacts): StartDecision {
   let link = stored;
   const credentialMatches = facts.credentialMemberId !== undefined &&
     facts.credentialMemberId === link.memberId;
-  if (link.state === "joining") {
-    // the credential is stored after the reply and before joined is written
-    link = credentialMatches ? link.joined() : HubLink.unjoined();
+  // the credential is stored after the reply and before joined is written;
+  // without it the join stays open, to be replayed with the same joinId
+  if (link.state === "joining" && credentialMatches) {
+    link = link.joined();
   }
   if (link.holdsCredential && !credentialMatches) {
     link = link.refuse();

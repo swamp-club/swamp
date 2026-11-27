@@ -43,7 +43,10 @@ function instance(overrides: Partial<HubLinkInstance> = {}): HubLinkInstance {
   };
 }
 
-const MISMATCHED = HubLink.unjoined().beginJoin("https://hub.example.com")
+const MISMATCHED = HubLink.unjoined().beginJoin(
+  "https://hub.example.com",
+  crypto.randomUUID(),
+)
   .received({
     memberId: crypto.randomUUID(),
     memberName: "edge",

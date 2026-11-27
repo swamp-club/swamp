@@ -55,7 +55,7 @@ function instanceKey(instanceId: string): string {
   return `${HUB_LINK_INSTANCES_PREFIX}${InstanceId.create(instanceId).value}`;
 }
 
-/** a member's link records in its control-plane store; none holds a secret */
+/** a member's link records in its control-plane store; only a joining link holds its joinId */
 export class HubLinkStore {
   readonly #store: ControlPlaneStore;
   readonly #now: () => number;

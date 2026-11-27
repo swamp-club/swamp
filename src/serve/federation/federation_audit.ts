@@ -34,6 +34,7 @@ const logger = getSwampLogger(["serve", "federation", "audit"]);
 
 export const FEDERATION_AUDIT_ACTIONS = {
   join: "federation.member.join",
+  joinReplayed: "federation.member.join.replayed",
   checkInRejected: "federation.member.check_in.rejected",
 } as const;
 
@@ -86,6 +87,18 @@ export class FederationAudit {
       action: FEDERATION_AUDIT_ACTIONS.join,
       resourceName: memberName,
       caller: { principal: null, sourceIp },
+    });
+  }
+
+  /** a lost join reply asked for again; the member gets a new credential */
+  joinReplayed(sourceIp: string, memberName: string): void {
+    this.#emit({
+      category: "auth",
+      outcome: "success",
+      action: FEDERATION_AUDIT_ACTIONS.joinReplayed,
+      resourceName: memberName,
+      caller: { principal: null, sourceIp },
+      detail: "reason=join_replayed",
     });
   }
 

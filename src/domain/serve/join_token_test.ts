@@ -20,6 +20,7 @@
 import { assertEquals, assertThrows } from "@std/assert";
 import {
   DEFAULT_JOIN_TOKEN_DURATION_MS,
+  joinIdOf,
   JoinToken,
   JoinTokenError,
   joinTokenNameOf,
@@ -30,8 +31,22 @@ import { MemberName } from "./member_name.ts";
 const NOW = Date.parse("2026-11-26T12:00:00.000Z");
 const EDGE = MemberName.create("edge-1");
 
+const JOIN_ID = crypto.randomUUID();
+
 function minted() {
   return JoinToken.mint(EDGE, DEFAULT_JOIN_TOKEN_DURATION_MS, NOW);
+}
+
+function firstUse(token: JoinToken, plaintext: string): JoinToken {
+  const used = JoinToken.use(
+    token,
+    plaintext,
+    JOIN_ID,
+    crypto.randomUUID(),
+    NOW,
+  );
+  if (used.kind !== "first-use") throw new Error("expected a first use");
+  return used.token;
 }
 
 Deno.test("JoinToken.mint: the plaintext is <name>.<secret> and only its hash is kept", () => {
@@ -51,42 +66,108 @@ Deno.test("JoinToken.mint: refuses a duration over 30 days or not positive", () 
   JoinToken.mint(EDGE, MAX_JOIN_TOKEN_DURATION_MS, NOW);
 });
 
-Deno.test("JoinToken.use: marks the token used with the member id", () => {
+Deno.test("JoinToken.use: marks the token used with the member id and the joinId's hash", () => {
   const { token, plaintext } = minted();
   const memberId = crypto.randomUUID();
-  const used = JoinToken.use(token, plaintext, memberId, NOW + 1);
-  assertEquals(used.ok, true);
-  if (!used.ok) return;
+  const used = JoinToken.use(token, plaintext, JOIN_ID, memberId, NOW + 1);
+  assertEquals(used.kind, "first-use");
+  if (used.kind !== "first-use") return;
   assertEquals(used.token.state, "used");
   assertEquals(used.token.memberId, memberId);
-  assertEquals(used.token.toJSON().usedAt, new Date(NOW + 1).toISOString());
+  const record = used.token.toJSON();
+  assertEquals(record.usedAt, new Date(NOW + 1).toISOString());
+  assertEquals(/^[0-9a-f]{64}$/.test(record.joinIdHash ?? ""), true);
+  assertEquals(JSON.stringify(record).includes(JOIN_ID), false);
 });
 
-Deno.test("JoinToken.use: missing, used, expired, revoked and wrong secrets are one refusal", () => {
+Deno.test("JoinToken.use: the same token and joinId on a used token replay its member", () => {
   const { token, plaintext } = minted();
-  const id = crypto.randomUUID();
-  const used = JoinToken.use(token, plaintext, id, NOW);
-  if (!used.ok) throw new Error("expected use");
+  const memberId = crypto.randomUUID();
+  const used = JoinToken.use(token, plaintext, JOIN_ID, memberId, NOW);
+  if (used.kind !== "first-use") throw new Error("expected a first use");
+  const replay = JoinToken.use(
+    used.token,
+    plaintext,
+    JOIN_ID,
+    crypto.randomUUID(),
+    NOW + DEFAULT_JOIN_TOKEN_DURATION_MS - 1,
+  );
+  assertEquals(replay, { kind: "replay", memberId });
+});
+
+Deno.test("JoinToken.use: a replay with another joinId, a wrong secret or after expiry is refused", () => {
+  const { token, plaintext } = minted();
+  const used = firstUse(token, plaintext);
   const other = minted();
+  const id = crypto.randomUUID();
   const refusals = [
-    JoinToken.use(null, plaintext, id, NOW),
-    JoinToken.use(used.token, plaintext, id, NOW),
-    JoinToken.use(token, plaintext, id, NOW + DEFAULT_JOIN_TOKEN_DURATION_MS),
-    JoinToken.use(token.revoke(NOW), plaintext, id, NOW),
-    JoinToken.use(token, other.plaintext, id, NOW),
-    JoinToken.use(token, 42, id, NOW),
+    JoinToken.use(used, plaintext, crypto.randomUUID(), id, NOW),
+    JoinToken.use(used, other.plaintext, JOIN_ID, id, NOW),
+    JoinToken.use(
+      used,
+      plaintext,
+      JOIN_ID,
+      id,
+      NOW + DEFAULT_JOIN_TOKEN_DURATION_MS,
+    ),
   ];
   for (const refusal of refusals) {
-    assertEquals(refusal, { ok: false, refusal: "invalid" });
+    assertEquals(refusal, { kind: "refused" });
+  }
+});
+
+Deno.test("JoinToken.use: a used token recorded without a joinId hash never replays", () => {
+  const { token, plaintext } = minted();
+  const { joinIdHash: _hash, ...record } = firstUse(token, plaintext).toJSON();
+  assertEquals(
+    JoinToken.use(
+      JoinToken.fromJSON(record),
+      plaintext,
+      JOIN_ID,
+      crypto.randomUUID(),
+      NOW,
+    ),
+    { kind: "refused" },
+  );
+});
+
+Deno.test("JoinToken.use: refuses to run with a joinId that is not a lower-case UUID", () => {
+  const { token, plaintext } = minted();
+  for (const joinId of ["", "not-a-uuid", JOIN_ID.toUpperCase()]) {
+    assertThrows(
+      () => JoinToken.use(token, plaintext, joinId, crypto.randomUUID(), NOW),
+      JoinTokenError,
+    );
+  }
+});
+
+Deno.test("JoinToken.use: missing, expired, revoked and wrong secrets are one refusal", () => {
+  const { token, plaintext } = minted();
+  const id = crypto.randomUUID();
+  const other = minted();
+  const refusals = [
+    JoinToken.use(null, plaintext, JOIN_ID, id, NOW),
+    JoinToken.use(
+      token,
+      plaintext,
+      JOIN_ID,
+      id,
+      NOW + DEFAULT_JOIN_TOKEN_DURATION_MS,
+    ),
+    JoinToken.use(token.revoke(NOW), plaintext, JOIN_ID, id, NOW),
+    JoinToken.use(token, other.plaintext, JOIN_ID, id, NOW),
+    JoinToken.use(token, 42, JOIN_ID, id, NOW),
+  ];
+  for (const refusal of refusals) {
+    assertEquals(refusal, { kind: "refused" });
   }
 });
 
 Deno.test("JoinToken.revoke: only an unused, unexpired token", () => {
   const { token, plaintext } = minted();
   assertEquals(token.revoke(NOW).state, "revoked");
-  const used = JoinToken.use(token, plaintext, crypto.randomUUID(), NOW);
-  if (!used.ok) throw new Error("expected use");
-  assertThrows(() => used.token.revoke(NOW), JoinTokenError, "is used");
+  const used = firstUse(token, plaintext);
+  assertThrows(() => used.revoke(NOW), JoinTokenError, "is used");
   assertThrows(
     () => token.revoke(NOW + DEFAULT_JOIN_TOKEN_DURATION_MS),
     JoinTokenError,
@@ -105,10 +186,23 @@ Deno.test("JoinToken.expire: records expiry once it has passed", () => {
   );
 });
 
-Deno.test("JoinToken.fromJSON: round-trips and refuses unknown fields", () => {
+Deno.test("JoinToken.fromJSON: round-trips and ignores unknown fields", () => {
   const { token } = minted();
   assertEquals(JoinToken.fromJSON(token.toJSON()).toJSON(), token.toJSON());
-  assertThrows(() => JoinToken.fromJSON({ ...token.toJSON(), secret: "x" }));
+  assertEquals(
+    JoinToken.fromJSON({ ...token.toJSON(), later: "x" }).toJSON(),
+    token.toJSON(),
+  );
+  assertThrows(() =>
+    JoinToken.fromJSON({ ...token.toJSON(), secretHash: "x" })
+  );
+});
+
+Deno.test("joinIdOf: accepts a lower-case UUID only", () => {
+  assertEquals(joinIdOf(JOIN_ID), JOIN_ID);
+  for (const value of [JOIN_ID.toUpperCase(), "", "x", 1, null, undefined]) {
+    assertEquals(joinIdOf(value), undefined);
+  }
 });
 
 Deno.test("joinTokenNameOf: reads the claimed name from a well-formed token only", () => {

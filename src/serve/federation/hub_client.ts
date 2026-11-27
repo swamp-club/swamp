@@ -105,10 +105,12 @@ export class HubClient {
 
   async join(
     joinToken: string,
+    joinId: string,
     fingerprint: Fingerprint,
   ): Promise<HubOutcome<JoinReply>> {
     const outcome = await this.#post(FEDERATION_JOIN_PATH, {
       joinToken,
+      joinId,
       fingerprint: fingerprint.toJSON(),
       protocolVersion: FEDERATION_PROTOCOL_VERSION,
       capabilities: [],

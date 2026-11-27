@@ -33,14 +33,15 @@ const hubArb = fc.constantFrom(...HUBS);
 // every link a member can hold, built through the entity's own transitions
 const linkArb: fc.Arbitrary<HubLink> = fc.oneof(
   fc.constant(HubLink.unjoined()),
-  hubArb.map((hub) => HubLink.unjoined().beginJoin(hub)),
+  hubArb.map((hub) => HubLink.unjoined().beginJoin(hub, crypto.randomUUID())),
   fc.tuple(hubArb, memberArb).chain(([hub, memberId]) => {
-    const received = HubLink.unjoined().beginJoin(hub).received({
-      memberId,
-      memberName: "edge",
-      hubName: "central",
-      joinedAt: "2026-11-26T12:00:00.000Z",
-    });
+    const received = HubLink.unjoined().beginJoin(hub, crypto.randomUUID())
+      .received({
+        memberId,
+        memberName: "edge",
+        hubName: "central",
+        joinedAt: "2026-11-26T12:00:00.000Z",
+      });
     const joined = received.joined();
     return fc.constantFrom(
       received,
@@ -91,6 +92,19 @@ Deno.test("decideStart property: a link that keeps a credential is the credentia
         facts.credentialMemberId !== undefined,
       );
     }
+  }));
+});
+
+Deno.test("decideStart property: an unsettled join keeps its joinId, and a settled link holds none", () => {
+  fc.assert(fc.property(linkArb, factsArb, (link, facts) => {
+    const decision = decideStart(link, facts);
+    if (link.state === "joining" && decision.link.state === "joining") {
+      assertEquals(decision.link.joinId, link.joinId);
+    }
+    assertEquals(
+      decision.link.joinId === null,
+      decision.link.state !== "joining",
+    );
   }));
 });
 

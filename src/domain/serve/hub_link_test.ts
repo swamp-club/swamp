@@ -37,7 +37,9 @@ const MEMBER = {
 const MEMBER_ID = MEMBER.memberId.toLowerCase();
 
 function joinedLink(hubUrl = HUB): HubLink {
-  return HubLink.unjoined().beginJoin(hubUrl).received(MEMBER).joined();
+  return HubLink.unjoined().beginJoin(hubUrl, crypto.randomUUID()).received(
+    MEMBER,
+  ).joined();
 }
 
 Deno.test("HubLink: a join goes joining, then joined once the reply is recorded, with a lower-case member id", () => {
@@ -50,15 +52,18 @@ Deno.test("HubLink: a join goes joining, then joined once the reply is recorded,
 
 Deno.test("HubLink: joined before a join reply is refused", () => {
   assertThrows(
-    () => HubLink.unjoined().beginJoin(HUB).joined(),
+    () => HubLink.unjoined().beginJoin(HUB, crypto.randomUUID()).joined(),
     HubLinkError,
     "before a join reply",
   );
 });
 
 Deno.test("HubLink: a joined link cannot begin another join; a refused one can", () => {
-  assertThrows(() => joinedLink().beginJoin(OTHER), HubLinkError);
-  const rejoining = joinedLink().refuse().beginJoin(OTHER);
+  assertThrows(
+    () => joinedLink().beginJoin(OTHER, crypto.randomUUID()),
+    HubLinkError,
+  );
+  const rejoining = joinedLink().refuse().beginJoin(OTHER, crypto.randomUUID());
   assertEquals(rejoining.state, "joining");
   assertEquals(rejoining.hubUrl, OTHER);
   assertEquals(rejoining.memberId, null);
@@ -130,7 +135,8 @@ Deno.test("decideStart: a refused link without a token stays idle", () => {
 });
 
 Deno.test("decideStart: a joining link whose credential was stored completes the join", () => {
-  const joining = HubLink.unjoined().beginJoin(HUB).received(MEMBER);
+  const joining = HubLink.unjoined().beginJoin(HUB, crypto.randomUUID())
+    .received(MEMBER);
   const decision = decideStart(joining, {
     configuredHubUrl: HUB,
     credentialMemberId: MEMBER_ID,
@@ -140,14 +146,74 @@ Deno.test("decideStart: a joining link whose credential was stored completes the
   assertEquals(decision.link.state, "joined");
 });
 
-Deno.test("decideStart: a joining link with no credential is a join that never finished", () => {
-  const decision = decideStart(HubLink.unjoined().beginJoin(HUB), {
-    configuredHubUrl: HUB,
-    credentialMemberId: undefined,
-    hasJoinToken: true,
-  });
-  assertEquals(decision.action, "join");
-  assertEquals(decision.link.state, "unjoined");
+Deno.test("decideStart: a joining link with no credential stays joining, to replay with its joinId", () => {
+  const joinId = crypto.randomUUID();
+  for (
+    const joining of [
+      HubLink.unjoined().beginJoin(HUB, joinId),
+      HubLink.unjoined().beginJoin(HUB, joinId).received(MEMBER),
+    ]
+  ) {
+    const decision = decideStart(joining, {
+      configuredHubUrl: OTHER,
+      credentialMemberId: undefined,
+      hasJoinToken: true,
+    });
+    assertEquals(decision.action, "join");
+    assertEquals(decision.link.state, "joining");
+    assertEquals(decision.link.joinId, joinId);
+    const idle = decideStart(joining, {
+      configuredHubUrl: HUB,
+      credentialMemberId: crypto.randomUUID(),
+      hasJoinToken: false,
+    });
+    assertEquals(idle.action, "idle");
+    assertEquals(idle.link.joinId, joinId);
+    assertEquals(idle.discardCredential, true);
+  }
+});
+
+Deno.test("HubLink.beginJoin: a joining link keeps its joinId and takes the new hub; others use the fresh one", () => {
+  const joinId = crypto.randomUUID();
+  const joining = HubLink.unjoined().beginJoin(HUB, joinId).received(MEMBER);
+  const again = joining.beginJoin(OTHER, crypto.randomUUID());
+  assertEquals(again.joinId, joinId);
+  assertEquals(again.hubUrl, OTHER);
+  assertEquals(again.memberId, null);
+  const fresh = crypto.randomUUID();
+  assertEquals(joinedLink().refuse().beginJoin(OTHER, fresh).joinId, fresh);
+  assertThrows(
+    () => HubLink.unjoined().beginJoin(HUB, fresh.toUpperCase()),
+    HubLinkError,
+  );
+});
+
+Deno.test("HubLink: a settled link holds no joinId; abandonJoin starts afresh", () => {
+  assertEquals(joinedLink().joinId, null);
+  assertEquals(joinedLink().refuse().joinId, null);
+  const joining = HubLink.unjoined().beginJoin(HUB, crypto.randomUUID());
+  assertEquals(joining.abandonJoin().toJSON(), HubLink.unjoined().toJSON());
+  assertEquals(joining.received(MEMBER).abandonJoin().state, "unjoined");
+  assertThrows(() => joinedLink().abandonJoin(), HubLinkError);
+});
+
+Deno.test("HubLink.fromJSON: a joining link needs a joinId, a settled one holds none, and an older record reads without one", () => {
+  const joining = HubLink.unjoined().beginJoin(HUB, crypto.randomUUID());
+  assertEquals(HubLink.fromJSON(joining.toJSON()).toJSON(), joining.toJSON());
+  assertThrows(
+    () => HubLink.fromJSON({ ...joining.toJSON(), joinId: null }),
+    HubLinkError,
+  );
+  assertThrows(
+    () =>
+      HubLink.fromJSON({
+        ...joinedLink().toJSON(),
+        joinId: crypto.randomUUID(),
+      }),
+    HubLinkError,
+  );
+  const { joinId: _id, ...older } = joinedLink().toJSON();
+  assertEquals(HubLink.fromJSON(older).joinId, null);
 });
 
 Deno.test("decideStart: a joined link whose credential is gone is refused", () => {

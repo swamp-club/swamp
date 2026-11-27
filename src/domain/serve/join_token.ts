@@ -52,12 +52,14 @@ export const JoinTokenRecordSchema = z.object({
   revokedAt: z.string().datetime().optional(),
   /** sha256 hex of the wire form; the plaintext is shown once and never kept */
   secretHash: z.string().regex(/^[0-9a-f]{64}$/),
-}).strict();
+  /** sha256 hex of the joinId the first join sent, so only that member can replay */
+  joinIdHash: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+});
 
 export type JoinTokenRecord = z.infer<typeof JoinTokenRecordSchema>;
 
-/** a token as listed: never its hash */
-export type JoinTokenView = Omit<JoinTokenRecord, "secretHash">;
+/** a token as listed: never a hash */
+export type JoinTokenView = Omit<JoinTokenRecord, "secretHash" | "joinIdHash">;
 
 export class JoinTokenError extends Error {
   constructor(message: string) {
@@ -66,12 +68,23 @@ export class JoinTokenError extends Error {
   }
 }
 
-/** missing, used, expired, revoked and a wrong secret are one refusal */
+/**
+ * a replay is the first join again, carrying the same token and joinId before
+ * expiry; every other refusal (missing, used, expired, revoked, a wrong secret
+ * or joinId) is one shape
+ */
 export type JoinTokenUse =
-  | { readonly ok: true; readonly token: JoinToken }
-  | { readonly ok: false; readonly refusal: "invalid" };
+  | { readonly kind: "first-use"; readonly token: JoinToken }
+  | { readonly kind: "replay"; readonly memberId: string }
+  | { readonly kind: "refused" };
 
-const INVALID: JoinTokenUse = { ok: false, refusal: "invalid" };
+const REFUSED: JoinTokenUse = { kind: "refused" };
+
+/** the joinId a join carries: a UUID, in lower case only */
+export function joinIdOf(value: unknown): string | undefined {
+  const id = normalizedUuid(value);
+  return id !== undefined && id === value ? id : undefined;
+}
 
 /** the name a presented <name>.<secret> claims, so its record can be found */
 export function joinTokenNameOf(wire: unknown): MemberName | undefined {
@@ -126,25 +139,40 @@ export class JoinToken {
   static use(
     token: JoinToken | null,
     presented: unknown,
+    joinId: string,
     memberId: string,
     now: number,
   ): JoinTokenUse {
-    if (token === null || typeof presented !== "string") return INVALID;
+    if (joinIdOf(joinId) === undefined) {
+      throw new JoinTokenError("A join's joinId must be a lower-case UUID");
+    }
     const id = normalizedUuid(memberId);
     if (id === undefined) {
       throw new JoinTokenError("A joining member's id must be a UUID");
     }
-    const matches = matchesHash(presented, token.record.secretHash);
-    if (!matches || token.stateAt(now) !== "unused") return INVALID;
-    return {
-      ok: true,
-      token: new JoinToken({
-        ...token.record,
-        state: "used",
-        usedAt: new Date(now).toISOString(),
-        memberId: id,
-      }),
-    };
+    if (token === null || typeof presented !== "string") return REFUSED;
+    if (!matchesHash(presented, token.record.secretHash)) return REFUSED;
+    const state = token.stateAt(now);
+    if (state === "unused") {
+      return {
+        kind: "first-use",
+        token: new JoinToken({
+          ...token.record,
+          state: "used",
+          usedAt: new Date(now).toISOString(),
+          memberId: id,
+          joinIdHash: sha256Hex(joinId),
+        }),
+      };
+    }
+    const { joinIdHash, memberId: usedBy } = token.record;
+    if (
+      state === "used" && joinIdHash !== undefined && usedBy !== undefined &&
+      now < Date.parse(token.expiresAt) && matchesHash(joinId, joinIdHash)
+    ) {
+      return { kind: "replay", memberId: usedBy };
+    }
+    return REFUSED;
   }
 
   get memberName(): string {

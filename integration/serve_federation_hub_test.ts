@@ -137,7 +137,10 @@ class FakeMember {
 
   constructor(readonly hubUrl: string) {}
 
-  async join(joinToken: string): Promise<Response> {
+  async join(
+    joinToken: string,
+    joinId: string = crypto.randomUUID(),
+  ): Promise<Response> {
     const response = await fetch(`${this.hubUrl}${FEDERATION_JOIN_PATH}`, {
       method: "POST",
       body: JSON.stringify({
@@ -145,6 +148,7 @@ class FakeMember {
         capabilities: [],
         fingerprint: sampleFingerprintProps(),
         joinToken,
+        joinId,
       }),
     });
     if (response.status === 200) {

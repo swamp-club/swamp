@@ -103,11 +103,13 @@ Deno.test("FederationAudit: joins through the routes are audited as anonymous, n
   const t = createTestHub();
   const { plaintext } = await t.hub.createToken("edge-1");
   const secret = plaintext.split(".")[1];
-  const body = (joinToken: string) =>
+  const joinId = crypto.randomUUID();
+  const body = (joinToken: string, id = crypto.randomUUID()) =>
     JSON.stringify({
       protocolVersion: 1,
       fingerprint: sampleFingerprintProps(),
       joinToken,
+      joinId: id,
     });
   const post = (path: string, payload: string, auth?: string) =>
     new Request(`http://hub.test${path}`, {
@@ -117,10 +119,15 @@ Deno.test("FederationAudit: joins through the routes are audited as anonymous, n
     });
   const deps = { hub: t.hub, clientAddress: "10.9.8.7", audit };
   const joined = await handleFederationRequest(
-    post(FEDERATION_JOIN_PATH, body(plaintext)),
+    post(FEDERATION_JOIN_PATH, body(plaintext, joinId)),
     deps,
   );
-  const { credential } = await joined!.json();
+  const replayed = await handleFederationRequest(
+    post(FEDERATION_JOIN_PATH, body(plaintext, joinId)),
+    deps,
+  );
+  await joined?.body?.cancel();
+  const { credential } = await replayed!.json();
   const again = await handleFederationRequest(
     post(FEDERATION_JOIN_PATH, body(plaintext)),
     deps,
@@ -143,11 +150,14 @@ Deno.test("FederationAudit: joins through the routes are audited as anonymous, n
 
   assertEquals(events.map((e) => [e.action, e.outcome, e.resourceName]), [
     [FEDERATION_AUDIT_ACTIONS.join, "success", "edge-1"],
+    [FEDERATION_AUDIT_ACTIONS.joinReplayed, "success", "edge-1"],
     [FEDERATION_AUDIT_ACTIONS.join, "failure", "edge-1"],
     [FEDERATION_AUDIT_ACTIONS.checkInRejected, "failure", "check-in"],
   ]);
+  assertEquals(events[1].detail, "reason=join_replayed");
   const text = JSON.stringify(events);
   assert(!text.includes(secret));
+  assert(!text.includes(joinId));
   assert(!text.includes(credential.split(".")[2]));
   for (const event of events) assertEquals(event.principalKind, "anonymous");
 });

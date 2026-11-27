@@ -36,13 +36,17 @@ import {
   SERVE_MEMBER_DATA_NAME,
   SERVE_MEMBER_MODEL_TYPE,
 } from "../src/domain/models/serve/serve_member_names.ts";
+import { sampleFingerprintProps } from "../src/domain/serve/federation_test_helpers.ts";
 import type { HubLink } from "../src/domain/serve/hub_link.ts";
 import { FederationHub } from "../src/serve/federation/federation_hub.ts";
 import {
   repoMemberMethodRunner,
   repoMemberRecords,
 } from "../src/serve/federation/member_record_store.ts";
-import { handleFederationRequest } from "../src/serve/federation/hub_routes.ts";
+import {
+  FEDERATION_JOIN_PATH,
+  handleFederationRequest,
+} from "../src/serve/federation/hub_routes.ts";
 import { HubLinkStore } from "../src/serve/federation/hub_link_store.ts";
 import { resetRateLimitState } from "../src/serve/rate_limiter.ts";
 import { startProcessHost } from "./process_host.ts";
@@ -91,7 +95,9 @@ interface HubUnderTest extends AsyncDisposable {
   restart(): void;
 }
 
-async function startHub(): Promise<HubUnderTest> {
+async function startHub(
+  options: { now?: () => number } = {},
+): Promise<HubUnderTest> {
   assert(await registerFederationModelTypes(GATE_ON));
   const repoDir = await initRepo("swamp-federation-member-hub-");
   const repoContext = createRepositoryContext({ repoDir });
@@ -100,6 +106,7 @@ async function startHub(): Promise<HubUnderTest> {
     hubName: "central",
     members: repoMemberRecords(repoContext),
     runMemberMethod: repoMemberMethodRunner({ repoDir, repoContext }),
+    ...(options.now !== undefined ? { now: options.now } : {}),
   });
   const listen = (port: number) =>
     Deno.serve(
@@ -175,6 +182,8 @@ interface MemberProcess extends AsyncDisposable {
   readonly instanceId: string;
   readonly built: boolean;
   stop(): Promise<void>;
+  /** ends the process with no shutdown, as a crash does */
+  kill(): void;
 }
 
 async function startMember(
@@ -214,8 +223,146 @@ async function startMember(
     instanceId: started.instanceId,
     built: started.built,
     stop,
+    kill() {
+      stopped = true;
+      host.terminate();
+    },
     [Symbol.asyncDispose]: stop,
   };
+}
+
+interface DroppingProxy extends AsyncDisposable {
+  readonly url: string;
+  /** the joinId of every join the proxy forwarded */
+  readonly joinIds: string[];
+  /** joins still to forward and then answer with a closed connection */
+  drops: number;
+}
+
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
+
+function indexOfHeaderEnd(bytes: Uint8Array): number {
+  for (let i = 0; i + 3 < bytes.length; i++) {
+    if (
+      bytes[i] === 13 && bytes[i + 1] === 10 && bytes[i + 2] === 13 &&
+      bytes[i + 3] === 10
+    ) return i;
+  }
+  return -1;
+}
+
+async function readRequest(
+  conn: Deno.Conn,
+): Promise<
+  | { method: string; path: string; authorization?: string; body: Uint8Array }
+  | undefined
+> {
+  let buffer = new Uint8Array(0);
+  const chunk = new Uint8Array(16 * 1024);
+  const more = async () => {
+    const n = await conn.read(chunk);
+    if (n === null) return false;
+    const next = new Uint8Array(buffer.length + n);
+    next.set(buffer);
+    next.set(chunk.subarray(0, n), buffer.length);
+    buffer = next;
+    return true;
+  };
+  let end = indexOfHeaderEnd(buffer);
+  while (end < 0) {
+    if (!await more()) return undefined;
+    end = indexOfHeaderEnd(buffer);
+  }
+  const head = decoder.decode(buffer.subarray(0, end)).split("\r\n");
+  const [method, path] = head[0].split(" ");
+  const header = (name: string) => {
+    const line = head.find((l) => l.toLowerCase().startsWith(`${name}:`));
+    return line?.slice(name.length + 1).trim();
+  };
+  const length = Number(header("content-length") ?? "0");
+  const authorization = header("authorization");
+  while (buffer.length < end + 4 + length) {
+    if (!await more()) return undefined;
+  }
+  return {
+    method,
+    path,
+    ...(authorization !== undefined ? { authorization } : {}),
+    body: buffer.slice(end + 4, end + 4 + length),
+  };
+}
+
+/** forwards to the hub; a dropped join reaches the hub, then its reply is never sent */
+function droppingProxy(target: string, drops: number): DroppingProxy {
+  const listener = Deno.listen({ hostname: "127.0.0.1", port: 0 });
+  const handlers = new Set<Promise<void>>();
+  const proxy = {
+    url: `http://127.0.0.1:${listener.addr.port}`,
+    joinIds: [] as string[],
+    drops,
+  };
+  const handle = async (conn: Deno.Conn) => {
+    try {
+      const request = await readRequest(conn);
+      if (request === undefined) return;
+      const isJoin = request.path === FEDERATION_JOIN_PATH;
+      if (isJoin) {
+        proxy.joinIds.push(JSON.parse(decoder.decode(request.body)).joinId);
+      }
+      const response = await fetch(`${target}${request.path}`, {
+        method: request.method,
+        headers: {
+          "content-type": "application/json",
+          ...(request.authorization !== undefined
+            ? { authorization: request.authorization }
+            : {}),
+        },
+        body: decoder.decode(request.body),
+      });
+      const body = new Uint8Array(await response.arrayBuffer());
+      if (isJoin && proxy.drops > 0) {
+        proxy.drops--;
+        return;
+      }
+      const head = [
+        `HTTP/1.1 ${response.status} X`,
+        "content-type: application/json",
+        `content-length: ${body.length}`,
+        "connection: close",
+        "",
+        "",
+      ].join("\r\n");
+      await conn.write(encoder.encode(head));
+      await conn.write(body);
+    } catch {
+      // a member shutting down mid-request closes its side first
+    } finally {
+      try {
+        conn.close();
+      } catch {
+        // already closed
+      }
+    }
+  };
+  const serving = (async () => {
+    try {
+      for await (const conn of listener) {
+        const handler = handle(conn);
+        handlers.add(handler);
+        handler.finally(() => handlers.delete(handler)).catch(() => {});
+      }
+    } catch {
+      // the listener closed
+    }
+  })();
+  return Object.assign(proxy, {
+    async [Symbol.asyncDispose]() {
+      listener.close();
+      await serving;
+      await Promise.all(handlers);
+    },
+  });
 }
 
 async function memberNamed(h: HubUnderTest, name: string) {
@@ -434,4 +581,109 @@ Deno.test("federation member: no join token or credential reaches a log", async 
   const text = JSON.stringify(logs);
   assert(!text.includes(plaintext.split(".")[1]), "join token secret");
   assert(!text.includes("swfm1."), "member credential");
+});
+
+for (const drops of [1, 2]) {
+  Deno.test(`federation member: a join reply lost ${drops} time(s) is replayed and joins as one member`, async () => {
+    resetRateLimitState();
+    await using h = await startHub();
+    await using proxy = droppingProxy(h.url, drops);
+    await using repo = await memberRepo();
+    const { plaintext } = await h.hub.createToken("edge");
+    await repo.configure({ hubUrl: proxy.url, token: plaintext });
+    await using member = await startMember(repo.dir);
+    await waitFor(() => seenBy(h, member.instanceId), "a check-in");
+    const members = (await h.hub.listMembers()).filter((m) =>
+      m.name === "edge"
+    );
+    assertEquals(members.length, 1);
+    const link = await repo.link();
+    assertEquals(link.state, "joined");
+    assertEquals(link.memberId, members[0].memberId);
+    assertEquals(proxy.joinIds.length, drops + 1);
+    assertEquals(new Set(proxy.joinIds).size, 1);
+    assertEquals(
+      (await h.hub.listTokens()).find((t) => t.memberName === "edge")?.state,
+      "used",
+    );
+  });
+}
+
+Deno.test("federation member: killed after its join reached the hub, the restarted member is the same member", async () => {
+  resetRateLimitState();
+  await using h = await startHub();
+  await using proxy = droppingProxy(h.url, Number.MAX_SAFE_INTEGER);
+  await using repo = await memberRepo();
+  const { plaintext } = await h.hub.createToken("edge");
+  await repo.configure({ hubUrl: proxy.url, token: plaintext });
+  const first = await startMember(repo.dir);
+  await waitFor(
+    async () => (await memberNamed(h, "edge")) !== undefined,
+    "the hub accepting the join",
+  );
+  first.kill();
+  const memberId = (await memberNamed(h, "edge"))!.memberId;
+  assertEquals((await repo.link()).state, "joining");
+  await repo.configure({ hubUrl: h.url, token: plaintext });
+  await using restarted = await startMember(repo.dir);
+  await waitFor(() => seenBy(h, restarted.instanceId), "a check-in");
+  const members = (await h.hub.listMembers()).filter((m) => m.name === "edge");
+  assertEquals(members.length, 1);
+  assertEquals(members[0].memberId, memberId);
+  assertEquals((await repo.link()).memberId, memberId);
+});
+
+Deno.test("federation member: a replay with another joinId, after expiry or after removal gets the token refusal", async () => {
+  resetRateLimitState();
+  let offset = 0;
+  await using h = await startHub({ now: () => Date.now() + offset });
+  await using proxy = droppingProxy(h.url, 1);
+  await using repo = await memberRepo();
+  const { plaintext } = await h.hub.createToken("edge");
+  await repo.configure({ hubUrl: proxy.url, token: plaintext });
+  const member = await startMember(repo.dir);
+  await waitFor(() => seenBy(h, member.instanceId), "a check-in");
+  await member.stop();
+  const joinId = proxy.joinIds[0];
+  const replay = async (token: string, id: string) => {
+    const response = await fetch(`${h.url}${FEDERATION_JOIN_PATH}`, {
+      method: "POST",
+      body: JSON.stringify({
+        protocolVersion: 1,
+        capabilities: [],
+        fingerprint: sampleFingerprintProps(),
+        joinToken: token,
+        joinId: id,
+      }),
+    });
+    return { status: response.status, text: await response.text() };
+  };
+  const madeUp = await replay(`edge.${"A".repeat(43)}`, crypto.randomUUID());
+  assertEquals(madeUp.status, 401);
+  assertEquals(await replay(plaintext, crypto.randomUUID()), madeUp);
+  offset = 2 * 60 * 60 * 1000;
+  assertEquals(await replay(plaintext, joinId), madeUp);
+  offset = 0;
+  assertEquals((await replay(plaintext, joinId)).status, 200);
+  await h.hub.removeMember("edge");
+  assertEquals(await replay(plaintext, joinId), madeUp);
+});
+
+Deno.test("federation member: two nodes on one store, the first losing its reply, join once with one joinId", async () => {
+  resetRateLimitState();
+  await using h = await startHub();
+  await using proxy = droppingProxy(h.url, 1);
+  await using repo = await memberRepo();
+  const { plaintext } = await h.hub.createToken("edge");
+  await repo.configure({ hubUrl: proxy.url, token: plaintext });
+  await using a = await startMember(repo.dir);
+  await using b = await startMember(repo.dir);
+  await waitFor(
+    async () => await seenBy(h, a.instanceId) && await seenBy(h, b.instanceId),
+    "both instances checking in",
+  );
+  const members = (await h.hub.listMembers()).filter((m) => m.name === "edge");
+  assertEquals(members.length, 1);
+  assertEquals(proxy.joinIds.length >= 2, true);
+  assertEquals(new Set(proxy.joinIds).size, 1);
 });

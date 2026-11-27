@@ -27,7 +27,7 @@ import {
   FingerprintSchema,
 } from "../../domain/serve/fingerprint.ts";
 import { InstanceId } from "../../domain/serve/instance_id.ts";
-import { joinTokenNameOf } from "../../domain/serve/join_token.ts";
+import { joinIdOf, joinTokenNameOf } from "../../domain/serve/join_token.ts";
 import {
   MemberCredential,
   MemberCredentialError,
@@ -258,6 +258,10 @@ async function handleJoin(
   if (typeof read.body.joinToken !== "string") {
     return badRequest("joinToken: expected a string");
   }
+  const joinId = joinIdOf(read.body.joinId);
+  if (joinId === undefined) {
+    return badRequest("joinId: expected a lower-case UUID");
+  }
   const presented = read.body.joinToken;
   const claimedName = joinTokenNameOf(presented)?.value;
   let guarded;
@@ -267,6 +271,7 @@ async function handleJoin(
       async () => {
         const outcome = await deps.hub.join(
           presented,
+          joinId,
           fingerprint.fingerprint,
         );
         return { ok: outcome.kind !== "invalid-token", outcome };
@@ -292,7 +297,11 @@ async function handleJoin(
           `A live member is already named '${outcome.memberName}'; remove it before another joins under this name`,
       });
     case "joined":
-      deps.audit?.joined(address, outcome.memberName);
+      if (outcome.replayed) {
+        deps.audit?.joinReplayed(address, outcome.memberName);
+      } else {
+        deps.audit?.joined(address, outcome.memberName);
+      }
       return json(200, {
         memberId: outcome.memberId,
         memberName: outcome.memberName,
