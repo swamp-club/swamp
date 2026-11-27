@@ -19,7 +19,7 @@
 
 import { bold, cyan, dim, green, red, yellow } from "@std/fmt/colors";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
-// the hub sent these strings; log mode escapes them, JSON.stringify escapes JSON
+// another serve may have supplied these strings, so log mode escapes them
 import { escapeControlCharacters as shown } from "../../domain/control_characters.ts";
 import type {
   HubLinkInstance,

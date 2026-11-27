@@ -36,11 +36,7 @@ export function captureRaw(render: () => void): string {
 // deno-lint-ignore no-control-regex
 const SGR = /\x1b\[[0-9;]*m/g;
 
-/**
- * removes only the colour codes @std/fmt/colors emits, so any other control
- * character left came from data; an injected colour code is also removed, so
- * pair this with a check that the escaped form of the input is present
- */
+// ignores newlines and any SGR code, even injected ones: also assert the escaped input is present
 export function assertNoControlCharacters(output: string): void {
   const rest = output.replace(SGR, "").replaceAll("\n", "");
   assert(

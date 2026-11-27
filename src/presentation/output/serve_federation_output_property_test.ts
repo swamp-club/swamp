@@ -74,8 +74,7 @@ const memberArb = fc.record({
 type MemberFields = typeof memberArb extends fc.Arbitrary<infer T> ? T
   : never;
 
-// the CLI renders a serve's JSON reply, and an older or newer serve may skip the
-// validation these types assume, so every field is arbitrary text
+// another serve version may skip the validation these types assume, so every field is arbitrary text
 function memberOf(m: MemberFields): Member {
   return {
     memberId: m.memberId,

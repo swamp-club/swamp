@@ -20,7 +20,7 @@
 import { bold, cyan, dim, green, red, yellow } from "@std/fmt/colors";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { maxOf } from "../../domain/array_extrema.ts";
-// a member sent these strings; log mode escapes them, JSON.stringify escapes JSON
+// another serve may have supplied these strings, so log mode escapes them
 import { escapeControlCharacters as shown } from "../../domain/control_characters.ts";
 import type { MemberData } from "../../libswamp/serve/member_get.ts";
 import type { ServeMemberRecord } from "../../domain/serve/serve_member.ts";
