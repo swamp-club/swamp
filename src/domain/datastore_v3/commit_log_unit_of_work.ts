@@ -225,18 +225,49 @@ export const LEASE_LAPSED_CODE = "datastore_v3_lease_lapsed";
 export const COMMIT_MAY_LAND_CODE = "datastore_v3_commit_may_land";
 
 /**
+ * a failure that can say what went wrong without saying what the datastore
+ * holds, for a message whose outcome is stated elsewhere
+ */
+export interface ReasonWithoutOutcome {
+  readonly reasonWithoutOutcome: string;
+}
+
+function reasonOf(error: unknown): string {
+  let current = error;
+  for (let depth = 0; depth < MAX_CAUSE_DEPTH; depth++) {
+    const own = (current as Partial<ReasonWithoutOutcome> | undefined)
+      ?.reasonWithoutOutcome;
+    if (typeof own === "string") return own;
+    if (!(current instanceof Error)) break;
+    current = current.cause;
+  }
+  return messageOf(error);
+}
+
+function asSentence(text: string): string {
+  const trimmed = text.trim().replace(/\.+$/, "");
+  return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
+}
+
+/**
  * the commit outbox could be neither cleared nor marked, so the change may
  * already be in the datastore or be landed by the next writer; rerunning
  * blindly could make it twice
  */
 export class MayLandLaterError extends UnrecordedEndError {
   constructor(cause: unknown, readonly reason: unknown) {
-    const failed = cause === undefined ? "" : `${messageOf(cause)}. `;
+    const why = cause === undefined ? undefined : reasonOf(cause);
+    const unrecorded = reasonOf(reason);
+    const failed = why === undefined ? "" : `${asSentence(why)}. `;
+    const because = why !== undefined && unrecorded === why
+      ? ", for the same reason,"
+      : ` (${unrecorded.trim().replace(/\.+$/, "")}),`;
     super(
       `${failed}Swamp could not record that this change must not be ` +
-        `committed (${messageOf(reason)}), so it may already be in the v3 ` +
-        `datastore, or be committed by the next swamp command that writes ` +
-        `it. Check the datastore before running this command again.`,
+        `committed${because} so it may already be in the v3 datastore, or ` +
+        `be committed by the next swamp command that writes; a command ` +
+        `that only reads does not commit it. Check the datastore before ` +
+        `running this command again.`,
       COMMIT_MAY_LAND_CODE,
     );
     this.name = "MayLandLaterError";

@@ -26,6 +26,7 @@
 import { loginHintFor } from "../auth/workspace_sign_in_notes.ts";
 import {
   COMMIT_MAY_LAND_CODE,
+  type ReasonWithoutOutcome,
 } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { CommitsCompactedError } from "../../domain/datastore_v3/commit_store.ts";
 import {
@@ -55,10 +56,12 @@ export type ServeRequestSent = "never" | "maybe";
  * "maybe" means it may have reached serve. Nothing goes around serve to the
  * datastore's storage, which is never reached another way
  */
-export class ServeUnreachableError extends UserError {
+export class ServeUnreachableError extends UserError
+  implements ReasonWithoutOutcome {
   declare readonly code:
     | typeof V3_SERVE_UNREACHABLE_CODE
     | typeof LEASE_LAPSED_CODE;
+  readonly reasonWithoutOutcome: string;
 
   constructor(
     readonly serveUrl: string,
@@ -96,6 +99,11 @@ export class ServeUnreachableError extends UserError {
     );
     this.name = "ServeUnreachableError";
     this.cause = cause;
+    this.reasonWithoutOutcome = lapsed !== undefined
+      ? `this command's lease on ${lapsed.lease} at serve lapsed unrenewed`
+      : sent === "never"
+      ? `swamp could not reach serve at ${serveUrl} (${reason})`
+      : `swamp lost its connection to serve at ${serveUrl} (${reason})`;
   }
 }
 

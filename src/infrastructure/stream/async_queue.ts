@@ -17,8 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+/** buffered items handed out before the iterator gives timers and I/O a turn */
+export const ASYNC_QUEUE_YIELD_EVERY = 256;
+
+const COMPACT_AFTER = 1024;
+
 export class AsyncQueue<T> implements AsyncIterable<T> {
   private buffer: T[] = [];
+  private head = 0;
   private closed = false;
   private waiting: ((value: IteratorResult<T>) => void) | null = null;
 
@@ -49,13 +55,36 @@ export class AsyncQueue<T> implements AsyncIterable<T> {
     this.close();
   }
 
+  #take(): T {
+    const item = this.buffer[this.head];
+    this.buffer[this.head] = undefined as T;
+    this.head++;
+    if (this.head === this.buffer.length) {
+      this.buffer = [];
+      this.head = 0;
+    } else if (
+      this.head >= COMPACT_AFTER && this.head * 2 >= this.buffer.length
+    ) {
+      this.buffer = this.buffer.slice(this.head);
+      this.head = 0;
+    }
+    return item;
+  }
+
   async *[Symbol.asyncIterator](): AsyncIterator<T> {
+    let run = 0;
     while (true) {
-      if (this.buffer.length > 0) {
-        yield this.buffer.shift()!;
+      if (this.head < this.buffer.length) {
+        yield this.#take();
+        // a drain on microtasks alone would starve timers, a lease's renewal among them
+        if (++run >= ASYNC_QUEUE_YIELD_EVERY) {
+          run = 0;
+          await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        }
       } else if (this.closed) {
         return;
       } else {
+        run = 0;
         const result = await new Promise<IteratorResult<T>>((resolve) => {
           this.waiting = resolve;
         });
